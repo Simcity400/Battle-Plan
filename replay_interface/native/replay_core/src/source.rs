@@ -4,14 +4,14 @@
 //! (REPLAY_ARCHITECTURE.md, "Ingest boundary"). Backend 1 — the
 //! snapshot-flavor `.battleplan` container or directory store — is read
 //! through the verified `snapshot` crate reader (reuse, not a fork).
-//! Backend 2 — the current production compact-stream-only container — is
-//! detected and refused with a precise error instead of guessing record
-//! layouts.
+//! Backend 2 — a compact-stream-only container — is rejected as incomplete;
+//! portable production packages must include canonical folded snapshots.
 
 use serde_json::{Map, Value};
 use snapshot::{ExpectedIdentity, Store};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Timeline format id the production recorder writes for compact-stream-only
 /// recordings (`extractor/native/recorder_host`).
@@ -23,6 +23,23 @@ const COMPACT_STREAM_ROLE: &str = "collector_compact_stream";
 struct RecorderSessionBinding {
     active_dlcs: Vec<String>,
     localisation_language: String,
+    display_variant: RecorderDisplayVariant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecorderDisplayVariant {
+    physical_width: u32,
+    physical_height: u32,
+    min_gui_width: u32,
+    min_gui_height: u32,
+    gui_scale_f32_bits: u32,
+    refresh_rate_hz: u32,
+    max_refresh_rate_hz: Option<u32>,
+    fullscreen: bool,
+    borderless: bool,
+    display_mode: String,
+    settings_file_sha256: String,
 }
 
 struct MetadataRoute {
@@ -71,9 +88,8 @@ pub struct RawFrame {
     pub rest: Map<String, Value>,
 }
 
-/// A recording backend. Backend 1 is the snapshot-flavor container/dir store.
-/// Backend 2 (compact-stream-only production containers) fails closed in
-/// [`open_recording`] until the extraction layer settles its decode contract.
+/// A recording backend. Portable production recordings carry indexed,
+/// canonical per-hour snapshots inside the file.
 pub trait ReplaySource: Send + Sync {
     fn game_id(&self) -> &str;
     /// Sorted, deduplicated canonical hour indexes, taken from the recording
@@ -82,6 +98,12 @@ pub trait ReplaySource: Send + Sync {
     fn hours(&self) -> &[i64];
     /// Non-fatal ingest findings (index entries skipped, duplicate hours, ...).
     fn warnings(&self) -> &[String];
+    fn content_manifest(&self) -> Option<&portable_content_manifest::ContentManifest> {
+        None
+    }
+    fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
+        None
+    }
     /// Raw snapshot frame for one canonical hour from [`ReplaySource::hours`].
     fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError>;
 }
@@ -170,10 +192,9 @@ where
         .index(&game_id)
         .map_err(|e| SourceError::Open(format!("read index for game {game_id:?}: {e}")))?;
 
-    // FAIL-CLOSED: an empty snapshot index is the signature of the production
-    // compact-stream recording (recorder_host packs `"snapshots": []` plus a
-    // `collector_compact_stream` payload entry). Refuse with a precise error
-    // rather than guessing compact record layouts.
+    // FAIL-CLOSED: an empty snapshot index is an incomplete compact-only
+    // package. Portable production packages must include canonical folded
+    // per-hour snapshots.
     if index.snapshots.is_empty() {
         return Err(SourceError::Unsupported(empty_index_message(
             &store,
@@ -181,6 +202,7 @@ where
             &game_id,
         )));
     }
+    validate_index_schema_version(index.schema_version.as_ref())?;
 
     let mut files_by_hour: BTreeMap<i64, String> = BTreeMap::new();
     let mut warnings: Vec<String> = Vec::new();
@@ -213,6 +235,7 @@ where
     }
 
     let hours: Vec<i64> = files_by_hour.keys().copied().collect();
+    let design_catalog = read_portable_design_catalog(&store, &game_id)?;
     Ok(Box::new(StoreSource {
         store,
         game_id,
@@ -220,7 +243,44 @@ where
         files_by_hour,
         warnings,
         recorder_binding: metadata.binding,
+        design_catalog,
     }))
+}
+
+fn read_portable_design_catalog(
+    store: &Store,
+    game_id: &str,
+) -> Result<Option<Arc<crate::design_catalog::PortableDesignCatalog>>, SourceError> {
+    let bytes = store
+        .read_game_file_bytes(game_id, crate::design_catalog::PORTABLE_ARTIFACT_PATH)
+        .map_err(|error| {
+            SourceError::Open(format!(
+                "read verified A27 design catalog artifact {:?}: {error}",
+                crate::design_catalog::PORTABLE_ARTIFACT_PATH
+            ))
+        })?;
+    bytes
+        .map(|bytes| {
+            crate::design_catalog::PortableDesignCatalog::decode_a27_live_json(&bytes)
+                .map(Arc::new)
+                .map_err(|error| {
+                    SourceError::Open(format!("invalid A27 design catalog artifact: {error}"))
+                })
+        })
+        .transpose()
+}
+
+fn validate_index_schema_version(version: Option<&Value>) -> Result<(), SourceError> {
+    match version {
+        // The canonical JSON writer uses a string. Numeric 1 is retained for
+        // legacy directory stores that predate the canonical string spelling.
+        None => Ok(()),
+        Some(Value::String(value)) if value == "1" => Ok(()),
+        Some(Value::Number(value)) if value.as_u64() == Some(1) => Ok(()),
+        Some(value) => Err(SourceError::Unsupported(format!(
+            "incompatible replay index schema_version {value}; this standalone replayer supports schema_version \"1\""
+        ))),
+    }
 }
 
 fn recorder_metadata_route(store: &Store, game_id: &str) -> Result<MetadataRoute, SourceError> {
@@ -527,11 +587,61 @@ fn recorder_manifest_binding_value(
             ))
         })?
         .to_string();
+    let display_variant: RecorderDisplayVariant =
+        serde_json::from_value(modset.get("display_variant").cloned().ok_or_else(|| {
+            SourceError::Open(format!(
+                "recorder manifest {reference:?} modset.display_variant is missing"
+            ))
+        })?)
+        .map_err(|error| {
+            SourceError::Open(format!(
+                "recorder manifest {reference:?} modset.display_variant has invalid shape: {error}"
+            ))
+        })?;
+    validate_display_variant(&display_variant, reference)?;
 
     Ok(RecorderSessionBinding {
         active_dlcs,
         localisation_language,
+        display_variant,
     })
+}
+
+fn validate_display_variant(
+    display: &RecorderDisplayVariant,
+    reference: &str,
+) -> Result<(), SourceError> {
+    let scale = f32::from_bits(display.gui_scale_f32_bits);
+    let expected_mode = match (display.fullscreen, display.borderless) {
+        (true, false) => "fullscreen",
+        (false, true) => "borderless_fullscreen",
+        (false, false) => "windowed",
+        (true, true) => {
+            return Err(SourceError::Open(format!(
+                "recorder manifest {reference:?} display_variant flags are ambiguous"
+            )))
+        }
+    };
+    let sha_ok = display.settings_file_sha256.len() == 64
+        && display
+            .settings_file_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+    if display.physical_width == 0
+        || display.physical_height == 0
+        || display.min_gui_width == 0
+        || display.min_gui_height == 0
+        || display.refresh_rate_hz == 0
+        || !scale.is_finite()
+        || scale <= 0.0
+        || display.display_mode != expected_mode
+        || !sha_ok
+    {
+        return Err(SourceError::Open(format!(
+            "recorder manifest {reference:?} modset.display_variant violates the exact launch-settings contract"
+        )));
+    }
+    Ok(())
 }
 
 /// Precise Unsupported message for a recording whose snapshot index is empty,
@@ -601,6 +711,7 @@ struct StoreSource {
     files_by_hour: BTreeMap<i64, String>,
     warnings: Vec<String>,
     recorder_binding: Option<RecorderSessionBinding>,
+    design_catalog: Option<Arc<crate::design_catalog::PortableDesignCatalog>>,
 }
 
 impl ReplaySource for StoreSource {
@@ -612,6 +723,14 @@ impl ReplaySource for StoreSource {
     }
     fn warnings(&self) -> &[String] {
         &self.warnings
+    }
+    fn content_manifest(&self) -> Option<&portable_content_manifest::ContentManifest> {
+        self.store
+            .container()
+            .and_then(|container| container.content_manifest())
+    }
+    fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
+        self.design_catalog.as_ref()
     }
     fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
         let file = self.files_by_hour.get(&hour_index).ok_or_else(|| {
@@ -653,6 +772,11 @@ impl ReplaySource for StoreSource {
                 "localisation_language",
                 serde_json::json!(binding.localisation_language),
             )?;
+            bind_or_match(
+                session,
+                "display_variant",
+                serde_json::json!(binding.display_variant),
+            )?;
         }
         Ok(RawFrame {
             hour_index,
@@ -688,6 +812,11 @@ fn validate_existing_recorder_metadata(
             "session.language",
             &binding.localisation_language,
         )?;
+        check_exact_value(
+            session.get("display_variant"),
+            "session.display_variant",
+            &serde_json::json!(binding.display_variant),
+        )?;
     }
 
     if let Some(world_value) = rest.get("world") {
@@ -714,6 +843,19 @@ fn validate_existing_recorder_metadata(
                 &binding.localisation_language,
             )?;
         }
+    }
+    Ok(())
+}
+
+fn check_exact_value(
+    value: Option<&Value>,
+    context: &str,
+    expected: &Value,
+) -> Result<(), SourceError> {
+    if value.is_some_and(|actual| actual != expected) {
+        return Err(SourceError::Open(format!(
+            "recorder metadata conflict: {context} does not match launch-bound manifest metadata"
+        )));
     }
     Ok(())
 }
@@ -842,7 +984,16 @@ mod tests {
                         "errors": [],
                         "dlc": {"enabled": ["dlc/a.dlc"]},
                         "dlc_display_names": {"dlc/a.dlc": "DLC A"},
-                        "localisation_language": "l_english"
+                        "localisation_language": "l_english",
+                        "display_variant": {
+                            "physical_width": 2752, "physical_height": 1152,
+                            "min_gui_width": 1280, "min_gui_height": 720,
+                            "gui_scale_f32_bits": 1.0f32.to_bits(),
+                            "refresh_rate_hz": 60, "max_refresh_rate_hz": 75,
+                            "fullscreen": false, "borderless": true,
+                            "display_mode": "borderless_fullscreen",
+                            "settings_file_sha256": "aa".repeat(32)
+                        }
                     }
                 }))
                 .unwrap(),
@@ -871,6 +1022,10 @@ mod tests {
         assert_eq!(frame.rest["marker"], "ANCHORED");
         assert_eq!(frame.rest["session"]["active_dlcs"], json!(["DLC A"]));
         assert_eq!(frame.rest["session"]["localisation_language"], "l_english");
+        assert_eq!(
+            frame.rest["session"]["display_variant"]["physical_width"],
+            2752
+        );
         drop(source);
         let _ = fs::remove_dir_all(parent);
     }
@@ -931,7 +1086,7 @@ mod tests {
                 "timeline.json" => {
                     br#"{"session_manifest":"recorder/native_session_manifest.json"}"#.as_slice()
                 }
-                "recorder/native_session_manifest.json" => br#"{"modset":{"resolved":true,"errors":[],"dlc":{"enabled":["dlc/a.dlc"]},"dlc_display_names":{"dlc/a.dlc":"DLC A"},"localisation_language":"l_english"}}"#,
+                "recorder/native_session_manifest.json" => br#"{"modset":{"resolved":true,"errors":[],"dlc":{"enabled":["dlc/a.dlc"]},"dlc_display_names":{"dlc/a.dlc":"DLC A"},"localisation_language":"l_english","display_variant":{"physical_width":2752,"physical_height":1152,"min_gui_width":1280,"min_gui_height":720,"gui_scale_f32_bits":1065353216,"refresh_rate_hz":60,"max_refresh_rate_hz":75,"fullscreen":false,"borderless":true,"display_mode":"borderless_fullscreen","settings_file_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}"#,
                 other => panic!("unexpected metadata read {other:?}"),
             };
             Ok(Some(bytes.to_vec()))
@@ -941,6 +1096,7 @@ mod tests {
         let binding = route.binding.expect("first buffers must produce a binding");
         assert_eq!(binding.active_dlcs, vec!["DLC A"]);
         assert_eq!(binding.localisation_language, "l_english");
+        assert_eq!(binding.display_variant.physical_width, 2752);
         assert_eq!(
             calls.get("timeline.json").copied(),
             Some(1),

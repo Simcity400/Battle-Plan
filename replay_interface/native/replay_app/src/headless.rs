@@ -10,6 +10,7 @@ use std::io::Write;
 use std::path::Path;
 
 use map_viewer::GameFileResolver;
+use sha2::{Digest, Sha256};
 
 use crate::bundle::MapBundle;
 use crate::camera::Camera;
@@ -24,15 +25,17 @@ use crate::{Result, TimelineMode};
 const DUMP_WIDTH: u32 = 1408;
 const DUMP_HEIGHT: u32 = 512;
 
-/// Render `hour` (default: the timeline's first hour) at whole-map fit,
-/// draw the same overlay as the interactive window (text only when the
-/// game fonts load from `game_resolver`), and write a 32-bit BMP to `out`.
+/// Render `hour` (default: the timeline's first hour) and write a 32-bit BMP.
+/// A supplied bundle selects the debug/capture renderer and overlay. A
+/// bundle-less recording selects only the strict product D3D carrier and reads
+/// the app-owned offscreen RTV; it never substitutes the debug renderer.
 pub fn dump_frame(
-    bundle: &MapBundle,
+    bundle: Option<&MapBundle>,
     mode: &TimelineMode,
     hour: Option<i64>,
     out: &Path,
-    game_resolver: Option<&GameFileResolver>,
+    _game_resolver: Option<&GameFileResolver>,
+    product_paths: &crate::install_paths::ProductPaths,
     dump_zoom: Option<f64>,
     dump_center: Option<(f64, f64)>,
     dump_hdr: Option<&Path>,
@@ -42,7 +45,66 @@ pub fn dump_frame(
     day_night_hour_override: Option<f32>,
     water_full: bool,
 ) -> Result<()> {
-    let (provider, label) = build_provider(bundle, mode)?;
+    reject_recording_dump_debug_bundle(mode, bundle.is_some())?;
+    match bundle {
+        Some(bundle) => dump_debug_frame(
+            bundle,
+            mode,
+            hour,
+            out,
+            product_paths,
+            dump_zoom,
+            dump_center,
+            dump_hdr,
+            capture_dir,
+            postfx_enabled,
+            postfx_restore_full,
+            day_night_hour_override,
+            water_full,
+        ),
+        None => dump_production_recording_frame(
+            mode,
+            hour,
+            out,
+            product_paths,
+            dump_zoom,
+            dump_center,
+            dump_hdr,
+            capture_dir,
+            day_night_hour_override,
+        ),
+    }
+}
+
+fn reject_recording_dump_debug_bundle(mode: &TimelineMode, has_bundle: bool) -> Result<()> {
+    if matches!(mode, TimelineMode::Recording { .. }) && has_bundle {
+        return Err(
+            "production recording --dump-frame forbids --bundle; no debug renderer substitute is permitted"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn dump_debug_frame(
+    bundle: &MapBundle,
+    mode: &TimelineMode,
+    hour: Option<i64>,
+    out: &Path,
+    product_paths: &crate::install_paths::ProductPaths,
+    dump_zoom: Option<f64>,
+    dump_center: Option<(f64, f64)>,
+    dump_hdr: Option<&Path>,
+    capture_dir: Option<&Path>,
+    postfx_enabled: bool,
+    postfx_restore_full: bool,
+    day_night_hour_override: Option<f32>,
+    water_full: bool,
+) -> Result<()> {
+    let (provider, label) = build_provider(Some(bundle), mode)?;
+    let (game_resolver, _content_admission) =
+        crate::content_compatibility::bind_provider_content(provider.as_ref(), product_paths)
+            .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
     let hours = provider.hours();
     if hours.is_empty() {
         return Err("timeline provider has no hours".into());
@@ -58,15 +120,23 @@ pub fn dump_frame(
         bundle,
         bundle.max_state_id(),
         capture_dir,
-        game_resolver,
+        Some(&game_resolver),
         postfx_enabled,
         postfx_restore_full,
         water_full,
     )?;
-    let mut overlay = Overlay::create(&gfx, game_resolver);
+    let mut overlay = Overlay::create(&gfx, Some(&game_resolver));
     let owners = provider.owners_at(hour);
     let controllers = provider.controllers_at(hour);
-    renderer.update_state_politics(&gfx, &owners, &controllers, &bundle.country_colors)?;
+    let frame = provider.world_frame_at(hour);
+    renderer.update_state_politics(
+        &gfx,
+        bundle,
+        frame.as_deref(),
+        &owners,
+        &controllers,
+        &bundle.country_colors,
+    )?;
     let mut camera = Camera::fit(
         bundle.width,
         bundle.height,
@@ -142,12 +212,240 @@ pub fn dump_frame(
             if stats.restore_evidence_found { "found" } else { "none" },
             stats.last_render_ms.unwrap_or(0.0)
         );
+        println!(
+            "captured pass submitted-stream omissions: particles {}, entities {}, direct_visuals {}, weather {}",
+            if stats.particle_stream_omitted {
+                "omitted"
+            } else {
+                "none"
+            },
+            if stats.entity_stream_omitted {
+                "omitted"
+            } else {
+                "none"
+            },
+            if stats.direct_visual_stream_omitted {
+                "omitted"
+            } else {
+                "none"
+            },
+            if stats.weather_stream_omitted {
+                "omitted"
+            } else {
+                "none"
+            },
+        );
         if let Some(water_gap) = &stats.water_gap {
             println!("captured pass water gap: {water_gap}");
         }
         for gap in &stats.layer_gaps {
             println!("captured pass layer gap: {gap}");
         }
+    }
+    Ok(())
+}
+
+/// Render one portable recording hour through the same app-owned D3D11
+/// device/context/RTV route as the product window, then read that exact RTV.
+/// No debug bundle, captured pass, proxy map, camera, HUD, or overlay is
+/// admitted into this path.
+fn dump_production_recording_frame(
+    mode: &TimelineMode,
+    hour: Option<i64>,
+    out: &Path,
+    product_paths: &crate::install_paths::ProductPaths,
+    dump_zoom: Option<f64>,
+    dump_center: Option<(f64, f64)>,
+    dump_hdr: Option<&Path>,
+    capture_dir: Option<&Path>,
+    day_night_hour_override: Option<f32>,
+) -> Result<()> {
+    if !matches!(mode, TimelineMode::Recording { .. }) {
+        return Err(
+            "bundle-less --dump-frame is a production recording command and requires --recording"
+                .into(),
+        );
+    }
+    reject_production_dump_debug_inputs(
+        dump_zoom,
+        dump_center,
+        dump_hdr,
+        capture_dir,
+        day_night_hour_override,
+    )?;
+
+    let (provider, label) = build_provider(None, mode)?;
+    let (game_resolver, content_admission) =
+        crate::content_compatibility::bind_provider_content(provider.as_ref(), product_paths)
+            .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+    let content_manifest = provider
+        .content_manifest()
+        .ok_or("portable playback has no admitted content manifest after binding")?;
+    let hours = provider.hours();
+    let selected_hour = hour
+        .or_else(|| hours.first().copied())
+        .ok_or("timeline provider has no hours")?;
+    if hours.binary_search(&selected_hour).is_err() {
+        return Err(
+            format!("--dump-hour {selected_hour} is not an exact recorded timeline hour").into(),
+        );
+    }
+    let initial_frame = provider
+        .world_frame_at(hours[0])
+        .ok_or("initial replay frame is unavailable")?;
+    let initial_display = initial_frame
+        .session_metadata()
+        .display_variant
+        .measured()
+        .ok_or("replay lacks authenticated initial display_variant")?;
+    let output_width = initial_display.physical_width;
+    let output_height = initial_display.physical_height;
+    if output_width == 0 || output_height == 0 {
+        return Err("recorded physical client extent is empty".into());
+    }
+
+    let frame = provider
+        .world_frame_at(selected_hour)
+        .ok_or("selected exact replay frame is unavailable")?;
+    let production_render = frame
+        .production_render()
+        .ok_or("selected replay hour has no authenticated production_render carrier")?;
+    let mut production_map = map_viewer::ProductionMapRenderer::new(
+        &game_resolver,
+        &content_admission,
+        content_manifest,
+    )?;
+    let production_plan = production_map.prepare_frame(Some(production_render))?;
+    let prepared =
+        map_viewer::prepare_production_d3d_frame(&production_plan, production_map.resources())?;
+    for message in production_optional_omission_messages(&production_plan, &prepared) {
+        eprintln!("replay_app: {message}");
+    }
+    let gfx = Gfx::create_offscreen(output_width, output_height)?;
+    gfx.clear_target([0.0, 0.0, 0.0, 1.0])?;
+    let has_map_route = prepared.target.is_some() && !prepared.ordered_render_operations.is_empty();
+    let (map_operations, map_receipt, map_presented) = if has_map_route {
+        let mut runtime = crate::app::ProductProductionD3dRuntime::default();
+        let outcome =
+            runtime.execute(&gfx, &game_resolver, production_map.resources(), &prepared)?;
+        (
+            outcome.executed_operations,
+            outcome.receipt_sha256,
+            outcome.presented_to_app_target,
+        )
+    } else {
+        (0, "none".into(), false)
+    };
+
+    let mut selected_present_operations = 0usize;
+    let mut selected_present_m02_draws = 0usize;
+    let mut selected_present_executed = false;
+    if let Some(pass) = prepared.authenticated_ui_pass.as_ref() {
+        let mut runtime = crate::ui_runtime::ProductSelectedPresentRuntime::new(
+            &gfx,
+            &game_resolver,
+            &content_admission,
+            pass,
+        )?;
+        let runtime_text = match frame.runtime_text()? {
+            replay_core::Leaf::Measured(catalog) => Some(catalog),
+            replay_core::Leaf::Absent | replay_core::Leaf::Unobtained => None,
+        };
+        match runtime.execute(
+            &gfx,
+            &game_resolver,
+            &prepared,
+            frame.as_ref(),
+            None,
+            runtime_text.as_ref(),
+        )? {
+            crate::ui_runtime::SelectedPresentUiOutcome::Executed {
+                operation_count,
+                m02_draw_count,
+            } => {
+                selected_present_operations = operation_count;
+                selected_present_m02_draws = m02_draw_count;
+                selected_present_executed = true;
+            }
+            crate::ui_runtime::SelectedPresentUiOutcome::Omitted(reason) => {
+                eprintln!(
+                    "replay_app: production dump feature omitted [SELECTED_PRESENT_UI] {reason}"
+                );
+            }
+        }
+    }
+    if !map_presented && !selected_present_executed {
+        return Err(
+            "production recording dump has neither authenticated map output nor executable selected-Present UI output"
+                .into(),
+        );
+    }
+    if map_operations == 0 && selected_present_operations == 0 {
+        return Err("production recording dump executed zero authenticated draws".into());
+    }
+    let pixels = gfx.read_target()?;
+    let pixel_sha256 = format!("{:x}", Sha256::digest(&pixels));
+    write_bmp(out, output_width, output_height, &pixels)?;
+    println!(
+        "wrote production recording frame dump: {} ({label}, hour {selected_hour}, {}x{}, {} map operations, {} selected-Present operations including {} M02 draws, map receipt {}, bgra_sha256 {})",
+        out.display(),
+        output_width,
+        output_height,
+        map_operations,
+        selected_present_operations,
+        selected_present_m02_draws,
+        map_receipt,
+        pixel_sha256,
+    );
+    Ok(())
+}
+
+fn production_optional_omission_messages(
+    plan: &map_viewer::PreparedProductionMapFrame,
+    prepared: &map_viewer::PreparedProductionD3dFrame,
+) -> Vec<String> {
+    let mut messages = plan
+        .omitted_data_needs
+        .iter()
+        .map(|need| {
+            format!(
+                "production dump feature omitted [{}] {}: {}",
+                need.packet, need.feature, need.reason
+            )
+        })
+        .chain(prepared.omissions.iter().map(|omission| {
+            format!(
+                "production dump feature omitted [PRODUCTION_MAP_D3D] {}: {}",
+                omission.pass, omission.reason
+            )
+        }))
+        .collect::<Vec<_>>();
+    if prepared.authenticated_ui_pass.is_none() {
+        messages.push(
+            "production dump feature omitted [SELECTED_PRESENT_UI] authenticated selected-Present UI/M02 carrier is absent"
+                .into(),
+        );
+    }
+    messages
+}
+
+fn reject_production_dump_debug_inputs(
+    dump_zoom: Option<f64>,
+    dump_center: Option<(f64, f64)>,
+    dump_hdr: Option<&Path>,
+    capture_dir: Option<&Path>,
+    day_night_hour_override: Option<f32>,
+) -> Result<()> {
+    if dump_zoom.is_some()
+        || dump_center.is_some()
+        || dump_hdr.is_some()
+        || capture_dir.is_some()
+        || day_night_hour_override.is_some()
+    {
+        return Err(
+            "production recording --dump-frame forbids debug camera, HDR, capture, and day/night inputs"
+                .into(),
+        );
     }
     Ok(())
 }
@@ -192,4 +490,145 @@ fn write_bmp(path: &Path, width: u32, height: u32, pixels: &[u8]) -> Result<()> 
     file.write_all(&out)
         .map_err(|err| format!("write {}: {err}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn production_recording_dump_rejects_every_debug_substitute() {
+        assert!(reject_production_dump_debug_inputs(None, None, None, None, None).is_ok());
+        assert!(reject_production_dump_debug_inputs(Some(1.0), None, None, None, None).is_err());
+        assert!(
+            reject_production_dump_debug_inputs(None, Some((1.0, 2.0)), None, None, None).is_err()
+        );
+        assert!(reject_production_dump_debug_inputs(
+            None,
+            None,
+            Some(Path::new("scene.hdr")),
+            None,
+            None
+        )
+        .is_err());
+        assert!(reject_production_dump_debug_inputs(
+            None,
+            None,
+            None,
+            Some(Path::new("capture")),
+            None
+        )
+        .is_err());
+        assert!(reject_production_dump_debug_inputs(None, None, None, None, Some(0.5)).is_err());
+    }
+
+    #[test]
+    fn production_recording_dump_rejects_debug_bundle_route() {
+        let mode = TimelineMode::Recording {
+            path: "portable.battleplan".into(),
+            timeline: replay_core::TimelineConfig::default(),
+        };
+        assert!(reject_recording_dump_debug_bundle(&mode, false).is_ok());
+        assert!(reject_recording_dump_debug_bundle(&mode, true).is_err());
+        assert!(reject_recording_dump_debug_bundle(&TimelineMode::Static1936, true).is_ok());
+    }
+
+    #[test]
+    fn optional_packet_and_d3d_omissions_are_reported_without_rejecting_the_frame() {
+        let plan = map_viewer::PreparedProductionMapFrame {
+            content_manifest_sha256: "11".repeat(32),
+            effective_vfs_manifest_sha256: "22".repeat(32),
+            selected_submit_index: None,
+            selected_submit_global_order: None,
+            ordered_scene_constant_buffers: Vec::new(),
+            ordered_static_map_programs: Vec::new(),
+            ordered_render_operations: Vec::new(),
+            political_textures: Vec::new(),
+            tiled_lights: Vec::new(),
+            ordered_runtime_draws: Vec::new(),
+            m02_combat: None,
+            authenticated_ui_pass: None,
+            m03_arrows: None,
+            o04_cities: None,
+            omitted_data_needs: vec![map_viewer::ProductionMapDataNeed {
+                packet: "M02".into(),
+                feature: "combat indicators".into(),
+                reason: "carrier absent".into(),
+            }],
+        };
+        let mut prepared = map_viewer::PreparedProductionD3dFrame {
+            content_manifest_sha256: "11".repeat(32),
+            effective_vfs_manifest_sha256: "22".repeat(32),
+            target: None,
+            ordered_scene_constant_buffers: Vec::new(),
+            ordered_render_operations: Vec::new(),
+            political_textures: Vec::new(),
+            tiled_lights: Vec::new(),
+            ordered_static_used_content: Vec::new(),
+            ordered_static_programs: Vec::new(),
+            ordered_runtime_draws: Vec::new(),
+            m02_combat: None,
+            authenticated_ui_pass: None,
+            m03_arrows: None,
+            omissions: vec![map_viewer::ProductionD3dOmission {
+                pass: "optional-pass".into(),
+                reason: "unsupported optional interpreter".into(),
+            }],
+        };
+        let messages = production_optional_omission_messages(&plan, &prepared);
+        assert_eq!(messages.len(), 3);
+        assert!(messages[0].contains("[M02]"));
+        assert!(messages[1].contains("[PRODUCTION_MAP_D3D]"));
+        assert!(messages[2].contains("[SELECTED_PRESENT_UI]"));
+        assert!(messages[2].contains("carrier is absent"));
+
+        prepared.authenticated_ui_pass = Some(replay_core::AuthenticatedUiPass {
+            schema: replay_core::UI_PASS_SCHEMA.into(),
+            update_index: 1,
+            first_sequence: 1,
+            last_sequence: 1,
+            ui_pass_draw_count: 0,
+            target: replay_core::RenderTargetDesc {
+                prepared_target: replay_core::PreparedRenderTarget::SwapchainBackBuffer,
+                width: 1920,
+                height: 1080,
+                dxgi_format_u32: 28,
+                mip_level: 0,
+                sample_count: 1,
+                sample_quality: 0,
+                persistent_content: None,
+                exact_resource: None,
+            },
+            active_mapmode_state: None,
+            ui_pass_operations: Vec::new(),
+            pass_identity_sha256: "00".repeat(32),
+        });
+        let messages = production_optional_omission_messages(&plan, &prepared);
+        assert_eq!(messages.len(), 2);
+        assert!(messages
+            .iter()
+            .all(|message| !message.contains("[SELECTED_PRESENT_UI]")));
+    }
+
+    #[test]
+    fn headless_source_executes_selected_present_before_exact_target_readback() {
+        let source = include_str!("headless.rs");
+        let production = &source[source
+            .find("fn dump_production_recording_frame(")
+            .expect("production recording dump function")..];
+        let selected_start = production
+            .find("ProductSelectedPresentRuntime::new")
+            .expect("headless selected-Present runtime");
+        let execute = selected_start
+            + production[selected_start..]
+                .find("runtime.execute(")
+                .expect("headless selected-Present execution route");
+        let readback = production
+            .find("let pixels = gfx.read_target()?")
+            .expect("headless exact target readback");
+        assert!(execute < readback);
+        let forbidden_legacy_omission = ["interactive Present", "-stage surface"].concat();
+        assert!(!production.contains(&forbidden_legacy_omission));
+        assert!(production.contains("selected_present_m02_draws"));
+    }
 }

@@ -191,6 +191,26 @@ See `../../../documents/archive/native_lanes/focus_research_decisions_depth_live
 `../../../documents/archive/native_lanes/focus_research_decisions_depth_live/SHARED_RESIDUAL_PATCH_PLAN.md` for residual-specific shared hunks that require
 an orchestrator slot.
 
+## 2026-07-17 A2/A12 promotion update
+
+`A2_A12_RE_REPORT.md` and `A2_A12_RE_EVIDENCE.json` supersede the residual
+claims below for focus pause, decision cooldowns, and target storage:
+
+- focus pause is `CCountry+0x1380 -> CNationalFocusProgress+0xB0`;
+- decision re-enable is `CCountry+0xFA0 -> CDecisionStatus+0x58`, with
+  `CDecisionCooldown { definition:+0x08, days:+0x10 }`;
+- decision removal uses the same record at `CDecisionStatus+0x70`;
+- the targeted-decision union is `record+0x20` string/country or
+  `record+0x24` numeric, while `record+0x28` is lifecycle state rather than a
+  target-kind discriminator;
+- target scope is joined from the static decision definition. A present,
+  non-false `state_target` declaration makes the numeric value a state ID.
+  The pinned game-file corpus has 278 such declarations and no
+  `province_target` producer.
+
+The following residual narrative is retained as historical evidence of the
+search path; it is no longer the current A2/A12 RE status.
+
 Current residual status is `NOT COMPLETE`: direct completed-focus token closure
 is a validated slice when compact focus source rows carry completed vectors.
 Focus pause has the full `CFocusStatus+0x00..+0x7F` bounded object range

@@ -1,0 +1,900 @@
+//! Capture-independent D3D11 execution contract for the production map.
+//!
+//! This module deliberately contains no capture-bundle adapter and no asset
+//! catalogue.  Static interpreters may submit a draw only after resolving all
+//! of its inputs through the replay-admitted effective VFS.  A semantic content
+//! binding without a complete draw descriptor is an omission, never a license
+//! to invent pipeline state or pixels.
+
+use crate::{
+    production_main_scene_desc_from_outputs,
+    production_map_interpreter::{materialize_static_program, unsupported_reason},
+    PreparedProductionMapFrame, PreparedRuntimeDraw, ProductionMainSceneTargetDesc,
+    ProductionMapResource, Result,
+};
+use replay_core::{
+    BufferSource, ConstantBufferBinding, M03ArrowDraw, M03ArrowFrame, RenderExecutionRef,
+    RenderTargetDesc, RenderTargetInitialSource, StaticGeometrySource, StaticMapCommand,
+    StaticMapOperation, StaticMapPassProgram, StaticShaderResourceSource, UsedContentKey,
+};
+use serde::{Deserialize, Serialize};
+use snapshot::sha256::Sha256;
+use std::collections::BTreeMap;
+
+pub type ProductionD3dStaticPassProgram = StaticMapPassProgram;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProductionD3dOmission {
+    pub pass: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedProductionD3dFrame {
+    pub content_manifest_sha256: String,
+    pub effective_vfs_manifest_sha256: String,
+    pub target: Option<ProductionMainSceneTargetDesc>,
+    pub ordered_scene_constant_buffers: Vec<ConstantBufferBinding>,
+    pub ordered_render_operations: Vec<RenderExecutionRef>,
+    pub political_textures: Vec<replay_core::PoliticalTexturePacket>,
+    pub tiled_lights: Vec<replay_core::TiledLightSubmission>,
+    pub ordered_static_used_content: Vec<UsedContentKey>,
+    pub ordered_static_programs: Vec<StaticMapPassProgram>,
+    pub ordered_runtime_draws: Vec<PreparedRuntimeDraw>,
+    pub m02_combat: Option<replay_core::M02CombatFrame>,
+    pub authenticated_ui_pass: Option<replay_core::AuthenticatedUiPass>,
+    pub m03_arrows: Option<M03ArrowFrame>,
+    pub omissions: Vec<ProductionD3dOmission>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProductionD3dExecutedDraw {
+    pub global_ordinal: u32,
+    pub pass: String,
+    pub draw_token: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProductionD3dExecutionReceipt {
+    pub schema: String,
+    pub content_manifest_sha256: String,
+    pub effective_vfs_manifest_sha256: String,
+    pub target: Option<ProductionMainSceneTargetDesc>,
+    pub ordered_draws: Vec<ProductionD3dExecutedDraw>,
+    pub ordered_used_content: Vec<UsedContentKey>,
+    pub omissions: Vec<ProductionD3dOmission>,
+    pub deterministic_sha256: String,
+}
+
+/// Backend-neutral ordered execution boundary.  The Windows implementation can
+/// bind these calls to D3D11 while headless tests use a deterministic sink.
+pub trait ProductionD3dExecutionBridge {
+    fn begin_frame(&mut self, frame: &PreparedProductionD3dFrame) -> Result<()>;
+    fn execute_static_operation(
+        &mut self,
+        global_ordinal: u32,
+        pass: &StaticMapPassProgram,
+        ordered_scene_constant_buffers: &[ConstantBufferBinding],
+        operation: &StaticMapOperation,
+    ) -> Result<()>;
+    fn execute_runtime_draw(
+        &mut self,
+        global_ordinal: u32,
+        ordered_scene_constant_buffers: &[ConstantBufferBinding],
+        draw: &PreparedRuntimeDraw,
+    ) -> Result<()>;
+    fn execute_m03_draw(
+        &mut self,
+        global_ordinal: u32,
+        ordered_scene_constant_buffers: &[ConstantBufferBinding],
+        draw: &M03ArrowDraw,
+    ) -> Result<()>;
+    fn finish_frame(&mut self) -> Result<()>;
+}
+
+/// Join the production-map plan with independently generated static-pass
+/// programs. Missing programs remain feature-local omissions. Present programs
+/// fail closed on any order, descriptor, byte-range, or content-identity error.
+pub fn prepare_production_d3d_frame(
+    frame: &PreparedProductionMapFrame,
+    resources: &BTreeMap<String, ProductionMapResource>,
+) -> Result<PreparedProductionD3dFrame> {
+    let mut ordered_static_programs = Vec::new();
+    let mut omissions = Vec::new();
+    if frame.m02_combat.is_some() && frame.authenticated_ui_pass.is_none() {
+        omissions.push(ProductionD3dOmission {
+            pass: "m02_combat_indicators".into(),
+            reason: "exact M02 swapchain draws are carried, but the complete authenticated selected-Present UI-pass operation stream is absent; the entire M02 pixel route is omitted".into(),
+        });
+    }
+    let mut omitted_static_ordinals = std::collections::BTreeSet::new();
+    for program in &frame.ordered_static_map_programs {
+        let mut seen = std::collections::BTreeSet::new();
+        if program
+            .ordered_content_keys
+            .iter()
+            .any(|key| !seen.insert(key))
+        {
+            return Err("opaque D3D program content keys are duplicated".into());
+        }
+        if program.ordered_operations.is_empty() {
+            omissions.push(ProductionD3dOmission {
+                pass: program.pass_token.clone(),
+                reason: "typed static-pass program contains no authenticated draws".into(),
+            });
+            continue;
+        }
+        let program = match materialize_static_program(program, resources) {
+            Ok(program) => program,
+            Err(error) => {
+                if let Some(reason) = unsupported_reason(&error) {
+                    omitted_static_ordinals.extend(
+                        program
+                            .ordered_operations
+                            .iter()
+                            .map(|operation| operation.operation_ordinal),
+                    );
+                    omissions.push(ProductionD3dOmission {
+                        pass: program.pass_token.clone(),
+                        reason,
+                    });
+                    continue;
+                }
+                return Err(error.into());
+            }
+        };
+        ordered_static_programs.push(program);
+    }
+
+    let mut omit_m03 = false;
+    loop {
+        let mut changed = false;
+        if !omit_m03
+            && frame.m03_arrows.as_ref().is_some_and(|m03| {
+                m03.draws.iter().any(|packet| {
+                    static_draw_omitted_dependency(&packet.draw, &omitted_static_ordinals, false)
+                        .is_some()
+                })
+            })
+        {
+            omit_m03 = true;
+            changed = true;
+            omissions.push(ProductionD3dOmission {
+                pass: "m03_order_movement_arrows".into(),
+                reason: "M03 consumes a render-graph resource whose authenticated static producer was omitted; the entire dependent M03 feature is transitively omitted".into(),
+            });
+        }
+
+        let mut retained = Vec::with_capacity(ordered_static_programs.len());
+        for program in ordered_static_programs {
+            if let Some(dependency) =
+                static_program_omitted_dependency(&program, &omitted_static_ordinals, omit_m03)
+            {
+                omitted_static_ordinals.extend(
+                    program
+                        .ordered_operations
+                        .iter()
+                        .map(|operation| operation.operation_ordinal),
+                );
+                omissions.push(ProductionD3dOmission {
+                    pass: program.pass_token.clone(),
+                    reason: format!(
+                        "static pass consumes {dependency}, whose authenticated producer was omitted; this dependent pass is transitively omitted"
+                    ),
+                });
+                changed = true;
+            } else {
+                retained.push(program);
+            }
+        }
+        ordered_static_programs = retained;
+        if !changed {
+            break;
+        }
+    }
+
+    let mut ordered_static_used_content = Vec::new();
+    let mut output_states = Vec::new();
+    for program in &ordered_static_programs {
+        let expected_consumer = format!("production_map.static_program/{}", program.payload_sha256);
+        for key in &program.ordered_content_keys {
+            let resource = resources
+                .get(key)
+                .ok_or_else(|| format!("opaque program references absent content key {key}"))?;
+            ordered_static_used_content.push(resource.content.clone());
+        }
+        for operation in &program.ordered_operations {
+            validate_static_operation(operation, resources, &expected_consumer)?;
+            if let StaticMapCommand::Draw { draw } = &operation.command {
+                output_states.push(draw.output_state.clone());
+            }
+        }
+    }
+    let m03_arrows = if omit_m03 {
+        None
+    } else {
+        frame.m03_arrows.clone()
+    };
+    if let Some(m03) = &m03_arrows {
+        for content in &m03.used_content {
+            ordered_static_used_content.push(content.clone());
+        }
+        output_states.extend(m03.draws.iter().map(|draw| draw.draw.output_state.clone()));
+    }
+    output_states.extend(frame.ordered_runtime_draws.iter().map(|draw| match draw {
+        PreparedRuntimeDraw::Particle { packet, .. } => packet.output_state.clone(),
+        PreparedRuntimeDraw::Entity { submission, .. }
+        | PreparedRuntimeDraw::O04City { submission, .. } => submission.output_state.clone(),
+    }));
+    let target = production_main_scene_desc_from_outputs(output_states.iter())?;
+
+    Ok(PreparedProductionD3dFrame {
+        content_manifest_sha256: frame.content_manifest_sha256.clone(),
+        effective_vfs_manifest_sha256: frame.effective_vfs_manifest_sha256.clone(),
+        target,
+        ordered_scene_constant_buffers: frame.ordered_scene_constant_buffers.clone(),
+        ordered_render_operations: frame
+            .ordered_render_operations
+            .iter()
+            .filter(|reference| match reference {
+                RenderExecutionRef::Static { operation_ordinal } => {
+                    !omitted_static_ordinals.contains(operation_ordinal)
+                }
+                RenderExecutionRef::Runtime { .. } => true,
+                RenderExecutionRef::M03 { .. } => !omit_m03,
+                // M02 belongs to the complete swapchain UI pass. Until the
+                // product carries every intervening UI ordinal, executing it
+                // here would place it incorrectly after a flattened HUD.
+                RenderExecutionRef::M02 { .. } => false,
+            })
+            .cloned()
+            .collect(),
+        political_textures: frame.political_textures.clone(),
+        tiled_lights: frame.tiled_lights.clone(),
+        ordered_static_used_content,
+        ordered_static_programs,
+        ordered_runtime_draws: frame.ordered_runtime_draws.clone(),
+        m02_combat: frame.m02_combat.clone(),
+        authenticated_ui_pass: frame.authenticated_ui_pass.clone(),
+        m03_arrows,
+        omissions,
+    })
+}
+
+pub fn execute_production_d3d_frame(
+    frame: &PreparedProductionD3dFrame,
+    bridge: &mut impl ProductionD3dExecutionBridge,
+) -> Result<ProductionD3dExecutionReceipt> {
+    bridge.begin_frame(frame)?;
+    let mut ordinal = 0u32;
+    let mut ordered_draws = Vec::new();
+    let mut used = BTreeMap::<String, UsedContentKey>::new();
+    for content in &frame.ordered_static_used_content {
+        insert_content(&mut used, content);
+    }
+    if frame.ordered_render_operations.is_empty() {
+        if !frame.ordered_static_programs.is_empty() {
+            return Err(
+                "static map programs have no authoritative cross-family execution order".into(),
+            );
+        }
+        for draw in &frame.ordered_runtime_draws {
+            bridge.execute_runtime_draw(ordinal, &frame.ordered_scene_constant_buffers, draw)?;
+            collect_runtime_draw_content(draw, &mut used);
+            let pass = if matches!(draw, PreparedRuntimeDraw::O04City { .. }) {
+                "o04_city"
+            } else {
+                "runtime_submit"
+            };
+            ordered_draws.push(ProductionD3dExecutedDraw {
+                global_ordinal: ordinal,
+                pass: pass.into(),
+                draw_token: runtime_draw_token(draw),
+            });
+            ordinal = ordinal
+                .checked_add(1)
+                .ok_or("production draw ordinal overflow")?;
+        }
+    } else {
+        let static_count = frame
+            .ordered_static_programs
+            .iter()
+            .map(|program| program.ordered_operations.len())
+            .sum::<usize>();
+        let m03_count = frame.m03_arrows.as_ref().map_or(0, |m03| m03.draws.len());
+        if frame.ordered_render_operations.len()
+            != static_count + frame.ordered_runtime_draws.len() + m03_count
+        {
+            return Err(
+                "cross-family execution order does not cover every static/runtime operation".into(),
+            );
+        }
+        let mut seen_static = std::collections::BTreeSet::new();
+        let mut seen_runtime = std::collections::BTreeSet::new();
+        let mut seen_m03 = std::collections::BTreeSet::new();
+        for reference in &frame.ordered_render_operations {
+            match reference {
+                RenderExecutionRef::Static { operation_ordinal } => {
+                    if !seen_static.insert(*operation_ordinal) {
+                        return Err("cross-family order repeats a static operation".into());
+                    }
+                    let (program, operation) = frame
+                        .ordered_static_programs
+                        .iter()
+                        .find_map(|program| {
+                            program
+                                .ordered_operations
+                                .iter()
+                                .find(|operation| operation.operation_ordinal == *operation_ordinal)
+                                .map(|operation| (program, operation))
+                        })
+                        .ok_or("cross-family order references an absent static operation")?;
+                    bridge.execute_static_operation(
+                        ordinal,
+                        program,
+                        &frame.ordered_scene_constant_buffers,
+                        operation,
+                    )?;
+                    collect_static_operation_content(operation, &mut used);
+                    ordered_draws.push(ProductionD3dExecutedDraw {
+                        global_ordinal: ordinal,
+                        pass: program.pass_token.clone(),
+                        draw_token: static_operation_token(operation),
+                    });
+                }
+                RenderExecutionRef::Runtime { output } => {
+                    let token = serde_json::to_string(output)?;
+                    if !seen_runtime.insert(token) {
+                        return Err("cross-family order repeats a runtime draw".into());
+                    }
+                    let draw = frame
+                        .ordered_runtime_draws
+                        .iter()
+                        .find(|draw| match draw {
+                            PreparedRuntimeDraw::Particle { ordered_draw, .. }
+                            | PreparedRuntimeDraw::Entity { ordered_draw, .. }
+                            | PreparedRuntimeDraw::O04City { ordered_draw, .. } => {
+                                ordered_draw == output
+                            }
+                        })
+                        .ok_or("cross-family order references an absent runtime draw")?;
+                    bridge.execute_runtime_draw(
+                        ordinal,
+                        &frame.ordered_scene_constant_buffers,
+                        draw,
+                    )?;
+                    collect_runtime_draw_content(draw, &mut used);
+                    let pass = if matches!(draw, PreparedRuntimeDraw::O04City { .. }) {
+                        "o04_city"
+                    } else {
+                        "runtime_submit"
+                    };
+                    ordered_draws.push(ProductionD3dExecutedDraw {
+                        global_ordinal: ordinal,
+                        pass: pass.into(),
+                        draw_token: runtime_draw_token(draw),
+                    });
+                }
+                RenderExecutionRef::M02 { .. } => {
+                    return Err(
+                        "M02 overlay reached map/runtime execution without complete UI-pass interleave"
+                            .into(),
+                    );
+                }
+                RenderExecutionRef::M03 { output } => {
+                    if !seen_m03.insert(output.clone()) {
+                        return Err("cross-family order repeats an M03 draw".into());
+                    }
+                    let draw = frame
+                        .m03_arrows
+                        .as_ref()
+                        .and_then(|m03| m03.draw(output))
+                        .ok_or("cross-family order references an absent M03 draw")?;
+                    bridge.execute_m03_draw(
+                        ordinal,
+                        &frame.ordered_scene_constant_buffers,
+                        draw,
+                    )?;
+                    collect_m03_draw_content(draw, &mut used);
+                    ordered_draws.push(ProductionD3dExecutedDraw {
+                        global_ordinal: ordinal,
+                        pass: "m03_order_movement_arrows".into(),
+                        draw_token: draw.draw.draw_token.clone(),
+                    });
+                }
+            }
+            ordinal = ordinal
+                .checked_add(1)
+                .ok_or("production draw ordinal overflow")?;
+        }
+        if seen_static.len() != static_count
+            || seen_runtime.len() != frame.ordered_runtime_draws.len()
+            || seen_m03.len() != m03_count
+        {
+            return Err("cross-family execution order omits a static/runtime operation".into());
+        }
+    }
+    bridge.finish_frame()?;
+
+    let ordered_used_content = used.into_values().collect::<Vec<_>>();
+    let mut receipt = ProductionD3dExecutionReceipt {
+        schema: "hoi4.production_d3d_execution.v1".into(),
+        content_manifest_sha256: frame.content_manifest_sha256.clone(),
+        effective_vfs_manifest_sha256: frame.effective_vfs_manifest_sha256.clone(),
+        target: frame.target.clone(),
+        ordered_draws,
+        ordered_used_content,
+        omissions: frame.omissions.clone(),
+        deterministic_sha256: String::new(),
+    };
+    receipt.deterministic_sha256 = Sha256::hex(&serde_json::to_vec(&receipt)?);
+    Ok(receipt)
+}
+
+fn collect_m03_draw_content(packet: &M03ArrowDraw, out: &mut BTreeMap<String, UsedContentKey>) {
+    let operation = StaticMapOperation {
+        operation_ordinal: packet.engine_draw_ordinal,
+        payload_sha256: packet.draw.payload_sha256.clone(),
+        command: StaticMapCommand::Draw {
+            draw: packet.draw.clone(),
+        },
+    };
+    collect_static_operation_content(&operation, out);
+}
+
+fn static_program_omitted_dependency(
+    program: &StaticMapPassProgram,
+    omitted_static_ordinals: &std::collections::BTreeSet<u32>,
+    m03_omitted: bool,
+) -> Option<String> {
+    program.ordered_operations.iter().find_map(|operation| {
+        let StaticMapCommand::Draw { draw } = &operation.command else {
+            return None;
+        };
+        static_draw_omitted_dependency(draw, omitted_static_ordinals, m03_omitted)
+    })
+}
+
+fn static_draw_omitted_dependency(
+    draw: &replay_core::StaticMapDraw,
+    omitted_static_ordinals: &std::collections::BTreeSet<u32>,
+    m03_omitted: bool,
+) -> Option<String> {
+    draw.ordered_shader_resources.iter().find_map(|binding| {
+        let StaticShaderResourceSource::PreparedTarget { producer, .. } = &binding.source else {
+            return None;
+        };
+        match producer {
+            RenderExecutionRef::Static { operation_ordinal }
+                if omitted_static_ordinals.contains(operation_ordinal) =>
+            {
+                Some(format!("omitted static operation {operation_ordinal}"))
+            }
+            RenderExecutionRef::M03 { output } if m03_omitted => Some(format!(
+                "omitted M03 draw {}",
+                serde_json::to_string(output).expect("M03ArrowDrawRef serialization cannot fail")
+            )),
+            _ => None,
+        }
+    })
+}
+
+fn validate_static_operation(
+    operation: &StaticMapOperation,
+    resources: &BTreeMap<String, ProductionMapResource>,
+    expected_consumer: &str,
+) -> Result<()> {
+    let StaticMapCommand::Draw { draw } = &operation.command else {
+        let target = match &operation.command {
+            StaticMapCommand::ClearColor { target, .. }
+            | StaticMapCommand::ClearDepthStencil { target, .. } => target,
+            StaticMapCommand::Draw { .. } => unreachable!(),
+        };
+        validate_render_target_content(target, resources, expected_consumer)?;
+        return Ok(());
+    };
+    if draw.draw_token.trim().is_empty() {
+        return Err("production D3D draw token is empty".into());
+    }
+    validate_shader_payload(
+        &draw.shader_program.compiled_vertex_shader.bytecode,
+        &draw.shader_program.compiled_vertex_shader.sha256,
+        "vertex shader",
+    )?;
+    validate_shader_payload(
+        &draw.shader_program.compiled_pixel_shader.bytecode,
+        &draw.shader_program.compiled_pixel_shader.sha256,
+        "pixel shader",
+    )?;
+    for (label, stage) in [
+        (
+            "geometry shader",
+            draw.shader_program.geometry_shader.as_ref(),
+        ),
+        ("hull shader", draw.shader_program.hull_shader.as_ref()),
+        ("domain shader", draw.shader_program.domain_shader.as_ref()),
+        (
+            "compute shader",
+            draw.shader_program.compute_shader.as_ref(),
+        ),
+    ] {
+        if let Some(stage) = stage {
+            validate_shader_payload(&stage.compiled.bytecode, &stage.compiled.sha256, label)?;
+        }
+    }
+    require_content(&draw.shader_program.source, resources)?;
+    for binding in &draw.ordered_shader_resources {
+        if let StaticShaderResourceSource::UsedContent {
+            content, resource, ..
+        } = &binding.source
+        {
+            require_content(content, resources)?;
+            for subresource in &resource.ordered_subresources {
+                validate_buffer_source(&subresource.source, &[], resources)?;
+            }
+        }
+    }
+    match &draw.geometry {
+        StaticGeometrySource::Exact { geometry } => {
+            for vertex in &geometry.ordered_vertex_buffers {
+                validate_buffer_source(&vertex.source, &[], resources)?;
+            }
+            if let Some(index) = &geometry.index_buffer {
+                validate_buffer_source(&index.source, &[], resources)?;
+            }
+        }
+        StaticGeometrySource::InterpreterOutput {
+            ordered_input_content_keys,
+            ..
+        } => {
+            for key in ordered_input_content_keys {
+                if !resources.contains_key(key) {
+                    return Err(format!(
+                        "static geometry interpreter input key {key} is not admitted"
+                    )
+                    .into());
+                }
+            }
+        }
+    }
+    for constant in &draw.ordered_constant_buffers {
+        validate_shader_payload(&constant.raw_bytes, &constant.sha256, "constant buffer")?;
+        if constant.byte_count == 0 {
+            return Err("constant-buffer selected range is empty".into());
+        }
+        let end = usize::try_from(constant.byte_offset)?
+            .checked_add(usize::try_from(constant.byte_count)?)
+            .ok_or("constant-buffer selected range overflow")?;
+        if end > constant.raw_bytes.len() {
+            return Err("constant-buffer selected range exceeds carried bytes".into());
+        }
+    }
+    for target in &draw.output_state.ordered_color_targets {
+        validate_render_target_content(target, resources, expected_consumer)?;
+    }
+    if let Some(target) = &draw.output_state.depth_target {
+        validate_render_target_content(target, resources, expected_consumer)?;
+    }
+    Ok(())
+}
+
+fn validate_render_target_content(
+    target: &RenderTargetDesc,
+    resources: &BTreeMap<String, ProductionMapResource>,
+    expected_consumer: &str,
+) -> Result<()> {
+    if let Some(content) = &target.persistent_content {
+        require_content_consumer(content, resources, expected_consumer)?;
+    }
+    let Some(exact) = &target.exact_resource else {
+        return Ok(());
+    };
+    for initial in &exact.ordered_initial_subresources {
+        match &initial.source {
+            RenderTargetInitialSource::Inline { bytes, sha256 } => {
+                if Sha256::hex(bytes) != *sha256 {
+                    return Err("exact render-target inline initialization SHA-256 mismatch".into());
+                }
+            }
+            RenderTargetInitialSource::UsedContentRange {
+                content,
+                source_byte_offset,
+                byte_count,
+                range_sha256,
+            } => {
+                let resource = require_content_consumer(content, resources, expected_consumer)?;
+                let start = usize::try_from(*source_byte_offset)
+                    .map_err(|_| "exact render-target content offset does not fit usize")?;
+                let count = usize::try_from(*byte_count)
+                    .map_err(|_| "exact render-target content length does not fit usize")?;
+                let end = start
+                    .checked_add(count)
+                    .ok_or("exact render-target content range overflows")?;
+                let bytes = resource
+                    .bytes
+                    .get(start..end)
+                    .ok_or("exact render-target content range exceeds admitted payload")?;
+                if Sha256::hex(bytes) != *range_sha256 {
+                    return Err("exact render-target content-range SHA-256 mismatch".into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn require_content_consumer<'a>(
+    content: &UsedContentKey,
+    resources: &'a BTreeMap<String, ProductionMapResource>,
+    expected_consumer: &str,
+) -> Result<&'a ProductionMapResource> {
+    let resource = require_content(content, resources)?;
+    if !resource
+        .consumers
+        .iter()
+        .any(|consumer| consumer == expected_consumer)
+    {
+        return Err(format!(
+            "exact render-target content {} is not bound to sealed consumer {expected_consumer}",
+            content.normalized_game_relative_path
+        )
+        .into());
+    }
+    Ok(resource)
+}
+
+fn validate_shader_payload(bytes: &[u8], expected: &str, role: &str) -> Result<()> {
+    if bytes.is_empty() {
+        return Err(format!("{role} bytecode/payload is empty").into());
+    }
+    let actual = Sha256::hex(bytes);
+    if actual != expected {
+        return Err(format!("{role} SHA-256 mismatch: expected {expected}, got {actual}").into());
+    }
+    Ok(())
+}
+
+fn validate_buffer_source(
+    source: &BufferSource,
+    particle_instance_records: &[u8],
+    resources: &BTreeMap<String, ProductionMapResource>,
+) -> Result<()> {
+    match source {
+        BufferSource::Inline { bytes, sha256 } => {
+            validate_shader_payload(bytes, sha256, "inline buffer")
+        }
+        BufferSource::ParticleInstanceRecords => {
+            if particle_instance_records.is_empty() {
+                Err("ParticleInstanceRecords source has no carried instance bytes".into())
+            } else {
+                Ok(())
+            }
+        }
+        BufferSource::UsedContentRange {
+            content,
+            source_byte_offset,
+            byte_count,
+            range_sha256,
+        } => {
+            let resource = require_content(content, resources)?;
+            let start = usize::try_from(*source_byte_offset)
+                .map_err(|_| "used-content range offset does not fit usize")?;
+            let len = usize::try_from(*byte_count)
+                .map_err(|_| "used-content range length does not fit usize")?;
+            let end = start
+                .checked_add(len)
+                .ok_or("used-content range overflow")?;
+            let bytes = resource
+                .bytes
+                .get(start..end)
+                .ok_or("used-content range is outside admitted payload")?;
+            validate_shader_payload(bytes, range_sha256, "used-content range")
+        }
+    }
+}
+
+fn require_content<'a>(
+    content: &UsedContentKey,
+    resources: &'a BTreeMap<String, ProductionMapResource>,
+) -> Result<&'a ProductionMapResource> {
+    resources
+        .values()
+        .find(|resource| &resource.content == content)
+        .ok_or_else(|| {
+            format!(
+                "draw references non-admitted content {}",
+                content.normalized_game_relative_path
+            )
+            .into()
+        })
+}
+
+fn collect_static_operation_content(
+    operation: &StaticMapOperation,
+    out: &mut BTreeMap<String, UsedContentKey>,
+) {
+    let StaticMapCommand::Draw { draw } = &operation.command else {
+        let target = match &operation.command {
+            StaticMapCommand::ClearColor { target, .. }
+            | StaticMapCommand::ClearDepthStencil { target, .. } => target,
+            StaticMapCommand::Draw { .. } => unreachable!(),
+        };
+        collect_render_target_content(target, out);
+        return;
+    };
+    let mut insert = |value: &UsedContentKey| {
+        let key = format!(
+            "{}:{}:{}:{}",
+            value.winning_layer_ordinal,
+            value.layer_id,
+            value.normalized_game_relative_path,
+            value.payload_sha256
+        );
+        out.insert(key, value.clone());
+    };
+    insert(&draw.shader_program.source);
+    for binding in &draw.ordered_shader_resources {
+        if let StaticShaderResourceSource::UsedContent {
+            content, resource, ..
+        } = &binding.source
+        {
+            insert(content);
+            for subresource in &resource.ordered_subresources {
+                collect_buffer_source_content(&subresource.source, &mut insert);
+            }
+        }
+    }
+    if let StaticGeometrySource::Exact { geometry } = &draw.geometry {
+        for vertex in &geometry.ordered_vertex_buffers {
+            collect_buffer_source_content(&vertex.source, &mut insert);
+        }
+        if let Some(index) = &geometry.index_buffer {
+            collect_buffer_source_content(&index.source, &mut insert);
+        }
+    }
+    for target in &draw.output_state.ordered_color_targets {
+        collect_render_target_content_with(target, &mut insert);
+    }
+    if let Some(target) = &draw.output_state.depth_target {
+        collect_render_target_content_with(target, &mut insert);
+    }
+}
+
+fn collect_runtime_draw_content(
+    draw: &PreparedRuntimeDraw,
+    out: &mut BTreeMap<String, UsedContentKey>,
+) {
+    match draw {
+        PreparedRuntimeDraw::Particle { packet, .. } => {
+            collect_runtime_parts(
+                &packet.shader_program.source,
+                &packet.ordered_texture_bindings,
+                &packet.geometry,
+                &packet.output_state,
+                out,
+            );
+        }
+        PreparedRuntimeDraw::Entity { submission, .. }
+        | PreparedRuntimeDraw::O04City { submission, .. } => {
+            collect_runtime_parts(
+                &submission.shader_program.source,
+                &submission.ordered_texture_bindings,
+                &submission.geometry,
+                &submission.output_state,
+                out,
+            );
+            insert_content(out, &submission.content_identity.resolved_entity_asset);
+            insert_content(out, &submission.content_identity.mesh);
+        }
+    }
+}
+
+fn collect_runtime_parts(
+    shader: &UsedContentKey,
+    textures: &[replay_core::TextureBinding],
+    geometry: &replay_core::GeometryBinding,
+    output: &replay_core::RenderOutputState,
+    out: &mut BTreeMap<String, UsedContentKey>,
+) {
+    insert_content(out, shader);
+    for texture in textures {
+        insert_content(out, &texture.content);
+        for subresource in &texture.resource.ordered_subresources {
+            if let BufferSource::UsedContentRange { content, .. } = &subresource.source {
+                insert_content(out, content);
+            }
+        }
+    }
+    for vertex in &geometry.ordered_vertex_buffers {
+        if let BufferSource::UsedContentRange { content, .. } = &vertex.source {
+            insert_content(out, content);
+        }
+    }
+    if let Some(index) = &geometry.index_buffer {
+        if let BufferSource::UsedContentRange { content, .. } = &index.source {
+            insert_content(out, content);
+        }
+    }
+    for target in &output.ordered_color_targets {
+        collect_render_target_content(target, out);
+    }
+    if let Some(target) = &output.depth_target {
+        collect_render_target_content(target, out);
+    }
+}
+
+fn collect_render_target_content(
+    target: &RenderTargetDesc,
+    out: &mut BTreeMap<String, UsedContentKey>,
+) {
+    collect_render_target_content_with(target, &mut |content| insert_content(out, content));
+}
+
+fn collect_render_target_content_with(
+    target: &RenderTargetDesc,
+    insert: &mut impl FnMut(&UsedContentKey),
+) {
+    if let Some(content) = &target.persistent_content {
+        insert(content);
+    }
+    if let Some(exact) = &target.exact_resource {
+        for initial in &exact.ordered_initial_subresources {
+            if let RenderTargetInitialSource::UsedContentRange { content, .. } = &initial.source {
+                insert(content);
+            }
+        }
+    }
+}
+
+fn static_operation_token(operation: &StaticMapOperation) -> String {
+    match &operation.command {
+        StaticMapCommand::ClearColor { .. } => "clear_color".into(),
+        StaticMapCommand::ClearDepthStencil { .. } => "clear_depth_stencil".into(),
+        StaticMapCommand::Draw { draw } => draw.draw_token.clone(),
+    }
+}
+
+fn collect_buffer_source_content(source: &BufferSource, insert: &mut impl FnMut(&UsedContentKey)) {
+    if let BufferSource::UsedContentRange { content, .. } = source {
+        insert(content);
+    }
+}
+
+fn insert_content(out: &mut BTreeMap<String, UsedContentKey>, value: &UsedContentKey) {
+    let key = format!(
+        "{}:{}:{}:{}",
+        value.winning_layer_ordinal,
+        value.layer_id,
+        value.normalized_game_relative_path,
+        value.payload_sha256
+    );
+    out.insert(key, value.clone());
+}
+
+fn runtime_draw_token(draw: &PreparedRuntimeDraw) -> String {
+    match draw {
+        PreparedRuntimeDraw::Particle { ordered_draw, .. }
+        | PreparedRuntimeDraw::Entity { ordered_draw, .. }
+        | PreparedRuntimeDraw::O04City { ordered_draw, .. } => {
+            serde_json::to_string(ordered_draw).expect("RenderOutputRef serialization cannot fail")
+        }
+    }
+}
+
+#[cfg(windows)]
+mod m02_overlay;
+#[cfg(windows)]
+mod native;
+#[cfg(windows)]
+mod native_draw;
+
+#[cfg(windows)]
+pub use m02_overlay::{
+    M02OverlayExecutedDraw, M02OverlayExecutionReceipt, NativeM02OverlayExecutor,
+    PreparedM02OverlayPlan,
+};
+#[cfg(windows)]
+pub use native::{NativeProductionD3dBackend, NativeProductionD3dExecutor, ProductionD3dReadback};
+
+#[cfg(test)]
+mod tests;

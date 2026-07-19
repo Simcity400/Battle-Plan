@@ -473,7 +473,10 @@ pub fn env_reason_by_name(name: &str) -> Option<&'static str> {
 /// line as tab-separated fields: `slug<TAB>kind<TAB>surface-kind<TAB>surface<TAB>status<TAB>waits-for`.
 pub fn render_list() -> String {
     let mut out = String::new();
-    out.push_str(&format!("replay_app product blockers: {}\n", REGISTRY.len()));
+    out.push_str(&format!(
+        "replay_app product blockers: {}\n",
+        REGISTRY.len()
+    ));
     for b in REGISTRY {
         out.push_str(&format!(
             "{}\t{}\t{}\t{}\t{}\t{}\n",
@@ -511,11 +514,7 @@ mod tests {
         // Slugs are unique too (they key the emission).
         let mut slugs = BTreeSet::new();
         for b in REGISTRY {
-            assert!(
-                slugs.insert(b.id.slug()),
-                "duplicate slug {}",
-                b.id.slug()
-            );
+            assert!(slugs.insert(b.id.slug()), "duplicate slug {}", b.id.slug());
         }
     }
 
@@ -589,7 +588,11 @@ mod tests {
         // Every CLI surface line carries a `--` token; every env line does not.
         for b in REGISTRY {
             let needle = format!("\t{}\tBLOCKED\t", b.surface.label());
-            assert!(list.contains(&needle), "missing row for {}", b.surface.label());
+            assert!(
+                list.contains(&needle),
+                "missing row for {}",
+                b.surface.label()
+            );
         }
     }
 }

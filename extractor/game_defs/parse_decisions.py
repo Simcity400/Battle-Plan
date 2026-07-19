@@ -129,8 +129,21 @@ def _read_clausewitz(rel: str, abspath: Path, *, strict: bool, warnings: list[st
 
 
 def _target_metadata(body: Node) -> dict:
-    country_target = boolish(first_scalar(body, "country_target"))
-    state_target = boolish(first_scalar(body, "state_target"))
+    country_target_raw = first_scalar(body, "country_target")
+    state_target_raw = first_scalar(body, "state_target")
+
+    # Target selectors are not booleans in every valid game definition.  For
+    # example, `state_target = any_controlled_state` still declares a state
+    # target even though boolish() intentionally returns None for that token.
+    # Only an explicit false/no disables a present target declaration.
+    def declared_target(raw: str | None) -> bool | None:
+        if raw is None:
+            return None
+        parsed = boolish(raw)
+        return True if parsed is None else parsed
+
+    country_target = declared_target(country_target_raw)
+    state_target = declared_target(state_target_raw)
     out = {
         "has_target_trigger": body.get("target_trigger") is not None,
         "has_target_root_trigger": body.get("target_root_trigger") is not None,
@@ -140,6 +153,10 @@ def _target_metadata(body: Node) -> dict:
     put_present(out, "targeted_decision", boolish(first_scalar(body, "targeted_decision")))
     put_present(out, "country_target", country_target)
     put_present(out, "state_target", state_target)
+    if country_target_raw is not None and boolish(country_target_raw) is None:
+        out["country_target_selector"] = country_target_raw
+    if state_target_raw is not None and boolish(state_target_raw) is None:
+        out["state_target_selector"] = state_target_raw
     put_present(out, "target_non_existing", boolish(first_scalar(body, "target_non_existing")))
     put_present(out, "target_array", first_scalar(body, "target_array"))
     put_present(out, "target_scope", "country" if country_target else "state" if state_target else None)
@@ -264,6 +281,10 @@ def _parse_decision_files(layers, categories: dict[str, dict], *, strict: bool, 
                     "resolved_icon": first_scalar(body, "icon") or (categories.get(category) or {}).get("icon"),
                     "picture": first_scalar(body, "picture"),
                     "fire_only_once": boolish(first_scalar(body, "fire_only_once")),
+                    "do_not_show_alert": boolish(first_scalar(body, "do_not_show_alert")),
+                    "is_good": boolish(first_scalar(body, "is_good")),
+                    "sort_order": first_scalar(body, "sort_order"),
+                    "priority": first_scalar(body, "priority"),
                     "cost": _cost_metadata(body),
                     "targets": _target_metadata(body),
                     "cooldowns": _cooldown_metadata(body),

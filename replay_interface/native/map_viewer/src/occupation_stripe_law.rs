@@ -79,11 +79,12 @@ pub fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
 /// the province UVs; `cam_y` the camera height. Returns the stripe intensity in
 /// `[0,1]` BEFORE the secondary-texture alpha gate.
 pub fn occupation_stripe_mask(u: f32, v: f32, cam_y: f32) -> f32 {
-    let grating = (u * STRIPE_ANGLE.cos() * SEC_MAP_TILE + v * STRIPE_ANGLE.sin() * SEC_MAP_TILE)
-        .cos();
+    let grating =
+        (u * STRIPE_ANGLE.cos() * SEC_MAP_TILE + v * STRIPE_ANGLE.sin() * SEC_MAP_TILE).cos();
     let cam_dist = cam_distance(cam_y, STRIPE_CAM_MIN, STRIPE_CAM_MAX);
     let lifted = grating + cam_dist * STRIPE_CAM_LIFT;
-    let intensity = STRIPE_INTENSITY_NEAR + (STRIPE_INTENSITY_FAR - STRIPE_INTENSITY_NEAR) * cam_dist;
+    let intensity =
+        STRIPE_INTENSITY_NEAR + (STRIPE_INTENSITY_FAR - STRIPE_INTENSITY_NEAR) * cam_dist;
     smoothstep(0.0, 1.0, lifted * STRIPE_CONTRAST) * intensity
 }
 
@@ -174,8 +175,15 @@ mod tests {
 
         // Zero secondary alpha: base color and bloom pass through untouched
         // (this is why vanilla's all-transparent secondary SRV shows no stripes).
-        let (rgb2, bloom2) =
-            apply_secondary_color([0.2, 0.3, 0.4], [1.0, 1.0, 1.0], 0.0, 0.0, 0.0, STRIPE_CAM_MIN, 0.8);
+        let (rgb2, bloom2) = apply_secondary_color(
+            [0.2, 0.3, 0.4],
+            [1.0, 1.0, 1.0],
+            0.0,
+            0.0,
+            0.0,
+            STRIPE_CAM_MIN,
+            0.8,
+        );
         assert_eq!(rgb2, [0.2, 0.3, 0.4]);
         assert!((bloom2 - 0.8).abs() < EPS);
     }
@@ -187,10 +195,9 @@ mod tests {
             return;
         };
         let resolver = GameFileResolver::vanilla(game_dir).expect("resolver");
-        let funcs = std::fs::read_to_string(
-            resolver.resolve(STANDARDFUNCS_SOURCE).unwrap().unwrap(),
-        )
-        .unwrap();
+        let funcs =
+            std::fs::read_to_string(resolver.resolve(STANDARDFUNCS_SOURCE).unwrap().unwrap())
+                .unwrap();
         assert!(funcs.contains("float t = 3.14159 / 8.0;"), "stripe angle");
         assert!(funcs.contains("float w = SEC_MAP_TILE;"), "period scale");
         assert!(

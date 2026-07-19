@@ -20,7 +20,7 @@
 //!     "infantry"`, `organisation = 42.0`, `strength = 0.95`, `equipment = []`.
 //!     Div 101 `location_province`: `1000` (tick<4), `1001` (tick<8), else
 //!     `2000`; `moving = tick<8`.
-//!   * `fx_naval_air_activity` — task force `501:1` (owner ENG, fleet `500:1`,
+//!   * `fx_naval_air_activity` — task force `501:1` (owner ENG, fleet `500`,
 //!     mission `patrol`, `dominant_hull_class "capital"`, `location_province
 //!     3000`, `ship_count = 8 + tick`, no inline `ships` array → Absent) and air
 //!     wing `800:1` (owner ENG, name `Fighter Wing`, `count = 100 + tick`,
@@ -205,7 +205,7 @@ fn naval_task_force_panel_binds_fixture_ground_truth() {
             .unwrap_or_else(|| panic!("task force 501:1 present @h{hour}"));
         assert!(tf.available, "naval view available @h{hour}");
         assert_eq!(tf.owner.as_deref(), Some("ENG"));
-        assert_eq!(tf.fleet_uid.as_deref(), Some("500:1"));
+        assert_eq!(tf.fleet_uid.as_deref(), Some("500"));
         assert_eq!(tf.mission.as_deref(), Some("patrol"));
         assert_eq!(tf.dominant_hull_class.as_deref(), Some("capital"));
         assert_eq!(tf.location_province, Some(3000));

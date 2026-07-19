@@ -878,7 +878,7 @@ mod tests {
         fs::write(root.join("load_order.json"), b"{\"entries\":[]}").unwrap();
         fs::write(
             root.join("source_inventory.json"),
-            b"{\"schema\":\"extractor.live_binding_source_inventory.v2\"}",
+            b"{\"schema\":\"extractor.live_binding_source_inventory.v3\"}",
         )
         .unwrap();
         fs::write(

@@ -1,0 +1,1558 @@
+{
+  "authority": {
+    "production_head": "2069d17b707320fe2551bced1581ecea9b812d2f",
+    "production_root": "C:\\Users\\Example\\OneDrive\\Documents\\Paradox Interactive\\Hearts of Iron IV\\mod\\battle-plan",
+    "source_sha256": {
+      "d3d11_device.rs": "f5cb1dc0eb97d7ba41f4f210749deead33a13e30c98c4a88064d882fe4402c71",
+      "frame_bundle.rs": "c6919d0a0984b7640133292b15d61cbda5674aae1b144fafed9991a80109c1e5",
+      "light_depth_projection.rs": "df770f28647588de84674cf982927366e23e29cfd498d5962fbed87c404d13c9",
+      "m01_runtime_admission.rs": "83adf48584082dd1b27437796c20e4526e936cafa679c5ac9dae48bb85c63eda",
+      "map_label_law.rs": "d255a84fda0978390f5c606e90fa0ef61df4f7aa308cbdfe899b5662a56a9851",
+      "mod_resolver.rs": "7d0d97f58df2ec5ab755cee9aa77523fc4e86a7a6859545541e5c75b7dedfd99",
+      "o05_fixed_object_law.rs": "beea1010aac0936ff7e2bc53ff4edc441cccdd061623ef0ac53e2595bbc074a1",
+      "pass_graph.rs": "ff6282072282184ce8db0fe67dbb35bd18b0d541545245365842c283423cd09c",
+      "research_canvas.rs": "9be186579fb8241d8cac2d20c1514f88270cdc6fe322b8bb1cf98c91419e5605",
+      "scrollbar_law.rs": "0b01cce06c9310f1335ecb5770b5799088594cfb618a6b5d1192dcc2047835bd",
+      "shadow_law.rs": "73a9aad64890f42af997c28bf6d39c2df898b5dbec9f16661211f776866f70f7",
+      "terrain_lod_law.rs": "930ec0a5918685d985176716f5d5d298bfb8e192491890c579d36909600b628c"
+    },
+    "workspace": "C:\\Users\\Example\\OneDrive\\Documents\\Paradox Interactive\\Hearts of Iron IV\\mod\\battle-plan"
+  },
+  "files": [
+    {
+      "bytes": 11853,
+      "path": "build_manifest.py",
+      "sha256": "2c0e4b038009fbc8534735d4c39a819e27c154625614ad08df9f17ee200cbccb"
+    },
+    {
+      "bytes": 1086,
+      "path": "MASTER_LIST.md",
+      "sha256": "d94e0ca0c4e5c7470e8ed34754b0ec053658762b214c6d37a26ffbcdc69afe24"
+    },
+    {
+      "bytes": 32677,
+      "path": "mechanical_result.json",
+      "sha256": "61f8f04d894e346f778f6d972bfaba2d50844f74b12af35b7844a5edc9cec205"
+    },
+    {
+      "bytes": 4480,
+      "path": "REPORT.md",
+      "sha256": "c40bb48f933d5d9f5b6a466c9544f8069419ac4a1165a801822be195627e94fb"
+    },
+    {
+      "bytes": 27161,
+      "path": "run_audit.py",
+      "sha256": "5ffc882d216f6b1f2c3a62d67d20231158d18160a6d1130b53054c90ed0c055c"
+    },
+    {
+      "bytes": 21,
+      "path": "runs/L02_shadow_matrix_composition.stderr.log",
+      "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+    },
+    {
+      "bytes": 195,
+      "path": "runs/L02_shadow_matrix_composition.stdout.log",
+      "sha256": "6f7821a01f9da6237809d0c396bd9d9e0af752dadf05aa72d5ad5ebca1bd8d70"
+    },
+    {
+      "bytes": 21,
+      "path": "runs/L03_object_pass_projection.stderr.log",
+      "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+    },
+    {
+      "bytes": 102,
+      "path": "runs/L03_object_pass_projection.stdout.log",
+      "sha256": "5755328d0b8db2868e9794418cb53b234a5a965bab4684d5a06f03d8a9c8c6e3"
+    },
+    {
+      "bytes": 21,
+      "path": "runs/L06_snowmud_pixel_join.stderr.log",
+      "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+    },
+    {
+      "bytes": 722,
+      "path": "runs/L06_snowmud_pixel_join.stdout.log",
+      "sha256": "9ea7330d9f39f3a87819302e6bd0ae3eabac99d201a147b1d3059540254fabb7"
+    },
+    {
+      "bytes": 42,
+      "path": "runs/M01_unit_event_pass.stderr.log",
+      "sha256": "a4de0590a9de837986176964654d687b59f11de7534c40602fbfb1bf782b1a52"
+    },
+    {
+      "bytes": 1919,
+      "path": "runs/M01_unit_event_pass.stdout.log",
+      "sha256": "221c291feff179afe18d9e9d64e28d2b0c5df0a8e819d3864862d3c0893de938"
+    },
+    {
+      "bytes": 21,
+      "path": "runs/M03_arrow_pixel_contract.stderr.log",
+      "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+    },
+    {
+      "bytes": 115,
+      "path": "runs/M03_arrow_pixel_contract.stdout.log",
+      "sha256": "e8d6462c12609460fa1b323c96a5e7415d3a6448ec2c26f82aaa4a61ef89b6ef"
+    },
+    {
+      "bytes": 42,
+      "path": "runs/N02_map_label_projection.stderr.log",
+      "sha256": "a4de0590a9de837986176964654d687b59f11de7534c40602fbfb1bf782b1a52"
+    },
+    {
+      "bytes": 48,
+      "path": "runs/N02_map_label_projection.stdout.log",
+      "sha256": "1e24cfcd9786685173cf145189a09c8c4c0e71c56f659159449d1c23bced3635"
+    },
+    {
+      "bytes": 13690,
+      "path": "runs/n02_result.json",
+      "sha256": "865560319219f547ee84e97902238addada65ef46250bd6f977cdadd7b69a9a2"
+    },
+    {
+      "bytes": 21,
+      "path": "runs/O04_city_event_pixel_join.stderr.log",
+      "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+    },
+    {
+      "bytes": 570,
+      "path": "runs/O04_city_event_pixel_join.stdout.log",
+      "sha256": "33060f0928fd78d721db151679f7dc13830d115eca618f915d057c9bafa599f6"
+    },
+    {
+      "bytes": 21,
+      "path": "runs/O05_object_event_pixel_gate.stderr.log",
+      "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+    },
+    {
+      "bytes": 308,
+      "path": "runs/O05_object_event_pixel_gate.stdout.log",
+      "sha256": "3cb2aa234684c54e21b37b6730f69ec6381414a2a2735e6ac9e272ef07109ffe"
+    },
+    {
+      "bytes": 478,
+      "path": "runs/production_final_frame_final_full.stderr.log",
+      "sha256": "68627b3946172f49cb900713c554903733e6469273583ad3789a3c6e9004c5ba"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/production_final_frame_final_full.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 449,
+      "path": "runs/production_final_frame_fow_off.stderr.log",
+      "sha256": "22c658a96603cd6144fcad274612b3e8276e05cf630f178f535950ab18f81a25"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/production_final_frame_fow_off.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 449,
+      "path": "runs/production_final_frame_fow_on.stderr.log",
+      "sha256": "0d27842c9a8522b76b0e90362d6ee2c406f38194b21201c88697523a0bd679db"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/production_final_frame_fow_on.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 299,
+      "path": "runs/production_final_frame_gate18.stderr.log",
+      "sha256": "081b4262ca2546404bc8a5858d6dc05f9ab1d6c3b279f5c876e0cea7e9256aa7"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/production_final_frame_gate18.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 523,
+      "path": "runs/production_final_frame_pan2.stderr.log",
+      "sha256": "e0103adb1fa308ed1c2337b4269201649b02b631a4e00d37458d8bf2af75e1a9"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/production_final_frame_pan2.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 317,
+      "path": "runs/production_final_frame_pan_chunks.stderr.log",
+      "sha256": "e296210ce613dab53f44850c48ed3da7816755b19bbe8c1f780deb25c541d2a7"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/production_final_frame_pan_chunks.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 209,
+      "path": "runs/production_final_frame_trees_measure.stderr.log",
+      "sha256": "f5eb2a9e5ad6fa0b4f5bfddb6837feaeaf5946753b2fbcb656927851d9cd0905"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/production_final_frame_trees_measure.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 4420,
+      "path": "runs/production_o05_fixed_object_gate_tests.stderr.log",
+      "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+    },
+    {
+      "bytes": 484,
+      "path": "runs/production_o05_fixed_object_gate_tests.stdout.log",
+      "sha256": "7a447caa86f9fe058fb9bfa664ba9e84ef7fe61b0bde9588f331496647f35d5f"
+    },
+    {
+      "bytes": 4420,
+      "path": "runs/production_pass_graph_tests.stderr.log",
+      "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+    },
+    {
+      "bytes": 904,
+      "path": "runs/production_pass_graph_tests.stdout.log",
+      "sha256": "77f5e6ea9eafd2f441435e3f07d81d4e2d5e95b48f0a5abc0828fa89fbdb5c5d"
+    },
+    {
+      "bytes": 9038,
+      "path": "runs/production_renderer_build.stderr.log",
+      "sha256": "d1584e75432e295f8e5dd1374e054a59067e8f6a7e53ea018b72787728bd6d57"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/production_renderer_build.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 4493,
+      "path": "runs/production_shadow_law_tests.stderr.log",
+      "sha256": "debf8ce82c2c607b3e769f724297ca19891759a35091afc8b0e06badfa73f99f"
+    },
+    {
+      "bytes": 1491,
+      "path": "runs/production_shadow_law_tests.stdout.log",
+      "sha256": "274f1775461fd83d415c5a2a16737d4e85b4b02b667b47922c585593c59af3ff"
+    },
+    {
+      "bytes": 4420,
+      "path": "runs/production_t01_lod_selection_final_full.stderr.log",
+      "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+    },
+    {
+      "bytes": 124,
+      "path": "runs/production_t01_lod_selection_final_full.stdout.log",
+      "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+    },
+    {
+      "bytes": 4420,
+      "path": "runs/production_t01_lod_selection_gate18.stderr.log",
+      "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+    },
+    {
+      "bytes": 124,
+      "path": "runs/production_t01_lod_selection_gate18.stdout.log",
+      "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+    },
+    {
+      "bytes": 4420,
+      "path": "runs/production_t01_lod_selection_pan2.stderr.log",
+      "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+    },
+    {
+      "bytes": 124,
+      "path": "runs/production_t01_lod_selection_pan2.stdout.log",
+      "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+    },
+    {
+      "bytes": 4420,
+      "path": "runs/production_t01_lod_selection_pan_chunks.stderr.log",
+      "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+    },
+    {
+      "bytes": 124,
+      "path": "runs/production_t01_lod_selection_pan_chunks.stdout.log",
+      "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+    },
+    {
+      "bytes": 4420,
+      "path": "runs/production_t01_mesh_corpus_final_full.stderr.log",
+      "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+    },
+    {
+      "bytes": 124,
+      "path": "runs/production_t01_mesh_corpus_final_full.stdout.log",
+      "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+    },
+    {
+      "bytes": 4420,
+      "path": "runs/production_t01_mesh_corpus_gate18.stderr.log",
+      "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+    },
+    {
+      "bytes": 124,
+      "path": "runs/production_t01_mesh_corpus_gate18.stdout.log",
+      "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+    },
+    {
+      "bytes": 4420,
+      "path": "runs/production_t01_mesh_corpus_pan2.stderr.log",
+      "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+    },
+    {
+      "bytes": 124,
+      "path": "runs/production_t01_mesh_corpus_pan2.stdout.log",
+      "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+    },
+    {
+      "bytes": 4420,
+      "path": "runs/production_t01_mesh_corpus_pan_chunks.stderr.log",
+      "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+    },
+    {
+      "bytes": 124,
+      "path": "runs/production_t01_mesh_corpus_pan_chunks.stdout.log",
+      "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+    },
+    {
+      "bytes": 4420,
+      "path": "runs/production_t01_vsnap_corpus_final_full.stderr.log",
+      "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+    },
+    {
+      "bytes": 124,
+      "path": "runs/production_t01_vsnap_corpus_final_full.stdout.log",
+      "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+    },
+    {
+      "bytes": 4420,
+      "path": "runs/production_t01_vsnap_corpus_gate18.stderr.log",
+      "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+    },
+    {
+      "bytes": 124,
+      "path": "runs/production_t01_vsnap_corpus_gate18.stdout.log",
+      "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+    },
+    {
+      "bytes": 4420,
+      "path": "runs/production_t01_vsnap_corpus_pan2.stderr.log",
+      "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+    },
+    {
+      "bytes": 124,
+      "path": "runs/production_t01_vsnap_corpus_pan2.stdout.log",
+      "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+    },
+    {
+      "bytes": 4420,
+      "path": "runs/production_t01_vsnap_corpus_pan_chunks.stderr.log",
+      "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+    },
+    {
+      "bytes": 124,
+      "path": "runs/production_t01_vsnap_corpus_pan_chunks.stdout.log",
+      "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+    },
+    {
+      "bytes": 4633,
+      "path": "runs/production_terrain_lod_compose_tests.stderr.log",
+      "sha256": "d9462c7b452194938d93f024571e9f41b1a038412adbae5d06f5502a0ca02e55"
+    },
+    {
+      "bytes": 980,
+      "path": "runs/production_terrain_lod_compose_tests.stdout.log",
+      "sha256": "cc61ecf4f4037af2e7a1893f4e97e45daa33611041d1ad5ff5c08dfafe6bdd54"
+    },
+    {
+      "bytes": 21,
+      "path": "runs/R02_river_event_order.stderr.log",
+      "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+    },
+    {
+      "bytes": 42871,
+      "path": "runs/R02_river_event_order.stdout.log",
+      "sha256": "90f9ca322cf2b57a52faaea0b03af8d8dfe13a5743d446345f79ebc3df8818b0"
+    },
+    {
+      "bytes": 21,
+      "path": "runs/UI06_legacy_pixel_join.stderr.log",
+      "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+    },
+    {
+      "bytes": 54,
+      "path": "runs/UI06_legacy_pixel_join.stdout.log",
+      "sha256": "9f884eef32577fd8d46cb8420338445fc095922b61b9ca97514eea5105fe2074"
+    },
+    {
+      "bytes": 9647,
+      "path": "runs/ui09_current_contract.json",
+      "sha256": "b87699074bdd2f0f5e7ef6682091a7c12861cd2a9be4f871489f13ae61d1e717"
+    },
+    {
+      "bytes": 3622,
+      "path": "runs/ui09_current_result.json",
+      "sha256": "24e61c91717621524155c8ac7762522595d75026fae5a3d1555e5235e00ee5d2"
+    },
+    {
+      "bytes": 21,
+      "path": "runs/UI09_UI10_current_canvas_join.stderr.log",
+      "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+    },
+    {
+      "bytes": 6479,
+      "path": "runs/UI09_UI10_current_canvas_join.stdout.log",
+      "sha256": "2c6f51832191d56a27600fa2f2431f170e5c895d2507ce56970fb4adf35f48c9"
+    },
+    {
+      "bytes": 21,
+      "path": "runs/UI15_archive_mount_promotion.stderr.log",
+      "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+    },
+    {
+      "bytes": 9605,
+      "path": "runs/UI15_archive_mount_promotion.stdout.log",
+      "sha256": "361d9e6aa8178f1e0cd2e4fd59245d787419d914bd09389d5356943fff9ff85a"
+    },
+    {
+      "bytes": 1430,
+      "path": "static_srv_resolver_join/verification.json",
+      "sha256": "468035b76a967ad1c070967faa7d2199d0e2e1e20b4f7e452bf1e326beff932d"
+    },
+    {
+      "bytes": 1051,
+      "path": "trees_measure_legacy_join/manifest.json",
+      "sha256": "875047b57fb58e8a9faa4d8b62e21d29f04ab11be2fb6f0372e181c9b852af01"
+    },
+    {
+      "bytes": 3631,
+      "path": "verify_ui09_ui10_current_join.py",
+      "sha256": "f97d4b1fb9dbdbac9713942121fe131163c0d46b3dd7640ebfb19b788455a33f"
+    }
+  ],
+  "ghidra_provenance": {
+    "artifact_path": null,
+    "function_address": null,
+    "job_id": null,
+    "manifest_hash": null,
+    "reason": "No Ghidra operation or executable finding was used in this audit."
+  },
+  "reference_proof": {
+    "current_gate_log_count": 72,
+    "current_promotion_artifact_count": 25,
+    "current_promotion_artifacts": [
+      {
+        "bytes": 8450,
+        "gate": "L02_shadow_matrix_composition",
+        "path": "replay_interface/re_evidence/rendering_laws/L02/promotion_manifest.json",
+        "sha256": "d27cd4b005eabfba62940cca3c9a6f217e33a9f8754a414fc40ede9a6f95dd02"
+      },
+      {
+        "bytes": 2719,
+        "gate": "L02_shadow_matrix_composition",
+        "path": "replay_interface/re_evidence/rendering_laws/L02/production_port_verification.json",
+        "sha256": "9e5062493ac3d57c81bacac5e751dae555c94517d8092c2387c737330e725144"
+      },
+      {
+        "bytes": 35249,
+        "gate": "L02_shadow_matrix_composition",
+        "path": "replay_interface/native/map_viewer/src/shadow_law.rs",
+        "sha256": "73a9aad64890f42af997c28bf6d39c2df898b5dbec9f16661211f776866f70f7"
+      },
+      {
+        "bytes": 10615,
+        "gate": "L03_object_pass_projection",
+        "path": "replay_interface/re_evidence/rendering_laws/L03/manifest.json",
+        "sha256": "67b733ea6bb619600807a1f21d59bd14b3e013faf819c488c73506fa5554c91c"
+      },
+      {
+        "bytes": 1634,
+        "gate": "L03_object_pass_projection",
+        "path": "replay_interface/re_evidence/rendering_laws/L03/production_projection/verification.json",
+        "sha256": "01da076eb40aa55b04d31b832af265cf82d5a4af157a4fc680c0402984b8181c"
+      },
+      {
+        "bytes": 30762,
+        "gate": "L03_object_pass_projection",
+        "path": "replay_interface/native/map_viewer/src/light_depth_projection.rs",
+        "sha256": "df770f28647588de84674cf982927366e23e29cfd498d5962fbed87c404d13c9"
+      },
+      {
+        "bytes": 4934,
+        "gate": "M01_unit_event_pass",
+        "path": "replay_interface/re_evidence/rendering_laws/M01/evidence_manifest.json",
+        "sha256": "19efa74a0f55f002b78381e6d05371751e85939adced6383842c21da78ff5a98"
+      },
+      {
+        "bytes": 942,
+        "gate": "M01_unit_event_pass",
+        "path": "replay_interface/re_evidence/rendering_laws/M01/runtime_admission/verification_result.json",
+        "sha256": "900b8ed4fb87d18ac4a981f4ec476c5c4d22c9ba7ac0904080071c91379ca938"
+      },
+      {
+        "bytes": 14072,
+        "gate": "M01_unit_event_pass",
+        "path": "replay_interface/native/map_viewer/src/m01_runtime_admission.rs",
+        "sha256": "83adf48584082dd1b27437796c20e4526e936cafa679c5ac9dae48bb85c63eda"
+      },
+      {
+        "bytes": 2701,
+        "gate": "N02_map_label_projection",
+        "path": "replay_interface/re_evidence/rendering_laws/N02/promotion_manifest.json",
+        "sha256": "6d574bc8e7820caf7e9d4cf844d8fd86a2c0494336c505c99d57da28c7094ac0"
+      },
+      {
+        "bytes": 290,
+        "gate": "N02_map_label_projection",
+        "path": "replay_interface/re_evidence/rendering_laws/N02/promotion_manifest_verification.json",
+        "sha256": "a3c5983cf9d511296b3fdd0b9333d0f2a7a8c064f01b9bbb5ba7fd9ace7825d5"
+      },
+      {
+        "bytes": 133626,
+        "gate": "N02_map_label_projection",
+        "path": "replay_interface/native/map_viewer/src/map_label_law.rs",
+        "sha256": "d255a84fda0978390f5c606e90fa0ef61df4f7aa308cbdfe899b5662a56a9851"
+      },
+      {
+        "bytes": 5066,
+        "gate": "O05_object_event_pixel_gate",
+        "path": "replay_interface/re_evidence/rendering_laws/O05/production_promotion.json",
+        "sha256": "1c8203dfe9fb59580389c6386622538c7eeb4d329466af6f714e5a597f6a8b6b"
+      },
+      {
+        "bytes": 277,
+        "gate": "O05_object_event_pixel_gate",
+        "path": "replay_interface/re_evidence/rendering_laws/O05/production_promotion_verification.json",
+        "sha256": "bc94d734d739adf0fcca7c5c2ea27c59bf07b1c0e166e54c65fc81ca91c7d806"
+      },
+      {
+        "bytes": 13951,
+        "gate": "O05_object_event_pixel_gate",
+        "path": "replay_interface/native/map_viewer/src/o05_fixed_object_law.rs",
+        "sha256": "beea1010aac0936ff7e2bc53ff4edc441cccdd061623ef0ac53e2595bbc074a1"
+      },
+      {
+        "bytes": 3883,
+        "gate": "UI06_legacy_pixel_join",
+        "path": "replay_interface/re_evidence/rendering_laws/UI06/production_manifest.json",
+        "sha256": "3bb68a0a0da492724357aafc2fee7181675f4a22c41fe3d5705a1ab6850912e9"
+      },
+      {
+        "bytes": 3229,
+        "gate": "UI06_legacy_pixel_join",
+        "path": "replay_interface/re_evidence/rendering_laws/UI06/production_promotion.json",
+        "sha256": "fa00b2687639036ed82683d6a72d34c09bfb9e8bd5519e5d75b3bc63b60a7d42"
+      },
+      {
+        "bytes": 7166,
+        "gate": "UI06_legacy_pixel_join",
+        "path": "replay_interface/native/game_ui/src/scrollbar_law.rs",
+        "sha256": "0b01cce06c9310f1335ecb5770b5799088594cfb618a6b5d1192dcc2047835bd"
+      },
+      {
+        "bytes": 2800,
+        "gate": "UI09_UI10_current_canvas_join",
+        "path": "replay_interface/re_evidence/rendering_laws/UI09/production_completion/manifest.json",
+        "sha256": "bbd78550e276bc7f313a3faea06329bf1eee5f43b34337768186e1defee349de"
+      },
+      {
+        "bytes": 11852,
+        "gate": "UI09_UI10_current_canvas_join",
+        "path": "replay_interface/native/game_ui/src/research_canvas.rs",
+        "sha256": "9be186579fb8241d8cac2d20c1514f88270cdc6fe322b8bb1cf98c91419e5605"
+      },
+      {
+        "bytes": 8960,
+        "gate": "UI09_UI10_current_canvas_join",
+        "path": "replay_interface/native/game_ui/tests/ui09_canvas_admission.rs",
+        "sha256": "4ed28d6316eb7ad9c0e7d51655fa4019a39a2ec8e9f256259fbe9a18c07199c2"
+      },
+      {
+        "bytes": 3236,
+        "gate": "UI15_archive_mount_promotion",
+        "path": "replay_interface/re_evidence/rendering_laws/UI15/manifest.json",
+        "sha256": "2ec90335998c0c5b05af13a18af9815ce77c4300b729a7579f2dba1c89047b21"
+      },
+      {
+        "bytes": 9418,
+        "gate": "UI15_archive_mount_promotion",
+        "path": "replay_interface/re_evidence/rendering_laws/UI15/verifier_result.json",
+        "sha256": "de7af846d92792cac6d2bb20c9c507f87d044624c35582f408984739504fa041"
+      },
+      {
+        "bytes": 52571,
+        "gate": "UI15_archive_mount_promotion",
+        "path": "replay_interface/native/map_viewer/src/mod_resolver.rs",
+        "sha256": "7d0d97f58df2ec5ab755cee9aa77523fc4e86a7a6859545541e5c75b7dedfd99"
+      },
+      {
+        "bytes": 260095,
+        "gate": "static_srv_closure",
+        "path": "replay_interface/native/map_viewer/src/frame_bundle.rs",
+        "sha256": "c6919d0a0984b7640133292b15d61cbda5674aae1b144fafed9991a80109c1e5"
+      }
+    ],
+    "current_static_srv_closure": [
+      {
+        "bytes": 260095,
+        "name": "frame_bundle",
+        "path": "replay_interface/native/map_viewer/src/frame_bundle.rs",
+        "sha256": "c6919d0a0984b7640133292b15d61cbda5674aae1b144fafed9991a80109c1e5"
+      },
+      {
+        "bytes": 1051,
+        "name": "trees_oracle_manifest",
+        "path": "trees_measure_legacy_join/manifest.json",
+        "sha256": "875047b57fb58e8a9faa4d8b62e21d29f04ab11be2fb6f0372e181c9b852af01"
+      },
+      {
+        "bytes": 1430,
+        "name": "verification",
+        "path": "static_srv_resolver_join/verification.json",
+        "sha256": "468035b76a967ad1c070967faa7d2199d0e2e1e20b4f7e452bf1e326beff932d"
+      }
+    ],
+    "excluded_existing_artifacts": [
+      {
+        "path": "__pycache__/build_manifest.cpython-311.pyc",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "__pycache__/run_audit.cpython-311.pyc",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/o05_result.json",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/production_static_object_gate_tests.stderr.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/production_static_object_gate_tests.stdout.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/production_t01_mesh_corpus_fow_off.stderr.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/production_t01_mesh_corpus_fow_off.stdout.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/production_t01_mesh_corpus_fow_on.stderr.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/production_t01_mesh_corpus_fow_on.stdout.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/production_t01_mesh_corpus_trees_measure.stderr.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/production_t01_mesh_corpus_trees_measure.stdout.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/production_t01_vsnap_corpus_fow_off.stderr.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/production_t01_vsnap_corpus_fow_off.stdout.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/production_t01_vsnap_corpus_fow_on.stderr.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/production_t01_vsnap_corpus_fow_on.stdout.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/production_t01_vsnap_corpus_trees_measure.stderr.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/production_t01_vsnap_corpus_trees_measure.stdout.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/production_unit_model_gate_tests.stderr.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/production_unit_model_gate_tests.stdout.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/T01_current_promotion_gate.stderr.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/T01_current_promotion_gate.stdout.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/t01_current_result.json",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/T01_owner_composition.stderr.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/T01_owner_composition.stdout.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/T01_promotion_gate.stderr.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/T01_promotion_gate.stdout.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/UI09_final_canvas_join.stderr.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/UI09_final_canvas_join.stdout.log",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "runs/ui09_result.json",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "static_srv_resolver_join/REPORT.md",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "trees_measure_legacy_join/oracle.json",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "trees_measure_legacy_join/REPORT.md",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "trees_measure_legacy_join/verification.json",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "trees_measure_legacy_join/verify_oracle.py",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      },
+      {
+        "path": "verify_t01_current_join.py",
+        "reason": "not referenced by the current 36-gate result or current runner side-result set"
+      }
+    ],
+    "excluded_obsolete_run_artifact_count": 27,
+    "excluded_obsolete_run_artifacts": [
+      "runs/o05_result.json",
+      "runs/production_static_object_gate_tests.stderr.log",
+      "runs/production_static_object_gate_tests.stdout.log",
+      "runs/production_t01_mesh_corpus_fow_off.stderr.log",
+      "runs/production_t01_mesh_corpus_fow_off.stdout.log",
+      "runs/production_t01_mesh_corpus_fow_on.stderr.log",
+      "runs/production_t01_mesh_corpus_fow_on.stdout.log",
+      "runs/production_t01_mesh_corpus_trees_measure.stderr.log",
+      "runs/production_t01_mesh_corpus_trees_measure.stdout.log",
+      "runs/production_t01_vsnap_corpus_fow_off.stderr.log",
+      "runs/production_t01_vsnap_corpus_fow_off.stdout.log",
+      "runs/production_t01_vsnap_corpus_fow_on.stderr.log",
+      "runs/production_t01_vsnap_corpus_fow_on.stdout.log",
+      "runs/production_t01_vsnap_corpus_trees_measure.stderr.log",
+      "runs/production_t01_vsnap_corpus_trees_measure.stdout.log",
+      "runs/production_unit_model_gate_tests.stderr.log",
+      "runs/production_unit_model_gate_tests.stdout.log",
+      "runs/T01_current_promotion_gate.stderr.log",
+      "runs/T01_current_promotion_gate.stdout.log",
+      "runs/t01_current_result.json",
+      "runs/T01_owner_composition.stderr.log",
+      "runs/T01_owner_composition.stdout.log",
+      "runs/T01_promotion_gate.stderr.log",
+      "runs/T01_promotion_gate.stdout.log",
+      "runs/UI09_final_canvas_join.stderr.log",
+      "runs/UI09_final_canvas_join.stdout.log",
+      "runs/ui09_result.json"
+    ],
+    "included": [
+      {
+        "path": "build_manifest.py",
+        "references": [
+          {
+            "anchor": "builds and verifies this freeze",
+            "kind": "manifest_builder"
+          }
+        ]
+      },
+      {
+        "path": "MASTER_LIST.md",
+        "references": [
+          {
+            "anchor": "current concise promotion disposition",
+            "kind": "master"
+          }
+        ]
+      },
+      {
+        "path": "mechanical_result.json",
+        "references": [
+          {
+            "anchor": "current 36-gate mechanical result",
+            "kind": "audit_result"
+          }
+        ]
+      },
+      {
+        "path": "REPORT.md",
+        "references": [
+          {
+            "anchor": "current 36-gate audit report",
+            "kind": "report"
+          }
+        ]
+      },
+      {
+        "path": "run_audit.py",
+        "references": [
+          {
+            "anchor": "defines and executes the current 36 gates",
+            "kind": "runner"
+          }
+        ]
+      },
+      {
+        "path": "runs/L02_shadow_matrix_composition.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[L02_shadow_matrix_composition].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/L02_shadow_matrix_composition.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[L02_shadow_matrix_composition].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/L03_object_pass_projection.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[L03_object_pass_projection].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/L03_object_pass_projection.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[L03_object_pass_projection].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/L06_snowmud_pixel_join.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[L06_snowmud_pixel_join].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/L06_snowmud_pixel_join.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[L06_snowmud_pixel_join].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/M01_unit_event_pass.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[M01_unit_event_pass].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/M01_unit_event_pass.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[M01_unit_event_pass].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/M03_arrow_pixel_contract.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[M03_arrow_pixel_contract].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/M03_arrow_pixel_contract.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[M03_arrow_pixel_contract].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/N02_map_label_projection.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[N02_map_label_projection].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/N02_map_label_projection.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[N02_map_label_projection].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/n02_result.json",
+        "references": [
+          {
+            "anchor": "JSON result of gate N02_map_label_projection",
+            "kind": "gate_side_result"
+          }
+        ]
+      },
+      {
+        "path": "runs/O04_city_event_pixel_join.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[O04_city_event_pixel_join].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/O04_city_event_pixel_join.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[O04_city_event_pixel_join].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/O05_object_event_pixel_gate.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[O05_object_event_pixel_gate].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/O05_object_event_pixel_gate.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[O05_object_event_pixel_gate].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_final_frame_final_full.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_final_frame_final_full].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_final_frame_final_full.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_final_frame_final_full].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_final_frame_fow_off.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_final_frame_fow_off].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_final_frame_fow_off.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_final_frame_fow_off].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_final_frame_fow_on.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_final_frame_fow_on].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_final_frame_fow_on.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_final_frame_fow_on].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_final_frame_gate18.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_final_frame_gate18].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_final_frame_gate18.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_final_frame_gate18].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_final_frame_pan2.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_final_frame_pan2].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_final_frame_pan2.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_final_frame_pan2].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_final_frame_pan_chunks.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_final_frame_pan_chunks].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_final_frame_pan_chunks.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_final_frame_pan_chunks].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_final_frame_trees_measure.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_final_frame_trees_measure].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_final_frame_trees_measure.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_final_frame_trees_measure].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_o05_fixed_object_gate_tests.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_o05_fixed_object_gate_tests].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_o05_fixed_object_gate_tests.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_o05_fixed_object_gate_tests].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_pass_graph_tests.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_pass_graph_tests].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_pass_graph_tests.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_pass_graph_tests].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_renderer_build.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_renderer_build].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_renderer_build.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_renderer_build].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_shadow_law_tests.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_shadow_law_tests].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_shadow_law_tests.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_shadow_law_tests].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_lod_selection_final_full.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_lod_selection_final_full].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_lod_selection_final_full.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_lod_selection_final_full].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_lod_selection_gate18.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_lod_selection_gate18].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_lod_selection_gate18.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_lod_selection_gate18].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_lod_selection_pan2.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_lod_selection_pan2].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_lod_selection_pan2.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_lod_selection_pan2].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_lod_selection_pan_chunks.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_lod_selection_pan_chunks].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_lod_selection_pan_chunks.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_lod_selection_pan_chunks].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_mesh_corpus_final_full.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_mesh_corpus_final_full].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_mesh_corpus_final_full.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_mesh_corpus_final_full].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_mesh_corpus_gate18.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_mesh_corpus_gate18].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_mesh_corpus_gate18.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_mesh_corpus_gate18].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_mesh_corpus_pan2.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_mesh_corpus_pan2].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_mesh_corpus_pan2.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_mesh_corpus_pan2].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_mesh_corpus_pan_chunks.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_mesh_corpus_pan_chunks].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_mesh_corpus_pan_chunks.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_mesh_corpus_pan_chunks].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_vsnap_corpus_final_full.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_vsnap_corpus_final_full].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_vsnap_corpus_final_full.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_vsnap_corpus_final_full].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_vsnap_corpus_gate18.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_vsnap_corpus_gate18].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_vsnap_corpus_gate18.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_vsnap_corpus_gate18].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_vsnap_corpus_pan2.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_vsnap_corpus_pan2].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_vsnap_corpus_pan2.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_vsnap_corpus_pan2].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_vsnap_corpus_pan_chunks.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_vsnap_corpus_pan_chunks].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_t01_vsnap_corpus_pan_chunks.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_t01_vsnap_corpus_pan_chunks].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_terrain_lod_compose_tests.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_terrain_lod_compose_tests].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/production_terrain_lod_compose_tests.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[production_terrain_lod_compose_tests].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/R02_river_event_order.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[R02_river_event_order].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/R02_river_event_order.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[R02_river_event_order].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/UI06_legacy_pixel_join.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[UI06_legacy_pixel_join].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/UI06_legacy_pixel_join.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[UI06_legacy_pixel_join].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/ui09_current_contract.json",
+        "references": [
+          {
+            "anchor": "generated current contract consumed by gate UI09_UI10_current_canvas_join",
+            "kind": "gate_side_input"
+          }
+        ]
+      },
+      {
+        "path": "runs/ui09_current_result.json",
+        "references": [
+          {
+            "anchor": "JSON result of gate UI09_UI10_current_canvas_join",
+            "kind": "gate_side_result"
+          }
+        ]
+      },
+      {
+        "path": "runs/UI09_UI10_current_canvas_join.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[UI09_UI10_current_canvas_join].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/UI09_UI10_current_canvas_join.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[UI09_UI10_current_canvas_join].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/UI15_archive_mount_promotion.stderr.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[UI15_archive_mount_promotion].stderr",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "runs/UI15_archive_mount_promotion.stdout.log",
+        "references": [
+          {
+            "anchor": "mechanical_result.gates[UI15_archive_mount_promotion].stdout",
+            "kind": "gate_log"
+          }
+        ]
+      },
+      {
+        "path": "static_srv_resolver_join/verification.json",
+        "references": [
+          {
+            "anchor": "verification",
+            "kind": "static_srv_closure"
+          }
+        ]
+      },
+      {
+        "path": "trees_measure_legacy_join/manifest.json",
+        "references": [
+          {
+            "anchor": "trees_oracle_manifest",
+            "kind": "static_srv_closure"
+          }
+        ]
+      },
+      {
+        "path": "verify_ui09_ui10_current_join.py",
+        "references": [
+          {
+            "anchor": "command input of gate UI09_UI10_current_canvas_join",
+            "kind": "runner_dependency"
+          }
+        ]
+      }
+    ],
+    "included_file_count": 83,
+    "rule": "only current result/log references, current runner inputs/results, and report/master/runner/manifest-builder controls are frozen"
+  },
+  "result": {
+    "direct_passes": 31,
+    "external_capture_gaps": 4,
+    "failures": 0,
+    "not_applicable_diagnostics": 1,
+    "path": "mechanical_result.json",
+    "post_port_fixture_gaps": 0,
+    "sha256": "61f8f04d894e346f778f6d972bfaba2d50844f74b12af35b7844a5edc9cec205",
+    "status": "PASS",
+    "total": 36
+  },
+  "schema": "hoi4-rendering-laws-final-event-compose-manifest-v3",
+  "scope": "mechanical event-scoped pass and final-frame composition audit",
+  "status": "FROZEN"
+}

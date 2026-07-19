@@ -622,25 +622,34 @@ The replay renders the events that FIRED during the recording through the
 shipped `interface/eventwindow.gui` chrome (4 window variants + option-row
 template — layout + event-def→window resolution DONE and gated replay-side,
 `game_ui::event_chrome`; **97.4% of the 6,757 visible vanilla events resolve to
-a fully renderable window** from the def + localisation + picture GFX). The one
-thing the recording must add is **which events actually fired**:
+a fully renderable window** from the def + localisation + picture GFX). XUI21
+now defines one strict rich row per firing:
 
 - `event_id` — the fired event definition's `id` (join key into the parsed
   `events/*.txt` def: title/desc/picture/options come from the def + item 9 loc
   join, so only the id + context need recording, NOT the event text).
-- `target_tag` — the country the event fired to (the POV that saw the popup;
+- `recipient_tag` — the country the event fired to (the POV that saw the popup;
   also resolves `[FROM]`/`[ROOT]` loc scopes).
-- `chosen_option_index` — the option the player/AI picked (highlights the taken
-  button; optional — absent → no highlight).
-- `fire_date` — recording date/hour the event fired (timeline placement).
+- `fire_date`, `fire_hour`, `fire_tick`, `event_sequence` — exact chronology and
+  total ordering, including repeated and same-hour firings.
+- `visible_option_ordinals[]` and `chosen_option_ordinal` — definition-array
+  ordinals preserving the trigger-filtered option set/order and exact selection.
+- `selected_desc_key`, `shown_picture_gfx`, `popup_subtype` — the selected
+  description branch, actual picture, and country/news/state/leader/operative chrome.
+- `effective_timeout_hours`, `timeout_tick`, `resolved_tick`,
+  `resolution_reason` — exact pending/selected/timeout/dismissed lifetime.
+- `runtime_text_context_id` — join to A25/XUI06 exact runtime text for scoped or
+  formatted localisation.
+- `fired_events_complete=true` — mandatory completeness witness; legacy save ID
+  ledgers and measured-empty lists without this witness are rejected.
 
 **Cadence:** on-change (events are discrete). Volume is tiny (a game fires
 hundreds of events total, not per hour). Degrades to unavailable: with no
 stream the event chrome is fail-closed "no event data" (never a fabricated
-title/option). Which `desc` branch showed is `trigger`-gated
-(computed-not-stored) — if cheap, the stream MAY carry the shown desc key /
-resolved title+desc text; else the replay takes the first loc-resolvable desc
-(documented FIT). Pairs with the localisation join (item 9).
+title/option). No description, option-visibility, subtype, timeout, picture, or
+chronology FIT remains. Static text resolves through the effective files;
+runtime-dependent text must join A25 and otherwise rejects. Pairs with the
+localisation join (item 9).
 
 ---
 
@@ -650,11 +659,10 @@ resolved title+desc text; else the replay takes the first loc-resolvable desc
   `REPLAY_SCHEMA.md` shape, send the delta — the schema doc gets amended
   rather than silently diverged from. Unknown domains are preserved raw,
   so additive growth is free.
-- `extractor/native/snapshot` crate: the replay consumes it read-only as
-  a path dependency for container reading. Its public API (`Store`,
-  `Container`, `Snapshot`, `pack`) is a shared contract — change is fine,
-  silent breakage is the only hazard; a one-line heads-up in a commit
-  message is enough.
+- `portable_replay/native/snapshot` owns the neutral on-disk format API
+  (`Store`, `Container`, `Snapshot`, `pack`). Extractor and replay packages
+  statically link it independently; neither may depend on the other's runtime,
+  libraries, process, source tree, or install path.
 
 ## Coverage status (replay side's view, for reconciliation)
 
@@ -676,7 +684,7 @@ resolved title+desc text; else the replay takes the first loc-resolvable desc
 | 11 | rail/supply state | deferred |
 | 12 | battle plans | deferred — do not build yet |
 | 13 | per-country FoW / visibility | **PROMOTED 2026-07-09** (observer country-POV is now core UX); per-player-country province-level-or-finer visibility/intel + spotted-units per hour; OPEN on both sides |
-| 14 | fired-event stream | **NEW (U2 2026-07-09).** Event popup chrome layout + def→window resolution DONE replay-side (`game_ui::event_chrome`, 97.4% of visible vanilla events renderable); needs `{event_id, target_tag, chosen_option_index, fire_date}` per fired event (on-change, tiny volume). Content fail-closed until it lands. OPEN extractor-side (EXTRACTION_NEEDS A18) |
+| 14 | fired-event stream | **XUI21 REPLAY READY.** `replay_core::FiredEventsView`, strict `game_ui::event_chrome` admission, schema validation, exact option/branch/picture/subtype/timeout/history laws, and tick-domain visibility are implemented. Only extractor XUI21-E1's authenticated rich rows + completeness witness remain; legacy save IDs reject. |
 | 15 | UI-inventory deep-panel streams (12 of 14) | replay-side FIXTURE + typed view + round-trip gate LANDED (fx-streams lane): research/focus/politics-detail/production+stockpile/templates+variants/intel/trade/occupation/leaders/power-balance/naval-air-combat/scripted-GUI-vars (+raids). Shapes exist in `REPLAY_SCHEMA.md`; extractor fold into hourly snapshots OPEN (EXTRACTION_NEEDS A22–A33). fired-event + decision-state owned by u2a/u2b |
 
 The replay layer keeps this file current; anything new the replay needs

@@ -11,9 +11,11 @@ their xy GEOMETRY, prerequisites, mutual exclusion, PP ``cost``, the loc keys
 Per focus tree:
   id, country (where set), default, continuous_focus_position, shared_focus refs
 Per focus:
-  id, icon, x, y, relative_position_id, cost (PP; engine = cost*7 days),
+  id, icon, overlay, text_icon, x, y, relative_position_id, authored base cost,
   prerequisites [[...] or...], mutually_exclusive, available/bypass presence,
-  search_filters, loc {title,desc}, source_file.
+  exact background style and four state sprites, search_filters,
+  loc {title,desc}, source_file. The authored cost is not promoted to an
+  effective runtime duration because decisions and scripted state can reduce it.
 
 stdlib only.
 """
@@ -56,6 +58,8 @@ def parse_focus(node: Node, loc, rel) -> dict:
     return {
         "id": fid,
         "icon": _scalar(node.get("icon")),
+        "overlay": _scalar(node.get("overlay")),
+        "text_icon": _scalar(node.get("text_icon")),
         "x": _num(node.get("x")), "y": _num(node.get("y")),
         "relative_position_id": _scalar(node.get("relative_position_id")),
         "cost": _num(node.get("cost")),
@@ -80,6 +84,7 @@ def parse_focus_defs(layers, loc) -> dict:
     focuses: dict[str, dict] = {}
     shared: dict[str, dict] = {}
     joint: dict[str, dict] = {}
+    styles: dict[str, dict] = {}
     collisions = []
     ordered = R.ordered_files(layers, "common/national_focus", (".txt",))
     for rel, abspath in ordered:
@@ -97,6 +102,7 @@ def parse_focus_defs(layers, loc) -> dict:
                     if fk.lower() == "focus" and isinstance(fv, Node):
                         rec = parse_focus(fv, loc, rel)
                         if rec:
+                            rec["kind"] = "focus"
                             tree_focuses.append(rec["id"])
                             if rec["id"] in focuses and focuses[rec["id"]]["source_file"] != rel:
                                 collisions.append({"id": rec["id"],
@@ -122,22 +128,48 @@ def parse_focus_defs(layers, loc) -> dict:
             elif kl in ("shared_focus", "joint_focus") and isinstance(v, Node):
                 rec = parse_focus(v, loc, rel)
                 if rec:
+                    rec["kind"] = kl
                     if kl == "shared_focus":
                         shared[rec["id"]] = rec
                     else:
                         joint[rec["id"]] = rec
                     focuses[rec["id"]] = rec
+            elif kl == "style" and isinstance(v, Node):
+                name = _scalar(v.get("name"))
+                if name:
+                    styles[name] = {
+                        "name": name,
+                        "default": _scalar(v.get("default")) == "yes",
+                        "unavailable": _scalar(v.get("unavailable")),
+                        "available": _scalar(v.get("available")),
+                        "current": _scalar(v.get("current")),
+                        "completed": _scalar(v.get("completed")),
+                        "source_file": rel,
+                    }
+    default_styles = [name for name, style in styles.items() if style["default"]]
+    default_style = default_styles[0] if len(default_styles) == 1 else None
+    unresolved_styles = []
+    for rec in focuses.values():
+        style_name = rec["text_icon"] or default_style
+        rec["background_style_name"] = style_name
+        rec["background_style"] = styles.get(style_name)
+        if style_name not in styles:
+            unresolved_styles.append({"focus": rec["id"], "style": style_name})
     return {
         "meta": {
             "tree_count": len(trees),
             "focus_count": len(focuses),
             "shared_focus_count": len(shared),
             "joint_focus_count": len(joint),
+            "focus_background_style_count": len(styles),
+            "default_focus_background_styles": default_styles,
+            "unresolved_focus_background_styles": unresolved_styles,
             "files_parsed": len(ordered),
             "id_collisions_last_wins": collisions,
         },
         "trees": dict(sorted(trees.items())),
         "focuses": dict(sorted(focuses.items())),
+        "focus_background_styles": dict(sorted(styles.items())),
     }
 
 

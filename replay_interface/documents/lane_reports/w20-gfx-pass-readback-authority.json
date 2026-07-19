@@ -1,0 +1,29 @@
+{
+  "engine_manifest": {
+    "bytes": 4310,
+    "path": "C:\\tmp\\w20-postcarrier-boundaries-fix\\postfx_frame161848\\manifest.json",
+    "sha256": "c880102193e52127b8deac5f8eb2c4461d2ff593f5895edfff1a680143b71737"
+  },
+  "replay_command": {
+    "bytes": 832,
+    "path": "C:\\Users\\Example\\hoi4_lanes\\w14_scoreboard_v4\\postfx_frame161848\\replay_app.command.json",
+    "sha256": "af1cb05a0de6c23349e9078f590dedd4be57238bcb2ab436a0fc31ea954fad29"
+  },
+  "replay_inputs": {
+    "capture": {
+      "path": "C:\\Users\\Example\\AppData\\Local\\hoi4_captures\\session_WAVE1_CAP3_parity_scoreboard_overlay_w14b"
+    },
+    "capture_base": {
+      "path": "C:\\Users\\Example\\AppData\\Local\\hoi4_captures\\session_WAVE1_CAP3_parity_payload_join"
+    },
+    "executable": {
+      "bytes": 7544832,
+      "path": "C:\\Users\\Example\\hoi4_lanes\\bt_release\\release\\replay_app.exe",
+      "sha256": "7d0d025b42b4fc380c42574417d05d2d756dcb5d9a44080dcdd2c9e8f5d0df5a"
+    },
+    "map_bundle": {
+      "path": "C:\\Users\\Example\\battle-plan_main\\replay_interface\\native\\map_viewer\\out\\map_bundle"
+    }
+  },
+  "schema": "hoi4-pass-final-readback-authority-v1"
+}

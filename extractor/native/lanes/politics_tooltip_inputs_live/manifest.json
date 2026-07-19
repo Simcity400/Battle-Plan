@@ -1,0 +1,56 @@
+{
+  "schema": "hoi4-extractor-a24-artifact-manifest-v1",
+  "authority": {
+    "program": "hoi4.exe 1.19.2.0.a729",
+    "image_base": "0x140000000",
+    "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+  },
+  "artifacts": [
+    {
+      "path": "extractor/documents/dossiers/A24_POLITICS_TOOLTIP_INPUTS.json",
+      "sha256": "c27175c4243502884c96909ca55cacd02bc4e5f8a86f8cebae334d275eb84355"
+    },
+    {
+      "path": "extractor/native/lanes/politics_tooltip_inputs_live/Cargo.toml",
+      "sha256": "b7fe155a39336a013bcf9e62b961033cb69ef2dc8d0f070fbf1e72e747775359"
+    },
+    {
+      "path": "extractor/native/lanes/politics_tooltip_inputs_live/src/lib.rs",
+      "sha256": "e989abc784b6fb714c7e448db91370dce002fdecba404160fe63fbee6c35447f"
+    },
+    {
+      "path": "extractor/native/lanes/politics_tooltip_inputs_live/src/a729_hook.rs",
+      "sha256": "73c5c557b34479f9588cf86dd49560754299b6083e6950b243e1d1ab146064bc"
+    },
+    {
+      "path": "extractor/native/lanes/politics_tooltip_inputs_live/A24_RE_REPORT.md",
+      "sha256": "826eb6ce57cf1f9b457536c3401dc05a4ef54750f5f663e4c575fe3775f1116c"
+    },
+    {
+      "path": "extractor/native/lanes/politics_tooltip_inputs_live/verify_a24.py",
+      "sha256": "6f4724c20972aad9dd771d995dcc3a3fd95c63691534f832b0dd9c054c5d0b2f"
+    },
+    {
+      "path": "extractor/native/lanes/politics_tooltip_inputs_live/verification.json",
+      "sha256": "c365ed63fe02e6dfe51ec808015ac07c90a39e643e9c719ffb8b78867131db45"
+    },
+    {
+      "path": "extractor/native/recorder_host/tests/a24_d73.rs",
+      "sha256": "278d1eb14f7cf267cd937241305df8e12201193cc273ba2a0af456267ea78a30"
+    }
+  ],
+  "external_ghidra": [
+    {
+      "job_id": "20260717T103021Z-a24-politics-tooltip-anchors-v1-4af7c984",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T103021Z-a24-politics-tooltip-anchors-v1-4af7c984\\string-xrefs.txt",
+      "sha256": "4096785ffe2701327a1702ddc5e4640255f8f0505c050cf684376ddbbc07a3c6",
+      "identity_manifest_sha256": "cd33527ef2f8f5d73ac87272d13b3c6219927272875ffe379ec7f4e1f4f8f8fe"
+    },
+    {
+      "job_id": "20260717T103340Z-a24-politics-tooltip-producers-v1-c7bba362",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T103340Z-a24-politics-tooltip-producers-v1-c7bba362\\evidence\\_FUNCTION_EVIDENCE_MANIFEST.json",
+      "sha256": "aec720fe9371b012bfb6a8f000f74ab39232f3482a766c0edfac7582ce489ce5",
+      "identity_manifest_sha256": "cd33527ef2f8f5d73ac87272d13b3c6219927272875ffe379ec7f4e1f4f8f8fe"
+    }
+  ]
+}

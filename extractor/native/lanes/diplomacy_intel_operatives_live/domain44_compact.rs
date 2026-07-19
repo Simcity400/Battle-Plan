@@ -158,12 +158,17 @@ const ROW_COMPACT_STATE_EVENT_LEN: usize = 32;
 // Wave-5 running-operations `OPIN` trailer (tail-appended after the base
 // self-delimiting payload; MTD1/ACE1/PLIC/PLCF precedent).
 const OPERATION_INSTANCE_TRAILER_MAGIC: &[u8; 4] = b"OPIN";
-const OPERATION_INSTANCE_TRAILER_VERSION: u16 = 1;
+const OPERATION_INSTANCE_TRAILER_VERSION_V1: u16 = 1;
+const OPERATION_INSTANCE_TRAILER_VERSION: u16 = 2;
 const OPERATION_INSTANCE_TRAILER_HEADER_LEN: usize = 12;
-const OPERATION_INSTANCE_TRAILER_ROW_LEN: usize = 12;
+const OPERATION_INSTANCE_TRAILER_V1_ROW_LEN: usize = 12;
+const OPERATION_INSTANCE_TRAILER_V2_ROW_HEADER_LEN: usize = 48;
 const OPERATION_INSTANCE_FLAG_DEF_REF_OK: u32 = 1;
 const OPERATION_INSTANCE_FLAG_COUNTRY_PRESENT: u32 = 1 << 1;
+const OPERATION_INSTANCE_V2_FLAG_STATE_TARGET: u8 = 1;
 pub const MAX_OPERATION_INSTANCE_ROWS: usize = 4_096;
+pub const MAX_OPERATION_DEFINITION_ID_LEN: usize = 256;
+pub const MAX_OPERATION_ASSIGNED_OPERATIVES: usize = 64;
 
 const INCOMING_ACTION_QUEUE_TRAILER_MAGIC: &[u8; 4] = b"DIAQ";
 const INCOMING_ACTION_QUEUE_TRAILER_VERSION: u16 = 1;
@@ -302,10 +307,19 @@ fn encoded_payload_capacity(snapshot: &DiplomacyIntelSnapshot) -> usize {
 fn operation_instance_trailer_capacity(rows: &[OperationInstanceRow]) -> usize {
     if rows.is_empty() {
         0
+    } else if rows.iter().all(OperationInstanceRow::is_exact_runtime) {
+        OPERATION_INSTANCE_TRAILER_HEADER_LEN.saturating_add(rows.iter().fold(
+            0usize,
+            |sum, row| {
+                sum.saturating_add(OPERATION_INSTANCE_TRAILER_V2_ROW_HEADER_LEN)
+                    .saturating_add(row.definition_id.as_ref().map_or(0, String::len))
+                    .saturating_add(row.assigned_operative_ids.len().saturating_mul(4))
+            },
+        ))
     } else {
         OPERATION_INSTANCE_TRAILER_HEADER_LEN.saturating_add(
             rows.len()
-                .saturating_mul(OPERATION_INSTANCE_TRAILER_ROW_LEN),
+                .saturating_mul(OPERATION_INSTANCE_TRAILER_V1_ROW_LEN),
         )
     }
 }
@@ -398,8 +412,10 @@ pub struct SubjectRow {
     pub overlord_tag_db_id: u32,
     pub subject_tag_db_id: u32,
     pub autonomy_state_hash: u32,
-    /// UNVALIDATED — `CSubjectRelation+0x60`; no melt oracle. Emitted for
-    /// completeness but must NOT be treated as validated by consumers.
+    /// `CSubjectRelation+0x60` is an i64 Clausewitz fixed-point scalar at
+    /// memory-read time. The extractor validates it in the exact 0..=100000
+    /// autonomy-ratio range before narrowing it into this lossless i32 wire
+    /// carrier (`raw / 100000.0`).
     pub autonomy_ratio_raw: i32,
     /// `CSubjectRelation+0x20` i32 engine-hour subject start_date (RAW). The
     /// replay layer derives the display date. Live-validated 38/38 on 870ebf.
@@ -476,14 +492,68 @@ pub struct OperationAnchorRow {
 /// associated_country}. The `owner` (+0x10) field is REJECTED and NOT carried.
 /// `associated_country` is PROVISIONAL — semantics are associated-country;
 /// target-vs-operative-location is undistinguished (all 8 coincided on D04).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperationInstanceStatus {
+    Preparing,
+    Running,
+    Finished,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OperationInstanceRow {
     pub instance_id: u32,
-    /// The operation-def ptr (@+0x48) passed the COperation vtable check.
+    /// OPIN-v1 compatibility witness. Always true on exact v2 rows.
     pub def_ref_ok: bool,
-    /// Resolved associated-country tag_db_id (@+0x50 -> CCountry). `None` when
-    /// the pointer was null/invalid (absent, never zero).
+    /// OPIN-v1 compatibility value. On exact v2 rows this is the authored
+    /// target-country CId at +0x58, never the owner pointer at +0x50.
     pub associated_country_tag_db_id: Option<u32>,
+    pub definition_id: Option<String>,
+    pub owner_country_tag_db_id: Option<u32>,
+    pub target_country_tag_db_id: Option<u32>,
+    pub target_state_id: Option<u32>,
+    pub status: Option<OperationInstanceStatus>,
+    pub phase_index: u32,
+    pub phase_count: u32,
+    pub progress_fixed: Option<i64>,
+    pub start_hour: Option<u32>,
+    pub duration_hours: Option<u32>,
+    pub assigned_operative_ids: Vec<u32>,
+}
+
+impl OperationInstanceRow {
+    pub fn legacy(
+        instance_id: u32,
+        def_ref_ok: bool,
+        associated_country_tag_db_id: Option<u32>,
+    ) -> Self {
+        Self {
+            instance_id,
+            def_ref_ok,
+            associated_country_tag_db_id,
+            definition_id: None,
+            owner_country_tag_db_id: None,
+            target_country_tag_db_id: None,
+            target_state_id: None,
+            status: None,
+            phase_index: 0,
+            phase_count: 0,
+            progress_fixed: None,
+            start_hour: None,
+            duration_hours: None,
+            assigned_operative_ids: Vec::new(),
+        }
+    }
+
+    pub fn is_exact_runtime(&self) -> bool {
+        self.definition_id.is_some()
+            && self.owner_country_tag_db_id.is_some()
+            && self.target_country_tag_db_id.is_some()
+            && self.status.is_some()
+            && self.phase_count != 0
+            && self.progress_fixed.is_some()
+            && self.start_hour.is_some()
+            && self.duration_hours.is_some()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1269,10 +1339,56 @@ fn append_operation_instance_trailer(payload: &mut Vec<u8>, rows: &[OperationIns
     if rows.is_empty() {
         return;
     }
+    let exact_v2 = rows.iter().all(OperationInstanceRow::is_exact_runtime);
     payload.extend_from_slice(OPERATION_INSTANCE_TRAILER_MAGIC);
-    payload.extend_from_slice(&OPERATION_INSTANCE_TRAILER_VERSION.to_le_bytes());
+    payload.extend_from_slice(
+        &(if exact_v2 {
+            OPERATION_INSTANCE_TRAILER_VERSION
+        } else {
+            OPERATION_INSTANCE_TRAILER_VERSION_V1
+        })
+        .to_le_bytes(),
+    );
     payload.extend_from_slice(&(OPERATION_INSTANCE_TRAILER_HEADER_LEN as u16).to_le_bytes());
     payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    if exact_v2 {
+        for row in rows {
+            let definition_id = row.definition_id.as_deref().unwrap_or_default().as_bytes();
+            let owner = row.owner_country_tag_db_id.unwrap_or_default();
+            let target_country = row.target_country_tag_db_id.unwrap_or_default();
+            let target_state = row.target_state_id.unwrap_or_default();
+            let status = match row.status {
+                Some(OperationInstanceStatus::Preparing) => 0u8,
+                Some(OperationInstanceStatus::Running) => 1u8,
+                Some(OperationInstanceStatus::Finished) => 2u8,
+                None => unreachable!("exact OPIN v2 row requires status"),
+            };
+            let flags = if row.target_state_id.is_some() {
+                OPERATION_INSTANCE_V2_FLAG_STATE_TARGET
+            } else {
+                0
+            };
+            payload.extend_from_slice(&row.instance_id.to_le_bytes());
+            payload.extend_from_slice(&owner.to_le_bytes());
+            payload.extend_from_slice(&target_country.to_le_bytes());
+            payload.extend_from_slice(&target_state.to_le_bytes());
+            payload.push(status);
+            payload.push(flags);
+            payload.extend_from_slice(&(definition_id.len() as u16).to_le_bytes());
+            payload.extend_from_slice(&row.phase_index.to_le_bytes());
+            payload.extend_from_slice(&row.phase_count.to_le_bytes());
+            payload.extend_from_slice(&row.progress_fixed.unwrap_or_default().to_le_bytes());
+            payload.extend_from_slice(&row.start_hour.unwrap_or_default().to_le_bytes());
+            payload.extend_from_slice(&row.duration_hours.unwrap_or_default().to_le_bytes());
+            payload.extend_from_slice(&(row.assigned_operative_ids.len() as u16).to_le_bytes());
+            payload.extend_from_slice(&0u16.to_le_bytes());
+            payload.extend_from_slice(definition_id);
+            for operative_id in &row.assigned_operative_ids {
+                payload.extend_from_slice(&operative_id.to_le_bytes());
+            }
+        }
+        return;
+    }
     for row in rows {
         let mut flags = 0u32;
         if row.def_ref_ok {
@@ -1357,8 +1473,10 @@ fn decode_operation_instance_trailer(
     let version = read_u16_le(trailer, 4);
     let header_len = read_u16_le(trailer, 6) as usize;
     let row_count = read_u32_le(trailer, 8) as usize;
-    if version != OPERATION_INSTANCE_TRAILER_VERSION
-        || header_len != OPERATION_INSTANCE_TRAILER_HEADER_LEN
+    if !matches!(
+        version,
+        OPERATION_INSTANCE_TRAILER_VERSION_V1 | OPERATION_INSTANCE_TRAILER_VERSION
+    ) || header_len != OPERATION_INSTANCE_TRAILER_HEADER_LEN
     {
         errors.push(format!(
             "offset {offset}: operation-instance trailer header shape invalid (version {version}, header_len {header_len})"
@@ -1371,45 +1489,149 @@ fn decode_operation_instance_trailer(
         ));
         return (Vec::new(), 0);
     }
-    let expected = OPERATION_INSTANCE_TRAILER_HEADER_LEN
-        .saturating_add(row_count.saturating_mul(OPERATION_INSTANCE_TRAILER_ROW_LEN));
-    if trailer.len() < expected {
-        errors.push(format!(
-            "offset {offset}: operation-instance trailer len {} < {expected}",
-            trailer.len()
-        ));
-        return (Vec::new(), 0);
-    }
     let mut rows = Vec::with_capacity(row_count);
     let mut seen = BTreeSet::new();
     let mut cursor = OPERATION_INSTANCE_TRAILER_HEADER_LEN;
-    for _ in 0..row_count {
-        let instance_id = read_u32_le(trailer, cursor);
-        let flags = read_u32_le(trailer, cursor + 4);
-        let country = read_u32_le(trailer, cursor + 8);
-        cursor += OPERATION_INSTANCE_TRAILER_ROW_LEN;
-        if instance_id == 0 {
+    if version == OPERATION_INSTANCE_TRAILER_VERSION_V1 {
+        let expected = OPERATION_INSTANCE_TRAILER_HEADER_LEN
+            .saturating_add(row_count.saturating_mul(OPERATION_INSTANCE_TRAILER_V1_ROW_LEN));
+        if trailer.len() < expected {
             errors.push(format!(
-                "offset {offset}: operation-instance row has zero instance_id"
+                "offset {offset}: operation-instance v1 trailer len {} < {expected}",
+                trailer.len()
             ));
+            return (Vec::new(), 0);
         }
-        if flags & !(OPERATION_INSTANCE_FLAG_DEF_REF_OK | OPERATION_INSTANCE_FLAG_COUNTRY_PRESENT)
-            != 0
-        {
-            errors.push(format!(
-                "offset {offset}: operation-instance row has unknown flags {flags:#x}"
-            ));
-        }
-        let country_present = flags & OPERATION_INSTANCE_FLAG_COUNTRY_PRESENT != 0;
-        if country_present {
-            if country == 0 || country > MAX_TAG_DB_ID {
+        for _ in 0..row_count {
+            let instance_id = read_u32_le(trailer, cursor);
+            let flags = read_u32_le(trailer, cursor + 4);
+            let country = read_u32_le(trailer, cursor + 8);
+            cursor += OPERATION_INSTANCE_TRAILER_V1_ROW_LEN;
+            if instance_id == 0 {
+                errors.push(format!(
+                    "offset {offset}: operation-instance row has zero instance_id"
+                ));
+            }
+            if flags
+                & !(OPERATION_INSTANCE_FLAG_DEF_REF_OK | OPERATION_INSTANCE_FLAG_COUNTRY_PRESENT)
+                != 0
+            {
+                errors.push(format!(
+                    "offset {offset}: operation-instance row has unknown flags {flags:#x}"
+                ));
+            }
+            let country_present = flags & OPERATION_INSTANCE_FLAG_COUNTRY_PRESENT != 0;
+            if country_present && (country == 0 || country > MAX_TAG_DB_ID) {
                 errors.push(format!(
                     "offset {offset}: operation-instance row has invalid associated_country {country}"
                 ));
+            } else if !country_present && country != 0 {
+                errors.push(format!(
+                    "offset {offset}: operation-instance row has country without present flag"
+                ));
             }
-        } else if country != 0 {
+            if !seen.insert(instance_id) {
+                errors.push(format!(
+                    "offset {offset}: operation-instance trailer duplicates instance_id {instance_id}"
+                ));
+            }
+            rows.push(OperationInstanceRow::legacy(
+                instance_id,
+                flags & OPERATION_INSTANCE_FLAG_DEF_REF_OK != 0,
+                country_present.then_some(country),
+            ));
+        }
+        return (rows, expected);
+    }
+    for _ in 0..row_count {
+        let Some(header_end) = cursor.checked_add(OPERATION_INSTANCE_TRAILER_V2_ROW_HEADER_LEN)
+        else {
             errors.push(format!(
-                "offset {offset}: operation-instance row has country without present flag"
+                "offset {offset}: operation-instance v2 row overflows"
+            ));
+            return (Vec::new(), 0);
+        };
+        if header_end > trailer.len() {
+            errors.push(format!(
+                "offset {offset}: operation-instance v2 row header is truncated"
+            ));
+            return (Vec::new(), 0);
+        }
+        let instance_id = read_u32_le(trailer, cursor);
+        let owner = read_u32_le(trailer, cursor + 4);
+        let target_country = read_u32_le(trailer, cursor + 8);
+        let target_state = read_u32_le(trailer, cursor + 12);
+        let status_raw = trailer[cursor + 16];
+        let flags = trailer[cursor + 17];
+        let definition_len = read_u16_le(trailer, cursor + 18) as usize;
+        let phase_index = read_u32_le(trailer, cursor + 20);
+        let phase_count = read_u32_le(trailer, cursor + 24);
+        let progress_fixed = read_i64_le(trailer, cursor + 28);
+        let start_hour = read_u32_le(trailer, cursor + 36);
+        let duration_hours = read_u32_le(trailer, cursor + 40);
+        let operative_count = read_u16_le(trailer, cursor + 44) as usize;
+        let reserved = read_u16_le(trailer, cursor + 46);
+        cursor = header_end;
+        let row_end = cursor
+            .checked_add(definition_len)
+            .and_then(|value| value.checked_add(operative_count.saturating_mul(4)));
+        let Some(row_end) = row_end else {
+            errors.push(format!(
+                "offset {offset}: operation-instance v2 row overflows"
+            ));
+            return (Vec::new(), 0);
+        };
+        if row_end > trailer.len() {
+            errors.push(format!(
+                "offset {offset}: operation-instance v2 variable row is truncated"
+            ));
+            return (Vec::new(), 0);
+        }
+        let definition_id = std::str::from_utf8(&trailer[cursor..cursor + definition_len])
+            .ok()
+            .filter(|value| !value.is_empty() && !value.chars().any(char::is_control))
+            .map(ToOwned::to_owned);
+        cursor += definition_len;
+        let mut assigned_operative_ids = Vec::with_capacity(operative_count);
+        for _ in 0..operative_count {
+            assigned_operative_ids.push(read_u32_le(trailer, cursor));
+            cursor += 4;
+        }
+        let status = match status_raw {
+            0 => Some(OperationInstanceStatus::Preparing),
+            1 => Some(OperationInstanceStatus::Running),
+            2 => Some(OperationInstanceStatus::Finished),
+            _ => None,
+        };
+        if instance_id == 0
+            || owner == 0
+            || owner > MAX_TAG_DB_ID
+            || target_country == 0
+            || target_country > MAX_TAG_DB_ID
+            || definition_len == 0
+            || definition_len > MAX_OPERATION_DEFINITION_ID_LEN
+            || definition_id.is_none()
+            || operative_count > MAX_OPERATION_ASSIGNED_OPERATIVES
+            || assigned_operative_ids
+                .iter()
+                .any(|id| *id == 0 || *id > MAX_OPERATIVE_ID)
+            || phase_count == 0
+            || phase_index >= phase_count
+            || !(0..=compact_contract::build_profile::DOMAIN53_OPERATION_PROGRESS_SCALE)
+                .contains(&progress_fixed)
+            || status.is_none()
+            || flags & !OPERATION_INSTANCE_V2_FLAG_STATE_TARGET != 0
+            || reserved != 0
+            || (flags & OPERATION_INSTANCE_V2_FLAG_STATE_TARGET != 0) != (target_state != 0)
+            || (matches!(status, Some(OperationInstanceStatus::Preparing))
+                && (start_hour != 0 || duration_hours != 0))
+            || (matches!(
+                status,
+                Some(OperationInstanceStatus::Running | OperationInstanceStatus::Finished)
+            ) && duration_hours == 0)
+        {
+            errors.push(format!(
+                "offset {offset}: operation-instance v2 row {instance_id} violates the exact runtime contract"
             ));
         }
         if !seen.insert(instance_id) {
@@ -1419,11 +1641,22 @@ fn decode_operation_instance_trailer(
         }
         rows.push(OperationInstanceRow {
             instance_id,
-            def_ref_ok: flags & OPERATION_INSTANCE_FLAG_DEF_REF_OK != 0,
-            associated_country_tag_db_id: country_present.then_some(country),
+            def_ref_ok: true,
+            associated_country_tag_db_id: Some(target_country),
+            definition_id,
+            owner_country_tag_db_id: Some(owner),
+            target_country_tag_db_id: Some(target_country),
+            target_state_id: (target_state != 0).then_some(target_state),
+            status,
+            phase_index,
+            phase_count,
+            progress_fixed: Some(progress_fixed),
+            start_hour: Some(start_hour),
+            duration_hours: Some(duration_hours),
+            assigned_operative_ids,
         });
     }
-    (rows, expected)
+    (rows, cursor)
 }
 
 #[derive(Default)]
@@ -2879,7 +3112,7 @@ fn validate_subject_row(
             "offset {offset}: subject row {row_index} has zero autonomy_state_hash"
         ));
     }
-    if !(0..=1_000_000).contains(&autonomy_ratio_raw) {
+    if !(0..=FIXED_SCALE_RAW as i32).contains(&autonomy_ratio_raw) {
         summary.parse_errors.push(format!(
             "offset {offset}: subject row {row_index} has invalid autonomy_ratio_raw {autonomy_ratio_raw}"
         ));
@@ -3667,7 +3900,7 @@ fn summarize_subject_row(
             "offset {offset}: subject row {row_index} has zero autonomy_state_hash"
         ));
     }
-    if !(0..=1_000_000).contains(&row.autonomy_ratio_raw) {
+    if !(0..=FIXED_SCALE_RAW as i32).contains(&row.autonomy_ratio_raw) {
         let autonomy_ratio_raw = row.autonomy_ratio_raw;
         summary.parse_errors.push(format!(
             "offset {offset}: subject row {row_index} has invalid autonomy_ratio_raw {autonomy_ratio_raw}"
@@ -4777,16 +5010,8 @@ mod tests {
     fn operation_instance_trailer_round_trips() {
         let mut snapshot = fixture_snapshot();
         snapshot.operation_instances = vec![
-            OperationInstanceRow {
-                instance_id: 129_014,
-                def_ref_ok: true,
-                associated_country_tag_db_id: Some(3),
-            },
-            OperationInstanceRow {
-                instance_id: 128_904,
-                def_ref_ok: false,
-                associated_country_tag_db_id: None,
-            },
+            OperationInstanceRow::legacy(129_014, true, Some(3)),
+            OperationInstanceRow::legacy(128_904, false, None),
         ];
         let payload = encode_payload(&snapshot);
         let summary = decode_payload(0, &payload);
@@ -4822,13 +5047,38 @@ mod tests {
     }
 
     #[test]
-    fn incoming_action_queue_trailer_round_trips_with_operation_instances() {
+    fn operation_runtime_v2_round_trips_exact_contract() {
         let mut snapshot = fixture_snapshot();
         snapshot.operation_instances = vec![OperationInstanceRow {
-            instance_id: 129_014,
+            instance_id: 18_568,
             def_ref_ok: true,
-            associated_country_tag_db_id: Some(3),
+            associated_country_tag_db_id: Some(1),
+            definition_id: Some("operation_infiltrate_civilian_government".into()),
+            owner_country_tag_db_id: Some(2),
+            target_country_tag_db_id: Some(1),
+            target_state_id: Some(64),
+            status: Some(OperationInstanceStatus::Running),
+            phase_index: 1,
+            phase_count: 3,
+            progress_fixed: Some(42_735),
+            start_hour: Some(60_762_441),
+            duration_hours: Some(2_808),
+            assigned_operative_ids: vec![9_751, 17_071],
         }];
+        let payload = encode_payload(&snapshot);
+        let trailer = payload
+            .windows(4)
+            .position(|window| window == OPERATION_INSTANCE_TRAILER_MAGIC)
+            .expect("OPIN trailer");
+        assert_eq!(read_u16_le(&payload, trailer + 4), 2);
+        let decoded = decode_snapshot_payload(0, &payload).expect("decode OPIN v2");
+        assert_eq!(decoded.operation_instances, snapshot.operation_instances);
+    }
+
+    #[test]
+    fn incoming_action_queue_trailer_round_trips_with_operation_instances() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.operation_instances = vec![OperationInstanceRow::legacy(129_014, true, Some(3))];
         snapshot.incoming_actions = vec![
             IncomingActionQueueRow {
                 recipient_tag_db_id: 9,
@@ -5177,6 +5427,18 @@ mod tests {
     }
 
     #[test]
+    fn subject_rejects_ratio_above_one() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.subjects[0].autonomy_ratio_raw = FIXED_SCALE_RAW as i32 + 1;
+        let payload = encode_payload(&snapshot);
+        let summary = decode_payload(0, &payload);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("invalid autonomy_ratio_raw 100001")));
+    }
+
+    #[test]
     fn intel_network_graph_trailer_rejects_duplicate_slot() {
         let mut snapshot = fixture_snapshot();
         snapshot.intel_network_graphs = vec![
@@ -5205,16 +5467,8 @@ mod tests {
     fn operation_instance_trailer_rejects_duplicate_instance_id() {
         let mut snapshot = fixture_snapshot();
         snapshot.operation_instances = vec![
-            OperationInstanceRow {
-                instance_id: 42,
-                def_ref_ok: true,
-                associated_country_tag_db_id: None,
-            },
-            OperationInstanceRow {
-                instance_id: 42,
-                def_ref_ok: true,
-                associated_country_tag_db_id: None,
-            },
+            OperationInstanceRow::legacy(42, true, None),
+            OperationInstanceRow::legacy(42, true, None),
         ];
         let payload = encode_payload(&snapshot);
         let summary = decode_payload(0, &payload);
@@ -5227,11 +5481,7 @@ mod tests {
     #[test]
     fn operation_instance_trailer_rejects_country_without_flag() {
         let mut snapshot = fixture_snapshot();
-        snapshot.operation_instances = vec![OperationInstanceRow {
-            instance_id: 7,
-            def_ref_ok: true,
-            associated_country_tag_db_id: None,
-        }];
+        snapshot.operation_instances = vec![OperationInstanceRow::legacy(7, true, None)];
         let mut payload = encode_payload(&snapshot);
         // Force a nonzero country field on a row whose flag says absent.
         let len = payload.len();
@@ -5447,16 +5697,8 @@ mod tests {
         // and STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED (informational only).
         snapshot.status_flags &= !STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED;
         snapshot.operation_instances = vec![
-            OperationInstanceRow {
-                instance_id: 5001,
-                def_ref_ok: true,
-                associated_country_tag_db_id: Some(3),
-            },
-            OperationInstanceRow {
-                instance_id: 5002,
-                def_ref_ok: false,
-                associated_country_tag_db_id: None,
-            },
+            OperationInstanceRow::legacy(5001, true, Some(3)),
+            OperationInstanceRow::legacy(5002, false, None),
         ];
         snapshot.incoming_actions = vec![
             IncomingActionQueueRow {

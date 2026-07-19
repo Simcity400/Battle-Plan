@@ -69,6 +69,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use serde::Serialize;
 use serde_json::{json, Value};
 use snapshot::sha256::{to_hex, Sha256};
 
@@ -267,6 +268,9 @@ pub struct ModsetReport {
     /// dlc_load.json mtime (unix seconds) and the game process creation time
     /// (unix seconds), both recorded so config-newer-than-process is provable.
     pub dlc_load_mtime_unix: Option<i64>,
+    /// SHA-256 of the exact byte-identical `dlc_load.json` reads used below.
+    /// This binds requested launcher selection evidence without another read.
+    pub dlc_load_sha256: Option<String>,
     pub process_start_unix: Option<i64>,
     pub enabled_mods: Vec<ResolvedMod>,
     pub installed_dlcs: Vec<String>,
@@ -276,9 +280,37 @@ pub struct ModsetReport {
     /// descriptor whose name cannot be read stays present with a null value;
     /// the corresponding resolution failure is recorded in `errors`.
     pub dlc_display_names: BTreeMap<String, Option<String>>,
+    /// Installed descriptor path -> exact launch-bound descriptor evidence.
+    /// The name and raw hash come from one byte-identical pre-start read.
+    pub dlc_descriptor_evidence: BTreeMap<String, Option<DlcDescriptorEvidence>>,
     /// `language=` from settings.txt in the same corroborated Paradox user
     /// directory. Never defaulted when the file or field is unavailable.
     pub localisation_language: Option<String>,
+    /// Exact launch-bound display inputs from the same stable settings.txt
+    /// read as `localisation_language`. Numeric scale identity is carried as
+    /// IEEE-754 bits; no replay-side decimal re-rounding is permitted.
+    pub display_variant: Option<DisplayVariantSettings>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DlcDescriptorEvidence {
+    pub display_name: String,
+    pub descriptor_file_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayVariantSettings {
+    pub physical_width: u32,
+    pub physical_height: u32,
+    pub min_gui_width: u32,
+    pub min_gui_height: u32,
+    pub gui_scale_f32_bits: u32,
+    pub refresh_rate_hz: u32,
+    pub max_refresh_rate_hz: Option<u32>,
+    pub fullscreen: bool,
+    pub borderless: bool,
+    pub display_mode: String,
+    pub settings_file_sha256: String,
 }
 
 impl ModsetReport {
@@ -292,6 +324,7 @@ impl ModsetReport {
             "pdx_user_dir": self.user_dir.as_ref().map(|p| p.display().to_string()),
             "user_dir_source": self.user_dir_source,
             "dlc_load_mtime_unix": self.dlc_load_mtime_unix,
+            "dlc_load_sha256": self.dlc_load_sha256,
             "process_start_unix": self.process_start_unix,
             "enabled_mods": self.enabled_mods.iter().map(|m| json!({
                 "descriptor_entry": m.descriptor_entry,
@@ -312,7 +345,21 @@ impl ModsetReport {
                 "enabled": self.enabled_dlcs,
             },
             "dlc_display_names": self.dlc_display_names,
+            "dlc_descriptor_evidence": self.dlc_descriptor_evidence,
             "localisation_language": self.localisation_language,
+            "display_variant": self.display_variant.as_ref().map(|display| json!({
+                "physical_width": display.physical_width,
+                "physical_height": display.physical_height,
+                "min_gui_width": display.min_gui_width,
+                "min_gui_height": display.min_gui_height,
+                "gui_scale_f32_bits": display.gui_scale_f32_bits,
+                "refresh_rate_hz": display.refresh_rate_hz,
+                "max_refresh_rate_hz": display.max_refresh_rate_hz,
+                "fullscreen": display.fullscreen,
+                "borderless": display.borderless,
+                "display_mode": display.display_mode,
+                "settings_file_sha256": display.settings_file_sha256,
+            })),
         });
         if self.resolved {
             let mut doc = json!({
@@ -341,6 +388,28 @@ impl ModsetReport {
 /// Resolve the recording modset for the attached game process. Never fails —
 /// every problem lands in `errors` and clears `resolved`.
 pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetReport {
+    resolve_modset_inner(pid, user_dir_override, None)
+}
+
+/// Resolve a process that is still held by this recorder's
+/// `CREATE_SUSPENDED` authority. The caller has already selected both exact
+/// paths and the command line contains this exact `-userdir`; requiring a
+/// game-held log handle here would be impossible because no game instruction
+/// has run yet. All file/directory stability and pre-process-time checks remain
+/// identical to attached-process resolution.
+pub(crate) fn resolve_suspended_launch_modset(
+    pid: u32,
+    expected_executable: &Path,
+    exact_user_dir: &Path,
+) -> ModsetReport {
+    resolve_modset_inner(pid, Some(exact_user_dir), Some(expected_executable))
+}
+
+fn resolve_modset_inner(
+    pid: u32,
+    user_dir_override: Option<&Path>,
+    suspended_expected_executable: Option<&Path>,
+) -> ModsetReport {
     let mut report = ModsetReport {
         resolved: true,
         errors: Vec::new(),
@@ -350,13 +419,16 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
         user_dir: None,
         user_dir_source: None,
         dlc_load_mtime_unix: None,
+        dlc_load_sha256: None,
         process_start_unix: None,
         enabled_mods: Vec::new(),
         installed_dlcs: Vec::new(),
         disabled_dlcs: Vec::new(),
         enabled_dlcs: Vec::new(),
         dlc_display_names: BTreeMap::new(),
+        dlc_descriptor_evidence: BTreeMap::new(),
         localisation_language: None,
+        display_variant: None,
     };
     macro_rules! fail {
         ($($arg:tt)*) => {{
@@ -368,6 +440,19 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
     // --- game build binding ---
     match query_process_image_path(pid) {
         Ok(exe) => {
+            if let Some(expected) = suspended_expected_executable {
+                match (fs::canonicalize(&exe), fs::canonicalize(expected)) {
+                    (Ok(observed), Ok(expected)) if observed == expected => {}
+                    (Ok(observed), Ok(expected)) => fail!(
+                        "suspended process executable {} differs from selected {}",
+                        observed.display(),
+                        expected.display()
+                    ),
+                    (observed, expected) => fail!(
+                        "canonicalize suspended executable binding failed: observed={observed:?} expected={expected:?}"
+                    ),
+                }
+            }
             match hash_file_streaming_stable(&exe) {
                 Ok((size, sha)) => {
                     report.exe_size_bytes = Some(size);
@@ -391,7 +476,23 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
     };
 
     // --- Paradox user dir + dlc_load.json ---
-    let user_dir_corroborated = match locate_user_dir(pid, user_dir_override) {
+    let located_user_dir = if suspended_expected_executable.is_some() {
+        user_dir_override
+            .ok_or_else(|| "suspended launch omitted its exact user directory".to_string())
+            .and_then(|dir| {
+                let dir = fs::canonicalize(dir)
+                    .map_err(|e| format!("canonicalize suspended launch user dir: {e}"))?;
+                if !dir.is_dir() || !dir.join("dlc_load.json").is_file() {
+                    return Err(
+                        "suspended launch user dir is not a directory with dlc_load.json".into(),
+                    );
+                }
+                Ok((dir, "override"))
+            })
+    } else {
+        locate_user_dir(pid, user_dir_override)
+    };
+    let user_dir_corroborated = match located_user_dir {
         Ok((dir, source)) => {
             // Discovery has already run the PID-held-log corroboration across
             // every physical candidate and required exactly one survivor.
@@ -405,24 +506,28 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
         }
     };
 
-    // The language is evidence from the SAME user directory whose live log
+    // Language and display settings are evidence from the SAME user directory whose live log
     // handle corroborates dlc_load.json. A merely probed/overridden path is
     // not sufficient provenance for settings.txt, and disk state written
     // after launch cannot describe the running process.
     if user_dir_corroborated {
         if let Some(user_dir) = report.user_dir.as_deref() {
             match process_start {
-                Some(start) => match read_localisation_language(user_dir, start) {
-                    Ok(Some(language)) => report.localisation_language = Some(language),
-                    Ok(None) => fail!(
-                        "settings.txt localisation language assignment is absent; recorded null"
-                    ),
+                Some(start) => match read_launch_settings(user_dir, start) {
+                    Ok((Some(language), display)) => {
+                        report.localisation_language = Some(language);
+                        report.display_variant = Some(display);
+                    }
+                    Ok((None, display)) => {
+                        report.display_variant = Some(display);
+                        fail!("settings.txt localisation language assignment is absent; recorded null")
+                    }
                     Err(e) => {
-                        fail!("settings.txt localisation language unresolved: {e}; recorded null")
+                        fail!("settings.txt launch settings unresolved: {e}; recorded null")
                     }
                 },
                 None => {
-                    fail!("settings.txt launch binding unavailable; recorded language as null")
+                    fail!("settings.txt launch binding unavailable; recorded language/display as null")
                 }
             }
         }
@@ -465,7 +570,9 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
                     // read with a preserved mtime is indistinguishable from
                     // user mode; both reads then see the same (new) bytes.
                     match fs::read_to_string(&dlc_load_path) {
-                        Ok(text_again) if text_again == text => {}
+                        Ok(text_again) if text_again == text => {
+                            report.dlc_load_sha256 = Some(Sha256::hex(text.as_bytes()));
+                        }
                         Ok(_) => fail!(
                             "dlc_load.json changed while being read (bytes differ between reads)"
                         ),
@@ -597,9 +704,10 @@ pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetRepor
                     // Display names are read INSIDE the census bracket. Each
                     // descriptor is also double-read with a metadata bracket
                     // and must predate launch.
-                    let (display_names, display_name_errors) =
+                    let (display_names, descriptor_evidence, display_name_errors) =
                         resolve_dlc_display_names(game_root, &installed, process_start);
                     report.dlc_display_names = display_names;
+                    report.dlc_descriptor_evidence = descriptor_evidence;
                     for error in display_name_errors {
                         fail!("{error}");
                     }
@@ -679,23 +787,325 @@ fn validate_stable_text_read(
 /// two byte-identical reads. Equality with process start fails closed because
 /// it cannot prove that the running process saw these bytes.
 fn read_text_stable_before_start(path: &Path, process_start: SystemTime) -> Result<String, String> {
+    let bytes = read_bytes_stable_before_start(path, process_start)?;
+    String::from_utf8(bytes).map_err(|e| format!("{} is not UTF-8: {e}", path.display()))
+}
+
+/// Return the exact bytes from the same pre-start, metadata-bracketed,
+/// byte-identical read used for descriptor parsing and hashing.
+fn read_bytes_stable_before_start(
+    path: &Path,
+    process_start: SystemTime,
+) -> Result<Vec<u8>, String> {
     let before = file_stamp(path)?;
     let first = fs::read(path).map_err(|e| format!("{} first read: {e}", path.display()))?;
     let second = fs::read(path).map_err(|e| format!("{} second read: {e}", path.display()))?;
     let after = file_stamp(path)?;
-    validate_stable_text_read(path, process_start, before, first, second, after)
+    if before.modified >= process_start {
+        return Err(format!(
+            "{} mtime is at/after game process start",
+            path.display()
+        ));
+    }
+    if after != before {
+        return Err(format!(
+            "{} changed while being read (metadata moved)",
+            path.display()
+        ));
+    }
+    if first != second {
+        return Err(format!(
+            "{} changed while being read (bytes differ between reads)",
+            path.display()
+        ));
+    }
+    if first.len() as u64 != before.len {
+        return Err(format!(
+            "{} read length does not match bracketed metadata",
+            path.display()
+        ));
+    }
+    Ok(first)
 }
 
-/// Read the localisation language from settings.txt in the already
-/// corroborated Paradox user directory. Absent values stay absent; malformed,
-/// unstable, or post-launch evidence is an attributed error.
-fn read_localisation_language(
+/// Read all launch-bound variant inputs from one byte-identical settings.txt
+/// snapshot. This prevents language and display metadata from being bound to
+/// different file generations.
+fn read_launch_settings(
     user_dir: &Path,
     process_start: SystemTime,
-) -> Result<Option<String>, String> {
+) -> Result<(Option<String>, DisplayVariantSettings), String> {
     let path = user_dir.join("settings.txt");
     let text = read_text_stable_before_start(&path, process_start)?;
-    clausewitz_string_field(&text, "language")
+    let language = clausewitz_string_field(&text, "language")?;
+    let graphics = clausewitz_object_field(&text, "graphics")
+        .map_err(|e| format!("graphics object: {e}"))?
+        .ok_or("settings.txt graphics object is absent")?;
+    let size = clausewitz_object_field(graphics, "size")
+        .map_err(|e| format!("graphics.size object: {e}"))?
+        .ok_or("settings.txt graphics.size object is absent")?;
+    let min_gui = clausewitz_object_field(graphics, "min_gui")
+        .map_err(|e| format!("graphics.min_gui object: {e}"))?
+        .ok_or("settings.txt graphics.min_gui object is absent")?;
+    let physical_width = required_u32(size, "x", "graphics.size.x")?;
+    let physical_height = required_u32(size, "y", "graphics.size.y")?;
+    let min_gui_width = required_u32(min_gui, "x", "graphics.min_gui.x")?;
+    let min_gui_height = required_u32(min_gui, "y", "graphics.min_gui.y")?;
+    if physical_width == 0 || physical_height == 0 || min_gui_width == 0 || min_gui_height == 0 {
+        return Err("settings.txt display extents must be nonzero".into());
+    }
+    let scale_text = clausewitz_atom_field(graphics, "gui_scale")?
+        .ok_or("settings.txt graphics.gui_scale is absent")?;
+    let scale: f32 = scale_text
+        .parse()
+        .map_err(|e| format!("settings.txt graphics.gui_scale is not f32: {e}"))?;
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err("settings.txt graphics.gui_scale is not finite and positive".into());
+    }
+    let refresh_rate_hz = required_u32(graphics, "refreshRate", "graphics.refreshRate")?;
+    if refresh_rate_hz == 0 {
+        return Err("settings.txt graphics.refreshRate must be nonzero".into());
+    }
+    let max_refresh_rate_hz = clausewitz_atom_field(graphics, "max_refresh_rate")?
+        .map(|value| {
+            value
+                .parse::<u32>()
+                .map_err(|e| format!("settings.txt graphics.max_refresh_rate is not u32: {e}"))
+        })
+        .transpose()?;
+    let fullscreen = required_yes_no(graphics, "fullScreen", "graphics.fullScreen")?;
+    let borderless = required_yes_no(graphics, "borderless", "graphics.borderless")?;
+    let display_mode = match (fullscreen, borderless) {
+        (true, false) => "fullscreen",
+        (false, true) => "borderless_fullscreen",
+        (false, false) => "windowed",
+        (true, true) => {
+            return Err(
+                "settings.txt graphics fullScreen=yes and borderless=yes is ambiguous".into(),
+            )
+        }
+    };
+    Ok((
+        language,
+        DisplayVariantSettings {
+            physical_width,
+            physical_height,
+            min_gui_width,
+            min_gui_height,
+            gui_scale_f32_bits: scale.to_bits(),
+            refresh_rate_hz,
+            max_refresh_rate_hz,
+            fullscreen,
+            borderless,
+            display_mode: display_mode.to_string(),
+            settings_file_sha256: Sha256::hex(text.as_bytes()),
+        },
+    ))
+}
+
+fn required_u32(text: &str, key: &str, context: &str) -> Result<u32, String> {
+    clausewitz_atom_field(text, key)?
+        .ok_or_else(|| format!("settings.txt {context} is absent"))?
+        .parse::<u32>()
+        .map_err(|e| format!("settings.txt {context} is not u32: {e}"))
+}
+
+fn required_yes_no(text: &str, key: &str, context: &str) -> Result<bool, String> {
+    match clausewitz_atom_field(text, key)?
+        .ok_or_else(|| format!("settings.txt {context} is absent"))?
+    {
+        "yes" => Ok(true),
+        "no" => Ok(false),
+        other => Err(format!(
+            "settings.txt {context} is neither yes nor no: {other:?}"
+        )),
+    }
+}
+
+/// Return a unique object assignment's interior. The scanner tracks comments,
+/// quoted strings and brace nesting, so same-named keys in nested objects do
+/// not satisfy the requested scope.
+fn clausewitz_object_field<'a>(text: &'a str, wanted: &str) -> Result<Option<&'a str>, String> {
+    let bytes = text.as_bytes();
+    let mut index = 0usize;
+    let mut depth = 0usize;
+    let mut found = None;
+    while index < bytes.len() {
+        skip_space_and_comments(bytes, &mut index);
+        if index >= bytes.len() {
+            break;
+        }
+        match bytes[index] {
+            b'{' => {
+                depth += 1;
+                index += 1;
+            }
+            b'}' => {
+                depth = depth.checked_sub(1).ok_or("unbalanced closing brace")?;
+                index += 1;
+            }
+            b'"' => skip_quoted(bytes, &mut index)?,
+            byte if is_key_byte(byte) => {
+                let start = index;
+                while index < bytes.len() && is_key_byte(bytes[index]) {
+                    index += 1;
+                }
+                let key = &text[start..index];
+                let mut cursor = index;
+                skip_space_and_comments(bytes, &mut cursor);
+                if cursor >= bytes.len() || bytes[cursor] != b'=' {
+                    index = cursor;
+                    continue;
+                }
+                cursor += 1;
+                skip_space_and_comments(bytes, &mut cursor);
+                if depth == 0 && key == wanted {
+                    if found.is_some() {
+                        return Err(format!("duplicate {wanted}= object assignment"));
+                    }
+                    if cursor >= bytes.len() || bytes[cursor] != b'{' {
+                        return Err(format!("{wanted}= value is not an object"));
+                    }
+                    let open = cursor;
+                    let close = matching_brace(bytes, open)?;
+                    found = Some(&text[open + 1..close]);
+                    index = close + 1;
+                } else {
+                    index = cursor;
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    if depth != 0 {
+        return Err("unbalanced object brace".into());
+    }
+    Ok(found)
+}
+
+fn clausewitz_atom_field<'a>(text: &'a str, wanted: &str) -> Result<Option<&'a str>, String> {
+    let bytes = text.as_bytes();
+    let mut index = 0usize;
+    let mut depth = 0usize;
+    let mut found = None;
+    while index < bytes.len() {
+        skip_space_and_comments(bytes, &mut index);
+        if index >= bytes.len() {
+            break;
+        }
+        match bytes[index] {
+            b'{' => {
+                depth += 1;
+                index += 1;
+            }
+            b'}' => {
+                depth = depth.checked_sub(1).ok_or("unbalanced closing brace")?;
+                index += 1;
+            }
+            b'"' => skip_quoted(bytes, &mut index)?,
+            byte if is_key_byte(byte) => {
+                let start = index;
+                while index < bytes.len() && is_key_byte(bytes[index]) {
+                    index += 1;
+                }
+                let key = &text[start..index];
+                let mut cursor = index;
+                skip_space_and_comments(bytes, &mut cursor);
+                if cursor >= bytes.len() || bytes[cursor] != b'=' {
+                    index = cursor;
+                    continue;
+                }
+                cursor += 1;
+                skip_space_and_comments(bytes, &mut cursor);
+                if depth == 0 && key == wanted {
+                    if found.is_some() {
+                        return Err(format!("duplicate {wanted}= assignment"));
+                    }
+                    let value_start = cursor;
+                    while cursor < bytes.len()
+                        && !bytes[cursor].is_ascii_whitespace()
+                        && !matches!(bytes[cursor], b'{' | b'}' | b'#' | b'=')
+                    {
+                        cursor += 1;
+                    }
+                    if cursor == value_start {
+                        return Err(format!("{wanted}= has no atom value"));
+                    }
+                    found = Some(&text[value_start..cursor]);
+                    index = cursor;
+                } else {
+                    index = cursor;
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    if depth != 0 {
+        return Err("unbalanced object brace".into());
+    }
+    Ok(found)
+}
+
+fn is_key_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-')
+}
+
+fn skip_space_and_comments(bytes: &[u8], index: &mut usize) {
+    loop {
+        while *index < bytes.len() && bytes[*index].is_ascii_whitespace() {
+            *index += 1;
+        }
+        if *index < bytes.len() && bytes[*index] == b'#' {
+            while *index < bytes.len() && bytes[*index] != b'\n' {
+                *index += 1;
+            }
+        } else {
+            break;
+        }
+    }
+}
+
+fn skip_quoted(bytes: &[u8], index: &mut usize) -> Result<(), String> {
+    *index += 1;
+    while *index < bytes.len() {
+        match bytes[*index] {
+            b'\\' => *index += 2,
+            b'"' => {
+                *index += 1;
+                return Ok(());
+            }
+            _ => *index += 1,
+        }
+    }
+    Err("unbalanced quoted string".into())
+}
+
+fn matching_brace(bytes: &[u8], open: usize) -> Result<usize, String> {
+    let mut index = open + 1;
+    let mut depth = 1usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'#' => {
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            b'"' => skip_quoted(bytes, &mut index)?,
+            b'{' => {
+                depth += 1;
+                index += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(index);
+                }
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    Err("unbalanced object brace".into())
 }
 
 /// Parse a single line-oriented Clausewitz `key = "value"` assignment.
@@ -767,34 +1177,48 @@ fn resolve_dlc_display_names(
     game_root: &Path,
     installed: &[String],
     process_start: Option<SystemTime>,
-) -> (BTreeMap<String, Option<String>>, Vec<String>) {
+) -> (
+    BTreeMap<String, Option<String>>,
+    BTreeMap<String, Option<DlcDescriptorEvidence>>,
+    Vec<String>,
+) {
     let mut names = BTreeMap::new();
+    let mut evidence = BTreeMap::new();
     let mut errors = Vec::new();
     for relative in installed {
         let path = game_root.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
-        let name = match process_start {
+        let row = match process_start {
             None => {
                 errors.push(format!(
                     "DLC descriptor launch binding unavailable: {relative:?}; recorded null"
                 ));
                 None
             }
-            Some(start) => match read_text_stable_before_start(&path, start) {
-                Ok(text) => match clausewitz_string_field(&text, "name") {
-                    Ok(Some(name)) => Some(name),
-                    Ok(None) => {
-                        errors.push(format!(
+            Some(start) => match read_bytes_stable_before_start(&path, start) {
+                Ok(bytes) => {
+                    let text = bytes
+                        .iter()
+                        .map(|byte| char::from(*byte))
+                        .collect::<String>();
+                    match clausewitz_string_field(&text, "name") {
+                        Ok(Some(name)) => Some(DlcDescriptorEvidence {
+                            display_name: name,
+                            descriptor_file_sha256: Sha256::hex(&bytes),
+                        }),
+                        Ok(None) => {
+                            errors.push(format!(
                             "DLC descriptor has no name= display value: {relative:?}; recorded null"
                         ));
-                        None
-                    }
-                    Err(e) => {
-                        errors.push(format!(
+                            None
+                        }
+                        Err(e) => {
+                            errors.push(format!(
                             "DLC descriptor display name malformed: {relative:?}: {e}; recorded null"
                         ));
-                        None
+                            None
+                        }
                     }
-                },
+                }
                 Err(e) => {
                     errors.push(format!(
                         "DLC descriptor display name not launch-bound: {relative:?}: {e}; recorded null"
@@ -803,9 +1227,13 @@ fn resolve_dlc_display_names(
                 }
             },
         };
-        names.insert(relative.clone(), name);
+        names.insert(
+            relative.clone(),
+            row.as_ref().map(|value| value.display_name.clone()),
+        );
+        evidence.insert(relative.clone(), row);
     }
-    (names, errors)
+    (names, evidence, errors)
 }
 
 /// A field that MUST exist as an array of strings. Anything else is unproven
@@ -1623,9 +2051,10 @@ mod tests {
         assert_eq!(enabled, vec!["dlc/dlc023_man_the_guns/dlc023.dlc"]);
 
         let launch = SystemTime::now() + std::time::Duration::from_secs(60);
-        let (display_names, display_errors) =
+        let (display_names, descriptor_evidence, display_errors) =
             resolve_dlc_display_names(&root, &installed, Some(launch));
         assert!(display_errors.is_empty());
+        assert_eq!(descriptor_evidence.len(), installed.len());
         assert_eq!(
             display_names["dlc/dlc013_sabaton/dlc013.dlc"].as_deref(),
             Some("Sabaton")
@@ -1635,9 +2064,10 @@ mod tests {
             Some("Man the Guns")
         );
 
-        let (post_launch, post_launch_errors) =
+        let (post_launch, post_launch_evidence, post_launch_errors) =
             resolve_dlc_display_names(&root, &installed, Some(std::time::UNIX_EPOCH));
         assert!(post_launch.values().all(Option::is_none));
+        assert!(post_launch_evidence.values().all(Option::is_none));
         assert_eq!(post_launch_errors.len(), installed.len());
         assert!(post_launch_errors
             .iter()
@@ -1646,8 +2076,10 @@ mod tests {
         // Every installed path remains present when its descriptor becomes
         // unreadable; the value is null and the failure note is explicit.
         fs::remove_file(root.join("dlc").join("dlc013_sabaton").join("dlc013.dlc")).unwrap();
-        let (after_remove, errors) = resolve_dlc_display_names(&root, &installed, Some(launch));
+        let (after_remove, after_remove_evidence, errors) =
+            resolve_dlc_display_names(&root, &installed, Some(launch));
         assert!(after_remove["dlc/dlc013_sabaton/dlc013.dlc"].is_none());
+        assert!(after_remove_evidence["dlc/dlc013_sabaton/dlc013.dlc"].is_none());
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("recorded null"));
 
@@ -1660,37 +2092,40 @@ mod tests {
     }
 
     #[test]
-    fn localisation_language_reads_settings_without_defaulting() {
+    fn launch_language_and_display_read_one_stable_settings_snapshot() {
         let dir = temp_dir("language");
         fs::write(
             dir.join("settings.txt"),
-            "\u{feff}language=\"l_english\"\nvolume=0.5\n",
+            "\u{feff}language=\"l_english\"\ngraphics={\n\
+             size={ x=2752 y=1152 }\nmin_gui={ x=1280 y=720 }\n\
+             gui_scale=1.000000\nrefreshRate=60\nmax_refresh_rate=75\n\
+             fullScreen=no\nborderless=yes\n}\n",
         )
         .unwrap();
+        let (language, display) =
+            read_launch_settings(&dir, SystemTime::now() + std::time::Duration::from_secs(60))
+                .unwrap();
+        assert_eq!(language.as_deref(), Some("l_english"));
         assert_eq!(
-            read_localisation_language(
-                &dir,
-                SystemTime::now() + std::time::Duration::from_secs(60),
-            )
-            .unwrap()
-            .as_deref(),
-            Some("l_english")
+            (display.physical_width, display.physical_height),
+            (2752, 1152)
         );
+        assert_eq!((display.min_gui_width, display.min_gui_height), (1280, 720));
+        assert_eq!(display.gui_scale_f32_bits, 1.0f32.to_bits());
+        assert_eq!(display.display_mode, "borderless_fullscreen");
+        assert_eq!(display.settings_file_sha256.len(), 64);
 
         fs::write(dir.join("settings.txt"), "volume=0.5\n").unwrap();
-        assert!(read_localisation_language(
-            &dir,
-            SystemTime::now() + std::time::Duration::from_secs(60),
-        )
-        .unwrap()
-        .is_none());
-        assert!(read_localisation_language(&dir, std::time::UNIX_EPOCH).is_err());
+        assert!(
+            read_launch_settings(&dir, SystemTime::now() + std::time::Duration::from_secs(60),)
+                .is_err()
+        );
+        assert!(read_launch_settings(&dir, std::time::UNIX_EPOCH).is_err());
         fs::remove_file(dir.join("settings.txt")).unwrap();
-        assert!(read_localisation_language(
-            &dir,
-            SystemTime::now() + std::time::Duration::from_secs(60),
-        )
-        .is_err());
+        assert!(
+            read_launch_settings(&dir, SystemTime::now() + std::time::Duration::from_secs(60),)
+                .is_err()
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -1797,13 +2232,16 @@ mod tests {
             user_dir: None,
             user_dir_source: None,
             dlc_load_mtime_unix: None,
+            dlc_load_sha256: None,
             process_start_unix: None,
             enabled_mods: Vec::new(),
             installed_dlcs: vec!["dlc/a/a.dlc".to_string()],
             disabled_dlcs: Vec::new(),
             enabled_dlcs: vec!["dlc/a/a.dlc".to_string()],
             dlc_display_names: BTreeMap::from([("dlc/a/a.dlc".to_string(), Some("A".to_string()))]),
+            dlc_descriptor_evidence: BTreeMap::new(),
             localisation_language: None,
+            display_variant: None,
         };
         let doc = report.as_json();
         // A naive consumer reading top-level lists on an unresolved report
@@ -1817,6 +2255,7 @@ mod tests {
             "A"
         );
         assert!(doc["partial_evidence"]["localisation_language"].is_null());
+        assert!(doc["partial_evidence"]["display_variant"].is_null());
 
         let resolved = ModsetReport {
             resolved: true,

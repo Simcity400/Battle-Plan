@@ -1,0 +1,276 @@
+{
+  "capture_oracle_derivations": [
+    {
+      "derived_rect": [
+        1223,
+        671,
+        297,
+        148
+      ],
+      "entry": "21137_229.bin",
+      "translation": [
+        0.27395835518836975,
+        -0.5166666507720947
+      ]
+    },
+    {
+      "derived_rect": [
+        1238,
+        876,
+        291,
+        164
+      ],
+      "entry": "37139_228.bin",
+      "translation": [
+        0.28958335518836975,
+        -0.9259259104728699
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "detail": null,
+      "name": "authority exact",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "promotion status exact",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "domain 72 promotion carrier",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "primary Ghidra tuple exact",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "domain 72 schedulable registry",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "domain 72 compact descriptor promoted",
+      "pass": true
+    },
+    {
+      "detail": {
+        "command": "cargo metadata --locked --offline --no-deps --format-version 1",
+        "returncode": 0,
+        "stderr_tail": ""
+      },
+      "name": "workspace metadata",
+      "pass": true
+    },
+    {
+      "detail": {
+        "command": "cargo test --locked --offline -p resolved_tooltip_instances_live_lane",
+        "returncode": 0,
+        "stderr_tail": "   Compiling runtime_text_inputs_live_lane v0.1.0 (extractor\\native\\lanes\\runtime_text_inputs_live)\n   Compiling resolved_tooltip_instances_live_lane v0.1.0 (extractor\\native\\lanes\\resolved_tooltip_instances_live)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.12s\n     Running unittests src\\lib.rs (.cargo-target-a26\\debug\\deps\\resolved_tooltip_instances_live_lane-74bc8571d0ad0aa2.exe)\n   Doc-tests resolved_tooltip_instances_live_lane\n"
+      },
+      "name": "lane tests 6/6",
+      "pass": true
+    },
+    {
+      "detail": {
+        "command": "cargo test --locked --offline -p compact_contract all_registry_document_ids_are_assigned",
+        "returncode": 0,
+        "stderr_tail": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s\n     Running unittests src\\lib.rs (.cargo-target-a26\\debug\\deps\\compact_contract-512872ca556f15bd.exe)\n"
+      },
+      "name": "registry ID gate",
+      "pass": true
+    },
+    {
+      "detail": {
+        "command": "cargo test --locked --offline -p compact_contract native_json_registry_is_derived_from_descriptors",
+        "returncode": 0,
+        "stderr_tail": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s\n     Running unittests src\\lib.rs (.cargo-target-a26\\debug\\deps\\compact_contract-512872ca556f15bd.exe)\n"
+      },
+      "name": "registry JSON gate",
+      "pass": true
+    },
+    {
+      "detail": {
+        "command": "cargo check --locked --offline -p collector",
+        "returncode": 0,
+        "stderr_tail": "rd(page_base: usize) -> bool {\n      |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: function `page_confirmed_good` is never used\n     --> collector\\src\\lib.rs:59509:8\n      |\n59509 |     fn page_confirmed_good(page_base: usize) -> bool {\n      |        ^^^^^^^^^^^^^^^^^^^\n\nwarning: function `ntrpm_exact` is never used\n     --> collector\\src\\lib.rs:59578:15\n      |\n59578 |     unsafe fn ntrpm_exact(addr: usize, dst: *mut u8, len: usize) -> bool {\n      |               ^^^^^^^^^^^\n\nwarning: function `NtReadVirtualMemory` is never used\n    --> collector\\src\\lib.rs:1338:12\n     |\n1338 |         fn NtReadVirtualMemory(\n     |            ^^^^^^^^^^^^^^^^^^^\n\nwarning: `WriteFile` redeclared with a different signature\n    --> collector\\src\\lib.rs:1316:9\n     |\n1316 | /         fn WriteFile(\n1317 | |             file: Handle,\n1318 | |             buffer: *const c_void,\n1319 | |             bytes_to_write: Dword,\n1320 | |             bytes_written: *mut Dword,\n1321 | |             overlapped: Lpvoid,\n1322 | |         ) -> Bool;\n     | |__________________^ this signature doesn't match the previous declaration\n     |\n    ::: collector\\src\\duplex_client.rs:1079:9\n     |\n1079 | /         fn WriteFile(\n1080 | |             handle: Handle,\n1081 | |             buffer: *const c_void,\n1082 | |             len: Dword,\n1083 | |             written: *mut Dword,\n1084 | |             overlapped: *mut Overlapped,\n1085 | |         ) -> Bool;\n     | |__________________- `WriteFile` previously declared here\n     |\n     = note: expected `unsafe extern \"system\" fn(*mut c_void, *const c_void, u32, *mut u32, *mut Overlapped) -> i32`\n                found `unsafe extern \"system\" fn(*mut c_void, *const c_void, u32, *mut u32, *mut c_void) -> i32`\n     = note: `#[warn(clashing_extern_declarations)]` on by default\n\nwarning: `collector` (lib) generated 121 warnings (run `cargo fix --lib -p collector` to apply 1 suggestion)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.54s\n"
+      },
+      "name": "collector integration compiles",
+      "pass": true
+    },
+    {
+      "detail": {
+        "command": "cargo test --locked --offline -p recorder_host a26_domain72 --lib",
+        "returncode": 0,
+        "stderr_tail": " &mut u64, raw, dom, pl: &[u8]| {\n     |         ----^^^^\n     |         |\n     |         help: remove this `mut`\n     |\n     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default\n\nwarning: variable does not need to be mutable\n    --> recorder_host\\src\\world_fold\\tests.rs:7211:9\n     |\n7211 |     let mut push = |stream: &mut Vec<u8>, seq: &mut u64, dom, pl: &[u8]| {\n     |         ----^^^^\n     |         |\n     |         help: remove this `mut`\n\nwarning: variable does not need to be mutable\n     --> recorder_host\\src\\world_fold\\tests.rs:11467:9\n      |\n11467 |     let mut push = |stream: &mut Vec<u8>, seq: &mut u64, domain: u16, payload: &[u8]| {\n      |         ----^^^^\n      |         |\n      |         help: remove this `mut`\n\nwarning: methods `heartbeat_cycle` and `receive_terminal_sink_status` are never used\n    --> recorder_host\\src\\auto_attach\\duplex_worker.rs:1087:19\n     |\n 985 | impl<I: DeadlineControlIo> DuplexWorkerSession<I> {\n     | ------------------------------------------------- methods in this implementation\n...\n1087 |     pub(crate) fn heartbeat_cycle(\n     |                   ^^^^^^^^^^^^^^^\n...\n1397 |     pub(crate) fn receive_terminal_sink_status(\n     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n     |\n     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: associated function `for_test` is never used\n   --> recorder_host\\src\\auto_attach\\proof.rs:311:19\n    |\n293 | impl ValidatedCompactRecordProof {\n    | -------------------------------- associated function in this implementation\n...\n311 |     pub(crate) fn for_test(game_hour_raw: i32) -> Self {\n    |                   ^^^^^^^^\n\nwarning: `recorder_host` (lib test) generated 5 warnings (run `cargo fix --lib -p recorder_host --tests` to apply 3 suggestions)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.09s\n     Running unittests src\\lib.rs (.cargo-target-a26\\debug\\deps\\recorder_host-05970e60fba9102e.exe)\n"
+      },
+      "name": "recorder domain-72 tests 2/2",
+      "pass": true
+    },
+    {
+      "detail": {
+        "command": "cargo check --locked --offline -p recorder_host",
+        "returncode": 0,
+        "stderr_tail": "ng, key: &str, value: u64, comma: bool) {\n     |    ^^^^^^^^\n\nwarning: function `push_json_string` is never used\n    --> lanes\\naval_missions_status_live\\src\\domain56_compact.rs:1172:4\n     |\n1172 | fn push_json_string(out: &mut String, value: &str) {\n     |    ^^^^^^^^^^^^^^^^\n\nwarning: function `main` is never used\n    --> lanes\\naval_missions_status_live\\src\\domain56_compact.rs:1188:4\n     |\n1188 | fn main() {\n     |    ^^^^\n\nwarning: `naval_missions_status_live_lane` (lib) generated 5 warnings\n    Checking scientists_live_lane v0.1.0 (extractor\\native\\scientists_live_lane)\n    Checking recorder_host v0.1.0 (extractor\\native\\recorder_host)\nwarning: methods `heartbeat_cycle`, `heartbeat_cycle_at`, and `receive_terminal_sink_status` are never used\n    --> recorder_host\\src\\auto_attach\\duplex_worker.rs:1087:19\n     |\n 985 | impl<I: DeadlineControlIo> DuplexWorkerSession<I> {\n     | ------------------------------------------------- methods in this implementation\n...\n1087 |     pub(crate) fn heartbeat_cycle(\n     |                   ^^^^^^^^^^^^^^^\n...\n1123 |     pub(crate) fn heartbeat_cycle_at(\n     |                   ^^^^^^^^^^^^^^^^^^\n...\n1397 |     pub(crate) fn receive_terminal_sink_status(\n     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n     |\n     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: method `receive_and_dispatch_identity_failure` is never used\n   --> recorder_host\\src\\duplex_session\\identity_control.rs:975:19\n    |\n900 | impl<S: IdentityDurableCandidateSink> RecorderIdentityControlDispatcher<S> {\n    | -------------------------------------------------------------------------- method in this implementation\n...\n975 |     pub(crate) fn receive_and_dispatch_identity_failure<I: DeadlineControlIo>(\n    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: `recorder_host` (lib) generated 2 warnings\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.78s\n"
+      },
+      "name": "recorder integration compiles",
+      "pass": true
+    },
+    {
+      "detail": {
+        "command": "rustfmt --edition 2021 --check extractor\\native\\lanes\\resolved_tooltip_instances_live\\src\\lib.rs extractor\\native\\lanes\\resolved_tooltip_instances_live\\src\\a729_hook.rs",
+        "returncode": 0,
+        "stderr_tail": ""
+      },
+      "name": "lane source and hook rustfmt",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "RDC hash hoi4_frame37048.rdc",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "artifact hash fcbd58fc96894519.bin",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "artifact hash 1c776a409565ace5.bin",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "artifact hash cb_blobs.zip",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "constant-buffer entry hash 21137_229.bin",
+      "pass": true
+    },
+    {
+      "detail": {
+        "derived_rect": [
+          1223,
+          671,
+          297,
+          148
+        ],
+        "entry": "21137_229.bin",
+        "translation": [
+          0.27395835518836975,
+          -0.5166666507720947
+        ]
+      },
+      "name": "constant-buffer rectangle 21137_229.bin",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "RDC hash hoi4_frame54162.rdc",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "artifact hash ef8af5e0f1d8a6a0.bin",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "artifact hash 5cbfeb9cece2ef15.bin",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "artifact hash cb_blobs.zip",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "constant-buffer entry hash 37139_228.bin",
+      "pass": true
+    },
+    {
+      "detail": {
+        "derived_rect": [
+          1238,
+          876,
+          291,
+          164
+        ],
+        "entry": "37139_228.bin",
+        "translation": [
+          0.28958335518836975,
+          -0.9259259104728699
+        ]
+      },
+      "name": "constant-buffer rectangle 37139_228.bin",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "two exact capture rectangles",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "no screen-derived producer fallback",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "complete-frame fields implemented",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "availability states implemented",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "exact a729 hook boundary implemented",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "no duplicate final-setter detour",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "domain 72 folded without inference",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "domain 72 fold tests frozen",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "production replay schema carrier",
+      "pass": true
+    }
+  ],
+  "ghidra_provenance": {
+    "artifact_path": "evidence/func_1402a4080.decompile.c",
+    "artifact_sha256": "a1838600f7f016606ed6287926ef47d5b836a5501bc83ef59467c5dd61a1c071",
+    "function_address": "0x1402A4080",
+    "job_id": "20260717T113739Z-a25-ctextbox-vtable-identity-accessors-7ddacf03",
+    "manifest_hash": "2bc2bc389cfcadb3903ad6c79a03645a5fe4b7102feac1eb982f89e6aabac9c5"
+  },
+  "human_input_required": [],
+  "live_data_dependency": null,
+  "passed": 35,
+  "schema": "extractor-a26-resolved-tooltip-verification-v1",
+  "status": "PASS_PRODUCTION_PROMOTION_READY_EXACT_A729_D72",
+  "total": 35
+}

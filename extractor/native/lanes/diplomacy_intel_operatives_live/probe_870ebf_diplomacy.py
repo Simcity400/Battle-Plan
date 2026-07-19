@@ -136,6 +136,11 @@ def i32(p: winmem.Process, addr: int) -> int | None:
     return struct.unpack("<i", data)[0] if data is not None else None
 
 
+def i64(p: winmem.Process, addr: int) -> int | None:
+    data = read_exact(p, addr, 8)
+    return struct.unpack("<q", data)[0] if data is not None else None
+
+
 def qword_at(data: bytes, off: int) -> int:
     return struct.unpack_from("<Q", data, off)[0]
 
@@ -531,9 +536,9 @@ def current_rtti_flag_vtables(rtti: dict[str, Any]) -> dict[int, dict[str, Any]]
 def read_subject_candidate(p: winmem.Process, subj_ptr: int, tags: dict[int, str]) -> dict[str, Any] | None:
     overlord = i32(p, subj_ptr + SUBJ_OVERLORD)
     subject = i32(p, subj_ptr + SUBJ_SUBJECT)
-    ratio = i32(p, subj_ptr + SUBJ_RATIO)
+    ratio = i64(p, subj_ptr + SUBJ_RATIO)
     state_db = u64(p, subj_ptr + SUBJ_STATE_DB)
-    if overlord not in tags or subject not in tags or ratio is None:
+    if overlord not in tags or subject not in tags or ratio is None or not 0 <= ratio <= 100_000:
         return None
     state_name = None
     if state_db and is_heap(state_db) and locate is not None:

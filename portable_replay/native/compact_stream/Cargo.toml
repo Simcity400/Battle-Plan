@@ -1,0 +1,8 @@
+[package]
+name = "portable_compact_stream"
+version = "0.1.0"
+edition = "2021"
+description = "Neutral raw/zstd file-boundary codec for portable Battle Plan streams"
+
+[dependencies]
+zstd = "0.13.3"

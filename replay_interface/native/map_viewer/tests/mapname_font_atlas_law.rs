@@ -159,7 +159,10 @@ fn le_u32(b: &[u8], off: usize) -> u32 {
 fn glyph_atlas_ships_complete_mip_chain_not_runtime_generated() {
     let dds_path = Path::new(VANILLA_GAME_DIR).join(FONT_DDS);
     let Ok(f) = std::fs::read(&dds_path) else {
-        eprintln!("SKIP glyph atlas mip law: no atlas at {}", dds_path.display());
+        eprintln!(
+            "SKIP glyph atlas mip law: no atlas at {}",
+            dds_path.display()
+        );
         return;
     };
     assert_eq!(&f[0..4], b"DDS ", "magic");
@@ -182,7 +185,11 @@ fn glyph_atlas_ships_complete_mip_chain_not_runtime_generated() {
         le_u32(&f, 104),
     );
     assert_eq!(pf_flags & 0x41, 0x41, "DDPF_RGB | DDPF_ALPHAPIXELS");
-    assert_eq!(fourcc, [0, 0, 0, 0], "uncompressed (no FourCC / DX10 header)");
+    assert_eq!(
+        fourcc,
+        [0, 0, 0, 0],
+        "uncompressed (no FourCC / DX10 header)"
+    );
     assert_eq!(rgb_bit_count, 32, "32 bpp");
     assert_eq!(
         (mask_r, mask_g, mask_b, mask_a),

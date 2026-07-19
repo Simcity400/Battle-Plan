@@ -50,7 +50,10 @@ use crate::gfx::SpriteRegistry;
 use crate::gui::{GuiElement, LayoutSet};
 use crate::loc::Localisation;
 use crate::paradox_text::{parse_file, Document, Value};
+use crate::text_law::{resolve_localisation, RuntimeTextContext, TextIssue};
 use crate::Result;
+use replay_core::{FiredEventRow as RecordedFiredEventRow, FiredEventsView, Leaf};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The event-window layout file (FILE: shipped `interface/eventwindow.gui`).
 pub const EVENT_WINDOW_GUI: &str = "interface/eventwindow.gui";
@@ -131,6 +134,9 @@ impl EventKind {
 pub struct EventOption {
     /// The `name` localisation key, or `None` for a nameless (hidden) option.
     pub name_key: Option<String>,
+    /// A triggered option is not necessarily visible for a particular firing;
+    /// XUI21 therefore admits its definition ordinal only from the recording.
+    pub has_trigger: bool,
 }
 
 /// A parsed event definition — exactly the fields the chrome binds.
@@ -149,6 +155,9 @@ pub struct EventDef {
     pub hidden: bool,
     /// `major = yes` (news events; full-screen news chrome).
     pub major: bool,
+    /// Scripted timeout in days. `None` means the engine's effective default;
+    /// the producer records that resolved value instead of replay hard-coding it.
+    pub timeout_days: Option<u32>,
     pub source_file: String,
 }
 
@@ -198,6 +207,7 @@ fn option_rows(value: &Value) -> Vec<EventOption> {
                 .map(str::trim)
                 .filter(|name| !name.is_empty())
                 .map(str::to_string),
+            has_trigger: opt.values_ci("trigger").next().is_some(),
         })
         .collect()
 }
@@ -230,6 +240,9 @@ fn parse_event_value(kind: EventKind, source_file: &str, value: &Value) -> Optio
         major: value
             .first_scalar_ci("major")
             .is_some_and(|v| v.eq_ignore_ascii_case("yes")),
+        timeout_days: value
+            .first_scalar_ci("timeout_days")
+            .and_then(|value| value.parse::<u32>().ok()),
         source_file: source_file.to_string(),
     })
 }
@@ -342,8 +355,7 @@ pub fn resolve_event(
                 .is_some_and(|key| loc_present(loc, key))
         })
         .count();
-    let renderable =
-        title_resolved && desc_resolved && picture_ok && options_resolved >= 1;
+    let renderable = title_resolved && desc_resolved && picture_ok && options_resolved >= 1;
     EventResolution {
         id: def.id.clone(),
         kind: def.kind,
@@ -467,6 +479,8 @@ pub struct EventWindowChrome {
     pub picture: Option<EventChromeElement>,
     /// The `options_grid` gridBox that hosts the option-row template.
     pub options_grid: Option<EventChromeElement>,
+    pub options_slot_size: Option<(String, String)>,
+    pub options_max_slots_horizontal: Option<u32>,
 }
 
 fn raw_pair(pair: &Option<crate::gui::MeasurePair>) -> Option<(String, String)> {
@@ -485,10 +499,7 @@ fn chrome_element(element: &GuiElement) -> EventChromeElement {
         sprite: element.sprite_refs.first().cloned(),
         font: element.font.clone(),
         format: element.format.clone(),
-        max_width: element
-            .raw
-            .first_scalar_ci("maxWidth")
-            .map(str::to_string),
+        max_width: element.raw.first_scalar_ci("maxWidth").map(str::to_string),
     }
 }
 
@@ -517,8 +528,20 @@ pub fn event_window_chrome(layout: &LayoutSet, window_name: &str) -> Option<Even
         .find_by_name(window_name)
         .into_iter()
         .find(|e| e.element_type.eq_ignore_ascii_case("containerWindowType"))?;
-    let background_sprite = find_child(window, "Background")
-        .and_then(|bg| bg.sprite_refs.first().cloned());
+    let background_sprite =
+        find_child(window, "Background").and_then(|bg| bg.sprite_refs.first().cloned());
+    let options_grid = find_child(window, "options_grid");
+    let options_slot_size = options_grid
+        .and_then(|grid| grid.raw.first_value_ci("slotsize"))
+        .and_then(|slot| {
+            Some((
+                slot.first_scalar_ci("width")?.to_string(),
+                slot.first_scalar_ci("height")?.to_string(),
+            ))
+        });
+    let options_max_slots_horizontal = options_grid
+        .and_then(|grid| grid.raw.first_scalar_ci("max_slots_horizontal"))
+        .and_then(|value| value.parse::<u32>().ok());
     Some(EventWindowChrome {
         window_name: window.name.clone(),
         window_size: raw_pair(&window.size),
@@ -526,13 +549,17 @@ pub fn event_window_chrome(layout: &LayoutSet, window_name: &str) -> Option<Even
         title: find_child(window, "Title").map(chrome_element),
         description: find_child(window, "Description").map(chrome_element),
         picture: find_child(window, "event_picture").map(chrome_element),
-        options_grid: find_child(window, "options_grid").map(chrome_element),
+        options_grid: options_grid.map(chrome_element),
+        options_slot_size,
+        options_max_slots_horizontal,
     })
 }
 
 /// The shared option-row template (`event_option_entry`) and its `Name`
 /// text-box, located from a parsed layout.
-pub fn event_option_entry_chrome(layout: &LayoutSet) -> Option<(EventChromeElement, EventChromeElement)> {
+pub fn event_option_entry_chrome(
+    layout: &LayoutSet,
+) -> Option<(EventChromeElement, EventChromeElement)> {
     let entry = layout
         .find_by_name(EVENT_OPTION_ENTRY)
         .into_iter()
@@ -619,6 +646,460 @@ pub fn event_window_content(
     }
 }
 
+// ===========================================================================
+// XUI21 production admission: ordered fired-event history + visible popup
+// ===========================================================================
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventPopupSubtype {
+    Country,
+    News,
+    State,
+    UnitLeader,
+    OperativeLeader,
+}
+
+impl EventPopupSubtype {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "country" => Some(Self::Country),
+            "news" => Some(Self::News),
+            "state" => Some(Self::State),
+            "unit_leader" => Some(Self::UnitLeader),
+            "operative_leader" => Some(Self::OperativeLeader),
+            _ => None,
+        }
+    }
+
+    pub fn window_name(self) -> &'static str {
+        match self {
+            Self::News => "EventWindow_News",
+            Self::UnitLeader => "EventWindow_leader",
+            Self::OperativeLeader => "EventWindow_Operative",
+            Self::Country | Self::State => "EventWindow",
+        }
+    }
+
+    fn compatible_with(self, kind: EventKind) -> bool {
+        match kind {
+            EventKind::News => self == Self::News,
+            EventKind::State => self == Self::State,
+            EventKind::UnitLeader => self == Self::UnitLeader,
+            EventKind::OperativeLeader => self == Self::OperativeLeader,
+            // Some country events materialise the leader/operative chrome from
+            // scoped content.  That exact choice is producer-authenticated.
+            EventKind::Country => matches!(
+                self,
+                Self::Country | Self::UnitLeader | Self::OperativeLeader
+            ),
+        }
+    }
+
+    fn default_picture(self) -> &'static str {
+        match self {
+            Self::News => "GFX_news_event_001",
+            _ => "GFX_report_event_001",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmittedEventOption {
+    pub definition_ordinal: usize,
+    pub text: String,
+    pub selected: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmittedEventPopup {
+    pub subtype: EventPopupSubtype,
+    pub window_name: &'static str,
+    pub title: String,
+    pub description: String,
+    pub selected_desc_key: String,
+    pub picture_gfx: String,
+    pub options: Vec<AdmittedEventOption>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmittedFiredEvent {
+    pub event_id: String,
+    pub recipient_tag: String,
+    pub fire_date: String,
+    pub fire_hour: i64,
+    pub fire_tick: i64,
+    pub event_sequence: i64,
+    pub definition_hidden: bool,
+    pub chosen_option_ordinal: Option<usize>,
+    pub effective_timeout_hours: i64,
+    pub timeout_tick: i64,
+    pub resolved_tick: Option<i64>,
+    pub resolution_reason: String,
+    pub runtime_text_context_id: Option<String>,
+    /// Present only when the producer supplied enough exact materialisation
+    /// evidence to render a popup. Hidden, AI-only and otherwise
+    /// non-materialised lifecycle rows remain admitted with `None`.
+    pub popup: Option<AdmittedEventPopup>,
+}
+
+impl AdmittedFiredEvent {
+    /// Exact tick-domain visibility. No hour-to-tick conversion is attempted.
+    pub fn visible_at(&self, recipient_tag: &str, tick: i64) -> bool {
+        if self.popup.is_none() || self.recipient_tag != recipient_tag || tick < self.fire_tick {
+            return false;
+        }
+        let close_tick = self.resolved_tick.map_or(self.timeout_tick, |resolved| {
+            resolved.min(self.timeout_tick)
+        });
+        tick < close_tick
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventPopupPresentation {
+    pub event: AdmittedFiredEvent,
+    pub popup: AdmittedEventPopup,
+    pub chrome: EventWindowChrome,
+    pub option_entry: EventChromeElement,
+    pub option_name: EventChromeElement,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventPresentationRejection {
+    NotMaterialised,
+    NotVisible,
+    MissingChrome,
+    MissingOptionTemplate,
+    InvalidOptionGrid,
+}
+
+/// Compose-ready visible state: exact fired-event content joined to the exact
+/// authored variant and one vertical 300x47 option row per admitted ordinal.
+/// XUI04/XUI06/XUI07 own widget state, text glyphs and runtime graphics.
+pub fn event_popup_presentation(
+    event: &AdmittedFiredEvent,
+    layout: &LayoutSet,
+    recipient_tag: &str,
+    tick: i64,
+) -> std::result::Result<EventPopupPresentation, EventPresentationRejection> {
+    let popup = event
+        .popup
+        .as_ref()
+        .ok_or(EventPresentationRejection::NotMaterialised)?;
+    if !event.visible_at(recipient_tag, tick) {
+        return Err(EventPresentationRejection::NotVisible);
+    }
+    let chrome = event_window_chrome(layout, popup.window_name)
+        .ok_or(EventPresentationRejection::MissingChrome)?;
+    if chrome
+        .options_slot_size
+        .as_ref()
+        .map(|(width, height)| (width.as_str(), height.as_str()))
+        != Some(("300", "47"))
+        || chrome.options_max_slots_horizontal != Some(1)
+    {
+        return Err(EventPresentationRejection::InvalidOptionGrid);
+    }
+    let (option_entry, option_name) = event_option_entry_chrome(layout)
+        .ok_or(EventPresentationRejection::MissingOptionTemplate)?;
+    Ok(EventPopupPresentation {
+        event: event.clone(),
+        popup: popup.clone(),
+        chrome,
+        option_entry,
+        option_name,
+    })
+}
+
+pub struct EventHistoryRequest<'a> {
+    pub source_record_id: &'a str,
+    pub history: &'a FiredEventsView,
+    pub definitions: &'a BTreeMap<String, EventDef>,
+    pub localisation: &'a Localisation,
+    pub sprites: &'a SpriteRegistry,
+    /// Exact XUI06/A25 runtime values keyed by `runtime_text_context_id`.
+    pub runtime_text: &'a BTreeMap<String, RuntimeTextContext>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EventHistoryRejection {
+    MissingProvenance,
+    HistoryIncomplete,
+    HistoryUnavailable,
+    InvalidIdentity,
+    MissingDefinition,
+    InvalidChronology,
+    InvalidPopupSubtype,
+    InvalidDescriptionBranch,
+    InvalidVisibleOptions,
+    InvalidSelection,
+    InvalidTimeout,
+    InvalidResolution,
+    PictureUnavailable,
+    RuntimeTextContextUnavailable,
+    TextUnresolved(Vec<TextIssue>),
+}
+
+pub fn event_definitions_by_id(
+    corpus: &EventCorpus,
+) -> std::result::Result<BTreeMap<String, EventDef>, EventHistoryRejection> {
+    let mut out = BTreeMap::new();
+    for def in &corpus.defs {
+        if def.id.trim().is_empty() || out.insert(def.id.clone(), def.clone()).is_some() {
+            return Err(EventHistoryRejection::InvalidIdentity);
+        }
+    }
+    Ok(out)
+}
+
+pub fn admit_event_history(
+    request: EventHistoryRequest<'_>,
+) -> std::result::Result<Vec<AdmittedFiredEvent>, EventHistoryRejection> {
+    if request.source_record_id.trim().is_empty() {
+        return Err(EventHistoryRejection::MissingProvenance);
+    }
+    if request.history.history_complete.measured() != Some(&true) {
+        return Err(EventHistoryRejection::HistoryIncomplete);
+    }
+    let rows = request
+        .history
+        .events
+        .measured()
+        .ok_or(EventHistoryRejection::HistoryUnavailable)?;
+    let mut out = Vec::with_capacity(rows.len());
+    let mut prior_sequence = None;
+    let mut prior_tick = None;
+    let mut identities = BTreeSet::new();
+    for row in rows {
+        let admitted = admit_fired_event(row, &request)?;
+        if prior_sequence.is_some_and(|value| value >= admitted.event_sequence)
+            || prior_tick.is_some_and(|value| value > admitted.fire_tick)
+            || !identities.insert(admitted.event_sequence)
+        {
+            return Err(EventHistoryRejection::InvalidChronology);
+        }
+        prior_sequence = Some(admitted.event_sequence);
+        prior_tick = Some(admitted.fire_tick);
+        out.push(admitted);
+    }
+    Ok(out)
+}
+
+fn admit_fired_event(
+    row: &RecordedFiredEventRow,
+    request: &EventHistoryRequest<'_>,
+) -> std::result::Result<AdmittedFiredEvent, EventHistoryRejection> {
+    let event_id =
+        measured_nonempty(&row.event_id).ok_or(EventHistoryRejection::InvalidIdentity)?;
+    let recipient_tag =
+        measured_nonempty(&row.recipient_tag).ok_or(EventHistoryRejection::InvalidIdentity)?;
+    let fire_date =
+        measured_nonempty(&row.fire_date).ok_or(EventHistoryRejection::InvalidIdentity)?;
+    let fire_hour =
+        measured_nonnegative(&row.fire_hour).ok_or(EventHistoryRejection::InvalidChronology)?;
+    let fire_tick =
+        measured_nonnegative(&row.fire_tick).ok_or(EventHistoryRejection::InvalidChronology)?;
+    let event_sequence = measured_nonnegative(&row.event_sequence)
+        .ok_or(EventHistoryRejection::InvalidChronology)?;
+    let def = request
+        .definitions
+        .get(event_id)
+        .filter(|def| def.id == event_id)
+        .ok_or(EventHistoryRejection::MissingDefinition)?;
+    let visible_ordinals = match &row.visible_option_ordinals {
+        Leaf::Measured(values)
+            if values.iter().all(|value| {
+                *value >= 0 && usize::try_from(*value).is_ok_and(|i| i < def.options.len())
+            }) && !values.windows(2).any(|pair| pair[0] >= pair[1]) =>
+        {
+            Some(
+                values
+                    .iter()
+                    .map(|value| usize::try_from(*value).expect("validated option ordinal"))
+                    .collect::<Vec<_>>(),
+            )
+        }
+        Leaf::Measured(_) => return Err(EventHistoryRejection::InvalidVisibleOptions),
+        Leaf::Absent | Leaf::Unobtained => None,
+    };
+    let visible_set: BTreeSet<usize> = visible_ordinals
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .copied()
+        .collect();
+
+    let chosen_option_ordinal = match &row.chosen_option_ordinal {
+        Leaf::Measured(value) => usize::try_from(*value)
+            .ok()
+            .filter(|ordinal| *ordinal < def.options.len())
+            .filter(|ordinal| visible_set.is_empty() || visible_set.contains(ordinal))
+            .ok_or(EventHistoryRejection::InvalidSelection)
+            .map(Some)?,
+        Leaf::Absent | Leaf::Unobtained => None,
+    };
+
+    let effective_timeout_hours = measured_positive(&row.effective_timeout_hours)
+        .ok_or(EventHistoryRejection::InvalidTimeout)?;
+    if let Some(days) = def.timeout_days {
+        let scripted = i64::from(days) * 24;
+        if scripted != effective_timeout_hours {
+            return Err(EventHistoryRejection::InvalidTimeout);
+        }
+    }
+    let timeout_tick = measured_nonnegative(&row.timeout_tick)
+        .filter(|value| *value > fire_tick)
+        .ok_or(EventHistoryRejection::InvalidTimeout)?;
+    let resolved_tick = match &row.resolved_tick {
+        Leaf::Measured(value) if *value >= fire_tick => Some(*value),
+        Leaf::Measured(_) => return Err(EventHistoryRejection::InvalidResolution),
+        Leaf::Absent | Leaf::Unobtained => None,
+    };
+    let resolution_reason = measured_nonempty(&row.resolution_reason)
+        .ok_or(EventHistoryRejection::InvalidResolution)?;
+    match resolution_reason {
+        "pending" if resolved_tick.is_none() && chosen_option_ordinal.is_none() => {}
+        "selected" if resolved_tick.is_some() && chosen_option_ordinal.is_some() => {}
+        "timeout" if resolved_tick.is_some() => {}
+        "dismissed" if resolved_tick.is_some() && chosen_option_ordinal.is_none() => {}
+        _ => return Err(EventHistoryRejection::InvalidResolution),
+    }
+
+    let runtime_text_context_id =
+        measured_nonempty(&row.runtime_text_context_id).map(str::to_string);
+    let popup = admit_popup_materialisation(
+        row,
+        def,
+        visible_ordinals.as_deref(),
+        chosen_option_ordinal,
+        runtime_text_context_id.as_deref(),
+        request,
+    );
+
+    Ok(AdmittedFiredEvent {
+        event_id: event_id.to_string(),
+        recipient_tag: recipient_tag.to_string(),
+        fire_date: fire_date.to_string(),
+        fire_hour,
+        fire_tick,
+        event_sequence,
+        definition_hidden: def.hidden,
+        chosen_option_ordinal,
+        effective_timeout_hours,
+        timeout_tick,
+        resolved_tick,
+        resolution_reason: resolution_reason.to_string(),
+        runtime_text_context_id,
+        popup,
+    })
+}
+
+/// Admit popup presentation only from a complete exact materialisation tuple.
+/// Failure here suppresses presentation without discarding the authenticated
+/// lifecycle row. This is how hidden, AI-only, zero-description and otherwise
+/// non-renderable events remain part of complete history without fabricated UI.
+fn admit_popup_materialisation(
+    row: &RecordedFiredEventRow,
+    def: &EventDef,
+    visible_ordinals: Option<&[usize]>,
+    chosen_option_ordinal: Option<usize>,
+    runtime_text_context_id: Option<&str>,
+    request: &EventHistoryRequest<'_>,
+) -> Option<AdmittedEventPopup> {
+    if def.hidden {
+        return None;
+    }
+    let measured_desc = measured_nonempty(&row.selected_desc_key);
+    let measured_picture = measured_nonempty(&row.shown_picture_gfx);
+    let visible_ordinals = visible_ordinals?;
+    // A subtype alone is not a materialisation witness: lifecycle producers
+    // may carry a class/default value for AI-only or hidden firings.
+    if measured_desc.is_none() && measured_picture.is_none() && visible_ordinals.is_empty() {
+        return None;
+    }
+    let subtype = measured_nonempty(&row.popup_subtype)
+        .and_then(EventPopupSubtype::parse)
+        .filter(|subtype| subtype.compatible_with(def.kind))?;
+    let selected_desc_key = match measured_desc {
+        Some(key) if def.desc_keys.iter().any(|candidate| candidate == key) => key.to_string(),
+        Some(_) => return None,
+        None if def.desc_keys.len() == 1 => def.desc_keys[0].clone(),
+        None => return None,
+    };
+    let visible_set: BTreeSet<usize> = visible_ordinals.iter().copied().collect();
+    if def
+        .options
+        .iter()
+        .enumerate()
+        .any(|(ordinal, option)| !option.has_trigger && !visible_set.contains(&ordinal))
+        || chosen_option_ordinal.is_some_and(|ordinal| !visible_set.contains(&ordinal))
+    {
+        return None;
+    }
+    let empty_runtime = RuntimeTextContext::default();
+    let runtime = match runtime_text_context_id {
+        Some(id) => request.runtime_text.get(id)?,
+        None => &empty_runtime,
+    };
+    let title =
+        resolve_exact_text(request.localisation, def.title_key.as_deref()?, runtime).ok()?;
+    let description = resolve_exact_text(request.localisation, &selected_desc_key, runtime).ok()?;
+    let mut options = Vec::with_capacity(visible_ordinals.len());
+    for &ordinal in visible_ordinals {
+        let key = def.options[ordinal].name_key.as_deref()?;
+        options.push(AdmittedEventOption {
+            definition_ordinal: ordinal,
+            text: resolve_exact_text(request.localisation, key, runtime).ok()?,
+            selected: chosen_option_ordinal == Some(ordinal),
+        });
+    }
+    // The authenticated runtime result may be a country-specific variant of
+    // the authored base key. Exact sprite existence is the replay-side gate;
+    // equality with the base key would incorrectly reject the proven variant.
+    let picture_gfx = measured_picture
+        .map(str::to_string)
+        .or_else(|| def.picture_gfx.clone())
+        .unwrap_or_else(|| subtype.default_picture().to_string());
+    request.sprites.get(&picture_gfx)?;
+    Some(AdmittedEventPopup {
+        subtype,
+        window_name: subtype.window_name(),
+        title,
+        description,
+        selected_desc_key,
+        picture_gfx,
+        options,
+    })
+}
+
+fn resolve_exact_text(
+    localisation: &Localisation,
+    key: &str,
+    runtime: &RuntimeTextContext,
+) -> std::result::Result<String, EventHistoryRejection> {
+    let resolved = resolve_localisation(&localisation.entries, key, runtime);
+    if resolved.admitted() {
+        Ok(resolved.text)
+    } else {
+        Err(EventHistoryRejection::TextUnresolved(resolved.issues))
+    }
+}
+
+fn measured_nonempty(value: &Leaf<String>) -> Option<&str> {
+    value
+        .measured()
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn measured_nonnegative(value: &Leaf<i64>) -> Option<i64> {
+    value.measured().copied().filter(|value| *value >= 0)
+}
+
+fn measured_positive(value: &Leaf<i64>) -> Option<i64> {
+    value.measured().copied().filter(|value| *value > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -670,7 +1151,10 @@ mod tests {
         assert_eq!(generic.title_key.as_deref(), Some("generic.1.t"));
         assert_eq!(
             generic.desc_keys,
-            vec!["generic.1.d_good".to_string(), "generic.1.d_bad".to_string()]
+            vec![
+                "generic.1.d_good".to_string(),
+                "generic.1.d_bad".to_string()
+            ]
         );
         assert_eq!(
             generic.picture_gfx.as_deref(),
@@ -781,8 +1265,297 @@ mod tests {
         assert_eq!(bound.window_name.as_deref(), Some("EventWindow"));
         assert_eq!(bound.title.as_deref(), Some("A Title"));
         assert_eq!(bound.description.as_deref(), Some("Good desc"));
-        assert_eq!(bound.options, vec!["Option A".to_string(), "Option B".to_string()]);
+        assert_eq!(
+            bound.options,
+            vec!["Option A".to_string(), "Option B".to_string()]
+        );
         assert_eq!(bound.chosen_option_index, Some(1));
+    }
+
+    fn rich_row() -> RecordedFiredEventRow {
+        RecordedFiredEventRow {
+            event_id: Leaf::Measured("generic.1".into()),
+            recipient_tag: Leaf::Measured("GER".into()),
+            fire_date: Leaf::Measured("1936.1.1.12".into()),
+            fire_hour: Leaf::Measured(12),
+            fire_tick: Leaf::Measured(1200),
+            event_sequence: Leaf::Measured(4),
+            visible_option_ordinals: Leaf::Measured(vec![0, 1]),
+            chosen_option_ordinal: Leaf::Measured(1),
+            selected_desc_key: Leaf::Measured("generic.1.d_good".into()),
+            shown_picture_gfx: Leaf::Measured("GFX_report_event_generic_read_write".into()),
+            popup_subtype: Leaf::Measured("country".into()),
+            effective_timeout_hours: Leaf::Measured(312),
+            timeout_tick: Leaf::Measured(2000),
+            resolved_tick: Leaf::Measured(1210),
+            resolution_reason: Leaf::Measured("selected".into()),
+            runtime_text_context_id: Leaf::Absent,
+        }
+    }
+
+    #[test]
+    fn xui21_admits_exact_history_and_visible_presentation() {
+        let defs = parse_events_document("events/test.txt", &sample_events_doc());
+        let definitions = event_definitions_by_id(&EventCorpus {
+            defs,
+            files_parsed: 1,
+            parse_failures: Vec::new(),
+        })
+        .unwrap();
+        let history = FiredEventsView {
+            events: Leaf::Measured(vec![rich_row()]),
+            history_complete: Leaf::Measured(true),
+        };
+        let mut loc = Localisation::default();
+        for (key, text) in [
+            ("generic.1.t", "A Title"),
+            ("generic.1.d_good", "Good desc"),
+            ("generic.1.a", "Option A"),
+            ("generic.1.b", "Option B"),
+        ] {
+            loc.entries.insert(key.into(), text.into());
+        }
+        let mut sprites = SpriteRegistry::new();
+        sprites.insert(sprite_stub("GFX_report_event_generic_read_write"));
+        let admitted = admit_event_history(EventHistoryRequest {
+            source_record_id: "record:1",
+            history: &history,
+            definitions: &definitions,
+            localisation: &loc,
+            sprites: &sprites,
+            runtime_text: &BTreeMap::new(),
+        })
+        .expect("admit exact fired-event history");
+        assert_eq!(admitted.len(), 1);
+        let event = &admitted[0];
+        let popup = event.popup.as_ref().expect("materialised popup");
+        assert_eq!(popup.window_name, "EventWindow");
+        assert_eq!(popup.selected_desc_key, "generic.1.d_good");
+        assert_eq!(popup.options.len(), 2);
+        assert_eq!(popup.options[0].definition_ordinal, 0);
+        assert!(!popup.options[0].selected);
+        assert!(popup.options[1].selected);
+        assert!(event.visible_at("GER", 1200));
+        assert!(event.visible_at("GER", 1209));
+        assert!(!event.visible_at("GER", 1210));
+        assert!(!event.visible_at("SOV", 1205));
+
+        let mut layout = LayoutSet::default();
+        layout.add_document(
+            "interface/eventwindow.gui",
+            &parse_str(
+                r#"guiTypes = {
+                    containerWindowType = {
+                        name = "EventWindow"
+                        size = { width = 581 height = 427 }
+                        gridBoxType = {
+                            name = "options_grid"
+                            size = { width = 300 height = 30 }
+                            slotsize = { width = 300 height = 47 }
+                            max_slots_horizontal = 1
+                        }
+                    }
+                    containerWindowType = {
+                        name = "event_option_entry"
+                        size = { width = 300 height = 47 }
+                        instantTextBoxType = { name = "Name" font = "hoi_20bs" }
+                    }
+                }"#,
+            ),
+        );
+        let presentation = event_popup_presentation(event, &layout, "GER", 1205)
+            .expect("compose-ready popup presentation");
+        assert_eq!(
+            presentation.chrome.options_slot_size,
+            Some(("300".into(), "47".into()))
+        );
+        assert_eq!(
+            presentation.option_entry.size,
+            Some(("300".into(), "47".into()))
+        );
+        assert_eq!(presentation.popup.options.len(), 2);
+        assert_eq!(
+            event_popup_presentation(event, &layout, "GER", 1210),
+            Err(EventPresentationRejection::NotVisible)
+        );
+    }
+
+    #[test]
+    fn xui21_rejects_legacy_or_inferred_history() {
+        let history = FiredEventsView {
+            events: Leaf::Measured(vec![RecordedFiredEventRow {
+                event_id: Leaf::Measured("generic.1".into()),
+                ..rich_row()
+            }]),
+            history_complete: Leaf::Measured(false),
+        };
+        let result = admit_event_history(EventHistoryRequest {
+            source_record_id: "record:1",
+            history: &history,
+            definitions: &BTreeMap::new(),
+            localisation: &Localisation::default(),
+            sprites: &SpriteRegistry::new(),
+            runtime_text: &BTreeMap::new(),
+        });
+        assert_eq!(result, Err(EventHistoryRejection::HistoryIncomplete));
+    }
+
+    #[test]
+    fn xui21_keeps_hidden_and_ai_rows_as_lifecycle_without_fabricated_popups() {
+        let defs = parse_events_document("events/test.txt", &sample_events_doc());
+        let definitions = event_definitions_by_id(&EventCorpus {
+            defs,
+            files_parsed: 1,
+            parse_failures: Vec::new(),
+        })
+        .unwrap();
+        let mut hidden = rich_row();
+        hidden.event_id = Leaf::Measured("hidden.1".into());
+        hidden.event_sequence = Leaf::Measured(4);
+        hidden.visible_option_ordinals = Leaf::Measured(Vec::new());
+        hidden.chosen_option_ordinal = Leaf::Measured(0);
+        hidden.selected_desc_key = Leaf::Absent;
+        hidden.shown_picture_gfx = Leaf::Absent;
+        let mut ai = rich_row();
+        ai.event_sequence = Leaf::Measured(5);
+        ai.visible_option_ordinals = Leaf::Measured(Vec::new());
+        ai.selected_desc_key = Leaf::Absent;
+        ai.shown_picture_gfx = Leaf::Absent;
+        let history = FiredEventsView {
+            events: Leaf::Measured(vec![hidden, ai]),
+            history_complete: Leaf::Measured(true),
+        };
+        let admitted = admit_event_history(EventHistoryRequest {
+            source_record_id: "record:lifecycle",
+            history: &history,
+            definitions: &definitions,
+            localisation: &Localisation::default(),
+            sprites: &SpriteRegistry::new(),
+            runtime_text: &BTreeMap::new(),
+        })
+        .expect("admit exact lifecycle rows");
+        assert_eq!(admitted.len(), 2);
+        assert!(admitted[0].definition_hidden);
+        assert!(admitted.iter().all(|event| event.popup.is_none()));
+        assert_eq!(admitted[1].chosen_option_ordinal, Some(1));
+        assert_eq!(
+            event_popup_presentation(&admitted[1], &LayoutSet::default(), "GER", 1205),
+            Err(EventPresentationRejection::NotMaterialised)
+        );
+    }
+
+    #[test]
+    fn xui21_admits_zero_option_and_no_desc_lifecycle_separately() {
+        let doc = parse_str(
+            r#"
+            country_event = {
+                id = generic.2
+                title = generic.2.t
+                desc = generic.2.d
+                picture = GFX_report_event_zero
+            }
+            country_event = {
+                id = generic.3
+                title = generic.3.t
+                picture = GFX_report_event_no_desc
+                option = { name = generic.3.a }
+            }
+            "#,
+        );
+        let definitions = event_definitions_by_id(&EventCorpus {
+            defs: parse_events_document("events/edges.txt", &doc),
+            files_parsed: 1,
+            parse_failures: Vec::new(),
+        })
+        .unwrap();
+        let mut zero = rich_row();
+        zero.event_id = Leaf::Measured("generic.2".into());
+        zero.visible_option_ordinals = Leaf::Measured(Vec::new());
+        zero.chosen_option_ordinal = Leaf::Absent;
+        zero.selected_desc_key = Leaf::Measured("generic.2.d".into());
+        zero.shown_picture_gfx = Leaf::Measured("GFX_report_event_zero".into());
+        zero.resolution_reason = Leaf::Measured("timeout".into());
+        let mut no_desc = rich_row();
+        no_desc.event_id = Leaf::Measured("generic.3".into());
+        no_desc.event_sequence = Leaf::Measured(5);
+        no_desc.visible_option_ordinals = Leaf::Measured(vec![0]);
+        no_desc.chosen_option_ordinal = Leaf::Measured(0);
+        no_desc.selected_desc_key = Leaf::Absent;
+        no_desc.shown_picture_gfx = Leaf::Measured("GFX_report_event_no_desc".into());
+        let history = FiredEventsView {
+            events: Leaf::Measured(vec![zero, no_desc]),
+            history_complete: Leaf::Measured(true),
+        };
+        let mut loc = Localisation::default();
+        for (key, text) in [
+            ("generic.2.t", "Zero title"),
+            ("generic.2.d", "Zero description"),
+            ("generic.3.t", "No desc title"),
+            ("generic.3.a", "Only option"),
+        ] {
+            loc.entries.insert(key.into(), text.into());
+        }
+        let mut sprites = SpriteRegistry::new();
+        sprites.insert(sprite_stub("GFX_report_event_zero"));
+        sprites.insert(sprite_stub("GFX_report_event_no_desc"));
+        let admitted = admit_event_history(EventHistoryRequest {
+            source_record_id: "record:edges",
+            history: &history,
+            definitions: &definitions,
+            localisation: &loc,
+            sprites: &sprites,
+            runtime_text: &BTreeMap::new(),
+        })
+        .expect("admit edge lifecycle rows");
+        assert!(admitted[0]
+            .popup
+            .as_ref()
+            .is_some_and(|popup| popup.options.is_empty()));
+        assert!(admitted[1].popup.is_none());
+    }
+
+    #[test]
+    fn xui21_accepts_timeout_default_ordinal_and_runtime_picture_variant() {
+        let defs = parse_events_document("events/test.txt", &sample_events_doc());
+        let definitions = event_definitions_by_id(&EventCorpus {
+            defs,
+            files_parsed: 1,
+            parse_failures: Vec::new(),
+        })
+        .unwrap();
+        let mut row = rich_row();
+        row.chosen_option_ordinal = Leaf::Measured(0);
+        row.resolution_reason = Leaf::Measured("timeout".into());
+        row.shown_picture_gfx = Leaf::Measured("GFX_report_event_GER_generic_read_write".into());
+        let history = FiredEventsView {
+            events: Leaf::Measured(vec![row]),
+            history_complete: Leaf::Measured(true),
+        };
+        let mut loc = Localisation::default();
+        for (key, text) in [
+            ("generic.1.t", "A Title"),
+            ("generic.1.d_good", "Good desc"),
+            ("generic.1.a", "Option A"),
+            ("generic.1.b", "Option B"),
+        ] {
+            loc.entries.insert(key.into(), text.into());
+        }
+        let mut sprites = SpriteRegistry::new();
+        sprites.insert(sprite_stub("GFX_report_event_GER_generic_read_write"));
+        let admitted = admit_event_history(EventHistoryRequest {
+            source_record_id: "record:timeout-variant",
+            history: &history,
+            definitions: &definitions,
+            localisation: &loc,
+            sprites: &sprites,
+            runtime_text: &BTreeMap::new(),
+        })
+        .expect("admit timeout default and runtime picture variant");
+        let popup = admitted[0].popup.as_ref().expect("materialised popup");
+        assert_eq!(admitted[0].resolution_reason, "timeout");
+        assert_eq!(admitted[0].chosen_option_ordinal, Some(0));
+        assert!(popup.options[0].selected);
+        assert_eq!(popup.picture_gfx, "GFX_report_event_GER_generic_read_write");
     }
 
     fn sprite_stub(name: &str) -> crate::gfx::SpriteDefinition {

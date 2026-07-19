@@ -11,10 +11,11 @@ mod border_world_synthesis;
 mod building_files;
 mod bundle_gen;
 mod camera;
-mod cap4_sea_referee;
 mod camera_interp_law;
+mod cap4_sea_referee;
 mod cli;
 mod color_lut;
+mod combat_indicator_assets;
 mod constants;
 mod cpu_terrain;
 mod d3d11_device;
@@ -24,25 +25,33 @@ mod frame_bundle;
 mod game_data;
 mod image_load;
 mod keying;
+mod light_depth_projection;
 mod light_law;
 mod luminance_law;
+mod m01_runtime_admission;
 mod map_furniture;
 mod map_label_capture;
-mod map_mode_terrain_resource;
 mod map_label_law;
 mod map_mode_admin;
+mod map_mode_terrain_resource;
 mod map_static_data;
 mod map_text;
 mod mapmode_air;
-mod mapmode_infrastructure;
-mod mod_resolver;
 mod mapmode_diplomacy;
 mod mapmode_factions;
+mod mapmode_infrastructure;
+mod mod_resolver;
 mod naval_supremacy_tint;
+mod o05_fixed_object_law;
+mod occupation_mapmode;
 mod occupation_stripe_law;
 mod pass_graph;
 mod pdx_mesh;
 mod political_color_synthesis;
+mod production_d3d;
+mod production_map_interpreter;
+mod production_map_renderer;
+mod production_map_target;
 mod rail_files;
 mod reflection_cube_law;
 mod restore_evidence;
@@ -59,7 +68,6 @@ mod terrain_chunk_synthesis;
 mod terrain_id_map_synthesis;
 mod terrain_lod_law;
 mod terrain_mesh_law;
-mod combat_indicator_assets;
 #[cfg(test)]
 mod test_support;
 mod texture_sampling;
@@ -73,6 +81,7 @@ mod unit_placement;
 mod util;
 mod water_law;
 mod weather_law;
+mod xn13_unit_presentation;
 
 pub(crate) use border_pass::*;
 pub(crate) use bundle_gen::*;
@@ -123,13 +132,12 @@ pub use border_texture_law::{
 pub use border_world_synthesis::{
     border_material_sources_from_resolver, border_source_evidence_from_resolver,
     synthesize_border_world_mesh_from_resolver, synthesize_border_world_mesh_with_keying,
-    BorderChain, BorderClassIndexPartition,
-    BorderClassIndexRange, BorderMaterial, BorderMaterialSource, BorderRank,
-    BorderSourceEvidenceReport, BorderSourceExcerpt, BorderWaterClass, BorderWorldMesh,
-    BorderWorldSynthesisStats, BorderWorldVertex, BORDER_CONSTANTS_SOURCE,
-    BORDER_DEFAULT_MAP_SOURCE, BORDER_DEFINITION_CSV_SOURCE, BORDER_HEIGHTMAP_BMP_SOURCE,
-    BORDER_HISTORY_STATES_DIR, BORDER_PROVINCES_BMP_SOURCE, BORDER_SHADER_SOURCE,
-    BORDER_VERTEX_STRIDE_BYTES,
+    BorderChain, BorderClassIndexPartition, BorderClassIndexRange, BorderMaterial,
+    BorderMaterialSource, BorderRank, BorderSourceEvidenceReport, BorderSourceExcerpt,
+    BorderWaterClass, BorderWorldMesh, BorderWorldSynthesisStats, BorderWorldVertex,
+    BORDER_CONSTANTS_SOURCE, BORDER_DEFAULT_MAP_SOURCE, BORDER_DEFINITION_CSV_SOURCE,
+    BORDER_HEIGHTMAP_BMP_SOURCE, BORDER_HISTORY_STATES_DIR, BORDER_PROVINCES_BMP_SOURCE,
+    BORDER_SHADER_SOURCE, BORDER_VERTEX_STRIDE_BYTES,
 };
 pub use building_files::{
     building_entity_bindings_from_resolver, building_file_derived_layer_from_resolver,
@@ -147,13 +155,13 @@ pub use camera::{
     hoi4_map_camera_defines_from_bundle, map_wrap_offsets, Hoi4MapCameraDefines,
     ProductionMapCamera, ProductionMapCameraProjection,
 };
-pub use cap4_sea_referee::{
-    find_unique_payload, mine_sea_base_referee, mine_sea_base_referee_round_dir, SeaBaseReferee,
-};
 pub use camera_interp_law::{
     camera_interp_step, clamp_height, interp_remaining_fraction, zoom_step_speed,
     CAMERA_INTERPOLATION_SPEED, CAMERA_MAX_HEIGHT, CAMERA_MIN_HEIGHT, CAMERA_ZOOM_SPEED,
     CAMERA_ZOOM_SPEED_DISTANCE_MULT,
+};
+pub use cap4_sea_referee::{
+    find_unique_payload, mine_sea_base_referee, mine_sea_base_referee_round_dir, SeaBaseReferee,
 };
 pub use cli::run_cli;
 pub use color_lut::{
@@ -164,7 +172,7 @@ pub use color_lut::{
 pub use d3d11_replay::{
     accept_terrain_d3d11, accept_terrain_d3d11_with_resolver, render_production_map_d3d11,
     render_production_map_d3d11_with_resolver, render_terrain_d3d11, render_terrain_d3d11_bundle,
-    render_terrain_d3d11_with_resolver, smoke_terrain_chunk_synthesis,
+    render_terrain_d3d11_with_resolver, smoke_terrain_chunk_synthesis, tiled_light_grid_cb2_bytes,
     validate_terrain_chunk_synthesis, validate_terrain_d3d11_bundle,
     validate_terrain_d3d11_bundle_with_resolver, NativeD3d11PreparedProductionMap,
     NativeD3d11PreparedSynthesizedProductionMap, NativeD3d11PreparedTerrainBundle,
@@ -187,6 +195,15 @@ pub use frame_bundle::{
     validate_trees_map_frame_bundle, validate_water_map_frame_bundle,
 };
 pub use keying::KeyingTables;
+pub use light_depth_projection::{
+    project_l03_light_depth, L03DrawArguments, L03LightDepthProjection, L03LightDepthSubmission,
+    L03LightDepthTarget, L03MaterialFamily, L03PdxMeshGroupInput, L03PdxMeshObjectInput,
+    L03PdxMeshSubmeshInput, L03ProjectionRequest, L03SelectedLight, L03SelectedLightFrame,
+    L03SemanticInputRow, L03ShadowPipeline, L03TreeBatchInput, L03TypedOwner,
+    L03_LIGHT_DEPTH_DXGI_FORMAT, L03_LIGHT_DEPTH_HEIGHT, L03_LIGHT_DEPTH_MIP_LEVELS,
+    L03_LIGHT_DEPTH_WIDTH, L03_PARTITION_MASK_ALL, L03_PARTITION_PRIMARY, L03_PARTITION_WRAP_EAST,
+    L03_PARTITION_WRAP_WEST,
+};
 pub use light_law::{defines as light_defines, offsets as light_offsets};
 pub use light_law::{
     diffuse_color_rgb_from_hsv_define, night_yzw_residual, render_sun_dir_yzw,
@@ -197,31 +214,38 @@ pub use luminance_law::{
     scene_average_luminance, scene_average_luminance_r16g16b16a16_float, AverageLuminanceReduction,
     LuminanceClampBounds, LOG_LUMINANCE_EPSILON, LUMINANCE_VECTOR,
 };
+pub use m01_runtime_admission::{
+    admit_m01_runtime_rows, parse_and_admit_m01_runtime_rows, M01A14ControlState,
+    M01AdmissionError, M01AdmittedRuntimeRows, M01AirBaseProvinceIfWing, M01NegativeRuntimeControl,
+    M01PositiveRuntimeRow, M01RuntimeInputEnvelope, M01RuntimeRowPair, M01UnitKind,
+    M01VisibilityOrIntelState, M01_RUNTIME_INPUT_SCHEMA,
+};
 pub use map_furniture::{
     associate_naval_spawns_to_provinces, base_icon_defines_from_resolver, base_icon_frame,
     base_icon_layer_from_resolver, building_locator_pixel, capital_states_from_resolver,
     compute_base_icon_markers, compute_furniture_markers, cosmetic_tags_from_resolver,
     cosmetic_tags_from_resolver_with_dlc, country_colors_from_game_resolver,
-    furniture_layer_from_resolver, furniture_layer_with_keying, furniture_static_data_from_resolver,
-    heightmap_grid_from_resolver, load_vp_label_font, load_vp_map_text_font, load_vp_strip_rgba,
-    parse_base_icon_defines, parse_bmfont, parse_state_building_levels, parse_vp_icon_defines,
-    ruling_parties_from_resolver, state_building_levels_from_resolver,
-    vp_icon_defines_from_resolver, vp_icon_relation_column, vp_strip_frame_index,
-    vp_strip_texture_path, BaseIconDefines, BaseIconInputs, BaseIconKind, BaseIconLayer,
-    BaseIconMarker, BmFont, BmFontGlyph, FurnitureLawInputs, FurnitureLayer, FurnitureMarker,
-    FurnitureMarkerKind, FurnitureStaticData, HeightmapGrid, RgbaFontAtlas, StateBuildingLevels,
-    VpIconDefines, VpIconDiplomaticPairState, AIRBASE_ICON_DISTANCE_CUTOFF_KEY, AIR_BASE_BUILDING,
-    AIR_BASE_SPRITE_FRAMES, AIR_BASE_SPRITE_NAME, AIR_BASE_SPRITE_TEXTURE,
-    AIR_BASE_STATE_MAX_LEVEL, CAPITAL_ICON_CUTOFF_KEY, CORE_GFX_SOURCE, HOI_20BS_ATLAS_SOURCE,
-    HOI_20BS_FNT_SOURCE, MAPICONS_GFX_SOURCE, MAPICONS_GUI_SOURCE, MAPICON_CONTAINER_HEIGHT,
-    MAPICON_CONTAINER_WIDTH, MAPICON_ICON_OFFSET_X, MAPICON_ICON_OFFSET_Y, MAPICON_TEXT_MAX_HEIGHT,
-    MAPICON_TEXT_MAX_WIDTH, MAPICON_TEXT_OFFSET_X, MAPICON_TEXT_OFFSET_Y,
-    NAVALBASE_ICON_DISTANCE_CUTOFF_KEY, NAVAL_BASE_BUILDING, NAVAL_BASE_PROVINCE_MAX_LEVEL,
-    NAVAL_BASE_SPAWN_LOCATOR, NAVAL_BASE_SPRITE_FRAMES, NAVAL_BASE_SPRITE_NAME,
-    NAVAL_BASE_SPRITE_TEXTURE, NAVAL_SPAWN_LAND_SNAP_RADIUS, VICTORY_POINTS_LOC_PREFIX,
-    VICTORY_POINT_LEVELS_KEY, VICTORY_POINT_MAP_ICON_AFTER_KEY, VP_LABEL_FONT_NAME,
-    VP_MAP_TEXT_ATLAS_SOURCE, VP_MAP_TEXT_FNT_SOURCE, VP_MAP_TEXT_FONT_NAME, VP_MAP_TEXT_SCALE,
-    VP_STRIP_COLOR_ENEMY_RED, VP_STRIP_COLOR_ENGINE_UNREACHED_1, VP_STRIP_COLOR_ENGINE_UNREACHED_3,
+    furniture_layer_from_resolver, furniture_layer_with_keying,
+    furniture_static_data_from_resolver, heightmap_grid_from_resolver, load_vp_label_font,
+    load_vp_map_text_font, load_vp_strip_rgba, parse_base_icon_defines, parse_bmfont,
+    parse_state_building_levels, parse_vp_icon_defines, ruling_parties_from_resolver,
+    state_building_levels_from_resolver, vp_icon_defines_from_resolver, vp_icon_relation_column,
+    vp_strip_frame_index, vp_strip_texture_path, BaseIconDefines, BaseIconInputs, BaseIconKind,
+    BaseIconLayer, BaseIconMarker, BmFont, BmFontGlyph, FurnitureLawInputs, FurnitureLayer,
+    FurnitureMarker, FurnitureMarkerKind, FurnitureStaticData, HeightmapGrid, RgbaFontAtlas,
+    StateBuildingLevels, VpIconDefines, VpIconDiplomaticPairState,
+    AIRBASE_ICON_DISTANCE_CUTOFF_KEY, AIR_BASE_BUILDING, AIR_BASE_SPRITE_FRAMES,
+    AIR_BASE_SPRITE_NAME, AIR_BASE_SPRITE_TEXTURE, AIR_BASE_STATE_MAX_LEVEL,
+    CAPITAL_ICON_CUTOFF_KEY, CORE_GFX_SOURCE, HOI_20BS_ATLAS_SOURCE, HOI_20BS_FNT_SOURCE,
+    MAPICONS_GFX_SOURCE, MAPICONS_GUI_SOURCE, MAPICON_CONTAINER_HEIGHT, MAPICON_CONTAINER_WIDTH,
+    MAPICON_ICON_OFFSET_X, MAPICON_ICON_OFFSET_Y, MAPICON_TEXT_MAX_HEIGHT, MAPICON_TEXT_MAX_WIDTH,
+    MAPICON_TEXT_OFFSET_X, MAPICON_TEXT_OFFSET_Y, NAVALBASE_ICON_DISTANCE_CUTOFF_KEY,
+    NAVAL_BASE_BUILDING, NAVAL_BASE_PROVINCE_MAX_LEVEL, NAVAL_BASE_SPAWN_LOCATOR,
+    NAVAL_BASE_SPRITE_FRAMES, NAVAL_BASE_SPRITE_NAME, NAVAL_BASE_SPRITE_TEXTURE,
+    NAVAL_SPAWN_LAND_SNAP_RADIUS, VICTORY_POINTS_LOC_PREFIX, VICTORY_POINT_LEVELS_KEY,
+    VICTORY_POINT_MAP_ICON_AFTER_KEY, VP_LABEL_FONT_NAME, VP_MAP_TEXT_ATLAS_SOURCE,
+    VP_MAP_TEXT_FNT_SOURCE, VP_MAP_TEXT_FONT_NAME, VP_MAP_TEXT_SCALE, VP_STRIP_COLOR_ENEMY_RED,
+    VP_STRIP_COLOR_ENGINE_UNREACHED_1, VP_STRIP_COLOR_ENGINE_UNREACHED_3,
     VP_STRIP_COLOR_NEUTRAL_GRAY, VP_STRIP_COLOR_SELF_OR_FACTION, VP_STRIP_COLOR_SLOTS,
     VP_STRIP_FRAME_COUNT, VP_STRIP_SPRITE_NAME, VP_STRIP_SPRITE_TEXTURE,
 };
@@ -232,19 +256,30 @@ pub use map_label_capture::{
 };
 pub use map_label_law::{
     build_mapname_vertices, compute_country_label_placements,
-    compute_country_label_placements_with_text, label_draw_visible, mapname_tracked_advance_px,
-    mapname_tracking_px, principal_axis, CountryLabelPlacement, EngineCurve, GlyphScale,
-    LabelLawInputs, LabelTextMetrics, MapLabelGlyphLayoutQuad, ProvinceKind, ENGINE_TITLE_CAP_COEF,
-    ENGINE_TITLE_FIT_COEF, LABEL_AB_HYSTERESIS, LABEL_HEIGHT_BREADTH_K, LABEL_OFFSET_PX,
-    LABEL_SAMPLE_STEP,
+    compute_country_label_placements_with_text, label_draw_visible,
+    mapname_measured_glyph_parameters, mapname_tracked_advance_px, mapname_tracking_px,
+    principal_axis, CountryLabelPlacement, EngineCurve, GlyphScale, LabelLawInputs,
+    LabelTextMetrics, MapLabelGlyphLayoutQuad, MapLabelStraightLayoutStation, ProvinceKind,
+    ENGINE_TITLE_CAP_COEF, ENGINE_TITLE_FIT_COEF, LABEL_AB_HYSTERESIS, LABEL_HEIGHT_BREADTH_K,
+    LABEL_OFFSET_PX, LABEL_SAMPLE_STEP,
 };
 pub use map_mode_admin::{
     admin_mapmode_defines_from_resolver, admin_mapmode_defines_from_source,
     ideology_colors_from_resolver, ideology_colors_from_source, ideology_fill,
     parse_ideology_colors_into, players_fill, state_boundary_outline, states_admin_fill,
     vanilla_ideology_colors, AdminMapModeDefines, IdeologyColorTable, StateAdminFill,
-    StateBoundaryOutline, StateIdeologyFill, StatePlayersFill, ADMIN_MAPMODE_GRAPHICS_DEFINES_SOURCE,
-    IDEOLOGIES_DIR, VANILLA_ADMIN_MAPMODE_DEFINES,
+    StateBoundaryOutline, StateIdeologyFill, StatePlayersFill,
+    ADMIN_MAPMODE_GRAPHICS_DEFINES_SOURCE, IDEOLOGIES_DIR, VANILLA_ADMIN_MAPMODE_DEFINES,
+};
+pub use map_mode_terrain_resource::{
+    classify_resource_deposits, classify_terrain_map_mode, parse_resource_definitions,
+    parse_state_resource_deposits, parse_terrain_category_colors, province_terrain_fill,
+    resource_definitions_from_resolver, resource_deposit_set_from_resolver, resource_state_fill,
+    resource_state_overlay, terrain_category_colors_from_resolver, terrain_map_mode_from_resolver,
+    ResourceDefinition, ResourceDepositSet, ResourceStateOverlay, TerrainMapMode,
+    RESOURCE_DEFINITIONS_SOURCE, RESOURCE_DEPOSITS_STATES_DIR, RESOURCE_ICON_STRIP_SOURCE,
+    TERRAIN_CATEGORIES_SOURCE, TERRAIN_DEFINITION_CSV_SOURCE, VANILLA_RESOURCE_DEFINITIONS,
+    VANILLA_TERRAIN_CATEGORY_COLORS,
 };
 pub use map_static_data::{
     map_building_placements_from_game_dir, map_building_placements_from_resolver,
@@ -266,29 +301,8 @@ pub use mapmode_air::{
     air_overlay_alpha, air_region_set_from_resolver, air_region_status, air_region_tint,
     air_region_tints, build_air_regions, pov_air_status_color, strategic_air_colors_from_resolver,
     strategic_air_colors_from_source, AirActivityInput, AirRegion, AirRegionSet, AirRegionStatus,
-    AirRegionTint, PovAirRelation, StrategicAirColors, VANILLA_STRATEGIC_AIR_COLORS,
-    AIR_GRAPHICS_DEFINES_SOURCE, AIR_STRATEGIC_REGIONS_DIR,
-};
-pub use mapmode_infrastructure::{
-    infra_gradient_colors_from_resolver, infra_gradient_colors_from_source, infra_gradient_rgba,
-    infra_ratio, infra_state_max_from_resolver, infra_state_tint, infra_state_tints,
-    parse_infrastructure_state_max, InfraGradientColors, InfraLevelInput, InfraStateTint,
-    INFRASTRUCTURE_BUILDING_KEY, INFRA_BUILDINGS_SOURCE, INFRA_GRAPHICS_DEFINES_SOURCE,
-    VANILLA_INFRA_GRADIENT_COLORS, VANILLA_INFRA_STATE_MAX,
-};
-pub use mod_resolver::{
-    sensitive_file_overrides, GameFileResolver, GameFileResolverOptions, GameFileResolverStats,
-    SensitiveFileOverrideReport,
-};
-pub use map_mode_terrain_resource::{
-    classify_resource_deposits, classify_terrain_map_mode, parse_resource_definitions,
-    parse_state_resource_deposits, parse_terrain_category_colors, province_terrain_fill,
-    resource_definitions_from_resolver, resource_deposit_set_from_resolver, resource_state_fill,
-    resource_state_overlay, terrain_category_colors_from_resolver, terrain_map_mode_from_resolver,
-    ResourceDefinition, ResourceDepositSet, ResourceStateOverlay, TerrainMapMode,
-    RESOURCE_DEFINITIONS_SOURCE, RESOURCE_DEPOSITS_STATES_DIR, RESOURCE_ICON_STRIP_SOURCE,
-    TERRAIN_CATEGORIES_SOURCE, TERRAIN_DEFINITION_CSV_SOURCE, VANILLA_RESOURCE_DEFINITIONS,
-    VANILLA_TERRAIN_CATEGORY_COLORS,
+    AirRegionTint, PovAirRelation, StrategicAirColors, AIR_GRAPHICS_DEFINES_SOURCE,
+    AIR_STRATEGIC_REGIONS_DIR, VANILLA_STRATEGIC_AIR_COLORS,
 };
 pub use mapmode_diplomacy::{
     classify_relation, country_relations, relation_fill, relation_to_vp_column, DiploPairInput,
@@ -300,6 +314,19 @@ pub use mapmode_factions::{
     factions_defines_from_source, membership_for, FactionInput, FactionMembership, FactionsDefines,
     FACTIONS_GRAPHICS_DEFINES_SOURCE, VANILLA_FACTIONS_DEFINES,
 };
+pub use mapmode_infrastructure::{
+    infra_gradient_colors_from_resolver, infra_gradient_colors_from_source, infra_gradient_rgba,
+    infra_ratio, infra_state_max_from_resolver, infra_state_tint, infra_state_tints,
+    parse_infrastructure_state_max, InfraGradientColors, InfraLevelInput, InfraStateTint,
+    INFRASTRUCTURE_BUILDING_KEY, INFRA_BUILDINGS_SOURCE, INFRA_GRAPHICS_DEFINES_SOURCE,
+    VANILLA_INFRA_GRADIENT_COLORS, VANILLA_INFRA_STATE_MAX,
+};
+pub use mod_resolver::{
+    semantic_descriptor_sha256, sensitive_file_overrides, stable_dlc_product_id, GameContentSource,
+    GameFileResolver, GameFileResolverOptions, GameFileResolverStats, PlaybackEnvironment,
+    RecordedContentSource, RequiredGameContent, ResolvedGameFile, RestrictedGameFileResolver,
+    SensitiveFileOverrideReport,
+};
 pub use naval_supremacy_tint::{
     classify_naval_regions, naval_region_set_from_resolver, naval_supremacy_tints,
     naval_tint_defines_from_resolver, naval_tint_defines_from_source, pov_stripe_color,
@@ -308,6 +335,23 @@ pub use naval_supremacy_tint::{
     ZoneSupremacyStatus, ZoneTint, NAVAL_SUPREMACY_DEFINITION_CSV_SOURCE,
     NAVAL_SUPREMACY_GRAPHICS_DEFINES_SOURCE, NAVAL_SUPREMACY_STRATEGIC_REGIONS_DIR,
     VANILLA_NAVAL_TINT_DEFINES,
+};
+pub use o05_fixed_object_law::{
+    admit_o05_fixed_objects, admit_o05_fixed_objects_from_resolver,
+    o05_fixed_object_source_hashes_from_resolver,
+    o05_static_building_source_identities_from_resolver,
+    o05_static_building_source_identities_from_source, O05FixedObjectAdmission,
+    O05FixedObjectClass, O05StaticBuildingSourceIdentity, O05_FIXED_OBJECT_SOURCE_HASHES,
+    O05_MAP_BUILDINGS_SOURCE,
+};
+pub use occupation_mapmode::{
+    occupation_mapmode_color, occupation_palette_from_resolver, occupation_palette_from_source,
+    OccupationColorStop, OccupationMapMode, OccupationMapModePalette,
+    OCCUPATION_GRAPHICS_DEFINES_SOURCE,
+};
+pub use occupation_stripe_law::{
+    apply_secondary_color, cam_distance as occupation_cam_distance, occupation_stripe_mask,
+    smoothstep as occupation_smoothstep, SEC_MAP_TILE, STRIPE_ANGLE,
 };
 pub use pass_graph::{
     ProductionMapPassGraph, ProductionMapPassKind, ProductionMapPassPlan, ProductionMapPassStatus,
@@ -321,10 +365,6 @@ pub use pdx_mesh::{
     PdxMeshValidationRow, PdxModel, PdxNode, PdxProperty, PdxShape, PdxSkin, PdxValues,
     PDX_ASSET_BINARY_MAGIC, PDX_ASSET_SUPPORTED_VERSION, PDX_ASSET_TEXT_MAGIC, PDX_MODELS_ROOT,
 };
-pub use occupation_stripe_law::{
-    apply_secondary_color, cam_distance as occupation_cam_distance, occupation_stripe_mask,
-    smoothstep as occupation_smoothstep, SEC_MAP_TILE, STRIPE_ANGLE,
-};
 pub use political_color_synthesis::{
     compare_political_colors_to_capture, dump_political_color_comparison,
     political_color_composition_law, synthesize_political_colors,
@@ -333,6 +373,31 @@ pub use political_color_synthesis::{
     PoliticalColorSamplerDescriptor, PoliticalColorSynthesis, PoliticalColorSynthesisSource,
     PoliticalColorTextureDescriptor, PROVINCE_COLOR_MAP_DXGI_FORMAT, PROVINCE_COLOR_MAP_HEIGHT,
     PROVINCE_COLOR_MAP_WIDTH, PROVINCE_SECONDARY_COLOR_MAP_SHADER_SLOT,
+};
+pub use production_d3d::{
+    execute_production_d3d_frame, prepare_production_d3d_frame, PreparedProductionD3dFrame,
+    ProductionD3dExecutedDraw, ProductionD3dExecutionBridge, ProductionD3dExecutionReceipt,
+    ProductionD3dOmission, ProductionD3dStaticPassProgram,
+};
+#[cfg(windows)]
+pub use production_d3d::{
+    M02OverlayExecutedDraw, M02OverlayExecutionReceipt, NativeM02OverlayExecutor,
+    NativeProductionD3dBackend, NativeProductionD3dExecutor, PreparedM02OverlayPlan,
+    ProductionD3dReadback,
+};
+pub use production_map_interpreter::{
+    materialize_static_program, MapInterpreterFailure, RAW_VERTEX_BUFFERS_V1,
+    RAW_VERTEX_INDEX_BUFFERS_V1,
+};
+pub use production_map_renderer::{
+    PreparedProductionMapFrame, PreparedRuntimeDraw, ProductionMapDataNeed, ProductionMapRenderer,
+    ProductionMapResource,
+};
+#[cfg(windows)]
+pub use production_map_target::NativeProductionMainSceneTarget;
+pub use production_map_target::{
+    production_main_scene_desc, production_main_scene_desc_from_outputs,
+    ProductionMainSceneTargetDesc,
 };
 pub use rail_files::{
     compute_province_centroids, parse_rail_geometry_defines, rail_file_derived_layer_from_resolver,
@@ -371,11 +436,30 @@ pub use seasons::{
 };
 pub use shader_meta::PoliticalSceneCb0;
 pub use shadow_law::{
-    calculate_shadow, get_shadow_scaled, pcf_tap_offsets, shadow_blur_3tap, shadow_fade_factor,
-    shadow_gated_by_daynight, terrain_shadow_term, DRAW_SHADOWS_CUTOFF, DRAW_SHADOWS_FADE_LENGTH,
-    LIGHT_SHADOW_DIRECTION, PCF_BIAS, SHADOW_MAP_SIZE, SHADOW_WEIGHT_TERRAIN, SHADOW_WEIGHT_WATER,
+    build_shadow_frame, calculate_shadow, compose_shadow_map_texture_matrix,
+    fit_shadow_map_matrices, get_shadow_scaled, pcf_tap_offsets, select_shadow_light,
+    shadow_blur_3tap, shadow_fade_factor, shadow_gated_by_daynight, terrain_shadow_term,
+    SelectedShadowLight, ShadowFrameInput, ShadowFrameMatrices, ShadowLightKind, ShadowMat4,
+    DRAW_SHADOWS_CUTOFF, DRAW_SHADOWS_FADE_LENGTH, LIGHT_SHADOW_DIRECTION, PCF_BIAS,
+    SHADOW_FIT_EYE_MARGIN, SHADOW_FIT_GRID, SHADOW_MAP_SIZE, SHADOW_WEIGHT_TERRAIN,
+    SHADOW_WEIGHT_WATER,
+};
+pub use xn13_unit_presentation::{
+    admit_xn13_rows, parse_and_admit_xn13_rows, Xn13AdmissionError, Xn13AdmittedPresentationRows,
+    Xn13AnimationBinding, Xn13DamageVariant, Xn13EffectKind, Xn13EffectTrigger, Xn13InputEnvelope,
+    Xn13PassPoses, Xn13PoseBinding, Xn13PresentationRow, Xn13SelectionEffect, XN13_INPUT_SCHEMA,
 };
 
+pub use combat_indicator_assets::{
+    combat_indicator_assets_from_resolver, combat_indicator_fonts_from_resolver,
+    combat_indicator_gui_container_count, combat_indicator_gui_layouts_from_resolver,
+    combat_indicator_progress_bars_from_resolver, land_combat_indicator_sprites_from_resolver,
+    naval_combat_indicator_sprites_from_resolver, CombatIndicatorAssetManifest,
+    CombatIndicatorGuiLayouts, CombatIndicatorKind, CombatIndicatorPlacement,
+    COMBAT_INDICATOR_LANDCOMBAT_GFX_SOURCE, COMBAT_INDICATOR_MAPICONS_GFX_SOURCE,
+    COMBAT_INDICATOR_MAPICONS_GUI_SOURCE, COMBAT_INDICATOR_NAVALCOMBAT_GFX_SOURCE,
+    COMBAT_INDICATOR_NAVAL_LEADER_MODULE_GFX_SOURCE,
+};
 pub use shader_compile::{
     build_stage_hlsl, effect_file_from_resolver, parse_dxbc_reflection, parse_effect_file,
     scan_effect_files_from_resolver, DxbcCbuffer, DxbcCbufferVar, DxbcReflection, DxbcResource,
@@ -455,16 +539,6 @@ pub use tree_instance_synthesis::{
 pub use tree_second_subdraw::{
     identify_tree_pixel_shader, tree_second_subdraw_verdict, TreePixelShaderEvidence,
     TreePixelShaderKind, TreeSecondSubDrawVerdict, TREE_FULL_PS_FNV1A64, TREE_LOW_GFX_PS_FNV1A64,
-};
-pub use combat_indicator_assets::{
-    combat_indicator_assets_from_resolver, combat_indicator_fonts_from_resolver,
-    combat_indicator_gui_container_count, combat_indicator_gui_layouts_from_resolver,
-    combat_indicator_progress_bars_from_resolver, land_combat_indicator_sprites_from_resolver,
-    naval_combat_indicator_sprites_from_resolver, CombatIndicatorAssetManifest,
-    CombatIndicatorGuiLayouts, CombatIndicatorKind, CombatIndicatorPlacement,
-    COMBAT_INDICATOR_LANDCOMBAT_GFX_SOURCE, COMBAT_INDICATOR_MAPICONS_GFX_SOURCE,
-    COMBAT_INDICATOR_MAPICONS_GUI_SOURCE, COMBAT_INDICATOR_NAVALCOMBAT_GFX_SOURCE,
-    COMBAT_INDICATOR_NAVAL_LEADER_MODULE_GFX_SOURCE,
 };
 pub use types::IndexImage;
 pub use underwater_pass::{UNDERWATER_EFFECT_NAME, UNDERWATER_SHADER_SOURCE};

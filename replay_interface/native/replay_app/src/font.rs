@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use game_ui::assets::normalize_rel_path;
 use game_ui::dds::{self, RgbaImage};
 use game_ui::tga;
-use map_viewer::{GameFileResolver, LabelTextMetrics};
+use map_viewer::{GameFileResolver, LabelTextMetrics, MapLabelStraightLayoutStation};
 
 use crate::Result;
 
@@ -601,13 +601,32 @@ impl Font {
     /// glyph station.
     pub fn label_text_metrics(&self, text: &str) -> Result<LabelTextMetrics> {
         let mut advances = Vec::with_capacity(text.chars().count());
+        let mut straight_layout_stations = Vec::with_capacity(text.chars().count());
         let mut missing = Vec::new();
-        for ch in text.chars() {
-            let Some(glyph) = self.glyphs.get(&(ch as u32)) else {
+        let mut pen = 0.0f32;
+        let mut previous: Option<u32> = None;
+        for (slot_index, ch) in text.chars().enumerate() {
+            let id = ch as u32;
+            let Some(glyph) = self.glyphs.get(&id) else {
                 missing.push(ch);
+                previous = None;
                 continue;
             };
+            if let Some(previous) = previous {
+                if let Some(amount) = self.kernings.get(&(previous, id)) {
+                    pen += *amount as f32;
+                }
+            }
+            if glyph.width > 0 && glyph.height > 0 {
+                straight_layout_stations.push(MapLabelStraightLayoutStation {
+                    slot_index,
+                    x: pen + glyph.xoffset as f32 + glyph.width as f32 * 0.5,
+                    y: glyph.yoffset as f32,
+                });
+            }
             advances.push((glyph.xadvance as f32, ch == ' '));
+            pen += glyph.xadvance as f32;
+            previous = Some(id);
         }
         if !missing.is_empty() {
             return Err(format!(
@@ -630,6 +649,7 @@ impl Font {
             advances,
             line_height_px: self.line_height as f32,
             space_advance_px,
+            straight_layout_stations,
         })
     }
 

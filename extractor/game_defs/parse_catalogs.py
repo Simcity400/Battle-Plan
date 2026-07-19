@@ -31,6 +31,7 @@ stdlib only.
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -56,6 +57,46 @@ def _plain(node):
             out["_list"] = anon
         return out
     return node
+
+
+def _plain_preserve_duplicate_keys(node):
+    """Convert a Clausewitz node without dropping repeated sibling keys.
+
+    Most catalog consumers rely on the historical single-value object shape, so
+    this converter keeps that shape when a key occurs once and promotes only a
+    repeated key's values to a source-ordered JSON array. Power-balance
+    ``on_activate``/``on_deactivate`` blocks need this lossless form because the
+    shipped CZE and FIN definitions author more than one
+    ``set_power_balance_gfx`` command in the same block.
+    """
+    if isinstance(node, str):
+        return node
+    if not isinstance(node, Node):
+        return node
+
+    keyed: dict[str, list] = {}
+    key_order: list[str] = []
+    anonymous = []
+    for key, value in node.entries:
+        converted = _plain_preserve_duplicate_keys(value)
+        if key == "":
+            anonymous.append(converted)
+            continue
+        if key not in keyed:
+            keyed[key] = []
+            key_order.append(key)
+        keyed[key].append(converted)
+
+    out = {
+        key: values[0] if len(values) == 1 else values
+        for key in key_order
+        for values in (keyed[key],)
+    }
+    if anonymous and not out:
+        return anonymous
+    if anonymous:
+        out["_list"] = anonymous
+    return out
 
 
 def _atoms(node):
@@ -193,8 +234,8 @@ def _bop_range(n, rel, side_id=None, order=0):
         "modifier": _plain(n.get("modifier")) or {},
         "has_on_activate": n.get("on_activate") is not None,
         "has_on_deactivate": n.get("on_deactivate") is not None,
-        "on_activate": _plain(n.get("on_activate")) or {},
-        "on_deactivate": _plain(n.get("on_deactivate")) or {},
+        "on_activate": _plain_preserve_duplicate_keys(n.get("on_activate")) or {},
+        "on_deactivate": _plain_preserve_duplicate_keys(n.get("on_deactivate")) or {},
         "source_file": rel,
     }
 
@@ -421,15 +462,25 @@ def parse_catalogs(layers) -> dict:
             "collisions": coll}
 
 
-def build(vanilla=None, mods=None):
-    layers = R.build_layers(vanilla=vanilla, mods=mods)
+def build(vanilla=None, mods=None, modset_json=None, userdata=None):
+    layers = R.build_layers(vanilla=vanilla, mods=mods,
+                            modset_json=modset_json, userdata=userdata)
     return parse_catalogs(layers)
 
 
 if __name__ == "__main__":
-    out = build()
-    outp = Path(__file__).resolve().parent / "out" / "catalogs.json"
-    outp.parent.mkdir(exist_ok=True)
+    cli = argparse.ArgumentParser()
+    cli.add_argument("--vanilla")
+    cli.add_argument("--mod", dest="mods", action="append")
+    cli.add_argument("--modset-json")
+    cli.add_argument("--userdata")
+    cli.add_argument("--out", type=Path,
+                     default=Path(__file__).resolve().parent / "out" / "catalogs.json")
+    args = cli.parse_args()
+    out = build(vanilla=args.vanilla, mods=args.mods,
+                modset_json=args.modset_json, userdata=args.userdata)
+    outp = args.out
+    outp.parent.mkdir(parents=True, exist_ok=True)
     outp.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
     for name, m in out["meta"].items():
         print(f"  {name:20s}: {m['count']:5d}  (collisions {m['collisions']})")

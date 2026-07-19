@@ -19,8 +19,8 @@
 //! absent, matching `topbar::topbar_rects_follow_engine_layout_law`).
 
 use game_ui::alerts::{
-    alert_feed_binding, alerts_strip_from_frame, AlertKind, ALERT_BADGE_BG_SPRITE,
-    ALERT_FEED_ICON_SPRITE, ALERT_FEED_WINDOW, ALERTS_GUI,
+    alert_feed_binding, alerts_strip_from_frame, AlertKind, ALERTS_GUI, ALERT_BADGE_BG_SPRITE,
+    ALERT_FEED_ICON_SPRITE, ALERT_FEED_WINDOW,
 };
 use replay_core::{open_recording, WorldTimeline};
 use std::path::PathBuf;
@@ -64,12 +64,7 @@ fn alert_counts_render_generator_values_per_pov() {
             for kind in AlertKind::ALL {
                 let exp = expected_count(kind, t);
                 let badge = strip.badge(kind);
-                assert_eq!(
-                    badge.count,
-                    Some(exp),
-                    "{tag} {:?} count @t{t}",
-                    kind
-                );
+                assert_eq!(badge.count, Some(exp), "{tag} {:?} count @t{t}", kind);
                 assert_eq!(
                     badge.badge_shown,
                     exp > 0,
@@ -78,7 +73,12 @@ fn alert_counts_render_generator_values_per_pov() {
                 );
                 assert_eq!(
                     badge.count_text.as_deref(),
-                    if exp > 0 { Some(format!("{exp}")) } else { None }.as_deref(),
+                    if exp > 0 {
+                        Some(format!("{exp}"))
+                    } else {
+                        None
+                    }
+                    .as_deref(),
                     "{tag} {:?} count_text @t{t}",
                     kind
                 );
@@ -113,7 +113,9 @@ fn market_contracts_probe_endpoint_is_exact() {
     let s0 = alerts_strip_from_frame(&f0, "GER");
     assert!(s0.available);
     assert!(
-        s0.badges.iter().all(|b| b.count == Some(0) && !b.badge_shown),
+        s0.badges
+            .iter()
+            .all(|b| b.count == Some(0) && !b.badge_shown),
         "t=0 all badges measured-zero and suppressed"
     );
 }

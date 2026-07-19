@@ -70,24 +70,33 @@ fn run_extractor_cargo(extractor_native: &Path, temp_dir: &Path, args: &[&str]) 
     );
 }
 
-fn push_h4cr_record(
-    out: &mut Vec<u8>,
-    template: &[u8],
-    sequence: u64,
-    game_hour_raw: i32,
-    domain_id: u16,
-    record_type: u16,
-    payload: &[u8],
-) {
-    assert!(template.len() >= 32);
-    out.extend_from_slice(&template[..8]);
-    out.extend_from_slice(&sequence.to_le_bytes());
-    out.extend_from_slice(&game_hour_raw.to_le_bytes());
-    out.extend_from_slice(&domain_id.to_le_bytes());
-    out.extend_from_slice(&record_type.to_le_bytes());
-    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out.extend_from_slice(payload);
+fn relocate_h4cr_stream_hour(stream: &mut [u8], game_hour_raw: i32) -> usize {
+    let mut offset = 0usize;
+    let mut records = 0usize;
+    while offset < stream.len() {
+        assert!(
+            stream.len() - offset >= 32,
+            "truncated H4CR header at byte {offset}"
+        );
+        assert_eq!(&stream[offset..offset + 4], b"H4CR");
+        let header_len =
+            u16::from_le_bytes(stream[offset + 6..offset + 8].try_into().unwrap()) as usize;
+        let payload_len =
+            u32::from_le_bytes(stream[offset + 24..offset + 28].try_into().unwrap()) as usize;
+        assert!(header_len >= 32, "invalid H4CR header length {header_len}");
+        let next = offset
+            .checked_add(header_len)
+            .and_then(|value| value.checked_add(payload_len))
+            .expect("H4CR record length overflow");
+        assert!(
+            next <= stream.len(),
+            "truncated H4CR record at byte {offset}"
+        );
+        stream[offset + 16..offset + 20].copy_from_slice(&game_hour_raw.to_le_bytes());
+        offset = next;
+        records += 1;
+    }
+    records
 }
 
 /// GATE 2a — faction membership matrix appears exactly at the tick-3 change and
@@ -313,13 +322,19 @@ fn production_faction_roster_binding_timeline() -> (PathBuf, WorldTimeline, i64)
         ],
     );
 
-    let mut encoded = fs::read(&proof_record).unwrap();
-    assert_eq!(&encoded[..4], b"H4CR");
-    assert_eq!(u16::from_le_bytes(encoded[20..22].try_into().unwrap()), 53);
+    let mut stream = fs::read(&proof_record).unwrap();
+    assert_eq!(&stream[..4], b"H4CR");
+    assert_eq!(u16::from_le_bytes(stream[20..22].try_into().unwrap()), 53);
     let raw_hour = 43_799_999i32 + (1936 * 365 * 24);
-    encoded[16..20].copy_from_slice(&raw_hour.to_le_bytes());
-    let mut stream = encoded.clone();
-    push_h4cr_record(&mut stream, &encoded, 2, raw_hour, 1000, 2, &[0u8; 28]);
+    // `domain53_proof` now emits a complete H4CR stream (SESSION_META, D53
+    // DATA, FRAME_END), not a single D53 record. Relocate every record header
+    // together; relocating only the first header leaves the data at the proof
+    // CLI's historical smoke hour and makes the tested hour correctly fold an
+    // unavailable roster. Payload bytes remain byte-identical.
+    assert!(
+        relocate_h4cr_stream_hour(&mut stream, raw_hour) >= 3,
+        "the proof stream must include metadata, D53 data, and frame end"
+    );
     let stream_path = root.join("collector_stream.bin");
     fs::write(&stream_path, stream).unwrap();
 

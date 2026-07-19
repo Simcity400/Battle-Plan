@@ -1,7 +1,7 @@
 use game_ui::compose::{measure_to_pixels_for_parent, ComposeOptions, Rect};
 use game_ui::gui::{GuiElement, LayoutSet};
 use game_ui::widget_layout::{
-    gridbox_layout, listbox_layout, scrollbar_layout, ListFlow, ScrollbarAxis,
+    gridbox_layout, listbox_layout, scrollbar_layout, ListFlow, ScrollbarAxis, ScrollbarFamily,
 };
 use std::path::{Path, PathBuf};
 
@@ -104,6 +104,7 @@ fn scrollbar_declared_parts_are_resolved_but_thumb_travel_fails_closed() {
     let layout = scrollbar_layout(split, Rect::new(0, 0, 1024, 768), &options).expect("scrollbar");
     assert_eq!(layout.rect, Rect::new(23, 103, 230, 26));
     assert_eq!(layout.axis, ScrollbarAxis::Horizontal);
+    assert_eq!(layout.family, ScrollbarFamily::Legacy);
     assert_eq!(layout.border_size, Some((16, 16)));
     assert_eq!(layout.min_value, Some(0.0));
     assert_eq!(layout.max_value, Some(100.0));

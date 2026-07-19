@@ -21,13 +21,15 @@
 //! found, replace the raw renderer for that field and cite it. See
 //! `LANE_REPORT.md` for the per-field FILE/UNKNOWN table.
 
-use crate::hud::{MapmodeBinding, OutlinerBinding, OutlinerRowBinding};
+use crate::hud::{OutlinerBinding, OutlinerRowBinding};
 use crate::loc::Localisation;
 use crate::topbar::{
     flag_candidates_for_size, month_name_english, FactoryCounts, FlagSizeFolder, TopbarBinding,
 };
 use replay_core::world::FactionRosterStatus;
-use replay_core::{CountryIdentity, DiplomacyView, Leaf, TopbarScalars, ViewStatus, WorldFrame};
+use replay_core::{
+    CountryIdentity, DiplomacyView, Leaf, TopbarRatios, TopbarScalars, ViewStatus, WorldFrame,
+};
 
 /// Render an `f64` leaf as its raw shortest round-trip decimal, or `None`
 /// (the fail-closed absent form) when the value was never measured.
@@ -57,6 +59,18 @@ fn measured_u32(leaf: &Leaf<i64>) -> Option<u32> {
     }
 }
 
+/// Measured 0..=1 fraction for an authored progress bar. Non-finite or
+/// out-of-range values fail closed instead of being clamped into a plausible
+/// display value.
+fn measured_ratio(leaf: &Leaf<f64>) -> Option<f32> {
+    match leaf {
+        Leaf::Measured(value) if value.is_finite() && (0.0..=1.0).contains(value) => {
+            Some(*value as f32)
+        }
+        _ => None,
+    }
+}
+
 /// Map one country's [`TopbarScalars`] view onto the layout-only
 /// [`TopbarBinding`] text/count fields, fail-closed. The flag/ideology
 /// identity fields are filled separately by [`apply_identity`].
@@ -81,6 +95,7 @@ fn apply_scalars(binding: &mut TopbarBinding, scalars: &TopbarScalars) {
     binding.world_tension = scalars.world_tension.measured().map(|v| *v as f32);
     binding.supply = raw_f64(&scalars.supply_value);
     binding.convoys = raw_f64(&scalars.convoys);
+    binding.supply_ratio = measured_ratio(&scalars.supply_ratio);
 
     // Factory triple: only bound when all three counts are measured, so a
     // partial capture never renders a mixed real/zero triple.
@@ -99,6 +114,16 @@ fn apply_scalars(binding: &mut TopbarBinding, scalars: &TopbarScalars) {
     // The single-count `factory_text` alias is left absent; the triple above is
     // the measured form. (Its `/`-join is UNKNOWN formatting — see report.)
     binding.factory_text = None;
+}
+
+/// Map the three unambiguous ratio leaves onto their exact authored bars.
+/// `xp_ratio` remains intentionally unused: the recording carries one value,
+/// while the topbar has distinct army/navy/air overlays, so assigning it to
+/// any or all three would fabricate a join.
+fn apply_ratios(binding: &mut TopbarBinding, ratios: &TopbarRatios) {
+    binding.industrial_ratio = measured_ratio(&ratios.industrial_ratio);
+    binding.convoys_ratio = measured_ratio(&ratios.convoy_ratio);
+    binding.fuel_ratio = measured_ratio(&ratios.fuel_ratio);
 }
 
 /// Fill the flag/ideology identity fields from a [`CountryIdentity`] view.
@@ -136,6 +161,12 @@ pub fn topbar_binding_from_frame(frame: &WorldFrame, pov_tag: &str) -> TopbarBin
     if frame.topbar_status() == ViewStatus::Present {
         if let Some(scalars) = frame.topbar_scalars(pov_tag) {
             apply_scalars(&mut binding, scalars);
+        }
+    }
+
+    if frame.topbar_extras_status() == ViewStatus::Present {
+        if let Some(ratios) = frame.topbar_ratios(pov_tag) {
+            apply_ratios(&mut binding, ratios);
         }
     }
 
@@ -639,26 +670,6 @@ pub fn apply_clock(binding: &mut TopbarBinding, clock: &ClockBinding) {
 }
 
 // ===========================================================================
-// D7 — Map-mode bar active state (observer default)
-// ===========================================================================
-//
-// The active map mode is NOT recorded — it is viewer UI state (UI_LAYOUT_LAW
-// §6.2: "active mode per tick = runtime/recording-gated"). The observer app
-// CHOOSES the mode; the replay's default is political (`game_map_mode_country`,
-// the first map-mode button). A recorded active-mode is descoped (plan D7).
-
-/// The observer default map-mode bar state (D7): political
-/// (`game_map_mode_country`), button 1, four-button layout. There is no
-/// recorded active mode to bind (UI_LAYOUT_LAW §6.2); this is the viewer
-/// default the map-mode bar highlights.
-pub fn observer_default_mapmode() -> MapmodeBinding {
-    MapmodeBinding {
-        selected_button: 1,
-        use_four_button_layout: true,
-    }
-}
-
-// ===========================================================================
 // D7 — Tile (state) tooltip content binding
 // ===========================================================================
 //
@@ -822,13 +833,6 @@ mod tests {
         assert_eq!(playback_speed_button(1), 2);
         assert_eq!(playback_speed_button(4), 5);
         assert_eq!(playback_speed_button(7), 5); // clamp at 5 buttons
-    }
-
-    #[test]
-    fn observer_default_mapmode_is_political_button_one() {
-        let m = observer_default_mapmode();
-        assert_eq!(m.selected_button, 1);
-        assert!(m.use_four_button_layout);
     }
 
     fn all_absent_scalars() -> TopbarScalars {

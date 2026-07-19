@@ -76,7 +76,7 @@ ROOTS: list[dict[str, Any]] = [
             "overlord": "subject_relation+0x10 i32",
             "subject": "subject_relation+0x14 i32",
             "autonomy_state_db": "subject_relation+0x58 -> std::string at +0x08",
-            "ratio": "subject_relation+0x60 i32 / 100000",
+            "ratio": "subject_relation+0x60 i64 fixed-point / 100000",
         },
         "source": "memory_reader/diplo_relations_live.py",
     },

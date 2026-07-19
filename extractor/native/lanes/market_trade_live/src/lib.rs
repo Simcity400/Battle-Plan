@@ -43,11 +43,58 @@ pub const MARKET_TRADE_LEND_LEASE_SCHEMA_VERSION: u16 = 1;
 pub const MARKET_TRADE_LEND_LEASE_HEADER_LEN: usize = 32;
 pub const MARKET_TRADE_LEND_LEASE_ROW_LEN: usize = 48;
 pub const MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC: &[u8; 4] = b"MTRF";
-pub const MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION: u16 = 1;
+pub const MARKET_TRADE_RESOURCE_FLOW_LEGACY_SCHEMA_VERSION: u16 = 1;
+pub const MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION: u16 = 2;
 pub const MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN: usize = 32;
 pub const MARKET_TRADE_RESOURCE_FLOW_ROW_LEN: usize = 72;
+pub const MARKET_TRADE_RESOURCE_FLOW_KIND_PRODUCED: u32 = 1;
+pub const MARKET_TRADE_RESOURCE_FLOW_KIND_IMPORTED: u32 = 2;
 pub const MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED: u32 = 3;
+pub const MARKET_TRADE_RESOURCE_FLOW_KIND_USED: u32 = 4;
+pub const MARKET_TRADE_RESOURCE_FLOW_KIND_TO_EXPORT: u32 = 5;
+pub const MARKET_TRADE_RESOURCE_FLOW_KIND_BASE_EXPORT: u32 = 6;
+pub const MARKET_TRADE_RESOURCE_FLOW_KIND_MASK: u32 = 0x3F;
 pub const MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK: u32 = 0x7F;
+pub const MARKET_TRADE_FACTORY_HEADER_TRAILER_MAGIC: &[u8; 4] = b"MTRH";
+pub const MARKET_TRADE_FACTORY_HEADER_SCHEMA_VERSION: u16 = 1;
+pub const MARKET_TRADE_FACTORY_HEADER_HEADER_LEN: usize = 24;
+pub const MARKET_TRADE_FACTORY_HEADER_ROW_LEN: usize = 16;
+pub const MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC: &[u8; 4] = b"MTRR";
+pub const MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION: u16 = 1;
+pub const MARKET_TRADE_RESOURCE_ROW_HEADER_LEN: usize = 32;
+pub const MARKET_TRADE_RESOURCE_ROW_LEN: usize = 64;
+pub const MARKET_TRADE_RESOURCE_COUNT: u32 = 7;
+pub const MARKET_TRADE_RESOURCE_NEEDED_SURPLUS: u32 = 1;
+pub const MARKET_TRADE_RESOURCE_NEEDED_DEFICIT: u32 = 2;
+pub const MARKET_TRADE_RESOURCE_NEEDED_CURRENT_MAX: u32 = 3;
+pub const MARKET_TRADE_RESOURCE_FLAG_CURRENT: u32 = 1;
+pub const MARKET_TRADE_RESOURCE_FLAG_MAX: u32 = 1 << 1;
+pub const MARKET_TRADE_RESOURCE_FLAGS_KNOWN: u32 =
+    MARKET_TRADE_RESOURCE_FLAG_CURRENT | MARKET_TRADE_RESOURCE_FLAG_MAX;
+pub const MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC: &[u8; 4] = b"MTRD";
+pub const MARKET_TRADE_CLASSIC_DEAL_SCHEMA_VERSION: u16 = 1;
+pub const MARKET_TRADE_CLASSIC_DEAL_HEADER_LEN: usize = 32;
+pub const MARKET_TRADE_CLASSIC_DEAL_ROW_LEN: usize = 96;
+pub const MARKET_TRADE_CLASSIC_DEAL_DIRECTION_IMPORT: u32 = 1;
+pub const MARKET_TRADE_CLASSIC_DEAL_DIRECTION_EXPORT: u32 = 2;
+pub const MARKET_TRADE_CLASSIC_DEAL_ROUTE_LAND: u32 = 1;
+pub const MARKET_TRADE_CLASSIC_DEAL_ROUTE_SEA: u32 = 2;
+pub const MARKET_TRADE_CLASSIC_DEAL_ROUTE_LOCKED: u32 = 3;
+pub const MARKET_TRADE_CLASSIC_DEAL_FLAG_EXACT: u32 = 1;
+/// B1 exact per-country equipment-market stockpile snapshot. `MTS1` carries
+/// every country-owner witness, including measured-empty nested iterators.
+pub const MARKET_TRADE_STOCKPILE_TRAILER_MAGIC: &[u8; 4] = b"MTS1";
+pub const MARKET_TRADE_STOCKPILE_SCHEMA_VERSION: u16 = 1;
+pub const MARKET_TRADE_STOCKPILE_HEADER_LEN: usize = 40;
+pub const MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN: usize = 20;
+pub const MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN: usize = 24;
+pub const MARKET_TRADE_STOCKPILE_GLOBAL_OWNER_ITERATOR_COMPLETE: u32 = 1;
+pub const MARKET_TRADE_STOCKPILE_GLOBAL_NESTED_ITERATORS_COMPLETE: u32 = 1 << 1;
+pub const MARKET_TRADE_STOCKPILE_GLOBAL_FLAGS_KNOWN: u32 =
+    MARKET_TRADE_STOCKPILE_GLOBAL_OWNER_ITERATOR_COMPLETE
+        | MARKET_TRADE_STOCKPILE_GLOBAL_NESTED_ITERATORS_COMPLETE;
+pub const MARKET_TRADE_STOCKPILE_COUNTRY_COMPLETE: u32 = 1;
+pub const MARKET_TRADE_STOCKPILE_EQUIPMENT_TYPE: u32 = 70;
 
 pub const ROW_FLAG_BUYER_PTR_VALID: u32 = 1;
 pub const ROW_FLAG_EQUIPMENT_SUBBUF_VALID: u32 = 1 << 1;
@@ -205,6 +252,68 @@ pub struct ResourceFlowRow {
     pub values_raw: [i64; 7],
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FactoryHeaderRow {
+    pub tag_db_id: u32,
+    pub total: i32,
+    pub used: i32,
+    pub available: i32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ResourceViewRow {
+    pub tag_db_id: u32,
+    pub resource_index: u32,
+    pub visible_order: u32,
+    pub needed_type: u32,
+    pub balance: i32,
+    pub produced: i32,
+    pub imported: i32,
+    pub exported: i32,
+    pub special_project: i32,
+    pub production_line: i32,
+    pub needed: i32,
+    pub needed_current: i32,
+    pub needed_max: i32,
+    pub flags: u32,
+    pub descriptor_db_index: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ClassicDealRow {
+    pub owner_tag_db_id: u32,
+    pub counterpart_tag_db_id: u32,
+    pub resource_index: u32,
+    pub visible_order: u32,
+    pub direction: u32,
+    pub route_kind: u32,
+    pub flags: u32,
+    pub deal_id: u64,
+    pub requested_raw: i64,
+    pub delivered_raw: i64,
+    pub available_export_raw: i64,
+    pub factory_cost_raw: i64,
+    pub efficiency_raw: i64,
+    pub civilian_factories: i32,
+    pub convoys_assigned: i32,
+    pub convoys_required: i32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MarketStockpileCountryRow {
+    pub tag_db_id: u32,
+    pub item_first: u32,
+    pub item_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MarketStockpileItemRow {
+    pub equipment_variant_id: u32,
+    pub equipment_type: u32,
+    pub ordinal: u32,
+    pub amount_raw: i64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MarketTradeResidualBadge {
     pub gap_id: u32,
@@ -284,14 +393,35 @@ pub struct MarketTradePayloadSummary {
     pub lend_lease_price_valid_rows: u32,
     pub resource_flow_trailer_present: bool,
     pub resource_flow_rows: u32,
+    pub resource_flow_country_rows: u32,
     pub resource_flow_exported_rows: u32,
     pub resource_flow_scale_raw: u32,
     pub resource_flow_resource_mask: u32,
+    pub resource_flow_kind_mask: u32,
+    pub factory_header_trailer_present: bool,
+    pub factory_header_rows: u32,
+    pub resource_row_trailer_present: bool,
+    pub resource_rows: u32,
+    pub resource_row_country_count: u32,
+    pub resource_row_resource_count: u32,
+    pub classic_deal_trailer_present: bool,
+    pub classic_deal_rows: u32,
+    pub classic_deal_country_count: u32,
+    pub stockpile_trailer_present: bool,
+    pub stockpile_country_rows: u32,
+    pub stockpile_item_rows: u32,
+    pub stockpile_expected_country_count: u32,
     pub rows: Vec<MarketTradeRow>,
     pub residual_badges: Vec<MarketTradeResidualBadgeRow>,
     pub detail_contracts: Vec<PurchaseContractDetailRow>,
     pub lend_lease_mappings: Vec<LendLeaseMappingRow>,
     pub resource_flow_rows_decoded: Vec<ResourceFlowRow>,
+    pub factory_headers: Vec<FactoryHeaderRow>,
+    pub resource_view_rows: Vec<ResourceViewRow>,
+    pub classic_deal_country_witnesses: Vec<u32>,
+    pub classic_deals: Vec<ClassicDealRow>,
+    pub stockpile_countries: Vec<MarketStockpileCountryRow>,
+    pub stockpile_items: Vec<MarketStockpileItemRow>,
     pub parse_errors: Vec<String>,
 }
 
@@ -351,7 +481,14 @@ pub struct MarketTradeStreamSummary {
     pub lend_lease_price_valid_rows_total: u64,
     pub resource_flow_records: u64,
     pub resource_flow_rows_total: u64,
+    pub resource_flow_country_rows_total: u64,
     pub resource_flow_exported_rows_total: u64,
+    pub factory_header_records: u64,
+    pub factory_header_rows_total: u64,
+    pub resource_row_records: u64,
+    pub resource_rows_total: u64,
+    pub classic_deal_records: u64,
+    pub classic_deal_rows_total: u64,
     pub payloads: Vec<MarketTradePayloadSummary>,
     pub parse_errors: Vec<String>,
     pub ordering_errors: Vec<String>,
@@ -926,10 +1063,11 @@ pub fn encode_lend_lease_trailer(rows: &[LendLeaseMappingRow]) -> Vec<u8> {
 
 pub fn encode_resource_flow_trailer(rows: &[ResourceFlowRow]) -> Vec<u8> {
     let row_count = rows.len().min(u32::MAX as usize) as u32;
-    let exported = rows
+    let country_count = rows
         .iter()
-        .filter(|row| row.flow_kind == MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED)
-        .count()
+        .map(|row| row.tag_db_id)
+        .collect::<BTreeSet<_>>()
+        .len()
         .min(u32::MAX as usize) as u32;
 
     let mut payload = Vec::with_capacity(
@@ -941,10 +1079,10 @@ pub fn encode_resource_flow_trailer(rows: &[ResourceFlowRow]) -> Vec<u8> {
     payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_FLOW_ROW_LEN as u16).to_le_bytes());
     payload.extend_from_slice(&0u16.to_le_bytes());
     payload.extend_from_slice(&row_count.to_le_bytes());
-    payload.extend_from_slice(&exported.to_le_bytes());
+    payload.extend_from_slice(&country_count.to_le_bytes());
     payload.extend_from_slice(&MARKET_TRADE_SCALE_RAW.to_le_bytes());
     payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK.to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&MARKET_TRADE_RESOURCE_FLOW_KIND_MASK.to_le_bytes());
     for row in rows {
         payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
         payload.extend_from_slice(&row.flow_kind.to_le_bytes());
@@ -953,6 +1091,76 @@ pub fn encode_resource_flow_trailer(rows: &[ResourceFlowRow]) -> Vec<u8> {
         for value in row.values_raw {
             payload.extend_from_slice(&value.to_le_bytes());
         }
+    }
+    payload
+}
+
+pub fn encode_factory_header_trailer(rows: &[FactoryHeaderRow]) -> Vec<u8> {
+    let row_count = rows.len().min(u32::MAX as usize) as u32;
+    let mut payload = Vec::with_capacity(
+        MARKET_TRADE_FACTORY_HEADER_HEADER_LEN + rows.len() * MARKET_TRADE_FACTORY_HEADER_ROW_LEN,
+    );
+    payload.extend_from_slice(MARKET_TRADE_FACTORY_HEADER_TRAILER_MAGIC);
+    payload.extend_from_slice(&MARKET_TRADE_FACTORY_HEADER_SCHEMA_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_FACTORY_HEADER_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_FACTORY_HEADER_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&0u16.to_le_bytes());
+    payload.extend_from_slice(&row_count.to_le_bytes());
+    payload.extend_from_slice(&row_count.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    for row in rows {
+        payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.total.to_le_bytes());
+        payload.extend_from_slice(&row.used.to_le_bytes());
+        payload.extend_from_slice(&row.available.to_le_bytes());
+    }
+    payload
+}
+
+pub fn encode_market_stockpile_trailer(
+    expected_country_count: u32,
+    countries: &[MarketStockpileCountryRow],
+    items: &[MarketStockpileItemRow],
+) -> Vec<u8> {
+    let country_count = countries.len().min(u32::MAX as usize) as u32;
+    let item_count = items.len().min(u32::MAX as usize) as u32;
+    let segment_len = MARKET_TRADE_STOCKPILE_HEADER_LEN
+        .saturating_add(
+            countries
+                .len()
+                .saturating_mul(MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN),
+        )
+        .saturating_add(
+            items
+                .len()
+                .saturating_mul(MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN),
+        );
+    let mut payload = Vec::with_capacity(segment_len);
+    payload.extend_from_slice(MARKET_TRADE_STOCKPILE_TRAILER_MAGIC);
+    payload.extend_from_slice(&MARKET_TRADE_STOCKPILE_SCHEMA_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_STOCKPILE_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(segment_len as u32).to_le_bytes());
+    payload.extend_from_slice(&country_count.to_le_bytes());
+    payload.extend_from_slice(&item_count.to_le_bytes());
+    payload.extend_from_slice(&expected_country_count.to_le_bytes());
+    payload.extend_from_slice(&MARKET_TRADE_SCALE_RAW.to_le_bytes());
+    payload.extend_from_slice(&MARKET_TRADE_STOCKPILE_GLOBAL_FLAGS_KNOWN.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    for row in countries {
+        payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.item_first.to_le_bytes());
+        payload.extend_from_slice(&row.item_count.to_le_bytes());
+        payload.extend_from_slice(&MARKET_TRADE_STOCKPILE_COUNTRY_COMPLETE.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+    }
+    for row in items {
+        payload.extend_from_slice(&row.equipment_variant_id.to_le_bytes());
+        payload.extend_from_slice(&row.equipment_type.to_le_bytes());
+        payload.extend_from_slice(&row.ordinal.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&row.amount_raw.to_le_bytes());
     }
     payload
 }
@@ -1137,6 +1345,20 @@ fn decode_optional_trailer(
             decode_lend_lease_trailer(offset, payload, trailer_offset, summary)
         } else if magic == MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC {
             decode_resource_flow_trailer(offset, payload, trailer_offset, summary)
+        } else if magic == MARKET_TRADE_FACTORY_HEADER_TRAILER_MAGIC {
+            decode_factory_header_trailer(offset, payload, trailer_offset, summary)
+        } else if magic == MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC {
+            decode_resource_row_trailer(offset, payload, trailer_offset, summary)
+        } else if magic == MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC {
+            decode_classic_deal_trailer(offset, payload, trailer_offset, summary)
+        } else if magic == MARKET_TRADE_STOCKPILE_TRAILER_MAGIC {
+            if summary.stockpile_trailer_present {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: duplicate MTS1 stockpile trailer"));
+                return;
+            }
+            decode_market_stockpile_trailer(offset, payload, trailer_offset, summary)
         } else {
             summary.parse_errors.push(format!(
                 "offset {offset}: market trade optional trailer has unknown magic"
@@ -1154,6 +1376,499 @@ fn decode_optional_trailer(
         }
         trailer_offset = next_offset;
     }
+}
+
+fn decode_market_stockpile_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    summary: &mut MarketTradePayloadSummary,
+) -> Option<usize> {
+    summary.stockpile_trailer_present = true;
+    if payload.len().saturating_sub(trailer_offset) < MARKET_TRADE_STOCKPILE_HEADER_LEN {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: MTS1 trailer is too short"));
+        return None;
+    }
+    let trailer = &payload[trailer_offset..];
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let country_row_len = read_u16_le(trailer, 8) as usize;
+    let item_row_len = read_u16_le(trailer, 10) as usize;
+    let segment_len = read_u32_le(trailer, 12) as usize;
+    let country_count = read_u32_le(trailer, 16);
+    let item_count = read_u32_le(trailer, 20);
+    let expected_country_count = read_u32_le(trailer, 24);
+    let scale_raw = read_u32_le(trailer, 28);
+    let flags = read_u32_le(trailer, 32);
+    let reserved = read_u32_le(trailer, 36);
+    summary.stockpile_country_rows = country_count;
+    summary.stockpile_item_rows = item_count;
+    summary.stockpile_expected_country_count = expected_country_count;
+    let expected_len = MARKET_TRADE_STOCKPILE_HEADER_LEN
+        .saturating_add(
+            (country_count as usize).saturating_mul(MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN),
+        )
+        .saturating_add((item_count as usize).saturating_mul(MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN));
+    if version != MARKET_TRADE_STOCKPILE_SCHEMA_VERSION
+        || header_len != MARKET_TRADE_STOCKPILE_HEADER_LEN
+        || country_row_len != MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN
+        || item_row_len != MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN
+        || segment_len != expected_len
+        || country_count == 0
+        || country_count != expected_country_count
+        || scale_raw != MARKET_TRADE_SCALE_RAW
+        || flags != MARKET_TRADE_STOCKPILE_GLOBAL_FLAGS_KNOWN
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: invalid MTS1 header shape version {version} header_len {header_len} country_row_len {country_row_len} item_row_len {item_row_len} segment_len {segment_len}/{expected_len} countries {country_count}/{expected_country_count} scale {scale_raw} flags {flags:#x} reserved {reserved}"
+        ));
+        return None;
+    }
+
+    let item_base =
+        header_len.saturating_add((country_count as usize).saturating_mul(country_row_len));
+    let errors_before_country_rows = summary.parse_errors.len();
+    let mut seen_tags = BTreeSet::new();
+    let mut expected_first = 0u32;
+    for row_index in 0..country_count {
+        let cursor = header_len + row_index as usize * country_row_len;
+        let row = MarketStockpileCountryRow {
+            tag_db_id: read_u32_le(trailer, cursor),
+            item_first: read_u32_le(trailer, cursor + 4),
+            item_count: read_u32_le(trailer, cursor + 8),
+        };
+        let row_flags = read_u32_le(trailer, cursor + 12);
+        let row_reserved = read_u32_le(trailer, cursor + 16);
+        let item_end = row.item_first.saturating_add(row.item_count);
+        if row.tag_db_id == 0
+            || row.tag_db_id > MARKET_TRADE_MAX_TAG_DB_ID
+            || !seen_tags.insert(row.tag_db_id)
+            || row.item_first != expected_first
+            || item_end > item_count
+            || row_flags != MARKET_TRADE_STOCKPILE_COUNTRY_COMPLETE
+            || row_reserved != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: MTS1 country row {row_index} has invalid tag/range/completeness"
+            ));
+        }
+        expected_first = item_end;
+        summary.stockpile_countries.push(row);
+    }
+    if expected_first != item_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: MTS1 country ranges cover {expected_first} item(s), expected {item_count}"
+        ));
+    }
+    if summary.parse_errors.len() != errors_before_country_rows {
+        return Some(trailer_offset + segment_len);
+    }
+
+    let mut per_country_keys = BTreeSet::new();
+    for country in &summary.stockpile_countries {
+        for ordinal in 0..country.item_count {
+            let item_index = country.item_first.saturating_add(ordinal);
+            let cursor = item_base + item_index as usize * item_row_len;
+            let row = MarketStockpileItemRow {
+                equipment_variant_id: read_u32_le(trailer, cursor),
+                equipment_type: read_u32_le(trailer, cursor + 4),
+                ordinal: read_u32_le(trailer, cursor + 8),
+                amount_raw: read_i64_le(trailer, cursor + 16),
+            };
+            let item_reserved = read_u32_le(trailer, cursor + 12);
+            if row.equipment_variant_id == 0
+                || row.equipment_variant_id > MARKET_TRADE_MAX_VARIANT_ID
+                || row.equipment_type != MARKET_TRADE_STOCKPILE_EQUIPMENT_TYPE
+                || row.ordinal != ordinal
+                || row.amount_raw < 0
+                || row.amount_raw > MARKET_TRADE_MAX_AMOUNT_RAW
+                || item_reserved != 0
+                || !per_country_keys.insert((
+                    country.tag_db_id,
+                    row.equipment_variant_id,
+                    row.equipment_type,
+                ))
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: MTS1 item {item_index} has invalid identity/order/amount"
+                ));
+            }
+            summary.stockpile_items.push(row);
+        }
+    }
+    Some(trailer_offset + segment_len)
+}
+
+fn decode_factory_header_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    summary: &mut MarketTradePayloadSummary,
+) -> Option<usize> {
+    summary.factory_header_trailer_present = true;
+    if payload.len().saturating_sub(trailer_offset) < MARKET_TRADE_FACTORY_HEADER_HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: factory-header trailer is too short"
+        ));
+        return None;
+    }
+    let trailer = &payload[trailer_offset..];
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let row_len = read_u16_le(trailer, 8) as usize;
+    let reserved0 = read_u16_le(trailer, 10);
+    let row_count = read_u32_le(trailer, 12);
+    let country_count = read_u32_le(trailer, 16);
+    let reserved1 = read_u32_le(trailer, 20);
+    summary.factory_header_rows = row_count;
+    if version != MARKET_TRADE_FACTORY_HEADER_SCHEMA_VERSION
+        || header_len != MARKET_TRADE_FACTORY_HEADER_HEADER_LEN
+        || row_len != MARKET_TRADE_FACTORY_HEADER_ROW_LEN
+        || reserved0 != 0
+        || reserved1 != 0
+        || row_count != country_count
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: invalid factory-header shape version {version} header_len {header_len} row_len {row_len} rows {row_count} countries {country_count}"
+        ));
+        return None;
+    }
+    let expected_len = header_len.saturating_add((row_count as usize).saturating_mul(row_len));
+    if trailer.len() < expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: factory-header trailer is {} byte(s), expected at least {expected_len}",
+            trailer.len()
+        ));
+        return None;
+    }
+    let mut cursor = header_len;
+    let mut seen = BTreeSet::new();
+    for row_index in 0..row_count {
+        let row = FactoryHeaderRow {
+            tag_db_id: read_u32_le(trailer, cursor),
+            total: read_i32_le(trailer, cursor + 4),
+            used: read_i32_le(trailer, cursor + 8),
+            available: read_i32_le(trailer, cursor + 12),
+        };
+        cursor += row_len;
+        if row.tag_db_id == 0 || row.tag_db_id > MARKET_TRADE_MAX_TAG_DB_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: factory-header row {row_index} invalid tag_db_id {}",
+                row.tag_db_id
+            ));
+        }
+        if !seen.insert(row.tag_db_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: factory-header row {row_index} duplicates tag_db_id {}",
+                row.tag_db_id
+            ));
+        }
+        summary.factory_headers.push(row);
+    }
+    Some(trailer_offset + expected_len)
+}
+
+fn decode_resource_row_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    summary: &mut MarketTradePayloadSummary,
+) -> Option<usize> {
+    summary.resource_row_trailer_present = true;
+    if payload.len().saturating_sub(trailer_offset) < MARKET_TRADE_RESOURCE_ROW_HEADER_LEN {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: MTRR trailer is too short"));
+        return None;
+    }
+    let trailer = &payload[trailer_offset..];
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let row_len = read_u16_le(trailer, 8) as usize;
+    let reserved0 = read_u16_le(trailer, 10);
+    let row_count = read_u32_le(trailer, 12);
+    let country_count = read_u32_le(trailer, 16);
+    let resource_count = read_u32_le(trailer, 20);
+    let display_scale = read_u32_le(trailer, 24);
+    let reserved1 = read_u32_le(trailer, 28);
+    summary.resource_rows = row_count;
+    summary.resource_row_country_count = country_count;
+    summary.resource_row_resource_count = resource_count;
+    if version != MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION
+        || header_len != MARKET_TRADE_RESOURCE_ROW_HEADER_LEN
+        || row_len != MARKET_TRADE_RESOURCE_ROW_LEN
+        || reserved0 != 0
+        || reserved1 != 0
+        || resource_count != MARKET_TRADE_RESOURCE_COUNT
+        || display_scale != 1
+        || row_count != country_count.saturating_mul(resource_count)
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: invalid MTRR shape version {version} header_len {header_len} row_len {row_len} rows {row_count} countries {country_count} resources {resource_count} scale {display_scale}"
+        ));
+        return None;
+    }
+    let expected_len = header_len.saturating_add((row_count as usize).saturating_mul(row_len));
+    if trailer.len() < expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: MTRR trailer is {} byte(s), expected at least {expected_len}",
+            trailer.len()
+        ));
+        return None;
+    }
+    let mut cursor = header_len;
+    let mut seen = BTreeSet::new();
+    let mut per_country = BTreeMap::<u32, BTreeSet<u32>>::new();
+    for row_index in 0..row_count {
+        let row = ResourceViewRow {
+            tag_db_id: read_u32_le(trailer, cursor),
+            resource_index: read_u32_le(trailer, cursor + 4),
+            visible_order: read_u32_le(trailer, cursor + 8),
+            needed_type: read_u32_le(trailer, cursor + 12),
+            balance: read_i32_le(trailer, cursor + 16),
+            produced: read_i32_le(trailer, cursor + 20),
+            imported: read_i32_le(trailer, cursor + 24),
+            exported: read_i32_le(trailer, cursor + 28),
+            special_project: read_i32_le(trailer, cursor + 32),
+            production_line: read_i32_le(trailer, cursor + 36),
+            needed: read_i32_le(trailer, cursor + 40),
+            needed_current: read_i32_le(trailer, cursor + 44),
+            needed_max: read_i32_le(trailer, cursor + 48),
+            flags: read_u32_le(trailer, cursor + 52),
+            descriptor_db_index: read_u32_le(trailer, cursor + 56),
+        };
+        let reserved = read_u32_le(trailer, cursor + 60);
+        cursor += row_len;
+        if row.tag_db_id == 0 || row.tag_db_id > MARKET_TRADE_MAX_TAG_DB_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: MTRR row {row_index} invalid tag_db_id {}",
+                row.tag_db_id
+            ));
+        }
+        if row.resource_index >= MARKET_TRADE_RESOURCE_COUNT
+            || row.visible_order >= MARKET_TRADE_RESOURCE_COUNT
+            || row.descriptor_db_index == 0
+            || row.flags & !MARKET_TRADE_RESOURCE_FLAGS_KNOWN != 0
+            || reserved != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: MTRR row {row_index} has invalid shape"
+            ));
+        }
+        let oil = row.resource_index == 0;
+        if (oil
+            && (row.needed_type != MARKET_TRADE_RESOURCE_NEEDED_CURRENT_MAX
+                || row.flags != MARKET_TRADE_RESOURCE_FLAGS_KNOWN
+                || row.needed != row.needed_current))
+            || (!oil
+                && (row.flags != 0
+                    || row.needed_current != 0
+                    || row.needed_max != 0
+                    || ![
+                        MARKET_TRADE_RESOURCE_NEEDED_SURPLUS,
+                        MARKET_TRADE_RESOURCE_NEEDED_DEFICIT,
+                    ]
+                    .contains(&row.needed_type)
+                    || row.needed != row.balance
+                    || (row.balance < 0)
+                        != (row.needed_type == MARKET_TRADE_RESOURCE_NEEDED_DEFICIT)))
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: MTRR row {row_index} has inconsistent needed semantics"
+            ));
+        }
+        if !seen.insert((row.tag_db_id, row.resource_index)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: MTRR row {row_index} duplicates country/resource key"
+            ));
+        }
+        per_country
+            .entry(row.tag_db_id)
+            .or_default()
+            .insert(row.visible_order);
+        summary.resource_view_rows.push(row);
+    }
+    if per_country.len() != country_count as usize {
+        summary.parse_errors.push(format!(
+            "offset {offset}: MTRR decoded country count {} != header {country_count}",
+            per_country.len()
+        ));
+    }
+    for (tag_db_id, orders) in per_country {
+        if orders.len() != resource_count as usize || !orders.iter().copied().eq(0..resource_count)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: MTRR country {tag_db_id} visible order is not complete"
+            ));
+        }
+    }
+    Some(trailer_offset + expected_len)
+}
+
+fn decode_classic_deal_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    summary: &mut MarketTradePayloadSummary,
+) -> Option<usize> {
+    summary.classic_deal_trailer_present = true;
+    if payload.len().saturating_sub(trailer_offset) < MARKET_TRADE_CLASSIC_DEAL_HEADER_LEN {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: MTRD trailer is too short"));
+        return None;
+    }
+    let trailer = &payload[trailer_offset..];
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let row_len = read_u16_le(trailer, 8) as usize;
+    let reserved0 = read_u16_le(trailer, 10);
+    let row_count = read_u32_le(trailer, 12);
+    let country_count = read_u32_le(trailer, 16);
+    let scale_raw = read_u32_le(trailer, 20);
+    let witness_count = read_u32_le(trailer, 24);
+    let reserved1 = read_u32_le(trailer, 28);
+    summary.classic_deal_rows = row_count;
+    summary.classic_deal_country_count = country_count;
+    if version != MARKET_TRADE_CLASSIC_DEAL_SCHEMA_VERSION
+        || header_len != MARKET_TRADE_CLASSIC_DEAL_HEADER_LEN
+        || row_len != MARKET_TRADE_CLASSIC_DEAL_ROW_LEN
+        || reserved0 != 0
+        || reserved1 != 0
+        || scale_raw != MARKET_TRADE_SCALE_RAW
+        || witness_count != country_count
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: invalid MTRD shape version {version} header_len {header_len} row_len {row_len} countries {country_count} witnesses {witness_count} scale {scale_raw}"
+        ));
+        return None;
+    }
+    let expected_len = header_len
+        .saturating_add((witness_count as usize).saturating_mul(4))
+        .saturating_add((row_count as usize).saturating_mul(row_len));
+    if trailer.len() < expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: MTRD trailer is {} byte(s), expected at least {expected_len}",
+            trailer.len()
+        ));
+        return None;
+    }
+    let mut cursor = header_len;
+    let mut witnesses = BTreeSet::new();
+    for witness_index in 0..witness_count {
+        let tag_db_id = read_u32_le(trailer, cursor);
+        cursor += 4;
+        if tag_db_id == 0 || tag_db_id > MARKET_TRADE_MAX_TAG_DB_ID || !witnesses.insert(tag_db_id)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: MTRD witness {witness_index} is invalid or duplicated"
+            ));
+        }
+        summary.classic_deal_country_witnesses.push(tag_db_id);
+    }
+    let mut seen = BTreeSet::new();
+    let mut pair_halves = BTreeMap::<u64, Vec<ClassicDealRow>>::new();
+    let mut per_owner_order = BTreeMap::<u32, BTreeSet<u32>>::new();
+    for row_index in 0..row_count {
+        let row = ClassicDealRow {
+            owner_tag_db_id: read_u32_le(trailer, cursor),
+            counterpart_tag_db_id: read_u32_le(trailer, cursor + 4),
+            resource_index: read_u32_le(trailer, cursor + 8),
+            visible_order: read_u32_le(trailer, cursor + 12),
+            direction: read_u32_le(trailer, cursor + 16),
+            route_kind: read_u32_le(trailer, cursor + 20),
+            flags: read_u32_le(trailer, cursor + 24),
+            deal_id: read_u64_le(trailer, cursor + 32),
+            requested_raw: read_i64_le(trailer, cursor + 40),
+            delivered_raw: read_i64_le(trailer, cursor + 48),
+            available_export_raw: read_i64_le(trailer, cursor + 56),
+            factory_cost_raw: read_i64_le(trailer, cursor + 64),
+            efficiency_raw: read_i64_le(trailer, cursor + 72),
+            civilian_factories: read_i32_le(trailer, cursor + 80),
+            convoys_assigned: read_i32_le(trailer, cursor + 84),
+            convoys_required: read_i32_le(trailer, cursor + 88),
+        };
+        let reserved_row0 = read_u32_le(trailer, cursor + 28);
+        let reserved_row1 = read_i32_le(trailer, cursor + 92);
+        cursor += row_len;
+        if !witnesses.contains(&row.owner_tag_db_id)
+            || !witnesses.contains(&row.counterpart_tag_db_id)
+            || row.owner_tag_db_id == row.counterpart_tag_db_id
+            || row.resource_index >= MARKET_TRADE_RESOURCE_COUNT
+            || ![
+                MARKET_TRADE_CLASSIC_DEAL_DIRECTION_IMPORT,
+                MARKET_TRADE_CLASSIC_DEAL_DIRECTION_EXPORT,
+            ]
+            .contains(&row.direction)
+            || ![
+                MARKET_TRADE_CLASSIC_DEAL_ROUTE_LAND,
+                MARKET_TRADE_CLASSIC_DEAL_ROUTE_SEA,
+                MARKET_TRADE_CLASSIC_DEAL_ROUTE_LOCKED,
+            ]
+            .contains(&row.route_kind)
+            || row.flags != MARKET_TRADE_CLASSIC_DEAL_FLAG_EXACT
+            || row.efficiency_raw < 0
+            || row.efficiency_raw > MARKET_TRADE_SCALE_RAW as i64
+            || reserved_row0 != 0
+            || reserved_row1 != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: MTRD row {row_index} has invalid shape"
+            ));
+        }
+        if !seen.insert((row.owner_tag_db_id, row.visible_order)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: MTRD row {row_index} duplicates owner/visible_order"
+            ));
+        }
+        per_owner_order
+            .entry(row.owner_tag_db_id)
+            .or_default()
+            .insert(row.visible_order);
+        pair_halves.entry(row.deal_id).or_default().push(row);
+        summary.classic_deals.push(row);
+    }
+    for (deal_id, halves) in pair_halves {
+        if halves.len() != 2 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: MTRD deal_id {deal_id} has {} half/halves, expected 2",
+                halves.len()
+            ));
+            continue;
+        }
+        let a = halves[0];
+        let b = halves[1];
+        if a.owner_tag_db_id != b.counterpart_tag_db_id
+            || b.owner_tag_db_id != a.counterpart_tag_db_id
+            || a.direction == b.direction
+            || a.resource_index != b.resource_index
+            || a.route_kind != b.route_kind
+            || a.requested_raw != b.requested_raw
+            || a.delivered_raw != b.delivered_raw
+            || a.available_export_raw != b.available_export_raw
+            || a.factory_cost_raw != b.factory_cost_raw
+            || a.efficiency_raw != b.efficiency_raw
+            || a.civilian_factories != b.civilian_factories
+            || a.convoys_assigned != b.convoys_assigned
+            || a.convoys_required != b.convoys_required
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: MTRD deal_id {deal_id} reciprocal halves disagree"
+            ));
+        }
+    }
+    for (owner, orders) in per_owner_order {
+        if !orders.iter().copied().eq(0..orders.len() as u32) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: MTRD owner {owner} visible order is not contiguous"
+            ));
+        }
+    }
+    Some(trailer_offset + expected_len)
 }
 
 fn decode_residual_trailer(
@@ -1591,17 +2306,26 @@ fn decode_resource_flow_trailer(
     let row_len = read_u16_le(trailer, 8) as usize;
     let reserved0 = read_u16_le(trailer, 10);
     let row_count = read_u32_le(trailer, 12);
-    let exported = read_u32_le(trailer, 16);
+    let country_count_or_exported = read_u32_le(trailer, 16);
     let scale_raw = read_u32_le(trailer, 20);
     let resource_mask = read_u32_le(trailer, 24);
-    let reserved1 = read_u32_le(trailer, 28);
+    let kind_mask = read_u32_le(trailer, 28);
 
     summary.resource_flow_rows = row_count;
-    summary.resource_flow_exported_rows = exported;
+    summary.resource_flow_country_rows = if version == MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION {
+        country_count_or_exported
+    } else {
+        0
+    };
     summary.resource_flow_scale_raw = scale_raw;
     summary.resource_flow_resource_mask = resource_mask;
+    summary.resource_flow_kind_mask = kind_mask;
 
-    if version != MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION
+    if ![
+        MARKET_TRADE_RESOURCE_FLOW_LEGACY_SCHEMA_VERSION,
+        MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION,
+    ]
+    .contains(&version)
         || header_len != MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN
         || row_len != MARKET_TRADE_RESOURCE_FLOW_ROW_LEN
     {
@@ -1610,14 +2334,35 @@ fn decode_resource_flow_trailer(
         ));
         return None;
     }
-    if reserved0 != 0 || reserved1 != 0 {
+    if reserved0 != 0 {
         summary.parse_errors.push(format!(
             "offset {offset}: resource-flow trailer reserved header field is nonzero"
         ));
     }
-    if exported != row_count {
+    if version == MARKET_TRADE_RESOURCE_FLOW_LEGACY_SCHEMA_VERSION && kind_mask != 0 {
         summary.parse_errors.push(format!(
-            "offset {offset}: resource_flow_exported_rows {exported} != row_count {row_count}"
+            "offset {offset}: legacy resource-flow trailer reserved header field is nonzero"
+        ));
+    }
+    if version == MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION
+        && kind_mask != MARKET_TRADE_RESOURCE_FLOW_KIND_MASK
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: resource_flow_kind_mask {kind_mask:#X} != {MARKET_TRADE_RESOURCE_FLOW_KIND_MASK:#X}"
+        ));
+    }
+    if version == MARKET_TRADE_RESOURCE_FLOW_LEGACY_SCHEMA_VERSION
+        && country_count_or_exported != row_count
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: legacy resource_flow_exported_rows {country_count_or_exported} != row_count {row_count}"
+        ));
+    }
+    if version == MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION
+        && row_count != country_count_or_exported.saturating_mul(6)
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: resource_flow_rows {row_count} != country_count {country_count_or_exported} * 6"
         ));
     }
     if scale_raw != MARKET_TRADE_SCALE_RAW {
@@ -1641,7 +2386,8 @@ fn decode_resource_flow_trailer(
     }
 
     let mut cursor = MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN;
-    let mut seen_tags = BTreeSet::new();
+    let mut seen_keys = BTreeSet::new();
+    let mut seen_tag_masks = BTreeMap::<u32, u32>::new();
     let mut computed_exported = 0u32;
     for row_index in 0..row_count {
         let mut row = ResourceFlowRow {
@@ -1656,22 +2402,51 @@ fn decode_resource_flow_trailer(
         }
         cursor += MARKET_TRADE_RESOURCE_FLOW_ROW_LEN;
 
-        validate_resource_flow_row(offset, row_index as usize, &row, reserved, summary);
+        validate_resource_flow_row(
+            offset,
+            row_index as usize,
+            &row,
+            reserved,
+            version == MARKET_TRADE_RESOURCE_FLOW_LEGACY_SCHEMA_VERSION,
+            summary,
+        );
         if row.flow_kind == MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED {
             computed_exported = computed_exported.saturating_add(1);
         }
-        if row.tag_db_id != 0 && !seen_tags.insert(row.tag_db_id) {
+        if row.tag_db_id != 0 && !seen_keys.insert((row.tag_db_id, row.flow_kind)) {
             summary.parse_errors.push(format!(
-                "offset {offset}: resource-flow row {row_index} duplicates tag_db_id {}",
-                row.tag_db_id
+                "offset {offset}: resource-flow row {row_index} duplicates tag_db_id {} flow_kind {}",
+                row.tag_db_id, row.flow_kind
             ));
+        }
+        if (1..=6).contains(&row.flow_kind) {
+            let mask = seen_tag_masks.entry(row.tag_db_id).or_default();
+            *mask |= 1 << (row.flow_kind - 1);
         }
         summary.resource_flow_rows_decoded.push(row);
     }
-    if exported != computed_exported {
+    summary.resource_flow_exported_rows = computed_exported;
+    if version == MARKET_TRADE_RESOURCE_FLOW_LEGACY_SCHEMA_VERSION
+        && country_count_or_exported != computed_exported
+    {
         summary.parse_errors.push(format!(
-            "offset {offset}: resource_flow_exported_rows header {exported} != decoded {computed_exported}"
+            "offset {offset}: legacy resource_flow_exported_rows header {country_count_or_exported} != decoded {computed_exported}"
         ));
+    }
+    if version == MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION {
+        if seen_tag_masks.len() != country_count_or_exported as usize {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decoded resource-flow country count {} != header {country_count_or_exported}",
+                seen_tag_masks.len()
+            ));
+        }
+        for (tag_db_id, observed_mask) in seen_tag_masks {
+            if observed_mask != MARKET_TRADE_RESOURCE_FLOW_KIND_MASK {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: tag_db_id {tag_db_id} resource-flow kind mask {observed_mask:#X} != {MARKET_TRADE_RESOURCE_FLOW_KIND_MASK:#X}"
+                ));
+            }
+        }
     }
     Some(trailer_offset + expected_len)
 }
@@ -1681,6 +2456,7 @@ fn validate_resource_flow_row(
     row_index: usize,
     row: &ResourceFlowRow,
     reserved: u32,
+    legacy: bool,
     summary: &mut MarketTradePayloadSummary,
 ) {
     if row.tag_db_id == 0 || row.tag_db_id > MARKET_TRADE_MAX_TAG_DB_ID {
@@ -1689,7 +2465,9 @@ fn validate_resource_flow_row(
             row.tag_db_id
         ));
     }
-    if row.flow_kind != MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED {
+    if (legacy && row.flow_kind != MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED)
+        || (!legacy && !(1..=6).contains(&row.flow_kind))
+    {
         summary.parse_errors.push(format!(
             "offset {offset}: resource-flow row {row_index} invalid flow_kind {}",
             row.flow_kind
@@ -1706,7 +2484,7 @@ fn validate_resource_flow_row(
             "offset {offset}: resource-flow row {row_index} reserved field is nonzero"
         ));
     }
-    if row.values_raw.iter().all(|value| *value == 0) {
+    if legacy && row.values_raw.iter().all(|value| *value == 0) {
         summary.parse_errors.push(format!(
             "offset {offset}: resource-flow row {row_index} has all-zero exported resources"
         ));
@@ -2444,9 +3222,31 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
                 summary.resource_flow_rows_total = summary
                     .resource_flow_rows_total
                     .saturating_add(payload_summary.resource_flow_rows as u64);
+                summary.resource_flow_country_rows_total = summary
+                    .resource_flow_country_rows_total
+                    .saturating_add(payload_summary.resource_flow_country_rows as u64);
                 summary.resource_flow_exported_rows_total = summary
                     .resource_flow_exported_rows_total
                     .saturating_add(payload_summary.resource_flow_exported_rows as u64);
+                if payload_summary.factory_header_trailer_present {
+                    summary.factory_header_records =
+                        summary.factory_header_records.saturating_add(1);
+                }
+                summary.factory_header_rows_total = summary
+                    .factory_header_rows_total
+                    .saturating_add(payload_summary.factory_header_rows as u64);
+                if payload_summary.resource_row_trailer_present {
+                    summary.resource_row_records = summary.resource_row_records.saturating_add(1);
+                }
+                summary.resource_rows_total = summary
+                    .resource_rows_total
+                    .saturating_add(payload_summary.resource_rows as u64);
+                if payload_summary.classic_deal_trailer_present {
+                    summary.classic_deal_records = summary.classic_deal_records.saturating_add(1);
+                }
+                summary.classic_deal_rows_total = summary
+                    .classic_deal_rows_total
+                    .saturating_add(payload_summary.classic_deal_rows as u64);
                 summary
                     .parse_errors
                     .extend(payload_summary.parse_errors.iter().cloned());
@@ -2857,6 +3657,124 @@ mod tests {
             1,
             &[MarketTradeRow::complete(seed, 2, 3)],
         )
+    }
+
+    fn append_test_mtrr(payload: &mut Vec<u8>, countries: &[u32]) {
+        payload.extend_from_slice(MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC);
+        payload.extend_from_slice(&MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION.to_le_bytes());
+        payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_ROW_HEADER_LEN as u16).to_le_bytes());
+        payload.extend_from_slice(&(MARKET_TRADE_RESOURCE_ROW_LEN as u16).to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(
+            &((countries.len() as u32) * MARKET_TRADE_RESOURCE_COUNT).to_le_bytes(),
+        );
+        payload.extend_from_slice(&(countries.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&MARKET_TRADE_RESOURCE_COUNT.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for &tag_db_id in countries {
+            for resource_index in 0..MARKET_TRADE_RESOURCE_COUNT {
+                let oil = resource_index == 0;
+                let balance = if oil { -10 } else { resource_index as i32 };
+                for value in [
+                    tag_db_id,
+                    resource_index,
+                    resource_index,
+                    if oil {
+                        MARKET_TRADE_RESOURCE_NEEDED_CURRENT_MAX
+                    } else {
+                        MARKET_TRADE_RESOURCE_NEEDED_SURPLUS
+                    },
+                ] {
+                    payload.extend_from_slice(&value.to_le_bytes());
+                }
+                for value in [
+                    balance,
+                    100 + resource_index as i32,
+                    10,
+                    -5,
+                    2,
+                    3,
+                    if oil { -12 } else { balance },
+                    if oil { -12 } else { 0 },
+                    if oil { -8 } else { 0 },
+                ] {
+                    payload.extend_from_slice(&value.to_le_bytes());
+                }
+                payload.extend_from_slice(
+                    &(if oil {
+                        MARKET_TRADE_RESOURCE_FLAGS_KNOWN
+                    } else {
+                        0
+                    })
+                    .to_le_bytes(),
+                );
+                payload.extend_from_slice(&(resource_index + 1).to_le_bytes());
+                payload.extend_from_slice(&0u32.to_le_bytes());
+            }
+        }
+    }
+
+    fn append_test_mtrd(payload: &mut Vec<u8>, mismatch_second_half: bool) {
+        let witnesses = [47u32, 51, 99];
+        payload.extend_from_slice(MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC);
+        payload.extend_from_slice(&MARKET_TRADE_CLASSIC_DEAL_SCHEMA_VERSION.to_le_bytes());
+        payload.extend_from_slice(&(MARKET_TRADE_CLASSIC_DEAL_HEADER_LEN as u16).to_le_bytes());
+        payload.extend_from_slice(&(MARKET_TRADE_CLASSIC_DEAL_ROW_LEN as u16).to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&(witnesses.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&MARKET_TRADE_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&(witnesses.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for witness in witnesses {
+            payload.extend_from_slice(&witness.to_le_bytes());
+        }
+        let deal_id = 0x0000_002f_0033_0401u64;
+        for (index, owner, counterpart, direction) in [
+            (
+                0usize,
+                47u32,
+                51u32,
+                MARKET_TRADE_CLASSIC_DEAL_DIRECTION_EXPORT,
+            ),
+            (
+                1usize,
+                51u32,
+                47u32,
+                MARKET_TRADE_CLASSIC_DEAL_DIRECTION_IMPORT,
+            ),
+        ] {
+            for value in [
+                owner,
+                counterpart,
+                4,
+                0,
+                direction,
+                MARKET_TRADE_CLASSIC_DEAL_ROUTE_SEA,
+            ] {
+                payload.extend_from_slice(&value.to_le_bytes());
+            }
+            payload.extend_from_slice(&MARKET_TRADE_CLASSIC_DEAL_FLAG_EXACT.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&deal_id.to_le_bytes());
+            payload.extend_from_slice(&3_200_000i64.to_le_bytes());
+            payload.extend_from_slice(
+                &(if mismatch_second_half && index == 1 {
+                    2_700_001i64
+                } else {
+                    2_700_000i64
+                })
+                .to_le_bytes(),
+            );
+            payload.extend_from_slice(&9_600_000i64.to_le_bytes());
+            payload.extend_from_slice(&25_000i64.to_le_bytes());
+            payload.extend_from_slice(&84_375i64.to_le_bytes());
+            payload.extend_from_slice(&8i32.to_le_bytes());
+            payload.extend_from_slice(&14i32.to_le_bytes());
+            payload.extend_from_slice(&18i32.to_le_bytes());
+            payload.extend_from_slice(&0i32.to_le_bytes());
+        }
     }
 
     fn append_complete_market_frame(stream: &mut Vec<u8>, next_sequence: &mut u64, hour: i32) {
@@ -3318,23 +4236,40 @@ mod tests {
             amount_raw: 30_000_000,
             ..PurchaseContractDetailRow::default()
         };
-        let resource_row = ResourceFlowRow {
+        let resource_rows = [
+            MARKET_TRADE_RESOURCE_FLOW_KIND_PRODUCED,
+            MARKET_TRADE_RESOURCE_FLOW_KIND_IMPORTED,
+            MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED,
+            MARKET_TRADE_RESOURCE_FLOW_KIND_USED,
+            MARKET_TRADE_RESOURCE_FLOW_KIND_TO_EXPORT,
+            MARKET_TRADE_RESOURCE_FLOW_KIND_BASE_EXPORT,
+        ]
+        .map(|flow_kind| ResourceFlowRow {
             tag_db_id: 67,
-            flow_kind: MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED,
+            flow_kind,
             resource_mask: MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK,
-            values_raw: [800_000, 0, 0, 1_900_000, 15_499_941, 800_000, 12_000_000],
-        };
+            values_raw: if flow_kind == MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED {
+                [800_000, 0, 0, 1_900_000, 15_499_941, 800_000, 12_000_000]
+            } else {
+                [0; 7]
+            },
+        });
         let mut payload = encode_payload_with_detail_rows(0, 0, 0, 0, &[], &[detail]);
-        payload.extend_from_slice(&encode_resource_flow_trailer(&[resource_row]));
+        payload.extend_from_slice(&encode_resource_flow_trailer(&resource_rows));
 
         let decoded = decode_payload(0, &payload);
 
         assert!(decoded.ok(), "{:?}", decoded.parse_errors);
         assert!(decoded.detail_trailer_present);
         assert!(decoded.resource_flow_trailer_present);
-        assert_eq!(decoded.resource_flow_rows, 1);
+        assert_eq!(decoded.resource_flow_rows, 6);
+        assert_eq!(decoded.resource_flow_country_rows, 1);
         assert_eq!(decoded.resource_flow_exported_rows, 1);
-        assert_eq!(decoded.resource_flow_rows_decoded, vec![resource_row]);
+        assert_eq!(
+            decoded.resource_flow_kind_mask,
+            MARKET_TRADE_RESOURCE_FLOW_KIND_MASK
+        );
+        assert_eq!(decoded.resource_flow_rows_decoded, resource_rows);
 
         let mut stream = Vec::new();
         append_compact_record(
@@ -3361,28 +4296,51 @@ mod tests {
         );
         assert_eq!(summary.detail_records, 1);
         assert_eq!(summary.resource_flow_records, 1);
-        assert_eq!(summary.resource_flow_rows_total, 1);
+        assert_eq!(summary.resource_flow_rows_total, 6);
+        assert_eq!(summary.resource_flow_country_rows_total, 1);
         assert_eq!(summary.resource_flow_exported_rows_total, 1);
     }
 
     #[test]
-    fn resource_flow_trailer_rejects_all_zero_export_row() {
-        let resource_row = ResourceFlowRow {
-            tag_db_id: 67,
-            flow_kind: MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED,
-            resource_mask: MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK,
-            values_raw: [0; 7],
-        };
+    fn resource_flow_trailer_preserves_complete_all_zero_country() {
+        let resource_rows = (1..=6)
+            .map(|flow_kind| ResourceFlowRow {
+                tag_db_id: 67,
+                flow_kind,
+                resource_mask: MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK,
+                values_raw: [0; 7],
+            })
+            .collect::<Vec<_>>();
         let mut payload = encode_payload(0, 0, 0, 0, &[]);
-        payload.extend_from_slice(&encode_resource_flow_trailer(&[resource_row]));
+        payload.extend_from_slice(&encode_resource_flow_trailer(&resource_rows));
 
         let decoded = decode_payload(0, &payload);
 
-        assert!(!decoded.ok());
-        assert!(decoded
-            .parse_errors
-            .iter()
-            .any(|err| err.contains("all-zero exported resources")));
+        assert!(decoded.ok(), "{:?}", decoded.parse_errors);
+        assert_eq!(decoded.resource_flow_rows_decoded, resource_rows);
+    }
+
+    #[test]
+    fn factory_header_trailer_decodes_complete_country_snapshot() {
+        let rows = vec![FactoryHeaderRow {
+            tag_db_id: 67,
+            total: 128,
+            used: 41,
+            available: 73,
+        }];
+        let mut payload = encode_payload(0, STATUS_SOURCE_UNAVAILABLE, 0, 0, &[]);
+        payload.extend_from_slice(&encode_factory_header_trailer(&rows));
+
+        let decoded = decode_payload(0, &payload);
+
+        assert!(decoded.factory_header_trailer_present);
+        assert_eq!(decoded.factory_header_rows, 1);
+        assert_eq!(decoded.factory_headers, rows);
+        assert!(
+            decoded.parse_errors.is_empty(),
+            "{:?}",
+            decoded.parse_errors
+        );
     }
 
     #[test]
@@ -4002,5 +4960,148 @@ mod tests {
         assert_eq!(gate.summary.domain_data_records, 3);
         assert_eq!(gate.summary.unique_game_hours, 3);
         assert_eq!(gate.summary.partial_field_rows_total, 0);
+    }
+
+    #[test]
+    fn x15_mtrr_mtrd_decode_complete_rows_and_zero_deal_witness() {
+        let mut payload = complete_market_payload(1);
+        append_test_mtrr(&mut payload, &[47, 51, 99]);
+        append_test_mtrd(&mut payload, false);
+
+        let decoded = decode_payload(0, &payload);
+
+        assert!(
+            decoded.parse_errors.is_empty(),
+            "{:?}",
+            decoded.parse_errors
+        );
+        assert!(decoded.resource_row_trailer_present);
+        assert_eq!(decoded.resource_row_country_count, 3);
+        assert_eq!(decoded.resource_view_rows.len(), 21);
+        assert!(decoded.classic_deal_trailer_present);
+        assert_eq!(decoded.classic_deal_country_count, 3);
+        assert_eq!(decoded.classic_deals.len(), 2);
+        assert!(decoded.classic_deal_country_witnesses.contains(&99));
+        assert!(!decoded
+            .classic_deals
+            .iter()
+            .any(|row| row.owner_tag_db_id == 99));
+    }
+
+    #[test]
+    fn x15_mtrd_rejects_reciprocal_half_value_disagreement() {
+        let mut payload = complete_market_payload(1);
+        append_test_mtrd(&mut payload, true);
+
+        let decoded = decode_payload(0, &payload);
+
+        assert!(decoded
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("reciprocal halves disagree")));
+    }
+
+    #[test]
+    fn x15_mtrr_rejects_incomplete_visible_order() {
+        let mut payload = complete_market_payload(1);
+        let trailer = payload.len();
+        append_test_mtrr(&mut payload, &[47]);
+        let final_row_visible_order =
+            trailer + MARKET_TRADE_RESOURCE_ROW_HEADER_LEN + 6 * MARKET_TRADE_RESOURCE_ROW_LEN + 8;
+        payload[final_row_visible_order..final_row_visible_order + 4]
+            .copy_from_slice(&0u32.to_le_bytes());
+
+        let decoded = decode_payload(0, &payload);
+
+        assert!(decoded
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("visible order is not complete")));
+    }
+
+    #[test]
+    fn b1_mts1_preserves_ordered_rows_and_measured_empty_country() {
+        let countries = [
+            MarketStockpileCountryRow {
+                tag_db_id: 34,
+                item_first: 0,
+                item_count: 2,
+            },
+            MarketStockpileCountryRow {
+                tag_db_id: 67,
+                item_first: 2,
+                item_count: 0,
+            },
+        ];
+        let items = [
+            MarketStockpileItemRow {
+                equipment_variant_id: 90,
+                equipment_type: 70,
+                ordinal: 0,
+                amount_raw: 76_700_000,
+            },
+            MarketStockpileItemRow {
+                equipment_variant_id: 91,
+                equipment_type: 70,
+                ordinal: 1,
+                amount_raw: 0,
+            },
+        ];
+        let mut payload = complete_market_payload(1);
+        payload.extend_from_slice(&encode_market_stockpile_trailer(2, &countries, &items));
+
+        let decoded = decode_payload(0, &payload);
+        assert!(
+            decoded.parse_errors.is_empty(),
+            "{:?}",
+            decoded.parse_errors
+        );
+        assert!(decoded.stockpile_trailer_present);
+        assert_eq!(decoded.stockpile_country_rows, 2);
+        assert_eq!(decoded.stockpile_item_rows, 2);
+        assert_eq!(decoded.stockpile_countries, countries);
+        assert_eq!(decoded.stockpile_items, items);
+        assert_eq!(decoded.stockpile_countries[1].item_count, 0);
+    }
+
+    #[test]
+    fn b1_mts1_rejects_incomplete_coverage_and_noncontiguous_nested_ranges() {
+        let countries = [
+            MarketStockpileCountryRow {
+                tag_db_id: 34,
+                item_first: 0,
+                item_count: 1,
+            },
+            MarketStockpileCountryRow {
+                tag_db_id: 67,
+                item_first: 1,
+                item_count: 0,
+            },
+        ];
+        let items = [MarketStockpileItemRow {
+            equipment_variant_id: 90,
+            equipment_type: 70,
+            ordinal: 0,
+            amount_raw: 100_000,
+        }];
+        let mut wrong_count = complete_market_payload(1);
+        wrong_count.extend_from_slice(&encode_market_stockpile_trailer(3, &countries, &items));
+        let decoded = decode_payload(0, &wrong_count);
+        assert!(decoded
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("invalid MTS1 header shape")));
+
+        let mut noncontiguous = complete_market_payload(1);
+        let mut trailer = encode_market_stockpile_trailer(2, &countries, &items);
+        // Second country item_first (country row 1 +4) must equal 1.
+        let second_first =
+            MARKET_TRADE_STOCKPILE_HEADER_LEN + MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN + 4;
+        trailer[second_first..second_first + 4].copy_from_slice(&0u32.to_le_bytes());
+        noncontiguous.extend_from_slice(&trailer);
+        let decoded = decode_payload(0, &noncontiguous);
+        assert!(decoded.parse_errors.iter().any(|error| {
+            error.contains("MTS1 country row 1 has invalid tag/range/completeness")
+        }));
     }
 }

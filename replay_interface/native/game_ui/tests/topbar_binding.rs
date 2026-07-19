@@ -10,20 +10,34 @@
 //! Expected values are derived from the fixture GENERATOR SOURCE
 //! (`replay_fixture_gen/src/main.rs`), not by running the code under test.
 
+use game_ui::assets::AssetResolver;
 use game_ui::binding::{
     country_name_key_candidates, topbar_binding_from_frame, topbar_flag_key_candidates,
 };
-use game_ui::topbar::FactoryCounts;
+use game_ui::probe::{parse_gfx_files, DEFAULT_GAME_ROOT};
+use game_ui::topbar::{compose_topbar, FactoryCounts};
 use replay_core::{open_recording, WorldTimeline};
 use std::path::PathBuf;
 
 fn fixture(name: &str) -> WorldTimeline {
+    fixture_in("positive", name)
+}
+
+fn fixture_in(group: &str, name: &str) -> WorldTimeline {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures/positive")
+        .join("../../fixtures")
+        .join(group)
         .join(format!("{name}.battleplan"));
     let source = open_recording(&path)
         .unwrap_or_else(|err| panic!("open {name}: {err} ({})", path.display()));
     WorldTimeline::open(source).unwrap_or_else(|err| panic!("timeline {name}: {err}"))
+}
+
+fn game_root() -> Option<PathBuf> {
+    let root = std::env::var_os("BATTLE_PLAN_GAME_ROOT").or_else(|| std::env::var_os("HOI4_GAME_ROOT"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_GAME_ROOT));
+    root.is_dir().then_some(root)
 }
 
 // --- generator formulas, transcribed from replay_fixture_gen::fx_topbar_scalars_sweep ---
@@ -151,6 +165,30 @@ fn topbar_scalar_sweep_renders_generator_values() {
                 Some(format!("{}", 12.0 + t as f64)),
                 "{tag} supply @t{t}"
             );
+            assert_eq!(
+                b.industrial_ratio,
+                Some((0.5 + t as f64 * 0.01) as f32),
+                "{tag} industrial ratio @t{t}"
+            );
+            assert_eq!(
+                b.convoys_ratio,
+                Some((0.9 - t as f64 * 0.01) as f32),
+                "{tag} convoy ratio @t{t}"
+            );
+            assert_eq!(
+                b.fuel_ratio,
+                Some((0.25 + t as f64 * 0.02) as f32),
+                "{tag} fuel ratio @t{t}"
+            );
+            assert_eq!(
+                b.supply_ratio,
+                Some((0.8 - t as f64 * 0.01) as f32),
+                "{tag} supply ratio @t{t}"
+            );
+            // One recorded xp_ratio cannot be joined to three distinct bars.
+            assert_eq!(b.army_xp_ratio, None);
+            assert_eq!(b.navy_xp_ratio, None);
+            assert_eq!(b.air_xp_ratio, None);
         }
     }
 }
@@ -170,6 +208,133 @@ fn absent_pov_renders_fail_closed_binding() {
     assert_eq!(b.factory_counts, None);
     assert_eq!(b.country_ideology, None);
     assert_eq!(b.cosmetic_tag, None);
+}
+
+/// End-to-end XUI27 unavailable-data gate. A POV omitted from a present
+/// `WorldFrame` drives every dynamic topbar leaf to `None`, then the real
+/// game-file composer omits those elements. This proves the renderer cannot
+/// expose `topbar.gui` placeholders or select zero/default progress frames.
+#[test]
+fn absent_world_frame_data_is_omitted_by_topbar_composition() {
+    let Some(root) = game_root() else {
+        eprintln!(
+            "SKIP absent_world_frame_data_is_omitted_by_topbar_composition: the game root missing"
+        );
+        return;
+    };
+    let tl = fixture("fx_topbar_scalars_sweep");
+    let frame = tl.frame(tl.first_hour()).unwrap();
+    let binding = topbar_binding_from_frame(&frame, "USA");
+    let resolver = AssetResolver::new(vec![root]);
+    let (registry, _) = parse_gfx_files(&resolver).expect("parse GFX");
+    let rendered = compose_topbar(&resolver, &registry, &binding).expect("compose absent topbar");
+    let rendered_again =
+        compose_topbar(&resolver, &registry, &binding).expect("recompose absent topbar");
+
+    assert_eq!(rendered.output.image, rendered_again.output.image);
+    assert_eq!(
+        rendered.output.debug_rects,
+        rendered_again.output.debug_rects
+    );
+    assert_eq!(
+        (rendered.output.image.width, rendered.output.image.height),
+        (2346, 87)
+    );
+
+    let names = rendered
+        .output
+        .debug_rects
+        .iter()
+        .map(|rect| rect.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for name in [
+        "pol_power",
+        "manpower",
+        "stability",
+        "war_support",
+        "command_power_value",
+        "experience_value",
+        "navy_experience_value",
+        "air_experience_value",
+        "nukes_value",
+        "industrial_capacity",
+        "convoys_count",
+        "fuel_value",
+        "supply_value",
+        "industrial_ratio_bar",
+        "convoys_ratio_bar",
+        "fuel_ratio_bar",
+        "supply_ratio_bar",
+        "threat_button",
+        "threat_icon_glow",
+        "threat_value_button",
+        "threat_value",
+        "DateText",
+        "button_speedstep1",
+        "button_speedstep2",
+        "button_speedstep3",
+        "button_speedstep4",
+        "button_speedstep5",
+        "initiative_text",
+        "decisionview_amount_timeout_bg",
+        "decisionview_amount_timeout_items",
+        "decisionview_amount_to_take_bg",
+        "decisionview_amount_to_take_items",
+        "intelview_ops_prepared_or_completed_bg",
+        "intelview_ops_prepared_or_completed_items",
+        "intelview_ops_available_bg",
+        "intelview_ops_available_items",
+        "prototype_rewards_aquired_bg",
+        "prototype_rewards_aquired",
+        "non_delivering_contracts",
+        "non_delivering_contract_amount",
+        "delivering_contracts",
+        "ongoing_contract_amount",
+    ] {
+        assert!(
+            !names.contains(name),
+            "unavailable `{name}` reached the render tree"
+        );
+    }
+}
+
+/// The anomaly fixture changes one typed scalar from numeric to wrong-typed at
+/// the crossing hour. `WorldFrame` classifies that leaf as `Unobtained`; the
+/// composed topbar must omit only that value while retaining measured peers.
+#[test]
+fn unobtained_world_frame_leaf_is_selectively_omitted_by_topbar_composition() {
+    let Some(root) = game_root() else {
+        eprintln!("SKIP unobtained_world_frame_leaf_is_selectively_omitted_by_topbar_composition: the game root missing");
+        return;
+    };
+    let tl = fixture_in("anomaly", "fx_anomaly_type_flip");
+    let crossing_hour = tl.hours()[6];
+    let frame = tl.frame(crossing_hour).unwrap();
+    let binding = topbar_binding_from_frame(&frame, "GER");
+    assert_eq!(binding.political_power, None);
+    assert!(
+        frame
+            .coverage_warnings()
+            .iter()
+            .any(|warning| warning.contains("political_power") && warning.contains("unobtained")),
+        "crossing frame did not preserve the wrong-type/unobtained finding"
+    );
+
+    let resolver = AssetResolver::new(vec![root]);
+    let (registry, _) = parse_gfx_files(&resolver).expect("parse GFX");
+    let rendered =
+        compose_topbar(&resolver, &registry, &binding).expect("compose unobtained topbar");
+    let names = rendered
+        .output
+        .debug_rects
+        .iter()
+        .map(|rect| rect.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(!names.contains("pol_power"));
+    assert!(
+        names.contains("manpower"),
+        "measured peer was incorrectly omitted"
+    );
 }
 
 /// GATE 2 — the ideology/cosmetic flip re-keys the flag and display-name

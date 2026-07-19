@@ -916,7 +916,11 @@ mod tests {
     #[test]
     fn event_or_lost_builds_event_for_readable_pid() {
         assert_eq!(
-            event_or_lost("Win32_ProcessStartTrace".into(), Some(42), "hoi4.exe".into()),
+            event_or_lost(
+                "Win32_ProcessStartTrace".into(),
+                Some(42),
+                "hoi4.exe".into()
+            ),
             WmiPoll::Event {
                 class: "Win32_ProcessStartTrace".into(),
                 pid: 42,

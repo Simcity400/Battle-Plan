@@ -115,7 +115,8 @@ mod tests {
         // Fully zoomed in: base speed. Fully out: base * DISTANCE_MULT.
         assert!((zoom_step_speed(0.0) - CAMERA_ZOOM_SPEED).abs() < EPS);
         assert!(
-            (zoom_step_speed(1.0) - CAMERA_ZOOM_SPEED * CAMERA_ZOOM_SPEED_DISTANCE_MULT).abs() < EPS
+            (zoom_step_speed(1.0) - CAMERA_ZOOM_SPEED * CAMERA_ZOOM_SPEED_DISTANCE_MULT).abs()
+                < EPS
         );
         // Monotone increasing with height.
         assert!(zoom_step_speed(0.25) < zoom_step_speed(0.75));
@@ -128,10 +129,9 @@ mod tests {
             return;
         };
         let resolver = crate::mod_resolver::GameFileResolver::vanilla(game_dir).expect("resolver");
-        let defines = std::fs::read_to_string(
-            resolver.resolve(GRAPHICS_DEFINES_SOURCE).unwrap().unwrap(),
-        )
-        .unwrap();
+        let defines =
+            std::fs::read_to_string(resolver.resolve(GRAPHICS_DEFINES_SOURCE).unwrap().unwrap())
+                .unwrap();
         assert!(
             defines.contains("CAMERA_INTERPOLATION_SPEED = 0.19"),
             "interpolation speed"

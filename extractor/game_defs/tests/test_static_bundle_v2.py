@@ -19,13 +19,19 @@ def _source_row(
     relpath: str,
     payload: bytes,
 ) -> dict:
+    payload_sha256 = SB.sha256_bytes(payload)
     return {
         "namespace_ordinal": namespace_ordinal,
         "layer_kind": layer_kind,
         "layer_id": layer_id,
         "relpath": relpath,
         "bytes": len(payload),
-        "sha256": SB.sha256_bytes(payload),
+        "sha256": payload_sha256,
+        "storage_kind": "directory",
+        "source_container_sha256": None,
+        "source_byte_offset": 0,
+        "source_byte_count": len(payload),
+        "source_range_sha256": payload_sha256,
     }
 
 
@@ -53,6 +59,9 @@ def _inventory_document(
                 "id": layer_id,
                 "label": label,
                 "replace_paths": replace_paths,
+                "storage_kind": "directory",
+                "source_container_sha256": None,
+                "source_container_bytes": None,
                 "file_count": len(namespace_rows),
                 "content_sha256": SB.sha256_bytes(SB.canonical_json(content_rows)),
                 "binding_content_sha256": SB.sha256_bytes(SB.canonical_json(content_rows)),

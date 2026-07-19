@@ -13,8 +13,8 @@ use std::mem;
 use std::ptr;
 
 use map_viewer::{
-    build_mapname_vertices, mapname_tracked_advance_px, mapname_tracking_px, CountryLabelPlacement,
-    MapLabelGlyphLayoutQuad,
+    build_mapname_vertices, mapname_measured_glyph_parameters, mapname_tracked_advance_px,
+    mapname_tracking_px, CountryLabelPlacement, MapLabelGlyphLayoutQuad,
 };
 use winapi::shared::dxgiformat::{
     DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -139,22 +139,37 @@ pub fn build_label_vertex_batches(
         .into());
     }
 
+    // Recover the engine's direct spline parameter over the complete laid-out
+    // glyph sequence before atlas-page batching. Page filtering must not alter
+    // Euclidean station spacing (including spaces and cross-page glyphs).
+    let mut all_glyphs: Vec<MapLabelGlyphLayoutQuad> = layout
+        .quads
+        .iter()
+        .map(|quad| MapLabelGlyphLayoutQuad {
+            x0: quad.x0,
+            y0: quad.y0,
+            x1: quad.x1,
+            y1: quad.y1,
+            u0: quad.u0,
+            v0: quad.v0,
+            u1: quad.u1,
+            v1: quad.v1,
+            measured_t: 0.0,
+        })
+        .collect();
+    let measured = mapname_measured_glyph_parameters(&all_glyphs)
+        .ok_or_else(|| format!("map label {:?} has invalid straight-layout stations", text))?;
+    for (glyph, measured_t) in all_glyphs.iter_mut().zip(measured) {
+        glyph.measured_t = measured_t;
+    }
+
     let mut batches = Vec::new();
     for page in 0..font.pages.len() {
         let glyphs: Vec<MapLabelGlyphLayoutQuad> = layout
             .quads
             .iter()
-            .filter(|quad| quad.page == page)
-            .map(|quad| MapLabelGlyphLayoutQuad {
-                x0: quad.x0,
-                y0: quad.y0,
-                x1: quad.x1,
-                y1: quad.y1,
-                u0: quad.u0,
-                v0: quad.v0,
-                u1: quad.u1,
-                v1: quad.v1,
-            })
+            .zip(&all_glyphs)
+            .filter_map(|(quad, glyph)| (quad.page == page).then_some(*glyph))
             .collect();
         if glyphs.is_empty() {
             continue;
@@ -659,10 +674,29 @@ kernings count=0
         assert_eq!(batches[0].vertices.len(), 12);
 
         let metrics = font.label_text_metrics("AB").expect("metrics");
+        assert_eq!(metrics.straight_layout_stations.len(), 2);
+        assert_eq!(metrics.straight_layout_stations[0].slot_index, 0);
+        assert_eq!(
+            metrics.straight_layout_stations[0].x.to_bits(),
+            2.0f32.to_bits()
+        );
+        assert_eq!(
+            metrics.straight_layout_stations[0].y.to_bits(),
+            4.0f32.to_bits()
+        );
+        assert_eq!(metrics.straight_layout_stations[1].slot_index, 1);
+        assert_eq!(
+            metrics.straight_layout_stations[1].x.to_bits(),
+            7.0f32.to_bits()
+        );
+        assert_eq!(
+            metrics.straight_layout_stations[1].y.to_bits(),
+            4.0f32.to_bits()
+        );
         let tracking = mapname_tracking_px(&placement, &metrics);
         let tracked_advance = mapname_tracked_advance_px(&metrics, tracking);
         let layout = font.layout_text_tracked(0.0, 0.0, "AB", tracking);
-        let glyphs: Vec<MapLabelGlyphLayoutQuad> = layout
+        let mut glyphs: Vec<MapLabelGlyphLayoutQuad> = layout
             .quads
             .iter()
             .map(|quad| MapLabelGlyphLayoutQuad {
@@ -674,8 +708,13 @@ kernings count=0
                 v0: quad.v0,
                 u1: quad.u1,
                 v1: quad.v1,
+                measured_t: 0.0,
             })
             .collect();
+        let measured = mapname_measured_glyph_parameters(&glyphs).expect("measured stations");
+        for (glyph, measured_t) in glyphs.iter_mut().zip(measured) {
+            glyph.measured_t = measured_t;
+        }
         let natural_width: f32 = metrics.advances.iter().map(|(advance, _)| *advance).sum();
         let law = build_mapname_vertices(
             &placement,
@@ -753,7 +792,7 @@ kernings count=0
             let tracking = mapname_tracking_px(&placement, &metrics);
             let tracked_advance = mapname_tracked_advance_px(&metrics, tracking);
             let layout = font.layout_text_tracked(0.0, 0.0, &text, tracking);
-            let glyphs: Vec<MapLabelGlyphLayoutQuad> = layout
+            let mut glyphs: Vec<MapLabelGlyphLayoutQuad> = layout
                 .quads
                 .iter()
                 .map(|quad| MapLabelGlyphLayoutQuad {
@@ -765,8 +804,13 @@ kernings count=0
                     v0: quad.v0,
                     u1: quad.u1,
                     v1: quad.v1,
+                    measured_t: 0.0,
                 })
                 .collect();
+            let measured = mapname_measured_glyph_parameters(&glyphs).expect("measured stations");
+            for (glyph, measured_t) in glyphs.iter_mut().zip(measured) {
+                glyph.measured_t = measured_t;
+            }
             let natural_width: f32 = metrics.advances.iter().map(|(advance, _)| *advance).sum();
             let law = build_mapname_vertices(
                 &placement,

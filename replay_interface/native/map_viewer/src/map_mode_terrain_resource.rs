@@ -7,19 +7,13 @@
 //! Follows the `naval_supremacy_tint` pattern (pure classify fns + mod-aware
 //! resolver loaders + fail-closed on missing evidence).
 //!
-//! ## Terrain mode (6) — province terrain-type fill (fully static, FILE)
+//! ## Terrain mode (6) — typed omission
 //!
-//! Each province has a terrain **category** in `map/definition.csv` column 6
-//! (0-indexed: `id;r;g;b;type;coastal;terrain;continent`) — already parsed into
-//! [`crate::ProvinceDefinition::terrain`]. Each category's fill colour is the
-//! `color = { r g b }` under `categories = { <name> = { color = ... } }` in
-//! `common/terrain/00_terrain.txt`. So the terrain map-mode fill of a province is
-//! `category_colours[definitions[province].terrain]`. Every colour is FILE-cited
-//! to `00_terrain.txt`; a province whose terrain field names no defined category
-//! fails **closed** (no fill, counted as unclassified) rather than inventing one.
-//! The separate graphical `terrain = { terrain_N = { color = { <index> } } }`
-//! block maps `terrain.bmp` palette indices to categories and is NOT used here —
-//! the per-province category (definition.csv) is the exact, complete key.
+//! The former `definition.csv` category-colour proxy was capture-refuted: it
+//! matched only 49.44% of the retained carrier, and even the later naval-terrain
+//! classifier retained 84,946 residual texels. Category parsing remains useful
+//! evidence, but production emits no terrain fill until the exact producer is
+//! available.
 //!
 //! ## Resource mode (9) — state resource-deposit overlay (deposits FILE, fill UNKNOWN)
 //!
@@ -219,12 +213,11 @@ pub fn terrain_category_colors_from_resolver(
 /// terrain category mapped through the category colour table. `None` (fail-closed)
 /// when the province is unknown or its terrain field names no defined category.
 pub fn province_terrain_fill(
-    province_id: u32,
-    definitions: &BTreeMap<u32, ProvinceDefinition>,
-    category_colors: &BTreeMap<String, [u8; 3]>,
+    _province_id: u32,
+    _definitions: &BTreeMap<u32, ProvinceDefinition>,
+    _category_colors: &BTreeMap<String, [u8; 3]>,
 ) -> Option<[u8; 3]> {
-    let def = definitions.get(&province_id)?;
-    category_colors.get(&def.terrain).copied()
+    None
 }
 
 /// Classify every province in `definitions` into a terrain-mode fill. Pure: no
@@ -232,22 +225,11 @@ pub fn province_terrain_fill(
 /// into `unclassified` (fail-closed, no fill).
 pub fn classify_terrain_map_mode(
     definitions: &BTreeMap<u32, ProvinceDefinition>,
-    category_colors: &BTreeMap<String, [u8; 3]>,
+    _category_colors: &BTreeMap<String, [u8; 3]>,
 ) -> TerrainMapMode {
-    let mut province_fill = BTreeMap::new();
-    let mut category_province_counts: BTreeMap<String, usize> = BTreeMap::new();
-    let mut unclassified = Vec::new();
-    for (&province_id, def) in definitions {
-        match category_colors.get(&def.terrain) {
-            Some(rgb) => {
-                province_fill.insert(province_id, *rgb);
-                *category_province_counts
-                    .entry(def.terrain.clone())
-                    .or_insert(0) += 1;
-            }
-            None => unclassified.push(province_id),
-        }
-    }
+    let province_fill = BTreeMap::new();
+    let category_province_counts = BTreeMap::new();
+    let unclassified = definitions.keys().copied().collect();
     TerrainMapMode {
         province_fill,
         category_province_counts,
@@ -537,7 +519,7 @@ resources = {
     }
 
     #[test]
-    fn classify_terrain_fills_and_fails_closed() {
+    fn terrain_category_proxy_is_retained_only_as_evidence() {
         let colors: BTreeMap<String, [u8; 3]> = VANILLA_TERRAIN_CATEGORY_COLORS
             .iter()
             .map(|(n, c)| (n.to_string(), *c))
@@ -549,16 +531,11 @@ resources = {
         defs.insert(13u32, def("no_such_category")); // fail-closed
         let mode = classify_terrain_map_mode(&defs, &colors);
         assert_eq!(mode.total_provinces, 4);
-        assert_eq!(mode.classified_count(), 3);
-        assert_eq!(mode.unclassified, vec![13]);
-        assert_eq!(mode.province_fill.get(&10), Some(&[255u8, 129, 66]));
-        assert_eq!(mode.province_fill.get(&11), Some(&[40u8, 83, 176]));
-        assert_eq!(mode.category_province_counts.get("plains"), Some(&1));
-        // Single-province lookup matches.
-        assert_eq!(
-            province_terrain_fill(12, &defs, &colors),
-            Some([89u8, 199, 85])
-        );
+        assert_eq!(mode.classified_count(), 0);
+        assert_eq!(mode.unclassified, vec![10, 11, 12, 13]);
+        assert!(mode.province_fill.is_empty());
+        assert!(mode.category_province_counts.is_empty());
+        assert_eq!(province_terrain_fill(12, &defs, &colors), None);
         assert_eq!(province_terrain_fill(13, &defs, &colors), None);
         assert_eq!(province_terrain_fill(999, &defs, &colors), None);
     }
@@ -689,8 +666,8 @@ resources = {
         assert_eq!(resource_state_fill(7, &deposits, &defs), None);
     }
 
-    /// Vanilla terrain parse gate (skips without `BATTLE_PLAN_GAME_DIR`). Asserts the
-    /// full category table + 0 unclassified provinces against the shipped files.
+    /// Vanilla terrain parse gate: file interpretation remains available, but
+    /// the capture-refuted category proxy cannot emit product fill.
     #[test]
     fn gate_vanilla_terrain_map_mode() {
         let Ok(game_dir) = std::env::var("BATTLE_PLAN_GAME_DIR").or_else(|_| std::env::var("HOI4_GAME_DIR")) else {
@@ -704,28 +681,13 @@ resources = {
         for (name, rgb) in VANILLA_TERRAIN_CATEGORY_COLORS {
             assert_eq!(colors.get(*name), Some(rgb), "category {name} colour");
         }
-        // Every province is classified: 0 unclassified.
+        // Every province remains deliberately omitted.
         let mode = terrain_map_mode_from_resolver(&resolver).expect("mode");
         assert_eq!(mode.total_provinces, 13414, "vanilla province count");
-        assert_eq!(mode.unclassified.len(), 0, "0 unclassified provinces");
-        assert_eq!(mode.classified_count(), 13414);
-        // The 11 categories actually used by vanilla provinces + their counts.
-        assert_eq!(mode.category_province_counts.get("ocean"), Some(&3133));
-        assert_eq!(mode.category_province_counts.get("plains"), Some(&3031));
-        assert_eq!(mode.category_province_counts.get("forest"), Some(&2364));
-        assert_eq!(mode.category_province_counts.get("mountain"), Some(&1708));
-        assert_eq!(mode.category_province_counts.get("hills"), Some(&1352));
-        assert_eq!(mode.category_province_counts.get("desert"), Some(&815));
-        assert_eq!(mode.category_province_counts.get("jungle"), Some(&477));
-        assert_eq!(mode.category_province_counts.get("urban"), Some(&265));
-        assert_eq!(mode.category_province_counts.get("marsh"), Some(&142));
-        assert_eq!(mode.category_province_counts.get("lakes"), Some(&126));
-        assert_eq!(mode.category_province_counts.get("unknown"), Some(&1));
-        assert_eq!(
-            mode.category_province_counts.len(),
-            11,
-            "11 used categories"
-        );
+        assert_eq!(mode.unclassified.len(), 13414);
+        assert_eq!(mode.classified_count(), 0);
+        assert!(mode.province_fill.is_empty());
+        assert!(mode.category_province_counts.is_empty());
     }
 
     /// Vanilla resource parse gate (skips without `BATTLE_PLAN_GAME_DIR`). Asserts the

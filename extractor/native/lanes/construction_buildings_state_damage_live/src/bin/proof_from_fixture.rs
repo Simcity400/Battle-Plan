@@ -44,6 +44,9 @@ fn main() -> Result<(), String> {
                 produced_raw: 5_500_000,
                 priority: 0,
                 target_state_id: None,
+                target_location_id: None,
+                target_scope: None,
+                repair_levels_remaining: Some(1),
                 created_date_raw: Some(60_827_043),
             },
             ConstructionQueueRow {
@@ -55,6 +58,9 @@ fn main() -> Result<(), String> {
                 produced_raw: 100_000,
                 priority: 1,
                 target_state_id: None,
+                target_location_id: None,
+                target_scope: None,
+                repair_levels_remaining: Some(0),
                 created_date_raw: None,
             },
         ],
@@ -66,6 +72,7 @@ fn main() -> Result<(), String> {
                 type_id: 0x2FAB,
                 level: 5,
                 healthy_level: Some(4),
+                partial_health_raw: Some(8_184_501),
             },
             BuildingRow {
                 scope: SCOPE_STATE,
@@ -74,6 +81,7 @@ fn main() -> Result<(), String> {
                 type_id: 0x4E2D,
                 level: 8,
                 healthy_level: Some(8),
+                partial_health_raw: Some(0),
             },
             BuildingRow {
                 scope: SCOPE_PROVINCE,
@@ -82,6 +90,7 @@ fn main() -> Result<(), String> {
                 type_id: 0x4CC1,
                 level: 2,
                 healthy_level: Some(2),
+                partial_health_raw: Some(0),
             },
             BuildingRow {
                 scope: SCOPE_PROVINCE,
@@ -90,6 +99,7 @@ fn main() -> Result<(), String> {
                 type_id: 0x31F6,
                 level: 10,
                 healthy_level: Some(10),
+                partial_health_raw: Some(0),
             },
         ],
         resource_rows: vec![

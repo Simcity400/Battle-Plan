@@ -7,7 +7,12 @@
 //! becomes [`Leaf::Unobtained`] plus a [`WorldFrame::coverage_warnings`]
 //! entry, never a guessed value and never a silent drop.
 
+use crate::design_catalog::{
+    CurrentDesignCatalog, DesignCatalogJoinError, DesignKind, DisplayOrderSnapshot,
+    FieldCompleteness, PortableDesignCatalog,
+};
 use crate::source::{RawFrame, ReplaySource, SourceError};
+use portable_render_stream::ProductionRenderFrame;
 use serde_json::{Map, Value};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -150,6 +155,79 @@ pub struct CombatRow {
     /// Participant division ids (bare `div_id`s per §7).
     pub attackers: Leaf<Vec<i64>>,
     pub defenders: Leaf<Vec<i64>>,
+    /// Producer-owned display inputs. These remain `Unobtained` for the
+    /// current d21/d55 fold where the recorder deliberately emits null.
+    pub combat_width: Leaf<f64>,
+    pub terrain: Leaf<String>,
+    pub progress: Leaf<f64>,
+    /// Authenticated d55 lifecycle/current-side enrichment.
+    pub detail: Leaf<LandCombatDetail>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CombatParticipantEvent {
+    pub event: Leaf<String>,
+    pub generation: Leaf<i64>,
+    pub side: Leaf<String>,
+    pub division_id: Leaf<i64>,
+    pub old_side_count: Leaf<i64>,
+    pub new_side_count: Leaf<i64>,
+    pub semantic: Leaf<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LandDamageAttributionRow {
+    pub dealer_tag_db_id: Leaf<i64>,
+    pub victim_tag_db_id: Leaf<i64>,
+    pub damage: Leaf<f64>,
+    pub damage_raw: Leaf<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LandCombatTacticIdentity {
+    pub id: Leaf<i64>,
+    pub token: Leaf<String>,
+    pub name: Leaf<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LandCombatSideDetail {
+    pub units: Leaf<i64>,
+    pub committed: Leaf<i64>,
+    pub reserve: Leaf<i64>,
+    pub air_kills: Leaf<i64>,
+    pub org_loss_summary_index: Leaf<i64>,
+    pub num_org_losses: Leaf<i64>,
+    pub anti_air_attack: Leaf<f64>,
+    pub air_damage_str: Leaf<f64>,
+    pub air_damage_org: Leaf<f64>,
+    pub ground_damage_str: Leaf<f64>,
+    pub ground_damage_org: Leaf<f64>,
+    pub prevented_damage_str: Leaf<f64>,
+    pub prevented_damage_org: Leaf<f64>,
+    pub progress: Leaf<f64>,
+    pub progress_raw: Leaf<i64>,
+    /// `Measured(None)` preserves a null tactic payload. `tactic_status`
+    /// distinguishes exact v4 no-tactic from a legacy unavailable stream;
+    /// `Unobtained` is reserved for a malformed non-object payload.
+    pub tactic: Leaf<Option<LandCombatTacticIdentity>>,
+    pub tactic_status: Leaf<String>,
+    pub losses_status: Leaf<String>,
+    pub counts_incomplete: Leaf<bool>,
+    pub damage_attribution: Leaf<Vec<LandDamageAttributionRow>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LandCombatDetail {
+    pub phase_event: Leaf<String>,
+    pub generation: Leaf<i64>,
+    pub location_province: Leaf<u32>,
+    pub age_days: Leaf<u32>,
+    pub duration_days: Leaf<u32>,
+    pub participant_events: Leaf<Vec<CombatParticipantEvent>>,
+    pub side_detail_completeness: Leaf<String>,
+    pub attacker: Leaf<LandCombatSideDetail>,
+    pub defender: Leaf<LandCombatSideDetail>,
 }
 
 /// Equipment composition row shared by divisions, task forces, and air wings.
@@ -238,6 +316,23 @@ pub struct SessionMetadataView {
     pub speed_events: Leaf<Vec<SpeedEvent>>,
     pub active_dlcs: Leaf<Vec<String>>,
     pub localisation_language: Leaf<String>,
+    pub display_variant: Leaf<DisplayVariantMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisplayVariantMetadata {
+    pub physical_width: u32,
+    pub physical_height: u32,
+    pub min_gui_width: u32,
+    pub min_gui_height: u32,
+    pub gui_scale_f32_bits: u32,
+    pub refresh_rate_hz: u32,
+    pub max_refresh_rate_hz: Option<u32>,
+    pub fullscreen: bool,
+    pub borderless: bool,
+    pub display_mode: String,
+    pub settings_file_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -415,6 +510,60 @@ pub struct WarRelationRow {
     pub second_casualties: Leaf<i64>,
 }
 
+/// Exact W1B contribution members from the a729 war-participation record.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WarParticipationBreakdown {
+    pub land_damage: Leaf<i64>,
+    pub occupation: Leaf<i64>,
+    pub air_damage: Leaf<i64>,
+    pub strategic_bombing: Leaf<i64>,
+    pub sunk_ships: Leaf<i64>,
+    pub sunk_convoys: Leaf<i64>,
+    pub casualties: Leaf<i64>,
+    pub lend_lease_given: Leaf<i64>,
+    pub lend_lease_received: Leaf<i64>,
+}
+
+/// One ordered participant row. Fixed-point producer values are retained as
+/// raw 1e5 integers; replay presentation must not recompute engine inputs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WarParticipantOverviewRow {
+    pub tag: Leaf<String>,
+    pub tag_db_id: Leaf<i64>,
+    pub participation_raw: Leaf<i64>,
+    pub capitulation_progress_raw: Leaf<i64>,
+    pub breakdown: Leaf<WarParticipationBreakdown>,
+}
+
+/// One authenticated D60 war-object row. The current producer is pair-scoped;
+/// it does not claim alliance-side grouping or per-participant warscore/IC.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WarObjectRow {
+    pub key: String,
+    /// Exact ordered attacker/defender side tags when the producer carries a
+    /// complete war object. Pair-scoped D60 rows leave these absent.
+    pub attackers: Leaf<Vec<String>>,
+    pub defenders: Leaf<Vec<String>>,
+    /// Engine-resolved display name. The source object key is identity only
+    /// and must never be substituted for a missing display name.
+    pub war_name: Leaf<String>,
+    pub front: Leaf<String>,
+    pub start_hour: Leaf<i64>,
+    pub attacker_participants: Leaf<Vec<WarParticipantOverviewRow>>,
+    pub defender_participants: Leaf<Vec<WarParticipantOverviewRow>>,
+    /// Signed aggressor-minus-defender fixed-1e5 progress.
+    pub overall_progress_raw: Leaf<i64>,
+    pub first: Leaf<String>,
+    pub second: Leaf<String>,
+    pub first_tag_db_id: Leaf<i64>,
+    pub second_tag_db_id: Leaf<i64>,
+    pub start_date: Leaf<String>,
+    pub first_casualties: Leaf<i64>,
+    pub second_casualties: Leaf<i64>,
+    pub casualties_semantics: Leaf<String>,
+    pub casualties_is_save_snapshot: Leaf<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiplomacyView {
     pub status: ViewStatus,
@@ -423,6 +572,7 @@ pub struct DiplomacyView {
     /// Live war-relation rows from `diplomacy_live.war_relations`
     /// (`Absent` when the key never appears, `Unobtained` when explicit-null).
     pub war_relations: Leaf<Vec<WarRelationRow>>,
+    pub wars: Leaf<Vec<WarObjectRow>>,
     /// Faction membership from witnessed d53 rows, falling back to the
     /// recording's `diplomacy_live` faction id → member TAG map when the d53
     /// status predates the recording. Source absence/null remains distinct.
@@ -692,6 +842,129 @@ pub struct ProvenanceView {
     pub notes: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DynamicCollectionRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DynamicCollectionSourceItem {
+    pub stable_item_id: String,
+    pub source_ordinal: u32,
+    pub included: bool,
+    pub filter_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DynamicCollectionGroup {
+    pub group_id: String,
+    pub start_index: u32,
+    pub item_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DynamicCollectionMaterializedSlot {
+    pub slot_id: String,
+    pub bound_item_id: String,
+    pub row_template_id: String,
+    pub rect: DynamicCollectionRect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DynamicCollectionTraceRow {
+    pub collection_instance_id: String,
+    pub frame_hour: u64,
+    pub source_items: Vec<DynamicCollectionSourceItem>,
+    pub ordered_item_ids: Vec<String>,
+    pub group_boundaries: Vec<DynamicCollectionGroup>,
+    pub row_template_id: String,
+    pub materialized_slots: Vec<DynamicCollectionMaterializedSlot>,
+    pub clip_rect: DynamicCollectionRect,
+    pub content_extent_pixels: [i32; 2],
+    pub viewport_extent_pixels: [i32; 2],
+    pub scroll_min_fixed: i64,
+    pub scroll_max_fixed: i64,
+    pub scroll_current_fixed: i64,
+    pub scroll_target_fixed: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynamicCollectionTraceView {
+    pub status: ViewStatus,
+    pub frame_hour: Option<u64>,
+    pub collections: Vec<DynamicCollectionTraceRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesignCatalogContext {
+    pub schema_version: u32,
+    pub authority: String,
+    pub elapsed_wall_ms: u64,
+    pub frame_hour: u64,
+    pub completeness_record_identity: String,
+    pub transition_sequence: u64,
+    pub active: bool,
+    pub mode: i32,
+    pub family: String,
+    pub our_filter_enabled: bool,
+    pub foreign_filter_enabled: bool,
+    pub obsolete_filter_enabled: bool,
+    pub current_country_tag_id: u32,
+    pub selected_country_tag_ids: Vec<u32>,
+    pub ordered_design_ids: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesignCatalogContextView {
+    pub status: ViewStatus,
+    pub context: Option<DesignCatalogContext>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HudSurfaceActivationKind {
+    Topbar,
+    Minimap,
+    Mapmodes,
+    TheatreSelector,
+    DesignerCountryEquipment,
+    DesignerTank,
+    DesignerPlane,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HudSurfaceActivationRoot {
+    pub surface: HudSurfaceActivationKind,
+    pub runtime_root_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HudSurfaceActivation {
+    pub schema_version: u32,
+    pub authority: String,
+    pub frame_hour: u64,
+    pub status_flags: u32,
+    pub observation_sequence: u64,
+    pub active_surfaces: Vec<HudSurfaceActivationRoot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HudSurfaceActivationView {
+    pub status: ViewStatus,
+    pub activation: Option<HudSurfaceActivation>,
+}
+
 /// World state at one canonical hour: the raw domain map plus typed views.
 pub struct WorldFrame {
     hour_index: i64,
@@ -724,6 +997,8 @@ pub struct WorldFrame {
     air_superiority_status: ViewStatus,
     weather_by_region: BTreeMap<u32, WeatherRegionRow>,
     weather_status: ViewStatus,
+    production_render: Option<ProductionRenderFrame>,
+    production_render_status: ViewStatus,
     snow_mud: SnowMudView,
     country_identities: BTreeMap<String, CountryIdentity>,
     country_identities_status: ViewStatus,
@@ -752,13 +1027,25 @@ pub struct WorldFrame {
     trade_status: ViewStatus,
     leaders_by_country: BTreeMap<String, LeaderRosterView>,
     leaders_status: ViewStatus,
+    character_rosters_exact: BTreeMap<String, CharacterRosterExactView>,
+    character_rosters_exact_status: ViewStatus,
+    ace_rosters_exact: BTreeMap<String, AceRosterExactView>,
+    ace_rosters_exact_status: ViewStatus,
     occupation_by_state: BTreeMap<u32, OccupationRow>,
     occupation_status: ViewStatus,
+    occupation_history: Leaf<Vec<OccupationHistoryExactRow>>,
+    occupation_history_complete: Leaf<bool>,
     power_balance: PowerBalanceView,
     designs: DesignsView,
     naval_air_combat: NavalAirCombatView,
     scripted_gui: ScriptedGuiView,
+    dynamic_collection_trace: DynamicCollectionTraceView,
+    design_catalog_context: DesignCatalogContextView,
+    hud_surface_activation: HudSurfaceActivationView,
+    design_catalog: Option<Arc<PortableDesignCatalog>>,
     raids: RaidStateView,
+    fired_events: FiredEventsView,
+    fired_events_status: ViewStatus,
     provenance: ProvenanceView,
     coverage_warnings: Vec<String>,
 }
@@ -872,6 +1159,14 @@ impl WorldFrame {
     pub fn weather_status(&self) -> ViewStatus {
         self.weather_status
     }
+    /// Exact post-simulation/post-evaluation non-UI submissions. Gameplay rows
+    /// are never adapted into this packet-native carrier.
+    pub fn production_render(&self) -> Option<&ProductionRenderFrame> {
+        self.production_render.as_ref()
+    }
+    pub fn production_render_status(&self) -> ViewStatus {
+        self.production_render_status
+    }
     /// Accumulated per-province snow/mud ground cover and its fade window
     /// (requirements item 6), independent of the region weather phenomenon.
     pub fn snow_mud(&self) -> &SnowMudView {
@@ -973,6 +1268,13 @@ impl WorldFrame {
     }
 
     fn from_raw(frame: RawFrame) -> WorldFrame {
+        Self::from_raw_with_design_catalog(frame, None)
+    }
+
+    fn from_raw_with_design_catalog(
+        frame: RawFrame,
+        design_catalog: Option<Arc<PortableDesignCatalog>>,
+    ) -> WorldFrame {
         let mut warnings: Vec<String> = Vec::new();
         let (owner_by_state, owner_by_state_source, owner_by_state_status) = build_tag_map(
             &frame.rest,
@@ -1009,6 +1311,8 @@ impl WorldFrame {
         let (air_superiority_by_region, air_superiority_status) =
             build_air_superiority(&frame.rest, &mut warnings);
         let (weather_by_region, weather_status) = build_weather(&frame.rest, &mut warnings);
+        let (production_render, production_render_status) =
+            build_production_render(&frame.rest, frame.hour_index, &mut warnings);
         let snow_mud = build_snow_mud(&frame.rest, &mut warnings);
         let (country_identities, country_identities_status) =
             build_country_identities(&frame.rest, &mut warnings);
@@ -1028,12 +1332,25 @@ impl WorldFrame {
         let (intel_by_country, intel_status) = build_intel(&frame.rest, &mut warnings);
         let (trade_by_country, trade_status) = build_trade(&frame.rest, &mut warnings);
         let (leaders_by_country, mut leaders_status) = build_leaders(&frame.rest, &mut warnings);
+        let (
+            character_rosters_exact,
+            character_rosters_exact_status,
+            ace_rosters_exact,
+            ace_rosters_exact_status,
+        ) = build_xui17_exact_rosters(&frame.rest, &mut warnings);
         let (occupation_by_state, occupation_status) = build_occupation(&frame.rest, &mut warnings);
+        let (occupation_history, occupation_history_complete) =
+            build_occupation_history(&frame.rest, &mut warnings);
         let power_balance = build_power_balance(&frame.rest, &mut warnings);
         let designs = build_designs(&frame.rest, &mut warnings);
         let naval_air_combat = build_naval_air_combat(&frame.rest, &mut warnings);
         let scripted_gui = build_scripted_gui(&frame.rest, &mut warnings);
+        let dynamic_collection_trace = build_dynamic_collection_trace(&frame.rest, &mut warnings);
+        let design_catalog_context = build_design_catalog_context(&frame.rest, &mut warnings);
+        let hud_surface_activation =
+            build_hud_surface_activation(&frame.rest, frame.hour_index, &mut warnings);
         let raids = build_raids(&frame.rest, &mut warnings);
+        let (fired_events, fired_events_status) = build_fired_events(&frame.rest, &mut warnings);
         let provenance = build_provenance(&frame.rest, &mut warnings);
         reconcile_domain_problem_statuses(
             &frame.rest,
@@ -1075,6 +1392,8 @@ impl WorldFrame {
             air_superiority_status,
             weather_by_region,
             weather_status,
+            production_render,
+            production_render_status,
             snow_mud,
             country_identities,
             country_identities_status,
@@ -1102,13 +1421,25 @@ impl WorldFrame {
             trade_status,
             leaders_by_country,
             leaders_status,
+            character_rosters_exact,
+            character_rosters_exact_status,
+            ace_rosters_exact,
+            ace_rosters_exact_status,
             occupation_by_state,
             occupation_status,
+            occupation_history,
+            occupation_history_complete,
             power_balance,
             designs,
             naval_air_combat,
             scripted_gui,
+            dynamic_collection_trace,
+            design_catalog_context,
+            hud_surface_activation,
+            design_catalog,
             raids,
+            fired_events,
+            fired_events_status,
             provenance,
             coverage_warnings: warnings,
         }
@@ -1150,6 +1481,7 @@ pub struct WorldTimeline {
     hours: Vec<i64>,
     config: TimelineConfig,
     cache: Mutex<FrameCache>,
+    design_catalog: Option<Arc<PortableDesignCatalog>>,
 }
 
 /// Result of resolving an arbitrary requested hour against the snapshot spine.
@@ -1203,17 +1535,50 @@ impl WorldTimeline {
                 )));
             }
         }
+        let design_catalog = source.design_catalog().cloned();
         Ok(WorldTimeline {
             source,
             hours,
             config,
             cache: Mutex::new(FrameCache::new(config.frame_cache_entries)),
+            design_catalog,
         })
     }
 
     /// The frame-cache entry budget this timeline was opened with.
     pub fn frame_cache_entries(&self) -> usize {
         self.config.frame_cache_entries
+    }
+
+    /// Available before the first frame decode, so first-launch VFS admission
+    /// gates construction of every production renderer/catalog.
+    pub fn content_manifest(&self) -> Option<&portable_content_manifest::ContentManifest> {
+        self.source.content_manifest()
+    }
+
+    pub fn design_catalog(&self) -> Option<&PortableDesignCatalog> {
+        self.design_catalog.as_deref()
+    }
+
+    pub fn admit_playback_content(
+        &self,
+        inventory: &portable_content_manifest::PlaybackContentInventory,
+    ) -> Result<
+        portable_content_manifest::ValidatedContentAdmission,
+        portable_content_manifest::ContentValidationReport,
+    > {
+        let Some(manifest) = self.content_manifest() else {
+            return Err(portable_content_manifest::ContentValidationReport {
+                compatible: false,
+                verified_required_content: 0,
+                issues: vec![portable_content_manifest::ContentIssue {
+                    code: portable_content_manifest::ContentIssueCode::InvalidManifest,
+                    subject: "manifest.content_manifest".into(),
+                    message: "recording has no portable used-content manifest".into(),
+                }],
+            });
+        };
+        manifest.admit_playback(inventory)
     }
 
     pub fn game_id(&self) -> &str {
@@ -1290,7 +1655,10 @@ impl WorldTimeline {
             return Ok(frame);
         }
         let raw = self.source.frame(hour_index)?;
-        let frame = Arc::new(WorldFrame::from_raw(raw));
+        let frame = Arc::new(WorldFrame::from_raw_with_design_catalog(
+            raw,
+            self.design_catalog.clone(),
+        ));
         self.cache
             .lock()
             .expect("frame cache lock")
@@ -1433,6 +1801,22 @@ fn leaf_i64(
     typed_leaf(obj, path, "integer", ctx, warnings, Value::as_i64)
 }
 
+fn leaf_u64(
+    obj: &Map<String, Value>,
+    path: &[&str],
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<u64> {
+    typed_leaf(
+        obj,
+        path,
+        "non-negative integer",
+        ctx,
+        warnings,
+        Value::as_u64,
+    )
+}
+
 fn leaf_u32(
     obj: &Map<String, Value>,
     path: &[&str],
@@ -1442,6 +1826,58 @@ fn leaf_u32(
     typed_leaf(obj, path, "non-negative integer", ctx, warnings, |v| {
         v.as_u64().and_then(|n| u32::try_from(n).ok())
     })
+}
+
+fn leaf_u32_prefer(
+    obj: &Map<String, Value>,
+    primary: &[&str],
+    fallback: &[&str],
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<u32> {
+    match leaf_u32(obj, primary, ctx, warnings) {
+        Leaf::Absent => leaf_u32(obj, fallback, ctx, warnings),
+        value => value,
+    }
+}
+
+fn leaf_i64_prefer(
+    obj: &Map<String, Value>,
+    primary: &[&str],
+    fallback: &[&str],
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<i64> {
+    match leaf_i64(obj, primary, ctx, warnings) {
+        Leaf::Absent => leaf_i64(obj, fallback, ctx, warnings),
+        value => value,
+    }
+}
+
+fn leaf_f64_prefer(
+    obj: &Map<String, Value>,
+    primary: &[&str],
+    fallback: &[&str],
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<f64> {
+    match leaf_f64(obj, primary, ctx, warnings) {
+        Leaf::Absent => leaf_f64(obj, fallback, ctx, warnings),
+        value => value,
+    }
+}
+
+fn leaf_string_prefer(
+    obj: &Map<String, Value>,
+    primary: &[&str],
+    fallback: &[&str],
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<String> {
+    match leaf_string(obj, primary, ctx, warnings) {
+        Leaf::Absent => leaf_string(obj, fallback, ctx, warnings),
+        value => value,
+    }
 }
 
 fn leaf_bool(
@@ -1571,6 +2007,131 @@ fn leaf_string_list(
             warnings.push(format!(
                 "{ctx}.{}: present but wrong-typed (expected array, found {}); \
                  treated as unobtained",
+                path.join("."),
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
+    }
+}
+
+fn leaf_i64_list(
+    obj: &Map<String, Value>,
+    path: &[&str],
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<Vec<i64>> {
+    match walk_path(obj, path, ctx, warnings) {
+        Leaf::Absent => Leaf::Absent,
+        Leaf::Unobtained => Leaf::Unobtained,
+        Leaf::Measured(Value::Array(items)) => {
+            let mut out = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                match item.as_i64() {
+                    Some(value) => out.push(value),
+                    None => {
+                        warnings.push(format!(
+                            "{ctx}.{}[{i}]: expected integer, found {}; whole list treated as unobtained",
+                            path.join("."),
+                            json_type_name(item)
+                        ));
+                        return Leaf::Unobtained;
+                    }
+                }
+            }
+            Leaf::Measured(out)
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "{ctx}.{}: present but wrong-typed (expected integer array, found {}); treated as unobtained",
+                path.join("."),
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
+    }
+}
+
+fn leaf_string_map(
+    obj: &Map<String, Value>,
+    path: &[&str],
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<BTreeMap<String, String>> {
+    match walk_path(obj, path, ctx, warnings) {
+        Leaf::Absent => Leaf::Absent,
+        Leaf::Unobtained => Leaf::Unobtained,
+        Leaf::Measured(Value::Object(map)) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in map {
+                match value_to_id_string(value) {
+                    Some(value) => {
+                        out.insert(key.clone(), value);
+                    }
+                    None => {
+                        warnings.push(format!(
+                            "{ctx}.{}.{key}: expected string/integer id, found {}; whole map treated as unobtained",
+                            path.join("."),
+                            json_type_name(value)
+                        ));
+                        return Leaf::Unobtained;
+                    }
+                }
+            }
+            Leaf::Measured(out)
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "{ctx}.{}: present but wrong-typed (expected object, found {}); treated as unobtained",
+                path.join("."),
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
+    }
+}
+
+fn leaf_string_list_map(
+    obj: &Map<String, Value>,
+    path: &[&str],
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<BTreeMap<String, Vec<String>>> {
+    match walk_path(obj, path, ctx, warnings) {
+        Leaf::Absent => Leaf::Absent,
+        Leaf::Unobtained => Leaf::Unobtained,
+        Leaf::Measured(Value::Object(map)) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in map {
+                let Value::Array(items) = value else {
+                    warnings.push(format!(
+                        "{ctx}.{}.{key}: expected array, found {}; whole map treated as unobtained",
+                        path.join("."),
+                        json_type_name(value)
+                    ));
+                    return Leaf::Unobtained;
+                };
+                let mut values = Vec::with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    match value_to_id_string(item) {
+                        Some(value) => values.push(value),
+                        None => {
+                            warnings.push(format!(
+                                "{ctx}.{}.{key}[{i}]: expected string/integer id, found {}; whole map treated as unobtained",
+                                path.join("."),
+                                json_type_name(item)
+                            ));
+                            return Leaf::Unobtained;
+                        }
+                    }
+                }
+                out.insert(key.clone(), values);
+            }
+            Leaf::Measured(out)
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "{ctx}.{}: present but wrong-typed (expected object, found {}); treated as unobtained",
                 path.join("."),
                 json_type_name(other)
             ));
@@ -2269,9 +2830,188 @@ fn build_combats(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> Vec<C
             location_province: leaf_u32(obj, &["location_province"], &ctx, warnings),
             attackers: leaf_id_list(obj, "attackers", &ctx, warnings),
             defenders: leaf_id_list(obj, "defenders", &ctx, warnings),
+            combat_width: leaf_f64(obj, &["combat_width"], &ctx, warnings),
+            terrain: leaf_string(obj, &["terrain"], &ctx, warnings),
+            progress: leaf_f64(obj, &["progress"], &ctx, warnings),
+            detail: parse_land_combat_detail(obj, &ctx, warnings),
         });
     }
     rows
+}
+
+fn parse_land_combat_detail(
+    combat: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<LandCombatDetail> {
+    let key = "land_combat_detail_events_live";
+    let obj = match combat.get(key) {
+        None => return Leaf::Absent,
+        Some(Value::Null) => return Leaf::Unobtained,
+        Some(Value::Object(obj)) => obj,
+        Some(other) => {
+            warnings.push(format!(
+                "{ctx}.{key}: expected object, found {}; treated as unobtained",
+                json_type_name(other)
+            ));
+            return Leaf::Unobtained;
+        }
+    };
+    let dctx = format!("{ctx}.{key}");
+    Leaf::Measured(LandCombatDetail {
+        phase_event: leaf_string(obj, &["phase_event"], &dctx, warnings),
+        generation: leaf_i64(obj, &["generation"], &dctx, warnings),
+        location_province: leaf_u32(obj, &["location_province"], &dctx, warnings),
+        age_days: leaf_u32(obj, &["age_days"], &dctx, warnings),
+        duration_days: leaf_u32(obj, &["duration_days"], &dctx, warnings),
+        participant_events: parse_participant_events(obj, &dctx, warnings),
+        side_detail_completeness: leaf_string(obj, &["side_detail_completeness"], &dctx, warnings),
+        attacker: parse_land_side(obj, "attacker", &dctx, warnings),
+        defender: parse_land_side(obj, "defender", &dctx, warnings),
+    })
+}
+
+fn parse_participant_events(
+    detail: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<Vec<CombatParticipantEvent>> {
+    let items = match detail.get("participant_events") {
+        None => return Leaf::Absent,
+        Some(Value::Null) => return Leaf::Unobtained,
+        Some(Value::Array(items)) => items,
+        Some(other) => {
+            warnings.push(format!(
+                "{ctx}.participant_events: expected array, found {}; treated as unobtained",
+                json_type_name(other)
+            ));
+            return Leaf::Unobtained;
+        }
+    };
+    let mut rows = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let Some(obj) = item.as_object() else {
+            warnings.push(format!(
+                "{ctx}.participant_events[{index}]: expected object; whole list unobtained"
+            ));
+            return Leaf::Unobtained;
+        };
+        let rctx = format!("{ctx}.participant_events[{index}]");
+        rows.push(CombatParticipantEvent {
+            event: leaf_string(obj, &["event"], &rctx, warnings),
+            generation: leaf_i64(obj, &["generation"], &rctx, warnings),
+            side: leaf_string(obj, &["side"], &rctx, warnings),
+            division_id: leaf_i64(obj, &["division_id"], &rctx, warnings),
+            old_side_count: leaf_i64(obj, &["old_side_count"], &rctx, warnings),
+            new_side_count: leaf_i64(obj, &["new_side_count"], &rctx, warnings),
+            semantic: leaf_string(obj, &["semantic"], &rctx, warnings),
+        });
+    }
+    Leaf::Measured(rows)
+}
+
+fn parse_land_side(
+    detail: &Map<String, Value>,
+    key: &str,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<LandCombatSideDetail> {
+    let obj = match detail.get(key) {
+        None => return Leaf::Absent,
+        Some(Value::Null) => return Leaf::Unobtained,
+        Some(Value::Object(obj)) => obj,
+        Some(other) => {
+            warnings.push(format!(
+                "{ctx}.{key}: expected object, found {}; treated as unobtained",
+                json_type_name(other)
+            ));
+            return Leaf::Unobtained;
+        }
+    };
+    let sctx = format!("{ctx}.{key}");
+    Leaf::Measured(LandCombatSideDetail {
+        units: leaf_i64(obj, &["units"], &sctx, warnings),
+        committed: leaf_i64(obj, &["committed"], &sctx, warnings),
+        reserve: leaf_i64(obj, &["reserve"], &sctx, warnings),
+        air_kills: leaf_i64(obj, &["air_kills"], &sctx, warnings),
+        org_loss_summary_index: leaf_i64(obj, &["org_loss_summary_index"], &sctx, warnings),
+        num_org_losses: leaf_i64(obj, &["num_org_losses"], &sctx, warnings),
+        anti_air_attack: leaf_f64(obj, &["anti_air_attack"], &sctx, warnings),
+        air_damage_str: leaf_f64(obj, &["air_damage_str"], &sctx, warnings),
+        air_damage_org: leaf_f64(obj, &["air_damage_org"], &sctx, warnings),
+        ground_damage_str: leaf_f64(obj, &["ground_damage_str"], &sctx, warnings),
+        ground_damage_org: leaf_f64(obj, &["ground_damage_org"], &sctx, warnings),
+        prevented_damage_str: leaf_f64(obj, &["prevented_damage_str"], &sctx, warnings),
+        prevented_damage_org: leaf_f64(obj, &["prevented_damage_org"], &sctx, warnings),
+        progress: leaf_f64(obj, &["progress"], &sctx, warnings),
+        progress_raw: leaf_i64(obj, &["progress_raw"], &sctx, warnings),
+        tactic: parse_land_tactic(obj, &sctx, warnings),
+        tactic_status: leaf_string(obj, &["tactic_status"], &sctx, warnings),
+        losses_status: leaf_string(obj, &["losses_status"], &sctx, warnings),
+        counts_incomplete: leaf_bool(obj, &["counts_incomplete"], &sctx, warnings),
+        damage_attribution: parse_damage_attribution(obj, &sctx, warnings),
+    })
+}
+
+fn parse_land_tactic(
+    side: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<Option<LandCombatTacticIdentity>> {
+    let obj = match side.get("tactic") {
+        None => return Leaf::Absent,
+        Some(Value::Null) => return Leaf::Measured(None),
+        Some(Value::Object(obj)) => obj,
+        Some(other) => {
+            warnings.push(format!(
+                "{ctx}.tactic: expected object or null, found {}; treated as unobtained",
+                json_type_name(other)
+            ));
+            return Leaf::Unobtained;
+        }
+    };
+    let tctx = format!("{ctx}.tactic");
+    Leaf::Measured(Some(LandCombatTacticIdentity {
+        id: leaf_i64(obj, &["id"], &tctx, warnings),
+        token: leaf_string(obj, &["token"], &tctx, warnings),
+        name: leaf_string(obj, &["name"], &tctx, warnings),
+    }))
+}
+
+fn parse_damage_attribution(
+    side: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<Vec<LandDamageAttributionRow>> {
+    let items = match side.get("damage_attribution") {
+        None => return Leaf::Absent,
+        Some(Value::Null) => return Leaf::Unobtained,
+        Some(Value::Array(items)) => items,
+        Some(other) => {
+            warnings.push(format!(
+                "{ctx}.damage_attribution: expected array, found {}; treated as unobtained",
+                json_type_name(other)
+            ));
+            return Leaf::Unobtained;
+        }
+    };
+    let mut rows = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let Some(obj) = item.as_object() else {
+            warnings.push(format!(
+                "{ctx}.damage_attribution[{index}]: expected object; whole list unobtained"
+            ));
+            return Leaf::Unobtained;
+        };
+        let rctx = format!("{ctx}.damage_attribution[{index}]");
+        rows.push(LandDamageAttributionRow {
+            dealer_tag_db_id: leaf_i64(obj, &["dealer_tag_db_id"], &rctx, warnings),
+            victim_tag_db_id: leaf_i64(obj, &["victim_tag_db_id"], &rctx, warnings),
+            damage: leaf_f64(obj, &["damage"], &rctx, warnings),
+            damage_raw: leaf_i64(obj, &["damage_raw"], &rctx, warnings),
+        });
+    }
+    Leaf::Measured(rows)
 }
 
 fn build_session_metadata(
@@ -2343,12 +3083,66 @@ fn build_session_metadata(
         },
         other => other,
     };
+    let display_variant = match session {
+        Some(obj) => leaf_display_variant(obj, warnings),
+        None if session_status == ViewStatus::DomainUnavailable => Leaf::Unobtained,
+        None => Leaf::Absent,
+    };
     SessionMetadataView {
         status,
         player_countries,
         speed_events,
         active_dlcs,
         localisation_language,
+        display_variant,
+    }
+}
+
+fn leaf_display_variant(
+    session: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> Leaf<DisplayVariantMetadata> {
+    let Some(value) = session.get("display_variant") else {
+        return Leaf::Absent;
+    };
+    let display: DisplayVariantMetadata = match serde_json::from_value(value.clone()) {
+        Ok(display) => display,
+        Err(error) => {
+            warnings.push(format!(
+                "session.display_variant: invalid exact launch-settings object ({error}); treated as unobtained"
+            ));
+            return Leaf::Unobtained;
+        }
+    };
+    let scale = f32::from_bits(display.gui_scale_f32_bits);
+    let expected_mode = match (display.fullscreen, display.borderless) {
+        (true, false) => "fullscreen",
+        (false, true) => "borderless_fullscreen",
+        (false, false) => "windowed",
+        (true, true) => {
+            warnings.push("session.display_variant: ambiguous fullscreen/borderless flags; treated as unobtained".into());
+            return Leaf::Unobtained;
+        }
+    };
+    let sha_ok = display.settings_file_sha256.len() == 64
+        && display
+            .settings_file_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+    if display.physical_width == 0
+        || display.physical_height == 0
+        || display.min_gui_width == 0
+        || display.min_gui_height == 0
+        || display.refresh_rate_hz == 0
+        || !scale.is_finite()
+        || scale <= 0.0
+        || display.display_mode != expected_mode
+        || !sha_ok
+    {
+        warnings.push("session.display_variant: values violate exact launch-settings contract; treated as unobtained".into());
+        Leaf::Unobtained
+    } else {
+        Leaf::Measured(display)
     }
 }
 
@@ -2776,6 +3570,55 @@ fn build_weather(
     (out, ViewStatus::Present)
 }
 
+fn build_production_render(
+    rest: &Map<String, Value>,
+    frame_hour: i64,
+    warnings: &mut Vec<String>,
+) -> (Option<ProductionRenderFrame>, ViewStatus) {
+    let Some(value) = rest.get("production_render") else {
+        return (None, ViewStatus::DomainAbsent);
+    };
+    if value.is_null() {
+        return (None, ViewStatus::DomainUnavailable);
+    }
+    let bytes = match serde_json::to_vec(value) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            warnings.push(format!(
+                "production_render: JSON serialization failed: {error}"
+            ));
+            return (None, ViewStatus::DomainUnavailable);
+        }
+    };
+    match ProductionRenderFrame::decode_json(&bytes) {
+        Ok(frame) => {
+            if let Some(pass) = &frame.authenticated_ui_pass {
+                let runtime_text =
+                    match crate::runtime_text::admit_runtime_text(rest.get("runtime_text")) {
+                        Ok(runtime_text) => runtime_text,
+                        Err(error) => {
+                            warnings.push(format!("production_render runtime-text join: {error}"));
+                            return (None, ViewStatus::DomainUnavailable);
+                        }
+                    };
+                if let Err(error) = crate::runtime_text::validate_ui_pass_runtime_text_bindings(
+                    pass,
+                    &runtime_text,
+                    frame_hour,
+                ) {
+                    warnings.push(format!("production_render runtime-text join: {error}"));
+                    return (None, ViewStatus::DomainUnavailable);
+                }
+            }
+            (Some(frame), ViewStatus::Present)
+        }
+        Err(error) => {
+            warnings.push(format!("production_render: {error}"));
+            (None, ViewStatus::DomainUnavailable)
+        }
+    }
+}
+
 /// Accumulated snow/mud ground-cover view (requirements item 6). The engine's
 /// SnowMudData texture is province-addressed and lives under
 /// `weather.snow_mud` (`texture` = per-province levels, `fade` = the blend
@@ -3062,6 +3905,7 @@ fn build_diplomacy(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> Dip
     // recorder's witnessed d53 roster, with diplomacy_live used only when the
     // d53 status is absent.
     let (war_relations, war_rel_status) = read_war_relations(rest, warnings);
+    let (wars, wars_status) = read_war_objects(rest, warnings);
     let (faction_members, faction_status) = match read_domain53_faction_roster(rest, warnings) {
         Some((_, modern_members, modern_status)) => (modern_members, modern_status),
         None => match read_faction_members(rest, warnings) {
@@ -3071,13 +3915,17 @@ fn build_diplomacy(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> Dip
             legacy => legacy,
         },
     };
-    status = combine_status(combine_status(status, war_rel_status), faction_status);
+    status = combine_status(
+        combine_status(combine_status(status, war_rel_status), wars_status),
+        faction_status,
+    );
 
     DiplomacyView {
         status,
         pairs,
         countries,
         war_relations,
+        wars,
         faction_members,
         relation_flags,
     }
@@ -3179,6 +4027,146 @@ fn read_war_relations(
             (Leaf::Unobtained, ViewStatus::DomainUnavailable)
         }
     }
+}
+
+fn war_participation_breakdown(
+    participant: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<WarParticipationBreakdown> {
+    let breakdown = match participant.get("participation_breakdown") {
+        None => return Leaf::Absent,
+        Some(Value::Null) => return Leaf::Unobtained,
+        Some(Value::Object(value)) => value,
+        Some(other) => {
+            warnings.push(format!(
+                "{ctx}.participation_breakdown: expected object, found {}; treated as unobtained",
+                json_type_name(other)
+            ));
+            return Leaf::Unobtained;
+        }
+    };
+    let bctx = format!("{ctx}.participation_breakdown");
+    Leaf::Measured(WarParticipationBreakdown {
+        land_damage: leaf_i64(breakdown, &["land_damage"], &bctx, warnings),
+        occupation: leaf_i64(breakdown, &["occupation"], &bctx, warnings),
+        air_damage: leaf_i64(breakdown, &["air_damage"], &bctx, warnings),
+        strategic_bombing: leaf_i64(breakdown, &["strategic_bombing"], &bctx, warnings),
+        sunk_ships: leaf_i64(breakdown, &["sunk_ships"], &bctx, warnings),
+        sunk_convoys: leaf_i64(breakdown, &["sunk_convoys"], &bctx, warnings),
+        casualties: leaf_i64(breakdown, &["casualties"], &bctx, warnings),
+        lend_lease_given: leaf_i64(breakdown, &["lend_lease_given"], &bctx, warnings),
+        lend_lease_received: leaf_i64(breakdown, &["lend_lease_received"], &bctx, warnings),
+    })
+}
+
+fn war_participants(
+    war: &Map<String, Value>,
+    key: &str,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<Vec<WarParticipantOverviewRow>> {
+    let rows = match war.get(key) {
+        None => return Leaf::Absent,
+        Some(Value::Null) => return Leaf::Unobtained,
+        Some(Value::Array(rows)) => rows,
+        Some(other) => {
+            warnings.push(format!(
+                "{ctx}.{key}: expected array, found {}; treated as unobtained",
+                json_type_name(other)
+            ));
+            return Leaf::Unobtained;
+        }
+    };
+    let mut out = Vec::with_capacity(rows.len());
+    for (index, row) in rows.iter().enumerate() {
+        let Some(row) = row.as_object() else {
+            warnings.push(format!(
+                "{ctx}.{key}[{index}]: expected object; whole participant list treated as unobtained"
+            ));
+            return Leaf::Unobtained;
+        };
+        let rctx = format!("{ctx}.{key}[{index}]");
+        out.push(WarParticipantOverviewRow {
+            tag: leaf_string(row, &["tag"], &rctx, warnings),
+            tag_db_id: leaf_i64(row, &["tag_db_id"], &rctx, warnings),
+            participation_raw: leaf_i64(row, &["participation_raw"], &rctx, warnings),
+            capitulation_progress_raw: leaf_i64(
+                row,
+                &["capitulation_progress_raw"],
+                &rctx,
+                warnings,
+            ),
+            breakdown: war_participation_breakdown(row, &rctx, warnings),
+        });
+    }
+    Leaf::Measured(out)
+}
+
+fn read_war_objects(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (Leaf<Vec<WarObjectRow>>, ViewStatus) {
+    let world = match rest.get("diplomacy_world") {
+        None => return (Leaf::Absent, ViewStatus::DomainAbsent),
+        Some(Value::Null) => return (Leaf::Unobtained, ViewStatus::DomainUnavailable),
+        Some(Value::Object(world)) => world,
+        Some(other) => {
+            warnings.push(format!(
+                "diplomacy_world: expected object, found {}; wars unavailable",
+                json_type_name(other)
+            ));
+            return (Leaf::Unobtained, ViewStatus::DomainUnavailable);
+        }
+    };
+    let entries = match world.get("wars") {
+        None => return (Leaf::Absent, ViewStatus::DomainAbsent),
+        Some(Value::Null) => return (Leaf::Unobtained, ViewStatus::DomainUnavailable),
+        Some(Value::Object(entries)) => entries,
+        Some(other) => {
+            warnings.push(format!(
+                "diplomacy_world.wars: expected object, found {}; wars unavailable",
+                json_type_name(other)
+            ));
+            return (Leaf::Unobtained, ViewStatus::DomainUnavailable);
+        }
+    };
+    let mut rows = Vec::with_capacity(entries.len());
+    for (key, item) in entries {
+        let Some(obj) = item.as_object() else {
+            warnings.push(format!(
+                "diplomacy_world.wars.{key}: expected object; wars unavailable"
+            ));
+            return (Leaf::Unobtained, ViewStatus::DomainUnavailable);
+        };
+        let ctx = format!("diplomacy_world.wars.{key}");
+        rows.push(WarObjectRow {
+            key: key.clone(),
+            attackers: leaf_string_list(obj, &["attackers"], &ctx, warnings),
+            defenders: leaf_string_list(obj, &["defenders"], &ctx, warnings),
+            war_name: leaf_string_prefer(obj, &["war_name"], &["name"], &ctx, warnings),
+            front: leaf_string(obj, &["front"], &ctx, warnings),
+            start_hour: leaf_i64(obj, &["start_hour"], &ctx, warnings),
+            attacker_participants: war_participants(obj, "attacker_participants", &ctx, warnings),
+            defender_participants: war_participants(obj, "defender_participants", &ctx, warnings),
+            overall_progress_raw: leaf_i64(obj, &["overall_progress_raw"], &ctx, warnings),
+            first: leaf_string(obj, &["first"], &ctx, warnings),
+            second: leaf_string(obj, &["second"], &ctx, warnings),
+            first_tag_db_id: leaf_i64(obj, &["first_tag_db_id"], &ctx, warnings),
+            second_tag_db_id: leaf_i64(obj, &["second_tag_db_id"], &ctx, warnings),
+            start_date: leaf_string(obj, &["start_date"], &ctx, warnings),
+            first_casualties: leaf_i64(obj, &["first_casualties"], &ctx, warnings),
+            second_casualties: leaf_i64(obj, &["second_casualties"], &ctx, warnings),
+            casualties_semantics: leaf_string(obj, &["casualties_semantics"], &ctx, warnings),
+            casualties_is_save_snapshot: leaf_bool(
+                obj,
+                &["casualties_is_save_snapshot"],
+                &ctx,
+                warnings,
+            ),
+        });
+    }
+    (Leaf::Measured(rows), ViewStatus::Present)
 }
 
 /// Read `diplomacy_live.faction_members` (`{faction_id: [TAG,…]}`). Returns the
@@ -4727,7 +5715,46 @@ fn downgrade_present_status(status: &mut ViewStatus) {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResearchProgressRow {
     pub name: Leaf<String>,
+    pub points_factor: Leaf<f64>,
+    pub progress_points: Leaf<f64>,
+    pub required_points_base: Leaf<f64>,
+    pub remaining_points_base: Leaf<f64>,
     pub progress_pct: Leaf<f64>,
+    pub eta_days: Leaf<i64>,
+    pub progress_basis: Leaf<String>,
+    pub progress_unavailable_reason: Leaf<String>,
+    pub eta_unavailable_reason: Leaf<String>,
+    pub ahead_of_time_years: Leaf<f64>,
+    pub ahead_of_time_penalty_pct: Leaf<f64>,
+    pub ahead_of_time_reduction_years: Leaf<f64>,
+    pub ahead_of_time_reduced_penalty_pct: Leaf<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResearchLiveProgressRow {
+    pub slot_index: Leaf<i64>,
+    pub tech_handle_raw: Leaf<i64>,
+    pub tech_def_index_raw: Leaf<i64>,
+    pub tech_name: Leaf<String>,
+    pub progress_raw: Leaf<i64>,
+    pub progress_units: Leaf<f64>,
+    pub live_progress_raw: Leaf<i64>,
+    pub live_progress_units: Leaf<f64>,
+    pub base_required_points_raw: Leaf<i64>,
+    pub base_required_points_units: Leaf<f64>,
+    pub points_factor: Leaf<f64>,
+    pub points_factor_elapsed_hours: Leaf<i64>,
+    pub required_points_base: Leaf<f64>,
+    pub remaining_points_base: Leaf<f64>,
+    pub progress_pct: Leaf<f64>,
+    pub eta_days: Leaf<i64>,
+    pub progress_basis: Leaf<String>,
+    pub progress_unavailable_reason: Leaf<String>,
+    pub eta_unavailable_reason: Leaf<String>,
+    pub ahead_of_time_years: Leaf<f64>,
+    pub ahead_of_time_penalty_pct: Leaf<f64>,
+    pub ahead_of_time_reduction_years: Leaf<f64>,
+    pub ahead_of_time_reduced_penalty_pct: Leaf<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -4765,6 +5792,7 @@ pub struct ResearchView {
     pub tech_count: Leaf<i64>,
     pub research_slots: Leaf<i64>,
     pub in_progress: Leaf<Vec<ResearchProgressRow>>,
+    pub in_progress_live: Leaf<Vec<ResearchLiveProgressRow>>,
     pub technologies: Leaf<Vec<ResearchTechnologyRow>>,
     pub doctrine: Leaf<DoctrineView>,
 }
@@ -4775,6 +5803,7 @@ impl ResearchView {
             tech_count: Leaf::Unobtained,
             research_slots: Leaf::Unobtained,
             in_progress: Leaf::Unobtained,
+            in_progress_live: Leaf::Unobtained,
             technologies: Leaf::Unobtained,
             doctrine: Leaf::Unobtained,
         }
@@ -4786,9 +5815,15 @@ impl ResearchView {
 pub struct FocusView {
     pub focus_tree: Leaf<String>,
     pub current: Leaf<String>,
+    pub current_set: Leaf<Vec<String>>,
+    pub current_continuous: Leaf<String>,
+    pub current_continuous_set: Leaf<Vec<String>>,
     pub completed_count: Leaf<i64>,
     pub progress: Leaf<f64>,
     pub completed: Leaf<Vec<String>>,
+    pub available: Leaf<Vec<String>>,
+    pub visible_order: Leaf<Vec<String>>,
+    pub paused: Leaf<bool>,
 }
 
 impl FocusView {
@@ -4796,38 +5831,120 @@ impl FocusView {
         FocusView {
             focus_tree: Leaf::Unobtained,
             current: Leaf::Unobtained,
+            current_set: Leaf::Unobtained,
+            current_continuous: Leaf::Unobtained,
+            current_continuous_set: Leaf::Unobtained,
             completed_count: Leaf::Unobtained,
             progress: Leaf::Unobtained,
             completed: Leaf::Unobtained,
+            available: Leaf::Unobtained,
+            visible_order: Leaf::Unobtained,
+            paused: Leaf::Unobtained,
         }
     }
 }
 
 // --- 3. politics detail (REPLAY_SCHEMA §3.3) + command abilities (abilities) ---
 #[derive(Debug, Clone, PartialEq)]
+pub struct AppointedAdvisorRow {
+    pub idea_token: Leaf<String>,
+    pub slot: Leaf<String>,
+    pub ledger: Leaf<String>,
+    pub character: Leaf<String>,
+}
+
+/// One frame-authoritative command-ability entry.  Every display-facing value
+/// remains a tri-state leaf so authored defaults never masquerade as the
+/// selected leader's effective runtime state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommandAbilityRow {
+    pub ability_id: Leaf<String>,
+    pub available: Leaf<bool>,
+    pub active: Leaf<bool>,
+    pub activation_hour: Leaf<i64>,
+    pub cooldown_hours: Leaf<i64>,
+    pub cooldown_remaining_hours: Leaf<i64>,
+    pub cost_command_power: Leaf<f64>,
+    pub target_kind: Leaf<String>,
+    pub target_id: Leaf<String>,
+    pub duration_hours: Leaf<i64>,
+    pub duration_remaining_hours: Leaf<i64>,
+    pub display_order: Leaf<i64>,
+    pub icon: Leaf<String>,
+    pub tooltip: Leaf<String>,
+    pub disabled_reason: Leaf<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct PoliticsDetailView {
+    pub stability: Leaf<f64>,
+    pub war_support: Leaf<f64>,
+    pub political_power: Leaf<f64>,
+    pub command_power: Leaf<f64>,
+    pub ruling_party: Leaf<String>,
     pub party_popularities: Leaf<BTreeMap<String, f64>>,
     pub ideas: Leaf<Vec<String>>,
+    pub ideas_all: Leaf<Vec<String>>,
+    pub ideas_other: Leaf<Vec<String>>,
     pub national_spirits: Leaf<Vec<String>>,
+    pub idea_groups: Leaf<BTreeMap<String, Vec<String>>>,
+    pub advisor_ideas: Leaf<BTreeMap<String, Vec<String>>>,
+    /// The complete typed law object, preserving current live group names such
+    /// as `trade_laws` and `mobilization_laws` as well as save aliases.
+    pub laws: Leaf<BTreeMap<String, String>>,
     pub law_economy: Leaf<String>,
     pub law_trade: Leaf<String>,
     pub law_conscription: Leaf<String>,
+    pub idea_count: Leaf<i64>,
+    pub party_count: Leaf<i64>,
+    pub election_frequency: Leaf<i64>,
+    pub last_election: Leaf<String>,
+    pub elections_allowed: Leaf<bool>,
+    pub low_confidence: Leaf<bool>,
     pub appointed_advisors: Leaf<Vec<String>>,
+    pub appointed_advisor_details: Leaf<Vec<AppointedAdvisorRow>>,
+    pub appointed_advisor_slots: Leaf<BTreeMap<String, Vec<String>>>,
+    pub appointed_advisor_ledgers: Leaf<BTreeMap<String, Vec<String>>>,
     /// Active command abilities (ability tokens) from `countries.<tag>.abilities`.
     pub command_abilities: Leaf<Vec<String>>,
+    /// Exact selected-context ability rows from `countries.<tag>.active_abilities.rows`.
+    pub command_ability_rows: Leaf<Vec<CommandAbilityRow>>,
+    /// Distinguishes a proven-empty ability bar from an unreadable producer.
+    pub command_abilities_complete: Leaf<bool>,
 }
 
 impl PoliticsDetailView {
     fn all_unobtained() -> PoliticsDetailView {
         PoliticsDetailView {
+            stability: Leaf::Unobtained,
+            war_support: Leaf::Unobtained,
+            political_power: Leaf::Unobtained,
+            command_power: Leaf::Unobtained,
+            ruling_party: Leaf::Unobtained,
             party_popularities: Leaf::Unobtained,
             ideas: Leaf::Unobtained,
+            ideas_all: Leaf::Unobtained,
+            ideas_other: Leaf::Unobtained,
             national_spirits: Leaf::Unobtained,
+            idea_groups: Leaf::Unobtained,
+            advisor_ideas: Leaf::Unobtained,
+            laws: Leaf::Unobtained,
             law_economy: Leaf::Unobtained,
             law_trade: Leaf::Unobtained,
             law_conscription: Leaf::Unobtained,
+            idea_count: Leaf::Unobtained,
+            party_count: Leaf::Unobtained,
+            election_frequency: Leaf::Unobtained,
+            last_election: Leaf::Unobtained,
+            elections_allowed: Leaf::Unobtained,
+            low_confidence: Leaf::Unobtained,
             appointed_advisors: Leaf::Unobtained,
+            appointed_advisor_details: Leaf::Unobtained,
+            appointed_advisor_slots: Leaf::Unobtained,
+            appointed_advisor_ledgers: Leaf::Unobtained,
             command_abilities: Leaf::Unobtained,
+            command_ability_rows: Leaf::Unobtained,
+            command_abilities_complete: Leaf::Unobtained,
         }
     }
 }
@@ -4841,18 +5958,74 @@ pub struct ProductionLineRow {
     pub cost: Leaf<f64>,
 }
 
+/// One military/naval production line. Every display-facing field is a
+/// tri-state leaf: legacy d11 rows measure only the fields they actually
+/// carry, while successor schemas can fill the exact identity, efficiency,
+/// completeness and projection seams without replay-side guessing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EquipmentProductionLineRow {
+    pub id: Leaf<i64>,
+    pub priority: Leaf<i64>,
+    pub line_subtype: Leaf<String>,
+    pub equipment_variant_id: Leaf<String>,
+    pub active_factories: Leaf<i64>,
+    pub requested_factories: Leaf<i64>,
+    pub efficiency: Leaf<f64>,
+    pub efficiency_cap: Leaf<f64>,
+    pub efficiency_growth: Leaf<f64>,
+    pub cost: Leaf<f64>,
+    pub speed: Leaf<f64>,
+    pub produced: Leaf<f64>,
+    pub amount: Leaf<i64>,
+    pub progress_ratio: Leaf<f64>,
+    pub daily_output: Leaf<f64>,
+    pub days_to_next_unit: Leaf<f64>,
+    pub mio_id: Leaf<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct EquipmentStock {
     pub archetype: Leaf<String>,
     pub amount: Leaf<f64>,
 }
 
+/// B2 exact country convoy-bank row. `amount_raw` is the serializer-proven
+/// fixed-5 value; `amount` is its lossless replay projection at scale 100000.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConvoyVariantAmount {
+    pub archetype: Leaf<String>,
+    pub equip_id: Leaf<i64>,
+    pub equip_type: Leaf<i64>,
+    pub amount_raw: Leaf<i64>,
+    pub amount: Leaf<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConvoyPriorityReservation {
+    pub priority: Leaf<i64>,
+    pub count: Leaf<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProductionView {
     pub stockpile_total: Leaf<f64>,
     pub stockpile: Leaf<BTreeMap<String, f64>>,
+    pub stockpile_complete: Leaf<bool>,
+    pub military_lines: Leaf<Vec<EquipmentProductionLineRow>>,
+    pub military_lines_complete: Leaf<bool>,
+    pub naval_lines: Leaf<Vec<EquipmentProductionLineRow>>,
+    pub naval_lines_complete: Leaf<bool>,
     pub construction_queue: Leaf<Vec<ProductionLineRow>>,
     pub equipment_stockpile: Leaf<Vec<EquipmentStock>>,
+    pub convoys_complete: Leaf<bool>,
+    pub convoys_owned_raw: Leaf<i64>,
+    pub convoys_owned: Leaf<f64>,
+    pub convoys_assigned: Leaf<i64>,
+    pub convoys_available: Leaf<i64>,
+    pub convoys_cache_valid: Leaf<bool>,
+    pub convoy_variants: Leaf<Vec<ConvoyVariantAmount>>,
+    pub convoy_priority_reservations_complete: Leaf<bool>,
+    pub convoy_priority_reservations: Leaf<Vec<ConvoyPriorityReservation>>,
 }
 
 impl ProductionView {
@@ -4860,8 +6033,22 @@ impl ProductionView {
         ProductionView {
             stockpile_total: Leaf::Unobtained,
             stockpile: Leaf::Unobtained,
+            stockpile_complete: Leaf::Unobtained,
+            military_lines: Leaf::Unobtained,
+            military_lines_complete: Leaf::Unobtained,
+            naval_lines: Leaf::Unobtained,
+            naval_lines_complete: Leaf::Unobtained,
             construction_queue: Leaf::Unobtained,
             equipment_stockpile: Leaf::Unobtained,
+            convoys_complete: Leaf::Unobtained,
+            convoys_owned_raw: Leaf::Unobtained,
+            convoys_owned: Leaf::Unobtained,
+            convoys_assigned: Leaf::Unobtained,
+            convoys_available: Leaf::Unobtained,
+            convoys_cache_valid: Leaf::Unobtained,
+            convoy_variants: Leaf::Unobtained,
+            convoy_priority_reservations_complete: Leaf::Unobtained,
+            convoy_priority_reservations: Leaf::Unobtained,
         }
     }
 }
@@ -4882,6 +6069,53 @@ pub struct OperationRow {
     pub target: Leaf<String>,
 }
 
+/// Exact raw D53 agency leaves that are already production-carried. The
+/// unresolved names are intentional: their final UI semantics remain A30 RE
+/// inputs and must not be inferred from the raw offsets.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Domain53AgencyScalarsRaw {
+    pub max_operatives_unresolved: Leaf<i64>,
+    pub usable_slots_unresolved: Leaf<i64>,
+    pub operative_count: Leaf<i64>,
+    pub cryptology_target_count: Leaf<i64>,
+    /// Legacy carrier key `defense_raw`; neutralized until A30 reconciles the
+    /// +0x128 serialized representation and scale.
+    pub value_0x128_unvalidated: Leaf<i64>,
+    /// Legacy carrier key `upgrade_progress_raw`; neutralized until A30
+    /// reconciles the +0xC8 optional/object serialization path.
+    pub value_0xc8_unvalidated: Leaf<i64>,
+    pub name_hash: Leaf<u64>,
+    pub icon_hash: Leaf<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Domain53AgencyCapacityRaw {
+    pub value_0xe4: Leaf<i64>,
+    pub value_0xf0: Leaf<i64>,
+    pub value_0xf4: Leaf<i64>,
+    pub proof_hash: Leaf<u64>,
+    pub semantic_status: Leaf<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Domain53OperativeLifecycleRawRow {
+    pub op_id: Leaf<i64>,
+    pub detected: Leaf<bool>,
+    pub captured_unvalidated: Leaf<bool>,
+    pub skill: Leaf<i64>,
+    pub experience_raw: Leaf<i64>,
+    pub name_hash: Leaf<u64>,
+    pub state_hash: Leaf<u64>,
+    pub lifecycle_flag: Leaf<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Domain53CryptologyTargetRawRow {
+    pub target_tag_db_id: Leaf<i64>,
+    pub amount_raw: Leaf<i64>,
+    pub decrypting: Leaf<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct IntelView {
     pub agency_name: Leaf<String>,
@@ -4889,6 +6123,12 @@ pub struct IntelView {
     pub agency_upgrade_progress: Leaf<f64>,
     pub operatives: Leaf<Vec<OperativeRow>>,
     pub operations_running: Leaf<Vec<OperationRow>>,
+    /// Typed access to the already-extracted, deliberately non-semantic D53
+    /// sidecar. These are reusable A30 inputs, not a complete UI frame.
+    pub domain53_agency_scalars_raw: Leaf<Domain53AgencyScalarsRaw>,
+    pub domain53_agency_capacity_raw: Leaf<Domain53AgencyCapacityRaw>,
+    pub domain53_operative_lifecycle_raw: Leaf<Vec<Domain53OperativeLifecycleRawRow>>,
+    pub domain53_cryptology_targets_raw: Leaf<Vec<Domain53CryptologyTargetRawRow>>,
 }
 
 impl IntelView {
@@ -4899,6 +6139,10 @@ impl IntelView {
             agency_upgrade_progress: Leaf::Unobtained,
             operatives: Leaf::Unobtained,
             operations_running: Leaf::Unobtained,
+            domain53_agency_scalars_raw: Leaf::Unobtained,
+            domain53_agency_capacity_raw: Leaf::Unobtained,
+            domain53_operative_lifecycle_raw: Leaf::Unobtained,
+            domain53_cryptology_targets_raw: Leaf::Unobtained,
         }
     }
 }
@@ -4911,35 +6155,295 @@ pub struct TradeContractRow {
     pub convoys_assigned: Leaf<i64>,
 }
 
+/// One controller-materialized resource cell in `countrytradeview`.
+///
+/// Array order is preserved and `visible_order` authenticates that order.  The
+/// replay never reconstructs these display roles from a balance formula: the
+/// engine supplies each semantic value independently.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TradeResourceRow {
+    pub resource: Leaf<String>,
+    pub visible_order: Leaf<i64>,
+    pub balance: Leaf<f64>,
+    pub produced: Leaf<f64>,
+    pub imported: Leaf<f64>,
+    pub exported: Leaf<f64>,
+    pub special_project: Leaf<f64>,
+    pub production_line: Leaf<f64>,
+    pub needed: Leaf<f64>,
+    /// Oil-only first line written to the `needed` widget. Unobtained for
+    /// non-oil resources; retained separately because the engine writes two
+    /// numeric lines for oil.
+    pub needed_current: Leaf<f64>,
+    /// Oil-only second line written to the `needed` widget.
+    pub needed_max: Leaf<f64>,
+    pub needed_type: Leaf<String>,
+}
+
+/// One classic resource-trade deal (not an equipment-market purchase
+/// contract).  All amounts and costs are recorded semantic inputs; no replay
+/// trade simulation or route estimation is permitted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResourceTradeDealRow {
+    pub deal_id: Leaf<i64>,
+    pub counterpart: Leaf<String>,
+    pub direction: Leaf<String>,
+    pub resource: Leaf<String>,
+    pub requested: Leaf<f64>,
+    pub delivered: Leaf<f64>,
+    pub available_export: Leaf<f64>,
+    pub civilian_factories: Leaf<i64>,
+    pub factory_cost_per_resource: Leaf<f64>,
+    pub convoys_assigned: Leaf<i64>,
+    pub convoys_required: Leaf<i64>,
+    pub route_kind: Leaf<String>,
+    pub delivery_efficiency: Leaf<f64>,
+    /// Exact route+0xE8 flag. Optional in older recordings.
+    pub no_trade_influence: Leaf<bool>,
+    /// Exact route+0xE9 flag. Optional in older recordings.
+    pub no_resources: Leaf<bool>,
+    pub visible_order: Leaf<i64>,
+}
+
+const TRADE_RESOURCE_ORDER: [&str; 7] = [
+    "oil",
+    "aluminium",
+    "rubber",
+    "tungsten",
+    "steel",
+    "chromium",
+    "coal",
+];
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TradeView {
+    pub resource_pools_complete: Leaf<bool>,
     pub produced: Leaf<BTreeMap<String, f64>>,
+    pub imported: Leaf<BTreeMap<String, f64>>,
+    pub used: Leaf<BTreeMap<String, f64>>,
     pub exported: Leaf<BTreeMap<String, f64>>,
     pub to_export: Leaf<BTreeMap<String, f64>>,
+    pub base_export: Leaf<BTreeMap<String, f64>>,
+    pub available_derived: Leaf<BTreeMap<String, f64>>,
+    pub resource_rows: Leaf<Vec<TradeResourceRow>>,
+    pub resource_rows_complete: Leaf<bool>,
+    pub resource_deals: Leaf<Vec<ResourceTradeDealRow>>,
+    pub resource_deals_complete: Leaf<bool>,
+    pub factories_total: Leaf<i64>,
+    pub factories_used: Leaf<i64>,
+    pub factories_available: Leaf<i64>,
     pub contracts: Leaf<Vec<TradeContractRow>>,
 }
 
 impl TradeView {
     fn all_unobtained() -> TradeView {
         TradeView {
+            resource_pools_complete: Leaf::Unobtained,
             produced: Leaf::Unobtained,
+            imported: Leaf::Unobtained,
+            used: Leaf::Unobtained,
             exported: Leaf::Unobtained,
             to_export: Leaf::Unobtained,
+            base_export: Leaf::Unobtained,
+            available_derived: Leaf::Unobtained,
+            resource_rows: Leaf::Unobtained,
+            resource_rows_complete: Leaf::Unobtained,
+            resource_deals: Leaf::Unobtained,
+            resource_deals_complete: Leaf::Unobtained,
+            factories_total: Leaf::Unobtained,
+            factories_used: Leaf::Unobtained,
+            factories_available: Leaf::Unobtained,
             contracts: Leaf::Unobtained,
+        }
+    }
+
+    /// Total imported resources displayed by the engine.  This is available
+    /// only for a complete measured resource-row set.
+    pub fn computed_imported_total(&self) -> Leaf<f64> {
+        self.sum_complete_resource_rows(|row| &row.imported)
+    }
+
+    /// Total exported resources displayed by the engine.  This is available
+    /// only for a complete measured resource-row set.
+    pub fn computed_exported_total(&self) -> Leaf<f64> {
+        self.sum_complete_resource_rows(|row| &row.exported)
+    }
+
+    pub fn computed_convoys_assigned_total(&self) -> Leaf<i64> {
+        self.sum_complete_deal_i64(|row| &row.convoys_assigned)
+    }
+
+    pub fn computed_convoys_required_total(&self) -> Leaf<i64> {
+        self.sum_complete_deal_i64(|row| &row.convoys_required)
+    }
+
+    pub fn computed_requested_total(&self) -> Leaf<f64> {
+        self.sum_complete_deal_f64(|row| &row.requested)
+    }
+
+    pub fn computed_delivered_total(&self) -> Leaf<f64> {
+        self.sum_complete_deal_f64(|row| &row.delivered)
+    }
+
+    pub fn computed_civilian_factory_total(&self) -> Leaf<i64> {
+        self.sum_complete_deal_i64(|row| &row.civilian_factories)
+    }
+
+    /// Unique partners in measured visible deal order.  No alphabetical or
+    /// country-id sort is introduced by replay.
+    pub fn computed_partners(&self) -> Leaf<Vec<String>> {
+        match (&self.resource_deals_complete, &self.resource_deals) {
+            (Leaf::Measured(true), Leaf::Measured(rows)) => {
+                let mut seen = BTreeSet::new();
+                let mut partners = Vec::new();
+                for row in rows {
+                    let Leaf::Measured(counterpart) = &row.counterpart else {
+                        return Leaf::Unobtained;
+                    };
+                    if seen.insert(counterpart.clone()) {
+                        partners.push(counterpart.clone());
+                    }
+                }
+                Leaf::Measured(partners)
+            }
+            (Leaf::Absent, _) | (_, Leaf::Absent) => Leaf::Absent,
+            _ => Leaf::Unobtained,
+        }
+    }
+
+    fn sum_complete_resource_rows(
+        &self,
+        select: impl Fn(&TradeResourceRow) -> &Leaf<f64>,
+    ) -> Leaf<f64> {
+        match (&self.resource_rows_complete, &self.resource_rows) {
+            (Leaf::Measured(true), Leaf::Measured(rows)) => {
+                let mut total = 0.0;
+                for row in rows {
+                    let Leaf::Measured(value) = select(row) else {
+                        return Leaf::Unobtained;
+                    };
+                    total += value;
+                }
+                Leaf::Measured(total)
+            }
+            (Leaf::Absent, _) | (_, Leaf::Absent) => Leaf::Absent,
+            _ => Leaf::Unobtained,
+        }
+    }
+
+    fn sum_complete_deal_i64(
+        &self,
+        select: impl Fn(&ResourceTradeDealRow) -> &Leaf<i64>,
+    ) -> Leaf<i64> {
+        match (&self.resource_deals_complete, &self.resource_deals) {
+            (Leaf::Measured(true), Leaf::Measured(rows)) => {
+                let mut total = 0i64;
+                for row in rows {
+                    let Leaf::Measured(value) = select(row) else {
+                        return Leaf::Unobtained;
+                    };
+                    let Some(next) = total.checked_add(*value) else {
+                        return Leaf::Unobtained;
+                    };
+                    total = next;
+                }
+                Leaf::Measured(total)
+            }
+            (Leaf::Absent, _) | (_, Leaf::Absent) => Leaf::Absent,
+            _ => Leaf::Unobtained,
+        }
+    }
+
+    fn sum_complete_deal_f64(
+        &self,
+        select: impl Fn(&ResourceTradeDealRow) -> &Leaf<f64>,
+    ) -> Leaf<f64> {
+        match (&self.resource_deals_complete, &self.resource_deals) {
+            (Leaf::Measured(true), Leaf::Measured(rows)) => {
+                let mut total = 0.0;
+                for row in rows {
+                    let Leaf::Measured(value) = select(row) else {
+                        return Leaf::Unobtained;
+                    };
+                    total += value;
+                }
+                Leaf::Measured(total)
+            }
+            (Leaf::Absent, _) | (_, Leaf::Absent) => Leaf::Absent,
+            _ => Leaf::Unobtained,
         }
     }
 }
 
 // --- 7. occupation resistance/compliance (REPLAY_SCHEMA §4, state-scoped) ---
 #[derive(Debug, Clone, PartialEq)]
+pub struct OccupationEquipmentExactRow {
+    pub source_ordinal: Leaf<i64>,
+    pub equipment_id: Leaf<u32>,
+    pub equipment_type: Leaf<u32>,
+    pub equipment_token: Leaf<String>,
+    pub amount: Leaf<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OccupationManpowerExactRow {
+    pub source_ordinal: Leaf<i64>,
+    pub tag: Leaf<String>,
+    pub value: Leaf<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GarrisonReinforcementExactRow {
+    pub source_ordinal: Leaf<i64>,
+    pub total_progress: Leaf<f64>,
+    pub need: Leaf<BTreeMap<String, f64>>,
+    pub date: Leaf<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OccupationHistoryExactRow {
+    pub stable_event_id: Leaf<String>,
+    pub source_ordinal: Leaf<i64>,
+    pub controller_tag: Leaf<String>,
+    pub state_id: Leaf<u32>,
+    pub occupied_country_tag: Leaf<String>,
+    pub event_hour_or_engine_date: Leaf<String>,
+    pub attack_blocked: Leaf<bool>,
+    pub resistance_activity: Leaf<String>,
+    pub lost_manpower: Leaf<i64>,
+    pub equipment_loss_rows: Leaf<Vec<OccupationEquipmentExactRow>>,
+    pub equipment_loss_children_complete: Leaf<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct OccupationRow {
     pub resistance: Leaf<f64>,
     pub resistance_speed: Leaf<f64>,
     pub compliance: Leaf<f64>,
     pub compliance_speed: Leaf<f64>,
+    pub occupier_tag: Leaf<String>,
     pub occupied_country_tag: Leaf<String>,
     pub operational_status: Leaf<String>,
     pub occupation_law: Leaf<String>,
+    /// Exact FNV-1a-32 law token from domain 66 when present, otherwise the
+    /// domain-52 per-state/default token retained in its authenticated sidecar.
+    pub occupation_law_token_id: Leaf<u32>,
+    pub occupation_law_token_encoding: Leaf<String>,
+    pub occupation_law_token_source: Leaf<String>,
+    pub occupation_law_status: Leaf<String>,
+    pub garrison_template_id: Leaf<u32>,
+    pub garrison_army_manpower_need: Leaf<i64>,
+    pub garrison_strength_ratio: Leaf<f64>,
+    pub garrison_required: Leaf<f64>,
+    pub garrison_signals_status: Leaf<String>,
+    pub garrison_manpower_source_tag_db_id: Leaf<u32>,
+    pub occupation_controller_tag_db_id: Leaf<u32>,
+    pub occupied_tag_db_id: Leaf<u32>,
+    pub garrison_manpower_pool: Leaf<Vec<OccupationManpowerExactRow>>,
+    pub garrison_equipment: Leaf<Vec<OccupationEquipmentExactRow>>,
+    pub garrison_equipment_complete: Leaf<bool>,
+    pub garrison_equipment_need: Leaf<BTreeMap<String, f64>>,
+    pub garrison_reinforcement_requests: Leaf<Vec<GarrisonReinforcementExactRow>>,
 }
 
 // --- 8. leader roster + traits (REPLAY_SCHEMA §3.10) ---
@@ -4970,6 +6474,133 @@ impl LeaderRosterView {
             generals: Leaf::Unobtained,
             admirals: Leaf::Unobtained,
             roster_size: Leaf::Unobtained,
+        }
+    }
+}
+
+// --- 8b. lossless live character/leader/ace sidecars (XUI17) ---
+//
+// These views expose only fields already authenticated by the domain-47 and
+// domain-46 recorder folds. `producer_ordinal` preserves the full-snapshot
+// array order for diagnostics; it is deliberately not named or treated as a
+// UI-visible ordinal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CharacterIdentityExactRow {
+    pub producer_ordinal: usize,
+    pub char_id: u64,
+    pub name: String,
+    pub token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CountryLeaderRoleExactRow {
+    pub producer_ordinal: usize,
+    pub char_id: u64,
+    pub name: String,
+    pub token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveRulerExactRow {
+    pub producer_ordinal: usize,
+    pub char_id: u64,
+    pub ruling_party: String,
+    pub name: String,
+    pub token: String,
+    pub leader_vec_size: u64,
+    pub ambiguous: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnitLeaderAssignmentKind {
+    ArmyGroup,
+    Army,
+    Fleet,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnitLeaderAssignmentExact {
+    pub kind: UnitLeaderAssignmentKind,
+    pub formation_id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnitLeaderExactRow {
+    pub producer_ordinal: usize,
+    pub unit_leader_id: u64,
+    pub char_id: u64,
+    pub leader_kind: String,
+    pub leader_kind_raw: u64,
+    pub skill: i64,
+    pub experience_raw: i64,
+    pub attack: i64,
+    pub defense: i64,
+    pub planning: i64,
+    pub logistics: i64,
+    pub maneuvering: i64,
+    pub coordination: i64,
+    /// Exact CUnitLeader trait-vector order, reconstructed from `ordinal`.
+    pub traits: Vec<String>,
+    /// Exact d28 OOB join by `unit_leader_id`. `None` means reserve only when
+    /// the containing view's `command_assignments_complete` is true.
+    pub assignment: Option<UnitLeaderAssignmentExact>,
+    pub token: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CharacterRosterExactView {
+    pub status: ViewStatus,
+    /// All three d28 command arrays were present, well typed, and unique.
+    /// When false, `UnitLeaderExactRow::assignment == None` is unavailable,
+    /// not evidence that the leader is in reserve.
+    pub command_assignments_complete: bool,
+    pub characters: Vec<CharacterIdentityExactRow>,
+    pub unit_leaders: Vec<UnitLeaderExactRow>,
+    pub country_leader_roles: Vec<CountryLeaderRoleExactRow>,
+    pub active_rulers: Vec<ActiveRulerExactRow>,
+}
+
+impl CharacterRosterExactView {
+    fn unavailable() -> Self {
+        Self {
+            status: ViewStatus::DomainUnavailable,
+            command_assignments_complete: false,
+            characters: Vec::new(),
+            unit_leaders: Vec::new(),
+            country_leader_roles: Vec::new(),
+            active_rulers: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AceExactRow {
+    pub ace_id: u64,
+    /// Exact per-country roster-vector index authenticated by domain 46.
+    pub country_ace_index: u64,
+    pub name: String,
+    pub surname: String,
+    pub callsign: String,
+    pub alive: bool,
+    pub wing_id: u64,
+    pub killer_ace_id: u64,
+    pub killer_country_tag_db_id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AceRosterExactView {
+    pub status: ViewStatus,
+    pub wing_assignment_complete: bool,
+    pub aces: Vec<AceExactRow>,
+}
+
+impl AceRosterExactView {
+    fn unavailable() -> Self {
+        Self {
+            status: ViewStatus::DomainUnavailable,
+            wing_assignment_complete: false,
+            aces: Vec::new(),
         }
     }
 }
@@ -5039,11 +6670,43 @@ impl DesignsView {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NavalCombatRow {
     pub combat_id: Leaf<i64>,
+    pub generation: Leaf<i64>,
     pub location_province: Leaf<u32>,
+    pub region_id: Leaf<u32>,
     pub attacker: Leaf<String>,
     pub defender: Leaf<String>,
     pub result_type: Leaf<String>,
     pub progress: Leaf<f64>,
+    pub attacker_member_count: Leaf<u32>,
+    pub defender_member_count: Leaf<u32>,
+    pub attacker_positioning: Leaf<f64>,
+    pub defender_positioning: Leaf<f64>,
+    pub attacker_task_force_ids: Leaf<Vec<i64>>,
+    pub defender_task_force_ids: Leaf<Vec<i64>>,
+    /// Exact sorted/deduplicated owner ids derived only from authenticated D50
+    /// member rows. A missing/unknown side or owner fails the affected set
+    /// closed; it is never inferred from task-force membership or diplomacy.
+    pub attacker_country_tag_db_ids: Leaf<Vec<i64>>,
+    pub defender_country_tag_db_ids: Leaf<Vec<i64>>,
+    pub members: Leaf<Vec<NavalCombatMemberRow>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NavalCombatMemberRow {
+    pub side: Leaf<String>,
+    pub group_index: Leaf<i64>,
+    pub member_index: Leaf<i64>,
+    pub is_convoy: Leaf<bool>,
+    pub ship_instance_id: Leaf<i64>,
+    pub cship_join_validated: Leaf<bool>,
+    pub owner_tag_db_id: Leaf<i64>,
+    pub task_force_id: Leaf<i64>,
+    pub fleet_id: Leaf<i64>,
+    pub battle_slot_index: Leaf<i64>,
+    pub state_bitmask: Leaf<i64>,
+    pub strength: Leaf<f64>,
+    pub organisation: Leaf<f64>,
+    pub sunk_convoys: Leaf<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -5054,10 +6717,57 @@ pub struct ConvoyLossRow {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct AirCombatLossRow {
+    pub owner: Leaf<String>,
+    pub owner_tag_db_id: Leaf<i64>,
+    pub wing_id: Leaf<i64>,
+    pub generation: Leaf<i64>,
+    pub mission_mask: Leaf<i64>,
+    pub mission_region: Leaf<u32>,
+    pub old_count: Leaf<i64>,
+    pub new_count: Leaf<i64>,
+    pub count_delta: Leaf<i64>,
+    pub old_equipment_amount_sum: Leaf<f64>,
+    pub new_equipment_amount_sum: Leaf<f64>,
+    pub equipment_amount_delta: Leaf<f64>,
+    pub flags: Leaf<i64>,
+    pub air_accidents: Leaf<i64>,
+    pub experience: Leaf<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AirRegionDamageRow {
+    pub channel: Leaf<String>,
+    pub cause_type: Leaf<i64>,
+    pub cause: Leaf<String>,
+    pub amount: Leaf<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AirRegionCombatRow {
+    pub owner: Leaf<String>,
+    pub owner_tag_db_id: Leaf<i64>,
+    pub region_id: Leaf<u32>,
+    pub side_vector: Leaf<i64>,
+    pub selection_flag: Leaf<i64>,
+    pub classification_flag: Leaf<i64>,
+    pub copied_flag: Leaf<i64>,
+    pub wing_id: Leaf<i64>,
+    pub date_raw: Leaf<i64>,
+    pub plane_count: Leaf<i64>,
+    pub mission_mask: Leaf<i64>,
+    pub attributed_country: Leaf<String>,
+    pub attributed_country_tag_db_id: Leaf<i64>,
+    pub damage: Leaf<Vec<AirRegionDamageRow>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct NavalAirCombatView {
     pub status: ViewStatus,
     pub naval_combats: Vec<NavalCombatRow>,
     pub sunk_convoys: Leaf<Vec<ConvoyLossRow>>,
+    pub air_losses: Leaf<Vec<AirCombatLossRow>>,
+    pub air_region_combat: Leaf<Vec<AirRegionCombatRow>>,
 }
 
 // --- 12. scripted-GUI variable state (REPLAY_SCHEMA §3 script_variables / §18) ---
@@ -5066,9 +6776,25 @@ pub struct ScriptedGuiView {
     pub status: ViewStatus,
     /// Per-country dynamic script variables (`countries.<tag>.script_variables`).
     pub by_country: BTreeMap<String, Leaf<BTreeMap<String, f64>>>,
+    /// Per-country named flags from the production d51 fold
+    /// (`countries.<tag>.extra.script_flags`).
+    pub country_flags: BTreeMap<String, Leaf<Vec<String>>>,
+    /// Engine-resolved inputs for scripted constructs that cannot be evaluated
+    /// from the recorded variable/flag subset. Keyed by country then GUI id.
+    pub runtime_by_country: BTreeMap<String, Leaf<BTreeMap<String, ScriptedGuiRuntimeInputs>>>,
     pub world_variables: Leaf<BTreeMap<String, f64>>,
     /// Active global flag names (`world.flags` keys), sorted.
     pub world_flags: Leaf<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScriptedGuiRuntimeInputs {
+    pub visible: Leaf<bool>,
+    pub enabled: Leaf<bool>,
+    pub triggers: BTreeMap<String, bool>,
+    /// Flattened `<element>.<property>` keys with exact engine-resolved values.
+    pub properties: BTreeMap<String, String>,
+    pub effect_enabled: BTreeMap<String, bool>,
 }
 
 // --- small: strategic raid state (REPLAY_SCHEMA §16) ---
@@ -5085,6 +6811,60 @@ impl RaidStateView {
             status,
             priorities: BTreeMap::new(),
             next_target: match status {
+                ViewStatus::DomainAbsent => Leaf::Absent,
+                _ => Leaf::Unobtained,
+            },
+        }
+    }
+}
+
+// --- XUI21: fired-event history and popup producer inputs -----------------
+//
+// The save-era `world_events.fired_events = ["namespace.id", ...]` ledger is
+// intentionally still accepted.  Such legacy rows expose only `event_id`; all
+// live presentation leaves remain `Absent`, so production admission cannot
+// mistake a historical id set for an ordered fired-event stream.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FiredEventRow {
+    pub event_id: Leaf<String>,
+    pub recipient_tag: Leaf<String>,
+    pub fire_date: Leaf<String>,
+    pub fire_hour: Leaf<i64>,
+    /// Absolute producer tick.  Replay code never converts hours to ticks.
+    pub fire_tick: Leaf<i64>,
+    /// Monotone producer ordinal; array order must agree with this value.
+    pub event_sequence: Leaf<i64>,
+    /// Definition option ordinals visible when the popup was materialised.
+    pub visible_option_ordinals: Leaf<Vec<i64>>,
+    /// Definition option ordinal selected by the human/AI, if resolved.
+    pub chosen_option_ordinal: Leaf<i64>,
+    pub selected_desc_key: Leaf<String>,
+    pub shown_picture_gfx: Leaf<String>,
+    pub popup_subtype: Leaf<String>,
+    pub effective_timeout_hours: Leaf<i64>,
+    pub timeout_tick: Leaf<i64>,
+    pub resolved_tick: Leaf<i64>,
+    pub resolution_reason: Leaf<String>,
+    /// Join key into the generic XUI06/A25 exact runtime-text carrier.
+    pub runtime_text_context_id: Leaf<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FiredEventsView {
+    pub events: Leaf<Vec<FiredEventRow>>,
+    /// A measured-empty list is authoritative only when this witness is true.
+    pub history_complete: Leaf<bool>,
+}
+
+impl FiredEventsView {
+    fn with_status(status: ViewStatus) -> Self {
+        let leaf = match status {
+            ViewStatus::DomainAbsent => Leaf::Absent,
+            _ => Leaf::Unobtained,
+        };
+        Self {
+            events: leaf,
+            history_complete: match status {
                 ViewStatus::DomainAbsent => Leaf::Absent,
                 _ => Leaf::Unobtained,
             },
@@ -5156,6 +6936,24 @@ impl WorldFrame {
     pub fn leaders_status(&self) -> ViewStatus {
         self.leaders_status
     }
+    pub fn character_rosters_exact(&self) -> &BTreeMap<String, CharacterRosterExactView> {
+        &self.character_rosters_exact
+    }
+    pub fn character_roster_exact(&self, tag: &str) -> Option<&CharacterRosterExactView> {
+        self.character_rosters_exact.get(tag)
+    }
+    pub fn character_rosters_exact_status(&self) -> ViewStatus {
+        self.character_rosters_exact_status
+    }
+    pub fn ace_rosters_exact(&self) -> &BTreeMap<String, AceRosterExactView> {
+        &self.ace_rosters_exact
+    }
+    pub fn ace_roster_exact(&self, tag: &str) -> Option<&AceRosterExactView> {
+        self.ace_rosters_exact.get(tag)
+    }
+    pub fn ace_rosters_exact_status(&self) -> ViewStatus {
+        self.ace_rosters_exact_status
+    }
     pub fn occupation_by_state(&self) -> &BTreeMap<u32, OccupationRow> {
         &self.occupation_by_state
     }
@@ -5164,6 +6962,12 @@ impl WorldFrame {
     }
     pub fn occupation_status(&self) -> ViewStatus {
         self.occupation_status
+    }
+    pub fn occupation_history(&self) -> &Leaf<Vec<OccupationHistoryExactRow>> {
+        &self.occupation_history
+    }
+    pub fn occupation_history_complete(&self) -> &Leaf<bool> {
+        &self.occupation_history_complete
     }
     pub fn power_balance(&self) -> &PowerBalanceView {
         &self.power_balance
@@ -5189,11 +6993,82 @@ impl WorldFrame {
     pub fn scripted_gui_status(&self) -> ViewStatus {
         self.scripted_gui.status
     }
+    pub fn dynamic_collection_trace(&self) -> &DynamicCollectionTraceView {
+        &self.dynamic_collection_trace
+    }
+    pub fn dynamic_collection_trace_status(&self) -> ViewStatus {
+        self.dynamic_collection_trace.status
+    }
+    pub fn design_catalog_context(&self) -> &DesignCatalogContextView {
+        &self.design_catalog_context
+    }
+    pub fn design_catalog_context_status(&self) -> ViewStatus {
+        self.design_catalog_context.status
+    }
+    pub fn hud_surface_activation(&self) -> &HudSurfaceActivationView {
+        &self.hud_surface_activation
+    }
+    pub fn hud_surface_activation_status(&self) -> ViewStatus {
+        self.hud_surface_activation.status
+    }
+    /// Complete pointer-free A27 live catalog carried once by the replay.
+    /// Its vector order is captured heap-scan provenance, not UI display order.
+    pub fn design_catalog(&self) -> Option<&PortableDesignCatalog> {
+        self.design_catalog.as_deref()
+    }
+    /// Exact current equipment-designer rows: record identities come from the
+    /// A27 live catalog and order comes only from d78's displayed row vector.
+    /// Domain 59 authored-definition order and A27 heap-scan order are never
+    /// substituted for UI order.
+    pub fn current_design_catalog(&self) -> Result<CurrentDesignCatalog, DesignCatalogJoinError> {
+        let catalog = self
+            .design_catalog()
+            .ok_or(DesignCatalogJoinError::CatalogUnavailable)?;
+        if self.design_catalog_context.status != ViewStatus::Present {
+            return Err(DesignCatalogJoinError::ContextUnavailable);
+        }
+        let context = self
+            .design_catalog_context
+            .context
+            .as_ref()
+            .ok_or(DesignCatalogJoinError::ContextUnavailable)?;
+        let mut seen = BTreeSet::new();
+        let mut records = Vec::with_capacity(context.ordered_design_ids.len());
+        let mut ordered_design_ids = Vec::with_capacity(context.ordered_design_ids.len());
+        for id in &context.ordered_design_ids {
+            if !seen.insert(*id) {
+                return Err(DesignCatalogJoinError::DuplicateContextId(*id));
+            }
+            let stable_id = format!("{id}:70");
+            let record = catalog
+                .get(&stable_id)
+                .ok_or(DesignCatalogJoinError::UnknownContextId(*id))?;
+            if record.kind == DesignKind::DivisionTemplate {
+                return Err(DesignCatalogJoinError::ContextSelectedDivisionTemplate(*id));
+            }
+            ordered_design_ids.push(stable_id);
+            records.push(record.clone());
+        }
+        Ok(CurrentDesignCatalog {
+            records,
+            display_order: DisplayOrderSnapshot {
+                source_record_id: context.completeness_record_identity.clone(),
+                completeness: FieldCompleteness::Complete,
+                ordered_design_ids,
+            },
+        })
+    }
     pub fn raids(&self) -> &RaidStateView {
         &self.raids
     }
     pub fn raids_status(&self) -> ViewStatus {
         self.raids.status
+    }
+    pub fn fired_events(&self) -> &FiredEventsView {
+        &self.fired_events
+    }
+    pub fn fired_events_status(&self) -> ViewStatus {
+        self.fired_events_status
     }
 }
 
@@ -5314,6 +7189,140 @@ fn object_keys(
     }
 }
 
+fn bool_map(
+    obj: &Map<String, Value>,
+    key: &str,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Option<BTreeMap<String, bool>> {
+    let value = obj.get(key)?;
+    let Value::Object(map) = value else {
+        warnings.push(format!(
+            "{ctx}.{key}: expected object; scripted-GUI runtime input treated as unobtained"
+        ));
+        return None;
+    };
+    let mut out = BTreeMap::new();
+    for (name, value) in map {
+        let Some(value) = value.as_bool() else {
+            warnings.push(format!(
+                "{ctx}.{key}.{name}: expected bool; scripted-GUI runtime input treated as unobtained"
+            ));
+            return None;
+        };
+        out.insert(name.clone(), value);
+    }
+    Some(out)
+}
+
+fn property_string_map(
+    obj: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Option<BTreeMap<String, String>> {
+    let Some(value) = obj.get("properties") else {
+        return Some(BTreeMap::new());
+    };
+    let Value::Object(elements) = value else {
+        warnings.push(format!(
+            "{ctx}.properties: expected object; scripted-GUI runtime input treated as unobtained"
+        ));
+        return None;
+    };
+    let mut out = BTreeMap::new();
+    for (element, value) in elements {
+        let Value::Object(properties) = value else {
+            warnings.push(format!(
+                "{ctx}.properties.{element}: expected object; scripted-GUI runtime input treated as unobtained"
+            ));
+            return None;
+        };
+        for (property, value) in properties {
+            let Some(value) = value.as_str() else {
+                warnings.push(format!(
+                    "{ctx}.properties.{element}.{property}: expected string; scripted-GUI runtime input treated as unobtained"
+                ));
+                return None;
+            };
+            out.insert(format!("{element}.{property}"), value.to_string());
+        }
+    }
+    Some(out)
+}
+
+fn leaf_scripted_gui_runtime_inputs(
+    obj: &Map<String, Value>,
+    path: &[&str],
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<BTreeMap<String, ScriptedGuiRuntimeInputs>> {
+    match walk_path(obj, path, ctx, warnings) {
+        Leaf::Absent => Leaf::Absent,
+        Leaf::Unobtained => Leaf::Unobtained,
+        Leaf::Measured(Value::Object(guis)) => {
+            let mut out = BTreeMap::new();
+            for (gui, value) in guis {
+                let Value::Object(input) = value else {
+                    warnings.push(format!(
+                        "{ctx}.{}.{gui}: expected object; whole scripted-GUI runtime map treated as unobtained",
+                        path.join(".")
+                    ));
+                    return Leaf::Unobtained;
+                };
+                let required = [
+                    "visible",
+                    "enabled",
+                    "triggers",
+                    "properties",
+                    "effect_enabled",
+                ];
+                if input.len() != required.len()
+                    || required.iter().any(|key| !input.contains_key(*key))
+                {
+                    warnings.push(format!(
+                        "{ctx}.{}.{gui}: scripted-GUI runtime input has unknown or missing fields; whole map treated as unobtained",
+                        path.join(".")
+                    ));
+                    return Leaf::Unobtained;
+                }
+                let rctx = format!("{ctx}.{}.{gui}", path.join("."));
+                let Some(triggers) = bool_map(input, "triggers", &rctx, warnings)
+                    .or_else(|| (!input.contains_key("triggers")).then(BTreeMap::new))
+                else {
+                    return Leaf::Unobtained;
+                };
+                let Some(effect_enabled) = bool_map(input, "effect_enabled", &rctx, warnings)
+                    .or_else(|| (!input.contains_key("effect_enabled")).then(BTreeMap::new))
+                else {
+                    return Leaf::Unobtained;
+                };
+                let Some(properties) = property_string_map(input, &rctx, warnings) else {
+                    return Leaf::Unobtained;
+                };
+                out.insert(
+                    gui.clone(),
+                    ScriptedGuiRuntimeInputs {
+                        visible: leaf_bool(input, &["visible"], &rctx, warnings),
+                        enabled: leaf_bool(input, &["enabled"], &rctx, warnings),
+                        triggers,
+                        properties,
+                        effect_enabled,
+                    },
+                );
+            }
+            Leaf::Measured(out)
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "{ctx}.{}: expected object, found {}; treated as unobtained",
+                path.join("."),
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
+    }
+}
+
 /// Array-of-objects at `path` -> `Leaf<Vec<T>>` via a per-row builder. A
 /// non-object element poisons the whole leaf (fail-closed, with warning).
 fn leaf_rows<T>(
@@ -5421,9 +7430,87 @@ fn build_research(
             in_progress: leaf_rows(obj, &["research", "in_progress"], ctx, w, |o, c, w| {
                 ResearchProgressRow {
                     name: leaf_string(o, &["name"], c, w),
+                    points_factor: leaf_f64(o, &["points_factor"], c, w),
+                    progress_points: leaf_f64(o, &["progress_points"], c, w),
+                    required_points_base: leaf_f64(o, &["required_points_base"], c, w),
+                    remaining_points_base: leaf_f64(o, &["remaining_points_base"], c, w),
                     progress_pct: leaf_f64(o, &["progress_pct"], c, w),
+                    eta_days: leaf_i64(o, &["eta_days"], c, w),
+                    progress_basis: leaf_string(o, &["progress_basis"], c, w),
+                    progress_unavailable_reason: leaf_string(
+                        o,
+                        &["progress_unavailable_reason"],
+                        c,
+                        w,
+                    ),
+                    eta_unavailable_reason: leaf_string(o, &["eta_unavailable_reason"], c, w),
+                    ahead_of_time_years: leaf_f64(o, &["ahead_of_time_years"], c, w),
+                    ahead_of_time_penalty_pct: leaf_f64(o, &["ahead_of_time_penalty_pct"], c, w),
+                    ahead_of_time_reduction_years: leaf_f64(
+                        o,
+                        &["ahead_of_time_reduction_years"],
+                        c,
+                        w,
+                    ),
+                    ahead_of_time_reduced_penalty_pct: leaf_f64(
+                        o,
+                        &["ahead_of_time_reduced_penalty_pct"],
+                        c,
+                        w,
+                    ),
                 }
             }),
+            in_progress_live: leaf_rows(
+                obj,
+                &["research", "in_progress_live"],
+                ctx,
+                w,
+                |o, c, w| ResearchLiveProgressRow {
+                    slot_index: leaf_i64(o, &["slot_index"], c, w),
+                    tech_handle_raw: leaf_i64(o, &["tech_handle_raw"], c, w),
+                    tech_def_index_raw: leaf_i64(o, &["tech_def_index_raw"], c, w),
+                    tech_name: leaf_string(o, &["tech_name"], c, w),
+                    progress_raw: leaf_i64(o, &["progress_raw"], c, w),
+                    progress_units: leaf_f64(o, &["progress_units"], c, w),
+                    live_progress_raw: leaf_i64(o, &["live_progress_raw"], c, w),
+                    live_progress_units: leaf_f64(o, &["live_progress_units"], c, w),
+                    base_required_points_raw: leaf_i64(o, &["base_required_points_raw"], c, w),
+                    base_required_points_units: leaf_f64(o, &["base_required_points_units"], c, w),
+                    points_factor: leaf_f64(o, &["points_factor"], c, w),
+                    points_factor_elapsed_hours: leaf_i64(
+                        o,
+                        &["points_factor_elapsed_hours"],
+                        c,
+                        w,
+                    ),
+                    required_points_base: leaf_f64(o, &["required_points_base"], c, w),
+                    remaining_points_base: leaf_f64(o, &["remaining_points_base"], c, w),
+                    progress_pct: leaf_f64(o, &["progress_pct"], c, w),
+                    eta_days: leaf_i64(o, &["eta_days"], c, w),
+                    progress_basis: leaf_string(o, &["progress_basis"], c, w),
+                    progress_unavailable_reason: leaf_string(
+                        o,
+                        &["progress_unavailable_reason"],
+                        c,
+                        w,
+                    ),
+                    eta_unavailable_reason: leaf_string(o, &["eta_unavailable_reason"], c, w),
+                    ahead_of_time_years: leaf_f64(o, &["ahead_of_time_years"], c, w),
+                    ahead_of_time_penalty_pct: leaf_f64(o, &["ahead_of_time_penalty_pct"], c, w),
+                    ahead_of_time_reduction_years: leaf_f64(
+                        o,
+                        &["ahead_of_time_reduction_years"],
+                        c,
+                        w,
+                    ),
+                    ahead_of_time_reduced_penalty_pct: leaf_f64(
+                        o,
+                        &["ahead_of_time_reduced_penalty_pct"],
+                        c,
+                        w,
+                    ),
+                },
+            ),
             technologies: leaf_rows(obj, &["research", "technologies"], ctx, w, |o, c, w| {
                 ResearchTechnologyRow {
                     name: leaf_string(o, &["name"], c, w),
@@ -5484,9 +7571,20 @@ fn build_focus(
         FocusView {
             focus_tree: leaf_string(obj, &["focus", "focus_tree"], ctx, w),
             current: leaf_string(obj, &["focus", "current"], ctx, w),
+            current_set: leaf_string_list(obj, &["focus", "current_set"], ctx, w),
+            current_continuous: leaf_string(obj, &["focus", "current_continuous"], ctx, w),
+            current_continuous_set: leaf_string_list(
+                obj,
+                &["focus", "current_continuous_set"],
+                ctx,
+                w,
+            ),
             completed_count: leaf_i64(obj, &["focus", "completed_count"], ctx, w),
             progress: leaf_f64(obj, &["focus", "progress"], ctx, w),
             completed: leaf_string_list(obj, &["focus", "completed"], ctx, w),
+            available: leaf_string_list(obj, &["focus", "available"], ctx, w),
+            visible_order: leaf_string_list(obj, &["focus", "visible_order"], ctx, w),
+            paused: leaf_bool(obj, &["focus", "paused"], ctx, w),
         }
     })
 }
@@ -5500,16 +7598,121 @@ fn build_politics_detail(
         warnings,
         PoliticsDetailView::all_unobtained,
         |obj, ctx, w| PoliticsDetailView {
+            stability: leaf_f64(obj, &["politics", "stability"], ctx, w),
+            war_support: leaf_f64(obj, &["politics", "war_support"], ctx, w),
+            political_power: leaf_f64(obj, &["politics", "political_power"], ctx, w),
+            command_power: leaf_f64(obj, &["politics", "command_power"], ctx, w),
+            ruling_party: leaf_string(obj, &["politics", "ruling_party"], ctx, w),
             party_popularities: leaf_f64_map(obj, &["politics", "party_popularities"], ctx, w),
             ideas: leaf_string_list(obj, &["politics", "ideas"], ctx, w),
+            ideas_all: leaf_string_list(obj, &["politics", "ideas_all"], ctx, w),
+            ideas_other: leaf_string_list(obj, &["politics", "ideas_other"], ctx, w),
             national_spirits: leaf_string_list(obj, &["politics", "national_spirits"], ctx, w),
+            idea_groups: leaf_string_list_map(obj, &["politics", "idea_groups"], ctx, w),
+            advisor_ideas: leaf_string_list_map(obj, &["politics", "advisor_ideas"], ctx, w),
+            laws: leaf_string_map(obj, &["politics", "laws"], ctx, w),
             law_economy: leaf_string(obj, &["politics", "laws", "economy"], ctx, w),
             law_trade: leaf_string(obj, &["politics", "laws", "trade"], ctx, w),
             law_conscription: leaf_string(obj, &["politics", "laws", "conscription"], ctx, w),
+            idea_count: leaf_i64(obj, &["politics", "idea_count"], ctx, w),
+            party_count: leaf_i64(obj, &["politics", "party_count"], ctx, w),
+            election_frequency: leaf_i64(obj, &["politics", "election_frequency"], ctx, w),
+            last_election: leaf_string(obj, &["politics", "last_election"], ctx, w),
+            elections_allowed: leaf_bool(obj, &["politics", "elections_allowed"], ctx, w),
+            low_confidence: leaf_bool(obj, &["politics", "low_confidence"], ctx, w),
             appointed_advisors: leaf_string_list(obj, &["politics", "appointed_advisors"], ctx, w),
+            appointed_advisor_details: leaf_rows(
+                obj,
+                &["politics", "appointed_advisor_details"],
+                ctx,
+                w,
+                |row, row_ctx, row_warnings| AppointedAdvisorRow {
+                    idea_token: leaf_string(row, &["idea_token"], row_ctx, row_warnings),
+                    slot: leaf_string(row, &["slot"], row_ctx, row_warnings),
+                    ledger: leaf_string(row, &["ledger"], row_ctx, row_warnings),
+                    character: leaf_string(row, &["character"], row_ctx, row_warnings),
+                },
+            ),
+            appointed_advisor_slots: leaf_string_list_map(
+                obj,
+                &["politics", "appointed_advisor_slots"],
+                ctx,
+                w,
+            ),
+            appointed_advisor_ledgers: leaf_string_list_map(
+                obj,
+                &["politics", "appointed_advisor_ledgers"],
+                ctx,
+                w,
+            ),
             command_abilities: leaf_obj_field_list(obj, &["abilities"], "ability", ctx, w),
+            command_ability_rows: leaf_rows(
+                obj,
+                &["active_abilities", "rows"],
+                ctx,
+                w,
+                |row, row_ctx, row_warnings| CommandAbilityRow {
+                    ability_id: leaf_id_string(row, &["ability_id"], row_ctx, row_warnings),
+                    available: leaf_bool(row, &["available"], row_ctx, row_warnings),
+                    active: leaf_bool(row, &["active"], row_ctx, row_warnings),
+                    activation_hour: leaf_i64(row, &["activation_hour"], row_ctx, row_warnings),
+                    cooldown_hours: leaf_i64(row, &["cooldown_hours"], row_ctx, row_warnings),
+                    cooldown_remaining_hours: leaf_i64(
+                        row,
+                        &["cooldown_remaining_hours"],
+                        row_ctx,
+                        row_warnings,
+                    ),
+                    cost_command_power: leaf_f64(
+                        row,
+                        &["cost_command_power"],
+                        row_ctx,
+                        row_warnings,
+                    ),
+                    target_kind: leaf_string(row, &["target_kind"], row_ctx, row_warnings),
+                    target_id: leaf_id_string(row, &["target_id"], row_ctx, row_warnings),
+                    duration_hours: leaf_i64(row, &["duration_hours"], row_ctx, row_warnings),
+                    duration_remaining_hours: leaf_i64(
+                        row,
+                        &["duration_remaining_hours"],
+                        row_ctx,
+                        row_warnings,
+                    ),
+                    display_order: leaf_i64(row, &["display_order"], row_ctx, row_warnings),
+                    icon: leaf_string(row, &["icon"], row_ctx, row_warnings),
+                    tooltip: leaf_string(row, &["tooltip"], row_ctx, row_warnings),
+                    disabled_reason: leaf_string(row, &["disabled_reason"], row_ctx, row_warnings),
+                },
+            ),
+            command_abilities_complete: leaf_bool(obj, &["active_abilities", "complete"], ctx, w),
         },
     )
+}
+
+fn equipment_production_line_row(
+    obj: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> EquipmentProductionLineRow {
+    EquipmentProductionLineRow {
+        id: leaf_i64(obj, &["id"], ctx, warnings),
+        priority: leaf_i64(obj, &["priority"], ctx, warnings),
+        line_subtype: leaf_string(obj, &["line_subtype"], ctx, warnings),
+        equipment_variant_id: leaf_id_string(obj, &["equipment_variant_id"], ctx, warnings),
+        active_factories: leaf_i64(obj, &["active_factories"], ctx, warnings),
+        requested_factories: leaf_i64(obj, &["requested_factories"], ctx, warnings),
+        efficiency: leaf_f64(obj, &["efficiency"], ctx, warnings),
+        efficiency_cap: leaf_f64(obj, &["efficiency_cap"], ctx, warnings),
+        efficiency_growth: leaf_f64(obj, &["efficiency_growth"], ctx, warnings),
+        cost: leaf_f64(obj, &["cost"], ctx, warnings),
+        speed: leaf_f64(obj, &["speed"], ctx, warnings),
+        produced: leaf_f64(obj, &["produced"], ctx, warnings),
+        amount: leaf_i64(obj, &["amount"], ctx, warnings),
+        progress_ratio: leaf_f64(obj, &["progress_ratio"], ctx, warnings),
+        daily_output: leaf_f64(obj, &["daily_output"], ctx, warnings),
+        days_to_next_unit: leaf_f64(obj, &["days_to_next_unit"], ctx, warnings),
+        mio_id: leaf_id_string(obj, &["mio_id"], ctx, warnings),
+    }
 }
 
 fn build_production(
@@ -5523,6 +7726,28 @@ fn build_production(
         |obj, ctx, w| ProductionView {
             stockpile_total: leaf_f64(obj, &["production", "stockpile_total"], ctx, w),
             stockpile: leaf_f64_map(obj, &["production", "stockpile"], ctx, w),
+            stockpile_complete: leaf_bool(obj, &["production", "stockpile_complete"], ctx, w),
+            military_lines: leaf_rows(
+                obj,
+                &["production", "military_lines"],
+                ctx,
+                w,
+                equipment_production_line_row,
+            ),
+            military_lines_complete: leaf_bool(
+                obj,
+                &["production", "military_lines_complete"],
+                ctx,
+                w,
+            ),
+            naval_lines: leaf_rows(
+                obj,
+                &["production", "naval_lines"],
+                ctx,
+                w,
+                equipment_production_line_row,
+            ),
+            naval_lines_complete: leaf_bool(obj, &["production", "naval_lines_complete"], ctx, w),
             construction_queue: leaf_rows(
                 obj,
                 &["production", "construction_queue"],
@@ -5543,6 +7768,37 @@ fn build_production(
                 |o, c, w| EquipmentStock {
                     archetype: leaf_string(o, &["archetype"], c, w),
                     amount: leaf_f64(o, &["amount"], c, w),
+                },
+            ),
+            convoys_complete: leaf_bool(obj, &["military", "convoys_complete"], ctx, w),
+            convoys_owned_raw: leaf_i64(obj, &["military", "convoys_owned_raw"], ctx, w),
+            convoys_owned: leaf_f64(obj, &["military", "convoys_count"], ctx, w),
+            convoys_assigned: leaf_i64(obj, &["military", "convoys_assigned"], ctx, w),
+            convoys_available: leaf_i64(obj, &["military", "convoys_available"], ctx, w),
+            convoys_cache_valid: leaf_bool(obj, &["military", "convoys_cache_valid"], ctx, w),
+            convoy_variants: leaf_rows(obj, &["military", "convoys"], ctx, w, |o, c, w| {
+                ConvoyVariantAmount {
+                    archetype: leaf_string(o, &["archetype"], c, w),
+                    equip_id: leaf_i64(o, &["equip_id"], c, w),
+                    equip_type: leaf_i64(o, &["equip_type"], c, w),
+                    amount_raw: leaf_i64(o, &["amount_raw"], c, w),
+                    amount: leaf_f64(o, &["amount"], c, w),
+                }
+            }),
+            convoy_priority_reservations_complete: leaf_bool(
+                obj,
+                &["military", "convoy_priority_reservations_complete"],
+                ctx,
+                w,
+            ),
+            convoy_priority_reservations: leaf_rows(
+                obj,
+                &["military", "convoy_priority_reservations"],
+                ctx,
+                w,
+                |o, c, w| ConvoyPriorityReservation {
+                    priority: leaf_i64(o, &["priority"], c, w),
+                    count: leaf_i64(o, &["count"], c, w),
                 },
             ),
         },
@@ -5594,8 +7850,105 @@ fn build_intel(
                 }
             }),
             operations_running,
+            domain53_agency_scalars_raw: leaf_domain53_agency_scalars_raw(obj, ctx, w),
+            domain53_agency_capacity_raw: leaf_domain53_agency_capacity_raw(obj, ctx, w),
+            domain53_operative_lifecycle_raw: leaf_rows(
+                obj,
+                &["intel", "domain53_extra", "operative_lifecycle_rows"],
+                ctx,
+                w,
+                |o, c, w| Domain53OperativeLifecycleRawRow {
+                    op_id: leaf_i64(o, &["op_id"], c, w),
+                    detected: leaf_bool(o, &["detected"], c, w),
+                    captured_unvalidated: leaf_bool(o, &["captured_unvalidated"], c, w),
+                    skill: leaf_i64(o, &["skill"], c, w),
+                    experience_raw: leaf_i64(o, &["experience_raw"], c, w),
+                    name_hash: leaf_u64(o, &["name_hash"], c, w),
+                    state_hash: leaf_u64(o, &["state_hash"], c, w),
+                    lifecycle_flag: leaf_i64(o, &["lifecycle_flag"], c, w),
+                },
+            ),
+            domain53_cryptology_targets_raw: leaf_rows(
+                obj,
+                &["intel", "domain53_extra", "cryptology_targets"],
+                ctx,
+                w,
+                |o, c, w| Domain53CryptologyTargetRawRow {
+                    target_tag_db_id: leaf_i64(o, &["target_tag_db_id"], c, w),
+                    amount_raw: leaf_i64(o, &["amount_raw"], c, w),
+                    decrypting: leaf_bool(o, &["decrypting"], c, w),
+                },
+            ),
         }
     })
+}
+
+fn leaf_domain53_agency_scalars_raw(
+    obj: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<Domain53AgencyScalarsRaw> {
+    let path = &["intel", "domain53_extra", "agency_scalars"];
+    match walk_path(obj, path, ctx, warnings) {
+        Leaf::Absent => Leaf::Absent,
+        Leaf::Unobtained => Leaf::Unobtained,
+        Leaf::Measured(Value::Object(o)) => {
+            let c = format!("{ctx}.{}", path.join("."));
+            Leaf::Measured(Domain53AgencyScalarsRaw {
+                max_operatives_unresolved: leaf_i64(
+                    o,
+                    &["max_operatives_unresolved"],
+                    &c,
+                    warnings,
+                ),
+                usable_slots_unresolved: leaf_i64(o, &["usable_slots_unresolved"], &c, warnings),
+                operative_count: leaf_i64(o, &["operative_count"], &c, warnings),
+                cryptology_target_count: leaf_i64(o, &["cryptology_target_count"], &c, warnings),
+                value_0x128_unvalidated: leaf_i64(o, &["defense_raw"], &c, warnings),
+                value_0xc8_unvalidated: leaf_i64(o, &["upgrade_progress_raw"], &c, warnings),
+                name_hash: leaf_u64(o, &["name_hash"], &c, warnings),
+                icon_hash: leaf_u64(o, &["icon_hash"], &c, warnings),
+            })
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "{ctx}.{}: expected object, found {}; treated as unobtained",
+                path.join("."),
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
+    }
+}
+
+fn leaf_domain53_agency_capacity_raw(
+    obj: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<Domain53AgencyCapacityRaw> {
+    let path = &["intel", "domain53_extra", "raw_capacity_cluster"];
+    match walk_path(obj, path, ctx, warnings) {
+        Leaf::Absent => Leaf::Absent,
+        Leaf::Unobtained => Leaf::Unobtained,
+        Leaf::Measured(Value::Object(o)) => {
+            let c = format!("{ctx}.{}", path.join("."));
+            Leaf::Measured(Domain53AgencyCapacityRaw {
+                value_0xe4: leaf_i64(o, &["value_0xe4"], &c, warnings),
+                value_0xf0: leaf_i64(o, &["value_0xf0"], &c, warnings),
+                value_0xf4: leaf_i64(o, &["value_0xf4"], &c, warnings),
+                proof_hash: leaf_u64(o, &["proof_hash"], &c, warnings),
+                semantic_status: leaf_string(o, &["semantic_status"], &c, warnings),
+            })
+        }
+        Leaf::Measured(other) => {
+            warnings.push(format!(
+                "{ctx}.{}: expected object, found {}; treated as unobtained",
+                path.join("."),
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
+    }
 }
 
 fn build_trade(
@@ -5603,10 +7956,54 @@ fn build_trade(
     warnings: &mut Vec<String>,
 ) -> (BTreeMap<String, TradeView>, ViewStatus) {
     country_map(rest, warnings, TradeView::all_unobtained, |obj, ctx, w| {
+        let resource_rows = validated_trade_resource_rows(obj, ctx, w);
+        let resource_deals = validated_resource_trade_deals(obj, ctx, w);
         TradeView {
+            resource_pools_complete: leaf_bool(obj, &["economy", "resources", "complete"], ctx, w),
             produced: leaf_f64_map(obj, &["economy", "resources", "produced"], ctx, w),
+            imported: leaf_f64_map(obj, &["economy", "resources", "imported"], ctx, w),
+            used: leaf_f64_map(obj, &["economy", "resources", "used"], ctx, w),
             exported: leaf_f64_map(obj, &["economy", "resources", "exported"], ctx, w),
             to_export: leaf_f64_map(obj, &["economy", "resources", "to_export"], ctx, w),
+            base_export: leaf_f64_map(obj, &["economy", "resources", "base_export"], ctx, w),
+            available_derived: leaf_f64_map(
+                obj,
+                &["economy", "resources", "available_derived"],
+                ctx,
+                w,
+            ),
+            resource_rows,
+            resource_rows_complete: leaf_bool(
+                obj,
+                &["economy", "resource_trade", "resource_rows_complete"],
+                ctx,
+                w,
+            ),
+            resource_deals,
+            resource_deals_complete: leaf_bool(
+                obj,
+                &["economy", "resource_trade", "deals_complete"],
+                ctx,
+                w,
+            ),
+            factories_total: leaf_i64(
+                obj,
+                &["economy", "resource_trade", "factories", "total"],
+                ctx,
+                w,
+            ),
+            factories_used: leaf_i64(
+                obj,
+                &["economy", "resource_trade", "factories", "used"],
+                ctx,
+                w,
+            ),
+            factories_available: leaf_i64(
+                obj,
+                &["economy", "resource_trade", "factories", "available"],
+                ctx,
+                w,
+            ),
             contracts: leaf_rows(obj, &["diplomacy", "lend_lease"], ctx, w, |o, c, w| {
                 TradeContractRow {
                     counterpart: leaf_string(o, &["counterpart"], c, w),
@@ -5616,6 +8013,635 @@ fn build_trade(
             }),
         }
     })
+}
+
+fn validated_trade_resource_rows(
+    obj: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<Vec<TradeResourceRow>> {
+    let rows = leaf_rows(
+        obj,
+        &["economy", "resource_trade", "resource_rows"],
+        ctx,
+        warnings,
+        |o, c, w| TradeResourceRow {
+            resource: leaf_string(o, &["resource"], c, w),
+            visible_order: leaf_i64(o, &["visible_order"], c, w),
+            balance: leaf_f64(o, &["balance"], c, w),
+            produced: leaf_f64(o, &["produced"], c, w),
+            imported: leaf_f64(o, &["imported"], c, w),
+            exported: leaf_f64(o, &["exported"], c, w),
+            special_project: leaf_f64(o, &["special_project"], c, w),
+            production_line: leaf_f64(o, &["production_line"], c, w),
+            needed: leaf_f64(o, &["needed"], c, w),
+            needed_current: leaf_f64(o, &["needed_current"], c, w),
+            needed_max: leaf_f64(o, &["needed_max"], c, w),
+            needed_type: leaf_string(o, &["needed_type"], c, w),
+        },
+    );
+    let rows = validate_visible_order(
+        rows,
+        ctx,
+        "economy.resource_trade.resource_rows",
+        warnings,
+        |row| &row.visible_order,
+    );
+    validate_trade_resource_order(rows, ctx, warnings)
+}
+
+fn validate_trade_resource_order(
+    rows: Leaf<Vec<TradeResourceRow>>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<Vec<TradeResourceRow>> {
+    let Leaf::Measured(items) = rows else {
+        return rows;
+    };
+    if items.len() != TRADE_RESOURCE_ORDER.len() {
+        warnings.push(format!(
+            "{ctx}.economy.resource_trade.resource_rows: expected exact seven-resource list, found {}; whole list treated as unobtained",
+            items.len()
+        ));
+        return Leaf::Unobtained;
+    }
+    for (index, (item, expected)) in items.iter().zip(TRADE_RESOURCE_ORDER).enumerate() {
+        match &item.resource {
+            Leaf::Measured(resource) if resource == expected => {}
+            Leaf::Measured(resource) => {
+                warnings.push(format!(
+                    "{ctx}.economy.resource_trade.resource_rows[{index}].resource: expected {expected}, found {resource}; whole list treated as unobtained"
+                ));
+                return Leaf::Unobtained;
+            }
+            _ => {
+                warnings.push(format!(
+                    "{ctx}.economy.resource_trade.resource_rows[{index}].resource: not measured; whole list treated as unobtained"
+                ));
+                return Leaf::Unobtained;
+            }
+        }
+    }
+    Leaf::Measured(items)
+}
+
+fn validated_resource_trade_deals(
+    obj: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<Vec<ResourceTradeDealRow>> {
+    let rows = leaf_rows(
+        obj,
+        &["economy", "resource_trade", "deals"],
+        ctx,
+        warnings,
+        |o, c, w| ResourceTradeDealRow {
+            deal_id: leaf_i64(o, &["deal_id"], c, w),
+            counterpart: leaf_string(o, &["counterpart"], c, w),
+            direction: leaf_string(o, &["direction"], c, w),
+            resource: leaf_string(o, &["resource"], c, w),
+            requested: leaf_f64(o, &["requested"], c, w),
+            delivered: leaf_f64(o, &["delivered"], c, w),
+            available_export: leaf_f64(o, &["available_export"], c, w),
+            civilian_factories: leaf_i64(o, &["civilian_factories"], c, w),
+            factory_cost_per_resource: leaf_f64(o, &["factory_cost_per_resource"], c, w),
+            convoys_assigned: leaf_i64(o, &["convoys", "assigned"], c, w),
+            convoys_required: leaf_i64(o, &["convoys", "required"], c, w),
+            route_kind: leaf_string(o, &["route_kind"], c, w),
+            delivery_efficiency: leaf_f64(o, &["delivery_efficiency"], c, w),
+            no_trade_influence: leaf_bool(o, &["no_trade_influence"], c, w),
+            no_resources: leaf_bool(o, &["no_resources"], c, w),
+            visible_order: leaf_i64(o, &["visible_order"], c, w),
+        },
+    );
+    validate_visible_order(rows, ctx, "economy.resource_trade.deals", warnings, |row| {
+        &row.visible_order
+    })
+}
+
+/// A materialized visible list must carry contiguous zero-based ordinals in
+/// its serialized array order.  Missing/wrong-typed ordinals poison the whole
+/// collection rather than allowing replay to invent an order.
+fn validate_visible_order<T>(
+    rows: Leaf<Vec<T>>,
+    ctx: &str,
+    path: &str,
+    warnings: &mut Vec<String>,
+    ordinal: impl Fn(&T) -> &Leaf<i64>,
+) -> Leaf<Vec<T>> {
+    let Leaf::Measured(items) = rows else {
+        return rows;
+    };
+    for (index, item) in items.iter().enumerate() {
+        match ordinal(item) {
+            Leaf::Measured(value) if *value == index as i64 => {}
+            Leaf::Measured(value) => {
+                warnings.push(format!(
+                    "{ctx}.{path}[{index}].visible_order: expected {index}, found {value}; whole list treated as unobtained"
+                ));
+                return Leaf::Unobtained;
+            }
+            _ => {
+                warnings.push(format!(
+                    "{ctx}.{path}[{index}].visible_order: not measured; whole list treated as unobtained"
+                ));
+                return Leaf::Unobtained;
+            }
+        }
+    }
+    Leaf::Measured(items)
+}
+
+fn xui17_object<'a>(
+    value: &'a Value,
+    ctx: &str,
+) -> std::result::Result<&'a Map<String, Value>, String> {
+    value
+        .as_object()
+        .ok_or_else(|| format!("{ctx}: expected object, found {}", json_type_name(value)))
+}
+
+fn xui17_array<'a>(
+    obj: &'a Map<String, Value>,
+    key: &str,
+    ctx: &str,
+    required: bool,
+) -> std::result::Result<&'a [Value], String> {
+    match obj.get(key) {
+        Some(Value::Array(rows)) => Ok(rows),
+        Some(value) => Err(format!(
+            "{ctx}.{key}: expected array, found {}",
+            json_type_name(value)
+        )),
+        None if required => Err(format!("{ctx}.{key}: required exact array is absent")),
+        None => Ok(&[]),
+    }
+}
+
+fn xui17_u64(obj: &Map<String, Value>, key: &str, ctx: &str) -> std::result::Result<u64, String> {
+    obj.get(key).and_then(Value::as_u64).ok_or_else(|| {
+        format!("{ctx}.{key}: required non-negative integer is absent or wrong-typed")
+    })
+}
+
+fn xui17_i64(obj: &Map<String, Value>, key: &str, ctx: &str) -> std::result::Result<i64, String> {
+    obj.get(key)
+        .and_then(Value::as_i64)
+        .ok_or_else(|| format!("{ctx}.{key}: required integer is absent or wrong-typed"))
+}
+
+fn xui17_bool(obj: &Map<String, Value>, key: &str, ctx: &str) -> std::result::Result<bool, String> {
+    obj.get(key)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| format!("{ctx}.{key}: required bool is absent or wrong-typed"))
+}
+
+fn xui17_string(
+    obj: &Map<String, Value>,
+    key: &str,
+    ctx: &str,
+) -> std::result::Result<String, String> {
+    obj.get(key)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| format!("{ctx}.{key}: required string is absent or wrong-typed"))
+}
+
+fn xui17_oob_assignments(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (
+    bool,
+    BTreeMap<String, BTreeMap<u64, UnitLeaderAssignmentExact>>,
+) {
+    let Some(Value::Object(oob)) = rest.get("order_of_battle") else {
+        return (false, BTreeMap::new());
+    };
+    let specs = [
+        ("army_groups", UnitLeaderAssignmentKind::ArmyGroup),
+        ("armies", UnitLeaderAssignmentKind::Army),
+        ("fleets", UnitLeaderAssignmentKind::Fleet),
+    ];
+    let mut out: BTreeMap<String, BTreeMap<u64, UnitLeaderAssignmentExact>> = BTreeMap::new();
+    let mut global_leaders = BTreeSet::new();
+    for (array_name, kind) in specs {
+        let Some(Value::Array(rows)) = oob.get(array_name) else {
+            return (false, BTreeMap::new());
+        };
+        for (ordinal, value) in rows.iter().enumerate() {
+            let ctx = format!("order_of_battle.{array_name}[{ordinal}]");
+            let Some(row) = value.as_object() else {
+                warnings.push(format!(
+                    "{ctx}: malformed d28 command row; XUI17 assignments unavailable"
+                ));
+                return (false, BTreeMap::new());
+            };
+            let Some(formation_id) = row.get("id").and_then(Value::as_u64) else {
+                warnings.push(format!(
+                    "{ctx}.id: missing integer; XUI17 assignments unavailable"
+                ));
+                return (false, BTreeMap::new());
+            };
+            let Some(owner) = row.get("owner").and_then(Value::as_str) else {
+                warnings.push(format!(
+                    "{ctx}.owner: missing string; XUI17 assignments unavailable"
+                ));
+                return (false, BTreeMap::new());
+            };
+            let leader_id = match row.get("leader") {
+                Some(Value::Null) | None => continue,
+                Some(value) => match value.as_u64() {
+                    Some(id) => id,
+                    None => {
+                        warnings.push(format!(
+                            "{ctx}.leader: wrong typed; XUI17 assignments unavailable"
+                        ));
+                        return (false, BTreeMap::new());
+                    }
+                },
+            };
+            if !global_leaders.insert(leader_id) {
+                warnings.push(format!(
+                    "{ctx}.leader: duplicate d28 assignment for unit_leader_id {leader_id}; XUI17 assignments unavailable"
+                ));
+                return (false, BTreeMap::new());
+            }
+            out.entry(owner.to_string()).or_default().insert(
+                leader_id,
+                UnitLeaderAssignmentExact {
+                    kind: kind.clone(),
+                    formation_id,
+                },
+            );
+        }
+    }
+    (true, out)
+}
+
+fn parse_xui17_character_roster(
+    sidecar: &Map<String, Value>,
+    ctx: &str,
+    command_assignments_complete: bool,
+    assignments: Option<&BTreeMap<u64, UnitLeaderAssignmentExact>>,
+) -> std::result::Result<CharacterRosterExactView, String> {
+    let mut characters = Vec::new();
+    let mut character_ids = BTreeSet::new();
+    for (ordinal, value) in xui17_array(sidecar, "characters", ctx, true)?
+        .iter()
+        .enumerate()
+    {
+        let rctx = format!("{ctx}.characters[{ordinal}]");
+        let row = xui17_object(value, &rctx)?;
+        let char_id = xui17_u64(row, "char_id", &rctx)?;
+        if !character_ids.insert(char_id) {
+            return Err(format!("{rctx}.char_id: duplicate {char_id}"));
+        }
+        characters.push(CharacterIdentityExactRow {
+            producer_ordinal: ordinal,
+            char_id,
+            name: xui17_string(row, "name", &rctx)?,
+            token: xui17_string(row, "token", &rctx)?,
+        });
+    }
+
+    let mut traits_by_leader: BTreeMap<u64, Vec<(u64, String)>> = BTreeMap::new();
+    for (ordinal, value) in xui17_array(sidecar, "unit_leader_traits", ctx, false)?
+        .iter()
+        .enumerate()
+    {
+        let rctx = format!("{ctx}.unit_leader_traits[{ordinal}]");
+        let row = xui17_object(value, &rctx)?;
+        let leader_id = xui17_u64(row, "unit_leader_id", &rctx)?;
+        let trait_ordinal = xui17_u64(row, "ordinal", &rctx)?;
+        let token = xui17_string(row, "trait_token", &rctx)?;
+        if token.is_empty() {
+            return Err(format!("{rctx}.trait_token: empty exact token"));
+        }
+        traits_by_leader
+            .entry(leader_id)
+            .or_default()
+            .push((trait_ordinal, token));
+    }
+
+    let mut unit_leaders = Vec::new();
+    let mut unit_leader_ids = BTreeSet::new();
+    for (ordinal, value) in xui17_array(sidecar, "unit_leaders", ctx, false)?
+        .iter()
+        .enumerate()
+    {
+        let rctx = format!("{ctx}.unit_leaders[{ordinal}]");
+        let row = xui17_object(value, &rctx)?;
+        let unit_leader_id = xui17_u64(row, "unit_leader_id", &rctx)?;
+        if !unit_leader_ids.insert(unit_leader_id) {
+            return Err(format!("{rctx}.unit_leader_id: duplicate {unit_leader_id}"));
+        }
+        let char_id = xui17_u64(row, "char_id", &rctx)?;
+        if !character_ids.contains(&char_id) {
+            return Err(format!("{rctx}.char_id: orphan character {char_id}"));
+        }
+        let leader_kind = xui17_string(row, "leader_kind", &rctx)?;
+        let leader_kind_raw = xui17_u64(row, "leader_kind_raw", &rctx)?;
+        let expected_kind = match leader_kind_raw {
+            0 => "army",
+            1 => "navy",
+            other => return Err(format!("{rctx}.leader_kind_raw: unsupported {other}")),
+        };
+        if leader_kind != expected_kind {
+            return Err(format!(
+                "{rctx}.leader_kind: {leader_kind:?} contradicts raw {leader_kind_raw}"
+            ));
+        }
+        let assignment = assignments
+            .and_then(|rows| rows.get(&unit_leader_id))
+            .cloned();
+        if let Some(assignment) = &assignment {
+            let assignment_matches_kind = matches!(
+                (&leader_kind[..], &assignment.kind),
+                (
+                    "army",
+                    UnitLeaderAssignmentKind::Army | UnitLeaderAssignmentKind::ArmyGroup
+                ) | ("navy", UnitLeaderAssignmentKind::Fleet)
+            );
+            if !assignment_matches_kind {
+                return Err(format!(
+                    "{rctx}: d28 {:?} assignment contradicts {leader_kind} leader kind",
+                    assignment.kind
+                ));
+            }
+        }
+        let mut ordered_traits = traits_by_leader.remove(&unit_leader_id).unwrap_or_default();
+        ordered_traits.sort_by_key(|(trait_ordinal, _)| *trait_ordinal);
+        let mut traits = Vec::with_capacity(ordered_traits.len());
+        for (expected, (actual, token)) in ordered_traits.into_iter().enumerate() {
+            if actual != expected as u64 {
+                return Err(format!(
+                    "{ctx}.unit_leader_traits: leader {unit_leader_id} expected ordinal {expected}, found {actual}"
+                ));
+            }
+            traits.push(token);
+        }
+        unit_leaders.push(UnitLeaderExactRow {
+            producer_ordinal: ordinal,
+            unit_leader_id,
+            char_id,
+            leader_kind,
+            leader_kind_raw,
+            skill: xui17_i64(row, "skill", &rctx)?,
+            experience_raw: xui17_i64(row, "experience_raw", &rctx)?,
+            attack: xui17_i64(row, "attack", &rctx)?,
+            defense: xui17_i64(row, "defense", &rctx)?,
+            planning: xui17_i64(row, "planning", &rctx)?,
+            logistics: xui17_i64(row, "logistics", &rctx)?,
+            maneuvering: xui17_i64(row, "maneuvering", &rctx)?,
+            coordination: xui17_i64(row, "coordination", &rctx)?,
+            traits,
+            assignment,
+            token: xui17_string(row, "token", &rctx)?,
+            name: xui17_string(row, "name", &rctx)?,
+        });
+    }
+    if let Some((&orphan, _)) = traits_by_leader.iter().next() {
+        return Err(format!(
+            "{ctx}.unit_leader_traits: orphan unit_leader_id {orphan}"
+        ));
+    }
+    if let Some(assignments) = assignments {
+        if let Some(orphan) = assignments
+            .keys()
+            .find(|leader_id| !unit_leader_ids.contains(leader_id))
+        {
+            return Err(format!(
+                "{ctx}: d28 assignment references orphan unit_leader_id {orphan}"
+            ));
+        }
+    }
+
+    let mut country_leader_roles = Vec::new();
+    for (ordinal, value) in xui17_array(sidecar, "country_leader_roles", ctx, false)?
+        .iter()
+        .enumerate()
+    {
+        let rctx = format!("{ctx}.country_leader_roles[{ordinal}]");
+        let row = xui17_object(value, &rctx)?;
+        let char_id = xui17_u64(row, "char_id", &rctx)?;
+        if !character_ids.contains(&char_id) {
+            return Err(format!("{rctx}.char_id: orphan character {char_id}"));
+        }
+        country_leader_roles.push(CountryLeaderRoleExactRow {
+            producer_ordinal: ordinal,
+            char_id,
+            name: xui17_string(row, "name", &rctx)?,
+            token: xui17_string(row, "token", &rctx)?,
+        });
+    }
+
+    let mut active_rulers = Vec::new();
+    for (ordinal, value) in xui17_array(sidecar, "active_rulers", ctx, false)?
+        .iter()
+        .enumerate()
+    {
+        let rctx = format!("{ctx}.active_rulers[{ordinal}]");
+        let row = xui17_object(value, &rctx)?;
+        let char_id = xui17_u64(row, "char_id", &rctx)?;
+        if !character_ids.contains(&char_id) {
+            return Err(format!("{rctx}.char_id: orphan character {char_id}"));
+        }
+        active_rulers.push(ActiveRulerExactRow {
+            producer_ordinal: ordinal,
+            char_id,
+            ruling_party: xui17_string(row, "ruling_party", &rctx)?,
+            name: xui17_string(row, "name", &rctx)?,
+            token: xui17_string(row, "token", &rctx)?,
+            leader_vec_size: xui17_u64(row, "leader_vec_size", &rctx)?,
+            ambiguous: xui17_bool(row, "ambiguous", &rctx)?,
+        });
+    }
+
+    Ok(CharacterRosterExactView {
+        status: ViewStatus::Present,
+        command_assignments_complete,
+        characters,
+        unit_leaders,
+        country_leader_roles,
+        active_rulers,
+    })
+}
+
+fn parse_xui17_ace_roster(
+    sidecar: &Map<String, Value>,
+    ctx: &str,
+) -> std::result::Result<AceRosterExactView, String> {
+    let blocked = match sidecar.get("wing_assignment_blocked") {
+        None => false,
+        Some(Value::Bool(value)) => *value,
+        Some(value) => {
+            return Err(format!(
+                "{ctx}.wing_assignment_blocked: expected bool, found {}",
+                json_type_name(value)
+            ))
+        }
+    };
+    let rows = xui17_array(sidecar, "aces", ctx, true)?;
+    if rows.is_empty() {
+        return Err(format!(
+            "{ctx}.aces: empty sidecar is not an authenticated roster"
+        ));
+    }
+    let mut ids = BTreeSet::new();
+    let mut assigned_wings = BTreeSet::new();
+    let mut aces = Vec::with_capacity(rows.len());
+    for (ordinal, value) in rows.iter().enumerate() {
+        let rctx = format!("{ctx}.aces[{ordinal}]");
+        let row = xui17_object(value, &rctx)?;
+        let ace_id = xui17_u64(row, "ace_id", &rctx)?;
+        if !ids.insert(ace_id) {
+            return Err(format!("{rctx}.ace_id: duplicate {ace_id}"));
+        }
+        let country_ace_index = xui17_u64(row, "country_ace_index", &rctx)?;
+        if country_ace_index != ordinal as u64 {
+            return Err(format!(
+                "{rctx}.country_ace_index: expected {ordinal}, found {country_ace_index}"
+            ));
+        }
+        let wing_id = xui17_u64(row, "wing_id", &rctx)?;
+        if wing_id != 0 && !assigned_wings.insert(wing_id) {
+            return Err(format!(
+                "{rctx}.wing_id: duplicate nonzero assignment {wing_id}"
+            ));
+        }
+        aces.push(AceExactRow {
+            ace_id,
+            country_ace_index,
+            name: xui17_string(row, "name", &rctx)?,
+            surname: xui17_string(row, "surname", &rctx)?,
+            callsign: xui17_string(row, "callsign", &rctx)?,
+            alive: xui17_bool(row, "alive", &rctx)?,
+            wing_id,
+            killer_ace_id: xui17_u64(row, "killer_ace_id", &rctx)?,
+            killer_country_tag_db_id: xui17_u64(row, "killer_country_tag_db_id", &rctx)?,
+        });
+    }
+    Ok(AceRosterExactView {
+        status: ViewStatus::Present,
+        wing_assignment_complete: !blocked,
+        aces,
+    })
+}
+
+fn xui17_merge_status(status: &mut ViewStatus, candidate: ViewStatus) {
+    *status = match (*status, candidate) {
+        (ViewStatus::DomainUnavailable, _) | (_, ViewStatus::DomainUnavailable) => {
+            ViewStatus::DomainUnavailable
+        }
+        (ViewStatus::Present, _) | (_, ViewStatus::Present) => ViewStatus::Present,
+        _ => ViewStatus::DomainAbsent,
+    };
+}
+
+fn build_xui17_exact_rosters(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (
+    BTreeMap<String, CharacterRosterExactView>,
+    ViewStatus,
+    BTreeMap<String, AceRosterExactView>,
+    ViewStatus,
+) {
+    let (command_assignments_complete, command_assignments) = xui17_oob_assignments(rest, warnings);
+    let countries = match rest.get("countries") {
+        Some(Value::Object(countries)) => countries,
+        Some(Value::Null) => {
+            return (
+                BTreeMap::new(),
+                ViewStatus::DomainUnavailable,
+                BTreeMap::new(),
+                ViewStatus::DomainUnavailable,
+            )
+        }
+        None => {
+            return (
+                BTreeMap::new(),
+                ViewStatus::DomainAbsent,
+                BTreeMap::new(),
+                ViewStatus::DomainAbsent,
+            )
+        }
+        Some(other) => {
+            warnings.push(format!(
+                "countries: expected object for XUI17 exact rosters, found {}",
+                json_type_name(other)
+            ));
+            return (
+                BTreeMap::new(),
+                ViewStatus::DomainUnavailable,
+                BTreeMap::new(),
+                ViewStatus::DomainUnavailable,
+            );
+        }
+    };
+
+    let mut characters = BTreeMap::new();
+    let mut aces = BTreeMap::new();
+    let mut character_status = ViewStatus::DomainAbsent;
+    let mut ace_status = ViewStatus::DomainAbsent;
+    for (tag, country_value) in countries {
+        let country = match country_value.as_object() {
+            Some(country) => country,
+            None => continue,
+        };
+        let Some(extra_value) = country.get("extra") else {
+            continue;
+        };
+        let Some(extra) = extra_value.as_object() else {
+            warnings.push(format!(
+                "countries.{tag}.extra: expected object for XUI17 exact rosters, found {}",
+                json_type_name(extra_value)
+            ));
+            characters.insert(tag.clone(), CharacterRosterExactView::unavailable());
+            aces.insert(tag.clone(), AceRosterExactView::unavailable());
+            xui17_merge_status(&mut character_status, ViewStatus::DomainUnavailable);
+            xui17_merge_status(&mut ace_status, ViewStatus::DomainUnavailable);
+            continue;
+        };
+
+        if let Some(value) = extra.get("_r2_characters_leaders_cabinet_live") {
+            let ctx = format!("countries.{tag}.extra._r2_characters_leaders_cabinet_live");
+            match xui17_object(value, &ctx).and_then(|row| {
+                parse_xui17_character_roster(
+                    row,
+                    &ctx,
+                    command_assignments_complete,
+                    command_assignments.get(tag),
+                )
+            }) {
+                Ok(view) => {
+                    characters.insert(tag.clone(), view);
+                    xui17_merge_status(&mut character_status, ViewStatus::Present);
+                }
+                Err(error) => {
+                    warnings.push(error);
+                    characters.insert(tag.clone(), CharacterRosterExactView::unavailable());
+                    xui17_merge_status(&mut character_status, ViewStatus::DomainUnavailable);
+                }
+            }
+        }
+
+        if let Some(value) = extra.get("_r2_air_ace_roster_live") {
+            let ctx = format!("countries.{tag}.extra._r2_air_ace_roster_live");
+            match xui17_object(value, &ctx).and_then(|row| parse_xui17_ace_roster(row, &ctx)) {
+                Ok(view) => {
+                    aces.insert(tag.clone(), view);
+                    xui17_merge_status(&mut ace_status, ViewStatus::Present);
+                }
+                Err(error) => {
+                    warnings.push(error);
+                    aces.insert(tag.clone(), AceRosterExactView::unavailable());
+                    xui17_merge_status(&mut ace_status, ViewStatus::DomainUnavailable);
+                }
+            }
+        }
+    }
+    (characters, character_status, aces, ace_status)
 }
 
 fn build_leaders(
@@ -5649,6 +8675,88 @@ fn build_leaders(
             }
         },
     )
+}
+
+fn occupation_equipment_exact_row(
+    obj: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> OccupationEquipmentExactRow {
+    OccupationEquipmentExactRow {
+        source_ordinal: leaf_i64(obj, &["source_ordinal"], ctx, warnings),
+        equipment_id: leaf_u32(obj, &["equipment_id"], ctx, warnings),
+        equipment_type: leaf_u32(obj, &["equipment_type"], ctx, warnings),
+        equipment_token: leaf_string(obj, &["equipment_token"], ctx, warnings),
+        amount: leaf_f64(obj, &["amount"], ctx, warnings),
+    }
+}
+
+fn occupation_manpower_exact_row(
+    obj: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> OccupationManpowerExactRow {
+    OccupationManpowerExactRow {
+        source_ordinal: leaf_i64(obj, &["source_ordinal"], ctx, warnings),
+        tag: leaf_string(obj, &["tag"], ctx, warnings),
+        value: leaf_f64(obj, &["value"], ctx, warnings),
+    }
+}
+
+fn garrison_reinforcement_exact_row(
+    obj: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> GarrisonReinforcementExactRow {
+    GarrisonReinforcementExactRow {
+        source_ordinal: leaf_i64(obj, &["source_ordinal"], ctx, warnings),
+        total_progress: leaf_f64(obj, &["total_progress"], ctx, warnings),
+        need: leaf_f64_map(obj, &["need"], ctx, warnings),
+        date: leaf_string(obj, &["date"], ctx, warnings),
+    }
+}
+
+fn build_occupation_history(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (Leaf<Vec<OccupationHistoryExactRow>>, Leaf<bool>) {
+    let rows = leaf_rows(
+        rest,
+        &["occupation_history"],
+        "snapshot",
+        warnings,
+        |obj, ctx, row_warnings| OccupationHistoryExactRow {
+            stable_event_id: leaf_string(obj, &["stable_event_id"], ctx, row_warnings),
+            source_ordinal: leaf_i64(obj, &["source_ordinal"], ctx, row_warnings),
+            controller_tag: leaf_string(obj, &["controller_tag"], ctx, row_warnings),
+            state_id: leaf_u32(obj, &["state_id"], ctx, row_warnings),
+            occupied_country_tag: leaf_string(obj, &["occupied_country_tag"], ctx, row_warnings),
+            event_hour_or_engine_date: leaf_string(
+                obj,
+                &["event_hour_or_engine_date"],
+                ctx,
+                row_warnings,
+            ),
+            attack_blocked: leaf_bool(obj, &["attack_blocked"], ctx, row_warnings),
+            resistance_activity: leaf_string(obj, &["resistance_activity"], ctx, row_warnings),
+            lost_manpower: leaf_i64(obj, &["lost_manpower"], ctx, row_warnings),
+            equipment_loss_rows: leaf_rows(
+                obj,
+                &["equipment_loss_rows"],
+                ctx,
+                row_warnings,
+                occupation_equipment_exact_row,
+            ),
+            equipment_loss_children_complete: leaf_bool(
+                obj,
+                &["equipment_loss_children_complete"],
+                ctx,
+                row_warnings,
+            ),
+        },
+    );
+    let complete = leaf_bool(rest, &["occupation_history_complete"], "snapshot", warnings);
+    (rows, complete)
 }
 
 fn build_occupation(
@@ -5688,6 +8796,7 @@ fn build_occupation(
                         resistance_speed: leaf_f64(occ, &["resistance_speed"], &ctx, warnings),
                         compliance: leaf_f64(occ, &["compliance"], &ctx, warnings),
                         compliance_speed: leaf_f64(occ, &["compliance_speed"], &ctx, warnings),
+                        occupier_tag: leaf_string(occ, &["occupier_tag"], &ctx, warnings),
                         occupied_country_tag: leaf_string(
                             occ,
                             &["occupied_country_tag"],
@@ -5705,6 +8814,139 @@ fn build_occupation(
                             &["occupation_law"],
                             &format!("states.{key}"),
                             warnings,
+                        ),
+                        occupation_law_token_id: leaf_u32_prefer(
+                            occ,
+                            &["occupation_law_token_id"],
+                            &[
+                                "_r2_occupation_resistance_compliance_live",
+                                "occupation_law_token_id",
+                            ],
+                            &ctx,
+                            warnings,
+                        ),
+                        occupation_law_token_encoding: leaf_string_prefer(
+                            occ,
+                            &["occupation_law_token_encoding"],
+                            &[
+                                "_r2_occupation_resistance_compliance_live",
+                                "occupation_law_token_encoding",
+                            ],
+                            &ctx,
+                            warnings,
+                        ),
+                        occupation_law_token_source: leaf_string(
+                            occ,
+                            &[
+                                "_r2_occupation_resistance_compliance_live",
+                                "occupation_law_token_source",
+                            ],
+                            &ctx,
+                            warnings,
+                        ),
+                        occupation_law_status: leaf_string(
+                            occ,
+                            &[
+                                "_r2_occupation_resistance_compliance_live",
+                                "occupation_law_status",
+                            ],
+                            &ctx,
+                            warnings,
+                        ),
+                        garrison_template_id: leaf_u32_prefer(
+                            occ,
+                            &["garrison_template_id"],
+                            &[
+                                "_r2_occupation_resistance_compliance_live",
+                                "garrison_template_id",
+                            ],
+                            &ctx,
+                            warnings,
+                        ),
+                        garrison_army_manpower_need: leaf_i64_prefer(
+                            occ,
+                            &["garrison_army_manpower_need"],
+                            &[
+                                "_r2_occupation_resistance_compliance_live",
+                                "garrison_army_manpower_need",
+                            ],
+                            &ctx,
+                            warnings,
+                        ),
+                        garrison_strength_ratio: leaf_f64_prefer(
+                            occ,
+                            &["garrison_strength_ratio"],
+                            &[
+                                "_r2_occupation_resistance_compliance_live",
+                                "garrison_strength_ratio",
+                            ],
+                            &ctx,
+                            warnings,
+                        ),
+                        garrison_required: leaf_f64_prefer(
+                            occ,
+                            &["garrison_required"],
+                            &[
+                                "_r2_occupation_resistance_compliance_live",
+                                "garrison_required",
+                            ],
+                            &ctx,
+                            warnings,
+                        ),
+                        garrison_signals_status: leaf_string(
+                            occ,
+                            &[
+                                "_r2_occupation_resistance_compliance_live",
+                                "garrison_signals_status",
+                            ],
+                            &ctx,
+                            warnings,
+                        ),
+                        garrison_manpower_source_tag_db_id: leaf_u32(
+                            occ,
+                            &["garrison_manpower_source_tag_db_id"],
+                            &ctx,
+                            warnings,
+                        ),
+                        occupation_controller_tag_db_id: leaf_u32(
+                            occ,
+                            &["occupation_controller_tag_db_id"],
+                            &ctx,
+                            warnings,
+                        ),
+                        occupied_tag_db_id: leaf_u32(occ, &["occupied_tag_db_id"], &ctx, warnings),
+                        garrison_manpower_pool: leaf_rows(
+                            occ,
+                            &["garrison_manpower_pool"],
+                            &ctx,
+                            warnings,
+                            occupation_manpower_exact_row,
+                        ),
+                        garrison_equipment: leaf_rows(
+                            occ,
+                            &["garrison_equipment"],
+                            &ctx,
+                            warnings,
+                            occupation_equipment_exact_row,
+                        ),
+                        garrison_equipment_complete: leaf_bool(
+                            occ,
+                            &["garrison_equipment_complete"],
+                            &ctx,
+                            warnings,
+                        ),
+                        garrison_equipment_need: leaf_f64_map(
+                            occ,
+                            &["garrison_equipment_need"],
+                            &ctx,
+                            warnings,
+                        ),
+                        garrison_reinforcement_requests: leaf_rows(
+                            occ,
+                            &["garrison_reinforcement_requests"],
+                            &ctx,
+                            warnings,
+                            garrison_reinforcement_exact_row,
                         ),
                     },
                 );
@@ -5833,27 +9075,69 @@ fn build_naval_air_combat(
     rest: &Map<String, Value>,
     warnings: &mut Vec<String>,
 ) -> NavalAirCombatView {
-    let (items, combat_status) = array_at_path(rest, &["naval_combats"], "naval_combats", warnings);
-    let mut naval_combats = Vec::new();
-    if let Some(items) = items {
-        for (i, item) in items.iter().enumerate() {
-            let Some(o) = item.as_object() else {
-                warnings.push(format!(
-                    "naval_combats[{i}]: expected object, found {}; row skipped",
-                    json_type_name(item)
-                ));
-                continue;
-            };
-            let ctx = format!("naval_combats[{i}]");
-            naval_combats.push(NavalCombatRow {
-                combat_id: leaf_i64(o, &["naval_combat_id"], &ctx, warnings),
-                location_province: leaf_u32(o, &["location_province"], &ctx, warnings),
-                attacker: leaf_string(o, &["attacker"], &ctx, warnings),
-                defender: leaf_string(o, &["defender"], &ctx, warnings),
-                result_type: leaf_string(o, &["result_type"], &ctx, warnings),
-                progress: leaf_f64(o, &["progress"], &ctx, warnings),
-            });
+    let mut naval_items: Vec<(String, &Value)> = Vec::new();
+    let combat_status = match rest.get("naval_combats") {
+        None => ViewStatus::DomainAbsent,
+        Some(Value::Null) => ViewStatus::DomainUnavailable,
+        Some(Value::Array(items)) => {
+            naval_items.extend(
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, item)| (format!("naval_combats[{i}]"), item)),
+            );
+            ViewStatus::Present
         }
+        Some(Value::Object(items)) => {
+            naval_items.extend(
+                items
+                    .iter()
+                    .map(|(key, item)| (format!("naval_combats.{key}"), item)),
+            );
+            ViewStatus::Present
+        }
+        Some(other) => {
+            warnings.push(format!(
+                "naval_combats: expected array or object, found {}; treated as unavailable",
+                json_type_name(other)
+            ));
+            ViewStatus::DomainUnavailable
+        }
+    };
+    let mut naval_combats = Vec::new();
+    for (ctx, item) in naval_items {
+        let Some(o) = item.as_object() else {
+            warnings.push(format!(
+                "{ctx}: expected object, found {}; row skipped",
+                json_type_name(item)
+            ));
+            continue;
+        };
+        let members = parse_naval_members(o, &ctx, warnings);
+        let (attacker_country_tag_db_ids, defender_country_tag_db_ids) =
+            naval_combat_country_sets(&members);
+        naval_combats.push(NavalCombatRow {
+            combat_id: first_available_i64([
+                leaf_i64(o, &["naval_combat_id"], &ctx, warnings),
+                leaf_i64(o, &["combat_id"], &ctx, warnings),
+            ]),
+            generation: leaf_i64(o, &["generation"], &ctx, warnings),
+            location_province: leaf_u32(o, &["location_province"], &ctx, warnings),
+            region_id: leaf_u32(o, &["region_id"], &ctx, warnings),
+            attacker: leaf_string(o, &["attacker"], &ctx, warnings),
+            defender: leaf_string(o, &["defender"], &ctx, warnings),
+            result_type: leaf_string(o, &["result_type"], &ctx, warnings),
+            progress: leaf_f64(o, &["progress"], &ctx, warnings),
+            attacker_member_count: leaf_u32(o, &["attacker_member_count"], &ctx, warnings),
+            defender_member_count: leaf_u32(o, &["defender_member_count"], &ctx, warnings),
+            attacker_positioning: leaf_f64(o, &["attacker_positioning"], &ctx, warnings),
+            defender_positioning: leaf_f64(o, &["defender_positioning"], &ctx, warnings),
+            attacker_task_force_ids: leaf_id_list(o, "attacker_task_force_ids", &ctx, warnings),
+            defender_task_force_ids: leaf_id_list(o, "defender_task_force_ids", &ctx, warnings),
+            attacker_country_tag_db_ids,
+            defender_country_tag_db_ids,
+            members,
+        });
     }
     let sunk_convoys = leaf_rows(
         rest,
@@ -5871,10 +9155,473 @@ fn build_naval_air_combat(
         Leaf::Unobtained => ViewStatus::DomainUnavailable,
         Leaf::Absent => ViewStatus::DomainAbsent,
     };
+    let air_losses = parse_air_losses(rest, warnings);
+    let air_region_combat = parse_air_region_combat(rest, warnings);
+    let air_status = match (&air_losses, &air_region_combat) {
+        (Leaf::Measured(_), _) | (_, Leaf::Measured(_)) => ViewStatus::Present,
+        (Leaf::Unobtained, _) | (_, Leaf::Unobtained) => ViewStatus::DomainUnavailable,
+        _ => ViewStatus::DomainAbsent,
+    };
     NavalAirCombatView {
-        status: combine_status(combat_status, sunk_status),
+        status: combine_status(combine_status(combat_status, sunk_status), air_status),
         naval_combats,
         sunk_convoys,
+        air_losses,
+        air_region_combat,
+    }
+}
+
+fn parse_naval_members(
+    combat: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<Vec<NavalCombatMemberRow>> {
+    let items = match combat.get("members") {
+        None => return Leaf::Absent,
+        Some(Value::Null) => return Leaf::Unobtained,
+        Some(Value::Array(items)) => items,
+        Some(other) => {
+            warnings.push(format!(
+                "{ctx}.members: expected array, found {}; treated as unobtained",
+                json_type_name(other)
+            ));
+            return Leaf::Unobtained;
+        }
+    };
+    let mut rows = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let Some(obj) = item.as_object() else {
+            warnings.push(format!(
+                "{ctx}.members[{index}]: expected object; whole list unobtained"
+            ));
+            return Leaf::Unobtained;
+        };
+        let rctx = format!("{ctx}.members[{index}]");
+        rows.push(NavalCombatMemberRow {
+            side: leaf_string(obj, &["side"], &rctx, warnings),
+            group_index: leaf_i64(obj, &["group_index"], &rctx, warnings),
+            member_index: leaf_i64(obj, &["member_index"], &rctx, warnings),
+            is_convoy: leaf_bool(obj, &["is_convoy"], &rctx, warnings),
+            ship_instance_id: leaf_i64(obj, &["ship_instance_id"], &rctx, warnings),
+            cship_join_validated: leaf_bool(obj, &["cship_join_validated"], &rctx, warnings),
+            owner_tag_db_id: leaf_i64(obj, &["owner_tag_db_id"], &rctx, warnings),
+            task_force_id: leaf_i64(obj, &["task_force_id"], &rctx, warnings),
+            fleet_id: leaf_i64(obj, &["fleet_id"], &rctx, warnings),
+            battle_slot_index: leaf_i64(obj, &["battle_slot_index"], &rctx, warnings),
+            state_bitmask: leaf_i64(obj, &["state_bitmask"], &rctx, warnings),
+            strength: leaf_f64(obj, &["strength"], &rctx, warnings),
+            organisation: leaf_f64(obj, &["organisation"], &rctx, warnings),
+            sunk_convoys: leaf_i64(obj, &["sunk_convoys"], &rctx, warnings),
+        });
+    }
+    Leaf::Measured(rows)
+}
+
+fn naval_combat_country_sets(
+    members: &Leaf<Vec<NavalCombatMemberRow>>,
+) -> (Leaf<Vec<i64>>, Leaf<Vec<i64>>) {
+    let rows = match members {
+        Leaf::Absent => return (Leaf::Absent, Leaf::Absent),
+        Leaf::Unobtained => return (Leaf::Unobtained, Leaf::Unobtained),
+        Leaf::Measured(rows) => rows,
+    };
+    let mut attacker = BTreeSet::new();
+    let mut defender = BTreeSet::new();
+    let mut attacker_exact = true;
+    let mut defender_exact = true;
+    for row in rows {
+        let side = match &row.side {
+            Leaf::Measured(side) => side.as_str(),
+            Leaf::Absent | Leaf::Unobtained => {
+                attacker_exact = false;
+                defender_exact = false;
+                continue;
+            }
+        };
+        let owner = match &row.owner_tag_db_id {
+            Leaf::Measured(owner) if *owner > 0 => *owner,
+            Leaf::Measured(_) | Leaf::Absent | Leaf::Unobtained => {
+                match side {
+                    "attacker" => attacker_exact = false,
+                    "defender" => defender_exact = false,
+                    _ => {
+                        attacker_exact = false;
+                        defender_exact = false;
+                    }
+                }
+                continue;
+            }
+        };
+        match side {
+            "attacker" => {
+                attacker.insert(owner);
+            }
+            "defender" => {
+                defender.insert(owner);
+            }
+            _ => {
+                attacker_exact = false;
+                defender_exact = false;
+            }
+        }
+    }
+    let attacker = if attacker_exact {
+        Leaf::Measured(attacker.into_iter().collect())
+    } else {
+        Leaf::Unobtained
+    };
+    let defender = if defender_exact {
+        Leaf::Measured(defender.into_iter().collect())
+    } else {
+        Leaf::Unobtained
+    };
+    (attacker, defender)
+}
+
+fn nested_array<'a>(
+    rest: &'a Map<String, Value>,
+    domain: &str,
+    key: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<&'a Vec<Value>> {
+    match rest.get(domain) {
+        None => Leaf::Absent,
+        Some(Value::Null) => Leaf::Unobtained,
+        Some(Value::Object(obj)) => match obj.get(key) {
+            None => Leaf::Absent,
+            Some(Value::Null) => Leaf::Unobtained,
+            Some(Value::Array(items)) => Leaf::Measured(items),
+            Some(other) => {
+                warnings.push(format!(
+                    "{domain}.{key}: expected array, found {}; treated as unobtained",
+                    json_type_name(other)
+                ));
+                Leaf::Unobtained
+            }
+        },
+        Some(other) => {
+            warnings.push(format!(
+                "{domain}: expected object, found {}; treated as unobtained",
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
+    }
+}
+
+fn parse_air_losses(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> Leaf<Vec<AirCombatLossRow>> {
+    let items = match nested_array(rest, "naval_air", "_r2_air_combat_losses_live", warnings) {
+        Leaf::Absent => return Leaf::Absent,
+        Leaf::Unobtained => return Leaf::Unobtained,
+        Leaf::Measured(items) => items,
+    };
+    let mut rows = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let Some(obj) = item.as_object() else {
+            return Leaf::Unobtained;
+        };
+        let ctx = format!("naval_air._r2_air_combat_losses_live[{index}]");
+        rows.push(AirCombatLossRow {
+            owner: leaf_string(obj, &["owner"], &ctx, warnings),
+            owner_tag_db_id: leaf_i64(obj, &["owner_tag_db_id"], &ctx, warnings),
+            wing_id: leaf_i64(obj, &["wing_id"], &ctx, warnings),
+            generation: leaf_i64(obj, &["generation"], &ctx, warnings),
+            mission_mask: leaf_i64(obj, &["mission_mask"], &ctx, warnings),
+            mission_region: leaf_u32(obj, &["mission_region"], &ctx, warnings),
+            old_count: leaf_i64(obj, &["old_count"], &ctx, warnings),
+            new_count: leaf_i64(obj, &["new_count"], &ctx, warnings),
+            count_delta: leaf_i64(obj, &["count_delta"], &ctx, warnings),
+            old_equipment_amount_sum: leaf_f64(obj, &["old_equipment_amount_sum"], &ctx, warnings),
+            new_equipment_amount_sum: leaf_f64(obj, &["new_equipment_amount_sum"], &ctx, warnings),
+            equipment_amount_delta: leaf_f64(obj, &["equipment_amount_delta"], &ctx, warnings),
+            flags: leaf_i64(obj, &["flags"], &ctx, warnings),
+            air_accidents: leaf_i64(obj, &["air_accidents"], &ctx, warnings),
+            experience: leaf_f64(obj, &["experience"], &ctx, warnings),
+        });
+    }
+    Leaf::Measured(rows)
+}
+
+fn parse_air_region_combat(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> Leaf<Vec<AirRegionCombatRow>> {
+    let items = match nested_array(rest, "naval_air", "_r2_air_region_combat_stats", warnings) {
+        Leaf::Absent => return Leaf::Absent,
+        Leaf::Unobtained => return Leaf::Unobtained,
+        Leaf::Measured(items) => items,
+    };
+    let mut rows = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let Some(obj) = item.as_object() else {
+            return Leaf::Unobtained;
+        };
+        let ctx = format!("naval_air._r2_air_region_combat_stats[{index}]");
+        rows.push(AirRegionCombatRow {
+            owner: leaf_string(obj, &["owner"], &ctx, warnings),
+            owner_tag_db_id: leaf_i64(obj, &["owner_tag_db_id"], &ctx, warnings),
+            region_id: leaf_u32(obj, &["region_id"], &ctx, warnings),
+            side_vector: leaf_i64(obj, &["side_vector"], &ctx, warnings),
+            selection_flag: leaf_i64(obj, &["selection_flag"], &ctx, warnings),
+            classification_flag: leaf_i64(obj, &["classification_flag"], &ctx, warnings),
+            copied_flag: leaf_i64(obj, &["copied_flag"], &ctx, warnings),
+            wing_id: leaf_i64(obj, &["wing_id"], &ctx, warnings),
+            date_raw: leaf_i64(obj, &["date_raw"], &ctx, warnings),
+            plane_count: leaf_i64(obj, &["plane_count"], &ctx, warnings),
+            mission_mask: leaf_i64(obj, &["mission_mask"], &ctx, warnings),
+            attributed_country: leaf_string(obj, &["attributed_country"], &ctx, warnings),
+            attributed_country_tag_db_id: leaf_i64(
+                obj,
+                &["attributed_country_tag_db_id"],
+                &ctx,
+                warnings,
+            ),
+            damage: parse_air_damage(obj, &ctx, warnings),
+        });
+    }
+    Leaf::Measured(rows)
+}
+
+fn parse_air_damage(
+    obj: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<Vec<AirRegionDamageRow>> {
+    let items = match obj.get("damage") {
+        None => return Leaf::Absent,
+        Some(Value::Null) => return Leaf::Unobtained,
+        Some(Value::Array(items)) => items,
+        Some(_) => return Leaf::Unobtained,
+    };
+    let mut rows = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let Some(row) = item.as_object() else {
+            return Leaf::Unobtained;
+        };
+        let rctx = format!("{ctx}.damage[{index}]");
+        rows.push(AirRegionDamageRow {
+            channel: leaf_string(row, &["channel"], &rctx, warnings),
+            cause_type: leaf_i64(row, &["cause_type"], &rctx, warnings),
+            cause: leaf_string(row, &["cause"], &rctx, warnings),
+            amount: leaf_f64(row, &["amount"], &rctx, warnings),
+        });
+    }
+    Leaf::Measured(rows)
+}
+
+fn build_dynamic_collection_trace(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> DynamicCollectionTraceView {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Root {
+        schema_version: u32,
+        authority: String,
+        elapsed_wall_ms: u64,
+        frame_hour: u64,
+        collections: Vec<DynamicCollectionTraceRow>,
+    }
+
+    let Some(value) = rest.get("_r2_dynamic_collection_trace_live") else {
+        return DynamicCollectionTraceView {
+            status: ViewStatus::DomainAbsent,
+            frame_hour: None,
+            collections: Vec::new(),
+        };
+    };
+    if value.is_null() {
+        return DynamicCollectionTraceView {
+            status: ViewStatus::DomainUnavailable,
+            frame_hour: None,
+            collections: Vec::new(),
+        };
+    }
+    let root: Root = match serde_json::from_value(value.clone()) {
+        Ok(root) => root,
+        Err(error) => {
+            warnings.push(format!(
+                "_r2_dynamic_collection_trace_live malformed: {error}; treated as unavailable"
+            ));
+            return DynamicCollectionTraceView {
+                status: ViewStatus::DomainUnavailable,
+                frame_hour: None,
+                collections: Vec::new(),
+            };
+        }
+    };
+    let _elapsed_wall_ms = root.elapsed_wall_ms;
+    let mut ids = BTreeSet::new();
+    if root.schema_version != 1
+        || root.authority != "exact_a729_controller"
+        || root.collections.iter().any(|row| {
+            row.frame_hour != root.frame_hour || !ids.insert(row.collection_instance_id.as_str())
+        })
+    {
+        warnings.push("_r2_dynamic_collection_trace_live authority/frame/identity rejected".into());
+        return DynamicCollectionTraceView {
+            status: ViewStatus::DomainUnavailable,
+            frame_hour: None,
+            collections: Vec::new(),
+        };
+    }
+    DynamicCollectionTraceView {
+        status: ViewStatus::Present,
+        frame_hour: Some(root.frame_hour),
+        collections: root.collections,
+    }
+}
+
+fn build_design_catalog_context(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> DesignCatalogContextView {
+    let key = "_r2_design_catalog_context_live";
+    let Some(value) = rest.get(key) else {
+        return DesignCatalogContextView {
+            status: ViewStatus::DomainAbsent,
+            context: None,
+        };
+    };
+    if value.is_null() {
+        return DesignCatalogContextView {
+            status: ViewStatus::DomainUnavailable,
+            context: None,
+        };
+    }
+    let context: DesignCatalogContext = match serde_json::from_value(value.clone()) {
+        Ok(context) => context,
+        Err(error) => {
+            warnings.push(format!("{key} malformed: {error}; treated as unavailable"));
+            return DesignCatalogContextView {
+                status: ViewStatus::DomainUnavailable,
+                context: None,
+            };
+        }
+    };
+    let family_matches = matches!(
+        (context.mode, context.family.as_str()),
+        (0, "countryequipmentdesignerview")
+            | (1, "tank_designer_view")
+            | (2, "plane_designer_view")
+    );
+    let selected = context
+        .selected_country_tag_ids
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let designs = context
+        .ordered_design_ids
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if context.schema_version != 1
+        || context.authority != "exact_a729_designer_view"
+        || context.completeness_record_identity.trim().is_empty()
+        || context.transition_sequence == 0
+        || context.current_country_tag_id == 0
+        || !family_matches
+        || selected.len() != context.selected_country_tag_ids.len()
+        || selected.contains(&0)
+        || designs.len() != context.ordered_design_ids.len()
+        || designs.contains(&0)
+        || (!context.active && !context.ordered_design_ids.is_empty())
+    {
+        warnings.push(format!("{key} authority/context identity rejected"));
+        return DesignCatalogContextView {
+            status: ViewStatus::DomainUnavailable,
+            context: None,
+        };
+    }
+    DesignCatalogContextView {
+        status: ViewStatus::Present,
+        context: Some(context),
+    }
+}
+
+fn build_hud_surface_activation(
+    rest: &Map<String, Value>,
+    expected_hour: i64,
+    warnings: &mut Vec<String>,
+) -> HudSurfaceActivationView {
+    let key = "_r2_hud_surface_activation_live";
+    let Some(value) = rest.get(key) else {
+        return HudSurfaceActivationView {
+            status: ViewStatus::DomainAbsent,
+            activation: None,
+        };
+    };
+    if value.is_null() {
+        return HudSurfaceActivationView {
+            status: ViewStatus::DomainUnavailable,
+            activation: None,
+        };
+    }
+    let activation: HudSurfaceActivation = match serde_json::from_value(value.clone()) {
+        Ok(activation) => activation,
+        Err(error) => {
+            warnings.push(format!("{key} malformed: {error}; treated as unavailable"));
+            return HudSurfaceActivationView {
+                status: ViewStatus::DomainUnavailable,
+                activation: None,
+            };
+        }
+    };
+    let required = [
+        HudSurfaceActivationKind::Topbar,
+        HudSurfaceActivationKind::Minimap,
+        HudSurfaceActivationKind::Mapmodes,
+        HudSurfaceActivationKind::TheatreSelector,
+    ];
+    let designer = |surface| {
+        matches!(
+            surface,
+            HudSurfaceActivationKind::DesignerCountryEquipment
+                | HudSurfaceActivationKind::DesignerTank
+                | HudSurfaceActivationKind::DesignerPlane
+        )
+    };
+    let mut seen = BTreeSet::new();
+    let mut prior = None;
+    let mut designer_count = 0usize;
+    let rows_valid = activation.active_surfaces.iter().all(|row| {
+        let canonical = prior.map_or(true, |old| old < row.surface);
+        prior = Some(row.surface);
+        if designer(row.surface) {
+            designer_count += 1;
+        }
+        canonical
+            && seen.insert(row.surface)
+            && !row.runtime_root_name.trim().is_empty()
+            && row.runtime_root_name.len() <= 512
+            && !row.runtime_root_name.contains('/')
+            && !row.runtime_root_name.contains('\\')
+            && !row.runtime_root_name.chars().any(char::is_control)
+    });
+    let required_present = required.into_iter().all(|surface| seen.contains(&surface));
+    let expected_len = 4 + designer_count;
+    let expected_hour = u64::try_from(expected_hour).ok();
+    if activation.schema_version != 1
+        || activation.authority != "exact_a729_hud_controller_roots"
+        || Some(activation.frame_hour) != expected_hour
+        || activation.observation_sequence == 0
+        || !rows_valid
+        || !required_present
+        || designer_count > 1
+        || activation.active_surfaces.len() != expected_len
+    {
+        warnings.push(format!("{key} authority/hour/root partition rejected"));
+        return HudSurfaceActivationView {
+            status: ViewStatus::DomainUnavailable,
+            activation: None,
+        };
+    }
+    HudSurfaceActivationView {
+        status: ViewStatus::Present,
+        activation: Some(activation),
     }
 }
 
@@ -5883,7 +9630,24 @@ fn build_scripted_gui(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> 
         rest,
         warnings,
         || Leaf::Unobtained,
-        |obj, ctx, w| leaf_f64_map(obj, &["script_variables"], ctx, w),
+        |obj, ctx, w| match leaf_f64_map(obj, &["extra", "_r2_script_variables"], ctx, w) {
+            Leaf::Absent => leaf_f64_map(obj, &["script_variables"], ctx, w),
+            production => production,
+        },
+    );
+    let (country_flags, flag_status) = country_map(
+        rest,
+        warnings,
+        || Leaf::Unobtained,
+        |obj, ctx, w| object_keys(obj, &["extra", "script_flags"], ctx, w),
+    );
+    let (runtime_by_country, runtime_status) = country_map(
+        rest,
+        warnings,
+        || Leaf::Unobtained,
+        |obj, ctx, w| {
+            leaf_scripted_gui_runtime_inputs(obj, &["extra", "scripted_gui_runtime"], ctx, w)
+        },
     );
     let world_variables = leaf_f64_map(rest, &["world", "variables"], "snapshot", warnings);
     let world_flags = object_keys(rest, &["world", "flags"], "world.flags", warnings);
@@ -5893,8 +9657,13 @@ fn build_scripted_gui(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> 
         _ => ViewStatus::DomainAbsent,
     };
     ScriptedGuiView {
-        status: combine_status(cstatus, world_status),
+        status: combine_status(
+            combine_status(cstatus, flag_status),
+            combine_status(runtime_status, world_status),
+        ),
         by_country,
+        country_flags,
+        runtime_by_country,
         world_variables,
         world_flags,
     }
@@ -5930,6 +9699,128 @@ fn build_raids(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> RaidSta
     }
 }
 
+fn legacy_fired_event(event_id: String) -> FiredEventRow {
+    FiredEventRow {
+        event_id: Leaf::Measured(event_id),
+        recipient_tag: Leaf::Absent,
+        fire_date: Leaf::Absent,
+        fire_hour: Leaf::Absent,
+        fire_tick: Leaf::Absent,
+        event_sequence: Leaf::Absent,
+        visible_option_ordinals: Leaf::Absent,
+        chosen_option_ordinal: Leaf::Absent,
+        selected_desc_key: Leaf::Absent,
+        shown_picture_gfx: Leaf::Absent,
+        popup_subtype: Leaf::Absent,
+        effective_timeout_hours: Leaf::Absent,
+        timeout_tick: Leaf::Absent,
+        resolved_tick: Leaf::Absent,
+        resolution_reason: Leaf::Absent,
+        runtime_text_context_id: Leaf::Absent,
+    }
+}
+
+fn build_fired_events(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (FiredEventsView, ViewStatus) {
+    let (world_events, status) = object_at_path(rest, &["world_events"], "world_events", warnings);
+    let Some(world_events) = world_events else {
+        return (FiredEventsView::with_status(status), status);
+    };
+    let history_complete = leaf_bool(
+        world_events,
+        &["fired_events_complete"],
+        "world_events",
+        warnings,
+    );
+    let events = match world_events.get("fired_events") {
+        None => Leaf::Absent,
+        Some(Value::Null) => Leaf::Unobtained,
+        Some(Value::Array(items)) => {
+            let mut rows = Vec::with_capacity(items.len());
+            for (index, item) in items.iter().enumerate() {
+                if let Some(id) = value_to_id_string(item) {
+                    rows.push(legacy_fired_event(id));
+                    continue;
+                }
+                let Some(obj) = item.as_object() else {
+                    warnings.push(format!(
+                        "world_events.fired_events[{index}]: expected event id or object, found {}; whole list treated as unobtained",
+                        json_type_name(item)
+                    ));
+                    return (
+                        FiredEventsView {
+                            events: Leaf::Unobtained,
+                            history_complete,
+                        },
+                        ViewStatus::DomainUnavailable,
+                    );
+                };
+                let ctx = format!("world_events.fired_events[{index}]");
+                rows.push(FiredEventRow {
+                    event_id: leaf_id_string(obj, &["event_id"], &ctx, warnings),
+                    recipient_tag: leaf_string(obj, &["recipient_tag"], &ctx, warnings),
+                    fire_date: leaf_string(obj, &["fire_date"], &ctx, warnings),
+                    fire_hour: leaf_i64(obj, &["fire_hour"], &ctx, warnings),
+                    fire_tick: leaf_i64(obj, &["fire_tick"], &ctx, warnings),
+                    event_sequence: leaf_i64(obj, &["event_sequence"], &ctx, warnings),
+                    visible_option_ordinals: leaf_i64_list(
+                        obj,
+                        &["visible_option_ordinals"],
+                        &ctx,
+                        warnings,
+                    ),
+                    chosen_option_ordinal: leaf_i64(
+                        obj,
+                        &["chosen_option_ordinal"],
+                        &ctx,
+                        warnings,
+                    ),
+                    selected_desc_key: leaf_string(obj, &["selected_desc_key"], &ctx, warnings),
+                    shown_picture_gfx: leaf_string(obj, &["shown_picture_gfx"], &ctx, warnings),
+                    popup_subtype: leaf_string(obj, &["popup_subtype"], &ctx, warnings),
+                    effective_timeout_hours: leaf_i64(
+                        obj,
+                        &["effective_timeout_hours"],
+                        &ctx,
+                        warnings,
+                    ),
+                    timeout_tick: leaf_i64(obj, &["timeout_tick"], &ctx, warnings),
+                    resolved_tick: leaf_i64(obj, &["resolved_tick"], &ctx, warnings),
+                    resolution_reason: leaf_string(obj, &["resolution_reason"], &ctx, warnings),
+                    runtime_text_context_id: leaf_string(
+                        obj,
+                        &["runtime_text_context_id"],
+                        &ctx,
+                        warnings,
+                    ),
+                });
+            }
+            Leaf::Measured(rows)
+        }
+        Some(other) => {
+            warnings.push(format!(
+                "world_events.fired_events: expected array, found {}; treated as unobtained",
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
+    };
+    let status = if matches!(events, Leaf::Unobtained) {
+        ViewStatus::DomainUnavailable
+    } else {
+        ViewStatus::Present
+    };
+    (
+        FiredEventsView {
+            events,
+            history_complete,
+        },
+        status,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5944,6 +9835,615 @@ mod tests {
     const RECORD_TYPE_FRAME_END: u16 = 2;
     const RECORD_TYPE_DOMAIN_DATA: u16 = 3;
     const DATE_EPOCH_CONST: i32 = 43_799_999;
+
+    #[test]
+    fn fired_event_view_preserves_rich_history_order_and_legacy_ids() {
+        let value = serde_json::json!({
+            "world_events": {
+                "fired_events_complete": true,
+                "fired_events": [
+                    {
+                        "event_id": "test.1",
+                        "recipient_tag": "GER",
+                        "fire_date": "1936.1.2.3",
+                        "fire_hour": 27,
+                        "fire_tick": 27004,
+                        "event_sequence": 8,
+                        "visible_option_ordinals": [0, 2],
+                        "chosen_option_ordinal": 2,
+                        "selected_desc_key": "test.1.d2",
+                        "shown_picture_gfx": "GFX_report_event_test",
+                        "popup_subtype": "country",
+                        "effective_timeout_hours": 312,
+                        "timeout_tick": 28000,
+                        "resolved_tick": 27009,
+                        "resolution_reason": "selected",
+                        "runtime_text_context_id": "event:8"
+                    },
+                    "legacy.2"
+                ]
+            }
+        });
+        let mut warnings = Vec::new();
+        let (view, status) = build_fired_events(value.as_object().unwrap(), &mut warnings);
+        assert_eq!(status, ViewStatus::Present);
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        assert_eq!(view.history_complete, Leaf::Measured(true));
+        let rows = view.events.measured().expect("fired event rows");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].event_id, Leaf::Measured("test.1".into()));
+        assert_eq!(rows[0].visible_option_ordinals, Leaf::Measured(vec![0, 2]));
+        assert_eq!(rows[0].event_sequence, Leaf::Measured(8));
+        assert_eq!(rows[1].event_id, Leaf::Measured("legacy.2".into()));
+        assert_eq!(rows[1].recipient_tag, Leaf::Absent);
+        assert_eq!(rows[1].event_sequence, Leaf::Absent);
+    }
+
+    #[test]
+    fn fired_event_view_wrong_typed_member_fails_closed() {
+        let value = serde_json::json!({
+            "world_events": {"fired_events_complete": true, "fired_events": [false]}
+        });
+        let mut warnings = Vec::new();
+        let (view, status) = build_fired_events(value.as_object().unwrap(), &mut warnings);
+        assert_eq!(status, ViewStatus::DomainUnavailable);
+        assert_eq!(view.events, Leaf::Unobtained);
+        assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn occupation_view_exposes_domain52_and_domain66_garrison_carriers() {
+        let value = serde_json::json!({
+            "occupation_history_complete": true,
+            "occupation_history": [{
+                "stable_event_id": "GER|1942.8.15.1|891|0",
+                "source_ordinal": 0,
+                "controller_tag": "GER",
+                "state_id": 891,
+                "occupied_country_tag": "FRA",
+                "event_hour_or_engine_date": "1942.8.15.1",
+                "attack_blocked": true,
+                "resistance_activity": null,
+                "lost_manpower": 33,
+                "equipment_loss_rows": [{
+                    "source_ordinal": 0,
+                    "equipment_id": 438,
+                    "equipment_type": 70,
+                    "equipment_token": "support_equipment_1",
+                    "amount": 1.0
+                }],
+                "equipment_loss_children_complete": true
+            }],
+            "states": {
+                "891": {
+                    "occupation_law": null,
+                    "occupation": {
+                        "resistance": 22.3,
+                        "resistance_speed": 0.025,
+                        "compliance": 65.0,
+                        "compliance_speed": -0.012,
+                        "occupier_tag": "47",
+                        "occupied_country_tag": "180",
+                        "occupation_law_token_id": 304778569,
+                        "occupation_law_token_encoding": "fnv1a32_of_law_token",
+                        "occupation_controller_tag_db_id": 47,
+                        "occupied_tag_db_id": 180,
+                        "garrison_manpower_source_tag_db_id": 47,
+                        "garrison_template_id": 4183,
+                        "garrison_army_manpower_need": 13869,
+                        "garrison_strength_ratio": 0.9375,
+                        "garrison_required": 0.55477,
+                        "garrison_manpower_pool": [{
+                            "source_ordinal": 0,
+                            "tag": "GER",
+                            "value": 13869.0
+                        }],
+                        "garrison_equipment": [{
+                            "source_ordinal": 0,
+                            "equipment_id": 90,
+                            "equipment_type": 70,
+                            "equipment_token": "infantry_equipment_0",
+                            "amount": 1664.31
+                        }],
+                        "garrison_equipment_complete": true,
+                        "garrison_equipment_need": {
+                            "infantry_equipment": 1664.31
+                        },
+                        "garrison_reinforcement_requests": [{
+                            "source_ordinal": 0,
+                            "total_progress": 7.57643,
+                            "need": {"infantry_equipment": 661.31},
+                            "date": "1942.8.18.2"
+                        }],
+                        "_r2_occupation_resistance_compliance_live": {
+                            "occupation_law_token_id": 1626184329,
+                            "occupation_law_token_encoding": "fnv1a32_name_hash",
+                            "occupation_law_token_source": "controller_country_default",
+                            "garrison_template_id": 4183,
+                            "garrison_army_manpower_need": 14000,
+                            "garrison_strength_ratio": 0.875,
+                            "garrison_required": 2.5
+                        }
+                    }
+                }
+            }
+        });
+        let mut warnings = Vec::new();
+        let (rows, status) = build_occupation(value.as_object().unwrap(), &mut warnings);
+        assert_eq!(status, ViewStatus::Present);
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        let row = rows.get(&891).expect("state 891 occupation row");
+        assert_eq!(row.occupier_tag, Leaf::Measured("47".into()));
+        assert_eq!(row.occupation_law_token_id, Leaf::Measured(304_778_569));
+        assert_eq!(
+            row.occupation_law_token_encoding,
+            Leaf::Measured("fnv1a32_of_law_token".into())
+        );
+        assert_eq!(row.garrison_template_id, Leaf::Measured(4183));
+        assert_eq!(row.garrison_army_manpower_need, Leaf::Measured(13_869));
+        assert_eq!(row.garrison_strength_ratio, Leaf::Measured(0.9375));
+        assert_eq!(row.garrison_required, Leaf::Measured(0.55477));
+        assert_eq!(row.garrison_manpower_source_tag_db_id, Leaf::Measured(47));
+        let equipment = row
+            .garrison_equipment
+            .measured()
+            .expect("garrison equipment");
+        assert_eq!(equipment.len(), 1);
+        assert_eq!(
+            equipment[0].equipment_token,
+            Leaf::Measured("infantry_equipment_0".into())
+        );
+        assert_eq!(row.garrison_equipment_complete, Leaf::Measured(true));
+        assert_eq!(
+            row.garrison_equipment_need
+                .measured()
+                .and_then(|need| need.get("infantry_equipment"))
+                .copied(),
+            Some(1664.31)
+        );
+        let requests = row
+            .garrison_reinforcement_requests
+            .measured()
+            .expect("garrison reinforcement requests");
+        assert_eq!(requests[0].total_progress, Leaf::Measured(7.57643));
+
+        let (history, history_complete) =
+            build_occupation_history(value.as_object().unwrap(), &mut warnings);
+        assert_eq!(history_complete, Leaf::Measured(true));
+        let history = history.measured().expect("occupation history");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].attack_blocked, Leaf::Measured(true));
+        assert_eq!(history[0].lost_manpower, Leaf::Measured(33));
+        assert_eq!(
+            history[0]
+                .equipment_loss_rows
+                .measured()
+                .expect("equipment losses")[0]
+                .equipment_token,
+            Leaf::Measured("support_equipment_1".into())
+        );
+    }
+
+    #[test]
+    fn politics_detail_exposes_complete_live_classification_and_advisor_contract() {
+        let value: Value = serde_json::from_str(
+            r#"{
+              "countries": {"GER": {
+                "politics": {
+                  "stability": 0.75,
+                  "war_support": 0.6,
+                  "political_power": 42.5,
+                  "command_power": 18.0,
+                  "ruling_party": "fascism",
+                  "party_popularities": {"fascism": 60.0, "democratic": 20.0},
+                  "ideas": ["war_economy", "GER_advisor"],
+                  "ideas_all": ["war_economy", "GER_advisor"],
+                  "ideas_other": ["GER_advisor"],
+                  "national_spirits": [],
+                  "idea_groups": {"economy": ["war_economy"], "political_advisor": ["GER_advisor"]},
+                  "advisor_ideas": {"political_advisor": ["GER_advisor"]},
+                  "laws": {"economy": "war_economy", "trade_laws": "export_focus", "mobilization_laws": "limited_conscription"},
+                  "idea_count": 2,
+                  "party_count": 4,
+                  "election_frequency": 48,
+                  "last_election": "1936.1.1.1",
+                  "elections_allowed": false,
+                  "low_confidence": false,
+                  "appointed_advisors": ["GER_advisor"],
+                  "appointed_advisor_details": [{"idea_token": "GER_advisor", "slot": "political_advisor", "ledger": "political", "character": "GER_character"}],
+                  "appointed_advisor_slots": {"political_advisor": ["GER_advisor"]},
+                  "appointed_advisor_ledgers": {"political": ["GER_advisor"]}
+                },
+                "abilities": [{"ability": "force_attack"}],
+                "active_abilities": {
+                  "complete": true,
+                  "rows": [{
+                    "ability_id": "force_attack",
+                    "available": false,
+                    "active": true,
+                    "activation_hour": 17,
+                    "cooldown_hours": 504,
+                    "cooldown_remaining_hours": 336,
+                    "cost_command_power": 22.0,
+                    "target_kind": "army_leader",
+                    "target_id": 73,
+                    "duration_hours": 168,
+                    "duration_remaining_hours": 120,
+                    "display_order": 0,
+                    "icon": "GFX_ability_force_attack",
+                    "tooltip": "Force Attack",
+                    "disabled_reason": "Already active"
+                  }]
+                }
+              }}
+            }"#,
+        )
+        .expect("politics fixture json");
+        let rest = value.as_object().expect("politics fixture object");
+        let mut warnings = Vec::new();
+        let (views, status) = build_politics_detail(rest, &mut warnings);
+        assert_eq!(status, ViewStatus::Present);
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        let view = views.get("GER").expect("GER politics detail");
+        assert_eq!(view.ruling_party, Leaf::Measured("fascism".to_string()));
+        assert_eq!(view.idea_count, Leaf::Measured(2));
+        assert_eq!(view.elections_allowed, Leaf::Measured(false));
+        assert_eq!(
+            view.laws,
+            Leaf::Measured(BTreeMap::from([
+                ("economy".to_string(), "war_economy".to_string()),
+                (
+                    "mobilization_laws".to_string(),
+                    "limited_conscription".to_string()
+                ),
+                ("trade_laws".to_string(), "export_focus".to_string()),
+            ]))
+        );
+        assert_eq!(
+            view.appointed_advisor_details,
+            Leaf::Measured(vec![AppointedAdvisorRow {
+                idea_token: Leaf::Measured("GER_advisor".to_string()),
+                slot: Leaf::Measured("political_advisor".to_string()),
+                ledger: Leaf::Measured("political".to_string()),
+                character: Leaf::Measured("GER_character".to_string()),
+            }])
+        );
+        assert_eq!(
+            view.command_abilities,
+            Leaf::Measured(vec!["force_attack".to_string()])
+        );
+        assert_eq!(view.command_abilities_complete, Leaf::Measured(true));
+        let Leaf::Measured(rows) = &view.command_ability_rows else {
+            panic!("exact command-ability rows must be measured");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].ability_id,
+            Leaf::Measured("force_attack".to_string())
+        );
+        assert_eq!(rows[0].available, Leaf::Measured(false));
+        assert_eq!(rows[0].active, Leaf::Measured(true));
+        assert_eq!(rows[0].target_id, Leaf::Measured("73".to_string()));
+        assert_eq!(rows[0].display_order, Leaf::Measured(0));
+        assert_eq!(
+            rows[0].disabled_reason,
+            Leaf::Measured("Already active".to_string())
+        );
+    }
+
+    #[test]
+    fn command_ability_rows_fail_closed_without_inference() {
+        let value = serde_json::json!({
+            "countries": {"GER": {
+                "active_abilities": {
+                    "complete": null,
+                    "rows": [{
+                        "ability_id": "last_stand",
+                        "available": "yes",
+                        "active": false
+                    }]
+                }
+            }}
+        });
+        let rest = value.as_object().expect("ability fixture object");
+        let mut warnings = Vec::new();
+        let (views, status) = build_politics_detail(rest, &mut warnings);
+        assert_eq!(status, ViewStatus::Present);
+        let view = views.get("GER").expect("GER ability view");
+        assert_eq!(view.command_abilities_complete, Leaf::Unobtained);
+        let Leaf::Measured(rows) = &view.command_ability_rows else {
+            panic!("row container should remain measured");
+        };
+        assert_eq!(rows[0].ability_id, Leaf::Measured("last_stand".to_string()));
+        assert_eq!(rows[0].available, Leaf::Unobtained);
+        assert_eq!(rows[0].active, Leaf::Measured(false));
+        assert_eq!(rows[0].cooldown_remaining_hours, Leaf::Absent);
+        assert_eq!(rows[0].tooltip, Leaf::Absent);
+        assert!(warnings.iter().any(|warning| warning.contains("available")));
+    }
+
+    #[test]
+    fn intel_view_types_existing_domain53_raw_slice_without_relabeling() {
+        let frame = world_frame_from_json(serde_json::json!({
+            "hour_index": 9,
+            "countries": {"GER": {"intel": {"domain53_extra": {
+                "agency_scalars": {
+                    "max_operatives_unresolved": 3,
+                    "usable_slots_unresolved": 2,
+                    "operative_count": 2,
+                    "cryptology_target_count": 1,
+                    "defense_raw": 500000,
+                    "upgrade_progress_raw": 25000,
+                    "name_hash": 12345678901234u64,
+                    "icon_hash": 987654321u64
+                },
+                "raw_capacity_cluster": {
+                    "value_0xe4": 3,
+                    "value_0xf0": 2,
+                    "value_0xf4": 3,
+                    "proof_hash": 51966,
+                    "semantic_status": "raw_offsets_unresolved"
+                },
+                "operative_lifecycle_rows": [{
+                    "op_id": 7,
+                    "detected": false,
+                    "captured_unvalidated": false,
+                    "skill": 2,
+                    "experience_raw": 30000,
+                    "name_hash": 444u64,
+                    "state_hash": 555,
+                    "lifecycle_flag": 47
+                }],
+                "cryptology_targets": [{
+                    "target_tag_db_id": 11,
+                    "amount_raw": 960000,
+                    "decrypting": true
+                }]
+            }}}}
+        }));
+        let intel = frame.intel("GER").expect("GER intel");
+        let agency = intel
+            .domain53_agency_scalars_raw
+            .measured()
+            .expect("typed raw agency scalars");
+        assert_eq!(agency.value_0x128_unvalidated, Leaf::Measured(500000));
+        assert_eq!(agency.value_0xc8_unvalidated, Leaf::Measured(25000));
+        assert_eq!(agency.name_hash, Leaf::Measured(12345678901234));
+        let capacity = intel
+            .domain53_agency_capacity_raw
+            .measured()
+            .expect("typed raw capacity");
+        assert_eq!(
+            capacity.semantic_status,
+            Leaf::Measured("raw_offsets_unresolved".to_string())
+        );
+        let operatives = intel
+            .domain53_operative_lifecycle_raw
+            .measured()
+            .expect("typed raw operatives");
+        assert_eq!(operatives[0].captured_unvalidated, Leaf::Measured(false));
+        let cryptology = intel
+            .domain53_cryptology_targets_raw
+            .measured()
+            .expect("typed raw cryptology");
+        assert_eq!(cryptology[0].amount_raw, Leaf::Measured(960000));
+    }
+
+    #[test]
+    fn trade_view_preserves_resource_semantics_order_and_complete_totals() {
+        let pool = |oil: f64, steel: f64| {
+            BTreeMap::from([
+                ("oil", oil),
+                ("aluminium", 0.0),
+                ("rubber", 0.0),
+                ("tungsten", 0.0),
+                ("steel", steel),
+                ("chromium", 0.0),
+                ("coal", 0.0),
+            ])
+        };
+        let resource_rows: Vec<Value> = TRADE_RESOURCE_ORDER
+            .iter()
+            .enumerate()
+            .map(|(visible_order, resource)| {
+                let oil = *resource == "oil";
+                let steel = *resource == "steel";
+                serde_json::json!({
+                    "resource": resource,
+                    "visible_order": visible_order,
+                    "balance": if oil || steel { 5.0 } else { 0.0 },
+                    "produced": if oil { 10.0 } else if steel { 20.0 } else { 0.0 },
+                    "imported": if oil { 4.0 } else if steel { 2.0 } else { 0.0 },
+                    "exported": if oil { 1.0 } else if steel { 4.0 } else { 0.0 },
+                    "special_project": 0.0,
+                    "production_line": if oil { 8.0 } else if steel { 13.0 } else { 0.0 },
+                    "needed": if oil { -12.0 } else { 0.0 },
+                    "needed_current": if oil { Some(-12.0) } else { None },
+                    "needed_max": if oil { Some(-20.0) } else { None },
+                    "needed_type": if oil { "current_max" } else { "surplus" }
+                })
+            })
+            .collect();
+        let frame = world_frame_from_json(serde_json::json!({
+            "hour_index": 7,
+            "countries": {
+                "GER": {
+                    "economy": {
+                        "resources": {
+                            "complete": true,
+                            "produced": pool(10.0, 20.0),
+                            "imported": pool(4.0, 2.0),
+                            "used": pool(8.0, 13.0),
+                            "to_export": pool(2.0, 5.0),
+                            "base_export": pool(3.0, 6.0),
+                            "exported": pool(1.0, 4.0),
+                            "available_derived": pool(9.0, 16.0)
+                        },
+                        "resource_trade": {
+                            "resource_rows_complete": true,
+                            "resource_rows": resource_rows,
+                            "deals_complete": true,
+                            "deals": [
+                                {
+                                    "deal_id": 41, "counterpart": "SWE",
+                                    "direction": "import", "resource": "steel",
+                                    "requested": 8.0, "delivered": 6.0,
+                                    "available_export": 12.0,
+                                    "civilian_factories": 1,
+                                    "factory_cost_per_resource": 0.125,
+                                    "convoys": {"assigned": 2, "required": 3},
+                                    "route_kind": "sea", "delivery_efficiency": 0.75,
+                                    "no_trade_influence": false, "no_resources": false,
+                                    "visible_order": 0
+                                },
+                                {
+                                    "deal_id": 42, "counterpart": "SOV",
+                                    "direction": "import", "resource": "oil",
+                                    "requested": 4.0, "delivered": 4.0,
+                                    "available_export": 30.0,
+                                    "civilian_factories": 1,
+                                    "factory_cost_per_resource": 0.25,
+                                    "convoys": {"assigned": 0, "required": 0},
+                                    "route_kind": "land", "delivery_efficiency": 1.0,
+                                    "visible_order": 1
+                                },
+                                {
+                                    "deal_id": 43, "counterpart": "SWE",
+                                    "direction": "import", "resource": "oil",
+                                    "requested": 2.0, "delivered": 1.0,
+                                    "available_export": 12.0,
+                                    "civilian_factories": 1,
+                                    "factory_cost_per_resource": 0.5,
+                                    "convoys": {"assigned": 1, "required": 2},
+                                    "route_kind": "sea", "delivery_efficiency": 0.5,
+                                    "visible_order": 2
+                                }
+                            ],
+                            "factories": {"total": 25, "used": 11, "available": 14}
+                        }
+                    },
+                    "diplomacy": {"lend_lease": []}
+                }
+            },
+            "order_of_battle": {
+                "army_groups": [
+                    {"id": 500, "owner": "GER", "leader": 100}
+                ],
+                "armies": [],
+                "fleets": [
+                    {"id": 600, "owner": "GER", "leader": 101}
+                ]
+            }
+        }));
+        let view = frame.trade("GER").expect("GER trade");
+        assert_eq!(view.resource_pools_complete, Leaf::Measured(true));
+        assert_eq!(
+            view.imported,
+            Leaf::Measured(BTreeMap::from([
+                ("aluminium".to_string(), 0.0),
+                ("chromium".to_string(), 0.0),
+                ("coal".to_string(), 0.0),
+                ("oil".to_string(), 4.0),
+                ("rubber".to_string(), 0.0),
+                ("steel".to_string(), 2.0),
+                ("tungsten".to_string(), 0.0),
+            ]))
+        );
+        assert_eq!(view.factories_total, Leaf::Measured(25));
+        assert_eq!(view.factories_used, Leaf::Measured(11));
+        assert_eq!(view.factories_available, Leaf::Measured(14));
+        assert_eq!(view.computed_imported_total(), Leaf::Measured(6.0));
+        assert_eq!(view.computed_exported_total(), Leaf::Measured(5.0));
+        assert_eq!(view.computed_convoys_assigned_total(), Leaf::Measured(3));
+        assert_eq!(view.computed_convoys_required_total(), Leaf::Measured(5));
+        assert_eq!(view.computed_requested_total(), Leaf::Measured(14.0));
+        assert_eq!(view.computed_delivered_total(), Leaf::Measured(11.0));
+        assert_eq!(view.computed_civilian_factory_total(), Leaf::Measured(3));
+        assert_eq!(
+            view.computed_partners(),
+            Leaf::Measured(vec!["SWE".to_string(), "SOV".to_string()])
+        );
+        let Leaf::Measured(rows) = &view.resource_rows else {
+            panic!("resource rows must be measured");
+        };
+        assert_eq!(rows[0].resource, Leaf::Measured("oil".to_string()));
+        assert_eq!(rows[0].needed_current, Leaf::Measured(-12.0));
+        assert_eq!(rows[0].needed_max, Leaf::Measured(-20.0));
+        assert_eq!(rows[4].resource, Leaf::Measured("steel".to_string()));
+        let Leaf::Measured(deals) = &view.resource_deals else {
+            panic!("resource deals must be measured");
+        };
+        assert_eq!(deals[0].no_trade_influence, Leaf::Measured(false));
+        assert_eq!(deals[0].no_resources, Leaf::Measured(false));
+        assert_eq!(deals[1].no_resources, Leaf::Absent);
+    }
+
+    #[test]
+    fn trade_view_fails_closed_on_unproven_order_or_incomplete_totals() {
+        let frame = world_frame_from_json(serde_json::json!({
+            "hour_index": 8,
+            "countries": {"GER": {"economy": {"resource_trade": {
+                "resource_rows_complete": false,
+                "resource_rows": [{
+                    "resource": "oil", "visible_order": 1,
+                    "balance": 0, "produced": 0, "imported": 0, "exported": 0,
+                    "special_project": 0, "production_line": 0, "needed": 0,
+                    "needed_type": "surplus"
+                }],
+                "deals_complete": false,
+                "deals": []
+            }}}}
+        }));
+        let view = frame.trade("GER").expect("GER trade");
+        assert_eq!(view.resource_rows, Leaf::Unobtained);
+        assert_eq!(view.computed_imported_total(), Leaf::Unobtained);
+        assert_eq!(view.computed_convoys_assigned_total(), Leaf::Unobtained);
+        assert!(frame.coverage_warnings().iter().any(|warning| {
+            warning.contains("resource_rows[0].visible_order")
+                && warning.contains("whole list treated as unobtained")
+        }));
+    }
+
+    #[test]
+    fn trade_view_rejects_complete_noncanonical_resource_sequence() {
+        let rows: Vec<Value> = [
+            "oil",
+            "steel",
+            "rubber",
+            "tungsten",
+            "aluminium",
+            "chromium",
+            "coal",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(visible_order, resource)| {
+            serde_json::json!({
+                "resource": resource, "visible_order": visible_order,
+                "balance": 0, "produced": 0, "imported": 0, "exported": 0,
+                "special_project": 0, "production_line": 0, "needed": 0,
+                "needed_current": if resource == "oil" { Some(0) } else { None },
+                "needed_max": if resource == "oil" { Some(0) } else { None },
+                "needed_type": if resource == "oil" { "current_max" } else { "surplus" }
+            })
+        })
+        .collect();
+        let frame = world_frame_from_json(serde_json::json!({
+            "hour_index": 9,
+            "countries": {"GER": {"economy": {"resource_trade": {
+                "resource_rows_complete": true,
+                "resource_rows": rows,
+                "deals_complete": true,
+                "deals": []
+            }}}}
+        }));
+        let view = frame.trade("GER").expect("GER trade");
+        assert_eq!(view.resource_rows, Leaf::Unobtained);
+        assert!(frame.coverage_warnings().iter().any(|warning| {
+            warning.contains("resource_rows[1].resource")
+                && warning.contains("expected aluminium, found steel")
+        }));
+    }
 
     struct TestDir(PathBuf);
 
@@ -6134,6 +10634,168 @@ mod tests {
             schema_version: root.remove("schema_version"),
             rest: root,
         })
+    }
+
+    fn xui17_exact_root() -> Value {
+        serde_json::json!({
+            "hour_index": 7,
+            "countries": {
+                "GER": {
+                    "extra": {
+                        "_r2_characters_leaders_cabinet_live": {
+                            "characters": [
+                                {"char_id": 10, "name": "Heinz Guderian", "token": "GER_heinz_guderian"},
+                                {"char_id": 11, "name": "Karl Donitz", "token": "GER_karl_donitz"}
+                            ],
+                            "unit_leaders": [
+                                {
+                                    "unit_leader_id": 100, "char_id": 10,
+                                    "leader_kind": "army", "leader_kind_raw": 0,
+                                    "skill": 5, "experience_raw": 12345,
+                                    "attack": 6, "defense": 4, "planning": 5, "logistics": 3,
+                                    "maneuvering": 0, "coordination": 0,
+                                    "token": "GER_heinz_guderian", "name": "Heinz Guderian"
+                                },
+                                {
+                                    "unit_leader_id": 101, "char_id": 11,
+                                    "leader_kind": "navy", "leader_kind_raw": 1,
+                                    "skill": 4, "experience_raw": -20,
+                                    "attack": 0, "defense": 0, "planning": 0, "logistics": 0,
+                                    "maneuvering": 5, "coordination": 6,
+                                    "token": "GER_karl_donitz", "name": "Karl Donitz"
+                                }
+                            ],
+                            "unit_leader_traits": [
+                                {"unit_leader_id": 100, "ordinal": 1, "trait_token": "panzer_leader"},
+                                {"unit_leader_id": 100, "ordinal": 0, "trait_token": "armor_officer"}
+                            ],
+                            "country_leader_roles": [],
+                            "active_rulers": [
+                                {"char_id": 10, "ruling_party": "fascism", "name": "Heinz Guderian", "token": "GER_heinz_guderian", "leader_vec_size": 1, "ambiguous": false}
+                            ]
+                        },
+                        "_r2_air_ace_roster_live": {
+                            "aces": [
+                                {"ace_id": 900, "country_ace_index": 0, "name": "Max", "surname": "Mustermann", "callsign": "Falke", "alive": true, "wing_id": 700, "killer_ace_id": 0, "killer_country_tag_db_id": 0},
+                                {"ace_id": 901, "country_ace_index": 1, "name": "Erika", "surname": "Musterfrau", "callsign": "Adler", "alive": false, "wing_id": 0, "killer_ace_id": 42, "killer_country_tag_db_id": 3}
+                            ]
+                        }
+                    }
+                }
+            },
+            "order_of_battle": {
+                "army_groups": [
+                    {"id": 500, "owner": "GER", "leader": 100}
+                ],
+                "armies": [],
+                "fleets": [
+                    {"id": 600, "owner": "GER", "leader": 101}
+                ]
+            }
+        })
+    }
+
+    #[test]
+    fn xui17_exact_sidecars_are_typed_and_joined_fail_closed() {
+        let frame = world_frame_from_json(xui17_exact_root());
+        assert_eq!(frame.character_rosters_exact_status(), ViewStatus::Present);
+        let roster = frame
+            .character_roster_exact("GER")
+            .expect("GER exact roster");
+        assert_eq!(roster.status, ViewStatus::Present);
+        assert_eq!(roster.characters.len(), 2);
+        assert_eq!(roster.unit_leaders[0].unit_leader_id, 100);
+        assert_eq!(
+            roster.unit_leaders[0].traits,
+            vec!["armor_officer", "panzer_leader"]
+        );
+        assert_eq!(roster.unit_leaders[1].experience_raw, -20);
+        assert!(roster.command_assignments_complete);
+        assert_eq!(
+            roster.unit_leaders[0].assignment,
+            Some(UnitLeaderAssignmentExact {
+                kind: UnitLeaderAssignmentKind::ArmyGroup,
+                formation_id: 500,
+            })
+        );
+        assert_eq!(
+            roster.unit_leaders[1].assignment,
+            Some(UnitLeaderAssignmentExact {
+                kind: UnitLeaderAssignmentKind::Fleet,
+                formation_id: 600,
+            })
+        );
+        assert_eq!(roster.active_rulers[0].char_id, 10);
+
+        assert_eq!(frame.ace_rosters_exact_status(), ViewStatus::Present);
+        let aces = frame.ace_roster_exact("GER").expect("GER exact aces");
+        assert!(aces.wing_assignment_complete);
+        assert_eq!(aces.aces[1].country_ace_index, 1);
+        assert_eq!(aces.aces[1].killer_ace_id, 42);
+    }
+
+    #[test]
+    fn xui17_never_labels_missing_or_duplicate_oob_as_reserve() {
+        let mut missing = xui17_exact_root();
+        missing
+            .as_object_mut()
+            .expect("root")
+            .remove("order_of_battle");
+        let frame = world_frame_from_json(missing);
+        let roster = frame.character_roster_exact("GER").expect("GER roster");
+        assert!(!roster.command_assignments_complete);
+        assert!(roster
+            .unit_leaders
+            .iter()
+            .all(|row| row.assignment.is_none()));
+
+        let mut duplicate = xui17_exact_root();
+        duplicate["order_of_battle"]["armies"] = serde_json::json!([
+            {"id": 501, "owner": "GER", "leader": 100}
+        ]);
+        let frame = world_frame_from_json(duplicate);
+        let roster = frame.character_roster_exact("GER").expect("GER roster");
+        assert!(!roster.command_assignments_complete);
+        assert!(roster
+            .unit_leaders
+            .iter()
+            .all(|row| row.assignment.is_none()));
+        assert!(frame.coverage_warnings().iter().any(|warning| {
+            warning.contains("duplicate d28 assignment for unit_leader_id 100")
+        }));
+    }
+
+    #[test]
+    fn xui17_rejects_orphan_traits_and_noncontiguous_ace_order() {
+        let mut root = xui17_exact_root();
+        root["countries"]["GER"]["extra"]["_r2_characters_leaders_cabinet_live"]
+            ["unit_leader_traits"][0]["unit_leader_id"] = serde_json::json!(999);
+        root["countries"]["GER"]["extra"]["_r2_air_ace_roster_live"]["aces"][1]
+            ["country_ace_index"] = serde_json::json!(7);
+        let frame = world_frame_from_json(root);
+        assert_eq!(
+            frame.character_rosters_exact_status(),
+            ViewStatus::DomainUnavailable
+        );
+        assert_eq!(
+            frame
+                .character_roster_exact("GER")
+                .expect("failed roster")
+                .status,
+            ViewStatus::DomainUnavailable
+        );
+        assert_eq!(
+            frame.ace_rosters_exact_status(),
+            ViewStatus::DomainUnavailable
+        );
+        assert!(frame
+            .coverage_warnings()
+            .iter()
+            .any(|warning| warning.contains("orphan unit_leader_id 999")));
+        assert!(frame
+            .coverage_warnings()
+            .iter()
+            .any(|warning| warning.contains("expected 1, found 7")));
     }
 
     fn carried_problem_backed_json(domain_problems: Option<Value>) -> Value {
@@ -6773,6 +11435,214 @@ mod tests {
     }
 
     #[test]
+    fn production_lines_expose_complete_future_contract_without_derivation() {
+        let frame = world_frame_from_json(serde_json::json!({
+            "hour_index": 1,
+            "countries": {
+                "GER": {
+                    "production": {
+                        "stockpile": {"7316": 125.5},
+                        "stockpile_total": 125.5,
+                        "stockpile_complete": true,
+                        "military_lines_complete": true,
+                        "naval_lines_complete": true,
+                        "military_lines": [{
+                            "id": 41,
+                            "priority": 0,
+                            "line_subtype": "military",
+                            "equipment_variant_id": 7316,
+                            "active_factories": 7,
+                            "requested_factories": 10,
+                            "efficiency": 0.72,
+                            "efficiency_cap": 0.85,
+                            "efficiency_growth": 0.003,
+                            "cost": 4.5,
+                            "speed": 18.0,
+                            "produced": 2.25,
+                            "amount": -1,
+                            "progress_ratio": 0.5,
+                            "daily_output": 4.0,
+                            "days_to_next_unit": 0.125,
+                            "mio_id": "german_tank_organization"
+                        }],
+                        "naval_lines": []
+                    },
+                    "military": {"equipment_stockpile": []}
+                }
+            }
+        }));
+        let production = frame.production("GER").expect("GER production");
+        assert_eq!(production.stockpile_complete, Leaf::Measured(true));
+        assert_eq!(production.military_lines_complete, Leaf::Measured(true));
+        assert_eq!(production.naval_lines_complete, Leaf::Measured(true));
+        assert_eq!(production.naval_lines, Leaf::Measured(Vec::new()));
+        let Leaf::Measured(lines) = &production.military_lines else {
+            panic!("future production lines must be measured");
+        };
+        assert_eq!(lines.len(), 1);
+        let line = &lines[0];
+        assert_eq!(line.id, Leaf::Measured(41));
+        assert_eq!(line.priority, Leaf::Measured(0));
+        assert_eq!(line.line_subtype, Leaf::Measured("military".into()));
+        assert_eq!(line.equipment_variant_id, Leaf::Measured("7316".into()));
+        assert_eq!(line.active_factories, Leaf::Measured(7));
+        assert_eq!(line.requested_factories, Leaf::Measured(10));
+        assert_eq!(line.efficiency, Leaf::Measured(0.72));
+        assert_eq!(line.efficiency_cap, Leaf::Measured(0.85));
+        assert_eq!(line.efficiency_growth, Leaf::Measured(0.003));
+        assert_eq!(line.cost, Leaf::Measured(4.5));
+        assert_eq!(line.speed, Leaf::Measured(18.0));
+        assert_eq!(line.produced, Leaf::Measured(2.25));
+        assert_eq!(line.amount, Leaf::Measured(-1));
+        assert_eq!(line.progress_ratio, Leaf::Measured(0.5));
+        assert_eq!(line.daily_output, Leaf::Measured(4.0));
+        assert_eq!(line.days_to_next_unit, Leaf::Measured(0.125));
+        assert_eq!(
+            line.mio_id,
+            Leaf::Measured("german_tank_organization".into())
+        );
+        assert!(frame.coverage_warnings().is_empty());
+    }
+
+    #[test]
+    fn b2_exact_convoy_bank_is_typed_without_stockpile_substitution() {
+        let frame = world_frame_from_json(serde_json::json!({
+            "hour_index": 1,
+            "countries": {"GER": {"military": {
+                "convoys_complete": true,
+                "convoys_owned_raw": 36900000,
+                "convoys_count": 369.0,
+                "convoys_assigned": 21,
+                "convoys_available": 348,
+                "convoys_cache_valid": true,
+                "convoy_priority_reservations_complete": true,
+                "convoys": [{
+                    "archetype": "convoy_1",
+                    "equip_id": 7316,
+                    "equip_type": 70,
+                    "amount_raw": 36900000,
+                    "amount": 369.0
+                }],
+                "convoy_priority_reservations": [{"priority": 10, "count": 21}]
+            }}}
+        }));
+        let production = frame.production("GER").expect("GER production view");
+        assert_eq!(production.convoys_complete, Leaf::Measured(true));
+        assert_eq!(production.convoys_owned_raw, Leaf::Measured(36_900_000));
+        assert_eq!(production.convoys_owned, Leaf::Measured(369.0));
+        assert_eq!(production.convoys_assigned, Leaf::Measured(21));
+        assert_eq!(production.convoys_available, Leaf::Measured(348));
+        let variants = production.convoy_variants.measured().expect("variants");
+        assert_eq!(variants[0].archetype, Leaf::Measured("convoy_1".into()));
+        assert_eq!(variants[0].equip_id, Leaf::Measured(7316));
+        assert_eq!(variants[0].equip_type, Leaf::Measured(70));
+        assert_eq!(variants[0].amount_raw, Leaf::Measured(36_900_000));
+        assert_eq!(
+            production
+                .convoy_priority_reservations
+                .measured()
+                .expect("reservations")[0]
+                .priority,
+            Leaf::Measured(10)
+        );
+        assert_eq!(
+            frame.topbar_scalars("GER").unwrap().convoys,
+            Leaf::Measured(369.0)
+        );
+        assert!(frame.coverage_warnings().is_empty());
+    }
+
+    #[test]
+    fn production_lines_keep_legacy_values_and_fail_closed_missing_seams() {
+        let frame = world_frame_from_json(serde_json::json!({
+            "hour_index": 1,
+            "countries": {
+                "GER": {
+                    "production": {
+                        "military_lines": [{
+                            "id": 41,
+                            "active_factories": 7,
+                            "cost": 4.5,
+                            "speed": 18.0,
+                            "produced": 2.25,
+                            "amount": -1
+                        }],
+                        "naval_lines": null,
+                        "stockpile": null,
+                        "stockpile_total": null
+                    }
+                }
+            }
+        }));
+        let production = frame.production("GER").expect("GER production");
+        assert_eq!(production.stockpile, Leaf::Unobtained);
+        assert_eq!(production.naval_lines, Leaf::Unobtained);
+        assert_eq!(production.stockpile_complete, Leaf::Absent);
+        assert_eq!(production.military_lines_complete, Leaf::Absent);
+        let Leaf::Measured(lines) = &production.military_lines else {
+            panic!("legacy production line must remain available");
+        };
+        let line = &lines[0];
+        assert_eq!(line.id, Leaf::Measured(41));
+        assert_eq!(line.active_factories, Leaf::Measured(7));
+        assert_eq!(line.cost, Leaf::Measured(4.5));
+        assert_eq!(line.speed, Leaf::Measured(18.0));
+        assert_eq!(line.produced, Leaf::Measured(2.25));
+        assert_eq!(line.amount, Leaf::Measured(-1));
+        for seam in [&line.priority, &line.requested_factories] {
+            assert_eq!(*seam, Leaf::Absent);
+        }
+        assert_eq!(line.line_subtype, Leaf::Absent);
+        assert_eq!(line.equipment_variant_id, Leaf::Absent);
+        assert_eq!(line.efficiency, Leaf::Absent);
+        assert_eq!(line.efficiency_cap, Leaf::Absent);
+        assert_eq!(line.efficiency_growth, Leaf::Absent);
+        assert_eq!(line.progress_ratio, Leaf::Absent);
+        assert_eq!(line.daily_output, Leaf::Absent);
+        assert_eq!(line.days_to_next_unit, Leaf::Absent);
+        assert_eq!(line.mio_id, Leaf::Absent);
+    }
+
+    #[test]
+    fn production_line_wrong_types_are_unobtained_with_warnings() {
+        let frame = world_frame_from_json(serde_json::json!({
+            "hour_index": 1,
+            "countries": {
+                "GER": {
+                    "production": {
+                        "stockpile_complete": "yes",
+                        "military_lines_complete": 1,
+                        "military_lines": [{
+                            "id": "wrong",
+                            "equipment_variant_id": [],
+                            "requested_factories": 3.5,
+                            "efficiency": "wrong",
+                            "progress_ratio": false,
+                            "mio_id": {}
+                        }],
+                        "naval_lines": {}
+                    }
+                }
+            }
+        }));
+        let production = frame.production("GER").expect("GER production");
+        assert_eq!(production.stockpile_complete, Leaf::Unobtained);
+        assert_eq!(production.military_lines_complete, Leaf::Unobtained);
+        assert_eq!(production.naval_lines, Leaf::Unobtained);
+        let Leaf::Measured(lines) = &production.military_lines else {
+            panic!("well-shaped row list must remain measured");
+        };
+        let line = &lines[0];
+        assert_eq!(line.id, Leaf::Unobtained);
+        assert_eq!(line.equipment_variant_id, Leaf::Unobtained);
+        assert_eq!(line.requested_factories, Leaf::Unobtained);
+        assert_eq!(line.efficiency, Leaf::Unobtained);
+        assert_eq!(line.progress_ratio, Leaf::Unobtained);
+        assert_eq!(line.mio_id, Leaf::Unobtained);
+        assert!(frame.coverage_warnings().len() >= 9);
+    }
+
+    #[test]
     fn folded_undercovered_production_is_unavailable_to_typed_consumer() {
         const HOUR_A: i64 = 16_959_360;
         const HOUR_B: i64 = HOUR_A + 1;
@@ -6881,5 +11751,302 @@ mod tests {
             current.raw()["countries"]["GER"]["production"],
             "raw carried production remains available for diagnostics"
         );
+    }
+
+    #[test]
+    fn xui20_land_detail_parser_preserves_side_rows_and_event_order() {
+        let rest = serde_json::json!({"combats":[{
+            "combat_id":77,"kind":"land","location_province":12,"attackers":[1,2],"defenders":[3],
+            "combat_width":null,"terrain":null,"progress":null,
+            "land_combat_detail_events_live":{"phase_event":"updated","generation":5,
+                "participant_events":[
+                    {"event":"participant_joined","generation":5,"side":"attacker","division_id":2,"old_side_count":1,"new_side_count":2},
+                    {"event":"participant_left_unclassified","generation":5,"side":"defender","division_id":4,"old_side_count":2,"new_side_count":1,"semantic":"left_unclassified"}],
+                "side_detail_completeness":"both",
+                "attacker":{"units":2,"committed":1,"reserve":1,"air_kills":3,"counts_incomplete":false,"progress":0.53,"progress_raw":53000,"tactic":{"id":7,"token":"tactic_basic_attack","name":"TACTIC_BASIC_ATTACK"},"tactic_status":"exact","losses_status":"omitted_all_zero_oracle"},
+                "defender":{"units":1,"committed":1,"reserve":0,"air_kills":0,"counts_incomplete":false,"progress":-0.175,"progress_raw":-17500,"tactic":null,"tactic_status":"exact_none","losses_status":"omitted_all_zero_oracle"}}
+        }]}).as_object().unwrap().clone();
+        let mut warnings = Vec::new();
+        let rows = build_combats(&rest, &mut warnings);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let detail = rows[0].detail.measured().unwrap();
+        assert_eq!(
+            detail.attacker.measured().unwrap().reserve,
+            Leaf::Measured(1)
+        );
+        let attacker = detail.attacker.measured().unwrap();
+        assert_eq!(attacker.progress_raw, Leaf::Measured(53_000));
+        let tactic = attacker.tactic.measured().unwrap().as_ref().unwrap();
+        assert_eq!(tactic.id, Leaf::Measured(7));
+        assert_eq!(tactic.token, Leaf::Measured("tactic_basic_attack".into()));
+        assert_eq!(
+            detail.defender.measured().unwrap().tactic,
+            Leaf::Measured(None)
+        );
+        let events = detail.participant_events.measured().unwrap();
+        assert_eq!(events[0].division_id, Leaf::Measured(2));
+        assert_eq!(
+            events[1].semantic,
+            Leaf::Measured("left_unclassified".into())
+        );
+        assert_eq!(rows[0].combat_width, Leaf::Unobtained);
+    }
+
+    #[test]
+    fn xui20_war_overview_preserves_ordered_sides_and_exact_metric_raws() {
+        let rest = serde_json::json!({"diplomacy_world":{"wars":{"war:7":{
+            "war_name":"THE_GREAT_WAR",
+            "attackers":["GER","ITA"],
+            "defenders":["ENG","FRA"],
+            "front":"western",
+            "start_hour":42,
+            "overall_progress_raw":-12500,
+            "attacker_participants":[{
+                "tag":"GER","tag_db_id":1,"participation_raw":60000,
+                "capitulation_progress_raw":10000,
+                "participation_breakdown":{
+                    "land_damage":11,"occupation":12,"air_damage":13,
+                    "strategic_bombing":14,"sunk_ships":15,"sunk_convoys":16,
+                    "casualties":17,"lend_lease_given":18,"lend_lease_received":19
+                }
+            },{
+                "tag":"ITA","tag_db_id":2,"participation_raw":40000,
+                "capitulation_progress_raw":20000
+            }],
+            "defender_participants":[{
+                "tag":"ENG","tag_db_id":3,"participation_raw":100000,
+                "capitulation_progress_raw":0
+            }]
+        }}}})
+        .as_object()
+        .unwrap()
+        .clone();
+        let mut warnings = Vec::new();
+        let (Leaf::Measured(wars), status) = read_war_objects(&rest, &mut warnings) else {
+            panic!("war overview must be measured");
+        };
+        assert_eq!(status, ViewStatus::Present);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let war = &wars[0];
+        assert_eq!(war.key, "war:7");
+        assert_eq!(
+            war.attackers,
+            Leaf::Measured(vec!["GER".into(), "ITA".into()])
+        );
+        assert_eq!(
+            war.defenders,
+            Leaf::Measured(vec!["ENG".into(), "FRA".into()])
+        );
+        assert_eq!(war.overall_progress_raw, Leaf::Measured(-12_500));
+        let attackers = war.attacker_participants.measured().expect("attackers");
+        assert_eq!(attackers[0].tag, Leaf::Measured("GER".into()));
+        assert_eq!(attackers[1].tag, Leaf::Measured("ITA".into()));
+        assert_eq!(attackers[0].participation_raw, Leaf::Measured(60_000));
+        assert_eq!(
+            attackers[0]
+                .breakdown
+                .measured()
+                .expect("breakdown")
+                .lend_lease_received,
+            Leaf::Measured(19)
+        );
+        assert_eq!(attackers[1].breakdown, Leaf::Absent);
+        assert_eq!(war.war_name, Leaf::Measured("THE_GREAT_WAR".into()));
+    }
+
+    #[test]
+    fn xui20_war_overview_wrong_participant_shape_fails_whole_side_closed() {
+        let rest = serde_json::json!({"diplomacy_world":{"wars":{"war:bad":{
+            "attackers":["GER"],
+            "defenders":["ENG"],
+            "attacker_participants":["GER"]
+        }}}})
+        .as_object()
+        .unwrap()
+        .clone();
+        let mut warnings = Vec::new();
+        let (Leaf::Measured(wars), _) = read_war_objects(&rest, &mut warnings) else {
+            panic!("war object container remains measured");
+        };
+        assert_eq!(wars[0].attacker_participants, Leaf::Unobtained);
+        assert_eq!(wars[0].defender_participants, Leaf::Absent);
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("whole participant list treated as unobtained")));
+    }
+
+    #[test]
+    fn xui20_production_naval_object_and_air_loss_arrays_are_typed() {
+        let rest = serde_json::json!({
+            "naval_combats":{"9:2":{"combat_id":9,"generation":2,"kind":"naval","region_id":77,"attacker_member_count":2,"defender_member_count":1,"attacker_task_force_ids":[10],"defender_task_force_ids":[20],"members":[{"side":"attacker","group_index":0,"member_index":0,"is_convoy":false,"ship_instance_id":100,"cship_join_validated":true,"owner_tag_db_id":3,"task_force_id":10,"fleet_id":11,"battle_slot_index":0,"state_bitmask":3,"strength":0.75,"organisation":0.5,"sunk_convoys":0},{"side":"attacker","group_index":0,"member_index":1,"is_convoy":false,"ship_instance_id":101,"cship_join_validated":true,"owner_tag_db_id":1,"task_force_id":10,"fleet_id":11,"battle_slot_index":1,"state_bitmask":3,"strength":0.5,"organisation":0.4,"sunk_convoys":0},{"side":"defender","group_index":0,"member_index":0,"is_convoy":true,"cship_join_validated":false,"owner_tag_db_id":2,"battle_slot_index":0,"state_bitmask":1,"strength":1.0,"organisation":1.0,"sunk_convoys":0}]}},
+            "naval_air":{"_r2_air_combat_losses_live":[{"owner":"ENG","owner_tag_db_id":1,"wing_id":5,"generation":3,"mission_mask":4,"mission_region":77,"old_count":10,"new_count":7,"count_delta":-3,"old_equipment_amount_sum":10.0,"new_equipment_amount_sum":7.0,"equipment_amount_delta":-3.0,"flags":25}],"_r2_air_region_combat_stats":[{"owner":"ENG","owner_tag_db_id":1,"region_id":77,"side_vector":0,"selection_flag":1,"classification_flag":0,"copied_flag":0,"wing_id":5,"date_raw":1,"plane_count":7,"mission_mask":4,"attributed_country":"GER","attributed_country_tag_db_id":2,"damage":[{"channel":"losses_disruption","cause_type":4,"cause":"planes_shot_down_by_enemy_planes","amount":3.0}]}]},
+            "world_events":{"sunk_convoys":[]}
+        }).as_object().unwrap().clone();
+        let mut warnings = Vec::new();
+        let view = build_naval_air_combat(&rest, &mut warnings);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(view.naval_combats[0].generation, Leaf::Measured(2));
+        assert_eq!(
+            view.naval_combats[0].attacker_country_tag_db_ids,
+            Leaf::Measured(vec![1, 3])
+        );
+        assert_eq!(
+            view.naval_combats[0].defender_country_tag_db_ids,
+            Leaf::Measured(vec![2])
+        );
+        assert_eq!(
+            view.naval_combats[0].members.measured().unwrap()[0].ship_instance_id,
+            Leaf::Measured(100)
+        );
+        assert_eq!(
+            view.air_losses.measured().unwrap()[0].count_delta,
+            Leaf::Measured(-3)
+        );
+        assert_eq!(
+            view.air_region_combat.measured().unwrap()[0]
+                .damage
+                .measured()
+                .unwrap()[0]
+                .cause_type,
+            Leaf::Measured(4)
+        );
+    }
+
+    #[test]
+    fn xui20_naval_country_sets_fail_closed_per_side() {
+        let rest = serde_json::json!({
+            "naval_combats": [{
+                "combat_id": 9,
+                "generation": 2,
+                "members": [
+                    {"side":"attacker","owner_tag_db_id":1},
+                    {"side":"attacker","owner_tag_db_id":null},
+                    {"side":"defender","owner_tag_db_id":2}
+                ]
+            }]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let mut warnings = Vec::new();
+        let view = build_naval_air_combat(&rest, &mut warnings);
+        assert_eq!(
+            view.naval_combats[0].attacker_country_tag_db_ids,
+            Leaf::Unobtained
+        );
+        assert_eq!(
+            view.naval_combats[0].defender_country_tag_db_ids,
+            Leaf::Measured(vec![2])
+        );
+    }
+
+    #[test]
+    fn a28_dynamic_collection_sidecar_is_typed_and_fail_closed() {
+        let value = serde_json::json!({
+            "_r2_dynamic_collection_trace_live": {
+                "schema_version": 1,
+                "authority": "exact_a729_controller",
+                "elapsed_wall_ms": 7,
+                "frame_hour": 900,
+                "collections": [{
+                    "collection_instance_id": "interface/test.gui#grid@GER",
+                    "frame_hour": 900,
+                    "source_items": [{"stable_item_id":"item:a","source_ordinal":0,"included":true,"filter_reason":null}],
+                    "ordered_item_ids": ["item:a"],
+                    "group_boundaries": [{"group_id":"all","start_index":0,"item_count":1}],
+                    "row_template_id": "row",
+                    "materialized_slots": [{"slot_id":"slot:0","bound_item_id":"item:a","row_template_id":"row","rect":{"x":1,"y":2,"width":30,"height":10}}],
+                    "clip_rect": {"x":0,"y":0,"width":100,"height":100},
+                    "content_extent_pixels": [100,10],
+                    "viewport_extent_pixels": [100,100],
+                    "scroll_min_fixed": 0,
+                    "scroll_max_fixed": 100000,
+                    "scroll_current_fixed": 0,
+                    "scroll_target_fixed": 0
+                }]
+            }
+        });
+        let rest = value.as_object().unwrap().clone();
+        let mut warnings = Vec::new();
+        let view = build_dynamic_collection_trace(&rest, &mut warnings);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(view.status, ViewStatus::Present);
+        assert_eq!(view.frame_hour, Some(900));
+        assert_eq!(view.collections[0].ordered_item_ids, vec!["item:a"]);
+
+        let mut wrong = rest;
+        wrong["_r2_dynamic_collection_trace_live"]["authority"] =
+            Value::String("screen_inferred".into());
+        let view = build_dynamic_collection_trace(&wrong, &mut warnings);
+        assert_eq!(view.status, ViewStatus::DomainUnavailable);
+        assert!(view.collections.is_empty());
+    }
+
+    #[test]
+    fn a27_design_catalog_context_is_typed_ordered_and_fail_closed() {
+        let value = serde_json::json!({
+            "_r2_design_catalog_context_live": {
+                "schema_version": 1,
+                "authority": "exact_a729_designer_view",
+                "elapsed_wall_ms": 7,
+                "frame_hour": 900,
+                "completeness_record_identity": "a27:a729:transition:4",
+                "transition_sequence": 4,
+                "active": true,
+                "mode": 2,
+                "family": "plane_designer_view",
+                "our_filter_enabled": true,
+                "foreign_filter_enabled": false,
+                "obsolete_filter_enabled": true,
+                "current_country_tag_id": 17,
+                "selected_country_tag_ids": [17, 42],
+                "ordered_design_ids": [100, 7, 55]
+            }
+        });
+        let rest = value.as_object().unwrap().clone();
+        let mut warnings = Vec::new();
+        let view = build_design_catalog_context(&rest, &mut warnings);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(view.status, ViewStatus::Present);
+        assert_eq!(
+            view.context.as_ref().unwrap().ordered_design_ids,
+            [100, 7, 55]
+        );
+
+        let mut wrong = rest;
+        wrong["_r2_design_catalog_context_live"]["family"] =
+            Value::String("tank_designer_view".into());
+        let view = build_design_catalog_context(&wrong, &mut warnings);
+        assert_eq!(view.status, ViewStatus::DomainUnavailable);
+        assert!(view.context.is_none());
+    }
+
+    #[test]
+    fn d79_hud_surface_activation_is_typed_hour_bound_and_fail_closed() {
+        let value = serde_json::json!({
+            "_r2_hud_surface_activation_live": {
+                "schema_version": 1,
+                "authority": "exact_a729_hud_controller_roots",
+                "frame_hour": 900,
+                "status_flags": 0,
+                "observation_sequence": 9,
+                "active_surfaces": [
+                    {"surface":"topbar","runtime_root_name":"topbar_root"},
+                    {"surface":"minimap","runtime_root_name":"minimap_root"},
+                    {"surface":"mapmodes","runtime_root_name":"mapmodes_root"},
+                    {"surface":"theatre_selector","runtime_root_name":"theatre_root"}
+                ]
+            }
+        });
+        let rest = value.as_object().unwrap().clone();
+        let mut warnings = Vec::new();
+        let view = build_hud_surface_activation(&rest, 900, &mut warnings);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(view.status, ViewStatus::Present);
+        assert_eq!(view.activation.unwrap().active_surfaces.len(), 4);
+
+        let view = build_hud_surface_activation(&rest, 901, &mut warnings);
+        assert_eq!(view.status, ViewStatus::DomainUnavailable);
+        assert!(view.activation.is_none());
     }
 }

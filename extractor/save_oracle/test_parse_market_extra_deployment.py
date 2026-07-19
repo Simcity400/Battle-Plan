@@ -106,13 +106,15 @@ countries={
 # set + equipment-in-transit) PLUS the sibling deployment SETTINGS (must be
 # skipped) and a reinforcement priority; FRA with a conveyor line that has only
 # max_training (no `training` key, like the real Paratroopers line) and 2 equips;
-# TUR with an EMPTY reinforcement block (priority absent -> omitted); SOV with a
+# TUR with an EMPTY reinforcement block and exact empty queue; SOV with a
 # lent (expeditionary) division (logical_country=ENG inside SOV's units), plus a
 # normal SOV-owned division.
 DEPLOY_SYN = """
 date=1940.9.10.13
 version="Operation Postern v1.19.1.0"
 player="GER"
+military_deployment_line_index=9001
+military_deployment_conveyor_index=501
 equipments={
 \tinfantry_equipment_1={ id={ id=24 type=70 } }
 \tartillery_equipment_1={ id={ id=1977 type=70 } }
@@ -281,6 +283,8 @@ def test_market_no_path_leak():
 def test_deploy_conveyor_counts():
     out, _ = _build_deploy()
     st = out["meta"]["stats"]
+    assert out["meta"]["military_deployment_line_index"] == "9001"
+    assert out["meta"]["military_deployment_conveyor_index"] == "501"
     assert st["countries_with_conveyor"] == 2          # ENG, FRA
     assert st["total_conveyors"] == 2
     assert st["total_deploying_unit_lines"] == 2
@@ -293,14 +297,18 @@ def test_deploy_conveyor_fields_and_equipment_join():
     eng = out["countries"]["ENG"]
     assert eng["conveyor_count"] == 1
     c = eng["conveyors"][0]
+    assert c["ordinal"] == 0
+    assert tuple(c["id"]) == (473, 64)
     assert c["name"] == "Infantry 1936 L"
     assert tuple(c["template_id"]) == (902, 52)
     assert c["location"] == 6103 and c["priority"] == 1
     assert c["role"] == "infantry" and c["closed"] is False
     ln = c["lines"][0]
+    assert ln["ordinal"] == 0
     assert ln["training"] == 0.91264 and ln["max_training"] == 0.95312
     assert ln["manpower_have"] == 6300 and ln["max_manpower"] == 6300
     eq = ln["equipment_in_transit"]
+    assert [e["ordinal"] for e in eq] == [0, 1]
     assert {e["archetype"] for e in eq} == {"infantry_equipment_1",
                                             "artillery_equipment_1"}
     amt = {e["archetype"]: e["amount"] for e in eq}
@@ -325,7 +333,7 @@ def test_deploy_skips_settings_blocks():
     # ENG's deployment also had default_hq_template / unit_modifiers /
     # unlocked_subunits / initial_carrier_air_wing_deployment -> none leak in.
     eng = out["countries"]["ENG"]
-    assert set(eng.keys()) == {"reinforcement_priority", "conveyors",
+    assert set(eng.keys()) == {"queue_complete", "reinforcement_priority", "conveyors",
                                "conveyor_count"}
     assert "default_hq_template" not in str(eng)
     assert "unlocked_subunits" not in str(eng)
@@ -336,8 +344,10 @@ def test_deploy_reinforcement_priority():
     assert out["countries"]["ENG"]["reinforcement_priority"] == 3
     assert out["countries"]["FRA"]["reinforcement_priority"] == 2
     assert out["countries"]["SOV"]["reinforcement_priority"] == 1
-    # TUR has an EMPTY reinforcement block -> no priority -> omitted entirely
-    assert "TUR" not in out["countries"]
+    # TUR has an EMPTY reinforcement block and no conveyor.  It is retained as
+    # an exact proven-empty queue instead of being confused with unreadable.
+    assert out["countries"]["TUR"]["queue_complete"] is True
+    assert out["countries"]["TUR"]["conveyors"] == []
     assert out["meta"]["stats"]["countries_with_reinforcement_priority"] == 3
 
 

@@ -177,7 +177,7 @@ these fail-closed guards land together with that work.
 ## Proof Commands
 
 ```powershell
-Set-Location 'C:\Users\Example\OneDrive\Documents\Paradox Interactive\Hearts of Iron IV\mod\battle-plan\extractor\native'
+Set-Location 'extractor\native'
 cargo test -p naval_combat_live_lane
 cargo test --workspace
 ```

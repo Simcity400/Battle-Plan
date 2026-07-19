@@ -1,0 +1,76 @@
+{
+  "schema": "hoi4-extractor-a24-verification-v1",
+  "status": "PASS_EXACT_A729_NATIVE_SOURCE_D73_CARRIER_FOLD_PROMOTION_READY",
+  "authority": {
+    "program": "hoi4.exe 1.19.2.0.a729",
+    "image_base": "0x140000000",
+    "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+  },
+  "mechanical_verifier": {
+    "command": "python extractor/native/lanes/politics_tooltip_inputs_live/verify_a24.py",
+    "exit_code": 0,
+    "checks_passed": 72,
+    "checks_total": 72
+  },
+  "cargo_gates": [
+    {
+      "command": "cargo test --manifest-path extractor/native/Cargo.toml -p politics_tooltip_inputs_live_lane",
+      "exit_code": 0,
+      "result": "7 passed; 0 failed; includes authenticated source scheduling, source-to-d73 encoding, bad-chain, unobserved-tuple and missing-family rejection"
+    },
+    {
+      "command": "cargo test --manifest-path extractor/native/Cargo.toml -p compact_contract",
+      "exit_code": 0,
+      "result": "117 passed; 0 failed"
+    },
+    {
+      "command": "cargo check --manifest-path extractor/native/Cargo.toml -p collector",
+      "exit_code": 1,
+      "result": "A24 and its Windows hook dependencies compiled successfully; the shared collector then failed in unrelated concurrent market-trade edits at lib.rs:32265, 32462 and 32610. Cargo metadata succeeded."
+    },
+    {
+      "command": "cargo test --manifest-path extractor/native/Cargo.toml -p recorder_host --test a24_d73",
+      "exit_code": 0,
+      "result": "2 passed; 0 failed; all six A24 families plus cross-hour rejection"
+    }
+  ],
+  "non_a24_test_incident": {
+    "command": "cargo test --manifest-path extractor/native/Cargo.toml -p recorder_host a24_domain73_folds_typed_engine_results_and_provenance -- --exact",
+    "exit_code": 1,
+    "reason": "The monolithic lib-test target fails during unrelated FRD helper compilation because FRD_HEADER_LEN_V2 and FRD_SCHEMA_VERSION_V2 are absent. The dedicated A24 integration target compiles the production recorder library and passes."
+  },
+  "ghidra": {
+    "string_job_id": "20260717T103021Z-a24-politics-tooltip-anchors-v1-4af7c984",
+    "string_artifact_sha256": "4096785ffe2701327a1702ddc5e4640255f8f0505c050cf684376ddbbc07a3c6",
+    "producer_job_id": "20260717T103340Z-a24-politics-tooltip-producers-v1-c7bba362",
+    "producer_manifest_sha256": "aec720fe9371b012bfb6a8f000f74ab39232f3482a766c0edfac7582ce489ce5",
+    "stale_helper_job_id": "20260717T103804Z-a24-politics-runtime-helpers-v1-1a23f7fd",
+    "stale_helper_job_json_sha256": "58078f2f6a995e02dbe5a14887b696b01f50d55d5653ed4ce79d6bb1a46e7331"
+  },
+  "native_source": {
+    "source": "politics_tooltip_inputs_live_lane::a729_hook::A729PoliticsHookSource",
+    "hook_absolute_address": "0x141C33FE0",
+    "hook_rva": "0x01C33FE0",
+    "sentinel_hex": "48895c24185556574154415541564157",
+    "producer_manifest_sha256": "aec720fe9371b012bfb6a8f000f74ab39232f3482a766c0edfac7582ce489ce5",
+    "retained_dispatch_event_count": 258,
+    "retained_dispatch_analysis_sha256": "7fe5897afe038acd9e7050e50c73b6f37a527e109a4a6b784d185610f16fa016",
+    "admission": "exact tuple count plus one-time tuple consumption plus retained dispatch identity plus PTI1 validation plus all six families"
+  },
+  "cleanup": {
+    "pre_work_removed_path": "target_xui23",
+    "pre_work_bytes_removed": 860697432,
+    "preserved": [
+      "A24 source and reports",
+      "Ghidra jobs and artifacts",
+      "world_fold recovery and history artifacts"
+    ],
+    "post_test_removed_path": "target_xui23",
+    "post_test_bytes_removed": 2446267936,
+    "post_test_target_cleanup": "complete after absolute within-repo verification",
+    "post_hook_test_removed_path": "target_xui23",
+    "post_hook_test_bytes_removed": 384189258,
+    "post_hook_test_items_removed": 1581,
+    "post_hook_test_target_cleanup": "complete after absolute within-repo verification"
+  }
+}

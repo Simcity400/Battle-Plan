@@ -20,9 +20,10 @@ use windows_sys::Win32::System::Memory::{
     VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, CreateRemoteThread, GetExitCodeProcess, GetExitCodeThread, ResumeThread,
-    TerminateProcess, WaitForSingleObject, CREATE_SUSPENDED, INFINITE, PROCESS_INFORMATION,
-    STARTUPINFOW,
+    CreateProcessW, CreateRemoteThread, GetExitCodeProcess, GetExitCodeThread, OpenProcess,
+    ResumeThread, TerminateProcess, WaitForSingleObject, CREATE_SUSPENDED, INFINITE,
+    PROCESS_CREATE_THREAD, PROCESS_INFORMATION, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION,
+    PROCESS_VM_READ, PROCESS_VM_WRITE, STARTUPINFOW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowThreadProcessId, IsWindowVisible, PostThreadMessageW, SetWindowsHookExW,
@@ -53,9 +54,9 @@ const DEFAULT_MAX_CAPTURE_WORK_MS_PER_FRAME: u64 = 1_000;
 const DEFAULT_TERRAIN_CHUNK_LIBRARY_MAX_CAPTURE_WORK_MS_PER_FRAME: u64 = 2_000;
 const DEFAULT_MAX_PAYLOAD_WRITER_QUEUE_BYTES: u64 = 536_870_912;
 const DEFAULT_UI_PASS_MAX_STATES: u32 = 64;
-/// CAPFIX2 dwell cap: sessions may run at most 10 minutes. The attach helper
-/// rejects any `--dwell-ms` above this (standing user directive).
-const MAX_DWELL_MS: u64 = 600_000;
+/// Capture sessions may run for up to 30 minutes so slow the game continue-save
+/// loads still leave enough armed time for synchronized evidence collection.
+const MAX_DWELL_MS: u64 = 1_800_000;
 
 fn main() -> Result<()> {
     let args = env::args().skip(1).collect::<Vec<_>>();
@@ -74,11 +75,9 @@ fn main() -> Result<()> {
         } else {
             30_000
         });
-    // CAPFIX2 dwell cap (standing user directive: "cut all these timers to a max
-    // of 10 min"). Reject anything larger with a clear error rather than silently
-    // clamping, so an operator who asks for an hour learns the session cannot run
-    // that long. With Bug 1 fixed, dwell expiry is safe (the DLL disarms, it
-    // never unhooks/unloads at runtime).
+    // Reject anything above the explicit 30-minute capture ceiling rather than
+    // silently clamping. With Bug 1 fixed, dwell expiry is safe (the DLL
+    // disarms; it never unhooks or unloads at runtime).
     validate_dwell_ms(dwell_ms)?;
     let settle_ms = value_after(&args, "--settle-ms")
         .map(|value| value.parse::<u64>())
@@ -252,7 +251,11 @@ fn main() -> Result<()> {
         )?;
     } else {
         let pid = required_value(&args, "--pid")?.parse::<u32>()?;
-        attach_terrain_capture(pid, &dll, dwell_ms, &capture_out_dir)?;
+        if args.iter().any(|arg| arg == "--direct-load-library") {
+            attach_terrain_capture_direct(pid, &dll, dwell_ms, &capture_out_dir)?;
+        } else {
+            attach_terrain_capture(pid, &dll, dwell_ms, &capture_out_dir)?;
+        }
     }
     Ok(())
 }
@@ -813,6 +816,45 @@ fn attach_terrain_capture(
     Ok(())
 }
 
+fn attach_terrain_capture_direct(
+    pid: u32,
+    dll: &PathBuf,
+    dwell_ms: u64,
+    capture_out_dir: &Path,
+) -> Result<()> {
+    if !dll.is_file() {
+        return Err(format!("terrain capture DLL does not exist: {}", dll.display()).into());
+    }
+    let access = PROCESS_CREATE_THREAD
+        | PROCESS_QUERY_INFORMATION
+        | PROCESS_VM_OPERATION
+        | PROCESS_VM_WRITE
+        | PROCESS_VM_READ;
+    let process = unsafe { OpenProcess(access, 0, pid) };
+    if process.is_null() {
+        return Err(format!(
+            "OpenProcess for direct one-shot injection into pid {pid} failed: {}",
+            std::io::Error::last_os_error()
+        )
+        .into());
+    }
+    let process = HandleGuard(process);
+    let remote_dll = inject_dll_by_load_library(process.0, dll)?;
+    let dll_dir = dll
+        .parent()
+        .ok_or("terrain capture DLL path has no parent directory")?;
+    let ready = wait_for_capture_hooks_installed(capture_out_dir, dll_dir, 30_000, false)?;
+    println!(
+        "terrain capture DLL directly loaded once into pid {pid}; observed {ready}; remote module handle low bits 0x{remote_dll:X}"
+    );
+    thread::sleep(Duration::from_millis(dwell_ms));
+    println!(
+        "direct terrain capture dwell complete for pid {pid}; check {}",
+        capture_out_dir.join(CAPTURE_EVENTS_FILE).display()
+    );
+    Ok(())
+}
+
 fn find_main_window(pid: u32) -> Option<HWND> {
     #[repr(C)]
     struct Search {
@@ -865,13 +907,13 @@ fn parse_max_draws_per_pass_arg(args: &[String]) -> Result<Option<u32>> {
     Ok(value)
 }
 
-/// CAPFIX2 dwell cap: the attach helper rejects any `--dwell-ms` above
-/// [`MAX_DWELL_MS`] (10 minutes) with a clear error. Values at or under the cap
+/// The attach helper rejects any `--dwell-ms` above [`MAX_DWELL_MS`] (30
+/// minutes) with a clear error. Values at or under the cap
 /// pass through unchanged.
 fn validate_dwell_ms(dwell_ms: u64) -> Result<()> {
     if dwell_ms > MAX_DWELL_MS {
         return Err(format!(
-            "--dwell-ms {dwell_ms} exceeds the {MAX_DWELL_MS} ms (10 minute) cap; \
+            "--dwell-ms {dwell_ms} exceeds the {MAX_DWELL_MS} ms (30 minute) cap; \
              pass a value <= {MAX_DWELL_MS}"
         )
         .into());
@@ -1600,14 +1642,15 @@ fn json_escape(value: &str) -> String {
 
 fn print_help() {
     eprintln!(
-        "terrain_capture_attach --pid <the game pid> --dll <terrain_capture.dll> [--capture-out-dir <dir>] [--shader-cache <dir>] [--capture-moment terrain_active_pass|terrain_chunk_library|water_pass|rivers_pass|borders_pass|underwater_pass|trees_pass|restore_pass|mapname_pass|ui_pass] [--capture-moments terrain_active_pass,terrain_chunk_library,water_pass,rivers_pass,borders_pass,underwater_pass,trees_pass,restore_pass,mapname_pass,ui_pass] [--census] [--enable-map-frame-rounds] [--trees-close-mode frame-repeat] [--max-payload-writer-queue-bytes <bytes>] [--max-total-payload-bytes-per-session <bytes>] [--ui-max-states <count>] [--ui-cb-skip hazard|all|none] [--dwell-ms <ms, default 30000>]\n\
+        "terrain_capture_attach --pid <the game pid> --dll <terrain_capture.dll> [--direct-load-library] [--capture-out-dir <dir>] [--shader-cache <dir>] [--capture-moment terrain_active_pass|terrain_chunk_library|water_pass|rivers_pass|borders_pass|underwater_pass|trees_pass|restore_pass|mapname_pass|ui_pass] [--capture-moments terrain_active_pass,terrain_chunk_library,water_pass,rivers_pass,borders_pass,underwater_pass,trees_pass,restore_pass,mapname_pass,ui_pass] [--census] [--enable-map-frame-rounds] [--trees-close-mode frame-repeat] [--max-payload-writer-queue-bytes <bytes>] [--max-total-payload-bytes-per-session <bytes>] [--ui-max-states <count>] [--ui-cb-skip hazard|all|none] [--dwell-ms <ms, default 30000>]\n\
          terrain_capture_attach --exe <hoi4.exe> --dll <terrain_capture.dll> [--capture-out-dir <dir>] [--working-dir <game dir>] [--args <quoted args>] [--shader-cache <dir>] [--capture-moment terrain_active_pass|terrain_chunk_library|water_pass|rivers_pass|borders_pass|underwater_pass|trees_pass|restore_pass|mapname_pass|ui_pass] [--capture-moments terrain_active_pass,terrain_chunk_library,water_pass,rivers_pass,borders_pass,underwater_pass,trees_pass,restore_pass,mapname_pass,ui_pass] [--census] [--enable-map-frame-rounds] [--trees-close-mode frame-repeat] [--max-payload-writer-queue-bytes <bytes>] [--max-total-payload-bytes-per-session <bytes>] [--ui-max-states <count>] [--ui-cb-skip hazard|all|none] [--pre-resume-timeout-ms <ms, default 30000>] [--dwell-ms <ms, default 30000>] [--settle-ms <ms, default 8000>]\n\
          terrain_capture_attach --harness <capture_harness.exe> --dll <terrain_capture.dll> [--capture-out-dir <dir>] [--working-dir <harness dir>] [--args <quoted harness args>] [--harness-bundle-control <session capture dir>] [--accept-probe-before-resume] [--capture-moments terrain_active_pass,terrain_chunk_library,water_pass,rivers_pass,borders_pass,underwater_pass,trees_pass,restore_pass,mapname_pass,ui_pass] [--census] [--enable-map-frame-rounds] [--trees-close-mode frame-repeat] [--max-payload-writer-queue-bytes <bytes>] [--max-total-payload-bytes-per-session <bytes>] [--ui-max-states <count>] [--ui-cb-skip hazard|all|none] [--pre-resume-timeout-ms <ms, default 30000>] [--dwell-ms <ms, default 120000>] [--settle-ms <ms, default 8000>]\n\
          [--cb0-sample-ms <ms>] arms the persistent scene-CB0 sampler: once the map renderer is live it appends one 416-byte TerrainSceneCB0 snapshot at most every <ms> ms to cb0_samples.jsonl for the WHOLE session (survives moment completion, round completion and the byte-budget quiesce; byte-budget exempt; capped at 100000 samples). Absent => sampler fully off.\n\
          [--max-draws-per-pass <n>] operator escape hatch for the PER-FRAME map-frame draw cap (default 128 for map moments, higher for the chunk library). A pass now closes at every clean frame boundary, so this bounds a SINGLE frame's draws; raise it only if one genuine frame legitimately issues more than the default. Must be >= 1 (0 is rejected).\n\
-         [--arm-delay-ms <ms>] choreography: delay arming the map-frame moment sequence until <ms> ms AFTER the map renderer first goes live, so the orchestrator can zoom/position the camera before any pass is captured. The CB0 sampler and the renderer-live trust latch are NOT delayed. Absent/0 => arm immediately. This is the first-class replacement for the never-firing-token workaround and the zoom-race dance.\n\
+[--arm-delay-ms <ms>] choreography: delay arming the map-frame moment sequence until <ms> ms AFTER the map renderer first goes live, so the orchestrator can zoom/position the camera before any pass is captured. The CB0 sampler and the renderer-live trust latch are NOT delayed. Absent/0 => arm immediately. This is the first-class replacement for the never-firing-token workaround and the zoom-race dance.\n\
+--direct-load-library is an explicit one-shot fallback for a live PID with no visible window. It uses the same remote LoadLibraryW path as suspended launch; never retry it while the target remains alive if module presence is uncertain.\n\
          KEEPALIVE PATTERN (no flag needed): include borders_pass in --capture-moments as a trailing moment to keep the session dwelling and the hooks live while you pan/zoom to set up a later moment. borders_pass only completes on a genuine inked border draw that changes the render target, so an idle camera leaves it pending and the dwell runs to its timeout, holding the renderer live for the CB0 sampler and any --arm-delay-ms window without capturing spurious bundles.\n\
-         --dwell-ms is CAPPED at 600000 (10 minutes); a larger value is rejected. Dwell expiry is safe: the capture DLL disarms its hooks and pins its module (it never unhooks or unloads at runtime); only process exit tears the hooks down."
+         --dwell-ms is CAPPED at 1800000 (30 minutes); a larger value is rejected. Dwell expiry is safe: the capture DLL disarms its hooks and pins its module (it never unhooks or unloads at runtime); only process exit tears the hooks down."
     );
 }
 
@@ -1616,21 +1659,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn capfix2_dwell_cap_rejects_over_ten_minutes() {
-        // Standing user directive: sessions run at most 10 minutes. The attach
-        // helper rejects a larger --dwell-ms with a clear error rather than
-        // silently clamping.
-        assert_eq!(MAX_DWELL_MS, 600_000);
+    fn dwell_cap_rejects_over_thirty_minutes() {
+        // Slow continue-save loads need up to 20 minutes, so the helper permits
+        // a 30-minute session but still rejects larger values fail-closed.
+        assert_eq!(MAX_DWELL_MS, 1_800_000);
         assert!(validate_dwell_ms(0).is_ok());
         assert!(validate_dwell_ms(30_000).is_ok());
         assert!(
-            validate_dwell_ms(600_000).is_ok(),
+            validate_dwell_ms(1_800_000).is_ok(),
             "exactly the cap is allowed"
         );
-        let err = validate_dwell_ms(600_001).expect_err("just over the cap must reject");
+        let err = validate_dwell_ms(1_800_001).expect_err("just over the cap must reject");
         let message = err.to_string();
         assert!(
-            message.contains("600001") && message.contains("cap"),
+            message.contains("1800001") && message.contains("cap"),
             "error must name the offending value and the cap: {message}"
         );
         assert!(validate_dwell_ms(3_600_000).is_err(), "an hour must reject");

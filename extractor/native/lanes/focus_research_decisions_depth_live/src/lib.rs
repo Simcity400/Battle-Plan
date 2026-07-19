@@ -35,9 +35,15 @@ const BADGE_ROW_FIXED_LEN: usize = 20;
 const DEPTH_STATUS_FOCUS_PAUSE_BADGED: u32 = 1;
 const DEPTH_STATUS_DECISION_TARGETS_BADGED: u32 = 1 << 1;
 const DEPTH_STATUS_DIRECT_EVENTS_DERIVED: u32 = 1 << 2;
+const DEPTH_STATUS_FOCUS_PAUSE_EXACT: u32 = 1 << 3;
+const DEPTH_STATUS_DECISION_TARGETS_EXACT: u32 = 1 << 4;
+const DEPTH_STATUS_DECISION_COOLDOWNS_EXACT: u32 = 1 << 5;
 const DEPTH_STATUS_KNOWN_MASK: u32 = DEPTH_STATUS_FOCUS_PAUSE_BADGED
     | DEPTH_STATUS_DECISION_TARGETS_BADGED
-    | DEPTH_STATUS_DIRECT_EVENTS_DERIVED;
+    | DEPTH_STATUS_DIRECT_EVENTS_DERIVED
+    | DEPTH_STATUS_FOCUS_PAUSE_EXACT
+    | DEPTH_STATUS_DECISION_TARGETS_EXACT
+    | DEPTH_STATUS_DECISION_COOLDOWNS_EXACT;
 
 const BADGE_KIND_FOCUS_PAUSE_FAIL_CLOSED: u32 = 1;
 const BADGE_KIND_DECISION_TARGET_FIELDS_FAIL_CLOSED: u32 = 2;
@@ -67,12 +73,15 @@ const FOCUS_EVENT_CURRENT_STOPPED: u32 = 3;
 const FOCUS_EVENT_CURRENT_CHANGED: u32 = 4;
 const FOCUS_EVENT_PROGRESS_REGRESSED: u32 = 5;
 const FOCUS_EVENT_INVALID_BOTH_CURRENT_TYPES: u32 = 6;
+const FOCUS_EVENT_STATE_SNAPSHOT: u32 = 7;
 
 const FOCUS_KIND_NATIONAL: u32 = 1;
 const FOCUS_KIND_CONTINUOUS: u32 = 2;
 
 const FOCUS_FLAG_COMPLETED_TOKEN_INFERRED: u32 = 1;
 const FOCUS_FLAG_COMPLETED_TOKEN_EXACT: u32 = 1 << 1;
+const FOCUS_FLAG_PAUSED: u32 = 1 << 2;
+const FOCUS_FLAG_PAUSED_PRESENT: u32 = 1 << 3;
 
 const RESEARCH_FLAG_SAME_TECH: u32 = 1;
 const RESEARCH_FLAG_POSITIVE_SPEED: u32 = 1 << 1;
@@ -86,6 +95,8 @@ const DECISION_EVENT_STOPPED: u32 = 2;
 const DECISION_EVENT_DAY_DELTA: u32 = 3;
 const DECISION_EVENT_STATE_CHANGED: u32 = 4;
 const DECISION_EVENT_STATUS_COUNTS_CHANGED: u32 = 5;
+const DECISION_EVENT_RE_ENABLE_COOLDOWN_SNAPSHOT: u32 = 6;
+const DECISION_EVENT_REMOVE_COOLDOWN_SNAPSHOT: u32 = 7;
 
 const DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED: u32 = 1;
 const DECISION_TARGET_FLAG_COUNTRY_TAG: u32 = 1;
@@ -1723,10 +1734,16 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
             "offset {offset}: {DOMAIN_NAME} status_flags has unknown bits: {status_flags}"
         ));
     }
-    if status_flags & DEPTH_STATUS_KNOWN_MASK != DEPTH_STATUS_KNOWN_MASK {
-        let missing = DEPTH_STATUS_KNOWN_MASK & !status_flags;
+    let exact_status = DEPTH_STATUS_FOCUS_PAUSE_EXACT
+        | DEPTH_STATUS_DECISION_TARGETS_EXACT
+        | DEPTH_STATUS_DECISION_COOLDOWNS_EXACT;
+    let legacy_status = DEPTH_STATUS_FOCUS_PAUSE_BADGED | DEPTH_STATUS_DECISION_TARGETS_BADGED;
+    if status_flags & DEPTH_STATUS_DIRECT_EVENTS_DERIVED == 0
+        || (status_flags & exact_status != exact_status
+            && status_flags & legacy_status != legacy_status)
+    {
         summary.parse_errors.push(format!(
-            "offset {offset}: {DOMAIN_NAME} status_flags missing required fail-closed bits: {missing}"
+            "offset {offset}: {DOMAIN_NAME} status_flags lack a complete exact or legacy authority set"
         ));
     }
 
@@ -1775,7 +1792,7 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
                 "offset {offset}: focus depth row {row_index} has zero tag_db_id"
             ));
         }
-        if kind == 0 || kind > FOCUS_EVENT_INVALID_BOTH_CURRENT_TYPES {
+        if kind == 0 || kind > FOCUS_EVENT_STATE_SNAPSHOT {
             summary.parse_errors.push(format!(
                 "offset {offset}: focus depth row {row_index} has invalid kind {kind}"
             ));
@@ -1785,9 +1802,29 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
                 "offset {offset}: focus depth row {row_index} has invalid focus_kind {focus_kind}"
             ));
         }
-        if flags & !(FOCUS_FLAG_COMPLETED_TOKEN_INFERRED | FOCUS_FLAG_COMPLETED_TOKEN_EXACT) != 0 {
+        if flags
+            & !(FOCUS_FLAG_COMPLETED_TOKEN_INFERRED
+                | FOCUS_FLAG_COMPLETED_TOKEN_EXACT
+                | FOCUS_FLAG_PAUSED
+                | FOCUS_FLAG_PAUSED_PRESENT)
+            != 0
+        {
             summary.parse_errors.push(format!(
                 "offset {offset}: focus depth row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if kind == FOCUS_EVENT_STATE_SNAPSHOT {
+            if flags & FOCUS_FLAG_PAUSED_PRESENT == 0
+                || flags & (FOCUS_FLAG_COMPLETED_TOKEN_INFERRED | FOCUS_FLAG_COMPLETED_TOKEN_EXACT)
+                    != 0
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: focus state snapshot row {row_index} has invalid pause flags {flags}"
+                ));
+            }
+        } else if flags & (FOCUS_FLAG_PAUSED | FOCUS_FLAG_PAUSED_PRESENT) != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: non-snapshot focus row {row_index} carries pause flags {flags}"
             ));
         }
         if kind == FOCUS_EVENT_COMPLETED_COUNT_INCREASED {
@@ -1849,6 +1886,7 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
             && to_len == 0
             && completed_len == 0
             && kind != FOCUS_EVENT_INVALID_BOTH_CURRENT_TYPES
+            && kind != FOCUS_EVENT_STATE_SNAPSHOT
             && !unresolved_completion
         {
             summary.parse_errors.push(format!(
@@ -2037,7 +2075,7 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
                 "offset {offset}: decision event row {row_index} has zero tag_db_id"
             ));
         }
-        if !(DECISION_EVENT_STARTED..=DECISION_EVENT_STATUS_COUNTS_CHANGED).contains(&kind) {
+        if !(DECISION_EVENT_STARTED..=DECISION_EVENT_REMOVE_COOLDOWN_SNAPSHOT).contains(&kind) {
             summary.parse_errors.push(format!(
                 "offset {offset}: decision event row {row_index} has invalid kind {kind}"
             ));
@@ -2272,29 +2310,35 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
             _ => {}
         }
     }
-    for (flag, kind, name) in [
+    for (flag, exact_flag, kind, name) in [
         (
             DEPTH_STATUS_FOCUS_PAUSE_BADGED,
+            DEPTH_STATUS_FOCUS_PAUSE_EXACT,
             BADGE_KIND_FOCUS_PAUSE_FAIL_CLOSED,
             "focus pause",
         ),
         (
             DEPTH_STATUS_DECISION_TARGETS_BADGED,
+            DEPTH_STATUS_DECISION_TARGETS_EXACT,
             BADGE_KIND_DECISION_TARGET_FIELDS_FAIL_CLOSED,
             "decision target fields",
         ),
         (
             DEPTH_STATUS_DIRECT_EVENTS_DERIVED,
+            0,
             BADGE_KIND_DIRECT_EVENT_HOOKS_UNAVAILABLE,
             "direct event hooks",
         ),
     ] {
-        if status_flags & flag != 0 && !badge_kinds.contains(&kind) {
+        if status_flags & exact_flag == 0
+            && status_flags & flag != 0
+            && !badge_kinds.contains(&kind)
+        {
             summary.parse_errors.push(format!(
                 "offset {offset}: {DOMAIN_NAME} status flag for {name} lacks badge row"
             ));
         }
-        if !badge_kinds.contains(&kind) {
+        if status_flags & exact_flag == 0 && !badge_kinds.contains(&kind) {
             summary.parse_errors.push(format!(
                 "offset {offset}: {DOMAIN_NAME} missing required {name} badge row"
             ));
@@ -4720,7 +4764,7 @@ mod tests {
         assert!(summary
             .parse_errors
             .iter()
-            .any(|err| err.contains("status_flags missing required fail-closed bits")));
+            .any(|err| err.contains("lack a complete exact or legacy authority set")));
     }
 
     #[test]

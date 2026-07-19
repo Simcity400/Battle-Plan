@@ -448,6 +448,8 @@ speed, cost}`), `stockpile` (on-hand equipment by archetype+amount), `convoys`,
 `factory_totals` (mil/naval factories assigned).
 - Key paths: top-level `equipments.<archetype>={id={id type} creator obsolete}`,
   `countries.<TAG>.production.{military_lines,naval_lines,ship_refit_lines}`,
+  per-line `industrial_manufacturer={id type=79}` (exact assigned MIO; absent is
+  proven-unassigned),
   `…production.equipments.equipment={id={id type} amount}`,
   `countries.<TAG>.convoys.equipment.equipment`.
 - **Note:** per-line `produced` is the line's lifetime accumulator; there is no
@@ -513,15 +515,19 @@ provinces), `manpower` (`available`/`locked`/`total`), `resistance`
 ## `combats.json` — active combats (`parse_combats.py`)
 List of active battles: `{combat_id, kind, location, day, duration, terrain,
 attacker, defender}`; each side `{units[(id,type)], unit_count, losses,
-air/ground_damage_str/org, tactic, progress}`.
-- Key paths: `combat.land_combat.{id, location, day, duration, terrain,
-  attacker, defender}`, side `…attacker.unit` (repeated) + `…attacker.log.progress`.
-- **Gap (important for the high-freq combat work):** the melt exposes **only
-  `land_combat`**. Naval and air battles are transient and are **not persisted**
-  to saves — they are live-memory only. The parser scans for
-  `naval_combat`/`air_combat` keys anyway (future-proof) and reports they were
-  absent. Side `progress` is a per-side accumulating engine figure, not a
-  0-100 percent; unit ids are handle refs that join to `divisions.json` by id.
+air/ground_damage_str/org, tactic, progress}`. The same output preserves exact
+terminal `combat_history` rows as `{location, attacker, defender, end_date,
+type_raw}`.
+- Key paths: `combat.<kind>_combat.{id, location, day, duration, terrain,
+  attacker, defender}`, side `…attacker.unit` (repeated) + `…attacker.log.progress`,
+  and `combat.history.history[]` for terminal rows.
+- Persisted active kinds are save-dependent. The D04 1944.2.11.18 authority
+  contains 50 land and four naval blocks; absence in another save is not proof
+  that a combat kind is globally transient. The terminal-history `type_raw`
+  enum remains intentionally uninterpreted, and those rows contain neither a
+  stable active-combat id nor per-combat loss payload. Side `progress` is a
+  per-side accumulating engine figure, not a 0-100 percent; unit ids are handle
+  refs that join to `divisions.json` by id.
 
 ## Deep-layer validation (real save `GER_1940_09_10_13.hoi4`, 1940.9.10.13)
 ```

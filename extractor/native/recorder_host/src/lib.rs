@@ -4,10 +4,18 @@ pub mod compact_domain_registry;
 pub mod control_transport;
 pub mod domain_data_authority;
 pub mod duplex_session;
+#[cfg(windows)]
+pub mod early_render_host_channel;
+pub mod early_render_launch;
 pub mod emitted_token_inventory;
 pub mod mmap;
 pub mod modset;
+pub mod portable_content_manifest;
 pub mod proc_mem;
+pub mod production_content_vfs;
+pub mod production_map_content_index;
+pub mod production_vfs_winner_binding;
+pub mod runtime_dlc_roster;
 pub mod scientist_source_report;
 pub mod static_bundle_gate;
 pub mod stitching;

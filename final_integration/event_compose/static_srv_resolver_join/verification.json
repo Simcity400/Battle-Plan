@@ -1,0 +1,38 @@
+{
+  "schema": "hoi4-production-static-srv-resolver-join-verification-v1",
+  "status": "PASS_PRODUCTION_ADAPTER_READY_TO_PROMOTE",
+  "production_source": {
+    "path": "replay_interface/native/map_viewer/src/frame_bundle.rs",
+    "sha256": "c6919d0a0984b7640133292b15d61cbda5674aae1b144fafed9991a80109c1e5"
+  },
+  "focused_tests": {
+    "command": "cargo test --manifest-path replay_interface/native/map_viewer/Cargo.toml descriptor_only_ -- --nocapture",
+    "passed": 4,
+    "failed": 0,
+    "exit_code": 0
+  },
+  "compile_gate": {
+    "command": "cargo check --manifest-path replay_interface/native/map_viewer/Cargo.toml",
+    "exit_code": 0
+  },
+  "trees_oracle": {
+    "manifest": "final_integration/event_compose/trees_measure_legacy_join/manifest.json",
+    "manifest_sha256": "875047b57fb58e8a9faa4d8b62e21d29f04ab11be2fb6f0372e181c9b852af01",
+    "status": "PASS_EXACT_SOURCE_AND_CAPTURE_ORACLE_FROZEN",
+    "checks_passed": 14,
+    "descriptor_joins": 56,
+    "negative_controls": 2
+  },
+  "authoritative_event_gate": {
+    "id": "production_final_frame_fow_on",
+    "graph": ["terrain", "water", "rivers", "trees"],
+    "status": "PASS",
+    "final_fnv1a64": "5a79c3503df3a519"
+  },
+  "non_authoritative_diagnostic": {
+    "id": "fow_off_terrain_only",
+    "actual_fnv1a64": "866ceb9c97c5cab0",
+    "reason": "dependent graph omitted; must not be promoted or used as an oracle"
+  },
+  "program_status_modified": false
+}

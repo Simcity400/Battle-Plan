@@ -123,7 +123,10 @@ pub enum SinkStatusError {
     /// dependency-neutral `u16`; the recorder-host shim owns the `MessageKind`
     /// mapping that constructs this.
     WrongMessageKind(u16),
-    InvalidLength { expected: usize, actual: usize },
+    InvalidLength {
+        expected: usize,
+        actual: usize,
+    },
     UnsupportedSchema(u16),
     NonZeroReserved,
     UnknownTopologyBits(u8),

@@ -1251,29 +1251,50 @@ def _diff_scientists(tag, old, new, emit) -> None:
 # ---------------------------------------------------------------------------
 def _diff_deployment(tag, old, new, emit) -> None:
     """unit_deployment_started / unit_deployment_completed: a conveyor (keyed by
-    template_id @ location) appears / disappears.
+    its exact serialized ``id={id type}``) appears / disappears.
     expeditionary_force_sent / expeditionary_force_recalled: an (owner,controller)
     lent-division pairing appears/grows / disappears/shrinks."""
     def _conv_index(country):
         out = {}
-        for c in ((country.get("military") or {}).get("deployment_queue") or []):
+        queue = (country.get("military") or {}).get("deployment_queue")
+        if not isinstance(queue, list):
+            return None
+        for c in queue:
             if not isinstance(c, dict):
-                continue
-            tid = c.get("template_id")
-            tid_key = ":".join(str(x) for x in tid) if isinstance(tid, list) else str(tid)
-            out["%s@%s" % (tid_key, c.get("location"))] = c
+                return None
+            cid = c.get("id")
+            if (not isinstance(cid, list) or len(cid) != 2
+                    or any(type(value) is not int for value in cid)):
+                return None
+            key = "%d:%d" % (cid[0], cid[1])
+            if key in out:
+                return None
+            out[key] = c
         return out
 
     oc, nc = _conv_index(old), _conv_index(new)
-    for key in set(nc) - set(oc):
-        c = nc[key]
-        emit("unit_deployment_started", subject=tag, key=key, to=c.get("location"),
-             detail={"name": c.get("name"), "template_id": c.get("template_id")})
-    for key in set(oc) - set(nc):
-        c = oc[key]
-        emit("unit_deployment_completed", subject=tag, key=key,
-             **{"from": c.get("location")},
-             detail={"name": c.get("name"), "template_id": c.get("template_id")})
+    # Any malformed/missing/duplicate identity invalidates the complete vector;
+    # emitting from a filtered subset could fabricate starts or completions.
+    if oc is not None and nc is not None:
+        for key in sorted(set(nc) - set(oc)):
+            c = nc[key]
+            emit("unit_deployment_started", subject=tag, key=key, to=c.get("location"),
+                 detail={"id": c.get("id"), "ordinal": c.get("ordinal"),
+                         "name": c.get("name"),
+                         "template_id": c.get("template_id"),
+                         "amount": c.get("amount"), "priority": c.get("priority"),
+                         "role": c.get("role"), "closed": c.get("closed"),
+                         "line_count": len(c.get("lines") or [])})
+        for key in sorted(set(oc) - set(nc)):
+            c = oc[key]
+            emit("unit_deployment_completed", subject=tag, key=key,
+                 **{"from": c.get("location")},
+                 detail={"id": c.get("id"), "ordinal": c.get("ordinal"),
+                         "name": c.get("name"),
+                         "template_id": c.get("template_id"),
+                         "amount": c.get("amount"), "priority": c.get("priority"),
+                         "role": c.get("role"), "closed": c.get("closed"),
+                         "line_count": len(c.get("lines") or [])})
 
     # expeditionary (per-owner; keyed by controller). count = number of divisions.
     def _exp_index(country):

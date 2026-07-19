@@ -275,6 +275,8 @@ def _ingest_countries(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
                 eco["construction_queue"] = e["construction_queue"]
             if isinstance(e.get("resources"), dict):
                 eco["resources"] = e["resources"]
+            if isinstance(e.get("resource_trade"), dict):
+                eco["resource_trade"] = e["resource_trade"]
             if isinstance(e.get("fuel"), dict):
                 eco["fuel"] = e["fuel"]
             pol = dst["politics"]
@@ -621,14 +623,52 @@ def _ingest_occupation(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
     occ = bundle.get("occupation")
     if not isinstance(occ, dict) or not isinstance(occ.get("countries"), dict):
         return
+    variants = snap.get("designs", {}).get("equipment_variants", {})
+
+    def fnv1a32(token: str) -> int:
+        value = 0x811C9DC5
+        for byte in token.encode("utf-8"):
+            value ^= byte
+            value = (value * 0x01000193) & 0xFFFFFFFF
+        return value or 1
+
+    def resolve_equipment(rows: Any) -> Tuple[List[Dict[str, Any]], bool]:
+        if not isinstance(rows, list):
+            return [], False
+        out = []
+        complete = True
+        for source_ordinal, row in enumerate(rows):
+            if not isinstance(row, dict):
+                complete = False
+                continue
+            equipment_id = row.get("equipment_id")
+            equipment_type = row.get("equipment_type")
+            variant = variants.get(f"{equipment_id}:{equipment_type}") if isinstance(variants, dict) else None
+            token = variant.get("archetype") if isinstance(variant, dict) else None
+            if not isinstance(token, str) or not token:
+                complete = False
+            out.append({
+                "source_ordinal": row.get("source_ordinal", source_ordinal),
+                "equipment_id": equipment_id,
+                "equipment_type": equipment_type,
+                "equipment_token": token,
+                "amount": row.get("amount"),
+            })
+        return out, complete
+
+    history = []
+    history_complete = True
     for occupier, c in occ["countries"].items():
         if not isinstance(c, dict):
             continue
+        template = c.get("garrison_template_id")
+        template_id = template[0] if isinstance(template, (list, tuple)) and template else None
         for grp in (c.get("occupied") or []):
             if not isinstance(grp, dict):
                 continue
             law_by_state = grp.get("occupation_law_by_state") or {}
             occupied_tag = grp.get("occupied_tag")
+            garrison_by_state = grp.get("state_garrison_data") or {}
             for sid in (grp.get("states") or []):
                 skey = str(sid)
                 st = snap["states"].get(skey)
@@ -636,6 +676,10 @@ def _ingest_occupation(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
                     st = schema.empty_state()
                     snap["states"][skey] = st
                 law = law_by_state.get(skey)
+                law_source = "save_occupation_law_by_state"
+                if law is None:
+                    law = c.get("default_law")
+                    law_source = "save_controller_default_law"
                 if law is not None and st.get("occupation_law") is None:
                     st["occupation_law"] = law
                 # enrich the per-state occupation object (created by state_detail)
@@ -648,6 +692,67 @@ def _ingest_occupation(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
                     occ_obj["occupied_country_tag"] = occupied_tag
                 if occ_obj.get("occupier_tag") is None and isinstance(occupier, str):
                     occ_obj["occupier_tag"] = occupier
+                if isinstance(law, str) and law:
+                    occ_obj["occupation_law_token_id"] = fnv1a32(law)
+                    occ_obj["occupation_law_token_encoding"] = "fnv1a32_of_law_token"
+                    occ_obj["occupation_law_token_source"] = law_source
+
+                garrison = garrison_by_state.get(skey)
+                if garrison is None:
+                    garrison = garrison_by_state.get(sid)
+                if isinstance(garrison, dict):
+                    rows, tokens_complete = resolve_equipment(garrison.get("equipment"))
+                    equipment_meta = garrison.get("equipment_meta") or {}
+                    raw_complete = equipment_meta.get("rows_complete") is True
+                    occ_obj["garrison_template_id"] = template_id
+                    occ_obj["garrison_army_manpower_need"] = garrison.get("army_manpower_need")
+                    occ_obj["garrison_strength_ratio"] = garrison.get("strength_ratio")
+                    occ_obj["garrison_required"] = garrison.get("garrison_required")
+                    occ_obj["garrison_manpower_pool"] = garrison.get("manpower_pool") or []
+                    occ_obj["garrison_equipment"] = rows
+                    occ_obj["garrison_equipment_raw_complete"] = raw_complete
+                    occ_obj["garrison_equipment_complete"] = raw_complete and tokens_complete
+                    occ_obj["garrison_equipment_allow_zero_entries"] = equipment_meta.get(
+                        "allow_zero_entries"
+                    )
+                    occ_obj["garrison_equipment_need"] = garrison.get("equipment_need") or {}
+                    occ_obj["garrison_reinforcement_requests"] = (
+                        garrison.get("reinforcement_requests") or []
+                    )
+
+        country_history = c.get("resistance_attack_log")
+        if not isinstance(country_history, list):
+            history_complete = False
+            continue
+        if c.get("resistance_attack_log_complete") is not True:
+            history_complete = False
+        for row in country_history:
+            if not isinstance(row, dict):
+                history_complete = False
+                continue
+            equipment_rows, tokens_complete = resolve_equipment(row.get("equipment_loss_rows"))
+            equipment_meta = row.get("equipment_loss_meta") or {}
+            row_complete = (
+                row.get("row_complete") is True
+                and equipment_meta.get("rows_complete") is True
+                and tokens_complete
+            )
+            history_complete = history_complete and row_complete
+            history.append({
+                "stable_event_id": row.get("stable_event_id"),
+                "source_ordinal": row.get("source_ordinal"),
+                "controller_tag": occupier,
+                "state_id": row.get("state_id"),
+                "occupied_country_tag": row.get("occupied_country_tag"),
+                "event_hour_or_engine_date": row.get("event_hour_or_engine_date"),
+                "attack_blocked": row.get("attack_blocked"),
+                "resistance_activity": row.get("resistance_activity"),
+                "lost_manpower": row.get("lost_manpower"),
+                "equipment_loss_rows": equipment_rows,
+                "equipment_loss_children_complete": row_complete,
+            })
+    snap["occupation_history"] = history
+    snap["occupation_history_complete"] = history_complete
 
 
 def _ingest_oob(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
@@ -1088,7 +1193,10 @@ def _ingest_deployment(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
                 continue
             mil = _ensure_country(snap, tag)["military"]
             conv = rec.get("conveyors")
-            if isinstance(conv, list) and conv:
+            # Empty is authoritative only when the parser positively completed
+            # this country's full conveyor vector.  A missing completeness bit
+            # must remain unreadable/None rather than erase a prior queue.
+            if rec.get("queue_complete") is True and isinstance(conv, list):
                 mil["deployment_queue"] = conv
             rp = rec.get("reinforcement_priority")
             if rp is not None:

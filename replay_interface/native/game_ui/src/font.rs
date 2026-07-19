@@ -1,8 +1,10 @@
 use crate::assets::{normalize_rel_path, AssetResolver};
 use crate::dds::RgbaImage;
+use crate::paradox_text::parse_file;
 use crate::{ErrorKind, GameUiError, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::path::Path;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct BitmapFont {
@@ -102,11 +104,48 @@ impl TextAlign {
 
 impl BitmapFont {
     pub fn load(resolver: &AssetResolver, name: &str) -> Result<Self> {
-        let rel = format!("gfx/fonts/{name}.fnt");
-        let resolved = resolver.resolve_file(&rel)?;
+        let direct_rel = format!("gfx/fonts/{name}.fnt");
+        let resolved = match resolver.resolve_file(&direct_rel) {
+            Ok(resolved) => resolved,
+            Err(direct_error) => {
+                let Some(alias_rel) = bitmap_font_alias_path(resolver, name)? else {
+                    return Err(direct_error);
+                };
+                resolver.resolve_file(&alias_rel)?
+            }
+        };
         let bytes = fs::read(&resolved.path)?;
-        let parsed = parse_bmfont_bytes(name, &resolved.rel_path, &bytes)?;
-        parsed.load_pages(resolver)
+        // Page-less BMFont descriptors use the physical file stem for the
+        // inferred atlas name. Preserve the symbolic GUI alias only after the
+        // physical `garamond_14` (etc.) pages have been resolved.
+        let page_stem = std::path::Path::new(&resolved.rel_path)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or(name);
+        let parsed = parse_bmfont_bytes(page_stem, &resolved.rel_path, &bytes)?;
+        let mut font = parsed.load_pages(resolver)?;
+        font.name = name.to_string();
+        Ok(font)
+    }
+
+    /// Load one exact portable font binding by descriptor path. This bypasses
+    /// alias/path discovery because the selected-Present carrier already chose
+    /// the effective VFS winner and authenticated its content index.
+    pub fn load_from_descriptor(
+        resolver: &AssetResolver,
+        font_identity: &str,
+        descriptor_path: &str,
+    ) -> Result<Self> {
+        let resolved = resolver.resolve_file(descriptor_path)?;
+        let bytes = fs::read(&resolved.path)?;
+        let page_stem = Path::new(&resolved.rel_path)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or(font_identity);
+        let parsed = parse_bmfont_bytes(page_stem, &resolved.rel_path, &bytes)?;
+        let mut font = parsed.load_pages(resolver)?;
+        font.name = font_identity.to_string();
+        Ok(font)
     }
 
     pub fn printable_ascii_coverage(&self) -> BTreeSet<char> {
@@ -227,6 +266,232 @@ impl BitmapFont {
             missing_glyphs: layout.missing_glyphs,
         }
     }
+
+    /// Draw one authenticated runtime glyph at an already-resolved position.
+    /// The effective BMFont owns the atlas rectangle; the runtime carrier owns
+    /// only fallback-font selection, glyph id, position, tint and clipping.
+    pub fn draw_runtime_glyph(
+        &self,
+        image: &mut RgbaImage,
+        glyph_id: u32,
+        x: i32,
+        y: i32,
+        color: [u8; 4],
+        clip: Option<[i32; 4]>,
+    ) -> bool {
+        let Some(font_char) = self.chars.get(&glyph_id) else {
+            return false;
+        };
+        let Some(page) = self.pages.iter().find(|page| page.id == font_char.page) else {
+            return false;
+        };
+        blit_glyph_clipped(
+            image,
+            &page.image,
+            x,
+            y,
+            font_char,
+            color,
+            self.glyph_channel,
+            clip,
+        );
+        true
+    }
+}
+
+/// Resolve every file consumed by the proven bitmap-font loader without
+/// decoding pixels. The list is VFS-derived and includes `core.gfx` whenever
+/// it supplies the alias or text-colour table, the physical BMFont descriptor,
+/// and every explicit/inferred page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BitmapFontDependencyPaths {
+    pub alias_source: Option<String>,
+    pub descriptor: String,
+    pub pages: Vec<String>,
+}
+
+pub fn bitmap_font_dependency_paths(
+    resolver: &map_viewer::GameFileResolver,
+    symbolic_name: &str,
+) -> Result<BitmapFontDependencyPaths> {
+    if symbolic_name.trim().is_empty() {
+        return Err(GameUiError::parse("blank bitmap-font identity"));
+    }
+    let core = resolver
+        .resolve_with_provenance("interface/core.gfx")
+        .map_err(|error| GameUiError::missing(error.to_string()))?;
+    let direct = format!("gfx/fonts/{symbolic_name}.fnt");
+    let mut used_alias = false;
+    let descriptor = if resolver
+        .resolve_with_provenance(&direct)
+        .map_err(|error| GameUiError::missing(error.to_string()))?
+        .is_some()
+    {
+        direct
+    } else {
+        used_alias = true;
+        let core = core.as_ref().ok_or_else(|| {
+            GameUiError::missing(format!(
+                "font {symbolic_name} has no descriptor or core.gfx alias"
+            ))
+        })?;
+        let document = parse_file(&core.local_path)?;
+        if !document.recoveries.is_empty() {
+            return Err(GameUiError::parse(
+                "core.gfx font alias parse required recovery",
+            ));
+        }
+        let mut aliases = Vec::new();
+        for block in document.root.values_ci("bitmapfonts") {
+            for entry in block.fields() {
+                let Some(kind) = entry.key.as_deref() else {
+                    continue;
+                };
+                if !kind.eq_ignore_ascii_case("bitmapfont")
+                    && !kind.eq_ignore_ascii_case("bitmapfont_override")
+                {
+                    continue;
+                }
+                if entry
+                    .value
+                    .first_scalar_ci("name")
+                    .is_some_and(|name| name.eq_ignore_ascii_case(symbolic_name))
+                {
+                    if let Some(path) = entry.value.first_scalar_ci("path") {
+                        aliases.push(normalize_rel_path(path));
+                    }
+                }
+            }
+        }
+        aliases.sort();
+        aliases.dedup();
+        if aliases.len() != 1 {
+            return Err(GameUiError::missing(format!(
+                "font {symbolic_name} has {} effective aliases",
+                aliases.len()
+            )));
+        }
+        aliases.remove(0)
+    };
+    let resolved = resolver
+        .resolve_required_with_provenance(&descriptor, "bitmap-font descriptor")
+        .map_err(|error| GameUiError::missing(error.to_string()))?;
+    let bytes = fs::read(&resolved.local_path)?;
+    let stem = Path::new(&resolved.logical_path)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(symbolic_name);
+    let parsed = parse_bmfont_bytes(stem, &resolved.logical_path, &bytes)?;
+    let parent = Path::new(&resolved.logical_path)
+        .parent()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    let alias_source = used_alias.then(|| "interface/core.gfx".to_string());
+    let mut pages = Vec::new();
+    if parsed.page_files.is_empty() {
+        let mut inferred = Vec::new();
+        for candidate in [
+            format!("gfx/fonts/{stem}.dds"),
+            format!("gfx/fonts/{stem}.tga"),
+            format!("gfx/fonts/{stem}_0.dds"),
+            format!("gfx/fonts/{stem}_0.tga"),
+        ] {
+            if resolver
+                .resolve_with_provenance(&candidate)
+                .map_err(|error| GameUiError::missing(error.to_string()))?
+                .is_some()
+            {
+                inferred.push(candidate);
+            }
+        }
+        if inferred.len() != 1 {
+            return Err(GameUiError::missing(format!(
+                "font {symbolic_name} has {} inferred atlas candidates",
+                inferred.len()
+            )));
+        }
+        pages.extend(inferred);
+    } else {
+        for (id, page) in &parsed.page_files {
+            let path = normalize_rel_path(&format!("{parent}/{page}"));
+            if resolver
+                .resolve_with_provenance(&path)
+                .map_err(|error| GameUiError::missing(error.to_string()))?
+                .is_some()
+            {
+                pages.push(path);
+                continue;
+            }
+            let mut fallback = None;
+            for candidate in [
+                format!("gfx/fonts/{stem}.dds"),
+                format!("gfx/fonts/{stem}.tga"),
+                format!("gfx/fonts/{stem}_{id}.dds"),
+                format!("gfx/fonts/{stem}_{id}.tga"),
+            ] {
+                if resolver
+                    .resolve_with_provenance(&candidate)
+                    .map_err(|error| GameUiError::missing(error.to_string()))?
+                    .is_some()
+                {
+                    fallback = Some(candidate);
+                    break;
+                }
+            }
+            let fallback = fallback.ok_or_else(|| {
+                GameUiError::missing(format!(
+                    "bitmap-font page {path} and inferred {stem} page {id} are absent"
+                ))
+            })?;
+            pages.push(fallback);
+        }
+    }
+    pages.sort();
+    pages.dedup();
+    Ok(BitmapFontDependencyPaths {
+        alias_source,
+        descriptor: resolved.logical_path,
+        pages,
+    })
+}
+
+/// Resolve the symbolic GUI font name through the effective
+/// `interface/core.gfx` bitmapfont table. The engine's GUI files use names such
+/// as `Main_14`; those are aliases for file stems such as
+/// `gfx/fonts/garamond_14`, not literal `Main_14.fnt` paths.
+fn bitmap_font_alias_path(resolver: &AssetResolver, name: &str) -> Result<Option<String>> {
+    let core = match resolver.resolve_file("interface/core.gfx") {
+        Ok(core) => core,
+        Err(_) => return Ok(None),
+    };
+    let document = parse_file(&core.path)?;
+    for container in document.root.values_ci("bitmapfonts") {
+        for entry in container.fields() {
+            if !entry
+                .key
+                .as_deref()
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("bitmapfont"))
+            {
+                continue;
+            }
+            if !entry
+                .value
+                .first_scalar_ci("name")
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name))
+            {
+                continue;
+            }
+            let Some(path) = entry.value.first_scalar_ci("path") else {
+                return Ok(None);
+            };
+            let mut rel = normalize_rel_path(path);
+            if !rel.to_ascii_lowercase().ends_with(".fnt") {
+                rel.push_str(".fnt");
+            }
+            return Ok(Some(rel));
+        }
+    }
+    Ok(None)
 }
 
 impl BitmapFont {
@@ -276,6 +541,19 @@ fn blit_glyph(
     color: [u8; 4],
     glyph_channel: Option<usize>,
 ) {
+    blit_glyph_clipped(dst, page, x, y, font_char, color, glyph_channel, None)
+}
+
+fn blit_glyph_clipped(
+    dst: &mut RgbaImage,
+    page: &RgbaImage,
+    x: i32,
+    y: i32,
+    font_char: &FontChar,
+    color: [u8; 4],
+    glyph_channel: Option<usize>,
+    clip: Option<[i32; 4]>,
+) {
     for gy in 0..font_char.height {
         let dy = y + gy as i32;
         if dy < 0 || dy >= dst.height as i32 {
@@ -285,6 +563,17 @@ fn blit_glyph(
             let dx = x + gx as i32;
             if dx < 0 || dx >= dst.width as i32 {
                 continue;
+            }
+            if let Some([clip_x, clip_y, clip_w, clip_h]) = clip {
+                if clip_w < 0
+                    || clip_h < 0
+                    || dx < clip_x
+                    || dy < clip_y
+                    || dx >= clip_x.saturating_add(clip_w)
+                    || dy >= clip_y.saturating_add(clip_h)
+                {
+                    continue;
+                }
             }
             let sx = font_char.x + gx;
             let sy = font_char.y + gy;

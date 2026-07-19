@@ -42,7 +42,6 @@ Those gates are listed below the table.
 | `DOMAIN53_SUBJECT_SUBJECT` | `0x14` | `probe_870ebf_diplomacy.json::relation_flags.subjects`, script function `read_subject_candidate` field `SUBJ_SUBJECT=0x14` | `STRUCTURAL-ONLY` |
 | `DOMAIN53_SUBJECT_STATE_DB` | `0x58` | `probe_870ebf_diplomacy.json::relation_flags.subjects`, script function `read_subject_candidate` field `SUBJ_STATE_DB=0x58` | `STRUCTURAL-ONLY` |
 | `DOMAIN53_SUBJECT_STATE_NAME` | `0x08` | `probe_870ebf_diplomacy.json::relation_flags.subjects`, script reads autonomy state name at `state_db+0x08` | `STRUCTURAL-ONLY` |
-| `DOMAIN53_SUBJECT_RATIO` | `0x60` | `probe_870ebf_diplomacy.json::relation_flags.subjects`, script function `read_subject_candidate` field `SUBJ_RATIO=0x60` | `STRUCTURAL-ONLY` |
 | `DOMAIN53_COUNTRY_AGENCY_PTR` | `0xFC0` | `probe_870ebf_intel.json::agencies.country_agency_ptr_offset=0xFC0`, `valid_agencies=112`, `nonheap_agency_ptrs=0` | `VALIDATED` |
 | `DOMAIN53_AGENCY_VTABLE_RVA` | `0x296B338` | `probe_870ebf_intel.json::agencies.agency_vtable_rtti[0].rva=0x296B338`, `status=validated` | `VALIDATED` |
 | `DOMAIN53_AGENCY_NAME` | `0x80` | `probe_870ebf_intel.json::agencies.samples[].name`, script constant `AG_NAME=0x80` | `VALIDATED` |
@@ -113,10 +112,11 @@ Those gates are listed below the table.
   worldwide relation rows is a hard fail. Relation flags and subject/autonomy
   rows still rely on their per-row structural gates until their individual
   serialized values are fixture-closed.
-- Subjects: enabled as structural relation rows. Per frame requires exact
+- Subjects: enabled as validated relation rows. Per frame requires exact
   `CSubjectRelation` vtable discovery through the relation scan, valid overlord
-  and subject tags, non-self pair, bounded autonomy ratio, and hashed autonomy
-  state name only when readable.
+  and subject tags, non-self pair, a full-width i64 autonomy-ratio read bounded
+  to `0..=100000`, and hashed autonomy state name only when readable. The compact
+  carrier remains i32 only after lossless range-checked narrowing.
 - Agencies and capacity: enabled. Per frame requires exact
   `CIntelligenceAgency` vtable, bounded raw scalars, readable strings when
   present, and raw capacity `+0xE4/+0xF0/+0xF4` with `+0xE4 == +0xF4`. Capacity

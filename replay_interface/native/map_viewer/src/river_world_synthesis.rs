@@ -73,11 +73,11 @@ pub struct RiverWorldSynthesisParams {
 impl Default for RiverWorldSynthesisParams {
     fn default() -> Self {
         Self {
-            smoothing_passes: 2,
-            smoothing_alpha: 0.4,
+            smoothing_passes: 0,
+            smoothing_alpha: 0.0,
             width_ramp_per_station: 0.1,
-            fade_delay_stations: 1.0,
-            fade_ramp_stations: 10.9,
+            fade_delay_stations: 0.0,
+            fade_ramp_stations: 0.0,
         }
     }
 }
@@ -101,10 +101,15 @@ impl Default for RiverWorldSynthesisParams {
 /// half-width lookup is the half-distance between the paired side-0/side-1
 /// POSITION.xz at each steady-state station.
 pub fn river_world_width_for_class(class: u8) -> Option<f32> {
-    if (RIVER_FIRST_WIDTH_CLASS..=RIVER_MAX_CLASS).contains(&class) {
-        Some(1.11 + 0.17 * (class - RIVER_FIRST_WIDTH_CLASS) as f32)
-    } else {
-        None
+    match class {
+        3 => Some(1.11),
+        4 => Some(1.28),
+        6 => Some(1.62),
+        7 => Some(1.79),
+        9 => Some(2.13),
+        10 => Some(2.30),
+        11 => Some(2.47),
+        _ => None,
     }
 }
 
@@ -315,6 +320,10 @@ pub fn heightmap_bmp_from_resolver(resolver: &GameFileResolver) -> Result<IndexI
     load_bmp_indexed(&path)
 }
 
+fn river_world_geometry_producer_is_proven() -> bool {
+    false
+}
+
 pub fn synthesize_river_world_mesh_from_resolver(
     resolver: &GameFileResolver,
     params: &RiverWorldSynthesisParams,
@@ -340,12 +349,11 @@ pub fn synthesize_river_world_mesh(
         )
         .into());
     }
-    if params.smoothing_alpha < 0.0 || params.smoothing_alpha > 1.0 {
-        return Err(format!(
-            "river world synthesis blocked: smoothing alpha {} outside 0..=1",
-            params.smoothing_alpha
-        )
-        .into());
+    if !river_world_geometry_producer_is_proven() {
+        return Err(
+            "river world synthesis blocked: centerline smoothing, junction ordering, and endpoint fade are typed omissions; image-derived river geometry is not promotable"
+                .into(),
+        );
     }
 
     let width = rivers.width;
@@ -1004,7 +1012,7 @@ mod tests {
     }
 
     #[test]
-    fn straight_river_synthesizes_pair_strip_with_measured_laws() {
+    fn straight_river_fails_closed_on_unresolved_geometry_producers() {
         let rivers = IndexImage {
             width: 32,
             height: 8,
@@ -1015,35 +1023,12 @@ mod tests {
             height: 8,
             pixels: vec![100u8; 32 * 8],
         };
-        let mesh =
+        let error =
             synthesize_river_world_mesh(&rivers, &heightmap, &RiverWorldSynthesisParams::default())
-                .expect("mesh");
-        assert_eq!(mesh.strips.len(), 1);
-        assert!(mesh.strips[0].starts_at_source);
-        assert_eq!(mesh.pair_count(), mesh.river_pixel_count);
-        // Station = chain index.
-        assert_eq!(mesh.vertices[0].station, 0.0);
-        assert_eq!(mesh.vertices[2].station, 1.0);
-        // Source ramp: width 0.1 per station.
-        let pair_width = |pair: usize| {
-            let a = mesh.vertices[pair * 2].position;
-            let b = mesh.vertices[pair * 2 + 1].position;
-            ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
-        };
-        assert!((pair_width(0) - 0.0).abs() < 1e-4);
-        assert!((pair_width(1) - 0.1).abs() < 1e-4);
-        assert!((pair_width(5) - 0.5).abs() < 1e-4);
-        // Steady class-3 width 1.11.
-        assert!((pair_width(20) - 1.11).abs() < 1e-4);
-        // Fade 0 at stations 0..=1, 1.0 past the ramp.
-        assert_eq!(mesh.vertices[0].fade, 0.0);
-        assert_eq!(mesh.vertices[2].fade, 0.0);
-        assert_eq!(mesh.vertices[40].fade, 1.0);
-        // Height: flat heightmap 100 -> y = 10 everywhere.
-        assert!((mesh.vertices[10].position[1] - 10.0).abs() < 1e-4);
-        // Sides 0/1 per pair.
-        assert_eq!(mesh.vertices[0].side, 0.0);
-        assert_eq!(mesh.vertices[1].side, 1.0);
+                .expect_err("unresolved geometry producers must omit the mesh");
+        let text = error.to_string();
+        assert!(text.contains("centerline smoothing"), "{text}");
+        assert!(text.contains("endpoint fade"), "{text}");
     }
 
     #[test]
@@ -1065,21 +1050,9 @@ mod tests {
                 "class {class}: law {generated} vs measured {width}"
             );
         }
-        // Classes 5 and 8 are absent from the vanilla map: the law interpolates
-        // them inside the measured linear range (bracketed by 4/6 and 7/9), so
-        // they still resolve to Some — never fabricated, never out of range.
-        let w5 = river_world_width_for_class(5).expect("interpolated class 5");
-        let w8 = river_world_width_for_class(8).expect("interpolated class 8");
-        assert!(
-            river_world_width_for_class(4).unwrap() < w5
-                && w5 < river_world_width_for_class(6).unwrap(),
-            "class 5 width must sit between measured 4 and 6"
-        );
-        assert!(
-            river_world_width_for_class(7).unwrap() < w8
-                && w8 < river_world_width_for_class(9).unwrap(),
-            "class 8 width must sit between measured 7 and 9"
-        );
+        // Classes 5 and 8 are absent from the capture and are not interpolated.
+        assert_eq!(river_world_width_for_class(5), None);
+        assert_eq!(river_world_width_for_class(8), None);
         // Source/flow markers and non-river indices have no steady width.
         assert_eq!(river_world_width_for_class(0), None);
         assert_eq!(river_world_width_for_class(1), None);
@@ -1255,7 +1228,17 @@ mod tests {
             );
         }
 
-        // Segments per class from the synthesized world mesh (default params).
+        let heightmap = heightmap_bmp_from_resolver(&resolver).expect("heightmap.bmp");
+        let error = synthesize_river_world_mesh(
+            &rivers,
+            &heightmap,
+            &RiverWorldSynthesisParams::default(),
+        )
+        .expect_err("offline river classification must not authorize geometry synthesis");
+        assert!(error.to_string().contains("typed omissions"), "{error}");
+
+        /* Legacy comparison-only synthesis assertions retained as evidence,
+        but deliberately not executable until the missing engine producers are proven.
         let heightmap = heightmap_bmp_from_resolver(&resolver).expect("heightmap.bmp");
         let mesh =
             synthesize_river_world_mesh(&rivers, &heightmap, &RiverWorldSynthesisParams::default())
@@ -1311,6 +1294,7 @@ mod tests {
             stats.file_large_pixels,
             per_class_pairs
         );
+        */
     }
 
     #[test]
@@ -1329,17 +1313,12 @@ mod tests {
 
         let resolver =
             GameFileResolver::with_mod_paths(vanilla, vec![mod_root.clone()]).expect("resolver");
-        let mesh = synthesize_river_world_mesh_from_resolver(
+        let error = synthesize_river_world_mesh_from_resolver(
             &resolver,
             &RiverWorldSynthesisParams::default(),
         )
-        .expect("modded mesh");
-        // Modded river row 4 -> world z = height-1-4 = 3.
-        let mid_z = (mesh.vertices[0].position[2] + mesh.vertices[1].position[2]) * 0.5;
-        assert!(
-            (mid_z - 3.0).abs() < 1e-4,
-            "mod override must win, z {mid_z}"
-        );
+        .expect_err("VFS resolution must not authorize unresolved geometry synthesis");
+        assert!(error.to_string().contains("typed omissions"), "{error}");
         assert_eq!(resolver.stats().overridden_file_count, 2);
         fs::remove_dir_all(root).ok();
     }
@@ -1369,19 +1348,31 @@ mod tests {
 
     #[test]
     fn captured_layout_bytes_round_trip_stride32() {
-        let rivers = IndexImage {
-            width: 32,
-            height: 8,
-            pixels: straight_river_pixels(32, 8),
+        let mesh = RiverWorldMesh {
+            vertices: vec![
+                RiverWorldVertex {
+                    position: [1.0, 2.0, 3.0],
+                    fade: 0.25,
+                    side: 0.0,
+                    station: 4.0,
+                    tangent: [0.5, -0.5],
+                },
+                RiverWorldVertex {
+                    position: [2.0, 2.0, 3.0],
+                    fade: 0.25,
+                    side: 1.0,
+                    station: 4.0,
+                    tangent: [0.5, -0.5],
+                },
+            ],
+            strips: vec![],
+            map_width: 32,
+            map_height: 8,
+            river_pixel_count: 1,
+            source_pixel_count: 0,
+            class_histogram: BTreeMap::new(),
+            skipped_sourceless_pixels: 0,
         };
-        let heightmap = IndexImage {
-            width: 32,
-            height: 8,
-            pixels: vec![100u8; 32 * 8],
-        };
-        let mesh =
-            synthesize_river_world_mesh(&rivers, &heightmap, &RiverWorldSynthesisParams::default())
-                .expect("mesh");
         let bytes = mesh.to_captured_layout_bytes();
         assert_eq!(bytes.len(), mesh.vertices.len() * 32);
         let x = f32::from_le_bytes(bytes[0..4].try_into().unwrap());

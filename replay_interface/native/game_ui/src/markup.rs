@@ -100,7 +100,10 @@ impl TextColorTable {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Token {
     /// A run of literal text carrying the active colour (`None` = base colour).
-    Text { text: String, color: Option<[u8; 3]> },
+    Text {
+        text: String,
+        color: Option<[u8; 3]>,
+    },
     /// `£key` / `£key|frame` inline icon.
     Icon { key: String, frame: Option<u32> },
     /// `$key$` variable / nested-loc substitution request.
@@ -388,14 +391,26 @@ mod tests {
         assert_eq!(
             parse("a\u{a3}political_power b", &table),
             vec![
-                Token::Text { text: "a".to_string(), color: None },
-                Token::Icon { key: "political_power".to_string(), frame: None },
-                Token::Text { text: " b".to_string(), color: None },
+                Token::Text {
+                    text: "a".to_string(),
+                    color: None
+                },
+                Token::Icon {
+                    key: "political_power".to_string(),
+                    frame: None
+                },
+                Token::Text {
+                    text: " b".to_string(),
+                    color: None
+                },
             ]
         );
         assert_eq!(
             parse("\u{a3}GFX_flag|3", &table),
-            vec![Token::Icon { key: "GFX_flag".to_string(), frame: Some(3) }]
+            vec![Token::Icon {
+                key: "GFX_flag".to_string(),
+                frame: Some(3)
+            }]
         );
     }
 
@@ -405,10 +420,20 @@ mod tests {
         assert_eq!(
             parse("Owner: $KEY$ [GetName]", &table),
             vec![
-                Token::Text { text: "Owner: ".to_string(), color: None },
-                Token::Variable { key: "KEY".to_string() },
-                Token::Text { text: " ".to_string(), color: None },
-                Token::DataFunction { expr: "GetName".to_string() },
+                Token::Text {
+                    text: "Owner: ".to_string(),
+                    color: None
+                },
+                Token::Variable {
+                    key: "KEY".to_string()
+                },
+                Token::Text {
+                    text: " ".to_string(),
+                    color: None
+                },
+                Token::DataFunction {
+                    expr: "GetName".to_string()
+                },
             ]
         );
     }
@@ -419,7 +444,9 @@ mod tests {
         // §[expr] evaluates to a colour at runtime; unresolvable here, so it
         // must vanish from the visible text and leave the colour unchanged.
         let tokens = parse("a\u{a7}[GetColorTier1]b\u{a7}!c", &table);
-        assert!(tokens.iter().all(|t| matches!(t, Token::Text { color: None, .. })));
+        assert!(tokens
+            .iter()
+            .all(|t| matches!(t, Token::Text { color: None, .. })));
         let runs = color_runs(&tokens, [10, 20, 30]);
         assert_eq!(runs.text, "abc");
         assert_eq!(runs.colors, vec![[10, 20, 30]; 3]);
@@ -436,7 +463,10 @@ mod tests {
         let table = table();
         assert_eq!(
             parse("price $5", &table),
-            vec![Token::Text { text: "price $5".to_string(), color: None }]
+            vec![Token::Text {
+                text: "price $5".to_string(),
+                color: None
+            }]
         );
     }
 }

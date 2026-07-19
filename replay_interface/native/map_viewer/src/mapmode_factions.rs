@@ -3,7 +3,7 @@
 //! `game_map_mode_factions`).
 //!
 //! The factions map mode colours every country by faction membership: members
-//! take the faction **leader's** country colour (so each faction reads as one
+//! take the faction **leader's COL3-baked** country colour (so each faction reads as one
 //! bloc), and non-members are greyed out. Colours are computed replay-side from
 //! the recorded faction rosters, **never recorded** (standing override).
 //!
@@ -16,20 +16,14 @@
 //!   reference. `FACTIONS_MEMBER_TRANSPARENCY = 1.0` (members are opaque) is the
 //!   companion FILE define.
 //!
-//! * **Member fill = faction-leader colour** — DERIVED. The engine layer
+//! * **Member fill = faction-leader COL3 colour** — CAPTURE. The engine layer
 //!   `game_map_mode_factions` has no scriptable colour (it is a hard-coded C++
 //!   layer; `common/map_modes/documentation.md` lists it among the hard-coded
 //!   types, and the matrix records the rule as "colour = faction/leader"). A
 //!   faction is keyed by its leader TAG, so members read the leader's country
-//!   colour. TWO residuals ride this and are flagged for a captured factions
-//!   frame (CAP) / binary RE:
-//!     1. **leader-colour vs own-colour** — whether members show the leader's
-//!        colour (bloc view, implemented here) or each their own colour.
-//!     2. **raw vs COL3-modified colour** — whether the fill uses the raw
-//!        country colour (as used here and by the naval tint) or the
-//!        HSV-modified political colour (`COL3` law, `COUNTRY_COLOR_*_MODIFIER`).
-//!   The membership CLASSIFICATION (which flips the gate) is fully determined by
-//!   the recording and is independent of both residuals.
+//!   colour. Retained carrier evidence contains the leader's COL3-baked colour
+//!   and contains no raw leader-colour texels. Carrier base alpha is zero;
+//!   boundary propagation owns positive alpha separately.
 //!
 //! ## Seam
 //!
@@ -196,34 +190,38 @@ pub fn membership_for(
 
 /// The fill colour for a country in the factions map mode.
 ///
-/// - [`FactionMembership::NonMember`] → `FACTIONS_COLOR_NOT_MEMBER` (FILE).
-/// - [`FactionMembership::Member`] → the leader's country colour at
-///   `member_transparency` alpha (DERIVED; see module header residuals). Fails
+/// - [`FactionMembership::NonMember`] → byte-truncated RGB from
+///   `FACTIONS_COLOR_NOT_MEMBER` with captured carrier base alpha zero.
+/// - [`FactionMembership::Member`] → the leader's already-COL3-baked RGB with
+///   captured carrier base alpha zero. Fails
 ///   **closed** to `None` when the leader tag is missing or has no colour entry
 ///   — no invented colour.
 ///
-/// `country_colors` is the resolved tag → RGB table
-/// (`game_data::*country_colors*`), the same table the political fill and naval
-/// tint use (raw colours; the raw-vs-COL3 question is a flagged residual).
+/// `col3_country_colors` is an explicit tag → already-COL3-baked RGB table. Raw
+/// country colours are not accepted by this seam.
 pub fn faction_fill(
     membership: &FactionMembership,
-    country_colors: &BTreeMap<String, [u8; 3]>,
+    col3_country_colors: &BTreeMap<String, [u8; 3]>,
     defines: &FactionsDefines,
-) -> Option<[f32; 4]> {
+) -> Option<[u8; 4]> {
     match membership {
         FactionMembership::Unknown => None,
-        FactionMembership::NonMember => Some(defines.not_member_color),
+        FactionMembership::NonMember => Some([
+            carrier_channel(defines.not_member_color[0])?,
+            carrier_channel(defines.not_member_color[1])?,
+            carrier_channel(defines.not_member_color[2])?,
+            0,
+        ]),
         FactionMembership::Member { leader, .. } => {
             let leader = leader.as_deref().filter(|t| !t.is_empty())?;
-            let rgb = country_colors.get(leader)?;
-            Some([
-                rgb[0] as f32 / 255.0,
-                rgb[1] as f32 / 255.0,
-                rgb[2] as f32 / 255.0,
-                defines.member_transparency,
-            ])
+            let rgb = col3_country_colors.get(leader)?;
+            Some([rgb[0], rgb[1], rgb[2], 0])
         }
     }
+}
+
+fn carrier_channel(value: f32) -> Option<u8> {
+    (value.is_finite() && (0.0..=1.0).contains(&value)).then(|| (value * 255.0) as u8)
 }
 
 #[cfg(test)]
@@ -255,12 +253,12 @@ NDefines = {
         let colors: BTreeMap<String, [u8; 3]> = BTreeMap::new();
         assert_eq!(
             faction_fill(&FactionMembership::NonMember, &colors, &d),
-            Some([0.7, 0.7, 0.7, 0.7])
+            Some([178, 178, 178, 0])
         );
     }
 
     #[test]
-    fn member_takes_leader_color_at_member_alpha() {
+    fn member_takes_col3_leader_color_with_zero_carrier_alpha() {
         let d = VANILLA_FACTIONS_DEFINES;
         let colors: BTreeMap<String, [u8; 3]> =
             BTreeMap::from([("GER".to_string(), [80u8, 80, 90])]);
@@ -269,10 +267,7 @@ NDefines = {
             leader: Some("GER".to_string()),
         };
         let fill = faction_fill(&m, &colors, &d).expect("member fill");
-        assert!((fill[0] - 80.0 / 255.0).abs() < 1e-6);
-        assert!((fill[1] - 80.0 / 255.0).abs() < 1e-6);
-        assert!((fill[2] - 90.0 / 255.0).abs() < 1e-6);
-        assert!((fill[3] - 1.0).abs() < 1e-6);
+        assert_eq!(fill, [80, 80, 90, 0]);
     }
 
     #[test]
@@ -399,9 +394,9 @@ NDefines = {
             ("ITA".to_string(), [70u8, 120, 70]),
             ("ENG".to_string(), [200u8, 40, 40]),
         ]);
-        let ger = [80.0 / 255.0, 80.0 / 255.0, 90.0 / 255.0, 1.0];
-        let eng = [200.0 / 255.0, 40.0 / 255.0, 40.0 / 255.0, 1.0];
-        let gray = [0.7, 0.7, 0.7, 0.7];
+        let ger = [80, 80, 90, 0];
+        let eng = [200, 40, 40, 0];
+        let gray = [178, 178, 178, 0];
 
         // Tick 2: all grey.
         let m2 = country_faction_memberships(fixture_roster_status(2), &fixture_factions(2));

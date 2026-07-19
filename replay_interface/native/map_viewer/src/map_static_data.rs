@@ -1094,17 +1094,33 @@ mod tests {
                 bounds[axis][1] = bounds[axis][1].max(v);
             }
         }
-        assert!(bounds[0][0] >= 0.0 && bounds[0][1] <= 5632.0, "x {:?}", bounds[0]);
-        assert!(bounds[2][0] >= 0.0 && bounds[2][1] <= 2048.0, "z {:?}", bounds[2]);
-        assert!(bounds[1][0] >= 0.0 && bounds[1][1] <= 200.0, "y {:?}", bounds[1]);
+        assert!(
+            bounds[0][0] >= 0.0 && bounds[0][1] <= 5632.0,
+            "x {:?}",
+            bounds[0]
+        );
+        assert!(
+            bounds[2][0] >= 0.0 && bounds[2][1] <= 2048.0,
+            "z {:?}",
+            bounds[2]
+        );
+        assert!(
+            bounds[1][0] >= 0.0 && bounds[1][1] <= 200.0,
+            "y {:?}",
+            bounds[1]
+        );
         println!(
             "buildings.txt position stats: {} rows; x[{:.1},{:.1}] y[{:.2},{:.2}] z[{:.1},{:.1}] \
              rotation[{:.3},{:.3}]",
             buildings.len(),
-            bounds[0][0], bounds[0][1],
-            bounds[1][0], bounds[1][1],
-            bounds[2][0], bounds[2][1],
-            min_rotation, max_rotation
+            bounds[0][0],
+            bounds[0][1],
+            bounds[1][0],
+            bounds[1][1],
+            bounds[2][0],
+            bounds[2][1],
+            min_rotation,
+            max_rotation
         );
 
         assert!(railways.iter().all(|segment| !segment.provinces.is_empty()));

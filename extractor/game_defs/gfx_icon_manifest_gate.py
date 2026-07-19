@@ -18,6 +18,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
 import resolver as R  # noqa: E402
+import live_binding_resolver as LR  # noqa: E402
 from paradox_parser import Node, parse  # noqa: E402
 from static_artifact_common import (  # noqa: E402
     CLAUSEWITZ_SYNTAX_QUIRK_ALLOWLIST,
@@ -63,6 +64,65 @@ def _installed_dlc_dirs(vanilla: Path, bucket: str) -> list[Path]:
     if not root.is_dir():
         return []
     return sorted((p.resolve() for p in root.iterdir() if p.is_dir()), key=lambda p: p.name.casefold())
+
+
+def _staged_dlc_roots(userdata: Path) -> dict[str, dict[str, Any]]:
+    manifest_path = userdata / "static_mod_staging_manifest.json"
+    if not manifest_path.is_file():
+        return {}
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"failed to read runtime DLC staging manifest: {exc}") from exc
+    if (
+        manifest.get("schema") != "extractor.runtime_static_mod_staging.v2"
+        or not isinstance(manifest.get("dlc_archives"), list)
+    ):
+        raise RuntimeError("runtime DLC staging manifest has an unsupported schema")
+    staging_root = (userdata / "_materialized_dlc").resolve()
+    rows: dict[str, dict[str, Any]] = {}
+    for row in manifest["dlc_archives"]:
+        if not isinstance(row, dict) or not isinstance(row.get("dlc_id"), str):
+            raise RuntimeError("runtime DLC staging manifest contains a malformed row")
+        dlc_id = row["dlc_id"]
+        if Path(dlc_id).name != dlc_id or "/" in dlc_id or "\\" in dlc_id:
+            raise RuntimeError(f"unsafe staged DLC id: {dlc_id!r}")
+        root = Path(row.get("content_path", "")).resolve()
+        try:
+            root.relative_to(staging_root)
+        except ValueError as exc:
+            raise RuntimeError(f"staged DLC root escapes runtime staging: {dlc_id}") from exc
+        if not root.is_dir():
+            raise RuntimeError(f"staged DLC root is missing: {root}")
+        if dlc_id in rows:
+            raise RuntimeError(f"runtime DLC staging repeats id: {dlc_id}")
+        rows[dlc_id] = {**row, "root": root}
+    return rows
+
+
+def _inventory_dlc_root(
+    vanilla: Path,
+    namespace: dict[str, Any],
+    staged_dlc: dict[str, dict[str, Any]],
+) -> Path:
+    layer_id = namespace["id"]
+    if Path(layer_id).name != layer_id or "/" in layer_id or "\\" in layer_id:
+        raise RuntimeError(f"unsafe source inventory namespace id: {layer_id!r}")
+    staged = staged_dlc.get(layer_id)
+    if staged is not None:
+        if staged.get("source_namespace_sha256") != namespace.get("content_sha256"):
+            raise RuntimeError(f"staged DLC content hash disagrees with live inventory: {layer_id}")
+        return staged["root"]
+    parent = "integrated_dlc" if namespace["kind"] == "integrated_dlc" else "dlc"
+    parent_root = (vanilla / parent).resolve()
+    root = (parent_root / layer_id).resolve()
+    try:
+        root.relative_to(parent_root)
+    except ValueError as exc:
+        raise RuntimeError(f"source inventory namespace escapes {parent}: {layer_id}") from exc
+    if not root.is_dir():
+        raise RuntimeError(f"source inventory namespace root is missing: {parent}/{layer_id}")
+    return root
 
 
 def _dlc_name_from_token(token: str) -> str | None:
@@ -119,6 +179,7 @@ def build_gfx_asset_layers(
     mods: list[str] | None = None,
     userdata: str | Path | None = None,
     strict_mods: bool = False,
+    source_inventory_path: Path | None = None,
 ) -> tuple[list[Any], dict[str, Any]]:
     """Build the GFX-only effective asset layer stack.
 
@@ -133,6 +194,36 @@ def build_gfx_asset_layers(
     mod_layers = R.build_layers(
         vanilla=str(vanilla_root), mods=mods, userdata=userdata_root, strict_mods=strict_mods
     )
+    inventory = None
+    if source_inventory_path is not None:
+        inventory = LR.validate_source_inventory_document(
+            json.loads(Path(source_inventory_path).read_text(encoding="utf-8"))
+        )
+        active_mod_labels = [
+            row["label"]
+            for row in inventory["namespaces"]
+            if row["binding"] == "active_mod"
+        ]
+        if len(active_mod_labels) != len(set(active_mod_labels)):
+            raise RuntimeError("live source inventory repeats an active-mod label")
+        by_label = {layer.label: layer for layer in mod_layers[1:]}
+        if len(by_label) != len(mod_layers) - 1:
+            raise RuntimeError("resolver returned duplicate non-base layer labels")
+        try:
+            selected_mod_layers = [by_label[label] for label in active_mod_labels]
+        except KeyError as exc:
+            raise RuntimeError(
+                "resolver active-mod layers do not match live source inventory"
+            ) from exc
+        for namespace, layer in zip(
+            (row for row in inventory["namespaces"] if row["binding"] == "active_mod"),
+            selected_mod_layers,
+            strict=True,
+        ):
+            if list(getattr(layer, "replace_paths", []) or []) != namespace["replace_paths"]:
+                raise RuntimeError("resolver active-mod replace_path differs from live inventory")
+    else:
+        selected_mod_layers = mod_layers[1:]
 
     integrated_dirs = _installed_dlc_dirs(vanilla_root, "integrated_dlc")
     installed_dlc_dirs = _installed_dlc_dirs(vanilla_root, "dlc")
@@ -140,58 +231,138 @@ def build_gfx_asset_layers(
     enabled_set = {name.casefold() for name in dlc_selection["enabled_dlcs"]}
     enabled_dlc_dirs = [path for path in installed_dlc_dirs if path.name.casefold() in enabled_set]
 
+    inventory_enabled_dlcs = (
+        [
+            row["id"]
+            for row in inventory["namespaces"]
+            if row["kind"] == "dlc" and row["binding"] == "active_product"
+        ]
+        if inventory is not None
+        else dlc_selection["enabled_dlcs"]
+    )
+    inventory_integrated_dlcs = (
+        [
+            row["id"]
+            for row in inventory["namespaces"]
+            if row["kind"] == "integrated_dlc" and row["binding"] == "integrated"
+        ]
+        if inventory is not None
+        else [path.name for path in integrated_dirs]
+    )
+    excluded_asset_only_dlcs = (
+        [
+            row["id"]
+            for row in inventory["namespaces"]
+            if row["kind"] == "dlc" and row["binding"] == "asset_only"
+        ]
+        if inventory is not None
+        else []
+    )
+
     selection_meta = {
         "dlc_load_json_present": dlc_selection["dlc_load_json_present"],
         "missing_dlc_load_means_all_installed_enabled": dlc_selection[
             "missing_dlc_load_means_all_installed_enabled"
         ],
-        "enabled_dlcs": dlc_selection["enabled_dlcs"],
+        "enabled_dlcs": inventory_enabled_dlcs,
         "disabled_dlcs": dlc_selection["disabled_dlcs"],
     }
-    layers = [
-        _clone_layer(
-            mod_layers[0],
-            meta_extra={
-                "kind": "vanilla",
-                "asset_layer_model": "vanilla, integrated_dlc/*, enabled dlc/*, mods",
-                **selection_meta,
-            },
-        )
-    ]
-    for root in integrated_dirs:
-        layers.append(
-            _new_layer(
-                f"integrated_dlc/{root.name}",
-                root,
-                meta={
-                    "kind": "integrated_dlc",
-                    "dlc_name": root.name,
-                    "enabled": True,
+    if inventory is None:
+        layers = [
+            _clone_layer(
+                mod_layers[0],
+                meta_extra={
+                    "kind": "vanilla",
+                    "asset_layer_model": "vanilla, integrated_dlc/*, enabled dlc/*, mods",
                     **selection_meta,
                 },
             )
-        )
-    for root in enabled_dlc_dirs:
-        layers.append(
-            _new_layer(
-                f"dlc/{root.name}",
-                root,
-                meta={
-                    "kind": "dlc",
-                    "dlc_name": root.name,
-                    "enabled": True,
-                    **selection_meta,
-                },
+        ]
+        for root in integrated_dirs:
+            layers.append(
+                _new_layer(
+                    f"integrated_dlc/{root.name}",
+                    root,
+                    meta={
+                        "kind": "integrated_dlc",
+                        "dlc_name": root.name,
+                        "enabled": True,
+                        **selection_meta,
+                    },
+                )
             )
-        )
-    for layer in mod_layers[1:]:
-        layers.append(_clone_layer(layer, meta_extra={"kind": "mod"}))
+        for root in enabled_dlc_dirs:
+            layers.append(
+                _new_layer(
+                    f"dlc/{root.name}",
+                    root,
+                    meta={
+                        "kind": "dlc",
+                        "dlc_name": root.name,
+                        "enabled": True,
+                        **selection_meta,
+                    },
+                )
+            )
+        for layer in selected_mod_layers:
+            layers.append(_clone_layer(layer, meta_extra={"kind": "mod"}))
+    else:
+        staged_dlc = _staged_dlc_roots(userdata_root)
+        mods_by_label = {layer.label: layer for layer in selected_mod_layers}
+        layers = []
+        for namespace in inventory["namespaces"]:
+            binding = namespace["binding"]
+            if binding == "base":
+                if layers or namespace["label"] != mod_layers[0].label:
+                    raise RuntimeError("live source inventory base does not match resolver base")
+                layer = _clone_layer(
+                    mod_layers[0],
+                    meta_extra={
+                        "kind": "vanilla",
+                        "binding": binding,
+                        "asset_layer_model": "exact live source_inventory namespace order",
+                        **selection_meta,
+                    },
+                )
+            elif binding == "asset_only":
+                # Descriptorless/asset-only install folders are not selected
+                # launch products and never become production VFS layers.
+                continue
+            elif binding in {"integrated", "active_product"}:
+                layer = _new_layer(
+                    namespace["label"],
+                    _inventory_dlc_root(vanilla_root, namespace, staged_dlc),
+                    replace_paths=namespace["replace_paths"],
+                    meta={
+                        "kind": namespace["kind"],
+                        "binding": binding,
+                        "dlc_name": namespace["id"],
+                        "enabled": True,
+                        **selection_meta,
+                    },
+                )
+            elif binding == "active_mod":
+                layer = _clone_layer(
+                    mods_by_label[namespace["label"]],
+                    meta_extra={"kind": "mod", "binding": binding},
+                )
+            else:
+                raise RuntimeError(f"unsupported source namespace binding: {binding!r}")
+            layers.append(layer)
 
     meta = {
-        "model": "vanilla root -> integrated_dlc/* -> enabled dlc/* -> mods",
-        "integrated_dlcs": [path.name for path in integrated_dirs],
+        "model": (
+            "exact live source_inventory namespace order"
+            if inventory is not None
+            else "vanilla root -> integrated_dlc/* -> enabled dlc/* -> mods"
+        ),
+        "source_inventory_sha256": (
+            inventory["inventory_sha256"] if inventory is not None else None
+        ),
+        "integrated_dlcs": inventory_integrated_dlcs,
         "installed_dlcs": dlc_selection["installed_dlcs"],
-        "enabled_dlcs": dlc_selection["enabled_dlcs"],
+        "enabled_dlcs": inventory_enabled_dlcs,
+        "excluded_asset_only_dlcs": excluded_asset_only_dlcs,
         "disabled_dlcs": dlc_selection["disabled_dlcs"],
         "disabled_dlc_paths": dlc_selection["disabled_dlc_paths"],
         "dlc_load_json_present": dlc_selection["dlc_load_json_present"],
@@ -382,6 +553,7 @@ def build_catalog(args: argparse.Namespace) -> dict[str, Any]:
         mods=mods_from_arg(args.mods),
         userdata=args.userdata,
         strict_mods=getattr(args, "strict_mods", False),
+        source_inventory_path=getattr(args, "source_inventory", None),
     )
     warnings = []
     sprites: dict[str, dict[str, Any]] = {}
@@ -597,9 +769,12 @@ def catalog_gate_checks(
         "min_sprites": meta["sprites"] >= min_sprites,
         "interface_gfx_files_parsed": meta["interface_gfx_files_parsed"] == meta["interface_gfx_files"],
         "unresolved_textures": meta["unresolved_textures"] == 0,
+        # DLC/mod selection changes which allowlisted authored references are
+        # active. Exact closure therefore requires every active missing
+        # texture to be accounted for, not every cross-product allowlist row
+        # to appear in this particular profile.
         "allowed_missing_textures": meta["allowed_missing_textures"]
-        == meta["missing_texture_allowlist"]["entries"],
-        "unused_missing_texture_allowlist_entries": meta["unused_missing_texture_allowlist_entries"] == 0,
+        == meta["missing_textures"],
         "warnings": not meta["warnings"],
     }
     if store_verify_result is not None:

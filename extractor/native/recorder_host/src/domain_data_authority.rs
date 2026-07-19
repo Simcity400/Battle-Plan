@@ -8,7 +8,9 @@ use army_battleplans_depth_live_lane as battleplans54;
 use capitulation_war_state_live as capwar60;
 use characters_leaders_cabinet_live_lane as domain47;
 use construction_buildings_state_damage_live_lane as domain48;
+use design_catalog_context_live_lane as design78;
 use diplomacy_intel_operatives_live as diplomacy53;
+use fired_event_popups_live_lane as fired75;
 use hub_motorization_live_lane as hub62;
 use land_combat_detail_events_live_lane as land_detail55;
 use naval_combat_live_lane as naval4950;
@@ -22,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const SUPPORTED_DOMAIN_DATA_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
     36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 60, 61,
-    62, 63, 64, 65, 66, 67, 68, 69,
+    62, 63, 64, 65, 66, 67, 68, 69, 75, 78,
 ];
 
 pub const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 =
@@ -75,17 +77,25 @@ pub const COMPACT_FRD_DEPTH_HEADER_LEN_V2: usize = 56;
 pub const COMPACT_FRD_DEPTH_HEADER_LEN: usize = 60;
 pub const COMPACT_FRD_DEPTH_SCHEMA_MAGIC: &[u8; 4] = b"FRD2";
 pub const COMPACT_FRD_DEPTH_SCHEMA_VERSION_V2: u16 = 2;
-pub const COMPACT_FRD_DEPTH_SCHEMA_VERSION: u16 = 3;
+pub const COMPACT_FRD_DEPTH_SCHEMA_VERSION_V3: u16 = 3;
+pub const COMPACT_FRD_DEPTH_SCHEMA_VERSION: u16 = 4;
 pub const COMPACT_FRD_RESEARCH_ETA_ROW_LEN: usize = 80;
 pub const COMPACT_FRD_DECISION_STATUS_ROW_LEN: usize = 28;
-pub const COMPACT_FRD_DECISION_TARGET_ROW_FIXED_LEN: usize = 16;
+pub const COMPACT_FRD_DECISION_TARGET_ROW_FIXED_LEN_V3: usize = 16;
+pub const COMPACT_FRD_DECISION_TARGET_ROW_FIXED_LEN: usize = 28;
 pub const COMPACT_FRD_BADGE_ROW_FIXED_LEN: usize = 20;
 pub const COMPACT_FRD_STATUS_FOCUS_PAUSE_BADGED: u32 = 1;
 pub const COMPACT_FRD_STATUS_DECISION_TARGETS_BADGED: u32 = 1 << 1;
 pub const COMPACT_FRD_STATUS_DIRECT_EVENTS_DERIVED: u32 = 1 << 2;
+pub const COMPACT_FRD_STATUS_FOCUS_PAUSE_EXACT: u32 = 1 << 3;
+pub const COMPACT_FRD_STATUS_DECISION_TARGETS_EXACT: u32 = 1 << 4;
+pub const COMPACT_FRD_STATUS_DECISION_COOLDOWNS_EXACT: u32 = 1 << 5;
 pub const COMPACT_FRD_STATUS_KNOWN_MASK: u32 = COMPACT_FRD_STATUS_FOCUS_PAUSE_BADGED
     | COMPACT_FRD_STATUS_DECISION_TARGETS_BADGED
-    | COMPACT_FRD_STATUS_DIRECT_EVENTS_DERIVED;
+    | COMPACT_FRD_STATUS_DIRECT_EVENTS_DERIVED
+    | COMPACT_FRD_STATUS_FOCUS_PAUSE_EXACT
+    | COMPACT_FRD_STATUS_DECISION_TARGETS_EXACT
+    | COMPACT_FRD_STATUS_DECISION_COOLDOWNS_EXACT;
 pub const COMPACT_FRD_BADGE_KIND_FOCUS_PAUSE_FAIL_CLOSED: u32 = 1;
 pub const COMPACT_FRD_BADGE_KIND_DECISION_TARGET_FIELDS_FAIL_CLOSED: u32 = 2;
 pub const COMPACT_FRD_BADGE_KIND_DIRECT_EVENT_HOOKS_UNAVAILABLE: u32 = 3;
@@ -111,9 +121,12 @@ pub const COMPACT_FRD_FOCUS_EVENT_STOPPED: u32 = 3;
 pub const COMPACT_FRD_FOCUS_EVENT_CHANGED: u32 = 4;
 pub const COMPACT_FRD_FOCUS_EVENT_PROGRESS_REGRESSED: u32 = 5;
 pub const COMPACT_FRD_FOCUS_EVENT_INVALID_BOTH_CURRENT_TYPES: u32 = 6;
+pub const COMPACT_FRD_FOCUS_EVENT_STATE_SNAPSHOT: u32 = 7;
 pub const COMPACT_FRD_FOCUS_KIND_CONTINUOUS: u32 = 2;
 pub const COMPACT_FRD_FOCUS_FLAG_COMPLETED_TOKEN_INFERRED: u32 = 1;
 pub const COMPACT_FRD_FOCUS_FLAG_COMPLETED_TOKEN_EXACT: u32 = 1 << 1;
+pub const COMPACT_FRD_FOCUS_FLAG_PAUSED: u32 = 1 << 2;
+pub const COMPACT_FRD_FOCUS_FLAG_PAUSED_PRESENT: u32 = 1 << 3;
 pub const COMPACT_FRD_RESEARCH_FLAG_SAME_TECH: u32 = 1;
 pub const COMPACT_FRD_RESEARCH_FLAG_POSITIVE_SPEED: u32 = 1 << 1;
 pub const COMPACT_FRD_RESEARCH_FLAG_ETA_AVAILABLE: u32 = 1 << 2;
@@ -125,9 +138,14 @@ pub const COMPACT_FRD_DECISION_EVENT_STOPPED: u32 = 2;
 pub const COMPACT_FRD_DECISION_EVENT_DAY_DELTA: u32 = 3;
 pub const COMPACT_FRD_DECISION_EVENT_STATE_CHANGED: u32 = 4;
 pub const COMPACT_FRD_DECISION_EVENT_STATUS_COUNTS_CHANGED: u32 = 5;
+pub const COMPACT_FRD_DECISION_EVENT_RE_ENABLE_COOLDOWN_SNAPSHOT: u32 = 6;
+pub const COMPACT_FRD_DECISION_EVENT_REMOVE_COOLDOWN_SNAPSHOT: u32 = 7;
 pub const COMPACT_FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED: u32 = 1;
+pub const COMPACT_FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED: u32 = 2;
 pub const COMPACT_FRD_DECISION_TARGET_FLAG_COUNTRY_TAG: u32 = 1;
 pub const COMPACT_FRD_DECISION_TARGET_FLAG_RECORD_0X20: u32 = 1 << 1;
+pub const COMPACT_FRD_DECISION_TARGET_FLAG_NUMERIC_ID: u32 = 1 << 2;
+pub const COMPACT_FRD_DECISION_TARGET_FLAG_RECORD_0X24: u32 = 1 << 3;
 pub const COMPACT_FRD_DECISION_TARGET_COUNTRY_FLAGS: u32 =
     COMPACT_FRD_DECISION_TARGET_FLAG_COUNTRY_TAG | COMPACT_FRD_DECISION_TARGET_FLAG_RECORD_0X20;
 pub const COMPACT_MARKET_TRADE_HEADER_LEN: usize = 48;
@@ -177,10 +195,33 @@ pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_KNOWN_MASK: u32 =
 // u32, then 7 x i64 per-resource values). Mirrors the collector's
 // append_compact_market_trade_resource_flow_trailer wire layout.
 pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC: &[u8; 4] = b"MTRF";
-pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION: u16 = 1;
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_LEGACY_VERSION: u16 = 1;
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION: u16 = 2;
 pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN: usize = 32;
 pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_ROW_LEN: usize = 72;
 pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK: u32 = 0x7F;
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_KIND_MASK: u32 = 0x3F;
+pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_MAGIC: &[u8; 4] = b"MTRH";
+pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_VERSION: u16 = 1;
+pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_HEADER_LEN: usize = 24;
+pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_ROW_LEN: usize = 16;
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC: &[u8; 4] = b"MTRR";
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION: u16 = 1;
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN: usize = 32;
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_LEN: usize = 64;
+pub const COMPACT_MARKET_TRADE_RESOURCE_COUNT: u32 = 7;
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC: &[u8; 4] = b"MTRD";
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION: u16 = 1;
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN: usize = 32;
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_ROW_LEN: usize = 96;
+pub const COMPACT_MARKET_TRADE_STOCKPILE_TRAILER_MAGIC: &[u8; 4] = b"MTS1";
+pub const COMPACT_MARKET_TRADE_STOCKPILE_TRAILER_VERSION: u16 = 1;
+pub const COMPACT_MARKET_TRADE_STOCKPILE_HEADER_LEN: usize = 40;
+pub const COMPACT_MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN: usize = 20;
+pub const COMPACT_MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN: usize = 24;
+pub const COMPACT_MARKET_TRADE_STOCKPILE_GLOBAL_FLAGS: u32 = 3;
+pub const COMPACT_MARKET_TRADE_STOCKPILE_COUNTRY_COMPLETE: u32 = 1;
+pub const COMPACT_MARKET_TRADE_STOCKPILE_EQUIPMENT_TYPE: u32 = 70;
 
 // --- W1-W6 newly wired domains 63-69: summarizer decode constants ----------
 // These mirror the collector emit and the world_fold parse (recorder_host
@@ -260,6 +301,7 @@ pub const COMPACT_TECH_SHARING_GROUP_MAX_GROUPS: usize =
     compact_contract::build_profile::DOMAIN69_TECH_SHARING_MAX_GROUPS as usize;
 pub const COMPACT_TECH_SHARING_GROUP_MAX_MEMBERS: usize = 512;
 pub const COMPACT_TECH_SHARING_GROUP_MAX_MEMBER_TAG_DB_ID: u32 = 2_048;
+pub const COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE: u16 = compact_contract::naval_history::DOMAIN_ID;
 
 pub const COMPACT_SUPPLY_LOGISTICS_HEADER_LEN: usize = 48;
 pub const COMPACT_SUPPLY_LOGISTICS_ROW_LEN: usize = 40;
@@ -427,6 +469,11 @@ pub const COMPACT_AIR_STRENGTH_DELTA_HEADER_LEN: usize = 48;
 // Row grew from 68 to 76 bytes with the wave-3 per-wing cumulative scalars
 // (air_accidents u32 @68, experience_raw i32 @72).
 pub const COMPACT_AIR_STRENGTH_DELTA_ROW_LEN: usize = 76;
+pub const COMPACT_AIR_REGION_STATS_TRAILER_MAGIC: u32 = 0x3152_3441;
+pub const COMPACT_AIR_REGION_STATS_TRAILER_VERSION: u16 = 1;
+pub const COMPACT_AIR_REGION_STATS_TRAILER_HEADER_LEN: usize = 32;
+pub const COMPACT_AIR_REGION_STATS_ROW_LEN: usize = 40;
+pub const COMPACT_AIR_REGION_DAMAGE_ROW_LEN: usize = 16;
 pub const COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_LOSS: u32 = 1;
 pub const COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_REINFORCEMENT: u32 = 1 << 1;
 pub const COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_DELETED: u32 = 1 << 2;
@@ -1071,10 +1118,230 @@ fn decode_compact_production_data_payload(
         }
         cursor += 32;
     }
-    // Wave-4 production licensing: parse the optional `PLIC` license trailer.
+    // Parse the strict additive D11 trailer chain (`PLIC`, X4-P1 `PVJ1`,
+    // X4-P2 `PFR1`, XUI12 `PLS1`/`PEF1`, and completeness witnesses).
     if cursor != payload.len() {
-        decode_compact_production_license_trailer(offset, payload, cursor, summary);
+        decode_compact_production_trailers(
+            offset,
+            payload,
+            cursor,
+            country_count,
+            &seen_stockpile,
+            &seen_lines,
+            summary,
+        );
     }
+}
+
+fn decode_compact_production_trailers(
+    offset: usize,
+    payload: &[u8],
+    mut trailer_offset: usize,
+    country_count: usize,
+    base_stockpile: &BTreeSet<(u32, u32)>,
+    base_lines: &BTreeSet<(u32, u32, i32)>,
+    summary: &mut DomainDataDecodeSummary,
+) {
+    let mut plic_seen = false;
+    let mut pvj_seen = false;
+    let mut pfr_seen = false;
+    let mut pls_seen = false;
+    let mut pef_seen = false;
+    let mut pcp_seen = false;
+    while trailer_offset < payload.len() {
+        let Some(magic) = payload.get(trailer_offset..trailer_offset.saturating_add(4)) else {
+            summary.parse_errors.push(format!(
+                "offset {offset}: production trailer at {trailer_offset} has truncated magic"
+            ));
+            return;
+        };
+        let next = if magic == b"PLIC" {
+            if plic_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production has duplicate PLIC trailer"
+                ));
+                return;
+            }
+            plic_seen = true;
+            decode_compact_production_license_trailer(offset, payload, trailer_offset, summary)
+        } else if magic == b"PVJ1" {
+            if pvj_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production has duplicate PVJ1 trailer"
+                ));
+                return;
+            }
+            pvj_seen = true;
+            decode_compact_production_variant_join_trailer(
+                offset,
+                payload,
+                trailer_offset,
+                base_lines,
+                summary,
+            )
+        } else if magic == b"PFR1" {
+            if pfr_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production has duplicate PFR1 trailer"
+                ));
+                return;
+            }
+            pfr_seen = true;
+            decode_compact_production_requested_factories_trailer(
+                offset,
+                payload,
+                trailer_offset,
+                base_lines,
+                summary,
+            )
+        } else if magic == b"PLS1" {
+            if pls_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production has duplicate PLS1 trailer"
+                ));
+                return;
+            }
+            pls_seen = true;
+            decode_compact_production_line_subtype_trailer(
+                offset,
+                payload,
+                trailer_offset,
+                base_lines,
+                summary,
+            )
+        } else if magic == b"PEF1" {
+            if pef_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production has duplicate PEF1 trailer"
+                ));
+                return;
+            }
+            pef_seen = true;
+            decode_compact_production_efficiency_trailer(
+                offset,
+                payload,
+                trailer_offset,
+                base_lines,
+                summary,
+            )
+        } else if magic == b"PCP1" {
+            if pcp_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production has duplicate PCP1 trailer"
+                ));
+                return;
+            }
+            pcp_seen = true;
+            decode_compact_production_completeness_trailer(
+                offset,
+                payload,
+                trailer_offset,
+                country_count,
+                base_stockpile,
+                base_lines,
+                summary,
+            )
+        } else {
+            summary.parse_errors.push(format!(
+                "offset {offset}: production trailing bytes are not a known D11 trailer"
+            ));
+            return;
+        };
+        let Some(next) = next else { return };
+        trailer_offset = next;
+    }
+}
+
+fn decode_compact_production_completeness_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    country_count: usize,
+    base_stockpile: &BTreeSet<(u32, u32)>,
+    base_lines: &BTreeSet<(u32, u32, i32)>,
+    summary: &mut DomainDataDecodeSummary,
+) -> Option<usize> {
+    const HEADER_LEN: usize = 20;
+    const KNOWN_FLAGS: u32 = 0b111;
+    let Some(trailer) = payload.get(trailer_offset..) else {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: PCP1 offset beyond payload"));
+        return None;
+    };
+    if trailer.len() < HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PCP1 trailer is {} byte(s), expected at least {HEADER_LEN}",
+            trailer.len()
+        ));
+        return None;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let segment_len = read_u32_le(trailer, 8) as usize;
+    let row_count = read_u32_le(trailer, 12) as usize;
+    let reserved = read_u32_le(trailer, 16);
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(8));
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || row_count != country_count
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PCP1 header/count/length is invalid"
+        ));
+        return None;
+    }
+    let mut cursor = HEADER_LEN;
+    let mut flags_by_tag = BTreeMap::new();
+    let mut complete_counts = [0usize; 3];
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32_le(trailer, cursor);
+        let flags = read_u32_le(trailer, cursor + 4);
+        cursor += 8;
+        if tag_db_id == 0 || flags_by_tag.insert(tag_db_id, flags).is_some() {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PCP1 row {row_index} has invalid/duplicate tag_db_id {tag_db_id}"
+            ));
+        }
+        if flags & !KNOWN_FLAGS != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PCP1 row {row_index} has unknown flags {flags:#x}"
+            ));
+        }
+        for (bit, count) in complete_counts.iter_mut().enumerate() {
+            if flags & (1 << bit) != 0 {
+                *count += 1;
+            }
+        }
+    }
+    for &(tag_db_id, _) in base_stockpile {
+        if flags_by_tag.get(&tag_db_id).copied().unwrap_or(0) & 1 == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PCP1 marks stockpile unreadable for tag {tag_db_id} with base rows"
+            ));
+        }
+    }
+    for &(tag_db_id, kind, _) in base_lines {
+        let required = if kind == 2 { 1 << 2 } else { 1 << 1 };
+        if flags_by_tag.get(&tag_db_id).copied().unwrap_or(0) & required == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PCP1 marks production line kind {kind} unreadable for tag {tag_db_id} with base rows"
+            ));
+        }
+    }
+    add_compact_domain_data_unit(summary, 11, "production_completeness_rows", row_count);
+    add_compact_domain_data_unit(summary, 11, "stockpile_complete_rows", complete_counts[0]);
+    add_compact_domain_data_unit(
+        summary,
+        11,
+        "military_lines_complete_rows",
+        complete_counts[1],
+    );
+    add_compact_domain_data_unit(summary, 11, "naval_lines_complete_rows", complete_counts[2]);
+    Some(trailer_offset + segment_len)
 }
 
 /// Decode + gate the domain-11 `PLIC` production-license trailer. The trailer
@@ -1085,27 +1352,27 @@ fn decode_compact_production_license_trailer(
     payload: &[u8],
     trailer_offset: usize,
     summary: &mut DomainDataDecodeSummary,
-) {
+) -> Option<usize> {
     const MAGIC: &[u8; 4] = b"PLIC";
     const HEADER_LEN: usize = 20;
     let Some(trailer) = payload.get(trailer_offset..) else {
         summary.parse_errors.push(format!(
             "offset {offset}: production license trailer offset {trailer_offset} beyond payload"
         ));
-        return;
+        return None;
     };
     if trailer.len() < HEADER_LEN {
         summary.parse_errors.push(format!(
             "offset {offset}: production license trailer is {} byte(s), expected at least {HEADER_LEN}",
             trailer.len()
         ));
-        return;
+        return None;
     }
     if &trailer[0..4] != MAGIC {
         summary.parse_errors.push(format!(
             "offset {offset}: production license trailer magic is invalid"
         ));
-        return;
+        return None;
     }
     let version = read_u16_le(trailer, 4);
     let header_len = read_u16_le(trailer, 6) as usize;
@@ -1116,17 +1383,17 @@ fn decode_compact_production_license_trailer(
         summary.parse_errors.push(format!(
             "offset {offset}: production license trailer header shape invalid (version {version}, header_len {header_len}, reserved {reserved})"
         ));
-        return;
+        return None;
     }
     let expected = HEADER_LEN
         .saturating_add(country_rows.saturating_mul(8))
         .saturating_add(id_rows.saturating_mul(4));
-    if trailer.len() != expected {
+    if trailer.len() < expected {
         summary.parse_errors.push(format!(
-            "offset {offset}: production license trailer len {} != {expected}",
+            "offset {offset}: production license trailer len {} < {expected}",
             trailer.len()
         ));
-        return;
+        return None;
     }
     let mut cursor = HEADER_LEN;
     let mut seen_country = BTreeSet::new();
@@ -1157,7 +1424,7 @@ fn decode_compact_production_license_trailer(
         summary.parse_errors.push(format!(
             "offset {offset}: production license id total {total_ids} != id_rows {id_rows}"
         ));
-        return;
+        return None;
     }
     for (tag_db_id, count) in &counts {
         let mut seen_ids = BTreeSet::new();
@@ -1184,6 +1451,322 @@ fn decode_compact_production_license_trailer(
         "production_license_empty_country_rows",
         empty_country_rows,
     );
+    Some(trailer_offset + expected)
+}
+
+fn decode_compact_production_variant_join_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    base_lines: &BTreeSet<(u32, u32, i32)>,
+    summary: &mut DomainDataDecodeSummary,
+) -> Option<usize> {
+    const HEADER_LEN: usize = 20;
+    let Some(trailer) = payload.get(trailer_offset..) else {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: PVJ1 offset beyond payload"));
+        return None;
+    };
+    if trailer.len() < HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PVJ1 trailer is {} byte(s), expected at least {HEADER_LEN}",
+            trailer.len()
+        ));
+        return None;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let segment_len = read_u32_le(trailer, 8) as usize;
+    let row_count = read_u32_le(trailer, 12) as usize;
+    let reserved = read_u32_le(trailer, 16);
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(16));
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PVJ1 header shape invalid (version {version}, header_len {header_len}, segment_len {segment_len}, expected {expected}, reserved {reserved}, available {})",
+            trailer.len()
+        ));
+        return None;
+    }
+    let mut cursor = HEADER_LEN;
+    let mut seen = BTreeSet::new();
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32_le(trailer, cursor);
+        let kind = read_u32_le(trailer, cursor + 4);
+        let line_id = read_i32_le(trailer, cursor + 8);
+        let variant_id = read_u32_le(trailer, cursor + 12);
+        cursor += 16;
+        let key = (tag_db_id, kind, line_id);
+        if tag_db_id == 0 || (kind != 1 && kind != 2) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PVJ1 row {row_index} has invalid tag/kind ({tag_db_id}, {kind})"
+            ));
+        }
+        if variant_id == 0 || variant_id > i32::MAX as u32 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PVJ1 row {row_index} has invalid equipment_variant_id {variant_id}"
+            ));
+        }
+        if !seen.insert(key) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PVJ1 row {row_index} duplicates tag_db_id {tag_db_id} kind {kind} line_id {line_id}"
+            ));
+        }
+    }
+    if seen != *base_lines {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PVJ1 line coverage is not bijective: trailer_rows={} base_lines={}",
+            seen.len(),
+            base_lines.len()
+        ));
+    }
+    add_compact_domain_data_unit(summary, 11, "production_variant_join_rows", row_count);
+    Some(trailer_offset + segment_len)
+}
+
+fn decode_compact_production_requested_factories_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    base_lines: &BTreeSet<(u32, u32, i32)>,
+    summary: &mut DomainDataDecodeSummary,
+) -> Option<usize> {
+    const HEADER_LEN: usize = 20;
+    let Some(trailer) = payload.get(trailer_offset..) else {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: PFR1 offset beyond payload"));
+        return None;
+    };
+    if trailer.len() < HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PFR1 trailer is {} byte(s), expected at least {HEADER_LEN}",
+            trailer.len()
+        ));
+        return None;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let segment_len = read_u32_le(trailer, 8) as usize;
+    let row_count = read_u32_le(trailer, 12) as usize;
+    let reserved = read_u32_le(trailer, 16);
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(16));
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PFR1 header shape invalid (version {version}, header_len {header_len}, segment_len {segment_len}, expected {expected}, reserved {reserved}, available {})",
+            trailer.len()
+        ));
+        return None;
+    }
+    let mut cursor = HEADER_LEN;
+    let mut seen = BTreeSet::new();
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32_le(trailer, cursor);
+        let kind = read_u32_le(trailer, cursor + 4);
+        let line_id = read_i32_le(trailer, cursor + 8);
+        let requested_factories = read_i32_le(trailer, cursor + 12);
+        cursor += 16;
+        let key = (tag_db_id, kind, line_id);
+        if tag_db_id == 0 || (kind != 1 && kind != 2) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PFR1 row {row_index} has invalid tag/kind ({tag_db_id}, {kind})"
+            ));
+        }
+        if !(0..=100_000).contains(&requested_factories) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PFR1 row {row_index} has invalid requested_factories {requested_factories}"
+            ));
+        }
+        if !seen.insert(key) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PFR1 row {row_index} duplicates tag_db_id {tag_db_id} kind {kind} line_id {line_id}"
+            ));
+        }
+    }
+    if seen != *base_lines {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PFR1 line coverage is not bijective: trailer_rows={} base_lines={}",
+            seen.len(),
+            base_lines.len()
+        ));
+    }
+    add_compact_domain_data_unit(
+        summary,
+        11,
+        "production_requested_factories_rows",
+        row_count,
+    );
+    Some(trailer_offset + segment_len)
+}
+
+fn decode_compact_production_line_subtype_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    base_lines: &BTreeSet<(u32, u32, i32)>,
+    summary: &mut DomainDataDecodeSummary,
+) -> Option<usize> {
+    const HEADER_LEN: usize = 20;
+    const ROW_LEN: usize = 16;
+    let Some(trailer) = payload.get(trailer_offset..) else {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: PLS1 offset beyond payload"));
+        return None;
+    };
+    if trailer.len() < HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PLS1 trailer is {} byte(s), expected at least {HEADER_LEN}",
+            trailer.len()
+        ));
+        return None;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let segment_len = read_u32_le(trailer, 8) as usize;
+    let row_count = read_u32_le(trailer, 12) as usize;
+    let reserved = read_u32_le(trailer, 16);
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PLS1 header shape invalid (version {version}, header_len {header_len}, segment_len {segment_len}, expected {expected}, reserved {reserved}, available {})",
+            trailer.len()
+        ));
+        return None;
+    }
+    let mut cursor = HEADER_LEN;
+    let mut seen = BTreeSet::new();
+    let mut subtype_counts = [0usize; 4];
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32_le(trailer, cursor);
+        let kind = read_u32_le(trailer, cursor + 4);
+        let line_id = read_i32_le(trailer, cursor + 8);
+        let subtype = read_u32_le(trailer, cursor + 12);
+        cursor += ROW_LEN;
+        let coherent = matches!((kind, subtype), (1, 1) | (2, 2) | (2, 3) | (1, 4));
+        if tag_db_id == 0 || !coherent {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PLS1 row {row_index} has invalid tag/kind/subtype ({tag_db_id}, {kind}, {subtype})"
+            ));
+        } else {
+            subtype_counts[subtype as usize - 1] =
+                subtype_counts[subtype as usize - 1].saturating_add(1);
+        }
+        if !seen.insert((tag_db_id, kind, line_id)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PLS1 row {row_index} duplicates tag_db_id {tag_db_id} kind {kind} line_id {line_id}"
+            ));
+        }
+    }
+    if seen != *base_lines {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PLS1 line coverage is not bijective: trailer_rows={} base_lines={}",
+            seen.len(),
+            base_lines.len()
+        ));
+    }
+    add_compact_domain_data_unit(summary, 11, "production_line_subtype_rows", row_count);
+    for (name, count) in [
+        ("production_military_subtype_rows", subtype_counts[0]),
+        ("production_naval_subtype_rows", subtype_counts[1]),
+        ("production_ship_refit_subtype_rows", subtype_counts[2]),
+        ("production_railway_gun_subtype_rows", subtype_counts[3]),
+    ] {
+        add_compact_domain_data_unit(summary, 11, name, count);
+    }
+    Some(trailer_offset + segment_len)
+}
+
+fn decode_compact_production_efficiency_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    base_lines: &BTreeSet<(u32, u32, i32)>,
+    summary: &mut DomainDataDecodeSummary,
+) -> Option<usize> {
+    const HEADER_LEN: usize = 20;
+    const ROW_LEN: usize = 36;
+    let Some(trailer) = payload.get(trailer_offset..) else {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: PEF1 offset beyond payload"));
+        return None;
+    };
+    if trailer.len() < HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PEF1 trailer is {} byte(s), expected at least {HEADER_LEN}",
+            trailer.len()
+        ));
+        return None;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let segment_len = read_u32_le(trailer, 8) as usize;
+    let row_count = read_u32_le(trailer, 12) as usize;
+    let reserved = read_u32_le(trailer, 16);
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PEF1 header shape invalid (version {version}, header_len {header_len}, segment_len {segment_len}, expected {expected}, reserved {reserved}, available {})",
+            trailer.len()
+        ));
+        return None;
+    }
+    let mut cursor = HEADER_LEN;
+    let mut seen = BTreeSet::new();
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32_le(trailer, cursor);
+        let kind = read_u32_le(trailer, cursor + 4);
+        let line_id = read_i32_le(trailer, cursor + 8);
+        let efficiency_raw = read_i64_le(trailer, cursor + 12);
+        let efficiency_cap_raw = read_i64_le(trailer, cursor + 20);
+        let efficiency_growth_raw = read_i64_le(trailer, cursor + 28);
+        cursor += ROW_LEN;
+        if tag_db_id == 0 || (kind != 1 && kind != 2) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PEF1 row {row_index} has invalid tag/kind ({tag_db_id}, {kind})"
+            ));
+        }
+        if efficiency_raw < 0 || efficiency_cap_raw < 0 || efficiency_growth_raw < 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PEF1 row {row_index} has negative efficiency values ({efficiency_raw}, {efficiency_cap_raw}, {efficiency_growth_raw})"
+            ));
+        }
+        if !seen.insert((tag_db_id, kind, line_id)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PEF1 row {row_index} duplicates tag_db_id {tag_db_id} kind {kind} line_id {line_id}"
+            ));
+        }
+    }
+    if seen != *base_lines {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PEF1 line coverage is not bijective: trailer_rows={} base_lines={}",
+            seen.len(),
+            base_lines.len()
+        ));
+    }
+    add_compact_domain_data_unit(summary, 11, "production_efficiency_rows", row_count);
+    Some(trailer_offset + segment_len)
 }
 
 fn decode_compact_focus_data_payload(
@@ -1320,12 +1903,12 @@ fn decode_compact_tech_data_payload(
             "offset {offset}: tech live scale {live_scale} != expected {COMPACT_TECH_LIVE_PROGRESS_SCALE_RAW}"
         ));
     }
-    let expected_len = 32usize
+    let minimum_len = 32usize
         .saturating_add(country_count.saturating_mul(16))
         .saturating_add(active_count.saturating_mul(40));
-    if payload.len() != expected_len {
+    if payload.len() < minimum_len {
         summary.parse_errors.push(format!(
-            "offset {offset}: tech data payload is {} byte(s), expected {expected_len}",
+            "offset {offset}: tech data payload is {} byte(s), expected at least {minimum_len}",
             payload.len()
         ));
         return;
@@ -1374,14 +1957,20 @@ fn decode_compact_tech_data_payload(
     }
     let mut seen_slots = BTreeSet::new();
     for row_index in 0..active_count {
+        if cursor.saturating_add(40) > payload.len() {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech active row {row_index} base record is truncated"
+            ));
+            return;
+        }
         let tag_db_id = read_u32_le(payload, cursor);
         let slot_index = read_u32_le(payload, cursor + 4);
         let _tech_handle_raw = read_u32_le(payload, cursor + 8);
         let _tech_def_index_raw = read_u32_le(payload, cursor + 12);
         let _progress_raw = read_u32_le(payload, cursor + 16);
         let flags = read_u32_le(payload, cursor + 20);
-        let _live_progress_raw = read_i64_le(payload, cursor + 24);
-        let _base_required_points_raw = read_i64_le(payload, cursor + 32);
+        let live_progress_raw = read_i64_le(payload, cursor + 24);
+        let base_required_points_raw = read_i64_le(payload, cursor + 32);
         if tag_db_id == 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: tech active row {row_index} has zero tag_db_id"
@@ -1392,7 +1981,7 @@ fn decode_compact_tech_data_payload(
                 "offset {offset}: tech active row {row_index} has invalid slot_index {slot_index}"
             ));
         }
-        if flags & !0b11 != 0 {
+        if flags & !0b1111 != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: tech active row {row_index} has unknown flags {flags}"
             ));
@@ -1403,6 +1992,56 @@ fn decode_compact_tech_data_payload(
             ));
         }
         cursor += 40;
+        if flags & 1 == 0 && live_progress_raw != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech active row {row_index} has live_progress_raw without presence flag"
+            ));
+        }
+        if flags & (1 << 1) == 0 && base_required_points_raw != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech active row {row_index} has base_required_points_raw without presence flag"
+            ));
+        }
+        if flags & (1 << 2) != 0 {
+            match skip_compact_string_len(payload, &mut cursor, "tech active tech_name") {
+                Ok(0) => summary.parse_errors.push(format!(
+                    "offset {offset}: tech active row {row_index} has empty tech_name"
+                )),
+                Ok(_) => {}
+                Err(err) => {
+                    summary.parse_errors.push(format!("offset {offset}: {err}"));
+                    return;
+                }
+            }
+        }
+        if flags & (1 << 3) != 0 {
+            if cursor.saturating_add(32) > payload.len() {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: tech active row {row_index} ahead quartet is truncated"
+                ));
+                return;
+            }
+            let years_raw = read_i64_le(payload, cursor);
+            let penalty_raw = read_i64_le(payload, cursor + 8);
+            let reduction_raw = read_i64_le(payload, cursor + 16);
+            let reduced_penalty_raw = read_i64_le(payload, cursor + 24);
+            if [years_raw, penalty_raw, reduction_raw, reduced_penalty_raw]
+                .iter()
+                .any(|value| !(0..=10_000_000_000i64).contains(value))
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: tech active row {row_index} has invalid ahead fixed-5 quartet"
+                ));
+            }
+            cursor += 32;
+            add_compact_domain_data_unit(summary, 13, "effective_ahead_rows", 1);
+        }
+    }
+    if cursor != payload.len() {
+        summary.parse_errors.push(format!(
+            "offset {offset}: tech data payload has {} trailing byte(s)",
+            payload.len().saturating_sub(cursor)
+        ));
     }
 }
 
@@ -1829,6 +2468,7 @@ fn decode_compact_frd_depth_data_payload(
         add_decoder_status(summary, raw_status_flags);
     }
     let decision_target_count = header.decision_target_count;
+    let decision_target_row_fixed_len = header.decision_target_row_fixed_len;
     let decision_target_omitted_rows = header.decision_target_omitted_rows;
     let depth_status_flags = header.depth_status_flags;
     let focus_count = header.focus_count;
@@ -1852,10 +2492,17 @@ fn decode_compact_frd_depth_data_payload(
             "offset {offset}: focus/research/decisions depth status_flags has unknown bits: {depth_status_flags}"
         ));
     }
-    if depth_status_flags & COMPACT_FRD_STATUS_KNOWN_MASK != COMPACT_FRD_STATUS_KNOWN_MASK {
-        let missing = COMPACT_FRD_STATUS_KNOWN_MASK & !depth_status_flags;
+    let exact_status = COMPACT_FRD_STATUS_FOCUS_PAUSE_EXACT
+        | COMPACT_FRD_STATUS_DECISION_TARGETS_EXACT
+        | COMPACT_FRD_STATUS_DECISION_COOLDOWNS_EXACT;
+    let legacy_status =
+        COMPACT_FRD_STATUS_FOCUS_PAUSE_BADGED | COMPACT_FRD_STATUS_DECISION_TARGETS_BADGED;
+    if depth_status_flags & COMPACT_FRD_STATUS_DIRECT_EVENTS_DERIVED == 0
+        || (depth_status_flags & exact_status != exact_status
+            && depth_status_flags & legacy_status != legacy_status)
+    {
         summary.parse_errors.push(format!(
-            "offset {offset}: focus/research/decisions depth status_flags missing required fail-closed bits: {missing}"
+            "offset {offset}: focus/research/decisions depth status_flags lack a complete exact or legacy authority set"
         ));
     }
 
@@ -1976,6 +2623,7 @@ fn decode_compact_frd_depth_data_payload(
                 | COMPACT_FRD_FOCUS_EVENT_CHANGED
                 | COMPACT_FRD_FOCUS_EVENT_PROGRESS_REGRESSED
                 | COMPACT_FRD_FOCUS_EVENT_INVALID_BOTH_CURRENT_TYPES
+                | COMPACT_FRD_FOCUS_EVENT_STATE_SNAPSHOT
         ) {
             summary.parse_errors.push(format!(
                 "offset {offset}: focus depth row {row_index} has invalid kind {kind}"
@@ -1988,11 +2636,31 @@ fn decode_compact_frd_depth_data_payload(
         }
         if flags
             & !(COMPACT_FRD_FOCUS_FLAG_COMPLETED_TOKEN_INFERRED
-                | COMPACT_FRD_FOCUS_FLAG_COMPLETED_TOKEN_EXACT)
+                | COMPACT_FRD_FOCUS_FLAG_COMPLETED_TOKEN_EXACT
+                | COMPACT_FRD_FOCUS_FLAG_PAUSED
+                | COMPACT_FRD_FOCUS_FLAG_PAUSED_PRESENT)
             != 0
         {
             summary.parse_errors.push(format!(
                 "offset {offset}: focus depth row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if kind == COMPACT_FRD_FOCUS_EVENT_STATE_SNAPSHOT {
+            if flags & COMPACT_FRD_FOCUS_FLAG_PAUSED_PRESENT == 0
+                || flags
+                    & (COMPACT_FRD_FOCUS_FLAG_COMPLETED_TOKEN_INFERRED
+                        | COMPACT_FRD_FOCUS_FLAG_COMPLETED_TOKEN_EXACT)
+                    != 0
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: focus state snapshot row {row_index} has invalid pause flags {flags}"
+                ));
+            }
+        } else if flags & (COMPACT_FRD_FOCUS_FLAG_PAUSED | COMPACT_FRD_FOCUS_FLAG_PAUSED_PRESENT)
+            != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: non-snapshot focus row {row_index} carries pause flags {flags}"
             ));
         }
         if kind == COMPACT_FRD_FOCUS_EVENT_COMPLETED_COUNT_INCREASED {
@@ -2042,6 +2710,7 @@ fn decode_compact_frd_depth_data_payload(
             && to_len == 0
             && completed_len == 0
             && kind != COMPACT_FRD_FOCUS_EVENT_INVALID_BOTH_CURRENT_TYPES
+            && kind != COMPACT_FRD_FOCUS_EVENT_STATE_SNAPSHOT
             && !unresolved_completion
         {
             summary.parse_errors.push(format!(
@@ -2165,6 +2834,7 @@ fn decode_compact_frd_depth_data_payload(
     }
 
     let mut seen_decision_status = BTreeSet::new();
+    let mut targeted_status_count_by_tag = BTreeMap::new();
     let mut targeted_timed_status_count_by_tag = BTreeMap::new();
     for row_index in 0..decision_status_count {
         if let Err(err) = require_compact_remaining(
@@ -2201,6 +2871,7 @@ fn decode_compact_frd_depth_data_payload(
                 "offset {offset}: decision status row {row_index} duplicates tag_db_id {tag_db_id}"
             ));
         }
+        targeted_status_count_by_tag.insert(tag_db_id, counts[1]);
         targeted_timed_status_count_by_tag.insert(tag_db_id, counts[2]);
     }
 
@@ -2237,6 +2908,8 @@ fn decode_compact_frd_depth_data_payload(
                 | COMPACT_FRD_DECISION_EVENT_DAY_DELTA
                 | COMPACT_FRD_DECISION_EVENT_STATE_CHANGED
                 | COMPACT_FRD_DECISION_EVENT_STATUS_COUNTS_CHANGED
+                | COMPACT_FRD_DECISION_EVENT_RE_ENABLE_COOLDOWN_SNAPSHOT
+                | COMPACT_FRD_DECISION_EVENT_REMOVE_COOLDOWN_SNAPSHOT
         ) {
             summary.parse_errors.push(format!(
                 "offset {offset}: decision event row {row_index} has invalid kind {kind}"
@@ -2264,14 +2937,14 @@ fn decode_compact_frd_depth_data_payload(
         }
     }
 
-    let mut decision_target_rows_by_tag: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut decision_target_rows_by_tag_and_source: BTreeMap<(u32, u32), u32> = BTreeMap::new();
     let mut seen_decision_targets = BTreeSet::new();
     let mut country_target_rows = 0usize;
     for row_index in 0..decision_target_count {
         if let Err(err) = require_compact_remaining(
             payload,
             cursor,
-            COMPACT_FRD_DECISION_TARGET_ROW_FIXED_LEN,
+            decision_target_row_fixed_len,
             "decision target row",
         ) {
             summary.parse_errors.push(format!("offset {offset}: {err}"));
@@ -2281,7 +2954,11 @@ fn decode_compact_frd_depth_data_payload(
         let target_id = read_u32_le(payload, cursor + 4);
         let flags = read_u32_le(payload, cursor + 8);
         let source_kind = read_u32_le(payload, cursor + 12);
-        cursor += COMPACT_FRD_DECISION_TARGET_ROW_FIXED_LEN;
+        let detailed = decision_target_row_fixed_len == COMPACT_FRD_DECISION_TARGET_ROW_FIXED_LEN;
+        let lifecycle_state = detailed.then(|| read_i32_le(payload, cursor + 16));
+        let ignore_raw = detailed.then(|| read_u32_le(payload, cursor + 20));
+        let days = detailed.then(|| read_i32_le(payload, cursor + 24));
+        cursor += decision_target_row_fixed_len;
         let decision = match read_compact_string(payload, &mut cursor, "decision target token") {
             Ok(decision) => decision,
             Err(err) => {
@@ -2295,17 +2972,26 @@ fn decode_compact_frd_depth_data_payload(
                 "offset {offset}: decision target row {row_index} has invalid owner tag_db_id {tag_db_id}"
             ));
         }
-        if flags != COMPACT_FRD_DECISION_TARGET_COUNTRY_FLAGS {
+        let country_flags = flags == COMPACT_FRD_DECISION_TARGET_COUNTRY_FLAGS;
+        let numeric_flags = flags
+            == (COMPACT_FRD_DECISION_TARGET_FLAG_NUMERIC_ID
+                | COMPACT_FRD_DECISION_TARGET_FLAG_RECORD_0X24);
+        if !country_flags && !numeric_flags {
             summary.parse_errors.push(format!(
-                "offset {offset}: decision target row {row_index} has non-country or unknown flags {flags:#x}"
+                "offset {offset}: decision target row {row_index} has unknown or mixed flags {flags:#x}"
             ));
         }
-        if target_id == 0 || target_id > COMPACT_MAX_OWNER_TAG_DB_ID {
+        if target_id == 0
+            || (country_flags && target_id > COMPACT_MAX_OWNER_TAG_DB_ID)
+            || (numeric_flags && target_id > 1_000_000)
+        {
             summary.parse_errors.push(format!(
-                "offset {offset}: decision target row {row_index} has invalid country target id {target_id}"
+                "offset {offset}: decision target row {row_index} has invalid typed target id {target_id}"
             ));
         }
-        if source_kind != COMPACT_FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED {
+        if source_kind != COMPACT_FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED
+            && (source_kind != COMPACT_FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED || !detailed)
+        {
             summary.parse_errors.push(format!(
                 "offset {offset}: decision target row {row_index} has invalid source_kind {source_kind}"
             ));
@@ -2315,20 +3001,52 @@ fn decode_compact_frd_depth_data_payload(
                 "offset {offset}: decision target row {row_index} has no decision token"
             ));
         }
+        if let (Some(lifecycle_state), Some(ignore_raw), Some(days)) =
+            (lifecycle_state, ignore_raw, days)
+        {
+            if !(0..=4).contains(&lifecycle_state) {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: decision target row {row_index} has invalid lifecycle_state {lifecycle_state}"
+                ));
+            }
+            if ignore_raw > 1 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: decision target row {row_index} has invalid ignore value {ignore_raw}"
+                ));
+            }
+            if !(-100_000..=100_000).contains(&days) {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: decision target row {row_index} has invalid days {days}"
+                ));
+            }
+        }
         if !seen_decision_targets.insert((tag_db_id, target_id, source_kind, decision.clone())) {
             summary.parse_errors.push(format!(
                 "offset {offset}: decision target row {row_index} duplicates owner/target/source key"
             ));
         }
-        country_target_rows = country_target_rows.saturating_add(1);
-        let count = decision_target_rows_by_tag.entry(tag_db_id).or_insert(0);
+        if country_flags {
+            country_target_rows = country_target_rows.saturating_add(1);
+        }
+        let count = decision_target_rows_by_tag_and_source
+            .entry((tag_db_id, source_kind))
+            .or_insert(0);
         *count = count.saturating_add(1);
     }
-    for (tag_db_id, target_rows) in decision_target_rows_by_tag {
-        match targeted_timed_status_count_by_tag.get(&tag_db_id).copied() {
+    for ((tag_db_id, source_kind), target_rows) in decision_target_rows_by_tag_and_source {
+        let status_count = match source_kind {
+            COMPACT_FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED => {
+                targeted_status_count_by_tag.get(&tag_db_id).copied()
+            }
+            COMPACT_FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED => {
+                targeted_timed_status_count_by_tag.get(&tag_db_id).copied()
+            }
+            _ => None,
+        };
+        match status_count {
             Some(status_count) if target_rows <= status_count => {}
             Some(status_count) => summary.parse_errors.push(format!(
-                "offset {offset}: decision target rows {target_rows} exceed targeted_timed_count {status_count} for tag_db_id {tag_db_id}"
+                "offset {offset}: decision target rows {target_rows} exceed source_kind {source_kind} status count {status_count} for tag_db_id {tag_db_id}"
             )),
             None => summary.parse_errors.push(format!(
                 "offset {offset}: decision target rows exist without a decision status row for tag_db_id {tag_db_id}"
@@ -2455,29 +3173,35 @@ fn decode_compact_frd_depth_data_payload(
         }
     }
 
-    for (flag, kind, name) in [
+    for (flag, exact_flag, kind, name) in [
         (
             COMPACT_FRD_STATUS_FOCUS_PAUSE_BADGED,
+            COMPACT_FRD_STATUS_FOCUS_PAUSE_EXACT,
             COMPACT_FRD_BADGE_KIND_FOCUS_PAUSE_FAIL_CLOSED,
             "focus pause",
         ),
         (
             COMPACT_FRD_STATUS_DECISION_TARGETS_BADGED,
+            COMPACT_FRD_STATUS_DECISION_TARGETS_EXACT,
             COMPACT_FRD_BADGE_KIND_DECISION_TARGET_FIELDS_FAIL_CLOSED,
             "decision target fields",
         ),
         (
             COMPACT_FRD_STATUS_DIRECT_EVENTS_DERIVED,
+            0,
             COMPACT_FRD_BADGE_KIND_DIRECT_EVENT_HOOKS_UNAVAILABLE,
             "direct event hooks",
         ),
     ] {
-        if depth_status_flags & flag != 0 && !badge_kinds.contains(&kind) {
+        if depth_status_flags & exact_flag == 0
+            && depth_status_flags & flag != 0
+            && !badge_kinds.contains(&kind)
+        {
             summary.parse_errors.push(format!(
                 "offset {offset}: focus/research/decisions depth status flag for {name} lacks badge row"
             ));
         }
-        if !badge_kinds.contains(&kind) {
+        if depth_status_flags & exact_flag == 0 && !badge_kinds.contains(&kind) {
             summary.parse_errors.push(format!(
                 "offset {offset}: focus/research/decisions depth missing required {name} badge row"
             ));
@@ -2494,6 +3218,7 @@ fn decode_compact_frd_depth_data_payload(
 #[derive(Clone, Copy)]
 struct CompactFrdDepthHeader {
     header_len: usize,
+    decision_target_row_fixed_len: usize,
     raw_status_flags: Option<u32>,
     decision_target_count: usize,
     decision_target_omitted_rows: usize,
@@ -2540,7 +3265,10 @@ fn decode_compact_frd_depth_header(
         let header_len = read_u16_le(payload, 6) as usize;
         let raw_status_flags = match (schema_version, header_len) {
             (COMPACT_FRD_DEPTH_SCHEMA_VERSION_V2, COMPACT_FRD_DEPTH_HEADER_LEN_V2) => None,
-            (COMPACT_FRD_DEPTH_SCHEMA_VERSION, COMPACT_FRD_DEPTH_HEADER_LEN) => {
+            (
+                COMPACT_FRD_DEPTH_SCHEMA_VERSION_V3 | COMPACT_FRD_DEPTH_SCHEMA_VERSION,
+                COMPACT_FRD_DEPTH_HEADER_LEN,
+            ) => {
                 if payload.len() < COMPACT_FRD_DEPTH_HEADER_LEN {
                     summary.parse_errors.push(format!(
                         "offset {offset}: focus/research/decisions depth v3 payload is {} byte(s), expected at least {COMPACT_FRD_DEPTH_HEADER_LEN}",
@@ -2559,6 +3287,11 @@ fn decode_compact_frd_depth_header(
         };
         return Some(CompactFrdDepthHeader {
             header_len,
+            decision_target_row_fixed_len: if schema_version == COMPACT_FRD_DEPTH_SCHEMA_VERSION {
+                COMPACT_FRD_DECISION_TARGET_ROW_FIXED_LEN
+            } else {
+                COMPACT_FRD_DECISION_TARGET_ROW_FIXED_LEN_V3
+            },
             raw_status_flags,
             depth_status_flags: read_u32_le(payload, 8),
             focus_count: read_u32_le(payload, 12) as usize,
@@ -2576,6 +3309,7 @@ fn decode_compact_frd_depth_header(
     }
     Some(CompactFrdDepthHeader {
         header_len: COMPACT_FRD_DEPTH_HEADER_LEN_V1,
+        decision_target_row_fixed_len: COMPACT_FRD_DECISION_TARGET_ROW_FIXED_LEN_V3,
         raw_status_flags: None,
         decision_target_count: 0,
         decision_target_omitted_rows: 0,
@@ -4923,11 +5657,11 @@ fn decode_compact_air_combat_losses_live_data_payload(
             "offset {offset}: air combat losses live header reserved field is nonzero"
         ));
     }
-    let expected_len = COMPACT_AIR_STRENGTH_DELTA_HEADER_LEN
+    let legacy_len = COMPACT_AIR_STRENGTH_DELTA_HEADER_LEN
         .saturating_add(row_count.saturating_mul(COMPACT_AIR_STRENGTH_DELTA_ROW_LEN));
-    if payload.len() != expected_len {
+    if payload.len() < legacy_len {
         summary.parse_errors.push(format!(
-            "offset {offset}: air combat losses live data payload is {} byte(s), expected {expected_len}",
+            "offset {offset}: air combat losses live data payload is {} byte(s), expected at least {legacy_len}",
             payload.len()
         ));
         return;
@@ -5200,6 +5934,127 @@ fn decode_compact_air_combat_losses_live_data_payload(
         42,
         "air_strength_scalar_change_rows",
         scalar_change_rows,
+    );
+
+    // Historical payloads ended at the legacy wing rows. Current-build
+    // payloads append the exact A4R1 regional combat-history state.
+    if payload.len() == legacy_len {
+        return;
+    }
+    let trailer = legacy_len;
+    if let Err(err) = require_compact_remaining(
+        payload,
+        trailer,
+        COMPACT_AIR_REGION_STATS_TRAILER_HEADER_LEN,
+        "air combat regional stats trailer",
+    ) {
+        summary.parse_errors.push(format!("offset {offset}: {err}"));
+        return;
+    }
+    let magic = read_u32_le(payload, trailer);
+    let version = read_u16_le(payload, trailer + 4);
+    let header_len = read_u16_le(payload, trailer + 6) as usize;
+    let region_row_count = read_u32_le(payload, trailer + 8) as usize;
+    let damage_row_count = read_u32_le(payload, trailer + 12) as usize;
+    let observed_region_objects = read_u32_le(payload, trailer + 16) as usize;
+    let reserved0 = read_u32_le(payload, trailer + 20);
+    let reserved1 = read_u32_le(payload, trailer + 24);
+    let reserved2 = read_u32_le(payload, trailer + 28);
+    if magic != COMPACT_AIR_REGION_STATS_TRAILER_MAGIC
+        || version != COMPACT_AIR_REGION_STATS_TRAILER_VERSION
+        || header_len != COMPACT_AIR_REGION_STATS_TRAILER_HEADER_LEN
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: invalid air combat regional stats trailer identity"
+        ));
+        return;
+    }
+    if reserved0 != 0 || reserved1 != 0 || reserved2 != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air combat regional stats trailer reserved field is nonzero"
+        ));
+    }
+    let region_bytes = region_row_count.saturating_mul(COMPACT_AIR_REGION_STATS_ROW_LEN);
+    let damage_bytes = damage_row_count.saturating_mul(COMPACT_AIR_REGION_DAMAGE_ROW_LEN);
+    let expected_len = trailer
+        .saturating_add(header_len)
+        .saturating_add(region_bytes)
+        .saturating_add(damage_bytes);
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air combat regional stats payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+    let region_base = trailer + header_len;
+    let damage_base = region_base + region_bytes;
+    let mut expected_damage_first = 0usize;
+    for index in 0..region_row_count {
+        let base = region_base + index * COMPACT_AIR_REGION_STATS_ROW_LEN;
+        let owner = read_u32_le(payload, base);
+        let region_id = read_u32_le(payload, base + 4);
+        let side_vector = payload[base + 8];
+        let selection_flag = payload[base + 9];
+        let classification_flag = payload[base + 10];
+        let copied_flag = payload[base + 11];
+        let wing_id = read_u32_le(payload, base + 12);
+        let plane_count = read_u32_le(payload, base + 20);
+        let attributed_country = read_u32_le(payload, base + 28);
+        let damage_first = read_u32_le(payload, base + 32) as usize;
+        let damage_count = read_u32_le(payload, base + 36) as usize;
+        if owner == 0
+            || owner > COMPACT_AIR_WING_MAX_OWNER_TAG_DB_ID
+            || attributed_country == 0
+            || attributed_country > COMPACT_AIR_WING_MAX_OWNER_TAG_DB_ID
+            || region_id > COMPACT_AIR_WING_MAX_MISSION_REGION_ID
+            || wing_id == 0
+            || wing_id > COMPACT_AIR_WING_MAX_ID
+            || plane_count > COMPACT_AIR_WING_MAX_PLANES
+            || side_vector > 1
+            || selection_flag > 1
+            || classification_flag > 1
+            || copied_flag > 1
+            || damage_first != expected_damage_first
+            || damage_first.saturating_add(damage_count) > damage_row_count
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: invalid air combat regional stats row {index}"
+            ));
+        }
+        expected_damage_first = damage_first.saturating_add(damage_count);
+    }
+    if expected_damage_first != damage_row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air combat regional stats damage coverage mismatch"
+        ));
+    }
+    for index in 0..damage_row_count {
+        let base = damage_base + index * COMPACT_AIR_REGION_DAMAGE_ROW_LEN;
+        let channel = payload[base];
+        let cause_type = payload[base + 1];
+        let reserved16 = read_u16_le(payload, base + 2);
+        let reserved32 = read_u32_le(payload, base + 4);
+        let amount_raw = read_i64_le(payload, base + 8);
+        if channel > 1
+            || cause_type > 10
+            || reserved16 != 0
+            || reserved32 != 0
+            || amount_raw < 0
+            || amount_raw > 1_000_000_000_000_000
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: invalid air combat regional damage row {index}"
+            ));
+        }
+    }
+    add_compact_domain_data_unit(summary, 42, "air_region_combat_stat_rows", region_row_count);
+    add_compact_domain_data_unit(summary, 42, "air_region_damage_rows", damage_row_count);
+    add_compact_domain_data_unit(
+        summary,
+        42,
+        "air_region_combat_objects",
+        observed_region_objects,
     );
 }
 
@@ -6136,6 +6991,18 @@ fn decode_compact_hub_motorization_live_data_payload(
         COMPACT_DOMAIN_HUB_MOTORIZATION_LIVE,
         "hub_motorization_map_entries",
         lane_summary.total_map_entries as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_HUB_MOTORIZATION_LIVE,
+        "hub_motorization_level_1_entries",
+        lane_summary.level_one_entries as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_HUB_MOTORIZATION_LIVE,
+        "hub_motorization_level_2_entries",
+        lane_summary.level_two_entries as usize,
     );
 }
 
@@ -8157,55 +9024,88 @@ fn decode_compact_market_trade_data_payload(
     // two are independent — so MTRF can appear WITHOUT MTD1. Dispatch by trailer
     // magic (mirroring the world_fold trailer walk) rather than assuming MTD1 is
     // always first; otherwise an MTD1-absent/MTRF-present record false-fails.
-    if cursor < payload.len() {
-        let magic = payload.get(cursor..cursor.saturating_add(4));
-        if magic == Some(COMPACT_MARKET_TRADE_DETAIL_TRAILER_MAGIC.as_slice()) {
-            let (detail_rows, mtd1_end) = decode_compact_market_trade_detail_trailer(
+    let mut detail_rows = 0usize;
+    let mut detail_seen = false;
+    let mut stockpile_seen = false;
+    while cursor < payload.len() {
+        let Some(magic) = payload.get(cursor..cursor.saturating_add(4)) else {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade trailer is too short to contain magic"
+            ));
+            break;
+        };
+        let next = if magic == COMPACT_MARKET_TRADE_DETAIL_TRAILER_MAGIC {
+            if detail_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: market trade has duplicate MTD1 trailer"
+                ));
+                break;
+            }
+            let (rows, end) = decode_compact_market_trade_detail_trailer(
                 offset,
                 payload,
                 cursor,
                 &seen_contracts,
                 summary,
             );
-            add_compact_domain_data_unit(summary, 43, "market_trade_detail_rows", detail_rows);
-            add_compact_domain_data_unit(
+            detail_rows = rows;
+            detail_seen = true;
+            end
+        } else if magic == COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC {
+            decode_compact_market_trade_resource_flow_trailer(offset, payload, cursor, summary)
+        } else if magic == COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_MAGIC {
+            decode_compact_market_trade_sized_trailer(
+                offset,
+                payload,
+                cursor,
+                COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_VERSION,
+                COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_HEADER_LEN,
+                COMPACT_MARKET_TRADE_FACTORY_HEADER_ROW_LEN,
+                "MTRH",
+                "market_trade_factory_header_rows",
                 summary,
-                43,
-                "market_trade_detail_omitted_rows",
-                row_count.saturating_sub(detail_rows),
-            );
-            // An MTRF resource-flow trailer may follow the MTD1 block.
-            if mtd1_end < payload.len() {
-                decode_compact_market_trade_resource_flow_trailer(
-                    offset, payload, mtd1_end, summary,
-                );
+            )
+        } else if magic == COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC {
+            decode_compact_market_trade_sized_trailer(
+                offset,
+                payload,
+                cursor,
+                COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
+                COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN,
+                COMPACT_MARKET_TRADE_RESOURCE_ROW_LEN,
+                "MTRR",
+                "market_trade_resource_rows",
+                summary,
+            )
+        } else if magic == COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC {
+            decode_compact_market_trade_classic_deal_trailer(offset, payload, cursor, summary)
+        } else if magic == COMPACT_MARKET_TRADE_STOCKPILE_TRAILER_MAGIC {
+            if stockpile_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: market trade has duplicate MTS1 trailer"
+                ));
+                break;
             }
-        } else if magic == Some(COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC.as_slice()) {
-            // MTRF present without a preceding MTD1 block.
-            add_compact_domain_data_unit(summary, 43, "market_trade_detail_rows", 0);
-            add_compact_domain_data_unit(
-                summary,
-                43,
-                "market_trade_detail_omitted_rows",
-                row_count,
-            );
-            decode_compact_market_trade_resource_flow_trailer(offset, payload, cursor, summary);
+            stockpile_seen = true;
+            decode_compact_market_trade_stockpile_trailer(offset, payload, cursor, summary)
         } else {
-            add_compact_domain_data_unit(summary, 43, "market_trade_detail_rows", 0);
-            add_compact_domain_data_unit(
-                summary,
-                43,
-                "market_trade_detail_omitted_rows",
-                row_count,
-            );
             summary.parse_errors.push(format!(
-                "offset {offset}: market trade trailing bytes are neither MTD1 nor MTRF trailer"
+                "offset {offset}: market trade trailing bytes have unknown trailer magic"
             ));
+            break;
+        };
+        if next <= cursor {
+            break;
         }
-    } else {
-        add_compact_domain_data_unit(summary, 43, "market_trade_detail_rows", 0);
-        add_compact_domain_data_unit(summary, 43, "market_trade_detail_omitted_rows", row_count);
+        cursor = next;
     }
+    add_compact_domain_data_unit(summary, 43, "market_trade_detail_rows", detail_rows);
+    add_compact_domain_data_unit(
+        summary,
+        43,
+        "market_trade_detail_omitted_rows",
+        row_count.saturating_sub(detail_rows),
+    );
 }
 
 fn decode_compact_market_trade_detail_trailer(
@@ -8554,14 +9454,14 @@ fn decode_compact_market_trade_resource_flow_trailer(
     payload: &[u8],
     trailer_offset: usize,
     summary: &mut DomainDataDecodeSummary,
-) {
+) -> usize {
     if payload.get(trailer_offset..trailer_offset.saturating_add(4))
         != Some(COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC.as_slice())
     {
         summary.parse_errors.push(format!(
             "offset {offset}: market trade trailing bytes are not MTRF resource-flow trailer"
         ));
-        return;
+        return trailer_offset;
     }
     if let Err(err) = require_compact_remaining(
         payload,
@@ -8570,7 +9470,7 @@ fn decode_compact_market_trade_resource_flow_trailer(
         "market trade MTRF trailer header",
     ) {
         summary.parse_errors.push(format!("offset {offset}: {err}"));
-        return;
+        return trailer_offset;
     }
 
     let version = read_u16_le(payload, trailer_offset + 4);
@@ -8578,21 +9478,24 @@ fn decode_compact_market_trade_resource_flow_trailer(
     let row_len = read_u16_le(payload, trailer_offset + 8) as usize;
     let reserved0 = read_u16_le(payload, trailer_offset + 10);
     let row_count = read_u32_le(payload, trailer_offset + 12) as usize;
-    let row_count_dup = read_u32_le(payload, trailer_offset + 16) as usize;
+    let count_or_country_count = read_u32_le(payload, trailer_offset + 16) as usize;
     let scale_raw = read_u32_le(payload, trailer_offset + 20);
     let resource_mask = read_u32_le(payload, trailer_offset + 24);
-    let reserved1 = read_u32_le(payload, trailer_offset + 28);
+    let reserved_or_kind_mask = read_u32_le(payload, trailer_offset + 28);
 
-    if version != COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION {
+    if ![
+        COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_LEGACY_VERSION,
+        COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION,
+    ]
+    .contains(&version)
+    {
         summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTRF version {version} != {}",
-            COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION
+            "offset {offset}: market trade MTRF version {version} is unsupported"
         ));
     }
     if header_len != COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN
         || row_len != COMPACT_MARKET_TRADE_RESOURCE_FLOW_ROW_LEN
         || reserved0 != 0
-        || reserved1 != 0
     {
         // Return early: `expected_len` below multiplies by the attacker-supplied
         // row_len, so a bad header shape must not be trusted to derive the length.
@@ -8601,11 +9504,21 @@ fn decode_compact_market_trade_resource_flow_trailer(
         summary.parse_errors.push(format!(
             "offset {offset}: market trade MTRF header shape is invalid"
         ));
-        return;
+        return trailer_offset;
     }
-    if row_count_dup != row_count {
+    if version == COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_LEGACY_VERSION {
+        if count_or_country_count != row_count || reserved_or_kind_mask != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade legacy MTRF count/reserved fields are invalid"
+            ));
+        }
+    } else if row_count
+        != count_or_country_count
+            .saturating_mul(COMPACT_MARKET_TRADE_RESOURCE_FLOW_KIND_MASK.count_ones() as usize)
+        || reserved_or_kind_mask != COMPACT_MARKET_TRADE_RESOURCE_FLOW_KIND_MASK
+    {
         summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTRF row_count {row_count} != dup {row_count_dup}"
+            "offset {offset}: market trade MTRF v2 country/kind shape is invalid"
         ));
     }
     if scale_raw != COMPACT_FIXED_SCALE_RAW {
@@ -8623,15 +9536,286 @@ fn decode_compact_market_trade_resource_flow_trailer(
     let expected_len = trailer_offset
         .saturating_add(header_len)
         .saturating_add(row_count.saturating_mul(row_len));
-    if payload.len() != expected_len {
+    if payload.len() < expected_len {
         summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTRF len {} != {expected_len}",
+            "offset {offset}: market trade MTRF len {} < {expected_len}",
             payload.len()
         ));
-        return;
+        return trailer_offset;
     }
 
     add_compact_domain_data_unit(summary, 43, "market_trade_resource_flow_rows", row_count);
+    expected_len
+}
+
+fn decode_compact_market_trade_sized_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    expected_version: u16,
+    expected_header_len: usize,
+    expected_row_len: usize,
+    label: &str,
+    unit_name: &str,
+    summary: &mut DomainDataDecodeSummary,
+) -> usize {
+    if payload.get(trailer_offset..trailer_offset.saturating_add(4)) != Some(label.as_bytes()) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade trailing bytes are not {label} trailer"
+        ));
+        return trailer_offset;
+    }
+    if let Err(err) = require_compact_remaining(
+        payload,
+        trailer_offset,
+        expected_header_len,
+        "market trade sized trailer header",
+    ) {
+        summary.parse_errors.push(format!("offset {offset}: {err}"));
+        return trailer_offset;
+    }
+
+    let version = read_u16_le(payload, trailer_offset + 4);
+    let header_len = read_u16_le(payload, trailer_offset + 6) as usize;
+    let row_len = read_u16_le(payload, trailer_offset + 8) as usize;
+    let reserved0 = read_u16_le(payload, trailer_offset + 10);
+    let row_count = read_u32_le(payload, trailer_offset + 12) as usize;
+    if version != expected_version
+        || header_len != expected_header_len
+        || row_len != expected_row_len
+        || reserved0 != 0
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade {label} header shape is invalid"
+        ));
+        return trailer_offset;
+    }
+
+    let shape_valid = if label == "MTRH" {
+        let country_count = read_u32_le(payload, trailer_offset + 16) as usize;
+        let reserved1 = read_u32_le(payload, trailer_offset + 20);
+        country_count == row_count && reserved1 == 0
+    } else if label == "MTRR" {
+        let country_count = read_u32_le(payload, trailer_offset + 16) as usize;
+        let resource_count = read_u32_le(payload, trailer_offset + 20);
+        let display_scale = read_u32_le(payload, trailer_offset + 24);
+        let reserved1 = read_u32_le(payload, trailer_offset + 28);
+        resource_count == COMPACT_MARKET_TRADE_RESOURCE_COUNT
+            && display_scale == 1
+            && reserved1 == 0
+            && row_count
+                == country_count.saturating_mul(COMPACT_MARKET_TRADE_RESOURCE_COUNT as usize)
+    } else {
+        false
+    };
+    if !shape_valid {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade {label} count/shape fields are invalid"
+        ));
+        return trailer_offset;
+    }
+
+    let expected_len = trailer_offset
+        .saturating_add(header_len)
+        .saturating_add(row_count.saturating_mul(row_len));
+    if payload.len() < expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade {label} len {} < {expected_len}",
+            payload.len()
+        ));
+        return trailer_offset;
+    }
+    add_compact_domain_data_unit(summary, 43, unit_name, row_count);
+    expected_len
+}
+
+fn decode_compact_market_trade_classic_deal_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    summary: &mut DomainDataDecodeSummary,
+) -> usize {
+    if payload.get(trailer_offset..trailer_offset.saturating_add(4))
+        != Some(COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC.as_slice())
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade trailing bytes are not MTRD classic-deal trailer"
+        ));
+        return trailer_offset;
+    }
+    if let Err(err) = require_compact_remaining(
+        payload,
+        trailer_offset,
+        COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN,
+        "market trade MTRD trailer header",
+    ) {
+        summary.parse_errors.push(format!("offset {offset}: {err}"));
+        return trailer_offset;
+    }
+
+    let version = read_u16_le(payload, trailer_offset + 4);
+    let header_len = read_u16_le(payload, trailer_offset + 6) as usize;
+    let row_len = read_u16_le(payload, trailer_offset + 8) as usize;
+    let reserved0 = read_u16_le(payload, trailer_offset + 10);
+    let row_count = read_u32_le(payload, trailer_offset + 12) as usize;
+    let country_count = read_u32_le(payload, trailer_offset + 16) as usize;
+    let scale_raw = read_u32_le(payload, trailer_offset + 20);
+    let witness_count = read_u32_le(payload, trailer_offset + 24) as usize;
+    let reserved1 = read_u32_le(payload, trailer_offset + 28);
+    if version != COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION
+        || header_len != COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN
+        || row_len != COMPACT_MARKET_TRADE_CLASSIC_DEAL_ROW_LEN
+        || reserved0 != 0
+        || reserved1 != 0
+        || scale_raw != COMPACT_FIXED_SCALE_RAW
+        || witness_count != country_count
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade MTRD header shape is invalid"
+        ));
+        return trailer_offset;
+    }
+
+    let expected_len = trailer_offset
+        .saturating_add(header_len)
+        .saturating_add(witness_count.saturating_mul(4))
+        .saturating_add(row_count.saturating_mul(row_len));
+    if payload.len() < expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade MTRD len {} < {expected_len}",
+            payload.len()
+        ));
+        return trailer_offset;
+    }
+    add_compact_domain_data_unit(
+        summary,
+        43,
+        "market_trade_classic_deal_country_witnesses",
+        witness_count,
+    );
+    add_compact_domain_data_unit(summary, 43, "market_trade_classic_deal_rows", row_count);
+    expected_len
+}
+
+fn decode_compact_market_trade_stockpile_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    summary: &mut DomainDataDecodeSummary,
+) -> usize {
+    if let Err(err) = require_compact_remaining(
+        payload,
+        trailer_offset,
+        COMPACT_MARKET_TRADE_STOCKPILE_HEADER_LEN,
+        "market trade MTS1 trailer header",
+    ) {
+        summary.parse_errors.push(format!("offset {offset}: {err}"));
+        return trailer_offset;
+    }
+    let version = read_u16_le(payload, trailer_offset + 4);
+    let header_len = read_u16_le(payload, trailer_offset + 6) as usize;
+    let country_row_len = read_u16_le(payload, trailer_offset + 8) as usize;
+    let item_row_len = read_u16_le(payload, trailer_offset + 10) as usize;
+    let segment_len = read_u32_le(payload, trailer_offset + 12) as usize;
+    let country_count = read_u32_le(payload, trailer_offset + 16) as usize;
+    let item_count = read_u32_le(payload, trailer_offset + 20) as usize;
+    let expected_country_count = read_u32_le(payload, trailer_offset + 24) as usize;
+    let scale_raw = read_u32_le(payload, trailer_offset + 28);
+    let flags = read_u32_le(payload, trailer_offset + 32);
+    let reserved = read_u32_le(payload, trailer_offset + 36);
+    let expected_segment_len = COMPACT_MARKET_TRADE_STOCKPILE_HEADER_LEN
+        .saturating_add(
+            country_count.saturating_mul(COMPACT_MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN),
+        )
+        .saturating_add(item_count.saturating_mul(COMPACT_MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN));
+    if version != COMPACT_MARKET_TRADE_STOCKPILE_TRAILER_VERSION
+        || header_len != COMPACT_MARKET_TRADE_STOCKPILE_HEADER_LEN
+        || country_row_len != COMPACT_MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN
+        || item_row_len != COMPACT_MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN
+        || segment_len != expected_segment_len
+        || country_count == 0
+        || country_count != expected_country_count
+        || scale_raw != COMPACT_FIXED_SCALE_RAW
+        || flags != COMPACT_MARKET_TRADE_STOCKPILE_GLOBAL_FLAGS
+        || reserved != 0
+        || trailer_offset.saturating_add(segment_len) > payload.len()
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade MTS1 header/count/length is invalid"
+        ));
+        return trailer_offset;
+    }
+
+    let mut seen_tags = BTreeSet::new();
+    let mut expected_first = 0usize;
+    for row_index in 0..country_count {
+        let cursor = trailer_offset + header_len + row_index * country_row_len;
+        let tag_db_id = read_u32_le(payload, cursor);
+        let item_first = read_u32_le(payload, cursor + 4) as usize;
+        let row_item_count = read_u32_le(payload, cursor + 8) as usize;
+        let row_flags = read_u32_le(payload, cursor + 12);
+        let row_reserved = read_u32_le(payload, cursor + 16);
+        let item_end = item_first.saturating_add(row_item_count);
+        if tag_db_id == 0
+            || tag_db_id > COMPACT_MARKET_TRADE_MAX_TAG_DB_ID
+            || !seen_tags.insert(tag_db_id)
+            || item_first != expected_first
+            || item_end > item_count
+            || row_flags != COMPACT_MARKET_TRADE_STOCKPILE_COUNTRY_COMPLETE
+            || row_reserved != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade MTS1 country row {row_index} has invalid tag/range/completeness"
+            ));
+            return trailer_offset;
+        }
+        expected_first = item_end;
+    }
+    if expected_first != item_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade MTS1 country ranges cover {expected_first} item(s), expected {item_count}"
+        ));
+        return trailer_offset;
+    }
+
+    let item_base = trailer_offset + header_len + country_count * country_row_len;
+    let mut seen_items = BTreeSet::new();
+    for country_index in 0..country_count {
+        let country_cursor = trailer_offset + header_len + country_index * country_row_len;
+        let tag_db_id = read_u32_le(payload, country_cursor);
+        let item_first = read_u32_le(payload, country_cursor + 4) as usize;
+        let row_item_count = read_u32_le(payload, country_cursor + 8) as usize;
+        for ordinal in 0..row_item_count {
+            let item_index = item_first + ordinal;
+            let cursor = item_base + item_index * item_row_len;
+            let variant_id = read_u32_le(payload, cursor);
+            let equipment_type = read_u32_le(payload, cursor + 4);
+            let row_ordinal = read_u32_le(payload, cursor + 8) as usize;
+            let item_reserved = read_u32_le(payload, cursor + 12);
+            let amount_raw = read_i64_le(payload, cursor + 16);
+            if variant_id == 0
+                || variant_id > COMPACT_MARKET_TRADE_MAX_VARIANT_ID
+                || equipment_type != COMPACT_MARKET_TRADE_STOCKPILE_EQUIPMENT_TYPE
+                || row_ordinal != ordinal
+                || item_reserved != 0
+                || !(0..=COMPACT_MARKET_TRADE_MAX_AMOUNT_RAW).contains(&amount_raw)
+                || !seen_items.insert((tag_db_id, variant_id, equipment_type))
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: market trade MTS1 item {item_index} has invalid identity/order/amount"
+                ));
+                return trailer_offset;
+            }
+        }
+    }
+    add_compact_domain_data_unit(
+        summary,
+        43,
+        "market_trade_stockpile_country_rows",
+        country_count,
+    );
+    add_compact_domain_data_unit(summary, 43, "market_trade_stockpile_item_rows", item_count);
+    trailer_offset + segment_len
 }
 
 // --- W1 domain 63 country_core_scalars_live -------------------------------
@@ -9579,6 +10763,128 @@ fn decode_compact_tech_sharing_groups_data_payload(
         "tech_sharing_groups_dynamic_bonus_rows",
         pair_total,
     );
+}
+
+fn decode_compact_sunk_convoy_history_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    // SCH1 stores its payload status at +0x0C. Preserve it in partial
+    // authority even when the remaining payload is malformed.
+    if payload.len() >= 16 {
+        add_decoder_status(summary, read_u32_le(payload, 12));
+    }
+    let decoded = match compact_contract::naval_history::decode_payload(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: sunk_convoy_history SCH1 payload invalid: {error}"
+            ));
+            return;
+        }
+    };
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE)
+    {
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(decoded.rows.len() as u64);
+        domain.status_flags_or |= decoded.status_flags;
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE,
+        "sunk_convoy_history_rows",
+        decoded.rows.len(),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE,
+        "sunk_convoy_history_observed_rows",
+        decoded.observed_rows as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE,
+        "sunk_convoy_history_convoys",
+        decoded
+            .rows
+            .iter()
+            .map(|row| row.convoys as usize)
+            .sum::<usize>(),
+    );
+}
+
+fn decode_compact_fired_event_popups_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    let decoded = match fired75::decode_payload(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: fired_event_popups FEV1 payload invalid: {error:?}"
+            ));
+            return;
+        }
+    };
+    if let Some(domain) = summary.per_domain.get_mut(&fired75::DOMAIN_ID) {
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(decoded.rows.len() as u64);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        fired75::DOMAIN_ID,
+        "fired_event_popups_rows",
+        decoded.rows.len(),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        fired75::DOMAIN_ID,
+        "fired_event_popups_dropped_rows",
+        decoded
+            .telemetry
+            .dropped_fire_rows
+            .saturating_add(decoded.telemetry.dropped_resolution_rows) as usize,
+    );
+}
+
+fn decode_compact_design_catalog_context_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    let decoded = match design78::decode_payload(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: design_catalog_context DCX1 payload invalid: {error:?}"
+            ));
+            return;
+        }
+    };
+    let rows = usize::from(decoded.context.is_some());
+    if let Some(domain) = summary.per_domain.get_mut(&design78::DOMAIN_ID) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(rows as u64);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        design78::DOMAIN_ID,
+        "design_catalog_context_rows",
+        rows,
+    );
+    if let Some(context) = decoded.context {
+        add_compact_domain_data_unit(
+            summary,
+            design78::DOMAIN_ID,
+            "design_catalog_context_ordered_design_ids",
+            context.ordered_design_ids.len(),
+        );
+    }
 }
 
 // Shared helper: an optional u32 field packed with a presence flag. When present
@@ -12157,6 +13463,11 @@ pub fn summarize_domain_data_payload(
         COMPACT_DOMAIN_TECH_SHARING_GROUPS_LIVE => {
             decode_compact_tech_sharing_groups_data_payload(offset, payload, &mut summary)
         }
+        COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE => {
+            decode_compact_sunk_convoy_history_data_payload(offset, payload, &mut summary)
+        }
+        75 => decode_compact_fired_event_popups_data_payload(offset, payload, &mut summary),
+        78 => decode_compact_design_catalog_context_data_payload(offset, payload, &mut summary),
         other => summary.parse_errors.push(format!(
             "offset {offset}: unsupported domain data payload for domain {other}"
         )),
@@ -12437,6 +13748,237 @@ mod tests {
     }
 
     #[test]
+    fn d13_summary_accepts_named_effective_ahead_extension() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        for value in [1, 1, 0, 1_000, 100_000, 1] {
+            push_u32(&mut payload, value);
+        }
+        for value in [47, 0b111, 17, 3] {
+            push_u32(&mut payload, value);
+        }
+        for value in [47, 1, 717, 717, 250, 0b1111] {
+            push_u32(&mut payload, value);
+        }
+        payload.extend_from_slice(&125_000i64.to_le_bytes());
+        payload.extend_from_slice(&300_000i64.to_le_bytes());
+        push_string(&mut payload, "basic_machine_tools");
+        for raw in [150_000i64, 300_000, 50_000, 200_000] {
+            payload.extend_from_slice(&raw.to_le_bytes());
+        }
+
+        let mut summary = DomainDataDecodeSummary {
+            domain_id: 13,
+            ..Default::default()
+        };
+        summary.per_domain.insert(13, DomainDataCounts::default());
+        decode_compact_tech_data_payload(0, &payload, &mut summary);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary.per_domain[&13].data_units_total["effective_ahead_rows"],
+            1
+        );
+    }
+
+    #[test]
+    fn d42_summary_accepts_exact_air_region_cause_trailer() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        for value in [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            COMPACT_AIR_STRENGTH_EQUIPMENT_AMOUNT_PER_PLANE as u32,
+            0,
+        ] {
+            push_u32(&mut payload, value);
+        }
+        push_u32(&mut payload, COMPACT_AIR_REGION_STATS_TRAILER_MAGIC);
+        payload.extend_from_slice(&COMPACT_AIR_REGION_STATS_TRAILER_VERSION.to_le_bytes());
+        payload
+            .extend_from_slice(&(COMPACT_AIR_REGION_STATS_TRAILER_HEADER_LEN as u16).to_le_bytes());
+        for value in [1, 1, 1, 0, 0, 0] {
+            push_u32(&mut payload, value);
+        }
+        push_u32(&mut payload, 1); // owner
+        push_u32(&mut payload, 88); // region
+        payload.extend_from_slice(&[0, 1, 0, 1]);
+        push_u32(&mut payload, 700); // wing
+        push_u32(&mut payload, 12345); // date raw
+        push_u32(&mut payload, 96); // planes
+        push_u32(&mut payload, 7); // mission
+        push_u32(&mut payload, 1); // attributed country
+        push_u32(&mut payload, 0); // damage first
+        push_u32(&mut payload, 1); // damage count
+        payload.extend_from_slice(&[1, 4, 0, 0]);
+        push_u32(&mut payload, 0);
+        payload.extend_from_slice(&300_000i64.to_le_bytes());
+
+        let mut summary = DomainDataDecodeSummary {
+            domain_id: 42,
+            ..Default::default()
+        };
+        summary.per_domain.insert(42, DomainDataCounts::default());
+        decode_compact_air_combat_losses_live_data_payload(0, &payload, &mut summary);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let units = &summary.per_domain[&42].data_units_total;
+        assert_eq!(units["air_region_combat_stat_rows"], 1);
+        assert_eq!(units["air_region_damage_rows"], 1);
+    }
+
+    #[test]
+    fn x4_p6_authority_accepts_exact_pcp1_and_rejects_unknown_flags() {
+        fn payload(flags: u32) -> Vec<u8> {
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&0u64.to_le_bytes());
+            for value in [1u32, 1, 0, COMPACT_PRODUCTION_SCALE_RAW, 0, 0, 0, 0] {
+                payload.extend_from_slice(&value.to_le_bytes());
+            }
+            payload.extend_from_slice(b"PCP1");
+            payload.extend_from_slice(&1u16.to_le_bytes());
+            payload.extend_from_slice(&20u16.to_le_bytes());
+            payload.extend_from_slice(&28u32.to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&47u32.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload
+        }
+
+        let mut summary = DomainDataDecodeSummary {
+            domain_id: 11,
+            ..Default::default()
+        };
+        summary.per_domain.insert(11, DomainDataCounts::default());
+        decode_compact_production_data_payload(0, &payload(0b111), &mut summary);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary.per_domain[&11].data_units_total["production_completeness_rows"],
+            1
+        );
+
+        let mut rejected = DomainDataDecodeSummary {
+            domain_id: 11,
+            ..Default::default()
+        };
+        rejected.per_domain.insert(11, DomainDataCounts::default());
+        decode_compact_production_data_payload(0, &payload(8), &mut rejected);
+        assert!(rejected
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("PCP1 row 0 has unknown flags")));
+
+        let mut incoherent = Vec::new();
+        incoherent.extend_from_slice(&0u64.to_le_bytes());
+        for value in [1u32, 1, 0, COMPACT_PRODUCTION_SCALE_RAW, 1, 0, 0, 0] {
+            incoherent.extend_from_slice(&value.to_le_bytes());
+        }
+        incoherent.extend_from_slice(&47u32.to_le_bytes());
+        incoherent.extend_from_slice(&70u32.to_le_bytes());
+        incoherent.extend_from_slice(&1i64.to_le_bytes());
+        incoherent.extend_from_slice(&payload(0)[40..]);
+        let mut rejected = DomainDataDecodeSummary {
+            domain_id: 11,
+            ..Default::default()
+        };
+        rejected.per_domain.insert(11, DomainDataCounts::default());
+        decode_compact_production_data_payload(0, &incoherent, &mut rejected);
+        assert!(rejected
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("marks stockpile unreadable")));
+    }
+
+    #[test]
+    fn xui12_authority_accepts_exact_pls1_pef1_and_rejects_incoherent_subtype() {
+        fn payload(subtype: u32) -> Vec<u8> {
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&0u64.to_le_bytes());
+            for value in [1u32, 1, 0, COMPACT_PRODUCTION_SCALE_RAW, 0, 1, 0, 0] {
+                payload.extend_from_slice(&value.to_le_bytes());
+            }
+            // One military base row at key (47, 1, 349).
+            payload.extend_from_slice(&47u32.to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.extend_from_slice(&349i32.to_le_bytes());
+            payload.extend_from_slice(&2i32.to_le_bytes());
+            payload.extend_from_slice(&0i32.to_le_bytes());
+            payload.extend_from_slice(&0i32.to_le_bytes());
+            payload.extend_from_slice(&0i32.to_le_bytes());
+            payload.extend_from_slice(&0i32.to_le_bytes());
+            // Exact PLS1 join.
+            payload.extend_from_slice(b"PLS1");
+            payload.extend_from_slice(&1u16.to_le_bytes());
+            payload.extend_from_slice(&20u16.to_le_bytes());
+            payload.extend_from_slice(&36u32.to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&47u32.to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.extend_from_slice(&349i32.to_le_bytes());
+            payload.extend_from_slice(&subtype.to_le_bytes());
+            // Exact PEF1 join.
+            payload.extend_from_slice(b"PEF1");
+            payload.extend_from_slice(&1u16.to_le_bytes());
+            payload.extend_from_slice(&20u16.to_le_bytes());
+            payload.extend_from_slice(&56u32.to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&47u32.to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.extend_from_slice(&349i32.to_le_bytes());
+            payload.extend_from_slice(&7_500_000i64.to_le_bytes());
+            payload.extend_from_slice(&10_000_000i64.to_le_bytes());
+            payload.extend_from_slice(&125_000i64.to_le_bytes());
+            payload
+        }
+
+        let mut summary = DomainDataDecodeSummary {
+            domain_id: 11,
+            ..Default::default()
+        };
+        summary.per_domain.insert(11, DomainDataCounts::default());
+        decode_compact_production_data_payload(0, &payload(4), &mut summary);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let units = &summary.per_domain[&11].data_units_total;
+        assert_eq!(units["production_line_subtype_rows"], 1);
+        assert_eq!(units["production_railway_gun_subtype_rows"], 1);
+        assert_eq!(units["production_efficiency_rows"], 1);
+
+        let mut rejected = DomainDataDecodeSummary {
+            domain_id: 11,
+            ..Default::default()
+        };
+        rejected.per_domain.insert(11, DomainDataCounts::default());
+        decode_compact_production_data_payload(0, &payload(3), &mut rejected);
+        assert!(rejected
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("PLS1 row 0 has invalid tag/kind/subtype (47, 1, 3)")));
+    }
+
+    #[test]
     fn static_join_inventory_extracts_only_approved_string_fields() {
         let mut politics = Vec::new();
         politics.extend_from_slice(&0u64.to_le_bytes());
@@ -12588,5 +14130,35 @@ mod tests {
         )
         .expect("valid FRD2 v3");
         assert_eq!(v3.status_flags, Some(0));
+    }
+
+    #[test]
+    fn sunk_convoy_history_summary_accepts_exact_sch1_payload() {
+        let rows = [
+            compact_contract::naval_history::SunkConvoyHistoryRow {
+                month: 10,
+                convoys: 2,
+                killer_country_tag_db_id: 4,
+                owner_tag_db_id: 9,
+            },
+            compact_contract::naval_history::SunkConvoyHistoryRow {
+                month: 11,
+                convoys: 3,
+                killer_country_tag_db_id: 9,
+                owner_tag_db_id: 4,
+            },
+        ];
+        let payload = compact_contract::naval_history::encode_payload(&rows, 0, 0, 2).unwrap();
+        let authority = summarize_domain_data_payload(
+            COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE,
+            &payload,
+            DomainDataContext::default(),
+        )
+        .expect("valid SCH1 authority");
+        assert_eq!(authority.emitted_rows, 2);
+        assert_eq!(authority.data_units["sunk_convoy_history_rows"], 2);
+        assert_eq!(authority.data_units["sunk_convoy_history_observed_rows"], 2);
+        assert_eq!(authority.data_units["sunk_convoy_history_convoys"], 5);
+        assert_eq!(authority.status_flags, Some(0));
     }
 }

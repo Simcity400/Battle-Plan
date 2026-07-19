@@ -54,6 +54,213 @@ from deep_common import (
 )
 
 
+def _parse_manpower_rows(tz):
+    rows = []
+    for key, opener in iter_block_entries(tz):
+        if opener is not LBRACE:
+            continue
+        if key != "value":
+            _skip_block_body(tz)
+            continue
+        tag = None
+        value = None
+        for subkey, subopener in iter_block_entries(tz):
+            if subopener is LBRACE:
+                _skip_block_body(tz)
+                continue
+            raw = atom_value(subopener)
+            if raw is None:
+                continue
+            if subkey == "tag":
+                tag = raw.strip('"')
+            elif subkey == "value":
+                value = to_float(raw)
+        rows.append({"source_ordinal": len(rows), "tag": tag, "value": value})
+    return rows
+
+
+def _parse_equipment_map(tz):
+    rows = []
+    allow_zero_entries = None
+    for key, opener in iter_block_entries(tz):
+        if opener is LBRACE:
+            if key != "equipment":
+                _skip_block_body(tz)
+                continue
+            equipment_id = equipment_type = amount = None
+            for subkey, subopener in iter_block_entries(tz):
+                if subopener is LBRACE:
+                    if subkey == "id":
+                        equipment_id, equipment_type = read_id_block(tz)
+                    else:
+                        _skip_block_body(tz)
+                    continue
+                raw = atom_value(subopener)
+                if subkey == "amount" and raw is not None:
+                    amount = to_float(raw)
+            rows.append({
+                "source_ordinal": len(rows),
+                "equipment_id": equipment_id,
+                "equipment_type": equipment_type,
+                "amount": amount,
+            })
+            continue
+        raw = atom_value(opener)
+        if key == "allow_zero_entries" and raw in ("yes", "no"):
+            allow_zero_entries = raw == "yes"
+    complete = all(
+        row["equipment_id"] is not None
+        and row["equipment_type"] is not None
+        and row["amount"] is not None
+        for row in rows
+    )
+    return rows, {
+        "present": True,
+        "rows_complete": complete,
+        "allow_zero_entries": allow_zero_entries,
+    }
+
+
+def _parse_numeric_map(tz):
+    out = {}
+    for key, opener in iter_block_entries(tz):
+        if opener is LBRACE:
+            _skip_block_body(tz)
+            continue
+        raw = atom_value(opener)
+        value = to_float(raw) if raw is not None else None
+        if value is not None:
+            out[key] = value
+    return out
+
+
+def _parse_reinforcement_requests(tz):
+    rows = []
+    for key, opener in iter_block_entries(tz):
+        if opener is not LBRACE:
+            continue
+        if key != "request":
+            _skip_block_body(tz)
+            continue
+        row = {"source_ordinal": len(rows), "total_progress": None, "need": {}, "date": None}
+        for subkey, subopener in iter_block_entries(tz):
+            if subopener is LBRACE:
+                if subkey == "need":
+                    row["need"] = _parse_numeric_map(tz)
+                else:
+                    _skip_block_body(tz)
+                continue
+            raw = atom_value(subopener)
+            if raw is None:
+                continue
+            if subkey == "total_progress":
+                row["total_progress"] = to_float(raw)
+            elif subkey == "date":
+                row["date"] = raw
+        rows.append(row)
+    return rows
+
+
+def _parse_state_garrison_entry(tz):
+    row = {
+        "strength_ratio": None,
+        "garrison_required": None,
+        "army_manpower_need": None,
+        "manpower_pool": [],
+        "equipment": None,
+        "equipment_meta": {"present": False, "rows_complete": False},
+        "equipment_need": {},
+        "reinforcement_requests": [],
+    }
+    for key, opener in iter_block_entries(tz):
+        if opener is LBRACE:
+            if key == "manpower_pool":
+                row["manpower_pool"] = _parse_manpower_rows(tz)
+            elif key == "equipment":
+                row["equipment"], row["equipment_meta"] = _parse_equipment_map(tz)
+            elif key == "equipment_need":
+                row["equipment_need"] = _parse_numeric_map(tz)
+            elif key == "garrison_reinforcement_requests":
+                row["reinforcement_requests"] = _parse_reinforcement_requests(tz)
+            else:
+                _skip_block_body(tz)
+            continue
+        raw = atom_value(opener)
+        if raw is None:
+            continue
+        if key == "strength_ratio":
+            row["strength_ratio"] = to_float(raw)
+        elif key == "garrison_required":
+            row["garrison_required"] = to_float(raw)
+        elif key == "army_manpower_need":
+            row["army_manpower_need"] = to_int(raw)
+    return row
+
+
+def _parse_state_garrison_data(tz):
+    rows = {}
+    for key, opener in iter_block_entries(tz):
+        if opener is not LBRACE:
+            continue
+        state_id = to_int(key)
+        row = _parse_state_garrison_entry(tz)
+        if state_id is not None:
+            rows[state_id] = row
+    return rows
+
+
+def _parse_attack_log(tz, controller_tag, source_ordinal):
+    row = {
+        "source_ordinal": source_ordinal,
+        "controller_tag": controller_tag,
+        "state_id": None,
+        "occupied_country_tag": None,
+        "event_hour_or_engine_date": None,
+        "garrison": None,
+        "attack_blocked": None,
+        "resistance_activity": None,
+        "manpower_loss_rows": [],
+        "lost_manpower": None,
+        "equipment_loss_rows": None,
+        "equipment_loss_meta": {"present": False, "rows_complete": False},
+    }
+    for key, opener in iter_block_entries(tz):
+        if opener is LBRACE:
+            if key == "manpower":
+                row["manpower_loss_rows"] = _parse_manpower_rows(tz)
+            elif key == "equipment":
+                row["equipment_loss_rows"], row["equipment_loss_meta"] = _parse_equipment_map(tz)
+            else:
+                _skip_block_body(tz)
+            continue
+        raw = atom_value(opener)
+        if raw is None:
+            continue
+        if key == "state":
+            row["state_id"] = to_int(raw)
+        elif key == "country":
+            row["occupied_country_tag"] = raw.strip('"')
+        elif key == "date":
+            row["event_hour_or_engine_date"] = raw
+        elif key == "garrison" and raw in ("yes", "no"):
+            row["garrison"] = raw == "yes"
+            row["attack_blocked"] = raw == "yes"
+        elif key == "resistance_activity":
+            row["resistance_activity"] = raw.strip('"')
+    values = [entry.get("value") for entry in row["manpower_loss_rows"]]
+    if all(isinstance(value, (int, float)) for value in values):
+        total = sum(values)
+        row["lost_manpower"] = int(total) if float(total).is_integer() else total
+    row["stable_event_id"] = "%s|%s|%s|%d" % (
+        controller_tag, row["event_hour_or_engine_date"], row["state_id"], source_ordinal
+    )
+    row["row_complete"] = all(value is not None for value in (
+        row["state_id"], row["occupied_country_tag"], row["event_hour_or_engine_date"],
+        row["attack_blocked"], row["lost_manpower"], row["equipment_loss_rows"],
+    )) and row["equipment_loss_meta"].get("rows_complete") is True
+    return row
+
+
 def _parse_occupied_entry(tz):
     """One occupied-country block:
        <OCC>={ states={..} compliance_modifiers={..} resistance compliance
@@ -62,6 +269,7 @@ def _parse_occupied_entry(tz):
     rec = {
         "states": [], "resistance": None, "compliance": None,
         "compliance_modifiers": [], "occupation_law_by_state": {},
+        "state_garrison_data": {},
     }
     for key, opener in iter_block_entries(tz):
         if opener is LBRACE:
@@ -79,6 +287,8 @@ def _parse_occupied_entry(tz):
                     sid = to_int(sk)
                     if sid is not None and v is not None:
                         rec["occupation_law_by_state"][sid] = v
+            elif key == "state_garrison_data":
+                rec["state_garrison_data"] = _parse_state_garrison_data(tz)
             else:
                 _skip_block_body(tz)
             continue
@@ -102,13 +312,17 @@ def _parse_occupation_block(tz, occupied):
         occupied.append(entry)
 
 
-def _parse_occupation_status(tz, rec):
+def _parse_occupation_status(tz, rec, controller_tag):
     for key, opener in iter_block_entries(tz):
         if opener is LBRACE:
             if key == "division_template_id":
                 rec["garrison_template_id"] = read_id_block(tz)
             elif key == "occupation":
                 _parse_occupation_block(tz, rec["occupied"])
+            elif key == "resistance_attack_log":
+                rec["resistance_attack_log"].append(
+                    _parse_attack_log(tz, controller_tag, len(rec["resistance_attack_log"]))
+                )
             else:
                 _skip_block_body(tz)
             continue
@@ -138,19 +352,19 @@ def _parse_countries(tz, by_tag):
             continue
         rec = {
             "default_law": None, "priority": None,
-            "garrison_template_id": None, "occupied": [],
+            "garrison_template_id": None, "occupied": [], "resistance_attack_log": [],
         }
         for key, op in iter_block_entries(tz):
             if op is LBRACE:
                 if key == "occupation_status":
-                    _parse_occupation_status(tz, rec)
+                    _parse_occupation_status(tz, rec, tag)
                 elif key == "collaboration":
                     _parse_collaboration(tz, rec)
                 else:
                     _skip_block_body(tz)
         # Keep a country if it administers ANY occupied territory, OR if it has a
         # non-default occupation law set (so the backstop preserves law choices).
-        if rec["occupied"] or rec["default_law"]:
+        if rec["occupied"] or rec["default_law"] or rec["resistance_attack_log"]:
             by_tag[tag] = rec
 
 
@@ -166,18 +380,35 @@ def build(text, source, was_melted):
     n_occupiers = 0
     n_pairs = 0
     n_state_laws = 0
+    n_garrison_rows = 0
+    n_equipment_rows = 0
+    n_history_rows = 0
+    n_history_equipment_rows = 0
     for tag, rec in sorted(by_tag.items()):
         occ = rec["occupied"]
         if occ:
             n_occupiers += 1
             n_pairs += len(occ)
             n_state_laws += sum(len(e["occupation_law_by_state"]) for e in occ)
+            n_garrison_rows += sum(len(e["state_garrison_data"]) for e in occ)
+            n_equipment_rows += sum(
+                len(row.get("equipment") or [])
+                for e in occ for row in e["state_garrison_data"].values()
+            )
+        n_history_rows += len(rec["resistance_attack_log"])
+        n_history_equipment_rows += sum(
+            len(row.get("equipment_loss_rows") or []) for row in rec["resistance_attack_log"]
+        )
         countries[tag] = {
             "default_law": rec["default_law"],
             "priority": rec["priority"],
             "garrison_template_id": rec["garrison_template_id"],
             "occupied_count": len(occ),
             "occupied": occ,
+            "resistance_attack_log": rec["resistance_attack_log"],
+            "resistance_attack_log_complete": all(
+                row.get("row_complete") is True for row in rec["resistance_attack_log"]
+            ),
         }
 
     out = {
@@ -201,6 +432,10 @@ def build(text, source, was_melted):
                 "active_occupiers": n_occupiers,
                 "occupier_occupied_pairs": n_pairs,
                 "per_state_law_assignments": n_state_laws,
+                "state_garrison_rows": n_garrison_rows,
+                "state_garrison_equipment_rows": n_equipment_rows,
+                "resistance_attack_history_rows": n_history_rows,
+                "resistance_attack_equipment_loss_rows": n_history_equipment_rows,
             },
         },
         "countries": countries,

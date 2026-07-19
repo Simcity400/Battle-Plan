@@ -16,33 +16,17 @@
 //! identity + the attacker/defender **division counts**
 //! (`attacker_committed_label` / `defender_committed_label` in the `.gui`).
 //!
-//! ## A16 combat-DISPLAY detail — recording-Absent, fail-closed
+//! ## Producer-owned display detail and external residuals
 //!
-//! The `landcombatview` chrome also shows a **combat progress** bar
-//! (`combat_progress` / `land_battle_progress_frame` / `combat_heading`), a
-//! **combat width** value, shore-**bombardment** and **air-superiority**
-//! modifiers, and the two participant **leaders**. None of these are carried by
-//! `replay_core::CombatRow` (which is scoped to id / kind / location /
-//! participant-id lists), so every such field here is fail-closed `None`.
-//!
-//! This is tracked two ways:
-//!   * **EXTRACTION_NEEDS A16** (already OPEN) — the recording does not yet
-//!     carry per-combat `progress` / `bombardment_active` /
-//!     `air_superiority_state` (land) nor the naval-combat result block. The
-//!     C3 combat-indicator law (`COMBAT_INDICATOR_LAW.md`) filed the same A16
-//!     dependency for the on-map battle bubbles.
-//!   * **replay_core VIEW gap** — even the fixture scaffolding
-//!     (`fx_division_movement` emits `combat_width`/`terrain`/`progress` on the
-//!     combat object) is deliberately NOT surfaced by `CombatRow`, so no
-//!     binding can read it without a `replay_core` change. This lane is
-//!     READ-ONLY on `replay_core`; closing the gap is a `replay_core` change,
-//!     not a binding change. See `LANE_REPORT.md`.
+//! `CombatRow` also exposes producer-owned terrain, progress, combat width,
+//! phase events, and both exact d55 side-detail rows. Only
+//! bombardment/air-superiority selectors, leaders, effective modifier stacks,
+//! and terminal result/loss joins remain external and fail closed.
 
-use replay_core::{CombatRow, Leaf, WorldFrame};
+use replay_core::{CombatRow, LandCombatSideDetail, Leaf, WorldFrame};
 
-/// One active-combat row bound from a [`CombatRow`]. Identity + participant
-/// division-id lists are populated; every A16 display-detail field is
-/// fail-closed `None` (see the module header).
+/// One active-combat row bound from a [`CombatRow`]. Producer-owned typed
+/// values are populated; only genuinely external selectors remain `None`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CombatPanelRow {
     /// Stable combat id (`combats[i].combat_id`), `None` if unmeasured.
@@ -56,15 +40,19 @@ pub struct CombatPanelRow {
     pub attacker_divisions: Option<Vec<i64>>,
     /// Defender participant division ids, `None` when unmeasured.
     pub defender_divisions: Option<Vec<i64>>,
+    pub terrain: Option<String>,
+    pub phase_event: Option<String>,
+    pub attacker: Option<LandCombatSideDetail>,
+    pub defender: Option<LandCombatSideDetail>,
 
-    // ---- A16 combat-display detail: recording-Absent → always None ----
-    /// Combat progress fraction (0..1) for `combat_progress`. A16 — never set.
+    // ---- Combat-display detail ----
+    /// Producer-owned combat progress for `combat_progress`.
     pub progress: Option<f64>,
     /// Shore-bombardment active flag. A16 — never set.
     pub bombardment_active: Option<bool>,
     /// Air-superiority modifier state (0..9 strip frame). A16 — never set.
     pub air_superiority_state: Option<i64>,
-    /// Combat width value (`combat_width` textbox). A16 — never set.
+    /// Producer-owned combat width value (`combat_width` textbox).
     pub combat_width: Option<f64>,
 }
 
@@ -100,17 +88,21 @@ pub struct CombatPanelBinding {
 }
 
 fn combat_row(row: &CombatRow) -> CombatPanelRow {
+    let detail = row.detail.measured();
     CombatPanelRow {
         combat_id: row.combat_id.measured().copied(),
         kind: row.kind.measured().cloned(),
         location_province: row.location_province.measured().copied(),
         attacker_divisions: measured_ids(&row.attackers),
         defender_divisions: measured_ids(&row.defenders),
-        // A16 combat-display detail is not surfaced by replay_core (see header).
-        progress: None,
+        terrain: row.terrain.measured().cloned(),
+        phase_event: detail.and_then(|value| value.phase_event.measured().cloned()),
+        attacker: detail.and_then(|value| value.attacker.measured().cloned()),
+        defender: detail.and_then(|value| value.defender.measured().cloned()),
+        progress: row.progress.measured().copied(),
         bombardment_active: None,
         air_superiority_state: None,
-        combat_width: None,
+        combat_width: row.combat_width.measured().copied(),
     }
 }
 
@@ -146,6 +138,10 @@ mod tests {
             location_province: loc,
             attackers: att,
             defenders: def,
+            combat_width: Leaf::Unobtained,
+            terrain: Leaf::Unobtained,
+            progress: Leaf::Unobtained,
+            detail: Leaf::Unobtained,
         }
     }
 
@@ -163,7 +159,11 @@ mod tests {
         assert_eq!(r.location_province, Some(2000));
         assert_eq!(r.attacker_division_count(), Some(2));
         assert_eq!(r.defender_division_count(), Some(1));
-        // A16 display detail is always fail-closed None.
+        assert_eq!(r.terrain, None);
+        assert_eq!(r.phase_event, None);
+        assert_eq!(r.attacker, None);
+        assert_eq!(r.defender, None);
+        // External selectors remain fail-closed.
         assert_eq!(r.progress, None);
         assert_eq!(r.bombardment_active, None);
         assert_eq!(r.air_superiority_state, None);

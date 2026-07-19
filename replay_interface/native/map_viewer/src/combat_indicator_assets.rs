@@ -242,9 +242,7 @@ type SpriteInventory = (
     Vec<crate::unit_counter_assets::UnresolvedSpriteAsset>,
 );
 
-fn land_combat_indicator_sprite_inventory(
-    resolver: &GameFileResolver,
-) -> Result<SpriteInventory> {
+fn land_combat_indicator_sprite_inventory(resolver: &GameFileResolver) -> Result<SpriteInventory> {
     let mut assets = BTreeMap::new();
     let mut unresolved = Vec::new();
     collect_named_sprites(
@@ -264,9 +262,7 @@ fn land_combat_indicator_sprite_inventory(
     Ok((assets, unresolved))
 }
 
-fn naval_combat_indicator_sprite_inventory(
-    resolver: &GameFileResolver,
-) -> Result<SpriteInventory> {
+fn naval_combat_indicator_sprite_inventory(resolver: &GameFileResolver) -> Result<SpriteInventory> {
     let mut assets = BTreeMap::new();
     let mut unresolved = Vec::new();
     collect_named_sprites(
@@ -344,8 +340,7 @@ fn collect_named_progress_bars(
 pub fn combat_indicator_gui_layouts_from_resolver(
     resolver: &GameFileResolver,
 ) -> Result<CombatIndicatorGuiLayouts> {
-    let path =
-        resolver.resolve_required(COMBAT_INDICATOR_MAPICONS_GUI_SOURCE, "map icons gui")?;
+    let path = resolver.resolve_required(COMBAT_INDICATOR_MAPICONS_GUI_SOURCE, "map icons gui")?;
     let text = read_latin1(&path)?;
     let container = |name: &str| -> Result<GuiContainerLayout> {
         container_layout_from_text(&text, name, COMBAT_INDICATOR_MAPICONS_GUI_SOURCE)
@@ -545,7 +540,10 @@ mod tests {
         let direction = manifest
             .land_combat_sprite("GFX_battle_indicator_direction")
             .expect("direction");
-        assert_eq!((direction.texture_width, direction.texture_height), (70, 70));
+        assert_eq!(
+            (direction.texture_width, direction.texture_height),
+            (70, 70)
+        );
 
         let strip = manifest
             .land_combat_sprite("GFX_landbattle_strip")
@@ -557,10 +555,7 @@ mod tests {
         let modifier = manifest
             .land_combat_sprite("GFX_battle_modifier_strip")
             .expect("battle modifier strip");
-        assert_eq!(
-            modifier.source_file,
-            COMBAT_INDICATOR_LANDCOMBAT_GFX_SOURCE
-        );
+        assert_eq!(modifier.source_file, COMBAT_INDICATOR_LANDCOMBAT_GFX_SOURCE);
         assert_eq!(modifier.no_of_frames, 10);
         assert_eq!((modifier.texture_width, modifier.texture_height), (250, 25));
         assert_eq!((modifier.frame_width, modifier.frame_height), (25, 25));

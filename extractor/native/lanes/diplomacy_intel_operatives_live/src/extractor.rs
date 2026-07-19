@@ -2,16 +2,16 @@ use crate::compact::{
     decode_payload, encode_payload, summarize_snapshot_instrumented, AgencyCapacityClusterRow,
     AgencyRow, CountryDiplomacyRow, CryptologyRow, DiplomacyIntelSnapshot, Domain53GateSummary,
     FactionRow, IncomingActionQueueRow, IntelMapRow, IntelNetworkGraphRow, OperationAnchorRow,
-    OperationInstanceRow, OperativeRow, OpinionRow, RelationFlagRow, StateEventRow, SubjectRow,
-    SummaryPhaseTimes, WarRelationRow, DOMAIN_ID_PROPOSED, MAX_ACTION_DATE_HOURS,
-    MAX_AGENCY_CAPACITY_CLUSTER_VALUE, MAX_CASUALTIES, MAX_CRYPTO_AMOUNT_RAW, MAX_FIXED_RAW,
-    MAX_INTEL_NETWORK_STATE_ID, MAX_OPERATION_ID, MAX_OPERATIVE_ID, MAX_OPERATIVE_LIFECYCLE_FLAG,
-    MAX_OPERATIVE_SKILL, MAX_OPINION_ABS, MAX_TAG_DB_ID, MAX_XP_RAW, REL_KIND_AIR_BASE_ACCESS,
-    REL_KIND_ATTACHE, REL_KIND_DOCKING_RIGHTS, REL_KIND_EMBARGO,
-    REL_KIND_EQUIPMENT_PURCHASE_CONTRACT_RELATION, REL_KIND_GUARANTEE, REL_KIND_IMPROVE_RELATIONS,
-    REL_KIND_LICENCE_PRODUCTION, REL_KIND_MARKET_ACCESS_RIGHTS, REL_KIND_MILITARY_ACCESS,
-    REL_KIND_NAVAL_BLOCKADE, REL_KIND_NON_AGGRESSION_PACT, REL_KIND_PUPPET,
-    STATE_EVENT_KIND_OBSERVED, STATE_EVENT_SOURCE_AGENCY_CAPACITY,
+    OperationInstanceRow, OperationInstanceStatus, OperativeRow, OpinionRow, RelationFlagRow,
+    StateEventRow, SubjectRow, SummaryPhaseTimes, WarRelationRow, DOMAIN_ID_PROPOSED,
+    MAX_ACTION_DATE_HOURS, MAX_AGENCY_CAPACITY_CLUSTER_VALUE, MAX_CASUALTIES,
+    MAX_CRYPTO_AMOUNT_RAW, MAX_FIXED_RAW, MAX_INTEL_NETWORK_STATE_ID, MAX_OPERATION_ID,
+    MAX_OPERATIVE_ID, MAX_OPERATIVE_LIFECYCLE_FLAG, MAX_OPERATIVE_SKILL, MAX_OPINION_ABS,
+    MAX_TAG_DB_ID, MAX_XP_RAW, REL_KIND_AIR_BASE_ACCESS, REL_KIND_ATTACHE, REL_KIND_DOCKING_RIGHTS,
+    REL_KIND_EMBARGO, REL_KIND_EQUIPMENT_PURCHASE_CONTRACT_RELATION, REL_KIND_GUARANTEE,
+    REL_KIND_IMPROVE_RELATIONS, REL_KIND_LICENCE_PRODUCTION, REL_KIND_MARKET_ACCESS_RIGHTS,
+    REL_KIND_MILITARY_ACCESS, REL_KIND_NAVAL_BLOCKADE, REL_KIND_NON_AGGRESSION_PACT,
+    REL_KIND_PUPPET, STATE_EVENT_KIND_OBSERVED, STATE_EVENT_SOURCE_AGENCY_CAPACITY,
     STATE_EVENT_SOURCE_AGENCY_SCALAR, STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP,
     STATE_EVENT_SOURCE_CRYPTOLOGY, STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE,
     STATE_EVENT_SOURCE_RELATION_FLAG, STATE_EVENT_SOURCE_RELATION_OPINION,
@@ -1062,6 +1062,7 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
     let (operation_instances, operation_drops) = read_operations(
         mem,
         module_base,
+        current_game_hour,
         &countries,
         &discovery.operation_instance_hits,
     )?;
@@ -2601,11 +2602,18 @@ fn read_subject_relation_from_ptr<M: Domain53Memory>(
         } else {
             crate::compact::stable_hash32("autonomy_state_unknown")
         };
-        // ratio (+0x60) has no melt oracle — carried UNVALIDATED, range-gated.
-        let ratio = mem.read_i32(add_addr(subject_ptr, profile::DOMAIN53_SUBJECT_RATIO)?)?;
-        if !(-MAX_FIXED_RAW..=MAX_FIXED_RAW).contains(&ratio) {
+        // `CSubjectRelation+0x60` is the final eight-byte field of the 0x68-byte
+        // object and is parsed/serialized as a Clausewitz fixed-point scalar.
+        // Read the full i64 so a corrupt/torn high dword cannot masquerade as a
+        // valid ratio. The normalized autonomy ratio is exactly 0..=1, scaled
+        // by 100000; after validation it is losslessly narrowed to the existing
+        // i32 compact-wire carrier.
+        let ratio_i64 = mem.read_i64(add_addr(subject_ptr, profile::DOMAIN53_SUBJECT_RATIO)?)?;
+        if !(0..=i64::from(crate::compact::FIXED_SCALE_RAW)).contains(&ratio_i64) {
             return Err(ExtractError::InvalidRoot("domain53_subject_ratio_invalid"));
         }
+        let ratio = i32::try_from(ratio_i64)
+            .map_err(|_| ExtractError::InvalidRoot("domain53_subject_ratio_invalid"))?;
         // start_date (+0x20) i32 engine-hour, RAW. A subject cannot start in the
         // future; gate strictly positive and no later than the current game hour
         // (with a small margin for live-read drift during capture).
@@ -3450,12 +3458,15 @@ pub struct OperationDropBreakdown {
 fn read_operations<M: Domain53Memory>(
     mem: &M,
     module_base: u64,
+    current_game_hour: u32,
     countries: &[CountryRoot],
     hits: &[u64],
 ) -> Result<(Vec<OperationInstanceRow>, OperationDropBreakdown), ExtractError> {
     let instance_vtable = add_addr(module_base, profile::DOMAIN53_OPERATION_INSTANCE_VTABLE_RVA)?;
     let def_vtable = add_addr(module_base, profile::DOMAIN53_OPERATION_DEF_VTABLE_RVA)?;
     let country_vtable = add_addr(module_base, profile::DOMAIN53_COUNTRY_VTABLE_RVA)?;
+    let province_vtable = add_addr(module_base, profile::CPROVINCE_VTABLE_RVA)?;
+    let state_vtable = add_addr(module_base, profile::STATE_VTABLE_RVA)?;
     let valid_countries = countries
         .iter()
         .map(|country| country.tag_db_id)
@@ -3519,26 +3530,178 @@ fn read_operations<M: Domain53Memory>(
             drops.filtered = drops.filtered.saturating_add(1);
             continue;
         }
-        // Def ptr @+0x48: vtable-check as COperation.
-        let def_ref_ok =
-            match mem.read_u64(add_addr(hit, profile::DOMAIN53_OPERATION_INSTANCE_DEF)?) {
-                Ok(def_ptr) if is_heap_ptr(def_ptr) => {
-                    matches!(mem.read_u64(def_ptr), Ok(vt) if vt == def_vtable)
-                }
-                _ => false,
-            };
-        // Associated country @+0x50: vtable-check as CCountry, read tag at +0x08.
-        // PROVISIONAL (associated-country; target-vs-location undistinguished).
-        let associated_country_tag_db_id = read_operation_associated_country(
+        // Every GH03 semantic field is required. A structurally incomplete row
+        // is filtered locally; no provisional/nullable runtime row is emitted.
+        let Ok(def_ptr) = mem.read_u64(add_addr(hit, profile::DOMAIN53_OPERATION_INSTANCE_DEF)?)
+        else {
+            drops.filtered = drops.filtered.saturating_add(1);
+            continue;
+        };
+        if !is_heap_ptr(def_ptr) || mem.read_u64(def_ptr).ok() != Some(def_vtable) {
+            drops.filtered = drops.filtered.saturating_add(1);
+            continue;
+        }
+        let definition_id = match read_msvc_string(
             mem,
-            add_addr(hit, profile::DOMAIN53_OPERATION_INSTANCE_TARGET_COUNTRY)?,
+            add_addr(def_ptr, profile::DOMAIN53_OPERATION_DEF_TOKEN)?,
+            crate::compact::MAX_OPERATION_DEFINITION_ID_LEN,
+        ) {
+            StringRead::Value(value) if valid_operation_definition_id(&value) => value,
+            _ => {
+                drops.filtered = drops.filtered.saturating_add(1);
+                continue;
+            }
+        };
+        let Some(owner_country_tag_db_id) = read_operation_country_pointer(
+            mem,
+            add_addr(hit, profile::DOMAIN53_OPERATION_INSTANCE_OWNER_COUNTRY)?,
             country_vtable,
             &valid_countries,
-        );
+        ) else {
+            drops.filtered = drops.filtered.saturating_add(1);
+            continue;
+        };
+        let Ok(target_country_tag_db_id) = mem.read_u32(add_addr(
+            hit,
+            profile::DOMAIN53_OPERATION_INSTANCE_TARGET_COUNTRY_ID,
+        )?) else {
+            drops.filtered = drops.filtered.saturating_add(1);
+            continue;
+        };
+        if !valid_countries.contains(&target_country_tag_db_id) {
+            drops.filtered = drops.filtered.saturating_add(1);
+            continue;
+        }
+        let target_state_id = match read_operation_target_state(
+            mem,
+            add_addr(hit, profile::DOMAIN53_OPERATION_INSTANCE_TARGET_OBJECT)?,
+            province_vtable,
+            state_vtable,
+        ) {
+            Ok(value) => value,
+            Err(()) => {
+                drops.filtered = drops.filtered.saturating_add(1);
+                continue;
+            }
+        };
+        let Ok(phase_count) = mem.read_u32(add_addr(
+            hit,
+            profile::DOMAIN53_OPERATION_INSTANCE_PHASE_COUNT,
+        )?) else {
+            drops.filtered = drops.filtered.saturating_add(1);
+            continue;
+        };
+        if phase_count == 0 || phase_count > 256 {
+            drops.filtered = drops.filtered.saturating_add(1);
+            continue;
+        }
+        let Ok(duration_days) = mem.read_u32(add_addr(
+            hit,
+            profile::DOMAIN53_OPERATION_INSTANCE_DURATION_DAYS,
+        )?) else {
+            drops.filtered = drops.filtered.saturating_add(1);
+            continue;
+        };
+        let terminal = mem
+            .read_u8(add_addr(
+                hit,
+                profile::DOMAIN53_OPERATION_INSTANCE_TERMINAL_FLAG,
+            )?)
+            .unwrap_or(0)
+            != 0;
+        let (status, phase_index, progress_fixed, start_hour, duration_hours) = if duration_days
+            == 0
+        {
+            let Ok(current) = mem.read_i64(add_addr(
+                hit,
+                profile::DOMAIN53_OPERATION_INSTANCE_PREPARATION_CURRENT,
+            )?) else {
+                drops.filtered = drops.filtered.saturating_add(1);
+                continue;
+            };
+            let Ok(required) = mem.read_i64(add_addr(
+                hit,
+                profile::DOMAIN53_OPERATION_INSTANCE_PREPARATION_REQUIRED,
+            )?) else {
+                drops.filtered = drops.filtered.saturating_add(1);
+                continue;
+            };
+            if current < 0 || required < 0 {
+                drops.filtered = drops.filtered.saturating_add(1);
+                continue;
+            }
+            let progress = if required == 0 {
+                profile::DOMAIN53_OPERATION_PROGRESS_SCALE
+            } else {
+                current
+                    .min(required)
+                    .saturating_mul(profile::DOMAIN53_OPERATION_PROGRESS_SCALE)
+                    / required
+            };
+            (OperationInstanceStatus::Preparing, 0, progress, 0, 0)
+        } else {
+            let Ok(start_hour) = mem.read_u32(add_addr(
+                hit,
+                profile::DOMAIN53_OPERATION_INSTANCE_START_HOUR,
+            )?) else {
+                drops.filtered = drops.filtered.saturating_add(1);
+                continue;
+            };
+            let Some(elapsed_days) = operation_elapsed_days(current_game_hour, start_hour) else {
+                drops.filtered = drops.filtered.saturating_add(1);
+                continue;
+            };
+            if elapsed_days > duration_days {
+                drops.filtered = drops.filtered.saturating_add(1);
+                continue;
+            }
+            let finished = terminal || elapsed_days == duration_days;
+            let phase_index = if finished {
+                phase_count - 1
+            } else {
+                elapsed_days.saturating_mul(phase_count) / duration_days
+            };
+            let progress = if finished {
+                profile::DOMAIN53_OPERATION_PROGRESS_SCALE
+            } else {
+                i64::from(elapsed_days).saturating_mul(profile::DOMAIN53_OPERATION_PROGRESS_SCALE)
+                    / i64::from(duration_days)
+            };
+            let Some(duration_hours) = duration_days.checked_mul(24) else {
+                drops.filtered = drops.filtered.saturating_add(1);
+                continue;
+            };
+            (
+                if finished {
+                    OperationInstanceStatus::Finished
+                } else {
+                    OperationInstanceStatus::Running
+                },
+                phase_index,
+                progress,
+                start_hour,
+                duration_hours,
+            )
+        };
+        let Some(assigned_operative_ids) = read_operation_assigned_operatives(mem, hit)? else {
+            drops.filtered = drops.filtered.saturating_add(1);
+            continue;
+        };
         rows.push(OperationInstanceRow {
             instance_id,
-            def_ref_ok,
-            associated_country_tag_db_id,
+            def_ref_ok: true,
+            associated_country_tag_db_id: Some(target_country_tag_db_id),
+            definition_id: Some(definition_id),
+            owner_country_tag_db_id: Some(owner_country_tag_db_id),
+            target_country_tag_db_id: Some(target_country_tag_db_id),
+            target_state_id,
+            status: Some(status),
+            phase_index,
+            phase_count,
+            progress_fixed: Some(progress_fixed),
+            start_hour: Some(start_hour),
+            duration_hours: Some(duration_hours),
+            assigned_operative_ids,
         });
     }
     rows.sort_by_key(|row| row.instance_id);
@@ -3549,7 +3712,7 @@ fn read_operations<M: Domain53Memory>(
 /// tag_db_id. Returns `None` (absent, not zero) when the pointer is
 /// null/invalid, fails the CCountry vtable check, or its tag is out of the
 /// known-country set.
-fn read_operation_associated_country<M: Domain53Memory>(
+fn read_operation_country_pointer<M: Domain53Memory>(
     mem: &M,
     country_ptr_addr: u64,
     country_vtable: u64,
@@ -3569,6 +3732,103 @@ fn read_operation_associated_country<M: Domain53Memory>(
         return None;
     }
     Some(tag_db_id)
+}
+
+fn valid_operation_definition_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= crate::compact::MAX_OPERATION_DEFINITION_ID_LEN
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':' | b'/')
+        })
+}
+
+fn read_operation_target_state<M: Domain53Memory>(
+    mem: &M,
+    target_object_addr: u64,
+    province_vtable: u64,
+    state_vtable: u64,
+) -> Result<Option<u32>, ()> {
+    let target_object = mem.read_u64(target_object_addr).map_err(|_| ())?;
+    if target_object == 0 {
+        return Ok(None);
+    }
+    if !is_heap_ptr(target_object)
+        || mem.read_u64(target_object).map_err(|_| ())? != province_vtable
+    {
+        return Err(());
+    }
+    let state = mem
+        .read_u64(
+            target_object
+                .checked_add(profile::CPROVINCE_OFF_STATE as u64)
+                .ok_or(())?,
+        )
+        .map_err(|_| ())?;
+    if !is_heap_ptr(state) || mem.read_u64(state).map_err(|_| ())? != state_vtable {
+        return Err(());
+    }
+    let state_id = mem
+        .read_u32(
+            state
+                .checked_add(profile::DOMAIN66_STATE_ID_OFF as u64)
+                .ok_or(())?,
+        )
+        .map_err(|_| ())?;
+    if state_id == 0 || state_id > profile::MAX_STATE_ID {
+        return Err(());
+    }
+    Ok(Some(state_id))
+}
+
+fn operation_elapsed_days(current_hour: u32, start_hour: u32) -> Option<u32> {
+    let epoch = profile::DOMAIN53_OPERATION_RAW_HOUR_EPOCH;
+    if current_hour < epoch || start_hour < epoch || current_hour < start_hour {
+        return None;
+    }
+    Some((current_hour - epoch) / 24 - (start_hour - epoch) / 24)
+}
+
+fn read_operation_assigned_operatives<M: Domain53Memory>(
+    mem: &M,
+    instance: u64,
+) -> Result<Option<Vec<u32>>, ExtractError> {
+    let count = mem.read_u32(add_addr(
+        instance,
+        profile::DOMAIN53_OPERATION_INSTANCE_OPERATIVE_COUNT,
+    )?)? as usize;
+    if count > crate::compact::MAX_OPERATION_ASSIGNED_OPERATIVES {
+        return Ok(None);
+    }
+    if count == 0 {
+        return Ok(Some(Vec::new()));
+    }
+    let data = mem.read_u64(add_addr(
+        instance,
+        profile::DOMAIN53_OPERATION_INSTANCE_OPERATIVE_VECTOR,
+    )?)?;
+    if !is_heap_ptr(data) {
+        return Ok(None);
+    }
+    let mut ids = Vec::with_capacity(count);
+    let mut seen = BTreeSet::new();
+    for index in 0..count {
+        let slot = add_addr(
+            data,
+            index.saturating_mul(profile::DOMAIN53_OPERATION_INSTANCE_OPERATIVE_STRIDE),
+        )?;
+        let handle = mem.read_u64(slot)?;
+        let handle_type = handle as u32;
+        let operative_id = (handle >> 32) as u32;
+        if handle_type != profile::DOMAIN53_OPERATION_INSTANCE_HANDLE_TYPE
+            || operative_id == 0
+            || operative_id > MAX_OPERATIVE_ID
+            || !seen.insert(operative_id)
+        {
+            return Ok(None);
+        }
+        ids.push(operative_id);
+    }
+    Ok(Some(ids))
 }
 
 fn read_intel_network_graph_rows<M: Domain53Memory>(
@@ -5068,16 +5328,8 @@ pub fn proof_fixture_rows() -> ExtractedDomain53Rows {
         intel_map: Vec::new(),
         state_events: validated_state_event_rows(),
         operation_instances: vec![
-            OperationInstanceRow {
-                instance_id: 129_014,
-                def_ref_ok: true,
-                associated_country_tag_db_id: Some(3),
-            },
-            OperationInstanceRow {
-                instance_id: 128_904,
-                def_ref_ok: true,
-                associated_country_tag_db_id: None,
-            },
+            OperationInstanceRow::legacy(129_014, true, Some(3)),
+            OperationInstanceRow::legacy(128_904, true, None),
         ],
         incoming_actions: vec![
             IncomingActionQueueRow {
@@ -5823,7 +6075,7 @@ mod tests {
                 subject_object + profile::DOMAIN53_SUBJECT_STATE_DB as u64,
                 autonomy_state,
             );
-            mem.write_i32(
+            mem.write_i64(
                 subject_object + profile::DOMAIN53_SUBJECT_RATIO as u64,
                 40_000,
             );
@@ -6255,6 +6507,32 @@ mod tests {
             report.gate_summary.status_flags_or & STATUS_FACTION_GROUP_UNVALIDATED,
             0
         );
+    }
+
+    #[test]
+    fn reader_rejects_subject_ratio_with_nonzero_high_dword() {
+        let mut mem = fake_domain53_memory(true, true);
+        let heap = profile::DOMAIN53_HEAP_LO as u64 + 0x10_0000;
+        let subject_object = heap + 0x1A_0000;
+        // Low dword is the otherwise-valid 40000. The former i32 reader would
+        // have silently accepted it; the proven i64 reader must reject the
+        // complete fixed-point scalar.
+        mem.write_i64(
+            subject_object + profile::DOMAIN53_SUBJECT_RATIO as u64,
+            (1i64 << 32) | 40_000,
+        );
+
+        let extracted = extract_rows_from_current_roots(&mem).expect("domain53 fake read");
+        assert!(extracted.rows.subjects.is_empty());
+        assert!(extracted.skipped_rows >= 1);
+    }
+
+    #[test]
+    fn subject_reader_accepts_full_width_valid_ratio() {
+        let mem = fake_domain53_memory(true, true);
+        let extracted = extract_rows_from_current_roots(&mem).expect("domain53 fake read");
+        assert_eq!(extracted.rows.subjects.len(), 1);
+        assert_eq!(extracted.rows.subjects[0].autonomy_ratio_raw, 40_000);
     }
 
     #[test]
@@ -6903,9 +7181,9 @@ mod tests {
         let heap = fake_heap_base();
         let instance = heap + 0x50_0000 + u64::from(index) * 0x2000;
         let def = instance + 0x1000;
-        mem.add_chunk(instance, 0x100);
-        mem.add_chunk(def, 0x10);
-        mem.add_range(instance, 0x100);
+        mem.add_chunk(instance, 0x120);
+        mem.add_chunk(def, 0x40);
+        mem.add_range(instance, 0x120);
         mem.write_u64(
             instance,
             mem.module_base + profile::DOMAIN53_OPERATION_INSTANCE_VTABLE_RVA as u64,
@@ -6928,13 +7206,45 @@ mod tests {
             mem.module_base + 0x1234
         };
         mem.write_u64(def, def_vtable);
-        // Country ptr @+0x50.
+        if def_ok {
+            mem.write_inline_string(
+                def + profile::DOMAIN53_OPERATION_DEF_TOKEN as u64,
+                "operation_test",
+            );
+        }
+        // Owner CCountry* @+0x50; authored country target CId @+0x58.
         mem.write_u64(
-            instance + profile::DOMAIN53_OPERATION_INSTANCE_TARGET_COUNTRY as u64,
+            instance + profile::DOMAIN53_OPERATION_INSTANCE_OWNER_COUNTRY as u64,
             country_ptr,
         );
-        // +0x10 owner is REJECTED: write garbage to prove it is never read.
-        mem.write_u64(instance + 0x10, 0x593B_0001);
+        mem.write_u32(
+            instance + profile::DOMAIN53_OPERATION_INSTANCE_TARGET_COUNTRY_ID as u64,
+            3,
+        );
+        mem.write_u64(
+            instance + profile::DOMAIN53_OPERATION_INSTANCE_TARGET_OBJECT as u64,
+            0,
+        );
+        mem.write_i64(
+            instance + profile::DOMAIN53_OPERATION_INSTANCE_PREPARATION_CURRENT as u64,
+            400_000,
+        );
+        mem.write_i64(
+            instance + profile::DOMAIN53_OPERATION_INSTANCE_PREPARATION_REQUIRED as u64,
+            1_500_000,
+        );
+        mem.write_u32(
+            instance + profile::DOMAIN53_OPERATION_INSTANCE_DURATION_DAYS as u64,
+            0,
+        );
+        mem.write_u32(
+            instance + profile::DOMAIN53_OPERATION_INSTANCE_OPERATIVE_COUNT as u64,
+            0,
+        );
+        mem.write_u32(
+            instance + profile::DOMAIN53_OPERATION_INSTANCE_PHASE_COUNT as u64,
+            3,
+        );
         instance
     }
 
@@ -6962,23 +7272,33 @@ mod tests {
 
         let countries =
             resolve_country_roots(&mem, module, fake_heap_base()).expect("country roots");
-        let (rows, drops) =
-            read_operations(&mem, module, &countries, &discovery.operation_instance_hits)
-                .expect("read_operations");
+        let (rows, drops) = read_operations(
+            &mem,
+            module,
+            60_830_441,
+            &countries,
+            &discovery.operation_instance_hits,
+        )
+        .expect("read_operations");
 
         // C dropped (bad handle type) — that is candidate FILTERING (the vtable
         // matched but it is not a valid instance), NOT liveness staleness. A+C
         // fix: it must be counted as `filtered`, never `stale_liveness` (the
-        // latter is what nuked the whole frame). A and B kept, sorted by id.
+        // latter is what nuked the whole frame). B is also filtered because an
+        // exact GH03 row never emits an invalid definition/owner.
         assert_eq!(drops.stale_liveness, 0);
-        assert_eq!(drops.filtered, 1);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].instance_id, 128_904);
-        assert!(!rows[0].def_ref_ok);
-        assert_eq!(rows[0].associated_country_tag_db_id, None);
-        assert_eq!(rows[1].instance_id, 129_014);
-        assert!(rows[1].def_ref_ok);
-        assert_eq!(rows[1].associated_country_tag_db_id, Some(3));
+        assert_eq!(drops.filtered, 2);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].instance_id, 129_014);
+        assert_eq!(rows[0].definition_id.as_deref(), Some("operation_test"));
+        assert_eq!(rows[0].owner_country_tag_db_id, Some(3));
+        assert_eq!(rows[0].target_country_tag_db_id, Some(3));
+        assert_eq!(rows[0].status, Some(OperationInstanceStatus::Preparing));
+        assert_eq!(rows[0].phase_index, 0);
+        assert_eq!(rows[0].phase_count, 3);
+        assert_eq!(rows[0].progress_fixed, Some(26_666));
+        assert_eq!(rows[0].start_hour, Some(0));
+        assert_eq!(rows[0].duration_hours, Some(0));
     }
 
     #[test]

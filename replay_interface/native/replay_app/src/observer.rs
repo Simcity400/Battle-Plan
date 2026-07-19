@@ -35,8 +35,7 @@ pub const FOW_NOT_LAW_CERTIFIED: &str =
 
 /// Fail-closed diagnostic surfaced when the recording carries no session
 /// player-country list the picker can use (see the module note / LANE_REPORT).
-pub const SESSION_PLAYERS_GAP: &str =
-    "session player-country list unavailable: replay_core \
+pub const SESSION_PLAYERS_GAP: &str = "session player-country list unavailable: replay_core \
      SessionMetadataView.player_countries is Absent for this recording (the \
      player list lives under world.scenario.players, which the session view \
      does not yet surface); country picker fails closed";
@@ -202,6 +201,7 @@ mod tests {
             speed_events: Leaf::Absent,
             active_dlcs: Leaf::Absent,
             localisation_language: Leaf::Absent,
+            display_variant: Leaf::Absent,
         }
     }
 

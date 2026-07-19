@@ -32,6 +32,12 @@ pub const PRODUCTION_SCALE_RAW: u32 = 100000;
 pub const FUEL_ROW_LEN: usize = 40;
 pub const PRODUCTION_STOCKPILE_ROW_LEN: usize = 16;
 pub const PRODUCTION_LINE_ROW_LEN: usize = 32;
+pub const PRODUCTION_EFFICIENCY_ROW_LEN: usize = 36;
+pub const PRODUCTION_MIO_JOIN_ROW_LEN: usize = 16;
+/// Native production-efficiency helpers return fixed-point percentage values:
+/// 100_000 raw units are one percentage point, so 10_000_000 is 100%.
+pub const PRODUCTION_EFFICIENCY_RAW_PER_PERCENT: i64 = 100_000;
+pub const PRODUCTION_EFFICIENCY_FULL_SCALE_RAW: i64 = 10_000_000;
 pub const PRODUCTION_CONSTRUCTION_ROW_LEN: usize = 32;
 pub const VARIANT_DEF_ROW_LEN: usize = 24;
 pub const VARIANT_DEF_MODULE_ROW_LEN: usize = 8;
@@ -94,6 +100,30 @@ pub struct ProductionLineRow {
     pub speed_raw: i32,
     pub produced_raw: i32,
     pub amount: i32,
+}
+
+/// Exact X4-P4 outputs from the three a729 line producers. These are producer
+/// results, not values reconstructed from line speed, factory counts, or
+/// global defines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProductionEfficiencyRow {
+    pub tag_db_id: u32,
+    pub kind: u32,
+    pub line_id: i32,
+    pub efficiency_raw: i64,
+    pub efficiency_cap_raw: i64,
+    pub efficiency_growth_raw: i64,
+}
+
+/// Exact X4-P5 line-owned industrial-organisation identity. `mio_id == 0`
+/// represents the serializer-proven absent `industrial_manufacturer` field;
+/// positive values represent `{ id, type = 79 }` after the live type gate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProductionMioJoinRow {
+    pub tag_db_id: u32,
+    pub kind: u32,
+    pub line_id: i32,
+    pub mio_id: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -316,24 +346,137 @@ pub fn encode_production_payload(
     payload
 }
 
+/// Append the strict X4-P4 `PEF1` producer-output segment. The caller must
+/// supply one exact helper-result row for every emitted base line; otherwise
+/// the segment is rejected instead of publishing partial/default efficiency.
+pub fn append_production_efficiency_trailer(
+    payload: &mut Vec<u8>,
+    military_rows: &[ProductionLineRow],
+    naval_rows: &[ProductionLineRow],
+    efficiency_rows: &[ProductionEfficiencyRow],
+) -> Result<(), String> {
+    let base_keys: BTreeSet<_> = military_rows
+        .iter()
+        .chain(naval_rows.iter())
+        .map(|row| (row.tag_db_id, row.kind, row.line_id))
+        .collect();
+    if base_keys.len() != military_rows.len().saturating_add(naval_rows.len()) {
+        return Err("PEF1 base production-line keys are not unique".to_string());
+    }
+
+    let mut efficiency_keys = BTreeSet::new();
+    for row in efficiency_rows {
+        if row.tag_db_id == 0 || (row.kind != 1 && row.kind != 2) {
+            return Err("PEF1 row has invalid tag/kind".to_string());
+        }
+        if row.efficiency_raw < 0 || row.efficiency_cap_raw < 0 || row.efficiency_growth_raw < 0 {
+            return Err("PEF1 row has a negative producer result".to_string());
+        }
+        if !efficiency_keys.insert((row.tag_db_id, row.kind, row.line_id)) {
+            return Err("PEF1 producer keys are not unique".to_string());
+        }
+    }
+    if efficiency_keys != base_keys {
+        return Err(format!(
+            "PEF1 line coverage is not bijective: producer_rows={} base_lines={}",
+            efficiency_keys.len(),
+            base_keys.len()
+        ));
+    }
+    if efficiency_rows.is_empty() {
+        return Ok(());
+    }
+
+    let row_count = u32::try_from(efficiency_rows.len())
+        .map_err(|_| "PEF1 row count exceeds u32".to_string())?;
+    let segment_len = 20u32
+        .checked_add(
+            row_count
+                .checked_mul(PRODUCTION_EFFICIENCY_ROW_LEN as u32)
+                .ok_or_else(|| "PEF1 segment length overflow".to_string())?,
+        )
+        .ok_or_else(|| "PEF1 segment length overflow".to_string())?;
+    payload.extend_from_slice(b"PEF1");
+    payload.extend_from_slice(&1u16.to_le_bytes());
+    payload.extend_from_slice(&20u16.to_le_bytes());
+    payload.extend_from_slice(&segment_len.to_le_bytes());
+    payload.extend_from_slice(&row_count.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    for row in efficiency_rows {
+        payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.kind.to_le_bytes());
+        payload.extend_from_slice(&row.line_id.to_le_bytes());
+        payload.extend_from_slice(&row.efficiency_raw.to_le_bytes());
+        payload.extend_from_slice(&row.efficiency_cap_raw.to_le_bytes());
+        payload.extend_from_slice(&row.efficiency_growth_raw.to_le_bytes());
+    }
+    Ok(())
+}
+
+/// Append the strict X4-P5 `PMI1` line-owned MIO join. The segment is only
+/// emitted when the caller supplies exactly one assigned-or-proven-null value
+/// for every admitted base production line.
+pub fn append_production_mio_join_trailer(
+    payload: &mut Vec<u8>,
+    military_rows: &[ProductionLineRow],
+    naval_rows: &[ProductionLineRow],
+    mio_rows: &[ProductionMioJoinRow],
+) -> Result<(), String> {
+    let base_keys: BTreeSet<_> = military_rows
+        .iter()
+        .chain(naval_rows.iter())
+        .map(|row| (row.tag_db_id, row.kind, row.line_id))
+        .collect();
+    if base_keys.len() != military_rows.len().saturating_add(naval_rows.len()) {
+        return Err("PMI1 base production-line keys are not unique".to_string());
+    }
+
+    let mut mio_keys = BTreeSet::new();
+    for row in mio_rows {
+        if row.tag_db_id == 0 || (row.kind != 1 && row.kind != 2) {
+            return Err("PMI1 row has invalid tag/kind".to_string());
+        }
+        if !mio_keys.insert((row.tag_db_id, row.kind, row.line_id)) {
+            return Err("PMI1 producer keys are not unique".to_string());
+        }
+    }
+    if mio_keys != base_keys {
+        return Err(format!(
+            "PMI1 line coverage is not bijective: producer_rows={} base_lines={}",
+            mio_keys.len(),
+            base_keys.len()
+        ));
+    }
+    if mio_rows.is_empty() {
+        return Ok(());
+    }
+
+    let row_count =
+        u32::try_from(mio_rows.len()).map_err(|_| "PMI1 row count exceeds u32".to_string())?;
+    let segment_len = 20u32
+        .checked_add(
+            row_count
+                .checked_mul(PRODUCTION_MIO_JOIN_ROW_LEN as u32)
+                .ok_or_else(|| "PMI1 segment length overflow".to_string())?,
+        )
+        .ok_or_else(|| "PMI1 segment length overflow".to_string())?;
+    payload.extend_from_slice(b"PMI1");
+    payload.extend_from_slice(&1u16.to_le_bytes());
+    payload.extend_from_slice(&20u16.to_le_bytes());
+    payload.extend_from_slice(&segment_len.to_le_bytes());
+    payload.extend_from_slice(&row_count.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    for row in mio_rows {
+        payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.kind.to_le_bytes());
+        payload.extend_from_slice(&row.line_id.to_le_bytes());
+        payload.extend_from_slice(&row.mio_id.to_le_bytes());
+    }
+    Ok(())
+}
+
 pub fn remaining_gap_badges() -> Vec<RemainingGapBadge> {
     vec![
-        RemainingGapBadge {
-            gap_id: 1,
-            name: "requested_factory_counts",
-            status: GAP_STATUS_SCHEMA_BLOCKED,
-            status_label: "schema_blocked",
-            evidence_mask: GAP_EVIDENCE_SAVE_ORACLE
-                | GAP_EVIDENCE_CURRENT_COMPACT_SCHEMA
-                | GAP_EVIDENCE_CURRENT_COLLECTOR_ROOTS,
-            current_support: GAP_CURRENT_SUPPORT_NONE,
-            current_compact_evidence: "domain 11 production line rows are 32 bytes: tag_db_id, kind, line_id, active_factories, cost, speed, produced, amount",
-            source_evidence: "save_oracle/parse_production.py reads countries.<TAG>.production.*_lines.requested_factories",
-            fail_closed_badge: "requested_factories omitted from replay until a live CEquipmentProductionLine requested-factory offset is validated",
-            proposed_domain_id: PROPOSED_DOMAIN_PRODUCTION_LINE_DEMAND,
-            proposed_domain_name: domain_name(PROPOSED_DOMAIN_PRODUCTION_LINE_DEMAND),
-            owner_boundary: "lane-owned production-line demand; joins by (tag_db_id, kind, line_id)",
-        },
         RemainingGapBadge {
             gap_id: 2,
             name: "consumer_goods",
@@ -384,22 +527,6 @@ pub fn remaining_gap_badges() -> Vec<RemainingGapBadge> {
             owner_boundary: "lane-owned deployment queue state; deployed unit/oob state remains unit-lane owned",
         },
         RemainingGapBadge {
-            gap_id: 5,
-            name: "mio_design_variant_production_joins",
-            status: GAP_STATUS_SCHEMA_BLOCKED,
-            status_label: "schema_blocked",
-            evidence_mask: GAP_EVIDENCE_SAVE_ORACLE
-                | GAP_EVIDENCE_CURRENT_COMPACT_SCHEMA
-                | GAP_EVIDENCE_CURRENT_COLLECTOR_ROOTS,
-            current_support: GAP_CURRENT_SUPPORT_PARTIAL,
-            current_compact_evidence: "stockpile variant domains carry variant ids, names, modules, and upgrades; production line rows do not carry equipment_variant_index or industrial_organisation ids",
-            source_evidence: "save_oracle/parse_designs.py reads production.industrial_organisations, scheduled_equipment_variants, and industrial_organisation design links",
-            fail_closed_badge: "MIO/design production joins omitted until production-line variant pointer and MIO id roots are validated live",
-            proposed_domain_id: PROPOSED_DOMAIN_MIO_DESIGN_JOINS,
-            proposed_domain_name: domain_name(PROPOSED_DOMAIN_MIO_DESIGN_JOINS),
-            owner_boundary: "join keys stay pointer-free: variant_id and (tag_db_id, kind, line_id)",
-        },
-        RemainingGapBadge {
             gap_id: 6,
             name: "economy_law_derived_state",
             status: GAP_STATUS_OWNED_ELSEWHERE,
@@ -442,16 +569,11 @@ pub fn gap_badge_rows(gaps: &[RemainingGapBadge]) -> Vec<GapBadgeRow> {
             evidence_mask: gap.evidence_mask,
             current_support: gap.current_support,
             current_domain_id: match gap.name {
-                "requested_factory_counts"
-                | "mio_design_variant_production_joins"
-                | "deployment_queues" => DOMAIN_PRODUCTION as u32,
+                "deployment_queues" => DOMAIN_PRODUCTION as u32,
                 _ => 0,
             },
             proposed_domain_id: gap.proposed_domain_id as u32,
             current_row_len: match gap.name {
-                "requested_factory_counts" | "mio_design_variant_production_joins" => {
-                    PRODUCTION_LINE_ROW_LEN as u32
-                }
                 "deployment_queues" => PRODUCTION_CONSTRUCTION_ROW_LEN as u32,
                 _ => 0,
             },
@@ -1165,9 +1287,9 @@ fn decode_production_payload(offset: usize, payload: &[u8], summary: &mut Compac
         .saturating_add(stockpile_count.saturating_mul(PRODUCTION_STOCKPILE_ROW_LEN))
         .saturating_add(line_count.saturating_mul(PRODUCTION_LINE_ROW_LEN))
         .saturating_add(construction_count.saturating_mul(PRODUCTION_CONSTRUCTION_ROW_LEN));
-    if payload.len() != expected_len {
+    if payload.len() < expected_len {
         summary.parse_errors.push(format!(
-            "offset {offset}: production payload length {} != expected {expected_len}",
+            "offset {offset}: production payload length {} < expected {expected_len}",
             payload.len()
         ));
         return;
@@ -1273,6 +1395,682 @@ fn decode_production_payload(offset: usize, payload: &[u8], summary: &mut Compac
         }
         cursor += PRODUCTION_CONSTRUCTION_ROW_LEN;
     }
+    if cursor != payload.len() {
+        decode_production_trailer_chain(
+            offset,
+            payload,
+            cursor,
+            country_count,
+            &seen_stockpile,
+            &seen_lines,
+            summary,
+        );
+    }
+}
+
+fn decode_production_trailer_chain(
+    offset: usize,
+    payload: &[u8],
+    mut cursor: usize,
+    country_count: usize,
+    base_stockpile: &BTreeSet<(u32, u32)>,
+    base_lines: &BTreeSet<(u32, u32, i32)>,
+    summary: &mut CompactStreamSummary,
+) {
+    let mut plic_seen = false;
+    let mut pvj_seen = false;
+    let mut pfr_seen = false;
+    let mut pls_seen = false;
+    let mut pef_seen = false;
+    let mut pmi_seen = false;
+    let mut pcp_seen = false;
+    while cursor < payload.len() {
+        let Some(magic) = payload.get(cursor..cursor.saturating_add(4)) else {
+            summary.parse_errors.push(format!(
+                "offset {offset}: production trailer at {cursor} has truncated magic"
+            ));
+            return;
+        };
+        if magic == b"PLIC" {
+            if plic_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production has duplicate PLIC trailer"
+                ));
+                return;
+            }
+            plic_seen = true;
+            let Some(next) = decode_production_plic_segment(offset, payload, cursor, summary)
+            else {
+                return;
+            };
+            cursor = next;
+        } else if magic == b"PVJ1" {
+            if pvj_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production has duplicate PVJ1 trailer"
+                ));
+                return;
+            }
+            pvj_seen = true;
+            let Some(next) =
+                decode_production_pvj1_segment(offset, payload, cursor, base_lines, summary)
+            else {
+                return;
+            };
+            cursor = next;
+        } else if magic == b"PFR1" {
+            if pfr_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production has duplicate PFR1 trailer"
+                ));
+                return;
+            }
+            pfr_seen = true;
+            let Some(next) =
+                decode_production_pfr1_segment(offset, payload, cursor, base_lines, summary)
+            else {
+                return;
+            };
+            cursor = next;
+        } else if magic == b"PLS1" {
+            if pls_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production has duplicate PLS1 trailer"
+                ));
+                return;
+            }
+            pls_seen = true;
+            let Some(next) =
+                decode_production_pls1_segment(offset, payload, cursor, base_lines, summary)
+            else {
+                return;
+            };
+            cursor = next;
+        } else if magic == b"PCP1" {
+            if pcp_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production has duplicate PCP1 trailer"
+                ));
+                return;
+            }
+            pcp_seen = true;
+            let Some(next) = decode_production_pcp1_segment(
+                offset,
+                payload,
+                cursor,
+                country_count,
+                base_stockpile,
+                base_lines,
+                summary,
+            ) else {
+                return;
+            };
+            cursor = next;
+        } else if magic == b"PEF1" {
+            if pef_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production has duplicate PEF1 trailer"
+                ));
+                return;
+            }
+            pef_seen = true;
+            let Some(next) =
+                decode_production_pef1_segment(offset, payload, cursor, base_lines, summary)
+            else {
+                return;
+            };
+            cursor = next;
+        } else if magic == b"PMI1" {
+            if pmi_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production has duplicate PMI1 trailer"
+                ));
+                return;
+            }
+            pmi_seen = true;
+            let Some(next) =
+                decode_production_pmi1_segment(offset, payload, cursor, base_lines, summary)
+            else {
+                return;
+            };
+            cursor = next;
+        } else {
+            summary.parse_errors.push(format!(
+                "offset {offset}: production trailing bytes are not a known D11 trailer"
+            ));
+            return;
+        }
+    }
+}
+
+fn decode_production_pmi1_segment(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    base_lines: &BTreeSet<(u32, u32, i32)>,
+    summary: &mut CompactStreamSummary,
+) -> Option<usize> {
+    const HEADER_LEN: usize = 20;
+    let trailer = payload.get(trailer_offset..)?;
+    if trailer.len() < HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PMI1 trailer shorter than {HEADER_LEN} bytes"
+        ));
+        return None;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let segment_len = read_u32_le(trailer, 8) as usize;
+    let row_count = read_u32_le(trailer, 12) as usize;
+    let reserved = read_u32_le(trailer, 16);
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(PRODUCTION_MIO_JOIN_ROW_LEN));
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: PMI1 header/length is invalid"));
+        return None;
+    }
+
+    let mut cursor = HEADER_LEN;
+    let mut seen = BTreeSet::new();
+    let mut assigned_count = 0u64;
+    for row_index in 0..row_count {
+        let tag = read_u32_le(trailer, cursor);
+        let kind = read_u32_le(trailer, cursor + 4);
+        let line_id = read_i32_le(trailer, cursor + 8);
+        let mio_id = read_u32_le(trailer, cursor + 12);
+        cursor += PRODUCTION_MIO_JOIN_ROW_LEN;
+        if tag == 0 || (kind != 1 && kind != 2) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PMI1 row {row_index} has invalid tag/kind"
+            ));
+        }
+        if mio_id != 0 {
+            assigned_count += 1;
+        }
+        if !seen.insert((tag, kind, line_id)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PMI1 row {row_index} duplicates line key"
+            ));
+        }
+    }
+    if seen != *base_lines {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PMI1 line coverage is not bijective: trailer_rows={} base_lines={}",
+            seen.len(),
+            base_lines.len()
+        ));
+    }
+    let domain = domain_entry(summary, DOMAIN_PRODUCTION);
+    add_unit(domain, "production_mio_join_rows", row_count as u64);
+    add_unit(domain, "production_mio_assigned_rows", assigned_count);
+    add_unit(
+        domain,
+        "production_mio_proven_null_rows",
+        row_count as u64 - assigned_count,
+    );
+    Some(trailer_offset + segment_len)
+}
+
+fn decode_production_pcp1_segment(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    country_count: usize,
+    base_stockpile: &BTreeSet<(u32, u32)>,
+    base_lines: &BTreeSet<(u32, u32, i32)>,
+    summary: &mut CompactStreamSummary,
+) -> Option<usize> {
+    const HEADER_LEN: usize = 20;
+    const KNOWN_FLAGS: u32 = 0b111;
+    let trailer = payload.get(trailer_offset..)?;
+    if trailer.len() < HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PCP1 trailer shorter than {HEADER_LEN} bytes"
+        ));
+        return None;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let segment_len = read_u32_le(trailer, 8) as usize;
+    let row_count = read_u32_le(trailer, 12) as usize;
+    let reserved = read_u32_le(trailer, 16);
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(8));
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || row_count != country_count
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PCP1 header/count/length is invalid"
+        ));
+        return None;
+    }
+    let mut cursor = HEADER_LEN;
+    let mut seen = BTreeSet::new();
+    let mut complete_counts = [0u64; 3];
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32_le(trailer, cursor);
+        let flags = read_u32_le(trailer, cursor + 4);
+        cursor += 8;
+        if tag_db_id == 0 || tag_db_id > MAX_TAG_DB_ID || !seen.insert(tag_db_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PCP1 row {row_index} has invalid/duplicate tag_db_id {tag_db_id}"
+            ));
+        }
+        if flags & !KNOWN_FLAGS != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PCP1 row {row_index} has unknown flags {flags:#x}"
+            ));
+        }
+        for (bit, count) in complete_counts.iter_mut().enumerate() {
+            if flags & (1 << bit) != 0 {
+                *count += 1;
+            }
+        }
+    }
+    for &(tag_db_id, _) in base_stockpile {
+        if trailer_flags(&seen, trailer, tag_db_id) & 1 == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PCP1 marks stockpile unreadable for tag {tag_db_id} with base rows"
+            ));
+        }
+    }
+    for &(tag_db_id, kind, _) in base_lines {
+        let required = if kind == 2 { 1 << 2 } else { 1 << 1 };
+        if trailer_flags(&seen, trailer, tag_db_id) & required == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PCP1 marks production line kind {kind} unreadable for tag {tag_db_id} with base rows"
+            ));
+        }
+    }
+    let domain = domain_entry(summary, DOMAIN_PRODUCTION);
+    add_unit(domain, "production_completeness_rows", row_count as u64);
+    add_unit(domain, "stockpile_complete_rows", complete_counts[0]);
+    add_unit(domain, "military_lines_complete_rows", complete_counts[1]);
+    add_unit(domain, "naval_lines_complete_rows", complete_counts[2]);
+    Some(trailer_offset + segment_len)
+}
+
+fn trailer_flags(seen: &BTreeSet<u32>, trailer: &[u8], tag_db_id: u32) -> u32 {
+    if !seen.contains(&tag_db_id) {
+        return 0;
+    }
+    let row_count = read_u32_le(trailer, 12) as usize;
+    for row_index in 0..row_count {
+        let cursor = 20 + row_index * 8;
+        if read_u32_le(trailer, cursor) == tag_db_id {
+            return read_u32_le(trailer, cursor + 4);
+        }
+    }
+    0
+}
+
+fn decode_production_pef1_segment(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    base_lines: &BTreeSet<(u32, u32, i32)>,
+    summary: &mut CompactStreamSummary,
+) -> Option<usize> {
+    const HEADER_LEN: usize = 20;
+    let trailer = payload.get(trailer_offset..)?;
+    if trailer.len() < HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PEF1 trailer shorter than {HEADER_LEN} bytes"
+        ));
+        return None;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let segment_len = read_u32_le(trailer, 8) as usize;
+    let row_count = read_u32_le(trailer, 12) as usize;
+    let reserved = read_u32_le(trailer, 16);
+    let expected =
+        HEADER_LEN.saturating_add(row_count.saturating_mul(PRODUCTION_EFFICIENCY_ROW_LEN));
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: PEF1 header/length is invalid"));
+        return None;
+    }
+
+    let mut cursor = HEADER_LEN;
+    let mut seen = BTreeSet::new();
+    for row_index in 0..row_count {
+        let tag = read_u32_le(trailer, cursor);
+        let kind = read_u32_le(trailer, cursor + 4);
+        let line_id = read_i32_le(trailer, cursor + 8);
+        let efficiency_raw = read_i64_le(trailer, cursor + 12);
+        let efficiency_cap_raw = read_i64_le(trailer, cursor + 20);
+        let efficiency_growth_raw = read_i64_le(trailer, cursor + 28);
+        cursor += PRODUCTION_EFFICIENCY_ROW_LEN;
+        if tag == 0 || (kind != 1 && kind != 2) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PEF1 row {row_index} has invalid tag/kind"
+            ));
+        }
+        if efficiency_raw < 0 || efficiency_cap_raw < 0 || efficiency_growth_raw < 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PEF1 row {row_index} has a negative producer result"
+            ));
+        }
+        if !seen.insert((tag, kind, line_id)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PEF1 row {row_index} duplicates line key"
+            ));
+        }
+    }
+    if seen != *base_lines {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PEF1 line coverage is not bijective: trailer_rows={} base_lines={}",
+            seen.len(),
+            base_lines.len()
+        ));
+    }
+    let domain = domain_entry(summary, DOMAIN_PRODUCTION);
+    add_unit(
+        domain,
+        "production_efficiency_producer_rows",
+        row_count as u64,
+    );
+    Some(trailer_offset + segment_len)
+}
+
+fn decode_production_pls1_segment(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    base_lines: &BTreeSet<(u32, u32, i32)>,
+    summary: &mut CompactStreamSummary,
+) -> Option<usize> {
+    const HEADER_LEN: usize = 20;
+    let trailer = payload.get(trailer_offset..)?;
+    if trailer.len() < HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PLS1 trailer shorter than {HEADER_LEN} bytes"
+        ));
+        return None;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let segment_len = read_u32_le(trailer, 8) as usize;
+    let row_count = read_u32_le(trailer, 12) as usize;
+    let reserved = read_u32_le(trailer, 16);
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(16));
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: PLS1 header/length is invalid"));
+        return None;
+    }
+    let mut cursor = HEADER_LEN;
+    let mut seen = BTreeSet::new();
+    let mut subtype_counts = [0u64; 4];
+    for row_index in 0..row_count {
+        let tag = read_u32_le(trailer, cursor);
+        let kind = read_u32_le(trailer, cursor + 4);
+        let line_id = read_i32_le(trailer, cursor + 8);
+        let subtype = read_u32_le(trailer, cursor + 12);
+        cursor += 16;
+        let coherent = matches!((kind, subtype), (1, 1 | 4) | (2, 2 | 3));
+        if tag == 0 || !coherent {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PLS1 row {row_index} has invalid tag/kind/subtype"
+            ));
+        }
+        if (1..=4).contains(&subtype) {
+            subtype_counts[(subtype - 1) as usize] += 1;
+        }
+        if !seen.insert((tag, kind, line_id)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PLS1 row {row_index} duplicates line key"
+            ));
+        }
+    }
+    if seen != *base_lines {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PLS1 line coverage is not bijective: trailer_rows={} base_lines={}",
+            seen.len(),
+            base_lines.len()
+        ));
+    }
+    let domain = domain_entry(summary, DOMAIN_PRODUCTION);
+    add_unit(domain, "production_line_subtype_rows", row_count as u64);
+    for (label, count) in [
+        ("production_line_subtype_military_rows", subtype_counts[0]),
+        ("production_line_subtype_naval_rows", subtype_counts[1]),
+        ("production_line_subtype_ship_refit_rows", subtype_counts[2]),
+        (
+            "production_line_subtype_railway_gun_rows",
+            subtype_counts[3],
+        ),
+    ] {
+        add_unit(domain, label, count);
+    }
+    Some(trailer_offset + segment_len)
+}
+
+fn decode_production_plic_segment(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    summary: &mut CompactStreamSummary,
+) -> Option<usize> {
+    const HEADER_LEN: usize = 20;
+    let trailer = payload.get(trailer_offset..)?;
+    if trailer.len() < HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PLIC trailer shorter than {HEADER_LEN} bytes"
+        ));
+        return None;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let country_rows = read_u32_le(trailer, 8) as usize;
+    let id_rows = read_u32_le(trailer, 12) as usize;
+    let reserved = read_u32_le(trailer, 16);
+    let expected = HEADER_LEN
+        .saturating_add(country_rows.saturating_mul(8))
+        .saturating_add(id_rows.saturating_mul(4));
+    if version != 1 || header_len != HEADER_LEN || reserved != 0 || trailer.len() < expected {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: PLIC header/length is invalid"));
+        return None;
+    }
+    let mut cursor = HEADER_LEN;
+    let mut counts = Vec::with_capacity(country_rows);
+    let mut seen_tags = BTreeSet::new();
+    let mut total_ids = 0usize;
+    for row_index in 0..country_rows {
+        let tag = read_u32_le(trailer, cursor);
+        let count = read_u32_le(trailer, cursor + 4) as usize;
+        cursor += 8;
+        if tag == 0 || !seen_tags.insert(tag) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PLIC country row {row_index} has invalid/duplicate tag {tag}"
+            ));
+        }
+        total_ids = total_ids.saturating_add(count);
+        counts.push((tag, count));
+    }
+    if total_ids != id_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PLIC id total {total_ids} != id_rows {id_rows}"
+        ));
+        return None;
+    }
+    for (tag, count) in counts {
+        let mut seen_ids = BTreeSet::new();
+        for _ in 0..count {
+            let variant_id = read_u32_le(trailer, cursor);
+            cursor += 4;
+            if variant_id == 0 || variant_id >= (1 << 24) || !seen_ids.insert(variant_id) {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: PLIC tag {tag} has invalid/duplicate variant_id {variant_id}"
+                ));
+            }
+        }
+    }
+    let domain = domain_entry(summary, DOMAIN_PRODUCTION);
+    add_unit(
+        domain,
+        "production_license_country_rows",
+        country_rows as u64,
+    );
+    add_unit(domain, "production_license_id_rows", id_rows as u64);
+    Some(trailer_offset + expected)
+}
+
+fn decode_production_pvj1_segment(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    base_lines: &BTreeSet<(u32, u32, i32)>,
+    summary: &mut CompactStreamSummary,
+) -> Option<usize> {
+    const HEADER_LEN: usize = 20;
+    let trailer = payload.get(trailer_offset..)?;
+    if trailer.len() < HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PVJ1 trailer shorter than {HEADER_LEN} bytes"
+        ));
+        return None;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let segment_len = read_u32_le(trailer, 8) as usize;
+    let row_count = read_u32_le(trailer, 12) as usize;
+    let reserved = read_u32_le(trailer, 16);
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(16));
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: PVJ1 header/length is invalid"));
+        return None;
+    }
+    let mut cursor = HEADER_LEN;
+    let mut seen = BTreeSet::new();
+    for row_index in 0..row_count {
+        let tag = read_u32_le(trailer, cursor);
+        let kind = read_u32_le(trailer, cursor + 4);
+        let line_id = read_i32_le(trailer, cursor + 8);
+        let variant_id = read_u32_le(trailer, cursor + 12);
+        cursor += 16;
+        if tag == 0 || (kind != 1 && kind != 2) || variant_id == 0 || variant_id > MAX_VARIANT_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PVJ1 row {row_index} has invalid tag/kind/variant"
+            ));
+        }
+        if !seen.insert((tag, kind, line_id)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PVJ1 row {row_index} duplicates line key"
+            ));
+        }
+    }
+    if seen != *base_lines {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PVJ1 line coverage is not bijective: trailer_rows={} base_lines={}",
+            seen.len(),
+            base_lines.len()
+        ));
+    }
+    let domain = domain_entry(summary, DOMAIN_PRODUCTION);
+    add_unit(domain, "production_variant_join_rows", row_count as u64);
+    Some(trailer_offset + segment_len)
+}
+
+fn decode_production_pfr1_segment(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    base_lines: &BTreeSet<(u32, u32, i32)>,
+    summary: &mut CompactStreamSummary,
+) -> Option<usize> {
+    const HEADER_LEN: usize = 20;
+    let trailer = payload.get(trailer_offset..)?;
+    if trailer.len() < HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PFR1 trailer shorter than {HEADER_LEN} bytes"
+        ));
+        return None;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let segment_len = read_u32_le(trailer, 8) as usize;
+    let row_count = read_u32_le(trailer, 12) as usize;
+    let reserved = read_u32_le(trailer, 16);
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(16));
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: PFR1 header/length is invalid"));
+        return None;
+    }
+    let mut cursor = HEADER_LEN;
+    let mut seen = BTreeSet::new();
+    for row_index in 0..row_count {
+        let tag = read_u32_le(trailer, cursor);
+        let kind = read_u32_le(trailer, cursor + 4);
+        let line_id = read_i32_le(trailer, cursor + 8);
+        let requested_factories = read_i32_le(trailer, cursor + 12);
+        cursor += 16;
+        if tag == 0
+            || (kind != 1 && kind != 2)
+            || !(0..=MAX_FACTORIES).contains(&requested_factories)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PFR1 row {row_index} has invalid tag/kind/requested_factories"
+            ));
+        }
+        if !seen.insert((tag, kind, line_id)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PFR1 row {row_index} duplicates line key"
+            ));
+        }
+    }
+    if seen != *base_lines {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PFR1 line coverage is not bijective: trailer_rows={} base_lines={}",
+            seen.len(),
+            base_lines.len()
+        ));
+    }
+    let domain = domain_entry(summary, DOMAIN_PRODUCTION);
+    add_unit(
+        domain,
+        "production_requested_factories_rows",
+        row_count as u64,
+    );
+    Some(trailer_offset + segment_len)
 }
 
 fn decode_variant_defs_payload(
@@ -2094,6 +2892,418 @@ mod tests {
     }
 
     #[test]
+    fn x4_p1_decodes_bijective_pvj1_variant_join() {
+        let mut payload = encode_production_payload(
+            9,
+            0,
+            1,
+            &[],
+            &[ProductionLineRow {
+                tag_db_id: 47,
+                kind: 1,
+                line_id: 349,
+                active_factories: 3,
+                cost_raw: 1,
+                speed_raw: 1,
+                produced_raw: 1,
+                amount: 0,
+            }],
+            &[],
+            &[],
+        );
+        payload.extend_from_slice(b"PVJ1");
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&20u16.to_le_bytes());
+        payload.extend_from_slice(&36u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&349i32.to_le_bytes());
+        payload.extend_from_slice(&7316u32.to_le_bytes());
+
+        let mut summary = CompactStreamSummary::default();
+        decode_production_payload(0, &payload, &mut summary);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary.per_domain[&DOMAIN_PRODUCTION]
+                .data_units_total
+                .get("production_variant_join_rows")
+                .copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn x4_p2_decodes_bijective_pfr1_requested_factories_join() {
+        let mut payload = encode_production_payload(
+            9,
+            0,
+            1,
+            &[],
+            &[ProductionLineRow {
+                tag_db_id: 47,
+                kind: 1,
+                line_id: 349,
+                active_factories: 3,
+                cost_raw: 1,
+                speed_raw: 1,
+                produced_raw: 1,
+                amount: 0,
+            }],
+            &[],
+            &[],
+        );
+        payload.extend_from_slice(b"PFR1");
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&20u16.to_le_bytes());
+        payload.extend_from_slice(&36u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&349i32.to_le_bytes());
+        payload.extend_from_slice(&5i32.to_le_bytes());
+
+        let mut summary = CompactStreamSummary::default();
+        decode_production_payload(0, &payload, &mut summary);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary.per_domain[&DOMAIN_PRODUCTION]
+                .data_units_total
+                .get("production_requested_factories_rows")
+                .copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn x4_p3_decodes_bijective_pls1_line_subtypes() {
+        let mut payload = encode_production_payload(
+            9,
+            0,
+            1,
+            &[],
+            &[ProductionLineRow {
+                tag_db_id: 47,
+                kind: 1,
+                line_id: 349,
+                active_factories: 3,
+                cost_raw: 1,
+                speed_raw: 1,
+                produced_raw: 1,
+                amount: 0,
+            }],
+            &[ProductionLineRow {
+                tag_db_id: 47,
+                kind: 2,
+                line_id: 350,
+                active_factories: 2,
+                cost_raw: 1,
+                speed_raw: 1,
+                produced_raw: 1,
+                amount: 0,
+            }],
+            &[],
+        );
+        payload.extend_from_slice(b"PLS1");
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&20u16.to_le_bytes());
+        payload.extend_from_slice(&52u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&349i32.to_le_bytes());
+        payload.extend_from_slice(&4u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&350i32.to_le_bytes());
+        payload.extend_from_slice(&3u32.to_le_bytes());
+
+        let mut summary = CompactStreamSummary::default();
+        decode_production_payload(0, &payload, &mut summary);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let units = &summary.per_domain[&DOMAIN_PRODUCTION].data_units_total;
+        assert_eq!(units.get("production_line_subtype_rows").copied(), Some(2));
+        assert_eq!(
+            units
+                .get("production_line_subtype_ship_refit_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            units
+                .get("production_line_subtype_railway_gun_rows")
+                .copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn x4_p6_decodes_tag_bearing_proven_empty_and_unreadable_vectors() {
+        let mut payload = encode_production_payload(9, 0, 2, &[], &[], &[], &[]);
+        payload.extend_from_slice(b"PCP1");
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&20u16.to_le_bytes());
+        payload.extend_from_slice(&36u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&0b111u32.to_le_bytes());
+        payload.extend_from_slice(&48u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        let mut summary = CompactStreamSummary::default();
+        decode_production_payload(0, &payload, &mut summary);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let units = &summary.per_domain[&DOMAIN_PRODUCTION].data_units_total;
+        assert_eq!(units.get("production_completeness_rows").copied(), Some(2));
+        assert_eq!(units.get("stockpile_complete_rows").copied(), Some(1));
+        assert_eq!(units.get("military_lines_complete_rows").copied(), Some(1));
+        assert_eq!(units.get("naval_lines_complete_rows").copied(), Some(1));
+    }
+
+    #[test]
+    fn x4_p6_rejects_non_bijective_or_unknown_pcp1_rows() {
+        let mut payload = encode_production_payload(9, 0, 2, &[], &[], &[], &[]);
+        payload.extend_from_slice(b"PCP1");
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&20u16.to_le_bytes());
+        payload.extend_from_slice(&28u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&8u32.to_le_bytes());
+        let mut summary = CompactStreamSummary::default();
+        decode_production_payload(0, &payload, &mut summary);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("PCP1 header/count/length is invalid")));
+
+        let mut unknown = encode_production_payload(9, 0, 1, &[], &[], &[], &[]);
+        unknown.extend_from_slice(b"PCP1");
+        unknown.extend_from_slice(&1u16.to_le_bytes());
+        unknown.extend_from_slice(&20u16.to_le_bytes());
+        unknown.extend_from_slice(&28u32.to_le_bytes());
+        unknown.extend_from_slice(&1u32.to_le_bytes());
+        unknown.extend_from_slice(&0u32.to_le_bytes());
+        unknown.extend_from_slice(&47u32.to_le_bytes());
+        unknown.extend_from_slice(&8u32.to_le_bytes());
+        let mut summary = CompactStreamSummary::default();
+        decode_production_payload(0, &unknown, &mut summary);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("PCP1 row 0 has unknown flags")));
+
+        let mut incoherent = encode_production_payload(
+            9,
+            0,
+            1,
+            &[ProductionStockpileRow {
+                tag_db_id: 47,
+                variant_id: 70,
+                amount_raw: 1,
+            }],
+            &[],
+            &[],
+            &[],
+        );
+        incoherent.extend_from_slice(b"PCP1");
+        incoherent.extend_from_slice(&1u16.to_le_bytes());
+        incoherent.extend_from_slice(&20u16.to_le_bytes());
+        incoherent.extend_from_slice(&28u32.to_le_bytes());
+        incoherent.extend_from_slice(&1u32.to_le_bytes());
+        incoherent.extend_from_slice(&0u32.to_le_bytes());
+        incoherent.extend_from_slice(&47u32.to_le_bytes());
+        incoherent.extend_from_slice(&0u32.to_le_bytes());
+        let mut summary = CompactStreamSummary::default();
+        decode_production_payload(0, &incoherent, &mut summary);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("marks stockpile unreadable")));
+    }
+
+    #[test]
+    fn x4_p4_appends_and_decodes_bijective_pef1_producer_outputs() {
+        let military = [ProductionLineRow {
+            tag_db_id: 47,
+            kind: 1,
+            line_id: 349,
+            active_factories: 3,
+            cost_raw: 1,
+            speed_raw: 1,
+            produced_raw: 1,
+            amount: 0,
+        }];
+        let mut payload = encode_production_payload(9, 0, 1, &[], &military, &[], &[]);
+        append_production_efficiency_trailer(
+            &mut payload,
+            &military,
+            &[],
+            &[ProductionEfficiencyRow {
+                tag_db_id: 47,
+                kind: 1,
+                line_id: 349,
+                efficiency_raw: 6_459_667,
+                efficiency_cap_raw: PRODUCTION_EFFICIENCY_FULL_SCALE_RAW,
+                efficiency_growth_raw: 12_345,
+            }],
+        )
+        .unwrap();
+
+        let mut summary = CompactStreamSummary::default();
+        decode_production_payload(0, &payload, &mut summary);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary.per_domain[&DOMAIN_PRODUCTION]
+                .data_units_total
+                .get("production_efficiency_producer_rows")
+                .copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn x4_p4_refuses_non_bijective_efficiency_carrier() {
+        let military = [ProductionLineRow {
+            tag_db_id: 47,
+            kind: 1,
+            line_id: 349,
+            active_factories: 3,
+            cost_raw: 1,
+            speed_raw: 1,
+            produced_raw: 1,
+            amount: 0,
+        }];
+        let mut payload = encode_production_payload(9, 0, 1, &[], &military, &[], &[]);
+        let base_len = payload.len();
+        let error =
+            append_production_efficiency_trailer(&mut payload, &military, &[], &[]).unwrap_err();
+        assert!(error.contains("not bijective"), "{error}");
+        assert_eq!(payload.len(), base_len);
+    }
+
+    #[test]
+    fn x4_p5_appends_and_decodes_assigned_and_proven_null_mio_joins() {
+        let military = [ProductionLineRow {
+            tag_db_id: 47,
+            kind: 1,
+            line_id: 1669,
+            active_factories: 3,
+            cost_raw: 1,
+            speed_raw: 1,
+            produced_raw: 1,
+            amount: 0,
+        }];
+        let naval = [ProductionLineRow {
+            tag_db_id: 47,
+            kind: 2,
+            line_id: 1672,
+            active_factories: 2,
+            cost_raw: 1,
+            speed_raw: 1,
+            produced_raw: 1,
+            amount: 0,
+        }];
+        let mut payload = encode_production_payload(9, 0, 1, &[], &military, &naval, &[]);
+        append_production_mio_join_trailer(
+            &mut payload,
+            &military,
+            &naval,
+            &[
+                ProductionMioJoinRow {
+                    tag_db_id: 47,
+                    kind: 1,
+                    line_id: 1669,
+                    mio_id: 33,
+                },
+                ProductionMioJoinRow {
+                    tag_db_id: 47,
+                    kind: 2,
+                    line_id: 1672,
+                    mio_id: 0,
+                },
+            ],
+        )
+        .unwrap();
+
+        let mut summary = CompactStreamSummary::default();
+        decode_production_payload(0, &payload, &mut summary);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let units = &summary.per_domain[&DOMAIN_PRODUCTION].data_units_total;
+        assert_eq!(units.get("production_mio_join_rows").copied(), Some(2));
+        assert_eq!(units.get("production_mio_assigned_rows").copied(), Some(1));
+        assert_eq!(
+            units.get("production_mio_proven_null_rows").copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn x4_p5_refuses_non_bijective_or_duplicate_mio_carrier() {
+        let military = [ProductionLineRow {
+            tag_db_id: 47,
+            kind: 1,
+            line_id: 1669,
+            active_factories: 3,
+            cost_raw: 1,
+            speed_raw: 1,
+            produced_raw: 1,
+            amount: 0,
+        }];
+        let mut payload = encode_production_payload(9, 0, 1, &[], &military, &[], &[]);
+        let base_len = payload.len();
+        let error =
+            append_production_mio_join_trailer(&mut payload, &military, &[], &[]).unwrap_err();
+        assert!(error.contains("not bijective"), "{error}");
+        assert_eq!(payload.len(), base_len);
+
+        let duplicate = ProductionMioJoinRow {
+            tag_db_id: 47,
+            kind: 1,
+            line_id: 1669,
+            mio_id: 33,
+        };
+        let error = append_production_mio_join_trailer(
+            &mut payload,
+            &military,
+            &[],
+            &[duplicate, duplicate],
+        )
+        .unwrap_err();
+        assert!(error.contains("not unique"), "{error}");
+        assert_eq!(payload.len(), base_len);
+    }
+
+    #[test]
     fn rejects_duplicate_stockpile_keys() {
         let payload = encode_production_payload(
             9,
@@ -2830,11 +4040,9 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "requested_factory_counts",
                 "consumer_goods",
                 "resource_flows_shortages",
                 "deployment_queues",
-                "mio_design_variant_production_joins",
                 "economy_law_derived_state",
                 "trade_factory_impact",
             ]
@@ -2844,7 +4052,7 @@ mod tests {
             .all(|gap| gap.evidence_mask != 0 && gap.proposed_domain_id != 0));
         assert!(gaps
             .iter()
-            .any(|gap| gap.status == GAP_STATUS_SCHEMA_BLOCKED));
+            .all(|gap| gap.status != GAP_STATUS_SCHEMA_BLOCKED));
         assert!(gaps
             .iter()
             .any(|gap| gap.status == GAP_STATUS_SOURCE_BLOCKED));
@@ -2866,13 +4074,13 @@ mod tests {
             summary.parse_errors
         );
         let domain = summary.per_domain.get(&DOMAIN_GAP_BADGES).unwrap();
-        assert_eq!(domain.data_rows_total, 7);
+        assert_eq!(domain.data_rows_total, 5);
         assert_eq!(
             domain
                 .data_units_total
                 .get("remaining_gap_badge_rows")
                 .copied(),
-            Some(7)
+            Some(5)
         );
         assert_eq!(
             domain

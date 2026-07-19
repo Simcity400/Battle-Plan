@@ -14,14 +14,17 @@ pub const DOMAIN_LAND_COMBAT_DETAIL_EVENTS_NAME: &str = "land_combat_detail_even
 // rows, extending the header with a side-detail count. v1 payloads (no side
 // detail) remain decodable: a v1 header omits the trailing count field, so the
 // version gate selects the header/parse shape (never a payload-byte sniff).
-pub const SCHEMA_VERSION: u16 = 3;
+pub const SCHEMA_VERSION: u16 = 4;
 pub const SCHEMA_VERSION_V1_NO_SIDE_DETAIL: u16 = 1;
 pub const SCHEMA_VERSION_V2_SIDE_DETAIL: u16 = 2;
+pub const SCHEMA_VERSION_V3_ATTRIBUTION: u16 = 3;
 /// v1 header (event rows only). Kept for decoding older streams.
 pub const PAYLOAD_HEADER_LEN_V1: usize = 28;
 /// v2 header adds a u32 side_detail_row_count after the event-row count block.
 pub const PAYLOAD_HEADER_LEN_V2: usize = 32;
-/// v3 header adds a u32 attribution_row_count after the side-detail count.
+/// v3/v4 header adds a u32 attribution_row_count after the side-detail count.
+/// In v4 the existing string_count word describes the canonical tactic string
+/// table appended after all fixed rows.
 pub const PAYLOAD_HEADER_LEN: usize = 36;
 pub const DETAIL_EVENT_ROW_LEN: usize = 52;
 
@@ -31,17 +34,23 @@ pub const DETAIL_EVENT_ROW_LEN: usize = 52;
 // frame for every live combat, so the fold always has the latest per-side
 // scalars regardless of whether the participant/phase delta changed this hour.
 // Offsets validated 50/50 on both sides vs the melt (FINAL_SWEEP §T2). Damage
-// fields are i64 fixed-point ×100000; counts are u32. `tactic` is PARTIAL
-// (pointer/table-backed, no inline offset) and `losses` is not disambiguable
-// on this all-zero-loss save — both are DELIBERATELY OMITTED (badged).
+// fields are i64 fixed-point ×100000; counts are u32. Schema v4 additionally
+// carries the exact progress accumulator and the validated tactic identity.
+// `losses` remains undisambiguated on the all-zero-loss oracle and is omitted.
 /// Side-detail row wire length. Layout (all little-endian):
 ///   combat_id u32 | generation u64 | side u32 | flags u32           (20)
 ///   units u32 | committed u32 | reserve u32 | air_kills u32
 ///     | org_loss_summary_index u32 | num_org_losses u32             (+24 = 44)
 ///   7 × i64 damage raws: anti_air, air_str, air_org, ground_str,
 ///     ground_org, prevented_str, prevented_org                      (+56 = 100)
-pub const SIDE_DETAIL_ROW_LEN: usize = 100;
+pub const SIDE_DETAIL_ROW_LEN_V3: usize = 100;
+/// v4 adds progress_raw i32, tactic_id i32, tactic_token_index u32, and
+/// tactic_name_index u32. String indices address the canonical payload table.
+pub const SIDE_DETAIL_ROW_LEN: usize = 116;
 pub const SIDE_DETAIL_FIXED_SCALE: i64 = 100_000;
+pub const MAX_TACTIC_STRING_COUNT: usize = 16_000;
+pub const MAX_TACTIC_STRING_LEN: usize = 256;
+pub const TACTIC_STRING_INDEX_NONE: u32 = u32::MAX;
 
 pub const SIDE_DETAIL_FLAG_ATTACKER: u32 = 1 << 0;
 pub const SIDE_DETAIL_FLAG_DEFENDER: u32 = 1 << 1;
@@ -58,12 +67,18 @@ pub const SIDE_DETAIL_FLAG_LOSSES_OMITTED: u32 = 1 << 4;
 /// the side exactly at the interesting transition) but badged so a consumer
 /// treats the count triple as momentarily inconsistent, not authoritative.
 pub const SIDE_DETAIL_FLAG_COUNTS_INCOMPLETE: u32 = 1 << 5;
+pub const SIDE_DETAIL_FLAG_PROGRESS_PRESENT: u32 = 1 << 6;
+pub const SIDE_DETAIL_FLAG_TACTIC_KNOWN: u32 = 1 << 7;
+pub const SIDE_DETAIL_FLAG_TACTIC_PRESENT: u32 = 1 << 8;
 pub const SIDE_DETAIL_KNOWN_FLAG_MASK: u32 = SIDE_DETAIL_FLAG_ATTACKER
     | SIDE_DETAIL_FLAG_DEFENDER
     | SIDE_DETAIL_FLAG_SIDE_VALIDATED
     | SIDE_DETAIL_FLAG_TACTIC_UNRESOLVED
     | SIDE_DETAIL_FLAG_LOSSES_OMITTED
-    | SIDE_DETAIL_FLAG_COUNTS_INCOMPLETE;
+    | SIDE_DETAIL_FLAG_COUNTS_INCOMPLETE
+    | SIDE_DETAIL_FLAG_PROGRESS_PRESENT
+    | SIDE_DETAIL_FLAG_TACTIC_KNOWN
+    | SIDE_DETAIL_FLAG_TACTIC_PRESENT;
 
 /// Sanity ceiling on a fixed-point damage accumulator (±~9.2e12 raw = ±92M
 /// after the /1e5 scale — generous for a single combat, still rejects garbage).
@@ -149,7 +164,14 @@ impl CombatSide {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TacticIdentity {
+    pub id: i32,
+    pub token: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SideDetail {
     /// Total units on the side (side+0x2C = committed + reserve). 100/100.
     pub units: u32,
@@ -171,13 +193,20 @@ pub struct SideDetail {
     pub ground_damage_org_raw: i64,
     pub prevented_damage_str_raw: i64,
     pub prevented_damage_org_raw: i64,
+    /// Exact stored side progress: i32[CCombatSide+0x418] / 100000.
+    /// None exists only when decoding legacy v2/v3 streams.
+    pub progress_raw: Option<i32>,
+    /// Exact runtime CCombatTactic identity. None with tactic_known=true means
+    /// the stable side tactic pointer was null; false is legacy/unavailable.
+    pub tactic: Option<TacticIdentity>,
+    pub tactic_known: bool,
     /// True when the stably-read count triple violated committed+reserve==units
     /// (a genuine mid-combat transient). The row is still emitted, badged.
     pub counts_incomplete: bool,
 }
 
 /// A per-side current-state detail row for one combat.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SideDetailRow {
     pub combat_id: u32,
     pub generation: u64,
@@ -549,7 +578,7 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
         // rebaseline frame — the fold needs the live scalars every hour.
         let side_detail_rows = side_detail_rows_from_snapshots(&current);
         let attribution_rows = attribution_rows_from_snapshots(&current);
-        let payload = encode_detail_events_payload_v3(
+        let payload = encode_detail_events_payload_v4(
             elapsed_wall_ms,
             STATUS_DELTA_DATA | STATUS_PARTIAL_DATA | STATUS_TRANSITION_BASELINE_RESET,
             &[],
@@ -594,7 +623,7 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
 pub fn side_detail_rows_from_snapshots(current: &[LandCombatSnapshot]) -> Vec<SideDetailRow> {
     let mut rows = Vec::new();
     for snapshot in current {
-        if let Some(detail) = snapshot.attacker_detail {
+        if let Some(detail) = snapshot.attacker_detail.clone() {
             rows.push(SideDetailRow {
                 combat_id: snapshot.combat_id,
                 generation: snapshot.generation,
@@ -602,7 +631,7 @@ pub fn side_detail_rows_from_snapshots(current: &[LandCombatSnapshot]) -> Vec<Si
                 detail,
             });
         }
-        if let Some(detail) = snapshot.defender_detail {
+        if let Some(detail) = snapshot.defender_detail.clone() {
             rows.push(SideDetailRow {
                 combat_id: snapshot.combat_id,
                 generation: snapshot.generation,
@@ -658,7 +687,7 @@ pub fn build_transition_capture_frame(
     let rows = build_detail_event_rows(previous, current)?;
     let side_detail_rows = side_detail_rows_from_snapshots(current);
     let attribution_rows = attribution_rows_from_snapshots(current);
-    let payload = encode_detail_events_payload_v3(
+    let payload = encode_detail_events_payload_v4(
         elapsed_wall_ms,
         STATUS_DELTA_DATA,
         &rows,
@@ -769,7 +798,7 @@ pub fn encode_detail_events_payload_v2(
     let mut payload = Vec::with_capacity(
         PAYLOAD_HEADER_LEN_V2
             + rows.len() * DETAIL_EVENT_ROW_LEN
-            + side_detail_rows.len() * SIDE_DETAIL_ROW_LEN,
+            + side_detail_rows.len() * SIDE_DETAIL_ROW_LEN_V3,
     );
     payload.extend_from_slice(&SCHEMA_VERSION_V2_SIDE_DETAIL.to_le_bytes());
     payload.extend_from_slice(&(DETAIL_EVENT_ROW_LEN as u16).to_le_bytes());
@@ -782,11 +811,13 @@ pub fn encode_detail_events_payload_v2(
     payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
     append_event_rows(&mut payload, rows);
     for row in side_detail_rows {
-        append_side_detail_row(&mut payload, row);
+        append_side_detail_row_legacy(&mut payload, row);
     }
     payload
 }
 
+/// v3 compatibility encoder: attribution rows are present, while side detail
+/// retains the legacy 100-byte shape and has no tactic string table.
 pub fn encode_detail_events_payload_v3(
     elapsed_wall_ms: u64,
     status_flags: u32,
@@ -797,10 +828,10 @@ pub fn encode_detail_events_payload_v3(
     let mut payload = Vec::with_capacity(
         PAYLOAD_HEADER_LEN
             + rows.len() * DETAIL_EVENT_ROW_LEN
-            + side_detail_rows.len() * SIDE_DETAIL_ROW_LEN
+            + side_detail_rows.len() * SIDE_DETAIL_ROW_LEN_V3
             + attribution_rows.len() * ATTRIBUTION_ROW_LEN,
     );
-    payload.extend_from_slice(&SCHEMA_VERSION.to_le_bytes());
+    payload.extend_from_slice(&SCHEMA_VERSION_V3_ATTRIBUTION.to_le_bytes());
     payload.extend_from_slice(&(DETAIL_EVENT_ROW_LEN as u16).to_le_bytes());
     payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
     payload.extend_from_slice(&status_flags.to_le_bytes());
@@ -813,12 +844,74 @@ pub fn encode_detail_events_payload_v3(
     payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
     append_event_rows(&mut payload, rows);
     for row in side_detail_rows {
-        append_side_detail_row(&mut payload, row);
+        append_side_detail_row_legacy(&mut payload, row);
     }
     for row in attribution_rows {
         append_attribution_row(&mut payload, row);
     }
     payload
+}
+
+/// v4 production encoder: exact per-side progress and tactic identity, with a
+/// canonical UTF-8 tactic string table, plus attribution rows.
+pub fn encode_detail_events_payload_v4(
+    elapsed_wall_ms: u64,
+    status_flags: u32,
+    rows: &[DetailEventRow],
+    side_detail_rows: &[SideDetailRow],
+    attribution_rows: &[AttributionRow],
+) -> Vec<u8> {
+    let strings = canonical_tactic_strings(side_detail_rows);
+    let string_indices = strings
+        .iter()
+        .enumerate()
+        .map(|(index, value)| (value.as_str(), index as u32))
+        .collect::<BTreeMap<_, _>>();
+    let string_bytes = strings.iter().map(|s| 4 + s.len()).sum::<usize>();
+    let mut payload = Vec::with_capacity(
+        PAYLOAD_HEADER_LEN
+            + rows.len() * DETAIL_EVENT_ROW_LEN
+            + side_detail_rows.len() * SIDE_DETAIL_ROW_LEN
+            + attribution_rows.len() * ATTRIBUTION_ROW_LEN
+            + string_bytes,
+    );
+    payload.extend_from_slice(&SCHEMA_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(DETAIL_EVENT_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+    payload.extend_from_slice(&status_flags.to_le_bytes());
+    payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    payload.extend_from_slice(&(strings.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    payload
+        .extend_from_slice(&(side_detail_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    payload
+        .extend_from_slice(&(attribution_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    append_event_rows(&mut payload, rows);
+    for row in side_detail_rows {
+        append_side_detail_row(&mut payload, row, &string_indices);
+    }
+    for row in attribution_rows {
+        append_attribution_row(&mut payload, row);
+    }
+    for value in strings {
+        payload.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        payload.extend_from_slice(value.as_bytes());
+    }
+    payload
+}
+
+fn canonical_tactic_strings(side_detail_rows: &[SideDetailRow]) -> Vec<String> {
+    let mut strings = BTreeSet::new();
+    for row in side_detail_rows {
+        if let Some(tactic) = &row.detail.tactic {
+            assert!(!tactic.token.is_empty() && tactic.token.len() <= MAX_TACTIC_STRING_LEN);
+            assert!(!tactic.name.is_empty() && tactic.name.len() <= MAX_TACTIC_STRING_LEN);
+            strings.insert(tactic.token.clone());
+            strings.insert(tactic.name.clone());
+        }
+    }
+    assert!(strings.len() <= MAX_TACTIC_STRING_COUNT);
+    strings.into_iter().collect()
 }
 
 fn append_event_rows(payload: &mut Vec<u8>, rows: &[DetailEventRow]) {
@@ -844,8 +937,7 @@ fn append_event_rows(payload: &mut Vec<u8>, rows: &[DetailEventRow]) {
     }
 }
 
-/// Encode one side-detail row (SIDE_DETAIL_ROW_LEN bytes; layout on the const).
-fn append_side_detail_row(payload: &mut Vec<u8>, row: &SideDetailRow) {
+fn append_side_detail_row_legacy(payload: &mut Vec<u8>, row: &SideDetailRow) {
     let mut flags = SIDE_DETAIL_FLAG_SIDE_VALIDATED
         | SIDE_DETAIL_FLAG_TACTIC_UNRESOLVED
         | SIDE_DETAIL_FLAG_LOSSES_OMITTED;
@@ -873,6 +965,68 @@ fn append_side_detail_row(payload: &mut Vec<u8>, row: &SideDetailRow) {
     payload.extend_from_slice(&row.detail.ground_damage_org_raw.to_le_bytes());
     payload.extend_from_slice(&row.detail.prevented_damage_str_raw.to_le_bytes());
     payload.extend_from_slice(&row.detail.prevented_damage_org_raw.to_le_bytes());
+}
+
+/// Encode one v4 side-detail row (SIDE_DETAIL_ROW_LEN bytes).
+fn append_side_detail_row(
+    payload: &mut Vec<u8>,
+    row: &SideDetailRow,
+    string_indices: &BTreeMap<&str, u32>,
+) {
+    assert!(
+        row.detail.progress_raw.is_some(),
+        "schema v4 requires exact side progress"
+    );
+    assert!(
+        row.detail.tactic_known,
+        "schema v4 requires authoritative tactic presence/absence"
+    );
+    let mut flags = SIDE_DETAIL_FLAG_SIDE_VALIDATED | SIDE_DETAIL_FLAG_LOSSES_OMITTED;
+    flags |= match row.side {
+        CombatSide::Attacker => SIDE_DETAIL_FLAG_ATTACKER,
+        CombatSide::Defender => SIDE_DETAIL_FLAG_DEFENDER,
+    };
+    if row.detail.counts_incomplete {
+        flags |= SIDE_DETAIL_FLAG_COUNTS_INCOMPLETE;
+    }
+    if row.detail.progress_raw.is_some() {
+        flags |= SIDE_DETAIL_FLAG_PROGRESS_PRESENT;
+    }
+    if row.detail.tactic_known {
+        flags |= SIDE_DETAIL_FLAG_TACTIC_KNOWN;
+    } else {
+        flags |= SIDE_DETAIL_FLAG_TACTIC_UNRESOLVED;
+    }
+    if row.detail.tactic.is_some() {
+        flags |= SIDE_DETAIL_FLAG_TACTIC_PRESENT;
+    }
+    payload.extend_from_slice(&row.combat_id.to_le_bytes());
+    payload.extend_from_slice(&row.generation.to_le_bytes());
+    payload.extend_from_slice(&row.side.wire_id().to_le_bytes());
+    payload.extend_from_slice(&flags.to_le_bytes());
+    payload.extend_from_slice(&row.detail.units.to_le_bytes());
+    payload.extend_from_slice(&row.detail.committed.to_le_bytes());
+    payload.extend_from_slice(&row.detail.reserve.to_le_bytes());
+    payload.extend_from_slice(&row.detail.air_kills.to_le_bytes());
+    payload.extend_from_slice(&row.detail.org_loss_summary_index.to_le_bytes());
+    payload.extend_from_slice(&row.detail.num_org_losses.to_le_bytes());
+    payload.extend_from_slice(&row.detail.anti_air_attack_raw.to_le_bytes());
+    payload.extend_from_slice(&row.detail.air_damage_str_raw.to_le_bytes());
+    payload.extend_from_slice(&row.detail.air_damage_org_raw.to_le_bytes());
+    payload.extend_from_slice(&row.detail.ground_damage_str_raw.to_le_bytes());
+    payload.extend_from_slice(&row.detail.ground_damage_org_raw.to_le_bytes());
+    payload.extend_from_slice(&row.detail.prevented_damage_str_raw.to_le_bytes());
+    payload.extend_from_slice(&row.detail.prevented_damage_org_raw.to_le_bytes());
+    payload.extend_from_slice(&row.detail.progress_raw.unwrap_or(0).to_le_bytes());
+    if let Some(tactic) = &row.detail.tactic {
+        payload.extend_from_slice(&tactic.id.to_le_bytes());
+        payload.extend_from_slice(&string_indices[tactic.token.as_str()].to_le_bytes());
+        payload.extend_from_slice(&string_indices[tactic.name.as_str()].to_le_bytes());
+    } else {
+        payload.extend_from_slice(&0i32.to_le_bytes());
+        payload.extend_from_slice(&TACTIC_STRING_INDEX_NONE.to_le_bytes());
+        payload.extend_from_slice(&TACTIC_STRING_INDEX_NONE.to_le_bytes());
+    }
 }
 
 fn append_attribution_row(payload: &mut Vec<u8>, row: &AttributionRow) {
@@ -1149,43 +1303,59 @@ pub fn decode_detail_events_payload(
     let mut errors = Vec::new();
     // The version selects the header/parse shape (framing-level, never a
     // payload-byte sniff). v1 = events only, v2 = side detail, v3 = side detail
-    // plus damage attribution.
+    // plus damage attribution, v4 = exact side progress and tactic identity.
     if payload.len() < 4 {
         return Err(vec![format!("offset {offset}: detail payload too short")]);
     }
     let version = read_u16(payload, 0);
-    let (header_len, side_detail_row_count, attribution_row_count) = match version {
-        SCHEMA_VERSION_V1_NO_SIDE_DETAIL => (PAYLOAD_HEADER_LEN_V1, 0usize, 0usize),
-        SCHEMA_VERSION_V2_SIDE_DETAIL => {
-            if payload.len() < PAYLOAD_HEADER_LEN_V2 {
+    let (header_len, side_detail_row_count, attribution_row_count, side_detail_row_len) =
+        match version {
+            SCHEMA_VERSION_V1_NO_SIDE_DETAIL => (PAYLOAD_HEADER_LEN_V1, 0usize, 0usize, 0usize),
+            SCHEMA_VERSION_V2_SIDE_DETAIL => {
+                if payload.len() < PAYLOAD_HEADER_LEN_V2 {
+                    return Err(vec![format!(
+                        "offset {offset}: detail v2 payload too short"
+                    )]);
+                }
+                (
+                    PAYLOAD_HEADER_LEN_V2,
+                    read_u32(payload, 24) as usize,
+                    0usize,
+                    SIDE_DETAIL_ROW_LEN_V3,
+                )
+            }
+            SCHEMA_VERSION_V3_ATTRIBUTION => {
+                if payload.len() < PAYLOAD_HEADER_LEN {
+                    return Err(vec![format!(
+                        "offset {offset}: detail v3 payload too short"
+                    )]);
+                }
+                (
+                    PAYLOAD_HEADER_LEN,
+                    read_u32(payload, 24) as usize,
+                    read_u32(payload, 28) as usize,
+                    SIDE_DETAIL_ROW_LEN_V3,
+                )
+            }
+            SCHEMA_VERSION => {
+                if payload.len() < PAYLOAD_HEADER_LEN {
+                    return Err(vec![format!(
+                        "offset {offset}: detail v4 payload too short"
+                    )]);
+                }
+                (
+                    PAYLOAD_HEADER_LEN,
+                    read_u32(payload, 24) as usize,
+                    read_u32(payload, 28) as usize,
+                    SIDE_DETAIL_ROW_LEN,
+                )
+            }
+            other => {
                 return Err(vec![format!(
-                    "offset {offset}: detail v2 payload too short"
+                    "offset {offset}: detail schema version {other} unsupported"
                 )]);
             }
-            (
-                PAYLOAD_HEADER_LEN_V2,
-                read_u32(payload, 24) as usize,
-                0usize,
-            )
-        }
-        SCHEMA_VERSION => {
-            if payload.len() < PAYLOAD_HEADER_LEN {
-                return Err(vec![format!(
-                    "offset {offset}: detail v3 payload too short"
-                )]);
-            }
-            (
-                PAYLOAD_HEADER_LEN,
-                read_u32(payload, 24) as usize,
-                read_u32(payload, 28) as usize,
-            )
-        }
-        other => {
-            return Err(vec![format!(
-                "offset {offset}: detail schema version {other} unsupported"
-            )]);
-        }
-    };
+        };
     if payload.len() < header_len {
         return Err(vec![format!("offset {offset}: detail payload too short")]);
     }
@@ -1193,7 +1363,7 @@ pub fn decode_detail_events_payload(
     let elapsed_wall_ms = read_u64(payload, 4);
     let status_flags = read_u32(payload, 12);
     let row_count = read_u32(payload, 16) as usize;
-    let string_count = read_u32(payload, 20);
+    let string_count = read_u32(payload, 20) as usize;
     // The final u32 of each header is a reserved-zero field (v1 @24, v2 @28).
     let reserved = read_u32(payload, header_len - 4);
     if row_len != DETAIL_EVENT_ROW_LEN {
@@ -1219,9 +1389,14 @@ pub fn decode_detail_events_payload(
             "offset {offset}: transition baseline reset is not badged PARTIAL_DATA"
         ));
     }
-    if string_count != 0 || reserved != 0 {
+    if (version != SCHEMA_VERSION && string_count != 0) || reserved != 0 {
         errors.push(format!(
             "offset {offset}: detail payload header reserved/string fields nonzero"
+        ));
+    }
+    if string_count > MAX_TACTIC_STRING_COUNT {
+        errors.push(format!(
+            "offset {offset}: tactic string_count {string_count} exceeds max {MAX_TACTIC_STRING_COUNT}"
         ));
     }
     if row_count > MAX_DETAIL_EVENT_ROWS {
@@ -1242,16 +1417,64 @@ pub fn decode_detail_events_payload(
     if !errors.is_empty() {
         return Err(errors);
     }
-    let expected_len = header_len
+    let fixed_len = header_len
         .saturating_add(row_count.saturating_mul(row_len))
-        .saturating_add(side_detail_row_count.saturating_mul(SIDE_DETAIL_ROW_LEN))
+        .saturating_add(side_detail_row_count.saturating_mul(side_detail_row_len))
         .saturating_add(attribution_row_count.saturating_mul(ATTRIBUTION_ROW_LEN));
-    if payload.len() != expected_len {
+    if payload.len() < fixed_len {
         errors.push(format!(
-            "offset {offset}: detail payload len {} != expected {expected_len}",
+            "offset {offset}: detail payload len {} shorter than fixed rows {fixed_len}",
             payload.len()
         ));
         return Err(errors);
+    }
+    let mut strings = Vec::with_capacity(string_count);
+    let mut string_cursor = fixed_len;
+    for string_index in 0..string_count {
+        if string_cursor.saturating_add(4) > payload.len() {
+            return Err(vec![format!(
+                "offset {offset}: tactic string {string_index} length overruns payload"
+            )]);
+        }
+        let len = read_u32(payload, string_cursor) as usize;
+        string_cursor += 4;
+        if len == 0
+            || len > MAX_TACTIC_STRING_LEN
+            || string_cursor.saturating_add(len) > payload.len()
+        {
+            return Err(vec![format!(
+                "offset {offset}: tactic string {string_index} invalid length {len}"
+            )]);
+        }
+        let bytes = &payload[string_cursor..string_cursor + len];
+        let value = std::str::from_utf8(bytes)
+            .map_err(|_| {
+                vec![format!(
+                    "offset {offset}: tactic string {string_index} is not UTF-8"
+                )]
+            })?
+            .to_string();
+        if value.chars().any(char::is_control) {
+            return Err(vec![format!(
+                "offset {offset}: tactic string {string_index} contains control characters"
+            )]);
+        }
+        if strings
+            .last()
+            .is_some_and(|previous: &String| previous >= &value)
+        {
+            return Err(vec![format!(
+                "offset {offset}: tactic string table is not strictly canonical"
+            )]);
+        }
+        strings.push(value);
+        string_cursor += len;
+    }
+    if string_cursor != payload.len() {
+        return Err(vec![format!(
+            "offset {offset}: detail payload has {} trailing bytes after tactic strings",
+            payload.len() - string_cursor
+        )]);
     }
     let mut seen = BTreeSet::new();
     let mut rows = Vec::with_capacity(row_count);
@@ -1312,11 +1535,19 @@ pub fn decode_detail_events_payload(
     let mut side_detail_rows = Vec::with_capacity(side_detail_row_count);
     let mut seen_side = BTreeSet::new();
     for row_index in 0..side_detail_row_count {
-        match decode_side_detail_row(offset, row_index, payload, cursor, &mut seen_side) {
+        match decode_side_detail_row(
+            offset,
+            row_index,
+            payload,
+            cursor,
+            version,
+            &strings,
+            &mut seen_side,
+        ) {
             Ok(row) => side_detail_rows.push(row),
             Err(err) => errors.push(err),
         }
-        cursor += SIDE_DETAIL_ROW_LEN;
+        cursor += side_detail_row_len;
     }
 
     let mut attribution_rows = Vec::with_capacity(attribution_row_count);
@@ -1355,6 +1586,8 @@ fn decode_side_detail_row(
     row_index: usize,
     payload: &[u8],
     cursor: usize,
+    schema_version: u16,
+    strings: &[String],
     seen: &mut BTreeSet<(u32, u64, u32)>,
 ) -> Result<SideDetailRow, String> {
     let combat_id = read_u32(payload, cursor);
@@ -1374,6 +1607,14 @@ fn decode_side_detail_row(
     let ground_damage_org_raw = read_i64(payload, cursor + 76);
     let prevented_damage_str_raw = read_i64(payload, cursor + 84);
     let prevented_damage_org_raw = read_i64(payload, cursor + 92);
+    let progress_raw = (schema_version == SCHEMA_VERSION).then(|| read_i32(payload, cursor + 100));
+    let tactic_id = (schema_version == SCHEMA_VERSION).then(|| read_i32(payload, cursor + 104));
+    let tactic_token_index = (schema_version == SCHEMA_VERSION)
+        .then(|| read_u32(payload, cursor + 108))
+        .unwrap_or(TACTIC_STRING_INDEX_NONE);
+    let tactic_name_index = (schema_version == SCHEMA_VERSION)
+        .then(|| read_u32(payload, cursor + 112))
+        .unwrap_or(TACTIC_STRING_INDEX_NONE);
 
     if combat_id == 0 || combat_id > MAX_COMBAT_ID {
         return Err(format!(
@@ -1395,6 +1636,20 @@ fn decode_side_detail_row(
         return Err(format!(
             "offset {offset}: side detail row {row_index} lacks side-validated flag"
         ));
+    }
+    if schema_version == SCHEMA_VERSION {
+        if flags & SIDE_DETAIL_FLAG_PROGRESS_PRESENT == 0 {
+            return Err(format!(
+                "offset {offset}: side detail row {row_index} lacks exact progress"
+            ));
+        }
+        if flags & SIDE_DETAIL_FLAG_TACTIC_KNOWN == 0
+            || flags & SIDE_DETAIL_FLAG_TACTIC_UNRESOLVED != 0
+        {
+            return Err(format!(
+                "offset {offset}: side detail row {row_index} tactic is not authoritative"
+            ));
+        }
     }
     let side = match side_wire {
         SIDE_ATTACKER => {
@@ -1467,6 +1722,30 @@ fn decode_side_detail_row(
             "offset {offset}: side detail row {row_index} duplicates (combat,generation,side)"
         ));
     }
+    let tactic_present = flags & SIDE_DETAIL_FLAG_TACTIC_PRESENT != 0;
+    let tactic = if tactic_present {
+        let token = strings.get(tactic_token_index as usize).ok_or_else(|| {
+            format!("offset {offset}: side detail row {row_index} tactic token index invalid")
+        })?;
+        let name = strings.get(tactic_name_index as usize).ok_or_else(|| {
+            format!("offset {offset}: side detail row {row_index} tactic name index invalid")
+        })?;
+        Some(TacticIdentity {
+            id: tactic_id.unwrap_or_default(),
+            token: token.clone(),
+            name: name.clone(),
+        })
+    } else {
+        if tactic_token_index != TACTIC_STRING_INDEX_NONE
+            || tactic_name_index != TACTIC_STRING_INDEX_NONE
+            || tactic_id.unwrap_or_default() != 0
+        {
+            return Err(format!(
+                "offset {offset}: side detail row {row_index} absent tactic has noncanonical payload"
+            ));
+        }
+        None
+    };
     Ok(SideDetailRow {
         combat_id,
         generation,
@@ -1485,6 +1764,9 @@ fn decode_side_detail_row(
             ground_damage_org_raw,
             prevented_damage_str_raw,
             prevented_damage_org_raw,
+            progress_raw,
+            tactic,
+            tactic_known: schema_version == SCHEMA_VERSION,
             counts_incomplete,
         },
     })
@@ -1512,7 +1794,7 @@ fn validate_payload_referential_consistency(
     let mut participant_identity = BTreeSet::new();
     let side_details = side_detail_rows
         .iter()
-        .map(|row| ((row.combat_id, row.generation, row.side), row.detail))
+        .map(|row| ((row.combat_id, row.generation, row.side), &row.detail))
         .collect::<BTreeMap<_, _>>();
 
     for (row_index, row) in rows.iter().enumerate() {
@@ -2203,6 +2485,10 @@ fn read_u32(data: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
 }
 
+fn read_i32(data: &[u8], offset: usize) -> i32 {
+    i32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
+}
+
 fn read_u64(data: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap())
 }
@@ -2337,7 +2623,7 @@ mod tests {
     }
 
     fn canonical_empty_d55_payload() -> Vec<u8> {
-        encode_detail_events_payload_v3(1, STATUS_DELTA_DATA, &[], &[], &[])
+        encode_detail_events_payload_v4(1, STATUS_DELTA_DATA, &[], &[], &[])
     }
 
     fn append_lane_hour(stream: &mut Vec<u8>, first_sequence: u64, hour: i32, payload: &[u8]) {
@@ -2878,13 +3164,13 @@ mod tests {
     #[test]
     fn compact_gate_rejects_noncanonical_and_fatal_d55_status() {
         let unknown =
-            encode_detail_events_payload_v3(1, STATUS_DELTA_DATA | (1 << 31), &[], &[], &[]);
+            encode_detail_events_payload_v4(1, STATUS_DELTA_DATA | (1 << 31), &[], &[], &[]);
         assert!(gate_d55_payload(&unknown)
             .errors
             .iter()
             .any(|error| error.contains("unknown bits")));
 
-        let fatal = encode_detail_events_payload_v3(
+        let fatal = encode_detail_events_payload_v4(
             1,
             STATUS_DELTA_DATA | STATUS_SOURCE_UNAVAILABLE,
             &[],
@@ -3078,7 +3364,7 @@ mod tests {
         let partial_join =
             participant_event(EVENT_PARTICIPANT_JOINED, CombatSide::Attacker, 1002, 1, 3);
         let payload =
-            encode_detail_events_payload_v3(1, STATUS_DELTA_DATA, &[partial_join], &[], &[]);
+            encode_detail_events_payload_v4(1, STATUS_DELTA_DATA, &[partial_join], &[], &[]);
         assert!(gate_d55_payload(&payload)
             .errors
             .iter()
@@ -3093,7 +3379,7 @@ mod tests {
             1,
         );
         let payload =
-            encode_detail_events_payload_v3(1, STATUS_DELTA_DATA, &[joined, left], &[], &[]);
+            encode_detail_events_payload_v4(1, STATUS_DELTA_DATA, &[joined, left], &[], &[]);
         assert!(gate_d55_payload(&payload)
             .errors
             .iter()
@@ -3103,7 +3389,7 @@ mod tests {
             participant_event(EVENT_PARTICIPANT_JOINED, CombatSide::Defender, 2002, 1, 2);
         missing_identity.flags &= !FLAG_DIVISION_PRESENT;
         let payload =
-            encode_detail_events_payload_v3(1, STATUS_DELTA_DATA, &[missing_identity], &[], &[]);
+            encode_detail_events_payload_v4(1, STATUS_DELTA_DATA, &[missing_identity], &[], &[]);
         assert!(gate_d55_payload(&payload).errors.iter().any(|error| {
             error.contains("division without flag")
                 || error.contains("lacks side/division identity")
@@ -3113,14 +3399,14 @@ mod tests {
             participant_event(EVENT_PARTICIPANT_JOINED, CombatSide::Defender, 2002, 1, 2);
         missing_side.flags &= !FLAG_SIDE_PRESENT;
         let payload =
-            encode_detail_events_payload_v3(1, STATUS_DELTA_DATA, &[missing_side], &[], &[]);
+            encode_detail_events_payload_v4(1, STATUS_DELTA_DATA, &[missing_side], &[], &[]);
         assert!(gate_d55_payload(&payload).errors.iter().any(|error| {
             error.contains("side without flag") || error.contains("lacks side/division identity")
         }));
 
         let wrong_join_direction =
             participant_event(EVENT_PARTICIPANT_JOINED, CombatSide::Attacker, 1002, 2, 1);
-        let payload = encode_detail_events_payload_v3(
+        let payload = encode_detail_events_payload_v4(
             1,
             STATUS_DELTA_DATA,
             &[wrong_join_direction],
@@ -3139,7 +3425,7 @@ mod tests {
             1,
             2,
         );
-        let payload = encode_detail_events_payload_v3(
+        let payload = encode_detail_events_payload_v4(
             1,
             STATUS_DELTA_DATA,
             &[wrong_leave_direction],
@@ -3260,6 +3546,13 @@ mod tests {
             ground_damage_org_raw: 15_443_824,
             prevented_damage_str_raw: 111_654,
             prevented_damage_org_raw: 245_433,
+            progress_raw: Some(53_000),
+            tactic: Some(TacticIdentity {
+                id: 7,
+                token: "tactic_basic_attack".into(),
+                name: "TACTIC_BASIC_ATTACK".into(),
+            }),
+            tactic_known: true,
             counts_incomplete: false,
         }
     }
@@ -3288,7 +3581,7 @@ mod tests {
     }
 
     #[test]
-    fn side_detail_rows_roundtrip_through_v3_payload() {
+    fn side_detail_rows_roundtrip_through_v4_payload() {
         let att = sample_side_detail(2, 2);
         let def = sample_side_detail(2, 0);
         let current = vec![snapshot_with_detail(
@@ -3296,8 +3589,8 @@ mod tests {
             7,
             &[8001, 8002, 8003, 8004],
             &[9001, 9002],
-            Some(att),
-            Some(def),
+            Some(att.clone()),
+            Some(def.clone()),
         )];
         let frame = build_transition_capture_frame(&[], &current, 1, 60_787_539, 1).unwrap();
         assert_eq!(frame.side_detail_rows.len(), 2);
@@ -3321,14 +3614,14 @@ mod tests {
             .unwrap();
         assert_eq!(defender.detail, def);
 
-        // Gate still accepts the v2 stream and counts side-detail rows.
+        // Gate accepts the v4 stream and counts exact side-detail rows.
         let gate = gate_stream(&certify_lane_data_record(frame.compact_stream));
         assert!(gate.ok, "{:?}", gate.errors);
         assert_eq!(gate.summary.side_detail_rows, 2);
     }
 
     #[test]
-    fn attribution_rows_roundtrip_through_v3_payload() {
+    fn attribution_rows_roundtrip_through_v4_payload() {
         let mut current = vec![snapshot_with_detail(
             21381,
             7,
@@ -3357,6 +3650,25 @@ mod tests {
         let gate = gate_stream(&certify_lane_data_record(frame.compact_stream));
         assert!(gate.ok, "{:?}", gate.errors);
         assert_eq!(gate.summary.attribution_rows, 2);
+    }
+
+    #[test]
+    fn v3_payload_decodes_with_explicit_legacy_tactic_progress_authority() {
+        let detail = sample_side_detail(2, 0);
+        let rows = vec![SideDetailRow {
+            combat_id: 21_381,
+            generation: 7,
+            side: CombatSide::Attacker,
+            detail: detail.clone(),
+        }];
+        let payload = encode_detail_events_payload_v3(1, STATUS_DELTA_DATA, &[], &rows, &[]);
+        assert_eq!(read_u16(&payload, 0), SCHEMA_VERSION_V3_ATTRIBUTION);
+        let decoded = decode_detail_events_payload(0, &payload).unwrap();
+        let legacy = &decoded.side_detail_rows[0].detail;
+        assert_eq!(legacy.ground_damage_str_raw, detail.ground_damage_str_raw);
+        assert_eq!(legacy.progress_raw, None);
+        assert_eq!(legacy.tactic, None);
+        assert!(!legacy.tactic_known);
     }
 
     #[test]

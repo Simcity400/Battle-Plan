@@ -66,6 +66,11 @@ class TestSourceMap(unittest.TestCase):
         self.assertEqual(schema.source_of("countries.POR.production.stockpile_total"), "C/M/D")
         self.assertEqual(schema.source_of("countries.POR.production.military_lines"), "C/M")
         self.assertEqual(schema.source_of("countries.POR.production.naval_factories"), "C/M")
+        self.assertEqual(
+            schema.source_of("countries.POR.production.stockpile_complete"), "C/M")
+        self.assertEqual(
+            schema.source_of("countries.POR.production.military_lines.0.daily_output"),
+            "C/M")
 
     def test_collector_focus_source(self):
         self.assertEqual(schema.source_of("countries.POR.focus.focus_tree"), "C/M/S")
@@ -74,6 +79,20 @@ class TestSourceMap(unittest.TestCase):
         self.assertEqual(
             schema.source_of("countries.POR.focus.current_continuous"), "C/M")
         self.assertEqual(schema.source_of("countries.POR.focus.progress"), "C/M/S")
+
+    def test_fired_event_stream_source(self):
+        self.assertEqual(schema.source_of("world_events.fired_events"), "C/M/S")
+        self.assertEqual(schema.source_of("world_events.fired_events_complete"), "C/M")
+
+    def test_active_ability_source(self):
+        self.assertEqual(
+            schema.source_of("countries.GER.active_abilities.rows.0.ability_id"),
+            "C/M",
+        )
+        self.assertEqual(
+            schema.source_of("countries.GER.active_abilities.rows.0.disabled_reason"),
+            "C/M",
+        )
 
     def test_collector_research_source(self):
         self.assertEqual(schema.source_of("countries.POR.research.tech_count"), "C/M/S")
@@ -193,6 +212,194 @@ class TestEmptySkeletons(unittest.TestCase):
 
 
 class TestValidator(unittest.TestCase):
+    def _fired_event_snapshot(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["world_events"]["fired_events_complete"] = True
+        snap["world_events"]["fired_events"] = [{
+            "event_id": "test.1",
+            "recipient_tag": "GER",
+            "fire_date": "1940.9.10.13",
+            "fire_hour": schema.date_to_hour_index("1940.9.10.13"),
+            "fire_tick": 4001,
+            "event_sequence": 7,
+            "visible_option_ordinals": [0, 2],
+            "chosen_option_ordinal": 2,
+            "selected_desc_key": "test.1.d2",
+            "shown_picture_gfx": "GFX_report_event_test",
+            "popup_subtype": "country",
+            "effective_timeout_hours": 312,
+            "timeout_tick": 5000,
+            "resolved_tick": 4010,
+            "resolution_reason": "selected",
+            "runtime_text_context_id": "event:7",
+        }]
+        return snap
+
+    def test_xui21_fired_event_contract_validates(self):
+        self.assertEqual(schema.validate_snapshot(self._fired_event_snapshot()), [])
+
+    def test_xui21_fired_event_contract_rejects_inference_shapes(self):
+        snap = self._fired_event_snapshot()
+        row = snap["world_events"]["fired_events"][0]
+        row["visible_option_ordinals"] = [2, 0]
+        row["chosen_option_ordinal"] = 1
+        row["popup_subtype"] = "guessed"
+        row["timeout_tick"] = row["fire_tick"]
+        row["resolution_reason"] = "pending"
+        probs = schema.validate_snapshot(snap)
+        for token in (
+            "visible_option_ordinals", "chosen_option_ordinal", "popup_subtype",
+            "timeout_tick", "resolution state inconsistent",
+        ):
+            self.assertTrue(any(token in problem for problem in probs), (token, probs))
+
+    def test_xui21_lifecycle_only_and_timeout_default_are_valid(self):
+        snap = self._fired_event_snapshot()
+        ai = snap["world_events"]["fired_events"][0]
+        ai["visible_option_ordinals"] = []
+        ai["selected_desc_key"] = None
+        ai["shown_picture_gfx"] = None
+        ai["popup_subtype"] = None
+        self.assertEqual(schema.validate_snapshot(snap), [])
+
+        timeout = self._fired_event_snapshot()
+        row = timeout["world_events"]["fired_events"][0]
+        row["chosen_option_ordinal"] = 0
+        row["visible_option_ordinals"] = [0, 2]
+        row["resolution_reason"] = "timeout"
+        self.assertEqual(schema.validate_snapshot(timeout), [])
+
+    def test_xui21_complete_history_rejects_legacy_identity_rows(self):
+        snap = self._fired_event_snapshot()
+        snap["world_events"]["fired_events"] = ["test.1"]
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(
+            any("legacy identity cannot satisfy fired_events_complete" in p for p in probs),
+            probs,
+        )
+
+    def _active_ability_snapshot(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["countries"]["GER"] = schema.empty_country()
+        snap["countries"]["GER"]["active_abilities"] = {
+            "complete": True,
+            "rows": [{
+                "ability_id": "force_attack",
+                "available": False,
+                "active": True,
+                "activation_hour": 17,
+                "cooldown_hours": 504,
+                "cooldown_remaining_hours": 336,
+                "cost_command_power": 22.0,
+                "target_kind": "army_leader",
+                "target_id": "73",
+                "duration_hours": 168,
+                "duration_remaining_hours": 120,
+                "display_order": 0,
+                "icon": "GFX_ability_force_attack",
+                "tooltip": "Force Attack",
+                "disabled_reason": "Already active",
+            }],
+        }
+        return snap
+
+    def test_xui23_active_ability_contract_validates(self):
+        self.assertEqual(schema.validate_snapshot(self._active_ability_snapshot()), [])
+
+    def test_xui23_active_ability_contract_rejects_inference_shapes(self):
+        snap = self._active_ability_snapshot()
+        row = snap["countries"]["GER"]["active_abilities"]["rows"][0]
+        row["available"] = "yes"
+        row["display_order"] = 2
+        row["cooldown_remaining_hours"] = 505
+        row["tooltip"] = None
+        probs = schema.validate_snapshot(snap)
+        for token in (
+            ".available", "display_order", "cooldown remaining exceeds total", ".tooltip"
+        ):
+            self.assertTrue(any(token in problem for problem in probs), (token, probs))
+
+    def _trade_snapshot(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["countries"]["GER"] = schema.empty_country()
+        resource_order = (
+            "oil", "aluminium", "rubber", "tungsten", "steel", "chromium", "coal")
+        snap["countries"]["GER"]["economy"]["resources"] = {
+            "complete": True,
+            "produced": {resource: 10.0 if resource == "oil" else 0.0 for resource in resource_order},
+            "imported": {resource: 4.0 if resource == "oil" else 0.0 for resource in resource_order},
+            "used": {resource: 8.0 if resource == "oil" else 0.0 for resource in resource_order},
+            "to_export": {resource: 2.0 if resource == "oil" else 0.0 for resource in resource_order},
+            "base_export": {resource: 3.0 if resource == "oil" else 0.0 for resource in resource_order},
+            "exported": {resource: 1.0 if resource == "oil" else 0.0 for resource in resource_order},
+            "available_derived": {"oil": 9.0},
+        }
+        resource_rows = []
+        for visible_order, resource in enumerate(resource_order):
+            resource_rows.append({
+                "resource": resource, "visible_order": visible_order,
+                "balance": 5.0 if resource == "oil" else 0.0,
+                "produced": 10.0 if resource == "oil" else 0.0,
+                "imported": 4.0 if resource == "oil" else 0.0,
+                "exported": 1.0 if resource == "oil" else 0.0,
+                "special_project": 0.0, "production_line": 8.0 if resource == "oil" else 0.0,
+                "needed": -12.0 if resource == "oil" else 0.0,
+                "needed_current": -12.0 if resource == "oil" else None,
+                "needed_max": -20.0 if resource == "oil" else None,
+                "needed_type": "current_max" if resource == "oil" else "surplus",
+            })
+        snap["countries"]["GER"]["economy"]["resource_trade"] = {
+            "resource_rows_complete": True,
+            "resource_rows": resource_rows,
+            "deals_complete": True,
+            "deals": [{
+                "deal_id": 41, "counterpart": "SWE", "direction": "import",
+                "resource": "oil", "requested": 8.0, "delivered": 6.0,
+                "available_export": 12.0, "civilian_factories": 1,
+                "factory_cost_per_resource": 0.125,
+                "convoys": {"assigned": 2, "required": 3},
+                "route_kind": "sea", "delivery_efficiency": 0.75,
+                "no_trade_influence": False, "no_resources": False,
+                "visible_order": 0,
+            }],
+            "factories": {"total": 25, "used": 11, "available": 14},
+        }
+        return snap
+
+    def test_xui15_trade_contract_validates(self):
+        self.assertEqual(schema.validate_snapshot(self._trade_snapshot()), [])
+        self.assertEqual(
+            schema.source_of("countries.GER.economy.resource_trade.deals.0.resource"),
+            "M")
+
+    def test_xui15_resource_pool_completeness_is_typed(self):
+        snap = self._trade_snapshot()
+        snap["countries"]["GER"]["economy"]["resources"]["complete"] = 1
+        self.assertIn(
+            "country 'GER'.economy.resources.complete 1 not bool|null",
+            schema.validate_snapshot(snap))
+
+    def test_xui15_trade_order_and_completeness_fail_closed(self):
+        snap = self._trade_snapshot()
+        trade = snap["countries"]["GER"]["economy"]["resource_trade"]
+        trade["resource_rows"][0]["visible_order"] = 2
+        trade["deals"] = None
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("resource_rows[0].visible_order" in p for p in probs), probs)
+        self.assertTrue(any("deals_complete true" in p for p in probs), probs)
+
+    def test_xui15_complete_trade_requires_exact_resources_and_typed_route_flags(self):
+        snap = self._trade_snapshot()
+        trade = snap["countries"]["GER"]["economy"]["resource_trade"]
+        trade["resource_rows"][1]["resource"] = "steel"
+        trade["deals"][0]["no_resources"] = 0
+        del snap["countries"]["GER"]["economy"]["resources"]["used"]["coal"]
+        probs = schema.validate_snapshot(snap)
+        for token in (
+            "exact seven-resource order", ".no_resources", "used complete without exactly seven",
+        ):
+            self.assertTrue(any(token in problem for problem in probs), (token, probs))
+
     def test_hour_index_mismatch_flagged(self):
         snap = schema.empty_snapshot("g1", "1940.9.10.13")
         snap["hour_index"] = 12345  # wrong
@@ -332,6 +539,8 @@ class TestValidator(unittest.TestCase):
         snap["countries"]["POR"]["production"].update({
             "stockpile": {"70": float("inf"), "bad": 1.0},
             "stockpile_total": "bad",
+            "stockpile_complete": 1,
+            "military_lines_complete": "yes",
             "military_lines": [{
                 "id": True,
                 "active_factories": -1,
@@ -339,6 +548,14 @@ class TestValidator(unittest.TestCase):
                 "speed": 1.0,
                 "produced": 2.0,
                 "amount": -2,
+                "priority": -1,
+                "requested_factories": 1.5,
+                "equipment_variant_id": "bad",
+                "line_subtype": "unknown",
+                "efficiency": -1.0,
+                "progress_ratio": 2.0,
+                "daily_output": float("inf"),
+                "mio_id": {},
             }],
             "naval_lines": ["bad"],
             "military_factories": -1,
@@ -348,16 +565,55 @@ class TestValidator(unittest.TestCase):
         self.assertTrue(any("production.stockpile['70']" in p for p in probs), probs)
         self.assertTrue(any("production.stockpile key 'bad'" in p for p in probs), probs)
         self.assertTrue(any("production.stockpile_total" in p for p in probs), probs)
+        self.assertTrue(any("stockpile_complete" in p for p in probs), probs)
+        self.assertTrue(any("military_lines_complete" in p for p in probs), probs)
         self.assertTrue(any("military_lines[0].id" in p for p in probs), probs)
         self.assertTrue(any("military_lines[0].active_factories" in p
                             for p in probs), probs)
         self.assertTrue(any("military_lines[0].cost" in p for p in probs), probs)
         self.assertTrue(any("military_lines[0].amount" in p for p in probs), probs)
+        for field in (
+            "priority", "requested_factories", "equipment_variant_id", "line_subtype",
+            "efficiency", "progress_ratio", "daily_output", "mio_id",
+        ):
+            self.assertTrue(any(f"military_lines[0].{field}" in p for p in probs), probs)
         self.assertTrue(any("naval_lines[0] not a dict" in p for p in probs), probs)
         self.assertTrue(any("military_factories" in p and "nonnegative int" in p
                             for p in probs), probs)
         self.assertTrue(any("naval_factories" in p and "nonnegative int" in p
                             for p in probs), probs)
+
+    def test_complete_future_production_contract_validates(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["countries"]["POR"] = schema.empty_country()
+        snap["countries"]["POR"]["production"].update({
+            "stockpile": {},
+            "stockpile_total": 0.0,
+            "stockpile_complete": True,
+            "military_lines_complete": True,
+            "naval_lines_complete": True,
+            "military_lines": [{
+                "id": 7,
+                "priority": 0,
+                "line_subtype": "military",
+                "equipment_variant_id": 7316,
+                "active_factories": 4,
+                "requested_factories": 6,
+                "efficiency": 0.7,
+                "efficiency_cap": 0.9,
+                "efficiency_growth": 0.004,
+                "cost": 4.0,
+                "speed": 12.0,
+                "produced": 2.0,
+                "amount": -1,
+                "progress_ratio": 0.5,
+                "daily_output": 3.0,
+                "days_to_next_unit": 0.1666666667,
+                "mio_id": "por_mio",
+            }],
+            "naval_lines": [],
+        })
+        self.assertEqual(schema.validate_snapshot(snap), [])
 
     def test_bad_map_control_tags_flagged(self):
         snap = schema.empty_snapshot("g1", "1940.9.10.13")

@@ -192,6 +192,13 @@ fn side_detail(committed: u32, reserve: u32) -> SideDetail {
         ground_damage_org_raw: 15_443_824,
         prevented_damage_str_raw: 111_654,
         prevented_damage_org_raw: 245_433,
+        progress_raw: Some(53_000),
+        tactic: Some(land_combat_detail_events_live_lane::TacticIdentity {
+            id: 7,
+            token: "tactic_basic_attack".into(),
+            name: "TACTIC_BASIC_ATTACK".into(),
+        }),
+        tactic_known: true,
         counts_incomplete: false,
     }
 }

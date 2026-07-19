@@ -5,7 +5,7 @@ edition = "2021"
 description = "Transparent raw/zstd file-boundary codec for H4CR compact streams"
 
 [dependencies]
-zstd = "0.13.3"
+portable_compact_stream = { path = "../../../portable_replay/native/compact_stream" }
 
 [[bin]]
 name = "compact_stream"

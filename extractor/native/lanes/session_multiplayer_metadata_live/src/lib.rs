@@ -934,7 +934,10 @@ pub mod collector_module {
         let has_command_rows = inputs.event_rows.iter().any(|row| {
             matches!(
                 row.kind,
-                SessionEventKind::GameSpeed | SessionEventKind::Pause | SessionEventKind::TagSwitch
+                SessionEventKind::Hotjoin
+                    | SessionEventKind::TagSwitch
+                    | SessionEventKind::GameSpeed
+                    | SessionEventKind::Pause
             )
         });
         if source_flags & SOURCE_FLAG_COMMAND_HOOK_VALIDATED == 0 && has_command_rows {
@@ -1781,6 +1784,30 @@ mod tests {
         assert!(output.frame.status_flags & STATUS_SOURCE_UNAVAILABLE != 0);
         assert!(output.frame.status_flags & STATUS_PARTIAL_DATA != 0);
         assert!(!output.gate.ok);
+    }
+
+    #[test]
+    fn collector_adapter_requires_player_event_source_for_hotjoin() {
+        let output = collect_domain57(SessionMetadataInputs {
+            game_hour_raw: 43_800_024,
+            source_flags: SOURCE_FLAG_SESSION_ROOT_VALIDATED | SOURCE_FLAG_PROOF_FIXTURE,
+            root_evidence_mask: 0x10,
+            player_country_rows: Vec::new(),
+            event_rows: vec![sample_event(SessionEventKind::Hotjoin, 0)],
+        });
+        assert!(output.frame.status_flags & STATUS_PARTIAL_DATA != 0);
+
+        let validated = collect_domain57(SessionMetadataInputs {
+            game_hour_raw: 43_800_024,
+            source_flags: SOURCE_FLAG_SESSION_ROOT_VALIDATED
+                | SOURCE_FLAG_COMMAND_HOOK_VALIDATED
+                | SOURCE_FLAG_PROOF_FIXTURE,
+            root_evidence_mask: 0x10,
+            player_country_rows: Vec::new(),
+            event_rows: vec![sample_event(SessionEventKind::Hotjoin, 0)],
+        });
+        assert_eq!(validated.frame.status_flags & STATUS_PARTIAL_DATA, 0);
+        assert!(validated.gate.ok, "{:?}", validated.gate.errors);
     }
 
     pub fn sample_frame() -> SessionMetadataFrame {

@@ -36,7 +36,7 @@ from deep_common import (  # noqa: E402
 )
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class OracleParseError(RuntimeError):
@@ -128,6 +128,70 @@ def parse_equipment_need(tz):
     return needs
 
 
+def parse_equipment_rows(tz, issues, context):
+    """Parse a save equipment collection without losing repeated rows or order.
+
+    The save shape is ``equipment={ equipment={ id={id type} amount } ...
+    allow_zero_entries=no }``.  A measured-empty collection is represented by
+    an empty row list plus the explicit ``allow_zero_entries`` value; it is not
+    confused with an absent collection.
+    """
+    rows = []
+    allow_zero_entries = None
+    truncated = False
+    malformed = 0
+    for key, opener in iter_block_entries_checked(tz):
+        if key is _EOF_TRUNCATED:
+            truncated = True
+            malformed += 1
+            issues.append("%s: equipment block truncated" % context)
+            break
+        if opener is LBRACE:
+            if key != "equipment":
+                dc._skip_block_body(tz)
+                continue
+            equipment_id = None
+            equipment_type = None
+            amount = None
+            for subkey, subopener in iter_block_entries(tz):
+                if subopener is LBRACE:
+                    if subkey == "id":
+                        equipment_id, equipment_type = read_id_block(tz)
+                    else:
+                        dc._skip_block_body(tz)
+                    continue
+                raw = atom_value(subopener)
+                if subkey == "amount" and raw is not None:
+                    amount = to_float(raw)
+            if equipment_id is None or equipment_type is None or amount is None:
+                malformed += 1
+                issues.append("%s: malformed equipment row %d" % (context, len(rows)))
+                continue
+            rows.append({
+                "source_ordinal": len(rows),
+                "equipment_id": equipment_id,
+                "equipment_type": equipment_type,
+                "amount": amount,
+            })
+            continue
+        raw = atom_value(opener)
+        if key == "allow_zero_entries" and raw is not None:
+            if raw == "yes":
+                allow_zero_entries = True
+            elif raw == "no":
+                allow_zero_entries = False
+            else:
+                malformed += 1
+                issues.append("%s: invalid allow_zero_entries %r" % (context, raw))
+    return rows, {
+        "present": True,
+        "allow_zero_entries": allow_zero_entries,
+        "rows_complete": not truncated and malformed == 0,
+        "truncated": truncated,
+        "malformed_rows": malformed,
+    }
+
+
 def parse_reinforcement_requests(tz):
     requests = []
     for key, opener in iter_block_entries(tz):
@@ -136,10 +200,20 @@ def parse_reinforcement_requests(tz):
         if key != "request":
             dc._skip_block_body(tz)
             continue
-        rec = {"status": None, "progress": None, "date": None}
+        rec = {
+            "source_ordinal": len(requests),
+            "status": None,
+            "progress": None,
+            "total_progress": None,
+            "need": {},
+            "date": None,
+        }
         for subkey, subopener in iter_block_entries(tz):
             if subopener is LBRACE:
-                dc._skip_block_body(tz)
+                if subkey == "need":
+                    rec["need"] = parse_equipment_need(tz)
+                else:
+                    dc._skip_block_body(tz)
                 continue
             raw = atom_value(subopener)
             if raw is None:
@@ -148,18 +222,22 @@ def parse_reinforcement_requests(tz):
                 rec["status"] = to_int(raw)
             elif subkey == "progress":
                 rec["progress"] = to_float(raw)
+            elif subkey == "total_progress":
+                rec["total_progress"] = to_float(raw)
             elif subkey == "date":
                 rec["date"] = raw
         requests.append(rec)
     return requests
 
 
-def parse_state_garrison_entry(tz):
+def parse_state_garrison_entry(tz, issues, context):
     rec = {
         "strength_ratio": None,
         "garrison_required": None,
         "army_manpower_need": None,
         "manpower_pool": [],
+        "equipment": None,
+        "equipment_meta": {"present": False, "rows_complete": False},
         "equipment_need": {},
         "reinforcement_requests": [],
     }
@@ -167,6 +245,10 @@ def parse_state_garrison_entry(tz):
         if opener is LBRACE:
             if key == "manpower_pool":
                 rec["manpower_pool"] = parse_manpower_pool(tz)
+            elif key == "equipment":
+                rec["equipment"], rec["equipment_meta"] = parse_equipment_rows(
+                    tz, issues, context + ".equipment"
+                )
             elif key == "equipment_need":
                 rec["equipment_need"] = parse_equipment_need(tz)
             elif key == "garrison_reinforcement_requests":
@@ -220,7 +302,7 @@ def parse_state_garrison_data(tz, issues, context):
             )
             continue
         state_id = to_int(key)
-        rec = parse_state_garrison_entry(tz)
+        rec = parse_state_garrison_entry(tz, issues, "%s state %r" % (context, key))
         if state_id is None:
             malformed_count += 1
             issues.append("%s: state_garrison_data key %r is not a state id" % (context, key))
@@ -296,6 +378,77 @@ def parse_occupied_country(tz, controller_tag, occupied_tag, issues):
     return rec
 
 
+def parse_resistance_attack_log(tz, controller_tag, source_ordinal, issues):
+    context = "%s resistance_attack_log[%d]" % (controller_tag, source_ordinal)
+    rec = {
+        "stable_event_id": None,
+        "source_ordinal": source_ordinal,
+        "controller_tag": controller_tag,
+        "state_id": None,
+        "occupied_country_tag": None,
+        "event_hour_or_engine_date": None,
+        "garrison": None,
+        "attack_blocked": None,
+        "resistance_activity": None,
+        "manpower_loss_rows": [],
+        "lost_manpower": None,
+        "equipment_loss_rows": None,
+        "equipment_loss_meta": {"present": False, "rows_complete": False},
+    }
+    for key, opener in iter_block_entries(tz):
+        if opener is LBRACE:
+            if key == "manpower":
+                rec["manpower_loss_rows"] = parse_manpower_pool(tz)
+            elif key == "equipment":
+                rec["equipment_loss_rows"], rec["equipment_loss_meta"] = parse_equipment_rows(
+                    tz, issues, context + ".equipment"
+                )
+            else:
+                dc._skip_block_body(tz)
+            continue
+        raw = atom_value(opener)
+        if raw is None:
+            continue
+        if key == "state":
+            rec["state_id"] = to_int(raw)
+        elif key == "country":
+            rec["occupied_country_tag"] = raw.strip('"')
+        elif key == "date":
+            rec["event_hour_or_engine_date"] = raw
+        elif key == "garrison":
+            if raw == "yes":
+                rec["garrison"] = True
+                rec["attack_blocked"] = True
+            elif raw == "no":
+                rec["garrison"] = False
+                rec["attack_blocked"] = False
+            else:
+                issues.append("%s: invalid garrison flag %r" % (context, raw))
+        elif key == "resistance_activity":
+            rec["resistance_activity"] = raw.strip('"')
+    manpower = [row.get("value") for row in rec["manpower_loss_rows"]]
+    if all(isinstance(value, (int, float)) for value in manpower):
+        total = sum(manpower)
+        rec["lost_manpower"] = int(total) if float(total).is_integer() else total
+    rec["stable_event_id"] = "%s|%s|%s|%d" % (
+        controller_tag,
+        rec["event_hour_or_engine_date"],
+        rec["state_id"],
+        source_ordinal,
+    )
+    required = [
+        rec["state_id"], rec["occupied_country_tag"],
+        rec["event_hour_or_engine_date"], rec["attack_blocked"],
+        rec["lost_manpower"], rec["equipment_loss_rows"],
+    ]
+    rec["row_complete"] = all(value is not None for value in required) and rec[
+        "equipment_loss_meta"
+    ].get("rows_complete") is True
+    if not rec["row_complete"]:
+        issues.append("%s: incomplete resistance attack row" % context)
+    return rec
+
+
 def parse_occupation_status(tz, controller_tag, issues):
     rec = {
         "default_law": None,
@@ -303,6 +456,8 @@ def parse_occupation_status(tz, controller_tag, issues):
         "garrison_template_id": None,
         "garrison_template_type": None,
         "occupied": [],
+        "resistance_attack_log": [],
+        "resistance_attack_log_complete": True,
     }
     for key, opener in iter_block_entries(tz):
         if opener is LBRACE:
@@ -316,6 +471,12 @@ def parse_occupation_status(tz, controller_tag, issues):
                         rec["occupied"].append(
                             parse_occupied_country(tz, controller_tag, occupied_tag, issues)
                         )
+            elif key == "resistance_attack_log":
+                rec["resistance_attack_log"].append(
+                    parse_resistance_attack_log(
+                        tz, controller_tag, len(rec["resistance_attack_log"]), issues
+                    )
+                )
             else:
                 dc._skip_block_body(tz)
             continue
@@ -400,6 +561,11 @@ def build_oracle(text, source_name):
         scalar_keys=("date", "version", "player"),
     )
     rows = flatten_rows(countries)
+    history_rows = [
+        row
+        for _tag, country in sorted(countries.items())
+        for row in country.get("resistance_attack_log", [])
+    ]
     rows_by_key = {row_key(row): row for row in rows}
     equipment_type_counts = {}
     reinforcement_status_counts = {}
@@ -485,10 +651,18 @@ def build_oracle(text, source_name):
             ),
             "rows_with_manpower_pool": sum(1 for row in rows if row.get("manpower_pool")),
             "rows_with_equipment_need": sum(1 for row in rows if row.get("equipment_need")),
+            "rows_with_equipment_collection": sum(
+                1 for row in rows if row.get("equipment") is not None
+            ),
+            "equipment_rows": sum(len(row.get("equipment") or []) for row in rows),
             "rows_with_reinforcement_requests": sum(
                 1 for row in rows if row.get("reinforcement_requests")
             ),
             "countries_with_nonempty_collaboration": len(collaboration_by_tag),
+            "resistance_attack_history_rows": len(history_rows),
+            "resistance_attack_equipment_loss_rows": sum(
+                len(row.get("equipment_loss_rows") or []) for row in history_rows
+            ),
         },
         "equipment_type_counts": dict(sorted(equipment_type_counts.items())),
         "reinforcement_status_counts": dict(sorted(reinforcement_status_counts.items())),
@@ -496,6 +670,10 @@ def build_oracle(text, source_name):
         "collaboration_by_tag": collaboration_by_tag,
         "garrison_rows": rows,
         "rows_by_key": rows_by_key,
+        "resistance_attack_history": history_rows,
+        "resistance_attack_history_complete": all(
+            row.get("row_complete") is True for row in history_rows
+        ),
         "field_contract": {
             "save_visible_only": (
                 "These values are persisted save-oracle facts. They can reject or "
@@ -508,9 +686,16 @@ def build_oracle(text, source_name):
                 "garrison_required",
                 "army_manpower_need",
                 "manpower_pool",
+                "equipment",
                 "equipment_need",
                 "reinforcement_requests",
+                "resistance_attack_history",
             ],
+            "attack_blocked_mapping": (
+                "save resistance_attack_log.garrison yes/no maps directly to the "
+                "GARRISON_LOG_ACTIVITY_STOPPED versus GARRISON_LOG_ACTIVITY_SUCCES presentation; "
+                "the raw garrison value is retained alongside attack_blocked"
+            ),
         },
     }
     return out

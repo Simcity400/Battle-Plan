@@ -77,6 +77,22 @@ REPLAY_DATA_REQUIREMENTS.md / EXTRACTION_NEEDS.md.
 
 ## Gate results
 
+### 2026-07-17 D53 proof-stream regression reconciliation
+
+The positive production-fold gate briefly regressed after `domain53_proof`
+began emitting a complete three-record H4CR stream (SESSION_META, D53 DATA,
+FRAME_END). The `game_ui` harness still treated that artifact as one record: it
+relocated only the first header and appended a second frame end. Consequently
+the D53 data remained at the proof CLI's historical smoke hour while the tested
+1936 hour correctly folded `faction_roster_status = unavailable` and no country
+objects. The production recorder fold was not at fault.
+
+`tests/diplomacy_binding.rs` now walks the framed stream, validates every record
+boundary, and relocates every header to the same canonical 1936 hour without
+changing payload bytes. The isolated real encoder -> recorder fold -> typed view
+-> UI binding gate again proves the measured roster `1 -> [1, 3, 22]`, the
+leader decoration, and the absence of a fabricated faction-name leaf.
+
 | Gate | Result |
 |---|---|
 | 1. Outliner: army/navy/air rows == fixture ground truth (counts + row key strings), ≥2 POVs | **PASS** — `tests/outliner_binding.rs` 3/3. Army across GER/SOV (`fx_division_movement`); navy+air on ENG vs empty on GER (`fx_naval_air_activity`), all 12 hours |

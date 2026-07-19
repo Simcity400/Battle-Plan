@@ -284,12 +284,12 @@ pub(crate) fn validate_map_frame_runtime_bundle_for_with_resolver(
         )
         .into());
     }
-    populate_descriptor_only_runtime_shader_resources(&mut frame, &bundle_dir)?;
-    if spec.terrain_strict {
-        if let Some(resolver) = resolver {
-            substitute_synthesized_terrain_id_map(&mut frame, &bundle_dir, resolver)?;
-        }
-    }
+    populate_descriptor_only_runtime_shader_resources(&mut frame, &bundle_dir, resolver)?;
+    // TerrainIDMap is a runtime engine product. Resolver files can validate
+    // source identity but cannot replace an absent authenticated payload: the
+    // former file synthesis matched only a capture-specific subset and could
+    // silently manufacture a product SRV. Missing bytes remain an extraction
+    // blocker even when a VFS resolver is available.
     let extraction_blockers = effective_map_frame_extraction_blockers(&frame, spec);
     if !extraction_blockers.is_empty() {
         return Err(format!(
@@ -325,7 +325,7 @@ pub(crate) fn validate_map_frame_runtime_bundle_for_with_resolver(
     if spec.terrain_strict {
         validate_map_frame_shader_cache_constants_evidence(&frame)?;
     }
-    validate_map_frame_vanilla_sources(&frame, &bundle_dir, spec)?;
+    validate_map_frame_vanilla_sources(&frame, &bundle_dir, spec, resolver)?;
     for draw in &frame.draws {
         validate_map_frame_draw(draw, &frame, &bundle_dir, spec)?;
     }
@@ -472,7 +472,7 @@ fn terrain_id_map_resource_has_captured_payload(resource: &MapFrameTextureBindin
 }
 
 pub(crate) fn is_synthetic_map_frame_file(file: &str) -> bool {
-    file == SYNTHESIZED_TERRAIN_ID_MAP_FILE
+    file == SYNTHESIZED_TERRAIN_ID_MAP_FILE || file.starts_with("resolver_static_texture_")
 }
 
 fn verify_captured_terrain_id_map_matches_synthesized(
@@ -695,19 +695,24 @@ fn synthesized_terrain_id_map_resource(
 fn populate_descriptor_only_runtime_shader_resources(
     frame: &mut MapFrameRuntimeBundle,
     bundle_dir: &Path,
+    resolver: Option<&GameFileResolver>,
 ) -> Result<()> {
     let fallbacks = terrain_chunk_library_shader_resource_fallbacks(bundle_dir)?;
     populate_descriptor_only_runtime_shader_resources_for_draw(
         &mut frame.active_draw,
         &mut frame.runtime_files,
+        &mut frame.synthetic_payloads,
         &fallbacks,
-    );
+        resolver,
+    )?;
     for draw in &mut frame.draws {
         populate_descriptor_only_runtime_shader_resources_for_draw(
             draw,
             &mut frame.runtime_files,
+            &mut frame.synthetic_payloads,
             &fallbacks,
-        );
+            resolver,
+        )?;
     }
     Ok(())
 }
@@ -715,8 +720,10 @@ fn populate_descriptor_only_runtime_shader_resources(
 fn populate_descriptor_only_runtime_shader_resources_for_draw(
     draw: &mut MapFrameDraw,
     runtime_files: &mut BTreeMap<String, MapFrameFileEvidence>,
-    fallbacks: &BTreeMap<String, (MapFrameTextureBinding, MapFrameFileEvidence)>,
-) {
+    synthetic_payloads: &mut BTreeMap<String, MapFrameSyntheticPayload>,
+    fallbacks: &BTreeMap<String, Vec<(MapFrameTextureBinding, MapFrameFileEvidence)>>,
+    resolver: Option<&GameFileResolver>,
+) -> Result<()> {
     for resource in &mut draw.shader_resources {
         let Some(name) = resource.declared_name.as_deref() else {
             continue;
@@ -724,7 +731,21 @@ fn populate_descriptor_only_runtime_shader_resources_for_draw(
         if !is_descriptor_only_shader_resource(resource) {
             continue;
         }
-        if let Some((fallback, evidence)) = fallbacks.get(name) {
+        let compatible_fallbacks = fallbacks
+            .get(name)
+            .into_iter()
+            .flatten()
+            .filter(|(fallback, _)| texture_descriptors_match(resource, fallback))
+            .collect::<Vec<_>>();
+        if compatible_fallbacks.len() > 1 {
+            return Err(format!(
+                "production terrain renderer blocked: descriptor-only shader resource {name} at PS slot {} has {} descriptor-compatible terrain chunk payloads; exact source is ambiguous",
+                resource.slot,
+                compatible_fallbacks.len()
+            )
+            .into());
+        }
+        if let Some((fallback, evidence)) = compatible_fallbacks.first().copied() {
             resource.file = fallback.file.clone();
             resource.byte_len = fallback.byte_len;
             resource.fnv1a64 = fallback.fnv1a64.clone();
@@ -737,6 +758,31 @@ fn populate_descriptor_only_runtime_shader_resources_for_draw(
             }
             continue;
         }
+        if let Some(resolver) = resolver {
+            if let Some(resolved) = resolve_descriptor_only_static_texture(resolver, resource)? {
+                resource.file = Some(resolved.file.clone());
+                resource.byte_len = resolved.bytes.len();
+                resource.fnv1a64 = Some(resolved.fnv1a64.clone());
+                resource.payload_format = Some(NATIVE_D3D11_TEXTURE_PAYLOAD_FORMAT.to_string());
+                resource.subresources = resolved.subresources.clone();
+                runtime_files
+                    .entry(resolved.file.clone())
+                    .or_insert_with(|| MapFrameFileEvidence {
+                        file: resolved.file.clone(),
+                        byte_len: resolved.bytes.len(),
+                        fnv1a64: resolved.fnv1a64.clone(),
+                        provenance: resolved.provenance.clone(),
+                    });
+                synthetic_payloads
+                    .entry(resolved.file.clone())
+                    .or_insert_with(|| MapFrameSyntheticPayload {
+                        bytes: resolved.bytes,
+                        fnv1a64: resolved.fnv1a64,
+                        provenance: resolved.provenance,
+                    });
+                continue;
+            }
+        }
         if let Some(file) = canonical_runtime_shader_resource_file(name) {
             if let Some(evidence) = runtime_files.get(file) {
                 resource.file = Some(evidence.file.clone());
@@ -745,6 +791,337 @@ fn populate_descriptor_only_runtime_shader_resources_for_draw(
             }
         }
     }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedStaticTexturePayload {
+    file: String,
+    bytes: Vec<u8>,
+    fnv1a64: String,
+    subresources: Vec<MapFrameTextureSubresource>,
+    provenance: String,
+}
+
+fn static_texture_source_candidates(name: &str) -> Option<&'static [&'static str]> {
+    match name {
+        TERRAIN_DIFFUSE_SYMBOL => Some(&["map/terrain/atlas0.dds"]),
+        "HeightNormal" => Some(&["map/world_normal.bmp"]),
+        TERRAIN_COLOR_TINT_SYMBOL => Some(&["map/terrain/colormap_rgb_cityemissivemask_a.dds"]),
+        SNOW_TEXTURE_SYMBOL => Some(&["map/terrain/snow_normal_rgb_diffuse_a.dds"]),
+        TERRAIN_NORMAL_SYMBOL => Some(&["map/terrain/atlas_normal0.dds"]),
+        CITY_LIGHTS_AND_SNOW_NOISE_SYMBOL => Some(&[
+            "map/terrain/citylights_rgb_snowmask_a_0.dds",
+            "map/terrain/citylights_rgb_snowmask_a_1.dds",
+            "map/terrain/citylights_rgb_snowmask_a_2.dds",
+        ]),
+        MUD_NORMAL_SPEC_SYMBOL => Some(&[
+            "map/terrain/mud_normal_rgb_spec_a_0.dds",
+            "map/terrain/mud_normal_rgb_spec_a_1.dds",
+            "map/terrain/mud_normal_rgb_spec_a_2.dds",
+        ]),
+        MUD_DIFFUSE_GLOSS_SYMBOL => Some(&[
+            "map/terrain/mud_diffuse_rgb_gloss_a_0.dds",
+            "map/terrain/mud_diffuse_rgb_gloss_a_1.dds",
+            "map/terrain/mud_diffuse_rgb_gloss_a_2.dds",
+        ]),
+        _ => None,
+    }
+}
+
+fn resolve_descriptor_only_static_texture(
+    resolver: &GameFileResolver,
+    resource: &MapFrameTextureBinding,
+) -> Result<Option<ResolvedStaticTexturePayload>> {
+    let Some(name) = resource.declared_name.as_deref() else {
+        return Ok(None);
+    };
+    let Some(candidates) = static_texture_source_candidates(name) else {
+        return Ok(None);
+    };
+    let mut matches = Vec::new();
+    let mut rejected = Vec::new();
+    for source in candidates {
+        let Some(path) = resolver.resolve(source)? else {
+            rejected.push(format!("{source}: not resolved"));
+            continue;
+        };
+        match static_texture_payload_from_source(name, source, &path, resource) {
+            Ok(payload) => matches.push(payload),
+            Err(error) => rejected.push(format!("{source}: {error}")),
+        }
+    }
+    match matches.len() {
+        1 => Ok(matches.pop()),
+        0 => Err(format!(
+            "production terrain renderer blocked: descriptor-only shader resource {name} at PS slot {} has no exact resolver source matching captured descriptor {}x{} DXGI {} mip_count {}: {}",
+            resource.slot,
+            resource.width,
+            resource.height,
+            resource.dxgi_format,
+            resource.mip_count,
+            rejected.join("; ")
+        )
+        .into()),
+        count => Err(format!(
+            "production terrain renderer blocked: descriptor-only shader resource {name} at PS slot {} has {count} exact resolver sources matching the captured descriptor; source admission is ambiguous",
+            resource.slot
+        )
+        .into()),
+    }
+}
+
+fn static_texture_payload_from_source(
+    name: &str,
+    source: &str,
+    path: &Path,
+    resource: &MapFrameTextureBinding,
+) -> Result<ResolvedStaticTexturePayload> {
+    validate_static_texture_capture_descriptor(name, resource)?;
+    let (bytes, subresources) = if source.ends_with(".bmp") {
+        static_bmp_texture_payload(path, resource)?
+    } else {
+        static_dds_texture_payload(path, resource)?
+    };
+    let fnv1a64 = fnv1a64_bytes(&bytes);
+    Ok(ResolvedStaticTexturePayload {
+        file: format!(
+            "resolver_static_texture_{}.d3d11",
+            sanitize_source_name(source)
+        ),
+        bytes,
+        fnv1a64,
+        subresources,
+        provenance: format!(
+            "exact descriptor/source/mip/format join for {name} from resolver {} source {source}",
+            path.display()
+        ),
+    })
+}
+
+fn validate_static_texture_capture_descriptor(
+    name: &str,
+    resource: &MapFrameTextureBinding,
+) -> Result<()> {
+    if resource.stage != "PS"
+        || resource.is_null
+        || resource.width == 0
+        || resource.height == 0
+        || resource.mip_count == 0
+        || resource.array_size != 1
+        || resource.sample_count != 1
+        || resource.bind_flags & D3D11_BIND_SHADER_RESOURCE == 0
+    {
+        return Err(format!(
+            "captured {name} descriptor is not a non-null, single-sample Texture2D shader resource"
+        )
+        .into());
+    }
+    let view = resource
+        .view_desc
+        .as_ref()
+        .ok_or_else(|| format!("captured {name} descriptor has no SRV view descriptor"))?;
+    if view.format != resource.dxgi_format
+        || view.view_dimension != D3D11_SRV_DIMENSION_TEXTURE2D
+        || view.most_detailed_mip != 0
+        || view.mip_levels != resource.mip_count
+        || view.first_array_slice != 0
+        || view.array_size > 1
+        || view.num_cubes != 0
+    {
+        return Err(format!(
+            "captured {name} SRV view does not expose the complete single Texture2D mip chain"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn static_dds_texture_payload(
+    path: &Path,
+    resource: &MapFrameTextureBinding,
+) -> Result<(Vec<u8>, Vec<MapFrameTextureSubresource>)> {
+    let data = fs::read(path)?;
+    if data.len() < 128 || data.get(0..4) != Some(b"DDS ") {
+        return Err(format!("{} is not a complete legacy DDS", path.display()).into());
+    }
+    let height = u32::from_le_bytes(data[12..16].try_into()?);
+    let width = u32::from_le_bytes(data[16..20].try_into()?);
+    let mip_count = u32::from_le_bytes(data[28..32].try_into()?).max(1);
+    if width != resource.width || height != resource.height || mip_count != resource.mip_count {
+        return Err(format!(
+            "DDS descriptor is {width}x{height} mip_count {mip_count}, captured descriptor is {}x{} mip_count {}",
+            resource.width, resource.height, resource.mip_count
+        )
+        .into());
+    }
+    let fourcc = &data[84..88];
+    let rgb_bits = u32::from_le_bytes(data[88..92].try_into()?) as usize;
+    let rmask = u32::from_le_bytes(data[92..96].try_into()?);
+    let gmask = u32::from_le_bytes(data[96..100].try_into()?);
+    let bmask = u32::from_le_bytes(data[100..104].try_into()?);
+    let amask = u32::from_le_bytes(data[104..108].try_into()?);
+    let format_matches = match resource.dxgi_format {
+        DXGI_FORMAT_BC1_UNORM | DXGI_FORMAT_BC1_UNORM_SRGB => fourcc == b"DXT1",
+        DXGI_FORMAT_BC3_UNORM | DXGI_FORMAT_BC3_UNORM_SRGB => fourcc == b"DXT5",
+        DXGI_FORMAT_B8G8R8A8_UNORM | DXGI_FORMAT_B8G8R8A8_UNORM_SRGB => {
+            fourcc.iter().all(|byte| *byte == 0)
+                && rgb_bits == 32
+                && rmask == 0x00ff0000
+                && gmask == 0x0000ff00
+                && bmask == 0x000000ff
+                && amask == 0xff000000
+        }
+        DXGI_FORMAT_B8G8R8X8_UNORM => {
+            fourcc.iter().all(|byte| *byte == 0)
+                && rgb_bits == 32
+                && rmask == 0x00ff0000
+                && gmask == 0x0000ff00
+                && bmask == 0x000000ff
+                && amask == 0
+        }
+        _ => false,
+    };
+    if !format_matches {
+        return Err(format!(
+            "DDS encoding {:?}/RGB{} masks {:08x}/{:08x}/{:08x}/{:08x} does not admit captured DXGI {}",
+            String::from_utf8_lossy(fourcc),
+            rgb_bits,
+            rmask,
+            gmask,
+            bmask,
+            amask,
+            resource.dxgi_format
+        )
+        .into());
+    }
+    const CAPTURED_STAGING_ROW_ALIGNMENT: u32 = 128;
+    let mut bytes = Vec::new();
+    let mut file_offset = 0usize;
+    let mut source_offset = 128usize;
+    let mut subresources = Vec::with_capacity(mip_count as usize);
+    for mip_slice in 0..mip_count {
+        let mip_width = (width >> mip_slice).max(1);
+        let mip_height = (height >> mip_slice).max(1);
+        let source_byte_len =
+            dds_mip_byte_len(mip_width as usize, mip_height as usize, fourcc, rgb_bits)?;
+        let source_row_pitch = native_d3d11_minimum_row_pitch(resource.dxgi_format, mip_width)?;
+        let row_pitch = source_row_pitch
+            .checked_add(CAPTURED_STAGING_ROW_ALIGNMENT - 1)
+            .ok_or("DDS captured row pitch overflow")?
+            / CAPTURED_STAGING_ROW_ALIGNMENT
+            * CAPTURED_STAGING_ROW_ALIGNMENT;
+        let row_count = native_d3d11_format_row_count(resource.dxgi_format, mip_height)?;
+        let depth_pitch = row_pitch
+            .checked_mul(row_count)
+            .ok_or("DDS subresource depth pitch overflow")?;
+        if source_byte_len != (source_row_pitch as usize) * (row_count as usize) {
+            return Err(format!(
+                "DDS mip {mip_slice} source byte_len {source_byte_len} does not equal tight D3D11 row layout"
+            )
+            .into());
+        }
+        let source_end = source_offset
+            .checked_add(source_byte_len)
+            .ok_or("DDS source range overflow")?;
+        if source_end > data.len() {
+            return Err(format!("{} is truncated at mip {mip_slice}", path.display()).into());
+        }
+        for row in 0..row_count as usize {
+            let row_start = source_offset + row * source_row_pitch as usize;
+            let row_end = row_start + source_row_pitch as usize;
+            bytes.extend_from_slice(&data[row_start..row_end]);
+            bytes.resize(bytes.len() + (row_pitch - source_row_pitch) as usize, 0);
+        }
+        source_offset = source_end;
+        subresources.push(MapFrameTextureSubresource {
+            mip_slice,
+            array_slice: 0,
+            file_offset,
+            byte_len: depth_pitch as usize,
+            row_pitch,
+            depth_pitch,
+            width: mip_width,
+            height: mip_height,
+        });
+        file_offset += depth_pitch as usize;
+    }
+    if source_offset != data.len() {
+        return Err(format!(
+            "{} contains {} trailing byte(s) outside the declared mip chain",
+            path.display(),
+            data.len() - source_offset
+        )
+        .into());
+    }
+    Ok((bytes, subresources))
+}
+
+fn static_bmp_texture_payload(
+    path: &Path,
+    resource: &MapFrameTextureBinding,
+) -> Result<(Vec<u8>, Vec<MapFrameTextureSubresource>)> {
+    if resource.dxgi_format != DXGI_FORMAT_B8G8R8X8_UNORM || resource.mip_count != 1 {
+        return Err(format!(
+            "BMP source only admits captured DXGI {} with one mip, got DXGI {} mip_count {}",
+            DXGI_FORMAT_B8G8R8X8_UNORM, resource.dxgi_format, resource.mip_count
+        )
+        .into());
+    }
+    let image = load_bmp_rgbx(path)?;
+    if image.width as u32 != resource.width || image.height as u32 != resource.height {
+        return Err(format!(
+            "BMP descriptor is {}x{}, captured descriptor is {}x{}",
+            image.width, image.height, resource.width, resource.height
+        )
+        .into());
+    }
+    let mut bytes = Vec::with_capacity(image.pixels.len() * 4);
+    for pixel in image.pixels {
+        bytes.extend_from_slice(&pixel.to_le_bytes());
+    }
+    let row_pitch = resource
+        .width
+        .checked_mul(4)
+        .ok_or("BMP BGRX row pitch overflow")?;
+    let depth_pitch = row_pitch
+        .checked_mul(resource.height)
+        .ok_or("BMP BGRX depth pitch overflow")?;
+    Ok((
+        bytes,
+        vec![MapFrameTextureSubresource {
+            mip_slice: 0,
+            array_slice: 0,
+            file_offset: 0,
+            byte_len: depth_pitch as usize,
+            row_pitch,
+            depth_pitch,
+            width: resource.width,
+            height: resource.height,
+        }],
+    ))
+}
+
+fn texture_descriptors_match(
+    captured: &MapFrameTextureBinding,
+    fallback: &MapFrameTextureBinding,
+) -> bool {
+    captured.stage == fallback.stage
+        && captured.slot == fallback.slot
+        && captured.declared_name == fallback.declared_name
+        && captured.is_null == fallback.is_null
+        && captured.view_desc == fallback.view_desc
+        && captured.dxgi_format == fallback.dxgi_format
+        && captured.width == fallback.width
+        && captured.height == fallback.height
+        && captured.mip_count == fallback.mip_count
+        && captured.array_size == fallback.array_size
+        && captured.sample_count == fallback.sample_count
+        && captured.sample_quality == fallback.sample_quality
+        && captured.bind_flags == fallback.bind_flags
+        && captured.usage == fallback.usage
+        && captured.cpu_access_flags == fallback.cpu_access_flags
+        && captured.misc_flags == fallback.misc_flags
 }
 
 fn is_descriptor_only_shader_resource(resource: &MapFrameTextureBinding) -> bool {
@@ -771,13 +1148,14 @@ fn canonical_runtime_shader_resource_file(name: &str) -> Option<&'static str> {
 
 fn terrain_chunk_library_shader_resource_fallbacks(
     bundle_dir: &Path,
-) -> Result<BTreeMap<String, (MapFrameTextureBinding, MapFrameFileEvidence)>> {
+) -> Result<BTreeMap<String, Vec<(MapFrameTextureBinding, MapFrameFileEvidence)>>> {
     let path = bundle_dir.join(TERRAIN_CHUNK_LIBRARY_FILE);
     if !path.exists() {
         return Ok(BTreeMap::new());
     }
     let library: TerrainChunkLibraryManifest = serde_json::from_slice(&fs::read(&path)?)?;
-    let mut fallbacks = BTreeMap::new();
+    let mut fallbacks: BTreeMap<String, Vec<(MapFrameTextureBinding, MapFrameFileEvidence)>> =
+        BTreeMap::new();
     for chunk in &library.chunks {
         for resource in &chunk.draw.shader_resources {
             let Some(name) = resource.declared_name.as_ref() else {
@@ -802,9 +1180,16 @@ fn terrain_chunk_library_shader_resource_fallbacks(
                             "terrain_chunk_library_shader_resource_fallback_{name}"
                         ),
                     });
-            fallbacks
-                .entry(name.clone())
-                .or_insert_with(|| (resource.clone(), evidence));
+            let entries = fallbacks.entry(name.clone()).or_insert_with(Vec::new);
+            if !entries.iter().any(|(existing, existing_evidence)| {
+                texture_descriptors_match(existing, resource)
+                    && existing.file == resource.file
+                    && existing.byte_len == resource.byte_len
+                    && existing.fnv1a64 == resource.fnv1a64
+                    && existing_evidence.fnv1a64 == evidence.fnv1a64
+            }) {
+                entries.push((resource.clone(), evidence));
+            }
         }
     }
     Ok(fallbacks)
@@ -1478,6 +1863,7 @@ pub(crate) fn validate_map_frame_vanilla_sources(
     frame: &MapFrameRuntimeBundle,
     bundle_dir: &Path,
     spec: MapFrameBundleValidationSpec,
+    resolver: Option<&GameFileResolver>,
 ) -> Result<()> {
     for &source in spec.required_vanilla_sources {
         let evidence = frame.vanilla_sources.get(source).ok_or_else(|| {
@@ -1487,6 +1873,26 @@ pub(crate) fn validate_map_frame_vanilla_sources(
             )
         })?;
         validate_map_frame_file_evidence(bundle_dir, evidence)?;
+        if let Some(resolver) = resolver {
+            let resolved = resolver.resolve_required(
+                source,
+                &format!("effective-VFS source required by {}", spec.renderer_label),
+            )?;
+            let actual_len = usize::try_from(fs::metadata(&resolved)?.len())?;
+            let actual_hash = fnv1a64_file(&resolved)?;
+            if actual_len != evidence.byte_len || actual_hash != evidence.fnv1a64 {
+                return Err(format!(
+                    "{} blocked: effective-VFS source {source} at {} does not match the replay-captured content identity (bytes {} vs {}, fnv1a64 {} vs {})",
+                    spec.renderer_label,
+                    resolved.display(),
+                    actual_len,
+                    evidence.byte_len,
+                    actual_hash,
+                    evidence.fnv1a64,
+                )
+                .into());
+            }
+        }
     }
     Ok(())
 }
@@ -4031,7 +4437,205 @@ mod tests {
     fn synthetic_terrain_resolver(root: &Path, palette: u8) -> GameFileResolver {
         let game = root.join("game");
         write_synthetic_terrain_id_map_game_files(&game, palette);
+        for source in MAP_FRAME_REQUIRED_VANILLA_SOURCES {
+            let path = source
+                .split('/')
+                .fold(game.clone(), |path, component| path.join(component));
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("create vanilla source fixture directory");
+            }
+            fs::write(&path, vanilla_source_fixture_bytes(source))
+                .expect("write vanilla source fixture");
+        }
         GameFileResolver::vanilla(game).expect("synthetic terrain resolver")
+    }
+
+    fn static_texture_test_descriptor(
+        name: &str,
+        slot: u32,
+        width: u32,
+        height: u32,
+        mip_count: u32,
+        dxgi_format: u32,
+    ) -> MapFrameTextureBinding {
+        MapFrameTextureBinding {
+            stage: "PS".to_string(),
+            slot,
+            declared_name: Some(name.to_string()),
+            is_null: false,
+            view_desc: Some(MapFrameShaderResourceViewDesc {
+                format: dxgi_format,
+                view_dimension: D3D11_SRV_DIMENSION_TEXTURE2D,
+                most_detailed_mip: 0,
+                mip_levels: mip_count,
+                first_array_slice: 0,
+                array_size: 1,
+                num_cubes: 0,
+            }),
+            file: None,
+            byte_len: 0,
+            fnv1a64: None,
+            dxgi_format,
+            width,
+            height,
+            mip_count,
+            array_size: 1,
+            sample_count: 1,
+            sample_quality: 0,
+            payload_format: None,
+            subresources: Vec::new(),
+            bind_flags: D3D11_BIND_SHADER_RESOURCE,
+            usage: D3D11_USAGE_DEFAULT,
+            cpu_access_flags: 0,
+            misc_flags: 0,
+        }
+    }
+
+    fn write_test_dxt5_dds(path: &Path, width: u32, height: u32, mip_count: u32) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create DDS parent");
+        }
+        let mut data = vec![0u8; 128];
+        data[0..4].copy_from_slice(b"DDS ");
+        data[4..8].copy_from_slice(&124u32.to_le_bytes());
+        data[12..16].copy_from_slice(&height.to_le_bytes());
+        data[16..20].copy_from_slice(&width.to_le_bytes());
+        data[28..32].copy_from_slice(&mip_count.to_le_bytes());
+        data[76..80].copy_from_slice(&32u32.to_le_bytes());
+        data[80..84].copy_from_slice(&4u32.to_le_bytes());
+        data[84..88].copy_from_slice(b"DXT5");
+        for mip in 0..mip_count {
+            let mip_width = (width >> mip).max(1);
+            let mip_height = (height >> mip).max(1);
+            let byte_len = mip_width.div_ceil(4) * mip_height.div_ceil(4) * 16;
+            data.extend((0..byte_len).map(|index| (index as u8).wrapping_add(mip as u8)));
+        }
+        fs::write(path, data).expect("write DXT5 DDS");
+    }
+
+    fn write_test_bmp24(path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create BMP parent");
+        }
+        let mut data = vec![0u8; 54];
+        data[0..2].copy_from_slice(b"BM");
+        data[2..6].copy_from_slice(&62u32.to_le_bytes());
+        data[10..14].copy_from_slice(&54u32.to_le_bytes());
+        data[14..18].copy_from_slice(&40u32.to_le_bytes());
+        data[18..22].copy_from_slice(&2i32.to_le_bytes());
+        data[22..26].copy_from_slice(&1i32.to_le_bytes());
+        data[26..28].copy_from_slice(&1u16.to_le_bytes());
+        data[28..30].copy_from_slice(&24u16.to_le_bytes());
+        data.extend_from_slice(&[3, 2, 1, 6, 5, 4, 0, 0]);
+        fs::write(path, data).expect("write 24-bit BMP");
+    }
+
+    #[test]
+    fn descriptor_only_dds_join_reconstructs_captured_row_pitch_law() {
+        let root = temp_test_dir("descriptor_only_dds_join");
+        let path = root.join("atlas0.dds");
+        write_test_dxt5_dds(&path, 8, 8, 3);
+        let resource = static_texture_test_descriptor(
+            TERRAIN_DIFFUSE_SYMBOL,
+            0,
+            8,
+            8,
+            3,
+            DXGI_FORMAT_BC3_UNORM_SRGB,
+        );
+
+        let payload = static_texture_payload_from_source(
+            TERRAIN_DIFFUSE_SYMBOL,
+            "map/terrain/atlas0.dds",
+            &path,
+            &resource,
+        )
+        .expect("exact DDS descriptor join");
+
+        assert_eq!(payload.subresources.len(), 3);
+        assert!(payload
+            .subresources
+            .iter()
+            .all(|subresource| subresource.row_pitch == 128));
+        assert_eq!(payload.bytes.len(), 512);
+        assert_eq!(&payload.bytes[0..32], &(0u8..32).collect::<Vec<_>>());
+        assert!(payload.bytes[32..128].iter().all(|byte| *byte == 0));
+        assert_eq!(&payload.bytes[128..160], &(32u8..64).collect::<Vec<_>>());
+        assert!(payload.bytes[160..256].iter().all(|byte| *byte == 0));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn descriptor_only_bmp_join_is_top_down_bgrx() {
+        let root = temp_test_dir("descriptor_only_bmp_join");
+        let path = root.join("world_normal.bmp");
+        write_test_bmp24(&path);
+        let resource =
+            static_texture_test_descriptor("HeightNormal", 1, 2, 1, 1, DXGI_FORMAT_B8G8R8X8_UNORM);
+
+        let payload = static_texture_payload_from_source(
+            "HeightNormal",
+            "map/world_normal.bmp",
+            &path,
+            &resource,
+        )
+        .expect("exact BMP descriptor join");
+
+        assert_eq!(payload.bytes, vec![3, 2, 1, 0, 6, 5, 4, 0]);
+        assert_eq!(payload.subresources[0].row_pitch, 8);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn descriptor_only_resolver_join_rejects_ambiguous_exact_sources() {
+        let root = temp_test_dir("descriptor_only_ambiguous_join");
+        let game = root.join("game");
+        for index in 0..=2 {
+            write_test_dxt5_dds(
+                &game.join(format!("map/terrain/citylights_rgb_snowmask_a_{index}.dds")),
+                4,
+                4,
+                1,
+            );
+        }
+        let resolver = GameFileResolver::vanilla(&game).expect("fixture resolver");
+        let resource = static_texture_test_descriptor(
+            CITY_LIGHTS_AND_SNOW_NOISE_SYMBOL,
+            8,
+            4,
+            4,
+            1,
+            DXGI_FORMAT_BC3_UNORM_SRGB,
+        );
+
+        let error = resolve_descriptor_only_static_texture(&resolver, &resource)
+            .expect_err("ambiguous exact sources must fail closed")
+            .to_string();
+        assert!(error.contains("3 exact resolver sources"), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn descriptor_only_resolver_join_rejects_descriptor_mismatch() {
+        let root = temp_test_dir("descriptor_only_mismatch_join");
+        let game = root.join("game");
+        write_test_dxt5_dds(&game.join("map/terrain/atlas0.dds"), 8, 8, 2);
+        let resolver = GameFileResolver::vanilla(&game).expect("fixture resolver");
+        let resource = static_texture_test_descriptor(
+            TERRAIN_DIFFUSE_SYMBOL,
+            0,
+            16,
+            8,
+            2,
+            DXGI_FORMAT_BC3_UNORM_SRGB,
+        );
+
+        let error = resolve_descriptor_only_static_texture(&resolver, &resource)
+            .expect_err("descriptor mismatch must fail closed")
+            .to_string();
+        assert!(error.contains("no exact resolver source"), "{error}");
+        assert!(error.contains("DDS descriptor is 8x8"), "{error}");
+        let _ = fs::remove_dir_all(root);
     }
 
     fn write_full_terrain_id_map_frame_bundle(
@@ -4156,25 +4760,16 @@ mod tests {
         }];
     }
 
-    fn assert_synthesized_terrain_id_map_bound(frame: &MapFrameRuntimeBundle, expected_hash: &str) {
+    fn assert_captured_terrain_id_map_bound(
+        frame: &MapFrameRuntimeBundle,
+        expected_file: &str,
+        expected_hash: &str,
+    ) {
         let terrain = map_frame_terrain_srv(&frame.active_draw).expect("TerrainIDMap SRV");
-        assert_eq!(
-            terrain.file.as_deref(),
-            Some(SYNTHESIZED_TERRAIN_ID_MAP_FILE)
-        );
+        assert_eq!(terrain.file.as_deref(), Some(expected_file));
         assert_eq!(terrain.fnv1a64.as_deref(), Some(expected_hash));
-        assert_eq!(
-            terrain.byte_len,
-            TERRAIN_ID_MAP_WIDTH * TERRAIN_ID_MAP_HEIGHT * 4
-        );
-        assert_eq!(terrain.payload_format, None);
-        assert!(terrain.subresources.is_empty());
-        let payload = frame
-            .synthetic_payloads
-            .get(SYNTHESIZED_TERRAIN_ID_MAP_FILE)
-            .expect("synthetic payload sidecar");
-        assert_eq!(payload.fnv1a64, expected_hash);
-        assert_eq!(payload.bytes.len(), terrain.byte_len);
+        assert_eq!(terrain.byte_len, TERRAIN_ID_MAP_WIDTH * TERRAIN_ID_MAP_HEIGHT * 4);
+        assert!(!frame.synthetic_payloads.contains_key(SYNTHESIZED_TERRAIN_ID_MAP_FILE));
     }
 
     #[test]
@@ -4196,7 +4791,141 @@ mod tests {
     }
 
     #[test]
-    fn map_frame_bundle_uses_synthesized_terrain_id_map_when_captured_payload_matches() {
+    fn map_frame_bundle_accepts_matching_effective_vfs_shader_sources() {
+        let root = temp_test_dir("map_frame_effective_vfs_sources_match");
+        let resolver = synthetic_terrain_resolver(&root, 0);
+        let bundle_dir = root.join("bundle");
+        fs::create_dir_all(&bundle_dir).expect("create map-frame bundle directory");
+        let path = write_valid_map_frame_bundle(&bundle_dir, |frame| frame);
+        let frame = validate_map_frame_runtime_bundle(&path).expect("valid captured bundle");
+
+        validate_map_frame_vanilla_sources(
+            &frame,
+            &bundle_dir,
+            TERRAIN_MAP_FRAME_SPEC,
+            Some(&resolver),
+        )
+        .expect("matching effective-VFS source identities must validate");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn map_frame_bundle_rejects_changed_effective_vfs_shader_source() {
+        let root = temp_test_dir("map_frame_effective_vfs_source_changed");
+        let resolver = synthetic_terrain_resolver(&root, 0);
+        fs::write(
+            root.join("game/gfx/FX/pdxmap.shader"),
+            b"changed after replay capture",
+        )
+        .expect("change selected effective shader source");
+        let bundle_dir = root.join("bundle");
+        fs::create_dir_all(&bundle_dir).expect("create map-frame bundle directory");
+        let path = write_valid_map_frame_bundle(&bundle_dir, |frame| frame);
+        let frame = validate_map_frame_runtime_bundle(&path).expect("valid captured bundle");
+
+        let error = validate_map_frame_vanilla_sources(
+            &frame,
+            &bundle_dir,
+            TERRAIN_MAP_FRAME_SPEC,
+            Some(&resolver),
+        )
+        .expect_err("changed effective-VFS source must fail closed")
+        .to_string();
+        assert!(
+            error.contains("effective-VFS source gfx/FX/pdxmap.shader"),
+            "{error}"
+        );
+        assert!(
+            error.contains("does not match the replay-captured content identity"),
+            "{error}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn map_frame_bundle_uses_mod_override_only_when_content_identity_matches() {
+        let root = temp_test_dir("map_frame_effective_vfs_mod_override");
+        let vanilla_resolver = synthetic_terrain_resolver(&root, 0);
+        drop(vanilla_resolver);
+        let game = root.join("game");
+        let mod_root = root.join("mod");
+        let override_path = mod_root.join("gfx/FX/pdxmap.shader");
+        fs::create_dir_all(override_path.parent().expect("override parent"))
+            .expect("create mod override directory");
+        fs::write(
+            &override_path,
+            vanilla_source_fixture_bytes("gfx/FX/pdxmap.shader"),
+        )
+        .expect("write byte-identical mod override");
+        let resolver = GameFileResolver::with_mod_paths(&game, vec![mod_root.clone()])
+            .expect("modded resolver");
+        let bundle_dir = root.join("bundle");
+        fs::create_dir_all(&bundle_dir).expect("create map-frame bundle directory");
+        let path = write_valid_map_frame_bundle(&bundle_dir, |frame| frame);
+        let frame = validate_map_frame_runtime_bundle(&path).expect("valid captured bundle");
+
+        validate_map_frame_vanilla_sources(
+            &frame,
+            &bundle_dir,
+            TERRAIN_MAP_FRAME_SPEC,
+            Some(&resolver),
+        )
+        .expect("byte-identical selected mod override must validate");
+
+        fs::write(&override_path, b"different selected mod shader")
+            .expect("change mod override content");
+        let changed_resolver = GameFileResolver::with_mod_paths(&game, vec![mod_root])
+            .expect("changed modded resolver");
+        let error = validate_map_frame_vanilla_sources(
+            &frame,
+            &bundle_dir,
+            TERRAIN_MAP_FRAME_SPEC,
+            Some(&changed_resolver),
+        )
+        .expect_err("changed selected mod override must fail closed")
+        .to_string();
+        assert!(
+            error.contains("does not match the replay-captured content identity"),
+            "{error}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn map_frame_bundle_rejects_replace_path_that_removes_required_shader() {
+        let root = temp_test_dir("map_frame_effective_vfs_replace_path");
+        let vanilla_resolver = synthetic_terrain_resolver(&root, 0);
+        drop(vanilla_resolver);
+        let game = root.join("game");
+        let mod_root = root.join("replace_mod");
+        fs::create_dir_all(&mod_root).expect("create replace-path mod");
+        fs::write(
+            mod_root.join("descriptor.mod"),
+            b"name=\"Replace FX\"\nreplace_path=\"gfx/FX\"\n",
+        )
+        .expect("write replace-path descriptor");
+        let resolver =
+            GameFileResolver::with_mod_paths(&game, vec![mod_root]).expect("replace-path resolver");
+        let bundle_dir = root.join("bundle");
+        fs::create_dir_all(&bundle_dir).expect("create map-frame bundle directory");
+        let path = write_valid_map_frame_bundle(&bundle_dir, |frame| frame);
+        let frame = validate_map_frame_runtime_bundle(&path).expect("valid captured bundle");
+
+        let error = validate_map_frame_vanilla_sources(
+            &frame,
+            &bundle_dir,
+            TERRAIN_MAP_FRAME_SPEC,
+            Some(&resolver),
+        )
+        .expect_err("replace_path removing a required source must fail closed")
+        .to_string();
+        assert!(error.contains("gfx/FX/pdxmap.shader"), "{error}");
+        assert!(error.contains("missing effective-VFS source"), "{error}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn map_frame_bundle_keeps_authenticated_captured_terrain_id_map() {
         let root = temp_test_dir("terrain_id_map_synth_matches_capture");
         let resolver = synthetic_terrain_resolver(&root, 0);
         let synthesized = synthesize_terrain_id_map(&resolver).expect("synthesize TerrainIDMap");
@@ -4210,14 +4939,18 @@ mod tests {
             .expect("write captured TerrainIDMap");
 
         let frame = validate_map_frame_runtime_bundle_with_resolver(&path, &resolver)
-            .expect("matching captured payload validates through synthesis");
+            .expect("authenticated captured payload validates");
 
-        assert_synthesized_terrain_id_map_bound(&frame, &synthesized.descriptor.fnv1a64);
+        assert_captured_terrain_id_map_bound(
+            &frame,
+            CANONICAL_TERRAIN_ID_MAP_FILE,
+            &synthesized.descriptor.fnv1a64,
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn map_frame_bundle_verifies_canonical_terrain_id_map_not_srv_payload_copy() {
+    fn map_frame_bundle_keeps_authenticated_srv_payload_without_canonical_substitution() {
         let root = temp_test_dir("terrain_id_map_synth_canonical_payload");
         let resolver = synthetic_terrain_resolver(&root, 0);
         let synthesized = synthesize_terrain_id_map(&resolver).expect("synthesize TerrainIDMap");
@@ -4245,6 +4978,15 @@ mod tests {
                     byte_len: synthesized.bytes.len(),
                     fnv1a64: synthesized.descriptor.fnv1a64.clone(),
                     provenance: "unit_test_canonical_terrain_id_map".to_string(),
+                },
+            );
+            frame.runtime_files.insert(
+                srv_file.to_string(),
+                MapFrameFileEvidence {
+                    file: srv_file.to_string(),
+                    byte_len: srv_payload.len(),
+                    fnv1a64: srv_hash.clone(),
+                    provenance: "unit_test_authenticated_srv_terrain_id_map".to_string(),
                 },
             );
             update_draw_terrain_id_resource_file(
@@ -4286,14 +5028,14 @@ mod tests {
         fs::write(bundle_dir.join(srv_file), &srv_payload).expect("write divergent SRV copy");
 
         let frame = validate_map_frame_runtime_bundle_with_resolver(&path, &resolver)
-            .expect("canonical captured TerrainIDMap validates even if SRV copy differs");
+            .expect("authenticated SRV payload validates without canonical substitution");
 
-        assert_synthesized_terrain_id_map_bound(&frame, &synthesized.descriptor.fnv1a64);
+        assert_captured_terrain_id_map_bound(&frame, srv_file, &srv_hash);
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn map_frame_bundle_uses_synthesized_terrain_id_map_when_payload_is_withheld() {
+    fn map_frame_bundle_rejects_withheld_terrain_id_map_even_with_resolver() {
         let root = temp_test_dir("terrain_id_map_synth_without_payload");
         let resolver = synthetic_terrain_resolver(&root, 0);
         let bundle_dir = root.join("bundle");
@@ -4303,15 +5045,14 @@ mod tests {
             .expect_err("no resolver path must still require captured TerrainIDMap payload");
         assert!(err.to_string().contains("TerrainIDMap"));
 
-        let frame = validate_map_frame_runtime_bundle_with_resolver(&path, &resolver)
-            .expect("resolver path supplies synthesized TerrainIDMap");
-        let synthesized = synthesize_terrain_id_map(&resolver).expect("synthesize TerrainIDMap");
-        assert_synthesized_terrain_id_map_bound(&frame, &synthesized.descriptor.fnv1a64);
+        let resolver_error = validate_map_frame_runtime_bundle_with_resolver(&path, &resolver)
+            .expect_err("resolver must not substitute an unauthenticated TerrainIDMap");
+        assert!(resolver_error.to_string().contains("TerrainIDMap"));
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn map_frame_bundle_rejects_captured_terrain_id_map_hash_mismatch() {
+    fn map_frame_bundle_accepts_self_consistent_captured_terrain_id_map_without_resynthesis() {
         let root = temp_test_dir("terrain_id_map_synth_mismatch");
         let resolver = synthetic_terrain_resolver(&root, 0);
         let synthesized = synthesize_terrain_id_map(&resolver).expect("synthesize TerrainIDMap");
@@ -4327,14 +5068,12 @@ mod tests {
         fs::write(bundle_dir.join("terrain_id_map.rgba"), &captured)
             .expect("write mismatched captured TerrainIDMap");
 
-        let err = validate_map_frame_runtime_bundle_with_resolver(&path, &resolver)
-            .expect_err("captured/synthesized TerrainIDMap mismatch must fail closed");
-        let text = err.to_string();
-        assert!(text.contains(&captured_hash), "{text}");
-        assert!(text.contains(&synthesized.descriptor.fnv1a64), "{text}");
-        assert!(
-            text.contains("modset differs from resolver modset"),
-            "{text}"
+        let frame = validate_map_frame_runtime_bundle_with_resolver(&path, &resolver)
+            .expect("self-consistent captured payload is authoritative");
+        assert_captured_terrain_id_map_bound(
+            &frame,
+            CANONICAL_TERRAIN_ID_MAP_FILE,
+            &captured_hash,
         );
         let _ = fs::remove_dir_all(&root);
     }

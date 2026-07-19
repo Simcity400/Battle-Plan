@@ -386,9 +386,30 @@ mod tests {
         );
         let ticks = t.date_ticks();
         assert_eq!(ticks.len(), 3);
-        assert_eq!(ticks[0], DateTick { index: 0, hour: 0, label: "1936.1.1".into() });
-        assert_eq!(ticks[1], DateTick { index: 2, hour: 24, label: "1936.1.2".into() });
-        assert_eq!(ticks[2], DateTick { index: 4, hour: 48, label: "1936.1.3".into() });
+        assert_eq!(
+            ticks[0],
+            DateTick {
+                index: 0,
+                hour: 0,
+                label: "1936.1.1".into()
+            }
+        );
+        assert_eq!(
+            ticks[1],
+            DateTick {
+                index: 2,
+                hour: 24,
+                label: "1936.1.2".into()
+            }
+        );
+        assert_eq!(
+            ticks[2],
+            DateTick {
+                index: 4,
+                hour: 48,
+                label: "1936.1.3".into()
+            }
+        );
     }
 
     #[test]

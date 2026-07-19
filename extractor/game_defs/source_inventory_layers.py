@@ -46,7 +46,20 @@ def definition_layers(
     if not base_layers:
         raise RuntimeError("resolver returned no base definition layer")
     vanilla = Path(base_layers[0].root).resolve()
-    mod_layers = iter(base_layers[1:])
+    active_mod_labels = [
+        namespace["label"]
+        for namespace in inventory["namespaces"]
+        if namespace["binding"] == "active_mod"
+    ]
+    if len(active_mod_labels) != len(set(active_mod_labels)):
+        raise RuntimeError("live source inventory repeats an active-mod label")
+    active_mod_label_set = set(active_mod_labels)
+    selected_mod_layers = [
+        layer for layer in base_layers[1:] if layer.label in active_mod_label_set
+    ]
+    if len(selected_mod_layers) != len(active_mod_labels):
+        raise RuntimeError("resolver active-mod layers do not match live source inventory")
+    mod_layers = iter(selected_mod_layers)
     selected: list[Any] = []
     excluded_asset_only: list[str] = []
     for namespace in inventory["namespaces"]:

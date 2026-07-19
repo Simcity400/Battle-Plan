@@ -25,7 +25,7 @@ autonomy RTTI vtables, then validated live==save -- see diplo_relations_offsets.
     CSubjectRelation sub-object (vtable RVA 0x293A168):
       +0x10 overlord tag_db_id   +0x14 subject tag_db_id
       +0x58 -> autonomy-state DB obj (name std::string at +0x08)
-      +0x60 autonomy_ratio i32 x100000
+      +0x60 autonomy_ratio i64 fixed-point x100000
 
 Validated live==save on build 16022851 against the lockstep melt (save_date 1946.5.19.9):
   * opinion 1113/1113 real-country pairs EXACT (the 69 X|WST pairs are the Wasteland
@@ -67,7 +67,7 @@ SUBJ_OVERLORD = 0x10        # i32 overlord tag_db_id
 SUBJ_SUBJECT = 0x14        # i32 subject  tag_db_id
 SUBJ_STATE_DB = 0x58       # u64 -> shared autonomy-state DB obj (name std::string at +0x08)
 SUBJ_STATE_NAME = 0x08     # msvc std::string within the DB obj
-SUBJ_RATIO = 0x60          # i32 autonomy ratio x100000
+SUBJ_RATIO = 0x60          # i64 Clausewitz fixed-point autonomy ratio x100000
 RATIO_SCALE = 100000.0
 
 # ---- flag-relation vtable RVAs (Ghidra image base 0x140000000; live = base + RVA) ----
@@ -155,7 +155,9 @@ def _read_subject(p, ident, subj_obj):
     try:
         ov = p.i32(subj_obj + SUBJ_OVERLORD)
         su = p.i32(subj_obj + SUBJ_SUBJECT)
-        ratio_raw = p.i32(subj_obj + SUBJ_RATIO)
+        ratio_raw = p.i64(subj_obj + SUBJ_RATIO)
+        if not 0 <= ratio_raw <= 100_000:
+            return None
         db = p.u64(subj_obj + SUBJ_STATE_DB)
     except OSError:
         return None

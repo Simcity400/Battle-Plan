@@ -90,6 +90,14 @@ fn exp_string(v: Option<&Value>) -> Leaf<String> {
         other => panic!("exp_string: not a string: {other:?}"),
     }
 }
+fn exp_id_string(v: Option<&Value>) -> Leaf<String> {
+    match v {
+        None => Leaf::Absent,
+        Some(Value::Null) => Leaf::Unobtained,
+        Some(Value::String(s)) => Leaf::Measured(s.clone()),
+        Some(n) => Leaf::Measured(n.as_i64().expect("integer id").to_string()),
+    }
+}
 fn exp_u32(v: Option<&Value>) -> Leaf<u32> {
     match v {
         None => Leaf::Absent,
@@ -1017,7 +1025,21 @@ fn rt_research_focus() {
             .iter()
             .map(|o| replay_core::ResearchProgressRow {
                 name: exp_string(o.get("name")),
+                points_factor: exp_f64(o.get("points_factor")),
+                progress_points: exp_f64(o.get("progress_points")),
+                required_points_base: exp_f64(o.get("required_points_base")),
+                remaining_points_base: exp_f64(o.get("remaining_points_base")),
                 progress_pct: exp_f64(o.get("progress_pct")),
+                eta_days: exp_i64(o.get("eta_days")),
+                progress_basis: exp_string(o.get("progress_basis")),
+                progress_unavailable_reason: exp_string(o.get("progress_unavailable_reason")),
+                eta_unavailable_reason: exp_string(o.get("eta_unavailable_reason")),
+                ahead_of_time_years: exp_f64(o.get("ahead_of_time_years")),
+                ahead_of_time_penalty_pct: exp_f64(o.get("ahead_of_time_penalty_pct")),
+                ahead_of_time_reduction_years: exp_f64(o.get("ahead_of_time_reduction_years")),
+                ahead_of_time_reduced_penalty_pct: exp_f64(
+                    o.get("ahead_of_time_reduced_penalty_pct"),
+                ),
             })
             .collect();
         assert_eq!(
@@ -1063,6 +1085,24 @@ fn rt_research_focus() {
             f.hour_index()
         );
         assert_eq!(
+            focus.current_set,
+            exp_string_list(raw(&f, &["countries", "GER", "focus", "current_set"]))
+        );
+        assert_eq!(
+            focus.current_continuous,
+            exp_string(raw(
+                &f,
+                &["countries", "GER", "focus", "current_continuous"]
+            ))
+        );
+        assert_eq!(
+            focus.current_continuous_set,
+            exp_string_list(raw(
+                &f,
+                &["countries", "GER", "focus", "current_continuous_set"]
+            ))
+        );
+        assert_eq!(
             focus.completed_count,
             exp_i64(raw(&f, &["countries", "GER", "focus", "completed_count"]))
         );
@@ -1073,6 +1113,18 @@ fn rt_research_focus() {
         assert_eq!(
             focus.progress,
             exp_f64(raw(&f, &["countries", "GER", "focus", "progress"]))
+        );
+        assert_eq!(
+            focus.available,
+            exp_string_list(raw(&f, &["countries", "GER", "focus", "available"]))
+        );
+        assert_eq!(
+            focus.visible_order,
+            exp_string_list(raw(&f, &["countries", "GER", "focus", "visible_order"]))
+        );
+        assert_eq!(
+            focus.paused,
+            exp_bool(raw(&f, &["countries", "GER", "focus", "paused"]))
         );
     }
 }
@@ -1147,6 +1199,70 @@ fn rt_country_management() {
             })
             .collect();
         assert_eq!(prod.equipment_stockpile, Leaf::Measured(want_eqs));
+        assert_eq!(
+            prod.stockpile_complete,
+            exp_bool(raw(
+                &f,
+                &["countries", "GER", "production", "stockpile_complete"]
+            ))
+        );
+        assert_eq!(
+            prod.military_lines_complete,
+            exp_bool(raw(
+                &f,
+                &["countries", "GER", "production", "military_lines_complete"]
+            ))
+        );
+        assert_eq!(
+            prod.naval_lines_complete,
+            exp_bool(raw(
+                &f,
+                &["countries", "GER", "production", "naval_lines_complete"]
+            ))
+        );
+        for (path, actual) in [
+            (
+                ["countries", "GER", "production", "military_lines"],
+                &prod.military_lines,
+            ),
+            (
+                ["countries", "GER", "production", "naval_lines"],
+                &prod.naval_lines,
+            ),
+        ] {
+            let expected = match raw(&f, &path) {
+                None => Leaf::Absent,
+                Some(Value::Null) => Leaf::Unobtained,
+                Some(Value::Array(rows)) => Leaf::Measured(
+                    rows.iter()
+                        .map(|value| {
+                            let o = value.as_object().expect("production line object");
+                            replay_core::EquipmentProductionLineRow {
+                                id: exp_i64(o.get("id")),
+                                priority: exp_i64(o.get("priority")),
+                                line_subtype: exp_string(o.get("line_subtype")),
+                                equipment_variant_id: exp_id_string(o.get("equipment_variant_id")),
+                                active_factories: exp_i64(o.get("active_factories")),
+                                requested_factories: exp_i64(o.get("requested_factories")),
+                                efficiency: exp_f64(o.get("efficiency")),
+                                efficiency_cap: exp_f64(o.get("efficiency_cap")),
+                                efficiency_growth: exp_f64(o.get("efficiency_growth")),
+                                cost: exp_f64(o.get("cost")),
+                                speed: exp_f64(o.get("speed")),
+                                produced: exp_f64(o.get("produced")),
+                                amount: exp_i64(o.get("amount")),
+                                progress_ratio: exp_f64(o.get("progress_ratio")),
+                                daily_output: exp_f64(o.get("daily_output")),
+                                days_to_next_unit: exp_f64(o.get("days_to_next_unit")),
+                                mio_id: exp_id_string(o.get("mio_id")),
+                            }
+                        })
+                        .collect(),
+                ),
+                other => panic!("production line list has wrong type: {other:?}"),
+            };
+            assert_eq!(*actual, expected, "production lines @ {}", f.hour_index());
+        }
 
         // --- intel / operatives ---
         let intel = f.intel("GER").expect("GER intel");
@@ -1418,9 +1534,9 @@ fn rt_scripted_gui_vars() {
             "scripted gui present @ {}",
             f.hour_index()
         );
-        let gvars = raw(&f, &["countries", "GER", "script_variables"])
+        let gvars = raw(&f, &["countries", "GER", "extra", "_r2_script_variables"])
             .and_then(Value::as_object)
-            .expect("GER script_variables");
+            .expect("GER production d51 script variables");
         let want_g: BTreeMap<String, f64> = gvars
             .iter()
             .map(|(k, v)| (k.clone(), v.as_f64().unwrap()))
@@ -1439,6 +1555,19 @@ fn rt_scripted_gui_vars() {
             .map(|(k, v)| (k.clone(), v.as_f64().unwrap()))
             .collect();
         assert_eq!(sg.world_variables, Leaf::Measured(want_w));
+        assert_eq!(
+            sg.country_flags.get("GER"),
+            Some(&Leaf::Measured(vec!["inner_circle_active".to_string()]))
+        );
+        let runtime = match sg.runtime_by_country.get("GER") {
+            Some(Leaf::Measured(rows)) => rows.get("GER_inner_circle_ui").unwrap(),
+            other => panic!("GER scripted-GUI runtime carrier missing: {other:?}"),
+        };
+        assert_eq!(runtime.visible, Leaf::Measured(true));
+        assert_eq!(
+            runtime.properties.get("member_1.image").map(String::as_str),
+            Some("GFX_inner_circle_member_1")
+        );
         let wf = raw(&f, &["world", "flags"])
             .and_then(Value::as_object)
             .expect("world flags");

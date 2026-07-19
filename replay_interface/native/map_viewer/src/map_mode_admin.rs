@@ -339,9 +339,7 @@ fn match_brace(source: &str, open_brace: usize) -> Option<usize> {
 fn read_token(source: &str, start: usize) -> (String, usize) {
     let bytes = source.as_bytes();
     let mut i = start;
-    while i < bytes.len()
-        && matches!(bytes[i], b'_' | b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9')
-    {
+    while i < bytes.len() && matches!(bytes[i], b'_' | b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9') {
         i += 1;
     }
     (source[start..i].to_string(), i)
@@ -412,9 +410,8 @@ pub fn state_boundary_outline(
     province_to_state: &BTreeMap<u32, u32>,
 ) -> StateBoundaryOutline {
     let mut outline = StateBoundaryOutline::default();
-    let state_of = |idx: usize| -> Option<u32> {
-        province_to_state.get(&province_ids[idx]).copied()
-    };
+    let state_of =
+        |idx: usize| -> Option<u32> { province_to_state.get(&province_ids[idx]).copied() };
     for y in 0..height {
         for x in 0..width {
             let idx = y * width + x;
@@ -657,30 +654,56 @@ ideologies = {
         let owner_by_state = BTreeMap::from([(10u32, "GER".to_string())]);
         let controls = BTreeMap::from([(
             10u32,
-            InitialStateControl { owner: Some("GER".into()), controller: Some("GER".into()) },
+            InitialStateControl {
+                owner: Some("GER".into()),
+                controller: Some("GER".into()),
+            },
         )]);
 
         // States-mode fill (module under test).
         let admin = states_admin_fill(&owner_by_state, &colors);
 
         // Political law for province 1000 (state 10, GER owner==controller).
-        let (class, primary, secondary) =
-            political_texel_colors(1000, &defs, &p2s, &states, &owner_by_state, &controls, &colors)
-                .expect("political texel");
+        let (class, primary, secondary) = political_texel_colors(
+            1000,
+            &defs,
+            &p2s,
+            &states,
+            &owner_by_state,
+            &controls,
+            &colors,
+        )
+        .expect("political texel");
         assert_eq!(class, PoliticalColorTexelClass::OwnerControllerEqual);
-        assert_eq!(secondary, None, "no occupation stripe when owner==controller");
+        assert_eq!(
+            secondary, None,
+            "no occupation stripe when owner==controller"
+        );
         // BYTE-WISE equality: States fill == political primary owner colour.
-        assert_eq!(admin[&10].fill_rgba, primary, "states fill == political owner colour");
+        assert_eq!(
+            admin[&10].fill_rgba, primary,
+            "states fill == political owner colour"
+        );
         assert_eq!(admin[&10].fill_rgba, Some([10, 20, 30, 255]));
 
         // Unowned state 20 -> political NoOwner (no colour) and States fill omits
         // it (fail closed) — same absent form.
-        let (class20, primary20, _) =
-            political_texel_colors(2000, &defs, &p2s, &states, &owner_by_state, &controls, &colors)
-                .expect("political texel");
+        let (class20, primary20, _) = political_texel_colors(
+            2000,
+            &defs,
+            &p2s,
+            &states,
+            &owner_by_state,
+            &controls,
+            &colors,
+        )
+        .expect("political texel");
         assert_eq!(class20, PoliticalColorTexelClass::NoOwner);
         assert_eq!(primary20, None, "political emits no owner colour");
-        assert!(!admin.contains_key(&20), "states fill omits the unowned state");
+        assert!(
+            !admin.contains_key(&20),
+            "states fill omits the unowned state"
+        );
     }
 
     // A 4x2 raster: left half province 1 (state 10), right half province 2
@@ -907,7 +930,11 @@ ideologies = {
         let owners = BTreeMap::from([(10u32, "GER".to_string()), (99u32, "FRA".to_string())]);
         let fills = players_fill(&owners, &players, &colors, &d);
         assert_eq!(fills[&10].fill_rgba, Some([10, 20, 30, 255]), "player full");
-        assert_eq!(fills[&99].fill_rgba, Some([40, 50, 60, 38]), "non-player fade");
+        assert_eq!(
+            fills[&99].fill_rgba,
+            Some([40, 50, 60, 38]),
+            "non-player fade"
+        );
     }
 
     // ===================================================================
@@ -916,7 +943,9 @@ ideologies = {
     #[test]
     fn gate_vanilla_admin_defines_and_ideology_colors() {
         let Ok(game_dir) = std::env::var("BATTLE_PLAN_GAME_DIR").or_else(|_| std::env::var("HOI4_GAME_DIR")) else {
-            eprintln!("gate_vanilla_admin_defines_and_ideology_colors: BATTLE_PLAN_GAME_DIR unset; skipped");
+            eprintln!(
+                "gate_vanilla_admin_defines_and_ideology_colors: BATTLE_PLAN_GAME_DIR unset; skipped"
+            );
             return;
         };
         let resolver = crate::mod_resolver::GameFileResolver::vanilla(game_dir).expect("resolver");

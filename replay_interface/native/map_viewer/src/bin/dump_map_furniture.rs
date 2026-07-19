@@ -524,7 +524,15 @@ fn render_region(
     Ok(in_view)
 }
 
-fn fill_square(pixels: &mut [[u8; 3]], w: usize, h: usize, cx: i32, cy: i32, r: i32, color: [u8; 3]) {
+fn fill_square(
+    pixels: &mut [[u8; 3]],
+    w: usize,
+    h: usize,
+    cx: i32,
+    cy: i32,
+    r: i32,
+    color: [u8; 3],
+) {
     for dy in -r..=r {
         for dx in -r..=r {
             put(pixels, w, h, cx + dx, cy + dy, color);
@@ -532,7 +540,15 @@ fn fill_square(pixels: &mut [[u8; 3]], w: usize, h: usize, cx: i32, cy: i32, r: 
     }
 }
 
-fn fill_diamond(pixels: &mut [[u8; 3]], w: usize, h: usize, cx: i32, cy: i32, r: i32, color: [u8; 3]) {
+fn fill_diamond(
+    pixels: &mut [[u8; 3]],
+    w: usize,
+    h: usize,
+    cx: i32,
+    cy: i32,
+    r: i32,
+    color: [u8; 3],
+) {
     for dy in -r..=r {
         for dx in -r..=r {
             if dx.abs() + dy.abs() <= r {

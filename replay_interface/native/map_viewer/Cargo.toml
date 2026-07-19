@@ -12,6 +12,8 @@ serde_json = "1"
 # scrubbable WorldTimeline typed views instead of the static history parse.
 # Acyclic (replay_core depends only on serde/serde_json/snapshot).
 replay_core = { path = "../replay_core" }
+snapshot = { package = "portable_replay_format", path = "../../../portable_replay/native/snapshot" }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 winapi = { version = "0.3.9", features = [
     "d3d11",
     "d3dcommon",

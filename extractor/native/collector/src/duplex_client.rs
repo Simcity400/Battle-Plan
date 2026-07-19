@@ -45,6 +45,7 @@
 
 #![allow(dead_code)]
 
+use sha2::{Digest, Sha256};
 use std::cell::Cell;
 use std::io;
 use std::rc::Rc;
@@ -59,14 +60,42 @@ use compact_contract::control_transport::payloads::{
     FirstCompactFrameAckV1, HeartbeatProofV1, PayloadError, HEARTBEAT_STATE_PAUSED_FOR_CONTROL,
     HEARTBEAT_STATE_PRODUCING, HEARTBEAT_STATE_WAITING_FOR_WORLD,
 };
+use compact_contract::control_transport::{
+    ControlCapabilities, ControlChannel, ControlError, ControlIo, EndpointRole, MessageKind,
+    SessionCapability, CONTROL_VERSION,
+};
+use compact_contract::early_render_content_manifest::{
+    decode_early_render_content_manifest_chunk, decode_early_render_content_manifest_commit,
+    EarlyRenderContentManifestCodecError,
+};
+use compact_contract::early_render_control::{
+    canonical_early_diagnostic_liveness_response_binding_bytes,
+    decode_early_commit_capture_receipt, decode_early_diagnostic_end,
+    decode_early_diagnostic_liveness_request, decode_early_render_launch_bind,
+    encode_early_diagnostic_liveness_response, encode_early_first_game_d3d,
+    encode_early_hook_ready, EarlyCommitCaptureReceiptV1, EarlyDiagnosticLivenessResponseV1,
+    EarlyFirstGameD3dV1, EarlyHookReadyV1, EarlyRenderCodecError,
+    EARLY_DIAGNOSTIC_END_RECORDER_CANCEL, EARLY_DIAGNOSTIC_MIN_HOLD_MS,
+};
+use compact_contract::early_render_runtime_dlc::{
+    encode_early_render_runtime_dlc_roster, EarlyRenderRuntimeDlcCodecError,
+    EarlyRenderRuntimeDlcRosterV1,
+};
+use compact_contract::early_render_vfs::{
+    canonical_early_render_vfs_index_bytes, decode_early_render_vfs_index_chunk,
+    decode_early_render_vfs_index_commit, EarlyRenderVfsCodecError, EarlyRenderVfsWinnerRowV1,
+};
+use compact_contract::early_render_vfs_payload::{
+    decode_early_render_vfs_payload_chunk, decode_early_render_vfs_payload_commit,
+    encode_early_render_vfs_payload_request, EarlyRenderVfsPayloadCodecError,
+    EarlyRenderVfsPayloadRequestV1,
+};
 use compact_contract::identity_control::{
     decode_identity_failure_ack, encode_identity_failure, IdentityControlCodecError,
     IdentityFailureAckV1, IdentityFailureV1,
 };
-use compact_contract::sink_failure::{encode_sink_failure, SinkFailureKind, SinkFailureReport, SinkStatusError};
-use compact_contract::control_transport::{
-    ControlCapabilities, ControlChannel, ControlError, ControlIo, EndpointRole, MessageKind,
-    SessionCapability, CONTROL_VERSION,
+use compact_contract::sink_failure::{
+    encode_sink_failure, SinkFailureKind, SinkFailureReport, SinkStatusError,
 };
 
 /// ACTIVATION FREEZE: the duplex control client is built and unit-tested but
@@ -82,6 +111,115 @@ pub const DUPLEX_CONTROL_CLIENT_ENABLED: bool = false;
 /// dormancy is enforced by construction.
 pub struct DuplexClientProductPermit {
     _private: (),
+}
+
+/// Move-only permit for the exact suspended-launch rendering path. It cannot
+/// construct the ordinary auto-attach client and is minted only together with
+/// a fully process/manifest-bound authority record.
+pub struct EarlyRenderDuplexProductPermit {
+    _private: (),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EarlyRenderControlBinding {
+    pub process_id: u32,
+    pub process_start_nonce: u64,
+    pub timeout_ms: u32,
+    pub launch_manifest_sha256: [u8; 32],
+    pub effective_vfs_manifest_sha256: [u8; 32],
+    pub effective_vfs_index_sha256: [u8; 32],
+    pub effective_vfs_index_row_count: u32,
+    pub effective_vfs_index_chunk_count: u32,
+    pub content_manifest_bytes_sha256: [u8; 32],
+    pub content_manifest_byte_count: u64,
+    pub content_manifest_chunk_count: u32,
+    pub session_id: [u8; 16],
+    pub launch_bind_sha256: [u8; 32],
+    pub executable_sha256: [u8; 32],
+    pub collector_sha256: [u8; 32],
+}
+
+/// Collector-side end receipt for the non-promotable staged-hook diagnostic.
+/// It is produced only after an authenticated EDRQ/EDRP/EDND exchange proving
+/// a fresh readiness sample and a recorder-owned hold. EOF is never proof, and
+/// no COMMIT or replay-producing state is admitted on this path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthenticatedEarlyRenderDiagnosticHoldProof {
+    pub process_id: u32,
+    pub process_start_nonce: u64,
+    pub session_id: [u8; 16],
+    pub launch_manifest_sha256: [u8; 32],
+    pub hook_epoch_nonce: u64,
+    pub staged_hook_generation: u64,
+    pub staged_hook_group_mask: u64,
+    pub staged_hook_set_sha256: [u8; 32],
+    pub observed_hold_ms: u64,
+    pub sampled_qpc: u64,
+    pub request_sha256: [u8; 32],
+    pub response_sha256: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DiagnosticReadinessSample {
+    process_id: u32,
+    process_start_nonce: u64,
+    hook_epoch_nonce: u64,
+    d3d_device_created_qpc: u64,
+    first_creation_sequence: u64,
+    qpc_frequency_hz: u64,
+    staged_hook_generation: u64,
+    staged_hook_count: u32,
+    diagnostic_stage_probe: bool,
+    staged_hook_group_mask: u64,
+    staged_hook_set_sha256: [u8; 32],
+    game_device_ptr: u64,
+    immediate_context_ptr: u64,
+    sampled_qpc: u64,
+}
+
+fn decode_canonical_lower_sha256(value: &str) -> Result<[u8; 32], ClientError> {
+    if value.len() != 64 {
+        return Err(ClientError::EarlyRenderBinding);
+    }
+    let mut out = [0u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let digit = |byte: u8| match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            _ => None,
+        };
+        out[index] = digit(pair[0])
+            .zip(digit(pair[1]))
+            .map(|(high, low)| (high << 4) | low)
+            .ok_or(ClientError::EarlyRenderBinding)?;
+    }
+    Ok(out)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmittedEarlyRenderContentManifest {
+    pub bytes_sha256: [u8; 32],
+    pub manifest: portable_content_manifest::ContentManifest,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmittedEarlyRenderVfsIndex {
+    pub process_start_nonce: u64,
+    pub effective_vfs_manifest_sha256: [u8; 32],
+    pub ordered_rows_sha256: [u8; 32],
+    pub ordered_rows: Vec<EarlyRenderVfsWinnerRowV1>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmittedEarlyRenderVfsPayload {
+    pub winner: EarlyRenderVfsWinnerRowV1,
+    pub payload_offset: u64,
+    pub payload_range_sha256: [u8; 32],
+    pub bytes: Vec<u8>,
+}
+
+pub fn early_render_duplex_product_permit() -> EarlyRenderDuplexProductPermit {
+    EarlyRenderDuplexProductPermit { _private: () }
 }
 
 /// The ONLY production constructor for [`DuplexClientProductPermit`]: fails
@@ -149,7 +287,9 @@ impl MonotonicDeadline {
         if now >= self.0 {
             None
         } else {
-            Some(Duration::from_nanos((self.0 .0 - now.0).min(u64::MAX as u128) as u64))
+            Some(Duration::from_nanos(
+                (self.0 .0 - now.0).min(u64::MAX as u128) as u64,
+            ))
         }
     }
 
@@ -393,7 +533,10 @@ pub enum ClientPhase {
 /// Events surfaced by [`CollectorControlClient::serve_next`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClientEvent {
-    HeartbeatServed { host_challenge_counter: u64, reported_state: u16 },
+    HeartbeatServed {
+        host_challenge_counter: u64,
+        reported_state: u16,
+    },
     FirstFrameAcked(FirstCompactFrameAckV1),
     /// The recorder durably recorded (or rejected) a previously-sent
     /// `IdentityFailure` and returned its `IdentityFailureAck` (CAMPAIGN_IDENTITY).
@@ -421,6 +564,19 @@ pub enum ClientError {
     SinkStatus(SinkStatusError),
     /// A campaign-identity CIF1/CIA1 payload failed the shared codec.
     IdentityCodec(IdentityControlCodecError),
+    EarlyRenderCodec(EarlyRenderCodecError),
+    EarlyRenderContentManifestCodec(EarlyRenderContentManifestCodecError),
+    EarlyRenderVfsCodec(EarlyRenderVfsCodecError),
+    EarlyRenderVfsPayloadCodec(EarlyRenderVfsPayloadCodecError),
+    EarlyRenderRuntimeDlcCodec(EarlyRenderRuntimeDlcCodecError),
+    EarlyRenderBinding,
+    EarlyRenderDiagnosticHoldTooShort {
+        observed_ms: u64,
+        required_ms: u64,
+    },
+    /// Deliberate terminal diagnostic outcome. It remains an error to every
+    /// production transaction caller so it cannot open COMMIT/frame/replay.
+    EarlyRenderDiagnosticHoldCompleted(AuthenticatedEarlyRenderDiagnosticHoldProof),
     /// A recorder->collector kind valid on the wire but not implemented by the
     /// v1 client (rollover/Stage-B belong to their own lanes), or a kind no
     /// production endpoint ever sends (e.g. `RecorderHello`): fail closed.
@@ -456,6 +612,36 @@ impl From<IdentityControlCodecError> for ClientError {
     }
 }
 
+impl From<EarlyRenderCodecError> for ClientError {
+    fn from(err: EarlyRenderCodecError) -> Self {
+        ClientError::EarlyRenderCodec(err)
+    }
+}
+
+impl From<EarlyRenderContentManifestCodecError> for ClientError {
+    fn from(err: EarlyRenderContentManifestCodecError) -> Self {
+        ClientError::EarlyRenderContentManifestCodec(err)
+    }
+}
+
+impl From<EarlyRenderVfsCodecError> for ClientError {
+    fn from(err: EarlyRenderVfsCodecError) -> Self {
+        ClientError::EarlyRenderVfsCodec(err)
+    }
+}
+
+impl From<EarlyRenderVfsPayloadCodecError> for ClientError {
+    fn from(err: EarlyRenderVfsPayloadCodecError) -> Self {
+        ClientError::EarlyRenderVfsPayloadCodec(err)
+    }
+}
+
+impl From<EarlyRenderRuntimeDlcCodecError> for ClientError {
+    fn from(err: EarlyRenderRuntimeDlcCodecError) -> Self {
+        ClientError::EarlyRenderRuntimeDlcCodec(err)
+    }
+}
+
 /// The collector's H4CT control-pipe client over the shared codec.
 pub struct CollectorControlClient<T: DeadlineControlIo, C: MonotonicClock> {
     channel: ControlChannel<DeadlineBridge<T>>,
@@ -467,6 +653,14 @@ pub struct CollectorControlClient<T: DeadlineControlIo, C: MonotonicClock> {
     first_frame_acked: bool,
     last_h4cr_sequence: u64,
     reported_state: ProductionState,
+    early_render_binding: Option<EarlyRenderControlBinding>,
+    early_render_content_manifest_admitted: bool,
+    early_render_vfs_admitted: bool,
+    next_early_render_vfs_payload_request_id: u64,
+    early_render_first_game_d3d_sent: bool,
+    early_render_diagnostic_stage_probe: bool,
+    early_render_runtime_dlc_sent: bool,
+    early_render_capture_committed: bool,
 }
 
 impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
@@ -486,6 +680,28 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
         identity: CollectorIdentity,
         policy: DuplexClientPolicy,
     ) -> Self {
+        Self::new_inner(io, clock, session, identity, policy, None)
+    }
+
+    pub fn new_early_render(
+        _permit: &EarlyRenderDuplexProductPermit,
+        io: T,
+        clock: C,
+        session: SessionCapability,
+        identity: CollectorIdentity,
+        policy: DuplexClientPolicy,
+    ) -> Self {
+        Self::new_inner(io, clock, session, identity, policy, None)
+    }
+
+    fn new_inner(
+        io: T,
+        clock: C,
+        session: SessionCapability,
+        identity: CollectorIdentity,
+        policy: DuplexClientPolicy,
+        early_render_binding: Option<EarlyRenderControlBinding>,
+    ) -> Self {
         // A placeholder deadline; every real operation overwrites the cell
         // immediately before it drives the channel.
         let deadline = Rc::new(Cell::new(MonotonicDeadline(clock.now())));
@@ -503,6 +719,14 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
             first_frame_acked: false,
             last_h4cr_sequence: 0,
             reported_state: ProductionState::WaitingForWorld,
+            early_render_binding,
+            early_render_content_manifest_admitted: false,
+            early_render_vfs_admitted: false,
+            next_early_render_vfs_payload_request_id: 1,
+            early_render_first_game_d3d_sent: false,
+            early_render_diagnostic_stage_probe: false,
+            early_render_runtime_dlc_sent: false,
+            early_render_capture_committed: false,
         }
     }
 
@@ -595,6 +819,807 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
         self.send_frame(MessageKind::CollectorHello, &payload, handshake_deadline)?;
         self.phase = ClientPhase::Attached;
         Ok(())
+    }
+
+    /// Exact early-launch handshake. The distinct move-only permit prevents
+    /// enabling the dormant ordinary auto-attach client as a side effect.
+    pub fn perform_early_render_handshake(
+        &mut self,
+        _permit: &EarlyRenderDuplexProductPermit,
+        handshake_deadline: MonotonicDeadline,
+    ) -> Result<(), ClientError> {
+        if self.phase != ClientPhase::Handshaking || self.early_render_binding.is_some() {
+            return Err(ClientError::NotUsable);
+        }
+        let payload = encode_collector_hello_with_capabilities(
+            &CollectorHelloV1 {
+                pid: self.identity.pid,
+                creation_filetime: self.identity.creation_filetime,
+                h4cr_version: self.identity.h4cr_version,
+                control_version: CONTROL_VERSION,
+                dll_sha256: self.identity.dll_sha256,
+                challenge: self.identity.challenge,
+            },
+            ControlCapabilities::early_render_duplex_v1().bits(),
+        );
+        self.send_frame(MessageKind::CollectorHello, &payload, handshake_deadline)?;
+        self.phase = ClientPhase::Attached;
+        Ok(())
+    }
+
+    /// Receives the recorder-authored launch/VFS authority immediately after
+    /// capability admission and before hook installation or READY. The binding
+    /// is accepted only for this process and this directly-hashed DLL.
+    pub fn receive_early_render_launch_bind(
+        &mut self,
+        deadline: MonotonicDeadline,
+    ) -> Result<EarlyRenderControlBinding, ClientError> {
+        if self.phase != ClientPhase::Attached || self.early_render_binding.is_some() {
+            return Err(ClientError::NotUsable);
+        }
+        let frame = self.recv_frame(deadline)?.ok_or(ClientError::NotUsable)?;
+        if frame.kind != MessageKind::EarlyRenderLaunchBind {
+            return self.fail(ClientError::Unsupported(frame.kind));
+        }
+        let wire = decode_early_render_launch_bind(&frame.payload)?;
+        if wire.process_id != self.identity.pid
+            || wire.process_start_nonce != self.identity.creation_filetime
+            || wire.collector_sha256 != self.identity.dll_sha256
+        {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+        let binding = EarlyRenderControlBinding {
+            process_id: wire.process_id,
+            process_start_nonce: wire.process_start_nonce,
+            timeout_ms: wire.timeout_ms,
+            launch_manifest_sha256: wire.launch_manifest_sha256,
+            effective_vfs_manifest_sha256: wire.effective_vfs_manifest_sha256,
+            effective_vfs_index_sha256: wire.effective_vfs_index_sha256,
+            effective_vfs_index_row_count: wire.effective_vfs_index_row_count,
+            effective_vfs_index_chunk_count: wire.effective_vfs_index_chunk_count,
+            content_manifest_bytes_sha256: wire.content_manifest_bytes_sha256,
+            content_manifest_byte_count: wire.content_manifest_byte_count,
+            content_manifest_chunk_count: wire.content_manifest_chunk_count,
+            session_id: *frame.session_id.as_bytes(),
+            launch_bind_sha256: Sha256::digest(&frame.payload).into(),
+            executable_sha256: wire.executable_sha256,
+            collector_sha256: wire.collector_sha256,
+        };
+        self.early_render_binding = Some(binding.clone());
+        Ok(binding)
+    }
+
+    /// Receives and validates the canonical path-redacted ContentManifest
+    /// metadata envelope before the winner index. The envelope must contain no
+    /// predeclared used-content rows; strict runtime admission derives those
+    /// solely from exact observed shader/buffer/texture payload sources.
+    pub fn receive_early_render_content_manifest(
+        &mut self,
+        _permit: &EarlyRenderDuplexProductPermit,
+        binding: &EarlyRenderControlBinding,
+        deadline: MonotonicDeadline,
+    ) -> Result<AdmittedEarlyRenderContentManifest, ClientError> {
+        if self.phase != ClientPhase::Attached
+            || self.early_render_binding.as_ref() != Some(binding)
+            || self.early_render_content_manifest_admitted
+            || self.early_render_vfs_admitted
+        {
+            return Err(ClientError::NotUsable);
+        }
+        let capacity = usize::try_from(binding.content_manifest_byte_count)
+            .map_err(|_| ClientError::EarlyRenderBinding)?;
+        let mut bytes = Vec::with_capacity(capacity);
+        for expected_chunk in 0..binding.content_manifest_chunk_count {
+            let frame = self.recv_frame(deadline)?.ok_or(ClientError::NotUsable)?;
+            if frame.kind != MessageKind::EarlyRenderContentManifestChunk {
+                return self.fail(ClientError::Unsupported(frame.kind));
+            }
+            let chunk = match decode_early_render_content_manifest_chunk(&frame.payload) {
+                Ok(value) => value,
+                Err(error) => {
+                    return self.fail(ClientError::EarlyRenderContentManifestCodec(error));
+                }
+            };
+            if chunk.process_id != binding.process_id
+                || chunk.process_start_nonce != binding.process_start_nonce
+                || chunk.session_id != binding.session_id
+                || chunk.launch_bind_sha256 != binding.launch_bind_sha256
+                || chunk.effective_vfs_manifest_sha256 != binding.effective_vfs_manifest_sha256
+                || chunk.effective_vfs_index_sha256 != binding.effective_vfs_index_sha256
+                || chunk.content_manifest_bytes_sha256 != binding.content_manifest_bytes_sha256
+                || chunk.chunk_index != expected_chunk
+                || chunk.chunk_count != binding.content_manifest_chunk_count
+                || chunk.byte_offset != bytes.len() as u64
+                || chunk.total_bytes != binding.content_manifest_byte_count
+            {
+                return self.fail(ClientError::EarlyRenderBinding);
+            }
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        if bytes.len() != capacity {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+        let frame = self.recv_frame(deadline)?.ok_or(ClientError::NotUsable)?;
+        if frame.kind != MessageKind::EarlyRenderContentManifestCommit {
+            return self.fail(ClientError::Unsupported(frame.kind));
+        }
+        let commit = match decode_early_render_content_manifest_commit(&frame.payload) {
+            Ok(value) => value,
+            Err(error) => {
+                return self.fail(ClientError::EarlyRenderContentManifestCodec(error));
+            }
+        };
+        let observed_sha256: [u8; 32] = Sha256::digest(&bytes).into();
+        if commit.process_id != binding.process_id
+            || commit.process_start_nonce != binding.process_start_nonce
+            || commit.session_id != binding.session_id
+            || commit.launch_bind_sha256 != binding.launch_bind_sha256
+            || commit.effective_vfs_manifest_sha256 != binding.effective_vfs_manifest_sha256
+            || commit.effective_vfs_index_sha256 != binding.effective_vfs_index_sha256
+            || commit.content_manifest_bytes_sha256 != binding.content_manifest_bytes_sha256
+            || commit.chunk_count != binding.content_manifest_chunk_count
+            || commit.total_bytes != binding.content_manifest_byte_count
+            || observed_sha256 != binding.content_manifest_bytes_sha256
+        {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+        let manifest = match portable_content_manifest::ContentManifest::decode_json(&bytes) {
+            Ok(value) => value,
+            Err(_) => return self.fail(ClientError::EarlyRenderBinding),
+        };
+        let vfs_sha256 = binding
+            .effective_vfs_manifest_sha256
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let executable_sha256 = binding
+            .executable_sha256
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        if manifest.manifest_digest_sha256.is_none()
+            || manifest.encode_json().ok().as_deref() != Some(bytes.as_slice())
+            || manifest.source_game.executable_sha256 != executable_sha256
+            || manifest.effective_vfs_manifest_sha256 != vfs_sha256
+            || !manifest.required_content.is_empty()
+            || manifest
+                .ordered_layers
+                .iter()
+                .any(|layer| layer.required_for_playback)
+            || manifest
+                .dlc_selection
+                .iter()
+                .any(|dlc| dlc.required_for_playback)
+        {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+        self.early_render_content_manifest_admitted = true;
+        Ok(AdmittedEarlyRenderContentManifest {
+            bytes_sha256: observed_sha256,
+            manifest,
+        })
+    }
+
+    /// Receive and fully authenticate the recorder-authored effective-VFS
+    /// winner index before READY. H4CT framing already binds direction and
+    /// sequence; each typed chunk additionally repeats the session, process
+    /// nonce, BIND digest, complete-index digest, and exact global row range.
+    pub fn receive_early_render_vfs_index(
+        &mut self,
+        _permit: &EarlyRenderDuplexProductPermit,
+        binding: &EarlyRenderControlBinding,
+        deadline: MonotonicDeadline,
+    ) -> Result<AdmittedEarlyRenderVfsIndex, ClientError> {
+        if self.phase != ClientPhase::Attached
+            || self.early_render_binding.as_ref() != Some(binding)
+            || !self.early_render_content_manifest_admitted
+            || self.early_render_vfs_admitted
+        {
+            return Err(ClientError::NotUsable);
+        }
+        let mut rows = Vec::with_capacity(binding.effective_vfs_index_row_count as usize);
+        for expected_chunk in 0..binding.effective_vfs_index_chunk_count {
+            let frame = self.recv_frame(deadline)?.ok_or(ClientError::NotUsable)?;
+            if frame.kind != MessageKind::EarlyRenderVfsIndexChunk {
+                return self.fail(ClientError::Unsupported(frame.kind));
+            }
+            let chunk = match decode_early_render_vfs_index_chunk(&frame.payload) {
+                Ok(value) => value,
+                Err(error) => return self.fail(ClientError::EarlyRenderVfsCodec(error)),
+            };
+            let expected_first =
+                u32::try_from(rows.len()).map_err(|_| ClientError::EarlyRenderBinding)?;
+            if chunk.process_id != binding.process_id
+                || chunk.process_start_nonce != binding.process_start_nonce
+                || chunk.session_id != binding.session_id
+                || chunk.launch_bind_sha256 != binding.launch_bind_sha256
+                || chunk.index_sha256 != binding.effective_vfs_index_sha256
+                || chunk.chunk_index != expected_chunk
+                || chunk.chunk_count != binding.effective_vfs_index_chunk_count
+                || chunk.first_row_index != expected_first
+                || chunk.total_row_count != binding.effective_vfs_index_row_count
+            {
+                return self.fail(ClientError::EarlyRenderBinding);
+            }
+            if rows
+                .last()
+                .is_some_and(|prior: &EarlyRenderVfsWinnerRowV1| {
+                    prior.normalized_game_relative_path
+                        >= chunk.rows[0].normalized_game_relative_path
+                })
+            {
+                return self.fail(ClientError::EarlyRenderBinding);
+            }
+            rows.extend(chunk.rows);
+        }
+        if rows.len() != binding.effective_vfs_index_row_count as usize {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+        let frame = self.recv_frame(deadline)?.ok_or(ClientError::NotUsable)?;
+        if frame.kind != MessageKind::EarlyRenderVfsIndexCommit {
+            return self.fail(ClientError::Unsupported(frame.kind));
+        }
+        let commit = match decode_early_render_vfs_index_commit(&frame.payload) {
+            Ok(value) => value,
+            Err(error) => return self.fail(ClientError::EarlyRenderVfsCodec(error)),
+        };
+        if commit.process_id != binding.process_id
+            || commit.process_start_nonce != binding.process_start_nonce
+            || commit.session_id != binding.session_id
+            || commit.launch_bind_sha256 != binding.launch_bind_sha256
+            || commit.index_sha256 != binding.effective_vfs_index_sha256
+            || commit.chunk_count != binding.effective_vfs_index_chunk_count
+            || commit.total_row_count != binding.effective_vfs_index_row_count
+        {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+        let canonical = match canonical_early_render_vfs_index_bytes(&rows) {
+            Ok(value) => value,
+            Err(error) => return self.fail(ClientError::EarlyRenderVfsCodec(error)),
+        };
+        let observed_sha256: [u8; 32] = Sha256::digest(canonical).into();
+        if observed_sha256 != binding.effective_vfs_index_sha256 {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+        self.early_render_vfs_admitted = true;
+        Ok(AdmittedEarlyRenderVfsIndex {
+            process_start_nonce: binding.process_start_nonce,
+            effective_vfs_manifest_sha256: binding.effective_vfs_manifest_sha256,
+            ordered_rows_sha256: observed_sha256,
+            ordered_rows: rows,
+        })
+    }
+
+    /// Request one exact decompressed payload range after the winner index has
+    /// been admitted. The caller supplies the expected range SHA-256; full-file
+    /// requests use the winner payload digest. No response is exposed until all
+    /// chunks and the typed COMMIT agree and the reconstructed bytes hash exactly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn request_early_render_vfs_payload_range(
+        &mut self,
+        _permit: &EarlyRenderDuplexProductPermit,
+        binding: &EarlyRenderControlBinding,
+        index: &AdmittedEarlyRenderVfsIndex,
+        winner: &EarlyRenderVfsWinnerRowV1,
+        payload_offset: u64,
+        payload_count: u64,
+        expected_payload_range_sha256: [u8; 32],
+        deadline: MonotonicDeadline,
+    ) -> Result<AdmittedEarlyRenderVfsPayload, ClientError> {
+        if self.phase != ClientPhase::Attached
+            || self.early_render_binding.as_ref() != Some(binding)
+            || !self.early_render_vfs_admitted
+            || !self.early_render_capture_committed
+            || index.process_start_nonce != binding.process_start_nonce
+            || index.effective_vfs_manifest_sha256 != binding.effective_vfs_manifest_sha256
+            || index.ordered_rows_sha256 != binding.effective_vfs_index_sha256
+            || index
+                .ordered_rows
+                .binary_search_by(|row| {
+                    row.normalized_game_relative_path
+                        .cmp(&winner.normalized_game_relative_path)
+                })
+                .ok()
+                .and_then(|position| index.ordered_rows.get(position))
+                != Some(winner)
+        {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+        let request_id = self.next_early_render_vfs_payload_request_id;
+        self.next_early_render_vfs_payload_request_id = self
+            .next_early_render_vfs_payload_request_id
+            .checked_add(1)
+            .ok_or(ClientError::EarlyRenderBinding)?;
+        let request = EarlyRenderVfsPayloadRequestV1 {
+            process_id: binding.process_id,
+            process_start_nonce: binding.process_start_nonce,
+            session_id: binding.session_id,
+            launch_bind_sha256: binding.launch_bind_sha256,
+            effective_vfs_manifest_sha256: binding.effective_vfs_manifest_sha256,
+            effective_vfs_index_sha256: binding.effective_vfs_index_sha256,
+            request_id,
+            payload_offset,
+            payload_count,
+            expected_payload_range_sha256,
+            winner: winner.clone(),
+        };
+        let payload = encode_early_render_vfs_payload_request(&request)?;
+        self.send_frame(
+            MessageKind::EarlyRenderVfsPayloadRequest,
+            &payload,
+            deadline,
+        )?;
+
+        let capacity =
+            usize::try_from(payload_count).map_err(|_| ClientError::EarlyRenderBinding)?;
+        let mut bytes = Vec::with_capacity(capacity);
+        let mut expected_chunk_count = None;
+        let mut expected_chunk_index = 0u32;
+        loop {
+            let frame = self.recv_frame(deadline)?.ok_or(ClientError::NotUsable)?;
+            if frame.kind != MessageKind::EarlyRenderVfsPayloadChunk {
+                return self.fail(ClientError::Unsupported(frame.kind));
+            }
+            let chunk = match decode_early_render_vfs_payload_chunk(&frame.payload) {
+                Ok(value) => value,
+                Err(error) => {
+                    return self.fail(ClientError::EarlyRenderVfsPayloadCodec(error));
+                }
+            };
+            let expected_offset = bytes.len() as u64;
+            if chunk.process_id != binding.process_id
+                || chunk.process_start_nonce != binding.process_start_nonce
+                || chunk.session_id != binding.session_id
+                || chunk.launch_bind_sha256 != binding.launch_bind_sha256
+                || chunk.effective_vfs_manifest_sha256 != binding.effective_vfs_manifest_sha256
+                || chunk.effective_vfs_index_sha256 != binding.effective_vfs_index_sha256
+                || chunk.request_id != request_id
+                || chunk.payload_offset != payload_offset
+                || chunk.payload_count != payload_count
+                || chunk.expected_payload_range_sha256 != expected_payload_range_sha256
+                || chunk.chunk_index != expected_chunk_index
+                || chunk.chunk_offset != expected_offset
+                || expected_chunk_count.is_some_and(|count| count != chunk.chunk_count)
+            {
+                return self.fail(ClientError::EarlyRenderBinding);
+            }
+            expected_chunk_count = Some(chunk.chunk_count);
+            expected_chunk_index += 1;
+            bytes.extend_from_slice(&chunk.bytes);
+            if expected_chunk_index == chunk.chunk_count {
+                break;
+            }
+        }
+        if bytes.len() != capacity {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+        let frame = self.recv_frame(deadline)?.ok_or(ClientError::NotUsable)?;
+        if frame.kind != MessageKind::EarlyRenderVfsPayloadCommit {
+            return self.fail(ClientError::Unsupported(frame.kind));
+        }
+        let commit = match decode_early_render_vfs_payload_commit(&frame.payload) {
+            Ok(value) => value,
+            Err(error) => return self.fail(ClientError::EarlyRenderVfsPayloadCodec(error)),
+        };
+        let observed_sha256: [u8; 32] = Sha256::digest(&bytes).into();
+        if commit.process_id != binding.process_id
+            || commit.process_start_nonce != binding.process_start_nonce
+            || commit.session_id != binding.session_id
+            || commit.launch_bind_sha256 != binding.launch_bind_sha256
+            || commit.effective_vfs_manifest_sha256 != binding.effective_vfs_manifest_sha256
+            || commit.effective_vfs_index_sha256 != binding.effective_vfs_index_sha256
+            || commit.request_id != request_id
+            || commit.payload_offset != payload_offset
+            || commit.payload_count != payload_count
+            || commit.payload_range_sha256 != expected_payload_range_sha256
+            || commit.payload_range_sha256 != observed_sha256
+            || Some(commit.chunk_count) != expected_chunk_count
+        {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+        Ok(AdmittedEarlyRenderVfsPayload {
+            winner: winner.clone(),
+            payload_offset,
+            payload_range_sha256: observed_sha256,
+            bytes,
+        })
+    }
+
+    pub fn send_early_render_ready(
+        &mut self,
+        proof: &EarlyHookReadyV1,
+        deadline: MonotonicDeadline,
+    ) -> Result<(), ClientError> {
+        let binding = self
+            .early_render_binding
+            .as_ref()
+            .ok_or(ClientError::EarlyRenderBinding)?;
+        if !self.early_render_vfs_admitted
+            || proof.effective_vfs_manifest_sha256 != binding.effective_vfs_manifest_sha256
+            || proof.effective_vfs_index_sha256 != binding.effective_vfs_index_sha256
+            || proof.effective_vfs_index_row_count != binding.effective_vfs_index_row_count
+            || proof.effective_vfs_index_chunk_count != binding.effective_vfs_index_chunk_count
+            || proof.content_manifest_bytes_sha256 != binding.content_manifest_bytes_sha256
+            || proof.content_manifest_byte_count != binding.content_manifest_byte_count
+            || proof.content_manifest_chunk_count != binding.content_manifest_chunk_count
+        {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+        self.validate_early_binding(
+            proof.process_id,
+            proof.process_start_nonce,
+            proof.hook_epoch_nonce,
+            Some(&proof.launch_manifest_sha256),
+        )?;
+        let payload = encode_early_hook_ready(proof)?;
+        self.send_frame(MessageKind::EarlyRenderReady, &payload, deadline)
+    }
+
+    pub fn send_early_render_first_game_d3d(
+        &mut self,
+        proof: &EarlyFirstGameD3dV1,
+        deadline: MonotonicDeadline,
+    ) -> Result<(), ClientError> {
+        if self.early_render_first_game_d3d_sent || self.early_render_runtime_dlc_sent {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+        self.validate_early_binding(
+            proof.process_id,
+            proof.process_start_nonce,
+            proof.hook_epoch_nonce,
+            Some(&proof.launch_manifest_sha256),
+        )?;
+        let payload = encode_early_first_game_d3d(proof)?;
+        self.send_frame(MessageKind::EarlyRenderFirstGameD3d, &payload, deadline)?;
+        self.early_render_first_game_d3d_sent = true;
+        self.early_render_diagnostic_stage_probe = proof.diagnostic_stage_probe;
+        Ok(())
+    }
+
+    pub fn send_early_render_runtime_dlc_roster(
+        &mut self,
+        proof: &EarlyRenderRuntimeDlcRosterV1,
+        deadline: MonotonicDeadline,
+    ) -> Result<(), ClientError> {
+        let binding = self
+            .early_render_binding
+            .as_ref()
+            .ok_or(ClientError::EarlyRenderBinding)?;
+        if !self.early_render_first_game_d3d_sent
+            || self.early_render_runtime_dlc_sent
+            || self.early_render_capture_committed
+            || proof.launch_manifest_sha256 != binding.launch_manifest_sha256
+            || proof.effective_vfs_manifest_sha256 != binding.effective_vfs_manifest_sha256
+        {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+        self.validate_early_binding(
+            proof.process_id,
+            proof.process_start_nonce,
+            proof.hook_epoch_nonce,
+            Some(&proof.launch_manifest_sha256),
+        )?;
+        let payload = encode_early_render_runtime_dlc_roster(proof)?;
+        self.send_frame(MessageKind::EarlyRenderRuntimeDlcRoster, &payload, deadline)?;
+        self.early_render_runtime_dlc_sent = true;
+        Ok(())
+    }
+
+    pub fn receive_early_render_commit(
+        &mut self,
+        expected_hook_epoch_nonce: u64,
+        deadline: MonotonicDeadline,
+    ) -> Result<EarlyCommitCaptureReceiptV1, ClientError> {
+        if !self.early_render_first_game_d3d_sent || !self.early_render_runtime_dlc_sent {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+        if self.early_render_diagnostic_stage_probe {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+        let frame = self.recv_frame(deadline)?.ok_or(ClientError::NotUsable)?;
+        if frame.kind != MessageKind::EarlyRenderCommitReceipt {
+            return self.fail(ClientError::Unsupported(frame.kind));
+        }
+        let commit = decode_early_commit_capture_receipt(&frame.payload)?;
+        self.validate_early_binding(
+            commit.process_id,
+            commit.process_start_nonce,
+            commit.hook_epoch_nonce,
+            None,
+        )?;
+        if commit.hook_epoch_nonce != expected_hook_epoch_nonce {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+        self.early_render_capture_committed = true;
+        Ok(commit)
+    }
+
+    fn complete_authenticated_diagnostic_hold<F>(
+        &mut self,
+        binding: &EarlyRenderControlBinding,
+        first: &EarlyFirstGameD3dV1,
+        hold_started: MonotonicInstant,
+        sample_readiness: F,
+    ) -> Result<AuthenticatedEarlyRenderDiagnosticHoldProof, ClientError>
+    where
+        F: FnOnce() -> Result<DiagnosticReadinessSample, ClientError>,
+    {
+        if self.early_render_binding.as_ref() != Some(binding)
+            || !self.early_render_first_game_d3d_sent
+            || !self.early_render_runtime_dlc_sent
+            || !self.early_render_diagnostic_stage_probe
+            || self.early_render_capture_committed
+            || !first.diagnostic_stage_probe
+        {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+        self.validate_early_binding(
+            first.process_id,
+            first.process_start_nonce,
+            first.hook_epoch_nonce,
+            Some(&first.launch_manifest_sha256),
+        )?;
+
+        // After FIRST + runtime roster, the ordinary launch/COMMIT timeout is
+        // intentionally irrelevant. Only the authenticated EDRQ/EDRP/EDND
+        // transcript can end this diagnostic; EOF and every other kind fail.
+        let recorder_owned_end = MonotonicDeadline(MonotonicInstant(u128::MAX));
+        let Some(request_frame) = self.recv_frame(recorder_owned_end)? else {
+            return self.fail(ClientError::NotUsable);
+        };
+        if request_frame.kind != MessageKind::EarlyRenderDiagnosticLivenessRequest {
+            return self.fail(ClientError::Unsupported(request_frame.kind));
+        }
+        let request = match decode_early_diagnostic_liveness_request(&request_frame.payload) {
+            Ok(request) => request,
+            Err(error) => return self.fail(ClientError::EarlyRenderCodec(error)),
+        };
+        let request_matches = request.session_id == binding.session_id
+            && request.launch_manifest_sha256 == binding.launch_manifest_sha256
+            && request.process_id == binding.process_id
+            && request.process_start_nonce == binding.process_start_nonce
+            && request.hook_epoch_nonce == first.hook_epoch_nonce
+            && request.game_device_ordinal == first.game_device_ordinal
+            && request.first_creation_sequence == first.first_creation_sequence
+            && request.creation_qpc == first.creation_qpc
+            && request.staged_hook_generation == first.staged_hook_generation
+            && request.staged_hook_count == first.staged_hook_count
+            && request.staged_hook_group_mask == first.staged_hook_group_mask
+            && request.staged_hook_set_sha256 == first.staged_hook_set_sha256
+            && request.game_device_ptr == first.game_device_ptr
+            && request.immediate_context_ptr == first.immediate_context_ptr
+            && request.required_hold_ms >= EARLY_DIAGNOSTIC_MIN_HOLD_MS;
+        if !request_matches {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+
+        let hold_sampled = self.clock.now();
+        let observed_hold_ms = hold_sampled
+            .0
+            .checked_sub(hold_started.0)
+            .and_then(|elapsed_ns| u64::try_from(elapsed_ns / 1_000_000).ok())
+            .ok_or(ClientError::EarlyRenderBinding)?;
+        if observed_hold_ms < request.required_hold_ms {
+            return self.fail(ClientError::EarlyRenderDiagnosticHoldTooShort {
+                observed_ms: observed_hold_ms,
+                required_ms: request.required_hold_ms,
+            });
+        }
+
+        // This callback must sample the live hook epoch now, after the recorder
+        // has held it for the requested interval. Equality to FIRST is exact.
+        let sample = match sample_readiness() {
+            Ok(sample) => sample,
+            Err(error) => return self.fail(error),
+        };
+        let sample_matches = sample.process_id == request.process_id
+            && sample.process_start_nonce == request.process_start_nonce
+            && sample.hook_epoch_nonce == request.hook_epoch_nonce
+            && sample.d3d_device_created_qpc == request.creation_qpc
+            && sample.first_creation_sequence == request.first_creation_sequence
+            && sample.qpc_frequency_hz != 0
+            && sample.staged_hook_generation == request.staged_hook_generation
+            && sample.staged_hook_count == request.staged_hook_count
+            && sample.diagnostic_stage_probe
+            && sample.staged_hook_group_mask == request.staged_hook_group_mask
+            && sample.staged_hook_set_sha256 == request.staged_hook_set_sha256
+            && sample.game_device_ptr == request.game_device_ptr
+            && sample.immediate_context_ptr == request.immediate_context_ptr
+            && sample.sampled_qpc >= request.creation_qpc;
+        if !sample_matches {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+
+        // EDRQ binds the exact request payload. EDRP binds its exact canonical
+        // 182-byte prefix, excluding only the terminal response hash.
+        let request_sha256 = Sha256::digest(&request_frame.payload).into();
+        let mut response = EarlyDiagnosticLivenessResponseV1 {
+            session_id: request.session_id,
+            process_id: request.process_id,
+            process_start_nonce: request.process_start_nonce,
+            hook_epoch_nonce: request.hook_epoch_nonce,
+            request_nonce: request.request_nonce,
+            request_sha256,
+            sampled_qpc: sample.sampled_qpc,
+            qpc_frequency_hz: sample.qpc_frequency_hz,
+            observed_hold_ms,
+            staged_hook_generation: sample.staged_hook_generation,
+            staged_hook_count: sample.staged_hook_count,
+            staged_hook_group_mask: sample.staged_hook_group_mask,
+            staged_hook_set_sha256: sample.staged_hook_set_sha256,
+            game_device_ptr: sample.game_device_ptr,
+            immediate_context_ptr: sample.immediate_context_ptr,
+            response_sha256: [0; 32],
+        };
+        let response_binding =
+            match canonical_early_diagnostic_liveness_response_binding_bytes(&response) {
+                Ok(binding) => binding,
+                Err(error) => return self.fail(ClientError::EarlyRenderCodec(error)),
+            };
+        response.response_sha256 = Sha256::digest(&response_binding).into();
+        let response_payload = match encode_early_diagnostic_liveness_response(&response) {
+            Ok(payload) => payload,
+            Err(error) => return self.fail(ClientError::EarlyRenderCodec(error)),
+        };
+        self.send_frame(
+            MessageKind::EarlyRenderDiagnosticLivenessResponse,
+            &response_payload,
+            recorder_owned_end,
+        )?;
+
+        let Some(end_frame) = self.recv_frame(recorder_owned_end)? else {
+            return self.fail(ClientError::NotUsable);
+        };
+        if end_frame.kind != MessageKind::EarlyRenderDiagnosticEnd {
+            return self.fail(ClientError::Unsupported(end_frame.kind));
+        }
+        let end = match decode_early_diagnostic_end(&end_frame.payload) {
+            Ok(end) => end,
+            Err(error) => return self.fail(ClientError::EarlyRenderCodec(error)),
+        };
+        if end.session_id != request.session_id
+            || end.process_id != request.process_id
+            || end.process_start_nonce != request.process_start_nonce
+            || end.hook_epoch_nonce != request.hook_epoch_nonce
+            || end.request_nonce != request.request_nonce
+            || end.response_sha256 != response.response_sha256
+            || end.disposition != EARLY_DIAGNOSTIC_END_RECORDER_CANCEL
+        {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+
+        self.phase = ClientPhase::Stopped;
+        Ok(AuthenticatedEarlyRenderDiagnosticHoldProof {
+            process_id: binding.process_id,
+            process_start_nonce: binding.process_start_nonce,
+            session_id: binding.session_id,
+            launch_manifest_sha256: binding.launch_manifest_sha256,
+            hook_epoch_nonce: first.hook_epoch_nonce,
+            staged_hook_generation: first.staged_hook_generation,
+            staged_hook_group_mask: first.staged_hook_group_mask,
+            staged_hook_set_sha256: first.staged_hook_set_sha256,
+            observed_hold_ms,
+            sampled_qpc: sample.sampled_qpc,
+            request_sha256,
+            response_sha256: response.response_sha256,
+        })
+    }
+
+    fn validate_early_binding(
+        &mut self,
+        process_id: u32,
+        process_start_nonce: u64,
+        hook_epoch_nonce: u64,
+        launch_manifest_sha256: Option<&[u8; 32]>,
+    ) -> Result<(), ClientError> {
+        let valid = self.early_render_binding.as_ref().is_some_and(|binding| {
+            process_id == binding.process_id
+                && process_start_nonce == binding.process_start_nonce
+                && hook_epoch_nonce != 0
+                && launch_manifest_sha256.is_none_or(|hash| hash == &binding.launch_manifest_sha256)
+        });
+        if !valid {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+        Ok(())
+    }
+
+    /// Complete the sole suspended-launch H4CT transcript. READY authenticates
+    /// only the two system-export bootstrap hooks while no game D3D object
+    /// exists. FIRST is admitted after the real device has staged and receipted
+    /// all 51 COM/engine hooks. The double-stable runtime DLC roster is then
+    /// sent before COMMIT and before any buffered d77/d80 capture can drain.
+    #[cfg(windows)]
+    pub fn complete_early_render_after_bind(
+        &mut self,
+        _permit: &EarlyRenderDuplexProductPermit,
+        binding: &EarlyRenderControlBinding,
+        first_game_d3d_deadline: MonotonicDeadline,
+        commit_deadline: MonotonicDeadline,
+    ) -> Result<EarlyCommitCaptureReceiptV1, ClientError> {
+        if self.early_render_binding.as_ref() != Some(binding) {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
+        let ready = crate::early_render_capture_control::ready_proof(binding)
+            .map_err(|_| ClientError::EarlyRenderBinding)?;
+        let hook_epoch_nonce = ready.hook_epoch_nonce;
+        self.send_early_render_ready(&ready, first_game_d3d_deadline)?;
+        let first = loop {
+            if first_game_d3d_deadline.is_expired(self.clock.now()) {
+                return self.fail(ClientError::Control(ControlError::Io(
+                    io::ErrorKind::TimedOut,
+                )));
+            }
+            match crate::early_render_capture_control::first_game_d3d_proof(
+                binding,
+                hook_epoch_nonce,
+            ) {
+                Ok(Some(first)) => break first,
+                Ok(None) => thread::yield_now(),
+                Err(_) => return self.fail(ClientError::EarlyRenderBinding),
+            }
+        };
+        self.send_early_render_first_game_d3d(&first, first_game_d3d_deadline)?;
+        let runtime_dlc = loop {
+            if commit_deadline.is_expired(self.clock.now()) {
+                return self.fail(ClientError::Control(ControlError::Io(
+                    io::ErrorKind::TimedOut,
+                )));
+            }
+            match crate::early_render_capture_control::runtime_dlc_roster_proof(
+                binding,
+                hook_epoch_nonce,
+                first.staged_hook_generation,
+                first.game_device_ptr,
+            ) {
+                Ok(Some(proof)) => break proof,
+                Ok(None) => thread::yield_now(),
+                Err(_) => return self.fail(ClientError::EarlyRenderBinding),
+            }
+        };
+        self.send_early_render_runtime_dlc_roster(&runtime_dlc, commit_deadline)?;
+        if first.diagnostic_stage_probe {
+            let hold_started = self.clock.now();
+            let proof = self.complete_authenticated_diagnostic_hold(
+                binding,
+                &first,
+                hold_started,
+                || {
+                    let live = production_render_submit_live_lane::a729_hook::early_capture_liveness_sample()
+                        .map_err(|_| ClientError::EarlyRenderBinding)?;
+                    let readiness = live.readiness;
+                    Ok(DiagnosticReadinessSample {
+                        process_id: readiness.process.process_id,
+                        process_start_nonce: readiness.process.process_start_nonce,
+                        hook_epoch_nonce: readiness.hook_epoch_nonce,
+                        d3d_device_created_qpc: readiness
+                            .d3d_device_created_qpc
+                            .ok_or(ClientError::EarlyRenderBinding)?,
+                        first_creation_sequence: readiness
+                            .first_creation_sequence
+                            .ok_or(ClientError::EarlyRenderBinding)?,
+                        qpc_frequency_hz: readiness.qpc_frequency_hz,
+                        staged_hook_generation: readiness.staged_hook_generation,
+                        staged_hook_count: readiness.staged_hook_count,
+                        diagnostic_stage_probe: readiness.diagnostic_stage_probe,
+                        staged_hook_group_mask: readiness.staged_hook_group_mask,
+                        staged_hook_set_sha256: decode_canonical_lower_sha256(
+                            &readiness.staged_hook_set_sha256,
+                        )?,
+                        game_device_ptr: u64::try_from(readiness.game_device_ptr)
+                            .map_err(|_| ClientError::EarlyRenderBinding)?,
+                        immediate_context_ptr: u64::try_from(readiness.immediate_context_ptr)
+                            .map_err(|_| ClientError::EarlyRenderBinding)?,
+                        sampled_qpc: live.sampled_qpc,
+                    })
+                },
+            )?;
+            return Err(ClientError::EarlyRenderDiagnosticHoldCompleted(proof));
+        }
+        let commit = self.receive_early_render_commit(hook_epoch_nonce, commit_deadline)?;
+        crate::early_render_capture_control::commit_capture_receipt(binding, &commit)
+            .map_err(|_| ClientError::EarlyRenderBinding)?;
+        Ok(commit)
     }
 
     /// TRANSPORT_STATUS capability: report an authoritative sink transport
@@ -829,6 +1854,23 @@ pub fn open_client_control_pipe<P: PipeConnector, C: MonotonicClock>(
     clock: &C,
     deadline: MonotonicDeadline,
 ) -> Result<P::Handle, DuplexConnectError> {
+    open_control_pipe_inner(connector, clock, deadline)
+}
+
+pub fn open_early_render_control_pipe<P: PipeConnector, C: MonotonicClock>(
+    _permit: &EarlyRenderDuplexProductPermit,
+    connector: &mut P,
+    clock: &C,
+    deadline: MonotonicDeadline,
+) -> Result<P::Handle, DuplexConnectError> {
+    open_control_pipe_inner(connector, clock, deadline)
+}
+
+fn open_control_pipe_inner<P: PipeConnector, C: MonotonicClock>(
+    connector: &mut P,
+    clock: &C,
+    deadline: MonotonicDeadline,
+) -> Result<P::Handle, DuplexConnectError> {
     loop {
         if deadline.is_expired(clock.now()) {
             return Err(DuplexConnectError::DeadlineExpired);
@@ -1003,7 +2045,8 @@ mod win32 {
 
     use super::{
         bounded_reap, CreateFileOutcome, DeadlineControlIo, DuplexClientProductPermit,
-        DuplexIoError, MonotonicClock, MonotonicDeadline, PipeConnector, ReapOutcome, WaitOutcome,
+        DuplexIoError, EarlyRenderDuplexProductPermit, MonotonicClock, MonotonicDeadline,
+        PipeConnector, ReapOutcome, WaitOutcome,
     };
     use std::os::raw::c_void;
     use std::ptr;
@@ -1027,6 +2070,9 @@ mod win32 {
     const INVALID_HANDLE_VALUE: isize = -1;
 
     const ERROR_FILE_NOT_FOUND: Dword = 2;
+    const ERROR_BROKEN_PIPE: Dword = 109;
+    const ERROR_NO_DATA: Dword = 232;
+    const ERROR_OPERATION_ABORTED: Dword = 995;
     const ERROR_PIPE_BUSY: Dword = 231;
     const ERROR_IO_PENDING: Dword = 997;
     const ERROR_IO_INCOMPLETE: Dword = 996;
@@ -1074,7 +2120,7 @@ mod win32 {
             buffer: *const c_void,
             len: Dword,
             written: *mut Dword,
-            overlapped: *mut Overlapped,
+            overlapped: *mut c_void,
         ) -> Bool;
         fn GetOverlappedResult(
             handle: Handle,
@@ -1123,6 +2169,12 @@ mod win32 {
         /// `create_file` is a direct `CreateFileW` pipe open, so its
         /// construction stays unreachable while the activation freeze holds.
         pub fn new(_permit: &DuplexClientProductPermit, pipe_name: &str) -> Self {
+            Self {
+                name: to_wide(pipe_name),
+            }
+        }
+
+        pub fn new_early_render(_permit: &EarlyRenderDuplexProductPermit, pipe_name: &str) -> Self {
             Self {
                 name: to_wide(pipe_name),
             }
@@ -1194,6 +2246,20 @@ mod win32 {
             })
         }
 
+        pub fn new_early_render(
+            _permit: &EarlyRenderDuplexProductPermit,
+            handle: SendHandle,
+        ) -> Option<Self> {
+            let event = unsafe { CreateEventW(ptr::null_mut(), 1, 0, ptr::null()) };
+            if event.is_null() {
+                return None;
+            }
+            Some(Self {
+                handle,
+                event: SendHandle(event),
+            })
+        }
+
         fn make_pending(&self, buffer: Vec<u8>) -> Box<PendingIo> {
             Box::new(PendingIo {
                 overlapped: Overlapped {
@@ -1225,22 +2291,40 @@ mod win32 {
             clock: &C,
             deadline: MonotonicDeadline,
         ) -> Result<(u32, Box<PendingIo>), DuplexIoError> {
-            let signaled = match deadline.wait_named_pipe_timeout_ms(clock.now()) {
-                Some(ms) => (unsafe { WaitForSingleObject(self.event.0, ms) }) == WAIT_OBJECT_0,
-                // No budget left: skip the wait, go straight to cancel + reap.
-                None => false,
-            };
-            if signaled {
-                let mut transferred: Dword = 0;
-                let ok = unsafe {
-                    GetOverlappedResult(self.handle.0, &mut pending.overlapped, &mut transferred, 0)
+            loop {
+                let Some(ms) = deadline.wait_named_pipe_timeout_ms(clock.now()) else {
+                    break;
                 };
-                return if ok != 0 {
-                    Ok((transferred, pending))
-                } else {
-                    // Completed with an error: no longer pending, reclaim + drop.
-                    Err(DuplexIoError::Disconnected)
-                };
+                match unsafe { WaitForSingleObject(self.event.0, ms) } {
+                    WAIT_OBJECT_0 => {
+                        let mut transferred: Dword = 0;
+                        let ok = unsafe {
+                            GetOverlappedResult(
+                                self.handle.0,
+                                &mut pending.overlapped,
+                                &mut transferred,
+                                0,
+                            )
+                        };
+                        return if ok != 0 {
+                            Ok((transferred, pending))
+                        } else {
+                            // Completed with an error: no longer pending, reclaim + drop.
+                            match unsafe { GetLastError() } {
+                                ERROR_BROKEN_PIPE | ERROR_NO_DATA | ERROR_OPERATION_ABORTED => {
+                                    Err(DuplexIoError::PeerClosed)
+                                }
+                                _ => Err(DuplexIoError::Disconnected),
+                            }
+                        };
+                    }
+                    // A clamped finite wait slice may expire long before an
+                    // extremely distant diagnostic recorder-owned end marker.
+                    // Recheck the absolute deadline and continue; never convert
+                    // a slice timeout into an operation timeout.
+                    WAIT_TIMEOUT if !deadline.is_expired(clock.now()) => continue,
+                    _ => break,
+                }
             }
 
             // Deadline reached or the wait failed: cancel this exact op, then reap
@@ -1311,7 +2395,7 @@ mod win32 {
                         pending.buffer.as_ptr() as *const c_void,
                         pending.buffer.len() as Dword,
                         &mut written,
-                        &mut pending.overlapped,
+                        (&mut pending.overlapped as *mut Overlapped).cast(),
                     )
                 };
                 let transferred = if ok != 0 {

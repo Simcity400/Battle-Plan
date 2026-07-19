@@ -1,4 +1,4 @@
-//! hub_motorization_live (domain 62) -- per-country motorized supply-node membership.
+//! hub_motorization_live (domain 62) -- exact per-country supply-node motorization levels.
 //!
 //! Build 870ebf validated shape:
 //!
@@ -14,11 +14,14 @@
 //!   state        = u32[record + 0x04]
 //!   motor_map    = u64[record + 0x10]
 //!   map_size     = u32[record + 0x1c]
+//!   motor_map[j] = 8-byte entry
+//!     actor_tag_db_id = u32[entry + 0x00]
+//!     level          = u8 [entry + 0x04]  // 1=50%, 2=100%; 0 is not persisted
 //! ```
 //!
-//! Semantics are deliberately node-level: `map_size > 0` means this country has a
-//! non-empty saved motorization map for the node. The inner multi-entry hashmap
-//! attribution is not emitted here.
+//! The stored key is already the country table/tag-db id: lookup call sites first
+//! result directly to entry `+0x00`. Emission validates that key against the live
+//! country table.
 
 use std::collections::BTreeSet;
 
@@ -54,6 +57,9 @@ pub const NODE_PROVINCE_OFF: usize = 0x00;
 pub const NODE_STATE_OFF: usize = 0x04;
 pub const NODE_MOTOR_MAP_PTR_OFF: usize = 0x10;
 pub const NODE_MOTOR_MAP_SIZE_OFF: usize = 0x1c;
+pub const MOTOR_MAP_ENTRY_STRIDE: usize = 0x08;
+pub const MOTOR_MAP_ACTOR_TAG_DB_ID_OFF: usize = 0x00;
+pub const MOTOR_MAP_LEVEL_OFF: usize = 0x04;
 
 pub const MAX_COUNTRY_COUNT: u32 = 2_048;
 pub const MAX_NODE_COUNT: u32 = 16_384;
@@ -61,22 +67,26 @@ pub const MAX_PROVINCE_ID: u32 = 20_000;
 pub const MAX_STATE_ID: u32 = 20_000;
 pub const MAX_MOTOR_MAP_SIZE: u32 = 2_048;
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const PAYLOAD_HEADER_LEN: usize = 32;
-/// Row: owner_tag_db_id | province_id | state_id | record_index | map_size | flags.
-pub const ROW_LEN: usize = 24;
+/// Row: owner | actor | province | state | record | entry | level | flags.
+pub const ROW_LEN: usize = 32;
 
 pub const ROW_FLAG_COUNTRY_VERIFIED: u32 = 1 << 0;
 pub const ROW_FLAG_STRUCT_VERIFIED: u32 = 1 << 1;
 pub const ROW_FLAG_NODE_MOTORIZED: u32 = 1 << 2;
+pub const ROW_FLAG_ACTOR_VERIFIED: u32 = 1 << 3;
+pub const ROW_FLAG_LEVEL_VERIFIED: u32 = 1 << 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HubMotorizationRow {
     pub owner_tag_db_id: u32,
+    pub actor_tag_db_id: u32,
     pub province_id: u32,
     pub state_id: u32,
     pub record_index: u32,
-    pub map_size: u32,
+    pub map_entry_index: u32,
+    pub motorization_level: u32,
     pub flags: u32,
 }
 
@@ -100,6 +110,8 @@ pub struct HubMotorizationGateSummary {
     pub verified_rows: u64,
     pub motorized_nodes: u64,
     pub map_entries: u64,
+    pub level_one_entries: u64,
+    pub level_two_entries: u64,
     pub parse_errors: Vec<String>,
 }
 
@@ -158,10 +170,12 @@ pub fn encode_payload(header: &HubMotorizationHeader, rows: &[HubMotorizationRow
     debug_assert_eq!(payload.len(), PAYLOAD_HEADER_LEN);
     for row in rows {
         payload.extend_from_slice(&row.owner_tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.actor_tag_db_id.to_le_bytes());
         payload.extend_from_slice(&row.province_id.to_le_bytes());
         payload.extend_from_slice(&row.state_id.to_le_bytes());
         payload.extend_from_slice(&row.record_index.to_le_bytes());
-        payload.extend_from_slice(&row.map_size.to_le_bytes());
+        payload.extend_from_slice(&row.map_entry_index.to_le_bytes());
+        payload.extend_from_slice(&row.motorization_level.to_le_bytes());
         payload.extend_from_slice(&row.flags.to_le_bytes());
     }
     payload
@@ -216,7 +230,12 @@ pub fn decode_payload(payload: &[u8]) -> HubMotorizationGateSummary {
         if row.flags & ROW_FLAG_NODE_MOTORIZED != 0 {
             summary.motorized_nodes += 1;
         }
-        summary.map_entries = summary.map_entries.saturating_add(u64::from(row.map_size));
+        summary.map_entries = summary.map_entries.saturating_add(1);
+        if row.motorization_level == 1 {
+            summary.level_one_entries = summary.level_one_entries.saturating_add(1);
+        } else if row.motorization_level == 2 {
+            summary.level_two_entries = summary.level_two_entries.saturating_add(1);
+        }
         summary.row_count += 1;
     }
     if summary.map_entries != u64::from(summary.total_map_entries) {
@@ -273,7 +292,7 @@ pub fn decode_payload_rows(
     for i in 0..declared_rows {
         let row = read_row(payload, PAYLOAD_HEADER_LEN + i * ROW_LEN);
         validate_row(i, &row, &mut errors);
-        map_entries = map_entries.saturating_add(u64::from(row.map_size));
+        map_entries = map_entries.saturating_add(1);
         rows.push(row);
     }
     if map_entries != u64::from(header.total_map_entries) {
@@ -292,11 +311,15 @@ pub fn decode_payload_rows(
 fn read_row(payload: &[u8], offset: usize) -> HubMotorizationRow {
     HubMotorizationRow {
         owner_tag_db_id: u32::from_le_bytes(payload[offset..offset + 4].try_into().unwrap()),
-        province_id: u32::from_le_bytes(payload[offset + 4..offset + 8].try_into().unwrap()),
-        state_id: u32::from_le_bytes(payload[offset + 8..offset + 12].try_into().unwrap()),
-        record_index: u32::from_le_bytes(payload[offset + 12..offset + 16].try_into().unwrap()),
-        map_size: u32::from_le_bytes(payload[offset + 16..offset + 20].try_into().unwrap()),
-        flags: u32::from_le_bytes(payload[offset + 20..offset + 24].try_into().unwrap()),
+        actor_tag_db_id: u32::from_le_bytes(payload[offset + 4..offset + 8].try_into().unwrap()),
+        province_id: u32::from_le_bytes(payload[offset + 8..offset + 12].try_into().unwrap()),
+        state_id: u32::from_le_bytes(payload[offset + 12..offset + 16].try_into().unwrap()),
+        record_index: u32::from_le_bytes(payload[offset + 16..offset + 20].try_into().unwrap()),
+        map_entry_index: u32::from_le_bytes(payload[offset + 20..offset + 24].try_into().unwrap()),
+        motorization_level: u32::from_le_bytes(
+            payload[offset + 24..offset + 28].try_into().unwrap(),
+        ),
+        flags: u32::from_le_bytes(payload[offset + 28..offset + 32].try_into().unwrap()),
     }
 }
 
@@ -305,6 +328,12 @@ fn validate_row(index: usize, row: &HubMotorizationRow, errors: &mut Vec<String>
         errors.push(format!(
             "row {index} owner_tag_db_id {} out of range",
             row.owner_tag_db_id
+        ));
+    }
+    if row.actor_tag_db_id == 0 || row.actor_tag_db_id > MAX_COUNTRY_COUNT {
+        errors.push(format!(
+            "row {index} actor_tag_db_id {} out of range",
+            row.actor_tag_db_id
         ));
     }
     if row.province_id == 0 || row.province_id > MAX_PROVINCE_ID {
@@ -319,14 +348,17 @@ fn validate_row(index: usize, row: &HubMotorizationRow, errors: &mut Vec<String>
             row.state_id
         ));
     }
-    if row.map_size == 0 || row.map_size > MAX_MOTOR_MAP_SIZE {
+    if row.motorization_level == 0 || row.motorization_level > 2 {
         errors.push(format!(
-            "row {index} map_size {} out of range",
-            row.map_size
+            "row {index} motorization_level {} out of range",
+            row.motorization_level
         ));
     }
-    let known_flags =
-        ROW_FLAG_COUNTRY_VERIFIED | ROW_FLAG_STRUCT_VERIFIED | ROW_FLAG_NODE_MOTORIZED;
+    let known_flags = ROW_FLAG_COUNTRY_VERIFIED
+        | ROW_FLAG_STRUCT_VERIFIED
+        | ROW_FLAG_NODE_MOTORIZED
+        | ROW_FLAG_ACTOR_VERIFIED
+        | ROW_FLAG_LEVEL_VERIFIED;
     if row.flags & !known_flags != 0 {
         errors.push(format!("row {index} unknown flags {:#x}", row.flags));
     }
@@ -578,15 +610,70 @@ fn derive_object_rows<M: Mem>(
         if !ok_ptr(map_ptr, heap_lo, heap_hi, 8) {
             return Err(malformed("motor_map_ptr_invalid"));
         }
+        let map_byte_len = (map_size as usize)
+            .checked_mul(MOTOR_MAP_ENTRY_STRIDE)
+            .ok_or_else(|| malformed("motor_map_len_overflow"))?;
+        let map_blob = mem
+            .read_bytes(map_ptr, map_byte_len)
+            .filter(|bytes| bytes.len() == map_byte_len)
+            .ok_or_else(|| malformed("motor_map_short_read"))?;
+        for entry_index in 0..map_size as usize {
+            let entry_off = entry_index * MOTOR_MAP_ENTRY_STRIDE;
+            let actor_tag_db_id = u32::from_le_bytes(
+                map_blob[entry_off + MOTOR_MAP_ACTOR_TAG_DB_ID_OFF
+                    ..entry_off + MOTOR_MAP_ACTOR_TAG_DB_ID_OFF + 4]
+                    .try_into()
+                    .unwrap(),
+            );
+            if actor_tag_db_id == 0
+                || actor_tag_db_id >= country_count
+                || actor_tag_db_id > MAX_COUNTRY_COUNT
+            {
+                return Err(malformed("motor_map_country_ref_out_of_range"));
+            }
+            let actor_country = mem
+                .u64(country_table + u64::from(actor_tag_db_id) * 8)
+                .filter(|ptr| ok_ptr(*ptr, heap_lo, heap_hi, 8))
+                .ok_or_else(|| malformed("motor_map_actor_country_unreadable"))?;
+            if mem.u64(actor_country) != Some(module_base + COUNTRY_VTABLE_RVA)
+                || mem.u32(actor_country + COUNTRY_TAG_DB_ID_OFF) != Some(actor_tag_db_id)
+            {
+                return Err(malformed("motor_map_actor_country_mismatch"));
+            }
+            let motorization_level = u32::from(map_blob[entry_off + MOTOR_MAP_LEVEL_OFF]);
+            if !(1..=2).contains(&motorization_level) {
+                return Err(malformed("motor_map_level_out_of_range"));
+            }
+            rows.push(HubMotorizationRow {
+                owner_tag_db_id: tag_db_id,
+                actor_tag_db_id,
+                province_id,
+                state_id,
+                record_index: i as u32,
+                map_entry_index: entry_index as u32,
+                motorization_level,
+                flags: ROW_FLAG_COUNTRY_VERIFIED
+                    | ROW_FLAG_STRUCT_VERIFIED
+                    | ROW_FLAG_NODE_MOTORIZED
+                    | ROW_FLAG_ACTOR_VERIFIED
+                    | ROW_FLAG_LEVEL_VERIFIED,
+            });
+        }
+        // The vector is game-owned and may reallocate. Re-read its pointer/count
+        // after decoding; a changed header makes this frame unknown.
+        let live_header = mem
+            .read_bytes(
+                arr + (i as u64) * NODE_RECORD_STRIDE as u64 + NODE_MOTOR_MAP_PTR_OFF as u64,
+                0x10,
+            )
+            .filter(|bytes| bytes.len() == 0x10)
+            .ok_or_else(|| malformed("motor_map_header_reread_failed"))?;
+        let live_ptr = u64::from_le_bytes(live_header[0..8].try_into().unwrap());
+        let live_size = u32::from_le_bytes(live_header[12..16].try_into().unwrap());
+        if live_ptr != map_ptr || live_size != map_size {
+            return Err(malformed("motor_map_raced"));
+        }
         map_entries = map_entries.saturating_add(map_size);
-        rows.push(HubMotorizationRow {
-            owner_tag_db_id: tag_db_id,
-            province_id,
-            state_id,
-            record_index: i as u32,
-            map_size,
-            flags: ROW_FLAG_COUNTRY_VERIFIED | ROW_FLAG_STRUCT_VERIFIED | ROW_FLAG_NODE_MOTORIZED,
-        });
     }
     Ok(ObjectRows {
         tag_db_id,
@@ -811,6 +898,12 @@ mod tests {
         blob[offset + 0x1c..offset + 0x20].copy_from_slice(&map_size.to_le_bytes());
     }
 
+    fn put_motor_entry(blob: &mut [u8], index: usize, country_ref_id: u32, level: u8) {
+        let offset = index * MOTOR_MAP_ENTRY_STRIDE;
+        blob[offset..offset + 4].copy_from_slice(&country_ref_id.to_le_bytes());
+        blob[offset + MOTOR_MAP_LEVEL_OFF] = level;
+    }
+
     fn good_image() -> MockMem {
         let mut mem = MockMem::default();
         let cgs = 0x2000_0000;
@@ -844,11 +937,24 @@ mod tests {
         put_record(&mut nodes, 1, 13071, 5, motor_map, 2);
         put_record(&mut nodes, 2, 7384, 5, motor_map + 0x40, 1);
         mem.sbytes(node_array, nodes);
+        let mut map_a = vec![0u8; 2 * MOTOR_MAP_ENTRY_STRIDE];
+        put_motor_entry(&mut map_a, 0, 17, 1);
+        put_motor_entry(&mut map_a, 1, 18, 2);
+        mem.sbytes(motor_map, map_a);
+        let mut map_b = vec![0u8; MOTOR_MAP_ENTRY_STRIDE];
+        put_motor_entry(&mut map_b, 0, 19, 2);
+        mem.sbytes(motor_map + 0x40, map_b);
+        for actor_tag in 17..=19u32 {
+            let actor = 0x2200_0000 + u64::from(actor_tag) * 0x1000;
+            mem.su64(country_table + u64::from(actor_tag) * 8, actor);
+            mem.su64(actor, BASE + COUNTRY_VTABLE_RVA);
+            mem.su32(actor + COUNTRY_TAG_DB_ID_OFF, actor_tag);
+        }
         mem
     }
 
     #[test]
-    fn collect_rows_emits_motorized_membership_only() {
+    fn collect_rows_emits_exact_actor_levels() {
         let mem = good_image();
         let got = collect_rows(&mem, BASE, LO, HI).expect("collection");
         assert_eq!(got.observed_objects, 1);
@@ -860,23 +966,45 @@ mod tests {
             vec![
                 HubMotorizationRow {
                     owner_tag_db_id: 16,
+                    actor_tag_db_id: 17,
                     province_id: 13071,
                     state_id: 5,
                     record_index: 1,
-                    map_size: 2,
+                    map_entry_index: 0,
+                    motorization_level: 1,
                     flags: ROW_FLAG_COUNTRY_VERIFIED
                         | ROW_FLAG_STRUCT_VERIFIED
-                        | ROW_FLAG_NODE_MOTORIZED,
+                        | ROW_FLAG_NODE_MOTORIZED
+                        | ROW_FLAG_ACTOR_VERIFIED
+                        | ROW_FLAG_LEVEL_VERIFIED,
                 },
                 HubMotorizationRow {
                     owner_tag_db_id: 16,
+                    actor_tag_db_id: 18,
+                    province_id: 13071,
+                    state_id: 5,
+                    record_index: 1,
+                    map_entry_index: 1,
+                    motorization_level: 2,
+                    flags: ROW_FLAG_COUNTRY_VERIFIED
+                        | ROW_FLAG_STRUCT_VERIFIED
+                        | ROW_FLAG_NODE_MOTORIZED
+                        | ROW_FLAG_ACTOR_VERIFIED
+                        | ROW_FLAG_LEVEL_VERIFIED,
+                },
+                HubMotorizationRow {
+                    owner_tag_db_id: 16,
+                    actor_tag_db_id: 19,
                     province_id: 7384,
                     state_id: 5,
                     record_index: 2,
-                    map_size: 1,
+                    map_entry_index: 0,
+                    motorization_level: 2,
                     flags: ROW_FLAG_COUNTRY_VERIFIED
                         | ROW_FLAG_STRUCT_VERIFIED
-                        | ROW_FLAG_NODE_MOTORIZED,
+                        | ROW_FLAG_NODE_MOTORIZED
+                        | ROW_FLAG_ACTOR_VERIFIED
+                        | ROW_FLAG_LEVEL_VERIFIED,
                 },
             ]
         );
@@ -890,6 +1018,35 @@ mod tests {
         assert_eq!(got.observed_objects, 1);
         assert_eq!(got.settings_objects, 0);
         assert!(got.rows.is_empty());
+    }
+
+    #[test]
+    fn rejects_unknown_inner_level() {
+        let mut mem = good_image();
+        let mut bad = vec![0u8; 2 * MOTOR_MAP_ENTRY_STRIDE];
+        put_motor_entry(&mut bad, 0, 17, 3);
+        put_motor_entry(&mut bad, 1, 18, 2);
+        mem.sbytes(0x2500_0000, bad);
+        assert_eq!(
+            collect_rows(&mem, BASE, LO, HI),
+            Err(HubMotorizationError::CcssMalformed {
+                object: 0x2300_0000,
+                reason: "motor_map_level_out_of_range",
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_unresolved_inner_country_reference() {
+        let mut mem = good_image();
+        mem.u64s.remove(&(0x2100_0000 + 17 * 8));
+        assert_eq!(
+            collect_rows(&mem, BASE, LO, HI),
+            Err(HubMotorizationError::CcssMalformed {
+                object: 0x2300_0000,
+                reason: "motor_map_actor_country_unreadable",
+            })
+        );
     }
 
     #[test]
@@ -911,10 +1068,12 @@ mod tests {
             "{:?}",
             summary.parse_errors
         );
-        assert_eq!(summary.row_count, 2);
-        assert_eq!(summary.verified_rows, 2);
-        assert_eq!(summary.motorized_nodes, 2);
+        assert_eq!(summary.row_count, 3);
+        assert_eq!(summary.verified_rows, 3);
+        assert_eq!(summary.motorized_nodes, 3);
         assert_eq!(summary.map_entries, 3);
+        assert_eq!(summary.level_one_entries, 1);
+        assert_eq!(summary.level_two_entries, 2);
         let (header, decoded) = decode_payload_rows(&payload).expect("strict rows");
         assert_eq!(header.total_settings_nodes, 3);
         assert_eq!(header.total_map_entries, 3);
@@ -951,7 +1110,7 @@ mod tests {
             "no-heap-scan path yields identical rows"
         );
         assert_eq!(anchored.settings_objects, 1);
-        assert_eq!(anchored.rows.len(), 2);
+        assert_eq!(anchored.rows.len(), 3);
     }
 
     #[test]

@@ -47,6 +47,18 @@ pub struct HudLayouts {
     pub sources: Vec<HudSourceWindow>,
 }
 
+/// The only authored roots admitted by the production replay HUD.  Probe and
+/// evidence tooling intentionally retains the wider `HudLayouts` surface, but
+/// the product path must not load controller-unbound fragments merely because
+/// they happen to live beside an authenticated root in the installed VFS.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuthenticatedHudLayouts {
+    pub minimap: GuiElement,
+    pub mapmodes: GuiElement,
+    pub outliner_shell: GuiElement,
+    pub sources: Vec<HudSourceWindow>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HudBinding {
     pub topbar: TopbarBinding,
@@ -59,14 +71,17 @@ pub struct HudBinding {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MapmodeBinding {
     pub selected_button: u8,
-    pub use_four_button_layout: bool,
+    pub use_four_button_layout: Option<bool>,
 }
 
 impl Default for MapmodeBinding {
     fn default() -> Self {
         Self {
-            selected_button: 1,
-            use_four_button_layout: true,
+            // Zero is the fail-closed "no authenticated active mapmode"
+            // state. Product playback may select 1..=12 only from a recorded
+            // token/button/layout join; it never asserts political by default.
+            selected_button: 0,
+            use_four_button_layout: None,
         }
     }
 }
@@ -128,7 +143,7 @@ impl HudBinding {
             topbar: TopbarBinding::sample_ire(),
             mapmode: MapmodeBinding {
                 selected_button: 5,
-                use_four_button_layout: true,
+                use_four_button_layout: Some(true),
             },
             minimap: MinimapBinding {
                 image: Some(sample_minimap_image(343, 98)),
@@ -250,6 +265,94 @@ pub fn load_hud_layouts(resolver: &AssetResolver) -> Result<HudLayouts> {
                 window_name: TOOLTIP_WINDOW_NAME.to_string(),
             },
         ],
+    })
+}
+
+pub fn load_authenticated_hud_layouts(resolver: &AssetResolver) -> Result<AuthenticatedHudLayouts> {
+    let minimap_file = resolver.resolve_file(MINIMAP_GUI)?;
+    let mapmodes_file = resolver.resolve_file(MAPMODES_GUI)?;
+    let outliner_file = resolver.resolve_file(OUTLINER_GUI)?;
+
+    let minimap = load_window_from_file(
+        &minimap_file.path,
+        &minimap_file.rel_path,
+        MINIMAP_WINDOW_NAME,
+    )?;
+    let mapmodes = load_window_from_file(
+        &mapmodes_file.path,
+        &mapmodes_file.rel_path,
+        MAPMODES_WINDOW_NAME,
+    )?;
+    let outliner_shell = load_window_from_file(
+        &outliner_file.path,
+        &outliner_file.rel_path,
+        OUTLINER_WINDOW_NAME,
+    )?;
+
+    Ok(AuthenticatedHudLayouts {
+        minimap,
+        mapmodes,
+        outliner_shell,
+        sources: vec![
+            HudSourceWindow {
+                panel: "minimap",
+                source_file: minimap_file.rel_path,
+                window_name: MINIMAP_WINDOW_NAME.to_string(),
+            },
+            HudSourceWindow {
+                panel: "map_modes",
+                source_file: mapmodes_file.rel_path,
+                window_name: MAPMODES_WINDOW_NAME.to_string(),
+            },
+            HudSourceWindow {
+                panel: "theatre_selector",
+                source_file: outliner_file.rel_path,
+                window_name: OUTLINER_WINDOW_NAME.to_string(),
+            },
+        ],
+    })
+}
+
+/// Compose exactly the four controller roots authenticated by the recording:
+/// topbar, minimap, map modes, and theatre selector.  Zoom buttons, theatre
+/// rows, and the global tooltip are separate controller identities and remain
+/// absent until a runtime carrier binds each one.
+pub fn compose_authenticated_hud(
+    resolver: &AssetResolver,
+    registry: &SpriteRegistry,
+    binding: &HudBinding,
+    width: usize,
+    height: usize,
+) -> Result<HudComposeResult> {
+    let layouts = load_authenticated_hud_layouts(resolver)?;
+    let mut output = empty_output(width, height);
+    let mut stats = HudSpriteStats::default();
+
+    let topbar = compose_topbar_at(resolver, registry, &binding.topbar, width, height)?;
+    draw_image(&mut output.image, &topbar.output.image, 0, 0);
+    merge_output(&mut output, topbar.output);
+
+    compose_authenticated_minimap_into(
+        resolver,
+        registry,
+        &layouts,
+        &binding.mapmode,
+        &binding.minimap,
+        &mut output,
+        &mut stats,
+    )?;
+    compose_authenticated_theatre_selector_into(
+        resolver,
+        registry,
+        &layouts,
+        &mut output,
+        &mut stats,
+    )?;
+
+    Ok(HudComposeResult {
+        output,
+        sources: layouts.sources,
+        sprite_stats: stats,
     })
 }
 
@@ -577,6 +680,101 @@ fn compose_minimap_into(
     Ok(())
 }
 
+fn compose_authenticated_minimap_into(
+    resolver: &AssetResolver,
+    registry: &SpriteRegistry,
+    layouts: &AuthenticatedHudLayouts,
+    mapmode: &MapmodeBinding,
+    binding: &MinimapBinding,
+    output: &mut ComposeOutput,
+    stats: &mut HudSpriteStats,
+) -> Result<()> {
+    let mut options = localized_options(resolver, output.image.width, output.image.height)?;
+    if let Some(minimap) = &binding.image {
+        let (w, h) = sprite_first_frame_size(resolver, registry, "GFX_minimap_world")?;
+        options
+            .sprite_overrides
+            .insert("worldmap_bg".to_string(), scaled_image(minimap, w, h));
+    }
+    let minimap = compose_root(resolver, registry, &layouts.minimap, &options);
+    let viewport = minimap
+        .debug_rects
+        .iter()
+        .find(|rect| rect.name == "worldmap_bg")
+        .cloned();
+    draw_image(&mut output.image, &minimap.image, 0, 0);
+    merge_output(output, minimap);
+
+    compose_authenticated_mapmodes_into(resolver, registry, layouts, mapmode, output, stats)?;
+
+    if let (Some(viewport), Some(view_rect)) = (viewport, binding.view_rect) {
+        let rect = minimap_view_rect_to_pixels(&viewport, view_rect);
+        draw_rect_outline(&mut output.image, rect, [245, 213, 101, 230]);
+        draw_rect_outline(
+            &mut output.image,
+            Rect::new(rect.x() + 1, rect.y() + 1, rect.w() - 2, rect.h() - 2),
+            [20, 20, 18, 190],
+        );
+        output.debug_rects.push(DebugRect {
+            name: "minimap_view_rect".to_string(),
+            element_type: "binding".to_string(),
+            x: rect.x(),
+            y: rect.y(),
+            w: rect.w(),
+            h: rect.h(),
+            depth: 2,
+        });
+    }
+
+    *stats = merge_sprite_stats(
+        stats,
+        &sprite_stats_for_roots(resolver, registry, [&layouts.minimap]),
+    );
+    Ok(())
+}
+
+fn compose_authenticated_mapmodes_into(
+    resolver: &AssetResolver,
+    registry: &SpriteRegistry,
+    layouts: &AuthenticatedHudLayouts,
+    binding: &MapmodeBinding,
+    output: &mut ComposeOutput,
+    stats: &mut HudSpriteStats,
+) -> Result<()> {
+    let mut options = localized_options(resolver, output.image.width, output.image.height)?;
+    apply_mapmode_binding(&layouts.mapmodes, registry, binding, &mut options);
+    let mapmodes = compose_root(resolver, registry, &layouts.mapmodes, &options);
+    draw_image(&mut output.image, &mapmodes.image, 0, 0);
+    merge_output(output, mapmodes);
+    *stats = merge_sprite_stats(
+        stats,
+        &sprite_stats_for_roots(resolver, registry, [&layouts.mapmodes]),
+    );
+    Ok(())
+}
+
+fn compose_authenticated_theatre_selector_into(
+    resolver: &AssetResolver,
+    registry: &SpriteRegistry,
+    layouts: &AuthenticatedHudLayouts,
+    output: &mut ComposeOutput,
+    stats: &mut HudSpriteStats,
+) -> Result<()> {
+    let shell = compose_root(
+        resolver,
+        registry,
+        &layouts.outliner_shell,
+        &localized_options(resolver, output.image.width, output.image.height)?,
+    );
+    draw_image(&mut output.image, &shell.image, 0, 0);
+    merge_output(output, shell);
+    *stats = merge_sprite_stats(
+        stats,
+        &sprite_stats_for_roots(resolver, registry, [&layouts.outliner_shell]),
+    );
+    Ok(())
+}
+
 fn compose_mapmodes_into(
     resolver: &AssetResolver,
     registry: &SpriteRegistry,
@@ -603,14 +801,27 @@ fn apply_mapmode_binding(
     binding: &MapmodeBinding,
     options: &mut ComposeOptions,
 ) {
-    if binding.use_four_button_layout {
-        options
-            .hidden_elements
-            .insert("3_button_mapmode".to_string());
-    } else {
-        options
-            .hidden_elements
-            .insert("4_button_mapmode".to_string());
+    match binding.use_four_button_layout {
+        Some(true) => {
+            options
+                .hidden_elements
+                .insert("3_button_mapmode".to_string());
+        }
+        Some(false) => {
+            options
+                .hidden_elements
+                .insert("4_button_mapmode".to_string());
+        }
+        None => {
+            // Both mutually exclusive authored branches are runtime-selected.
+            // With no authenticated layout-root token, render neither.
+            options
+                .hidden_elements
+                .insert("3_button_mapmode".to_string());
+            options
+                .hidden_elements
+                .insert("4_button_mapmode".to_string());
+        }
     }
 
     let selected = (1..=12)
@@ -1498,7 +1709,7 @@ mod tests {
             &registry,
             &MapmodeBinding {
                 selected_button: 5,
-                use_four_button_layout: true,
+                use_four_button_layout: Some(true),
             },
             &mut options,
         );
@@ -1511,6 +1722,27 @@ mod tests {
         assert_eq!(options.frame_overrides.get("mapmode_button_5"), Some(&4));
         assert_eq!(options.frame_overrides.get("mapmode_button_5_s"), Some(&4));
         assert_eq!(mapmode_frame_for_button(12, 18), 11);
+    }
+
+    #[test]
+    fn absent_mapmode_runtime_state_selects_neither_layout_nor_button() {
+        let root = synthetic_element("containerWindowType", "root", 0, 0, 20, 20, None);
+        let registry = SpriteRegistry::new();
+        let mut options = ComposeOptions::new(1920, 1080);
+        apply_mapmode_binding(&root, &registry, &MapmodeBinding::default(), &mut options);
+        assert!(options.hidden_elements.contains("3_button_mapmode"));
+        assert!(options.hidden_elements.contains("4_button_mapmode"));
+        for button in 1..=12u8 {
+            assert!(!options
+                .hidden_elements
+                .contains(&format!("mapmode_button_{button}")));
+            assert!(options
+                .hidden_elements
+                .contains(&format!("mapmode_button_{button}_s")));
+            assert!(options
+                .hidden_elements
+                .contains(&format!("mapmode_button_{button}_s_bg")));
+        }
     }
 
     #[test]

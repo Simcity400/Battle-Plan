@@ -1,0 +1,8 @@
+[package]
+name = "dynamic_collection_trace_live_lane"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "dynamic_collection_trace_live_lane"
+path = "src/lib.rs"

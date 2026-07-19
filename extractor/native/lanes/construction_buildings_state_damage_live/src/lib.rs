@@ -8,10 +8,10 @@ pub mod decoder_gate;
 pub const DOMAIN_ID: u16 = 48;
 pub const DOMAIN_NAME: &str = "construction_buildings_state_damage_live";
 pub const COMPACT_MAGIC: [u8; 4] = *b"CBSD";
-pub const COMPACT_VERSION: u16 = 1;
+pub const COMPACT_VERSION: u16 = 2;
 pub const HEADER_LEN: usize = 64;
-pub const CONSTRUCTION_ROW_LEN: usize = 40;
-pub const BUILDING_ROW_LEN: usize = 32;
+pub const CONSTRUCTION_ROW_LEN: usize = 52;
+pub const BUILDING_ROW_LEN: usize = 40;
 pub const RESOURCE_ROW_LEN: usize = 16;
 
 pub const STATUS_WORKER_PANIC: u32 = compact_contract::COMPACT_STATUS_WORKER_PANIC;
@@ -57,6 +57,10 @@ pub const CBUILDING_OFF_TYPE: usize = compact_contract::build_profile::CBUILDING
 pub const CBUILDING_OFF_LEVEL: usize = compact_contract::build_profile::CBUILDING_OFF_LEVEL;
 pub const CBUILDING_OFF_HEALTHY_LEVEL: usize =
     compact_contract::build_profile::CBUILDING_OFF_HEALTHY_LEVEL;
+pub const CBUILDING_OFF_PARTIAL_HEALTH_RAW: usize =
+    compact_contract::build_profile::CBUILDING_OFF_PARTIAL_HEALTH_RAW;
+pub const CBUILDING_PARTIAL_HEALTH_RAW_PER_LEVEL: u64 =
+    compact_contract::build_profile::CBUILDING_PARTIAL_HEALTH_RAW_PER_LEVEL;
 pub const BUILDING_VECTOR_MAX: u32 = compact_contract::build_profile::BUILDING_VECTOR_MAX;
 pub const BUILDING_LEVEL_SANE_MAX: u32 = compact_contract::build_profile::BUILDING_LEVEL_SANE_MAX;
 
@@ -74,6 +78,8 @@ pub const LINE_CONSTRUCTION_SUB: usize = compact_contract::build_profile::LINE_C
 // W4: CBuildingProductionLine+0x58 u32 created_date (native hour-count, same
 // epoch as the CGameState date word). D5-validated 105/105 lines.
 pub const LINE_CREATED_DATE: usize = compact_contract::build_profile::LINE_CREATED_DATE;
+pub const LINE_REPAIR_LEVELS_REMAINING: usize =
+    compact_contract::build_profile::LINE_REPAIR_LEVELS_REMAINING;
 // Fail-closed ceiling on a created_date raw hour-count. The date epoch offset is
 // 43799999 (raw = calendar_hours + 43799999), so the smallest plausible raw is
 // well above zero and no live line can approach u32::MAX; a raw at/above this
@@ -108,31 +114,77 @@ pub const CONSTRUCTION_FLAG_TARGET_STATE_PRESENT: u32 = 1 << 1;
 // row-length header field and total-length check are unaffected, so this is
 // strictly safer than a 40->44 row growth (Codex-reviewed).
 pub const CONSTRUCTION_FLAG_CREATED_DATE_PRESENT: u32 = 1 << 2;
+pub const CONSTRUCTION_FLAG_TARGET_LOCATION_PRESENT: u32 = 1 << 3;
+pub const CONSTRUCTION_FLAG_TARGET_SCOPE_PRESENT: u32 = 1 << 4;
+pub const CONSTRUCTION_FLAG_REPAIR_LEVELS_PRESENT: u32 = 1 << 5;
 // Every construction-row flag bit that is defined. An unknown bit in a decoded
 // row is a malformed/forward-incompatible payload and fails the gate closed.
 pub const CONSTRUCTION_ROW_KNOWN_FLAGS: u32 = CONSTRUCTION_FLAG_TEMPLATE_PRESENT
     | CONSTRUCTION_FLAG_TARGET_STATE_PRESENT
-    | CONSTRUCTION_FLAG_CREATED_DATE_PRESENT;
+    | CONSTRUCTION_FLAG_CREATED_DATE_PRESENT
+    | CONSTRUCTION_FLAG_TARGET_LOCATION_PRESENT
+    | CONSTRUCTION_FLAG_TARGET_SCOPE_PRESENT
+    | CONSTRUCTION_FLAG_REPAIR_LEVELS_PRESENT;
 pub const BUILDING_FLAG_HEALTHY_PRESENT: u32 = 1;
 pub const BUILDING_FLAG_DAMAGED: u32 = 1 << 1;
-pub const BUILDING_ROW_KNOWN_FLAGS: u32 = BUILDING_FLAG_HEALTHY_PRESENT | BUILDING_FLAG_DAMAGED;
+pub const BUILDING_FLAG_PARTIAL_HEALTH_PRESENT: u32 = 1 << 2;
+pub const BUILDING_ROW_KNOWN_FLAGS: u32 =
+    BUILDING_FLAG_HEALTHY_PRESENT | BUILDING_FLAG_DAMAGED | BUILDING_FLAG_PARTIAL_HEALTH_PRESENT;
 pub const ROW_ID_DELETED: u32 = 1 << 31;
 
 pub const PROVINCE_CONSTRUCTION_TEMPLATE_IDS: [u32; 4] = [12_790, 19_649, 22_353, 22_354];
 
+/// Exact reason enum consumed by the building mutation dispatcher at
+/// 0x1410c69f0 and named by 0x140b58e10.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum BuildingDamageReason {
+    None = 0,
+    Bombed = 1,
+    Sabotaged = 2,
+    Collateral = 3,
+    Repaired = 4,
+    Scorched = 5,
+}
+
+impl BuildingDamageReason {
+    pub fn from_raw(raw: u32) -> Option<Self> {
+        Some(match raw {
+            0 => Self::None,
+            1 => Self::Bombed,
+            2 => Self::Sabotaged,
+            3 => Self::Collateral,
+            4 => Self::Repaired,
+            5 => Self::Scorched,
+            _ => return None,
+        })
+    }
+
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Bombed => "bombed",
+            Self::Sabotaged => "sabotaged",
+            Self::Collateral => "collateral",
+            Self::Repaired => "repaired",
+            Self::Scorched => "scorched",
+        }
+    }
+}
+
 /// Bulk-read window covering every CBuilding field the building walk reads:
 /// vtable `[0x00,0x08)`, type `[0x08,0x0C)`, level `[0x40,0x42)`, healthy_level
-/// `[0x42,0x44)`. `N = CBUILDING_OFF_HEALTHY_LEVEL + 2` = the far field's end, so
+/// `[0x42,0x44)`, partial health `[0x48,0x50)`. `N` is the far field's end, so
 /// the window's region gate is identical to a scalar read of the last field.
-pub const CBUILDING_WINDOW_LEN: usize = CBUILDING_OFF_HEALTHY_LEVEL + 2;
+pub const CBUILDING_WINDOW_LEN: usize = CBUILDING_OFF_PARTIAL_HEALTH_RAW + 8;
 
 /// Bulk-read window covering every CBuildingProductionLine field the queue walk
 /// reads on the line object itself: type `[0x08,0x0C)`, id `[0x0C,0x10)`,
 /// active_factories `[0x18,0x1C)`, cost `[0x28,0x2C)`, produced `[0x38,0x3C)`,
-/// created_date `[0x58,0x5C)`, construction_sub ptr `[0x70,0x78)`. `N =
-/// LINE_CONSTRUCTION_SUB + 8` = the far (mandatory) field's end. The sub-object
+/// created_date `[0x58,0x5C)`, building ptr `[0x70,0x78)`, repair-level count
+/// `[0x78,0x7C)`. `N` is the far field's end. The building
 /// (template/target) is chased separately and stays a per-field read.
-pub const LINE_WINDOW_LEN: usize = LINE_CONSTRUCTION_SUB + 8;
+pub const LINE_WINDOW_LEN: usize = LINE_REPAIR_LEVELS_REMAINING + 4;
 
 pub trait LaneMemory {
     fn read_u8(&self, addr: usize) -> Option<u8>;
@@ -158,6 +210,11 @@ pub trait LaneMemory {
     fn read_i32(&self, addr: usize) -> Option<i32> {
         let bytes = self.read_bytes(addr, 4)?;
         Some(i32::from_le_bytes(bytes.try_into().ok()?))
+    }
+
+    fn read_i64(&self, addr: usize) -> Option<i64> {
+        let bytes = self.read_bytes(addr, 8)?;
+        Some(i64::from_le_bytes(bytes.try_into().ok()?))
     }
 
     fn read_u64(&self, addr: usize) -> Option<u64> {
@@ -219,6 +276,13 @@ pub struct ConstructionQueueRow {
     pub produced_raw: i32,
     pub priority: u32,
     pub target_state_id: Option<u32>,
+    /// Exact save `building.location`: state id for state buildings, province
+    /// id for province buildings.
+    pub target_location_id: Option<u32>,
+    pub target_scope: Option<u32>,
+    /// 0 for ordinary construction; positive for a damaged-building repair
+    /// line. Recomputed by the engine as level-healthy_level.
+    pub repair_levels_remaining: Option<u32>,
     /// W4: CBuildingProductionLine+0x58 native hour-count of the line's
     /// created_date (absent when the read fails/torn or is an implausible 0/
     /// out-of-range value). Carried in the reserved trailing row u32 (offset
@@ -234,6 +298,9 @@ pub struct BuildingRow {
     pub type_id: u32,
     pub level: u32,
     pub healthy_level: Option<u32>,
+    /// Sum of CBuilding+0x48 fixed-5 partial-health accumulators for this
+    /// location/type row. 10_000_000 completes one damaged level.
+    pub partial_health_raw: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -462,10 +529,13 @@ fn read_construction_queue_from_manager_with_targets<M: LaneMemory>(
         } else {
             None
         };
-        let target_state_id = target_lookup.and_then(|lookup| {
-            read_construction_target_location_id(mem, sub_ptr)
-                .and_then(|location_id| lookup.target_state_id(template_id, location_id))
+        let target_location_id = read_construction_target_location_id(mem, sub_ptr);
+        let target = target_lookup.and_then(|lookup| {
+            target_location_id.and_then(|location_id| lookup.target(template_id, location_id))
         });
+        let repair_levels_remaining = win_i32(win, mem, line_ptr, LINE_REPAIR_LEVELS_REMAINING)
+            .filter(|raw| *raw >= 0 && (*raw as u32) <= BUILDING_LEVEL_SANE_MAX)
+            .map(|raw| raw as u32);
         // W4: created_date at CBuildingProductionLine+0x58. Fail-closed — a read
         // failure or an implausible raw (0, or beyond the sane ceiling) is
         // badged absent (the row is still emitted with its validated fields).
@@ -479,7 +549,10 @@ fn read_construction_queue_from_manager_with_targets<M: LaneMemory>(
             cost_raw,
             produced_raw,
             priority: (offset / CONSTRUCTION_STRIDE) as u32,
-            target_state_id,
+            target_state_id: target.map(|target| target.state_id),
+            target_location_id,
+            target_scope: target.map(|target| target.scope),
+            repair_levels_remaining,
             created_date_raw,
         });
     }
@@ -490,6 +563,13 @@ fn read_construction_queue_from_manager_with_targets<M: LaneMemory>(
 pub struct TargetStateLookup {
     state_ids: BTreeSet<u32>,
     province_to_state: BTreeMap<u32, u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConstructionTarget {
+    pub scope: u32,
+    pub location_id: u32,
+    pub state_id: u32,
 }
 
 impl TargetStateLookup {
@@ -506,16 +586,25 @@ impl TargetStateLookup {
     }
 
     pub fn target_state_id(&self, template_id: Option<u32>, location_id: u32) -> Option<u32> {
+        self.target(template_id, location_id)
+            .map(|target| target.state_id)
+    }
+
+    pub fn target(&self, template_id: Option<u32>, location_id: u32) -> Option<ConstructionTarget> {
         if is_province_construction_template(template_id) {
-            return self.province_to_state.get(&location_id).copied();
+            return Some(ConstructionTarget {
+                scope: SCOPE_PROVINCE,
+                location_id,
+                state_id: self.province_to_state.get(&location_id).copied()?,
+            });
         }
-        if self.state_ids.contains(&location_id) {
-            return Some(location_id);
-        }
-        if !self.province_to_state.contains_key(&location_id) {
-            return None;
-        }
-        self.province_to_state.get(&location_id).copied()
+        self.state_ids
+            .contains(&location_id)
+            .then_some(ConstructionTarget {
+                scope: SCOPE_STATE,
+                location_id,
+                state_id: location_id,
+            })
     }
 }
 
@@ -638,10 +727,14 @@ pub fn read_building_rows_for_location<M: LaneMemory>(
         let healthy_level = win_u16(win, mem, building_ptr, CBUILDING_OFF_HEALTHY_LEVEL)
             .map(u32::from)
             .filter(|healthy| *healthy <= level && *healthy <= BUILDING_LEVEL_SANE_MAX);
+        let partial_health_raw = win_i64(win, mem, building_ptr, CBUILDING_OFF_PARTIAL_HEALTH_RAW)
+            .filter(|raw| *raw >= 0 && (*raw as u64) <= CBUILDING_PARTIAL_HEALTH_RAW_PER_LEVEL)
+            .map(|raw| raw as u64)
+            .filter(|raw| healthy_level.is_some_and(|healthy| healthy < level || *raw == 0));
         by_type
             .entry(type_id)
             .or_default()
-            .add(level, healthy_level);
+            .add(level, healthy_level, partial_health_raw);
     }
     Some(RowRead {
         rows: by_type
@@ -653,6 +746,7 @@ pub fn read_building_rows_for_location<M: LaneMemory>(
                 type_id,
                 level: acc.level,
                 healthy_level: acc.healthy_level(),
+                partial_health_raw: acc.partial_health_raw(),
             })
             .collect(),
         skipped_rows,
@@ -820,7 +914,10 @@ pub fn decode_lane_frame(bytes: &[u8]) -> Result<LaneFrame, String> {
         if deleted_identity_id(read_u32_le(bytes, cursor + 4)).is_some()
             && (read_u32_le(bytes, cursor + 8) != u32::MAX
                 || read_u32_le(bytes, cursor + 28) != 0
-                || read_u32_le(bytes, cursor + 36) != 0)
+                || read_u32_le(bytes, cursor + 36) != 0
+                || read_u32_le(bytes, cursor + 40) != 0
+                || read_u32_le(bytes, cursor + 44) != 0
+                || read_u32_le(bytes, cursor + 48) != 0)
         {
             return Err(format!(
                 "construction row {index} tombstone has live fields"
@@ -832,6 +929,21 @@ pub fn decode_lane_frame(bytes: &[u8]) -> Result<LaneFrame, String> {
             return Err(format!(
                 "construction row {index} created_date reserved field is nonzero"
             ));
+        }
+        for (flag, field_offset, field_name) in [
+            (
+                CONSTRUCTION_FLAG_TARGET_LOCATION_PRESENT,
+                40,
+                "target_location",
+            ),
+            (CONSTRUCTION_FLAG_TARGET_SCOPE_PRESENT, 44, "target_scope"),
+            (CONSTRUCTION_FLAG_REPAIR_LEVELS_PRESENT, 48, "repair_levels"),
+        ] {
+            if flags & flag == 0 && read_u32_le(bytes, cursor + field_offset) != 0 {
+                return Err(format!(
+                    "construction row {index} {field_name} reserved field is nonzero"
+                ));
+            }
         }
         let row = read_construction_row(bytes, cursor);
         validate_construction_row(index, &row)?;
@@ -852,8 +964,14 @@ pub fn decode_lane_frame(bytes: &[u8]) -> Result<LaneFrame, String> {
         if read_u32_le(bytes, cursor + 28) != 0 {
             return Err(format!("building row {index} reserved field is nonzero"));
         }
+        if flags & BUILDING_FLAG_PARTIAL_HEALTH_PRESENT == 0 && read_u64_le(bytes, cursor + 32) != 0
+        {
+            return Err(format!(
+                "building row {index} partial_health reserved field is nonzero"
+            ));
+        }
         if deleted_identity_id(read_u32_le(bytes, cursor + 12)).is_some()
-            && read_u32_le(bytes, cursor + 20) != u32::MAX
+            && (read_u32_le(bytes, cursor + 20) != u32::MAX || read_u64_le(bytes, cursor + 32) != 0)
         {
             return Err(format!("building row {index} tombstone has live fields"));
         }
@@ -1018,6 +1136,15 @@ fn write_construction_row(out: &mut Vec<u8>, row: &ConstructionQueueRow) {
     if row.created_date_raw.is_some() {
         flags |= CONSTRUCTION_FLAG_CREATED_DATE_PRESENT;
     }
+    if row.target_location_id.is_some() {
+        flags |= CONSTRUCTION_FLAG_TARGET_LOCATION_PRESENT;
+    }
+    if row.target_scope.is_some() {
+        flags |= CONSTRUCTION_FLAG_TARGET_SCOPE_PRESENT;
+    }
+    if row.repair_levels_remaining.is_some() {
+        flags |= CONSTRUCTION_FLAG_REPAIR_LEVELS_PRESENT;
+    }
     out.extend_from_slice(&row.tag_db_id.to_le_bytes());
     out.extend_from_slice(&row.line_id.to_le_bytes());
     out.extend_from_slice(&row.template_id.unwrap_or(u32::MAX).to_le_bytes());
@@ -1030,6 +1157,9 @@ fn write_construction_row(out: &mut Vec<u8>, row: &ConstructionQueueRow) {
     // W4: reserved trailing u32 now carries created_date_raw when present (0
     // when absent — identical to the prior always-zero behaviour).
     out.extend_from_slice(&row.created_date_raw.unwrap_or(0).to_le_bytes());
+    out.extend_from_slice(&row.target_location_id.unwrap_or(0).to_le_bytes());
+    out.extend_from_slice(&row.target_scope.unwrap_or(0).to_le_bytes());
+    out.extend_from_slice(&row.repair_levels_remaining.unwrap_or(0).to_le_bytes());
 }
 
 fn write_building_row(out: &mut Vec<u8>, row: &BuildingRow) {
@@ -1040,6 +1170,9 @@ fn write_building_row(out: &mut Vec<u8>, row: &BuildingRow) {
             flags |= BUILDING_FLAG_DAMAGED;
         }
     }
+    if row.partial_health_raw.is_some() {
+        flags |= BUILDING_FLAG_PARTIAL_HEALTH_PRESENT;
+    }
     out.extend_from_slice(&row.scope.to_le_bytes());
     out.extend_from_slice(&row.location_id.to_le_bytes());
     out.extend_from_slice(&row.state_id.to_le_bytes());
@@ -1048,6 +1181,7 @@ fn write_building_row(out: &mut Vec<u8>, row: &BuildingRow) {
     out.extend_from_slice(&row.healthy_level.unwrap_or(u32::MAX).to_le_bytes());
     out.extend_from_slice(&flags.to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&row.partial_health_raw.unwrap_or(0).to_le_bytes());
 }
 
 fn write_resource_row(out: &mut Vec<u8>, row: &StateResourceRow) {
@@ -1062,6 +1196,9 @@ fn read_construction_row(bytes: &[u8], offset: usize) -> ConstructionQueueRow {
     let target_state_raw = read_u32_le(bytes, offset + 28);
     let flags = read_u32_le(bytes, offset + 32);
     let created_date_raw = read_u32_le(bytes, offset + 36);
+    let target_location_raw = read_u32_le(bytes, offset + 40);
+    let target_scope_raw = read_u32_le(bytes, offset + 44);
+    let repair_levels_raw = read_u32_le(bytes, offset + 48);
     ConstructionQueueRow {
         tag_db_id: read_u32_le(bytes, offset),
         line_id: read_u32_le(bytes, offset + 4),
@@ -1072,6 +1209,12 @@ fn read_construction_row(bytes: &[u8], offset: usize) -> ConstructionQueueRow {
         priority: read_u32_le(bytes, offset + 24),
         target_state_id: (flags & CONSTRUCTION_FLAG_TARGET_STATE_PRESENT != 0)
             .then_some(target_state_raw),
+        target_location_id: (flags & CONSTRUCTION_FLAG_TARGET_LOCATION_PRESENT != 0)
+            .then_some(target_location_raw),
+        target_scope: (flags & CONSTRUCTION_FLAG_TARGET_SCOPE_PRESENT != 0)
+            .then_some(target_scope_raw),
+        repair_levels_remaining: (flags & CONSTRUCTION_FLAG_REPAIR_LEVELS_PRESENT != 0)
+            .then_some(repair_levels_raw),
         created_date_raw: (flags & CONSTRUCTION_FLAG_CREATED_DATE_PRESENT != 0)
             .then_some(created_date_raw),
     }
@@ -1087,6 +1230,8 @@ fn read_building_row(bytes: &[u8], offset: usize) -> BuildingRow {
         type_id: read_u32_le(bytes, offset + 12),
         level: read_u32_le(bytes, offset + 16),
         healthy_level: (flags & BUILDING_FLAG_HEALTHY_PRESENT != 0).then_some(healthy_raw),
+        partial_health_raw: (flags & BUILDING_FLAG_PARTIAL_HEALTH_PRESENT != 0)
+            .then_some(read_u64_le(bytes, offset + 32)),
     }
 }
 
@@ -1118,6 +1263,9 @@ fn validate_construction_row(index: usize, row: &ConstructionQueueRow) -> Result
             || row.produced_raw != 0
             || row.priority != 0
             || row.target_state_id.is_some()
+            || row.target_location_id.is_some()
+            || row.target_scope.is_some()
+            || row.repair_levels_remaining.is_some()
             || row.created_date_raw.is_some()
         {
             return Err(format!(
@@ -1154,6 +1302,40 @@ fn validate_construction_row(index: usize, row: &ConstructionQueueRow) -> Result
         if state_id == 0 || state_id > MAX_STATE_ID {
             return Err(format!(
                 "construction row {index} invalid target_state_id {state_id}"
+            ));
+        }
+    }
+    if row.target_location_id.is_some() != row.target_scope.is_some() {
+        return Err(format!(
+            "construction row {index} target_location_id/target_scope presence mismatch"
+        ));
+    }
+    if let (Some(location_id), Some(scope)) = (row.target_location_id, row.target_scope) {
+        if location_id == 0 || location_id > MAX_PROVINCE_ID {
+            return Err(format!(
+                "construction row {index} invalid target_location_id {location_id}"
+            ));
+        }
+        if scope != SCOPE_STATE && scope != SCOPE_PROVINCE {
+            return Err(format!(
+                "construction row {index} invalid target_scope {scope}"
+            ));
+        }
+        if scope == SCOPE_STATE && row.target_state_id != Some(location_id) {
+            return Err(format!(
+                "construction row {index} state target location/state mismatch"
+            ));
+        }
+        if scope == SCOPE_PROVINCE && row.target_state_id.is_none() {
+            return Err(format!(
+                "construction row {index} province target lacks target_state_id"
+            ));
+        }
+    }
+    if let Some(repair_levels) = row.repair_levels_remaining {
+        if repair_levels > BUILDING_LEVEL_SANE_MAX {
+            return Err(format!(
+                "construction row {index} invalid repair_levels_remaining {repair_levels}"
             ));
         }
     }
@@ -1201,7 +1383,7 @@ fn validate_building_row(index: usize, row: &BuildingRow) -> Result<(), String> 
         if type_id == 0 {
             return Err(format!("building row {index} has zero deleted type_id"));
         }
-        if row.level != 0 || row.healthy_level.is_some() {
+        if row.level != 0 || row.healthy_level.is_some() || row.partial_health_raw.is_some() {
             return Err(format!("building row {index} tombstone has live fields"));
         }
         return Ok(());
@@ -1214,6 +1396,19 @@ fn validate_building_row(index: usize, row: &BuildingRow) -> Result<(), String> 
             return Err(format!(
                 "building row {index} healthy_level {healthy} > level {}",
                 row.level
+            ));
+        }
+    }
+    if let Some(partial) = row.partial_health_raw {
+        let max = u64::from(row.level).saturating_mul(CBUILDING_PARTIAL_HEALTH_RAW_PER_LEVEL);
+        if partial > max {
+            return Err(format!(
+                "building row {index} partial_health_raw {partial} > maximum {max}"
+            ));
+        }
+        if row.healthy_level == Some(row.level) && partial != 0 {
+            return Err(format!(
+                "building row {index} undamaged building has nonzero partial_health_raw"
             ));
         }
     }
@@ -1279,11 +1474,13 @@ struct BuildingAccumulator {
     level: u32,
     healthy: u32,
     healthy_complete: bool,
+    partial_health_raw: u64,
+    partial_health_complete: bool,
     seen: bool,
 }
 
 impl BuildingAccumulator {
-    fn add(&mut self, level: u32, healthy_level: Option<u32>) {
+    fn add(&mut self, level: u32, healthy_level: Option<u32>, partial_health_raw: Option<u64>) {
         self.level = self.level.saturating_add(level);
         match healthy_level {
             Some(healthy) if !self.seen || self.healthy_complete => {
@@ -1294,11 +1491,23 @@ impl BuildingAccumulator {
                 self.healthy_complete = false;
             }
         }
+        match partial_health_raw {
+            Some(partial) if !self.seen || self.partial_health_complete => {
+                self.partial_health_raw = self.partial_health_raw.saturating_add(partial);
+                self.partial_health_complete = true;
+            }
+            _ => self.partial_health_complete = false,
+        }
         self.seen = true;
     }
 
     fn healthy_level(&self) -> Option<u32> {
         self.healthy_complete.then_some(self.healthy)
+    }
+
+    fn partial_health_raw(&self) -> Option<u64> {
+        self.partial_health_complete
+            .then_some(self.partial_health_raw)
     }
 }
 
@@ -1354,6 +1563,16 @@ fn win_i32<M: LaneMemory>(win: Option<&[u8]>, mem: &M, addr: usize, off: usize) 
     }
 }
 
+#[inline]
+fn win_i64<M: LaneMemory>(win: Option<&[u8]>, mem: &M, addr: usize, off: usize) -> Option<i64> {
+    match win {
+        Some(buf) => Some(i64::from_le_bytes(
+            buf.get(off..off.checked_add(8)?)?.try_into().ok()?,
+        )),
+        None => mem.read_i64(addr.checked_add(off)?),
+    }
+}
+
 /// Reads a production-line fixed-point raw either from the captured window or
 /// via an individual guarded read, then applies the in-range filter (the
 /// former `read_production_fixed_raw` guard). Byte-identical to the original.
@@ -1391,6 +1610,10 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
 
 fn read_i32_le(bytes: &[u8], offset: usize) -> i32 {
     i32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("i32 range"))
+}
+
+fn read_u64_le(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("u64 range"))
 }
 
 #[cfg(test)]
@@ -1753,6 +1976,7 @@ mod tests {
             state_target as u64,
         );
         mem.write_u32(state_target + TARGET_LOCATION_ID, 42);
+        mem.write_i32(state_line + LINE_REPAIR_LEVELS_REMAINING, 0);
 
         mem.write_u32(province_line + LINE_TYPE, LINE_TYPE_CONSTRUCTION);
         mem.write_u32(province_line + LINE_ID, 78);
@@ -1766,6 +1990,7 @@ mod tests {
             province_target as u64,
         );
         mem.write_u32(province_target + TARGET_LOCATION_ID, 2_068);
+        mem.write_i32(province_line + LINE_REPAIR_LEVELS_REMAINING, 2);
 
         let lookup = TargetStateLookup::new(
             &[StateRoot {
@@ -1786,6 +2011,12 @@ mod tests {
         assert_eq!(read.rows.len(), 2);
         assert_eq!(read.rows[0].target_state_id, Some(42));
         assert_eq!(read.rows[1].target_state_id, Some(42));
+        assert_eq!(read.rows[0].target_location_id, Some(42));
+        assert_eq!(read.rows[0].target_scope, Some(SCOPE_STATE));
+        assert_eq!(read.rows[0].repair_levels_remaining, Some(0));
+        assert_eq!(read.rows[1].target_location_id, Some(2_068));
+        assert_eq!(read.rows[1].target_scope, Some(SCOPE_PROVINCE));
+        assert_eq!(read.rows[1].repair_levels_remaining, Some(2));
     }
 
     #[test]
@@ -1804,6 +2035,7 @@ mod tests {
         mem.write_u32(building + CBUILDING_OFF_TYPE, 0x2FAB);
         mem.write_u16(building + CBUILDING_OFF_LEVEL, 5);
         mem.write_u16(building + CBUILDING_OFF_HEALTHY_LEVEL, 4);
+        mem.write_u64(building + CBUILDING_OFF_PARTIAL_HEALTH_RAW, 8_184_501);
 
         let read = read_state_building_rows(
             &mem,
@@ -1825,6 +2057,7 @@ mod tests {
                 type_id: 0x2FAB,
                 level: 5,
                 healthy_level: Some(4),
+                partial_health_raw: Some(8_184_501),
             }]
         );
     }
@@ -1913,8 +2146,9 @@ mod tests {
         let mut frame = sample_frame();
         frame.construction_rows[0].created_date_raw = Some(60_827_043);
         let encoded = encode_lane_frame(&frame);
-        // Repurposing the reserved slot must NOT change the wire row size.
-        assert_eq!(CONSTRUCTION_ROW_LEN, 40);
+        // A14 v2 appends exact target/repair fields after the preserved
+        // created-date slot.
+        assert_eq!(CONSTRUCTION_ROW_LEN, 52);
         let decoded = decode_lane_frame(&encoded).unwrap();
         assert_eq!(
             decoded.construction_rows[0].created_date_raw,
@@ -1936,6 +2170,64 @@ mod tests {
         let row_start = HEADER_LEN;
         assert_eq!(read_u32_le(&encoded, row_start + 36), 0);
         assert!(gate_lane_frame(&encoded).ok);
+    }
+
+    #[test]
+    fn a14_damage_reason_enum_is_exact_and_closed() {
+        let expected = [
+            BuildingDamageReason::None,
+            BuildingDamageReason::Bombed,
+            BuildingDamageReason::Sabotaged,
+            BuildingDamageReason::Collateral,
+            BuildingDamageReason::Repaired,
+            BuildingDamageReason::Scorched,
+        ];
+        for (raw, reason) in expected.into_iter().enumerate() {
+            assert_eq!(BuildingDamageReason::from_raw(raw as u32), Some(reason));
+        }
+        assert_eq!(BuildingDamageReason::Repaired.token(), "repaired");
+        assert_eq!(BuildingDamageReason::from_raw(6), None);
+        assert_eq!(BuildingDamageReason::from_raw(u32::MAX), None);
+    }
+
+    #[test]
+    fn a14_compact_round_trips_exact_location_and_repair_state() {
+        let mut frame = sample_frame();
+        frame.source_flags &= !SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE;
+        let row = &mut frame.construction_rows[0];
+        row.target_state_id = Some(42);
+        row.target_location_id = Some(2_068);
+        row.target_scope = Some(SCOPE_PROVINCE);
+        row.repair_levels_remaining = Some(1);
+        frame.building_rows[0].partial_health_raw = Some(8_184_501);
+
+        let encoded = encode_lane_frame(&frame);
+        let decoded = decode_lane_frame(&encoded).unwrap();
+        assert_eq!(decoded, frame);
+        assert!(gate_lane_frame(&encoded).ok);
+    }
+
+    #[test]
+    fn a14_compact_decode_rejects_unflagged_appended_payloads() {
+        for (field_offset, field_name) in [
+            (40usize, "target_location"),
+            (44, "target_scope"),
+            (48, "repair_levels"),
+        ] {
+            let mut encoded = encode_lane_frame(&sample_frame());
+            let field = HEADER_LEN + field_offset;
+            encoded[field..field + 4].copy_from_slice(&1u32.to_le_bytes());
+            let err = decode_lane_frame(&encoded).unwrap_err();
+            assert!(err.contains(field_name), "{field_name}: {err}");
+        }
+
+        let mut frame = sample_frame();
+        frame.building_rows[0].partial_health_raw = None;
+        let mut encoded = encode_lane_frame(&frame);
+        let field = HEADER_LEN + CONSTRUCTION_ROW_LEN + 32;
+        encoded[field..field + 8].copy_from_slice(&1u64.to_le_bytes());
+        let err = decode_lane_frame(&encoded).unwrap_err();
+        assert!(err.contains("partial_health"), "{err}");
     }
 
     #[test]
@@ -2027,6 +2319,9 @@ mod tests {
             produced_raw: 100_000,
             priority: 1,
             target_state_id: None,
+            target_location_id: None,
+            target_scope: None,
+            repair_levels_remaining: None,
             created_date_raw: None,
         });
 
@@ -2167,6 +2462,9 @@ mod tests {
                 produced_raw: 5_000_000,
                 priority: 0,
                 target_state_id: None,
+                target_location_id: None,
+                target_scope: None,
+                repair_levels_remaining: None,
                 // W4: melt-anchored created_date (GER line 18354 == raw
                 // 60827043 -> renders 1943.9.23.4). Exercises the reserved-slot
                 // round trip through encode/decode.
@@ -2180,6 +2478,7 @@ mod tests {
                     type_id: 0x2FAB,
                     level: 5,
                     healthy_level: Some(4),
+                    partial_health_raw: Some(8_184_501),
                 },
                 BuildingRow {
                     scope: SCOPE_PROVINCE,
@@ -2188,6 +2487,7 @@ mod tests {
                     type_id: 0x4CC1,
                     level: 2,
                     healthy_level: Some(2),
+                    partial_health_raw: Some(0),
                 },
             ],
             resource_rows: vec![StateResourceRow {

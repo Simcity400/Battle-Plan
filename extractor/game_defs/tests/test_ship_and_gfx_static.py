@@ -72,7 +72,7 @@ def _patch_layers(monkeypatch, vanilla: Path, mod: Path | None = None):
     monkeypatch.setattr(gfx_icon_manifest_gate.R, "build_layers", fake_build_layers)
 
 
-def _minimal_gate_catalog(*, sprites=1, parsed=1, total=1, unresolved=0, allowed=0, entries=0, unused=0, warnings=None):
+def _minimal_gate_catalog(*, sprites=1, parsed=1, total=1, unresolved=0, allowed=0, missing=0, entries=0, unused=0, warnings=None):
     return {
         "meta": {
             "sprites": sprites,
@@ -80,6 +80,7 @@ def _minimal_gate_catalog(*, sprites=1, parsed=1, total=1, unresolved=0, allowed
             "interface_gfx_files": total,
             "unresolved_textures": unresolved,
             "allowed_missing_textures": allowed,
+            "missing_textures": missing,
             "missing_texture_allowlist": {"entries": entries},
             "unused_missing_texture_allowlist_entries": unused,
             "warnings": warnings or [],
@@ -220,6 +221,201 @@ spriteTypes = {
     assert catalog["sprites"]["GFX_shared"]["texture_sha256"] == sha256_bytes(b"mod")
     assert catalog["sprites"]["GFX_integrated"]["source_layer"] == "integrated_dlc/dlc001"
     assert catalog["sprites"]["GFX_dlc"]["source_layer"] == "dlc/dlc010"
+
+
+def test_gfx_live_inventory_excludes_generated_dlc_descriptor_from_mod_layers(
+    tmp_path, monkeypatch
+):
+    vanilla = tmp_path / "vanilla"
+    userdata = tmp_path / "userdata"
+    staged_dlc = tmp_path / "staged_dlc"
+    vanilla.mkdir()
+    userdata.mkdir()
+    _write(userdata, "dlc_load.json", '{"enabled_mods":[],"disabled_dlcs":[]}')
+    inventory_path = tmp_path / "source_inventory.json"
+    inventory_path.write_text(
+        json.dumps(
+            {
+                "inventory_sha256": "1" * 64,
+                "namespaces": [
+                    {
+                        "binding": "base",
+                        "kind": "base",
+                        "id": "base",
+                        "label": "vanilla",
+                        "replace_paths": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        gfx_icon_manifest_gate.LR,
+        "validate_source_inventory_document",
+        lambda raw: raw,
+    )
+
+    def fake_build_layers(vanilla=None, mods=None, userdata=None, strict_mods=False):
+        return [
+            Layer("vanilla", Path(vanilla)),
+            Layer("Rocket Launcher Unit Pack", staged_dlc),
+        ]
+
+    monkeypatch.setattr(gfx_icon_manifest_gate.R, "build_layers", fake_build_layers)
+    layers, _meta = gfx_icon_manifest_gate.build_gfx_asset_layers(
+        vanilla=str(vanilla),
+        userdata=userdata,
+        source_inventory_path=inventory_path,
+    )
+
+    assert [layer.label for layer in layers] == ["vanilla"]
+
+
+def test_gfx_live_inventory_drives_exact_namespace_order_and_staged_archive_root(
+    tmp_path, monkeypatch
+):
+    vanilla = tmp_path / "vanilla"
+    userdata = tmp_path / "userdata"
+    mod = tmp_path / "mod"
+    staged = userdata / "_materialized_dlc/0004"
+    for root in (
+        vanilla,
+        userdata,
+        mod,
+        staged,
+        vanilla / "integrated_dlc/dlc023_man_the_guns",
+        vanilla / "dlc/dlc014_wallpaper",
+        vanilla / "dlc/dlc023_man_the_guns",
+        vanilla / "dlc/dlc048_content_creator_pack_peace_for_our_time",
+        vanilla / "dlc/m_product",
+    ):
+        root.mkdir(parents=True, exist_ok=True)
+    _write(userdata, "dlc_load.json", '{"enabled_mods":[],"disabled_dlcs":[]}')
+    _write(
+        userdata,
+        "static_mod_staging_manifest.json",
+        json.dumps(
+            {
+                "schema": "extractor.runtime_static_mod_staging.v2",
+                "dlc_archives": [
+                    {
+                        "dlc_id": "q_archive",
+                        "content_path": str(staged),
+                        "source_namespace_sha256": "9" * 64,
+                    }
+                ],
+            }
+        ),
+    )
+    namespaces = [
+        {
+            "binding": "base",
+            "kind": "vanilla",
+            "id": "vanilla",
+            "label": "vanilla",
+            "replace_paths": [],
+            "content_sha256": "0" * 64,
+        },
+        {
+            "binding": "integrated",
+            "kind": "integrated_dlc",
+            "id": "dlc023_man_the_guns",
+            "label": "integrated_dlc/dlc023_man_the_guns",
+            "replace_paths": [],
+            "content_sha256": "1" * 64,
+        },
+        {
+            "binding": "asset_only",
+            "kind": "dlc",
+            "id": "dlc014_wallpaper",
+            "label": "dlc/dlc014_wallpaper",
+            "replace_paths": [],
+            "content_sha256": "2" * 64,
+        },
+        {
+            "binding": "asset_only",
+            "kind": "dlc",
+            "id": "dlc023_man_the_guns",
+            "label": "dlc/dlc023_man_the_guns",
+            "replace_paths": [],
+            "content_sha256": "5" * 64,
+        },
+        {
+            "binding": "asset_only",
+            "kind": "dlc",
+            "id": "dlc048_content_creator_pack_peace_for_our_time",
+            "label": "dlc/dlc048_content_creator_pack_peace_for_our_time",
+            "replace_paths": [],
+            "content_sha256": "6" * 64,
+        },
+        {
+            "binding": "active_product",
+            "kind": "dlc",
+            "id": "q_archive",
+            "label": "dlc/q_archive",
+            "replace_paths": [],
+            "content_sha256": "9" * 64,
+        },
+        {
+            "binding": "active_product",
+            "kind": "dlc",
+            "id": "m_product",
+            "label": "dlc/m_product",
+            "replace_paths": [],
+            "content_sha256": "3" * 64,
+        },
+        {
+            "binding": "active_mod",
+            "kind": "mod",
+            "id": "fixture",
+            "label": "Fixture Mod",
+            "replace_paths": ["gfx/models"],
+            "content_sha256": "4" * 64,
+        },
+    ]
+    inventory_path = tmp_path / "source_inventory.json"
+    inventory_path.write_text(
+        json.dumps({"inventory_sha256": "f" * 64, "namespaces": namespaces}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        gfx_icon_manifest_gate.LR,
+        "validate_source_inventory_document",
+        lambda raw: raw,
+    )
+
+    def fake_build_layers(vanilla=None, mods=None, userdata=None, strict_mods=False):
+        return [
+            Layer("vanilla", Path(vanilla)),
+            Layer("Generated DLC Descriptor", staged),
+            Layer("Fixture Mod", mod, ["gfx/models"]),
+        ]
+
+    monkeypatch.setattr(gfx_icon_manifest_gate.R, "build_layers", fake_build_layers)
+    layers, meta = gfx_icon_manifest_gate.build_gfx_asset_layers(
+        vanilla=str(vanilla),
+        userdata=userdata,
+        source_inventory_path=inventory_path,
+    )
+
+    assert [layer.label for layer in layers] == [
+        "vanilla",
+        "integrated_dlc/dlc023_man_the_guns",
+        "dlc/q_archive",
+        "dlc/m_product",
+        "Fixture Mod",
+    ]
+    assert layers[2].root == staged.resolve()
+    assert layers[-1].replace_paths == ["gfx/models"]
+    assert meta["source_inventory_sha256"] == "f" * 64
+    assert meta["enabled_dlcs"] == ["q_archive", "m_product"]
+    assert meta["excluded_asset_only_dlcs"] == [
+        "dlc014_wallpaper",
+        "dlc023_man_the_guns",
+        "dlc048_content_creator_pack_peace_for_our_time",
+    ]
+    assert layers[0].meta["enabled_dlcs"] == ["q_archive", "m_product"]
 
 
 def test_gfx_disabled_dlc_is_excluded(tmp_path, monkeypatch):
@@ -418,3 +614,17 @@ def test_gfx_gate_shared_checks_reject_zero_sprite_catalog():
     assert not gfx_icon_manifest_gate.catalog_gate_passed(catalog, min_sprites=1)
     with pytest.raises(RuntimeError, match="min_sprites"):
         build_all._assert_gfx_gate_passed(catalog)
+
+
+def test_gfx_gate_allows_unused_rows_from_inactive_dlc_selection():
+    catalog = _minimal_gate_catalog(
+        allowed=1,
+        missing=1,
+        entries=2,
+        unused=1,
+    )
+
+    checks = gfx_icon_manifest_gate.catalog_gate_checks(catalog, min_sprites=1)
+
+    assert checks["allowed_missing_textures"] is True
+    assert gfx_icon_manifest_gate.catalog_gate_passed(catalog, min_sprites=1)

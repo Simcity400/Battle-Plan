@@ -391,12 +391,12 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             if row.get("classdesc_rtti") == ".?AVCOperativeLeader@@"
             and row.get("owner_valid")
         }
-        expected_flags = {"31", "47", "63"}
+        expected_observed_flags = {"15", "31", "47", "63"}
         nonactive_flags = sorted(flag for flag in current_counts if flag != "47")
         report["summary"] = {
             "COperativeLeader_identity_rows": sum(current_counts.values()),
             "owner_valid_COperativeLeader_lifeflag_counts": dict(sorted(current_counts.items())),
-            "active_lifeflag_47_rows": current_counts.get("47", 0),
+            "lifeflag_47_rows": current_counts.get("47", 0),
             "nonactive_lifeflags_observed": nonactive_flags,
             "prior_counts_match_current": current_counts
             == report["prior_intel_proof"]["operative_lifeflag_counts"],
@@ -408,7 +408,7 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         }
         if (
             not scan_report.get("timed_out")
-            and expected_flags.issubset(set(current_counts))
+            and expected_observed_flags.issubset(set(current_counts))
             and report["warm_validation"].get("status") == "validated"
         ):
             report["status"] = "operative_lifecycle_groups_validated"

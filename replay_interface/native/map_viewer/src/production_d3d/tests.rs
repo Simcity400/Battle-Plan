@@ -1,0 +1,684 @@
+use super::*;
+
+const FIXTURE_COLOR_ATTACHMENT_ORDINAL: u32 = 4;
+const FIXTURE_DEPTH_ATTACHMENT_ORDINAL: u32 = 9;
+
+#[derive(Default)]
+struct TraceBridge {
+    calls: Vec<String>,
+}
+
+impl ProductionD3dExecutionBridge for TraceBridge {
+    fn begin_frame(&mut self, frame: &PreparedProductionD3dFrame) -> Result<()> {
+        self.calls.push(format!("begin:{}", frame.target.is_some()));
+        Ok(())
+    }
+
+    fn execute_static_operation(
+        &mut self,
+        global_ordinal: u32,
+        pass: &StaticMapPassProgram,
+        _: &[ConstantBufferBinding],
+        operation: &StaticMapOperation,
+    ) -> Result<()> {
+        self.calls.push(format!(
+            "{global_ordinal}:{}:{}",
+            pass.pass_token,
+            static_operation_token(operation)
+        ));
+        Ok(())
+    }
+
+    fn execute_runtime_draw(
+        &mut self,
+        global_ordinal: u32,
+        _: &[ConstantBufferBinding],
+        _: &PreparedRuntimeDraw,
+    ) -> Result<()> {
+        self.calls.push(format!("{global_ordinal}:runtime"));
+        Ok(())
+    }
+
+    fn execute_m03_draw(
+        &mut self,
+        global_ordinal: u32,
+        _: &[ConstantBufferBinding],
+        _: &replay_core::M03ArrowDraw,
+    ) -> Result<()> {
+        self.calls.push(format!("{global_ordinal}:m03"));
+        Ok(())
+    }
+
+    fn finish_frame(&mut self) -> Result<()> {
+        self.calls.push("finish".into());
+        Ok(())
+    }
+}
+
+fn empty_frame() -> PreparedProductionMapFrame {
+    PreparedProductionMapFrame {
+        ordered_static_map_programs: Vec::new(),
+        political_textures: Vec::new(),
+        tiled_lights: Vec::new(),
+        content_manifest_sha256: "11".repeat(32),
+        effective_vfs_manifest_sha256: "22".repeat(32),
+        selected_submit_index: None,
+        selected_submit_global_order: None,
+        ordered_scene_constant_buffers: Vec::new(),
+        ordered_render_operations: Vec::new(),
+        ordered_runtime_draws: Vec::new(),
+        m02_combat: None,
+        authenticated_ui_pass: None,
+        m03_arrows: None,
+        o04_cities: None,
+        omitted_data_needs: Vec::new(),
+    }
+}
+
+fn static_clear(operation_ordinal: u32) -> StaticMapOperation {
+    StaticMapOperation {
+        operation_ordinal,
+        payload_sha256: format!("{:064x}", operation_ordinal),
+        command: StaticMapCommand::ClearColor {
+            target: replay_core::RenderTargetDesc {
+                prepared_target: replay_core::PreparedRenderTarget::OpaqueRenderTarget {
+                    attachment_ordinal: FIXTURE_COLOR_ATTACHMENT_ORDINAL,
+                },
+                width: 8,
+                height: 4,
+                dxgi_format_u32: 28,
+                mip_level: 0,
+                sample_count: 1,
+                sample_quality: 0,
+                persistent_content: None,
+                exact_resource: None,
+            },
+            rgba_f32_bits: [0, 0, 0, 0],
+        },
+    }
+}
+
+fn prepared_static_frame(operations: Vec<StaticMapOperation>) -> PreparedProductionD3dFrame {
+    let ordered_render_operations = operations
+        .iter()
+        .map(|operation| RenderExecutionRef::Static {
+            operation_ordinal: operation.operation_ordinal,
+        })
+        .collect();
+    PreparedProductionD3dFrame {
+        content_manifest_sha256: "11".repeat(32),
+        effective_vfs_manifest_sha256: "22".repeat(32),
+        target: None,
+        ordered_scene_constant_buffers: Vec::new(),
+        ordered_static_programs: vec![StaticMapPassProgram {
+            program_ordinal: 0,
+            pass_token: "map_viewer.production_map.terrain".into(),
+            ordered_content_keys: Vec::new(),
+            ordered_operations: operations,
+            payload_sha256: "33".repeat(32),
+        }],
+        ordered_static_used_content: Vec::new(),
+        ordered_render_operations,
+        ordered_runtime_draws: Vec::new(),
+        political_textures: Vec::new(),
+        tiled_lights: Vec::new(),
+        m02_combat: None,
+        authenticated_ui_pass: None,
+        m03_arrows: None,
+        omissions: Vec::new(),
+    }
+}
+
+#[test]
+fn headless_execution_receipt_is_byte_deterministic() {
+    let prepared = prepare_production_d3d_frame(&empty_frame(), &BTreeMap::new()).unwrap();
+    let mut first_bridge = TraceBridge::default();
+    let first = execute_production_d3d_frame(&prepared, &mut first_bridge).unwrap();
+    let mut second_bridge = TraceBridge::default();
+    let second = execute_production_d3d_frame(&prepared, &mut second_bridge).unwrap();
+    assert_eq!(first, second);
+    assert_eq!(first_bridge.calls, vec!["begin:false", "finish"]);
+    assert_eq!(first_bridge.calls, second_bridge.calls);
+    assert_eq!(first.deterministic_sha256.len(), 64);
+}
+
+#[test]
+fn absent_portable_static_programs_produce_no_static_pixels() {
+    let prepared = prepare_production_d3d_frame(&empty_frame(), &BTreeMap::new()).unwrap();
+    assert!(prepared.ordered_static_programs.is_empty());
+    assert!(prepared.ordered_static_used_content.is_empty());
+}
+
+#[test]
+fn m02_carrier_without_authenticated_ui_pass_omits_entire_pixel_route() {
+    let mut frame = empty_frame();
+    frame.m02_combat = Some(replay_core::M02CombatFrame {
+        schema: "hoi4.production-m02-combat-indicators.v1".into(),
+        update_index: 7,
+        first_sequence: 10,
+        last_sequence: 20,
+        ui_pass_draw_count: 1167,
+        validated_laws: vec![
+            replay_core::M02LawState::AActiveBaseline,
+            replay_core::M02LawState::BZoomBoundary,
+            replay_core::M02LawState::CResultLifecycle,
+            replay_core::M02LawState::DPortStrikeDiscriminator,
+            replay_core::M02LawState::EVisibilityControl,
+        ],
+        indicators: Vec::new(),
+        ordered_draws: Vec::new(),
+    });
+
+    let prepared = prepare_production_d3d_frame(&frame, &BTreeMap::new()).unwrap();
+    assert!(prepared.m02_combat.is_some());
+    assert!(prepared.ordered_render_operations.is_empty());
+    assert!(prepared.omissions.iter().any(|omission| {
+        omission.pass == "m02_combat_indicators"
+            && omission
+                .reason
+                .contains("authenticated selected-Present UI-pass operation stream is absent")
+            && omission
+                .reason
+                .contains("entire M02 pixel route is omitted")
+    }));
+}
+
+#[test]
+fn unified_order_is_the_only_static_execution_sequence() {
+    let frame = prepared_static_frame(vec![static_clear(5), static_clear(9)]);
+    let mut bridge = TraceBridge::default();
+    execute_production_d3d_frame(&frame, &mut bridge).unwrap();
+    assert_eq!(
+        bridge.calls,
+        vec![
+            "begin:false",
+            "0:map_viewer.production_map.terrain:clear_color",
+            "1:map_viewer.production_map.terrain:clear_color",
+            "finish",
+        ]
+    );
+}
+
+#[test]
+fn unified_order_rejects_duplicate_unknown_and_omitted_static_operations() {
+    let base = prepared_static_frame(vec![static_clear(5), static_clear(9)]);
+    for (order, expected) in [
+        (
+            vec![
+                RenderExecutionRef::Static {
+                    operation_ordinal: 5,
+                },
+                RenderExecutionRef::Static {
+                    operation_ordinal: 5,
+                },
+            ],
+            "repeats a static operation",
+        ),
+        (
+            vec![
+                RenderExecutionRef::Static {
+                    operation_ordinal: 5,
+                },
+                RenderExecutionRef::Static {
+                    operation_ordinal: 77,
+                },
+            ],
+            "absent static operation",
+        ),
+        (
+            vec![RenderExecutionRef::Static {
+                operation_ordinal: 5,
+            }],
+            "does not cover every static/runtime operation",
+        ),
+    ] {
+        let mut frame = base.clone();
+        frame.ordered_render_operations = order;
+        let error = execute_production_d3d_frame(&frame, &mut TraceBridge::default())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{error}");
+    }
+
+    let mut no_order = base;
+    no_order.ordered_render_operations.clear();
+    assert!(
+        execute_production_d3d_frame(&no_order, &mut TraceBridge::default())
+            .unwrap_err()
+            .to_string()
+            .contains("no authoritative cross-family execution order")
+    );
+}
+
+#[test]
+fn target_validation_rejects_format_order_and_sample_drift() {
+    let base = ProductionMainSceneTargetDesc {
+        color_attachment_ordinal: FIXTURE_COLOR_ATTACHMENT_ORDINAL,
+        color_width: 64,
+        color_height: 32,
+        color_format: 10,
+        color_samples: 4,
+        color_quality: 0,
+        depth_attachment_ordinal: FIXTURE_DEPTH_ATTACHMENT_ORDINAL,
+        depth_width: 64,
+        depth_height: 32,
+        depth_format: 45,
+        depth_samples: 4,
+        depth_quality: 0,
+    };
+    base.validate().unwrap();
+    let mut bad = base.clone();
+    bad.depth_samples = 1;
+    assert!(bad
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("multisample"));
+    bad = base;
+    bad.depth_width = 63;
+    assert!(bad
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("dimensions"));
+}
+
+#[test]
+fn production_module_has_no_capture_or_vanilla_asset_route() {
+    let source = include_str!("../production_d3d.rs");
+    for forbidden in [
+        "--bundle",
+        "--capture",
+        "map_frame_bundle",
+        "vanilla_",
+        "Program Files",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "forbidden production dependency: {forbidden}"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn offscreen_d3d11_clear_readback_is_deterministic() {
+    let desc = ProductionMainSceneTargetDesc {
+        color_attachment_ordinal: FIXTURE_COLOR_ATTACHMENT_ORDINAL,
+        color_width: 8,
+        color_height: 4,
+        color_format: 28,
+        color_samples: 1,
+        color_quality: 0,
+        depth_attachment_ordinal: FIXTURE_DEPTH_ATTACHMENT_ORDINAL,
+        depth_width: 8,
+        depth_height: 4,
+        depth_format: 45,
+        depth_samples: 1,
+        depth_quality: 0,
+    };
+    let mut backend = NativeProductionD3dBackend::create_offscreen(desc)
+        .expect("Windows production D3D proof requires a working D3D11 device");
+    backend.clear([0.25, 0.5, 0.75, 1.0], 1.0, 0).unwrap();
+    let first = backend.readback().unwrap();
+    let second = backend.readback().unwrap();
+    assert_eq!(first, second);
+    assert_eq!(first.bytes.len(), 8 * 4 * 4);
+}
+
+#[cfg(windows)]
+#[test]
+fn admitted_portable_exact_draw_changes_every_main_scene_pixel() {
+    use replay_core::{
+        BlendDesc, BlendFactor, BlendOperation, BufferSource, Comparison, CompiledShaderPayload,
+        CullMode, DepthDesc, DrawCommand, FillMode, GeometryBinding, IndexFormat, InputElementDesc,
+        PipelineDesc, PrimitiveTopology, RasterizerDesc, RenderOutputState, ShaderProgram,
+        StaticGeometrySource, StaticMapDraw, StencilFaceDesc, StencilOperation,
+        VertexBufferBinding, ViewportDesc,
+    };
+    use std::fs;
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("map_viewer_native_draw_{nonce}"));
+    struct RemoveOnDrop(std::path::PathBuf);
+    impl Drop for RemoveOnDrop {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = RemoveOnDrop(root.clone());
+    let shader_path = root.join("gfx").join("fx").join("portable_test.hlsl");
+    fs::create_dir_all(shader_path.parent().unwrap()).unwrap();
+    let hlsl = r#"
+struct VSIn { float2 position : POSITION; };
+float4 vs_main(VSIn input) : SV_Position { return float4(input.position, 0.0, 1.0); }
+float4 ps_main() : SV_Target { return float4(1.0, 0.0, 0.0, 1.0); }
+"#;
+    fs::write(&shader_path, hlsl).unwrap();
+    let vfs_hash = "22".repeat(32);
+    let (resolver, source) = crate::GameFileResolver::vanilla(&root)
+        .unwrap()
+        .bind_exact_test_content("gfx/fx/portable_test.hlsl", &vfs_hash)
+        .unwrap();
+
+    let compile = |entry: &str, target: &str| -> Vec<u8> {
+        unsafe {
+            let blob = crate::d3d11_device::native_d3d11_compile_shader(hlsl, entry, target)
+                .expect("production draw proof shader must compile");
+            std::slice::from_raw_parts(
+                (*blob.as_raw()).GetBufferPointer() as *const u8,
+                (*blob.as_raw()).GetBufferSize(),
+            )
+            .to_vec()
+        }
+    };
+    let vs = compile("vs_main", "vs_5_0");
+    let ps = compile("ps_main", "ps_5_0");
+    let desc = ProductionMainSceneTargetDesc {
+        color_attachment_ordinal: FIXTURE_COLOR_ATTACHMENT_ORDINAL,
+        color_width: 8,
+        color_height: 4,
+        color_format: 28,
+        color_samples: 1,
+        color_quality: 0,
+        depth_attachment_ordinal: FIXTURE_DEPTH_ATTACHMENT_ORDINAL,
+        depth_width: 8,
+        depth_height: 4,
+        depth_format: 45,
+        depth_samples: 1,
+        depth_quality: 0,
+    };
+    let mut backend = NativeProductionD3dBackend::create_offscreen(desc.clone())
+        .expect("Windows production draw proof requires a working D3D11 device");
+    backend.clear([0.0, 0.0, 0.0, 1.0], 1.0, 0).unwrap();
+
+    let mut vertices = Vec::new();
+    for value in [-1.0f32, -1.0, -1.0, 3.0, 3.0, -1.0] {
+        vertices.extend_from_slice(&value.to_le_bytes());
+    }
+    let stencil = StencilFaceDesc {
+        fail_operation: StencilOperation::Keep,
+        depth_fail_operation: StencilOperation::Keep,
+        pass_operation: StencilOperation::Keep,
+        comparison: Comparison::Always,
+    };
+    let draw = StaticMapDraw {
+        draw_token: "test.portable.solid_red".into(),
+        shader_program: ShaderProgram {
+            source,
+            effect_token: "test.solid_red".into(),
+            vertex_entry_token: "vs_main".into(),
+            pixel_entry_token: "ps_main".into(),
+            ordered_defines: Vec::new(),
+            compiled_vertex_shader: CompiledShaderPayload {
+                compiler_identity: "d3dcompiler_test_fixture".into(),
+                target_profile: "vs_5_0".into(),
+                compiler_flags_u64: 0,
+                sha256: snapshot::sha256::Sha256::hex(&vs),
+                bytecode: vs,
+            },
+            compiled_pixel_shader: CompiledShaderPayload {
+                compiler_identity: "d3dcompiler_test_fixture".into(),
+                target_profile: "ps_5_0".into(),
+                compiler_flags_u64: 0,
+                sha256: snapshot::sha256::Sha256::hex(&ps),
+                bytecode: ps,
+            },
+            geometry_shader: None,
+            hull_shader: None,
+            domain_shader: None,
+            compute_shader: None,
+        },
+        ordered_shader_resources: Vec::new(),
+        pipeline: PipelineDesc {
+            topology: PrimitiveTopology::TriangleList,
+            blend: BlendDesc {
+                alpha_to_coverage_enabled: false,
+                independent_blend_enabled: false,
+                enabled: false,
+                source_color: BlendFactor::One,
+                destination_color: BlendFactor::Zero,
+                color_operation: BlendOperation::Add,
+                source_alpha: BlendFactor::One,
+                destination_alpha: BlendFactor::Zero,
+                alpha_operation: BlendOperation::Add,
+                write_mask_rgba_u8: 0xf,
+                additional_targets: Vec::new(),
+                blend_factor_rgba_f32_bits: [0; 4],
+                sample_mask_u32: u32::MAX,
+            },
+            depth: DepthDesc {
+                enabled: false,
+                write_enabled: false,
+                comparison: Comparison::Always,
+                stencil_enabled: false,
+                stencil_read_mask_u8: 0xff,
+                stencil_write_mask_u8: 0xff,
+                front_face: stencil.clone(),
+                back_face: stencil,
+                stencil_reference_u32: 0,
+            },
+            rasterizer: RasterizerDesc {
+                fill: FillMode::Solid,
+                cull: CullMode::None,
+                front_counter_clockwise: false,
+                depth_clip_enabled: true,
+                scissor_enabled: false,
+                depth_bias_i32: 0,
+                depth_bias_clamp_f32_bits: 0,
+                slope_scaled_depth_bias_f32_bits: 0,
+                multisample_enabled: false,
+                antialiased_line_enabled: false,
+            },
+            samplers: Vec::new(),
+            input_layout: vec![InputElementDesc {
+                semantic_token: "POSITION".into(),
+                semantic_index: 0,
+                dxgi_format_u32: 16,
+                input_slot: 0,
+                aligned_byte_offset: 0,
+                per_instance: false,
+                instance_step_rate: 0,
+            }],
+            index_format: IndexFormat::None,
+            static_indices_u16: Vec::new(),
+        },
+        geometry: StaticGeometrySource::Exact {
+            geometry: GeometryBinding {
+                ordered_vertex_buffers: vec![VertexBufferBinding {
+                    input_slot: 0,
+                    stride_bytes: 8,
+                    byte_offset: 0,
+                    source: BufferSource::Inline {
+                        sha256: snapshot::sha256::Sha256::hex(&vertices),
+                        bytes: vertices,
+                    },
+                }],
+                index_buffer: None,
+                stream_output_targets: Vec::new(),
+                draw: DrawCommand::Draw {
+                    vertex_count: 3,
+                    start_vertex: 0,
+                },
+            },
+        },
+        ordered_constant_buffers: Vec::new(),
+        output_state: RenderOutputState {
+            ordered_color_targets: vec![replay_core::RenderTargetDesc {
+                prepared_target: replay_core::PreparedRenderTarget::OpaqueRenderTarget {
+                    attachment_ordinal: FIXTURE_COLOR_ATTACHMENT_ORDINAL,
+                },
+                width: 8,
+                height: 4,
+                dxgi_format_u32: 28,
+                mip_level: 0,
+                sample_count: 1,
+                sample_quality: 0,
+                persistent_content: None,
+                exact_resource: None,
+            }],
+            depth_target: Some(replay_core::RenderTargetDesc {
+                prepared_target: replay_core::PreparedRenderTarget::OpaqueRenderTarget {
+                    attachment_ordinal: FIXTURE_DEPTH_ATTACHMENT_ORDINAL,
+                },
+                width: 8,
+                height: 4,
+                dxgi_format_u32: 45,
+                mip_level: 0,
+                sample_count: 1,
+                sample_quality: 0,
+                persistent_content: None,
+                exact_resource: None,
+            }),
+            viewport: ViewportDesc {
+                top_left_x_f32_bits: 0,
+                top_left_y_f32_bits: 0,
+                width_f32_bits: 8f32.to_bits(),
+                height_f32_bits: 4f32.to_bits(),
+                min_depth_f32_bits: 0,
+                max_depth_f32_bits: 1f32.to_bits(),
+            },
+            scissor: None,
+        },
+        payload_sha256: "44".repeat(32),
+    };
+    let frame = PreparedProductionD3dFrame {
+        content_manifest_sha256: "11".repeat(32),
+        effective_vfs_manifest_sha256: vfs_hash,
+        target: Some(desc),
+        ordered_scene_constant_buffers: Vec::new(),
+        ordered_static_programs: vec![StaticMapPassProgram {
+            program_ordinal: 0,
+            pass_token: "map_viewer.production_map.terrain".into(),
+            ordered_content_keys: vec!["test-shader".into()],
+            ordered_operations: vec![StaticMapOperation {
+                operation_ordinal: 7,
+                payload_sha256: "55".repeat(32),
+                command: StaticMapCommand::Draw { draw },
+            }],
+            payload_sha256: "66".repeat(32),
+        }],
+        ordered_static_used_content: Vec::new(),
+        ordered_render_operations: vec![RenderExecutionRef::Static {
+            operation_ordinal: 7,
+        }],
+        ordered_runtime_draws: Vec::new(),
+        political_textures: Vec::new(),
+        tiled_lights: Vec::new(),
+        m02_combat: None,
+        authenticated_ui_pass: None,
+        m03_arrows: None,
+        omissions: Vec::new(),
+    };
+    let receipt = {
+        let resources = BTreeMap::new();
+        let mut executor =
+            NativeProductionD3dExecutor::new(&mut backend, &resolver, &resources).unwrap();
+        execute_production_d3d_frame(&frame, &mut executor).unwrap()
+    };
+    assert_eq!(receipt.ordered_draws.len(), 1);
+    assert_eq!(receipt.ordered_draws[0].global_ordinal, 0);
+    assert_eq!(
+        receipt.ordered_draws[0].draw_token,
+        "test.portable.solid_red"
+    );
+    let readback = backend.readback().unwrap();
+    assert!(readback
+        .bytes
+        .chunks_exact(4)
+        .all(|pixel| pixel == [255, 0, 0, 255]));
+    let mut substituted = frame.clone();
+    let StaticMapCommand::Draw { draw } =
+        &mut substituted.ordered_static_programs[0].ordered_operations[0].command
+    else {
+        unreachable!()
+    };
+    draw.output_state.ordered_color_targets[0].prepared_target =
+        replay_core::PreparedRenderTarget::OpaqueRenderTarget {
+            attachment_ordinal: FIXTURE_COLOR_ATTACHMENT_ORDINAL + 1,
+        };
+    {
+        let resources = BTreeMap::new();
+        let mut executor =
+            NativeProductionD3dExecutor::new(&mut backend, &resolver, &resources).unwrap();
+        let carried = execute_production_d3d_frame(&substituted, &mut executor).unwrap();
+        assert_eq!(carried.ordered_draws.len(), 1);
+        assert_eq!(
+            carried.ordered_draws[0].draw_token,
+            "test.portable.solid_red"
+        );
+    }
+    let StaticMapCommand::Draw { draw } =
+        &mut substituted.ordered_static_programs[0].ordered_operations[0].command
+    else {
+        unreachable!()
+    };
+    let initial = vec![0x5a; 8 * 4 * 4];
+    draw.output_state.ordered_color_targets[0].exact_resource =
+        Some(replay_core::RenderTargetExactResource {
+            resource: replay_core::RenderTargetResourceDesc {
+                dimension: replay_core::TextureResourceDimension::Texture2d,
+                width: 8,
+                height: 4,
+                depth: 1,
+                mip_levels: 1,
+                array_size: 1,
+                dxgi_format_u32: 28,
+                sample_count: 1,
+                sample_quality: 0,
+                usage_u32: 0,
+                bind_flags_u32: 0x28,
+                cpu_access_flags_u32: 0,
+                misc_flags_u32: 0,
+            },
+            ordered_views: vec![replay_core::RenderTargetViewDesc::RenderTarget {
+                dxgi_format_u32: 28,
+                view: replay_core::RenderTargetAttachmentView::Texture2d { mip_slice: 0 },
+            }],
+            ordered_initial_subresources: vec![replay_core::RenderTargetInitialSubresource {
+                subresource_ordinal: 0,
+                row_pitch: 32,
+                slice_pitch: 128,
+                source: replay_core::RenderTargetInitialSource::Inline {
+                    sha256: snapshot::sha256::Sha256::hex(&initial),
+                    bytes: initial,
+                },
+            }],
+        });
+    {
+        let resources = BTreeMap::new();
+        let mut executor =
+            NativeProductionD3dExecutor::new(&mut backend, &resolver, &resources).unwrap();
+        let exact = execute_production_d3d_frame(&substituted, &mut executor).unwrap();
+        assert_eq!(exact.ordered_draws.len(), 1);
+    }
+    unsafe {
+        backend
+            .attach_presentation_target(backend.color_rtv(), 8, 4, 28, 1, 0)
+            .unwrap();
+    }
+    backend.clear([0.0, 0.0, 0.0, 1.0], 1.0, 0).unwrap();
+    let mut presented = frame.clone();
+    let StaticMapCommand::Draw { draw } =
+        &mut presented.ordered_static_programs[0].ordered_operations[0].command
+    else {
+        unreachable!()
+    };
+    draw.output_state.ordered_color_targets[0].prepared_target =
+        replay_core::PreparedRenderTarget::SwapchainBackBuffer;
+    draw.output_state.depth_target = None;
+    {
+        let resources = BTreeMap::new();
+        let mut executor =
+            NativeProductionD3dExecutor::new(&mut backend, &resolver, &resources).unwrap();
+        execute_production_d3d_frame(&presented, &mut executor).unwrap();
+    }
+    let presented_readback = backend.readback().unwrap();
+    assert!(presented_readback
+        .bytes
+        .chunks_exact(4)
+        .all(|pixel| pixel == [255, 0, 0, 255]));
+}

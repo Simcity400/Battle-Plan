@@ -377,59 +377,15 @@ pub(crate) fn synthesize_river_world_indices(
 }
 
 pub(crate) fn synthesize_river_mesh_from_images(
-    rivers: &IndexImage,
-    heightmap: &IndexImage,
-    palette: RiverPaletteDefines,
-    fade: RiverFadeDefines,
+    _rivers: &IndexImage,
+    _heightmap: &IndexImage,
+    _palette: RiverPaletteDefines,
+    _fade: RiverFadeDefines,
 ) -> Result<RiverMeshSynthesis> {
-    if rivers.width != heightmap.width || rivers.height != heightmap.height {
-        return Err(format!(
-            "river mesh synthesis blocked: rivers map is {}x{} but heightmap is {}x{}",
-            rivers.width, rivers.height, heightmap.width, heightmap.height
-        )
-        .into());
-    }
-    let mut class_counts = BTreeMap::new();
-    let mut river_pixel_count = 0usize;
-    for value in &rivers.pixels {
-        if palette.is_river_pixel(*value) {
-            *class_counts.entry(*value).or_insert(0) += 1;
-            river_pixel_count += 1;
-        }
-    }
-
-    let polylines = trace_river_polylines(rivers, palette);
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-    for polyline in &polylines {
-        append_river_polyline_mesh(
-            polyline,
-            rivers,
-            heightmap,
-            fade,
-            &mut vertices,
-            &mut indices,
-        )?;
-    }
-
-    let stats = RiverMeshSynthesisStats {
-        schema: "battle-plan-river-mesh-synthesis-v1".to_string(),
-        map_width: rivers.width,
-        map_height: rivers.height,
-        river_pixel_count,
-        polyline_count: polylines.len(),
-        vertex_count: vertices.len() / RIVER_VERTEX_STRIDE_BYTES as usize,
-        index_count: indices.len(),
-        vertex_stride_bytes: RIVER_VERTEX_STRIDE_BYTES,
-        index_format: DXGI_FORMAT_R32_UINT,
-        class_counts,
-        convention: "vPosition=float4(x,heightmap*0.1,z,source_fade); vUV_Tangent=float4(side,station,tangent.x,tangent.z); world=(bmp_x,map_height-1-bmp_y)".to_string(),
-    };
-    Ok(RiverMeshSynthesis {
-        vertices,
-        indices,
-        stats,
-    })
+    Err(
+        "river mesh synthesis blocked: source fade, centerline filtering, junction ordering, and endpoint fade are unresolved engine producers; shipped RIVER_FADE_FROM/RIVER_FADE_TO describe river endings and cannot authorize generated geometry"
+            .into(),
+    )
 }
 
 #[allow(dead_code)]
@@ -936,7 +892,7 @@ mod tests {
     }
 
     #[test]
-    fn synthesized_river_mesh_uses_float4_layout_and_flipped_world_z() {
+    fn image_derived_river_mesh_fails_closed_on_unresolved_geometry_laws() {
         let rivers = IndexImage {
             width: 4,
             height: 4,
@@ -949,23 +905,16 @@ mod tests {
             height: 4,
             pixels: vec![100; 16],
         };
-        let mesh = synthesize_river_mesh_from_images(
+        let error = synthesize_river_mesh_from_images(
             &rivers,
             &heightmap,
             vanilla_river_palette_defines(),
             vanilla_river_fade_defines(),
         )
-        .expect("mesh");
-        assert_eq!(mesh.stats.vertex_stride_bytes, 32);
-        assert_eq!(mesh.stats.index_format, DXGI_FORMAT_R32_UINT);
-        assert!(mesh.stats.vertex_count >= 6);
-        assert!(mesh.stats.index_count >= 6);
-        let x = f32::from_le_bytes(mesh.vertices[0..4].try_into().unwrap());
-        let y = f32::from_le_bytes(mesh.vertices[4..8].try_into().unwrap());
-        let z = f32::from_le_bytes(mesh.vertices[8..12].try_into().unwrap());
-        assert!(x.is_finite());
-        assert_eq!(y, 10.0);
-        assert!(z.is_finite());
+        .expect_err("unresolved centerline, junction, and fade producers must omit the mesh");
+        let text = error.to_string();
+        assert!(text.contains("centerline filtering"), "{text}");
+        assert!(text.contains("endpoint fade"), "{text}");
     }
 
     /// The vanilla palette values, parsed from the VERBATIM shipped define

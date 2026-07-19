@@ -175,7 +175,9 @@ fn main() {
         "# pool={} MiB  entries={}  entry_stride=0x{:x}  hot_window={} B  iters={}  trials={}",
         pool_mb, entries, entry_stride, HOT_WINDOW_LEN, iters, trials
     );
-    println!("# WARNING: absolute ns are synthetic; the CURVE and the constant checksum are the signal.");
+    println!(
+        "# WARNING: absolute ns are synthetic; the CURVE and the constant checksum are the signal."
+    );
 
     // Real, mapped backing memory (a Vec is page-backed by the OS at a real
     // address; prefetch warms the exact lines the copy will read).

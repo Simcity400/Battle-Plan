@@ -199,39 +199,39 @@ composer** driven by recorded script variables, not 23 bespoke panels.
 
 ---
 
-## 5. Frontend / meta / dev — OUT OF SCOPE for in-game replay (enumerated for completeness) (24)
+## 5. Frontend / meta / dev — XUI26 admitted (25)
 
-A replay opens an in-game moment; these never appear during playback. Enumerated
-so the count is honest and nothing is silently dropped. Status = `not-started`
-and recommended **v1 descope** (except `load_screen` if a load chrome is wanted).
+These 25 formerly descoped families are admitted by XUI26. Effective-VFS chrome
+is exact; absent replay/backend/live/host/dev data receives the packet's typed
+unavailable disposition rather than fabricated content.
 
 | Panel | source .gui | class | disposition |
 |---|---|---|---|
-| Frontend main | frontendmainview.gui | frontend | descope |
-| Frontend game setup | frontendgamesetupview.gui | frontend | descope |
-| Frontend multiplayer | frontendmultiplayerview.gui | frontend | descope |
-| Frontend friends | frontend_friends_view.gui | frontend | descope |
-| Frontend credits | frontendcreditview.gui | frontend | descope |
-| Credits | credits.gui | meta | descope |
-| Load screen | load_screen.gui | meta | optional (replay load chrome) |
-| Tutorial screen | tutorialscreen.gui | meta | descope |
-| Achievements | achievements.gui | meta | descope (widget gate uses this file) |
-| Backend (account) | backend.gui | meta | descope (widget gate uses this file) |
-| Browser | browser.gui | meta | descope |
-| Pops login | pops_login.gui | account | descope |
-| Subscription message | subscription_message_view.gui | meta | descope |
-| Settings | settings.gui | settings `[interactive]` | descope |
-| Message settings | messagesettings.gui | settings `[interactive]` | descope |
-| Message filters | msg_filters.gui | settings `[interactive]` | descope |
-| Saved game rules | savedgamerules.gui | frontend | descope |
-| Player AI prefs | playeraiprefs.gui | frontend | descope |
-| Ingame lobby | ingamelobby.gui | MP | descope |
-| Player lobby | playerlobby.gui | MP | descope |
-| Hotjoin | hotjoin.gui | MP | descope |
-| Matchmaking | matchmaking.gui | MP | descope |
-| Matchmaking chat | matchmaking_chat.gui | MP | descope |
-| Nudge (map editor) | nudge.gui | dev/editor | descope |
-| AI trace | ai_trace.gui | dev/debug | descope |
+| Frontend main | frontendmainview.gui | frontend | XUI26 |
+| Frontend game setup | frontendgamesetupview.gui | frontend | XUI26 |
+| Frontend multiplayer | frontendmultiplayerview.gui | frontend | XUI26 |
+| Frontend friends | frontend_friends_view.gui | frontend | XUI26 |
+| Frontend credits | frontendcreditview.gui | frontend | XUI26 |
+| Credits | credits.gui | meta | XUI26 |
+| Load screen | load_screen.gui | meta | XUI26 |
+| Tutorial screen | tutorialscreen.gui | meta | XUI26 |
+| Achievements | achievements.gui | meta | XUI26 |
+| Backend (account) | backend.gui | meta | XUI26 |
+| Browser | browser.gui | meta | XUI26 |
+| Pops login | pops_login.gui | account | XUI26 |
+| Subscription message | subscription_message_view.gui | meta | XUI26 |
+| Settings | settings.gui | settings `[interactive]` | XUI26 |
+| Message settings | messagesettings.gui | settings `[interactive]` | XUI26 |
+| Message filters | msg_filters.gui | settings `[interactive]` | XUI26 |
+| Saved game rules | savedgamerules.gui | frontend | XUI26 |
+| Player AI prefs | playeraiprefs.gui | frontend | XUI26 |
+| Ingame lobby | ingamelobby.gui | MP | XUI26 |
+| Player lobby | playerlobby.gui | MP | XUI26 |
+| Hotjoin | hotjoin.gui | MP | XUI26 |
+| Matchmaking | matchmaking.gui | MP | XUI26 |
+| Matchmaking chat | matchmaking_chat.gui | MP | XUI26 |
+| Nudge (map editor) | nudge.gui | dev/editor | XUI26 |
+| AI trace | ai_trace.gui | dev/debug | XUI26 |
 
 Count: **25 rows.**
 
@@ -244,8 +244,9 @@ Only music panels ship as separate DLC `interface/*.gui`; all other DLC UI
 `interface/` and is DLC-gated at runtime — already rowed in §1–§4 with a `DLC`
 tag. Enumerated: `integrated_dlc/dlc023_man_the_guns/interface/mtg_music.gui`,
 `dlc/dlc013_sabaton/interface/sabaton_music.gui`,
-`dlc/dlc019_sabaton_vol2/interface/sabaton_music.gui`. Status `not-started`,
-disposition **descope** (music UI, inert). Count: **3 rows.**
+`dlc/dlc019_sabaton_vol2/interface/sabaton_music.gui`. XUI26 admits all three
+music-chrome families with typed player-state/unavailable behavior. Count:
+**3 rows.**
 
 ---
 
@@ -270,8 +271,8 @@ cross-cutting residual, not per-panel.
 | HUD chrome (§2) | 24 | chrome-composable; 5 POPULATED (topbar, outliner, alerts, selected-unit, map-icon counter content) |
 | Popups (§3) | 27 | chrome-composable; 2 POPULATED (land combat, war overview — U1) |
 | Country scripted-GUI (§4) | 23 | chrome-composable shell / population not-started |
-| Frontend/meta/dev (§5) | 25 | not-started / descope |
-| DLC music (§6) | 3 | not-started / descope |
+| Frontend/meta/dev (§5) | 25 | XUI26 admitted / fail-closed dynamic values |
+| DLC music (§6) | 3 | XUI26 admitted / fail-closed player state |
 | **Panel-file total** | **133** | — |
 | Tooltip frame (§7) | cross-cutting | LAW-solid frame, dynamic content not-started |
 
@@ -281,12 +282,10 @@ POPULATED today: **8 panels** (topbar D1/D2, outliner D3, diplomacy D4, alerts
 strip U1, selected-unit panel U1, map-icon counter content U1, land combat U1,
 war overview U1) + the observer-POV shell (E6, a `replay_app` mode, not a
 panel). Everything else is `chrome-composable` (layout law solid, binding
-pending) or descoped.
-`chrome-composable` (layout law solid, binding pending) or descoped.
+pending) or XUI26-admitted.
 
-In-scope for a replay (excludes §5 frontend/meta + §6 music) = **105 panels**:
-28 major views + 24 HUD + 27 popups + 23 scripted-GUI + 3 designers already
-counted in majors. Of those, **102 need data-binding work beyond the layout law**.
+All **133 panel files** are now in replay scope; the former 28-file descope is
+closed by XUI26 without making backend/live inputs a promotion dependency.
 
 ---
 

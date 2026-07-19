@@ -9,6 +9,8 @@ use serde_json::{Map as JsonMap, Value};
 
 #[cfg(windows)]
 mod d3d11_runtime;
+#[cfg(windows)]
+mod rendering_law_capture;
 
 pub const TERRAIN_ID_SRV_SLOT: u32 = 5;
 pub const TERRAIN_ID_DXGI_FORMAT: u32 = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -2548,6 +2550,10 @@ mod injected {
             return 0;
         };
         write_probe_frame(&path);
+        if let Err(error) = super::rendering_law_capture::initialize(&path) {
+            super::rendering_law_capture::write_initialization_blocker(&path, &error);
+            return 0;
+        }
         if let Some(dir) = path.parent() {
             super::d3d11_runtime::run_one_shot_capture(dir, TERRAIN_CAPTURE_TIMEOUT_MS);
         }

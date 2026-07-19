@@ -21,7 +21,7 @@ static `region_id` join.
 Run from the repository root:
 
 ```powershell
-$repo = 'C:\Users\Example\OneDrive\Documents\Paradox Interactive\Hearts of Iron IV\mod\battle-plan'
+$repo = ''
 Set-Location $repo
 $hoi4Pid = (Get-Process the game | Select-Object -First 1 -ExpandProperty Id)
 $run = 'extractor\native\runs\naval_combat_live_active_fixture_harness_870ebf_<fixture>'

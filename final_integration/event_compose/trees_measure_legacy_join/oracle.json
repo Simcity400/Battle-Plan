@@ -1,0 +1,78 @@
+{
+  "schema": "hoi4-trees-measure-legacy-static-srv-join-oracle-v1",
+  "status": "PASS_EXACT_SOURCE_AND_CAPTURE_ORACLE_FROZEN",
+  "authority": {
+    "program": "hoi4.exe 1.19.2.0.a729",
+    "binary_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "legacy_capture": "C:/Users/Example/hoi4_capture_corpus_preserved/live_trees_measure",
+    "raw_payload_oracle_capture": "C:/Users/Example/hoi4_capture_corpus_preserved/live_PAN2",
+    "game_root": "X:/SteamLibrary/steamapps/common/Hearts of Iron IV"
+  },
+  "join_law": {
+    "legacy_draw_count": 7,
+    "resources_per_draw": 8,
+    "required_join_count": 56,
+    "descriptor_fields": ["stage", "slot", "declared_name", "is_null", "view_desc", "dxgi_format", "width", "height", "mip_count", "array_size", "sample_count", "sample_quality", "bind_flags", "usage", "cpu_access_flags", "misc_flags"],
+    "bc3_dds_header_bytes": 128,
+    "bc3_compact_row_pitch": "ceil(width/4)*16",
+    "bc3_mapped_row_pitch": "max(128, ceil(width/4)*16)",
+    "bc3_block_rows": "ceil(height/4)",
+    "padding_rule": "zero-fill mapped row padding; captured padding is not sampled and is not identity",
+    "payload_format": "d3d11_mapped_subresources"
+  },
+  "resources": [
+    {
+      "symbol": "TerrainDiffuse", "slot": 0, "dxgi_format": 78, "width": 2048, "height": 2048, "mip_count": 10,
+      "source": "map/terrain/atlas0.dds", "source_bytes": 5592528, "source_sha256": "133b3bd652f4175cdb83d33858ead8690027ddccc9b87cd9f21f481d7ad827bd",
+      "payload_bytes": 5592960, "normalized_payload_sha256": "32534d5d4877d984a18a404d4eafd2b285a4c83fc3bfd8b629cadbab6e7987b1", "normalized_payload_fnv1a64": "8cb301d2ef094ac8",
+      "captured_payload_file": "terrain_chunk_map_frame_shared_payload_ps_srv_TerrainDiffuse_8cb301d2ef094ac8.d3d11", "captured_payload_sha256": "32534d5d4877d984a18a404d4eafd2b285a4c83fc3bfd8b629cadbab6e7987b1", "captured_payload_fnv1a64": "8cb301d2ef094ac8"
+    },
+    {
+      "symbol": "HeightNormal", "slot": 1, "dxgi_format": 88, "width": 2816, "height": 1024, "mip_count": 1,
+      "source": "map/world_normal.bmp", "source_bytes": 8650808, "source_sha256": "0a050aa615dcf087ddf127b0d3ffdb2cbc24921a1c503405edb1a2aa141b5b87",
+      "payload_bytes": 11534336, "normalized_payload_sha256": "00b4175ee12f6401f91de58697201065531c184e8cb308d4582d2a439bf4ffb7", "normalized_payload_fnv1a64": "981d5e8b1d88fb3a",
+      "captured_payload_file": "terrain_chunk_map_frame_shared_payload_ps_srv_HeightNormal_981d5e8b1d88fb3a.d3d11", "captured_payload_sha256": "00b4175ee12f6401f91de58697201065531c184e8cb308d4582d2a439bf4ffb7", "captured_payload_fnv1a64": "981d5e8b1d88fb3a"
+    },
+    {
+      "symbol": "TerrainColorTint", "slot": 2, "dxgi_format": 91, "width": 2816, "height": 1024, "mip_count": 1,
+      "source": "map/terrain/colormap_rgb_cityemissivemask_a.dds", "source_bytes": 11534464, "source_sha256": "94060e50e9d7de5fb7c69f7c1de35b7fd00efbb4f7321cd35f35d3150de988db",
+      "payload_bytes": 11534336, "normalized_payload_sha256": "e30c4093d655ac4842275d637f262b73ef7138225be872679373e17f8fb0b88e", "normalized_payload_fnv1a64": "8c826b508563dd38",
+      "captured_payload_file": "terrain_chunk_map_frame_shared_payload_ps_srv_TerrainColorTint_8c826b508563dd38.d3d11", "captured_payload_sha256": "e30c4093d655ac4842275d637f262b73ef7138225be872679373e17f8fb0b88e", "captured_payload_fnv1a64": "8c826b508563dd38"
+    },
+    {
+      "symbol": "SnowTexture", "slot": 3, "dxgi_format": 77, "width": 512, "height": 512, "mip_count": 10,
+      "source": "map/terrain/snow_normal_rgb_diffuse_a.dds", "source_bytes": 349680, "source_sha256": "353c56e7c67fc2c22828769233177e63838e4af0091d11eb80a0c7ed9b51af98",
+      "payload_bytes": 350336, "normalized_payload_sha256": "11021d5898f6eb1627c2a2deea6abfe0160db9800647cff5520ba9afdd4f937b", "normalized_payload_fnv1a64": "62a67520b1aa794d",
+      "captured_payload_file": "terrain_chunk_map_frame_shared_payload_ps_srv_SnowTexture_62a67520b1aa794d.d3d11", "captured_payload_sha256": "11021d5898f6eb1627c2a2deea6abfe0160db9800647cff5520ba9afdd4f937b", "captured_payload_fnv1a64": "62a67520b1aa794d"
+    },
+    {
+      "symbol": "TerrainNormal", "slot": 4, "dxgi_format": 77, "width": 2048, "height": 2048, "mip_count": 10,
+      "source": "map/terrain/atlas_normal0.dds", "source_bytes": 5592528, "source_sha256": "c1ac9e7accd6b02fd5687d4ff50ab9b4bdb5a12523d410993be70b80c5f009a5",
+      "payload_bytes": 5592960, "normalized_payload_sha256": "8d302f19972ab82fdc515d69abb7f55ad7e53fa0ee39554f350efbb59c7f2df0", "normalized_payload_fnv1a64": "6164b8601787fbd9",
+      "captured_payload_file": "terrain_chunk_map_frame_shared_payload_ps_srv_TerrainNormal_6164b8601787fbd9.d3d11", "captured_payload_sha256": "8d302f19972ab82fdc515d69abb7f55ad7e53fa0ee39554f350efbb59c7f2df0", "captured_payload_fnv1a64": "6164b8601787fbd9"
+    },
+    {
+      "symbol": "CityLightsAndSnowNoise", "slot": 8, "dxgi_format": 78, "width": 512, "height": 512, "mip_count": 10,
+      "source": "map/terrain/citylights_rgb_snowmask_a_0.dds", "source_bytes": 349680, "source_sha256": "a5d1048a1f40be399c30568e875f9897ec85753521427718b9de2f6986f5b58f",
+      "payload_bytes": 350336, "normalized_payload_sha256": "42f0c147d86ade77f21483d9feb9134e5648120238faac6e7400ee52ee7d6d9c", "normalized_payload_fnv1a64": "7228fc768b9d3bf4",
+      "captured_payload_file": "terrain_chunk_map_frame_shared_payload_ps_srv_CityLightsAndSnowNoise_7228fc768b9d3bf4.d3d11", "captured_payload_sha256": "42f0c147d86ade77f21483d9feb9134e5648120238faac6e7400ee52ee7d6d9c", "captured_payload_fnv1a64": "7228fc768b9d3bf4"
+    },
+    {
+      "symbol": "MudNormalSpec", "slot": 9, "dxgi_format": 77, "width": 1024, "height": 1024, "mip_count": 11,
+      "source": "map/terrain/mud_normal_rgb_spec_a_0.dds", "source_bytes": 1398256, "source_sha256": "92cd52e71b35c4ffce2f0712efddcc3bfca3579e513cffb87dc01990bb81b4ea",
+      "payload_bytes": 1398912, "normalized_payload_sha256": "cb67dc9ca0ccc2d7fdf44c890a0f5671cd2299ec1ad3a058d2aa630ba03f27d9", "normalized_payload_fnv1a64": "6133781bd18a6569",
+      "captured_payload_file": "terrain_chunk_map_frame_shared_payload_ps_srv_MudNormalSpec_ae7f890cb33bd148.d3d11", "captured_payload_sha256": "8d2f367bcbc5bebf9b28377c5fb297e99b624f3b338ffa5ecf80cb82ebb0a70c", "captured_payload_fnv1a64": "ae7f890cb33bd148"
+    },
+    {
+      "symbol": "MudDiffuseGloss", "slot": 13, "dxgi_format": 78, "width": 1024, "height": 1024, "mip_count": 11,
+      "source": "map/terrain/mud_diffuse_rgb_gloss_a_0.dds", "source_bytes": 1398256, "source_sha256": "ecf74eeccdc3528c4dc2484f35a8bbd2c36ceb697a79902d6ccef740d82cd0ab",
+      "payload_bytes": 1398912, "normalized_payload_sha256": "b8efaf6a0faf7a0a436899461a38bccea86404fab01524e546cbb20c1f2d36e5", "normalized_payload_fnv1a64": "a40b63ccfffa0d6b",
+      "captured_payload_file": "terrain_chunk_map_frame_shared_payload_ps_srv_MudDiffuseGloss_5a72f92c51d190df.d3d11", "captured_payload_sha256": "814e2da3146f7ed1ce46f747b54b5dbf025edc3eedf2dd73230e4e76b3d75f12", "captured_payload_fnv1a64": "5a72f92c51d190df"
+    }
+  ],
+  "production_acceptance": {
+    "positive": "all 56 legacy descriptor rows resolve from the exact game sources and match the frozen normalized payload hash/layout",
+    "negative": ["unknown symbol", "slot drift", "descriptor drift", "source hash drift", "missing source", "DDS format or mip drift", "truncated source", "payload hash drift"],
+    "forbidden": ["screen-derived texture", "placeholder texture", "nearest-name match", "descriptor-only acceptance", "copying semantically-unused nonzero capture padding"]
+  }
+}

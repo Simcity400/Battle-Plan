@@ -123,12 +123,14 @@ impl ControlCapabilities {
     pub const STAGE_B: u32 = 1 << 3;
     pub const TRANSPORT_STATUS: u32 = 1 << 4;
     pub const CAMPAIGN_IDENTITY: u32 = 1 << 5;
+    pub const EARLY_RENDER: u32 = 1 << 6;
     pub const KNOWN_MASK: u32 = Self::HEARTBEAT
         | Self::FIRST_COMPACT_ACK
         | Self::ROLLOVER
         | Self::STAGE_B
         | Self::TRANSPORT_STATUS
-        | Self::CAMPAIGN_IDENTITY;
+        | Self::CAMPAIGN_IDENTITY
+        | Self::EARLY_RENDER;
 
     pub fn from_bits(bits: u32) -> Result<Self, ControlError> {
         let unknown = bits & !Self::KNOWN_MASK;
@@ -163,6 +165,13 @@ impl ControlCapabilities {
 
     pub fn auto_attach_duplex_v1() -> Self {
         Self::from_bits(Self::AUTO_ATTACH_DUPLEX_V1).expect("closed auto-attach capability set")
+    }
+
+    pub const EARLY_RENDER_DUPLEX_V1: u32 = Self::AUTO_ATTACH_DUPLEX_V1 | Self::EARLY_RENDER;
+
+    pub fn early_render_duplex_v1() -> Self {
+        Self::from_bits(Self::EARLY_RENDER_DUPLEX_V1)
+            .expect("closed early-render duplex capability set")
     }
 }
 
@@ -264,9 +273,7 @@ impl SessionCapability {
 // `compact_contract` crate: the recorder host consumes it through the
 // transparent re-export in `recorder_host::control_transport`, which a
 // glob re-export cannot carry across the crate boundary at `pub(crate)`.
-pub fn claim_session_capability(
-    session_id: [u8; 16],
-) -> Result<SessionCapability, ControlError> {
+pub fn claim_session_capability(session_id: [u8; 16]) -> Result<SessionCapability, ControlError> {
     #[cfg(not(any(test, feature = "test-support")))]
     {
         SessionCapability::claim(session_id)
@@ -329,6 +336,21 @@ pub enum MessageKind {
     SinkTerminalFailure = 15,
     IdentityFailure = 16,
     IdentityFailureAck = 17,
+    EarlyRenderReady = 18,
+    EarlyRenderFirstGameD3d = 19,
+    EarlyRenderCommitReceipt = 20,
+    EarlyRenderLaunchBind = 21,
+    EarlyRenderVfsIndexChunk = 22,
+    EarlyRenderVfsIndexCommit = 23,
+    EarlyRenderVfsPayloadRequest = 24,
+    EarlyRenderVfsPayloadChunk = 25,
+    EarlyRenderVfsPayloadCommit = 26,
+    EarlyRenderContentManifestChunk = 27,
+    EarlyRenderContentManifestCommit = 28,
+    EarlyRenderRuntimeDlcRoster = 29,
+    EarlyRenderDiagnosticLivenessRequest = 30,
+    EarlyRenderDiagnosticLivenessResponse = 31,
+    EarlyRenderDiagnosticEnd = 32,
 }
 
 impl MessageKind {
@@ -341,7 +363,17 @@ impl MessageKind {
             | Self::EpochTokenOffer
             | Self::DeclarationTableAck
             | Self::EpochSealAck
-            | Self::IdentityFailureAck => EndpointRole::Recorder,
+            | Self::IdentityFailureAck
+            | Self::EarlyRenderCommitReceipt
+            | Self::EarlyRenderLaunchBind
+            | Self::EarlyRenderVfsIndexChunk
+            | Self::EarlyRenderVfsIndexCommit
+            | Self::EarlyRenderVfsPayloadChunk
+            | Self::EarlyRenderVfsPayloadCommit
+            | Self::EarlyRenderContentManifestChunk
+            | Self::EarlyRenderContentManifestCommit
+            | Self::EarlyRenderDiagnosticLivenessRequest
+            | Self::EarlyRenderDiagnosticEnd => EndpointRole::Recorder,
             Self::CollectorHello
             | Self::HeartbeatProof
             | Self::RolloverPropose
@@ -350,7 +382,12 @@ impl MessageKind {
             | Self::EpochSealReady
             | Self::SinkSetupFailure
             | Self::SinkTerminalFailure
-            | Self::IdentityFailure => EndpointRole::Collector,
+            | Self::IdentityFailure
+            | Self::EarlyRenderReady
+            | Self::EarlyRenderFirstGameD3d
+            | Self::EarlyRenderRuntimeDlcRoster
+            | Self::EarlyRenderDiagnosticLivenessResponse
+            | Self::EarlyRenderVfsPayloadRequest => EndpointRole::Collector,
         }
     }
 
@@ -375,6 +412,21 @@ impl MessageKind {
             Self::IdentityFailure | Self::IdentityFailureAck => {
                 ControlCapabilities::CAMPAIGN_IDENTITY
             }
+            Self::EarlyRenderReady
+            | Self::EarlyRenderFirstGameD3d
+            | Self::EarlyRenderCommitReceipt
+            | Self::EarlyRenderLaunchBind
+            | Self::EarlyRenderVfsIndexChunk
+            | Self::EarlyRenderVfsIndexCommit
+            | Self::EarlyRenderVfsPayloadRequest
+            | Self::EarlyRenderVfsPayloadChunk
+            | Self::EarlyRenderVfsPayloadCommit
+            | Self::EarlyRenderContentManifestChunk
+            | Self::EarlyRenderContentManifestCommit
+            | Self::EarlyRenderRuntimeDlcRoster
+            | Self::EarlyRenderDiagnosticLivenessRequest
+            | Self::EarlyRenderDiagnosticLivenessResponse
+            | Self::EarlyRenderDiagnosticEnd => ControlCapabilities::EARLY_RENDER,
         }
     }
 
@@ -397,6 +449,21 @@ impl MessageKind {
             15 => Ok(Self::SinkTerminalFailure),
             16 => Ok(Self::IdentityFailure),
             17 => Ok(Self::IdentityFailureAck),
+            18 => Ok(Self::EarlyRenderReady),
+            19 => Ok(Self::EarlyRenderFirstGameD3d),
+            20 => Ok(Self::EarlyRenderCommitReceipt),
+            21 => Ok(Self::EarlyRenderLaunchBind),
+            22 => Ok(Self::EarlyRenderVfsIndexChunk),
+            23 => Ok(Self::EarlyRenderVfsIndexCommit),
+            24 => Ok(Self::EarlyRenderVfsPayloadRequest),
+            25 => Ok(Self::EarlyRenderVfsPayloadChunk),
+            26 => Ok(Self::EarlyRenderVfsPayloadCommit),
+            27 => Ok(Self::EarlyRenderContentManifestChunk),
+            28 => Ok(Self::EarlyRenderContentManifestCommit),
+            29 => Ok(Self::EarlyRenderRuntimeDlcRoster),
+            30 => Ok(Self::EarlyRenderDiagnosticLivenessRequest),
+            31 => Ok(Self::EarlyRenderDiagnosticLivenessResponse),
+            32 => Ok(Self::EarlyRenderDiagnosticEnd),
             other => Err(ControlError::UnknownMessageKind(other)),
         }
     }
@@ -867,7 +934,8 @@ impl<I: DeadlineControlIo> DeadlineControlChannel<I> {
             Ok(frame) => frame,
             Err(error) => return self.fail(error),
         };
-        if !(allow_pre_hello_sink_failure && self.is_pre_hello_receivable_sink_failure(frame.kind)) {
+        if !(allow_pre_hello_sink_failure && self.is_pre_hello_receivable_sink_failure(frame.kind))
+        {
             self.assert_capability(frame.kind)?;
         }
         if frame.kind.sender() != self.role.opposite() {
@@ -1649,7 +1717,7 @@ mod tests {
         assert!(channel.is_poisoned());
     }
 
-    fn capability_kinds() -> [(MessageKind, EndpointRole, u32); 15] {
+    fn capability_kinds() -> [(MessageKind, EndpointRole, u32); 30] {
         [
             (
                 MessageKind::HeartbeatChallenge,
@@ -1726,6 +1794,81 @@ mod tests {
                 EndpointRole::Recorder,
                 ControlCapabilities::CAMPAIGN_IDENTITY,
             ),
+            (
+                MessageKind::EarlyRenderReady,
+                EndpointRole::Collector,
+                ControlCapabilities::EARLY_RENDER,
+            ),
+            (
+                MessageKind::EarlyRenderFirstGameD3d,
+                EndpointRole::Collector,
+                ControlCapabilities::EARLY_RENDER,
+            ),
+            (
+                MessageKind::EarlyRenderCommitReceipt,
+                EndpointRole::Recorder,
+                ControlCapabilities::EARLY_RENDER,
+            ),
+            (
+                MessageKind::EarlyRenderLaunchBind,
+                EndpointRole::Recorder,
+                ControlCapabilities::EARLY_RENDER,
+            ),
+            (
+                MessageKind::EarlyRenderVfsIndexChunk,
+                EndpointRole::Recorder,
+                ControlCapabilities::EARLY_RENDER,
+            ),
+            (
+                MessageKind::EarlyRenderVfsIndexCommit,
+                EndpointRole::Recorder,
+                ControlCapabilities::EARLY_RENDER,
+            ),
+            (
+                MessageKind::EarlyRenderVfsPayloadRequest,
+                EndpointRole::Collector,
+                ControlCapabilities::EARLY_RENDER,
+            ),
+            (
+                MessageKind::EarlyRenderVfsPayloadChunk,
+                EndpointRole::Recorder,
+                ControlCapabilities::EARLY_RENDER,
+            ),
+            (
+                MessageKind::EarlyRenderVfsPayloadCommit,
+                EndpointRole::Recorder,
+                ControlCapabilities::EARLY_RENDER,
+            ),
+            (
+                MessageKind::EarlyRenderContentManifestChunk,
+                EndpointRole::Recorder,
+                ControlCapabilities::EARLY_RENDER,
+            ),
+            (
+                MessageKind::EarlyRenderContentManifestCommit,
+                EndpointRole::Recorder,
+                ControlCapabilities::EARLY_RENDER,
+            ),
+            (
+                MessageKind::EarlyRenderRuntimeDlcRoster,
+                EndpointRole::Collector,
+                ControlCapabilities::EARLY_RENDER,
+            ),
+            (
+                MessageKind::EarlyRenderDiagnosticLivenessRequest,
+                EndpointRole::Recorder,
+                ControlCapabilities::EARLY_RENDER,
+            ),
+            (
+                MessageKind::EarlyRenderDiagnosticLivenessResponse,
+                EndpointRole::Collector,
+                ControlCapabilities::EARLY_RENDER,
+            ),
+            (
+                MessageKind::EarlyRenderDiagnosticEnd,
+                EndpointRole::Recorder,
+                ControlCapabilities::EARLY_RENDER,
+            ),
         ]
     }
 
@@ -1749,8 +1892,23 @@ mod tests {
             MessageKind::SinkTerminalFailure,
             MessageKind::IdentityFailure,
             MessageKind::IdentityFailureAck,
+            MessageKind::EarlyRenderReady,
+            MessageKind::EarlyRenderFirstGameD3d,
+            MessageKind::EarlyRenderCommitReceipt,
+            MessageKind::EarlyRenderLaunchBind,
+            MessageKind::EarlyRenderVfsIndexChunk,
+            MessageKind::EarlyRenderVfsIndexCommit,
+            MessageKind::EarlyRenderVfsPayloadRequest,
+            MessageKind::EarlyRenderVfsPayloadChunk,
+            MessageKind::EarlyRenderVfsPayloadCommit,
+            MessageKind::EarlyRenderContentManifestChunk,
+            MessageKind::EarlyRenderContentManifestCommit,
+            MessageKind::EarlyRenderRuntimeDlcRoster,
+            MessageKind::EarlyRenderDiagnosticLivenessRequest,
+            MessageKind::EarlyRenderDiagnosticLivenessResponse,
+            MessageKind::EarlyRenderDiagnosticEnd,
         ];
-        for (wire, kind) in (1u16..=17).zip(registry) {
+        for (wire, kind) in (1u16..=32).zip(registry) {
             assert_eq!(kind as u16, wire);
             assert_eq!(MessageKind::from_wire(wire).unwrap(), kind);
         }
@@ -1758,6 +1916,24 @@ mod tests {
         assert_eq!(MessageKind::SinkTerminalFailure as u16, 15);
         assert_eq!(MessageKind::IdentityFailure as u16, 16);
         assert_eq!(MessageKind::IdentityFailureAck as u16, 17);
+        assert_eq!(MessageKind::EarlyRenderReady as u16, 18);
+        assert_eq!(MessageKind::EarlyRenderFirstGameD3d as u16, 19);
+        assert_eq!(MessageKind::EarlyRenderCommitReceipt as u16, 20);
+        assert_eq!(MessageKind::EarlyRenderLaunchBind as u16, 21);
+        assert_eq!(MessageKind::EarlyRenderVfsIndexChunk as u16, 22);
+        assert_eq!(MessageKind::EarlyRenderVfsIndexCommit as u16, 23);
+        assert_eq!(MessageKind::EarlyRenderVfsPayloadRequest as u16, 24);
+        assert_eq!(MessageKind::EarlyRenderVfsPayloadChunk as u16, 25);
+        assert_eq!(MessageKind::EarlyRenderVfsPayloadCommit as u16, 26);
+        assert_eq!(MessageKind::EarlyRenderContentManifestChunk as u16, 27);
+        assert_eq!(MessageKind::EarlyRenderContentManifestCommit as u16, 28);
+        assert_eq!(MessageKind::EarlyRenderRuntimeDlcRoster as u16, 29);
+        assert_eq!(MessageKind::EarlyRenderDiagnosticLivenessRequest as u16, 30);
+        assert_eq!(
+            MessageKind::EarlyRenderDiagnosticLivenessResponse as u16,
+            31
+        );
+        assert_eq!(MessageKind::EarlyRenderDiagnosticEnd as u16, 32);
     }
 
     fn wrong_capability(required: u32) -> u32 {
@@ -1768,6 +1944,7 @@ mod tests {
             ControlCapabilities::STAGE_B => ControlCapabilities::FIRST_COMPACT_ACK,
             ControlCapabilities::TRANSPORT_STATUS => ControlCapabilities::HEARTBEAT,
             ControlCapabilities::CAMPAIGN_IDENTITY => ControlCapabilities::TRANSPORT_STATUS,
+            ControlCapabilities::EARLY_RENDER => ControlCapabilities::CAMPAIGN_IDENTITY,
             _ => unreachable!(),
         }
     }

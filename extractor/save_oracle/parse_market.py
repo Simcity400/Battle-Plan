@@ -275,6 +275,7 @@ def _parse_country_market(tz, rec):
     for key, opener in iter_block_entries(tz):
         if opener is LBRACE:
             if key == "market_stockpile":
+                rec["stockpile_present"] = True
                 for k, op in iter_block_entries(tz):
                     if op is LBRACE:
                         if k == "equipments":
@@ -303,14 +304,23 @@ def _parse_countries(tz, by_tag):
     for tag, opener in iter_block_entries(tz):
         if opener is not LBRACE:
             continue
-        rec = {"stockpile_raw": [], "automation": {}}
+        rec = {
+            "market_present": False,
+            "stockpile_present": False,
+            "stockpile_raw": [],
+            "automation": {},
+        }
         for key, op in iter_block_entries(tz):
             if op is LBRACE:
                 if key == "equipment_market":
+                    rec["market_present"] = True
                     _parse_country_market(tz, rec)
                 else:
                     _skip_block_body(tz)
-        if rec["stockpile_raw"] or rec["automation"]:
+        # Preserve explicit measured-empty market stockpiles. Dropping a
+        # country whose `equipments={}` vector is present conflates a proven
+        # empty serializer result with a missing/unreadable market owner.
+        if rec["market_present"]:
             by_tag[tag] = rec
 
 
@@ -373,10 +383,16 @@ def build(text, source, was_melted):
         countries[tag] = {
             "market_stockpile": stock,
             "market_stockpile_entries": len(stock),
+            "market_stockpile_complete": rec["stockpile_present"],
             "automation": rec["automation"] or None,
         }
 
     n_stock = sum(c["market_stockpile_entries"] for c in countries.values())
+    n_stockpile_present = sum(c["market_stockpile_complete"] for c in countries.values())
+    n_stockpile_empty = sum(
+        c["market_stockpile_complete"] and c["market_stockpile_entries"] == 0
+        for c in countries.values()
+    )
 
     out = {
         "meta": {
@@ -402,6 +418,8 @@ def build(text, source, was_melted):
             "stats": {
                 "purchase_contracts": len(contracts),
                 "countries_with_market_data": len(countries),
+                "countries_with_market_stockpile": n_stockpile_present,
+                "empty_market_stockpiles": n_stockpile_empty,
                 "total_market_stockpile_entries": n_stock,
                 "unknown_equipment_ids": len(unknown),
             },

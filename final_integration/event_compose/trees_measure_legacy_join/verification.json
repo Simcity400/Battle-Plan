@@ -1,0 +1,11 @@
+{
+  "checks_passed": 14,
+  "descriptor_joins": 56,
+  "legacy_draws": 7,
+  "negative_controls": 2,
+  "production_code_modified": false,
+  "program_status_modified": false,
+  "resources_per_draw": 8,
+  "schema": "hoi4-trees-measure-legacy-static-srv-join-verification-v1",
+  "status": "PASS_EXACT_SOURCE_AND_CAPTURE_ORACLE_FROZEN"
+}

@@ -513,7 +513,10 @@ NDefines = {
     fn pov_status_colors_map_to_file() {
         let c = VANILLA_STRATEGIC_AIR_COLORS;
         assert_eq!(pov_air_status_color(PovAirRelation::Friendly, &c), c.good);
-        assert_eq!(pov_air_status_color(PovAirRelation::Contested, &c), c.average);
+        assert_eq!(
+            pov_air_status_color(PovAirRelation::Contested, &c),
+            c.average
+        );
         assert_eq!(pov_air_status_color(PovAirRelation::Enemy, &c), c.bad);
     }
 

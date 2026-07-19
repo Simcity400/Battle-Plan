@@ -75,8 +75,10 @@ fn maps_from(snap: &d53::DiplomacyIntelSnapshot) -> Baseline {
             .insert((r.src_tag_db_id, r.target_tag_db_id), r.clone());
     }
     for r in &snap.relation_flags {
-        b.relation_flags
-            .insert((r.src_tag_db_id, r.target_tag_db_id, r.flag_kind), r.clone());
+        b.relation_flags.insert(
+            (r.src_tag_db_id, r.target_tag_db_id, r.flag_kind),
+            r.clone(),
+        );
     }
     for r in &snap.subjects {
         b.subjects
@@ -135,7 +137,11 @@ fn diff<K: Ord + Clone, T: Clone + PartialEq>(
     }
 }
 
-fn reduced_snapshot(base: &Baseline, cur: &Baseline, src: &d53::DiplomacyIntelSnapshot) -> d53::DiplomacyIntelSnapshot {
+fn reduced_snapshot(
+    base: &Baseline,
+    cur: &Baseline,
+    src: &d53::DiplomacyIntelSnapshot,
+) -> d53::DiplomacyIntelSnapshot {
     let mut s = d53::DiplomacyIntelSnapshot {
         status_flags: src.status_flags | compact_contract::COMPACT_STATUS_DELTA_DATA,
         // trailers cloned whole every delta frame (collector parity)
@@ -162,11 +168,16 @@ fn reduced_snapshot(base: &Baseline, cur: &Baseline, src: &d53::DiplomacyIntelSn
         r.src_tag_db_id |= DEL;
         r
     });
-    diff(&cur.relation_flags, &base.relation_flags, &mut s.relation_flags, |r| {
-        let mut r = r.clone();
-        r.src_tag_db_id |= DEL;
-        r
-    });
+    diff(
+        &cur.relation_flags,
+        &base.relation_flags,
+        &mut s.relation_flags,
+        |r| {
+            let mut r = r.clone();
+            r.src_tag_db_id |= DEL;
+            r
+        },
+    );
     diff(&cur.subjects, &base.subjects, &mut s.subjects, |r| {
         let mut r = r.clone();
         r.overlord_tag_db_id |= DEL;
@@ -177,11 +188,16 @@ fn reduced_snapshot(base: &Baseline, cur: &Baseline, src: &d53::DiplomacyIntelSn
         r.owner_tag_db_id |= DEL;
         r
     });
-    diff(&cur.clusters, &base.clusters, &mut s.agency_capacity_clusters, |r| {
-        let mut r = r.clone();
-        r.owner_tag_db_id |= DEL;
-        r
-    });
+    diff(
+        &cur.clusters,
+        &base.clusters,
+        &mut s.agency_capacity_clusters,
+        |r| {
+            let mut r = r.clone();
+            r.owner_tag_db_id |= DEL;
+            r
+        },
+    );
     diff(&cur.operatives, &base.operatives, &mut s.operatives, |r| {
         let mut r = r.clone();
         r.op_id |= DEL;
@@ -192,11 +208,16 @@ fn reduced_snapshot(base: &Baseline, cur: &Baseline, src: &d53::DiplomacyIntelSn
         r.owner_tag_db_id |= DEL;
         r
     });
-    diff(&cur.state_events, &base.state_events, &mut s.state_events, |r| {
-        let mut r = r.clone();
-        r.owner_tag_db_id |= DEL;
-        r
-    });
+    diff(
+        &cur.state_events,
+        &base.state_events,
+        &mut s.state_events,
+        |r| {
+            let mut r = r.clone();
+            r.owner_tag_db_id |= DEL;
+            r
+        },
+    );
     s
 }
 
@@ -273,7 +294,8 @@ fn main() {
             // and leave the baseline alone. A tolerated-partial SUCCESS frame has
             // only the PARTIAL bit set (mask it out before the failure test, like
             // the collector's post-build gate does).
-            let is_failure = compact_contract::compact_status_is_failure(snap.status_flags & !PARTIAL);
+            let is_failure =
+                compact_contract::compact_status_is_failure(snap.status_flags & !PARTIAL);
             before_bytes += plen as u64;
             if is_failure {
                 after_bytes += plen as u64;

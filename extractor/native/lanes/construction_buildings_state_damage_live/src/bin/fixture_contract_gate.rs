@@ -244,6 +244,9 @@ fn parse_construction_observations(
                 produced_raw,
                 priority,
                 target_state_id: Some(target_state_id),
+                target_location_id: Some(target_state_id),
+                target_scope: Some(SCOPE_STATE),
+                repair_levels_remaining: None,
                 created_date_raw: None,
             });
         }
@@ -317,6 +320,7 @@ fn parse_damaged_building_observations(
                 type_id,
                 level,
                 healthy_level: healthy,
+                partial_health_raw: None,
             });
         }
     }

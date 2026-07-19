@@ -40,6 +40,10 @@ impl Localisation {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
 }
 
 pub fn parse_english_yml(text: &str, out: &mut BTreeMap<String, String>) {

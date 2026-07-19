@@ -1,0 +1,468 @@
+{
+  "checks": [
+    {
+      "check": "handoff status",
+      "status": "PASS"
+    },
+    {
+      "check": "production admission",
+      "status": "PASS"
+    },
+    {
+      "check": "no new binary claims",
+      "status": "PASS"
+    },
+    {
+      "check": "zero remaining bounded integration patches",
+      "status": "PASS"
+    },
+    {
+      "check": "completed bounded patch is A15",
+      "status": "PASS"
+    },
+    {
+      "check": "collector change prohibited",
+      "status": "PASS"
+    },
+    {
+      "check": "compact schema change prohibited",
+      "status": "PASS"
+    },
+    {
+      "check": "binary research prohibited",
+      "status": "PASS"
+    },
+    {
+      "check": "declared upstream contract hash",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen upstream contract hash",
+      "status": "PASS"
+    },
+    {
+      "check": "declared upstream verifier hash",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen upstream verifier hash",
+      "status": "PASS"
+    },
+    {
+      "check": "declared upstream verification hash",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen upstream verification hash",
+      "status": "PASS"
+    },
+    {
+      "check": "declared upstream manifest hash",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen upstream manifest hash",
+      "status": "PASS"
+    },
+    {
+      "check": "upstream promotion ready",
+      "status": "PASS"
+    },
+    {
+      "check": "upstream batch zero residuals",
+      "status": "PASS"
+    },
+    {
+      "check": "upstream not global completion",
+      "status": "PASS"
+    },
+    {
+      "check": "upstream verification pass",
+      "status": "PASS"
+    },
+    {
+      "check": "upstream verification 106/106",
+      "status": "PASS"
+    },
+    {
+      "check": "upstream manifest pass",
+      "status": "PASS"
+    },
+    {
+      "check": "upstream manifest binds contract",
+      "status": "PASS"
+    },
+    {
+      "check": "upstream manifest binds verifier",
+      "status": "PASS"
+    },
+    {
+      "check": "upstream manifest binds verification",
+      "status": "PASS"
+    },
+    {
+      "check": "exact upstream packet set",
+      "status": "PASS"
+    },
+    {
+      "check": "handoff scope is exact",
+      "status": "PASS"
+    },
+    {
+      "check": "seven replay surface groups",
+      "status": "PASS"
+    },
+    {
+      "check": "all and only promoted packets handed off",
+      "status": "PASS"
+    },
+    {
+      "check": "all seven replay surface groups ready",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 projection set is complete",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 has no missing projection",
+      "status": "PASS"
+    },
+    {
+      "check": "JSON Schema draft",
+      "status": "PASS"
+    },
+    {
+      "check": "schema id",
+      "status": "PASS"
+    },
+    {
+      "check": "schema top-level surface countries",
+      "status": "PASS"
+    },
+    {
+      "check": "schema top-level surface states",
+      "status": "PASS"
+    },
+    {
+      "check": "schema top-level surface provinces",
+      "status": "PASS"
+    },
+    {
+      "check": "schema top-level surface strategic_air",
+      "status": "PASS"
+    },
+    {
+      "check": "schema top-level surface supply",
+      "status": "PASS"
+    },
+    {
+      "check": "schema top-level surface world_events",
+      "status": "PASS"
+    },
+    {
+      "check": "schema top-level surface _r2_session_multiplayer_metadata_live",
+      "status": "PASS"
+    },
+    {
+      "check": "ordered 24-channel value schema",
+      "status": "PASS"
+    },
+    {
+      "check": "24-channel divisor schema",
+      "status": "PASS"
+    },
+    {
+      "check": "building display divisors",
+      "status": "PASS"
+    },
+    {
+      "check": "non-building display divisors",
+      "status": "PASS"
+    },
+    {
+      "check": "motorization levels",
+      "status": "PASS"
+    },
+    {
+      "check": "motorization truck fractions",
+      "status": "PASS"
+    },
+    {
+      "check": "raw air channels are integers",
+      "status": "PASS"
+    },
+    {
+      "check": "raw air channels are exactly 24",
+      "status": "PASS"
+    },
+    {
+      "check": "motorization level/fraction pairing",
+      "status": "PASS"
+    },
+    {
+      "check": "unavailable event families are empty",
+      "status": "PASS"
+    },
+    {
+      "check": "numeric building key retained",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 event kinds",
+      "status": "PASS"
+    },
+    {
+      "check": "target session schema requires events",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen admitted world fold source",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen admitted world fold tests",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen recorder main assertion",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen A4/A21 authority source",
+      "status": "PASS"
+    },
+    {
+      "check": "recorder no longer drops all non-pause D57 events",
+      "status": "PASS"
+    },
+    {
+      "check": "current recorder projects D57 players and pause",
+      "status": "PASS"
+    },
+    {
+      "check": "current recorder projects typed A15 events",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 fold token SessionEventKind::Hotjoin",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 fold token SessionEventKind::TagSwitch",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 fold token SessionEventKind::Chat",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 fold token SessionEventKind::SystemMessage",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 fold token SOURCE_FLAG_MESSAGE_HOOK_VALIDATED",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 fold token SOURCE_FLAG_COMMAND_HOOK_VALIDATED",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 fold token DOMAIN57_ROOT_CHAT_MESSAGES",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 fold token DOMAIN57_ROOT_PLAYER_EVENTS",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 fold token message_event_family_unavailable",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 fold token player_event_family_unavailable",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 replay field actor_key_hash",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 replay field actor_name",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 replay field related_value_i32",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 replay field command_sequence",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 replay field event_hour_raw",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 replay field event_source_id",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 replay field event_state",
+      "status": "PASS"
+    },
+    {
+      "check": "existing replay projection _r2_air_region_combat_stats",
+      "status": "PASS"
+    },
+    {
+      "check": "existing replay projection _r2_air_loss_stats_live",
+      "status": "PASS"
+    },
+    {
+      "check": "existing replay projection _r2_hub_motorization_live",
+      "status": "PASS"
+    },
+    {
+      "check": "existing replay projection sunk_convoys",
+      "status": "PASS"
+    },
+    {
+      "check": "existing replay projection _r2_depth_targets",
+      "status": "PASS"
+    },
+    {
+      "check": "existing replay projection target_location_id",
+      "status": "PASS"
+    },
+    {
+      "check": "existing replay projection partial_health_raw",
+      "status": "PASS"
+    },
+    {
+      "check": "bounded patch-plan token world_fold.rs",
+      "status": "PASS"
+    },
+    {
+      "check": "bounded patch-plan token world_fold/tests.rs",
+      "status": "PASS"
+    },
+    {
+      "check": "bounded patch-plan token SOURCE_FLAG_MESSAGE_HOOK_VALIDATED",
+      "status": "PASS"
+    },
+    {
+      "check": "bounded patch-plan token SOURCE_FLAG_COMMAND_HOOK_VALIDATED",
+      "status": "PASS"
+    },
+    {
+      "check": "bounded patch-plan token 1 << 3",
+      "status": "PASS"
+    },
+    {
+      "check": "bounded patch-plan token 1 << 4",
+      "status": "PASS"
+    },
+    {
+      "check": "bounded patch-plan token hotjoin",
+      "status": "PASS"
+    },
+    {
+      "check": "bounded patch-plan token tag_switch",
+      "status": "PASS"
+    },
+    {
+      "check": "bounded patch-plan token chat",
+      "status": "PASS"
+    },
+    {
+      "check": "bounded patch-plan token system_message",
+      "status": "PASS"
+    },
+    {
+      "check": "bounded patch-plan token No compact payload, collector",
+      "status": "PASS"
+    },
+    {
+      "check": "patch plan excludes PROGRAM_STATUS",
+      "status": "PASS"
+    },
+    {
+      "check": "patch plan completion status",
+      "status": "PASS"
+    },
+    {
+      "check": "actual d42 diagnostic recorded",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen d42 header size 48",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen d42 row size 76",
+      "status": "PASS"
+    },
+    {
+      "check": "d42 assertion matches actual diagnostic",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 focused test chunk2_d57_a15_replay_json_matches_handoff_schema",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 focused test chunk2_d57_message_family_mismatch_keeps_player_events_players_and_pause",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 focused test chunk2_d57_player_event_family_mismatch_keeps_messages_players_and_pause",
+      "status": "PASS"
+    },
+    {
+      "check": "A15 focused test chunk2_d57_unknown_event_kind_fails_closed",
+      "status": "PASS"
+    },
+    {
+      "check": "cargo fmt recorder_host",
+      "status": "PASS"
+    },
+    {
+      "check": "cargo check recorder_host",
+      "status": "PASS"
+    },
+    {
+      "check": "focused A15 recorder tests 6/6",
+      "status": "PASS"
+    },
+    {
+      "check": "focused d42 diagnostic test 1/1",
+      "status": "PASS"
+    },
+    {
+      "check": "full recorder_host suite",
+      "status": "PASS"
+    }
+  ],
+  "checks_passed": 111,
+  "frozen_inputs": {
+    "extractor/documents/production_promotion/contract.json": "50286e9afead2d64766fca50d6c7502e82ab8ecf678b4569a23903d90eb777a9",
+    "extractor/documents/production_promotion/manifest.json": "9cd6b83b70902fdd212f2370ab798938aabd268d1bfb0ee8b39ebefd797b43ca",
+    "extractor/documents/production_promotion/verification.json": "c17b7d3ae5f8071a63ea03c7e6b402e0d98f96a6cc9647f14b17ebf79895059b",
+    "extractor/documents/production_promotion/verify_promotion.py": "ce941484b5180183917623f10450c2cde4c9af0462540e08ec924629b40e03a3",
+    "extractor/documents/production_replay_handoff/PATCH_PLAN.md": "981149b259735e678cf945c1acdbd0339f7361c5fc8fdac2f99bdd8199f4b557",
+    "extractor/documents/production_replay_handoff/handoff_contract.json": "82ddd6832e0e8e389a9c7adb675352e6a68fa8a425a512e7a4702b1cbeeda220",
+    "extractor/documents/production_replay_handoff/replay_payload.schema.json": "62763ac52b2f2b55a0ffb46f5ec12e612354650c97945578df04c972211b249f",
+    "extractor/documents/production_replay_handoff/verify_handoff.py": "12b29a756f251cce14c8ebaa1378d3d8fac0b687cf9781edf3a617d0b318b868",
+    "extractor/native/recorder_host/src/domain_data_authority.rs": "1bcc03a41790b4c77640f3f5c4ebe08b29fb61f90aed90367b6527bd2ac68ad1",
+    "extractor/native/recorder_host/src/main.rs": "aa35d560d22ef409e5e91e04de811d09d12655861402933b42b012f669ed5a81",
+    "extractor/native/recorder_host/src/world_fold.rs": "d0e42d67c678a38ba6e214af0e542287730812fbd553c2bdc9a1b09d28bb6cab",
+    "extractor/native/recorder_host/src/world_fold/tests.rs": "55ba4f4d8ea813909f8e903f33cb4edf043e0d3ea960c2694e03ce82d93af07a"
+  },
+  "production_admission": true,
+  "reason": "all seven promoted replay surface groups and the full recorder matrix pass",
+  "schema": "hoi4.extractor.production_replay_handoff.verification.v1",
+  "status": "PASS",
+  "upstream": "PASS 106/106"
+}

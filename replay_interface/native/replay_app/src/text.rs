@@ -496,6 +496,95 @@ pub struct QuadRenderer {
     white_srv: ComPtr<ID3D11ShaderResourceView>,
 }
 
+/// Full RGBA production-UI image renderer.  The CPU compositor only rebuilds
+/// an image when its exact replay inputs change; this object retains that
+/// immutable image on the GPU and draws it after the map on every presented
+/// frame.  It shares the same straight-alpha blend law as text/sprites.
+pub struct ImageRenderer {
+    pipeline: Pipeline,
+    image: Option<(ComPtr<ID3D11Texture2D>, ComPtr<ID3D11ShaderResourceView>)>,
+    extent: Option<(usize, usize)>,
+}
+
+impl ImageRenderer {
+    pub fn new(gfx: &Gfx) -> Result<Self> {
+        Ok(Self {
+            pipeline: Pipeline::new(gfx)?,
+            image: None,
+            extent: None,
+        })
+    }
+
+    /// Replace the retained UI image.  Dimensions and byte count are strict;
+    /// malformed or empty images never reach D3D.
+    pub fn set_rgba(&mut self, gfx: &Gfx, image: &game_ui::dds::RgbaImage) -> Result<()> {
+        if image.width == 0
+            || image.height == 0
+            || image.pixels.len() != image.width * image.height * 4
+        {
+            return Err("production UI image has invalid RGBA extent".into());
+        }
+        let uploaded = unsafe {
+            create_immutable_texture(
+                gfx,
+                image.width,
+                image.height,
+                DXGI_FORMAT_R8G8B8A8_UNORM,
+                &image.pixels,
+                "production replay UI composition",
+            )?
+        };
+        self.image = Some(uploaded);
+        self.extent = Some((image.width, image.height));
+        Ok(())
+    }
+
+    pub fn clear(&mut self) {
+        self.image = None;
+        self.extent = None;
+    }
+
+    pub fn has_image(&self) -> bool {
+        self.image.is_some()
+    }
+
+    pub fn draw(&self, gfx: &Gfx) -> Result<()> {
+        let Some((_, srv)) = &self.image else {
+            return Ok(());
+        };
+        let Some((width, height)) = self.extent else {
+            return Err("production UI texture exists without an extent".into());
+        };
+        // XUI25 rejects resampling one physical-pixel oracle into another
+        // viewport. Resize therefore clears/omits the UI until an exact image
+        // for that viewport is composed and uploaded.
+        if width != gfx.width as usize || height != gfx.height as usize {
+            return Err(format!(
+                "production UI image {}x{} does not match exact viewport {}x{}",
+                width, height, gfx.width, gfx.height
+            )
+            .into());
+        }
+        let mut vertices = Vec::with_capacity(6);
+        push_glyph_vertices(
+            &mut vertices,
+            &GlyphQuad {
+                page: 0,
+                x0: 0.0,
+                y0: 0.0,
+                x1: width as f32,
+                y1: height as f32,
+                u0: 0.0,
+                v0: 0.0,
+                u1: 1.0,
+                v1: 1.0,
+            },
+            color_to_rgba_bytes(0xFFFF_FFFF),
+        );
+        self.pipeline.draw(gfx, srv.as_raw(), &vertices)
+    }
+}
+
 impl QuadRenderer {
     pub fn new(gfx: &Gfx) -> Result<QuadRenderer> {
         let pipeline = Pipeline::new(gfx)?;

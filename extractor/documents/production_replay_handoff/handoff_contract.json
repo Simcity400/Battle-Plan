@@ -1,0 +1,143 @@
+{
+  "schema": "hoi4.extractor.production_replay_handoff.v1",
+  "status": "PRODUCTION_ADMITTED",
+  "production_admission": true,
+  "scope": "A1/A2/A4/A12/A14/A15/A21/A22/B8-X6 only",
+  "no_new_binary_claims": true,
+  "upstream_promotion_tuple": {
+    "contract": "extractor/documents/production_promotion/contract.json",
+    "contract_sha256": "50286e9afead2d64766fca50d6c7502e82ab8ecf678b4569a23903d90eb777a9",
+    "verifier": "extractor/documents/production_promotion/verify_promotion.py",
+    "verifier_sha256": "ce941484b5180183917623f10450c2cde4c9af0462540e08ec924629b40e03a3",
+    "verification": "extractor/documents/production_promotion/verification.json",
+    "verification_sha256": "c17b7d3ae5f8071a63ea03c7e6b402e0d98f96a6cc9647f14b17ebf79895059b",
+    "manifest": "extractor/documents/production_promotion/manifest.json",
+    "manifest_sha256": "9cd6b83b70902fdd212f2370ab798938aabd268d1bfb0ee8b39ebefd797b43ca",
+    "verification_result": "PASS 106/106"
+  },
+  "target_schema": "extractor/documents/production_replay_handoff/replay_payload.schema.json",
+  "consumer_laws": {
+    "unknown": "A null promoted sidecar means the domain/hour is unknown and must never be rendered as an empty measurement.",
+    "absent": "An absent optional field means it was not sourced or not projected; consumers must not synthesize a value.",
+    "empty": "An empty array is a measured empty set only when its owning sidecar is present and non-null.",
+    "identity": "Numeric *_tag_db_id fields are the stable identity; resolved TAG strings are presentation joins.",
+    "fixed_point": "Use raw integer fields for deterministic replay and the supplied scale/divisor for display.",
+    "closed_absence": "Do not synthesize persistent wing pairings or reinforcement-source enums rejected by A4/A21, or tokens for unknown/mod-added building ids."
+  },
+  "surfaces": [
+    {
+      "packets": ["A2", "A12"],
+      "domain_id": 45,
+      "paths": [
+        "countries.<TAG>.focus._r2_depth_events[].paused",
+        "countries.<TAG>.decisions._r2_depth_status",
+        "countries.<TAG>.decisions._r2_depth_targets",
+        "countries.<TAG>.decisions._r2_depth_events"
+      ],
+      "admission": "READY",
+      "rules": [
+        "paused is boolean or null and is present only when the exact paused flag is carried",
+        "numeric decision targets retain target_kind=numeric and require the frozen static decision definition to interpret state scope",
+        "country targets retain target_tag_db_id plus the resolved target",
+        "null _r2_depth_targets means omitted/incomplete target rows, never an empty target set"
+      ]
+    },
+    {
+      "packets": ["A4"],
+      "domain_id": 42,
+      "paths": ["strategic_air._r2_air_region_combat_stats"],
+      "admission": "READY",
+      "rules": [
+        "damage rows preserve channel, cause_type, exact cause label, amount_raw, and scale_raw",
+        "record identity preserves owner, region, side, flags, wing, date, plane count, mission mask, and attributed country"
+      ]
+    },
+    {
+      "packets": ["A21"],
+      "domain_id": 70,
+      "paths": ["world_events.sunk_convoys"],
+      "admission": "READY",
+      "rules": ["full-snapshot rows preserve month, convoys, killer_country, and owner"]
+    },
+    {
+      "packets": ["A14", "B8", "X6"],
+      "domain_id": 48,
+      "paths": [
+        "countries.<TAG>.production.construction_buildings_state_damage_live.construction_queue",
+        "states.<STATE>.construction_buildings_state_damage_live.state_buildings",
+        "provinces.<PROVINCE>.construction_buildings_state_damage_live.buildings"
+      ],
+      "admission": "READY",
+      "rules": [
+        "construction rows preserve target_location_id, target_scope, repair_levels_remaining, and is_repair",
+        "building rows preserve level, healthy_level, damaged, and optional partial_health_raw",
+        "type_0xNNNNNNNN is always retained; token is added only for an exact shared-registry match"
+      ]
+    },
+    {
+      "packets": ["A22"],
+      "domain_id": 61,
+      "paths": ["strategic_air._r2_air_loss_stats_live"],
+      "admission": "READY",
+      "rules": [
+        "all 24 raw channels and all 24 display divisors are required per admitted row",
+        "raw is authoritative; channels is the derived display value"
+      ]
+    },
+    {
+      "packets": ["A1"],
+      "domain_id": 62,
+      "paths": ["supply._r2_hub_motorization_live"],
+      "admission": "READY",
+      "rules": [
+        "row identity is owner/province/actor",
+        "motorization_level is exactly 1 or 2 and truck_fraction_raw is exactly 50000 or 100000"
+      ]
+    },
+    {
+      "packets": ["A15"],
+      "domain_id": 57,
+      "paths": ["_r2_session_multiplayer_metadata_live"],
+      "admission": "READY",
+      "current_projection": ["players_by_country", "pause", "events.hotjoin", "events.tag_switch", "events.chat", "events.system_message"],
+      "missing_projection": [],
+      "patch_plan": "extractor/documents/production_replay_handoff/PATCH_PLAN.md",
+      "rules": [
+        "retain the exact compact event row without inventing persona/session fields",
+        "chat and system_message require the validated message source family",
+        "hotjoin and tag_switch require the validated player-event source family",
+        "event families fail closed independently and must not poison valid players_by_country or pause"
+      ]
+    }
+  ],
+  "bounded_integration": {
+    "count": 0,
+    "completed_packet": "A15",
+    "source_file": "extractor/native/recorder_host/src/world_fold.rs",
+    "source_sha256": "d0e42d67c678a38ba6e214af0e542287730812fbd553c2bdc9a1b09d28bb6cab",
+    "test_file": "extractor/native/recorder_host/src/world_fold/tests.rs",
+    "test_sha256": "55ba4f4d8ea813909f8e903f33cb4edf043e0d3ea960c2694e03ce82d93af07a",
+    "recorder_main": "extractor/native/recorder_host/src/main.rs",
+    "recorder_main_sha256": "aa35d560d22ef409e5e91e04de811d09d12655861402933b42b012f669ed5a81",
+    "compact_schema_change": false,
+    "collector_change": false,
+    "binary_research": false
+  },
+  "test_matrix": {
+    "cargo_fmt_recorder_host": "PASS",
+    "cargo_check_recorder_host": "PASS",
+    "a15_focused": "6 passed, 0 failed",
+    "d42_stale_row_assertion": "1 passed, 0 failed",
+    "recorder_host_lib": "540 passed, 0 failed, 2 ignored",
+    "recorder_host_bin": "233 passed, 0 failed, 4 ignored",
+    "stitch_container_e2e": "10 passed, 0 failed",
+    "doc_tests": "PASS"
+  },
+  "admission_gate": {
+    "upstream_promotion_tuple": "PASS 106/106 and byte-identical",
+    "a15_recorder_fold": "PASS",
+    "replay_schema_conformance": "PASS",
+    "full_recorder_suite": "PASS",
+    "handoff_verifier": "required on every refreeze"
+  }
+}

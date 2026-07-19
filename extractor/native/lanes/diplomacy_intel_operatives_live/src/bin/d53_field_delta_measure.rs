@@ -192,7 +192,10 @@ fn main() {
                 s.ensure(&[("first_casualties", 8), ("second_casualties", 8)]);
                 if key_deleted(row.first_tag_db_id) {
                     s.tombstones += 1;
-                    wars.remove(&war_key(key_undelete(row.first_tag_db_id), row.second_tag_db_id));
+                    wars.remove(&war_key(
+                        key_undelete(row.first_tag_db_id),
+                        row.second_tag_db_id,
+                    ));
                     continue;
                 }
                 let k = war_key(row.first_tag_db_id, row.second_tag_db_id);
@@ -443,7 +446,10 @@ fn main() {
                         s.full_bytes += full_row_width(d53::KIND_COMPACT_STATE_EVENT) as u64;
                         acc_fields(
                             s,
-                            &[old.value_hash != row.value_hash, old.value_raw != row.value_raw],
+                            &[
+                                old.value_hash != row.value_hash,
+                                old.value_raw != row.value_raw,
+                            ],
                         );
                     }
                     None => s.baseline_rows += 1,
@@ -557,7 +563,9 @@ fn main() {
     );
     println!();
     println!("== TASK 2: per-field-delta value on row-level-delta base kinds ==");
-    println!("(saved = unchanged non-key field bytes a per-field encoder could omit on CHANGED rows)");
+    println!(
+        "(saved = unchanged non-key field bytes a per-field encoder could omit on CHANGED rows)"
+    );
     let mut total_full = 0u64;
     let mut total_saved = 0u64;
     for (kind, s) in &stat {

@@ -63,6 +63,17 @@
     { "id": 67, "name": "country_dynamic_modifiers_live", "status": "validated_slice_open_gaps", "schedulable": true, "requires_data_record": true },
     { "id": 68, "name": "session_header_live", "status": "validated_slice_open_gaps", "schedulable": true, "requires_data_record": true },
     { "id": 69, "name": "tech_sharing_groups_live", "status": "validated_slice_open_gaps", "schedulable": true, "requires_data_record": true },
+    { "id": 70, "name": "sunk_convoy_history_live", "status": "validated_slice", "schedulable": true, "requires_data_record": true },
+    { "id": 71, "name": "dynamic_collection_trace_live", "status": "reserved", "schedulable": false, "requires_data_record": true },
+    { "id": 72, "name": "resolved_tooltip_instances_live", "status": "validated_slice", "schedulable": true, "requires_data_record": true },
+    { "id": 73, "name": "politics_tooltip_inputs_live", "status": "reserved", "schedulable": false, "requires_data_record": true },
+    { "id": 74, "name": "power_balance_presentation_live", "status": "reserved", "schedulable": false, "requires_data_record": true },
+    { "id": 75, "name": "fired_event_popups_live", "status": "reserved", "schedulable": false, "requires_data_record": true },
+    { "id": 76, "name": "runtime_text_inputs_live", "status": "reserved", "schedulable": false, "requires_data_record": true },
+    { "id": 77, "name": "production_render_submits_live", "status": "reserved", "schedulable": false, "requires_data_record": true },
+    { "id": 78, "name": "design_catalog_context_live", "status": "validated_slice", "schedulable": true, "requires_data_record": true },
+    { "id": 79, "name": "hud_surface_activation_live", "status": "validated_slice", "schedulable": true, "requires_data_record": true },
+    { "id": 80, "name": "production_map_content_snapshot_live", "status": "reserved", "schedulable": false, "requires_data_record": true },
     { "id": 1000, "name": "frame", "status": "infrastructure", "schedulable": false, "requires_data_record": false }
   ]
 }

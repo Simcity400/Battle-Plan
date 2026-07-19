@@ -508,6 +508,7 @@ fn identity() -> PackIdentity {
         build_pinned: false,
         mod_identity: Some(serde_json::json!({ "modset_id": MODSET })),
         created_utc: Some("2026-07-12T00:00:00Z".into()),
+        content_manifest: None,
     }
 }
 

@@ -43,8 +43,8 @@ layer must therefore be finished **completely independently**:
   `replay_core`, not a rewrite. **Precondition (Codex review 2026-07-09):**
   the swap promise holds only for **snapshot-flavor** containers — `source.rs`
   fail-closed refuses compact-stream-only recordings (`snapshots: []`) by
-  design, requiring per-hour snapshot entries per HOI4REPLAY_CONTAINER_SPEC.md
-  or a shared decoder crate from the extraction layer. Requirements **item 1**
+  design, requiring per-hour snapshot entries per HOI4REPLAY_CONTAINER_SPEC.md.
+  Runtime loading of an extractor decoder is forbidden. Requirements **item 1**
   (hourly decoded snapshots in the container) is exactly this precondition;
   fixtures must therefore be packed snapshot-flavor containers too.
 

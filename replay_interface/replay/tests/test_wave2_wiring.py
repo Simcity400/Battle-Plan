@@ -114,6 +114,9 @@ class TestDiffEvents(unittest.TestCase):
         b = _snap("1936.1.2.12", save_domains=self.DOMS)
         for s in (a, b):
             s["countries"]["GER"] = schema.empty_country()
+            # deployment is declared captured for this pair, so the parser's
+            # completeness contract supplies an explicit empty vector.
+            s["countries"]["GER"]["military"]["deployment_queue"] = []
         return a, b
 
     def test_ace_dedup_single_fire(self):
@@ -232,13 +235,50 @@ class TestDiffEvents(unittest.TestCase):
     def test_deployment_and_subsidy_events(self):
         a, b = self._pair()
         b["countries"]["GER"]["military"]["deployment_queue"] = [
-            {"template_id": [5, 1], "location": 64, "name": "Inf"}]
+            {"id": [41, 64], "ordinal": 0,
+             "template_id": [5, 1], "location": 64, "name": "Inf"}]
         a["countries"]["GER"]["economy"]["market_subsidies"] = []
         b["countries"]["GER"]["economy"]["market_subsidies"] = [
             {"archetype": "small_plane", "cic": 1000}]
         evs = diff_engine.diff_snapshots(a, b)
         self.assertIn("unit_deployment_started", _types(evs))
         self.assertIn("market_subsidy_changed", _types(evs))
+
+    def test_deployment_uses_exact_conveyor_id_not_template_location(self):
+        a, b = self._pair()
+        b["countries"]["GER"]["military"]["deployment_queue"] = [
+            {"id": [41, 64], "ordinal": 0,
+             "template_id": [5, 52], "location": 64, "name": "Inf A"},
+            {"id": [42, 64], "ordinal": 1,
+             "template_id": [5, 52], "location": 64, "name": "Inf B"},
+        ]
+        events = [e for e in diff_engine.diff_snapshots(a, b)
+                  if e["type"] == "unit_deployment_started"]
+        self.assertEqual([e["key"] for e in events], ["41:64", "42:64"])
+
+    def test_deployment_missing_or_duplicate_id_fails_closed(self):
+        a, b = self._pair()
+        b["countries"]["GER"]["military"]["deployment_queue"] = [
+            {"template_id": [5, 52], "location": 64},
+            {"id": [41, 64], "template_id": [5, 52], "location": 64},
+            {"id": [41, 64], "template_id": [6, 52], "location": 65},
+        ]
+        events = [e for e in diff_engine.diff_snapshots(a, b)
+                  if e["type"] in {"unit_deployment_started",
+                                    "unit_deployment_completed"}]
+        self.assertEqual(events, [])
+
+    def test_one_invalid_identity_invalidates_whole_deployment_vector(self):
+        a, b = self._pair()
+        a["countries"]["GER"]["military"]["deployment_queue"] = []
+        b["countries"]["GER"]["military"]["deployment_queue"] = [
+            {"id": [41, 64], "template_id": [5, 52], "location": 64},
+            {"id": None, "template_id": [6, 52], "location": 65},
+        ]
+        events = [e for e in diff_engine.diff_snapshots(a, b)
+                  if e["type"] in {"unit_deployment_started",
+                                    "unit_deployment_completed"}]
+        self.assertEqual(events, [])
 
     def test_no_event_when_domain_uncaptured(self):
         # abilities domain NOT in either provenance -> no abilities events fire even
@@ -260,6 +300,76 @@ class TestDiffEvents(unittest.TestCase):
         a["countries"]["GER"]["projects"] = {"completed_projects": []}
         for e in diff_engine.diff_snapshots(a, b):
             self.assertEqual(schema.validate_event(e), [], e)
+
+
+class TestDeploymentStoreCompleteness(unittest.TestCase):
+    @staticmethod
+    def _exact_queue():
+        return [{
+            "id": [41, 64], "ordinal": 0, "name": "Infantry A",
+            "template_id": [5, 52], "amount": 1, "location": 64,
+            "priority": 1, "role": "infantry", "closed": False,
+            "lines": [{
+                "id": [91, 63], "ordinal": 0, "name_order": 7,
+                "amount": 1, "training": 0.5, "max_training": 0.9,
+                "manpower_have": 5000, "manpower_need": 5000,
+                "max_manpower": 5000,
+                "equipment_in_transit": [{
+                    "equip_id": 3, "equip_type": 70,
+                    "archetype": "infantry_equipment", "amount": 400.0,
+                    "ordinal": 0,
+                }],
+            }],
+        }]
+
+    def test_proven_empty_queue_is_folded_as_empty_not_unreadable(self):
+        bundle = object.__new__(store.OracleBundle)
+        bundle.data = {"deployment": {
+            "countries": {
+                "GER": {"queue_complete": True, "conveyors": []},
+            },
+            "expeditionary": [],
+        }}
+        snap = schema.empty_snapshot("g", "1936.1.1.12")
+        store._ingest_deployment(bundle, snap)
+        self.assertEqual(
+            snap["countries"]["GER"]["military"]["deployment_queue"], [])
+
+    def test_unproven_empty_queue_remains_unreadable(self):
+        bundle = object.__new__(store.OracleBundle)
+        bundle.data = {"deployment": {
+            "countries": {"GER": {"conveyors": []}},
+            "expeditionary": [],
+        }}
+        snap = schema.empty_snapshot("g", "1936.1.1.12")
+        store._ingest_deployment(bundle, snap)
+        self.assertIsNone(
+            snap["countries"]["GER"]["military"]["deployment_queue"])
+
+    def test_exact_queue_shape_is_schema_validated(self):
+        snap = _snap("1936.1.1.12", save_domains=["deployment"])
+        snap["countries"]["GER"] = schema.empty_country()
+        snap["countries"]["GER"]["military"]["deployment_queue"] = self._exact_queue()
+        self.assertEqual(schema.validate_snapshot(snap), [])
+
+    def test_wrong_line_identity_type_is_rejected(self):
+        snap = _snap("1936.1.1.12", save_domains=["deployment"])
+        snap["countries"]["GER"] = schema.empty_country()
+        queue = self._exact_queue()
+        queue[0]["lines"][0]["id"] = [91, 64]
+        snap["countries"]["GER"]["military"]["deployment_queue"] = queue
+        problems = schema.validate_snapshot(snap)
+        self.assertTrue(any("not exact type-63 id" in problem for problem in problems))
+
+    def test_absent_manpower_container_is_preserved_as_null(self):
+        snap = _snap("1936.1.1.12", save_domains=["deployment"])
+        snap["countries"]["GER"] = schema.empty_country()
+        queue = self._exact_queue()
+        queue[0]["lines"][0]["manpower_have"] = None
+        queue[0]["lines"][0]["manpower_need"] = None
+        queue[0]["lines"][0]["max_manpower"] = None
+        snap["countries"]["GER"]["military"]["deployment_queue"] = queue
+        self.assertEqual(schema.validate_snapshot(snap), [])
 
 
 @unittest.skipUnless(HAVE_FIXTURES, "WAVE-2 oracle fixtures not present")

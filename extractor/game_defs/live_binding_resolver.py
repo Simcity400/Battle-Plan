@@ -3,10 +3,13 @@
 
 The resolver is deliberately fail-closed.  ``system.log`` is accepted only when
 its first timestamp matches the queried process creation time and its reported
-active counts agree with the enumerated active names.  ``dlc_load.json`` is
-retained as launcher evidence, but the launched runtime list wins when the two
-conflict.  Missing descriptors, duplicate names, mutable files, or catalog/live
-layer mismatches stop bundle creation.
+active counts agree with the enumerated active names.  The runtime list proves
+which installed products the engine actually activated.  ``dlc_load.json`` is
+retained separately as the requested profile selection; it must never remove a
+product from the effective runtime roster when the engine reports that product
+active.
+Missing descriptors, duplicate names, mutable files, or catalog/live layer
+mismatches stop bundle creation.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ import ctypes.wintypes
 import datetime as dt
 import json
 import re
+import struct
 import sys
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -26,8 +30,69 @@ import static_bundle as SB
 
 
 RESOLUTION_SCHEMA = "extractor.live_binding_resolution.v1"
-SOURCE_INVENTORY_SCHEMA = "extractor.live_binding_source_inventory.v2"
+UI14_ENGINE_VFS_SCHEMA = "extractor.ui14_engine_vfs.v1"
+SOURCE_INVENTORY_SCHEMA = "extractor.live_binding_source_inventory.v3"
 EXPECTED_EXE_SHA256 = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+
+
+def _load_ui14_engine_vfs(
+    path: Path, exe_sha: str, userdir: Path, enabled_mods: list[str]
+) -> dict[str, Any]:
+    receipt = SB.load_object(path, "UI14 engine VFS receipt")
+    if set(receipt) != {"schema", "executable_sha256", "layers", "effective_winners"}:
+        raise ResolutionError("UI14 engine VFS receipt has unknown or missing fields")
+    if receipt["schema"] != UI14_ENGINE_VFS_SCHEMA or receipt["executable_sha256"] != exe_sha:
+        raise ResolutionError("UI14 engine VFS receipt executable/schema mismatch")
+    ids = [token.replace("\\", "/") for token in enabled_mods]
+    if len(ids) != len(set(ids)):
+        raise ResolutionError("launcher repeats an enabled mod descriptor")
+    layers = receipt.get("layers")
+    if not isinstance(layers, list) or len(layers) != len(ids):
+        raise ResolutionError("UI14 engine VFS layer count does not match enabled mods")
+    descriptor_ordinals: set[int] = set()
+    mount_ordinals: set[int] = set()
+    seen_ids: set[str] = set()
+    for row in layers:
+        if not isinstance(row, dict) or set(row) != {
+            "id", "descriptor_sha256", "engine_descriptor_ordinal", "engine_mount_ordinal"
+        }:
+            raise ResolutionError("UI14 engine VFS layer row is malformed")
+        layer_id = row["id"].replace("\\", "/") if isinstance(row["id"], str) else ""
+        descriptor_ordinal = row["engine_descriptor_ordinal"]
+        mount_ordinal = row["engine_mount_ordinal"]
+        if (
+            layer_id not in ids or layer_id in seen_ids
+            or not isinstance(descriptor_ordinal, int) or descriptor_ordinal < 0
+            or not isinstance(mount_ordinal, int) or mount_ordinal < 0
+            or descriptor_ordinal in descriptor_ordinals or mount_ordinal in mount_ordinals
+        ):
+            raise ResolutionError("UI14 engine VFS layer identity/ordinal is invalid")
+        descriptor = (userdir / layer_id).resolve()
+        descriptor_sha, _ = _hash_file_stable(descriptor)
+        if descriptor_sha != row["descriptor_sha256"]:
+            raise ResolutionError(f"UI14 engine VFS descriptor hash mismatch: {layer_id}")
+        seen_ids.add(layer_id)
+        descriptor_ordinals.add(descriptor_ordinal)
+        mount_ordinals.add(mount_ordinal)
+        row["id"] = layer_id
+    winners = receipt.get("effective_winners")
+    if not isinstance(winners, list):
+        raise ResolutionError("UI14 engine VFS effective_winners is not an array")
+    winner_keys: set[str] = set()
+    for row in winners:
+        if not isinstance(row, dict) or set(row) != {"relpath", "winner_id", "sha256"}:
+            raise ResolutionError("UI14 engine VFS winner row is malformed")
+        relpath = row["relpath"].replace("\\", "/") if isinstance(row["relpath"], str) else ""
+        key = relpath.casefold()
+        if (
+            not relpath or relpath.startswith("/") or ".." in Path(relpath).parts
+            or key in winner_keys or row["winner_id"] not in seen_ids
+            or not isinstance(row["sha256"], str) or len(row["sha256"]) != 64
+        ):
+            raise ResolutionError("UI14 engine VFS winner identity/path/hash is invalid")
+        winner_keys.add(key)
+        row["relpath"] = relpath
+    return receipt
 ACTIVE_COUNT_RE = re.compile(r"Active (DLC|Mod) Count:\s*(\d+)\s*$")
 ACTIVE_NAME_RE = re.compile(r"Active (DLC|Mod):\s*(.+?)\s*$")
 VERSION_RE = re.compile(r"Version:\s*(.+?)\s*$")
@@ -35,6 +100,7 @@ LOG_TIME_RE = re.compile(r"^\[(\d{2}):(\d{2}):(\d{2})\]")
 DESCRIPTOR_RE = re.compile(
     r"^\s*([A-Za-z0-9_]+)\s*=\s*(?:\"([^\"]*)\"|([^#\s]+))", re.MULTILINE
 )
+QUOTED_VALUE_RE = re.compile(r'"([^"]*)"')
 
 
 class ResolutionError(SB.BundleError):
@@ -44,7 +110,9 @@ class ResolutionError(SB.BundleError):
 def parse_descriptor(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise ResolutionError(f"missing descriptor: {path}")
-    text = path.read_text(encoding="utf-8-sig", errors="strict")
+    # Clausewitz descriptors are byte strings.  Latin-1 is the lossless
+    # one-byte mapping also used by the production replay resolver.
+    text = path.read_bytes().decode("latin-1")
     matches: dict[str, list[str]] = {}
     for key, quoted, bare in DESCRIPTOR_RE.findall(text):
         matches.setdefault(key.lower(), []).append(quoted or bare)
@@ -65,7 +133,102 @@ def parse_descriptor(path: Path) -> dict[str, Any]:
         for value in matches.get("replace_path", [])
         if value.replace("\\", "/").strip("/")
     ]
+    fields["dependencies"] = _descriptor_quoted_list(text, "dependencies")
     return fields
+
+
+def _descriptor_quoted_list(text: str, wanted: str) -> list[str]:
+    """Parse one descriptor ``key = { "value" ... }`` list, fail closed.
+
+    The a729 planner compares dependency entries to exact descriptor display
+    names.  Multiple dependency blocks or an unterminated block are therefore
+    ambiguous and rejected instead of being guessed.
+    """
+    starts = list(
+        re.finditer(
+            rf"(?im)^\s*{re.escape(wanted)}\s*=\s*\{{",
+            text,
+        )
+    )
+    if not starts:
+        return []
+    if len(starts) != 1:
+        raise ResolutionError(f"descriptor contains duplicate {wanted}")
+    body_start = starts[0].end()
+    body_end = text.find("}", body_start)
+    if body_end < 0:
+        raise ResolutionError(f"descriptor contains unterminated {wanted}")
+    body = text[body_start:body_end]
+    scrubbed = QUOTED_VALUE_RE.sub("", body)
+    if scrubbed.strip():
+        raise ResolutionError(f"descriptor contains malformed {wanted}")
+    values = [value.strip() for value in QUOTED_VALUE_RE.findall(body) if value.strip()]
+    if len(values) != len(set(values)):
+        raise ResolutionError(f"descriptor repeats {wanted} entry")
+    return values
+
+
+def _engine_byte_key(value: str) -> bytes:
+    """Exact a729 narrow-string ordering key (case-sensitive byte order)."""
+    return value.encode("utf-8")
+
+
+def _relative_descriptor_id(root: Path, descriptor: Path) -> str:
+    try:
+        value = descriptor.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError as exc:
+        raise ResolutionError(f"descriptor escapes content root: {descriptor}") from exc
+    if not value or any(part in {"", ".", ".."} for part in PurePosixPath(value).parts):
+        raise ResolutionError(f"unsafe descriptor identity: {value!r}")
+    return value
+
+
+def _engine_mount_plan(
+    dlc_layers: list[dict[str, Any]],
+    mod_layers: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Reproduce a729's selected-DLC/mod dependency priority planner.
+
+    DLC starts at priority 0 and mods at 10000.  For every dependency display
+    name, the matching layer is repeatedly lowered until it precedes the
+    dependent.  The final ascending-priority tie break is the exact portable
+    descriptor ID.  A dependency cycle has no engine fixed point and is
+    rejected rather than hanging the extractor.
+    """
+    plan = [
+        {**row, "priority": 0, "planner_kind": "dlc"} for row in dlc_layers
+    ] + [
+        {**row, "priority": 10000, "planner_kind": "mod"} for row in mod_layers
+    ]
+    ids = [row["descriptor_id"] for row in plan]
+    if len(ids) != len(set(ids)):
+        raise ResolutionError("engine mount plan repeats a descriptor identity")
+    if not plan:
+        return []
+
+    # Bellman-Ford form of the engine's repeated relaxation.  A stable plan
+    # exists after at most N-1 propagation rounds; a change in round N proves
+    # an active dependency cycle.
+    changed = False
+    for round_index in range(len(plan)):
+        changed = False
+        for dependent in plan:
+            dependent_priority = dependent["priority"]
+            for dependency_name in dependent.get("dependencies", []):
+                for dependency in plan:
+                    if dependency["name"] != dependency_name:
+                        continue
+                    if dependent_priority <= dependency["priority"]:
+                        dependency["priority"] -= 1
+                        changed = True
+        if not changed:
+            break
+        if round_index == len(plan) - 1:
+            raise ResolutionError("active DLC/mod dependencies contain a priority cycle")
+    return sorted(
+        plan,
+        key=lambda row: (row["priority"], _engine_byte_key(row["descriptor_id"])),
+    )
 
 
 def parse_runtime_log(path: Path) -> dict[str, Any]:
@@ -214,6 +377,11 @@ def hash_tree(
                 "relpath": rel,
                 "bytes": byte_count,
                 "sha256": digest,
+                "storage_kind": "directory",
+                "source_container_sha256": None,
+                "source_byte_offset": 0,
+                "source_byte_count": byte_count,
+                "source_range_sha256": digest,
             }
         )
     after = enumerate_files()
@@ -269,15 +437,17 @@ def classify_descriptorless_asset_layers(
     return classifications, prefixed_rows
 
 
-def _zip_namespace_rows(path: Path, layer_id: str) -> tuple[str, list[dict[str, Any]]]:
-    before_sha, _ = _hash_file_stable(path)
+def _zip_namespace_rows(
+    path: Path, layer_id: str, *, layer_kind: str = "mod"
+) -> tuple[str, list[dict[str, Any]], str, int]:
+    before_sha, before_bytes = _hash_file_stable(path)
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     try:
         archive = zipfile.ZipFile(path)
     except (OSError, zipfile.BadZipFile) as exc:
         raise ResolutionError(f"invalid mod archive: {path}") from exc
-    with archive:
+    with archive, path.open("rb") as raw_archive:
         for info in sorted(archive.infolist(), key=lambda item: item.filename.casefold()):
             if info.is_dir():
                 continue
@@ -297,13 +467,34 @@ def _zip_namespace_rows(path: Path, layer_id: str) -> tuple[str, list[dict[str, 
             mode = (info.external_attr >> 16) & 0o170000
             if mode == 0o120000:
                 raise ResolutionError(f"symlink mod archive member: {rel!r}")
+            if info.flag_bits & 0x1:
+                raise ResolutionError(f"encrypted mod archive member: {rel!r}")
+            raw_archive.seek(info.header_offset)
+            local_header = raw_archive.read(30)
+            if len(local_header) != 30:
+                raise ResolutionError(f"truncated archive local header: {rel!r}")
+            signature, *_, filename_len, extra_len = struct.unpack(
+                "<IHHHHHIIIHH", local_header
+            )
+            if signature != 0x04034B50:
+                raise ResolutionError(f"invalid archive local header: {rel!r}")
+            source_byte_offset = info.header_offset + 30 + filename_len + extra_len
+            raw_archive.seek(source_byte_offset)
+            compressed = raw_archive.read(info.compress_size)
+            if len(compressed) != info.compress_size:
+                raise ResolutionError(f"truncated archive member range: {rel!r}")
             data = archive.read(info)
             rows.append({
-                "layer_kind": "mod",
+                "layer_kind": layer_kind,
                 "layer_id": layer_id,
                 "relpath": rel,
                 "bytes": len(data),
                 "sha256": SB.sha256_bytes(data),
+                "storage_kind": "zip_archive",
+                "source_container_sha256": before_sha,
+                "source_byte_offset": source_byte_offset,
+                "source_byte_count": info.compress_size,
+                "source_range_sha256": SB.sha256_bytes(compressed),
             })
     after_sha, _ = _hash_file_stable(path)
     if before_sha != after_sha:
@@ -314,7 +505,7 @@ def _zip_namespace_rows(path: Path, layer_id: str) -> tuple[str, list[dict[str, 
         {"relpath": row["relpath"], "bytes": row["bytes"], "sha256": row["sha256"]}
         for row in rows
     ]
-    return SB.sha256_bytes(SB.canonical_json(content_rows)), rows
+    return SB.sha256_bytes(SB.canonical_json(content_rows)), rows, before_sha, before_bytes
 
 
 def recompute_source_inventory(
@@ -326,10 +517,16 @@ def recompute_source_inventory(
 ) -> dict[str, Any]:
     """Re-enumerate the ordered effective source namespaces."""
     vanilla = vanilla.resolve()
-    descriptor_by_id = {
-        path.parent.name: (path, parse_descriptor(path))
-        for path in sorted((vanilla / "dlc").glob("*/*.dlc"), key=lambda item: item.as_posix().casefold())
-    }
+    descriptor_by_id: dict[str, tuple[Path, dict[str, Any]]] = {}
+    loose_descriptors = sorted(
+        (vanilla / "dlc").rglob("*.dlc") if (vanilla / "dlc").is_dir() else [],
+        key=lambda item: _engine_byte_key(_relative_descriptor_id(vanilla, item)),
+    )
+    for path in loose_descriptors:
+        dlc_id = path.parent.name
+        if dlc_id in descriptor_by_id:
+            raise ResolutionError(f"multiple DLC descriptors share product id: {dlc_id}")
+        descriptor_by_id[dlc_id] = (path, parse_descriptor(path))
     namespaces: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
 
@@ -347,7 +544,9 @@ def recompute_source_inventory(
     ) -> None:
         ordinal = len(namespaces)
         if archive:
-            content_sha, inventory = _zip_namespace_rows(root, layer_id)
+            content_sha, inventory, source_container_sha256, source_container_bytes = _zip_namespace_rows(
+                root, layer_id, layer_kind=kind
+            )
         else:
             content_sha, inventory = hash_tree(
                 root,
@@ -356,6 +555,8 @@ def recompute_source_inventory(
                 allow_empty=allow_empty,
                 exclude_top=exclude_top,
             )
+            source_container_sha256 = None
+            source_container_bytes = None
         namespaces.append({
             "ordinal": ordinal,
             "kind": kind,
@@ -363,6 +564,9 @@ def recompute_source_inventory(
             "id": layer_id,
             "label": label,
             "replace_paths": list(replace_paths or []),
+            "storage_kind": "zip_archive" if archive else "directory",
+            "source_container_sha256": source_container_sha256,
+            "source_container_bytes": source_container_bytes,
             "file_count": len(inventory),
             "content_sha256": content_sha,
             "binding_content_sha256": binding_content_sha256 or content_sha,
@@ -376,34 +580,138 @@ def recompute_source_inventory(
 
     integrated_root = vanilla / "integrated_dlc"
     if integrated_root.is_dir():
-        for path in sorted((item for item in integrated_root.iterdir() if item.is_dir()), key=lambda item: item.name.casefold()):
+        integrated_descriptors = sorted(
+            integrated_root.rglob("*.dlc"),
+            key=lambda item: _engine_byte_key(_relative_descriptor_id(vanilla, item)),
+        )
+        seen_integrated_ids: set[str] = set()
+        for descriptor_path in integrated_descriptors:
+            path = descriptor_path.parent
+            if path.name in seen_integrated_ids:
+                raise ResolutionError(
+                    f"multiple integrated DLC descriptors share product id: {path.name}"
+                )
+            seen_integrated_ids.add(path.name)
             add_namespace(
                 "integrated_dlc", path.name, f"integrated_dlc/{path.name}", path,
                 allow_empty=True, binding="integrated"
             )
     active_products = set(enabled_dlc_ids)
     asset_only = set(extra_asset_dlc_ids)
-    for dlc_id in sorted(active_products | asset_only, key=str.casefold):
+    unknown_products = active_products - set(descriptor_by_id)
+    if unknown_products:
+        raise ResolutionError(
+            f"active DLC product ids lack descriptors: {sorted(unknown_products)}"
+        )
+    if asset_only & set(descriptor_by_id):
+        raise ResolutionError("descriptor-backed DLC cannot be classified asset-only")
+
+    # Descriptorless asset namespaces are deliberately excluded by production
+    # interpreters.  Keep their deterministic evidence rows ahead of mounted
+    # selected content without letting their names influence the engine plan.
+    for dlc_id in sorted(asset_only, key=_engine_byte_key):
         root = vanilla / "dlc" / dlc_id
-        descriptor = descriptor_by_id.get(dlc_id)
-        replace_paths = descriptor[1].get("replace_path", []) if descriptor else []
         add_namespace(
-            "dlc", dlc_id, f"dlc/{dlc_id}", root, replace_paths,
-            allow_empty=True,
-            binding="active_product" if dlc_id in active_products else "asset_only",
+            "dlc", dlc_id, f"dlc/{dlc_id}", root,
+            allow_empty=True, binding="asset_only",
         )
+
+    dlc_plan_rows = [
+        {
+            "id": dlc_id,
+            "descriptor_id": _relative_descriptor_id(vanilla, descriptor_by_id[dlc_id][0]),
+            "name": descriptor_by_id[dlc_id][1]["name"],
+            "dependencies": descriptor_by_id[dlc_id][1]["dependencies"],
+        }
+        for dlc_id in active_products
+    ]
+    mod_plan_rows: list[dict[str, Any]] = []
+    source_by_id: dict[str, dict[str, Any]] = {}
     for source in resolved_mod_sources:
-        descriptor = parse_descriptor(Path(source["descriptor_path"]))
-        add_namespace(
-            "mod",
-            source["id"],
-            source["name"],
-            Path(source["content_path"]),
-            descriptor.get("replace_path", []),
-            archive=source["content_kind"] == "archive",
-            binding="active_mod",
-            binding_content_sha256=source["content_sha256"],
+        descriptor_id = str(source["id"]).replace("\\", "/")
+        if descriptor_id in source_by_id:
+            raise ResolutionError(f"resolved mod source repeats id: {descriptor_id}")
+        descriptor_fields = parse_descriptor(Path(source["descriptor_path"]))
+        if descriptor_fields["name"] != source["name"]:
+            raise ResolutionError(f"resolved mod descriptor name changed: {descriptor_id}")
+        source_by_id[descriptor_id] = source
+        mod_plan_rows.append(
+            {
+                "id": descriptor_id,
+                "descriptor_id": descriptor_id,
+                "name": descriptor_fields["name"],
+                "dependencies": descriptor_fields["dependencies"],
+            }
         )
+    mount_plan = _engine_mount_plan(dlc_plan_rows, mod_plan_rows)
+    planned_mod_ids = [
+        row["descriptor_id"] for row in mount_plan if row["planner_kind"] == "mod"
+    ]
+    ordered_recorded_sources = sorted(
+        resolved_mod_sources,
+        key=lambda source: source.get("ordinal", -1),
+    )
+    if [source.get("ordinal") for source in ordered_recorded_sources] != list(
+        range(len(ordered_recorded_sources))
+    ):
+        raise ResolutionError("authenticated UI14 mod ordinals are not contiguous from zero")
+    recorded_mod_ids = [
+        str(source["id"]).replace("\\", "/")
+        for source in ordered_recorded_sources
+    ]
+    if planned_mod_ids != recorded_mod_ids:
+        raise ResolutionError(
+            "authenticated UI14 mod order disagrees with the a729 dependency/stable-id planner"
+        )
+
+    for planned in mount_plan:
+        if planned["planner_kind"] == "mod":
+            source = source_by_id[planned["descriptor_id"]]
+            descriptor = parse_descriptor(Path(source["descriptor_path"]))
+            add_namespace(
+                "mod",
+                source["id"],
+                source["name"],
+                Path(source["content_path"]),
+                descriptor.get("replace_path", []),
+                archive=source["content_kind"] == "archive",
+                binding="active_mod",
+                binding_content_sha256=source["content_sha256"],
+            )
+            continue
+
+        dlc_id = planned["id"]
+        root = vanilla / "dlc" / dlc_id
+        descriptor = descriptor_by_id[dlc_id]
+        replace_paths = descriptor[1].get("replace_path", [])
+        if descriptor[1].get("archive"):
+            archive_ref = Path(descriptor[1]["archive"].replace("\\", "/"))
+            if archive_ref.is_absolute() or any(
+                part in {"", ".", ".."} for part in archive_ref.parts
+            ):
+                raise ResolutionError(
+                    f"unsafe descriptor-backed DLC archive path: {dlc_id}"
+                )
+            archive_path = (vanilla / archive_ref).resolve()
+            try:
+                archive_path.relative_to(vanilla)
+            except ValueError as exc:
+                raise ResolutionError(
+                    f"descriptor-backed DLC archive escapes install root: {dlc_id}"
+                ) from exc
+            binding_sha, _ = hash_tree(
+                root, layer_kind="dlc", layer_id=dlc_id, allow_empty=True
+            )
+            add_namespace(
+                "dlc", dlc_id, f"dlc/{dlc_id}", archive_path, replace_paths,
+                archive=True, binding="active_product",
+                binding_content_sha256=binding_sha,
+            )
+        else:
+            add_namespace(
+                "dlc", dlc_id, f"dlc/{dlc_id}", root, replace_paths,
+                allow_empty=True, binding="active_product",
+            )
     namespace_sha = SB.sha256_bytes(SB.canonical_json(namespaces))
     rows_sha = SB.sha256_bytes(SB.canonical_json(rows))
     core = {
@@ -440,7 +748,8 @@ def validate_source_inventory_document(value: dict[str, Any]) -> dict[str, Any]:
     for ordinal, namespace in enumerate(namespaces):
         if not isinstance(namespace, dict) or set(namespace) != {
             "ordinal", "kind", "binding", "id", "label", "replace_paths", "file_count",
-            "content_sha256", "binding_content_sha256"
+            "content_sha256", "binding_content_sha256", "storage_kind",
+            "source_container_sha256", "source_container_bytes"
         }:
             raise ResolutionError(f"source namespace {ordinal} is malformed")
         if namespace.get("ordinal") != ordinal or namespace.get("kind") not in {
@@ -461,6 +770,25 @@ def validate_source_inventory_document(value: dict[str, Any]) -> dict[str, Any]:
         file_count = namespace.get("file_count")
         if not isinstance(file_count, int) or isinstance(file_count, bool) or file_count < 0:
             raise ResolutionError(f"namespace {ordinal}.file_count is invalid")
+        storage_kind = namespace.get("storage_kind")
+        source_container_sha256 = namespace.get("source_container_sha256")
+        source_container_bytes = namespace.get("source_container_bytes")
+        if storage_kind == "directory":
+            if source_container_sha256 is not None or source_container_bytes is not None:
+                raise ResolutionError(f"namespace {ordinal} directory carries container identity")
+        elif storage_kind == "zip_archive":
+            source_container_sha256 = SB._required_sha(
+                source_container_sha256,
+                f"namespace {ordinal}.source_container_sha256",
+            )
+            if (
+                not isinstance(source_container_bytes, int)
+                or isinstance(source_container_bytes, bool)
+                or source_container_bytes <= 0
+            ):
+                raise ResolutionError(f"namespace {ordinal}.source_container_bytes is invalid")
+        else:
+            raise ResolutionError(f"namespace {ordinal}.storage_kind is invalid")
         normalized_namespaces.append({
             "ordinal": ordinal,
             "kind": namespace["kind"],
@@ -468,6 +796,9 @@ def validate_source_inventory_document(value: dict[str, Any]) -> dict[str, Any]:
             "id": SB._required_string(namespace.get("id"), f"namespace {ordinal}.id"),
             "label": label,
             "replace_paths": replacement,
+            "storage_kind": storage_kind,
+            "source_container_sha256": source_container_sha256,
+            "source_container_bytes": source_container_bytes,
             "file_count": file_count,
             "content_sha256": SB._required_sha(namespace.get("content_sha256"), f"namespace {ordinal}.content_sha256"),
             "binding_content_sha256": SB._required_sha(
@@ -479,7 +810,9 @@ def validate_source_inventory_document(value: dict[str, Any]) -> dict[str, Any]:
     seen_rows: set[tuple[int, str]] = set()
     for index, row in enumerate(rows):
         if not isinstance(row, dict) or set(row) != {
-            "namespace_ordinal", "layer_kind", "layer_id", "relpath", "bytes", "sha256"
+            "namespace_ordinal", "layer_kind", "layer_id", "relpath", "bytes", "sha256",
+            "storage_kind", "source_container_sha256", "source_byte_offset",
+            "source_byte_count", "source_range_sha256"
         }:
             raise ResolutionError(f"source inventory row {index} is malformed")
         ordinal = row.get("namespace_ordinal")
@@ -505,13 +838,49 @@ def validate_source_inventory_document(value: dict[str, Any]) -> dict[str, Any]:
         byte_count = row.get("bytes")
         if not isinstance(byte_count, int) or isinstance(byte_count, bool) or byte_count < 0:
             raise ResolutionError(f"source row {index}.bytes is invalid")
+        payload_sha256 = SB._required_sha(row.get("sha256"), f"source row {index}.sha256")
+        source_byte_offset = row.get("source_byte_offset")
+        source_byte_count = row.get("source_byte_count")
+        if (
+            not isinstance(source_byte_offset, int)
+            or isinstance(source_byte_offset, bool)
+            or source_byte_offset < 0
+            or not isinstance(source_byte_count, int)
+            or isinstance(source_byte_count, bool)
+            or source_byte_count < 0
+        ):
+            raise ResolutionError(f"source row {index} physical range is invalid")
+        source_range_sha256 = SB._required_sha(
+            row.get("source_range_sha256"), f"source row {index}.source_range_sha256"
+        )
+        if row.get("storage_kind") != namespace["storage_kind"]:
+            raise ResolutionError(f"source row {index} storage kind mismatch")
+        if namespace["storage_kind"] == "directory":
+            if (
+                row.get("source_container_sha256") is not None
+                or source_byte_offset != 0
+                or source_byte_count != byte_count
+                or source_range_sha256 != payload_sha256
+            ):
+                raise ResolutionError(f"source row {index} loose-file range is invalid")
+        else:
+            if (
+                row.get("source_container_sha256") != namespace["source_container_sha256"]
+                or source_byte_offset + source_byte_count > namespace["source_container_bytes"]
+            ):
+                raise ResolutionError(f"source row {index} archive range is invalid")
         normalized_rows.append({
             "namespace_ordinal": ordinal,
             "layer_kind": namespace["kind"],
             "layer_id": namespace["id"],
             "relpath": relpath,
             "bytes": byte_count,
-            "sha256": SB._required_sha(row.get("sha256"), f"source row {index}.sha256"),
+            "sha256": payload_sha256,
+            "storage_kind": namespace["storage_kind"],
+            "source_container_sha256": namespace["source_container_sha256"],
+            "source_byte_offset": source_byte_offset,
+            "source_byte_count": source_byte_count,
+            "source_range_sha256": source_range_sha256,
         })
     for namespace in normalized_namespaces:
         ns_rows = [row for row in normalized_rows if row["namespace_ordinal"] == namespace["ordinal"]]
@@ -568,6 +937,58 @@ def _launcher_state(userdir: Path) -> tuple[dict[str, Any], bytes]:
     if len(state["enabled_mods"]) != len(set(state["enabled_mods"])):
         raise ResolutionError("dlc_load.json contains duplicate enabled mods")
     return state, before
+
+
+def _disabled_dlc_layer_ids(
+    disabled_tokens: list[str],
+    installed_descriptor_ids: set[str],
+) -> list[str]:
+    """Normalize launcher-disabled descriptor tokens to installed layer IDs."""
+    disabled_ids: set[str] = set()
+    for token in disabled_tokens:
+        normalized = token.replace("\\", "/")
+        parts = PurePosixPath(normalized).parts
+        if (
+            len(parts) != 3
+            or parts[0].casefold() != "dlc"
+            or not parts[1]
+            or not parts[2].casefold().endswith(".dlc")
+        ):
+            raise ResolutionError(f"invalid disabled DLC descriptor token: {token!r}")
+        if parts[1] not in installed_descriptor_ids:
+            raise ResolutionError(
+                f"disabled DLC descriptor token has no installed layer: {token!r}"
+            )
+        disabled_ids.add(parts[1])
+    return sorted(disabled_ids, key=_engine_byte_key)
+
+
+def _runtime_and_requested_dlc_selection(
+    runtime_active_names: list[str],
+    descriptor_ids_by_name: dict[str, str],
+    disabled_tokens: list[str],
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    """Return effective engine names/IDs, requested IDs, and their conflicts.
+
+    The a729 engine-owned Active DLC producer enumerates the manager's active
+    tree directly.  Launcher-disabled membership is therefore retained only as
+    requested-profile evidence and never intersects the effective roster.
+    """
+    missing = sorted(set(runtime_active_names) - set(descriptor_ids_by_name))
+    if missing:
+        raise ResolutionError(
+            f"runtime active DLC names lack installed descriptors: {missing}"
+        )
+    if len(runtime_active_names) != len(set(runtime_active_names)):
+        raise ResolutionError("runtime active DLC names contain duplicates")
+    installed_ids = set(descriptor_ids_by_name.values())
+    if len(installed_ids) != len(descriptor_ids_by_name):
+        raise ResolutionError("installed DLC descriptors repeat a layer ID")
+    disabled_ids = _disabled_dlc_layer_ids(disabled_tokens, installed_ids)
+    effective_ids = [descriptor_ids_by_name[name] for name in runtime_active_names]
+    requested_ids = sorted(installed_ids - set(disabled_ids), key=_engine_byte_key)
+    conflicts = sorted(set(effective_ids) & set(disabled_ids), key=_engine_byte_key)
+    return runtime_active_names, effective_ids, requested_ids, conflicts
 
 
 def _catalog_mod_names(catalog: dict[str, Any]) -> list[str]:
@@ -640,6 +1061,7 @@ def resolve_live_bindings(
     userdir: Path,
     pid: int,
     out_dir: Path,
+    ui14_engine_vfs: Path,
     process: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     process = process or query_process(pid)
@@ -654,27 +1076,52 @@ def resolve_live_bindings(
     launcher, launcher_bytes = _launcher_state(userdir)
     if len(launcher["enabled_mods"]) != len(runtime["active_mods"]):
         raise ResolutionError("launcher enabled-mod count does not match runtime active-mod count")
+    ui14_receipt = _load_ui14_engine_vfs(
+        ui14_engine_vfs, exe_sha, userdir, launcher["enabled_mods"]
+    )
+    engine_layers = sorted(
+        ui14_receipt["layers"],
+        key=lambda row: (row["engine_mount_ordinal"], row["engine_descriptor_ordinal"]),
+    )
 
     vanilla = exe.parent
     dlc_root = vanilla / "dlc"
-    descriptors = sorted(dlc_root.glob("*/*.dlc"), key=lambda path: path.as_posix().casefold())
+    descriptors = sorted(
+        dlc_root.rglob("*.dlc"),
+        key=lambda path: _engine_byte_key(_relative_descriptor_id(vanilla, path)),
+    )
     if not descriptors:
         raise ResolutionError("no installed DLC descriptors found")
-    descriptor_by_name: dict[str, tuple[Path, dict[str, str]]] = {}
+    descriptor_by_name: dict[str, tuple[Path, dict[str, Any]]] = {}
     for descriptor in descriptors:
         fields = parse_descriptor(descriptor)
         if fields["name"] in descriptor_by_name:
             raise ResolutionError(f"duplicate installed DLC name: {fields['name']}")
         descriptor_by_name[fields["name"]] = (descriptor, fields)
-    missing_runtime_dlcs = sorted(set(runtime["active_dlc"]) - set(descriptor_by_name))
-    if missing_runtime_dlcs:
-        raise ResolutionError(f"runtime active DLC names lack installed descriptors: {missing_runtime_dlcs}")
+    descriptor_ids_by_name = {
+        name: descriptor.parent.name
+        for name, (descriptor, _fields) in descriptor_by_name.items()
+    }
+    (
+        selected_dlc_names,
+        selected_dlc_ids,
+        requested_dlc_ids,
+        launched_disabled_conflicts,
+    ) = (
+        _runtime_and_requested_dlc_selection(
+            runtime["active_dlc"],
+            descriptor_ids_by_name,
+            launcher["disabled_dlcs"],
+        )
+    )
 
     mod_rows: list[dict[str, Any]] = []
     mod_inventory: list[dict[str, Any]] = []
     mod_names: list[str] = []
     resolved_mod_sources: list[dict[str, Any]] = []
-    for ordinal, token in enumerate(launcher["enabled_mods"]):
+    mod_inventory_by_id: dict[str, list[dict[str, Any]]] = {}
+    for ordinal, layer_receipt in enumerate(engine_layers):
+        token = layer_receipt["id"]
         descriptor = (userdir / token).resolve()
         fields = parse_descriptor(descriptor)
         content_ref = fields.get("path") or fields["archive"]
@@ -694,6 +1141,7 @@ def resolve_live_bindings(
         mod_names.append(fields["name"])
         descriptor_sha, _ = _hash_file_stable(descriptor)
         normalized_id = token.replace("\\", "/")
+        mod_inventory_by_id[normalized_id] = inventory
         mod_rows.append(
             {
                 "id": normalized_id,
@@ -715,28 +1163,33 @@ def resolve_live_bindings(
                 "content_sha256": content_sha,
             }
         )
-    if mod_names != runtime["active_mods"]:
+    if sorted(mod_names) != sorted(runtime["active_mods"]):
         raise ResolutionError(
-            f"launcher mod order/names {mod_names} != runtime active mods {runtime['active_mods']}"
+            f"engine-receipt mod names {mod_names} != runtime active mods {runtime['active_mods']}"
         )
+
+    collision_candidates: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    for layer_id, inventory in mod_inventory_by_id.items():
+        for row in inventory:
+            collision_candidates.setdefault(row["relpath"].replace("\\", "/").casefold(), []).append((layer_id, row))
+    collisions = {key: rows for key, rows in collision_candidates.items() if len(rows) > 1}
+    winner_rows = {row["relpath"].casefold(): row for row in ui14_receipt["effective_winners"]}
+    if set(winner_rows) != set(collisions):
+        raise ResolutionError("UI14 engine VFS winner rows do not exactly cover loose-mod collisions")
+    for key, winner in winner_rows.items():
+        matches = [row for layer_id, row in collisions[key] if layer_id == winner["winner_id"]]
+        if len(matches) != 1 or matches[0]["sha256"] != winner["sha256"]:
+            raise ResolutionError(f"UI14 engine VFS effective winner mismatch: {winner['relpath']}")
 
     source_rows: list[dict[str, Any]] = []
     vanilla_sha, vanilla_inventory = hash_tree(
         vanilla, layer_kind="vanilla", layer_id="vanilla", exclude_top={"dlc"}
     )
     descriptor_parent_ids = {descriptor.parent.name for descriptor in descriptors}
-    descriptorless_asset_layers, descriptorless_inventory = (
+    excluded_descriptorless_asset_layers, _descriptorless_inventory = (
         classify_descriptorless_asset_layers(vanilla, descriptor_parent_ids)
     )
-    if descriptorless_inventory:
-        vanilla_content_rows = [
-            {"relpath": row["relpath"], "bytes": row["bytes"], "sha256": row["sha256"]}
-            for row in [*vanilla_inventory, *descriptorless_inventory]
-        ]
-        vanilla_content_rows.sort(key=lambda row: row["relpath"].casefold())
-        vanilla_sha = SB.sha256_bytes(SB.canonical_json(vanilla_content_rows))
     source_rows.extend(vanilla_inventory)
-    source_rows.extend(descriptorless_inventory)
     source_rows.extend(mod_inventory)
     dlc_rows: list[dict[str, Any]] = []
     enabled_dlc_ids: list[str] = []
@@ -746,7 +1199,7 @@ def resolve_live_bindings(
         content_sha, inventory = hash_tree(descriptor.parent, layer_kind="dlc", layer_id=dlc_id)
         source_rows.extend(inventory)
         dlc_content[dlc_id] = content_sha
-        enabled = name in runtime["active_dlc"]
+        enabled = dlc_id in selected_dlc_ids
         if enabled:
             enabled_dlc_ids.append(dlc_id)
         dlc_rows.append(
@@ -758,7 +1211,7 @@ def resolve_live_bindings(
         raise ResolutionError("dlc_load.json changed during resolution")
     playset_seed = {
         "active_mods": runtime["active_mods"],
-        "active_dlcs": runtime["active_dlc"],
+        "active_dlcs": selected_dlc_names,
         "launcher_sha256": SB.sha256_bytes(launcher_bytes),
     }
     profile_seed = {
@@ -770,21 +1223,61 @@ def resolve_live_bindings(
         "playset_id": "runtime-playset:" + SB.sha256_bytes(SB.canonical_json(playset_seed)),
         "profile_id": "runtime-profile:" + SB.sha256_bytes(SB.canonical_json(profile_seed)),
     }
-    mod_rows.sort(key=lambda row: row["id"])
-    dlc_rows.sort(key=lambda row: row["id"])
+    mod_rows.sort(key=lambda row: _engine_byte_key(row["id"]))
+    dlc_rows.sort(key=lambda row: _engine_byte_key(row["id"]))
+    descriptor_by_product = {
+        descriptor.parent.name: (descriptor, fields)
+        for descriptor, fields in descriptor_by_name.values()
+    }
+    planned = _engine_mount_plan(
+        [
+            {
+                "id": dlc_id,
+                "descriptor_id": _relative_descriptor_id(
+                    vanilla, descriptor_by_product[dlc_id][0]
+                ),
+                "name": descriptor_by_product[dlc_id][1]["name"],
+                "dependencies": descriptor_by_product[dlc_id][1]["dependencies"],
+            }
+            for dlc_id in enabled_dlc_ids
+        ],
+        [
+            {
+                "id": source["id"],
+                "descriptor_id": source["id"],
+                "name": source["name"],
+                "dependencies": parse_descriptor(
+                    Path(source["descriptor_path"])
+                )["dependencies"],
+            }
+            for source in resolved_mod_sources
+        ],
+    )
+    planned_mod_ids = [
+        row["descriptor_id"] for row in planned if row["planner_kind"] == "mod"
+    ]
+    authenticated_mod_ids = [row["id"] for row in engine_layers]
+    if planned_mod_ids != authenticated_mod_ids:
+        raise ResolutionError(
+            "UI14 engine mount order disagrees with the a729 dependency/stable-id planner"
+        )
+    dlc_by_id = {row["id"]: row for row in dlc_rows}
+    mod_by_id = {row["id"]: row for row in mod_rows}
     load_rows = [{"id": "vanilla", "kind": "vanilla", "ordinal": 0, "content_sha256": vanilla_sha}]
-    ordinal = 1
-    for row in sorted((row for row in dlc_rows if row["enabled"]), key=lambda row: row["id"]):
-        load_rows.append(
-            {"id": row["id"], "kind": "dlc", "ordinal": ordinal, "content_sha256": row["content_sha256"]}
+    for ordinal, planned_row in enumerate(planned, start=1):
+        row = (
+            dlc_by_id[planned_row["id"]]
+            if planned_row["planner_kind"] == "dlc"
+            else mod_by_id[planned_row["id"]]
         )
-        ordinal += 1
-    ordered_mods = {token.replace("\\", "/"): index for index, token in enumerate(launcher["enabled_mods"])}
-    for row in sorted(mod_rows, key=lambda row: ordered_mods[row["id"]]):
         load_rows.append(
-            {"id": row["id"], "kind": "mod", "ordinal": ordinal, "content_sha256": row["content_sha256"]}
+            {
+                "id": row["id"],
+                "kind": planned_row["planner_kind"],
+                "ordinal": ordinal,
+                "content_sha256": row["content_sha256"],
+            }
         )
-        ordinal += 1
     documents = {
         "mod_state": {
             "schema": SB.MOD_STATE_SCHEMA,
@@ -813,14 +1306,10 @@ def resolve_live_bindings(
         vanilla,
         resolved_mod_sources,
         enabled_dlc_ids,
-        [row["id"] for row in descriptorless_asset_layers],
+        [],
         identity,
     )
     validate_source_inventory_document(source_inventory)
-    disabled_claims = {
-        Path(token).parent.name for token in launcher["disabled_dlcs"]
-    }
-    launched_disabled_conflicts = sorted(disabled_claims & set(enabled_dlc_ids))
     report = {
         "schema": RESOLUTION_SCHEMA,
         "passed": True,
@@ -839,7 +1328,10 @@ def resolve_live_bindings(
         },
         "runtime": runtime,
         "launcher_dlc_conflicts": launched_disabled_conflicts,
-        "descriptorless_asset_layers": descriptorless_asset_layers,
+        "requested_profile_dlc_ids": requested_dlc_ids,
+        "effective_launch_dlc_ids": enabled_dlc_ids,
+        "descriptorless_asset_layers": [],
+        "excluded_descriptorless_asset_layers": excluded_descriptorless_asset_layers,
         "binding_identity": identity,
         "source_inventory_rows": len(source_inventory["rows"]),
         "source_inventory_sha256": source_inventory["inventory_sha256"],
@@ -850,6 +1342,7 @@ def resolve_live_bindings(
         (out_dir / f"{role}.json").write_bytes(SB.pretty_json(document))
     (out_dir / "source_inventory.json").write_bytes(SB.pretty_json(source_inventory))
     (out_dir / "resolution_report.json").write_bytes(SB.pretty_json(report))
+    (out_dir / "ui14_engine_vfs.json").write_bytes(SB.pretty_json(ui14_receipt))
     return {
         "documents": documents,
         "report": report,
@@ -859,6 +1352,7 @@ def resolve_live_bindings(
             **{role: out_dir / f"{role}.json" for role in documents},
             "source_inventory": out_dir / "source_inventory.json",
             "resolution_report": out_dir / "resolution_report.json",
+            "ui14_engine_vfs": out_dir / "ui14_engine_vfs.json",
         },
     }
 
@@ -869,12 +1363,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--userdir", type=Path, required=True)
     parser.add_argument("--pid", type=int, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--ui14-engine-vfs", type=Path, required=True)
     parser.add_argument("--bundle-out", type=Path)
     parser.add_argument("--defer-provenance", type=Path)
     args = parser.parse_args(argv)
     try:
         resolved = resolve_live_bindings(
-            exe=args.exe, userdir=args.userdir, pid=args.pid, out_dir=args.out
+            exe=args.exe, userdir=args.userdir, pid=args.pid, out_dir=args.out,
+            ui14_engine_vfs=args.ui14_engine_vfs,
         )
         validated = {spec.role: SB.validate_artifact(spec) for spec in SB.DEFAULT_SPECS}
         blockers = catalog_compatibility(

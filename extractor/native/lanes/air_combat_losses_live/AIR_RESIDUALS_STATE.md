@@ -1,9 +1,11 @@
 # Air Residuals State
 
-Status: discovery-open synthesis for wave-2 air residuals. This file is not a
-promotion document. It records what prior probes proved, what they rejected, and
-which polling-observable alternatives remain worth a live fixture run on build
-`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
+Status: **SUPERSEDED** by
+[`A4_A21_PROMOTION_REPORT.md`](./A4_A21_PROMOTION_REPORT.md). The static writer,
+root accessor, serializer, and UI aggregation paths proved the persistent
+`CAirRegionCombatData -> SAirWingCombatData -> SDamageEntry` law after this
+wave-2 discovery ledger was written. Retain this file only as rejection history;
+its `ROOT_DISCOVERY_OPEN` conclusions are no longer current.
 
 ## Source Rows
 

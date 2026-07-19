@@ -12,12 +12,23 @@ use crate::constants::{
 };
 #[cfg(windows)]
 use winapi::um::d3d11::{
-    ID3D11Device, ID3D11DeviceContext, ID3D11ShaderResourceView, ID3D11Texture2D,
+    ID3D11DepthStencilView, ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView,
+    ID3D11ShaderResourceView, ID3D11Texture2D,
 };
 #[cfg(windows)]
 use winapi::um::d3dcommon::*;
 #[cfg(windows)]
 use winapi::um::unknwnbase::IUnknown;
+
+/// Encode the XN15 tiled-point-light `GridStart_InvCellSize` float4 exactly as
+/// the 16-byte little-endian PS CB2 payload. No float conversion occurs.
+pub fn tiled_light_grid_cb2_bytes(bits: [u32; 4]) -> [u8; 16] {
+    let mut bytes = [0u8; 16];
+    for (index, value) in bits.into_iter().enumerate() {
+        bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    bytes
+}
 
 /// WATER3 — the world-synthesis (`--synthesize-terrain-chunks`) production
 /// path's `WaterRefraction` (slot 5) source law, as a pure function so it is
@@ -411,6 +422,48 @@ impl NativeD3d11PreparedProductionMap {
         self.terrain.native.render_target.texture.as_raw()
     }
 
+    /// Borrow the prepared MainScene color RTV for replay-carried submitted
+    /// draws. The caller must keep this prepared map alive for the complete
+    /// draw sequence and must validate the carrier descriptor before binding.
+    #[cfg(windows)]
+    pub fn output_render_target_view_raw(&self) -> *mut ID3D11RenderTargetView {
+        self.terrain.native.render_target.view.as_raw()
+    }
+
+    /// Exact prepared MainScene color resource descriptor.
+    #[cfg(windows)]
+    pub fn output_color_desc(&self) -> (u32, u32, u32, u32, u32) {
+        let desc = &self.terrain.native.render_target.desc;
+        (
+            desc.width,
+            desc.height,
+            desc.format,
+            desc.sample_count,
+            desc.sample_quality,
+        )
+    }
+
+    /// Borrow the prepared MainScene depth DSV for replay-carried submitted
+    /// draws. See [`output_render_target_view_raw`](Self::output_render_target_view_raw).
+    #[cfg(windows)]
+    pub fn output_depth_stencil_view_raw(&self) -> *mut ID3D11DepthStencilView {
+        self.terrain.native.depth_target.view.as_raw()
+    }
+
+    /// Exact prepared MainScene depth resource descriptor, used to reject a
+    /// replay-carried output binding that names a different target.
+    #[cfg(windows)]
+    pub fn output_depth_desc(&self) -> (u32, u32, u32, u32, u32) {
+        let desc = &self.terrain.native.depth_target.desc;
+        (
+            desc.width,
+            desc.height,
+            desc.format,
+            desc.sample_count,
+            desc.sample_quality,
+        )
+    }
+
     /// SEASON1 (validation): replace the SnowMudTexture SRV in the terrain
     /// pass and every dependent pass (water ice, tree snow, border snow all
     /// sample it). Name-matched so a session without the input fails loudly.
@@ -435,6 +488,60 @@ impl NativeD3d11PreparedProductionMap {
             count += replace_named_ps_srv_in_pass(pass, "SnowMudTexture", snow_mud)?;
         }
         Ok(count)
+    }
+
+    /// Replace a named pixel-shader SRV across the terrain pass and every
+    /// dependent production pass. This is the byte-native replay handoff for
+    /// exact recorded runtime textures (for example ProvinceSecondaryColorMap
+    /// and the three GradientBorder channels); callers must validate the
+    /// descriptor and payload before creating `view`.
+    pub unsafe fn replace_named_ps_srv(
+        &mut self,
+        declared_name: &str,
+        view: *mut ID3D11ShaderResourceView,
+    ) -> Result<usize> {
+        if declared_name.is_empty() {
+            return Err(
+                "production native D3D11 replay blocked: empty SRV binding identity".into(),
+            );
+        }
+        let mut count =
+            replace_named_ps_srv_in_pass(&mut self.terrain.native.pass, declared_name, view)?;
+        for pass in [
+            self.water.as_mut(),
+            self.rivers.as_mut(),
+            self.borders.as_mut(),
+            self.trees.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            count += replace_named_ps_srv_in_pass(pass, declared_name, view)?;
+        }
+        Ok(count)
+    }
+
+    #[cfg(windows)]
+    fn draws_mut(&mut self) -> Vec<&mut NativeD3d11PreparedDraw> {
+        let mut draws = self
+            .terrain
+            .native
+            .pass
+            .draws
+            .iter_mut()
+            .collect::<Vec<_>>();
+        for pass in [
+            self.water.as_mut(),
+            self.rivers.as_mut(),
+            self.borders.as_mut(),
+            self.trees.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            draws.extend(pass.draws.iter_mut());
+        }
+        draws
     }
 
     #[cfg(windows)]
@@ -766,6 +873,35 @@ impl NativeD3d11TerrainRenderer {
     /// (e.g. from the replay_app CLI `--water-full` flag).
     pub fn set_water_full(&mut self, water_full: bool) {
         self.water_full = water_full;
+    }
+
+    /// Replace the exact tiled-point-light `GridStart_InvCellSize` constant
+    /// buffer on every production-map draw that declares the proven PS CB2
+    /// binding. The caller separately replaces `LightIndexMap` and
+    /// `LightDataMap`; all three inputs must come from the same retained submit.
+    #[cfg(windows)]
+    pub unsafe fn replace_tiled_light_cb2(
+        &self,
+        prepared: &mut NativeD3d11PreparedProductionMap,
+        grid_start_inv_cell_size_f32_bits: [u32; 4],
+    ) -> Result<usize> {
+        let bytes = tiled_light_grid_cb2_bytes(grid_start_inv_cell_size_f32_bits);
+        let mut replaced = 0usize;
+        for draw in prepared.draws_mut() {
+            for constant_buffer in &mut draw.constant_buffers {
+                if constant_buffer.stage == "PS"
+                    && constant_buffer.slot == TERRAIN_POINT_LIGHT_CB2_BIND_POINT
+                {
+                    constant_buffer.buffer = native_d3d11_create_exact_constant_buffer(
+                        &self.device.device,
+                        &bytes,
+                        "recorded tiled-point-light GridStart_InvCellSize CB2",
+                    )?;
+                    replaced += 1;
+                }
+            }
+        }
+        Ok(replaced)
     }
 
     /// Builder-style variant of [`set_water_full`](Self::set_water_full).
@@ -3063,8 +3199,22 @@ impl NativeD3d11TerrainBundle {
         Self::load_for(map_frame_bundle, WATER_MAP_FRAME_SPEC)
     }
 
+    pub fn load_water_with_resolver(
+        map_frame_bundle: impl AsRef<Path>,
+        resolver: &GameFileResolver,
+    ) -> Result<Self> {
+        Self::load_for_with_resolver(map_frame_bundle, WATER_MAP_FRAME_SPEC, Some(resolver))
+    }
+
     pub fn load_rivers(map_frame_bundle: impl AsRef<Path>) -> Result<Self> {
         Self::load_for(map_frame_bundle, RIVERS_MAP_FRAME_SPEC)
+    }
+
+    pub fn load_rivers_with_resolver(
+        map_frame_bundle: impl AsRef<Path>,
+        resolver: &GameFileResolver,
+    ) -> Result<Self> {
+        Self::load_for_with_resolver(map_frame_bundle, RIVERS_MAP_FRAME_SPEC, Some(resolver))
     }
 
     pub fn load_borders(map_frame_bundle: impl AsRef<Path>) -> Result<Self> {
@@ -3073,6 +3223,13 @@ impl NativeD3d11TerrainBundle {
 
     pub fn load_trees(map_frame_bundle: impl AsRef<Path>) -> Result<Self> {
         Self::load_for(map_frame_bundle, TREES_MAP_FRAME_SPEC)
+    }
+
+    pub fn load_trees_with_resolver(
+        map_frame_bundle: impl AsRef<Path>,
+        resolver: &GameFileResolver,
+    ) -> Result<Self> {
+        Self::load_for_with_resolver(map_frame_bundle, TREES_MAP_FRAME_SPEC, Some(resolver))
     }
 
     pub(crate) fn load_for(
@@ -4534,6 +4691,17 @@ mod tests {
 
     #[cfg(windows)]
     use winapi::um::d3dcommon::{D3D11_SRV_DIMENSION_TEXTURE2D, D3D11_SRV_DIMENSION_TEXTURECUBE};
+
+    #[test]
+    fn tiled_light_grid_cb2_preserves_raw_float_bits_little_endian() {
+        assert_eq!(
+            tiled_light_grid_cb2_bytes([0x3f80_0000, 0xbf00_0000, 0x0000_0001, 0x7fc0_0001]),
+            [
+                0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0xbf, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00,
+                0xc0, 0x7f,
+            ]
+        );
+    }
 
     // WATER3 — the chunk-synthesis low-level selector chooses the
     // mechanism-correct WATER2 underwater seafloor pass as WaterRefraction only

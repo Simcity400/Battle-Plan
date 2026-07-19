@@ -1,10 +1,10 @@
 # hub_motorization_live (domain 62) integration packet
 
-Status: scheduled as `ValidatedSliceOpenGaps` after D04 value validation.
+Status: `PROVEN` and production-implemented for exact inner country-to-level attribution.
 
 ## Scope
 
-This domain emits node-level supply-hub motorization membership only:
+This domain emits one exact row per saved country-to-level entry:
 
 ```text
 CCountrySupplySystem vtable[0] == module + 0x298BBF8
@@ -18,11 +18,15 @@ province       = u32[record + 0x00]
 state          = u32[record + 0x04]
 motor_map_ptr  = u64[record + 0x10]
 map_size       = u32[record + 0x1c]
-emit row iff map_size > 0
+entry j        = motor_map_ptr + j * 0x08
+actor tag id   = u32[entry + 0x00]
+level          = u8[entry + 0x04] (1 = 50%, 2 = 100%)
+emit one row per entry; reject all other levels
 ```
 
-The inner multi-entry country-to-level hashmap attribution is intentionally not emitted.
-`map_size` is promoted only as the saved entry count for the node.
+The actor id is already the tag-db/country-table id. Engine lookup callers convert
+to entry `+0x00`; the save serializer converts the same stored id to a country token
+country table and verifies the map pointer/count did not change while read.
 
 ## D04 value validation
 
@@ -52,7 +56,21 @@ Result:
 - Candidate guard rejections while scanning were discarded before promotion:
   `arr_ptr=2`, `province_range=5`, `country_vtable=4`, `country_ptr=4`.
 
-Verdict: PASS for node-level membership and map_size entry count.
+Verdict: PASS. The prior D04 comparison remains the exact outer-node/map-size oracle;
+the pinned serializer and lookup laws close the inner attribution and level encoding.
+
+## Production wire contract (schema v2)
+
+Each 32-byte row contains:
+
+`owner_tag_db_id`, `actor_tag_db_id`, `province_id`, `state_id`, `record_index`,
+`map_entry_index`, `motorization_level`, and validation flags.
+
+The world fold keys rows by `(owner, province, actor)` and exposes both country
+identities, exact `motorization_level`, and engine-fixed `truck_fraction_raw`
+(`50000` or `100000`). Any bad actor reference, level, short read, duplicate key,
+or pointer/count race makes the current domain hour unknown and retains the last
+clean accumulator.
 
 ## Packet wiring
 

@@ -17,11 +17,26 @@ name = "air_wings_variants_lifecycle_live_lane"
 version = "0.1.0"
 
 [[package]]
+name = "arbitrary"
+version = "1.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
+dependencies = [
+ "derive_arbitrary",
+]
+
+[[package]]
 name = "army_battleplans_depth_live_lane"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
 ]
+
+[[package]]
+name = "bitflags"
+version = "1.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "block-buffer"
@@ -31,6 +46,12 @@ checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
 dependencies = [
  "generic-array",
 ]
+
+[[package]]
+name = "bumpalo"
+version = "3.20.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "capitulation_war_state_live"
@@ -77,12 +98,24 @@ dependencies = [
  "characters_leaders_cabinet_live",
  "compact_contract",
  "construction_buildings_state_damage_live",
+ "design_catalog_context_live_lane",
  "diplomacy_intel_operatives_live",
+ "dynamic_collection_trace_live_lane",
+ "fired_event_popups_live_lane",
  "hub_motorization_live_lane",
+ "hud_role_observer_live_lane",
  "land_combat_detail_events_live_lane",
  "naval_combat_live_lane",
  "naval_missions_status_live_lane",
  "occupation_resistance_compliance_live_lane",
+ "politics_tooltip_inputs_live_lane",
+ "portable_content_manifest",
+ "portable_render_stream",
+ "power_balance_presentation_live_lane",
+ "production_render_catalog_live_lane",
+ "production_render_submit_live_lane",
+ "resolved_tooltip_instances_live_lane",
+ "runtime_text_inputs_live_lane",
  "scripted_state_flags_variables_live_lane",
  "serde",
  "serde_json",
@@ -95,6 +128,7 @@ name = "compact_contract"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -114,7 +148,7 @@ dependencies = [
 name = "compact_stream"
 version = "0.1.0"
 dependencies = [
- "zstd",
+ "portable_compact_stream",
 ]
 
 [[package]]
@@ -161,6 +195,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-utils"
+version = "0.8.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
+
+[[package]]
 name = "crypto-common"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -168,6 +208,25 @@ checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
 dependencies = [
  "generic-array",
  "typenum",
+]
+
+[[package]]
+name = "derive_arbitrary"
+version = "1.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e567bd82dcff979e4b03460c307b3cdc9e96fde3d73bed1496d2bc75d9dd62a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "design_catalog_context_live_lane"
+version = "0.1.0"
+dependencies = [
+ "minhook",
+ "windows-sys",
 ]
 
 [[package]]
@@ -190,6 +249,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "displaydoc"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ac70aa55017e108007fbaf5aa0f54b021c98f92ff8af59d42eda9da96e3dd4f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "dynamic_collection_trace_live_lane"
+version = "0.1.0"
+
+[[package]]
+name = "equivalent"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
+
+[[package]]
 name = "event_timeline_change_log_live"
 version = "0.1.0"
 dependencies = [
@@ -200,10 +280,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "fdeflate"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
+dependencies = [
+ "simd-adler32",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+
+[[package]]
+name = "fired_event_popups_live_lane"
+version = "0.1.0"
 
 [[package]]
 name = "flate2"
@@ -256,8 +349,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashbrown"
+version = "0.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+
+[[package]]
 name = "hub_motorization_live_lane"
 version = "0.1.0"
+
+[[package]]
+name = "hud_role_observer_live_lane"
+version = "0.1.0"
+dependencies = [
+ "minhook",
+ "portable_content_manifest",
+ "serde",
+ "serde_json",
+ "windows-sys",
+]
+
+[[package]]
+name = "indexmap"
+version = "2.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
+dependencies = [
+ "equivalent",
+ "hashbrown",
+]
 
 [[package]]
 name = "itoa"
@@ -300,6 +420,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "log"
+version = "0.4.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
+
+[[package]]
 name = "market_trade_live_lane"
 version = "0.1.0"
 dependencies = [
@@ -321,6 +447,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2d4139bb28d14ad1facf21d5eb8825051b326e172d216b39f6d31df53cc97862"
 dependencies = [
  "libmimalloc-sys",
+]
+
+[[package]]
+name = "minhook"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "455e088cb1600ffa5f1524c9702c9eeb0ba3604e0f4932efa165b99973272a8d"
+dependencies = [
+ "cc",
+ "tracing",
 ]
 
 [[package]]
@@ -358,10 +494,90 @@ dependencies = [
 ]
 
 [[package]]
+name = "once_cell"
+version = "1.21.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "pin-project-lite"
+version = "0.2.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
 name = "pkg-config"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
+
+[[package]]
+name = "png"
+version = "0.17.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82151a2fc869e011c153adc57cf2789ccb8d9906ce52c0b39a6b5697749d7526"
+dependencies = [
+ "bitflags",
+ "crc32fast",
+ "fdeflate",
+ "flate2",
+ "miniz_oxide",
+]
+
+[[package]]
+name = "politics_tooltip_inputs_live_lane"
+version = "0.1.0"
+dependencies = [
+ "minhook",
+ "windows-sys",
+]
+
+[[package]]
+name = "portable_compact_stream"
+version = "0.1.0"
+dependencies = [
+ "zstd",
+]
+
+[[package]]
+name = "portable_content_manifest"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "zip",
+]
+
+[[package]]
+name = "portable_render_stream"
+version = "0.1.0"
+dependencies = [
+ "portable_content_manifest",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "portable_replay_format"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "libc",
+ "portable_compact_stream",
+ "portable_content_manifest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "windows-sys",
+ "zstd",
+]
+
+[[package]]
+name = "power_balance_presentation_live_lane"
+version = "0.1.0"
 
 [[package]]
 name = "proc-macro2"
@@ -370,6 +586,44 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "production_render_catalog_capture_contract"
+version = "0.1.0"
+dependencies = [
+ "portable_content_manifest",
+ "sha2",
+]
+
+[[package]]
+name = "production_render_catalog_live_lane"
+version = "0.1.0"
+dependencies = [
+ "portable_content_manifest",
+ "portable_render_stream",
+ "production_render_catalog_capture_contract",
+ "production_render_submit_live_lane",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "production_render_submit_live_lane"
+version = "0.1.0"
+dependencies = [
+ "compact_contract",
+ "minhook",
+ "png",
+ "portable_content_manifest",
+ "portable_render_stream",
+ "production_render_catalog_capture_contract",
+ "serde",
+ "serde_json",
+ "sha2",
+ "winapi",
+ "windows-sys",
+ "zip",
 ]
 
 [[package]]
@@ -400,18 +654,32 @@ dependencies = [
  "compact_contract",
  "compact_stream",
  "construction_buildings_state_damage_live",
+ "design_catalog_context_live_lane",
  "diplomacy_intel_operatives_live",
+ "dynamic_collection_trace_live_lane",
+ "fired_event_popups_live_lane",
  "hub_motorization_live_lane",
+ "hud_role_observer_live_lane",
  "land_combat_detail_events_live_lane",
  "mimalloc",
  "naval_combat_live_lane",
  "naval_missions_status_live_lane",
  "occupation_resistance_compliance_live_lane",
+ "politics_tooltip_inputs_live_lane",
+ "portable_content_manifest",
+ "portable_render_stream",
+ "power_balance_presentation_live_lane",
+ "production_render_submit_live_lane",
+ "resolved_tooltip_instances_live_lane",
+ "runtime_text_inputs_live_lane",
  "scientists_live_lane",
  "scripted_state_flags_variables_live_lane",
+ "serde",
  "serde_json",
  "session_multiplayer_metadata_live",
+ "sha2",
  "snapshot",
+ "zip",
 ]
 
 [[package]]
@@ -423,6 +691,25 @@ dependencies = [
  "recorder_host",
  "serde_json",
  "snapshot",
+]
+
+[[package]]
+name = "resolved_tooltip_instances_live_lane"
+version = "0.1.0"
+dependencies = [
+ "minhook",
+ "runtime_text_inputs_live_lane",
+ "windows-sys",
+]
+
+[[package]]
+name = "runtime_text_inputs_live_lane"
+version = "0.1.0"
+dependencies = [
+ "minhook",
+ "serde_json",
+ "sha2",
+ "windows-sys",
 ]
 
 [[package]]
@@ -525,6 +812,7 @@ dependencies = [
  "crc32fast",
  "flate2",
  "libc",
+ "portable_replay_format",
  "serde",
  "serde_json",
  "windows-sys",
@@ -552,6 +840,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "thiserror"
+version = "2.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4288b5bcbc7920c07a1149a35cf9590a2aa808e0bc1eafaade0b80947865fbc4"
+dependencies = [
+ "thiserror-impl",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "2.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebc4ee7f67670e9b64d05fa4253e753e016c6c95ff35b89b7941d6b856dec1d5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "tracing"
+version = "0.1.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
+dependencies = [
+ "log",
+ "pin-project-lite",
+ "tracing-attributes",
+ "tracing-core",
+]
+
+[[package]]
+name = "tracing-attributes"
+version = "0.1.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "tracing-core"
+version = "0.1.36"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
+dependencies = [
+ "once_cell",
+]
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -570,6 +910,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "winapi"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419"
+dependencies = [
+ "winapi-i686-pc-windows-gnu",
+ "winapi-x86_64-pc-windows-gnu",
+]
+
+[[package]]
+name = "winapi-i686-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
+
+[[package]]
+name = "winapi-x86_64-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
+
+[[package]]
 name = "windows-link"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -585,10 +947,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "zip"
+version = "2.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fabe6324e908f85a1c52063ce7aa26b68dcb7eb6dbc83a2d148403c9bc3eba50"
+dependencies = [
+ "arbitrary",
+ "crc32fast",
+ "crossbeam-utils",
+ "displaydoc",
+ "flate2",
+ "indexmap",
+ "memchr",
+ "thiserror",
+ "zopfli",
+]
+
+[[package]]
 name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+
+[[package]]
+name = "zopfli"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f05cd8797d63865425ff89b5c4a48804f35ba0ce8d125800027ad6017d2b5249"
+dependencies = [
+ "bumpalo",
+ "crc32fast",
+ "log",
+ "simd-adler32",
+]
 
 [[package]]
 name = "zstd"

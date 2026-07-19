@@ -27,10 +27,9 @@
 //!     air stat, a failed self-ref/yearly-window guard, or an out-of-bounds
 //!     value FAILS THE ROW CLOSED (absent, never 0).
 //!
-//! SEMANTICS: only the six VALUE-PINNED channels are emitted with labels (the remaining ~18
-//! of the 24 channels are still a residual multi-writer trace — do NOT label them here). The
-//! raw record is available for the labeled indices only; unlabeled fields are intentionally
-//! omitted so the packet never promotes an unproven label.
+//! SEMANTICS: all 24 channels displayed by the strategic-air details panel are emitted in
+//! exact engine display order. The static `u32[24]` channel-to-field table at RVA `0x29f8940`
+//! and `AIRVIEW_DETAILS_CHANNEL_1..24` localisation keys prove the complete mapping.
 //!
 //! SCHEDULING: domain 61 is production-scheduled after the D04 1944 populated
 //! fixture revalidation proved 23/23 countries and 2047/2047 fields against the
@@ -56,6 +55,7 @@ pub const LOOPHIST_WINDOW_CAPACITY_OFF: u64 = 0x20;
 pub const EXPECTED_FIELD_COUNT: u32 = 89;
 pub const EXPECTED_YEARLY_CAPACITY: u32 = 5;
 pub const FIELD_SCALE: i64 = 100_000;
+pub const BUILDINGS_BOMBED_DISPLAY_SCALE: i64 = 1_000;
 
 // ---- binding guard offsets (the EXTRACTOR's own country index) ----
 pub const COUNTRY_TABLE_OFF: u64 = 0x310;
@@ -63,15 +63,64 @@ pub const COUNTRY_COUNT_OFF: u64 = 0x31C;
 pub const COUNTRY_VTABLE_RVA: u64 = 0x27D0E90;
 pub const COUNTRY_TAG_DB_ID_OFF: u64 = 0x08;
 
-/// Value-pinned air channels: (field index, label). These six are the only channels with a
-/// proven value-pin (D04 fixture) — the rest of the 24 remain an open multi-writer trace.
+/// Strategic-air details channels in exact UI order: (aggregate field index, stable label).
+/// Proven by the current-build table at RVA `0x29f8940` and the matching localisation keys.
 pub const PINNED_CHANNELS: &[(u32, &str)] = &[
+    (0, "our_buildings_bombed"),
+    (1, "our_troops_bombed"),
+    (2, "our_ships_bombed"),
     (3, "our_fighters_lost"),
     (10, "our_bombers_lost"),
+    (17, "our_cas_lost"),
+    (24, "our_transports_lost"),
+    (39, "our_bombers_disrupted"),
+    (36, "our_trains_lost"),
+    (37, "our_trucks_lost"),
+    (38, "our_railway_guns_lost"),
+    (40, "our_missiles_lost"),
+    (41, "enemy_buildings_bombed"),
+    (42, "enemy_troops_bombed"),
+    (43, "enemy_ships_sunk"),
     (44, "enemy_fighters_lost"),
     (51, "enemy_bombers_lost"),
     (58, "enemy_cas_lost"),
+    (65, "enemy_transports_lost"),
     (80, "enemy_bombers_disrupted"),
+    (77, "enemy_trains_lost"),
+    (78, "enemy_trucks_lost"),
+    (79, "enemy_railway_guns_lost"),
+    (81, "enemy_missiles_lost"),
+];
+
+pub const CHANNEL_COUNT: usize = 24;
+
+/// Engine display divisor in `PINNED_CHANNELS` order. Only buildings-bombed fields 0 and 41
+/// use 1000; all other displayed fields use 100000.
+pub const CHANNEL_DISPLAY_DIVISORS: [i64; CHANNEL_COUNT] = [
+    BUILDINGS_BOMBED_DISPLAY_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
+    BUILDINGS_BOMBED_DISPLAY_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
+    FIELD_SCALE,
 ];
 
 /// Max plausible cumulative loss (raw ×100000): 10,000,000 planes. Above this the row fails
@@ -79,10 +128,10 @@ pub const PINNED_CHANNELS: &[(u32, &str)] = &[
 pub const MAX_CHANNEL_RAW: i64 = 1_000_000_000_000;
 
 // ---- packet schema ----
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const PAYLOAD_HEADER_LEN: usize = 32;
-/// Row: owner_tag_db_id u32 | country_idx u32 | flags u32 | pad u32 | 6 × i64 channel = 16+48.
-pub const ROW_LEN: usize = 64;
+/// Row: owner_tag_db_id u32 | country_idx u32 | flags u32 | pad u32 | 24 × i64 = 16+192.
+pub const ROW_LEN: usize = 208;
 
 pub const STATUS_OK: u32 = 0;
 pub const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 0;
@@ -100,14 +149,18 @@ pub struct AirLossStatRow {
     pub owner_tag_db_id: u32,
     pub country_idx: u32,
     pub flags: u32,
-    /// Six value-pinned channels, in `PINNED_CHANNELS` order, raw ×100000 fixed-point.
-    pub channels: [i64; 6],
+    /// All 24 strategic-air details channels, in `PINNED_CHANNELS` order, stored raw.
+    pub channels: [i64; CHANNEL_COUNT],
 }
 
 impl AirLossStatRow {
-    /// Human value (planes) for pinned channel `n` (0..6).
+    /// Human display value for channel `n` (0..24), using the engine's per-channel divisor.
+    pub fn channel_value(&self, n: usize) -> f64 {
+        self.channels[n] as f64 / CHANNEL_DISPLAY_DIVISORS[n] as f64
+    }
+
     pub fn channel_planes(&self, n: usize) -> f64 {
-        self.channels[n] as f64 / FIELD_SCALE as f64
+        self.channel_value(n)
     }
 }
 
@@ -277,7 +330,7 @@ pub fn decode_payload_rows(
         {
             errors.push(format!("row {i} is missing required validation flags"));
         }
-        let mut channels = [0i64; 6];
+        let mut channels = [0i64; CHANNEL_COUNT];
         for (k, (_, label)) in PINNED_CHANNELS.iter().enumerate() {
             let vo = o + 16 + k * 8;
             let raw = i64::from_le_bytes(payload[vo..vo + 8].try_into().unwrap());
@@ -326,7 +379,7 @@ fn ok_ptr(v: u64) -> bool {
 }
 
 /// Derive one country's air-loss row, or `None` (fail closed). Emits ONLY when the country_idx
-/// binding is verified AND the CLoopHistory structure matches AND all six pinned channels read
+/// binding is verified AND the CLoopHistory structure matches AND all 24 display channels read
 /// in range. `country_idx` is the stats-registry slot (== tag_db_id after the binding check).
 pub fn derive_country_row<M: Mem>(
     mem: &M,
@@ -397,7 +450,7 @@ pub fn derive_country_row<M: Mem>(
     if !ok_ptr(arr) {
         return None;
     }
-    let mut channels = [0i64; 6];
+    let mut channels = [0i64; CHANNEL_COUNT];
     for (k, (idx, _)) in PINNED_CHANNELS.iter().enumerate() {
         let raw = mem.i64(arr + u64::from(*idx) * 8)?;
         if raw < 0 || raw > MAX_CHANNEL_RAW {
@@ -537,7 +590,7 @@ pub fn derive_country_row_result<M: Mem>(
     if !ok_ptr(arr) {
         return AirLossRowRead::Failed;
     }
-    let mut channels = [0i64; 6];
+    let mut channels = [0i64; CHANNEL_COUNT];
     for (k, (idx, _)) in PINNED_CHANNELS.iter().enumerate() {
         let Some(raw) = mem.i64(arr + u64::from(*idx) * 8) else {
             return AirLossRowRead::Failed;
@@ -635,9 +688,13 @@ mod tests {
         m.su(window + LOOPHIST_RECFLDS_OFF, recflds);
         m.su(recflds, arr);
         // pinned channel values (planes × scale)
-        let vals = [3i64, 10, 44, 51, 58, 80];
         for (k, (fi, _)) in PINNED_CHANNELS.iter().enumerate() {
-            m.si(arr + u64::from(*fi) * 8, vals[k] * FIELD_SCALE);
+            let raw = if k == 0 {
+                3 * BUILDINGS_BOMBED_DISPLAY_SCALE
+            } else {
+                i64::from(*fi) * FIELD_SCALE
+            };
+            m.si(arr + u64::from(*fi) * 8, raw);
         }
         m
     }
@@ -650,8 +707,9 @@ mod tests {
         assert_eq!(row.country_idx, 1);
         assert!(row.flags & ROW_FLAG_BINDING_VERIFIED != 0);
         assert!(row.flags & ROW_FLAG_STRUCT_VERIFIED != 0);
-        assert_eq!(row.channels[0], 3 * FIELD_SCALE);
-        assert_eq!(row.channel_planes(5), 80.0);
+        assert_eq!(row.channels[0], 3 * BUILDINGS_BOMBED_DISPLAY_SCALE);
+        assert_eq!(row.channel_value(0), 3.0);
+        assert_eq!(row.channel_planes(19), 80.0);
     }
 
     #[test]
@@ -752,13 +810,16 @@ mod tests {
 
     #[test]
     fn encode_decode_roundtrip() {
+        let mut additional_channels = [0; CHANNEL_COUNT];
+        additional_channels[3] = 100_000;
+        additional_channels[19] = 300_000;
         let rows = vec![
             derive_country_row(&good_image(1), BASE, 1).unwrap(),
             AirLossStatRow {
                 owner_tag_db_id: 16,
                 country_idx: 16,
                 flags: ROW_FLAG_BINDING_VERIFIED | ROW_FLAG_STRUCT_VERIFIED,
-                channels: [100_000, 0, 200_000, 0, 0, 300_000],
+                channels: additional_channels,
             },
         ];
         let header = AirLossStatHeader {
@@ -830,18 +891,51 @@ mod tests {
     }
 
     #[test]
-    fn pinned_channels_are_the_six_value_pinned() {
+    fn channels_match_the_full_ui_table_and_labels() {
+        let fields: Vec<u32> = PINNED_CHANNELS.iter().map(|(field, _)| *field).collect();
+        assert_eq!(
+            fields,
+            vec![
+                0, 1, 2, 3, 10, 17, 24, 39, 36, 37, 38, 40, 41, 42, 43, 44, 51, 58, 65, 80, 77, 78,
+                79, 81,
+            ]
+        );
         let labels: Vec<&str> = PINNED_CHANNELS.iter().map(|(_, l)| *l).collect();
         assert_eq!(
             labels,
             vec![
+                "our_buildings_bombed",
+                "our_troops_bombed",
+                "our_ships_bombed",
                 "our_fighters_lost",
                 "our_bombers_lost",
+                "our_cas_lost",
+                "our_transports_lost",
+                "our_bombers_disrupted",
+                "our_trains_lost",
+                "our_trucks_lost",
+                "our_railway_guns_lost",
+                "our_missiles_lost",
+                "enemy_buildings_bombed",
+                "enemy_troops_bombed",
+                "enemy_ships_sunk",
                 "enemy_fighters_lost",
                 "enemy_bombers_lost",
                 "enemy_cas_lost",
+                "enemy_transports_lost",
                 "enemy_bombers_disrupted",
+                "enemy_trains_lost",
+                "enemy_trucks_lost",
+                "enemy_railway_guns_lost",
+                "enemy_missiles_lost",
             ]
         );
+        assert_eq!(PINNED_CHANNELS.len(), CHANNEL_COUNT);
+        assert_eq!(CHANNEL_DISPLAY_DIVISORS[0], 1_000);
+        assert_eq!(CHANNEL_DISPLAY_DIVISORS[12], 1_000);
+        assert!(CHANNEL_DISPLAY_DIVISORS
+            .iter()
+            .enumerate()
+            .all(|(index, divisor)| index == 0 || index == 12 || *divisor == FIELD_SCALE));
     }
 }

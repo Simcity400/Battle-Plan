@@ -27,20 +27,24 @@ naval_combat_live_lane = { path = "../lanes/naval_combat_live" }
 army_battleplans_depth_live_lane = { path = "../lanes/army_battleplans_depth_live" }
 naval_missions_status_live_lane = { path = "../lanes/naval_missions_status_live" }
 session_multiplayer_metadata_live = { path = "../lanes/session_multiplayer_metadata_live" }
+dynamic_collection_trace_live_lane = { path = "../lanes/dynamic_collection_trace_live" }
+resolved_tooltip_instances_live_lane = { path = "../lanes/resolved_tooltip_instances_live" }
+politics_tooltip_inputs_live_lane = { path = "../lanes/politics_tooltip_inputs_live" }
+power_balance_presentation_live_lane = { path = "../lanes/power_balance_presentation_live" }
+fired_event_popups_live_lane = { path = "../lanes/fired_event_popups_live" }
+runtime_text_inputs_live_lane = { path = "../lanes/runtime_text_inputs_live" }
+production_render_submit_live_lane = { path = "../lanes/production_render_submit_live" }
+production_render_catalog_live = { package = "production_render_catalog_live_lane", path = "../lanes/production_render_catalog_live" }
+portable_content_manifest = { path = "../../../portable_replay/native/content_manifest" }
+design_catalog_context_live_lane = { path = "../lanes/design_catalog_context_live" }
+hud_role_observer_live_lane = { path = "../lanes/hud_role_observer_live" }
+portable_render_stream = { path = "../../../portable_replay/native/render_stream" }
 serde = "1"
 serde_json = "1"
 sha2 = "0.10"
 
 [features]
-# Exposes the duplex-client test-only permit constructor
-# (`test_duplex_client_permit`) so an external crate's test build can exercise
-# the permit-gated connector/worker logic while the activation constant stays
-# false. Off by default: never enabled in a production build.
 test-support = []
 
 [dev-dependencies]
-# Enables the shared codec's test-support surface (bounded session-claim retry
-# and the read-only `ControlChannel::io` accessor) for the collector's own
-# duplex-client test build. Resolver v2 keeps this out of the production DLL
-# build, so the shipped behavior and API surface are unchanged.
 compact_contract = { path = "../compact_contract", features = ["test-support"] }

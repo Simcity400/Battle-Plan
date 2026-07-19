@@ -1,0 +1,904 @@
+//! XUI21 exact fired-event producer carrier (d75).
+//!
+//! Only the authenticated a729 inline-hook runtime may construct a production
+//! frame. Save ledgers and delayed-event polling deliberately cannot implement
+//! [`ExactFiredEventSource`].
+
+use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+
+#[cfg(windows)]
+pub mod a729_bridge;
+#[cfg(windows)]
+pub mod a729_inline_hook;
+#[cfg(windows)]
+pub mod a729_runtime;
+
+pub const DOMAIN_ID: u16 = 75;
+pub const DOMAIN_NAME: &str = "fired_event_popups_live";
+pub const MAGIC: u32 = u32::from_le_bytes(*b"FEV1");
+pub const SCHEMA_VERSION: u32 = 1;
+pub const AUTHORITY_A729_INLINE_HOOKS: u32 = 1;
+pub const MAX_ROWS: usize = 1_000_000;
+pub const MAX_OPTIONS: usize = 65_536;
+pub const MAX_STRING: usize = 65_536;
+pub const PRODUCER_MANIFEST_SHA256: [u8; 32] = [
+    0xa0, 0xdd, 0xf8, 0x16, 0xaf, 0xcb, 0x3e, 0x12, 0xc6, 0x09, 0xf3, 0x34, 0xb8, 0x94, 0xa0, 0xa0,
+    0x24, 0x1d, 0x48, 0xc8, 0xf0, 0x28, 0xbf, 0x19, 0xd9, 0x9d, 0x59, 0x07, 0x76, 0x92, 0x32, 0x09,
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PopupSubtype {
+    Country,
+    News,
+    State,
+    UnitLeader,
+    OperativeLeader,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolutionReason {
+    Pending,
+    Selected,
+    Timeout,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FiredEventRow {
+    pub event_id: String,
+    pub recipient_tag: String,
+    pub fire_date: String,
+    pub fire_hour: u64,
+    pub fire_tick: u64,
+    pub event_sequence: u64,
+    pub visible_option_ordinals: Vec<u16>,
+    pub chosen_option_ordinal: Option<u16>,
+    pub selected_desc_key: Option<String>,
+    pub shown_picture_gfx: Option<String>,
+    pub popup_subtype: PopupSubtype,
+    pub effective_timeout_hours: u32,
+    pub timeout_tick: u64,
+    pub resolved_tick: Option<u64>,
+    pub resolution_reason: ResolutionReason,
+    pub runtime_text_context_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HookTelemetry {
+    pub fire_hook_validated: bool,
+    pub option_hook_validated: bool,
+    pub materialisation_hook_validated: bool,
+    pub timeout_hook_validated: bool,
+    pub all_event_classes_covered: bool,
+    pub player_ai_timeout_no_choice_covered: bool,
+    pub capture_start_baseline_complete: bool,
+    pub queue_capacity: u32,
+    pub queue_high_water_mark: u32,
+    pub dropped_fire_rows: u64,
+    pub dropped_resolution_rows: u64,
+    pub correlation_failures: u64,
+    pub invalid_definition_joins: u64,
+    pub fired_ledger_shadow_mismatches: u64,
+}
+
+impl HookTelemetry {
+    pub fn zero_gap(&self) -> bool {
+        self.fire_hook_validated
+            && self.option_hook_validated
+            && self.materialisation_hook_validated
+            && self.timeout_hook_validated
+            && self.all_event_classes_covered
+            && self.player_ai_timeout_no_choice_covered
+            && self.capture_start_baseline_complete
+            && self.queue_capacity > 0
+            && self.queue_high_water_mark <= self.queue_capacity
+            && self.dropped_fire_rows == 0
+            && self.dropped_resolution_rows == 0
+            && self.correlation_failures == 0
+            && self.invalid_definition_joins == 0
+            && self.fired_ledger_shadow_mismatches == 0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FiredEventFrame {
+    pub elapsed_wall_ms: u64,
+    pub frame_hour: u64,
+    pub producer_manifest_sha256: [u8; 32],
+    pub telemetry: HookTelemetry,
+    pub fired_events_complete: bool,
+    pub rows: Vec<FiredEventRow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CarrierError {
+    UnauthenticatedSource,
+    Invalid(String),
+    Truncated,
+    TrailingBytes,
+    Source(String),
+}
+
+pub trait ExactFiredEventSource {
+    fn is_authenticated_a729_hook_source(&self) -> bool;
+    fn producer_manifest_sha256(&self) -> [u8; 32];
+    fn snapshot(
+        &self,
+        frame_hour: u64,
+        elapsed_wall_ms: u64,
+    ) -> Result<(HookTelemetry, Vec<FiredEventRow>), String>;
+}
+
+/// Non-blocking ledger owned by the installed hook runtime. Hook callbacks use
+/// `try_lock`; contention is an explicit drop and therefore clears the
+/// completeness witness instead of stalling the game thread.
+pub struct A729EventLedger {
+    state: Mutex<LedgerState>,
+    capacity: usize,
+    contended_fire_drops: AtomicU64,
+    contended_resolution_drops: AtomicU64,
+}
+
+struct LedgerState {
+    telemetry: HookTelemetry,
+    rows: Vec<FiredEventRow>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FireInput {
+    pub event_id: String,
+    pub recipient_tag: String,
+    pub fire_date: String,
+    pub fire_hour: u64,
+    pub fire_tick: u64,
+    pub event_sequence: u64,
+    pub effective_timeout_hours: u32,
+    pub timeout_tick: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct MaterialisationInput {
+    pub event_sequence: u64,
+    pub visible_option_ordinals: Vec<u16>,
+    pub selected_desc_key: Option<String>,
+    pub shown_picture_gfx: Option<String>,
+    pub popup_subtype: PopupSubtype,
+    pub runtime_text_context_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolutionInput {
+    pub event_sequence: u64,
+    pub chosen_option_ordinal: Option<u16>,
+    pub resolved_tick: u64,
+    pub reason: ResolutionReason,
+}
+
+impl A729EventLedger {
+    pub fn new(capacity: usize) -> Self {
+        let capacity = capacity.clamp(1, MAX_ROWS);
+        Self {
+            state: Mutex::new(LedgerState {
+                telemetry: HookTelemetry {
+                    queue_capacity: capacity as u32,
+                    ..Default::default()
+                },
+                rows: Vec::new(),
+            }),
+            capacity,
+            contended_fire_drops: AtomicU64::new(0),
+            contended_resolution_drops: AtomicU64::new(0),
+        }
+    }
+
+    /// Marks only the facts proved by successful installation of the complete
+    /// pinned hook set. Coverage and baseline are separate witnesses.
+    pub fn record_installation_validation(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.telemetry.fire_hook_validated = true;
+            state.telemetry.option_hook_validated = true;
+            state.telemetry.materialisation_hook_validated = true;
+            state.telemetry.timeout_hook_validated = true;
+        }
+    }
+
+    pub fn record_baseline_complete(&self, complete: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            state.telemetry.capture_start_baseline_complete = complete;
+        }
+    }
+
+    /// Records an independently generated deterministic-fixture attestation.
+    /// Hook installation itself cannot manufacture coverage.
+    pub fn record_fixture_coverage(&self, all_classes: bool, all_resolution_paths: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            state.telemetry.all_event_classes_covered = all_classes;
+            state.telemetry.player_ai_timeout_no_choice_covered = all_resolution_paths;
+        }
+    }
+
+    #[cfg(test)]
+    pub fn authenticate_installation_and_fixture_coverage(
+        &self,
+        baseline_complete: bool,
+        all_classes: bool,
+        all_resolution_paths: bool,
+    ) {
+        self.record_installation_validation();
+        self.record_baseline_complete(baseline_complete);
+        self.record_fixture_coverage(all_classes, all_resolution_paths);
+    }
+
+    pub fn record_fire(&self, input: FireInput) {
+        let Ok(mut state) = self.state.try_lock() else {
+            self.note_fire_drop();
+            return;
+        };
+        if state.rows.len() >= self.capacity
+            || state
+                .rows
+                .iter()
+                .any(|row| row.event_sequence == input.event_sequence)
+        {
+            state.telemetry.dropped_fire_rows = state.telemetry.dropped_fire_rows.saturating_add(1);
+            return;
+        }
+        let row = FiredEventRow {
+            event_id: input.event_id,
+            recipient_tag: input.recipient_tag,
+            fire_date: input.fire_date,
+            fire_hour: input.fire_hour,
+            fire_tick: input.fire_tick,
+            event_sequence: input.event_sequence,
+            visible_option_ordinals: Vec::new(),
+            chosen_option_ordinal: None,
+            selected_desc_key: None,
+            shown_picture_gfx: None,
+            popup_subtype: PopupSubtype::Country,
+            effective_timeout_hours: input.effective_timeout_hours,
+            timeout_tick: input.timeout_tick,
+            resolved_tick: None,
+            resolution_reason: ResolutionReason::Pending,
+            runtime_text_context_id: None,
+        };
+        let position = state
+            .rows
+            .partition_point(|existing| existing.event_sequence < row.event_sequence);
+        state.rows.insert(position, row);
+        state.telemetry.queue_high_water_mark = state
+            .telemetry
+            .queue_high_water_mark
+            .max(state.rows.len() as u32);
+    }
+
+    pub fn record_materialisation(&self, input: MaterialisationInput) {
+        let Ok(mut state) = self.state.try_lock() else {
+            self.note_resolution_drop();
+            return;
+        };
+        let Some(row) = state
+            .rows
+            .iter_mut()
+            .find(|row| row.event_sequence == input.event_sequence)
+        else {
+            state.telemetry.correlation_failures =
+                state.telemetry.correlation_failures.saturating_add(1);
+            return;
+        };
+        row.visible_option_ordinals = input.visible_option_ordinals;
+        row.selected_desc_key = input.selected_desc_key;
+        row.shown_picture_gfx = input.shown_picture_gfx;
+        row.popup_subtype = input.popup_subtype;
+        row.runtime_text_context_id = input.runtime_text_context_id;
+    }
+
+    pub fn record_resolution(&self, input: ResolutionInput) {
+        let Ok(mut state) = self.state.try_lock() else {
+            self.note_resolution_drop();
+            return;
+        };
+        let Some(row) = state
+            .rows
+            .iter_mut()
+            .find(|row| row.event_sequence == input.event_sequence)
+        else {
+            state.telemetry.correlation_failures =
+                state.telemetry.correlation_failures.saturating_add(1);
+            return;
+        };
+        row.chosen_option_ordinal = input.chosen_option_ordinal;
+        row.resolved_tick = Some(input.resolved_tick);
+        row.resolution_reason = input.reason;
+    }
+
+    pub fn note_invalid_definition_join(&self) {
+        if let Ok(mut s) = self.state.try_lock() {
+            s.telemetry.invalid_definition_joins =
+                s.telemetry.invalid_definition_joins.saturating_add(1)
+        } else {
+            self.note_fire_drop()
+        }
+    }
+    pub fn note_correlation_failure(&self) {
+        if let Ok(mut state) = self.state.try_lock() {
+            state.telemetry.correlation_failures =
+                state.telemetry.correlation_failures.saturating_add(1)
+        } else {
+            self.note_resolution_drop()
+        }
+    }
+    pub fn note_shadow_mismatch(&self) {
+        if let Ok(mut s) = self.state.try_lock() {
+            s.telemetry.fired_ledger_shadow_mismatches =
+                s.telemetry.fired_ledger_shadow_mismatches.saturating_add(1)
+        } else {
+            self.note_fire_drop()
+        }
+    }
+    fn note_fire_drop(&self) {
+        self.contended_fire_drops.fetch_add(1, Ordering::Relaxed);
+    }
+    fn note_resolution_drop(&self) {
+        self.contended_resolution_drops
+            .fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl ExactFiredEventSource for A729EventLedger {
+    fn is_authenticated_a729_hook_source(&self) -> bool {
+        true
+    }
+    fn producer_manifest_sha256(&self) -> [u8; 32] {
+        PRODUCER_MANIFEST_SHA256
+    }
+    fn snapshot(
+        &self,
+        _frame_hour: u64,
+        _elapsed_wall_ms: u64,
+    ) -> Result<(HookTelemetry, Vec<FiredEventRow>), String> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "event ledger poisoned".to_string())?;
+        let mut telemetry = state.telemetry.clone();
+        telemetry.dropped_fire_rows = telemetry
+            .dropped_fire_rows
+            .saturating_add(self.contended_fire_drops.load(Ordering::Relaxed));
+        telemetry.dropped_resolution_rows = telemetry
+            .dropped_resolution_rows
+            .saturating_add(self.contended_resolution_drops.load(Ordering::Relaxed));
+        Ok((telemetry, state.rows.clone()))
+    }
+}
+
+pub fn collect_and_encode<S: ExactFiredEventSource>(
+    source: &S,
+    frame_hour: u64,
+    elapsed_wall_ms: u64,
+) -> Result<Vec<u8>, CarrierError> {
+    if !source.is_authenticated_a729_hook_source()
+        || source.producer_manifest_sha256() != PRODUCER_MANIFEST_SHA256
+    {
+        return Err(CarrierError::UnauthenticatedSource);
+    }
+    let (telemetry, rows) = source
+        .snapshot(frame_hour, elapsed_wall_ms)
+        .map_err(CarrierError::Source)?;
+    let frame = FiredEventFrame {
+        elapsed_wall_ms,
+        frame_hour,
+        producer_manifest_sha256: source.producer_manifest_sha256(),
+        fired_events_complete: telemetry.zero_gap(),
+        telemetry,
+        rows,
+    };
+    encode_payload(&frame)
+}
+
+pub fn validate_frame(frame: &FiredEventFrame) -> Result<(), CarrierError> {
+    if frame.producer_manifest_sha256 != PRODUCER_MANIFEST_SHA256 {
+        return invalid("producer manifest mismatch");
+    }
+    if frame.fired_events_complete != frame.telemetry.zero_gap() {
+        return invalid("completeness witness disagrees with zero-gap telemetry");
+    }
+    if frame.rows.len() > MAX_ROWS {
+        return invalid("row count exceeds bound");
+    }
+    let mut seq = None;
+    let mut tick = None;
+    let mut identities = BTreeSet::new();
+    for row in &frame.rows {
+        nonempty(&row.event_id, "event id")?;
+        tag(&row.recipient_tag)?;
+        nonempty(&row.fire_date, "fire date")?;
+        if !identities.insert(row.event_sequence) {
+            return invalid("duplicate event sequence");
+        }
+        if seq.is_some_and(|v| row.event_sequence <= v) {
+            return invalid("event sequence not strictly increasing");
+        }
+        if tick.is_some_and(|v| row.fire_tick < v) {
+            return invalid("fire tick regresses");
+        }
+        seq = Some(row.event_sequence);
+        tick = Some(row.fire_tick);
+        if row.visible_option_ordinals.len() > MAX_OPTIONS
+            || row.visible_option_ordinals.windows(2).any(|w| w[0] >= w[1])
+        {
+            return invalid("visible option ordinals not strictly ordered");
+        }
+        if row
+            .chosen_option_ordinal
+            .is_some_and(|v| !row.visible_option_ordinals.contains(&v))
+        {
+            return invalid("chosen option is not visible");
+        }
+        opt_nonempty(row.selected_desc_key.as_deref(), "description key")?;
+        opt_nonempty(row.shown_picture_gfx.as_deref(), "picture gfx")?;
+        opt_nonempty(
+            row.runtime_text_context_id.as_deref(),
+            "runtime text context",
+        )?;
+        if row.effective_timeout_hours == 0 || row.timeout_tick <= row.fire_tick {
+            return invalid("timeout is not after fire");
+        }
+        match row.resolution_reason {
+            ResolutionReason::Pending
+                if row.resolved_tick.is_none() && row.chosen_option_ordinal.is_none() => {}
+            ResolutionReason::Selected
+                if row.resolved_tick.is_some() && row.chosen_option_ordinal.is_some() => {}
+            ResolutionReason::Timeout
+                if row.resolved_tick.is_some() && row.chosen_option_ordinal.is_none() => {}
+            _ => return invalid("resolution fields disagree"),
+        }
+        if row.resolved_tick.is_some_and(|v| v < row.fire_tick) {
+            return invalid("resolution tick precedes fire");
+        }
+    }
+    Ok(())
+}
+
+pub fn encode_payload(frame: &FiredEventFrame) -> Result<Vec<u8>, CarrierError> {
+    validate_frame(frame)?;
+    let mut out = Vec::new();
+    u32v(&mut out, MAGIC);
+    u32v(&mut out, SCHEMA_VERSION);
+    u32v(&mut out, AUTHORITY_A729_INLINE_HOOKS);
+    u32v(&mut out, u32::from(frame.fired_events_complete));
+    u64v(&mut out, frame.elapsed_wall_ms);
+    u64v(&mut out, frame.frame_hour);
+    out.extend_from_slice(&frame.producer_manifest_sha256);
+    put_telemetry(&mut out, &frame.telemetry);
+    u32v(&mut out, frame.rows.len() as u32);
+    for row in &frame.rows {
+        string(&mut out, &row.event_id)?;
+        string(&mut out, &row.recipient_tag)?;
+        string(&mut out, &row.fire_date)?;
+        u64v(&mut out, row.fire_hour);
+        u64v(&mut out, row.fire_tick);
+        u64v(&mut out, row.event_sequence);
+        u32v(&mut out, row.visible_option_ordinals.len() as u32);
+        for value in &row.visible_option_ordinals {
+            u32v(&mut out, u32::from(*value));
+        }
+        optional_u16(&mut out, row.chosen_option_ordinal);
+        optional_string(&mut out, row.selected_desc_key.as_deref())?;
+        optional_string(&mut out, row.shown_picture_gfx.as_deref())?;
+        u32v(&mut out, subtype_code(row.popup_subtype));
+        u32v(&mut out, row.effective_timeout_hours);
+        u64v(&mut out, row.timeout_tick);
+        optional_u64(&mut out, row.resolved_tick);
+        u32v(&mut out, reason_code(row.resolution_reason));
+        optional_string(&mut out, row.runtime_text_context_id.as_deref())?;
+    }
+    Ok(out)
+}
+
+pub fn decode_payload(payload: &[u8]) -> Result<FiredEventFrame, CarrierError> {
+    let mut r = Reader {
+        data: payload,
+        at: 0,
+    };
+    if r.u32()? != MAGIC || r.u32()? != SCHEMA_VERSION || r.u32()? != AUTHORITY_A729_INLINE_HOOKS {
+        return Err(CarrierError::UnauthenticatedSource);
+    }
+    let fired_events_complete = r.bool()?;
+    let elapsed_wall_ms = r.u64()?;
+    let frame_hour = r.u64()?;
+    let producer_manifest_sha256 = r.array32()?;
+    let telemetry = r.telemetry()?;
+    let count = r.u32()? as usize;
+    if count > MAX_ROWS {
+        return invalid("row count exceeds bound");
+    }
+    let mut rows = Vec::with_capacity(count);
+    for _ in 0..count {
+        let event_id = r.string()?;
+        let recipient_tag = r.string()?;
+        let fire_date = r.string()?;
+        let fire_hour = r.u64()?;
+        let fire_tick = r.u64()?;
+        let event_sequence = r.u64()?;
+        let n = r.u32()? as usize;
+        if n > MAX_OPTIONS {
+            return invalid("option count exceeds bound");
+        }
+        let mut visible_option_ordinals = Vec::with_capacity(n);
+        for _ in 0..n {
+            visible_option_ordinals.push(
+                u16::try_from(r.u32()?)
+                    .map_err(|_| CarrierError::Invalid("option ordinal exceeds u16".into()))?,
+            );
+        }
+        rows.push(FiredEventRow {
+            event_id,
+            recipient_tag,
+            fire_date,
+            fire_hour,
+            fire_tick,
+            event_sequence,
+            visible_option_ordinals,
+            chosen_option_ordinal: r.optional_u16()?,
+            selected_desc_key: r.optional_string()?,
+            shown_picture_gfx: r.optional_string()?,
+            popup_subtype: subtype_from(r.u32()?)?,
+            effective_timeout_hours: r.u32()?,
+            timeout_tick: r.u64()?,
+            resolved_tick: r.optional_u64()?,
+            resolution_reason: reason_from(r.u32()?)?,
+            runtime_text_context_id: r.optional_string()?,
+        });
+    }
+    if r.at != payload.len() {
+        return Err(CarrierError::TrailingBytes);
+    }
+    let frame = FiredEventFrame {
+        elapsed_wall_ms,
+        frame_hour,
+        producer_manifest_sha256,
+        telemetry,
+        fired_events_complete,
+        rows,
+    };
+    validate_frame(&frame)?;
+    Ok(frame)
+}
+
+fn put_telemetry(o: &mut Vec<u8>, t: &HookTelemetry) {
+    for v in [
+        t.fire_hook_validated,
+        t.option_hook_validated,
+        t.materialisation_hook_validated,
+        t.timeout_hook_validated,
+        t.all_event_classes_covered,
+        t.player_ai_timeout_no_choice_covered,
+        t.capture_start_baseline_complete,
+    ] {
+        u32v(o, u32::from(v));
+    }
+    u32v(o, t.queue_capacity);
+    u32v(o, t.queue_high_water_mark);
+    for v in [
+        t.dropped_fire_rows,
+        t.dropped_resolution_rows,
+        t.correlation_failures,
+        t.invalid_definition_joins,
+        t.fired_ledger_shadow_mismatches,
+    ] {
+        u64v(o, v);
+    }
+}
+fn subtype_code(v: PopupSubtype) -> u32 {
+    match v {
+        PopupSubtype::Country => 0,
+        PopupSubtype::News => 1,
+        PopupSubtype::State => 2,
+        PopupSubtype::UnitLeader => 3,
+        PopupSubtype::OperativeLeader => 4,
+    }
+}
+fn subtype_from(v: u32) -> Result<PopupSubtype, CarrierError> {
+    match v {
+        0 => Ok(PopupSubtype::Country),
+        1 => Ok(PopupSubtype::News),
+        2 => Ok(PopupSubtype::State),
+        3 => Ok(PopupSubtype::UnitLeader),
+        4 => Ok(PopupSubtype::OperativeLeader),
+        _ => invalid("popup subtype invalid"),
+    }
+}
+fn reason_code(v: ResolutionReason) -> u32 {
+    match v {
+        ResolutionReason::Pending => 0,
+        ResolutionReason::Selected => 1,
+        ResolutionReason::Timeout => 2,
+    }
+}
+fn reason_from(v: u32) -> Result<ResolutionReason, CarrierError> {
+    match v {
+        0 => Ok(ResolutionReason::Pending),
+        1 => Ok(ResolutionReason::Selected),
+        2 => Ok(ResolutionReason::Timeout),
+        _ => invalid("resolution reason invalid"),
+    }
+}
+fn u32v(o: &mut Vec<u8>, v: u32) {
+    o.extend_from_slice(&v.to_le_bytes())
+}
+fn u64v(o: &mut Vec<u8>, v: u64) {
+    o.extend_from_slice(&v.to_le_bytes())
+}
+fn string(o: &mut Vec<u8>, v: &str) -> Result<(), CarrierError> {
+    if v.len() > MAX_STRING {
+        return invalid("string exceeds bound");
+    }
+    u32v(o, v.len() as u32);
+    o.extend_from_slice(v.as_bytes());
+    Ok(())
+}
+fn optional_string(o: &mut Vec<u8>, v: Option<&str>) -> Result<(), CarrierError> {
+    match v {
+        Some(v) => {
+            u32v(o, 1);
+            string(o, v)
+        }
+        None => {
+            u32v(o, 0);
+            Ok(())
+        }
+    }
+}
+fn optional_u16(o: &mut Vec<u8>, v: Option<u16>) {
+    match v {
+        Some(v) => {
+            u32v(o, 1);
+            u32v(o, u32::from(v))
+        }
+        None => u32v(o, 0),
+    }
+}
+fn optional_u64(o: &mut Vec<u8>, v: Option<u64>) {
+    match v {
+        Some(v) => {
+            u32v(o, 1);
+            u64v(o, v)
+        }
+        None => u32v(o, 0),
+    }
+}
+fn nonempty(v: &str, label: &str) -> Result<(), CarrierError> {
+    if v.trim().is_empty() || v.len() > MAX_STRING {
+        invalid(format!("{label} empty or too long"))
+    } else {
+        Ok(())
+    }
+}
+fn opt_nonempty(v: Option<&str>, l: &str) -> Result<(), CarrierError> {
+    v.map_or(Ok(()), |v| nonempty(v, l))
+}
+fn tag(v: &str) -> Result<(), CarrierError> {
+    if v.len() == 3 && v.bytes().all(|b| b.is_ascii_uppercase()) && v != "---" {
+        Ok(())
+    } else {
+        invalid("recipient tag invalid")
+    }
+}
+fn invalid<T>(v: impl Into<String>) -> Result<T, CarrierError> {
+    Err(CarrierError::Invalid(v.into()))
+}
+
+struct Reader<'a> {
+    data: &'a [u8],
+    at: usize,
+}
+impl<'a> Reader<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8], CarrierError> {
+        let e = self.at.checked_add(n).ok_or(CarrierError::Truncated)?;
+        let v = self.data.get(self.at..e).ok_or(CarrierError::Truncated)?;
+        self.at = e;
+        Ok(v)
+    }
+    fn u32(&mut self) -> Result<u32, CarrierError> {
+        Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
+    }
+    fn u64(&mut self) -> Result<u64, CarrierError> {
+        Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
+    }
+    fn bool(&mut self) -> Result<bool, CarrierError> {
+        match self.u32()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => invalid("boolean invalid"),
+        }
+    }
+    fn array32(&mut self) -> Result<[u8; 32], CarrierError> {
+        Ok(self.take(32)?.try_into().unwrap())
+    }
+    fn string(&mut self) -> Result<String, CarrierError> {
+        let n = self.u32()? as usize;
+        if n > MAX_STRING {
+            return invalid("string exceeds bound");
+        }
+        String::from_utf8(self.take(n)?.to_vec())
+            .map_err(|_| CarrierError::Invalid("invalid utf8".into()))
+    }
+    fn optional_string(&mut self) -> Result<Option<String>, CarrierError> {
+        match self.u32()? {
+            0 => Ok(None),
+            1 => Ok(Some(self.string()?)),
+            _ => invalid("optional string marker invalid"),
+        }
+    }
+    fn optional_u16(&mut self) -> Result<Option<u16>, CarrierError> {
+        match self.u32()? {
+            0 => Ok(None),
+            1 => {
+                Ok(Some(u16::try_from(self.u32()?).map_err(|_| {
+                    CarrierError::Invalid("u16 overflow".into())
+                })?))
+            }
+            _ => invalid("optional u16 marker invalid"),
+        }
+    }
+    fn optional_u64(&mut self) -> Result<Option<u64>, CarrierError> {
+        match self.u32()? {
+            0 => Ok(None),
+            1 => Ok(Some(self.u64()?)),
+            _ => invalid("optional u64 marker invalid"),
+        }
+    }
+    fn telemetry(&mut self) -> Result<HookTelemetry, CarrierError> {
+        Ok(HookTelemetry {
+            fire_hook_validated: self.bool()?,
+            option_hook_validated: self.bool()?,
+            materialisation_hook_validated: self.bool()?,
+            timeout_hook_validated: self.bool()?,
+            all_event_classes_covered: self.bool()?,
+            player_ai_timeout_no_choice_covered: self.bool()?,
+            capture_start_baseline_complete: self.bool()?,
+            queue_capacity: self.u32()?,
+            queue_high_water_mark: self.u32()?,
+            dropped_fire_rows: self.u64()?,
+            dropped_resolution_rows: self.u64()?,
+            correlation_failures: self.u64()?,
+            invalid_definition_joins: self.u64()?,
+            fired_ledger_shadow_mismatches: self.u64()?,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn telemetry() -> HookTelemetry {
+        HookTelemetry {
+            fire_hook_validated: true,
+            option_hook_validated: true,
+            materialisation_hook_validated: true,
+            timeout_hook_validated: true,
+            all_event_classes_covered: true,
+            player_ai_timeout_no_choice_covered: true,
+            capture_start_baseline_complete: true,
+            queue_capacity: 128,
+            queue_high_water_mark: 2,
+            ..Default::default()
+        }
+    }
+    fn row() -> FiredEventRow {
+        FiredEventRow {
+            event_id: "germany.1".into(),
+            recipient_tag: "GER".into(),
+            fire_date: "1936.1.1.12".into(),
+            fire_hour: 0,
+            fire_tick: 12,
+            event_sequence: 1,
+            visible_option_ordinals: vec![0, 2],
+            chosen_option_ordinal: Some(2),
+            selected_desc_key: Some("germany.1.d".into()),
+            shown_picture_gfx: Some("GFX_report_event_german_reich".into()),
+            popup_subtype: PopupSubtype::Country,
+            effective_timeout_hours: 312,
+            timeout_tick: 324,
+            resolved_tick: Some(13),
+            resolution_reason: ResolutionReason::Selected,
+            runtime_text_context_id: None,
+        }
+    }
+    #[test]
+    fn roundtrip_and_zero_gap() {
+        let f = FiredEventFrame {
+            elapsed_wall_ms: 1,
+            frame_hour: 12,
+            producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
+            telemetry: telemetry(),
+            fired_events_complete: true,
+            rows: vec![row()],
+        };
+        let b = encode_payload(&f).unwrap();
+        assert_eq!(decode_payload(&b).unwrap(), f);
+        assert_eq!(encode_payload(&decode_payload(&b).unwrap()).unwrap(), b)
+    }
+    #[test]
+    fn fail_closed_on_gap_or_bad_choice() {
+        let mut t = telemetry();
+        t.dropped_fire_rows = 1;
+        let f = FiredEventFrame {
+            elapsed_wall_ms: 1,
+            frame_hour: 12,
+            producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
+            telemetry: t,
+            fired_events_complete: true,
+            rows: vec![row()],
+        };
+        assert!(validate_frame(&f).is_err());
+        let mut r = row();
+        r.chosen_option_ordinal = Some(1);
+        let f = FiredEventFrame {
+            elapsed_wall_ms: 1,
+            frame_hour: 12,
+            producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
+            telemetry: telemetry(),
+            fired_events_complete: true,
+            rows: vec![r],
+        };
+        assert!(validate_frame(&f).is_err())
+    }
+
+    #[test]
+    fn ledger_preserves_repeated_same_hour_ids_by_sequence_and_no_choice_timeout() {
+        let ledger = A729EventLedger::new(8);
+        ledger.authenticate_installation_and_fixture_coverage(true, true, true);
+        // Hooked live dispatch can arrive before the post-install pending
+        // baseline enumeration. Engine sequence, not insertion order, owns the
+        // cumulative history order.
+        for sequence in [11, 10] {
+            ledger.record_fire(FireInput {
+                event_id: "germany.1".into(),
+                recipient_tag: "GER".into(),
+                fire_date: "1936.1.1.12".into(),
+                fire_hour: 0,
+                fire_tick: 12,
+                event_sequence: sequence,
+                effective_timeout_hours: 312,
+                timeout_tick: 324,
+            });
+        }
+        ledger.record_materialisation(MaterialisationInput {
+            event_sequence: 10,
+            visible_option_ordinals: vec![0, 2],
+            selected_desc_key: Some("germany.1.a".into()),
+            shown_picture_gfx: Some("GFX_a".into()),
+            popup_subtype: PopupSubtype::Country,
+            runtime_text_context_id: None,
+        });
+        ledger.record_resolution(ResolutionInput {
+            event_sequence: 10,
+            chosen_option_ordinal: Some(2),
+            resolved_tick: 13,
+            reason: ResolutionReason::Selected,
+        });
+        ledger.record_materialisation(MaterialisationInput {
+            event_sequence: 11,
+            visible_option_ordinals: vec![],
+            selected_desc_key: Some("germany.1.b".into()),
+            shown_picture_gfx: Some("GFX_b".into()),
+            popup_subtype: PopupSubtype::News,
+            runtime_text_context_id: None,
+        });
+        ledger.record_resolution(ResolutionInput {
+            event_sequence: 11,
+            chosen_option_ordinal: None,
+            resolved_tick: 324,
+            reason: ResolutionReason::Timeout,
+        });
+        let encoded = collect_and_encode(&ledger, 0, 1).unwrap();
+        let decoded = decode_payload(&encoded).unwrap();
+        assert!(decoded.fired_events_complete);
+        assert_eq!(decoded.rows.len(), 2);
+        assert_eq!(decoded.rows[0].event_sequence, 10);
+        assert_eq!(decoded.rows[1].event_sequence, 11);
+        assert!(decoded.rows[1].visible_option_ordinals.is_empty());
+    }
+}

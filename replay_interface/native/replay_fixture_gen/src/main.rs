@@ -1,16 +1,25 @@
 #![recursion_limit = "512"]
 
+use portable_content_manifest::{
+    ContentLayerKind, ContentManifest, LayerStorageKind, PlaybackContentInventory,
+    PlaybackContentLayer, RecordedContentLayer, RequiredContent, RequiredContentKind,
+    ResolvedPlaybackContent, SourceGameIdentity, SourceProfileIdentity, UsedContentKey, SCHEMA,
+};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use snapshot::{pack, pack_with, PackEntry, PackIdentity, PackOptions};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_SEED: u64 = 424_242;
 const SNAPSHOT_COUNT: usize = 12;
-const BUILD_SHA: &str =
-    "16022851eaa571728aa3a0b5fd5f990a56da57e2249a4c1b9cfb30336f59b120";
+const BUILD_SHA: &str = "16022851eaa571728aa3a0b5fd5f990a56da57e2249a4c1b9cfb30336f59b120";
 const MODSET: &str = "fixture-modset-a1a2";
+const FIXTURE_BASE_DEFINITION: &[u8] =
+    b"fixture_country = { graphical_culture = fixture_graphical_culture }\n";
+const FIXTURE_MOD_TEXTURE: &[u8] = b"DDS fixture replay icon payload v1\n";
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -69,7 +78,12 @@ fn generate(out_dir: &Path, seed: u64) -> Result<()> {
         let file = positive_dir.join(format!("{}.battleplan", scenario.name));
         let bytes = pack_scenario(&scenario, seed)?;
         fs::write(&file, &bytes)?;
-        positive_manifest.push(scenario_manifest(&scenario, &file, out_dir, bytes.len() as u64));
+        positive_manifest.push(scenario_manifest(
+            &scenario,
+            &file,
+            out_dir,
+            bytes.len() as u64,
+        ));
     }
 
     // F4 anomaly set: OPENS through the shared validator but degrades
@@ -81,7 +95,12 @@ fn generate(out_dir: &Path, seed: u64) -> Result<()> {
         let file = anomaly_dir.join(format!("{}.battleplan", scenario.name));
         let bytes = pack_scenario(&scenario, seed)?;
         fs::write(&file, &bytes)?;
-        anomaly_manifest.push(scenario_manifest(&scenario, &file, out_dir, bytes.len() as u64));
+        anomaly_manifest.push(scenario_manifest(
+            &scenario,
+            &file,
+            out_dir,
+            bytes.len() as u64,
+        ));
     }
 
     let mut negative_manifest = Vec::new();
@@ -104,14 +123,17 @@ fn generate(out_dir: &Path, seed: u64) -> Result<()> {
         "snapshot_count_per_positive_fixture": SNAPSHOT_COUNT,
         "generator": {
             "crate": "replay_interface/native/replay_fixture_gen",
-            "packing_api": "extractor/native/snapshot::pack",
+            "packing_api": "portable_replay/native/snapshot::pack",
             "determinism": "all timestamps, ordering, identity, and scenario data derive from the explicit seed"
         },
         "positive": positive_manifest,
         "anomaly": anomaly_manifest,
         "negative": negative_manifest,
     });
-    fs::write(out_dir.join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;
+    fs::write(
+        out_dir.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest)?,
+    )?;
 
     println!(
         "wrote {} positive, {} anomaly, and {} negative fixtures to {}",
@@ -356,7 +378,12 @@ fn fx_anomaly_out_of_range(seed: u64) -> Scenario {
         "fx_anomaly_out_of_range",
         "GER manpower goes negative and a province id absent from the map appears mid-recording.",
         &["plan:F4:out_of_range"],
-        &["clock", "country_identity", "country_scalars", "state_ownership"],
+        &[
+            "clock",
+            "country_identity",
+            "country_scalars",
+            "state_ownership",
+        ],
         &["Arms Against Tyranny"],
         "english",
         |tick, snap| {
@@ -453,8 +480,18 @@ fn fx_owner_controller_flip(seed: u64) -> Scenario {
         seed,
         "fx_owner_controller_flip",
         "State owner, state controller, and province controller flip over an hourly timeline.",
-        &["requirements:1", "requirements:2", "plan:A2:owner_controller_flips"],
-        &["clock", "country_identity", "state_ownership", "state_control", "province_control"],
+        &[
+            "requirements:1",
+            "requirements:2",
+            "plan:A2:owner_controller_flips",
+        ],
+        &[
+            "clock",
+            "country_identity",
+            "state_ownership",
+            "state_control",
+            "province_control",
+        ],
         &["Together for Victory", "Man the Guns"],
         "english",
         |tick, snap| {
@@ -472,7 +509,12 @@ fn fx_owner_controller_flip(seed: u64) -> Scenario {
     let h5 = hour_at(&s, 5);
     s = with_probe(
         s,
-        Probe::new(h5, &["states", "10", "owner"], json!("SOV"), "state 10 owner flip"),
+        Probe::new(
+            h5,
+            &["states", "10", "owner"],
+            json!("SOV"),
+            "state 10 owner flip",
+        ),
     );
     let h9 = hour_at(&s, 9);
     with_event(
@@ -506,7 +548,11 @@ fn fx_cosmetic_ideology(seed: u64) -> Scenario {
         seed,
         "fx_cosmetic_ideology",
         "Country cosmetic tag and ruling-party ideology change mid-recording.",
-        &["requirements:7", "requirements:7b", "plan:A2:cosmetic_ideology"],
+        &[
+            "requirements:7",
+            "requirements:7b",
+            "plan:A2:cosmetic_ideology",
+        ],
         &["clock", "country_identity", "country_misc", "politics_live"],
         &["Together for Victory", "La Resistance"],
         "english",
@@ -515,14 +561,14 @@ fn fx_cosmetic_ideology(seed: u64) -> Scenario {
                 snap["countries"]["GER"]["misc"]["cosmetic_tag"] = Value::Null;
                 snap["countries"]["GER"]["extra"]["cosmetic_tag"] = Value::Null;
                 snap["countries"]["GER"]["politics"]["ruling_party"] = json!("fascism");
-                snap["countries"]["GER"]["politics"]["party_popularities"] =
-                    json!({"fascism": 0.70, "democratic": 0.10, "communism": 0.15, "neutrality": 0.05});
+                snap["countries"]["GER"]["politics"]["party_popularities"] = json!({"fascism": 0.70, "democratic": 0.10, "communism": 0.15, "neutrality": 0.05});
             } else if tick < 8 {
-                snap["countries"]["GER"]["misc"]["cosmetic_tag"] = json!("GER_civil_war_democratic");
-                snap["countries"]["GER"]["extra"]["cosmetic_tag"] = json!("GER_civil_war_democratic");
+                snap["countries"]["GER"]["misc"]["cosmetic_tag"] =
+                    json!("GER_civil_war_democratic");
+                snap["countries"]["GER"]["extra"]["cosmetic_tag"] =
+                    json!("GER_civil_war_democratic");
                 snap["countries"]["GER"]["politics"]["ruling_party"] = json!("democratic");
-                snap["countries"]["GER"]["politics"]["party_popularities"] =
-                    json!({"fascism": 0.20, "democratic": 0.60, "communism": 0.15, "neutrality": 0.05});
+                snap["countries"]["GER"]["politics"]["party_popularities"] = json!({"fascism": 0.20, "democratic": 0.60, "communism": 0.15, "neutrality": 0.05});
             } else {
                 snap["countries"]["GER"]["misc"]["cosmetic_tag"] = json!("GER_reichskommissariat");
                 snap["countries"]["GER"]["extra"]["cosmetic_tag"] = json!("GER_reichskommissariat");
@@ -557,7 +603,13 @@ fn fx_war_faction_matrix(seed: u64) -> Scenario {
         "fx_war_faction_matrix",
         "War relation, faction membership, and live diplomacy matrix evolve.",
         &["requirements:8b", "plan:A2:war_faction_matrix"],
-        &["clock", "country_identity", "diplomacy", "diplomacy_live", "diplo_relations"],
+        &[
+            "clock",
+            "country_identity",
+            "diplomacy",
+            "diplomacy_live",
+            "diplo_relations",
+        ],
         &["Man the Guns"],
         "english",
         |tick, snap| {
@@ -594,8 +646,7 @@ fn fx_war_faction_matrix(seed: u64) -> Scenario {
                     {"first": "GER", "second": "ENG", "first_casualties": 1200, "second_casualties": 900},
                     {"first": "ITA", "second": "ENG", "first_casualties": 200, "second_casualties": 300}
                 ]);
-                snap["countries"]["GER"]["diplomacy"]["relation_flags"] =
-                    json!({"ITA": ["same_faction", "military_access"], "ENG": ["at_war", "embargo"]});
+                snap["countries"]["GER"]["diplomacy"]["relation_flags"] = json!({"ITA": ["same_faction", "military_access"], "ENG": ["at_war", "embargo"]});
             }
         },
     );
@@ -626,7 +677,12 @@ fn fx_capital_moves(seed: u64) -> Scenario {
         "fx_capital_moves",
         "Country capital state moves while ownership stays stable.",
         &["requirements:8b", "plan:A2:capital_moves"],
-        &["clock", "country_identity", "country_scalars", "state_ownership"],
+        &[
+            "clock",
+            "country_identity",
+            "country_scalars",
+            "state_ownership",
+        ],
         &["La Resistance"],
         "english",
         |tick, snap| {
@@ -681,7 +737,8 @@ fn fx_weather_sweep(seed: u64) -> Scenario {
             snap["weather"]["global_rollup"] =
                 json!({"dominant": name, "sampled_regions": 1, "max_intensity": intensity});
             snap["weather"]["source"] = json!("M");
-            snap["map"]["strategic_regions"] = json!({"101": {"name": "fixture_west", "provinces": [1000, 2000]}});
+            snap["map"]["strategic_regions"] =
+                json!({"101": {"name": "fixture_west", "provinces": [1000, 2000]}});
         },
     );
     let h4 = hour_at(&s, 4);
@@ -707,7 +764,12 @@ fn fx_snow_mud_accumulator(seed: u64) -> Scenario {
         "english",
         |tick, snap| {
             let snow = (tick as i64 * 21).min(180);
-            let mud = if tick < 5 { tick as i64 * 9 } else { 45 - ((tick as i64 - 5) * 5) }.max(0);
+            let mud = if tick < 5 {
+                tick as i64 * 9
+            } else {
+                45 - ((tick as i64 - 5) * 5)
+            }
+            .max(0);
             snap["weather"]["regions"] = json!({
                 "201": {"region_id": 201, "phenom": if tick < 6 { 3 } else { 0 }, "phenom_name": if tick < 6 { "snow" } else { "clear" }, "temp_c": if tick < 6 { -5.0 } else { 4.0 }, "active": true}
             });
@@ -797,6 +859,7 @@ fn fx_topbar_scalars_sweep(seed: u64) -> Scenario {
             });
         },
     );
+    attach_proven_xui25_display_variant(&mut s);
     let h11 = hour_at(&s, 11);
     s = with_probe(
         s,
@@ -816,6 +879,30 @@ fn fx_topbar_scalars_sweep(seed: u64) -> Scenario {
             "alert count sweep",
         ),
     )
+}
+
+/// Bind the one fully admitted XUI25 control to a portable fixture. The input
+/// family remains a replay-side dispatch choice (`MouseKeyboard`); the file
+/// carries the launch-authenticated display and language dimensions.
+fn attach_proven_xui25_display_variant(scenario: &mut Scenario) {
+    for snapshot in &mut scenario.snapshots {
+        snapshot["session"] = json!({
+            "localisation_language": "l_english",
+            "display_variant": {
+                "physical_width": 1920,
+                "physical_height": 1080,
+                "min_gui_width": 1280,
+                "min_gui_height": 720,
+                "gui_scale_f32_bits": 1.0f32.to_bits(),
+                "refresh_rate_hz": 60,
+                "max_refresh_rate_hz": 60,
+                "fullscreen": false,
+                "borderless": true,
+                "display_mode": "borderless_fullscreen",
+                "settings_file_sha256": "81e7be36cf183e982cf8ac99c174a8f1ac64fce4f358f480840067286beb4ef2"
+            }
+        });
+    }
 }
 
 fn fx_division_movement(seed: u64) -> Scenario {
@@ -884,7 +971,7 @@ fn fx_naval_air_activity(seed: u64) -> Scenario {
                 "confidence": "region_proxy"
             });
             snap["order_of_battle"]["fleets"] = json!([
-                {"id": "500:1", "owner": "ENG", "name": "Home Fleet", "leader": 44, "task_forces": [
+                {"id": 500, "owner": "ENG", "name": "Home Fleet", "leader": 44, "task_forces": [
                     {"id": "501:1", "name": "Channel Patrol", "location_province": 3000, "owner": "ENG", "mission": "patrol", "ship_count": 8 + tick as i64, "dominant_hull_class": "capital"}
                 ]}
             ]);
@@ -914,13 +1001,18 @@ fn fx_building_damage(seed: u64) -> Scenario {
         "fx_building_damage",
         "State and province building levels, damage, repair, and construction queue evolve.",
         &["requirements:10", "plan:A2:building_damage"],
-        &["clock", "country_identity", "state_detail", "buildings_live", "production_live"],
+        &[
+            "clock",
+            "country_identity",
+            "state_detail",
+            "buildings_live",
+            "production_live",
+        ],
         &["Arms Against Tyranny"],
         "english",
         |tick, snap| {
             let damage = (tick as f64 * 0.07).min(0.75);
-            snap["states"]["10"]["buildings"] =
-                json!({"infrastructure": 5, "arms_factory": 4, "industrial_complex": 3, "anti_air_building": 1});
+            snap["states"]["10"]["buildings"] = json!({"infrastructure": 5, "arms_factory": 4, "industrial_complex": 3, "anti_air_building": 1});
             snap["states"]["10"]["building_damage"] = json!([
                 {"scope": "state", "scope_id": 10, "building_type": "arms_factory", "level": 4, "healthy_level": if tick < 6 { 4 } else { 2 }, "damaged": tick >= 6, "damage_fraction": damage, "repair_progress": (tick as f64 / 11.0), "under_construction": false},
                 {"scope": "province", "scope_id": 1000, "building_type": "naval_base", "level": 2, "healthy_level": 1, "damaged": true, "damage_fraction": 0.25, "repair_progress": 0.5, "under_construction": false}
@@ -951,7 +1043,14 @@ fn fx_pov_visibility(seed: u64) -> Scenario {
         "fx_pov_visibility",
         "Per-player-country province visibility and spotted unit sets flip independently.",
         &["requirements:13", "plan:A2:pov_visibility"],
-        &["clock", "country_identity", "intel", "divisions", "naval_air", "air_wings"],
+        &[
+            "clock",
+            "country_identity",
+            "intel",
+            "divisions",
+            "naval_air",
+            "air_wings",
+        ],
         &["La Resistance", "No Step Back"],
         "english",
         |tick, snap| {
@@ -1004,7 +1103,11 @@ fn fx_dlc_language_variation(seed: u64) -> Scenario {
         seed,
         "fx_dlc_language_variation",
         "Recording-level DLC set and localisation language select identity/localisation variants.",
-        &["requirements:4", "requirements:9", "plan:A2:dlc_language_variation"],
+        &[
+            "requirements:4",
+            "requirements:9",
+            "plan:A2:dlc_language_variation",
+        ],
         &["clock", "country_identity", "world_meta"],
         &["Together for Victory"],
         "german",
@@ -1103,8 +1206,8 @@ fn fx_country_management(seed: u64) -> Scenario {
     let s = scenario(
         seed,
         "fx_country_management",
-        "Per-country politics detail, production queue+stockpile, intel/operatives, trade, and command abilities evolve.",
-        &["requirements:14", "plan:FXSTREAMS:country_management"],
+        "Per-country politics detail, successor production queue+stockpile, intel/operatives, trade, and command abilities evolve.",
+        &["requirements:14", "plan:FXSTREAMS:country_management", "rendering-laws:XUI12"],
         &[
             "clock",
             "country_identity",
@@ -1143,6 +1246,47 @@ fn fx_country_management(seed: u64) -> Scenario {
             // --- production queue + stockpile ---
             ger["production"]["stockpile_total"] = json!(1000.0 + tick as f64 * 50.0);
             ger["production"]["stockpile"] = json!({"1:1": 900 + t * 10, "2:3": 120 - t});
+            ger["production"]["stockpile_complete"] = json!(true);
+            ger["production"]["military_lines_complete"] = json!(true);
+            ger["production"]["naval_lines_complete"] = json!(true);
+            ger["production"]["military_lines"] = json!([{
+                "id": 41,
+                "priority": 0,
+                "line_subtype": "military",
+                "equipment_variant_id": "1:1",
+                "active_factories": 7,
+                "requested_factories": 10,
+                "efficiency": 0.72 + tick as f64 * 0.001,
+                "efficiency_cap": 0.85,
+                "efficiency_growth": 0.003,
+                "cost": 4.5,
+                "speed": 18.0,
+                "produced": 2.25 + tick as f64,
+                "amount": -1,
+                "progress_ratio": 0.5,
+                "daily_output": 4.0,
+                "days_to_next_unit": 0.125,
+                "mio_id": "german_tank_organization"
+            }]);
+            ger["production"]["naval_lines"] = json!([{
+                "id": 72,
+                "priority": 1,
+                "line_subtype": "ship_refit",
+                "equipment_variant_id": "2:3",
+                "active_factories": 3,
+                "requested_factories": 4,
+                "efficiency": 0.61,
+                "efficiency_cap": 0.8,
+                "efficiency_growth": 0.002,
+                "cost": 9.0,
+                "speed": 7.0,
+                "produced": 1.0,
+                "amount": 2,
+                "progress_ratio": 0.25,
+                "daily_output": 1.5,
+                "days_to_next_unit": 0.5,
+                "mio_id": "german_naval_organization"
+            }]);
             ger["production"]["construction_queue"] = json!([
                 {"id": 900, "template_id": 42, "active_factories": 5, "cost": 7200.0, "produced": tick as f64 * 120.0, "priority": 1}
             ]);
@@ -1189,11 +1333,35 @@ fn fx_country_management(seed: u64) -> Scenario {
             "production stockpile_total sweep",
         ),
     );
+    let s = with_probe(
+        s,
+        Probe::new(
+            h7,
+            &[
+                "countries",
+                "GER",
+                "production",
+                "military_lines",
+                "0",
+                "line_subtype",
+            ],
+            json!("military"),
+            "XUI12 successor production line subtype",
+        ),
+    );
     with_probe(
         s,
         Probe::new(
             h7,
-            &["countries", "GER", "intel", "operations", "running", "0", "type"],
+            &[
+                "countries",
+                "GER",
+                "intel",
+                "operations",
+                "running",
+                "0",
+                "type",
+            ],
             json!("coup"),
             "intel operation running",
         ),
@@ -1302,7 +1470,14 @@ fn fx_leader_roster(seed: u64) -> Scenario {
         s,
         Probe::new(
             h9,
-            &["countries", "GER", "commanders", "field_marshals", "0", "level"],
+            &[
+                "countries",
+                "GER",
+                "commanders",
+                "field_marshals",
+                "0",
+                "level",
+            ],
             json!(13),
             "field marshal skill growth",
         ),
@@ -1361,11 +1536,23 @@ fn fx_scripted_gui_vars(seed: u64) -> Scenario {
         "english",
         |tick, snap| {
             let t = tick as f64;
-            snap["countries"]["GER"]["script_variables"] =
+            snap["countries"]["GER"]["extra"]["_r2_script_variables"] =
                 json!({"inner_circle_loyalty": 10.0 + t, "rk_influence": 0.5});
+            snap["countries"]["GER"]["extra"]["script_flags"] = json!({
+                "inner_circle_active": {"value_raw": 1, "date_hour_raw": 12}
+            });
             snap["countries"]["USA"] = country("USA", false, "democratic", 361, 25.0);
-            snap["countries"]["USA"]["script_variables"] =
+            snap["countries"]["USA"]["extra"]["_r2_script_variables"] =
                 json!({"congress_support": 50.0 - t * 2.0, "war_readiness^0": 1.0});
+            snap["countries"]["GER"]["extra"]["scripted_gui_runtime"] = json!({
+                "GER_inner_circle_ui": {
+                    "visible": true,
+                    "enabled": true,
+                    "triggers": {"member_1_visible": tick >= 2},
+                    "properties": {"member_1": {"image": "GFX_inner_circle_member_1"}},
+                    "effect_enabled": {"member_1_click": tick >= 4}
+                }
+            });
             snap["world"]["variables"] = json!({"global_tension_mod": t, "campaign_phase^1": 3.0});
             snap["world"]["flags"] = json!({
                 "war_escalation_started": {"value": tick >= 6, "date": "1936.1.1.0"}
@@ -1377,7 +1564,13 @@ fn fx_scripted_gui_vars(seed: u64) -> Scenario {
         s,
         Probe::new(
             h8,
-            &["countries", "GER", "script_variables", "inner_circle_loyalty"],
+            &[
+                "countries",
+                "GER",
+                "extra",
+                "_r2_script_variables",
+                "inner_circle_loyalty",
+            ],
             json!(18.0),
             "scripted-GUI country variable sweep",
         ),
@@ -1470,7 +1663,12 @@ fn pack_scenario(scenario: &Scenario, seed: u64) -> Result<Vec<u8>> {
         hour_index: None,
     });
 
-    Ok(pack(game_id, &entries, &pack_identity(seed, MODSET), true)?)
+    Ok(pack(
+        game_id,
+        &entries,
+        &pack_identity(seed, MODSET)?,
+        true,
+    )?)
 }
 
 fn scenario_manifest(scenario: &Scenario, file: &Path, root: &Path, bytes: u64) -> Value {
@@ -1521,7 +1719,7 @@ fn negative_fixtures(seed: u64) -> Result<Vec<NegativeFixture>> {
         bytes: pack_with(
             "neg_malformed_manifest",
             &minimal_entries("neg_malformed_manifest", MODSET, "clean")?,
-            &pack_identity(seed, MODSET),
+            &pack_identity(seed, MODSET)?,
             false,
             &malformed_opts,
         )?,
@@ -1530,7 +1728,7 @@ fn negative_fixtures(seed: u64) -> Result<Vec<NegativeFixture>> {
     let mut bad_hash = pack(
         "neg_bad_snapshot_hash",
         &minimal_entries("neg_bad_snapshot_hash", MODSET, "clean")?,
-        &pack_identity(seed, MODSET),
+        &pack_identity(seed, MODSET)?,
         false,
     )?;
     let needle = b"\"negative_hash_marker\":\"clean\"";
@@ -1553,7 +1751,7 @@ fn negative_fixtures(seed: u64) -> Result<Vec<NegativeFixture>> {
         bytes: pack(
             "neg_modset_mismatch",
             &minimal_entries("neg_modset_mismatch", "snapshot-side-modset", "clean")?,
-            &pack_identity(seed, "manifest-side-modset"),
+            &pack_identity(seed, "manifest-side-modset")?,
             false,
         )?,
     });
@@ -1589,14 +1787,12 @@ fn negative_fixtures(seed: u64) -> Result<Vec<NegativeFixture>> {
             hour_index: None,
         },
     ];
-    let compact_identity = PackIdentity {
-        schema_version: Some("native_collector_session_v1".to_string()),
-        created_utc: Some(created_utc(seed)),
-        ..Default::default()
-    };
+    let mut compact_identity = pack_identity(seed, MODSET)?;
+    compact_identity.schema_version = Some("native_collector_session_v1".to_string());
     out.push(NegativeFixture {
         name: "neg_empty_snapshot_index",
-        description: "Compact-stream flavor signature: finalized container with an empty snapshot index.",
+        description:
+            "Compact-stream flavor signature: finalized container with an empty snapshot index.",
         expected_error_contains: "empty snapshot index",
         bytes: pack(game, &compact_entries, &compact_identity, true)?,
     });
@@ -1655,10 +1851,22 @@ fn base_snapshot(
 ) -> Value {
     let mut countries = Map::new();
     countries.insert("GER".to_string(), country("GER", true, "fascism", 10, 40.0));
-    countries.insert("SOV".to_string(), country("SOV", true, "communism", 20, 30.0));
-    countries.insert("ENG".to_string(), country("ENG", true, "democratic", 30, 50.0));
-    countries.insert("FRA".to_string(), country("FRA", false, "democratic", 20, 20.0));
-    countries.insert("ITA".to_string(), country("ITA", false, "fascism", 10, 15.0));
+    countries.insert(
+        "SOV".to_string(),
+        country("SOV", true, "communism", 20, 30.0),
+    );
+    countries.insert(
+        "ENG".to_string(),
+        country("ENG", true, "democratic", 30, 50.0),
+    );
+    countries.insert(
+        "FRA".to_string(),
+        country("FRA", false, "democratic", 20, 20.0),
+    );
+    countries.insert(
+        "ITA".to_string(),
+        country("ITA", false, "fascism", 10, 15.0),
+    );
 
     let dlc_values = dlcs.iter().map(|d| json!(d)).collect::<Vec<_>>();
     let domain_values = domains.iter().map(|d| json!(d)).collect::<Vec<_>>();
@@ -1819,7 +2027,7 @@ fn country(tag: &str, human: bool, party: &str, capital: i64, pp: f64) -> Value 
             "manpower": {"available": 100000, "deployed": 24000, "army": 20000, "navy": 2000, "air": 2000},
             "xp": {"army": 0.0, "navy": 0.0, "air": 0.0},
             "equipment_stockpile": [],
-            "convoys": [{"equip_id": 1, "equip_type": "convoy", "archetype": "convoy", "amount": 50.0}],
+            "convoys": [{"equip_id": 1, "equip_type": 70, "archetype": "convoy", "amount": 50.0}],
             "convoys_count": 50,
             "ships_by_hull": null,
             "casualties": {"killed": 0, "captured": 0},
@@ -2068,14 +2276,170 @@ fn mod_identity(modset_id: &str) -> Value {
     })
 }
 
-fn pack_identity(seed: u64, modset_id: &str) -> PackIdentity {
-    PackIdentity {
+fn pack_identity(seed: u64, modset_id: &str) -> Result<PackIdentity> {
+    Ok(PackIdentity {
         schema_version: Some("1".to_string()),
         build_exe_sha256: Some(BUILD_SHA.to_string()),
         build_pinned: true,
         mod_identity: Some(mod_identity(modset_id)),
         created_utc: Some(created_utc(seed)),
+        content_manifest: Some(fixture_content_manifest(seed, modset_id)?),
+    })
+}
+
+/// Path-independent content identity for the synthetic fixture runtime.
+///
+/// Both payloads are real fixture bytes: one resolves from the synthetic base
+/// layer, and one from the winning mod layer after its authored `replace_path`.
+/// Generated recordings therefore use the production VFS admission contract.
+fn fixture_content_manifest(seed: u64, modset_id: &str) -> Result<ContentManifest> {
+    let base_path = "common/replay_fixture/scenario.txt";
+    let mod_path = "gfx/interface/replay_fixture/icon.dds";
+    let base_sha = sha256(FIXTURE_BASE_DEFINITION);
+    let mod_sha = sha256(FIXTURE_MOD_TEXTURE);
+    let descriptor_bytes = format!(
+        "name=Fixture Replay Mod\nid={modset_id}\nreplace_path=common/replay_fixture\nreplace_path=gfx/interface/replay_fixture\n"
+    );
+    let descriptor_sha = sha256(descriptor_bytes.as_bytes());
+    let base_layer_id = "base:fixture-runtime".to_string();
+    let mod_layer_id = format!("mod:{modset_id}");
+
+    // Canonical root-free inventory. Neither the generator output directory
+    // nor a playback installation path participates in this digest.
+    let effective_vfs_manifest_sha256 = sha256(&serde_json::to_vec(&json!({
+        "schema": "hoi4.fixture-effective-vfs.v1",
+        "layers": [
+            {
+                "ordinal": 0,
+                "kind": "base",
+                "id": base_layer_id,
+                "storage": "directory",
+                "replace_paths": [],
+            },
+            {
+                "ordinal": 1,
+                "kind": "mod",
+                "id": mod_layer_id,
+                "descriptor_sha256": descriptor_sha,
+                "storage": "directory",
+                "replace_paths": ["common/replay_fixture", "gfx/interface/replay_fixture"],
+            }
+        ],
+        "files": [
+            {"path": base_path, "winner": 0, "source_sha256": base_sha},
+            {"path": mod_path, "winner": 1, "source_sha256": mod_sha},
+        ]
+    }))?);
+
+    let mut manifest = ContentManifest {
+        schema: SCHEMA.into(),
+        source_game: SourceGameIdentity {
+            version: "fixture-1.19.2".into(),
+            build: "fixture-build-1".into(),
+            executable_sha256: BUILD_SHA.into(),
+            build_profile: "replay_fixture_gen_v1".into(),
+        },
+        source_profile: SourceProfileIdentity {
+            profile_id: format!("fixture-profile-{seed}"),
+            playset_id: modset_id.into(),
+            selection_sha256: "0".repeat(64),
+        },
+        effective_vfs_manifest_sha256: effective_vfs_manifest_sha256.clone(),
+        ordered_layers: vec![
+            RecordedContentLayer {
+                ordinal: 0,
+                layer_kind: ContentLayerKind::Base,
+                layer_id: base_layer_id.clone(),
+                display_name: "Fixture Base Content".into(),
+                descriptor_sha256: None,
+                source_container_sha256: None,
+                storage_kind: LayerStorageKind::Directory,
+                replace_paths: vec![],
+                required_for_playback: true,
+            },
+            RecordedContentLayer {
+                ordinal: 1,
+                layer_kind: ContentLayerKind::Mod,
+                layer_id: mod_layer_id.clone(),
+                display_name: "Fixture Replay Mod".into(),
+                descriptor_sha256: Some(descriptor_sha),
+                source_container_sha256: None,
+                storage_kind: LayerStorageKind::Directory,
+                replace_paths: vec![
+                    "common/replay_fixture".into(),
+                    "gfx/interface/replay_fixture".into(),
+                ],
+                required_for_playback: true,
+            },
+        ],
+        dlc_selection: vec![],
+        localisation_language: "l_english".into(),
+        required_settings: BTreeMap::new(),
+        required_content: vec![
+            fixture_required_content(
+                "fixture-base-country-definition",
+                RequiredContentKind::Definition,
+                base_path,
+                0,
+                ContentLayerKind::Base,
+                &base_layer_id,
+                &effective_vfs_manifest_sha256,
+                &base_sha,
+                FIXTURE_BASE_DEFINITION.len(),
+                "replay_fixture_gen.snapshot_semantics",
+            ),
+            fixture_required_content(
+                "fixture-mod-interface-texture",
+                RequiredContentKind::Texture,
+                mod_path,
+                1,
+                ContentLayerKind::Mod,
+                &mod_layer_id,
+                &effective_vfs_manifest_sha256,
+                &mod_sha,
+                FIXTURE_MOD_TEXTURE.len(),
+                "replay_fixture_gen.mod_override",
+            ),
+        ],
+        manifest_digest_sha256: None,
+    };
+    manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256()?;
+    Ok(manifest.with_computed_digest()?)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fixture_required_content(
+    content_key: &str,
+    kind: RequiredContentKind,
+    path: &str,
+    ordinal: u32,
+    layer_kind: ContentLayerKind,
+    layer_id: &str,
+    vfs_sha: &str,
+    payload_sha: &str,
+    payload_bytes: usize,
+    consumer: &str,
+) -> RequiredContent {
+    RequiredContent {
+        content_key: content_key.into(),
+        kind,
+        content: UsedContentKey {
+            effective_vfs_manifest_sha256: vfs_sha.into(),
+            normalized_game_relative_path: path.into(),
+            winning_layer_ordinal: ordinal,
+            layer_kind,
+            layer_id: layer_id.into(),
+            source_sha256: payload_sha.into(),
+            payload_sha256: payload_sha.into(),
+            payload_bytes: payload_bytes as u64,
+        },
+        observation_count: 1,
+        consumers: vec![consumer.into()],
     }
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 fn created_utc(seed: u64) -> String {
@@ -2118,6 +2482,136 @@ fn rel_slash(path: &Path, root: &Path) -> String {
         .map(|c| c.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn portable_identity_records_exact_base_and_mod_vfs_winners() {
+        let identity = pack_identity(DEFAULT_SEED, MODSET).expect("fixture identity");
+        let manifest = identity
+            .content_manifest
+            .expect("portable content manifest");
+        manifest.validate().expect("valid finalized manifest");
+        assert_eq!(
+            manifest.manifest_digest_sha256.as_deref(),
+            Some(manifest.computed_digest().unwrap().as_str())
+        );
+        assert_eq!(manifest.ordered_layers.len(), 2);
+        assert_eq!(
+            manifest.ordered_layers[0].layer_kind,
+            ContentLayerKind::Base
+        );
+        let mod_layer = &manifest.ordered_layers[1];
+        assert_eq!(mod_layer.layer_kind, ContentLayerKind::Mod);
+        assert_eq!(
+            mod_layer.replace_paths,
+            ["common/replay_fixture", "gfx/interface/replay_fixture"]
+        );
+
+        let base = &manifest.required_content[0];
+        assert_eq!(base.content.winning_layer_ordinal, 0);
+        assert_eq!(base.content.payload_sha256, sha256(FIXTURE_BASE_DEFINITION));
+        assert_eq!(
+            base.content.payload_bytes,
+            FIXTURE_BASE_DEFINITION.len() as u64
+        );
+        let mod_override = &manifest.required_content[1];
+        assert_eq!(mod_override.content.winning_layer_ordinal, 1);
+        assert_eq!(mod_override.content.layer_id, mod_layer.layer_id);
+        assert_eq!(
+            mod_override.content.payload_sha256,
+            sha256(FIXTURE_MOD_TEXTURE)
+        );
+        assert_eq!(
+            mod_override.content.payload_bytes,
+            FIXTURE_MOD_TEXTURE.len() as u64
+        );
+
+        let playback = PlaybackContentInventory {
+            source_game: manifest.source_game.clone(),
+            source_profile: manifest.source_profile.clone(),
+            layers: manifest
+                .ordered_layers
+                .iter()
+                .map(|layer| PlaybackContentLayer {
+                    recorded_ordinal: layer.ordinal,
+                    layer_kind: layer.layer_kind,
+                    layer_id: layer.layer_id.clone(),
+                    descriptor_sha256: layer.descriptor_sha256.clone(),
+                    source_container_sha256: layer.source_container_sha256.clone(),
+                    storage_kind: layer.storage_kind,
+                    replace_paths: layer.replace_paths.clone(),
+                })
+                .collect(),
+            dlc_selection: manifest.dlc_selection.clone(),
+            localisation_language: manifest.localisation_language.clone(),
+            settings: manifest.required_settings.clone(),
+            resolved_content: manifest
+                .required_content
+                .iter()
+                .map(|required| ResolvedPlaybackContent {
+                    normalized_game_relative_path: required
+                        .content
+                        .normalized_game_relative_path
+                        .clone(),
+                    winning_layer_ordinal: required.content.winning_layer_ordinal,
+                    layer_kind: required.content.layer_kind,
+                    layer_id: required.content.layer_id.clone(),
+                    source_sha256: required.content.source_sha256.clone(),
+                    payload_sha256: required.content.payload_sha256.clone(),
+                    payload_bytes: required.content.payload_bytes,
+                })
+                .collect(),
+        };
+        let report = manifest.validate_playback(&playback);
+        assert!(report.compatible, "{:#?}", report.issues);
+        assert_eq!(report.verified_required_content, 2);
+    }
+
+    #[test]
+    fn generated_fixture_set_is_byte_identical_after_relocation() {
+        let root = std::env::temp_dir().join(format!(
+            "battle-plan-fixture-relocation-{}",
+            std::process::id()
+        ));
+        let first = root.join("first/location");
+        let second = root.join("relocated/recordings");
+        if root.exists() {
+            fs::remove_dir_all(&root).expect("remove stale fixture test root");
+        }
+
+        let result = (|| -> Result<()> {
+            generate(&first, DEFAULT_SEED)?;
+            generate(&second, DEFAULT_SEED)?;
+            assert_eq!(read_tree(&first)?, read_tree(&second)?);
+            Ok(())
+        })();
+        let cleanup = fs::remove_dir_all(&root);
+        result.expect("generate relocated fixtures");
+        cleanup.expect("clean fixture relocation test root");
+    }
+
+    fn read_tree(root: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
+        fn visit(root: &Path, dir: &Path, out: &mut BTreeMap<String, Vec<u8>>) -> Result<()> {
+            for entry in fs::read_dir(dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_dir() {
+                    visit(root, &path, out)?;
+                } else {
+                    out.insert(rel_slash(&path, root), fs::read(path)?);
+                }
+            }
+            Ok(())
+        }
+
+        let mut out = BTreeMap::new();
+        visit(root, root, &mut out)?;
+        Ok(out)
+    }
 }
 
 #[derive(Clone)]

@@ -6,7 +6,7 @@
 
 use game_ui::assets::AssetResolver;
 use game_ui::loc::Localisation;
-use game_ui::markup::{parse, Token, TextColorTable, SECTION};
+use game_ui::markup::{parse, TextColorTable, Token, SECTION};
 use std::path::PathBuf;
 
 const DEFAULT_GAME_ROOT: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
@@ -65,7 +65,11 @@ fn text_color_table_matches_shipped_core_gfx() {
     // Case sensitivity: distinct entries for b/B and g/G.
     assert_ne!(table.get('b'), table.get('B'));
     assert_ne!(table.get('g'), table.get('G'));
-    assert!(table.len() >= expected.len(), "table has {} codes", table.len());
+    assert!(
+        table.len() >= expected.len(),
+        "table has {} codes",
+        table.len()
+    );
 }
 
 /// Every `§` colour code appearing in the shipped English localisation corpus
@@ -81,7 +85,11 @@ fn shipped_english_localisation_tokenises_cleanly() {
     let resolver = AssetResolver::new(vec![root]);
     let table = TextColorTable::load(&resolver).expect("core.gfx loads");
     let loc = Localisation::load_english(&resolver).expect("localisation loads");
-    assert!(loc.entries.len() > 10_000, "loaded {} keys", loc.entries.len());
+    assert!(
+        loc.entries.len() > 10_000,
+        "loaded {} keys",
+        loc.entries.len()
+    );
 
     let mut unknown_codes = std::collections::BTreeSet::new();
     let mut strings_with_markup = 0usize;
@@ -143,8 +151,14 @@ fn shipped_english_localisation_tokenises_cleanly() {
         unknown_codes.is_empty(),
         "localisation uses §-codes absent from core.gfx: {unknown_codes:?}"
     );
-    assert!(strings_with_markup > 1000, "only {strings_with_markup} marked-up strings");
-    assert!(icon_tokens > 0, "expected some £ inline icons in the corpus");
+    assert!(
+        strings_with_markup > 1000,
+        "only {strings_with_markup} marked-up strings"
+    );
+    assert!(
+        icon_tokens > 0,
+        "expected some £ inline icons in the corpus"
+    );
     eprintln!(
         "markup gate: {} keys, {} with markup, {} £-icon tokens, 0 unknown §-codes",
         loc.entries.len(),

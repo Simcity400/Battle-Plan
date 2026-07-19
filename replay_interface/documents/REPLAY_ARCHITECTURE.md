@@ -45,23 +45,22 @@ Supporting toolchains (not in the runtime path):
   cache, not product runtime truth; replay_app must resolve effective installed content
   directly or fail closed.
 
-## Ingest boundary (the extraction-layer seam)
+## Ingest boundary (the portable-file seam)
 
-The extraction layer's final shape is not settled. The replay layer therefore
-binds to a narrow boundary and keeps everything behind it swappable:
+The extractor and standalone replayer are independently distributable. Their
+only runtime binding is a copied or relocated `.battleplan` file:
 
 - `replay_core::source::ReplaySource` is the only place recording bytes enter
   the replay layer. Everything downstream consumes `WorldTimeline`/`WorldFrame`.
-- Backend 1 (works today): **snapshot-flavor container/dir** — hourly world
+- Backend 1 (production): **snapshot-flavor container/dir** — hourly world
   snapshots per `REPLAY_SCHEMA.md`, read through the container rules of
   `HOI4REPLAY_CONTAINER_SPEC.md`. This is the proposed production contract
   (see `EXTRACTION_INTERFACE_REQUESTS.md`).
-- Backend 2 (fail-closed stub): **compact-stream-flavor container** — the
-  current production recorder packs only the raw compact domain stream
-  (`role: collector_compact_stream`) with an empty snapshot index. Until the
-  extraction layer either emits snapshots into the container or exposes its
-  decoders as a reusable crate, this backend refuses playback with a precise
-  error instead of guessing record layouts. No duplicated decoder logic.
+- Backend 2 (fail-closed incomplete package): **compact-stream-only
+  container** — a raw compact domain stream with an empty snapshot index is
+  not portable playback data. The recorder's production seal folds the stream
+  and packs indexed per-hour snapshots before publication. The replayer never
+  loads extractor code or folds extractor-private records at runtime.
 
 Rules at the boundary:
 
@@ -79,10 +78,14 @@ Rules at the boundary:
 
 | Crate | Role |
 | --- | --- |
-| `replay_core` | Container/dir ingest, `WorldTimeline`, scrub, typed views, provenance/coverage. Depends on `extractor/native/snapshot` (path dep) for the verified container reader — reuse, not a fork. |
+| `replay_core` | Container/dir ingest, `WorldTimeline`, scrub, typed views, provenance/coverage. Statically links the neutral `portable_replay/native/snapshot` format crate; it has no extractor library, process, or install-path dependency. |
 | `replay_app` | The product: Win32 + D3D11 swapchain window, frame loop, camera, map-mode GPU recolor, hit testing, timeline control, and (growing) the game UI chrome. |
 | `map_viewer` | Bundle tooling + CPU reference + captured-pass validation/replay backend. To be split from one 28.9k-line `lib.rs` into modules; behavior unchanged. |
 | `terrain_capture` | Unchanged; capture DLL + attach helper. |
+
+Neutral build-time format code lives under `portable_replay/native/`. Both
+distributions may statically link it, but neither installed distribution needs
+the other. The portable file remains the sole runtime interface.
 
 House style: raw `winapi` D3D11/Win32 (already the codebase norm), no new
 GUI frameworks. `minifb` remains only inside `map_viewer` debug/reference

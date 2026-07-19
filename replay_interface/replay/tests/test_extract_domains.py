@@ -267,7 +267,7 @@ class TestSchemaPresence(unittest.TestCase):
         self.assertEqual(schema.source_of("strategic_air.air_bases"), "S")
         self.assertEqual(schema.source_of("strategic_operatives.pools"), "S")
         self.assertEqual(schema.source_of("raids.targets"), "S")
-        self.assertEqual(schema.source_of("world_events.fired_events"), "S")
+        self.assertEqual(schema.source_of("world_events.fired_events"), "C/M/S")
         self.assertEqual(schema.source_of("world.scenario"), "S")
         self.assertEqual(schema.source_of(
             "world.scenario.difficulty_settings_empty"), "S")

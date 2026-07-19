@@ -59,7 +59,9 @@ Public API
         "completed_count": int,
         "completed": [focus_id, ...],          # ordered, == save order
         "current": focus_id | None,            # active NATIONAL focus
+        "current_set": [focus_id] | [],        # exact measured set; None = read failure
         "current_continuous": focus_id | None, # active CONTINUOUS focus
+        "current_continuous_set": [focus_id] | [], # exact measured set; None = read failure
         "progress_days": float | None,         # days into the active focus
         "paused": None,                        # open ticket (no paused=yes this frame)
         "_submgr_addr": int,
@@ -380,6 +382,11 @@ def read_country_focus(p, bridge=None, include_candidate=False, strict=True,
         cont_set = heap_ok(cont)
         current = _read_id_str(p, nat + FOCUS_OBJ_ID) if nat_set else None
         current_continuous = _read_id_str(p, cont + FOCUS_OBJ_ID) if cont_set else None
+        current_set = ([current] if current is not None else None) if nat_set else (
+            [] if nat == 0 else None)
+        current_continuous_set = (
+            [current_continuous] if current_continuous is not None else None
+        ) if cont_set else ([] if cont == 0 else None)
 
         # --- progress (days into the active focus); only meaningful when exactly one
         # of the two focus pointers is set (the live XOR invariant), so we never expose
@@ -397,7 +404,9 @@ def read_country_focus(p, bridge=None, include_candidate=False, strict=True,
             "completed_count": comp_size,
             "completed": completed,
             "current": current,
+            "current_set": current_set,
             "current_continuous": current_continuous,
+            "current_continuous_set": current_continuous_set,
             "progress_days": progress_days,
             "paused": None,   # OPEN TICKET: no paused=yes ground truth this frame
             "_submgr_addr": sm,

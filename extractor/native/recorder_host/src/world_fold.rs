@@ -35,11 +35,20 @@ use compact_contract::{
     COMPACT_STATUS_SOURCE_UNAVAILABLE, COMPACT_STATUS_TRANSITION_BASELINE_RESET,
 };
 use construction_buildings_state_damage_live_lane as domain48;
+use design_catalog_context_live_lane as design78;
 use diplomacy_intel_operatives_live as diplomacy53;
+use dynamic_collection_trace_live_lane as dct71;
+use fired_event_popups_live_lane as fired75;
 use hub_motorization_live_lane as hub62;
+use hud_role_observer_live_lane as hud79;
 use land_combat_detail_events_live_lane as land_detail55;
 use naval_combat_live_lane as naval4950;
 use naval_missions_status_live_lane as naval56;
+use politics_tooltip_inputs_live_lane as politics73;
+use portable_render_stream::ProductionRenderFrame;
+use power_balance_presentation_live_lane as power_balance74;
+use resolved_tooltip_instances_live_lane as tooltip72;
+use runtime_text_inputs_live_lane as runtime76;
 use serde_json::{json, Map, Value};
 use session_multiplayer_metadata_live as session57;
 
@@ -202,9 +211,18 @@ const SESSION_HEADER_MAX_STRING_LEN: usize = 128;
 // Fail-closed ceiling on the player tag_db_id (matches the collector guard).
 const SESSION_HEADER_MAX_PLAYER_TAG_DB_ID: u32 = 2_048;
 
-// W6 domain 69 tech_sharing_groups_live consumes only the explicit TSG2 v2
-// member/dynamic-bonus contract from compact_contract.
+// W6 domain 69 tech_sharing_groups_live uses the shared strict TSG2 codec.
 const TECH_SHARING_GROUPS_DOMAIN_ID: u16 = 69;
+const SUNK_CONVOY_HISTORY_DOMAIN_ID: u16 = compact_contract::naval_history::DOMAIN_ID;
+const DYNAMIC_COLLECTION_TRACE_DOMAIN_ID: u16 = dct71::DOMAIN_ID;
+const RESOLVED_TOOLTIP_INSTANCES_DOMAIN_ID: u16 = tooltip72::DOMAIN_ID;
+const POLITICS_TOOLTIP_INPUTS_DOMAIN_ID: u16 = politics73::DOMAIN_ID;
+const POWER_BALANCE_PRESENTATION_DOMAIN_ID: u16 = power_balance74::DOMAIN_ID;
+const FIRED_EVENT_POPUPS_DOMAIN_ID: u16 = fired75::DOMAIN_ID;
+const RUNTIME_TEXT_INPUTS_DOMAIN_ID: u16 = runtime76::DOMAIN_ID;
+const PRODUCTION_RENDER_SUBMITS_DOMAIN_ID: u16 = 77;
+const DESIGN_CATALOG_CONTEXT_DOMAIN_ID: u16 = design78::DOMAIN_ID;
+const HUD_SURFACE_ACTIVATION_DOMAIN_ID: u16 = hud79::DOMAIN_ID;
 // Fail-closed ceiling on the number of groups. Tied to the collector's own
 // vector-size ceiling (build_profile DOMAIN69_TECH_SHARING_MAX_GROUPS): the
 // reader now walks the tech-sharing std::vector's active size [0..size), not a
@@ -375,11 +393,48 @@ const MARKET_TRADE_DETAIL_FLAGS_KNOWN: u32 = MARKET_TRADE_DETAIL_FLAG_PRICE_VALI
     | MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID
     | MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID;
 const MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC: &[u8; 4] = b"MTRF";
-const MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION: u16 = 1;
+const MARKET_TRADE_RESOURCE_FLOW_TRAILER_LEGACY_VERSION: u16 = 1;
+const MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION: u16 = 2;
 const MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN: usize = 32;
 const MARKET_TRADE_RESOURCE_FLOW_ROW_LEN: usize = 72;
+const MARKET_TRADE_RESOURCE_FLOW_KIND_PRODUCED: u32 = 1;
+const MARKET_TRADE_RESOURCE_FLOW_KIND_IMPORTED: u32 = 2;
 const MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED: u32 = 3;
+const MARKET_TRADE_RESOURCE_FLOW_KIND_USED: u32 = 4;
+const MARKET_TRADE_RESOURCE_FLOW_KIND_TO_EXPORT: u32 = 5;
+const MARKET_TRADE_RESOURCE_FLOW_KIND_BASE_EXPORT: u32 = 6;
+const MARKET_TRADE_RESOURCE_FLOW_KIND_MASK: u32 = 0x3F;
 const MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK: u32 = 0x7F;
+const MARKET_TRADE_FACTORY_HEADER_TRAILER_MAGIC: &[u8; 4] = b"MTRH";
+const MARKET_TRADE_FACTORY_HEADER_TRAILER_VERSION: u16 = 1;
+const MARKET_TRADE_FACTORY_HEADER_TRAILER_HEADER_LEN: usize = 24;
+const MARKET_TRADE_FACTORY_HEADER_ROW_LEN: usize = 16;
+const MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC: &[u8; 4] = b"MTRR";
+const MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION: u16 = 1;
+const MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN: usize = 32;
+const MARKET_TRADE_RESOURCE_ROW_LEN: usize = 64;
+const MARKET_TRADE_RESOURCE_COUNT: u32 = 7;
+const MARKET_TRADE_RESOURCE_NEEDED_SURPLUS: u32 = 1;
+const MARKET_TRADE_RESOURCE_NEEDED_DEFICIT: u32 = 2;
+const MARKET_TRADE_RESOURCE_NEEDED_CURRENT_MAX: u32 = 3;
+const MARKET_TRADE_RESOURCE_FLAGS_OIL: u32 = 3;
+const MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC: &[u8; 4] = b"MTRD";
+const MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION: u16 = 1;
+const MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN: usize = 32;
+const MARKET_TRADE_CLASSIC_DEAL_ROW_LEN: usize = 96;
+const MARKET_TRADE_CLASSIC_DEAL_DIRECTION_IMPORT: u32 = 1;
+const MARKET_TRADE_CLASSIC_DEAL_DIRECTION_EXPORT: u32 = 2;
+const MARKET_TRADE_CLASSIC_DEAL_ROUTE_LAND: u32 = 1;
+const MARKET_TRADE_CLASSIC_DEAL_ROUTE_SEA: u32 = 2;
+const MARKET_TRADE_CLASSIC_DEAL_ROUTE_LOCKED: u32 = 3;
+const MARKET_TRADE_CLASSIC_DEAL_FLAG_EXACT: u32 = 1;
+const MARKET_TRADE_STOCKPILE_TRAILER_MAGIC: &[u8; 4] = b"MTS1";
+const MARKET_TRADE_STOCKPILE_TRAILER_VERSION: u16 = 1;
+const MARKET_TRADE_STOCKPILE_HEADER_LEN: usize = 40;
+const MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN: usize = 20;
+const MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN: usize = 24;
+const MARKET_TRADE_STOCKPILE_GLOBAL_FLAGS: u32 = 3;
+const MARKET_TRADE_STOCKPILE_COUNTRY_COMPLETE: u32 = 1;
 const MARKET_TRADE_RESOURCE_NAMES: [&str; 7] = [
     "oil",
     "aluminium",
@@ -487,6 +542,8 @@ const DOMAIN53_R2_KEY: &str = "_r2_diplomacy_intel_operatives_live";
 const DOMAIN57_R2_KEY: &str = "_r2_session_multiplayer_metadata_live";
 const DOMAIN57_ROOT_PLAYER_COUNTRY: u32 = 1 << 0;
 const DOMAIN57_ROOT_PAUSE_CLOCK: u32 = 1 << 1;
+const DOMAIN57_ROOT_CHAT_MESSAGES: u32 = 1 << 3;
+const DOMAIN57_ROOT_PLAYER_EVENTS: u32 = 1 << 4;
 
 const ROW_FLAG_DELETED_LOW_BIT: u32 = 1;
 const AIR_STRENGTH_DELTA_ROW_FLAG_DELETED: u32 = 1 << 2;
@@ -586,12 +643,14 @@ const FRD_HEADER_LEN_V2: usize = 56;
 const FRD_HEADER_LEN: usize = 60;
 const FRD_SCHEMA_MAGIC: &[u8; 4] = b"FRD2";
 const FRD_SCHEMA_VERSION_V2: u16 = 2;
-const FRD_SCHEMA_VERSION: u16 = 3;
+const FRD_SCHEMA_VERSION_V3: u16 = 3;
+const FRD_SCHEMA_VERSION: u16 = 4;
 const FRD_FOCUS_ROW_FIXED_LEN: usize = 36;
 const FRD_RESEARCH_ROW_LEN: usize = 80;
 const FRD_DECISION_STATUS_ROW_LEN: usize = 28;
 const FRD_DECISION_EVENT_ROW_FIXED_LEN: usize = 28;
-const FRD_DECISION_TARGET_ROW_FIXED_LEN: usize = 16;
+const FRD_DECISION_TARGET_ROW_FIXED_LEN_V3: usize = 16;
+const FRD_DECISION_TARGET_ROW_FIXED_LEN: usize = 28;
 const FRD_BADGE_ROW_FIXED_LEN: usize = 20;
 const FRD_FOCUS_COMPLETED_COUNT_INCREASED: u32 = 1;
 const FRD_FOCUS_CURRENT_STARTED: u32 = 2;
@@ -600,11 +659,16 @@ const FRD_FOCUS_CHANGED: u32 = 4;
 const FRD_FOCUS_CONTINUOUS_KIND: u32 = 2;
 const FRD_FOCUS_FLAG_COMPLETED_TOKEN_INFERRED: u32 = 1;
 const FRD_FOCUS_FLAG_COMPLETED_TOKEN_EXACT: u32 = 1 << 1;
+const FRD_FOCUS_FLAG_PAUSED: u32 = 1 << 2;
+const FRD_FOCUS_FLAG_PAUSED_PRESENT: u32 = 1 << 3;
 const FRD_RESEARCH_FLAG_ETA_AVAILABLE: u32 = 1 << 2;
 const FRD_RESEARCH_FLAG_BASE_PRESENT: u32 = 1 << 5;
 const FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED: u32 = 1;
+const FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED: u32 = 2;
 const FRD_DECISION_TARGET_FLAG_COUNTRY_TAG: u32 = 1;
 const FRD_DECISION_TARGET_FLAG_RECORD_0X20: u32 = 1 << 1;
+const FRD_DECISION_TARGET_FLAG_NUMERIC_ID: u32 = 1 << 2;
+const FRD_DECISION_TARGET_FLAG_RECORD_0X24: u32 = 1 << 3;
 const FRD_DECISION_TARGET_COUNTRY_FLAGS: u32 =
     FRD_DECISION_TARGET_FLAG_COUNTRY_TAG | FRD_DECISION_TARGET_FLAG_RECORD_0X20;
 const FRD_MAX_TARGET_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
@@ -688,6 +752,11 @@ const AIR_COMBAT_LOSS_HEADER_LEN: usize = 48;
 // Row grew from 68 to 76 bytes with the wave-3 per-wing cumulative scalars
 // (air_accidents u32 @68, experience_raw i32 @72).
 const AIR_COMBAT_LOSS_ROW_LEN: usize = 76;
+const AIR_REGION_STATS_TRAILER_MAGIC: u32 = 0x3152_3441;
+const AIR_REGION_STATS_TRAILER_VERSION: u16 = 1;
+const AIR_REGION_STATS_TRAILER_HEADER_LEN: usize = 32;
+const AIR_REGION_STATS_ROW_LEN: usize = 40;
+const AIR_REGION_DAMAGE_ROW_LEN: usize = 16;
 // Wing experience is cumulative XP, fixed-x100000 (not a 0..1 ratio).
 const AIR_WING_MAX_EXPERIENCE_RAW: i32 = 1_000_000_000;
 // Cumulative per-wing accident counter: keep the fold's bound consistent with the
@@ -765,7 +834,7 @@ const AIR_VARIANT_ARCHETYPE_KNOWN_FLAGS: u32 = ROW_FLAG_DELETED_LOW_BIT
 pub const FOLDED_DOMAIN_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
     36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 60, 61,
-    62, 63, 64, 65, 66, 67, 68, 69,
+    62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79,
 ];
 
 /// Metadata for a folded snapshot spilled to disk by [`WorldFold::new_file_backed`].
@@ -821,7 +890,7 @@ struct SnapshotEmitPipeline {
 const SNAPSHOT_EMIT_QUEUE_DEPTH: usize = 2;
 
 impl SnapshotEmitPipeline {
-    fn spawn() -> std::io::Result<SnapshotEmitPipeline> {
+    fn spawn() -> SnapshotEmitPipeline {
         let (tx, rx) = std::sync::mpsc::sync_channel::<SnapshotEmitJob>(SNAPSHOT_EMIT_QUEUE_DEPTH);
         let results = std::sync::Arc::new(std::sync::Mutex::new(SnapshotEmitResults::default()));
         let worker_results = std::sync::Arc::clone(&results);
@@ -859,12 +928,13 @@ impl SnapshotEmitPipeline {
                         }
                     }
                 }
-            })?;
-        Ok(SnapshotEmitPipeline {
+            })
+            .expect("spawn world-fold emit worker");
+        SnapshotEmitPipeline {
             tx: Some(tx),
             handle: Some(handle),
             results,
-        })
+        }
     }
 
     /// Hand a closed hour to the worker. Blocks only if the bounded channel is
@@ -1057,9 +1127,22 @@ pub struct WorldFold {
     war_state_wars_this_hour: Vec<capwar60::compact::WarRow>,
     /// D43 world-scoped market contracts; full-replaced by each successful frame.
     market_trade_contracts: Option<Vec<Value>>,
-    /// D43 validated exported-resource slice; full-replaced only by valid MTRF
-    /// trailers. Countries with zero exported resources remain absent.
-    market_trade_resource_exported: BTreeMap<u32, [i64; 7]>,
+    /// D43 exact six-pool CCountryResources snapshot; full-replaced only by a
+    /// structurally complete MTRF v2 trailer. Legacy v1 exported-only rows stay
+    /// readable for old recordings but never masquerade as a complete snapshot.
+    market_trade_resource_pools: BTreeMap<u32, MarketTradeResourcePools>,
+    /// X15-P4 exact country trade-view factory header. Replaced only by a
+    /// structurally complete MTRH snapshot and retained when that trailer is
+    /// absent or its producer fails closed.
+    market_trade_factory_headers: BTreeMap<u32, MarketTradeFactoryHeader>,
+    /// X15-P2 exact per-country resource-trade view rows in engine visible order.
+    market_trade_resource_rows: BTreeMap<u32, Vec<MarketTradeResourceRow>>,
+    /// X15-P3 exact classic resource delivery routes, full-replaced by MTRD.
+    market_trade_classic_deals: BTreeMap<u32, Vec<MarketTradeClassicDealRow>>,
+    /// B1 exact per-country sellable equipment stockpile. Replaced only by a
+    /// structurally complete MTS1 owner+nested-iterator snapshot; absence or a
+    /// failed purchase-contract core retains the last proven stockpile state.
+    market_trade_stockpiles: BTreeMap<u32, Vec<MarketTradeStockpileRow>>,
     /// D44 live supply proxy sidecar rendered from the row-state accumulator.
     supply: Option<Map<String, Value>>,
     /// D44 row-state accumulator. Full-replaced by baselines, patched by deltas,
@@ -1130,6 +1213,37 @@ pub struct WorldFold {
     /// W6 D69 tech-sharing groups (persistent last-value-wins). The last proven
     /// complete group set (all decoded slots). Retained on a failed/partial frame.
     tech_sharing_groups: Option<Vec<TechSharingGroupFoldState>>,
+    /// D70 global sunk-convoy history. Full-replaced only by a clean, exact SCH1
+    /// snapshot; failed or malformed frames never mutate the last proven set.
+    sunk_convoy_history: Option<Vec<compact_contract::naval_history::SunkConvoyHistoryRow>>,
+    /// A28/d71 exact controller trace for this hour only. Never carried across
+    /// absent/failed hours: collection visibility/order/materialization is frame state.
+    dynamic_collection_trace_this_hour: Option<Value>,
+    /// A26/d72 exact engine-resolved tooltip instances for this hour only.
+    /// Missing, authenticated measured-empty, and failed frames remain distinct.
+    resolved_tooltip_instances_this_hour: Option<Value>,
+    /// A24/d73 exact evaluated politics tooltip inputs for this hour only.
+    /// Missing and authenticated measured-empty frames remain distinct.
+    politics_tooltip_inputs_this_hour: Option<Value>,
+    /// A37/d74 exact power-balance presentation inputs for this hour only.
+    /// Missing and authenticated measured-empty frames remain distinct.
+    power_balance_presentation_this_hour: Option<Value>,
+    /// A25/d76 exact runtime-localised text inputs for this hour only. The
+    /// carrier frame identity is retained outside the replay envelope so even
+    /// an authenticated measured-empty frame cannot attach to a different hour.
+    runtime_text_inputs_this_hour: Option<(u64, Value)>,
+    /// XN12/XN13/XN14/XN15 exact post-evaluation submissions for this hour.
+    /// Frame-local and packet-native; no gameplay-state fallback is allowed.
+    production_render_this_hour: Option<(u64, Value)>,
+    /// A27/d78 exact pointer-free equipment-designer context for this hour.
+    design_catalog_context_this_hour: Option<(u64, Value)>,
+    /// d79 exact pointer-free HUD surface/root activation for this hour. A
+    /// failed frame never retains a prior activation as current truth.
+    hud_surface_activation_this_hour: Option<(u64, Value)>,
+    /// XUI21/d75 cumulative exact fired-event history. The value persists, but
+    /// it is admitted only after a clean d75 frame for the current hour.
+    fired_event_popups: Option<Value>,
+    fired_event_popups_known_this_hour: bool,
     /// D54 R2-projected active army battleplan depth annotations. D27 owns
     /// `battle_plan_orders`; D54 writes only its named extra bucket.
     army_battleplans_depth: BTreeMap<ArmyBattleplanDepthKey, ArmyBattleplanDepthOrder>,
@@ -1164,12 +1278,13 @@ pub struct WorldFold {
     air_variant_reserves: BTreeMap<AirVariantReserveKey, AirVariantReserveState>,
     air_superiority_inputs: BTreeMap<AirSuperiorityInputKey, AirSuperiorityInputState>,
     air_combat_losses_this_hour: Option<Vec<AirCombatLossState>>,
+    air_region_combat_stats_this_hour: Option<Vec<AirRegionCombatStatState>>,
     /// D61 per-country cumulative air-loss statistics from statistic id 23.
     /// Full-replaced on clean frames and retained on non-clean frames.
     air_loss_stats: BTreeMap<u32, airloss61::AirLossStatRow>,
-    /// D62 per-country motorized supply-node memberships from CCountrySupplySystem.
+    /// D62 exact owner/actor supply-node motorization levels from CCountrySupplySystem.
     /// Full-replaced on clean frames and retained on non-clean frames.
-    hub_motorization: BTreeMap<(u32, u32), hub62::HubMotorizationRow>,
+    hub_motorization: BTreeMap<(u32, u32, u32), hub62::HubMotorizationRow>,
     /// Persistent per-wing cumulative scalars (wave-3: air_accidents,
     /// experience), keyed by globally-unique wing_id. Updated by every
     /// scalar-bearing domain-42 row; deleted rows remove their wing.
@@ -1338,6 +1453,7 @@ type Domain48ResourceKey = (u32, u32);
 struct Domain57FoldState {
     players_by_country: Option<Vec<Domain57PlayerCountryProjection>>,
     pause_is_paused: Option<bool>,
+    events: Option<Vec<Domain57SessionEventProjection>>,
 }
 
 #[derive(Clone)]
@@ -1346,6 +1462,48 @@ struct Domain57PlayerCountryProjection {
     tag_db_id: u32,
     human_marker: bool,
     valid_from_hour_raw: i32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Domain57EventFamily {
+    Player,
+    Message,
+}
+
+#[derive(Clone)]
+struct Domain57SessionEventProjection {
+    family: Domain57EventFamily,
+    kind: &'static str,
+    flags: u32,
+    actor_key_hash: u64,
+    actor_name: String,
+    text: String,
+    tag_db_id: u32,
+    value_i32: i32,
+    related_value_i32: i32,
+    command_sequence: u64,
+    event_hour_raw: i32,
+    event_source_id: u32,
+    event_state: u32,
+}
+
+impl Domain57SessionEventProjection {
+    fn to_json(&self) -> Value {
+        json!({
+            "kind": self.kind,
+            "flags": self.flags,
+            "actor_key_hash": self.actor_key_hash,
+            "actor_name": self.actor_name,
+            "text": self.text,
+            "tag_db_id": self.tag_db_id,
+            "value_i32": self.value_i32,
+            "related_value_i32": self.related_value_i32,
+            "command_sequence": self.command_sequence,
+            "event_hour_raw": self.event_hour_raw,
+            "event_source_id": self.event_source_id,
+            "event_state": self.event_state,
+        })
+    }
 }
 
 /// W6 D68 session-header fold state (persistent last-value-wins). Each field is
@@ -1364,20 +1522,13 @@ struct SessionHeaderFoldState {
     version: Option<String>,
 }
 
-/// W6 D69 one technology-sharing member and its same-index signed fixed5
-/// dynamic adjustment. Pairing is established before any canonical sorting.
-#[derive(Clone)]
-struct TechSharingMemberBonusFoldState {
-    member_tag_db_id: u32,
-    dynamic_bonus_raw_fixed5: i64,
-}
-
-/// W6 D69 one technology-sharing group. `id_token` is an opaque sequential
-/// runtime intern ordinal, not a hash and not lawfully joinable to static ids.
+/// W6 D69 one tech-sharing group's folded membership: the group id token and
+/// the (sorted) member tag_db_id set. The static group id STRING is not decoded
+/// (the replay resolves the token via installed content).
 #[derive(Clone)]
 struct TechSharingGroupFoldState {
     id_token: u32,
-    members: Vec<TechSharingMemberBonusFoldState>,
+    members: Vec<compact_contract::tech_sharing_groups::TechSharingMemberBonus>,
 }
 
 impl WorldFold {
@@ -1412,7 +1563,11 @@ impl WorldFold {
             capitulation_war_state_known_this_hour: false,
             war_state_wars_this_hour: Vec::new(),
             market_trade_contracts: None,
-            market_trade_resource_exported: BTreeMap::new(),
+            market_trade_resource_pools: BTreeMap::new(),
+            market_trade_factory_headers: BTreeMap::new(),
+            market_trade_resource_rows: BTreeMap::new(),
+            market_trade_classic_deals: BTreeMap::new(),
+            market_trade_stockpiles: BTreeMap::new(),
             supply: None,
             supply_logistics: None,
             weather_live: None,
@@ -1441,6 +1596,17 @@ impl WorldFold {
             session_multiplayer_metadata_this_hour: None,
             session_header: None,
             tech_sharing_groups: None,
+            sunk_convoy_history: None,
+            dynamic_collection_trace_this_hour: None,
+            resolved_tooltip_instances_this_hour: None,
+            politics_tooltip_inputs_this_hour: None,
+            power_balance_presentation_this_hour: None,
+            runtime_text_inputs_this_hour: None,
+            production_render_this_hour: None,
+            design_catalog_context_this_hour: None,
+            hud_surface_activation_this_hour: None,
+            fired_event_popups: None,
+            fired_event_popups_known_this_hour: false,
             army_battleplans_depth: BTreeMap::new(),
             army_battleplans_depth_unknown_this_hour: false,
             army_battleplans_depth_omitted_non_exact_this_hour: 0,
@@ -1461,6 +1627,7 @@ impl WorldFold {
             air_variant_reserves: BTreeMap::new(),
             air_superiority_inputs: BTreeMap::new(),
             air_combat_losses_this_hour: None,
+            air_region_combat_stats_this_hour: None,
             air_loss_stats: BTreeMap::new(),
             hub_motorization: BTreeMap::new(),
             air_wing_cumulative: BTreeMap::new(),
@@ -1502,7 +1669,7 @@ impl WorldFold {
         let mut fold = Self::new(game_id);
         fold.file_sink = Some(SnapshotFileSink {
             dir,
-            pipeline: SnapshotEmitPipeline::spawn()?,
+            pipeline: SnapshotEmitPipeline::spawn(),
             stride: 1,
             stride_offset: 0,
             segment_ordinal: None,
@@ -1615,7 +1782,7 @@ impl WorldFold {
                 self.record_late_domain_data(game_hour_raw);
             } else {
                 foldprof::timed(&foldprof::APPLY_NS, || {
-                    self.apply_domain_data(domain_id, payload, record_flags)
+                    self.apply_domain_data(game_hour_raw, domain_id, payload, record_flags)
                 });
             }
         } else if record_type == COMPACT_RECORD_TYPE_FRAME_END {
@@ -1832,6 +1999,7 @@ impl WorldFold {
         self.notes_this_hour.clear();
         self.combat_detail_events_this_hour.clear();
         self.air_combat_losses_this_hour = None;
+        self.air_region_combat_stats_this_hour = None;
         self.air_wing_loadout_orphan_check_keys_this_hour.clear();
         self.division_equipment_touched_this_hour.clear();
         self.division_equipment_deleted_division_keys_this_hour
@@ -1859,6 +2027,15 @@ impl WorldFold {
         self.supply_unknown_this_hour = false;
         self.market_trade_unknown_this_hour = false;
         self.session_multiplayer_metadata_this_hour = None;
+        self.dynamic_collection_trace_this_hour = None;
+        self.resolved_tooltip_instances_this_hour = None;
+        self.politics_tooltip_inputs_this_hour = None;
+        self.power_balance_presentation_this_hour = None;
+        self.runtime_text_inputs_this_hour = None;
+        self.production_render_this_hour = None;
+        self.design_catalog_context_this_hour = None;
+        self.hud_surface_activation_this_hour = None;
+        self.fired_event_popups_known_this_hour = false;
         self.army_battleplans_depth_unknown_this_hour = false;
         self.army_battleplans_depth_omitted_non_exact_this_hour = 0;
         self.army_battleplans_depth_path_omitted_this_hour = 0;
@@ -2021,27 +2198,218 @@ impl WorldFold {
         countries: &mut Map<String, Value>,
         unresolved: &mut BTreeSet<u32>,
     ) {
-        for (tag_db_id, values_raw) in &self.market_trade_resource_exported {
+        for (tag_db_id, pools) in &self.market_trade_resource_pools {
             let country = ensure_country_projection_object(countries, self, *tag_db_id, unresolved);
-            let market = ensure_json_object_mut(country, "r2_market_trade_live");
-            let resource_flow = ensure_json_object_mut(market, "resource_flow");
-            let mut exported = Map::new();
-            let mut exported_raw = Map::new();
-            for (index, resource_name) in MARKET_TRADE_RESOURCE_NAMES.iter().enumerate() {
-                let value_raw = values_raw[index];
-                if value_raw != 0 {
-                    exported.insert(
-                        (*resource_name).into(),
-                        json!(value_raw as f64 / FIXED_SCALE),
-                    );
-                    exported_raw.insert((*resource_name).into(), json!(value_raw));
+            {
+                let market = ensure_json_object_mut(country, "r2_market_trade_live");
+                let resource_flow = ensure_json_object_mut(market, "resource_flow");
+                for (flow_name, values_raw) in pools.present_flows() {
+                    let mut values = Map::new();
+                    let mut raw = Map::new();
+                    for (index, resource_name) in MARKET_TRADE_RESOURCE_NAMES.iter().enumerate() {
+                        let value_raw = values_raw[index];
+                        values.insert(
+                            (*resource_name).into(),
+                            json!(value_raw as f64 / FIXED_SCALE),
+                        );
+                        raw.insert((*resource_name).into(), json!(value_raw));
+                    }
+                    resource_flow.insert(flow_name.into(), Value::Object(values));
+                    resource_flow.insert(format!("{flow_name}_raw"), Value::Object(raw));
                 }
+                resource_flow.insert("complete".into(), json!(pools.complete()));
+                resource_flow.insert("scale_raw".into(), json!(FIXED_SCALE as u32));
+                resource_flow.insert("source".into(), json!("CCountryResources+0x11F8"));
+                resource_flow.insert(
+                    "confidence".into(),
+                    json!(if pools.complete() {
+                        "validated_exact"
+                    } else {
+                        "legacy_slice"
+                    }),
+                );
             }
-            resource_flow.insert("exported".into(), Value::Object(exported));
-            resource_flow.insert("exported_raw".into(), Value::Object(exported_raw));
-            resource_flow.insert("scale_raw".into(), json!(FIXED_SCALE as u32));
-            resource_flow.insert("source".into(), json!("CCountryResources+0x5B0"));
-            resource_flow.insert("confidence".into(), json!("validated_slice"));
+            if pools.complete() {
+                let economy = ensure_json_object_mut(country, "economy");
+                let resources = ensure_json_object_mut(economy, "resources");
+                for (flow_name, values_raw) in pools.present_flows() {
+                    let mut values = Map::new();
+                    for (index, resource_name) in MARKET_TRADE_RESOURCE_NAMES.iter().enumerate() {
+                        values.insert(
+                            (*resource_name).into(),
+                            json!(values_raw[index] as f64 / FIXED_SCALE),
+                        );
+                    }
+                    resources.insert(flow_name.into(), Value::Object(values));
+                }
+                resources.insert("complete".into(), json!(true));
+                resources.insert("scale_raw".into(), json!(FIXED_SCALE as u32));
+                resources.insert("source".into(), json!("CCountryResources+0x11F8"));
+            }
+        }
+    }
+
+    fn project_market_trade_factory_headers(
+        &self,
+        countries: &mut Map<String, Value>,
+        unresolved: &mut BTreeSet<u32>,
+    ) {
+        for (tag_db_id, header) in &self.market_trade_factory_headers {
+            let country = ensure_country_projection_object(countries, self, *tag_db_id, unresolved);
+            let economy = ensure_json_object_mut(country, "economy");
+            let resource_trade = ensure_json_object_mut(economy, "resource_trade");
+            resource_trade.insert(
+                "factories".into(),
+                json!({
+                    "total": header.total,
+                    "used": header.used,
+                    "available": header.available,
+                }),
+            );
+            let market = ensure_json_object_mut(country, "r2_market_trade_live");
+            market.insert(
+                "factory_header".into(),
+                json!({
+                    "total": header.total,
+                    "used": header.used,
+                    "available": header.available,
+                    "source": "CCountry+0xF68/CProductionStatus",
+                    "confidence": "validated_exact",
+                }),
+            );
+        }
+    }
+
+    fn project_market_trade_resource_rows(
+        &self,
+        countries: &mut Map<String, Value>,
+        unresolved: &mut BTreeSet<u32>,
+    ) {
+        for (tag_db_id, rows) in &self.market_trade_resource_rows {
+            let country = ensure_country_projection_object(countries, self, *tag_db_id, unresolved);
+            let economy = ensure_json_object_mut(country, "economy");
+            let resource_trade = ensure_json_object_mut(economy, "resource_trade");
+            let values = rows
+                .iter()
+                .map(|row| {
+                    let resource = MARKET_TRADE_RESOURCE_NAMES[row.resource_index as usize];
+                    let needed_type = match row.needed_type {
+                        MARKET_TRADE_RESOURCE_NEEDED_SURPLUS => "surplus",
+                        MARKET_TRADE_RESOURCE_NEEDED_DEFICIT => "deficit",
+                        MARKET_TRADE_RESOURCE_NEEDED_CURRENT_MAX => "current_max",
+                        _ => unreachable!("MTRR parser rejected unknown needed type"),
+                    };
+                    let mut value = json!({
+                        "resource": resource,
+                        "visible_order": row.visible_order,
+                        "balance": row.balance as f64,
+                        "produced": row.produced as f64,
+                        "imported": row.imported as f64,
+                        "exported": row.exported as f64,
+                        "special_project": row.special_project as f64,
+                        "production_line": row.production_line as f64,
+                        "needed": row.needed as f64,
+                        "needed_type": needed_type,
+                        "descriptor_db_index": row.descriptor_db_index,
+                    });
+                    if row.resource_index == 0 {
+                        let Value::Object(object) = &mut value else {
+                            unreachable!();
+                        };
+                        object.insert("needed_current".into(), json!(row.needed_current as f64));
+                        object.insert("needed_max".into(), json!(row.needed_max as f64));
+                    }
+                    value
+                })
+                .collect::<Vec<_>>();
+            resource_trade.insert("resource_rows".into(), Value::Array(values));
+            resource_trade.insert("resource_rows_complete".into(), json!(true));
+        }
+    }
+
+    fn project_market_trade_classic_deals(
+        &self,
+        countries: &mut Map<String, Value>,
+        unresolved: &mut BTreeSet<u32>,
+    ) {
+        for (tag_db_id, rows) in &self.market_trade_classic_deals {
+            let values = rows
+                .iter()
+                .map(|row| {
+                    let counterpart = self
+                        .resolve_country_key(&row.counterpart_tag_db_id.to_string(), unresolved);
+                    let direction = match row.direction {
+                        MARKET_TRADE_CLASSIC_DEAL_DIRECTION_IMPORT => "import",
+                        MARKET_TRADE_CLASSIC_DEAL_DIRECTION_EXPORT => "export",
+                        _ => unreachable!("MTRD parser rejected unknown direction"),
+                    };
+                    let route_kind = match row.route_kind {
+                        MARKET_TRADE_CLASSIC_DEAL_ROUTE_LAND => "land",
+                        MARKET_TRADE_CLASSIC_DEAL_ROUTE_SEA => "sea",
+                        MARKET_TRADE_CLASSIC_DEAL_ROUTE_LOCKED => "locked",
+                        _ => unreachable!("MTRD parser rejected unknown route kind"),
+                    };
+                    json!({
+                        "deal_id": row.deal_id as i64,
+                        "counterpart": counterpart,
+                        "direction": direction,
+                        "resource": MARKET_TRADE_RESOURCE_NAMES[row.resource_index as usize],
+                        "requested": row.requested_raw as f64 / FIXED_SCALE,
+                        "delivered": row.delivered_raw as f64 / FIXED_SCALE,
+                        "available_export": row.available_export_raw as f64 / FIXED_SCALE,
+                        "civilian_factories": row.civilian_factories,
+                        "factory_cost_per_resource": row.factory_cost_raw as f64 / FIXED_SCALE,
+                        "convoys": {
+                            "assigned": row.convoys_assigned,
+                            "required": row.convoys_required,
+                        },
+                        "route_kind": route_kind,
+                        "delivery_efficiency": row.efficiency_raw as f64 / FIXED_SCALE,
+                        "visible_order": row.visible_order,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let country = ensure_country_projection_object(countries, self, *tag_db_id, unresolved);
+            let economy = ensure_json_object_mut(country, "economy");
+            let resource_trade = ensure_json_object_mut(economy, "resource_trade");
+            resource_trade.insert("deals".into(), Value::Array(values));
+            resource_trade.insert("deals_complete".into(), json!(true));
+        }
+    }
+
+    fn project_market_trade_stockpiles(
+        &self,
+        countries: &mut Map<String, Value>,
+        unresolved: &mut BTreeSet<u32>,
+    ) {
+        for (tag_db_id, rows) in &self.market_trade_stockpiles {
+            let values = rows
+                .iter()
+                .map(|row| {
+                    json!({
+                        "equip_id": row.equipment_variant_id,
+                        "equip_type": row.equipment_type,
+                        "amount": row.amount_raw as f64 / FIXED_SCALE,
+                        "amount_raw": row.amount_raw,
+                        "ordinal": row.ordinal,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let country = ensure_country_projection_object(countries, self, *tag_db_id, unresolved);
+            let economy = ensure_json_object_mut(country, "economy");
+            economy.insert("market_stockpile".into(), Value::Array(values));
+            economy.insert("market_stockpile_complete".into(), json!(true));
+            let market = ensure_json_object_mut(country, "r2_market_trade_live");
+            market.insert(
+                "market_stockpile".into(),
+                json!({
+                    "complete": true,
+                    "entry_count": rows.len(),
+                    "scale_raw": FIXED_SCALE as u32,
+                    "source": "CCountry+0xFB8->CMarketStockpile+0x38/CEquipmentPool+0x20",
+                    "confidence": "validated_exact",
+                }),
+            );
         }
     }
 
@@ -2369,9 +2737,21 @@ impl WorldFold {
                 "is_paused": Value::Null,
             }),
         };
+        let events = if let Some(rows) = &state.events {
+            json!({
+                "state": "known",
+                "rows": rows.iter().map(Domain57SessionEventProjection::to_json).collect::<Vec<_>>(),
+            })
+        } else {
+            json!({
+                "state": "unavailable",
+                "rows": [],
+            })
+        };
         Some(json!({
             "players_by_country": players_by_country,
             "pause": pause,
+            "events": events,
         }))
     }
 
@@ -2423,21 +2803,20 @@ impl WorldFold {
                     .iter()
                     .map(|member| member.member_tag_db_id)
                     .collect();
-                let member_tags: Vec<String> = group
-                    .members
+                let member_tags: Vec<String> = member_tag_db_ids
                     .iter()
-                    .map(|member| {
-                        self.resolve_country_key(&member.member_tag_db_id.to_string(), unresolved)
-                    })
+                    .map(|id| self.resolve_country_key(&id.to_string(), unresolved))
                     .collect();
                 let member_bonuses: Vec<Value> = group
                     .members
                     .iter()
-                    .zip(member_tags.iter())
-                    .map(|(member, country_tag)| {
+                    .map(|member| {
                         json!({
                             "member_tag_db_id": member.member_tag_db_id,
-                            "country_tag": country_tag,
+                            "country_tag": self.resolve_country_key(
+                                &member.member_tag_db_id.to_string(),
+                                unresolved,
+                            ),
                             "dynamic_bonus_raw_fixed5": member.dynamic_bonus_raw_fixed5,
                             "dynamic_bonus": member.dynamic_bonus_raw_fixed5 as f64
                                 / compact_contract::tech_sharing_groups::TECH_SHARING_BONUS_FIXED5_SCALE as f64,
@@ -2455,9 +2834,55 @@ impl WorldFold {
             .collect();
         Some(json!({
             "count": rows.len(),
-            "dynamic_bonus_fixed5_scale": compact_contract::tech_sharing_groups::TECH_SHARING_BONUS_FIXED5_SCALE,
             "groups": rows,
+            "dynamic_bonus_fixed5_scale": compact_contract::tech_sharing_groups::TECH_SHARING_BONUS_FIXED5_SCALE,
         }))
+    }
+
+    fn build_world_events_value(&self, unresolved: &mut BTreeSet<u32>) -> Value {
+        let mut world_events = Map::new();
+        if self.fold_domain_unknown(FIRED_EVENT_POPUPS_DOMAIN_ID)
+            || !self.fired_event_popups_known_this_hour
+        {
+            world_events.insert("fired_events".into(), Value::Null);
+            world_events.insert("fired_events_complete".into(), json!(false));
+        } else if let Some(value) = &self.fired_event_popups {
+            world_events.insert(
+                "fired_events".into(),
+                value.get("rows").cloned().unwrap_or(Value::Null),
+            );
+            world_events.insert(
+                "fired_events_complete".into(),
+                value
+                    .get("fired_events_complete")
+                    .cloned()
+                    .unwrap_or(json!(false)),
+            );
+            world_events.insert(
+                "fired_events_hook_telemetry".into(),
+                value.get("telemetry").cloned().unwrap_or(Value::Null),
+            );
+        }
+        if self.fold_domain_unknown(SUNK_CONVOY_HISTORY_DOMAIN_ID) {
+            world_events.insert("sunk_convoys".into(), Value::Null);
+        } else if let Some(rows) = &self.sunk_convoy_history {
+            world_events.insert(
+                "sunk_convoys".into(),
+                Value::Array(
+                    rows.iter()
+                        .map(|row| {
+                            json!({
+                                "month": row.month,
+                                "convoys": row.convoys,
+                                "killer_country": self.country_ref_json(row.killer_country_tag_db_id, unresolved),
+                                "owner": self.country_ref_json(row.owner_tag_db_id, unresolved),
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        Value::Object(world_events)
     }
 
     /// Run the canonical domain decoder in structural-only mode and return its
@@ -2538,19 +2963,51 @@ impl WorldFold {
             67 => self.fold_country_dynamic_modifiers(payload),
             68 => self.fold_session_header(payload),
             69 => self.fold_tech_sharing_groups(payload),
+            73 => self.fold_politics_tooltip_inputs(payload),
+            74 => self.fold_power_balance_presentation(payload),
+            75 => self.fold_fired_event_popups(payload),
+            76 => self.fold_runtime_text_inputs(payload),
+            77 => self.fold_production_render(payload, None),
+            78 => self.fold_design_catalog_context(payload),
+            79 => self.fold_hud_surface_activation(payload),
+            70 => self.fold_sunk_convoy_history(payload),
+            71 => self.fold_dynamic_collection_trace(payload),
+            72 => self.fold_resolved_tooltip_instances(payload),
             60 => self.fold_capitulation_war_state(payload),
             _ => return None,
         };
         Some(result)
     }
 
-    fn apply_domain_data(&mut self, domain_id: u16, payload: &[u8], record_flags: u32) {
-        let Some(result) = self.fold_domain_data(domain_id, payload, record_flags) else {
+    fn apply_domain_data(
+        &mut self,
+        game_hour_raw: i32,
+        domain_id: u16,
+        payload: &[u8],
+        record_flags: u32,
+    ) {
+        let result = if domain_id == PRODUCTION_RENDER_SUBMITS_DOMAIN_ID {
+            Some(self.fold_production_render(
+                payload,
+                hour_index_from_raw(game_hour_raw).map(|index| (game_hour_raw, index)),
+            ))
+        } else {
+            self.fold_domain_data(domain_id, payload, record_flags)
+        };
+        let Some(result) = result else {
             self.unfolded_domains_this_hour.insert(domain_id);
             return;
         };
         match result {
             Ok(()) => self.mark_domain(domain_id),
+            Err(err) if domain_id == PRODUCTION_RENDER_SUBMITS_DOMAIN_ID => {
+                self.production_render_this_hour = None;
+                self.mark_fold_domain_unknown(
+                    domain_id,
+                    "invalid_production_render",
+                    format!("domain {domain_id} fold skipped: {err}"),
+                );
+            }
             Err(err) => self.note(format!("domain {domain_id} fold skipped: {err}")),
         }
     }
@@ -2740,6 +3197,10 @@ impl WorldFold {
         // wins), creating country objects for capitulated minors if needed.
         self.project_capitulation_country_state(&mut countries, &mut unresolved);
         self.project_market_trade_resource_flow(&mut countries, &mut unresolved);
+        self.project_market_trade_factory_headers(&mut countries, &mut unresolved);
+        self.project_market_trade_resource_rows(&mut countries, &mut unresolved);
+        self.project_market_trade_classic_deals(&mut countries, &mut unresolved);
+        self.project_market_trade_stockpiles(&mut countries, &mut unresolved);
 
         // States: merge sibling-domain fields with D22-owned map-control fields.
         // Unknown domains mask only their own fields, not the whole shared object.
@@ -3129,6 +3590,7 @@ impl WorldFold {
         // gate below so any unmapped id is counted.
         let session_header_value = self.build_session_header_value(&mut unresolved);
         let tech_sharing_groups_value = self.build_tech_sharing_groups_value(&mut unresolved);
+        let world_events_value = self.build_world_events_value(&mut unresolved);
 
         // resolved only when we have a map AND every keyed/referenced id
         // resolved. Keep this after all section builders: OOB, designs, naval
@@ -3206,7 +3668,7 @@ impl WorldFold {
             "strategic_air": strategic_air_value,
             "strategic_operatives": {},
             "raids": {},
-            "world_events": {},
+            "world_events": world_events_value,
             "special_projects": special_projects_value,
             "world": world_value,
             "events": [],
@@ -3226,6 +3688,98 @@ impl WorldFold {
         if let Some(value) = tech_sharing_groups_value {
             if let Some(obj) = snapshot.as_object_mut() {
                 obj.insert("tech_sharing_group".into(), value);
+            }
+        }
+        if let Some(obj) = snapshot.as_object_mut() {
+            if self.fold_domain_unknown(DYNAMIC_COLLECTION_TRACE_DOMAIN_ID) {
+                obj.insert("_r2_dynamic_collection_trace_live".into(), Value::Null);
+            } else if let Some(value) = &self.dynamic_collection_trace_this_hour {
+                obj.insert("_r2_dynamic_collection_trace_live".into(), value.clone());
+            }
+            if self.fold_domain_unknown(RESOLVED_TOOLTIP_INSTANCES_DOMAIN_ID) {
+                obj.insert("_r2_resolved_tooltip_instances_live".into(), Value::Null);
+            } else if let Some(value) = &self.resolved_tooltip_instances_this_hour {
+                // The TTI1 frame identity is part of every instance key. Never
+                // attach a structurally valid payload to a different snapshot hour.
+                let frame_matches_snapshot = value.get("frame_hour").and_then(Value::as_u64)
+                    == u64::try_from(hour_index).ok();
+                obj.insert(
+                    "_r2_resolved_tooltip_instances_live".into(),
+                    if frame_matches_snapshot {
+                        value.clone()
+                    } else {
+                        Value::Null
+                    },
+                );
+            }
+            if self.fold_domain_unknown(POLITICS_TOOLTIP_INPUTS_DOMAIN_ID) {
+                obj.insert("_r2_politics_tooltip_inputs_live".into(), Value::Null);
+            } else if let Some(value) = &self.politics_tooltip_inputs_this_hour {
+                // The PTI1 frame identity is part of the row key. Never attach a
+                // structurally valid payload to a different H4CR snapshot hour.
+                let frame_matches_snapshot = value.get("frame_hour").and_then(Value::as_u64)
+                    == u64::try_from(hour_index).ok();
+                obj.insert(
+                    "_r2_politics_tooltip_inputs_live".into(),
+                    if frame_matches_snapshot {
+                        value.clone()
+                    } else {
+                        Value::Null
+                    },
+                );
+            }
+            if self.fold_domain_unknown(POWER_BALANCE_PRESENTATION_DOMAIN_ID) {
+                obj.insert("_r2_power_balance_presentation_live".into(), Value::Null);
+            } else if let Some(value) = &self.power_balance_presentation_this_hour {
+                obj.insert("_r2_power_balance_presentation_live".into(), value.clone());
+            }
+            if self.fold_domain_unknown(RUNTIME_TEXT_INPUTS_DOMAIN_ID) {
+                obj.insert("runtime_text".into(), Value::Null);
+            } else if let Some((frame_hour, value)) = &self.runtime_text_inputs_this_hour {
+                obj.insert(
+                    "runtime_text".into(),
+                    if Some(*frame_hour) == u64::try_from(hour_index).ok() {
+                        value.clone()
+                    } else {
+                        Value::Null
+                    },
+                );
+            }
+            if self.fold_domain_unknown(PRODUCTION_RENDER_SUBMITS_DOMAIN_ID) {
+                obj.insert("production_render".into(), Value::Null);
+            } else if let Some((frame_hour, value)) = &self.production_render_this_hour {
+                obj.insert(
+                    "production_render".into(),
+                    if Some(*frame_hour) == u64::try_from(hour_index).ok() {
+                        value.clone()
+                    } else {
+                        Value::Null
+                    },
+                );
+            }
+            if self.fold_domain_unknown(DESIGN_CATALOG_CONTEXT_DOMAIN_ID) {
+                obj.insert("_r2_design_catalog_context_live".into(), Value::Null);
+            } else if let Some((frame_hour, value)) = &self.design_catalog_context_this_hour {
+                obj.insert(
+                    "_r2_design_catalog_context_live".into(),
+                    if Some(*frame_hour) == u64::try_from(hour_index).ok() {
+                        value.clone()
+                    } else {
+                        Value::Null
+                    },
+                );
+            }
+            if self.fold_domain_unknown(HUD_SURFACE_ACTIVATION_DOMAIN_ID) {
+                obj.insert("_r2_hud_surface_activation_live".into(), Value::Null);
+            } else if let Some((frame_hour, value)) = &self.hud_surface_activation_this_hour {
+                obj.insert(
+                    "_r2_hud_surface_activation_live".into(),
+                    if Some(*frame_hour) == u64::try_from(hour_index).ok() {
+                        value.clone()
+                    } else {
+                        Value::Null
+                    },
+                );
             }
         }
         snapshot
@@ -3968,31 +4522,53 @@ impl WorldFold {
         // root source-availability is resolved. Do NOT read a green live proof
         // of operations here as validation until that lands; the unit tests +
         // the offset-verify (8/8 targets) are the current proof.
-        if !self
+        let exact_operation_rows = self
             .domain53_world_overlay_this_hour
             .operation_instances
-            .is_empty()
-        {
+            .iter()
+            .filter(|row| row.is_exact_runtime())
+            .map(|row| {
+                let owner_tag = row.owner_country_tag_db_id.expect("exact owner");
+                let target_country = row.target_country_tag_db_id.expect("exact target");
+                let target = row.target_state_id.map_or_else(
+                    || {
+                        json!({
+                            "kind": "country",
+                            "country": self.country_ref_json(target_country, unresolved),
+                            "tag_db_id": target_country,
+                        })
+                    },
+                    |state_id| json!({"kind": "state", "state_id": state_id}),
+                );
+                let status = match row.status.expect("exact status") {
+                    diplomacy53::compact::OperationInstanceStatus::Preparing => "preparing",
+                    diplomacy53::compact::OperationInstanceStatus::Running => "running",
+                    diplomacy53::compact::OperationInstanceStatus::Finished => "finished",
+                };
+                json!({
+                    "stable_operation_id": row.instance_id,
+                    "operation_id": format!("operation:{}", row.instance_id),
+                    "definition_id": row.definition_id.as_deref().expect("exact definition"),
+                    "owner_country": self.country_ref_json(owner_tag, unresolved),
+                    "owner_country_tag_db_id": owner_tag,
+                    "target_country_or_state": target,
+                    "target_country_tag_db_id": target_country,
+                    "status": status,
+                    "phase_index": row.phase_index,
+                    "phase_count": row.phase_count,
+                    "progress_fixed": row.progress_fixed.expect("exact progress"),
+                    "progress_scale": compact_contract::build_profile::DOMAIN53_OPERATION_PROGRESS_SCALE,
+                    "start_hour": row.start_hour.expect("exact start hour"),
+                    "duration_hours": row.duration_hours.expect("exact duration"),
+                    "time_units": "game_hours",
+                    "assigned_operative_ids": row.assigned_operative_ids,
+                })
+            })
+            .collect::<Vec<_>>();
+        if !exact_operation_rows.is_empty() {
             extra.insert(
                 "operation_instance_rows".into(),
-                Value::Array(
-                    self.domain53_world_overlay_this_hour
-                        .operation_instances
-                        .iter()
-                        .map(|row| {
-                            json!({
-                                "instance_id": row.instance_id,
-                                "def_ref_ok": row.def_ref_ok,
-                                "associated_country": row
-                                    .associated_country_tag_db_id
-                                    .map(|tag| self.country_ref_json(tag, unresolved))
-                                    .unwrap_or(Value::Null),
-                                "associated_country_tag_db_id": row.associated_country_tag_db_id,
-                                "associated_country_semantics": "provisional_target_vs_location_undistinguished",
-                            })
-                        })
-                        .collect(),
-                ),
+                Value::Array(exact_operation_rows),
             );
         }
         diplomacy_world.insert(DOMAIN53_EXTRA_KEY.into(), Value::Object(extra));
@@ -4957,6 +5533,7 @@ impl WorldFold {
         if self.fold_domain_unknown(AIR_COMBAT_LOSSES_DOMAIN_ID) {
             out.insert("_r2_air_combat_losses_live".into(), Value::Null);
             out.insert("_r2_air_wing_cumulative_scalars".into(), Value::Null);
+            out.insert("_r2_air_region_combat_stats".into(), Value::Null);
         } else if let Some(losses) = &self.air_combat_losses_this_hour {
             out.insert(
                 "_r2_air_combat_losses_live".into(),
@@ -4986,6 +5563,17 @@ impl WorldFold {
                         .collect(),
                 ),
             );
+            if let Some(stats) = &self.air_region_combat_stats_this_hour {
+                out.insert(
+                    "_r2_air_region_combat_stats".into(),
+                    Value::Array(
+                        stats
+                            .iter()
+                            .map(|row| row.to_json(self, unresolved))
+                            .collect(),
+                    ),
+                );
+            }
         }
     }
 
@@ -5001,15 +5589,15 @@ impl WorldFold {
                         .map(|row| {
                             let mut channels = Map::new();
                             let mut raw = Map::new();
+                            let mut display_divisors = Map::new();
                             for (index, (_, label)) in airloss61::PINNED_CHANNELS.iter().enumerate()
                             {
-                                channels.insert(
-                                    (*label).into(),
-                                    json!(
-                                        row.channels[index] as f64 / airloss61::FIELD_SCALE as f64
-                                    ),
-                                );
+                                channels.insert((*label).into(), json!(row.channel_value(index)));
                                 raw.insert((*label).into(), json!(row.channels[index]));
+                                display_divisors.insert(
+                                    (*label).into(),
+                                    json!(airloss61::CHANNEL_DISPLAY_DIVISORS[index]),
+                                );
                             }
                             json!({
                                 "country": self.country_ref_json(row.owner_tag_db_id, unresolved),
@@ -5017,7 +5605,7 @@ impl WorldFold {
                                 "country_idx": row.country_idx,
                                 "channels": channels,
                                 "raw": raw,
-                                "scale_raw": airloss61::FIELD_SCALE,
+                                "display_divisors": display_divisors,
                             })
                         })
                         .collect(),
@@ -5043,12 +5631,16 @@ impl WorldFold {
                             json!({
                                 "country": self.country_ref_json(row.owner_tag_db_id, unresolved),
                                 "owner_tag_db_id": row.owner_tag_db_id,
+                                "motorization_country": self.country_ref_json(row.actor_tag_db_id, unresolved),
+                                "actor_tag_db_id": row.actor_tag_db_id,
                                 "province_id": row.province_id,
                                 "state_id": row.state_id,
                                 "record_index": row.record_index,
-                                "map_size": row.map_size,
+                                "map_entry_index": row.map_entry_index,
+                                "motorization_level": row.motorization_level,
+                                "truck_fraction_raw": if row.motorization_level == 1 { 50_000 } else { 100_000 },
                                 "node_motorized": true,
-                                "scope": "node_membership",
+                                "scope": "country_level",
                             })
                         })
                         .collect(),
@@ -5584,103 +6176,47 @@ impl WorldFold {
     }
 
     // --- W6 DOMAIN 69 tech_sharing_groups_live (persistent last-value-wins) --
-    // TOP-LEVEL research-sharing groups. A proven frame FULL-REPLACES the carried
-    // group set; a hard-failure frame retains the prior set. Wire payload: 16-byte
-    // header (elapsed_wall_ms u64, group_count u32, status_flags u32), then
-    // group_count fixed 12-byte rows (id_token u32, member_count u32,
-    // member_blob_offset u32 in u32 units), then a single concatenated blob of
-    // u32 tag_db_ids. Windows must be contiguous and cover the blob exactly. Any
-    // bounds/torn failure returns Err (frame folds closed, prior set retained).
-    #[cfg(any())]
-    fn fold_tech_sharing_groups_legacy(&mut self, payload: &[u8]) -> Result<(), String> {
-        need(
-            payload,
-            TECH_SHARING_GROUPS_HEADER_LEN,
-            "tech_sharing_groups header",
-        )?;
-        let group_count = read_u32(payload, 8) as usize;
-        let status_flags = read_u32(payload, 12);
+    // TOP-LEVEL research-sharing groups. A proven TSG2 frame FULL-REPLACES the
+    // carried group set; a hard-failure frame retains the prior set. The shared
+    // codec validates the explicit schema discriminator, exact contiguous paired
+    // member/bonus blob, unique group/member identities, and exact coverage.
+    fn fold_tech_sharing_groups(&mut self, payload: &[u8]) -> Result<(), String> {
+        let decoded = compact_contract::tech_sharing_groups::decode_payload_with_bonuses(payload)?;
         if self.handle_compact_failure(
             TECH_SHARING_GROUPS_DOMAIN_ID,
             "tech_sharing_groups",
-            status_flags,
+            decoded.status_flags,
         ) {
             return Ok(());
         }
-        if group_count > TECH_SHARING_GROUP_MAX_GROUPS {
+        if decoded.rows.len() > TECH_SHARING_GROUP_MAX_GROUPS {
             return Err(format!(
-                "tech_sharing_groups group_count {group_count} exceeds {TECH_SHARING_GROUP_MAX_GROUPS} fixed slots"
+                "tech_sharing_groups group_count {} exceeds {TECH_SHARING_GROUP_MAX_GROUPS} fixed slots",
+                decoded.rows.len(),
             ));
         }
-        let table_len = TECH_SHARING_GROUPS_HEADER_LEN
-            + group_count
-                .checked_mul(TECH_SHARING_GROUPS_ROW_LEN)
-                .ok_or("tech_sharing_groups row table overflow")?;
-        need(payload, table_len, "tech_sharing_groups row table")?;
-
-        // The member blob is the payload remainder: a flat array of u32 tag_db_ids.
-        let blob = &payload[table_len..];
-        if blob.len() % 4 != 0 {
-            return Err(format!(
-                "tech_sharing_groups member blob {} bytes not u32-aligned",
-                blob.len()
-            ));
-        }
-        let member_total = blob.len() / 4;
-
-        let mut groups: Vec<TechSharingGroupFoldState> = Vec::with_capacity(group_count);
-        let mut expected_offset = 0usize;
-        for i in 0..group_count {
-            let base = TECH_SHARING_GROUPS_HEADER_LEN + i * TECH_SHARING_GROUPS_ROW_LEN;
-            let id_token = read_u32(payload, base);
-            let member_count = read_u32(payload, base + 4) as usize;
-            let member_blob_offset = read_u32(payload, base + 8) as usize;
-            if id_token == 0 {
-                return Err(format!("tech_sharing_groups row {i} zero id_token"));
-            }
-            if member_count == 0 {
-                return Err(format!("tech_sharing_groups row {i} zero member_count"));
-            }
-            if member_count > TECH_SHARING_GROUP_MAX_MEMBERS as usize {
+        let mut groups = Vec::with_capacity(decoded.rows.len());
+        for (row_index, row) in decoded.rows.into_iter().enumerate() {
+            if row.members.len() > TECH_SHARING_GROUP_MAX_MEMBERS as usize {
                 return Err(format!(
-                    "tech_sharing_groups row {i} member_count {member_count} out of range"
+                    "tech_sharing_groups row {row_index} member_count {} out of range",
+                    row.members.len(),
                 ));
             }
-            if member_blob_offset != expected_offset {
-                return Err(format!(
-                    "tech_sharing_groups row {i} member_blob_offset {member_blob_offset} != expected {expected_offset} (non-contiguous)"
-                ));
-            }
-            let end = member_blob_offset
-                .checked_add(member_count)
-                .ok_or("tech_sharing_groups member window overflow")?;
-            if end > member_total {
-                return Err(format!(
-                    "tech_sharing_groups row {i} member window [{member_blob_offset},{end}) exceeds {member_total} members"
-                ));
-            }
-            let mut member_tag_db_ids: Vec<u32> = (member_blob_offset..end)
-                .map(|idx| read_u32(blob, idx * 4))
-                .collect();
-            for tag in &member_tag_db_ids {
-                if *tag == 0 || *tag > TECH_SHARING_GROUP_MAX_MEMBER_TAG_DB_ID {
+            for member in &row.members {
+                if member.member_tag_db_id > TECH_SHARING_GROUP_MAX_MEMBER_TAG_DB_ID {
                     return Err(format!(
-                        "tech_sharing_groups row {i} member tag_db_id {tag} out of range"
+                        "tech_sharing_groups row {row_index} member tag_db_id {} out of range",
+                        member.member_tag_db_id,
                     ));
                 }
             }
-            // Sort for a stable, order-independent multiset representation.
-            member_tag_db_ids.sort_unstable();
+            let mut members = row.members;
+            members.sort_unstable_by_key(|member| member.member_tag_db_id);
             groups.push(TechSharingGroupFoldState {
-                id_token,
-                member_tag_db_ids,
+                id_token: row.id_token,
+                members,
             });
-            expected_offset = end;
-        }
-        if expected_offset != member_total {
-            return Err(format!(
-                "tech_sharing_groups windows cover {expected_offset} of {member_total} members (orphans)"
-            ));
         }
 
         // A proven frame with zero groups is a genuine empty set (distinct from
@@ -5690,62 +6226,599 @@ impl WorldFold {
         Ok(())
     }
 
-    fn fold_tech_sharing_groups(&mut self, payload: &[u8]) -> Result<(), String> {
-        let decoded = compact_contract::tech_sharing_groups::decode_payload_with_bonuses(payload)
-            .map_err(|error| format!("tech_sharing_groups TSG2 invalid: {error}"))?;
-        if decoded.rows.len() > TECH_SHARING_GROUP_MAX_GROUPS {
-            return Err(format!(
-                "tech_sharing_groups group_count {} exceeds {TECH_SHARING_GROUP_MAX_GROUPS}",
-                decoded.rows.len()
-            ));
-        }
-        for (row_index, row) in decoded.rows.iter().enumerate() {
-            if row.members.len() > TECH_SHARING_GROUP_MAX_MEMBERS as usize {
-                return Err(format!(
-                    "tech_sharing_groups row {row_index} member_count {} out of range",
-                    row.members.len()
-                ));
-            }
-            if let Some(member) = row
-                .members
-                .iter()
-                .find(|member| member.member_tag_db_id > TECH_SHARING_GROUP_MAX_MEMBER_TAG_DB_ID)
-            {
-                return Err(format!(
-                    "tech_sharing_groups row {row_index} member tag_db_id {} out of range",
-                    member.member_tag_db_id
-                ));
-            }
-        }
+    fn fold_sunk_convoy_history(&mut self, payload: &[u8]) -> Result<(), String> {
+        let decoded = compact_contract::naval_history::decode_payload(payload)
+            .map_err(|error| format!("sunk_convoy_history SCH1 invalid: {error}"))?;
         if self.handle_compact_failure(
-            TECH_SHARING_GROUPS_DOMAIN_ID,
-            "tech_sharing_groups",
+            SUNK_CONVOY_HISTORY_DOMAIN_ID,
+            "sunk_convoy_history",
+            decoded.status_flags,
+        ) {
+            return Ok(());
+        }
+        self.sunk_convoy_history = Some(decoded.rows);
+        self.mark_fold_domain_success(SUNK_CONVOY_HISTORY_DOMAIN_ID);
+        Ok(())
+    }
+
+    fn fold_dynamic_collection_trace(&mut self, payload: &[u8]) -> Result<(), String> {
+        let decoded = dct71::decode_payload(payload)
+            .map_err(|error| format!("dynamic_collection_trace DCT1 invalid: {error:?}"))?;
+        if self.handle_compact_failure(
+            DYNAMIC_COLLECTION_TRACE_DOMAIN_ID,
+            dct71::DOMAIN_NAME,
+            decoded.status_flags,
+        ) {
+            return Ok(());
+        }
+        let collections = decoded
+            .collections
+            .into_iter()
+            .map(|collection| {
+                json!({
+                    "collection_instance_id": collection.collection_instance_id,
+                    "frame_hour": collection.frame_hour,
+                    "source_items": collection.source_items.into_iter().map(|item| json!({
+                        "stable_item_id": item.stable_item_id,
+                        "source_ordinal": item.source_ordinal,
+                        "included": item.included,
+                        "filter_reason": item.filter_reason,
+                    })).collect::<Vec<_>>(),
+                    "ordered_item_ids": collection.ordered_item_ids,
+                    "group_boundaries": collection.group_boundaries.into_iter().map(|group| json!({
+                        "group_id": group.group_id,
+                        "start_index": group.start_index,
+                        "item_count": group.item_count,
+                    })).collect::<Vec<_>>(),
+                    "row_template_id": collection.row_template_id,
+                    "materialized_slots": collection.materialized_slots.into_iter().map(|slot| json!({
+                        "slot_id": slot.slot_id,
+                        "bound_item_id": slot.bound_item_id,
+                        "row_template_id": slot.row_template_id,
+                        "rect": {"x":slot.rect.x,"y":slot.rect.y,"width":slot.rect.width,"height":slot.rect.height},
+                    })).collect::<Vec<_>>(),
+                    "clip_rect": {"x":collection.clip_rect.x,"y":collection.clip_rect.y,"width":collection.clip_rect.width,"height":collection.clip_rect.height},
+                    "content_extent_pixels": [collection.content_extent_pixels.0, collection.content_extent_pixels.1],
+                    "viewport_extent_pixels": [collection.viewport_extent_pixels.0, collection.viewport_extent_pixels.1],
+                    "scroll_min_fixed": collection.scroll_min_fixed,
+                    "scroll_max_fixed": collection.scroll_max_fixed,
+                    "scroll_current_fixed": collection.scroll_current_fixed,
+                    "scroll_target_fixed": collection.scroll_target_fixed,
+                })
+            })
+            .collect::<Vec<_>>();
+        self.dynamic_collection_trace_this_hour = Some(json!({
+            "schema_version": dct71::SCHEMA_VERSION,
+            "authority": "exact_a729_controller",
+            "elapsed_wall_ms": decoded.elapsed_wall_ms,
+            "frame_hour": decoded.frame_hour,
+            "collections": collections,
+        }));
+        self.mark_fold_domain_success(DYNAMIC_COLLECTION_TRACE_DOMAIN_ID);
+        Ok(())
+    }
+
+    fn fold_resolved_tooltip_instances(&mut self, payload: &[u8]) -> Result<(), String> {
+        let decoded = tooltip72::decode_payload(payload)
+            .map_err(|error| format!("resolved_tooltip_instances TTI1 invalid: {error:?}"))?;
+        if self.handle_compact_failure(
+            RESOLVED_TOOLTIP_INSTANCES_DOMAIN_ID,
+            tooltip72::DOMAIN_NAME,
             decoded.status_flags,
         ) {
             return Ok(());
         }
 
-        let mut groups = Vec::with_capacity(decoded.rows.len());
-        for row in decoded.rows {
-            let mut members: Vec<TechSharingMemberBonusFoldState> = row
-                .members
-                .into_iter()
-                .map(|member| TechSharingMemberBonusFoldState {
-                    member_tag_db_id: member.member_tag_db_id,
-                    dynamic_bonus_raw_fixed5: member.dynamic_bonus_raw_fixed5,
+        let instances = decoded
+            .instances
+            .into_iter()
+            .map(|instance| {
+                let rows = instance
+                    .rows
+                    .into_iter()
+                    .map(|row| {
+                        let line_kind = match row.line_kind {
+                            tooltip72::TooltipLineKind::Header => "header",
+                            tooltip72::TooltipLineKind::Description => "description",
+                            tooltip72::TooltipLineKind::Value => "value",
+                            tooltip72::TooltipLineKind::Breakdown => "breakdown",
+                            tooltip72::TooltipLineKind::Scripted => "scripted",
+                            tooltip72::TooltipLineKind::Spacer => "spacer",
+                            tooltip72::TooltipLineKind::Resolved => "resolved",
+                        };
+                        let (availability_state, data_blocked_field) = match row.availability {
+                            tooltip72::RowAvailability::Resolved => ("resolved", None),
+                            tooltip72::RowAvailability::NotApplicable => ("not_applicable", None),
+                            tooltip72::RowAvailability::DataBlocked { field } => {
+                                ("data_blocked", Some(field))
+                            }
+                        };
+                        json!({
+                            "source_ordinal": row.source_ordinal,
+                            "line_kind": line_kind,
+                            "source_identity": row.source_identity,
+                            "evaluation_context": row.evaluation_context,
+                            "availability_state": availability_state,
+                            "data_blocked_field": data_blocked_field,
+                            "resolved_text": row.resolved_text,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                json!({
+                    "frame_hour": instance.frame_hour,
+                    "pov_country_or_global": instance.pov_country_or_global,
+                    "view_id": instance.view_id,
+                    "element_path": instance.element_path,
+                    "repeat_index": instance.repeat_index,
+                    "screen_rect": {
+                        "x": instance.screen_rect.x,
+                        "y": instance.screen_rect.y,
+                        "width": instance.screen_rect.width,
+                        "height": instance.screen_rect.height,
+                    },
+                    "viewport_width_px": instance.viewport_width_px,
+                    "viewport_height_px": instance.viewport_height_px,
+                    "producer_record_identity": instance.producer_record_identity,
+                    "rows": rows,
                 })
-                .collect();
-            // Canonicalize only after pairing. Sorting the legacy id vector
-            // independently would silently attach bonuses to the wrong member.
-            members.sort_unstable_by_key(|member| member.member_tag_db_id);
-            groups.push(TechSharingGroupFoldState {
-                id_token: row.id_token,
-                members,
-            });
+            })
+            .collect::<Vec<_>>();
+        let producer_manifest_sha256 = decoded
+            .producer_manifest_sha256
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        self.resolved_tooltip_instances_this_hour = Some(json!({
+            "schema_version": tooltip72::SCHEMA_VERSION,
+            "authority": "exact_a729_tooltip_controller",
+            "elapsed_wall_ms": decoded.elapsed_wall_ms,
+            "status_flags": decoded.status_flags,
+            "frame_hour": decoded.frame_hour,
+            "producer_manifest_sha256": producer_manifest_sha256,
+            "completeness_record_identity": decoded.completeness_record_identity,
+            "expected_instance_count": decoded.expected_instance_count,
+            "instances": instances,
+        }));
+        self.mark_fold_domain_success(RESOLVED_TOOLTIP_INSTANCES_DOMAIN_ID);
+        Ok(())
+    }
+
+    fn fold_politics_tooltip_inputs(&mut self, payload: &[u8]) -> Result<(), String> {
+        fn reasons(nodes: Vec<politics73::ReasonNode>) -> Vec<Value> {
+            nodes
+                .into_iter()
+                .map(|node| {
+                    json!({
+                        "source_ordinal": node.source_ordinal,
+                        "node_id": node.node_id,
+                        "parent_node_id": node.parent_node_id,
+                        "source_identity": node.source_identity,
+                        "result": node.result,
+                        "resolved_reason": node.resolved_reason,
+                    })
+                })
+                .collect()
         }
-        groups.sort_unstable_by_key(|group| group.id_token);
-        self.tech_sharing_groups = Some(groups);
-        self.mark_fold_domain_success(TECH_SHARING_GROUPS_DOMAIN_ID);
+        fn terms(values: Vec<politics73::NumericSourceTerm>) -> Vec<Value> {
+            values
+                .into_iter()
+                .map(|term| {
+                    json!({
+                        "source_ordinal": term.source_ordinal,
+                        "source_identity": term.source_identity,
+                        "evaluation_context": term.evaluation_context,
+                        "raw_value": term.raw_value,
+                        "scale": term.scale,
+                    })
+                })
+                .collect()
+        }
+
+        let decoded = politics73::decode_payload(payload)
+            .map_err(|error| format!("politics_tooltip_inputs PTI1 invalid: {error:?}"))?;
+        if self.handle_compact_failure(
+            POLITICS_TOOLTIP_INPUTS_DOMAIN_ID,
+            politics73::DOMAIN_NAME,
+            decoded.status_flags,
+        ) {
+            return Ok(());
+        }
+        let rows = decoded
+            .rows
+            .into_iter()
+            .map(|row| {
+                let line_kind = match row.line_kind {
+                    politics73::PoliticsLineKind::EvaluatedTriggerResultAndReasonTree => "evaluated_trigger_result_and_reason_tree",
+                    politics73::PoliticsLineKind::EffectiveHireOrRemovalCost => "effective_hire_or_removal_cost",
+                    politics73::PoliticsLineKind::AggregatedConditionalModifier => "aggregated_conditional_modifier",
+                    politics73::PoliticsLineKind::AdvisorSlotCapacityVacancyEligibilityAndDisabledReason => "advisor_slot_capacity_vacancy_eligibility_and_disabled_reason",
+                    politics73::PoliticsLineKind::TimedDynamicModifierValueSourceAndExpiry => "timed_dynamic_modifier_value_source_and_expiry",
+                    politics73::PoliticsLineKind::DisplayedPartyPopularityChangeSource => "displayed_party_popularity_change_source",
+                };
+                let (availability_state, unavailable_field, unavailable_reason) =
+                    match row.availability_state {
+                        politics73::AvailabilityState::Measured => ("measured", None, None),
+                        politics73::AvailabilityState::NotApplicable => ("not_applicable", None, None),
+                        politics73::AvailabilityState::Unobtainable { field, reason } =>
+                            ("unobtainable", Some(field), Some(reason)),
+                    };
+                let typed_value = row.typed_value.map(|value| match value {
+                    politics73::PoliticsTypedValue::TriggerEvaluation { result, reason_tree } => json!({
+                        "kind": "trigger_evaluation", "result": result, "reason_tree": reasons(reason_tree),
+                    }),
+                    politics73::PoliticsTypedValue::EffectiveCost { action, resource_token, raw_value, scale, affordable } => json!({
+                        "kind": "effective_cost",
+                        "action": match action { politics73::CostAction::Hire => "hire", politics73::CostAction::Remove => "remove" },
+                        "resource_token": resource_token, "raw_value": raw_value, "scale": scale, "affordable": affordable,
+                    }),
+                    politics73::PoliticsTypedValue::ConditionalModifierAggregate { modifier_token, raw_total, scale, terms: source_terms } => json!({
+                        "kind": "conditional_modifier_aggregate", "modifier_token": modifier_token,
+                        "raw_total": raw_total, "scale": scale, "terms": terms(source_terms),
+                    }),
+                    politics73::PoliticsTypedValue::AdvisorSlotState { capacity, occupied, vacancy, eligible, disabled_reason_tree } => json!({
+                        "kind": "advisor_slot_state", "capacity": capacity, "occupied": occupied,
+                        "vacancy": vacancy, "eligible": eligible, "disabled_reason_tree": reasons(disabled_reason_tree),
+                    }),
+                    politics73::PoliticsTypedValue::TimedDynamicModifier { modifier_token, raw_value, scale, source_token, applied_hour, expiry_hour } => json!({
+                        "kind": "timed_dynamic_modifier", "modifier_token": modifier_token,
+                        "raw_value": raw_value, "scale": scale, "source_token": source_token,
+                        "applied_hour": applied_hour, "expiry_hour": expiry_hour,
+                    }),
+                    politics73::PoliticsTypedValue::PartyPopularityChange { party_token, raw_change, scale, sources } => json!({
+                        "kind": "party_popularity_change", "party_token": party_token,
+                        "raw_change": raw_change, "scale": scale, "sources": terms(sources),
+                    }),
+                });
+                json!({
+                    "frame_hour": row.frame_hour,
+                    "country_tag": row.country_tag,
+                    "target_kind": row.target_kind,
+                    "target_token_or_slot": row.target_token_or_slot,
+                    "line_kind": line_kind,
+                    "availability_state": availability_state,
+                    "unobtainable_field": unavailable_field,
+                    "unobtainable_reason": unavailable_reason,
+                    "typed_value": typed_value,
+                    "source_identity": row.source_identity,
+                    "evaluation_context": row.evaluation_context,
+                })
+            })
+            .collect::<Vec<_>>();
+        let producer_manifest_sha256 = decoded
+            .producer_manifest_sha256
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        self.politics_tooltip_inputs_this_hour = Some(json!({
+            "schema_version": politics73::SCHEMA_VERSION,
+            "authority": "exact_a729_politics_producer",
+            "elapsed_wall_ms": decoded.elapsed_wall_ms,
+            "status_flags": decoded.status_flags,
+            "frame_hour": decoded.frame_hour,
+            "producer_manifest_sha256": producer_manifest_sha256,
+            "completeness_record_identity": decoded.completeness_record_identity,
+            "expected_row_count": decoded.expected_row_count,
+            "rows": rows,
+        }));
+        self.mark_fold_domain_success(POLITICS_TOOLTIP_INPUTS_DOMAIN_ID);
+        Ok(())
+    }
+
+    fn fold_power_balance_presentation(&mut self, payload: &[u8]) -> Result<(), String> {
+        let decoded = power_balance74::decode_payload(payload)
+            .map_err(|error| format!("power_balance_presentation PBP1 invalid: {error:?}"))?;
+        if self.handle_compact_failure(
+            POWER_BALANCE_PRESENTATION_DOMAIN_ID,
+            power_balance74::DOMAIN_NAME,
+            decoded.status_flags,
+        ) {
+            return Ok(());
+        }
+
+        let balances = decoded
+            .balances
+            .into_iter()
+            .map(|balance| {
+                let bar_state = match balance.bar_state {
+                    power_balance74::BarState::StableLeft => "stable_left",
+                    power_balance74::BarState::StableRight => "stable_right",
+                    power_balance74::BarState::MovingLeft => "moving_left",
+                    power_balance74::BarState::MovingRight => "moving_right",
+                };
+                let trend = balance.trend.map(|trend| {
+                    let cadence = match trend.cadence {
+                        power_balance74::ChangeCadence::Daily => "daily",
+                        power_balance74::ChangeCadence::Weekly => "weekly",
+                    };
+                    json!({
+                        "cadence": cadence,
+                        "magnitude": trend.magnitude,
+                        "resolved_text_ref": trend.resolved_text_ref,
+                    })
+                });
+                let active_modifiers = balance
+                    .active_modifiers
+                    .into_iter()
+                    .map(|modifier| {
+                        json!({
+                            "modifier_id": modifier.modifier_id,
+                            "source_record_id": modifier.source_record_id,
+                            "resolved_text_ref": modifier.resolved_text_ref,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let decisions = balance
+                    .decisions
+                    .into_iter()
+                    .map(|decision| {
+                        let availability = match decision.availability {
+                            power_balance74::DecisionAvailability::Available => "available",
+                            power_balance74::DecisionAvailability::Unavailable => "unavailable",
+                            power_balance74::DecisionAvailability::Active => "active",
+                            power_balance74::DecisionAvailability::OnCooldown => "on_cooldown",
+                        };
+                        json!({
+                            "decision_id": decision.decision_id,
+                            "source_record_id": decision.source_record_id,
+                            "availability": availability,
+                            "resolved_name_text_ref": decision.resolved_name_text_ref,
+                            "cost_text_ref": decision.cost_text_ref,
+                            "timer_text_ref": decision.timer_text_ref,
+                            "target_tag_ref": decision.target_tag_ref,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                json!({
+                    "source_record_id": balance.source_record_id,
+                    "country_tag": balance.country_tag,
+                    "balance_id": balance.balance_id,
+                    "display_ordinal": balance.display_ordinal,
+                    "active_side_id": balance.active_side_id,
+                    "active_range_id": balance.active_range_id,
+                    "effective_left_icon": balance.effective_left_icon,
+                    "effective_right_icon": balance.effective_right_icon,
+                    "launcher_visible": balance.launcher_visible,
+                    "launcher_percentage_text_ref": balance.launcher_percentage_text_ref,
+                    "launcher_levels_text_ref": balance.launcher_levels_text_ref,
+                    "launcher_icon_sprite": balance.launcher_icon_sprite,
+                    "launcher_glow_visible": balance.launcher_glow_visible,
+                    "bar_state": bar_state,
+                    "range_indicator_frame": balance.range_indicator_frame,
+                    "range_indicator_top_left": balance.range_indicator_top_left,
+                    "trend": trend,
+                    "active_modifiers_complete": balance.active_modifiers_complete,
+                    "active_modifiers": active_modifiers,
+                    "decisions_complete": balance.decisions_complete,
+                    "decisions": decisions,
+                    "resolved_text_refs": {
+                        "balance_name": balance.resolved_text_refs.balance_name,
+                        "left_side_name": balance.resolved_text_refs.left_side_name,
+                        "right_side_name": balance.resolved_text_refs.right_side_name,
+                        "active_range_name": balance.resolved_text_refs.active_range_name,
+                        "balance_tooltip": balance.resolved_text_refs.balance_tooltip,
+                        "active_range_tooltip": balance.resolved_text_refs.active_range_tooltip,
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+        let producer_manifest_sha256 = decoded
+            .producer_manifest_sha256
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        self.power_balance_presentation_this_hour = Some(json!({
+            "schema_version": power_balance74::SCHEMA_VERSION,
+            "authority": "exact_a729_power_balance_controller",
+            "elapsed_wall_ms": decoded.elapsed_wall_ms,
+            "frame_hour": decoded.frame_hour,
+            "producer_manifest_sha256": producer_manifest_sha256,
+            "completeness_record_identity": decoded.completeness_record_identity,
+            "expected_balance_count": decoded.expected_balance_count,
+            "balances": balances,
+        }));
+        self.mark_fold_domain_success(POWER_BALANCE_PRESENTATION_DOMAIN_ID);
+        Ok(())
+    }
+
+    fn fold_fired_event_popups(&mut self, payload: &[u8]) -> Result<(), String> {
+        let decoded = fired75::decode_payload(payload)
+            .map_err(|error| format!("fired_event_popups FEV1 invalid: {error:?}"))?;
+        let rows = decoded
+            .rows
+            .into_iter()
+            .map(|row| {
+                let subtype = match row.popup_subtype {
+                    fired75::PopupSubtype::Country => "country",
+                    fired75::PopupSubtype::News => "news",
+                    fired75::PopupSubtype::State => "state",
+                    fired75::PopupSubtype::UnitLeader => "unit_leader",
+                    fired75::PopupSubtype::OperativeLeader => "operative_leader",
+                };
+                let reason = match row.resolution_reason {
+                    fired75::ResolutionReason::Pending => "pending",
+                    fired75::ResolutionReason::Selected => "selected",
+                    fired75::ResolutionReason::Timeout => "timeout",
+                };
+                json!({
+                    "event_id": row.event_id,
+                    "recipient_tag": row.recipient_tag,
+                    "fire_date": row.fire_date,
+                    "fire_hour": row.fire_hour,
+                    "fire_tick": row.fire_tick,
+                    "event_sequence": row.event_sequence,
+                    "visible_option_ordinals": row.visible_option_ordinals,
+                    "chosen_option_ordinal": row.chosen_option_ordinal,
+                    "selected_desc_key": row.selected_desc_key,
+                    "shown_picture_gfx": row.shown_picture_gfx,
+                    "popup_subtype": subtype,
+                    "effective_timeout_hours": row.effective_timeout_hours,
+                    "timeout_tick": row.timeout_tick,
+                    "resolved_tick": row.resolved_tick,
+                    "resolution_reason": reason,
+                    "runtime_text_context_id": row.runtime_text_context_id,
+                })
+            })
+            .collect::<Vec<_>>();
+        let t = decoded.telemetry;
+        self.fired_event_popups = Some(json!({
+            "schema_version": fired75::SCHEMA_VERSION,
+            "authority": "exact_a729_inline_hooks",
+            "elapsed_wall_ms": decoded.elapsed_wall_ms,
+            "frame_hour": decoded.frame_hour,
+            "fired_events_complete": decoded.fired_events_complete,
+            "telemetry": {
+                "fire_hook_validated": t.fire_hook_validated,
+                "option_hook_validated": t.option_hook_validated,
+                "materialisation_hook_validated": t.materialisation_hook_validated,
+                "timeout_hook_validated": t.timeout_hook_validated,
+                "event_classes_covered": t.all_event_classes_covered,
+                "player_ai_timeout_no_choice_covered": t.player_ai_timeout_no_choice_covered,
+                "capture_start_baseline_complete": t.capture_start_baseline_complete,
+                "queue_capacity": t.queue_capacity,
+                "queue_high_water_mark": t.queue_high_water_mark,
+                "dropped_fire_rows": t.dropped_fire_rows,
+                "dropped_resolution_rows": t.dropped_resolution_rows,
+                "correlation_failures": t.correlation_failures,
+                "invalid_definition_joins": t.invalid_definition_joins,
+                "fired_ledger_shadow_mismatches": t.fired_ledger_shadow_mismatches,
+            },
+            "rows": rows,
+        }));
+        self.fired_event_popups_known_this_hour = true;
+        self.mark_fold_domain_success(FIRED_EVENT_POPUPS_DOMAIN_ID);
+        Ok(())
+    }
+
+    fn fold_runtime_text_inputs(&mut self, payload: &[u8]) -> Result<(), String> {
+        let decoded = runtime76::decode_payload(payload)
+            .map_err(|error| format!("runtime_text_inputs RTI1 invalid: {error:?}"))?;
+        if self.handle_compact_failure(
+            RUNTIME_TEXT_INPUTS_DOMAIN_ID,
+            runtime76::DOMAIN_NAME,
+            decoded.status_flags,
+        ) {
+            return Ok(());
+        }
+
+        let frame_hour = decoded.frame_hour;
+        let projected = runtime76::project_replay_runtime_text(&decoded)
+            .map_err(|error| format!("runtime_text_inputs replay projection invalid: {error:?}"))?;
+        self.runtime_text_inputs_this_hour = Some((frame_hour, projected));
+        self.mark_fold_domain_success(RUNTIME_TEXT_INPUTS_DOMAIN_ID);
+        Ok(())
+    }
+
+    fn fold_production_render(
+        &mut self,
+        payload: &[u8],
+        expected_hour: Option<(i32, i64)>,
+    ) -> Result<(), String> {
+        let frame = ProductionRenderFrame::decode_json(payload)?;
+        if let Some((expected_raw, expected)) = expected_hour {
+            let expected = u64::try_from(expected)
+                .map_err(|_| "production render H4CR hour index is negative".to_string())?;
+            if frame.selected_present.selected_game_hour_raw != expected_raw {
+                return Err(format!(
+                    "production render selected raw hour {} differs from H4CR game_hour_raw {expected_raw}",
+                    frame.selected_present.selected_game_hour_raw
+                ));
+            }
+            if frame.update_index != expected {
+                return Err(format!(
+                    "production render update_index {} differs from H4CR hour_index {expected}",
+                    frame.update_index
+                ));
+            }
+            if self.production_render_this_hour.is_some() {
+                return Err("production render repeats domain 77 in one H4CR hour".into());
+            }
+        }
+        if frame.submits.len() != 1 {
+            return Err("production render must retain exactly one selected display submit".into());
+        }
+        let update_index = frame.update_index;
+        let projected = serde_json::to_value(frame)
+            .map_err(|error| format!("production render projection: {error}"))?;
+        self.production_render_this_hour = Some((update_index, projected));
+        self.mark_fold_domain_success(PRODUCTION_RENDER_SUBMITS_DOMAIN_ID);
+        Ok(())
+    }
+
+    fn fold_design_catalog_context(&mut self, payload: &[u8]) -> Result<(), String> {
+        let decoded = design78::decode_payload(payload)
+            .map_err(|error| format!("design_catalog_context DCX1 invalid: {error:?}"))?;
+        if self.handle_compact_failure(
+            DESIGN_CATALOG_CONTEXT_DOMAIN_ID,
+            design78::DOMAIN_NAME,
+            decoded.status_flags,
+        ) {
+            return Ok(());
+        }
+        let context = decoded.context.ok_or_else(|| {
+            "design_catalog_context clean payload omitted authenticated context".to_string()
+        })?;
+        let frame_hour = decoded.frame_hour;
+        let family = context.family.engine_view_name();
+        self.design_catalog_context_this_hour = Some((
+            frame_hour,
+            json!({
+                "schema_version": design78::SCHEMA_VERSION,
+                "authority": "exact_a729_designer_view",
+                "elapsed_wall_ms": decoded.elapsed_wall_ms,
+                "frame_hour": frame_hour,
+                "completeness_record_identity": decoded.completeness_record_identity,
+                "transition_sequence": context.transition_sequence,
+                "active": context.active,
+                "mode": context.family.mode(),
+                "family": family,
+                "our_filter_enabled": context.our_filter_enabled,
+                "foreign_filter_enabled": context.foreign_filter_enabled,
+                "obsolete_filter_enabled": context.obsolete_filter_enabled,
+                "current_country_tag_id": context.current_country_tag_id,
+                "selected_country_tag_ids": context.selected_country_tag_ids,
+                "ordered_design_ids": context.ordered_design_ids,
+            }),
+        ));
+        self.mark_fold_domain_success(DESIGN_CATALOG_CONTEXT_DOMAIN_ID);
+        Ok(())
+    }
+
+    fn fold_hud_surface_activation(&mut self, payload: &[u8]) -> Result<(), String> {
+        let decoded = hud79::decode_activation_payload(payload)
+            .map_err(|error| format!("hud_surface_activation HRA1 invalid: {error}"))?;
+        if self.handle_compact_failure(
+            HUD_SURFACE_ACTIVATION_DOMAIN_ID,
+            hud79::DOMAIN_NAME,
+            decoded.status_flags,
+        ) {
+            self.hud_surface_activation_this_hour = None;
+            return Ok(());
+        }
+        if decoded.active_surfaces.is_empty() {
+            return Err("clean hud_surface_activation payload omitted all roots".into());
+        }
+        let active_surfaces = decoded
+            .active_surfaces
+            .iter()
+            .map(|row| {
+                json!({
+                    "surface": row.surface,
+                    "runtime_root_name": row.runtime_root_name,
+                })
+            })
+            .collect::<Vec<_>>();
+        self.hud_surface_activation_this_hour = Some((
+            decoded.frame_hour,
+            json!({
+                "schema_version": hud79::ACTIVATION_SCHEMA_VERSION,
+                "authority": "exact_a729_hud_controller_roots",
+                "frame_hour": decoded.frame_hour,
+                "status_flags": decoded.status_flags,
+                "observation_sequence": decoded.observation_sequence,
+                "active_surfaces": active_surfaces,
+            }),
+        ));
+        self.mark_fold_domain_success(HUD_SURFACE_ACTIVATION_DOMAIN_ID);
         Ok(())
     }
 
@@ -6017,17 +7090,34 @@ impl WorldFold {
         let construction_count = read_u32(payload, 36) as usize;
         let line_count = military_count + naval_count;
         let base_len = 40 + stockpile_count * 16 + line_count * 32 + construction_count * 32;
-        // Wave-4 production licensing: base payload is self-delimiting to
-        // base_len; any trailing bytes are the `PLIC` license trailer.
+        // The legacy base is self-delimiting. Additive D11 trailers are parsed
+        // as a strict segment chain so `PLIC` licensing, X4-P1 `PVJ1`
+        // line-variant joins, and X4-P2 `PFR1` requested-factory joins can
+        // coexist without changing legacy row offsets.
         if payload.len() < base_len {
             return Err(format!(
                 "production len {} < base {base_len}",
                 payload.len()
             ));
         }
+        let trailers = parse_production_trailers(payload, base_len)?;
         // clear any prior production block for every country we touch this frame
         // by building fresh per-tag accumulators; full-replace semantics.
         let mut per_tag: BTreeMap<u32, ProductionAccum> = BTreeMap::new();
+        if let Some(completeness_by_tag) = trailers.completeness_by_tag.as_ref() {
+            if completeness_by_tag.len() != country_count {
+                return Err(format!(
+                    "PCP1 country coverage is not bijective: trailer_rows={} country_count={country_count}",
+                    completeness_by_tag.len()
+                ));
+            }
+            for (&tag, &flags) in completeness_by_tag {
+                let accum = per_tag.entry(tag).or_default();
+                accum.stockpile_complete = Some(flags & 1 != 0);
+                accum.military_lines_complete = Some(flags & (1 << 1) != 0);
+                accum.naval_lines_complete = Some(flags & (1 << 2) != 0);
+            }
+        }
 
         let mut cursor = 40usize;
         for row_index in 0..stockpile_count {
@@ -6050,7 +7140,8 @@ impl WorldFold {
             accum.stockpile.insert(key, json!(amount));
             accum.stockpile_total += amount;
         }
-        for _ in 0..line_count {
+        let mut seen_line_keys = BTreeSet::new();
+        for row_index in 0..line_count {
             let tag = read_u32(payload, cursor);
             let kind = read_u32(payload, cursor + 4);
             let line_id = read_i32(payload, cursor + 8);
@@ -6059,20 +7150,81 @@ impl WorldFold {
             let speed = read_i32(payload, cursor + 20) as f64 / PRODUCTION_SCALE;
             let produced = read_i32(payload, cursor + 24) as f64 / PRODUCTION_SCALE;
             let amount = read_i32(payload, cursor + 28);
-            let row = json!({
-                "id": line_id,
-                "active_factories": active_factories,
-                "cost": cost,
-                "speed": speed,
-                "produced": produced,
-                "amount": amount,
-            });
+            let key = (tag, kind, line_id);
+            if !seen_line_keys.insert(key) {
+                return Err(format!(
+                    "production line row {row_index} duplicates tag {tag} kind {kind} line_id {line_id}"
+                ));
+            }
+            let mut row = Map::new();
+            row.insert("id".into(), json!(line_id));
+            row.insert("active_factories".into(), json!(active_factories));
+            row.insert("cost".into(), json!(cost));
+            row.insert("speed".into(), json!(speed));
+            row.insert("produced".into(), json!(produced));
+            row.insert("amount".into(), json!(amount));
+            if let Some(variant_by_line) = trailers.variant_by_line.as_ref() {
+                let variant_id = variant_by_line.get(&key).ok_or_else(|| {
+                    format!(
+                        "PVJ1 has no equipment_variant_id for production line tag {tag} kind {kind} line_id {line_id}"
+                    )
+                })?;
+                row.insert("equipment_variant_id".into(), json!(variant_id.to_string()));
+            }
+            if let Some(requested_by_line) = trailers.requested_factories_by_line.as_ref() {
+                let requested_factories = requested_by_line.get(&key).ok_or_else(|| {
+                    format!(
+                        "PFR1 has no requested_factories for production line tag {tag} kind {kind} line_id {line_id}"
+                    )
+                })?;
+                row.insert("requested_factories".into(), json!(requested_factories));
+            }
+            if let Some(subtype_by_line) = trailers.subtype_by_line.as_ref() {
+                let subtype = subtype_by_line.get(&key).ok_or_else(|| {
+                    format!(
+                        "PLS1 has no line_subtype for production line tag {tag} kind {kind} line_id {line_id}"
+                    )
+                })?;
+                row.insert("line_subtype".into(), json!(subtype));
+            }
+            if let Some(efficiency_by_line) = trailers.efficiency_by_line.as_ref() {
+                let values = efficiency_by_line.get(&key).ok_or_else(|| {
+                    format!(
+                        "PEF1 has no efficiency producer values for production line tag {tag} kind {kind} line_id {line_id}"
+                    )
+                })?;
+                const EFFICIENCY_SCALE: f64 = 10_000_000.0;
+                row.insert(
+                    "efficiency".into(),
+                    json!(values.efficiency_raw as f64 / EFFICIENCY_SCALE),
+                );
+                row.insert(
+                    "efficiency_cap".into(),
+                    json!(values.efficiency_cap_raw as f64 / EFFICIENCY_SCALE),
+                );
+                row.insert(
+                    "efficiency_growth".into(),
+                    json!(values.efficiency_growth_raw as f64 / EFFICIENCY_SCALE),
+                );
+            }
+            if let Some(mio_by_line) = trailers.mio_by_line.as_ref() {
+                let mio_id = mio_by_line.get(&key).ok_or_else(|| {
+                    format!(
+                        "PMI1 has no mio_id for production line tag {tag} kind {kind} line_id {line_id}"
+                    )
+                })?;
+                if *mio_id == 0 {
+                    row.insert("mio_id".into(), Value::Null);
+                } else {
+                    row.insert("mio_id".into(), json!(mio_id.to_string()));
+                }
+            }
             let accum = per_tag.entry(tag).or_default();
             if kind == 2 {
-                accum.naval_lines.push(row);
+                accum.naval_lines.push(Value::Object(row));
                 accum.naval_factories += active_factories as i64;
             } else {
-                accum.military_lines.push(row);
+                accum.military_lines.push(Value::Object(row));
                 accum.military_factories += active_factories as i64;
             }
             cursor += 32;
@@ -6102,16 +7254,110 @@ impl WorldFold {
             cursor += 32;
         }
 
-        // Wave-4 production licensing: parse the optional `PLIC` trailer. A
+        if let Some(variant_by_line) = trailers.variant_by_line.as_ref() {
+            if variant_by_line.len() != seen_line_keys.len()
+                || !variant_by_line
+                    .keys()
+                    .all(|key| seen_line_keys.contains(key))
+            {
+                return Err(format!(
+                    "PVJ1 line coverage is not bijective: trailer_rows={} base_lines={}",
+                    variant_by_line.len(),
+                    seen_line_keys.len()
+                ));
+            }
+        }
+        if let Some(requested_by_line) = trailers.requested_factories_by_line.as_ref() {
+            if requested_by_line.len() != seen_line_keys.len()
+                || !requested_by_line
+                    .keys()
+                    .all(|key| seen_line_keys.contains(key))
+            {
+                return Err(format!(
+                    "PFR1 line coverage is not bijective: trailer_rows={} base_lines={}",
+                    requested_by_line.len(),
+                    seen_line_keys.len()
+                ));
+            }
+        }
+        if let Some(subtype_by_line) = trailers.subtype_by_line.as_ref() {
+            if subtype_by_line.len() != seen_line_keys.len()
+                || !subtype_by_line
+                    .keys()
+                    .all(|key| seen_line_keys.contains(key))
+            {
+                return Err(format!(
+                    "PLS1 line coverage is not bijective: trailer_rows={} base_lines={}",
+                    subtype_by_line.len(),
+                    seen_line_keys.len()
+                ));
+            }
+        }
+        if let Some(efficiency_by_line) = trailers.efficiency_by_line.as_ref() {
+            if efficiency_by_line.len() != seen_line_keys.len()
+                || !efficiency_by_line
+                    .keys()
+                    .all(|key| seen_line_keys.contains(key))
+            {
+                return Err(format!(
+                    "PEF1 line coverage is not bijective: trailer_rows={} base_lines={}",
+                    efficiency_by_line.len(),
+                    seen_line_keys.len()
+                ));
+            }
+        }
+        if let Some(mio_by_line) = trailers.mio_by_line.as_ref() {
+            if mio_by_line.len() != seen_line_keys.len()
+                || !mio_by_line.keys().all(|key| seen_line_keys.contains(key))
+            {
+                return Err(format!(
+                    "PMI1 line coverage is not bijective: trailer_rows={} base_lines={}",
+                    mio_by_line.len(),
+                    seen_line_keys.len()
+                ));
+            }
+        }
+
+        // Wave-4 production licensing: apply the optional `PLIC` segment. A
         // country present in the trailer gets its measured license set
         // (proven-empty => `[]`); a country absent from the trailer keeps
         // `licenses = None` (unreadable/not measured, folded as null — absent
         // != empty).
         debug_assert_eq!(cursor, base_len);
-        if cursor != payload.len() {
-            let licenses_by_tag = parse_production_license_trailer(payload, cursor)?;
+        if let Some(licenses_by_tag) = trailers.licenses_by_tag {
             for (tag, ids) in licenses_by_tag {
                 per_tag.entry(tag).or_default().licenses = Some(ids);
+            }
+        }
+
+        if let Some(completeness_by_tag) = trailers.completeness_by_tag.as_ref() {
+            if per_tag.len() != completeness_by_tag.len()
+                || !per_tag
+                    .keys()
+                    .all(|tag| completeness_by_tag.contains_key(tag))
+            {
+                return Err(format!(
+                    "PCP1 tag coverage is not bijective: trailer_rows={} keyed_countries={}",
+                    completeness_by_tag.len(),
+                    per_tag.len()
+                ));
+            }
+            for (&tag, accum) in &per_tag {
+                if !accum.stockpile.is_empty()
+                    && completeness_by_tag.get(&tag).copied().unwrap_or(0) & 1 == 0
+                {
+                    return Err(format!(
+                        "PCP1 marks stockpile unreadable for tag {tag} with base stockpile rows"
+                    ));
+                }
+            }
+            for &(tag, kind, _) in &seen_line_keys {
+                let required = if kind == 2 { 1 << 2 } else { 1 << 1 };
+                if completeness_by_tag.get(&tag).copied().unwrap_or(0) & required == 0 {
+                    return Err(format!(
+                        "PCP1 marks production line kind {kind} unreadable for tag {tag} with base rows"
+                    ));
+                }
             }
         }
 
@@ -6133,23 +7379,32 @@ impl WorldFold {
         let mut ambiguous_leaves = Vec::new();
         for (tag, accum) in per_tag {
             let mut production = Map::new();
-            if accum.stockpile.is_empty() {
-                ambiguous_leaves.push(format!("{tag}:stockpile"));
-            } else {
+            if let Some(complete) = accum.stockpile_complete {
+                production.insert("stockpile_complete".into(), json!(complete));
+            }
+            if accum.stockpile_complete == Some(true) || !accum.stockpile.is_empty() {
                 production.insert("stockpile".into(), Value::Object(accum.stockpile));
                 production.insert("stockpile_total".into(), json!(accum.stockpile_total));
+            } else if accum.stockpile_complete.is_none() {
+                ambiguous_leaves.push(format!("{tag}:stockpile"));
             }
-            if accum.military_lines.is_empty() {
-                ambiguous_leaves.push(format!("{tag}:military_lines"));
-            } else {
+            if let Some(complete) = accum.military_lines_complete {
+                production.insert("military_lines_complete".into(), json!(complete));
+            }
+            if accum.military_lines_complete == Some(true) || !accum.military_lines.is_empty() {
                 production.insert("military_lines".into(), Value::Array(accum.military_lines));
                 production.insert("military_factories".into(), json!(accum.military_factories));
+            } else if accum.military_lines_complete.is_none() {
+                ambiguous_leaves.push(format!("{tag}:military_lines"));
             }
-            if accum.naval_lines.is_empty() {
-                ambiguous_leaves.push(format!("{tag}:naval_lines"));
-            } else {
+            if let Some(complete) = accum.naval_lines_complete {
+                production.insert("naval_lines_complete".into(), json!(complete));
+            }
+            if accum.naval_lines_complete == Some(true) || !accum.naval_lines.is_empty() {
                 production.insert("naval_lines".into(), Value::Array(accum.naval_lines));
                 production.insert("naval_factories".into(), json!(accum.naval_factories));
+            } else if accum.naval_lines_complete.is_none() {
+                ambiguous_leaves.push(format!("{tag}:naval_lines"));
             }
             if accum.construction_queue.is_empty() {
                 ambiguous_leaves.push(format!("{tag}:construction_queue"));
@@ -6168,6 +7423,76 @@ impl WorldFold {
             production.insert("production_licenses".into(), licenses_value);
             self.country_mut(tag)
                 .insert("production".into(), Value::Object(production));
+        }
+        if let Some(convoy_banks) = trailers.convoy_bank_by_tag {
+            for (tag, bank) in convoy_banks {
+                let country = self.country_mut(tag);
+                let military = match country
+                    .entry("military".to_string())
+                    .or_insert_with(|| Value::Object(Map::new()))
+                {
+                    Value::Object(map) => map,
+                    value => {
+                        *value = Value::Object(Map::new());
+                        value.as_object_mut().expect("just replaced with object")
+                    }
+                };
+                for key in [
+                    "convoys_owned_raw",
+                    "convoys_count",
+                    "convoys_assigned",
+                    "convoys_available",
+                    "convoys",
+                    "convoy_priority_reservations",
+                    "convoys_cache_valid",
+                ] {
+                    military.remove(key);
+                }
+                military.insert("convoys_complete".into(), json!(bank.complete));
+                military.insert(
+                    "convoy_priority_reservations_complete".into(),
+                    json!(bank.reservations_complete),
+                );
+                if !bank.complete {
+                    continue;
+                }
+                military.insert("convoys_owned_raw".into(), json!(bank.owned_raw));
+                military.insert(
+                    "convoys_count".into(),
+                    json!(bank.owned_raw as f64 / PRODUCTION_SCALE),
+                );
+                military.insert("convoys_assigned".into(), json!(bank.assigned));
+                military.insert("convoys_available".into(), json!(bank.available));
+                military.insert("convoys_cache_valid".into(), json!(bank.cache_valid));
+                military.insert(
+                    "convoys".into(),
+                    Value::Array(
+                        bank.variants
+                            .into_iter()
+                            .map(|row| {
+                                json!({
+                                    "archetype": "convoy_1",
+                                    "equip_id": row.variant_id,
+                                    "equip_type": row.equip_type,
+                                    "amount_raw": row.amount_raw,
+                                    "amount": row.amount_raw as f64 / PRODUCTION_SCALE,
+                                })
+                            })
+                            .collect(),
+                    ),
+                );
+                if bank.reservations_complete {
+                    military.insert(
+                        "convoy_priority_reservations".into(),
+                        Value::Array(
+                            bank.reservations
+                                .into_iter()
+                                .map(|row| json!({"priority": row.priority, "count": row.count}))
+                                .collect(),
+                        ),
+                    );
+                }
+            }
         }
         if !ambiguous_leaves.is_empty() {
             self.record_domain_problem(11, "production_leaf_presence_ambiguous");
@@ -6198,8 +7523,55 @@ impl WorldFold {
             let focus_tree = read_string(payload, &mut cursor, "focus tree")?;
             let current = read_string(payload, &mut cursor, "focus current")?;
             let current_continuous = read_string(payload, &mut cursor, "focus current continuous")?;
+            if flags & !0xff != 0 {
+                return Err(format!(
+                    "focus country {tag} carries unknown flags {flags:#x}"
+                ));
+            }
+            if flags & 1 == 0 && !focus_tree.is_empty() {
+                return Err(format!(
+                    "focus country {tag} carries tree token without tree-present flag"
+                ));
+            }
+            if flags & 1 != 0 && focus_tree.is_empty() {
+                return Err(format!(
+                    "focus country {tag} carries empty measured focus tree"
+                ));
+            }
+            if flags & (1 << 2) == 0 && !current.is_empty() {
+                return Err(format!(
+                    "focus country {tag} carries current token without set-read flag"
+                ));
+            }
+            if flags & (1 << 3) == 0 && !current_continuous.is_empty() {
+                return Err(format!(
+                    "focus country {tag} carries continuous token without set-read flag"
+                ));
+            }
+            if !current.is_empty() && !current_continuous.is_empty() {
+                return Err(format!(
+                    "focus country {tag} carries simultaneous national and continuous current focus"
+                ));
+            }
+            if flags & (1 << 1) == 0 && completed_count != u32::MAX {
+                return Err(format!(
+                    "focus country {tag} carries completed count without count-present flag"
+                ));
+            }
+            if flags & (1 << 1) != 0 && completed_count == u32::MAX {
+                return Err(format!(
+                    "focus country {tag} carries invalid measured completed count"
+                ));
+            }
             let mut obj = Map::new();
-            obj.insert("focus_tree".into(), string_or_null(&focus_tree));
+            obj.insert(
+                "focus_tree".into(),
+                if flags & 1 != 0 {
+                    json!(focus_tree)
+                } else {
+                    Value::Null
+                },
+            );
             obj.insert(
                 "completed_count".into(),
                 if completed_count == u32::MAX {
@@ -6209,17 +7581,57 @@ impl WorldFold {
                 },
             );
             obj.insert("current".into(), string_or_null(&current));
+            if flags & (1 << 2) != 0 {
+                obj.insert(
+                    "current_set".into(),
+                    if current.is_empty() {
+                        json!([])
+                    } else {
+                        json!([current])
+                    },
+                );
+            }
             obj.insert(
                 "current_continuous".into(),
                 string_or_null(&current_continuous),
             );
+            if flags & (1 << 3) != 0 {
+                obj.insert(
+                    "current_continuous_set".into(),
+                    if current_continuous.is_empty() {
+                        json!([])
+                    } else {
+                        json!([current_continuous])
+                    },
+                );
+            }
             // progress present only when flag bit 4 is set
             if flags & (1 << 4) != 0 {
                 obj.insert("progress".into(), json!(progress_raw as f64 / FIXED_SCALE));
             } else {
                 obj.insert("progress".into(), Value::Null);
             }
-            obj.insert("completed".into(), json!([]));
+            if flags & (1 << 7) != 0 && flags & (1 << 6) == 0 {
+                return Err(format!(
+                    "focus country {tag} carries paused value without paused-present flag"
+                ));
+            }
+            obj.insert(
+                "paused".into(),
+                if flags & (1 << 6) != 0 {
+                    json!(flags & (1 << 7) != 0)
+                } else {
+                    Value::Null
+                },
+            );
+            obj.insert(
+                "completed".into(),
+                if flags & (1 << 5) != 0 {
+                    json!([])
+                } else {
+                    Value::Null
+                },
+            );
             per_tag.insert(tag, obj);
         }
         for _ in 0..completed_token_count {
@@ -6227,10 +7639,32 @@ impl WorldFold {
             let tag = read_u32(payload, cursor);
             cursor += 4;
             let token = read_string(payload, &mut cursor, "focus completed token")?;
-            if let Some(obj) = per_tag.get_mut(&tag) {
-                if let Some(Value::Array(list)) = obj.get_mut("completed") {
-                    list.push(json!(token));
-                }
+            let obj = per_tag
+                .get_mut(&tag)
+                .ok_or_else(|| format!("focus completed token references unknown country {tag}"))?;
+            let list = obj
+                .get_mut("completed")
+                .and_then(Value::as_array_mut)
+                .ok_or_else(|| {
+                    format!("focus country {tag} carries completed token without list-present flag")
+                })?;
+            if token.is_empty() {
+                return Err(format!("focus country {tag} carries empty completed token"));
+            }
+            list.push(json!(token));
+        }
+        for (tag, obj) in &per_tag {
+            let Some(completed_count) = obj.get("completed_count").and_then(Value::as_u64) else {
+                continue;
+            };
+            let Some(completed) = obj.get("completed").and_then(Value::as_array) else {
+                continue;
+            };
+            if completed_count != completed.len() as u64 {
+                return Err(format!(
+                    "focus country {tag} completed count {completed_count} disagrees with list length {}",
+                    completed.len()
+                ));
             }
         }
         if cursor != payload.len() {
@@ -6251,9 +7685,11 @@ impl WorldFold {
         need(payload, 32, "tech header")?;
         let country_count = read_u32(payload, 8) as usize;
         let active_count = read_u32(payload, 28) as usize;
-        let expected = 32 + country_count * 16 + active_count * 40;
-        if payload.len() != expected {
-            return Err(format!("tech len {} != {expected}", payload.len()));
+        let minimum = 32usize
+            .saturating_add(country_count.saturating_mul(16))
+            .saturating_add(active_count.saturating_mul(40));
+        if payload.len() < minimum {
+            return Err(format!("tech len {} < minimum {minimum}", payload.len()));
         }
         let mut cursor = 32usize;
         let mut per_tag: BTreeMap<u32, Map<String, Value>> = BTreeMap::new();
@@ -6269,27 +7705,103 @@ impl WorldFold {
             per_tag.insert(tag, obj);
         }
         for _ in 0..active_count {
+            need(payload, cursor.saturating_add(40), "tech active row")?;
             let tag = read_u32(payload, cursor);
             let slot_index = read_u32(payload, cursor + 4);
-            let tech_handle = read_u32(payload, cursor + 8);
-            let tech_def_index = read_u32(payload, cursor + 12);
-            let progress = read_i32(payload, cursor + 16) as f64 / TECH_PROGRESS_SCALE;
-            let live_progress = read_i64(payload, cursor + 24) as f64 / TECH_LIVE_SCALE;
-            let base_required = read_i64(payload, cursor + 32) as f64 / TECH_LIVE_SCALE;
-            cursor += 40;
-            let slot = json!({
-                "slot_index": slot_index,
-                "tech_handle": tech_handle,
-                "tech_def_index": tech_def_index,
-                "progress": progress,
-                "live_progress": live_progress,
-                "base_required_points": base_required,
-            });
-            if let Some(obj) = per_tag.get_mut(&tag) {
-                if let Some(Value::Array(list)) = obj.get_mut("in_progress_live") {
-                    list.push(slot);
-                }
+            let tech_handle_raw = read_u32(payload, cursor + 8);
+            let tech_def_index_raw = read_u32(payload, cursor + 12);
+            let progress_raw = read_u32(payload, cursor + 16);
+            let flags = read_u32(payload, cursor + 20);
+            if flags & !0b1111 != 0 {
+                return Err(format!("tech active row has unknown flags {flags}"));
             }
+            let live_progress_raw = read_i64(payload, cursor + 24);
+            let base_required_points_raw = read_i64(payload, cursor + 32);
+            cursor += 40;
+            let mut slot = Map::new();
+            slot.insert("slot_index".into(), json!(slot_index));
+            slot.insert("tech_handle_raw".into(), json!(tech_handle_raw));
+            slot.insert("tech_def_index_raw".into(), json!(tech_def_index_raw));
+            slot.insert("progress_raw".into(), json!(progress_raw));
+            slot.insert(
+                "progress_units".into(),
+                json!(progress_raw as f64 / TECH_PROGRESS_SCALE),
+            );
+            if flags & 1 != 0 {
+                slot.insert("live_progress_raw".into(), json!(live_progress_raw));
+                slot.insert(
+                    "live_progress_units".into(),
+                    json!(live_progress_raw as f64 / TECH_LIVE_SCALE),
+                );
+            } else if live_progress_raw != 0 {
+                return Err("tech live_progress_raw without presence flag".into());
+            }
+            if flags & (1 << 1) != 0 {
+                slot.insert(
+                    "base_required_points_raw".into(),
+                    json!(base_required_points_raw),
+                );
+                slot.insert(
+                    "base_required_points_units".into(),
+                    json!(base_required_points_raw as f64 / TECH_LIVE_SCALE),
+                );
+            } else if base_required_points_raw != 0 {
+                return Err("tech base_required_points_raw without presence flag".into());
+            }
+            if flags & (1 << 2) != 0 {
+                let tech_name = read_string(payload, &mut cursor, "tech_name")?;
+                if tech_name.is_empty() {
+                    return Err("tech active row has empty tech_name".into());
+                }
+                slot.insert("tech_name".into(), json!(tech_name));
+            }
+            if flags & (1 << 3) != 0 {
+                need(payload, cursor.saturating_add(32), "tech ahead quartet")?;
+                let ahead_years_raw = read_i64(payload, cursor);
+                let penalty_raw = read_i64(payload, cursor + 8);
+                let reduction_raw = read_i64(payload, cursor + 16);
+                let reduced_penalty_raw = read_i64(payload, cursor + 24);
+                if [
+                    ahead_years_raw,
+                    penalty_raw,
+                    reduction_raw,
+                    reduced_penalty_raw,
+                ]
+                .iter()
+                .any(|value| !(0..=10_000_000_000i64).contains(value))
+                {
+                    return Err("tech active row has invalid ahead fixed-5 quartet".into());
+                }
+                cursor += 32;
+                slot.insert(
+                    "ahead_of_time_years".into(),
+                    json!(ahead_years_raw as f64 / TECH_LIVE_SCALE),
+                );
+                slot.insert(
+                    "ahead_of_time_penalty_pct".into(),
+                    json!(penalty_raw as f64 / TECH_LIVE_SCALE),
+                );
+                slot.insert(
+                    "ahead_of_time_reduction_years".into(),
+                    json!(reduction_raw as f64 / TECH_LIVE_SCALE),
+                );
+                slot.insert(
+                    "ahead_of_time_reduced_penalty_pct".into(),
+                    json!(reduced_penalty_raw as f64 / TECH_LIVE_SCALE),
+                );
+            }
+            let obj = per_tag
+                .get_mut(&tag)
+                .ok_or_else(|| format!("tech active row references unknown tag {tag}"))?;
+            if let Some(Value::Array(list)) = obj.get_mut("in_progress_live") {
+                list.push(Value::Object(slot));
+            }
+        }
+        if cursor != payload.len() {
+            return Err(format!(
+                "tech trailing bytes: consumed {cursor} of {}",
+                payload.len()
+            ));
         }
         for (tag, obj) in per_tag {
             self.country_mut(tag)
@@ -7958,11 +9470,11 @@ impl WorldFold {
         ) {
             return Ok(());
         }
-        let expected_len = AIR_COMBAT_LOSS_HEADER_LEN
+        let legacy_len = AIR_COMBAT_LOSS_HEADER_LEN
             .saturating_add(row_count.saturating_mul(AIR_COMBAT_LOSS_ROW_LEN));
-        if payload.len() != expected_len {
+        if payload.len() < legacy_len {
             return Err(format!(
-                "air_combat_losses len {} != {expected_len}",
+                "air_combat_losses len {} < {legacy_len}",
                 payload.len()
             ));
         }
@@ -8060,6 +9572,133 @@ impl WorldFold {
                 rows.push(row);
             }
         }
+        let regional_stats = if payload.len() == legacy_len {
+            None
+        } else {
+            let trailer = legacy_len;
+            need(
+                payload,
+                trailer + AIR_REGION_STATS_TRAILER_HEADER_LEN,
+                "air region combat stats trailer",
+            )?;
+            let magic = read_u32(payload, trailer);
+            let version = read_u16(payload, trailer + 4);
+            let header_len = read_u16(payload, trailer + 6) as usize;
+            let region_count = read_u32(payload, trailer + 8) as usize;
+            let damage_count = read_u32(payload, trailer + 12) as usize;
+            let _observed_region_objects = read_u32(payload, trailer + 16);
+            if magic != AIR_REGION_STATS_TRAILER_MAGIC
+                || version != AIR_REGION_STATS_TRAILER_VERSION
+                || header_len != AIR_REGION_STATS_TRAILER_HEADER_LEN
+            {
+                return Err("air region combat stats trailer identity mismatch".into());
+            }
+            if read_u32(payload, trailer + 20) != 0
+                || read_u32(payload, trailer + 24) != 0
+                || read_u32(payload, trailer + 28) != 0
+            {
+                return Err("air region combat stats trailer reserved field is nonzero".into());
+            }
+            let region_bytes = region_count.saturating_mul(AIR_REGION_STATS_ROW_LEN);
+            let damage_bytes = damage_count.saturating_mul(AIR_REGION_DAMAGE_ROW_LEN);
+            let expected_len = trailer
+                .saturating_add(header_len)
+                .saturating_add(region_bytes)
+                .saturating_add(damage_bytes);
+            if payload.len() != expected_len {
+                return Err(format!(
+                    "air region combat stats len {} != {expected_len}",
+                    payload.len()
+                ));
+            }
+            let region_base = trailer + header_len;
+            let damage_base = region_base + region_bytes;
+            let mut damage_rows = Vec::with_capacity(damage_count);
+            for index in 0..damage_count {
+                let base = damage_base + index * AIR_REGION_DAMAGE_ROW_LEN;
+                let channel = payload[base];
+                let cause_type = payload[base + 1];
+                let amount_raw = read_i64(payload, base + 8);
+                if channel > 1
+                    || cause_type > 10
+                    || read_u16(payload, base + 2) != 0
+                    || read_u32(payload, base + 4) != 0
+                    || !(0..=1_000_000_000_000_000).contains(&amount_raw)
+                {
+                    return Err(format!(
+                        "air region combat stats invalid damage row {index}"
+                    ));
+                }
+                damage_rows.push(AirRegionDamageState {
+                    channel,
+                    cause_type,
+                    amount_raw,
+                });
+            }
+            let mut region_rows = Vec::with_capacity(region_count);
+            let mut expected_damage_first = 0usize;
+            for index in 0..region_count {
+                let base = region_base + index * AIR_REGION_STATS_ROW_LEN;
+                let owner_tag_db_id = read_u32(payload, base);
+                let region_id = read_u32(payload, base + 4);
+                let side_vector = payload[base + 8];
+                let selection_flag = payload[base + 9];
+                let classification_flag = payload[base + 10];
+                let copied_flag = payload[base + 11];
+                let wing_id = read_u32(payload, base + 12);
+                let plane_count = read_u32(payload, base + 20);
+                let attributed_country_tag_db_id = read_u32(payload, base + 28);
+                let damage_first = read_u32(payload, base + 32) as usize;
+                let row_damage_count = read_u32(payload, base + 36) as usize;
+                if owner_tag_db_id == 0
+                    || owner_tag_db_id > 1_024
+                    || attributed_country_tag_db_id == 0
+                    || attributed_country_tag_db_id > 1_024
+                    || region_id > 65_535
+                    || wing_id == 0
+                    || wing_id > i32::MAX as u32
+                    || plane_count > 10_000_000
+                    || side_vector > 1
+                    || selection_flag > 1
+                    || classification_flag > 1
+                    || copied_flag > 1
+                    || damage_first != expected_damage_first
+                    || damage_first.saturating_add(row_damage_count) > damage_rows.len()
+                {
+                    return Err(format!(
+                        "air region combat stats invalid region row {index}"
+                    ));
+                }
+                let damage_end = damage_first + row_damage_count;
+                region_rows.push(AirRegionCombatStatState {
+                    owner_tag_db_id,
+                    region_id,
+                    side_vector,
+                    selection_flag,
+                    classification_flag,
+                    copied_flag,
+                    wing_id,
+                    date_raw: read_i32(payload, base + 16),
+                    plane_count,
+                    mission_mask: read_u32(payload, base + 24),
+                    attributed_country_tag_db_id,
+                    damage: damage_rows[damage_first..damage_end]
+                        .iter()
+                        .map(|entry| AirRegionDamageState {
+                            channel: entry.channel,
+                            cause_type: entry.cause_type,
+                            amount_raw: entry.amount_raw,
+                        })
+                        .collect(),
+                });
+                expected_damage_first = damage_end;
+            }
+            if expected_damage_first != damage_rows.len() {
+                return Err("air region combat stats damage coverage mismatch".into());
+            }
+            Some(region_rows)
+        };
+
         // Deletions first, then live upserts, so a wing deleted and recreated
         // in the same payload survives regardless of row ordering.
         for wing_id in &deleted_wing_rows_this_payload {
@@ -8069,6 +9708,7 @@ impl WorldFold {
             self.air_wing_cumulative.insert(wing_id, state);
         }
         self.air_combat_losses_this_hour = Some(rows);
+        self.air_region_combat_stats_this_hour = regional_stats;
         self.mark_fold_domain_success(AIR_COMBAT_LOSSES_DOMAIN_ID);
         Ok(())
     }
@@ -8101,7 +9741,7 @@ impl WorldFold {
         Ok(())
     }
 
-    // --- DOMAIN 62 hub_motorization_live (supply-node membership) ----------
+    // --- DOMAIN 62 hub_motorization_live (exact country levels) ------------
     fn fold_hub_motorization(&mut self, payload: &[u8]) -> Result<(), String> {
         let (header, rows) = match hub62::decode_payload_rows(payload) {
             Ok(decoded) => decoded,
@@ -8124,27 +9764,30 @@ impl WorldFold {
         let mut fresh = BTreeMap::new();
         let mut map_entries = 0u64;
         for row in rows {
-            if row.map_size == 0 {
+            if !(1..=2).contains(&row.motorization_level) {
                 self.mark_fold_domain_unknown(
                     HUB_MOTORIZATION_DOMAIN_ID,
-                    "zero_map_size_row",
+                    "invalid_motorization_level",
                     "hub_motorization_live state unknown this hour; accumulator retained",
                 );
-                return Err("hub_motorization_live row has zero map_size".into());
+                return Err("hub_motorization_live row has invalid motorization_level".into());
             }
-            map_entries = map_entries.saturating_add(u64::from(row.map_size));
+            map_entries = map_entries.saturating_add(1);
             if fresh
-                .insert((row.owner_tag_db_id, row.province_id), row)
+                .insert(
+                    (row.owner_tag_db_id, row.province_id, row.actor_tag_db_id),
+                    row,
+                )
                 .is_some()
             {
                 self.mark_fold_domain_unknown(
                     HUB_MOTORIZATION_DOMAIN_ID,
-                    "duplicate_country_province_row",
+                    "duplicate_owner_province_actor_row",
                     "hub_motorization_live state unknown this hour; accumulator retained",
                 );
                 return Err(format!(
-                    "hub_motorization_live duplicate country/province row {}:{}",
-                    row.owner_tag_db_id, row.province_id
+                    "hub_motorization_live duplicate owner/province/actor row {}:{}:{}",
+                    row.owner_tag_db_id, row.province_id, row.actor_tag_db_id
                 ));
             }
         }
@@ -10065,7 +11708,7 @@ impl WorldFold {
         let mut omitted_decision_target_tags = BTreeSet::new();
         for row in parsed.decision_status_rows {
             if parsed.decision_target_omitted_rows > 0
-                && row.targeted_timed_count
+                && row.targeted_count.saturating_add(row.targeted_timed_count)
                     > decision_target_rows_by_tag
                         .get(&row.tag_db_id)
                         .copied()
@@ -11095,10 +12738,18 @@ impl WorldFold {
             "ground_damage_org_raw": detail.ground_damage_org_raw,
             "prevented_damage_str_raw": detail.prevented_damage_str_raw,
             "prevented_damage_org_raw": detail.prevented_damage_org_raw,
-            // Unresolved / omitted fields, badged so a consumer never treats
-            // their absence as zero.
-            "tactic": Value::Null,
-            "tactic_status": "unresolved_pointer_table_backed",
+            "progress": detail.progress_raw.map(|raw| raw as f64 / scale),
+            "progress_raw": detail.progress_raw,
+            "tactic": detail.tactic.as_ref().map(|tactic| json!({
+                "id": tactic.id,
+                "token": tactic.token,
+                "name": tactic.name,
+            })),
+            "tactic_status": if detail.tactic_known {
+                if detail.tactic.is_some() { "exact" } else { "exact_none" }
+            } else {
+                "unavailable_legacy_stream"
+            },
             "losses_status": "omitted_all_zero_oracle",
             // True when committed+reserve != units on a STABLE read (a genuine
             // mid-combat transient — the counts are momentarily inconsistent,
@@ -11150,20 +12801,22 @@ impl WorldFold {
         self.naval_combat_lifecycle_known_this_hour = false;
         let (status_flags, rows) =
             naval4950::decode_lifecycle_rows(payload).map_err(|errors| errors.join("; "))?;
-        if let Err(reason) =
-            crate::domain_data_authority::validate_d49_promoted_location_region(status_flags, &rows)
-        {
-            // Structural boundary validation must reject this payload so the
-            // streaming fold takes its normal malformed-domain degradation
-            // path. Direct production folding must reach the same fail-closed
-            // state without mutating or publishing the carried combat map.
+        let location_region_incomplete =
+            status_flags & naval4950::STATUS_LOCATION_CANDIDATE_UNVALIDATED != 0
+                || rows.iter().any(|row| {
+                    !row.deleted && (row.location_id.is_none() || row.region_id.is_none())
+                });
+        if location_region_incomplete {
             if self.boundary_validation {
-                return Err(reason.to_string());
+                return Err(
+                    "naval_combat_lifecycle_live location/region promotion is incomplete"
+                        .to_string(),
+                );
             }
             self.mark_fold_domain_unknown(
                 NAVAL_COMBAT_LIFECYCLE_DOMAIN_ID,
                 "location_region_promotion_incomplete",
-                format!("{reason}; naval combat lifecycle unknown this hour, accumulator retained"),
+                "naval_combat_lifecycle_live location/region promotion incomplete; current hour masked and accumulator retained",
             );
             return Ok(());
         }
@@ -11439,6 +13092,24 @@ impl WorldFold {
                     "target_state_id".into(),
                     option_u32_json(row.target_state_id),
                 );
+            }
+            if let Some(target_location_id) = row.target_location_id {
+                obj.insert("target_location_id".into(), json!(target_location_id));
+            }
+            if let Some(target_scope) = row.target_scope {
+                let scope = match target_scope {
+                    domain48::SCOPE_STATE => "state",
+                    domain48::SCOPE_PROVINCE => "province",
+                    _ => unreachable!("domain48 gate rejected unknown target scope"),
+                };
+                obj.insert("target_scope".into(), json!(scope));
+            }
+            if let Some(repair_levels_remaining) = row.repair_levels_remaining {
+                obj.insert(
+                    "repair_levels_remaining".into(),
+                    json!(repair_levels_remaining),
+                );
+                obj.insert("is_repair".into(), json!(repair_levels_remaining > 0));
             }
             construction_by_country
                 .entry(row.tag_db_id)
@@ -12232,24 +13903,6 @@ impl WorldFold {
             });
         }
 
-        let mut pause_is_paused = None;
-        for _ in 0..event_count {
-            let row = &payload[cursor..cursor + session57::SESSION_EVENT_ROW_LEN];
-            cursor += session57::SESSION_EVENT_ROW_LEN;
-            let raw_kind = read_u16(row, 0);
-            let Some(kind) = session57::SessionEventKind::from_raw(raw_kind) else {
-                continue;
-            };
-            if kind != session57::SessionEventKind::Pause {
-                continue;
-            }
-            let value_i32 = read_i32(row, 32);
-            if value_i32 != 0 && value_i32 != 1 {
-                return Err(format!("domain57 pause value {value_i32} is not 0/1"));
-            }
-            pause_is_paused = Some(value_i32 != 0);
-        }
-
         let hard_failure = status_flags
             & (session57::STATUS_WORKER_PANIC | session57::STATUS_BRIDGE_UNAVAILABLE)
             != 0;
@@ -12259,12 +13912,141 @@ impl WorldFold {
             source_root_validated && (root_evidence_mask & DOMAIN57_ROOT_PLAYER_COUNTRY) != 0;
         let pause_root_validated =
             source_root_validated && (root_evidence_mask & DOMAIN57_ROOT_PAUSE_CLOCK) != 0;
+        let message_family_witnessed = !hard_failure
+            && source_root_validated
+            && source_flags & session57::SOURCE_FLAG_MESSAGE_HOOK_VALIDATED != 0
+            && root_evidence_mask & DOMAIN57_ROOT_CHAT_MESSAGES != 0;
+        let player_event_family_witnessed = !hard_failure
+            && source_root_validated
+            && source_flags & session57::SOURCE_FLAG_COMMAND_HOOK_VALIDATED != 0
+            && root_evidence_mask & DOMAIN57_ROOT_PLAYER_EVENTS != 0;
+
+        let mut pause_is_paused = None;
+        let mut event_candidates = Vec::new();
+        let mut message_family_invalid = false;
+        let mut player_event_family_invalid = false;
+        let mut seen_events = BTreeSet::new();
+        for row_index in 0..event_count {
+            let row = &payload[cursor..cursor + session57::SESSION_EVENT_ROW_LEN];
+            cursor += session57::SESSION_EVENT_ROW_LEN;
+            let raw_kind = read_u16(row, 0);
+            let Some(kind) = session57::SessionEventKind::from_raw(raw_kind) else {
+                return Err(format!(
+                    "domain57 event row {row_index} has unknown kind {raw_kind}"
+                ));
+            };
+            if kind == session57::SessionEventKind::Pause {
+                let value_i32 = read_i32(row, 32);
+                if value_i32 != 0 && value_i32 != 1 {
+                    return Err(format!("domain57 pause value {value_i32} is not 0/1"));
+                }
+                pause_is_paused = Some(value_i32 != 0);
+                continue;
+            }
+
+            let family =
+                match kind {
+                    session57::SessionEventKind::Hotjoin
+                    | session57::SessionEventKind::TagSwitch => Domain57EventFamily::Player,
+                    session57::SessionEventKind::Chat
+                    | session57::SessionEventKind::SystemMessage => Domain57EventFamily::Message,
+                    session57::SessionEventKind::GameSpeed
+                    | session57::SessionEventKind::Alert
+                    | session57::SessionEventKind::Notification => continue,
+                    session57::SessionEventKind::Pause => unreachable!(),
+                };
+            let flags = read_u32(row, 4);
+            let actor_key_hash = read_u64(row, 8);
+            let actor_name = d57_string_ref(strings, read_u32(row, 16), read_u16(row, 20))?;
+            let text = d57_string_ref(strings, read_u32(row, 24), read_u16(row, 22))?;
+            let tag_db_id = read_u32(row, 28);
+            let value_i32 = read_i32(row, 32);
+            let related_value_i32 = read_i32(row, 36);
+            let command_sequence = read_u64(row, 40);
+            let event_hour_raw = read_i32(row, 48);
+            let event_source_id = read_u32(row, 52);
+            let event_state = read_u32(row, 56);
+
+            let row_shape_valid = match kind {
+                session57::SessionEventKind::Hotjoin => {
+                    !actor_name.is_empty() && matches!(value_i32, 1 | 2) && event_source_id == 1
+                }
+                session57::SessionEventKind::TagSwitch => {
+                    !actor_name.is_empty()
+                        && value_i32 == 4
+                        && related_value_i32 > 0
+                        && event_source_id == 1
+                }
+                session57::SessionEventKind::Chat | session57::SessionEventKind::SystemMessage => {
+                    !text.is_empty() && event_source_id == 2
+                }
+                _ => unreachable!(),
+            };
+            let family_witnessed = match family {
+                Domain57EventFamily::Player => player_event_family_witnessed,
+                Domain57EventFamily::Message => message_family_witnessed,
+            };
+            if !row_shape_valid || !family_witnessed {
+                match family {
+                    Domain57EventFamily::Player => player_event_family_invalid = true,
+                    Domain57EventFamily::Message => message_family_invalid = true,
+                }
+            }
+
+            let event_key = (
+                raw_kind,
+                actor_key_hash,
+                tag_db_id,
+                value_i32,
+                related_value_i32,
+                command_sequence,
+                event_hour_raw,
+                event_source_id,
+                event_state,
+                actor_name.clone(),
+                text.clone(),
+            );
+            if !seen_events.insert(event_key) {
+                return Err(format!(
+                    "domain57 event row {row_index} duplicates a prior exact event"
+                ));
+            }
+            event_candidates.push(Domain57SessionEventProjection {
+                family,
+                kind: kind.name(),
+                flags,
+                actor_key_hash,
+                actor_name,
+                text,
+                tag_db_id,
+                value_i32,
+                related_value_i32,
+                command_sequence,
+                event_hour_raw,
+                event_source_id,
+                event_state,
+            });
+        }
 
         let players_known = !hard_failure && player_root_validated && !player_rows.is_empty();
         let pause_known = !hard_failure && pause_root_validated && pause_is_paused.is_some();
+        let message_family_known = message_family_witnessed && !message_family_invalid;
+        let player_event_family_known =
+            player_event_family_witnessed && !player_event_family_invalid;
+        let events_known = message_family_known || player_event_family_known;
+        let event_rows = events_known.then(|| {
+            event_candidates
+                .into_iter()
+                .filter(|row| match row.family {
+                    Domain57EventFamily::Player => player_event_family_known,
+                    Domain57EventFamily::Message => message_family_known,
+                })
+                .collect()
+        });
         self.session_multiplayer_metadata_this_hour = Some(Domain57FoldState {
             players_by_country: players_known.then_some(player_rows),
             pause_is_paused: if pause_known { pause_is_paused } else { None },
+            events: event_rows,
         });
 
         if status_flags & session57::STATUS_SOURCE_UNAVAILABLE != 0 {
@@ -12285,8 +14067,26 @@ impl WorldFold {
         if !pause_known {
             self.record_domain_problem(SESSION_MULTIPLAYER_METADATA_DOMAIN_ID, "pause_unavailable");
         }
+        if message_family_invalid {
+            self.record_domain_problem(
+                SESSION_MULTIPLAYER_METADATA_DOMAIN_ID,
+                "message_event_family_unavailable",
+            );
+        }
+        if player_event_family_invalid {
+            self.record_domain_problem(
+                SESSION_MULTIPLAYER_METADATA_DOMAIN_ID,
+                "player_event_family_unavailable",
+            );
+        }
+        if !events_known {
+            self.record_domain_problem(
+                SESSION_MULTIPLAYER_METADATA_DOMAIN_ID,
+                "events_unavailable",
+            );
+        }
 
-        if players_known || pause_known {
+        if players_known || pause_known || events_known {
             self.mark_fold_domain_success(SESSION_MULTIPLAYER_METADATA_DOMAIN_ID);
         } else {
             self.mark_fold_domain_unknown(
@@ -12780,6 +14580,38 @@ impl WorldFold {
         if payload.len() < core_end {
             return Err(format!("market trade len {} < {core_end}", payload.len()));
         }
+        if scale_raw != FIXED_SCALE as u32 {
+            return Err(format!(
+                "market trade scale_raw {scale_raw} != {}",
+                FIXED_SCALE as u32
+            ));
+        }
+        // The D43 core rows are equipment-market purchase contracts, while
+        // MTRF is an independently complete snapshot of classic country
+        // resource pools. Parse and commit a valid MTRF trailer before gating
+        // the core rows so an unavailable/partial purchase-contract sweep
+        // cannot suppress measured classic-resource state. Absence retains the
+        // prior resource snapshot; malformed trailers still fail closed.
+        let trailers = if payload.len() > core_end {
+            parse_market_trade_trailers(payload, core_end)?
+        } else {
+            MarketTradeTrailersFold::default()
+        };
+        if let Some(resource_pools) = trailers.resource_pools.clone() {
+            self.market_trade_resource_pools = resource_pools;
+        }
+        if let Some(factory_headers) = trailers.factory_headers.clone() {
+            self.market_trade_factory_headers = factory_headers;
+        }
+        if let Some(resource_rows) = trailers.resource_rows.clone() {
+            self.market_trade_resource_rows = resource_rows;
+        }
+        if let Some(classic_deals) = trailers.classic_deals.clone() {
+            self.market_trade_classic_deals = classic_deals;
+        }
+        if let Some(stockpiles) = trailers.stockpiles.clone() {
+            self.market_trade_stockpiles = stockpiles;
+        }
         // G1-residue gate finding 1 (2026-07-12): PARTIAL was previously
         // excluded from this gate and the frame folded "with omissions" — but
         // this fold is a FULL REPLACEMENT, so folding an admittedly-incomplete
@@ -12798,17 +14630,6 @@ impl WorldFold {
             ));
             return Ok(());
         }
-        if scale_raw != FIXED_SCALE as u32 {
-            return Err(format!(
-                "market trade scale_raw {scale_raw} != {}",
-                FIXED_SCALE as u32
-            ));
-        }
-        let trailers = if payload.len() > core_end {
-            parse_market_trade_trailers(payload, core_end)?
-        } else {
-            MarketTradeTrailersFold::default()
-        };
         let detail_rows = trailers.detail_rows;
 
         let mut contracts = Vec::with_capacity(row_count);
@@ -12913,9 +14734,6 @@ impl WorldFold {
         }
 
         self.market_trade_contracts = Some(contracts);
-        if let Some(resource_exported) = trailers.resource_exported {
-            self.market_trade_resource_exported = resource_exported;
-        }
         Ok(())
     }
 
@@ -13322,6 +15140,12 @@ struct ProductionAccum {
     /// `None` when no trailer row covered this country (unreadable/not measured
     /// — absent != empty). Only countries WITH a trailer row get an entry.
     licenses: Option<Vec<u32>>,
+    /// X4-P6 exact vector-read witnesses from PCP1. `Some(true)` includes a
+    /// proven-empty vector; `Some(false)` means unreadable. `None` preserves
+    /// the legacy no-PCP1 ambiguity law.
+    stockpile_complete: Option<bool>,
+    military_lines_complete: Option<bool>,
+    naval_lines_complete: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -13852,6 +15676,75 @@ impl AirCombatLossState {
     }
 }
 
+struct AirRegionDamageState {
+    channel: u8,
+    cause_type: u8,
+    amount_raw: i64,
+}
+
+struct AirRegionCombatStatState {
+    owner_tag_db_id: u32,
+    region_id: u32,
+    side_vector: u8,
+    selection_flag: u8,
+    classification_flag: u8,
+    copied_flag: u8,
+    wing_id: u32,
+    date_raw: i32,
+    plane_count: u32,
+    mission_mask: u32,
+    attributed_country_tag_db_id: u32,
+    damage: Vec<AirRegionDamageState>,
+}
+
+impl AirRegionCombatStatState {
+    fn to_json(&self, fold: &WorldFold, unresolved: &mut BTreeSet<u32>) -> Value {
+        json!({
+            "owner": fold.country_ref_json(self.owner_tag_db_id, unresolved),
+            "owner_tag_db_id": self.owner_tag_db_id,
+            "region_id": self.region_id,
+            "side_vector": self.side_vector,
+            "selection_flag": self.selection_flag,
+            "classification_flag": self.classification_flag,
+            "copied_flag": self.copied_flag,
+            "wing_id": self.wing_id,
+            "date_raw": self.date_raw,
+            "plane_count": self.plane_count,
+            "mission_mask": self.mission_mask,
+            "attributed_country": fold.country_ref_json(
+                self.attributed_country_tag_db_id,
+                unresolved,
+            ),
+            "attributed_country_tag_db_id": self.attributed_country_tag_db_id,
+            "damage": self.damage.iter().map(|entry| json!({
+                "channel": if entry.channel == 0 { "damage_done" } else { "losses_disruption" },
+                "cause_type": entry.cause_type,
+                "cause": air_region_damage_cause(entry.cause_type),
+                "amount": entry.amount_raw as f64 / FIXED_SCALE,
+                "amount_raw": entry.amount_raw,
+                "scale_raw": FIXED_SCALE as u32,
+            })).collect::<Vec<_>>(),
+        })
+    }
+}
+
+fn air_region_damage_cause(cause_type: u8) -> &'static str {
+    match cause_type {
+        0 => "buildings_bombed",
+        1 => "ships_bombed",
+        2 => "damage_to_divisions",
+        3 => "planes_disrupted",
+        4 => "planes_shot_down_by_enemy_planes",
+        5 => "planes_downed_by_anti_air",
+        6 => "logistics_bombed",
+        7 => "railway_guns_bombed",
+        8 => "unused",
+        9 => "planes_shot_down_en_route",
+        10 => "planes_downed_by_armored_trains",
+        _ => "invalid",
+    }
+}
+
 /// Persistent per-wing cumulative scalar state (wave-3 crack: CAirWing+0x74
 /// air_accidents, CAirWing+0x208 experience fixed-x100000).
 struct AirWingCumulativeScalars {
@@ -14329,6 +16222,8 @@ impl FrdFocusDepthEventState {
             "completed_token": self.completed_token,
             "completed_token_exact": self.flags & FRD_FOCUS_FLAG_COMPLETED_TOKEN_EXACT != 0,
             "completed_token_inferred": self.flags & FRD_FOCUS_FLAG_COMPLETED_TOKEN_INFERRED != 0,
+            "paused": (self.flags & FRD_FOCUS_FLAG_PAUSED_PRESENT != 0)
+                .then_some(self.flags & FRD_FOCUS_FLAG_PAUSED != 0),
         })
     }
 }
@@ -14387,10 +16282,99 @@ struct MarketTradeDetailFoldRow {
     equipment_transfer_progress_raw: i32,
 }
 
+#[derive(Clone, Debug, Default)]
+struct MarketTradeResourcePools {
+    produced: Option<[i64; 7]>,
+    imported: Option<[i64; 7]>,
+    exported: Option<[i64; 7]>,
+    used: Option<[i64; 7]>,
+    to_export: Option<[i64; 7]>,
+    base_export: Option<[i64; 7]>,
+}
+
+impl MarketTradeResourcePools {
+    fn complete(&self) -> bool {
+        self.produced.is_some()
+            && self.imported.is_some()
+            && self.exported.is_some()
+            && self.used.is_some()
+            && self.to_export.is_some()
+            && self.base_export.is_some()
+    }
+
+    fn present_flows(&self) -> Vec<(&'static str, &[i64; 7])> {
+        [
+            ("produced", self.produced.as_ref()),
+            ("imported", self.imported.as_ref()),
+            ("used", self.used.as_ref()),
+            ("to_export", self.to_export.as_ref()),
+            ("base_export", self.base_export.as_ref()),
+            ("exported", self.exported.as_ref()),
+        ]
+        .into_iter()
+        .filter_map(|(name, values)| values.map(|values| (name, values)))
+        .collect()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MarketTradeFactoryHeader {
+    total: i32,
+    used: i32,
+    available: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MarketTradeResourceRow {
+    resource_index: u32,
+    visible_order: u32,
+    needed_type: u32,
+    balance: i32,
+    produced: i32,
+    imported: i32,
+    exported: i32,
+    special_project: i32,
+    production_line: i32,
+    needed: i32,
+    needed_current: i32,
+    needed_max: i32,
+    descriptor_db_index: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MarketTradeClassicDealRow {
+    counterpart_tag_db_id: u32,
+    resource_index: u32,
+    visible_order: u32,
+    direction: u32,
+    route_kind: u32,
+    deal_id: u64,
+    requested_raw: i64,
+    delivered_raw: i64,
+    available_export_raw: i64,
+    factory_cost_raw: i64,
+    efficiency_raw: i64,
+    civilian_factories: i32,
+    convoys_assigned: i32,
+    convoys_required: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MarketTradeStockpileRow {
+    equipment_variant_id: u32,
+    equipment_type: u32,
+    ordinal: u32,
+    amount_raw: i64,
+}
+
 #[derive(Default)]
 struct MarketTradeTrailersFold {
     detail_rows: BTreeMap<u32, MarketTradeDetailFoldRow>,
-    resource_exported: Option<BTreeMap<u32, [i64; 7]>>,
+    resource_pools: Option<BTreeMap<u32, MarketTradeResourcePools>>,
+    factory_headers: Option<BTreeMap<u32, MarketTradeFactoryHeader>>,
+    resource_rows: Option<BTreeMap<u32, Vec<MarketTradeResourceRow>>>,
+    classic_deals: Option<BTreeMap<u32, Vec<MarketTradeClassicDealRow>>>,
+    stockpiles: Option<BTreeMap<u32, Vec<MarketTradeStockpileRow>>>,
 }
 
 struct FrdDecisionStatusState {
@@ -14442,22 +16426,65 @@ impl FrdDecisionEventState {
 #[derive(Clone)]
 struct FrdDecisionTargetState {
     tag_db_id: u32,
-    target_tag_db_id: u32,
+    target_id: u32,
     flags: u32,
     source_kind: u32,
+    lifecycle_state: Option<i32>,
+    ignore: Option<bool>,
+    days: Option<i32>,
     decision: String,
 }
 
 impl FrdDecisionTargetState {
     fn to_json(&self, fold: &WorldFold, unresolved: &mut BTreeSet<u32>) -> Value {
-        json!({
-            "decision": self.decision,
-            "target": fold.country_ref_json(self.target_tag_db_id, unresolved),
-            "target_tag_db_id": self.target_tag_db_id,
-            "flags": self.flags,
-            "source_kind": self.source_kind,
-            "source": "CDecisionStatus+0xE8 record+0x20",
-        })
+        let source_offset = if self.source_kind == FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED {
+            "0x100"
+        } else {
+            "0xE8"
+        };
+        let lifecycle_state_name =
+            self.lifecycle_state
+                .map(|state| match (self.source_kind, state) {
+                    (FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED, 0) => "available",
+                    (FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED, 1) => "active",
+                    (FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED, 2) => "re_enable_cooldown",
+                    (FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED, 3) => "completed",
+                    (FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED, 4) => "removed",
+                    (FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED, 0) => "active",
+                    (FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED, 1) => "available",
+                    (FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED, 2) => "completed",
+                    (FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED, 3) => "removed",
+                    (FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED, 4) => "re_enable_cooldown",
+                    _ => "unknown",
+                });
+        if self.flags == FRD_DECISION_TARGET_COUNTRY_FLAGS {
+            json!({
+                "decision": self.decision,
+                "target_kind": "country",
+                "target": fold.country_ref_json(self.target_id, unresolved),
+                "target_tag_db_id": self.target_id,
+                "flags": self.flags,
+                "source_kind": self.source_kind,
+                "source": format!("CDecisionStatus+{source_offset} record+0x20"),
+                "lifecycle_state": self.lifecycle_state,
+                "lifecycle_state_name": lifecycle_state_name,
+                "ignore": self.ignore,
+                "days": self.days,
+            })
+        } else {
+            json!({
+                "decision": self.decision,
+                "target_kind": "numeric",
+                "target_id": self.target_id,
+                "flags": self.flags,
+                "source_kind": self.source_kind,
+                "source": format!("CDecisionStatus+{source_offset} record+0x24"),
+                "lifecycle_state": self.lifecycle_state,
+                "lifecycle_state_name": lifecycle_state_name,
+                "ignore": self.ignore,
+                "days": self.days,
+            })
+        }
     }
 }
 
@@ -14870,10 +16897,18 @@ fn domain48_building_rows_by_type(rows: Vec<domain48::BuildingRow>) -> Value {
         let mut detail = Map::new();
         detail.insert("level".into(), json!(row.level));
         detail.insert("healthy_level".into(), option_u32_json(row.healthy_level));
+        if let Some(partial_health_raw) = row.partial_health_raw {
+            detail.insert("partial_health_raw".into(), json!(partial_health_raw));
+        }
         detail.insert(
             "damaged".into(),
             json!(row.healthy_level.is_some_and(|healthy| healthy < row.level)),
         );
+        if let Some(token) =
+            compact_contract::building_registry::building_token_from_type_id(row.type_id)
+        {
+            detail.insert("token".into(), json!(token));
+        }
         obj.insert(domain48_type_key(row.type_id), Value::Object(detail));
     }
     Value::Object(obj)
@@ -15415,14 +17450,433 @@ fn apply_project_lifecycle_delta(
     }))
 }
 
-/// Wave-4 production licensing: parse the domain-11 `PLIC` license trailer
-/// into {tag_db_id -> sorted, deduped license variant db ids}. Strict: the
-/// trailer must consume the payload to its exact end, ids are gated 1..2^24,
-/// and per-country/country dupes fail the whole trailer (fail closed).
-fn parse_production_license_trailer(
+#[derive(Default)]
+struct ProductionTrailersFold {
+    licenses_by_tag: Option<BTreeMap<u32, Vec<u32>>>,
+    variant_by_line: Option<BTreeMap<(u32, u32, i32), u32>>,
+    requested_factories_by_line: Option<BTreeMap<(u32, u32, i32), i32>>,
+    subtype_by_line: Option<BTreeMap<(u32, u32, i32), String>>,
+    efficiency_by_line: Option<BTreeMap<(u32, u32, i32), ProductionEfficiencyFold>>,
+    mio_by_line: Option<BTreeMap<(u32, u32, i32), u32>>,
+    completeness_by_tag: Option<BTreeMap<u32, u32>>,
+    convoy_bank_by_tag: Option<BTreeMap<u32, CountryConvoyBankFold>>,
+}
+
+#[derive(Clone, Copy)]
+struct ProductionEfficiencyFold {
+    efficiency_raw: i64,
+    efficiency_cap_raw: i64,
+    efficiency_growth_raw: i64,
+}
+
+#[derive(Clone)]
+struct CountryConvoyBankFold {
+    complete: bool,
+    reservations_complete: bool,
+    cache_valid: bool,
+    owned_raw: i64,
+    assigned: i32,
+    available: i32,
+    variants: Vec<CountryConvoyVariantFold>,
+    reservations: Vec<CountryConvoyReservationFold>,
+}
+
+#[derive(Clone, Copy)]
+struct CountryConvoyVariantFold {
+    variant_id: u32,
+    equip_type: u32,
+    amount_raw: i64,
+}
+
+#[derive(Clone, Copy)]
+struct CountryConvoyReservationFold {
+    priority: i32,
+    count: i32,
+}
+
+fn parse_production_trailers(
+    payload: &[u8],
+    mut trailer_offset: usize,
+) -> Result<ProductionTrailersFold, String> {
+    let mut out = ProductionTrailersFold::default();
+    while trailer_offset < payload.len() {
+        need(payload, trailer_offset + 4, "production trailer magic")?;
+        match &payload[trailer_offset..trailer_offset + 4] {
+            b"PLIC" => {
+                if out.licenses_by_tag.is_some() {
+                    return Err("production has duplicate PLIC trailer".to_string());
+                }
+                let (licenses, next_offset) =
+                    parse_production_license_segment(payload, trailer_offset)?;
+                out.licenses_by_tag = Some(licenses);
+                trailer_offset = next_offset;
+            }
+            b"PVJ1" => {
+                if out.variant_by_line.is_some() {
+                    return Err("production has duplicate PVJ1 trailer".to_string());
+                }
+                let (joins, next_offset) =
+                    parse_production_variant_join_segment(payload, trailer_offset)?;
+                out.variant_by_line = Some(joins);
+                trailer_offset = next_offset;
+            }
+            b"PFR1" => {
+                if out.requested_factories_by_line.is_some() {
+                    return Err("production has duplicate PFR1 trailer".to_string());
+                }
+                let (joins, next_offset) =
+                    parse_production_requested_factories_segment(payload, trailer_offset)?;
+                out.requested_factories_by_line = Some(joins);
+                trailer_offset = next_offset;
+            }
+            b"PLS1" => {
+                if out.subtype_by_line.is_some() {
+                    return Err("production has duplicate PLS1 trailer".to_string());
+                }
+                let (joins, next_offset) =
+                    parse_production_line_subtype_segment(payload, trailer_offset)?;
+                out.subtype_by_line = Some(joins);
+                trailer_offset = next_offset;
+            }
+            b"PEF1" => {
+                if out.efficiency_by_line.is_some() {
+                    return Err("production has duplicate PEF1 trailer".to_string());
+                }
+                let (joins, next_offset) =
+                    parse_production_efficiency_segment(payload, trailer_offset)?;
+                out.efficiency_by_line = Some(joins);
+                trailer_offset = next_offset;
+            }
+            b"PMI1" => {
+                if out.mio_by_line.is_some() {
+                    return Err("production has duplicate PMI1 trailer".to_string());
+                }
+                let (joins, next_offset) =
+                    parse_production_mio_join_segment(payload, trailer_offset)?;
+                out.mio_by_line = Some(joins);
+                trailer_offset = next_offset;
+            }
+            b"PCP1" => {
+                if out.completeness_by_tag.is_some() {
+                    return Err("production has duplicate PCP1 trailer".to_string());
+                }
+                let (rows, next_offset) =
+                    parse_production_completeness_segment(payload, trailer_offset)?;
+                out.completeness_by_tag = Some(rows);
+                trailer_offset = next_offset;
+            }
+            b"PCV1" => {
+                if out.convoy_bank_by_tag.is_some() {
+                    return Err("production has duplicate PCV1 trailer".to_string());
+                }
+                let (rows, next_offset) =
+                    parse_country_convoy_bank_segment(payload, trailer_offset)?;
+                out.convoy_bank_by_tag = Some(rows);
+                trailer_offset = next_offset;
+            }
+            _ => return Err("production trailing bytes are not a known D11 trailer".to_string()),
+        }
+    }
+    Ok(out)
+}
+
+fn parse_country_convoy_bank_segment(
     payload: &[u8],
     trailer_offset: usize,
-) -> Result<BTreeMap<u32, Vec<u32>>, String> {
+) -> Result<(BTreeMap<u32, CountryConvoyBankFold>, usize), String> {
+    const HEADER_LEN: usize = 28;
+    const COUNTRY_ROW_LEN: usize = 40;
+    const VARIANT_ROW_LEN: usize = 16;
+    const RESERVATION_ROW_LEN: usize = 8;
+    const KNOWN_FLAGS: u32 = 0b1_1111;
+    const SCALE: i64 = 100_000;
+    let trailer = payload
+        .get(trailer_offset..)
+        .ok_or_else(|| "PCV1 offset beyond payload".to_string())?;
+    if trailer.len() < HEADER_LEN {
+        return Err(format!(
+            "PCV1 trailer is {} byte(s), expected at least {HEADER_LEN}",
+            trailer.len()
+        ));
+    }
+    let version = read_u16(trailer, 4);
+    let header_len = read_u16(trailer, 6) as usize;
+    let segment_len = read_u32(trailer, 8) as usize;
+    let country_count = read_u32(trailer, 12) as usize;
+    let variant_count = read_u32(trailer, 16) as usize;
+    let reservation_count = read_u32(trailer, 20) as usize;
+    let reserved = read_u32(trailer, 24);
+    let expected = HEADER_LEN
+        .checked_add(
+            country_count
+                .checked_mul(COUNTRY_ROW_LEN)
+                .ok_or("PCV1 country size overflow")?,
+        )
+        .and_then(|v| v.checked_add(variant_count.checked_mul(VARIANT_ROW_LEN)?))
+        .and_then(|v| v.checked_add(reservation_count.checked_mul(RESERVATION_ROW_LEN)?))
+        .ok_or_else(|| "PCV1 segment size overflow".to_string())?;
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        return Err(format!(
+            "PCV1 header shape invalid (version {version}, header_len {header_len}, segment_len {segment_len}, expected {expected}, reserved {reserved}, available {})",
+            trailer.len()
+        ));
+    }
+    let country_base = HEADER_LEN;
+    let variant_base = country_base + country_count * COUNTRY_ROW_LEN;
+    let reservation_base = variant_base + variant_count * VARIANT_ROW_LEN;
+    let mut all_variants = Vec::with_capacity(variant_count);
+    for row_index in 0..variant_count {
+        let cursor = variant_base + row_index * VARIANT_ROW_LEN;
+        let variant_id = read_u32(trailer, cursor);
+        let equip_type = read_u32(trailer, cursor + 4);
+        let amount_raw = read_i64(trailer, cursor + 8);
+        if variant_id == 0 || equip_type != 70 || amount_raw < 0 {
+            return Err(format!(
+                "PCV1 variant row {row_index} invalid id/type/amount ({variant_id}/{equip_type}/{amount_raw})"
+            ));
+        }
+        all_variants.push(CountryConvoyVariantFold {
+            variant_id,
+            equip_type,
+            amount_raw,
+        });
+    }
+    let mut all_reservations = Vec::with_capacity(reservation_count);
+    for row_index in 0..reservation_count {
+        let cursor = reservation_base + row_index * RESERVATION_ROW_LEN;
+        let priority = read_i32(trailer, cursor);
+        let count = read_i32(trailer, cursor + 4);
+        if count < 0 {
+            return Err(format!(
+                "PCV1 reservation row {row_index} has negative count"
+            ));
+        }
+        all_reservations.push(CountryConvoyReservationFold { priority, count });
+    }
+
+    let mut rows = BTreeMap::new();
+    let mut expected_variant_start = 0usize;
+    let mut expected_reservation_start = 0usize;
+    for row_index in 0..country_count {
+        let cursor = country_base + row_index * COUNTRY_ROW_LEN;
+        let tag_db_id = read_u32(trailer, cursor);
+        let flags = read_u32(trailer, cursor + 4);
+        let owned_raw = read_i64(trailer, cursor + 8);
+        let assigned = read_i32(trailer, cursor + 16);
+        let available = read_i32(trailer, cursor + 20);
+        let variant_start = read_u32(trailer, cursor + 24) as usize;
+        let variant_len = read_u32(trailer, cursor + 28) as usize;
+        let reservation_start = read_u32(trailer, cursor + 32) as usize;
+        let reservation_len = read_u32(trailer, cursor + 36) as usize;
+        if tag_db_id == 0 || flags & !KNOWN_FLAGS != 0 {
+            return Err(format!("PCV1 country row {row_index} invalid tag/flags"));
+        }
+        if variant_start != expected_variant_start
+            || reservation_start != expected_reservation_start
+            || variant_start
+                .checked_add(variant_len)
+                .is_none_or(|end| end > variant_count)
+            || reservation_start
+                .checked_add(reservation_len)
+                .is_none_or(|end| end > reservation_count)
+        {
+            return Err(format!(
+                "PCV1 country row {row_index} has noncanonical ranges"
+            ));
+        }
+        expected_variant_start += variant_len;
+        expected_reservation_start += reservation_len;
+        let complete = flags & 1 != 0;
+        let reservations_complete = flags & (1 << 1) != 0;
+        let cache_valid = flags & (1 << 2) != 0;
+        let cache_verified = flags & (1 << 3) != 0;
+        let classifier_exact = flags & (1 << 4) != 0;
+        if !complete {
+            if flags != 0
+                || owned_raw != 0
+                || assigned != 0
+                || available != 0
+                || variant_len != 0
+                || reservation_len != 0
+            {
+                return Err(format!(
+                    "PCV1 unreadable country row {row_index} carries data"
+                ));
+            }
+        } else if !classifier_exact
+            || cache_valid != cache_verified
+            || (!reservations_complete && reservation_len != 0)
+        {
+            return Err(format!(
+                "PCV1 country row {row_index} has inconsistent witnesses"
+            ));
+        }
+        let variants = all_variants[variant_start..variant_start + variant_len].to_vec();
+        let reservations =
+            all_reservations[reservation_start..reservation_start + reservation_len].to_vec();
+        if complete {
+            let mut seen = BTreeSet::new();
+            let sum_raw = variants.iter().try_fold(0i64, |sum, row| {
+                if !seen.insert(row.variant_id) {
+                    return None;
+                }
+                sum.checked_add(row.amount_raw)
+            });
+            if sum_raw != Some(owned_raw)
+                || assigned < 0
+                || i64::from(assigned) > owned_raw / SCALE
+                || i64::from(available) != owned_raw / SCALE - i64::from(assigned)
+                || reservations
+                    .iter()
+                    .any(|row| i64::from(row.count) > owned_raw / SCALE)
+            {
+                return Err(format!(
+                    "PCV1 country row {row_index} fails exact total law"
+                ));
+            }
+        }
+        if rows
+            .insert(
+                tag_db_id,
+                CountryConvoyBankFold {
+                    complete,
+                    reservations_complete,
+                    cache_valid,
+                    owned_raw,
+                    assigned,
+                    available,
+                    variants,
+                    reservations,
+                },
+            )
+            .is_some()
+        {
+            return Err(format!("PCV1 duplicates tag_db_id {tag_db_id}"));
+        }
+    }
+    if expected_variant_start != variant_count || expected_reservation_start != reservation_count {
+        return Err("PCV1 ranges do not cover all rows".to_string());
+    }
+    Ok((rows, trailer_offset + segment_len))
+}
+
+fn parse_production_mio_join_segment(
+    payload: &[u8],
+    trailer_offset: usize,
+) -> Result<(BTreeMap<(u32, u32, i32), u32>, usize), String> {
+    const HEADER_LEN: usize = 20;
+    const ROW_LEN: usize = 16;
+    let trailer = payload
+        .get(trailer_offset..)
+        .ok_or_else(|| "PMI1 offset beyond payload".to_string())?;
+    if trailer.len() < HEADER_LEN {
+        return Err(format!(
+            "PMI1 trailer is {} byte(s), expected at least {HEADER_LEN}",
+            trailer.len()
+        ));
+    }
+    let version = read_u16(trailer, 4);
+    let header_len = read_u16(trailer, 6) as usize;
+    let segment_len = read_u32(trailer, 8) as usize;
+    let row_count = read_u32(trailer, 12) as usize;
+    let reserved = read_u32(trailer, 16);
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        return Err(format!(
+            "PMI1 header shape invalid (version {version}, header_len {header_len}, segment_len {segment_len}, expected {expected}, reserved {reserved}, available {})",
+            trailer.len()
+        ));
+    }
+    let mut rows = BTreeMap::new();
+    let mut cursor = HEADER_LEN;
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32(trailer, cursor);
+        let kind = read_u32(trailer, cursor + 4);
+        let line_id = read_i32(trailer, cursor + 8);
+        let mio_id = read_u32(trailer, cursor + 12);
+        cursor += ROW_LEN;
+        if tag_db_id == 0 || (kind != 1 && kind != 2) {
+            return Err(format!(
+                "PMI1 row {row_index} has invalid tag_db_id {tag_db_id} or kind {kind}"
+            ));
+        }
+        if rows.insert((tag_db_id, kind, line_id), mio_id).is_some() {
+            return Err(format!(
+                "PMI1 duplicates production line tag {tag_db_id} kind {kind} line_id {line_id}"
+            ));
+        }
+    }
+    Ok((rows, trailer_offset + segment_len))
+}
+
+fn parse_production_completeness_segment(
+    payload: &[u8],
+    trailer_offset: usize,
+) -> Result<(BTreeMap<u32, u32>, usize), String> {
+    const HEADER_LEN: usize = 20;
+    const KNOWN_FLAGS: u32 = 0b111;
+    let trailer = payload
+        .get(trailer_offset..)
+        .ok_or_else(|| "PCP1 offset beyond payload".to_string())?;
+    if trailer.len() < HEADER_LEN {
+        return Err(format!(
+            "PCP1 trailer is {} byte(s), expected at least {HEADER_LEN}",
+            trailer.len()
+        ));
+    }
+    let version = read_u16(trailer, 4);
+    let header_len = read_u16(trailer, 6) as usize;
+    let segment_len = read_u32(trailer, 8) as usize;
+    let row_count = read_u32(trailer, 12) as usize;
+    let reserved = read_u32(trailer, 16);
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(8));
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        return Err(format!(
+            "PCP1 header shape invalid (version {version}, header_len {header_len}, segment_len {segment_len}, expected {expected}, reserved {reserved}, available {})",
+            trailer.len()
+        ));
+    }
+    let mut rows = BTreeMap::new();
+    let mut cursor = HEADER_LEN;
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32(trailer, cursor);
+        let flags = read_u32(trailer, cursor + 4);
+        cursor += 8;
+        if tag_db_id == 0 {
+            return Err(format!("PCP1 row {row_index} has zero tag_db_id"));
+        }
+        if flags & !KNOWN_FLAGS != 0 {
+            return Err(format!("PCP1 row {row_index} has unknown flags {flags:#x}"));
+        }
+        if rows.insert(tag_db_id, flags).is_some() {
+            return Err(format!("PCP1 duplicates tag_db_id {tag_db_id}"));
+        }
+    }
+    Ok((rows, trailer_offset + segment_len))
+}
+
+/// Parse one `PLIC` segment into {tag_db_id -> sorted license variant ids}.
+/// Its legacy header has no segment-length field, but its exact length is
+/// computable from the country/id counts, allowing a following `PVJ1` segment.
+fn parse_production_license_segment(
+    payload: &[u8],
+    trailer_offset: usize,
+) -> Result<(BTreeMap<u32, Vec<u32>>, usize), String> {
     const MAGIC: &[u8; 4] = b"PLIC";
     const HEADER_LEN: usize = 20;
     let trailer = payload
@@ -15450,9 +17904,9 @@ fn parse_production_license_trailer(
     let expected = HEADER_LEN
         .saturating_add(country_rows.saturating_mul(8))
         .saturating_add(id_rows.saturating_mul(4));
-    if trailer.len() != expected {
+    if trailer.len() < expected {
         return Err(format!(
-            "production license trailer len {} != {expected}",
+            "production license trailer len {} < {expected}",
             trailer.len()
         ));
     }
@@ -15502,7 +17956,7 @@ fn parse_production_license_trailer(
         ids.sort_unstable();
         out.insert(tag_db_id, ids);
     }
-    Ok(out)
+    Ok((out, trailer_offset + expected))
 }
 
 fn parse_market_trade_trailers(
@@ -15524,18 +17978,783 @@ fn parse_market_trade_trailers(
             detail_seen = true;
             trailer_offset = next_offset;
         } else if magic == MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC {
-            if out.resource_exported.is_some() {
+            if out.resource_pools.is_some() {
                 return Err("market trade has duplicate MTRF resource-flow trailer".to_string());
             }
-            let (resource_exported, next_offset) =
+            let (resource_pools, next_offset) =
                 parse_market_trade_resource_flow_trailer(payload, trailer_offset)?;
-            out.resource_exported = Some(resource_exported);
+            out.resource_pools = Some(resource_pools);
+            trailer_offset = next_offset;
+        } else if magic == MARKET_TRADE_FACTORY_HEADER_TRAILER_MAGIC {
+            if out.factory_headers.is_some() {
+                return Err("market trade has duplicate MTRH factory-header trailer".to_string());
+            }
+            let (factory_headers, next_offset) =
+                parse_market_trade_factory_header_trailer(payload, trailer_offset)?;
+            out.factory_headers = Some(factory_headers);
+            trailer_offset = next_offset;
+        } else if magic == MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC {
+            if out.resource_rows.is_some() {
+                return Err("market trade has duplicate MTRR resource-row trailer".to_string());
+            }
+            let (resource_rows, next_offset) =
+                parse_market_trade_resource_row_trailer(payload, trailer_offset)?;
+            out.resource_rows = Some(resource_rows);
+            trailer_offset = next_offset;
+        } else if magic == MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC {
+            if out.classic_deals.is_some() {
+                return Err("market trade has duplicate MTRD classic-deal trailer".to_string());
+            }
+            let (classic_deals, next_offset) =
+                parse_market_trade_classic_deal_trailer(payload, trailer_offset)?;
+            out.classic_deals = Some(classic_deals);
+            trailer_offset = next_offset;
+        } else if magic == MARKET_TRADE_STOCKPILE_TRAILER_MAGIC {
+            if out.stockpiles.is_some() {
+                return Err("market trade has duplicate MTS1 stockpile trailer".to_string());
+            }
+            let (stockpiles, next_offset) =
+                parse_market_trade_stockpile_trailer(payload, trailer_offset)?;
+            out.stockpiles = Some(stockpiles);
             trailer_offset = next_offset;
         } else {
             return Err("market trade trailing bytes are not a known D43 trailer".to_string());
         }
     }
     Ok(out)
+}
+
+fn parse_market_trade_stockpile_trailer(
+    payload: &[u8],
+    trailer_offset: usize,
+) -> Result<(BTreeMap<u32, Vec<MarketTradeStockpileRow>>, usize), String> {
+    need(
+        payload,
+        trailer_offset + MARKET_TRADE_STOCKPILE_HEADER_LEN,
+        "market trade MTS1 header",
+    )?;
+    let trailer = &payload[trailer_offset..];
+    let version = read_u16(trailer, 4);
+    let header_len = read_u16(trailer, 6) as usize;
+    let country_row_len = read_u16(trailer, 8) as usize;
+    let item_row_len = read_u16(trailer, 10) as usize;
+    let segment_len = read_u32(trailer, 12) as usize;
+    let country_count = read_u32(trailer, 16) as usize;
+    let item_count = read_u32(trailer, 20) as usize;
+    let expected_country_count = read_u32(trailer, 24) as usize;
+    let scale_raw = read_u32(trailer, 28);
+    let flags = read_u32(trailer, 32);
+    let reserved = read_u32(trailer, 36);
+    let expected_len = MARKET_TRADE_STOCKPILE_HEADER_LEN
+        .checked_add(
+            country_count
+                .checked_mul(MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN)
+                .ok_or_else(|| "market trade MTS1 country length overflow".to_string())?,
+        )
+        .and_then(|value| {
+            item_count
+                .checked_mul(MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN)
+                .and_then(|items| value.checked_add(items))
+        })
+        .ok_or_else(|| "market trade MTS1 segment length overflow".to_string())?;
+    if version != MARKET_TRADE_STOCKPILE_TRAILER_VERSION
+        || header_len != MARKET_TRADE_STOCKPILE_HEADER_LEN
+        || country_row_len != MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN
+        || item_row_len != MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN
+        || segment_len != expected_len
+        || country_count == 0
+        || country_count != expected_country_count
+        || scale_raw != FIXED_SCALE as u32
+        || flags != MARKET_TRADE_STOCKPILE_GLOBAL_FLAGS
+        || reserved != 0
+    {
+        return Err("market trade MTS1 header/count/length is invalid".to_string());
+    }
+    need(
+        payload,
+        trailer_offset + segment_len,
+        "market trade MTS1 segment",
+    )?;
+
+    let item_base = header_len + country_count * country_row_len;
+    let mut country_ranges = Vec::with_capacity(country_count);
+    let mut seen_tags = BTreeSet::new();
+    let mut expected_first = 0usize;
+    for row_index in 0..country_count {
+        let cursor = header_len + row_index * country_row_len;
+        let tag_db_id = read_u32(trailer, cursor);
+        let item_first = read_u32(trailer, cursor + 4) as usize;
+        let row_item_count = read_u32(trailer, cursor + 8) as usize;
+        let row_flags = read_u32(trailer, cursor + 12);
+        let row_reserved = read_u32(trailer, cursor + 16);
+        let item_end = item_first
+            .checked_add(row_item_count)
+            .ok_or_else(|| format!("market trade MTS1 country row {row_index} range overflow"))?;
+        if tag_db_id == 0
+            || tag_db_id > compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID
+            || !seen_tags.insert(tag_db_id)
+            || item_first != expected_first
+            || item_end > item_count
+            || row_flags != MARKET_TRADE_STOCKPILE_COUNTRY_COMPLETE
+            || row_reserved != 0
+        {
+            return Err(format!(
+                "market trade MTS1 country row {row_index} has invalid tag/range/completeness"
+            ));
+        }
+        country_ranges.push((tag_db_id, item_first, row_item_count));
+        expected_first = item_end;
+    }
+    if expected_first != item_count {
+        return Err(format!(
+            "market trade MTS1 country ranges cover {expected_first} items, expected {item_count}"
+        ));
+    }
+
+    let mut out = BTreeMap::new();
+    for (tag_db_id, item_first, row_item_count) in country_ranges {
+        let mut rows = Vec::with_capacity(row_item_count);
+        let mut seen_variants = BTreeSet::new();
+        for ordinal in 0..row_item_count {
+            let item_index = item_first + ordinal;
+            let cursor = item_base + item_index * item_row_len;
+            let equipment_variant_id = read_u32(trailer, cursor);
+            let equipment_type = read_u32(trailer, cursor + 4);
+            let encoded_ordinal = read_u32(trailer, cursor + 8);
+            let item_reserved = read_u32(trailer, cursor + 12);
+            let amount_raw = read_i64(trailer, cursor + 16);
+            if equipment_variant_id == 0
+                || equipment_variant_id > i32::MAX as u32
+                || equipment_type != 70
+                || encoded_ordinal != ordinal as u32
+                || item_reserved != 0
+                || !(0..=1_000_000_000_000_000i64).contains(&amount_raw)
+                || !seen_variants.insert((equipment_variant_id, equipment_type))
+            {
+                return Err(format!(
+                    "market trade MTS1 item {item_index} has invalid identity/order/amount"
+                ));
+            }
+            rows.push(MarketTradeStockpileRow {
+                equipment_variant_id,
+                equipment_type,
+                ordinal: encoded_ordinal,
+                amount_raw,
+            });
+        }
+        out.insert(tag_db_id, rows);
+    }
+    Ok((out, trailer_offset + segment_len))
+}
+
+/// Parse X4-P1's self-sized `PVJ1` segment. Rows are keyed by the exact base
+/// production-line identity tuple and carry one validated type-70 variant id.
+fn parse_production_variant_join_segment(
+    payload: &[u8],
+    trailer_offset: usize,
+) -> Result<(BTreeMap<(u32, u32, i32), u32>, usize), String> {
+    const HEADER_LEN: usize = 20;
+    let trailer = payload
+        .get(trailer_offset..)
+        .ok_or_else(|| "PVJ1 offset beyond payload".to_string())?;
+    if trailer.len() < HEADER_LEN {
+        return Err(format!(
+            "PVJ1 trailer is {} byte(s), expected at least {HEADER_LEN}",
+            trailer.len()
+        ));
+    }
+    let version = read_u16(trailer, 4);
+    let header_len = read_u16(trailer, 6) as usize;
+    let segment_len = read_u32(trailer, 8) as usize;
+    let row_count = read_u32(trailer, 12) as usize;
+    let reserved = read_u32(trailer, 16);
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(16));
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        return Err(format!(
+            "PVJ1 header shape invalid (version {version}, header_len {header_len}, segment_len {segment_len}, expected {expected}, reserved {reserved}, available {})",
+            trailer.len()
+        ));
+    }
+    let mut out = BTreeMap::new();
+    let mut cursor = HEADER_LEN;
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32(trailer, cursor);
+        let kind = read_u32(trailer, cursor + 4);
+        let line_id = read_i32(trailer, cursor + 8);
+        let variant_id = read_u32(trailer, cursor + 12);
+        cursor += 16;
+        if tag_db_id == 0 {
+            return Err(format!("PVJ1 row {row_index} has zero tag_db_id"));
+        }
+        if kind != 1 && kind != 2 {
+            return Err(format!("PVJ1 row {row_index} has invalid kind {kind}"));
+        }
+        if variant_id == 0 || variant_id > i32::MAX as u32 {
+            return Err(format!(
+                "PVJ1 row {row_index} has invalid equipment_variant_id {variant_id}"
+            ));
+        }
+        if out.insert((tag_db_id, kind, line_id), variant_id).is_some() {
+            return Err(format!(
+                "PVJ1 duplicates tag {tag_db_id} kind {kind} line_id {line_id}"
+            ));
+        }
+    }
+    Ok((out, trailer_offset + segment_len))
+}
+
+/// Parse X4-P2's self-sized `PFR1` segment. Each exact base-line identity maps
+/// to the requested/assigned factory target written at production-line +0xE8.
+fn parse_production_requested_factories_segment(
+    payload: &[u8],
+    trailer_offset: usize,
+) -> Result<(BTreeMap<(u32, u32, i32), i32>, usize), String> {
+    const HEADER_LEN: usize = 20;
+    let trailer = payload
+        .get(trailer_offset..)
+        .ok_or_else(|| "PFR1 offset beyond payload".to_string())?;
+    if trailer.len() < HEADER_LEN {
+        return Err(format!(
+            "PFR1 trailer is {} byte(s), expected at least {HEADER_LEN}",
+            trailer.len()
+        ));
+    }
+    let version = read_u16(trailer, 4);
+    let header_len = read_u16(trailer, 6) as usize;
+    let segment_len = read_u32(trailer, 8) as usize;
+    let row_count = read_u32(trailer, 12) as usize;
+    let reserved = read_u32(trailer, 16);
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(16));
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        return Err(format!(
+            "PFR1 header shape invalid (version {version}, header_len {header_len}, segment_len {segment_len}, expected {expected}, reserved {reserved}, available {})",
+            trailer.len()
+        ));
+    }
+    let mut out = BTreeMap::new();
+    let mut cursor = HEADER_LEN;
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32(trailer, cursor);
+        let kind = read_u32(trailer, cursor + 4);
+        let line_id = read_i32(trailer, cursor + 8);
+        let requested_factories = read_i32(trailer, cursor + 12);
+        cursor += 16;
+        if tag_db_id == 0 {
+            return Err(format!("PFR1 row {row_index} has zero tag_db_id"));
+        }
+        if kind != 1 && kind != 2 {
+            return Err(format!("PFR1 row {row_index} has invalid kind {kind}"));
+        }
+        if !(0..=100_000).contains(&requested_factories) {
+            return Err(format!(
+                "PFR1 row {row_index} has invalid requested_factories {requested_factories}"
+            ));
+        }
+        if out
+            .insert((tag_db_id, kind, line_id), requested_factories)
+            .is_some()
+        {
+            return Err(format!(
+                "PFR1 duplicates tag {tag_db_id} kind {kind} line_id {line_id}"
+            ));
+        }
+    }
+    Ok((out, trailer_offset + segment_len))
+}
+
+/// Parse XUI12's exact production-line subtype join. The trailer is a
+/// bijective annotation over the base D11 line identity; the caller enforces
+/// coverage after all base rows have been decoded.
+fn parse_production_line_subtype_segment(
+    payload: &[u8],
+    trailer_offset: usize,
+) -> Result<(BTreeMap<(u32, u32, i32), String>, usize), String> {
+    const HEADER_LEN: usize = 20;
+    const ROW_LEN: usize = 16;
+    let trailer = payload
+        .get(trailer_offset..)
+        .ok_or_else(|| "PLS1 offset beyond payload".to_string())?;
+    if trailer.len() < HEADER_LEN {
+        return Err(format!(
+            "PLS1 trailer is {} byte(s), expected at least {HEADER_LEN}",
+            trailer.len()
+        ));
+    }
+    let version = read_u16(trailer, 4);
+    let header_len = read_u16(trailer, 6) as usize;
+    let segment_len = read_u32(trailer, 8) as usize;
+    let row_count = read_u32(trailer, 12) as usize;
+    let reserved = read_u32(trailer, 16);
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        return Err(format!(
+            "PLS1 header shape invalid (version {version}, header_len {header_len}, segment_len {segment_len}, expected {expected}, reserved {reserved}, available {})",
+            trailer.len()
+        ));
+    }
+    let mut out = BTreeMap::new();
+    let mut cursor = HEADER_LEN;
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32(trailer, cursor);
+        let kind = read_u32(trailer, cursor + 4);
+        let line_id = read_i32(trailer, cursor + 8);
+        let subtype = read_u32(trailer, cursor + 12);
+        cursor += ROW_LEN;
+        if tag_db_id == 0 {
+            return Err(format!("PLS1 row {row_index} has zero tag_db_id"));
+        }
+        let line_subtype = match (kind, subtype) {
+            (1, 1) => "military",
+            (2, 2) => "naval",
+            (2, 3) => "ship_refit",
+            (1, 4) => "railway_gun",
+            _ => {
+                return Err(format!(
+                    "PLS1 row {row_index} has incoherent kind/subtype ({kind}, {subtype})"
+                ))
+            }
+        };
+        if out
+            .insert((tag_db_id, kind, line_id), line_subtype.to_string())
+            .is_some()
+        {
+            return Err(format!(
+                "PLS1 duplicates tag {tag_db_id} kind {kind} line_id {line_id}"
+            ));
+        }
+    }
+    Ok((out, trailer_offset + segment_len))
+}
+
+/// Parse XUI12's exact production-efficiency join. Raw fixed-point values use
+/// 10,000,000 units for 100 percent and are scaled only when projected to JSON.
+fn parse_production_efficiency_segment(
+    payload: &[u8],
+    trailer_offset: usize,
+) -> Result<(BTreeMap<(u32, u32, i32), ProductionEfficiencyFold>, usize), String> {
+    const HEADER_LEN: usize = 20;
+    const ROW_LEN: usize = 36;
+    let trailer = payload
+        .get(trailer_offset..)
+        .ok_or_else(|| "PEF1 offset beyond payload".to_string())?;
+    if trailer.len() < HEADER_LEN {
+        return Err(format!(
+            "PEF1 trailer is {} byte(s), expected at least {HEADER_LEN}",
+            trailer.len()
+        ));
+    }
+    let version = read_u16(trailer, 4);
+    let header_len = read_u16(trailer, 6) as usize;
+    let segment_len = read_u32(trailer, 8) as usize;
+    let row_count = read_u32(trailer, 12) as usize;
+    let reserved = read_u32(trailer, 16);
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        return Err(format!(
+            "PEF1 header shape invalid (version {version}, header_len {header_len}, segment_len {segment_len}, expected {expected}, reserved {reserved}, available {})",
+            trailer.len()
+        ));
+    }
+    let mut out = BTreeMap::new();
+    let mut cursor = HEADER_LEN;
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32(trailer, cursor);
+        let kind = read_u32(trailer, cursor + 4);
+        let line_id = read_i32(trailer, cursor + 8);
+        let efficiency_raw = read_i64(trailer, cursor + 12);
+        let efficiency_cap_raw = read_i64(trailer, cursor + 20);
+        let efficiency_growth_raw = read_i64(trailer, cursor + 28);
+        cursor += ROW_LEN;
+        if tag_db_id == 0 || (kind != 1 && kind != 2) {
+            return Err(format!(
+                "PEF1 row {row_index} has invalid tag/kind ({tag_db_id}, {kind})"
+            ));
+        }
+        if efficiency_raw < 0 || efficiency_cap_raw < 0 || efficiency_growth_raw < 0 {
+            return Err(format!(
+                "PEF1 row {row_index} has negative efficiency values ({efficiency_raw}, {efficiency_cap_raw}, {efficiency_growth_raw})"
+            ));
+        }
+        let values = ProductionEfficiencyFold {
+            efficiency_raw,
+            efficiency_cap_raw,
+            efficiency_growth_raw,
+        };
+        if out.insert((tag_db_id, kind, line_id), values).is_some() {
+            return Err(format!(
+                "PEF1 duplicates tag {tag_db_id} kind {kind} line_id {line_id}"
+            ));
+        }
+    }
+    Ok((out, trailer_offset + segment_len))
+}
+
+fn parse_market_trade_factory_header_trailer(
+    payload: &[u8],
+    trailer_offset: usize,
+) -> Result<(BTreeMap<u32, MarketTradeFactoryHeader>, usize), String> {
+    if payload.get(trailer_offset..trailer_offset.saturating_add(4))
+        != Some(MARKET_TRADE_FACTORY_HEADER_TRAILER_MAGIC.as_slice())
+    {
+        return Err("market trade trailing bytes are not MTRH factory-header trailer".to_string());
+    }
+    need(
+        payload,
+        trailer_offset + MARKET_TRADE_FACTORY_HEADER_TRAILER_HEADER_LEN,
+        "market trade MTRH header",
+    )?;
+    let version = read_u16(payload, trailer_offset + 4);
+    let header_len = read_u16(payload, trailer_offset + 6) as usize;
+    let row_len = read_u16(payload, trailer_offset + 8) as usize;
+    let reserved0 = read_u16(payload, trailer_offset + 10);
+    let row_count = read_u32(payload, trailer_offset + 12) as usize;
+    let country_count = read_u32(payload, trailer_offset + 16) as usize;
+    let reserved1 = read_u32(payload, trailer_offset + 20);
+    if version != MARKET_TRADE_FACTORY_HEADER_TRAILER_VERSION
+        || header_len != MARKET_TRADE_FACTORY_HEADER_TRAILER_HEADER_LEN
+        || row_len != MARKET_TRADE_FACTORY_HEADER_ROW_LEN
+        || reserved0 != 0
+        || reserved1 != 0
+        || row_count != country_count
+    {
+        return Err("market trade MTRH header shape is invalid".to_string());
+    }
+    let expected = trailer_offset
+        .saturating_add(header_len)
+        .saturating_add(row_count.saturating_mul(row_len));
+    if payload.len() < expected {
+        return Err(format!(
+            "market trade MTRH len {} < {expected}",
+            payload.len()
+        ));
+    }
+    let mut rows = BTreeMap::new();
+    let mut cursor = trailer_offset + header_len;
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32(payload, cursor);
+        let header = MarketTradeFactoryHeader {
+            total: read_i32(payload, cursor + 4),
+            used: read_i32(payload, cursor + 8),
+            available: read_i32(payload, cursor + 12),
+        };
+        cursor += row_len;
+        if tag_db_id == 0
+            || tag_db_id > compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID
+        {
+            return Err(format!(
+                "market trade MTRH row {row_index} has invalid tag_db_id {tag_db_id}"
+            ));
+        }
+        if rows.insert(tag_db_id, header).is_some() {
+            return Err(format!(
+                "market trade MTRH row {row_index} duplicates tag_db_id {tag_db_id}"
+            ));
+        }
+    }
+    Ok((rows, expected))
+}
+
+fn parse_market_trade_resource_row_trailer(
+    payload: &[u8],
+    trailer_offset: usize,
+) -> Result<(BTreeMap<u32, Vec<MarketTradeResourceRow>>, usize), String> {
+    need(
+        payload,
+        trailer_offset + MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN,
+        "market trade MTRR header",
+    )?;
+    let version = read_u16(payload, trailer_offset + 4);
+    let header_len = read_u16(payload, trailer_offset + 6) as usize;
+    let row_len = read_u16(payload, trailer_offset + 8) as usize;
+    let reserved0 = read_u16(payload, trailer_offset + 10);
+    let row_count = read_u32(payload, trailer_offset + 12) as usize;
+    let country_count = read_u32(payload, trailer_offset + 16) as usize;
+    let resource_count = read_u32(payload, trailer_offset + 20);
+    let display_scale = read_u32(payload, trailer_offset + 24);
+    let reserved1 = read_u32(payload, trailer_offset + 28);
+    if version != MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION
+        || header_len != MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN
+        || row_len != MARKET_TRADE_RESOURCE_ROW_LEN
+        || reserved0 != 0
+        || reserved1 != 0
+        || resource_count != MARKET_TRADE_RESOURCE_COUNT
+        || display_scale != 1
+        || row_count != country_count.saturating_mul(resource_count as usize)
+    {
+        return Err("market trade MTRR header shape is invalid".to_string());
+    }
+    let expected = trailer_offset
+        .saturating_add(header_len)
+        .saturating_add(row_count.saturating_mul(row_len));
+    if payload.len() < expected {
+        return Err(format!(
+            "market trade MTRR len {} < {expected}",
+            payload.len()
+        ));
+    }
+    let mut rows = BTreeMap::<u32, Vec<MarketTradeResourceRow>>::new();
+    let mut seen = BTreeSet::new();
+    let mut cursor = trailer_offset + header_len;
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32(payload, cursor);
+        let resource_index = read_u32(payload, cursor + 4);
+        let visible_order = read_u32(payload, cursor + 8);
+        let needed_type = read_u32(payload, cursor + 12);
+        let row = MarketTradeResourceRow {
+            resource_index,
+            visible_order,
+            needed_type,
+            balance: read_i32(payload, cursor + 16),
+            produced: read_i32(payload, cursor + 20),
+            imported: read_i32(payload, cursor + 24),
+            exported: read_i32(payload, cursor + 28),
+            special_project: read_i32(payload, cursor + 32),
+            production_line: read_i32(payload, cursor + 36),
+            needed: read_i32(payload, cursor + 40),
+            needed_current: read_i32(payload, cursor + 44),
+            needed_max: read_i32(payload, cursor + 48),
+            descriptor_db_index: read_u32(payload, cursor + 56),
+        };
+        let flags = read_u32(payload, cursor + 52);
+        let reserved = read_u32(payload, cursor + 60);
+        cursor += row_len;
+        if tag_db_id == 0
+            || tag_db_id > compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID
+            || resource_index >= MARKET_TRADE_RESOURCE_COUNT
+            || visible_order >= MARKET_TRADE_RESOURCE_COUNT
+            || row.descriptor_db_index == 0
+            || reserved != 0
+        {
+            return Err(format!(
+                "market trade MTRR row {row_index} shape is invalid"
+            ));
+        }
+        if resource_index == 0 {
+            if needed_type != MARKET_TRADE_RESOURCE_NEEDED_CURRENT_MAX
+                || flags != MARKET_TRADE_RESOURCE_FLAGS_OIL
+                || row.needed != row.needed_current
+            {
+                return Err(format!(
+                    "market trade MTRR row {row_index} oil needed semantics are invalid"
+                ));
+            }
+        } else if flags != 0
+            || row.needed_current != 0
+            || row.needed_max != 0
+            || row.needed != row.balance
+            || ![
+                MARKET_TRADE_RESOURCE_NEEDED_SURPLUS,
+                MARKET_TRADE_RESOURCE_NEEDED_DEFICIT,
+            ]
+            .contains(&needed_type)
+            || (row.balance < 0) != (needed_type == MARKET_TRADE_RESOURCE_NEEDED_DEFICIT)
+        {
+            return Err(format!(
+                "market trade MTRR row {row_index} non-oil needed semantics are invalid"
+            ));
+        }
+        if !seen.insert((tag_db_id, resource_index)) {
+            return Err(format!(
+                "market trade MTRR row {row_index} duplicates country/resource key"
+            ));
+        }
+        rows.entry(tag_db_id).or_default().push(row);
+    }
+    if rows.len() != country_count {
+        return Err(format!(
+            "market trade MTRR decoded country count {} != header {country_count}",
+            rows.len()
+        ));
+    }
+    for (tag_db_id, country_rows) in &mut rows {
+        country_rows.sort_by_key(|row| row.visible_order);
+        if country_rows.len() != resource_count as usize
+            || !country_rows
+                .iter()
+                .enumerate()
+                .all(|(index, row)| row.visible_order == index as u32)
+        {
+            return Err(format!(
+                "market trade MTRR country {tag_db_id} visible order is incomplete"
+            ));
+        }
+    }
+    Ok((rows, expected))
+}
+
+fn parse_market_trade_classic_deal_trailer(
+    payload: &[u8],
+    trailer_offset: usize,
+) -> Result<(BTreeMap<u32, Vec<MarketTradeClassicDealRow>>, usize), String> {
+    need(
+        payload,
+        trailer_offset + MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN,
+        "market trade MTRD header",
+    )?;
+    let version = read_u16(payload, trailer_offset + 4);
+    let header_len = read_u16(payload, trailer_offset + 6) as usize;
+    let row_len = read_u16(payload, trailer_offset + 8) as usize;
+    let reserved0 = read_u16(payload, trailer_offset + 10);
+    let row_count = read_u32(payload, trailer_offset + 12) as usize;
+    let country_count = read_u32(payload, trailer_offset + 16) as usize;
+    let scale_raw = read_u32(payload, trailer_offset + 20);
+    let witness_count = read_u32(payload, trailer_offset + 24) as usize;
+    let reserved1 = read_u32(payload, trailer_offset + 28);
+    if version != MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION
+        || header_len != MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN
+        || row_len != MARKET_TRADE_CLASSIC_DEAL_ROW_LEN
+        || reserved0 != 0
+        || reserved1 != 0
+        || scale_raw != FIXED_SCALE as u32
+        || witness_count != country_count
+    {
+        return Err("market trade MTRD header shape is invalid".to_string());
+    }
+    let expected = trailer_offset
+        .saturating_add(header_len)
+        .saturating_add(witness_count.saturating_mul(4))
+        .saturating_add(row_count.saturating_mul(row_len));
+    if payload.len() < expected {
+        return Err(format!(
+            "market trade MTRD len {} < {expected}",
+            payload.len()
+        ));
+    }
+    let mut cursor = trailer_offset + header_len;
+    let mut witnesses = BTreeSet::new();
+    for witness_index in 0..witness_count {
+        let tag_db_id = read_u32(payload, cursor);
+        cursor += 4;
+        if tag_db_id == 0
+            || tag_db_id > compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID
+            || !witnesses.insert(tag_db_id)
+        {
+            return Err(format!(
+                "market trade MTRD witness {witness_index} is invalid or duplicated"
+            ));
+        }
+    }
+    let mut rows = witnesses
+        .iter()
+        .copied()
+        .map(|tag_db_id| (tag_db_id, Vec::new()))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = BTreeSet::new();
+    let mut deal_halves = BTreeMap::<u64, Vec<(u32, MarketTradeClassicDealRow)>>::new();
+    for row_index in 0..row_count {
+        let owner_tag_db_id = read_u32(payload, cursor);
+        let row = MarketTradeClassicDealRow {
+            counterpart_tag_db_id: read_u32(payload, cursor + 4),
+            resource_index: read_u32(payload, cursor + 8),
+            visible_order: read_u32(payload, cursor + 12),
+            direction: read_u32(payload, cursor + 16),
+            route_kind: read_u32(payload, cursor + 20),
+            deal_id: read_u64(payload, cursor + 32),
+            requested_raw: read_i64(payload, cursor + 40),
+            delivered_raw: read_i64(payload, cursor + 48),
+            available_export_raw: read_i64(payload, cursor + 56),
+            factory_cost_raw: read_i64(payload, cursor + 64),
+            efficiency_raw: read_i64(payload, cursor + 72),
+            civilian_factories: read_i32(payload, cursor + 80),
+            convoys_assigned: read_i32(payload, cursor + 84),
+            convoys_required: read_i32(payload, cursor + 88),
+        };
+        let flags = read_u32(payload, cursor + 24);
+        let reserved_row0 = read_u32(payload, cursor + 28);
+        let reserved_row1 = read_u32(payload, cursor + 92);
+        cursor += row_len;
+        if !witnesses.contains(&owner_tag_db_id)
+            || !witnesses.contains(&row.counterpart_tag_db_id)
+            || owner_tag_db_id == row.counterpart_tag_db_id
+            || row.resource_index >= MARKET_TRADE_RESOURCE_COUNT
+            || ![
+                MARKET_TRADE_CLASSIC_DEAL_DIRECTION_IMPORT,
+                MARKET_TRADE_CLASSIC_DEAL_DIRECTION_EXPORT,
+            ]
+            .contains(&row.direction)
+            || ![
+                MARKET_TRADE_CLASSIC_DEAL_ROUTE_LAND,
+                MARKET_TRADE_CLASSIC_DEAL_ROUTE_SEA,
+                MARKET_TRADE_CLASSIC_DEAL_ROUTE_LOCKED,
+            ]
+            .contains(&row.route_kind)
+            || flags != MARKET_TRADE_CLASSIC_DEAL_FLAG_EXACT
+            || row.efficiency_raw < 0
+            || row.efficiency_raw > FIXED_SCALE as i64
+            || reserved_row0 != 0
+            || reserved_row1 != 0
+            || !seen.insert((owner_tag_db_id, row.visible_order))
+        {
+            return Err(format!(
+                "market trade MTRD row {row_index} shape is invalid"
+            ));
+        }
+        rows.get_mut(&owner_tag_db_id)
+            .expect("witness map was initialized")
+            .push(row);
+        deal_halves
+            .entry(row.deal_id)
+            .or_default()
+            .push((owner_tag_db_id, row));
+    }
+    for (deal_id, halves) in deal_halves {
+        if halves.len() != 2 {
+            return Err(format!(
+                "market trade MTRD deal {deal_id} does not have two halves"
+            ));
+        }
+        let (owner_a, a) = halves[0];
+        let (owner_b, b) = halves[1];
+        if owner_a != b.counterpart_tag_db_id
+            || owner_b != a.counterpart_tag_db_id
+            || a.direction == b.direction
+            || a.resource_index != b.resource_index
+            || a.route_kind != b.route_kind
+            || a.requested_raw != b.requested_raw
+            || a.delivered_raw != b.delivered_raw
+            || a.available_export_raw != b.available_export_raw
+            || a.factory_cost_raw != b.factory_cost_raw
+            || a.efficiency_raw != b.efficiency_raw
+            || a.civilian_factories != b.civilian_factories
+            || a.convoys_assigned != b.convoys_assigned
+            || a.convoys_required != b.convoys_required
+        {
+            return Err(format!("market trade MTRD deal {deal_id} halves disagree"));
+        }
+    }
+    for (owner, owner_rows) in &mut rows {
+        owner_rows.sort_by_key(|row| row.visible_order);
+        if !owner_rows
+            .iter()
+            .enumerate()
+            .all(|(index, row)| row.visible_order == index as u32)
+        {
+            return Err(format!(
+                "market trade MTRD owner {owner} visible order is not contiguous"
+            ));
+        }
+    }
+    Ok((rows, expected))
 }
 
 fn parse_market_trade_detail_trailer(
@@ -15718,7 +18937,7 @@ fn parse_market_trade_detail_trailer(
 fn parse_market_trade_resource_flow_trailer(
     payload: &[u8],
     trailer_offset: usize,
-) -> Result<(BTreeMap<u32, [i64; 7]>, usize), String> {
+) -> Result<(BTreeMap<u32, MarketTradeResourcePools>, usize), String> {
     if payload.get(trailer_offset..trailer_offset.saturating_add(4))
         != Some(MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC.as_slice())
     {
@@ -15734,21 +18953,34 @@ fn parse_market_trade_resource_flow_trailer(
     let row_len = read_u16(payload, trailer_offset + 8) as usize;
     let reserved0 = read_u16(payload, trailer_offset + 10);
     let row_count = read_u32(payload, trailer_offset + 12) as usize;
-    let exported_count = read_u32(payload, trailer_offset + 16) as usize;
+    let country_count_or_exported = read_u32(payload, trailer_offset + 16) as usize;
     let scale_raw = read_u32(payload, trailer_offset + 20);
     let resource_mask = read_u32(payload, trailer_offset + 24);
-    let reserved1 = read_u32(payload, trailer_offset + 28);
-    if version != MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION
+    let kind_mask = read_u32(payload, trailer_offset + 28);
+    if ![
+        MARKET_TRADE_RESOURCE_FLOW_TRAILER_LEGACY_VERSION,
+        MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION,
+    ]
+    .contains(&version)
         || header_len != MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN
         || row_len != MARKET_TRADE_RESOURCE_FLOW_ROW_LEN
         || reserved0 != 0
-        || reserved1 != 0
     {
         return Err("market trade MTRF header shape is invalid".to_string());
     }
-    if exported_count != row_count {
+    if version == MARKET_TRADE_RESOURCE_FLOW_TRAILER_LEGACY_VERSION
+        && (kind_mask != 0 || country_count_or_exported != row_count)
+    {
         return Err(format!(
-            "market trade MTRF exported_count {exported_count} != row_count {row_count}"
+            "market trade legacy MTRF exported_count {country_count_or_exported} != row_count {row_count} or reserved kind mask is nonzero"
+        ));
+    }
+    if version == MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION
+        && (kind_mask != MARKET_TRADE_RESOURCE_FLOW_KIND_MASK
+            || row_count != country_count_or_exported.saturating_mul(6))
+    {
+        return Err(format!(
+            "market trade MTRF v2 country_count {country_count_or_exported}, row_count {row_count}, kind_mask {kind_mask:#x} is incomplete"
         ));
     }
     if scale_raw != FIXED_SCALE as u32 {
@@ -15793,7 +19025,11 @@ fn parse_market_trade_resource_flow_trailer(
                 "market trade MTRF row {row_index} has invalid tag_db_id {tag_db_id}"
             ));
         }
-        if flow_kind != MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED {
+        if (version == MARKET_TRADE_RESOURCE_FLOW_TRAILER_LEGACY_VERSION
+            && flow_kind != MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED)
+            || (version == MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION
+                && !(1..=6).contains(&flow_kind))
+        {
             return Err(format!(
                 "market trade MTRF row {row_index} has unsupported flow_kind {flow_kind}"
             ));
@@ -15808,14 +19044,41 @@ fn parse_market_trade_resource_flow_trailer(
                 "market trade MTRF row {row_index} reserved field is nonzero"
             ));
         }
-        if values_raw.iter().all(|value| *value == 0) {
+        if version == MARKET_TRADE_RESOURCE_FLOW_TRAILER_LEGACY_VERSION
+            && values_raw.iter().all(|value| *value == 0)
+        {
             return Err(format!(
                 "market trade MTRF row {row_index} has all-zero exported resources"
             ));
         }
-        if rows.insert(tag_db_id, values_raw).is_some() {
+        let pools = rows
+            .entry(tag_db_id)
+            .or_insert_with(MarketTradeResourcePools::default);
+        let slot = match flow_kind {
+            MARKET_TRADE_RESOURCE_FLOW_KIND_PRODUCED => &mut pools.produced,
+            MARKET_TRADE_RESOURCE_FLOW_KIND_IMPORTED => &mut pools.imported,
+            MARKET_TRADE_RESOURCE_FLOW_KIND_EXPORTED => &mut pools.exported,
+            MARKET_TRADE_RESOURCE_FLOW_KIND_USED => &mut pools.used,
+            MARKET_TRADE_RESOURCE_FLOW_KIND_TO_EXPORT => &mut pools.to_export,
+            MARKET_TRADE_RESOURCE_FLOW_KIND_BASE_EXPORT => &mut pools.base_export,
+            _ => unreachable!("flow kind was validated"),
+        };
+        if slot.replace(values_raw).is_some() {
             return Err(format!(
-                "market trade MTRF row {row_index} duplicates tag_db_id {tag_db_id}"
+                "market trade MTRF row {row_index} duplicates tag_db_id {tag_db_id} flow_kind {flow_kind}"
+            ));
+        }
+    }
+    if version == MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION {
+        if rows.len() != country_count_or_exported {
+            return Err(format!(
+                "market trade MTRF decoded country count {} != header {country_count_or_exported}",
+                rows.len()
+            ));
+        }
+        if let Some((tag_db_id, _)) = rows.iter().find(|(_, pools)| !pools.complete()) {
+            return Err(format!(
+                "market trade MTRF tag_db_id {tag_db_id} does not contain all six resource pools"
             ));
         }
     }
@@ -15885,6 +19148,7 @@ fn apply_market_trade_detail_to_contract(
 fn parse_frd_depth_payload(payload: &[u8], record_flags: u32) -> Result<FrdDepthFrame, String> {
     let header = parse_frd_depth_header(payload, record_flags)?;
     let decision_target_count = header.decision_target_count;
+    let decision_target_row_fixed_len = header.decision_target_row_fixed_len;
     let decision_target_omitted_rows = header.decision_target_omitted_rows;
     let depth_status_flags = header.depth_status_flags;
     let focus_count = header.focus_count;
@@ -16030,41 +19294,57 @@ fn parse_frd_depth_payload(payload: &[u8], record_flags: u32) -> Result<FrdDepth
         });
     }
 
+    let targeted_status_count_by_tag: BTreeMap<u32, u32> = decision_status_rows
+        .iter()
+        .map(|row| (row.tag_db_id, row.targeted_count))
+        .collect();
     let targeted_timed_status_count_by_tag: BTreeMap<u32, u32> = decision_status_rows
         .iter()
         .map(|row| (row.tag_db_id, row.targeted_timed_count))
         .collect();
-    let mut decision_target_rows_by_tag: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut decision_target_rows_by_tag_and_source: BTreeMap<(u32, u32), u32> = BTreeMap::new();
     let mut seen_decision_targets = BTreeSet::new();
     let mut decision_target_rows = Vec::with_capacity(decision_target_count);
     for row_index in 0..decision_target_count {
         need(
             payload,
-            cursor + FRD_DECISION_TARGET_ROW_FIXED_LEN,
+            cursor + decision_target_row_fixed_len,
             "frd decision target row",
         )?;
         let tag_db_id = read_u32(payload, cursor);
-        let target_tag_db_id = read_u32(payload, cursor + 4);
+        let target_id = read_u32(payload, cursor + 4);
         let flags = read_u32(payload, cursor + 8);
         let source_kind = read_u32(payload, cursor + 12);
-        cursor += FRD_DECISION_TARGET_ROW_FIXED_LEN;
+        let detailed = decision_target_row_fixed_len == FRD_DECISION_TARGET_ROW_FIXED_LEN;
+        let lifecycle_state = detailed.then(|| read_i32(payload, cursor + 16));
+        let ignore_raw = detailed.then(|| read_u32(payload, cursor + 20));
+        let days = detailed.then(|| read_i32(payload, cursor + 24));
+        cursor += decision_target_row_fixed_len;
         let decision = read_string(payload, &mut cursor, "frd decision target token")?;
         if tag_db_id == 0 || tag_db_id > FRD_MAX_TARGET_TAG_DB_ID {
             return Err(format!(
                 "frd decision target row {row_index} has invalid owner tag_db_id {tag_db_id}"
             ));
         }
-        if flags != FRD_DECISION_TARGET_COUNTRY_FLAGS {
+        let country_flags = flags == FRD_DECISION_TARGET_COUNTRY_FLAGS;
+        let numeric_flags =
+            flags == (FRD_DECISION_TARGET_FLAG_NUMERIC_ID | FRD_DECISION_TARGET_FLAG_RECORD_0X24);
+        if !country_flags && !numeric_flags {
             return Err(format!(
-                "frd decision target row {row_index} has non-country flags {flags:#x}"
+                "frd decision target row {row_index} has unknown or mixed flags {flags:#x}"
             ));
         }
-        if target_tag_db_id == 0 || target_tag_db_id > FRD_MAX_TARGET_TAG_DB_ID {
+        if target_id == 0
+            || (country_flags && target_id > FRD_MAX_TARGET_TAG_DB_ID)
+            || (numeric_flags && target_id > 1_000_000)
+        {
             return Err(format!(
-                "frd decision target row {row_index} has invalid country target id {target_tag_db_id}"
+                "frd decision target row {row_index} has invalid typed target id {target_id}"
             ));
         }
-        if source_kind != FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED {
+        if source_kind != FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED
+            && (source_kind != FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED || !detailed)
+        {
             return Err(format!(
                 "frd decision target row {row_index} has invalid source_kind {source_kind}"
             ));
@@ -16074,32 +19354,60 @@ fn parse_frd_depth_payload(payload: &[u8], record_flags: u32) -> Result<FrdDepth
                 "frd decision target row {row_index} has no decision token"
             ));
         }
-        if !seen_decision_targets.insert((
-            tag_db_id,
-            target_tag_db_id,
-            source_kind,
-            decision.clone(),
-        )) {
+        if let (Some(lifecycle_state), Some(ignore_raw), Some(days)) =
+            (lifecycle_state, ignore_raw, days)
+        {
+            if !(0..=4).contains(&lifecycle_state) {
+                return Err(format!(
+                    "frd decision target row {row_index} has invalid lifecycle_state {lifecycle_state}"
+                ));
+            }
+            if ignore_raw > 1 {
+                return Err(format!(
+                    "frd decision target row {row_index} has invalid ignore value {ignore_raw}"
+                ));
+            }
+            if !(-100_000..=100_000).contains(&days) {
+                return Err(format!(
+                    "frd decision target row {row_index} has invalid days {days}"
+                ));
+            }
+        }
+        if !seen_decision_targets.insert((tag_db_id, target_id, source_kind, decision.clone())) {
             return Err(format!(
                 "frd decision target row {row_index} duplicates owner/target/source key"
             ));
         }
-        let count = decision_target_rows_by_tag.entry(tag_db_id).or_insert(0);
+        let count = decision_target_rows_by_tag_and_source
+            .entry((tag_db_id, source_kind))
+            .or_insert(0);
         *count = count.saturating_add(1);
         decision_target_rows.push(FrdDecisionTargetState {
             tag_db_id,
-            target_tag_db_id,
+            target_id,
             flags,
             source_kind,
+            lifecycle_state,
+            ignore: ignore_raw.map(|value| value != 0),
+            days,
             decision,
         });
     }
-    for (tag_db_id, target_rows) in decision_target_rows_by_tag {
-        match targeted_timed_status_count_by_tag.get(&tag_db_id).copied() {
+    for ((tag_db_id, source_kind), target_rows) in decision_target_rows_by_tag_and_source {
+        let status_count = match source_kind {
+            FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED => {
+                targeted_status_count_by_tag.get(&tag_db_id).copied()
+            }
+            FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED => {
+                targeted_timed_status_count_by_tag.get(&tag_db_id).copied()
+            }
+            _ => None,
+        };
+        match status_count {
             Some(status_count) if target_rows <= status_count => {}
             Some(status_count) => {
                 return Err(format!(
-                    "frd decision target rows {target_rows} exceed targeted_timed_count {status_count} for tag_db_id {tag_db_id}"
+                    "frd decision target rows {target_rows} exceed source_kind {source_kind} status count {status_count} for tag_db_id {tag_db_id}"
                 ));
             }
             None => {
@@ -16149,6 +19457,7 @@ fn parse_frd_depth_payload(payload: &[u8], record_flags: u32) -> Result<FrdDepth
 
 struct FrdDepthHeader {
     header_len: usize,
+    decision_target_row_fixed_len: usize,
     decision_target_count: usize,
     decision_target_omitted_rows: u32,
     depth_status_flags: u32,
@@ -16185,7 +19494,7 @@ fn parse_frd_depth_header(payload: &[u8], record_flags: u32) -> Result<FrdDepthH
         let header_len = read_u16(payload, 6) as usize;
         match (version, header_len) {
             (FRD_SCHEMA_VERSION_V2, FRD_HEADER_LEN_V2) => {}
-            (FRD_SCHEMA_VERSION, FRD_HEADER_LEN) => need(
+            (FRD_SCHEMA_VERSION_V3 | FRD_SCHEMA_VERSION, FRD_HEADER_LEN) => need(
                 payload,
                 FRD_HEADER_LEN,
                 "focus_research_decisions_depth v3 header",
@@ -16198,6 +19507,11 @@ fn parse_frd_depth_header(payload: &[u8], record_flags: u32) -> Result<FrdDepthH
         }
         return Ok(FrdDepthHeader {
             header_len,
+            decision_target_row_fixed_len: if version == FRD_SCHEMA_VERSION {
+                FRD_DECISION_TARGET_ROW_FIXED_LEN
+            } else {
+                FRD_DECISION_TARGET_ROW_FIXED_LEN_V3
+            },
             depth_status_flags: read_u32(payload, 8),
             focus_count: read_u32(payload, 12) as usize,
             research_count: read_u32(payload, 16) as usize,
@@ -16214,6 +19528,7 @@ fn parse_frd_depth_header(payload: &[u8], record_flags: u32) -> Result<FrdDepthH
     }
     Ok(FrdDepthHeader {
         header_len: FRD_HEADER_LEN_V1,
+        decision_target_row_fixed_len: FRD_DECISION_TARGET_ROW_FIXED_LEN_V3,
         decision_target_count: 0,
         decision_target_omitted_rows: 0,
         depth_status_flags: read_u32(payload, 8),
@@ -16448,25 +19763,9 @@ fn map_detail_resource_name(resource_id: u32) -> String {
 }
 
 fn map_detail_building_name(type_id: u32) -> String {
-    match type_id {
-        0x27D2 => "naval_supply_hub".into(),
-        0x2FAB => "infrastructure".into(),
-        0x2FB6 => "air_base".into(),
-        0x31F6 => "naval_base".into(),
-        0x32B4 => "nuclear_reactor".into(),
-        0x3C8F => "fuel_silo".into(),
-        0x4BF6 => "dockyard".into(),
-        0x4CBE => "supply_node".into(),
-        0x4CC1 => "rail_way".into(),
-        0x4E22 => "arms_factory".into(),
-        0x4E2D => "industrial_complex".into(),
-        0x4E44 => "synthetic_refinery".into(),
-        0x5781 => "bunker".into(),
-        0x5782 => "coastal_bunker".into(),
-        0x6D5B => "anti_air_building".into(),
-        0x6DEF => "radar_station".into(),
-        other => format!("type_0x{other:04X}"),
-    }
+    compact_contract::building_registry::building_token_from_type_id(type_id)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("type_0x{type_id:08X}"))
 }
 
 fn domain_name(domain_id: u16) -> &'static str {

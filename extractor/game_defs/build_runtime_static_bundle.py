@@ -20,7 +20,8 @@ import static_bundle as SB
 
 BUILD_SCHEMA = "extractor.runtime_static_catalog_build.v1"
 FINGERPRINT_SCHEMA = "extractor.runtime_static_catalog_inputs.v1"
-STAGING_SCHEMA = "extractor.runtime_static_mod_staging.v1"
+STAGING_SCHEMA = "extractor.runtime_static_mod_staging.v2"
+RENDERER_HANDOFF_SCHEMA = "extractor.renderer_game_files_handoff.v1"
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[1]
 TEMPLATES_GATE = (
@@ -33,7 +34,152 @@ MOD_SOURCE_FIELDS = {
     "id", "ordinal", "name", "descriptor_path", "descriptor_sha256",
     "content_kind", "content_path", "content_sha256",
 }
+UI14_ENGINE_VFS_FILE = "ui14_engine_vfs.json"
+
+
+def _runtime_ui14_receipt(
+    bindings_dir: Path, destination: Path, staged_rows: list[dict[str, Any]]
+) -> dict[str, Any]:
+    source = SB.load_object(bindings_dir / UI14_ENGINE_VFS_FILE, "UI14 engine VFS receipt")
+    if (
+        source.get("schema") != LR.UI14_ENGINE_VFS_SCHEMA
+        or set(source) != {"schema", "executable_sha256", "layers", "effective_winners"}
+        or not isinstance(source.get("layers"), list)
+        or not isinstance(source.get("effective_winners"), list)
+    ):
+        raise LR.ResolutionError("UI14 engine VFS receipt is malformed")
+    source_by_id = {row.get("id"): row for row in source["layers"] if isinstance(row, dict)}
+    if set(source_by_id) != {row["id"] for row in staged_rows}:
+        raise LR.ResolutionError("UI14 engine VFS receipt layer set changed during staging")
+    layers = []
+    for row in staged_rows:
+        source_row = source_by_id[row["id"]]
+        if set(source_row) != {
+            "id", "descriptor_sha256", "engine_descriptor_ordinal", "engine_mount_ordinal"
+        }:
+            raise LR.ResolutionError("UI14 engine VFS layer row is malformed")
+        descriptor = destination / row["descriptor_relpath"]
+        layers.append({
+            "id": row["id"],
+            "descriptor_sha256": SB.sha256_file(descriptor),
+            "engine_descriptor_ordinal": source_row["engine_descriptor_ordinal"],
+            "engine_mount_ordinal": source_row["engine_mount_ordinal"],
+        })
+    return {
+        "schema": LR.UI14_ENGINE_VFS_SCHEMA,
+        "executable_sha256": source["executable_sha256"],
+        "layers": layers,
+        "effective_winners": source["effective_winners"],
+    }
 CONTENT_LINE_RE = re.compile(r"^\s*(?:path|archive)\s*=.*$", re.MULTILINE | re.IGNORECASE)
+SAFE_DLC_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def _source_namespace_index(bindings_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
+    inventory = LR.validate_source_inventory_document(
+        SB.load_object(bindings_dir / "source_inventory.json", "live source inventory")
+    )
+    return {
+        (row["kind"], row["id"]): row
+        for row in inventory["namespaces"]
+    }
+
+
+def _active_dlc_archive_sources(
+    bindings_dir: Path, vanilla: Path, dlc_state: dict[str, Any]
+) -> list[dict[str, Any]]:
+    load_order = SB._validate_binding_document(
+        SB.load_object(bindings_dir / "load_order.json", "resolved load order"),
+        "load_order",
+    )
+    enabled = {row["id"]: row for row in dlc_state["dlc"] if row["enabled"]}
+    ordered_ids = [row["id"] for row in load_order["items"] if row["kind"] == "dlc"]
+    if set(ordered_ids) != set(enabled) or len(ordered_ids) != len(enabled):
+        raise LR.ResolutionError("load order DLC identities do not match enabled DLC state")
+    namespaces = _source_namespace_index(bindings_dir)
+    sources: list[dict[str, Any]] = []
+    for ordinal, dlc_id in enumerate(ordered_ids):
+        if not SAFE_DLC_ID_RE.fullmatch(dlc_id):
+            raise LR.ResolutionError(f"unsafe DLC identity for staging: {dlc_id!r}")
+        descriptors = sorted((vanilla / "dlc" / dlc_id).glob("*.dlc"))
+        if len(descriptors) != 1:
+            raise LR.ResolutionError(
+                f"enabled DLC requires exactly one installed descriptor: {dlc_id}"
+            )
+        descriptor = descriptors[0]
+        fields = LR.parse_descriptor(descriptor)
+        if "archive" not in fields:
+            continue
+        archive_ref = Path(fields["archive"].replace("\\", "/"))
+        if archive_ref.is_absolute() or any(
+            part in {"", ".", ".."} for part in archive_ref.parts
+        ):
+            raise LR.ResolutionError(
+                f"unsafe descriptor-backed DLC archive path: {dlc_id}"
+            )
+        archive = (vanilla / archive_ref).resolve()
+        try:
+            archive.relative_to(vanilla.resolve())
+        except ValueError as exc:
+            raise LR.ResolutionError(
+                f"descriptor-backed DLC archive escapes install root: {dlc_id}"
+            ) from exc
+        binding_sha, _ = LR.hash_tree(
+            descriptor.parent, layer_kind="dlc", layer_id=dlc_id, allow_empty=True
+        )
+        if binding_sha != enabled[dlc_id]["content_sha256"]:
+            raise LR.ResolutionError(f"resolved DLC content changed: {dlc_id}")
+        archive_sha, _ = LR._hash_file_stable(archive)
+        namespace = namespaces.get(("dlc", dlc_id))
+        if not namespace or namespace.get("binding") != "active_product":
+            raise LR.ResolutionError(
+                f"source inventory lacks active descriptor-backed DLC namespace: {dlc_id}"
+            )
+        source_namespace_sha, _rows, source_container_sha, source_container_bytes = LR._zip_namespace_rows(
+            archive, dlc_id, layer_kind="dlc"
+        )
+        if source_namespace_sha != namespace.get("content_sha256"):
+            raise LR.ResolutionError(
+                f"source inventory DLC namespace changed: {dlc_id}"
+            )
+        if (
+            namespace.get("storage_kind") != "zip_archive"
+            or namespace.get("source_container_sha256") != source_container_sha
+            or namespace.get("source_container_bytes") != source_container_bytes
+        ):
+            raise LR.ResolutionError(
+                f"source inventory DLC archive identity changed: {dlc_id}"
+            )
+        sources.append({
+            "id": f"_ui15_dlc/{ordinal:04d}-{dlc_id}.mod",
+            "dlc_id": dlc_id,
+            "ordinal": ordinal,
+            "name": fields["name"],
+            "descriptor_path": str(descriptor.resolve()),
+            "descriptor_sha256": SB.sha256_file(descriptor),
+            "content_path": str(archive),
+            "source_archive_sha256": archive_sha,
+            "source_namespace_sha256": source_namespace_sha,
+        })
+    return sources
+
+
+def _renderer_handoff(
+    vanilla: Path, destination: Path, launcher: dict[str, Any], staging: dict[str, Any]
+) -> dict[str, Any]:
+    core = {
+        "schema": RENDERER_HANDOFF_SCHEMA,
+        "game_dir": str(vanilla.resolve()),
+        "userdata": str(destination.resolve()),
+        "use_dlc_load": True,
+        "launcher_sha256": SB.sha256_bytes(SB.canonical_json(launcher)),
+        "staging_manifest_sha256": staging["sha256"],
+        "cli_args": [
+            "--game", str(vanilla.resolve()),
+            "--use-dlc-load", "--userdata", str(destination.resolve()),
+        ],
+    }
+    return {**core, "sha256": SB.sha256_bytes(SB.canonical_json(core))}
 
 
 def _safe_launcher_token(token: str, destination: Path) -> Path:
@@ -141,6 +287,15 @@ def _extract_archive(source: Path, destination: Path) -> None:
                 shutil.copyfileobj(src, dst)
 
 
+def _reject_unattested_archive_mods(sources: list[dict[str, Any]]) -> None:
+    archive_ids = [source["id"] for source in sources if source["content_kind"] == "archive"]
+    if archive_ids:
+        raise LR.ResolutionError(
+            "unattested archive mod is not admitted without a proven native-collision "
+            f"attestation: {', '.join(archive_ids)}"
+        )
+
+
 def _stage_mod_descriptor(source: dict[str, Any], destination: Path, content_root: Path) -> Path:
     target = _safe_launcher_token(source["id"], destination)
     text = Path(source["descriptor_path"]).read_text(encoding="utf-8-sig", errors="strict")
@@ -161,6 +316,11 @@ def prepare_runtime_userdir(bindings_dir: Path, vanilla: Path, destination: Path
     SB._validate_binding_document(mod_state, "mod_state")
     SB._validate_binding_document(dlc_state, "dlc_state")
     mod_sources = _load_resolved_mod_sources(bindings_dir, mod_state)
+    _reject_unattested_archive_mods(mod_sources)
+    source_namespaces = _source_namespace_index(bindings_dir)
+    dlc_archive_sources = _active_dlc_archive_sources(
+        bindings_dir, vanilla, dlc_state
+    )
     descriptors = {
         path.parent.name: path.relative_to(vanilla).as_posix()
         for path in vanilla.glob("dlc/*/*.dlc")
@@ -173,6 +333,30 @@ def prepare_runtime_userdir(bindings_dir: Path, vanilla: Path, destination: Path
         if not row["enabled"]:
             disabled.append(descriptor)
     destination.mkdir(parents=True, exist_ok=False)
+    staged_dlc_rows = []
+    for source in dlc_archive_sources:
+        content_root = destination / "_materialized_dlc" / f"{source['ordinal']:04d}"
+        _extract_archive(Path(source["content_path"]), content_root)
+        staged_descriptor = _stage_mod_descriptor(source, destination, content_root)
+        staged_content_sha, staged_inventory = LR.hash_tree(
+            content_root, layer_kind="staged_dlc", layer_id=source["dlc_id"]
+        )
+        if staged_content_sha != source["source_namespace_sha256"]:
+            raise LR.ResolutionError(
+                f"source/staged DLC namespace mismatch: {source['dlc_id']}"
+            )
+        staged_dlc_rows.append({
+            "id": source["id"],
+            "dlc_id": source["dlc_id"],
+            "ordinal": source["ordinal"],
+            "descriptor_relpath": staged_descriptor.relative_to(destination).as_posix(),
+            "descriptor_sha256": SB.sha256_file(staged_descriptor),
+            "content_path": str(content_root.resolve()),
+            "content_sha256": staged_content_sha,
+            "content_files": len(staged_inventory),
+            "source_archive_sha256": source["source_archive_sha256"],
+            "source_namespace_sha256": source["source_namespace_sha256"],
+        })
     staged_rows = []
     for source in mod_sources:
         content_root = Path(source["content_path"])
@@ -183,6 +367,11 @@ def prepare_runtime_userdir(bindings_dir: Path, vanilla: Path, destination: Path
         staged_content_sha, staged_inventory = LR.hash_tree(
             content_root, layer_kind="staged_mod", layer_id=source["id"]
         )
+        source_namespace = source_namespaces.get(("mod", source["id"]))
+        if not source_namespace or staged_content_sha != source_namespace.get("content_sha256"):
+            raise LR.ResolutionError(
+                f"source/staged mod namespace mismatch: {source['id']}"
+            )
         staged_rows.append({
             "id": source["id"],
             "ordinal": source["ordinal"],
@@ -192,15 +381,30 @@ def prepare_runtime_userdir(bindings_dir: Path, vanilla: Path, destination: Path
             "content_sha256": staged_content_sha,
             "content_files": len(staged_inventory),
             "source_content_sha256": source["content_sha256"],
+            "source_namespace_sha256": source_namespace["content_sha256"],
         })
     launcher = {
-        "enabled_mods": [source["id"] for source in mod_sources],
+        "enabled_mods": [
+            *[source["id"] for source in dlc_archive_sources],
+            *[source["id"] for source in mod_sources],
+        ],
         "disabled_dlcs": sorted(disabled),
     }
     (destination / "dlc_load.json").write_bytes(SB.pretty_json(launcher))
-    staging = {"schema": STAGING_SCHEMA, "mods": staged_rows}
+    ui14_receipt = _runtime_ui14_receipt(bindings_dir, destination, staged_rows)
+    (destination / UI14_ENGINE_VFS_FILE).write_bytes(SB.pretty_json(ui14_receipt))
+    staging = {
+        "schema": STAGING_SCHEMA,
+        "dlc_archives": staged_dlc_rows,
+        "mods": staged_rows,
+        "ui14_engine_vfs_sha256": SB.sha256_bytes(SB.canonical_json(ui14_receipt)),
+    }
     staging["sha256"] = SB.sha256_bytes(SB.canonical_json(staging))
     (destination / "static_mod_staging_manifest.json").write_bytes(SB.pretty_json(staging))
+    handoff = _renderer_handoff(vanilla, destination, launcher, staging)
+    (destination / "renderer_game_file_handoff.json").write_bytes(
+        SB.pretty_json(handoff)
+    )
     return launcher
 
 
@@ -212,6 +416,11 @@ def _validate_runtime_userdir(
     SB._validate_binding_document(mod_state, "mod_state")
     SB._validate_binding_document(dlc_state, "dlc_state")
     sources = _load_resolved_mod_sources(bindings_dir, mod_state)
+    _reject_unattested_archive_mods(sources)
+    source_namespaces = _source_namespace_index(bindings_dir)
+    dlc_archive_sources = _active_dlc_archive_sources(
+        bindings_dir, vanilla, dlc_state
+    )
     descriptors = {
         path.parent.name: path.relative_to(vanilla).as_posix()
         for path in vanilla.glob("dlc/*/*.dlc")
@@ -224,12 +433,27 @@ def _validate_runtime_userdir(
         if not row["enabled"]:
             disabled.append(descriptor)
     expected_launcher = {
-        "enabled_mods": [row["id"] for row in sources],
+        "enabled_mods": [
+            *[row["id"] for row in dlc_archive_sources],
+            *[row["id"] for row in sources],
+        ],
         "disabled_dlcs": sorted(disabled),
     }
     actual_launcher = SB.load_object(destination / "dlc_load.json", "runtime staging launcher state")
     if actual_launcher != expected_launcher:
         raise LR.ResolutionError("runtime staging launcher state does not match resolved bindings")
+    expected_ui14 = _runtime_ui14_receipt(bindings_dir, destination, [
+        {
+            **source,
+            "descriptor_relpath": source["id"],
+        }
+        for source in sources
+    ])
+    actual_ui14 = SB.load_object(
+        destination / UI14_ENGINE_VFS_FILE, "runtime UI14 engine VFS receipt"
+    )
+    if actual_ui14 != expected_ui14:
+        raise LR.ResolutionError("runtime UI14 engine VFS receipt changed")
     manifest = SB.load_object(
         destination / "static_mod_staging_manifest.json", "runtime mod staging manifest"
     )
@@ -239,17 +463,58 @@ def _validate_runtime_userdir(
     if (
         manifest.get("schema") != STAGING_SCHEMA
         or claimed != SB.sha256_bytes(SB.canonical_json(unhashed))
+        or not isinstance(manifest.get("dlc_archives"), list)
+        or len(manifest["dlc_archives"]) != len(dlc_archive_sources)
         or not isinstance(manifest.get("mods"), list)
         or len(manifest["mods"]) != len(sources)
+        or manifest.get("ui14_engine_vfs_sha256")
+        != SB.sha256_bytes(SB.canonical_json(actual_ui14))
     ):
         raise LR.ResolutionError("runtime mod staging manifest is malformed")
-    expected_descriptor_relpaths = {row["id"] for row in sources}
+    expected_descriptor_relpaths = {
+        *[row["id"] for row in dlc_archive_sources],
+        *[row["id"] for row in sources],
+    }
     actual_descriptor_relpaths = {
         path.relative_to(destination).as_posix()
         for path in destination.rglob("*.mod")
     }
     if actual_descriptor_relpaths != expected_descriptor_relpaths:
         raise LR.ResolutionError("runtime mod staging descriptor namespace changed")
+    for source, row in zip(
+        dlc_archive_sources, manifest["dlc_archives"], strict=True
+    ):
+        if (
+            row.get("id") != source["id"]
+            or row.get("dlc_id") != source["dlc_id"]
+            or row.get("ordinal") != source["ordinal"]
+        ):
+            raise LR.ResolutionError("runtime DLC archive staging order changed")
+        descriptor = (destination / str(row.get("descriptor_relpath"))).resolve()
+        if SB.sha256_file(descriptor) != row.get("descriptor_sha256"):
+            raise LR.ResolutionError(
+                f"runtime staged DLC descriptor changed: {source['dlc_id']}"
+            )
+        fields = LR.parse_descriptor(descriptor)
+        content = Path(fields["path"]).resolve()
+        if str(content) != row.get("content_path"):
+            raise LR.ResolutionError(
+                f"runtime staged DLC content path changed: {source['dlc_id']}"
+            )
+        digest, inventory = LR.hash_tree(
+            content, layer_kind="staged_dlc", layer_id=source["dlc_id"]
+        )
+        expected_namespace = source["source_namespace_sha256"]
+        if (
+            digest != row.get("content_sha256")
+            or digest != row.get("source_namespace_sha256")
+            or digest != expected_namespace
+            or len(inventory) != row.get("content_files")
+            or row.get("source_archive_sha256") != source["source_archive_sha256"]
+        ):
+            raise LR.ResolutionError(
+                f"runtime staged DLC namespace changed: {source['dlc_id']}"
+            )
     for source, row in zip(sources, manifest["mods"], strict=True):
         if row.get("id") != source["id"] or row.get("ordinal") != source["ordinal"]:
             raise LR.ResolutionError("runtime mod staging order changed")
@@ -261,8 +526,24 @@ def _validate_runtime_userdir(
         if str(content) != row.get("content_path"):
             raise LR.ResolutionError(f"runtime staged mod content path changed: {source['id']}")
         digest, inventory = LR.hash_tree(content, layer_kind="staged_mod", layer_id=source["id"])
-        if digest != row.get("content_sha256") or len(inventory) != row.get("content_files"):
+        source_namespace = source_namespaces.get(("mod", source["id"]))
+        if (
+            not source_namespace
+            or digest != row.get("content_sha256")
+            or digest != row.get("source_namespace_sha256")
+            or digest != source_namespace.get("content_sha256")
+            or len(inventory) != row.get("content_files")
+        ):
             raise LR.ResolutionError(f"runtime staged mod content changed: {source['id']}")
+    expected_handoff = _renderer_handoff(
+        vanilla, destination, expected_launcher, manifest
+    )
+    actual_handoff = SB.load_object(
+        destination / "renderer_game_file_handoff.json",
+        "renderer game-file handoff",
+    )
+    if actual_handoff != expected_handoff:
+        raise LR.ResolutionError("renderer staged-root handoff changed")
     return expected_launcher
 
 
@@ -284,7 +565,7 @@ def _build_input_fingerprint(
     bindings_dir: Path, vanilla: Path, exe: Path, source_inventory: dict[str, Any]
 ) -> dict[str, Any]:
     binding_files = [
-        "mod_state.json", "dlc_state.json", "load_order.json",
+        "mod_state.json", "dlc_state.json", "load_order.json", UI14_ENGINE_VFS_FILE,
         "resolution_report.json", "source_inventory.json",
     ]
     value = {
@@ -400,8 +681,10 @@ def _technology_sharing_command(
 def build(
     *, bindings_dir: Path, vanilla: Path, output: Path, exe: Path, resume: bool = False
 ) -> dict[str, Any]:
+    bindings_dir = bindings_dir.resolve()
     vanilla = vanilla.resolve()
     exe = exe.resolve()
+    output = output.resolve()
     if not vanilla.is_dir() or not exe.is_file():
         raise LR.ResolutionError("vanilla root and executable must both exist")
     try:
@@ -641,6 +924,13 @@ def build(
         "schema": BUILD_SCHEMA,
         "passed": True,
         "runtime_launcher_state": launcher,
+        "renderer_game_files": SB.load_object(
+            staging_userdir / "renderer_game_file_handoff.json",
+            "renderer game-file handoff",
+        ),
+        "renderer_game_files_path": str(
+            (staging_userdir / "renderer_game_file_handoff.json").resolve()
+        ),
         "preserved_launcher_conflicts": resolution.get("launcher_dlc_conflicts", []),
         "generators": results,
         "bundle": verified,

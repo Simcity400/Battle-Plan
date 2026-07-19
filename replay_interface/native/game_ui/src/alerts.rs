@@ -218,7 +218,12 @@ pub fn alert_feed_binding() -> AlertFeedBinding {
 mod tests {
     use super::*;
 
-    fn alerts(init: Leaf<i64>, dec: Leaf<i64>, intel: Leaf<i64>, market: Leaf<i64>) -> TopbarAlerts {
+    fn alerts(
+        init: Leaf<i64>,
+        dec: Leaf<i64>,
+        intel: Leaf<i64>,
+        market: Leaf<i64>,
+    ) -> TopbarAlerts {
         TopbarAlerts {
             initiative: init,
             decisions_available: dec,
@@ -229,12 +234,15 @@ mod tests {
 
     #[test]
     fn badge_positive_count_is_shown_with_raw_text() {
-        let b = badge_from(AlertKind::Initiative, Some(&alerts(
-            Leaf::Measured(2),
-            Leaf::Measured(0),
-            Leaf::Absent,
-            Leaf::Unobtained,
-        )));
+        let b = badge_from(
+            AlertKind::Initiative,
+            Some(&alerts(
+                Leaf::Measured(2),
+                Leaf::Measured(0),
+                Leaf::Absent,
+                Leaf::Unobtained,
+            )),
+        );
         assert_eq!(b.count, Some(2));
         assert!(b.badge_shown);
         assert_eq!(b.count_text.as_deref(), Some("2"));
@@ -245,12 +253,15 @@ mod tests {
     fn zero_count_measured_is_absent_badge_never_shown() {
         // A *measured* zero is a real value (count = Some(0)) but the FIT
         // convention suppresses the badge; it is never a fabricated default.
-        let b = badge_from(AlertKind::DecisionsAvailable, Some(&alerts(
-            Leaf::Absent,
-            Leaf::Measured(0),
-            Leaf::Absent,
-            Leaf::Absent,
-        )));
+        let b = badge_from(
+            AlertKind::DecisionsAvailable,
+            Some(&alerts(
+                Leaf::Absent,
+                Leaf::Measured(0),
+                Leaf::Absent,
+                Leaf::Absent,
+            )),
+        );
         assert_eq!(b.count, Some(0));
         assert!(!b.badge_shown);
         assert_eq!(b.count_text, None);
@@ -271,7 +282,10 @@ mod tests {
 
     #[test]
     fn no_view_yields_all_absent_badges() {
-        let badges: Vec<_> = AlertKind::ALL.iter().map(|&k| badge_from(k, None)).collect();
+        let badges: Vec<_> = AlertKind::ALL
+            .iter()
+            .map(|&k| badge_from(k, None))
+            .collect();
         assert_eq!(badges.len(), 4);
         assert!(badges.iter().all(|b| b.count.is_none() && !b.badge_shown));
     }
@@ -291,7 +305,10 @@ mod tests {
             Leaf::Measured(3),
             Leaf::Measured(4),
         );
-        let badges: Vec<_> = AlertKind::ALL.iter().map(|&k| badge_from(k, Some(&a))).collect();
+        let badges: Vec<_> = AlertKind::ALL
+            .iter()
+            .map(|&k| badge_from(k, Some(&a)))
+            .collect();
         let kinds: Vec<_> = badges.iter().map(|b| b.kind).collect();
         assert_eq!(kinds, AlertKind::ALL.to_vec());
     }

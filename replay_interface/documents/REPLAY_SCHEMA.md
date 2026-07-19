@@ -346,19 +346,25 @@ are `null`.
 |-------|------|--------|-------|
 | `focus_tree` | str\|null | C / M / S | id of the active tree; scheduled collector `focus_live` reads `CCountry+0x1370 -> CFocusTree` |
 | `continuous_focus_palette` | str\|null | S | |
-| `completed[]` | list[str] | C / M / S / D | completed focus ids (diff -> completion timeline); scheduled collector `focus_live` reads the completed compact vector and measured-empty `[]` is protected by measured TAG |
+| `completed[]` | list[str] | C / M / S / D | completed focus ids in engine order (diff -> completion timeline); scheduled collector `focus_live` reads the complete vector, D12 authenticates list presence, and the recorder rejects count/list disagreement |
 | `completed_count` | int\|null | C / M / S | scheduled collector `focus_live` reads the completed-vector size |
 | `current` | str\|null | C / M / S | focus in progress |
 | `current_continuous` | str\|null | C / M | active continuous focus; live-only leaf, mutually exclusive with `current` |
+| `current_set` | list[str]\|null | C / M | exact zero-or-one national-current set; D12 bit 2 carries raw-pointer read success separately from the compact token, so measured-empty `[]` is distinct from unavailable |
+| `current_continuous_set` | list[str]\|null | C / M | exact zero-or-one continuous-current set; D12 bit 3 carries raw-pointer read success, and the measured set is mutually exclusive with nonempty `current_set` |
 | `progress` | number\|null | C / M / S | progress days on the active national or continuous focus |
-| `paused` | bool\|null | S | live pause byte is not pinned; save-only for now |
+| `paused` | bool\|null | C / S | exact live `CNationalFocusProgress+0xB0` pause byte; compact D12 preserves presence separately from its value |
+| `available` | list[str]\|null | C | exact engine-evaluated selectable national-focus set; static `available={}` presence or prerequisite inference is forbidden |
+| `visible_order` | list[str]\|null | C | exact engine-selected visible focus ids in presentation order after conditional/shared/joint topology selection |
 
 ### 3.6 `production`
 | field | type | source | notes |
 |-------|------|--------|-------|
 | `stockpile` | obj\|null | C / M | equipment-variant id string -> signed amount; scheduled collector `production_live` reads validated `CCountry+0xF68` production manager |
 | `stockpile_total` | float\|null | C / M / D | sum of measured `stockpile`; absent when stockpile vector was unavailable |
-| `military_lines[]` / `naval_lines[]` | list\|null | C / M | each: `id`, `active_factories`, `cost`, `speed`, `produced`, `amount`; measured-empty `[]` is distinct from null |
+| `stockpile_complete` | bool\|null | C / M | true only when the producer explicitly witnessed the country stockpile vector, including a proven-empty vector |
+| `military_lines[]` / `naval_lines[]` | list\|null | C / M | legacy rows measure `id`, `active_factories`, `cost`, `speed`, `produced`, `amount`; successor rows may additionally carry `priority`, `line_subtype`, `equipment_variant_id`, `requested_factories`, `efficiency`, `efficiency_cap`, `efficiency_growth`, `mio_id`, and explicit display-role leaves `progress_ratio`, `daily_output`, `days_to_next_unit`; replay never derives a missing successor field from the legacy raw values |
+| `military_lines_complete` / `naval_lines_complete` | bool\|null | C / M | true only when the producer explicitly witnessed the complete per-country vector; measured-empty `[]` plus true is distinct from null/unreadable |
 | `military_factories` / `naval_factories` | int\|null | C / M | sum of active factories over measured lines |
 | `construction_queue[]` | list\|null | C / M | scheduled `production_live` construction queue from `CCountry+0xF68 -> mgr+0x70`; each row has `id`, optional `template_id`, `active_factories`, `cost`, `produced`, `priority`; measured-empty `[]` is distinct from null; target state/location is not yet pinned |
 
@@ -393,6 +399,7 @@ are `null`.
 | `intel_networks[]` | list | S | reserved; null→`[]` (graph summarized in diplomacy) |
 | `operations` | obj\|null | S | `{priority, running[], finished[]}`. A running op: `op_id`, `type`, `date`, `duration` (days), `target`, `phases[]`, `operatives[]` (`{operative_id, mission}`). Progress derives from `save_date` vs `date`+`duration`. |
 | `decryption` | obj\|null | S | cryptology: `{targets[{target, decryption(bool), amount}], intel_source}`. `amount` = accumulated decryption points; `decryption=true` = actively decrypting that target. |
+| `domain53_extra` | obj\|null | C / M | Exact raw a729 sidecar already emitted by domain 53: `agency_scalars`, `raw_capacity_cluster`, `operative_lifecycle_rows[]`, and `cryptology_targets[]`. Names ending `_unresolved` or `_unvalidated` are intentionally non-semantic and must not populate final A30 agency, capture, assignment, portrait, trait, nationality, operation, network-strength, visibility, or ordering fields. The legacy wire keys `defense_raw` and `upgrade_progress_raw` are also non-semantic: the typed view exposes them only as `value_0x128_unvalidated` and `value_0xc8_unvalidated` pending serializer reconciliation. `replay_core::IntelView` otherwise exposes the raw leaves without relabeling them. |
 | `peace_conference` | obj\|null | S | active peace-conference state (`{active}`; empty/inactive in most saves) |
 
 > `gfx` on an operative is a portrait sprite **name**, not image data (rendering is a
@@ -439,6 +446,8 @@ stays `0`, e.g. a nuke RECORD with `amount=0` yields `nukes_total=0`).
 | `special_projects` | obj\|null | S | `{projects_started, projects_completed, active_programs[{building,province,country}], breakthrough{specialization_*:points}}` |
 | `experience_status` | obj\|null | S | `{army_experience, navy_experience, air_experience}` |
 | `script_flags` | obj | S | per-country script flags from `countries.<TAG>.flags`, keyed by flag name with `{value, date}`; omitted when the save has no flags block for that country |
+| `_r2_script_variables` | obj\|null | M | d51 country-scope `{name:number}` variable map. This is the recorder fold's lossless production carrier; `ScriptedGuiView` prefers it and accepts legacy root `script_variables` only when this carrier is absent. A measured empty object is authoritative empty state; `null` is unavailable. |
+| `scripted_gui_runtime` | obj\|null | M | Exact engine-resolved residuals keyed by effective scripted-GUI id: `{visible:bool\|null, enabled:bool\|null, triggers:{name:bool}, properties:{element:{property:string}}, effect_enabled:{name:bool}}`. Only engine-only constructs use this carrier; variable/flag predicates and variable effects are evaluated generically replay-side. Missing values remain unavailable, never false/zero/default. See extractor dossier `A38_SCRIPTED_GUI_EVALUATION_INPUTS.json`. |
 | `strategic_navy` | obj | S | save-persisted `countries.<TAG>.strategic_navy` block, preserved under `extra` with nested maps/repeated blocks intact; save-backed only, no live memory offset claim |
 | `convoys_destroyed` | int\|null | S | |
 | `accidents_score` | float\|null | S | |
@@ -746,11 +755,17 @@ World strategic-air picture. Save-sourced (**S**). Always present (`[]`/`null`-f
 
 ## 17. `world_events` (event + convoy ledgers; from `events.json`)
 
-Persisted ledgers. Drives the `event_fired` / `convoy_sunk` diff events (§9.2).
+Persisted ledgers plus the additive XUI21 exact fired-event stream. Rich rows
+are exhaustive lifecycle history; popup presentation is an optional
+materialisation join. Hidden, AI-only, zero-option and no-description rows
+remain lifecycle entries without fabricated chrome. The legacy save id list
+remains accepted only as incomplete identity history and cannot coexist with a
+truthful `fired_events_complete=true` claim.
 
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `fired_events[]` | list[str] | S | persisted scripted-event ids that fired this game |
+| `fired_events[]` | list[str\|obj] | C/M/S | legacy entries are persisted ids; rich lifecycle rows are `{event_id, recipient_tag, fire_date, fire_hour, fire_tick, event_sequence, visible_option_ordinals[], chosen_option_ordinal\|null, selected_desc_key\|null, shown_picture_gfx\|null, popup_subtype\|null, effective_timeout_hours, timeout_tick, resolved_tick\|null, resolution_reason, runtime_text_context_id\|null}`. Empty/absent presentation fields mean no replay-admissible popup, not that the lifecycle row is absent. `timeout` may retain the exact default option ordinal; only the no-choice timeout has null. |
+| `fired_events_complete` | bool\|null | C/M | only `true` admits an empty or populated rich lifecycle stream at the production replay boundary; legacy ids, absent/null or false remain incomplete and cannot authenticate popup history |
 | `pending_events[]` | list | S | scheduled-but-unfired events (empty in most saves; future-proofed) |
 | `threat[]` | list | S | world-tension CONTRIBUTOR ledger (per threat-action). Each: `{threat, final_threat, daily, tag, date, label}`. **NOT** the aggregate tension scalar (that is not stored — see `world.world_tension_inputs`). |
 | `sunk_convoys[]` | list | S | per-month convoy-loss ledger. Each: `{month (hours-since-epoch bucket), convoys, killer_country, owner}` |
@@ -968,3 +983,38 @@ Per DESIGN §4 hard-impossible — never add fields for these, never fake them:
 - Pure-UI display numbers that exist only in the renderer.
 
 A consumer that needs one of these must treat its absence as a hard limit, not a TODO.
+## XUI23 active command abilities
+
+`countries.<TAG>.active_abilities` is the frame-authoritative selected-context
+ability bar and is distinct from the save-sourced `abilities` object (aces,
+commander reassignment/capture cooldowns, and officer corps).
+
+```json
+{
+  "complete": true,
+  "rows": [{
+    "ability_id": "force_attack",
+    "available": false,
+    "active": true,
+    "activation_hour": 17,
+    "cooldown_hours": 504,
+    "cooldown_remaining_hours": 336,
+    "cost_command_power": 22.0,
+    "target_kind": "army_leader",
+    "target_id": "73",
+    "duration_hours": 168,
+    "duration_remaining_hours": 120,
+    "display_order": 0,
+    "icon": "GFX_ability_force_attack",
+    "tooltip": "Force Attack",
+    "disabled_reason": "Already active"
+  }]
+}
+```
+
+Rows are exact source order (`display_order == 0..N-1`). A measured empty list
+with `complete=true` is valid. Missing/null/incomplete data is unavailable, not
+an empty bar. Replay never evaluates authored `allowed` triggers, applies cost
+modifiers, advances timers, chooses targets, localizes tooltips, or invents a
+disabled reason. The effective definition/VFS catalog must contain the ability
+and agree with the recorded target kind and icon before UI admission.

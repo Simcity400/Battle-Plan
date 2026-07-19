@@ -307,6 +307,29 @@ def test_catalogs(layers):
     assert rng and rng["min"] == "0.6" and rng["max"] == "0.9"
     assert rng["modifier"]["political_power_factor"] == "0.1"
 
+    def count_effect(value, wanted):
+        if isinstance(value, dict):
+            total = 0
+            for key, child in value.items():
+                if key.lower() == wanted:
+                    total += len(child) if isinstance(child, list) else 1
+                total += count_effect(child, wanted)
+            return total
+        if isinstance(value, list):
+            return sum(count_effect(child, wanted) for child in value)
+        return 0
+
+    authored_gfx = 0
+    for balance in c["power_balances"].values():
+        ranges = list(balance["neutral_ranges"])
+        ranges.extend(rng for side in balance["sides"] for rng in side["ranges"])
+        for effect_range in ranges:
+            authored_gfx += count_effect(
+                effect_range["on_activate"], "set_power_balance_gfx")
+            authored_gfx += count_effect(
+                effect_range["on_deactivate"], "set_power_balance_gfx")
+    assert authored_gfx == 46
+
 
 def test_catalog_mod_override_wins(layers):
     # STRUCTURED-DEF mod-over-vanilla proof (not just loc): the AMSB mod overrides
@@ -324,8 +347,16 @@ def test_catalog_mod_override_wins(layers):
 def test_focus_defs(layers, loc):
     out = parse_focus_def.parse_focus_defs(layers, loc)
     assert out["meta"]["focus_count"] > 2000, out["meta"]
+    assert out["meta"]["default_focus_background_styles"] == ["default_style"]
+    assert not out["meta"]["unresolved_focus_background_styles"]
+    assert all(
+        all(style[key] for key in ("unavailable", "available", "current", "completed"))
+        for style in out["focus_background_styles"].values()
+    )
     f = out["focuses"].get("AST_additional_militia_training")
     assert f and f["x"] == 2 and f["y"] == 0 and f["cost"] == 10
+    assert f["background_style_name"] == "default_style"
+    assert f["background_style"]["available"] == "GFX_focus_can_start"
 
 
 # --- templates ------------------------------------------------------------

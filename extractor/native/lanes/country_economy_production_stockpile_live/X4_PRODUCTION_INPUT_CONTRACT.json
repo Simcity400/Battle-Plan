@@ -1,0 +1,252 @@
+{
+  "schema": "hoi4-extractor-x4-production-input-contract-v1",
+  "status": "X4_P1_TO_P6_PRODUCTION_PROMOTION_READY",
+  "program": {
+    "name": "hoi4.exe 1.19.2.0.a729",
+    "image_base": "0x140000000",
+    "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+  },
+  "owner": "extractor domain 11 successor schema",
+  "current_line_row": {
+    "bytes": 32,
+    "fields": [
+      "tag_db_id",
+      "kind",
+      "line_id",
+      "active_factories",
+      "cost_raw",
+      "speed_raw",
+      "produced_raw",
+      "amount"
+    ]
+  },
+  "irreducible_requirements": [
+    {
+      "id": "X4-P1",
+      "field": "equipment_variant_id",
+      "join": "production line to admitted live/static equipment-variant registry",
+      "cannot_infer_from": ["line_id", "kind", "stockpile membership"],
+      "status": "PROVEN_PRODUCTION_PROMOTION_READY",
+      "memory_law": "line+0x88 -> admitted type-70 variant object; variant+0x0C -> equipment_variant_id",
+      "admission": "exact a729 variant vtable, variant+0x08 == 70, id in 1..i32::MAX",
+      "wire": "all-or-nothing PVJ1 trailer with bijective (tag_db_id,kind,line_id) coverage"
+    },
+    {
+      "id": "X4-P2",
+      "field": "requested_factories",
+      "discriminator": "136 of 825 retained save-oracle lines differ from active_factories",
+      "status": "PROVEN_PRODUCTION_PROMOTION_READY",
+      "memory_law": "equipment production line+0xE8 -> signed requested/assigned factory target",
+      "admission": "readable signed value in 0..100000; absence or invalidity omits the entire successor join",
+      "wire": "all-or-nothing PFR1 trailer with bijective (tag_db_id,kind,line_id) coverage; legacy active_factories remains unchanged"
+    },
+    {
+      "id": "X4-P3",
+      "field": "line_subtype",
+      "required_values": ["military", "naval", "ship_refit", "railway_gun"],
+      "discriminator": "kind=2 cannot distinguish naval from ship-refit",
+      "status": "PROVEN_PRODUCTION_PROMOTION_READY",
+      "memory_law": "u64(line+0x00) exact primary vtable -> military 0x2965050, naval 0x2965238, railway_gun 0x2965398, ship_refit 0x2965858 (module-relative)",
+      "admission": "exact a729 image identity; unknown primary vtable rejects the complete production-line block",
+      "legacy_kind_mapping": "military and railway_gun -> kind 1; naval and ship_refit -> kind 2",
+      "wire": "all-or-nothing PLS1 trailer with bijective (tag_db_id,kind,line_id) coverage and subtype codes 1..4"
+    },
+    {
+      "id": "X4-P4",
+      "fields": ["efficiency", "efficiency_cap", "efficiency_growth"],
+      "rule": "capture authoritative line state; do not reconstruct from speed, factories or global defines",
+      "status": "PROVEN_PRODUCTION_PROMOTION_READY",
+      "producer_law": {
+        "efficiency": "0x141920d20(line,out)",
+        "efficiency_cap": "0x141922a00(line,out)",
+        "efficiency_growth": "0x141921160(line,out,optional_detail)"
+      },
+      "scale": "100000 raw per percentage point; 10000000 raw = 100 percent",
+      "wire": "all-or-nothing PEF1 trailer with bijective (tag_db_id,kind,line_id) coverage and three i64 raw helper outputs",
+      "save_oracle": "preserves ordered factory_efficiencies exactly; it does not fabricate cap or growth"
+    },
+    {
+      "id": "X4-P5",
+      "field": "mio_id",
+      "status": "PROVEN_PRODUCTION_PROMOTION_READY",
+      "rule": "carry exact line-owned industrial-manufacturer identity or proven-null",
+      "memory_law": "line+0x90 is a 64-bit CID with low u32 type and high u32 id; {type=0,id=0} is exact null; {type=79,id>0} is assigned",
+      "producer_law": "0x141d429b0 reads qword line+0x90, gates both u32 halves against zero, resolves nonzero through 0x14220a3d0, and sends the resolved industrial organisation to 0x140da35e0; 0x14220a3d0 dispatches on the first u32 and 0x1422083e0 hashes/compares both u32 CID words",
+      "admission": "only exact {0,0} or {79,id>0} CIDs are admitted; unreadable, mixed-zero, wrong-type, duplicate, or non-bijective input suppresses the entire successor join",
+      "save_law": "countries.<TAG>.production.{military_lines,naval_lines,ship_refit_lines}.industrial_manufacturer={id,type=79}; absent field is exact null",
+      "cannot_infer_from": ["equipment_variant_id", "variant.design_team", "MIO history.equipment"],
+      "discriminator": "ENG equipment 5682:70 is present on naval lines 1669 and 1672 with distinct mio_id 33 and 34; the variant design_team is 32:79",
+      "oracle": "extractor/re_evidence/X4_P5/SAVE_ORACLE_VERIFICATION.json",
+      "wire": "PMI1 version 1 self-sized trailer: 20-byte header followed by bijective 16-byte (tag_db_id:u32,kind:u32,line_id:i32,mio_id:u32) rows; mio_id 0 means proven null",
+      "fold_law": "positive mio_id emits a decimal string, zero emits JSON null, and legacy records without PMI1 leave mio_id absent"
+    },
+    {
+      "id": "X4-P6",
+      "fields": ["tag_db_id", "stockpile_complete", "military_lines_complete", "naval_lines_complete"],
+      "status": "PROVEN_PRODUCTION_PROMOTION_READY",
+      "rule": "emit a tag-bearing country row even when every vector is empty so proven-empty is distinct from unreadable",
+      "producer_law": "CountryProductionRow Option<Vec<_>> presence is the exact stable-read witness: Some([]) is readable/proven-empty and None is unreadable",
+      "wire": "PCP1 self-sized trailer: one bijective (tag_db_id:u32, flags:u32) row per admitted production country; bit0 stockpile_complete, bit1 military_lines_complete, bit2 naval_lines_complete",
+      "admission": "row_count equals d11 country_count, tags are nonzero and unique, flags use only bits 0..2, and any base vector row requires its matching complete bit",
+      "fold_law": "true emits an exact leaf even when empty plus its zero aggregate; false emits completeness=false and omits the unreadable leaf; legacy no-PCP1 records retain the prior ambiguity law"
+    }
+  ],
+  "admission_fixture": {
+    "synchronization": "one exact-a729 paused hour shared by successor stream and save oracle",
+    "must_exercise": [
+      "military line",
+      "naval line",
+      "ship-refit line or typed proof of absence",
+      "active_factories != requested_factories",
+      "MIO assigned and proven-unassigned",
+      "finite and infinite amount",
+      "proven-empty per-country vector"
+    ],
+    "fail_closed": "any unreadable required field or missing completeness witness rejects that country production block"
+  },
+  "not_owned_here": [
+    "production-panel formatting",
+    "progress/output display formulas",
+    "replay typed-view integration"
+  ],
+  "ghidra_provenance": [
+    {
+      "function_address": "0x141d429b0",
+      "job_id": "20260717T105825Z-x4-p1-production-line-ui-producers-799611da",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T105825Z-x4-p1-production-line-ui-producers-799611da\\evidence\\func_141d429b0.decompile.c",
+      "artifact_sha256": "4be8aeca5b113719974a5cc8960533595b32de5cfc88b4d50b0206e7168a5047",
+      "manifest_hash": "07b7b6322cbe32a3ad0763fde61089f22419726eb2a8b61d42e7fe0e984f14c9"
+    },
+    {
+      "function_address": "0x141d50350",
+      "job_id": "20260717T105825Z-x4-p1-production-line-ui-producers-799611da",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T105825Z-x4-p1-production-line-ui-producers-799611da\\evidence\\func_141d50350.decompile.c",
+      "artifact_sha256": "ed8a8990b71fa6cd099a4202e315684d0fe41965faf07e9be864f2ec31cbd083",
+      "manifest_hash": "07b7b6322cbe32a3ad0763fde61089f22419726eb2a8b61d42e7fe0e984f14c9"
+    },
+    {
+      "function_address": "0x141920d20",
+      "job_id": "20260717T105825Z-x4-p1-production-line-ui-producers-799611da",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T105825Z-x4-p1-production-line-ui-producers-799611da\\evidence\\func_141920d20.decompile.c",
+      "artifact_sha256": "99e14cbbb3c1ba3637b9575daaa7a36150a0d9e6dcbf523b8c07caeb9a9e4b68",
+      "manifest_hash": "07b7b6322cbe32a3ad0763fde61089f22419726eb2a8b61d42e7fe0e984f14c9"
+    },
+    {
+      "function_address": "0x141922a00",
+      "job_id": "20260717T105825Z-x4-p1-production-line-ui-producers-799611da",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T105825Z-x4-p1-production-line-ui-producers-799611da\\evidence\\func_141922a00.decompile.c",
+      "artifact_sha256": "8652e97dace347fe670b6d8f8cf777888da28b8d5119a36482a3249daf6dce8f",
+      "manifest_hash": "07b7b6322cbe32a3ad0763fde61089f22419726eb2a8b61d42e7fe0e984f14c9"
+    },
+    {
+      "function_address": "0x141921160",
+      "job_id": "20260717T105825Z-x4-p1-production-line-ui-producers-799611da",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T105825Z-x4-p1-production-line-ui-producers-799611da\\evidence\\func_141921160.decompile.c",
+      "artifact_sha256": "323b2f983845daded77841250cf701c04768cce790a48ca4156764e7aabeebe4",
+      "manifest_hash": "07b7b6322cbe32a3ad0763fde61089f22419726eb2a8b61d42e7fe0e984f14c9"
+    },
+    {
+      "function_address": "0x1424d8420",
+      "job_id": "20260717T105825Z-x4-p1-production-line-ui-producers-799611da",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T105825Z-x4-p1-production-line-ui-producers-799611da\\evidence\\func_1424d8420.decompile.c",
+      "artifact_sha256": "6e9233b5e1cd52cc8131f804b6723a311df6e8f4e6a7c162b0d9fc3a4bde758a",
+      "manifest_hash": "07b7b6322cbe32a3ad0763fde61089f22419726eb2a8b61d42e7fe0e984f14c9"
+    },
+    {
+      "function_address": "0x140082cb0",
+      "job_id": "20260717T114734Z-x4-p2-requested-factories-semantic-ancho-f81a99ff",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T114734Z-x4-p2-requested-factories-semantic-ancho-f81a99ff\\string-xrefs.txt",
+      "artifact_sha256": "cc9c410d2063d4755e1a915c9920a79c5819aa791355de09c59877121562a579",
+      "manifest_hash": "cd33527ef2f8f5d73ac87272d13b3c6219927272875ffe379ec7f4e1f4f8f8fe"
+    },
+    {
+      "function_address": "0x141d4a4a0",
+      "job_id": "20260717T115443Z-x4-p2-factory-allocation-mutation-callba-a385a12d",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T115443Z-x4-p2-factory-allocation-mutation-callba-a385a12d\\evidence\\func_141d4a4a0.decompile.c",
+      "artifact_sha256": "779e2695d715c1e467c44be43c09717306e123945b629b859651d1e1a7e2f82b",
+      "manifest_hash": "b9e3e335c47741885838bea996db10b97a8a65624f88f54009b24190e6bd917c"
+    },
+    {
+      "function_address": "0x14114d6c0",
+      "job_id": "20260717T120243Z-x4-p2-add-factories-command-vtable-metho-c60995df",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T120243Z-x4-p2-add-factories-command-vtable-metho-c60995df\\evidence\\func_14114d6c0.decompile.c",
+      "artifact_sha256": "3c6fe14c0a6a1de351123f481f9fd2ca6519268d41df7c3c098d464f06a80ee9",
+      "manifest_hash": "fbd1cd8edbed221fb31ed78ce41082a5c759b795296afc94caa634d83e11dc96"
+    },
+    {
+      "function_address": "0x14113d760",
+      "job_id": "20260717T120243Z-x4-p2-add-factories-command-vtable-metho-c60995df",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T120243Z-x4-p2-add-factories-command-vtable-metho-c60995df\\evidence\\func_14113d760.decompile.c",
+      "artifact_sha256": "024d627281622a69153d683a8d88efb07ae09112faef156b0611c1785c0bf2bb",
+      "manifest_hash": "fbd1cd8edbed221fb31ed78ce41082a5c759b795296afc94caa634d83e11dc96"
+    },
+    {
+      "function_address": "0x141926d20",
+      "job_id": "20260717T120243Z-x4-p2-add-factories-command-vtable-metho-c60995df",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T120243Z-x4-p2-add-factories-command-vtable-metho-c60995df\\evidence\\func_141926d20.decompile.c",
+      "artifact_sha256": "18d6ac180513e74e0c5fba324d40dd46b5babd06603ebcbccd3003844344f148",
+      "manifest_hash": "fbd1cd8edbed221fb31ed78ce41082a5c759b795296afc94caa634d83e11dc96"
+    },
+    {
+      "function_address": "0x140082cb0",
+      "job_id": "20260717T124846Z-x4-p6-production-completeness-semantic-a-83da6ab8",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T124846Z-x4-p6-production-completeness-semantic-a-83da6ab8\\string-xrefs.txt",
+      "artifact_sha256": "3b7bc3ff424e81390a86b02bf9a14fb2f91e46d19f8df58b6916b6322aac6757",
+      "manifest_hash": "cd33527ef2f8f5d73ac87272d13b3c6219927272875ffe379ec7f4e1f4f8f8fe"
+    },
+    {
+      "function_address": "0x141d429b0",
+      "job_id": "20260717T105825Z-x4-p1-production-line-ui-producers-799611da",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T105825Z-x4-p1-production-line-ui-producers-799611da\\evidence\\func_141d429b0.decompile.c",
+      "artifact_sha256": "4be8aeca5b113719974a5cc8960533595b32de5cfc88b4d50b0206e7168a5047",
+      "manifest_hash": "07b7b6322cbe32a3ad0763fde61089f22419726eb2a8b61d42e7fe0e984f14c9"
+    },
+    {
+      "function_address": "0x14220a3d0",
+      "job_id": "20260717T220448Z-x4-p5-cid-map-second-word-id-v1-80f9a123",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T220448Z-x4-p5-cid-map-second-word-id-v1-80f9a123\\evidence\\func_14220a3d0.decompile.c",
+      "artifact_sha256": "6ded7904dfb3b892721972f2a53adcdb72ddac8d9d8f85af94764903a3023fef",
+      "manifest_hash": "614e00757bf393f235f297fbf9519f33d038521c9ca9a97b1ef8553b4a86086c"
+    },
+    {
+      "function_address": "0x1422083e0",
+      "job_id": "20260717T220448Z-x4-p5-cid-map-second-word-id-v1-80f9a123",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T220448Z-x4-p5-cid-map-second-word-id-v1-80f9a123\\evidence\\func_1422083e0.decompile.c",
+      "artifact_sha256": "86f8ae2455f65c246487ed38d02ce6af8163be9ec882b45a8279c31fc740944b",
+      "manifest_hash": "614e00757bf393f235f297fbf9519f33d038521c9ca9a97b1ef8553b4a86086c"
+    },
+    {
+      "function_address": "0x140da35e0",
+      "job_id": "20260717T141047Z-x4-p5-line-mio-handle-resolver-tooltip-v-c5a0142d",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T141047Z-x4-p5-line-mio-handle-resolver-tooltip-v-c5a0142d\\evidence\\func_140da35e0.decompile.c",
+      "artifact_sha256": "71fcce170e529b3ef25de545a2ea7b1143cb24f4b705ebe225242c8fe462b1a4",
+      "manifest_hash": "4893c223e551a95fcd945a6ffb7b632e853ab2ffaa3ea9498dcf3a7c7755c1fe"
+    },
+    {
+      "function_address": "0x1402fb050",
+      "job_id": "20260717T140702Z-x4-p5-industrial-manufacturer-xref-targe-fec0fe33",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T140702Z-x4-p5-industrial-manufacturer-xref-targe-fec0fe33\\evidence\\func_1402fb050.decompile.c",
+      "artifact_sha256": "7d906ed09bdd17c47f4772d91a28c61a1088e1b265cedbc43a1acb4996e2671e",
+      "manifest_hash": "a4ec7d705ce20788768f357bffee21bc597350f84b88cec4d8c587e1c5fd0666"
+    },
+    {
+      "function_address": "0x14048e470",
+      "job_id": "20260717T140707Z-x4-p5-industrial-manufacturer-xref-v1-d57aed63",
+      "artifact_path": "C:\\Users\\Example\\ghidra_agent_exports\\20260717T140707Z-x4-p5-industrial-manufacturer-xref-v1-d57aed63\\evidence\\func_14048e470.decompile.c",
+      "artifact_sha256": "4a55176ea9f92906703bf0e19986b7dace671415311a43b97cabfa5c950a5a8a",
+      "manifest_hash": "40c2688f5e71daeaf214dc148620cc97beb89a6977fb6e5e2e268805713179e7"
+    }
+  ],
+  "x4_p3_static_provenance": {
+    "job_id": "20260717T123800Z-x4-p3-static-rtti-vtable",
+    "function_addresses": [
+      "0x140f59640", "0x140f59bb0", "0x140f59ba0",
+      "0x140f59d50", "0x140f5a410", "0x140f5a370",
+      "0x140f5c8d0", "0x140f5ce70", "0x140f5cbc0",
+      "0x140f5a680", "0x140f5bc90", "0x140f5bae0"
+    ],
+    "artifact_path": "extractor\\re_evidence\\X4_P3\\line_subtype_static_probe.json",
+    "artifact_sha256": "060a02c31c7fd1588b11dd3a52f7b2fa77511b8e7a8d8b8c049c8ee307e9be9f",
+    "manifest_hash": "70bf771c54bd635ca6f0fdac355604a0a314e2f2e8be6438205d2e31fd1f940a"
+  }
+}

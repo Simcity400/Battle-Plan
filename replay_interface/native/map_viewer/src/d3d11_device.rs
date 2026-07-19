@@ -5005,6 +5005,40 @@ pub(crate) unsafe fn native_d3d11_create_dynamic_constant_buffer(
 }
 
 #[cfg(windows)]
+pub(crate) unsafe fn native_d3d11_create_exact_constant_buffer(
+    device: &D3dPtr<ID3D11Device>,
+    bytes: &[u8],
+    role: &str,
+) -> Result<D3dPtr<ID3D11Buffer>> {
+    if bytes.is_empty() || bytes.len() % 16 != 0 {
+        return Err(format!(
+            "production native D3D11 terrain replay blocked: {role} is {} bytes; constant buffers must be non-empty and 16-byte aligned",
+            bytes.len()
+        )
+        .into());
+    }
+    let desc = D3D11_BUFFER_DESC {
+        ByteWidth: u32::try_from(bytes.len())?,
+        Usage: D3D11_USAGE_DEFAULT as _,
+        BindFlags: winapi::um::d3d11::D3D11_BIND_CONSTANT_BUFFER,
+        CPUAccessFlags: 0,
+        MiscFlags: 0,
+        StructureByteStride: 0,
+    };
+    let init = D3D11_SUBRESOURCE_DATA {
+        pSysMem: bytes.as_ptr() as *const _,
+        SysMemPitch: 0,
+        SysMemSlicePitch: 0,
+    };
+    let mut buffer: *mut ID3D11Buffer = ptr::null_mut();
+    native_d3d11_hr(
+        (*device.as_raw()).CreateBuffer(&desc, &init, &mut buffer),
+        &format!("CreateBuffer for {role}"),
+    )?;
+    D3dPtr::from_raw(buffer, role)
+}
+
+#[cfg(windows)]
 pub(crate) unsafe fn native_d3d11_create_buffer(
     device: &D3dPtr<ID3D11Device>,
     binding: &MapFrameBufferBinding,

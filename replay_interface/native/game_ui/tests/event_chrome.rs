@@ -12,8 +12,8 @@
 
 use game_ui::assets::AssetResolver;
 use game_ui::event_chrome::{
-    event_option_entry_chrome, event_window_chrome, load_event_layout, load_events,
-    resolve_events, EVENT_WINDOW_VARIANTS,
+    event_option_entry_chrome, event_window_chrome, load_event_layout, load_events, resolve_events,
+    EVENT_WINDOW_VARIANTS,
 };
 use game_ui::gfx::SpriteRegistry;
 use game_ui::loc::Localisation;
@@ -104,6 +104,8 @@ fn default_event_window_chrome_matches_shipped_rects() {
     assert_eq!(grid.element_type, "gridBoxType");
     assert_eq!(grid.position, pair("215", "-1"));
     assert_eq!(grid.size, pair("300", "30"));
+    assert_eq!(chrome.options_slot_size, pair("300", "47"));
+    assert_eq!(chrome.options_max_slots_horizontal, Some(1));
 }
 
 #[test]
@@ -116,7 +118,10 @@ fn news_event_window_chrome_matches_shipped_rects() {
     let chrome = event_window_chrome(&layout, "EventWindow_News").expect("EventWindow_News");
 
     assert_eq!(chrome.window_size, pair("528", "595"));
-    assert_eq!(chrome.background_sprite.as_deref(), Some("GFX_event_news_bg"));
+    assert_eq!(
+        chrome.background_sprite.as_deref(),
+        Some("GFX_event_news_bg")
+    );
 
     // News window uses the news picture sprite default + centre title.
     let pic = chrome.picture.expect("news event_picture");
@@ -160,7 +165,11 @@ fn event_def_to_window_resolution_rate() {
     let report = resolve_events(&corpus, &loc, &registry);
 
     // --- structural invariants (exact) ---
-    assert!(corpus.parse_failures.is_empty(), "event parse failures: {:?}", corpus.parse_failures);
+    assert!(
+        corpus.parse_failures.is_empty(),
+        "event parse failures: {:?}",
+        corpus.parse_failures
+    );
     assert_eq!(
         report.total,
         report.hidden + report.visible,

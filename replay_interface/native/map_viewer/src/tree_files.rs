@@ -1270,7 +1270,7 @@ mod tests {
     }
 
     #[test]
-    fn resolver_tree_instance_generation_uses_mod_overrides() {
+    fn resolver_tree_instance_generation_honors_vfs_then_fails_closed() {
         let root = temp_test_dir("tree_file_resolver_overrides");
         let vanilla = root.join("vanilla");
         let mod_root = root.join("mod");
@@ -1279,10 +1279,12 @@ mod tests {
         write_indexed_bmp_values(&mod_root.join(TREES_BMP_SOURCE), 2, 1, &[0, 6]);
         let resolver =
             GameFileResolver::with_mod_paths(&vanilla, vec![mod_root]).expect("resolver");
-        let generated =
-            synthesize_tree_instances_from_resolver(&resolver, 4, 4).expect("instances");
-        assert_eq!(generated.stats.instance_count, 1);
-        assert_eq!(generated.stats.tree_index_counts.get(&6), Some(&1));
+        let error = synthesize_tree_instances_from_resolver(&resolver, 4, 4)
+            .expect_err("unresolved yaw and slope producers must omit instances");
+        assert!(
+            error.to_string().contains(TREE_INSTANCE_GENERATOR_OMISSION),
+            "{error}"
+        );
         assert_eq!(resolver.stats().overridden_file_count, 1);
         let _ = fs::remove_dir_all(root);
     }

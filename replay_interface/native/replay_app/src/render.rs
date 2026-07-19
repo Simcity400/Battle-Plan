@@ -17,9 +17,17 @@ use map_viewer::{
     AverageLuminanceReduction, BloomBlurKernel, BloomParams, GameFileResolver,
     Hoi4MapCameraDefines, LuminanceClampBounds, NativeD3d11PreparedProductionMap,
     NativeD3d11RenderOptions, NativeD3d11TerrainBundle, NativeD3d11TerrainRenderer,
-    ProductionMapCamera, ProductionMapCameraProjection, RESTORE_PASS_BUNDLE_FILE,
+    ProductionMapCamera, ProductionMapCameraProjection, RecordedSnowMudLevel,
+    RecordedSnowMudTexture, SnowMudAddressing, SnowMudFeedInputs, RESTORE_PASS_BUNDLE_FILE,
 };
-use winapi::shared::dxgiformat::{DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM};
+use replay_core::{
+    Leaf, PoliticalTextureFormat, ProductionRenderFrame, RenderSubmit, TiledLightSubmission,
+    ViewStatus, WorldFrame,
+};
+use winapi::shared::dxgiformat::{
+    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_R16G16B16A16_FLOAT,
+    DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM,
+};
 use winapi::shared::dxgitype::DXGI_SAMPLE_DESC;
 use winapi::shared::minwindef::UINT;
 use winapi::um::d3d11::{
@@ -566,6 +574,10 @@ pub struct CapturedPassStats {
     pub postfx_enabled: bool,
     pub postfx_restore_full: bool,
     pub restore_evidence_found: bool,
+    pub particle_stream_omitted: bool,
+    pub entity_stream_omitted: bool,
+    pub direct_visual_stream_omitted: bool,
+    pub weather_stream_omitted: bool,
     pub water_gap: Option<String>,
     pub layer_gaps: Vec<String>,
 }
@@ -584,6 +596,8 @@ struct CapturedPassLayer {
     layer_gaps: Vec<String>,
     postfx_enabled: bool,
     restore_postfx: RestoreFullPostfx,
+    submitted_draw_resolver: GameFileResolver,
+    displayed_submit: Option<RenderSubmit>,
     restore_grade_resolver: Option<GameFileResolver>,
     restore_postfx_cb: Option<ComPtr<ID3D11Buffer>>,
     restore_color_cube: Option<RestoreColorCubeGpu>,
@@ -594,10 +608,116 @@ struct CapturedPassLayer {
     /// a blocker rather than a baked vanilla fallback. See
     /// `map_viewer::PoliticalSceneCb0`.
     political_cb0: map_viewer::PoliticalSceneCb0,
+    recorded_snow_mud_bound: bool,
+    recorded_political_bindings: std::collections::BTreeSet<String>,
+    recorded_tiled_lights_bound: bool,
+    reported_omitted_particles: bool,
+    reported_omitted_entities: bool,
+    reported_omitted_direct_visuals: bool,
+    reported_omitted_weather: bool,
     last_camera: Option<CapturedCameraKey>,
     last_restore_grade_key: Option<RestoreGradeKey>,
     dirty: bool,
     last_render: Option<Duration>,
+}
+
+/// Convert only fully measured portable replay state into the B13 shader
+/// carrier. `None` means the recording did not carry this dynamic layer; a
+/// malformed or partially measured present layer is an error, never a zero or
+/// previous-hour fallback.
+fn recorded_snow_mud_texture(
+    bundle: &MapBundle,
+    frame: &WorldFrame,
+) -> Result<Option<RecordedSnowMudTexture>> {
+    let view = frame.snow_mud();
+    if view.status != ViewStatus::Present {
+        return Ok(None);
+    }
+    let Some(fade_phase) = view.fade_phase.measured().copied() else {
+        return Err("recorded SnowMudData blocked: present view has no measured fade_phase".into());
+    };
+    if !fade_phase.is_finite() || !(0.0..=1.0).contains(&fade_phase) {
+        return Err(format!(
+            "recorded SnowMudData blocked: fade_phase must be measured in [0,1], got {fade_phase}"
+        )
+        .into());
+    }
+
+    let mut levels = BTreeMap::new();
+    for (province_id, cell) in &view.by_province {
+        let (Leaf::Measured(snow), Leaf::Measured(mud)) =
+            (&cell.snow_level_0_255, &cell.mud_level_0_255)
+        else {
+            return Err(format!(
+                "recorded SnowMudData blocked: province {province_id} has an unmeasured snow or mud level"
+            )
+            .into());
+        };
+        let snow = u8::try_from(*snow).map_err(|_| {
+            format!(
+                "recorded SnowMudData blocked: province {province_id} snow level {snow} exceeds 0..255"
+            )
+        })?;
+        let mud = u8::try_from(*mud).map_err(|_| {
+            format!(
+                "recorded SnowMudData blocked: province {province_id} mud level {mud} exceeds 0..255"
+            )
+        })?;
+        levels.insert(
+            *province_id,
+            RecordedSnowMudLevel {
+                snow_0_255: snow,
+                mud_0_255: mud,
+            },
+        );
+    }
+
+    map_viewer::synthesize_snow_mud_from_levels(
+        &SnowMudFeedInputs {
+            levels_by_province: &levels,
+            province_ids: &bundle.province_ids,
+            map_width: bundle.width,
+            map_height: bundle.height,
+            addressing: SnowMudAddressing::default(),
+            flip_source_y: true,
+        },
+        fade_phase as f32,
+    )
+    .map(Some)
+}
+
+fn production_display_submit(frame: &ProductionRenderFrame) -> Result<Option<&RenderSubmit>> {
+    let Some(text) = frame.display_submit_index.as_deref() else {
+        if frame.submits.is_empty() {
+            return Ok(None);
+        }
+        return Err(
+            "production render frame blocked: nonempty submit set has no display_submit_index"
+                .into(),
+        );
+    };
+    let submit_index = text.parse::<u64>().map_err(|_| {
+        format!("production render frame blocked: invalid display_submit_index {text:?}")
+    })?;
+    frame.submit(submit_index).map(Some).ok_or_else(|| {
+        format!(
+            "production render frame blocked: display_submit_index {submit_index} is not retained"
+        )
+        .into()
+    })
+}
+
+fn unique_display_tiled_light(submit: &RenderSubmit) -> Result<Option<&TiledLightSubmission>> {
+    match submit.tiled_lights.as_slice() {
+        [] => Ok(None),
+        [light] => Ok(Some(light)),
+        rows => Err(format!(
+            "production tiled lights blocked: displayed submit {} carries {} payloads and no explicit display-light selector",
+            submit.submit_index,
+            rows.len()
+        )
+        .into()),
+    }
 }
 
 impl CapturedPassLayer {
@@ -609,9 +729,13 @@ impl CapturedPassLayer {
         restore_postfx: RestoreFullPostfx,
         water_full: bool,
     ) -> Result<Self> {
-        if water_full && game_resolver.is_none() {
+        let resolver = game_resolver.ok_or(
+            "production map rendering requires a launcher-equivalent effective-VFS resolver selected by --game plus the replay mod/DLC profile; captured assets are never used against an unverified default install",
+        )?;
+        if !resolver.has_content_admission() {
             return Err(
-                "--water-full refraction requires --game <the game install dir> or BATTLE_PLAN_VANILLA".into(),
+                "production map rendering requires replay-validated used-content admission; unrestricted/default VFS lookup is forbidden"
+                    .into(),
             );
         }
         let mut renderer = NativeD3d11TerrainRenderer::from_borrowed_raw(
@@ -623,9 +747,6 @@ impl CapturedPassLayer {
         // By construction (above) `water_full` is only true here when a resolver
         // exists, so this `.ok_or` can never trip on the default path.
         let renderer = if water_full {
-            let resolver = game_resolver.ok_or(
-                "--water-full refraction requires --game <the game install dir> or BATTLE_PLAN_VANILLA",
-            )?;
             renderer.with_underwater_resolver(resolver.clone())
         } else {
             renderer
@@ -638,20 +759,16 @@ impl CapturedPassLayer {
         // paths that upload the real cube (--water-full / reference replay); the
         // blocked legacy mean-color approximation never reaches the decode, so
         // this is safe to thread unconditionally where a resolver exists.
-        let renderer = if let Some(resolver) = game_resolver {
-            renderer.with_reflection_resolver(resolver.clone())
-        } else {
-            renderer
-        };
+        let renderer = renderer.with_reflection_resolver(resolver.clone());
         let mut layer_gaps = Vec::new();
         let terrain_path = session_dir.join(TERRAIN_BUNDLE_FILE);
-        let terrain = load_terrain_bundle_for_replay(&terrain_path, game_resolver)?;
+        let terrain = load_terrain_bundle_for_replay(&terrain_path, Some(resolver))?;
         let base_camera = terrain.production_camera_from_capture()?;
         let camera_defines = hoi4_map_camera_defines_from_bundle(&terrain)?;
 
         let water_path = session_dir.join(WATER_BUNDLE_FILE);
         let water = if water_path.exists() {
-            NativeD3d11TerrainBundle::load_water(&water_path)?
+            NativeD3d11TerrainBundle::load_water_with_resolver(&water_path, resolver)?
         } else {
             return Err(format!(
                 "captured map rendering requires the water pass bundle: {}",
@@ -661,7 +778,7 @@ impl CapturedPassLayer {
         };
         let rivers_path = session_dir.join(RIVERS_BUNDLE_FILE);
         let rivers = if rivers_path.exists() {
-            NativeD3d11TerrainBundle::load_rivers(&rivers_path)?
+            NativeD3d11TerrainBundle::load_rivers_with_resolver(&rivers_path, resolver)?
         } else {
             return Err(format!(
                 "captured map rendering requires the rivers pass bundle: {}",
@@ -677,8 +794,8 @@ impl CapturedPassLayer {
             // tree_low_gfx — the LOW_END_GFX variant, compiled but bound to
             // no draw at the captured graphics settings. Gate the note on
             // real draw-binding evidence instead of asserting a gap.
-            let trees = NativeD3d11TerrainBundle::load_trees(&trees_path)?;
-            layer_gaps.push(tree_layer_note(&trees, game_resolver));
+            let trees = NativeD3d11TerrainBundle::load_trees_with_resolver(&trees_path, resolver)?;
+            layer_gaps.push(tree_layer_note(&trees, Some(resolver)));
             trees
         } else {
             return Err(format!(
@@ -795,9 +912,6 @@ impl CapturedPassLayer {
         // COL3: political-mapmode scene CB0 defines, resolver-read like the GB
         // country field. This is product-visible draw state, so missing source
         // files block startup instead of falling back to baked vanilla values.
-        let resolver = game_resolver.ok_or(
-            "replay_app captured-pass rendering blocked: --game <the game install dir> or BATTLE_PLAN_VANILLA is required to derive political scene CB0 defines from common/defines/00_graphics.lua",
-        )?;
         let political_cb0 =
             crate::political_scene::PoliticalSceneDefines::from_resolver(resolver)?.to_cb0();
         reject_snow_mud_env_overrides(
@@ -819,11 +933,20 @@ impl CapturedPassLayer {
             layer_gaps,
             postfx_enabled,
             restore_postfx,
+            submitted_draw_resolver: resolver.clone(),
+            displayed_submit: None,
             restore_grade_resolver,
             restore_postfx_cb,
             restore_color_cube,
             restore_bloom,
             political_cb0,
+            recorded_snow_mud_bound: false,
+            recorded_political_bindings: std::collections::BTreeSet::new(),
+            recorded_tiled_lights_bound: false,
+            reported_omitted_particles: false,
+            reported_omitted_entities: false,
+            reported_omitted_direct_visuals: false,
+            reported_omitted_weather: false,
             last_camera: None,
             last_restore_grade_key: None,
             dirty: true,
@@ -834,6 +957,221 @@ impl CapturedPassLayer {
     #[allow(dead_code)]
     fn mark_dirty(&mut self) {
         self.dirty = true;
+    }
+
+    /// B13 production route: turn the portable replay's measured per-province
+    /// snow/mud accumulator into the exact quarter-resolution shader carrier
+    /// and replace every captured-pass `SnowMudTexture` binding. Missing or
+    /// incomplete replay data is deliberately not substituted.
+    unsafe fn update_recorded_snow_mud(
+        &mut self,
+        gfx: &Gfx,
+        bundle: &MapBundle,
+        frame: &WorldFrame,
+    ) -> Result<()> {
+        let Some(texture) = recorded_snow_mud_texture(bundle, frame)? else {
+            if self.recorded_snow_mud_bound {
+                return Err(
+                    "recorded SnowMudData blocked: this hour has no present snow/mud view; refusing to display the previous hour's texture"
+                        .into(),
+                );
+            }
+            return Ok(());
+        };
+        let (_texture, srv) = create_immutable_texture(
+            gfx,
+            texture.width,
+            texture.height,
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            &texture.payload,
+            "recorded SnowMudData",
+        )?;
+        let replacements = self.prepared.replace_snow_mud_srv(srv.as_raw())?;
+        if replacements == 0 {
+            return Err(
+                "recorded SnowMudData blocked: no production pass sampled SnowMudTexture".into(),
+            );
+        }
+        self.political_cb0.snow_mud_fade = Some(texture.fade);
+        self.recorded_snow_mud_bound = true;
+        self.mark_dirty();
+        eprintln!(
+            "replay_app: bound recorded SnowMudData ({} pass bindings, {} covered texels, {} land texels without a recorded level, fade {:.6})",
+            replacements,
+            texture.covered_texels,
+            texture.land_texels_without_level,
+            texture.fade,
+        );
+        Ok(())
+    }
+
+    /// Bind exact byte-native political runtime textures from the explicitly
+    /// selected production submit. Target identity is checked by the prepared
+    /// pass itself; a packet that names no sampled SRV fails closed.
+    unsafe fn update_recorded_political_textures(
+        &mut self,
+        gfx: &Gfx,
+        render_frame: &ProductionRenderFrame,
+    ) -> Result<()> {
+        let Some(submit) = production_display_submit(render_frame)? else {
+            if !self.recorded_political_bindings.is_empty() {
+                return Err(
+                    "production political textures blocked: empty displayed submit would retain prior-hour bindings"
+                        .into(),
+                );
+            }
+            return Ok(());
+        };
+        let mut packets: Vec<_> = submit.political_textures.iter().collect();
+        packets.sort_by_key(|packet| packet.upload_order);
+        let next_bindings: std::collections::BTreeSet<String> = packets
+            .iter()
+            .map(|packet| packet.target_binding_identity.clone())
+            .collect();
+        if !self.recorded_political_bindings.is_subset(&next_bindings) {
+            return Err(
+                "production political textures blocked: displayed submit omits a previously bound target; refusing stale reuse"
+                    .into(),
+            );
+        }
+
+        for packet in packets {
+            let format = match packet.format {
+                PoliticalTextureFormat::B8g8r8a8UnormSrgb => DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
+            };
+            let tight_pitch = packet
+                .width
+                .checked_mul(4)
+                .ok_or("production political texture row pitch overflow")?;
+            if packet.row_pitch != tight_pitch {
+                return Err(format!(
+                    "production political texture {} blocked: row_pitch {} is not tight width*4 ({tight_pitch})",
+                    packet.target_binding_identity, packet.row_pitch
+                )
+                .into());
+            }
+            let (_texture, srv) = create_immutable_texture(
+                gfx,
+                packet.width as usize,
+                packet.height as usize,
+                format,
+                &packet.bytes,
+                &format!(
+                    "recorded political texture {}",
+                    packet.target_binding_identity
+                ),
+            )?;
+            let replacements = self
+                .prepared
+                .replace_named_ps_srv(&packet.target_binding_identity, srv.as_raw())?;
+            if replacements == 0 {
+                return Err(format!(
+                    "production political texture {:?} blocked: target binding {:?} is not sampled by the prepared map pass",
+                    packet.kind, packet.target_binding_identity
+                )
+                .into());
+            }
+        }
+        if !next_bindings.is_empty() {
+            self.recorded_political_bindings = next_bindings;
+            self.mark_dirty();
+        }
+        Ok(())
+    }
+
+    /// XN15P production route: bind the exact selected submit's tiled-light
+    /// grid constants and complete logical textures. Multiple payloads in one
+    /// displayed submit have no declared display winner, so they fail closed
+    /// instead of choosing first/last heuristically.
+    unsafe fn update_recorded_tiled_lights(
+        &mut self,
+        gfx: &Gfx,
+        render_frame: &ProductionRenderFrame,
+    ) -> Result<()> {
+        let Some(submit) = production_display_submit(render_frame)? else {
+            if self.recorded_tiled_lights_bound {
+                return Err(
+                    "production tiled lights blocked: empty displayed submit would retain prior-hour bindings"
+                        .into(),
+                );
+            }
+            return Ok(());
+        };
+        let light = match unique_display_tiled_light(submit)? {
+            None => {
+                if self.recorded_tiled_lights_bound {
+                    return Err(
+                        "production tiled lights blocked: displayed submit omits a previously bound payload"
+                            .into(),
+                    );
+                }
+                return Ok(());
+            }
+            Some(light) => light,
+        };
+
+        let (_index_texture, index_srv) = create_immutable_texture_with_pitch(
+            gfx,
+            64,
+            64,
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            64 * 4,
+            &light.light_index_map_64x64_bgra8,
+            "recorded tiled-light LightIndexMap",
+        )?;
+        let (_data_texture, data_srv) = create_immutable_texture_with_pitch(
+            gfx,
+            128,
+            1,
+            DXGI_FORMAT_R32G32B32A32_FLOAT,
+            128 * 16,
+            &light.light_data_map_128x1_rgba32f,
+            "recorded tiled-light LightDataMap",
+        )?;
+        let index_replacements = self
+            .prepared
+            .replace_named_ps_srv("LightIndexMap", index_srv.as_raw())?;
+        let data_replacements = self
+            .prepared
+            .replace_named_ps_srv("LightDataMap", data_srv.as_raw())?;
+        let cb_replacements = self.renderer.replace_tiled_light_cb2(
+            &mut self.prepared,
+            light.grid_start_inv_cell_size_float4_bits,
+        )?;
+        if index_replacements == 0 || data_replacements == 0 || cb_replacements == 0 {
+            return Err(format!(
+                "production tiled lights blocked: prepared map replacements index={index_replacements}, data={data_replacements}, cb2={cb_replacements}"
+            )
+            .into());
+        }
+        self.recorded_tiled_lights_bound = true;
+        self.mark_dirty();
+        Ok(())
+    }
+
+    /// Retain only the explicitly selected submit for execution after the map
+    /// graph. Clearing the selected draw set dirties the scene so an earlier
+    /// hour's particles/entities cannot remain in MainScene.
+    fn update_recorded_submitted_draws(
+        &mut self,
+        render_frame: &ProductionRenderFrame,
+    ) -> Result<()> {
+        let next = production_display_submit(render_frame)?.cloned();
+        if self.displayed_submit != next {
+            self.displayed_submit = next;
+            self.mark_dirty();
+        }
+        self.reported_omitted_particles = false;
+        self.reported_omitted_entities = false;
+        self.reported_omitted_direct_visuals = false;
+        self.reported_omitted_weather = false;
+        Ok(())
+    }
+
+    fn clear_recorded_submitted_draws(&mut self) {
+        if self.displayed_submit.take().is_some() {
+            self.mark_dirty();
+        }
     }
 
     /// `day_night_hour = None` keeps the captured CB0 day/night state (the
@@ -914,6 +1252,48 @@ impl CapturedPassLayer {
                 };
                 self.renderer
                     .render_prepared_production_map(&self.prepared, &options)?;
+            }
+            if let Some(submit) = self.displayed_submit.as_ref() {
+                let (color_width, color_height, color_format, color_samples, color_quality) =
+                    self.prepared.output_color_desc();
+                let (depth_width, depth_height, depth_format, depth_samples, depth_quality) =
+                    self.prepared.output_depth_desc();
+                let target = crate::submitted_draw::SubmittedMainSceneTarget {
+                    // The capture-bundle target has no portable registration
+                    // receipt. Keep the identities absent so submitted_draw
+                    // rejects this debug substitution instead of inventing an
+                    // opaque attachment ordinal.
+                    color_identity: None,
+                    depth_identity: None,
+                    color_rtv: self.prepared.output_render_target_view_raw(),
+                    depth_dsv: self.prepared.output_depth_stencil_view_raw(),
+                    color_width,
+                    color_height,
+                    color_format,
+                    color_samples,
+                    color_quality,
+                    depth_width,
+                    depth_height,
+                    depth_format,
+                    depth_samples,
+                    depth_quality,
+                };
+                let stats = unsafe {
+                    crate::submitted_draw::execute_submitted_draws(
+                        gfx,
+                        &self.submitted_draw_resolver,
+                        submit,
+                        &target,
+                    )?
+                };
+                eprintln!(
+                    "replay_app: executed portable submit {} in authoritative order ({} entity, {} particle, {} direct-visual joins, {} weather joins)",
+                    submit.submit_index,
+                    stats.entity_draws,
+                    stats.particle_draws,
+                    stats.direct_visual_joins,
+                    stats.weather_joins,
+                );
             }
             // Files-first per-frame exposure adaptation (FIDELITY_LEDGER debt
             // #2): reduce the just-rendered HDR MainScene through the ported
@@ -1444,6 +1824,10 @@ impl CapturedPassLayer {
             postfx_enabled: self.postfx_enabled,
             postfx_restore_full: self.restore_postfx.enabled,
             restore_evidence_found: self.restore_postfx.evidence_found,
+            particle_stream_omitted: self.reported_omitted_particles,
+            entity_stream_omitted: self.reported_omitted_entities,
+            direct_visual_stream_omitted: self.reported_omitted_direct_visuals,
+            weather_stream_omitted: self.reported_omitted_weather,
             water_gap: self.water_gap.clone(),
             layer_gaps: self.layer_gaps.clone(),
         }
@@ -1509,7 +1893,9 @@ impl MapRenderer {
     /// political colors remain blocked.
     pub fn update_state_politics(
         &mut self,
-        _gfx: &Gfx,
+        gfx: &Gfx,
+        bundle: &MapBundle,
+        frame: Option<&WorldFrame>,
         _owners: &BTreeMap<u32, String>,
         controllers: &BTreeMap<u32, String>,
         country_colors: &BTreeMap<String, [u8; 3]>,
@@ -1519,6 +1905,33 @@ impl MapRenderer {
             controllers,
             country_colors,
         )?;
+        if let Some(frame) = frame {
+            unsafe {
+                self.captured.update_recorded_snow_mud(gfx, bundle, frame)?;
+                if let Some(render_frame) = frame.production_render() {
+                    self.captured
+                        .update_recorded_submitted_draws(render_frame)?;
+                    self.captured
+                        .update_recorded_political_textures(gfx, render_frame)?;
+                    self.captured
+                        .update_recorded_tiled_lights(gfx, render_frame)?;
+                } else if !self.captured.recorded_political_bindings.is_empty() {
+                    return Err(
+                        "production political textures blocked: this hour has no production_render carrier; refusing stale prior-hour bindings"
+                            .into(),
+                    );
+                } else if self.captured.recorded_tiled_lights_bound {
+                    return Err(
+                        "production tiled lights blocked: this hour has no production_render carrier; refusing stale prior-hour bindings"
+                        .into(),
+                    );
+                } else {
+                    self.captured.clear_recorded_submitted_draws();
+                }
+            }
+        } else {
+            self.captured.clear_recorded_submitted_draws();
+        }
         Ok(())
     }
 
@@ -1673,9 +2086,21 @@ pub(crate) unsafe fn create_immutable_texture(
     bytes: &[u8],
     role: &str,
 ) -> Result<(ComPtr<ID3D11Texture2D>, ComPtr<ID3D11ShaderResourceView>)> {
-    let expected = width
+    let row_pitch = width.checked_mul(4).ok_or("texture row pitch overflow")?;
+    create_immutable_texture_with_pitch(gfx, width, height, format, row_pitch, bytes, role)
+}
+
+unsafe fn create_immutable_texture_with_pitch(
+    gfx: &Gfx,
+    width: usize,
+    height: usize,
+    format: u32,
+    row_pitch: usize,
+    bytes: &[u8],
+    role: &str,
+) -> Result<(ComPtr<ID3D11Texture2D>, ComPtr<ID3D11ShaderResourceView>)> {
+    let expected = row_pitch
         .checked_mul(height)
-        .and_then(|pixels| pixels.checked_mul(4))
         .ok_or("texture byte length overflow")?;
     if bytes.len() != expected {
         return Err(format!(
@@ -1701,7 +2126,7 @@ pub(crate) unsafe fn create_immutable_texture(
     };
     let init = D3D11_SUBRESOURCE_DATA {
         pSysMem: bytes.as_ptr() as *const _,
-        SysMemPitch: (width * 4) as UINT,
+        SysMemPitch: UINT::try_from(row_pitch)?,
         SysMemSlicePitch: 0,
     };
     let mut texture: *mut ID3D11Texture2D = ptr::null_mut();
@@ -2463,6 +2888,7 @@ fn production_camera_from_app_camera(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use replay_core::{ParticleRuntimeMode, RenderAuthority, RenderCheckpoint};
 
     #[test]
     fn cull_world_rect_shifts_into_wrap_copy_base_domain() {
@@ -2734,5 +3160,202 @@ MAX_HDR_ADJUSTMENT = 1.0,
         let err = reject_snow_mud_env_overrides(None, Some(std::ffi::OsString::from("0.75")))
             .expect_err("fade override must be blocked");
         assert!(err.to_string().contains("REPLAY_SNOW_MUD_FADE"), "{err}");
+    }
+
+    #[test]
+    fn relocated_portable_replay_drives_production_snow_mud_carrier() {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("fixtures/positive/fx_snow_mud_accumulator.battleplan");
+        let relocated_dir = crate::bundle::tests::unique_temp_dir("portable_snow_mud_relocated");
+        let relocated = relocated_dir.join("shared-copy.battleplan");
+        std::fs::copy(&source, &relocated).expect("relocate standalone replay file");
+
+        let timeline = replay_core::WorldTimeline::open(
+            replay_core::open_recording(&relocated).expect("open relocated replay"),
+        )
+        .expect("open relocated timeline");
+        let hour = *timeline.hours().last().expect("recorded hour");
+        let frame = timeline.frame(hour).expect("typed frame");
+        let measured = frame
+            .snow_mud()
+            .by_province
+            .get(&1000)
+            .expect("measured province 1000");
+        let expected_snow = *measured.snow_level_0_255.measured().expect("measured snow") as u8;
+        let expected_mud = *measured.mud_level_0_255.measured().expect("measured mud") as u8;
+
+        let bundle = MapBundle {
+            width: 4,
+            height: 4,
+            province_ids: vec![1000; 16],
+            province_to_state: BTreeMap::new(),
+            state_owner_1936: BTreeMap::new(),
+            country_colors: BTreeMap::new(),
+        };
+        let texture = recorded_snow_mud_texture(&bundle, &frame)
+            .expect("admit portable snow/mud")
+            .expect("present texture");
+        assert_eq!(texture.width, 1408);
+        assert_eq!(texture.height, 512);
+        assert_eq!(texture.covered_texels, 16);
+        let texel = map_viewer::decode_snow_mud_texel(&texture.payload, 0)
+            .expect("decode production texture texel");
+        assert_eq!(texel.snow_fade0, expected_snow);
+        assert_eq!(texel.snow_fade1, expected_snow);
+        assert_eq!(texel.mud_fade0, expected_mud);
+        assert_eq!(texel.mud_fade1, expected_mud);
+        assert!(
+            (texture.fade - *frame.snow_mud().fade_phase.measured().unwrap() as f32).abs()
+                < f32::EPSILON
+        );
+
+        std::fs::remove_dir_all(relocated_dir).expect("clean relocated replay fixture");
+    }
+
+    fn empty_submit(submit_index: u64, global_order: u32, qpc: u64) -> RenderSubmit {
+        RenderSubmit {
+            submit_index,
+            global_order,
+            presentation_qpc_ticks: qpc,
+            interpolation_phase_f32_bits: 0,
+            ordered_scene_constant_buffers: Vec::new(),
+            ordered_static_map_programs: Vec::new(),
+            effect_lifecycle_events: Vec::new(),
+            particles: Vec::new(),
+            entity_presentations: Vec::new(),
+            particle_packet_set_sha256: "5".repeat(64),
+            entities: Vec::new(),
+            ordered_draws: Vec::new(),
+            ordered_render_operations: Vec::new(),
+            direct_visuals: Vec::new(),
+            light_lifecycle_events: Vec::new(),
+            tiled_lights: Vec::new(),
+            weather_membership: Vec::new(),
+            political_textures: Vec::new(),
+        }
+    }
+
+    fn empty_render_checkpoint(last_sequence: u64, update_index: u64) -> RenderCheckpoint {
+        RenderCheckpoint {
+            last_sequence,
+            last_update_index: update_index,
+            last_submit_index: Some("12".to_string()),
+            next_stable_ids: BTreeMap::new(),
+            active_effect_lifecycle: Vec::new(),
+            active_entity_presentation: Vec::new(),
+            active_direct_visual_producers: Vec::new(),
+            active_light_lifecycle: Vec::new(),
+            latest_tiled_light_payload: None,
+            weather_state_and_ordered_membership: Vec::new(),
+            active_effect_set_sha256: "6".repeat(64),
+            ordered_particle_packets_sha256: "7".repeat(64),
+            ordered_entity_submissions_sha256: "8".repeat(64),
+            ordered_direct_visual_producers_sha256: "9".repeat(64),
+            ordered_light_submissions_sha256: "a".repeat(64),
+            weather_membership_sha256: "b".repeat(64),
+        }
+    }
+
+    #[test]
+    fn production_render_uses_explicit_display_submit_without_first_last_guess() {
+        let frame = ProductionRenderFrame {
+            schema: replay_core::PRODUCTION_RENDER_SCHEMA.to_string(),
+            authority: RenderAuthority {
+                process_id: 7,
+                process_start_nonce: 8,
+                observer_installed_qpc: 9,
+                d3d_device_created_qpc: 10,
+                first_creation_sequence: 1,
+                hook_epoch_nonce: 11,
+                hook_set_receipt_sha256: "a".repeat(64),
+                capture_receipt_sha256: "b".repeat(64),
+                launch_epoch_sha256: replay_core::compute_render_launch_epoch_sha256(
+                    7,
+                    8,
+                    9,
+                    10,
+                    1,
+                    11,
+                    &"a".repeat(64),
+                    &"b".repeat(64),
+                ),
+                effective_vfs_manifest_sha256: "2".repeat(64),
+                effect_catalog_sha256: "3".repeat(64),
+                entity_animation_catalog_sha256: "4".repeat(64),
+                recorded_input_variant: None,
+                particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
+            },
+            update_index: 16_959_360,
+            first_sequence: 10,
+            last_sequence: 20,
+            presentation_qpc_frequency_hz: 10_000_000,
+            display_submit_index: Some("12".to_string()),
+            selected_present: replay_core::SelectedPresentReceipt::sealed(
+                2,
+                "c".repeat(64),
+                12,
+                1,
+                60_759_359,
+                200,
+                300,
+            ),
+            submits: vec![empty_submit(12, 2, 200)],
+            m02_combat: None,
+            m03_arrows: None,
+            o04_cities: None,
+            authenticated_ui_pass: None,
+            checkpoint: empty_render_checkpoint(20, 16_959_360),
+        };
+        assert_eq!(
+            production_display_submit(&frame)
+                .expect("select display submit")
+                .expect("display submit")
+                .submit_index,
+            12
+        );
+
+        let mut ambiguous = frame;
+        ambiguous.display_submit_index = None;
+        assert!(production_display_submit(&ambiguous)
+            .expect_err("nonempty submit set without a selected display submit must fail")
+            .to_string()
+            .contains("display_submit_index"));
+    }
+
+    #[test]
+    fn tiled_light_binding_never_guesses_between_multiple_writers() {
+        fn light(writer_index: u64) -> TiledLightSubmission {
+            TiledLightSubmission {
+                update_index: 7,
+                writer_index,
+                first_sequence: 10,
+                last_sequence: 20,
+                grid_start_inv_cell_size_float4_bits: [0; 4],
+                light_index_map_64x64_bgra8: vec![0; 16_384],
+                light_index_map_sha256: "0".repeat(64),
+                light_data_map_128x1_rgba32f: vec![0; 2_048],
+                light_data_map_sha256: "0".repeat(64),
+                ordered_slot_semantic_joins: Vec::new(),
+            }
+        }
+
+        let mut submit = empty_submit(12, 2, 200);
+        assert!(unique_display_tiled_light(&submit)
+            .expect("empty light set")
+            .is_none());
+        submit.tiled_lights.push(light(41));
+        assert_eq!(
+            unique_display_tiled_light(&submit)
+                .expect("unique light")
+                .expect("present light")
+                .writer_index,
+            41
+        );
+        submit.tiled_lights.push(light(42));
+        assert!(unique_display_tiled_light(&submit)
+            .expect_err("multiple writers need an explicit selector")
+            .to_string()
+            .contains("no explicit display-light selector"));
     }
 }

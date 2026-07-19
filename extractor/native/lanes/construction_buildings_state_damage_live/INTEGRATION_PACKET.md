@@ -1,5 +1,13 @@
 # Integration Packet: `construction_buildings_state_damage_live` (compact domain 48)
 
+> **A14 closeout (2026-07-17):** this packet records the original pre-v2
+> integration plan. Its statements that exact target province/location and
+> repair semantics remain open are superseded by `A14_RE_REPORT.md` and
+> `A14_RE_EVIDENCE.json`. Compact v2 and the production fold now carry the
+> exact typed location, `repair_levels_remaining`, and `partial_health_raw`.
+> Historical damage cause is an event-only enum, not persistent current state,
+> so the current-state reader intentionally does not invent a last-cause field.
+
 Prepared for the serial shared-integration worker. This packet is lane-local only;
 do not treat it as applied shared wiring.
 

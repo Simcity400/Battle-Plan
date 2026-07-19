@@ -52,7 +52,20 @@ def _make_oracle_dir(root, *, with_market=True, with_occ=True):
                   "resistance": {"resistance": 22.3, "resistance_speed": -0.1,
                                  "compliance": 26.0, "compliance_speed": 0.04,
                                  "occupied_country_tag": "FRA",
+                                 "operational_status": True}},
+            "2": {"owner": "GER", "state_category": "town",
+                  "resistance": {"resistance": 0.0, "resistance_speed": 0.0,
+                                 "compliance": 100.0, "compliance_speed": 0.0,
+                                 "occupied_country_tag": "FRA",
                                  "operational_status": True}}}})
+    _dump(root, "designs.json", {
+        "equipment_variants": {
+            "90:70": {"id": 90, "type": 70,
+                      "archetype": "infantry_equipment_0"},
+            "438:70": {"id": 438, "type": 70,
+                       "archetype": "support_equipment_1"}},
+        "division_templates": [],
+        "countries": {}})
     if with_market:
         _dump(root, "market.json", {
             "meta": {"source_path_redacted": "secret"},
@@ -77,12 +90,70 @@ def _make_oracle_dir(root, *, with_market=True, with_occ=True):
             "meta": {"source_path_redacted": "secret"},
             "countries": {
                 "GER": {"default_law": "foreign_civilian_oversight",
+                        "garrison_template_id": [4183, 4713],
                         "occupied_count": 1,
-                        "occupied": [{"states": [1], "resistance": 22.3,
+                        "occupied": [{"states": [1, 2], "resistance": 22.3,
                                       "compliance": 26.0,
                                       "occupation_law_by_state":
                                           {"1": "military_governor_occupation"},
-                                      "occupied_tag": "FRA"}]}}})
+                                      "state_garrison_data": {
+                                          "1": {
+                                              "strength_ratio": 0.9375,
+                                              "garrison_required": 0.55477,
+                                              "army_manpower_need": 13869,
+                                              "manpower_pool": [{
+                                                  "source_ordinal": 0,
+                                                  "tag": "GER", "value": 13869.0}],
+                                              "equipment": [{
+                                                  "source_ordinal": 0,
+                                                  "equipment_id": 90,
+                                                  "equipment_type": 70,
+                                                  "amount": 1664.31}],
+                                              "equipment_meta": {
+                                                  "present": True,
+                                                  "rows_complete": True,
+                                                  "allow_zero_entries": False},
+                                              "equipment_need": {
+                                                  "infantry_equipment": 1664.31},
+                                              "reinforcement_requests": [{
+                                                  "source_ordinal": 0,
+                                                  "total_progress": 7.57643,
+                                                  "need": {
+                                                      "infantry_equipment": 661.31},
+                                                  "date": "1942.8.18.2"}]},
+                                          "2": {
+                                              "strength_ratio": 1.0,
+                                              "garrison_required": 0.0,
+                                              "army_manpower_need": 0,
+                                              "manpower_pool": [],
+                                              "equipment": [],
+                                              "equipment_meta": {
+                                                  "present": True,
+                                                  "rows_complete": True,
+                                                  "allow_zero_entries": False},
+                                              "equipment_need": {},
+                                              "reinforcement_requests": []}},
+                                      "occupied_tag": "FRA"}],
+                        "resistance_attack_log": [{
+                            "stable_event_id": "GER|1942.8.15.1|1|0",
+                            "source_ordinal": 0,
+                            "state_id": 1,
+                            "occupied_country_tag": "FRA",
+                            "event_hour_or_engine_date": "1942.8.15.1",
+                            "attack_blocked": True,
+                            "resistance_activity": None,
+                            "lost_manpower": 33,
+                            "equipment_loss_rows": [{
+                                "source_ordinal": 0,
+                                "equipment_id": 438,
+                                "equipment_type": 70,
+                                "amount": 1.0}],
+                            "equipment_loss_meta": {
+                                "present": True,
+                                "rows_complete": True,
+                                "allow_zero_entries": False},
+                            "row_complete": True}],
+                        "resistance_attack_log_complete": True}}})
     return root
 
 
@@ -101,6 +172,8 @@ class TestSchemaPresence(unittest.TestCase):
         self.assertEqual(schema.source_of("countries.GER.diplomacy.lend_lease"), "S")
         self.assertEqual(schema.source_of("countries.GER.economy.market_stockpile"), "S")
         self.assertEqual(schema.source_of("states.5.occupation_law"), "S")
+        self.assertEqual(schema.source_of("states.5.occupation.garrison_equipment"), "S")
+        self.assertEqual(schema.source_of("occupation_history"), "S")
         self.assertEqual(schema.source_of("diplomacy_world.trade_contracts"), "S")
         # dynamic tag resolves too
         self.assertEqual(schema.source_of("countries.D05.diplomacy.lend_lease"), "S")
@@ -158,6 +231,43 @@ class TestIngestSynthetic(unittest.TestCase):
         self.assertEqual(st["occupation"]["resistance"], 22.3)
         self.assertEqual(st["occupation"]["occupier_tag"], "GER")
         self.assertEqual(st["occupation"]["occupied_country_tag"], "FRA")
+
+    def test_exact_garrison_equipment_history_and_default_law_are_joined(self):
+        snap = store.build_snapshot_from_oracle(self.oracle, "syn")
+        first = snap["states"]["1"]["occupation"]
+        self.assertEqual(first["garrison_template_id"], 4183)
+        self.assertEqual(first["garrison_army_manpower_need"], 13869)
+        self.assertEqual(first["garrison_manpower_pool"], [{
+            "source_ordinal": 0, "tag": "GER", "value": 13869.0}])
+        self.assertEqual(first["garrison_equipment"], [{
+            "source_ordinal": 0,
+            "equipment_id": 90,
+            "equipment_type": 70,
+            "equipment_token": "infantry_equipment_0",
+            "amount": 1664.31}])
+        self.assertTrue(first["garrison_equipment_complete"])
+        self.assertEqual(first["garrison_reinforcement_requests"][0]["need"],
+                         {"infantry_equipment": 661.31})
+
+        # No explicit state assignment: exact controller default is folded with
+        # a distinct provenance label, not silently presented as per-state data.
+        second = snap["states"]["2"]["occupation"]
+        self.assertEqual(snap["states"]["2"]["occupation_law"],
+                         "foreign_civilian_oversight")
+        self.assertEqual(second["occupation_law_token_source"],
+                         "save_controller_default_law")
+        self.assertEqual(second["garrison_equipment"], [])
+        self.assertTrue(second["garrison_equipment_complete"])
+
+        self.assertTrue(snap["occupation_history_complete"])
+        history = snap["occupation_history"]
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["stable_event_id"], "GER|1942.8.15.1|1|0")
+        self.assertTrue(history[0]["attack_blocked"])
+        self.assertEqual(history[0]["lost_manpower"], 33)
+        self.assertEqual(history[0]["equipment_loss_rows"][0]["equipment_token"],
+                         "support_equipment_1")
+        self.assertTrue(history[0]["equipment_loss_children_complete"])
 
     def test_provenance_lists_market_and_occupation(self):
         snap = store.build_snapshot_from_oracle(self.oracle, "syn")

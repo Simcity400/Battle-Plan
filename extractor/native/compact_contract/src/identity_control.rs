@@ -525,10 +525,7 @@ mod tests {
         assert_eq!(&wire[0..4], IDENTITY_FAILURE_ACK_MAGIC);
 
         // DurablyRecorded with a nonzero error is incoherent and rejected.
-        let incoherent = IdentityFailureAckV1 {
-            error: 5,
-            ..ack
-        };
+        let incoherent = IdentityFailureAckV1 { error: 5, ..ack };
         assert!(matches!(
             encode_identity_failure_ack(incoherent),
             Err(IdentityControlCodecError::InvalidField(_))

@@ -15,7 +15,7 @@
 use game_ui::compose::{resolve_element_rect, ComposeOptions, Rect};
 use game_ui::gui::{GuiElement, LayoutSet};
 use game_ui::waroverview_binding::{war_overview_from_frame, WarRelationSummary};
-use replay_core::{open_recording, WorldTimeline};
+use replay_core::{open_recording, Leaf, WorldTimeline};
 use std::path::{Path, PathBuf};
 
 const DEFAULT_GAME_ROOT: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
@@ -162,6 +162,18 @@ fn war_overview_flips_at_change_hour() {
         vec!["ENG".to_string()],
         "GER wars @tick7"
     );
+    let wars = after.war_objects.measured().expect("war objects @tick7");
+    assert_eq!(wars.len(), 1);
+    assert_eq!(wars[0].source_key, "axis_allies_1936");
+    assert_eq!(
+        wars[0].attackers,
+        Leaf::Measured(vec!["GER".to_string(), "ITA".to_string()])
+    );
+    assert_eq!(wars[0].defenders, Leaf::Measured(vec!["ENG".to_string()]));
+    assert_eq!(wars[0].front, Leaf::Measured("western".to_string()));
+    assert_eq!(wars[0].war_name, Leaf::Absent);
+    assert_eq!(wars[0].attacker_participants, Leaf::Absent);
+    assert_eq!(wars[0].overall_progress_raw, Leaf::Absent);
 }
 
 /// BINDING GATE 2 — the belligerent set is POV-independent (global), while

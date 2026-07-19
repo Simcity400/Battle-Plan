@@ -2,13 +2,70 @@ use crate::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-// PAN2 tree draw decode: the captured mesh is slot 0, stride 56, with
-// 120 vertices and 216 R16 indices. The JSON contains DrawIndexedInstanced
-// 216 x 37, but no instance-buffer payload; the tree VS signature requires
-// generated slot 1 as TEXCOORD4=float4(pos.x, pos.y, pos.z, y_rotation) and
-// TEXCOORD5=float3(slopes), stride 28. trees.bmp is 1650x600 and scales to
-// the 5632x2048 world by cell centers.
-pub const TREE_INSTANCE_STRIDE_BYTES: u32 = 28;
+// CAPTURE (mined/hoi4_frame54162, chunk 14646, IA slot 1 buffer 131227,
+// pStrides[0] = 24) closes the actual tree-instance IA stride. TEXCOORD4 is
+// float4(pos.xyz,y_rotation) and TEXCOORD5 is float2(slopes). The previous
+// 28-byte interpretation came from the HLSL declaration rather than IA state.
+pub const TREE_INSTANCE_STRIDE_BYTES: u32 = 24;
+pub const TREE_INSTANCE_GENERATOR_OMISSION: &str =
+    "tree_instance_generator_yaw_and_slope_unresolved";
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CapturedTreeInstance {
+    pub anchor: [f32; 3],
+    pub yaw_radians: f32,
+    pub slopes: [f32; 2],
+}
+
+pub fn decode_captured_tree_instance(bytes: &[u8]) -> Result<CapturedTreeInstance> {
+    if bytes.len() != TREE_INSTANCE_STRIDE_BYTES as usize {
+        return Err(format!(
+            "tree CAP9 decode blocked: expected {} bytes, got {}",
+            TREE_INSTANCE_STRIDE_BYTES,
+            bytes.len()
+        )
+        .into());
+    }
+    let values: [f32; 6] = std::array::from_fn(|index| {
+        f32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap())
+    });
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err("tree CAP9 decode blocked: instance contains a non-finite float".into());
+    }
+    Ok(CapturedTreeInstance {
+        anchor: [values[0], values[1], values[2]],
+        yaw_radians: values[3],
+        slopes: [values[4], values[5]],
+    })
+}
+
+/// Bit-order-preserving X/Z lattice recovered from all 3,985 retained CAP9
+/// records. Y, yaw, and slopes are deliberately outside this law.
+pub fn tree_cell_anchor_xz(
+    cell_x: usize,
+    cell_y: usize,
+    tree_width: usize,
+    tree_height: usize,
+    map_width: usize,
+    map_height: usize,
+) -> Result<[f32; 2]> {
+    if tree_width == 0 || tree_height == 0 || map_width == 0 || map_height == 0 {
+        return Err("tree CAP9 anchor blocked: zero-sized tree or world map".into());
+    }
+    if cell_x >= tree_width || cell_y >= tree_height {
+        return Err(format!(
+            "tree CAP9 anchor blocked: cell ({cell_x},{cell_y}) outside {tree_width}x{tree_height}"
+        )
+        .into());
+    }
+    let sx = map_width as f32 / tree_width as f32;
+    let sz = map_height as f32 / tree_height as f32;
+    let stagger = if cell_y & 1 == 0 { 0.0 } else { 0.5 };
+    Ok([
+        cell_x as f32 * sx + stagger * sx,
+        (tree_height - cell_y - 1) as f32 * sz,
+    ])
+}
 
 /// SCATTER LAW (MAP-OBJECTS lane, 2026-07-09, capture-proven 8/8 exact):
 /// the engine builds tree instance buffers per 256x256-world-unit chunk
@@ -137,42 +194,11 @@ pub(crate) fn synthesize_tree_instances_from_images(
         )
         .into());
     }
-    let mut instances = Vec::new();
-    let mut counts = BTreeMap::new();
-    for y in 0..trees.height {
-        for x in 0..trees.width {
-            let tree_index = trees.pixels[y * trees.width + x];
-            if tree_index == 0 {
-                continue;
-            }
-            *counts.entry(tree_index).or_insert(0) += 1;
-            let world_x = (x as f32 + 0.5) * map_width as f32 / trees.width as f32;
-            let world_z =
-                map_height as f32 - (y as f32 + 0.5) * map_height as f32 / trees.height as f32;
-            let world_y = sample_tree_height(heightmap, world_x, world_z);
-            let rotation = deterministic_tree_rotation(x as u32, y as u32, tree_index);
-            let (slope_x, slope_z) = sample_tree_slope(heightmap, world_x, world_z);
-            for value in [world_x, world_y, world_z, rotation, slope_x, slope_z, 0.0] {
-                instances.extend_from_slice(&value.to_le_bytes());
-            }
-        }
-    }
-    let instance_count = instances.len() / TREE_INSTANCE_STRIDE_BYTES as usize;
-    Ok(TreeInstanceSynthesis {
-        instances,
-        stats: TreeInstanceSynthesisStats {
-            schema: "battle-plan-tree-instance-synthesis-v1".to_string(),
-            tree_map_width: trees.width,
-            tree_map_height: trees.height,
-            map_width,
-            map_height,
-            instance_count,
-            instance_stride_bytes: TREE_INSTANCE_STRIDE_BYTES,
-            tree_index_counts: counts,
-            convention: format!("one nonzero map/trees.bmp cell -> one instance; position=(cell_center scaled to {map_width}x{map_height}, heightmap*0.1, flipped z); rotation=stable cell hash; slopes=heightmap gradient"),
-            captured_anchor_status: "PAN2 tree bundle contains the 120-vertex template mesh (byte-exact forest_dunge_blend.mesh polySurfaceShape875, trees.gfx mapobject_5) and DrawIndexedInstanced 216x37 args with no instance payload; the 37-instance anchor IS reconstructed by the chunk scatter law: 37 = nonzero index-5 trees.bmp cells in 256-world-unit chunk (10,6) (TREE_CHUNK_WORLD_UNITS; live_trees_measure 8/8 exact)".to_string(),
-        },
-    })
+    let candidate_count = trees.pixels.iter().filter(|value| **value != 0).count();
+    Err(format!(
+        "{TREE_INSTANCE_GENERATOR_OMISSION}: {candidate_count} trees.bmp cells have exact palette, staggered X/Z, and height inputs, but the captured cell-to-yaw and slope producers remain unresolved; refusing to synthesize a 24-byte instance payload"
+    )
+    .into())
 }
 
 #[allow(dead_code)]
@@ -209,35 +235,8 @@ pub(crate) fn decode_captured_tree_template(
         mesh_vertex_count,
         index_count,
         instance_buffer_status,
-        convention: "captured slot 0 is 120 template vertices at 56 bytes: float3 position, float3 normal, float4 tangent, float2 uv0, float2 uv1; replay adds slot 1 float4 pos_yrot + float3 slopes".to_string(),
+        convention: "captured slot 0 is 120 template vertices at 56 bytes; captured slot 1 records are 24 bytes: float4 pos_yrot + float2 slopes".to_string(),
     })
-}
-
-fn deterministic_tree_rotation(x: u32, y: u32, tree_index: u8) -> f32 {
-    let mut value = x.wrapping_mul(0x9E37_79B1).rotate_left(5)
-        ^ y.wrapping_mul(0x85EB_CA6B).rotate_left(13)
-        ^ u32::from(tree_index).wrapping_mul(0xC2B2_AE35);
-    value ^= value >> 16;
-    value = value.wrapping_mul(0x7FEB_352D);
-    value ^= value >> 15;
-    value = value.wrapping_mul(0x846C_A68B);
-    value ^= value >> 16;
-    (value as f32 / u32::MAX as f32) * std::f32::consts::TAU
-}
-
-fn sample_tree_slope(heightmap: &IndexImage, x: f32, z: f32) -> (f32, f32) {
-    let left = sample_tree_height(heightmap, x - 1.0, z);
-    let right = sample_tree_height(heightmap, x + 1.0, z);
-    let down = sample_tree_height(heightmap, x, z - 1.0);
-    let up = sample_tree_height(heightmap, x, z + 1.0);
-    ((right - left) * 0.5, (up - down) * 0.5)
-}
-
-fn sample_tree_height(heightmap: &IndexImage, x: f32, z: f32) -> f32 {
-    let xi = x.round().clamp(0.0, (heightmap.width - 1) as f32) as usize;
-    let yi = ((heightmap.height - 1) as f32 - z.round()).clamp(0.0, (heightmap.height - 1) as f32)
-        as usize;
-    heightmap.pixels[yi * heightmap.width + xi] as f32 * 0.1
 }
 
 fn load_tree_raw_index_image(
@@ -279,7 +278,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tree_instances_scale_tree_cells_to_world_space() {
+    fn captured_tree_instance_stride_and_decode_are_exact() {
+        let values = [3.0f32, 10.0, 2.0, 1.134_464, 0.048_976, -0.125_650_3];
+        let bytes = values
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let decoded = decode_captured_tree_instance(&bytes).expect("captured instance");
+        assert_eq!(TREE_INSTANCE_STRIDE_BYTES, 24);
+        assert_eq!(decoded.anchor, [3.0, 10.0, 2.0]);
+        assert_eq!(decoded.yaw_radians.to_bits(), 1.134_464f32.to_bits());
+        assert_eq!(decoded.slopes[0].to_bits(), 0.048_976f32.to_bits());
+        assert_eq!(decoded.slopes[1].to_bits(), (-0.125_650_3f32).to_bits());
+    }
+
+    #[test]
+    fn tree_anchor_uses_engine_arithmetic_order_and_stagger() {
+        assert_eq!(tree_cell_anchor_xz(1, 0, 4, 2, 8, 4).unwrap(), [2.0, 2.0]);
+        assert_eq!(tree_cell_anchor_xz(1, 1, 4, 2, 8, 4).unwrap(), [3.0, 0.0]);
+    }
+
+    #[test]
+    fn tree_generation_fails_closed_without_yaw_and_slope_producers() {
         let trees = IndexImage {
             width: 2,
             height: 1,
@@ -290,38 +310,8 @@ mod tests {
             height: 4,
             pixels: vec![100; 16],
         };
-        let generated =
-            synthesize_tree_instances_from_images(&trees, &heightmap, 4, 4).expect("instances");
-        assert_eq!(generated.stats.instance_count, 1);
-        assert_eq!(
-            generated.instances.len(),
-            TREE_INSTANCE_STRIDE_BYTES as usize
-        );
-        let x = f32::from_le_bytes(generated.instances[0..4].try_into().unwrap());
-        let y = f32::from_le_bytes(generated.instances[4..8].try_into().unwrap());
-        let z = f32::from_le_bytes(generated.instances[8..12].try_into().unwrap());
-        assert_eq!(x, 3.0);
-        assert_eq!(y, 10.0);
-        assert_eq!(z, 2.0);
-    }
-
-    #[test]
-    fn tree_instance_generation_is_deterministic() {
-        let trees = IndexImage {
-            width: 3,
-            height: 2,
-            pixels: vec![0, 5, 0, 6, 0, 6],
-        };
-        let heightmap = IndexImage {
-            width: 6,
-            height: 4,
-            pixels: (0..24).map(|value| value as u8).collect(),
-        };
-        let first =
-            synthesize_tree_instances_from_images(&trees, &heightmap, 6, 4).expect("first pass");
-        let second =
-            synthesize_tree_instances_from_images(&trees, &heightmap, 6, 4).expect("second pass");
-        assert_eq!(first.instances, second.instances);
-        assert_eq!(first.stats, second.stats);
+        let error = synthesize_tree_instances_from_images(&trees, &heightmap, 4, 4)
+            .expect_err("unproven generators must fail closed");
+        assert!(error.to_string().contains(TREE_INSTANCE_GENERATOR_OMISSION));
     }
 }

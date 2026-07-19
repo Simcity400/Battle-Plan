@@ -1,12 +1,14 @@
 //! Battle Plan product surface: Win32 + D3D11 swapchain app.
 //!
-//! Product map rendering enters through validated the game D3D11 capture bundles.
-//! The replay app keeps the map bundle's province/state data for picking and
-//! snapshot metadata, but it does not render the removed CPU `map_visual.rgbx`
-//! scaffold or generated political-color SRV substitutions.
+//! Product map rendering enters through the portable replay's admitted,
+//! authenticated production-render carrier. The normal app executes its exact
+//! D3D11 program on the app-owned device and swapchain target; an absent or
+//! incomplete carrier is feature-locally omitted. Validated capture bundles
+//! remain debug/evidence inputs only. The replay app does not render the removed
+//! CPU `map_visual.rgbx` scaffold or generated political-color substitutions.
 //!
-//! Usage: `replay_app [--bundle <dir>] [--game <dir>] [--mod <content-dir> ...]
-//! [--use-dlc-load --userdata <dir>] [--recording <path>]
+//! Usage: `replay_app [--configure] [--config <file>] [--recording <portable .battleplan>]
+//! [--game <dir>] [--userdata <dir>] [--recording <path>]
 //! [--capture <session dir>]`
 //!
 //! `--recording` opens a snapshot-flavor `.battleplan` (or snapshot store
@@ -14,14 +16,13 @@
 //! state owners. Without it the map shows the grounded 1936 owners.
 //! Replay-driven political color substitution is blocked until the engine's
 //! primary fill / exact GradientBorder generation law is ported.
-//! `--capture` loads a validated map_viewer captured-pass session and uses
+//! Debug-only `--capture` loads a validated map_viewer captured-pass session and uses
 //! the game's captured pdxmap/pdxwater shaders as the map base layer; invalid
 //! captured sessions fail startup with the validator message.
 //!
-//! `--game` points at the game install (falls back to the `BATTLE_PLAN_VANILLA`
-//! environment variable) and enables the real DDS-backed `hoi_18mbs`
-//! overlay font. Without it the app still runs, but overlay text is omitted
-//! instead of rendered with a proxy font.
+//! On first launch the app asks for the game content root and the active
+//! user-data/profile root. The versioned local profile retains only those two
+//! roots; replay files remain independently movable and shareable.
 //!
 //! Controls: middle/right-drag or WASD pan; mouse wheel zooms toward the
 //! cursor; `R` resets to whole-map fit; `[`/`]` or Left/Right step one
@@ -32,16 +33,21 @@ mod anomaly;
 mod blockers;
 mod bundle;
 mod camera;
+mod character_runtime;
 mod clausewitz;
+mod content_compatibility;
 #[cfg(test)]
 mod e2e_playback;
 mod font;
 mod grading_law;
+mod gui_definition_admission;
+mod install_paths;
 mod observer;
 mod palette;
 #[cfg(test)]
 mod post_effect;
 mod timeline;
+mod tooltip_runtime;
 mod transport;
 mod validate;
 
@@ -62,7 +68,11 @@ mod political_scene;
 #[cfg(windows)]
 mod render;
 #[cfg(windows)]
+mod submitted_draw;
+#[cfg(windows)]
 mod text;
+#[cfg(windows)]
+mod ui_runtime;
 #[cfg(windows)]
 mod win32;
 
@@ -75,14 +85,14 @@ use map_viewer::{sensitive_file_overrides, GameFileResolver, GameFileResolverOpt
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-const USAGE: &str = "usage: replay_app [--list-blockers] [--validate-recording <path>] [--bundle <dir>] [--game <the game install dir>] \
+const USAGE: &str = "usage: replay_app [--configure] [--config <profile.json>] [--non-interactive] [--list-blockers] [--validate-recording <path>] [--validate-playback <path>] [--bundle <dir>] [--game <the game install dir>] \
 [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--recording <path> [--frame-cache <entries>]] [--capture <session dir>] [--dump-frame <out.bmp> [--dump-hour <N>] \
 [--hour <0..1>] [--dump-zoom <screen-px-per-map-px>] [--dump-center <x,y>] [--dump-hdr <out.rgba16f>]] \
     [--postfx] [--postfx-restore-full] [--postfx-validate-capture] [--water-full]\n\
 --frame-cache <entries> shrinks the recording's decoded-frame LRU budget for weak-PC profiles (default 16 hot frames; requires --recording); \
---game falls back to the BATTLE_PLAN_VANILLA environment variable; \
---mod is repeatable and --use-dlc-load mirrors map_viewer bundle semantics with --userdata; \
---capture loads map_viewer/out/captures session bundles and is required for map rendering; the removed CPU map_visual.rgbx scaffold is blocked from product output; \
+--configure selects/replaces the two machine-local content roots without opening a replay; --config provides a portable/headless configuration location; \
+normal product playback reconstructs the launcher's effective selection from the configured user-data dlc_load.json; --mod remains an explicit development/test override; \
+--bundle and --capture are debug/evidence inputs only; normal portable recording playback never requires either. `--recording <portable> --dump-frame <bmp>` executes one exact recorded hour on an app-owned offscreen D3D11 target and fails instead of writing when any production carrier/input/output is omitted; \
 --demo-scrub is blocked because it generated synthetic, non-replay state changes; \
 terrain chunk synthesis is blocked in replay_app until the remaining runtime/LOD state is engine-derived; use map_viewer terrain tooling only for development; --synthesize-terrain-chunks and --chunks-from-files are blocked; \
 --gb-cpu and REPLAY_APP_GB_CPU are blocked; generated political GradientBorder textures are research-only and not used for product rendering; \
@@ -122,11 +132,15 @@ enum TimelineMode {
 
 #[derive(Debug)]
 struct CliOptions {
-    bundle_dir: PathBuf,
+    /// Optional evidence/debug map bundle. Portable recording playback never
+    /// requires a pre-generated machine-local bundle.
+    bundle_dir: Option<PathBuf>,
     mode: TimelineMode,
     /// the game install for fonts (`--game`; `BATTLE_PLAN_VANILLA` env fallback).
     game_dir: Option<PathBuf>,
     game_files: GameFileResolverOptions,
+    config_path: Option<PathBuf>,
+    non_interactive: bool,
     /// Headless: render one hour to this BMP and exit (no window).
     dump_frame: Option<PathBuf>,
     dump_hour: Option<i64>,
@@ -160,6 +174,8 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
     let mut mod_paths = Vec::new();
     let mut use_dlc_load = false;
     let mut userdata = None;
+    let mut config_path = None;
+    let mut non_interactive = false;
     let mut dump_frame = None;
     let mut dump_hour = None;
     let mut day_night_hour = None;
@@ -211,6 +227,19 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
                     .get(index)
                     .ok_or_else(|| format!("--userdata requires a directory\n{USAGE}"))?;
                 userdata = Some(PathBuf::from(value));
+            }
+            "--config" => {
+                index += 1;
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| format!("--config requires a file path\n{USAGE}"))?;
+                config_path = Some(PathBuf::from(value));
+            }
+            "--non-interactive" => {
+                non_interactive = true;
+            }
+            "--configure" => {
+                return Err(format!("--configure is a standalone command and cannot be combined with playback options\n{USAGE}").into());
             }
             "--recording" => {
                 index += 1;
@@ -410,9 +439,11 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
         .into());
     }
     if use_dlc_load && userdata.is_none() {
-        return Err(
-            format!("pass --userdata <the game user-data dir> with --use-dlc-load\n{USAGE}").into(),
-        );
+        return Err(format!(
+            "--use-dlc-load requires --userdata <the game user-data dir> so the selected \n\
+             dlc_load.json is unambiguous\n{USAGE}"
+        )
+        .into());
     }
     let mode = match recording {
         Some(path) => TimelineMode::Recording {
@@ -438,9 +469,7 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
         }
     };
     Ok(CliOptions {
-        bundle_dir: bundle_dir.ok_or_else(|| {
-            format!("--bundle <dir> is required; no implicit generated bundle is loaded\n{USAGE}")
-        })?,
+        bundle_dir,
         mode,
         game_dir,
         game_files: GameFileResolverOptions {
@@ -448,6 +477,8 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
             use_dlc_load,
             userdata,
         },
+        config_path,
+        non_interactive,
         dump_frame,
         dump_hour,
         day_night_hour,
@@ -524,7 +555,106 @@ fn main() {
     }
 }
 
+/// Standalone first-launch/reselection command. This deliberately has a tiny
+/// argument surface so configuration works in a terminal or deployment script
+/// without a map bundle, renderer, or replay file.
+fn run_configure(args: &[String]) -> Result<()> {
+    let mut game = None;
+    let mut user_data = None;
+    let mut config = None;
+    let mut non_interactive = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--configure" => {}
+            "--game" => {
+                index += 1;
+                game = Some(PathBuf::from(
+                    args.get(index)
+                        .ok_or_else(|| format!("--game requires a directory\n{USAGE}"))?,
+                ));
+            }
+            "--userdata" => {
+                index += 1;
+                user_data = Some(PathBuf::from(
+                    args.get(index)
+                        .ok_or_else(|| format!("--userdata requires a directory\n{USAGE}"))?,
+                ));
+            }
+            "--config" => {
+                index += 1;
+                config = Some(PathBuf::from(
+                    args.get(index)
+                        .ok_or_else(|| format!("--config requires a file path\n{USAGE}"))?,
+                ));
+            }
+            "--non-interactive" => non_interactive = true,
+            other => {
+                return Err(format!(
+                    "{other:?} is not valid with --configure; use only --game, --userdata, --config, and --non-interactive\n{USAGE}"
+                )
+                .into())
+            }
+        }
+        index += 1;
+    }
+    let selected = install_paths::resolve_process_paths(
+        config,
+        install_paths::ResolveOptions {
+            game_override: game,
+            user_data_override: user_data,
+            force_reselect: true,
+            non_interactive,
+        },
+    )?;
+    let resolver =
+        GameFileResolver::from_dlc_load(selected.game_install.clone(), selected.user_data.clone())
+            .map_err(|error| {
+                format!(
+            "the selected roots do not produce a valid launcher-equivalent content profile: {error}"
+        )
+            })?;
+    install_paths::playback_environment_from_paths(
+        &selected,
+        &resolver,
+        [
+            "physical_width",
+            "physical_height",
+            "min_gui_width",
+            "min_gui_height",
+            "gui_scale_f32_bits",
+            "refresh_rate_hz",
+            "max_refresh_rate_hz",
+            "fullscreen",
+            "borderless",
+            "display_mode",
+            "settings_file_sha256",
+        ]
+        .into_iter()
+        .map(str::to_string),
+    )
+    .map_err(|error| format!("selected playback profile metadata is invalid: {error}"))?;
+    println!("Playback profile saved and validated.");
+    println!("  the game content root: {}", selected.game_install.display());
+    println!("  User-data/profile: {}", selected.user_data.display());
+    println!("The replay file location is not stored; .battleplan files remain portable.");
+    println!(
+        "  Effective content layers: {} (lowest to highest priority)",
+        resolver.active_sources().len()
+    );
+    for warning in resolver.warnings() {
+        eprintln!("replay_app: profile warning: {warning}");
+    }
+    Ok(())
+}
+
 fn run(args: &[String]) -> Result<()> {
+    if args.iter().any(|arg| arg == "--configure") {
+        return run_configure(args);
+    }
+    if args.iter().any(|arg| arg == "--validate-playback") {
+        return run_validate_playback(args);
+    }
     // E4 open/validate product entry: `--validate-recording <path>` runs the
     // SHARED validator and reports a readable diagnostic without needing a map
     // bundle. It is intercepted before `parse_cli` so it works standalone.
@@ -542,26 +672,65 @@ fn run(args: &[String]) -> Result<()> {
         return Ok(());
     }
     let options = parse_cli(args)?;
-    // Fail closed: no bundle, no window; nothing is fabricated.
-    let bundle = bundle::MapBundle::load(&options.bundle_dir).map_err(|err| {
-        format!(
-            "failed to open map bundle at {}: {}\n{}",
-            options.bundle_dir.display(),
-            err,
-            bundle::generation_guidance()
-        )
-    })?;
-    bundle.validate_product_dimensions().map_err(|err| {
-        format!(
-            "map bundle at {} failed validation: {}\n{}",
-            options.bundle_dir.display(),
-            err,
-            bundle::generation_guidance()
-        )
-    })?;
-    let game_dir = resolve_game_dir(options.game_dir, std::env::var_os("BATTLE_PLAN_VANILLA").or_else(|| std::env::var_os("HOI4_VANILLA")));
-    let game_resolver = build_game_file_resolver(game_dir, options.game_files)?;
+    let bundle = options
+        .bundle_dir
+        .as_deref()
+        .map(|bundle_dir| {
+            let bundle = bundle::MapBundle::load(bundle_dir).map_err(|err| {
+                format!(
+                    "failed to open debug/evidence map bundle at {}: {}\n{}",
+                    bundle_dir.display(),
+                    err,
+                    bundle::generation_guidance()
+                )
+            })?;
+            bundle.validate_product_dimensions().map_err(|err| {
+                format!(
+                    "debug/evidence map bundle at {} failed validation: {}\n{}",
+                    bundle_dir.display(),
+                    err,
+                    bundle::generation_guidance()
+                )
+            })?;
+            Ok::<_, Box<dyn std::error::Error>>(bundle)
+        })
+        .transpose()?;
+    let configured_paths = install_paths::resolve_process_paths(
+        options.config_path.clone(),
+        install_paths::ResolveOptions {
+            game_override: resolve_game_dir(options.game_dir, std::env::var_os("BATTLE_PLAN_VANILLA").or_else(|| std::env::var_os("HOI4_VANILLA"))),
+            user_data_override: options.game_files.userdata.clone(),
+            force_reselect: false,
+            non_interactive: options.non_interactive,
+        },
+    )?;
+    let game_dir = Some(configured_paths.game_install.clone());
+    let mut game_file_options = options.game_files;
+    game_file_options.userdata = Some(configured_paths.user_data.clone());
+    if game_file_options.mod_paths.is_empty() {
+        // Production playback follows the launcher's current effective profile.
+        // Explicit --mod roots are retained only as a deliberate test/developer
+        // selection and never inferred from a replay's source-machine paths.
+        game_file_options.use_dlc_load = true;
+    }
+    // Portable recording playback reconstructs only the replay-required VFS
+    // after opening its content manifest. Do not parse/materialize every local
+    // launcher layer first: an unrelated corrupt or missing layer is irrelevant.
+    let game_resolver = if matches!(options.mode, TimelineMode::Recording { .. }) {
+        None
+    } else {
+        build_game_file_resolver(game_dir, game_file_options)?
+    };
     log_game_file_resolver_warnings(game_resolver.as_ref())?;
+    // Preserve first-launch profile selection: an empty invocation must ask
+    // for the two machine-local roots before explaining that Static1936 is a
+    // debug-only mode. Portable product playback itself needs only --recording.
+    if matches!(options.mode, TimelineMode::Static1936) && bundle.is_none() {
+        return Err(
+            "static 1936 is a debug baseline and requires --bundle; production playback requires --recording <portable .battleplan>"
+                .into(),
+        );
+    }
     reject_gb_cpu_env(std::env::var_os("REPLAY_APP_GB_CPU"))?;
     reject_product_debug_env("REPLAY_DEBUG_DUMP_UNDERWATER")?;
     reject_product_debug_env("REPLAY_DEBUG_CLEAR_BEFORE_WATER")?;
@@ -577,8 +746,14 @@ fn run(args: &[String]) -> Result<()> {
         let report = render::restore_full_postfx_validate_capture(
             game_resolver.as_ref(),
             capture_dir,
-            bundle.width,
-            bundle.height,
+            bundle
+                .as_ref()
+                .ok_or("--postfx-validate-capture requires --bundle debug evidence")?
+                .width,
+            bundle
+                .as_ref()
+                .ok_or("--postfx-validate-capture requires --bundle debug evidence")?
+                .height,
             options.day_night_hour,
         )?;
         println!("postfx-validate-capture (file-law vs captured):");
@@ -619,11 +794,12 @@ fn run(args: &[String]) -> Result<()> {
     }
     match &options.dump_frame {
         Some(out) => dump_frame(
-            &bundle,
+            bundle.as_ref(),
             &options.mode,
             options.dump_hour,
             out,
             game_resolver.as_ref(),
+            &configured_paths,
             options.dump_zoom,
             options.dump_center,
             options.dump_hdr.as_deref(),
@@ -637,12 +813,82 @@ fn run(args: &[String]) -> Result<()> {
             bundle,
             options.mode,
             game_resolver,
+            configured_paths,
             options.capture_dir,
             options.postfx_enabled,
             options.postfx_restore_full,
             options.water_full,
         ),
     }
+}
+
+/// Full headless playback-installation gate. Unlike `--validate-recording`,
+/// this verifies the selected local VFS against the replay content manifest.
+fn run_validate_playback(args: &[String]) -> Result<()> {
+    let mut replay = None;
+    let mut game = None;
+    let mut user_data = None;
+    let mut config = None;
+    let mut non_interactive = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--validate-playback" => {
+                index += 1;
+                replay = Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                    format!("--validate-playback requires a replay path\n{USAGE}")
+                })?));
+            }
+            "--game" => {
+                index += 1;
+                game = Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                    format!("--game requires a directory\n{USAGE}")
+                })?));
+            }
+            "--userdata" => {
+                index += 1;
+                user_data = Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                    format!("--userdata requires a directory\n{USAGE}")
+                })?));
+            }
+            "--config" => {
+                index += 1;
+                config = Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                    format!("--config requires a file path\n{USAGE}")
+                })?));
+            }
+            "--non-interactive" => non_interactive = true,
+            other => {
+                return Err(format!(
+                    "{other:?} is not valid with --validate-playback; use only --game, --userdata, --config, and --non-interactive\n{USAGE}"
+                )
+                .into())
+            }
+        }
+        index += 1;
+    }
+    let replay =
+        replay.ok_or_else(|| format!("--validate-playback requires a replay path\n{USAGE}"))?;
+    let paths = install_paths::resolve_process_paths(
+        config,
+        install_paths::ResolveOptions {
+            game_override: resolve_game_dir(game, std::env::var_os("BATTLE_PLAN_VANILLA").or_else(|| std::env::var_os("HOI4_VANILLA"))),
+            user_data_override: user_data,
+            force_reselect: false,
+            non_interactive,
+        },
+    )?;
+    let timeline = match validate::open_timeline(&replay) {
+        Ok(timeline) => timeline,
+        Err(outcome) => {
+            let summary = outcome.summary();
+            println!("{summary}");
+            return Err(summary.into());
+        }
+    };
+    content_compatibility::validate_timeline_content(&timeline, &paths)
+        .map(|_| ())
+        .map_err(|error| error.into())
 }
 
 /// E4: open a recording through the shared validator and print a readable
@@ -667,9 +913,10 @@ fn run_validate_recording(path: &std::path::Path) -> Result<()> {
 
 #[cfg(windows)]
 fn run_app(
-    bundle: bundle::MapBundle,
+    bundle: Option<bundle::MapBundle>,
     mode: TimelineMode,
     game_resolver: Option<GameFileResolver>,
+    configured_paths: install_paths::ProductPaths,
     capture_dir: Option<PathBuf>,
     postfx_enabled: bool,
     postfx_restore_full: bool,
@@ -679,6 +926,7 @@ fn run_app(
         bundle,
         mode,
         game_resolver,
+        configured_paths,
         capture_dir,
         postfx_enabled,
         postfx_restore_full,
@@ -688,11 +936,12 @@ fn run_app(
 
 #[cfg(windows)]
 fn dump_frame(
-    bundle: &bundle::MapBundle,
+    bundle: Option<&bundle::MapBundle>,
     mode: &TimelineMode,
     hour: Option<i64>,
     out: &std::path::Path,
     game_resolver: Option<&GameFileResolver>,
+    configured_paths: &install_paths::ProductPaths,
     dump_zoom: Option<f64>,
     dump_center: Option<(f64, f64)>,
     dump_hdr: Option<&std::path::Path>,
@@ -708,6 +957,7 @@ fn dump_frame(
         hour,
         out,
         game_resolver,
+        configured_paths,
         dump_zoom,
         dump_center,
         dump_hdr,
@@ -721,9 +971,10 @@ fn dump_frame(
 
 #[cfg(not(windows))]
 fn run_app(
-    _bundle: bundle::MapBundle,
+    _bundle: Option<bundle::MapBundle>,
     _mode: TimelineMode,
     _game_resolver: Option<GameFileResolver>,
+    _configured_paths: install_paths::ProductPaths,
     _capture_dir: Option<PathBuf>,
     _postfx_enabled: bool,
     _postfx_restore_full: bool,
@@ -734,11 +985,12 @@ fn run_app(
 
 #[cfg(not(windows))]
 fn dump_frame(
-    _bundle: &bundle::MapBundle,
+    _bundle: Option<&bundle::MapBundle>,
     _mode: &TimelineMode,
     _hour: Option<i64>,
     _out: &std::path::Path,
     _game_resolver: Option<&GameFileResolver>,
+    _configured_paths: &install_paths::ProductPaths,
     _dump_zoom: Option<f64>,
     _dump_center: Option<(f64, f64)>,
     _dump_hdr: Option<&std::path::Path>,
@@ -789,19 +1041,17 @@ mod tests {
     }
 
     #[test]
-    fn cli_requires_explicit_bundle_path() {
-        let err = parse_cli(&[]).expect_err("empty args must fail");
-        assert!(
-            err.to_string().contains("--bundle <dir> is required"),
-            "{err}"
-        );
+    fn cli_does_not_require_machine_local_bundle() {
+        let options = parse_cli(&[]).expect("first launch reaches profile selection");
+        assert_eq!(options.bundle_dir, None);
+        assert_eq!(options.mode, TimelineMode::Static1936);
     }
 
     #[test]
     fn cli_parses_bundle_path() {
         let options = parse_cli(&args(&["--bundle", "some/dir"])).expect("args parse");
         assert_eq!(options.mode, TimelineMode::Static1936);
-        assert_eq!(options.bundle_dir, PathBuf::from("some/dir"));
+        assert_eq!(options.bundle_dir, Some(PathBuf::from("some/dir")));
     }
 
     #[test]
@@ -825,6 +1075,38 @@ mod tests {
                 timeline: replay_core::TimelineConfig::default(),
             }
         );
+    }
+
+    #[test]
+    fn cli_portable_recording_needs_no_bundle_or_capture() {
+        let options = parse_cli(&args(&[
+            "--recording",
+            "shared/session.battleplan",
+            "--non-interactive",
+        ]))
+        .expect("portable recording parse");
+        assert_eq!(options.bundle_dir, None);
+        assert_eq!(options.capture_dir, None);
+        assert!(matches!(options.mode, TimelineMode::Recording { .. }));
+    }
+
+    #[test]
+    fn cli_production_recording_dump_needs_no_debug_bundle_or_capture() {
+        let options = parse_cli(&args(&[
+            "--recording",
+            "shared/session.battleplan",
+            "--dump-frame",
+            "frame.bmp",
+            "--dump-hour",
+            "42",
+            "--non-interactive",
+        ]))
+        .expect("portable production dump parse");
+        assert_eq!(options.bundle_dir, None);
+        assert_eq!(options.capture_dir, None);
+        assert_eq!(options.dump_frame, Some(PathBuf::from("frame.bmp")));
+        assert_eq!(options.dump_hour, Some(42));
+        assert!(matches!(options.mode, TimelineMode::Recording { .. }));
     }
 
     #[test]
@@ -1401,7 +1683,10 @@ mod tests {
         let err = run(&args(&["--bundle", &dir.to_string_lossy()]))
             .expect_err("missing bundle must fail closed");
         let message = err.to_string();
-        assert!(message.contains("failed to open map bundle"), "{message}");
+        assert!(
+            message.contains("failed to open debug/evidence map bundle"),
+            "{message}"
+        );
         assert!(
             message.contains("cargo run --release -p map_viewer -- bundle --game"),
             "{message}"
@@ -1417,11 +1702,8 @@ mod tests {
     #[test]
     fn validate_recording_cli_opens_positive_fixture() {
         let path = fixture_root().join("positive/fx_owner_controller_flip.battleplan");
-        run(&args(&[
-            "--validate-recording",
-            &path.to_string_lossy(),
-        ]))
-        .expect("positive fixture must validate-open through the CLI");
+        run(&args(&["--validate-recording", &path.to_string_lossy()]))
+            .expect("positive fixture must validate-open through the CLI");
     }
 
     #[test]
@@ -1431,16 +1713,16 @@ mod tests {
             ("neg_malformed_manifest", "required_features"),
             // stitching fix6 CRC-32-at-open catches the corrupted payload before the sha256 check.
             ("neg_bad_snapshot_hash", "crc32 mismatch"),
-            ("neg_modset_mismatch", "disagrees with snapshot provenance.mod"),
+            (
+                "neg_modset_mismatch",
+                "disagrees with snapshot provenance.mod",
+            ),
             ("neg_empty_snapshot_index", "empty snapshot index"),
         ];
         for (name, expected) in cases {
             let path = fixture_root().join(format!("negative/{name}.battleplan"));
-            let err = run(&args(&[
-                "--validate-recording",
-                &path.to_string_lossy(),
-            ]))
-            .expect_err("negative fixture must be rejected through the CLI");
+            let err = run(&args(&["--validate-recording", &path.to_string_lossy()]))
+                .expect_err("negative fixture must be rejected through the CLI");
             assert!(
                 err.to_string().contains(expected),
                 "{name}: expected {expected:?}, got {err}"
@@ -1452,7 +1734,8 @@ mod tests {
     fn validate_recording_cli_requires_a_path() {
         let err = run(&args(&["--validate-recording"])).expect_err("must fail");
         assert!(
-            err.to_string().contains("--validate-recording requires a path"),
+            err.to_string()
+                .contains("--validate-recording requires a path"),
             "{err}"
         );
     }
@@ -1508,7 +1791,10 @@ mod tests {
                 "registry references `{cov}` but no such *_product_path_blocked gate exists"
             );
         }
-        assert_eq!(gate_symbols, covered, "gate set must equal registry-covered set");
+        assert_eq!(
+            gate_symbols, covered,
+            "gate set must equal registry-covered set"
+        );
     }
 
     #[test]

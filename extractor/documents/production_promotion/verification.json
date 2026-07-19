@@ -1,0 +1,482 @@
+{
+  "checks": [
+    {
+      "check": "contract promotion status",
+      "status": "PASS"
+    },
+    {
+      "check": "batch has zero residuals",
+      "status": "PASS"
+    },
+    {
+      "check": "batch is not mislabeled global completion",
+      "status": "PASS"
+    },
+    {
+      "check": "binary SHA is pinned",
+      "status": "PASS"
+    },
+    {
+      "check": "binary program/version is pinned",
+      "status": "PASS"
+    },
+    {
+      "check": "image base is pinned",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen hash extractor/native/lanes/hub_motorization_live/A1_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen hash extractor/native/lanes/hub_motorization_live/INTEGRATION_PACKET.md",
+      "status": "PASS"
+    },
+    {
+      "check": "binary provenance extractor/native/lanes/hub_motorization_live/A1_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "job id provenance extractor/native/lanes/hub_motorization_live/A1_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "function/address provenance extractor/native/lanes/hub_motorization_live/A1_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "artifact path provenance extractor/native/lanes/hub_motorization_live/A1_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "manifest hash provenance extractor/native/lanes/hub_motorization_live/A1_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "promotion disposition extractor/native/lanes/hub_motorization_live/A1_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen hash extractor/native/lanes/focus_research_decisions_depth_live/A2_A12_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen hash extractor/native/lanes/focus_research_decisions_depth_live/A2_A12_RE_EVIDENCE.json",
+      "status": "PASS"
+    },
+    {
+      "check": "binary provenance extractor/native/lanes/focus_research_decisions_depth_live/A2_A12_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "job id provenance extractor/native/lanes/focus_research_decisions_depth_live/A2_A12_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "function/address provenance extractor/native/lanes/focus_research_decisions_depth_live/A2_A12_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "artifact path provenance extractor/native/lanes/focus_research_decisions_depth_live/A2_A12_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "manifest hash provenance extractor/native/lanes/focus_research_decisions_depth_live/A2_A12_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "promotion disposition extractor/native/lanes/focus_research_decisions_depth_live/A2_A12_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen hash extractor/native/lanes/air_combat_losses_live/A4_A21_PROMOTION_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "binary provenance extractor/native/lanes/air_combat_losses_live/A4_A21_PROMOTION_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "job id provenance extractor/native/lanes/air_combat_losses_live/A4_A21_PROMOTION_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "function/address provenance extractor/native/lanes/air_combat_losses_live/A4_A21_PROMOTION_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "artifact path provenance extractor/native/lanes/air_combat_losses_live/A4_A21_PROMOTION_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "manifest hash provenance extractor/native/lanes/air_combat_losses_live/A4_A21_PROMOTION_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "promotion disposition extractor/native/lanes/air_combat_losses_live/A4_A21_PROMOTION_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen hash extractor/native/lanes/construction_buildings_state_damage_live/A14_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen hash extractor/native/lanes/construction_buildings_state_damage_live/A14_RE_EVIDENCE.json",
+      "status": "PASS"
+    },
+    {
+      "check": "binary provenance extractor/native/lanes/construction_buildings_state_damage_live/A14_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "job id provenance extractor/native/lanes/construction_buildings_state_damage_live/A14_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "function/address provenance extractor/native/lanes/construction_buildings_state_damage_live/A14_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "artifact path provenance extractor/native/lanes/construction_buildings_state_damage_live/A14_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "manifest hash provenance extractor/native/lanes/construction_buildings_state_damage_live/A14_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "promotion disposition extractor/native/lanes/construction_buildings_state_damage_live/A14_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen hash extractor/native/lanes/session_multiplayer_metadata_live/A15_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen hash extractor/native/lanes/session_multiplayer_metadata_live/INTEGRATION_PACKET.md",
+      "status": "PASS"
+    },
+    {
+      "check": "binary provenance extractor/native/lanes/session_multiplayer_metadata_live/A15_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "job id provenance extractor/native/lanes/session_multiplayer_metadata_live/A15_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "function/address provenance extractor/native/lanes/session_multiplayer_metadata_live/A15_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "artifact path provenance extractor/native/lanes/session_multiplayer_metadata_live/A15_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "manifest hash provenance extractor/native/lanes/session_multiplayer_metadata_live/A15_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "promotion disposition extractor/native/lanes/session_multiplayer_metadata_live/A15_RE_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen hash extractor/native/lanes/air_loss_stats_live/A22_FULL_CHANNEL_CLOSEOUT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen hash extractor/native/lanes/air_loss_stats_live/INTEGRATION_PACKET.md",
+      "status": "PASS"
+    },
+    {
+      "check": "binary provenance extractor/native/lanes/air_loss_stats_live/A22_FULL_CHANNEL_CLOSEOUT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "job id provenance extractor/native/lanes/air_loss_stats_live/A22_FULL_CHANNEL_CLOSEOUT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "function/address provenance extractor/native/lanes/air_loss_stats_live/A22_FULL_CHANNEL_CLOSEOUT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "artifact path provenance extractor/native/lanes/air_loss_stats_live/A22_FULL_CHANNEL_CLOSEOUT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "manifest hash provenance extractor/native/lanes/air_loss_stats_live/A22_FULL_CHANNEL_CLOSEOUT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "promotion disposition extractor/native/lanes/air_loss_stats_live/A22_FULL_CHANNEL_CLOSEOUT.md",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen hash extractor/native/lanes/construction_buildings_state_damage_live/B8_X6_BUILDING_REGISTRY_RE.md",
+      "status": "PASS"
+    },
+    {
+      "check": "frozen hash extractor/native/lanes/construction_buildings_state_damage_live/B8_X6_BUILDING_REGISTRY_PROOF.json",
+      "status": "PASS"
+    },
+    {
+      "check": "binary provenance extractor/native/lanes/construction_buildings_state_damage_live/B8_X6_BUILDING_REGISTRY_RE.md",
+      "status": "PASS"
+    },
+    {
+      "check": "job id provenance extractor/native/lanes/construction_buildings_state_damage_live/B8_X6_BUILDING_REGISTRY_RE.md",
+      "status": "PASS"
+    },
+    {
+      "check": "function/address provenance extractor/native/lanes/construction_buildings_state_damage_live/B8_X6_BUILDING_REGISTRY_RE.md",
+      "status": "PASS"
+    },
+    {
+      "check": "artifact path provenance extractor/native/lanes/construction_buildings_state_damage_live/B8_X6_BUILDING_REGISTRY_RE.md",
+      "status": "PASS"
+    },
+    {
+      "check": "manifest hash provenance extractor/native/lanes/construction_buildings_state_damage_live/B8_X6_BUILDING_REGISTRY_RE.md",
+      "status": "PASS"
+    },
+    {
+      "check": "promotion disposition extractor/native/lanes/construction_buildings_state_damage_live/B8_X6_BUILDING_REGISTRY_RE.md",
+      "status": "PASS"
+    },
+    {
+      "check": "packet set is exact",
+      "status": "PASS"
+    },
+    {
+      "check": "production surface hash extractor/native/domain_registry.json",
+      "status": "PASS"
+    },
+    {
+      "check": "production surface hash extractor/native/compact_contract/src/build_profile.rs",
+      "status": "PASS"
+    },
+    {
+      "check": "production surface hash extractor/native/compact_contract/src/building_registry.rs",
+      "status": "PASS"
+    },
+    {
+      "check": "production surface hash extractor/native/compact_contract/src/lib.rs",
+      "status": "PASS"
+    },
+    {
+      "check": "production surface hash extractor/native/collector/src/lib.rs",
+      "status": "PASS"
+    },
+    {
+      "check": "production surface hash extractor/native/recorder_host/src/domain_data_authority.rs",
+      "status": "PASS"
+    },
+    {
+      "check": "production surface hash extractor/native/recorder_host/src/world_fold.rs",
+      "status": "PASS"
+    },
+    {
+      "check": "production surface hash extractor/native/recorder_host/src/main.rs",
+      "status": "PASS"
+    },
+    {
+      "check": "XN07 frozen hash replay_interface/documents/lane_reports/rendering_laws/XN07.md",
+      "status": "PASS"
+    },
+    {
+      "check": "XN07 frozen hash replay_interface/re_evidence/rendering_laws/XN07/verification_result.json",
+      "status": "PASS"
+    },
+    {
+      "check": "XN07 frozen hash replay_interface/re_evidence/rendering_laws/XN07/verify_xn07.py",
+      "status": "PASS"
+    },
+    {
+      "check": "XN07 verification status",
+      "status": "PASS"
+    },
+    {
+      "check": "A2/A12 evidence status",
+      "status": "PASS"
+    },
+    {
+      "check": "A14 evidence status",
+      "status": "PASS"
+    },
+    {
+      "check": "B8/X6 evidence status",
+      "status": "PASS"
+    },
+    {
+      "check": "B8/X6 proof census",
+      "status": "PASS"
+    },
+    {
+      "check": "master links promotion contract",
+      "status": "PASS"
+    },
+    {
+      "check": "remaining ledger links promotion contract",
+      "status": "PASS"
+    },
+    {
+      "check": "master reconciliation: A4/A21 exact regional causes",
+      "status": "PASS"
+    },
+    {
+      "check": "master reconciliation: A1 exact hub actor/level attribution is closed",
+      "status": "PASS"
+    },
+    {
+      "check": "master reconciliation: B8/X6 exact building registry",
+      "status": "PASS"
+    },
+    {
+      "check": "master reconciliation: A2/A12 exact pause",
+      "status": "PASS"
+    },
+    {
+      "check": "master reconciliation: A15 exact multiplayer/session metadata is closed",
+      "status": "PASS"
+    },
+    {
+      "check": "master reconciliation: A1 exact actor/level attribution is closed",
+      "status": "PASS"
+    },
+    {
+      "check": "master reconciliation: A22 exact 24-channel schema are closed",
+      "status": "PASS"
+    },
+    {
+      "check": "stale master text absent: focus-paused A2; decision targets/cooldowns A12",
+      "status": "PASS"
+    },
+    {
+      "check": "stale master text absent: hotjoin/tag-switch/chat A15",
+      "status": "PASS"
+    },
+    {
+      "check": "stale master text absent: Per-hub level fixture A1",
+      "status": "PASS"
+    },
+    {
+      "check": "stale master text absent: 24-channel expansion/live fixture A22",
+      "status": "PASS"
+    },
+    {
+      "check": "remaining ledger closes A1",
+      "status": "PASS"
+    },
+    {
+      "check": "remaining ledger closes A2",
+      "status": "PASS"
+    },
+    {
+      "check": "remaining ledger closes A4",
+      "status": "PASS"
+    },
+    {
+      "check": "remaining ledger closes A12",
+      "status": "PASS"
+    },
+    {
+      "check": "remaining ledger closes A14",
+      "status": "PASS"
+    },
+    {
+      "check": "remaining ledger closes A15",
+      "status": "PASS"
+    },
+    {
+      "check": "remaining ledger closes A21",
+      "status": "PASS"
+    },
+    {
+      "check": "remaining ledger closes A22",
+      "status": "PASS"
+    },
+    {
+      "check": "remaining ledger closes B8",
+      "status": "PASS"
+    },
+    {
+      "check": "production tokens extractor/native/compact_contract/src/build_profile.rs",
+      "status": "PASS"
+    },
+    {
+      "check": "production tokens extractor/native/compact_contract/src/building_registry.rs",
+      "status": "PASS"
+    },
+    {
+      "check": "production tokens extractor/native/collector/src/lib.rs",
+      "status": "PASS"
+    },
+    {
+      "check": "production tokens extractor/native/recorder_host/src/domain_data_authority.rs",
+      "status": "PASS"
+    },
+    {
+      "check": "production tokens extractor/native/recorder_host/src/world_fold.rs",
+      "status": "PASS"
+    },
+    {
+      "check": "production tokens extractor/native/recorder_host/src/main.rs",
+      "status": "PASS"
+    }
+  ],
+  "checks_passed": 106,
+  "frozen_inputs": {
+    "extractor/documents/MASTER_EXTRACTION_CONTRACT.md": "50d82c89d2d790101f2bbad1bf98737e1608adad7ce33540083f20425381c251",
+    "extractor/documents/RE_REMAINING.md": "3f544a08887f6128ee94c06af1e6abb787161f81b77e53e570ccdf985e9723f8",
+    "extractor/native/collector/src/lib.rs": "d0373ec9c02316f3f3c8f44e2413649dbca5347f33f0984b0f1119c54af7a0c6",
+    "extractor/native/compact_contract/src/build_profile.rs": "f2688d41805f9224d16f0d78f1f08b92a8bbb3d173560c5f232d1a078ad45a14",
+    "extractor/native/compact_contract/src/building_registry.rs": "77271f7cd09d346b02e0a0af80490cd5a23cd84b181f8bf069c3db7e1dc76928",
+    "extractor/native/compact_contract/src/lib.rs": "a9066a47682ac95d3effed2311a5e2c067bc5a3900552bcdc724df0ea48b9d37",
+    "extractor/native/domain_registry.json": "0fd04e77192f4ab544e872e88f6a7b43e5a40c9cd8f5a85eb17c06b03ef830c5",
+    "extractor/native/lanes/air_combat_losses_live/A4_A21_PROMOTION_REPORT.md": "2889db02067e2c1a81375e58688b1f3abafdb2a8866ccab004c23fbb2cd416a2",
+    "extractor/native/lanes/air_loss_stats_live/A22_FULL_CHANNEL_CLOSEOUT.md": "aaf4f8dae1486d0726d723383a57f4554a68a9c98ed33f5fa8e8f9e35a58075a",
+    "extractor/native/lanes/air_loss_stats_live/INTEGRATION_PACKET.md": "89f616dd60fe07d91064a6301bd1a7f1ab403f172a74177805e87bc4997bed1e",
+    "extractor/native/lanes/construction_buildings_state_damage_live/A14_RE_EVIDENCE.json": "a6b23f1b31255a7e78608bd2cb7305cd71538761b9d756c4c14ab82736c21185",
+    "extractor/native/lanes/construction_buildings_state_damage_live/A14_RE_REPORT.md": "89d8854d226c4de4b3918d51351c754aa40369085eeea45b16cd61f32702fffc",
+    "extractor/native/lanes/construction_buildings_state_damage_live/B8_X6_BUILDING_REGISTRY_PROOF.json": "ee4f39937318ffb670414be9ef4aebb3d92282b6672e670460702d45ad0272b6",
+    "extractor/native/lanes/construction_buildings_state_damage_live/B8_X6_BUILDING_REGISTRY_RE.md": "b795608df46240eb77cd83428492a258548db30760a8ed7a3335fa44ecf20937",
+    "extractor/native/lanes/focus_research_decisions_depth_live/A2_A12_RE_EVIDENCE.json": "089991c953cf6bc680824745585c07393a209cee8704298f97c3eb9af5847bdf",
+    "extractor/native/lanes/focus_research_decisions_depth_live/A2_A12_RE_REPORT.md": "03fd80c077aa2bfb8ea152b6c4f0f7210ca6e026349556bbf6e1755bad10ce74",
+    "extractor/native/lanes/hub_motorization_live/A1_RE_REPORT.md": "c83692dea52d5fa0e3810144206d505bf19c9fa03faabd4bdb08c4a8b481ee35",
+    "extractor/native/lanes/hub_motorization_live/INTEGRATION_PACKET.md": "7be77e010a60d4af86fc3b67d141af9849f6c50026cba88f890bd8d0d4988deb",
+    "extractor/native/lanes/session_multiplayer_metadata_live/A15_RE_REPORT.md": "594abde60d89cc1de4268871f412f2e6536892e0f6f4bbc8e6a95efdafe63e52",
+    "extractor/native/lanes/session_multiplayer_metadata_live/INTEGRATION_PACKET.md": "1e43fee802fa77865ea0a6cb723f1b6171312b1f8d0a6b15e9b2fac72e9c407f",
+    "extractor/native/recorder_host/src/domain_data_authority.rs": "1bcc03a41790b4c77640f3f5c4ebe08b29fb61f90aed90367b6527bd2ac68ad1",
+    "extractor/native/recorder_host/src/main.rs": "c6e596745a2310ce856395da719c1e3f763aaff9bcfb08fbbbad9c064bef70d5",
+    "extractor/native/recorder_host/src/world_fold.rs": "e55b627b041b28ff700c12bee5eed4118d5b978496443980eb4aa29f99bf9a33",
+    "replay_interface/documents/lane_reports/rendering_laws/XN07.md": "fa8553c881e88f5c7042e3152e0627d74db4b75947755f37c06632a6571be2c9",
+    "replay_interface/re_evidence/rendering_laws/XN07/verification_result.json": "1e76a38678f7f81f7ec3005d6384875264633a9eed79c371d18cf71e9a5ca931",
+    "replay_interface/re_evidence/rendering_laws/XN07/verify_xn07.py": "dd2c4be23388bda6d35c003d1e3c1c75cf1abe172cb584e9a2e2f5a2e2db88e8"
+  },
+  "global_extractor_completion": false,
+  "mechanical_test_matrix": {
+    "cargo_check_packages": [
+      "compact_contract",
+      "collector",
+      "recorder_host",
+      "hub_motorization_live_lane",
+      "focus_research_decisions_depth_live",
+      "construction_buildings_state_damage_live",
+      "session_multiplayer_metadata_live",
+      "air_loss_stats_live_lane"
+    ],
+    "frozen_test_counts": {
+      "air_loss_filter": "7/7",
+      "building_registry": "9/9",
+      "collector_compact_frd": "3/3",
+      "focus_research_decisions_depth_live": "30/30",
+      "recorder_frd": "8/8",
+      "session_multiplayer_metadata_live": "27/27",
+      "sunk_convoy": "2/2"
+    }
+  },
+  "schema": "hoi4.extractor.production_promotion.verification.v1",
+  "scope_zero_residuals": true,
+  "status": "PASS"
+}

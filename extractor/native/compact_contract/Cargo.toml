@@ -7,13 +7,8 @@ edition = "2021"
 path = "src/lib.rs"
 
 [features]
-# Exposes test-only surface of the shared control-transport codec to downstream
-# crates' test builds: the bounded `claim_session_capability` retry that keeps a
-# process-global session-id registry from spuriously reporting `Busy` under the
-# concurrent `try_lock` load of a parallel test run, and the read-only
-# `ControlChannel::io` accessor. Off by default: a production build keeps the
-# exact non-blocking `try_lock` fail-closed behavior and no extra API surface.
 test-support = []
 
 [dev-dependencies]
 serde_json = "1"
+sha2 = "0.10"

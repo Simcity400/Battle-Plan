@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 replay_interface/tools/ghidra/.smoke/
 replay_interface/tools/ghidra/ghidra_pool.local.json
+replay_interface/tools/ghidra/ghidra_pool.local.*.json
 
 # OS / editor cruft
 Thumbs.db
@@ -13,6 +14,18 @@ desktop.ini
 
 # Rust/Codex scratch output from repo-root commands
 /target/
+/target_*/
+/.cargo-target-*/
+/.xui*-target/
+/.audit_targets/
+/replay_interface/native/target*/
+/replay_interface/re_evidence/**/.verify-target/
+/portable_replay/native/**/target/
+/extractor/native/.xui*_target/
+/extractor/native/scientists_live_lane/target_certification/debug/
+/extractor/native/scientists_live_lane/target_certification/release/
+/extractor/native/scientists_live_lane/target_certification/CACHEDIR.TAG
+/extractor/native/scientists_live_lane/target_certification/.rustc_info.json
 
 # backup assets (L7)
 *.old
@@ -50,6 +63,7 @@ replay_interface/native/target*/
 replay_interface/native/**/target/
 replay_interface/native/**/proof_out/
 *.pdb
+*.obj
 
 # --- Scratch / RE scan working dir (incl. crack_archive/: archived one-shot RE
 #     scratch scripts; may contain local machine/Ghidra paths -> never commit) ---

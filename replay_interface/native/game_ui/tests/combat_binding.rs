@@ -138,6 +138,9 @@ fn combat_panel_flips_at_generator_ticks() {
             );
             assert_eq!(row.attacker_division_count(), Some(1));
             assert_eq!(row.defender_division_count(), Some(1));
+            assert_eq!(row.terrain.as_deref(), Some("plains"));
+            assert_eq!(row.progress, Some(t as f64 / 10.0));
+            assert_eq!(row.combat_width, Some(80.0));
         } else {
             assert!(!b.available, "no combat @tick{t}");
             assert!(b.combats.is_empty(), "no combat rows @tick{t}");
@@ -145,16 +148,17 @@ fn combat_panel_flips_at_generator_ticks() {
     }
 }
 
-/// BINDING GATE 2 — every A16 combat-display detail field is fail-closed `None`
-/// on an active combat (recording-Absent; not surfaced by `replay_core`).
+/// BINDING GATE 2 — typed producer fields render exactly while genuinely
+/// external selectors remain fail-closed.
 #[test]
-fn a16_display_fields_are_fail_closed() {
+fn typed_display_fields_bind_and_external_selectors_fail_closed() {
     let tl = fixture("fx_division_movement");
     let hours = tl.hours().to_vec();
     let b = combat_panel_from_frame(&tl.frame(hours[7]).unwrap());
     let row = &b.combats[0];
-    assert_eq!(row.progress, None, "A16 progress fail-closed");
+    assert_eq!(row.progress, Some(0.7), "producer progress");
+    assert_eq!(row.combat_width, Some(80.0), "producer combat width");
+    assert_eq!(row.terrain.as_deref(), Some("plains"), "producer terrain");
     assert_eq!(row.bombardment_active, None, "A16 bombardment fail-closed");
     assert_eq!(row.air_superiority_state, None, "A16 air-sup fail-closed");
-    assert_eq!(row.combat_width, None, "A16 combat_width fail-closed");
 }

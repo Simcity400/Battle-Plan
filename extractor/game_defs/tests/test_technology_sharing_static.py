@@ -171,7 +171,17 @@ def test_gate_materializes_integrated_and_active_product_dlc_but_not_asset_only(
     asset_rel = "common/technology_sharing/30_asset_only.txt"
     _write(vanilla, base_rel, _group("base_group"))
     _write(vanilla / "integrated_dlc/dlc_integrated", integrated_rel, _group("integrated_group"))
+    _write(
+        vanilla / "integrated_dlc/dlc_integrated",
+        "integrated.dlc",
+        'name="Integrated"\npath="dlc/dlc_integrated"\n',
+    )
     _write(vanilla / "dlc/dlc_product", product_rel, _group("product_group"))
+    _write(
+        vanilla / "dlc/dlc_product",
+        "product.dlc",
+        'name="Product"\npath="dlc/dlc_product"\n',
+    )
     _write(vanilla / "dlc/dlc_asset", asset_rel, _group("asset_only_group"))
     layers = [_layer("vanilla", vanilla, kind="vanilla")]
     inventory = LR.recompute_source_inventory(

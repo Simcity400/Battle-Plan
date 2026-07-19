@@ -524,35 +524,35 @@ fn debug_color(depth: usize) -> [u8; 4] {
 pub fn binding_fields() -> Vec<BindingField> {
     vec![
         BindingField { field: "country_tag/country_ideology or flag_texture", gui_element: "player_flag", default: "empty shield overlay", notes: "medium flag TGA is masked through GFX_shield_medium" },
-        BindingField { field: "political_power", gui_element: "pol_power", default: "0", notes: "" },
-        BindingField { field: "manpower", gui_element: "manpower", default: "0", notes: "" },
-        BindingField { field: "stability_percent", gui_element: "stability", default: "0%", notes: "" },
-        BindingField { field: "war_support_percent", gui_element: "war_support", default: "0%", notes: "" },
-        BindingField { field: "command_power", gui_element: "command_power_value", default: "0", notes: "" },
-        BindingField { field: "army_experience", gui_element: "experience_value", default: "0", notes: "" },
-        BindingField { field: "navy_experience", gui_element: "navy_experience_value", default: "0", notes: "" },
-        BindingField { field: "air_experience", gui_element: "air_experience_value", default: "0", notes: "" },
-        BindingField { field: "nukes", gui_element: "nukes_value", default: "0", notes: "" },
-        BindingField { field: "factory_text or factory_counts", gui_element: "industrial_capacity", default: "0", notes: "factory_text is used when the live topbar exposes a single factory count" },
-        BindingField { field: "industrial_ratio", gui_element: "industrial_ratio_bar", default: "0.0", notes: "progress value 0.0..1.0" },
-        BindingField { field: "convoys", gui_element: "convoys_count", default: "0", notes: "" },
-        BindingField { field: "convoys_ratio", gui_element: "convoys_ratio_bar", default: "0.0", notes: "progress value 0.0..1.0" },
-        BindingField { field: "fuel", gui_element: "fuel_value", default: "0d", notes: "" },
-        BindingField { field: "fuel_ratio", gui_element: "fuel_ratio_bar", default: "0.0", notes: "progress value 0.0..1.0" },
-        BindingField { field: "supply", gui_element: "supply_value", default: "0d", notes: "topbar layout has supply text; no separate strategic resource amount fields are present in topbar.gui" },
-        BindingField { field: "supply_ratio", gui_element: "supply_ratio_bar", default: "0.0", notes: "progress value 0.0..1.0" },
-        BindingField { field: "world_tension/world_tension_percent", gui_element: "threat_button/threat_icon_glow/threat_value", default: "0%", notes: "selects GFX_world_tension_icon_big_strip and GFX_WT_anim_strip frames from the 0.0..1.0 value" },
-        BindingField { field: "date_time", gui_element: "DateText", default: "", notes: "" },
-        BindingField { field: "speed", gui_element: "button_speedstep1..5", default: "0", notes: "uses the green frame from GFX_speed_step when present" },
-        BindingField { field: "army_xp_ratio/navy_xp_ratio/air_xp_ratio", gui_element: "army_button/navy_button/air_button", default: "0.0", notes: "overlays GFX_topbar_fuel_bar fill anchored to the parsed button rect; vanilla topbar.gui has no separate progressbar child here" },
-        BindingField { field: "initiative", gui_element: "initiative_text", default: "", notes: "country-menu alert area" },
-        BindingField { field: "decision_timeout_items", gui_element: "decisionview_amount_timeout_items", default: "", notes: "country-menu alert area" },
-        BindingField { field: "decision_available_items", gui_element: "decisionview_amount_to_take_items", default: "", notes: "country-menu alert area" },
-        BindingField { field: "intel_prepared_or_completed", gui_element: "intelview_ops_prepared_or_completed_items", default: "", notes: "country-menu alert area" },
-        BindingField { field: "intel_available", gui_element: "intelview_ops_available_items", default: "", notes: "country-menu alert area" },
-        BindingField { field: "prototype_rewards", gui_element: "prototype_rewards_aquired", default: "", notes: "spelling follows vanilla GUI element name" },
-        BindingField { field: "non_delivering_contracts", gui_element: "non_delivering_contract_amount", default: "", notes: "international market alert area" },
-        BindingField { field: "ongoing_contracts", gui_element: "ongoing_contract_amount", default: "", notes: "international market alert area" },
+        BindingField { field: "political_power", gui_element: "pol_power", default: "omitted", notes: "unavailable values never expose the authored 999 placeholder" },
+        BindingField { field: "manpower", gui_element: "manpower", default: "omitted", notes: "unavailable values never expose the authored 9999 placeholder" },
+        BindingField { field: "stability_percent", gui_element: "stability", default: "omitted", notes: "unavailable values never expose the authored 100% placeholder" },
+        BindingField { field: "war_support_percent", gui_element: "war_support", default: "omitted", notes: "unavailable values never expose the authored 100% placeholder" },
+        BindingField { field: "command_power", gui_element: "command_power_value", default: "omitted", notes: "unavailable values never expose the authored 999 placeholder" },
+        BindingField { field: "army_experience", gui_element: "experience_value", default: "omitted", notes: "unavailable values never expose the authored 999 placeholder" },
+        BindingField { field: "navy_experience", gui_element: "navy_experience_value", default: "omitted", notes: "unavailable values never expose the authored 999 placeholder" },
+        BindingField { field: "air_experience", gui_element: "air_experience_value", default: "omitted", notes: "unavailable values never expose the authored 999 placeholder" },
+        BindingField { field: "nukes", gui_element: "nukes_value", default: "omitted", notes: "" },
+        BindingField { field: "factory_text or factory_counts", gui_element: "industrial_capacity", default: "omitted", notes: "factory_text is used when the live topbar exposes a single factory count; unavailable values never expose the authored 12/12/12 placeholder" },
+        BindingField { field: "industrial_ratio", gui_element: "industrial_ratio_bar", default: "omitted", notes: "measured progress value 0.0..1.0; unavailable never selects an authored/default frame" },
+        BindingField { field: "convoys", gui_element: "convoys_count", default: "omitted", notes: "unavailable values never expose the authored 0 placeholder" },
+        BindingField { field: "convoys_ratio", gui_element: "convoys_ratio_bar", default: "omitted", notes: "measured progress value 0.0..1.0; unavailable never selects an authored/default frame" },
+        BindingField { field: "fuel", gui_element: "fuel_value", default: "omitted", notes: "unavailable values never expose the authored 999d placeholder" },
+        BindingField { field: "fuel_ratio", gui_element: "fuel_ratio_bar", default: "omitted", notes: "measured progress value 0.0..1.0; unavailable never selects an authored/default frame" },
+        BindingField { field: "supply", gui_element: "supply_value", default: "omitted", notes: "topbar layout has supply text; no separate strategic resource amount fields are present in topbar.gui; unavailable never exposes the authored 999d placeholder" },
+        BindingField { field: "supply_ratio", gui_element: "supply_ratio_bar", default: "omitted", notes: "measured progress value 0.0..1.0; unavailable never selects an authored/default frame" },
+        BindingField { field: "world_tension/world_tension_percent", gui_element: "threat_button/threat_icon_glow/threat_value", default: "omitted", notes: "measured value selects GFX_world_tension_icon_big_strip and GFX_WT_anim_strip frames; unavailable omits the icon, glow, value button and authored 50% placeholder" },
+        BindingField { field: "date_time", gui_element: "DateText", default: "omitted", notes: "unavailable values never expose the authored sample date" },
+        BindingField { field: "speed", gui_element: "button_speedstep1..5", default: "omitted", notes: "uses the green frame from GFX_speed_step when present; unavailable selects no speed frame" },
+        BindingField { field: "army_xp_ratio/navy_xp_ratio/air_xp_ratio", gui_element: "army_button/navy_button/air_button", default: "omitted", notes: "overlays GFX_topbar_fuel_bar fill anchored to the parsed button rect only when measured; vanilla topbar.gui has no separate progressbar child here" },
+        BindingField { field: "initiative", gui_element: "initiative_text", default: "omitted", notes: "country-menu alert area" },
+        BindingField { field: "decision_timeout_items", gui_element: "decisionview_amount_timeout_items", default: "omitted", notes: "country-menu alert area" },
+        BindingField { field: "decision_available_items", gui_element: "decisionview_amount_to_take_items", default: "omitted", notes: "country-menu alert area" },
+        BindingField { field: "intel_prepared_or_completed", gui_element: "intelview_ops_prepared_or_completed_items", default: "omitted", notes: "country-menu alert area" },
+        BindingField { field: "intel_available", gui_element: "intelview_ops_available_items", default: "omitted", notes: "country-menu alert area" },
+        BindingField { field: "prototype_rewards", gui_element: "prototype_rewards_aquired", default: "omitted", notes: "spelling follows vanilla GUI element name" },
+        BindingField { field: "non_delivering_contracts", gui_element: "non_delivering_contract_amount", default: "omitted", notes: "international market alert area" },
+        BindingField { field: "ongoing_contracts", gui_element: "ongoing_contract_amount", default: "omitted", notes: "international market alert area" },
     ]
 }
 
@@ -572,181 +572,199 @@ fn topbar_native_size(
 }
 
 fn apply_binding(options: &mut ComposeOptions, binding: &TopbarBinding, registry: &SpriteRegistry) {
-    let text = &mut options.text_overrides;
-    text.insert(
-        "pol_power".to_string(),
-        binding
-            .political_power
-            .clone()
-            .unwrap_or_else(|| "0".to_string()),
+    bind_optional_text(options, "pol_power", binding.political_power.clone());
+    bind_optional_text(options, "manpower", binding.manpower.clone());
+    bind_optional_text(options, "stability", binding.stability_percent.clone());
+    bind_optional_text(options, "war_support", binding.war_support_percent.clone());
+    bind_optional_text(
+        options,
+        "command_power_value",
+        binding.command_power.clone(),
     );
-    text.insert(
-        "manpower".to_string(),
-        binding.manpower.clone().unwrap_or_else(|| "0".to_string()),
+    bind_optional_text(options, "experience_value", binding.army_experience.clone());
+    bind_optional_text(
+        options,
+        "navy_experience_value",
+        binding.navy_experience.clone(),
     );
-    text.insert(
-        "stability".to_string(),
-        binding
-            .stability_percent
-            .clone()
-            .unwrap_or_else(|| "0%".to_string()),
+    bind_optional_text(
+        options,
+        "air_experience_value",
+        binding.air_experience.clone(),
     );
-    text.insert(
-        "war_support".to_string(),
-        binding
-            .war_support_percent
-            .clone()
-            .unwrap_or_else(|| "0%".to_string()),
-    );
-    text.insert(
-        "command_power_value".to_string(),
-        binding
-            .command_power
-            .clone()
-            .unwrap_or_else(|| "0".to_string()),
-    );
-    text.insert(
-        "experience_value".to_string(),
-        binding
-            .army_experience
-            .clone()
-            .unwrap_or_else(|| "0".to_string()),
-    );
-    text.insert(
-        "navy_experience_value".to_string(),
-        binding
-            .navy_experience
-            .clone()
-            .unwrap_or_else(|| "0".to_string()),
-    );
-    text.insert(
-        "air_experience_value".to_string(),
-        binding
-            .air_experience
-            .clone()
-            .unwrap_or_else(|| "0".to_string()),
-    );
-    text.insert(
-        "nukes_value".to_string(),
-        binding.nukes.clone().unwrap_or_else(|| "0".to_string()),
-    );
-    text.insert(
-        "industrial_capacity".to_string(),
-        binding.factory_text.clone().unwrap_or_else(|| {
+    bind_optional_text(options, "nukes_value", binding.nukes.clone());
+    bind_optional_text(
+        options,
+        "industrial_capacity",
+        binding.factory_text.clone().or_else(|| {
             binding
                 .factory_counts
                 .as_ref()
                 .map(FactoryCounts::to_topbar_text)
-                .unwrap_or_else(|| "0".to_string())
         }),
     );
-    text.insert(
-        "convoys_count".to_string(),
-        binding.convoys.clone().unwrap_or_else(|| "0".to_string()),
-    );
-    text.insert(
-        "fuel_value".to_string(),
-        binding.fuel.clone().unwrap_or_else(|| "0d".to_string()),
-    );
-    text.insert(
-        "supply_value".to_string(),
-        binding.supply.clone().unwrap_or_else(|| "0d".to_string()),
-    );
-    text.insert(
-        "threat_value".to_string(),
+    bind_optional_text(options, "convoys_count", binding.convoys.clone());
+    bind_optional_text(options, "fuel_value", binding.fuel.clone());
+    bind_optional_text(options, "supply_value", binding.supply.clone());
+    bind_optional_text(
+        options,
+        "threat_value",
         binding
             .world_tension_percent
             .clone()
-            .or_else(|| binding.world_tension.map(format_percent))
-            .unwrap_or_else(|| "0%".to_string()),
+            .or_else(|| binding.world_tension.map(format_percent)),
     );
-    text.insert(
-        "DateText".to_string(),
-        binding.date_time.clone().unwrap_or_default(),
+    bind_optional_text(options, "DateText", binding.date_time.clone());
+    bind_optional_text(options, "initiative_text", binding.initiative.clone());
+    bind_optional_text(
+        options,
+        "decisionview_amount_timeout_items",
+        binding.decision_timeout_items.clone(),
     );
-    text.insert(
-        "initiative_text".to_string(),
-        binding.initiative.clone().unwrap_or_default(),
+    bind_optional_text(
+        options,
+        "decisionview_amount_to_take_items",
+        binding.decision_available_items.clone(),
     );
-    text.insert(
-        "decisionview_amount_timeout_items".to_string(),
-        binding.decision_timeout_items.clone().unwrap_or_default(),
+    bind_optional_text(
+        options,
+        "intelview_ops_prepared_or_completed_items",
+        binding.intel_prepared_or_completed.clone(),
     );
-    text.insert(
-        "decisionview_amount_to_take_items".to_string(),
-        binding.decision_available_items.clone().unwrap_or_default(),
+    bind_optional_text(
+        options,
+        "intelview_ops_available_items",
+        binding.intel_available.clone(),
     );
-    text.insert(
-        "intelview_ops_prepared_or_completed_items".to_string(),
-        binding
-            .intel_prepared_or_completed
-            .clone()
-            .unwrap_or_default(),
+    bind_optional_text(
+        options,
+        "prototype_rewards_aquired",
+        binding.prototype_rewards.clone(),
     );
-    text.insert(
-        "intelview_ops_available_items".to_string(),
-        binding.intel_available.clone().unwrap_or_default(),
+    bind_optional_text(
+        options,
+        "non_delivering_contract_amount",
+        binding.non_delivering_contracts.clone(),
     );
-    text.insert(
-        "prototype_rewards_aquired".to_string(),
-        binding.prototype_rewards.clone().unwrap_or_default(),
-    );
-    text.insert(
-        "non_delivering_contract_amount".to_string(),
-        binding.non_delivering_contracts.clone().unwrap_or_default(),
-    );
-    text.insert(
-        "ongoing_contract_amount".to_string(),
-        binding.ongoing_contracts.clone().unwrap_or_default(),
+    bind_optional_text(
+        options,
+        "ongoing_contract_amount",
+        binding.ongoing_contracts.clone(),
     );
 
-    options.progress_overrides.insert(
-        "industrial_ratio_bar".to_string(),
-        binding.industrial_ratio.unwrap_or(0.0),
-    );
-    options.progress_overrides.insert(
-        "convoys_ratio_bar".to_string(),
-        binding.convoys_ratio.unwrap_or(0.0),
-    );
-    options.progress_overrides.insert(
-        "fuel_ratio_bar".to_string(),
-        binding.fuel_ratio.unwrap_or(0.0),
-    );
-    options.progress_overrides.insert(
-        "supply_ratio_bar".to_string(),
-        binding.supply_ratio.unwrap_or(0.0),
-    );
-
-    let speed = binding.speed.unwrap_or(0).min(5);
-    let speed_green_frame = registry
-        .get("GFX_speed_step")
-        .map(|sprite| if sprite.no_of_frames > 1 { 1 } else { 0 })
-        .unwrap_or(1);
-    for step in 1..=5 {
-        options.frame_overrides.insert(
-            format!("button_speedstep{step}"),
-            if step <= speed { speed_green_frame } else { 0 },
-        );
+    // Unavailable alert sub-counts omit their authored badge chrome too.
+    for (available, name) in [
+        (
+            binding.decision_timeout_items.is_some(),
+            "decisionview_amount_timeout_bg",
+        ),
+        (
+            binding.decision_available_items.is_some(),
+            "decisionview_amount_to_take_bg",
+        ),
+        (
+            binding.intel_prepared_or_completed.is_some(),
+            "intelview_ops_prepared_or_completed_bg",
+        ),
+        (
+            binding.intel_available.is_some(),
+            "intelview_ops_available_bg",
+        ),
+        (
+            binding.prototype_rewards.is_some(),
+            "prototype_rewards_aquired_bg",
+        ),
+        (
+            binding.non_delivering_contracts.is_some(),
+            "non_delivering_contracts",
+        ),
+        (binding.ongoing_contracts.is_some(), "delivering_contracts"),
+    ] {
+        if !available {
+            options.hidden_elements.insert(name.to_string());
+        }
     }
 
-    let tension = binding.world_tension.unwrap_or_else(|| {
+    bind_optional_progress(options, "industrial_ratio_bar", binding.industrial_ratio);
+    bind_optional_progress(options, "convoys_ratio_bar", binding.convoys_ratio);
+    bind_optional_progress(options, "fuel_ratio_bar", binding.fuel_ratio);
+    bind_optional_progress(options, "supply_ratio_bar", binding.supply_ratio);
+
+    if let Some(speed) = binding.speed {
+        let speed = speed.min(5);
+        let speed_green_frame = registry
+            .get("GFX_speed_step")
+            .map(|sprite| if sprite.no_of_frames > 1 { 1 } else { 0 })
+            .unwrap_or(1);
+        for step in 1..=5 {
+            options.frame_overrides.insert(
+                format!("button_speedstep{step}"),
+                if step <= speed { speed_green_frame } else { 0 },
+            );
+        }
+    } else {
+        for step in 1..=5 {
+            options
+                .hidden_elements
+                .insert(format!("button_speedstep{step}"));
+        }
+    }
+
+    let tension = binding.world_tension.or_else(|| {
         binding
             .world_tension_percent
             .as_deref()
             .and_then(parse_percent)
-            .unwrap_or(0.0)
     });
-    if let Some(sprite) = registry.get("GFX_world_tension_icon_big_strip") {
-        options.frame_overrides.insert(
-            "threat_button".to_string(),
-            frame_from_fraction(tension, sprite.no_of_frames as usize),
-        );
+    if let Some(tension) = tension {
+        if let Some(sprite) = registry.get("GFX_world_tension_icon_big_strip") {
+            options.frame_overrides.insert(
+                "threat_button".to_string(),
+                frame_from_fraction(tension, sprite.no_of_frames as usize),
+            );
+        }
+        if let Some(sprite) = registry.get("GFX_WT_anim_strip") {
+            options.frame_overrides.insert(
+                "threat_icon_glow".to_string(),
+                frame_from_fraction(tension, sprite.no_of_frames as usize),
+            );
+        }
+    } else {
+        for name in [
+            "threat_button",
+            "threat_icon_glow",
+            "threat_value_button",
+            "threat_value",
+        ] {
+            options.hidden_elements.insert(name.to_string());
+        }
     }
-    if let Some(sprite) = registry.get("GFX_WT_anim_strip") {
-        options.frame_overrides.insert(
-            "threat_icon_glow".to_string(),
-            frame_from_fraction(tension, sprite.no_of_frames as usize),
-        );
+}
+
+/// Bind a measured string verbatim. `None` is not an empty string or an
+/// authored `.gui` placeholder: it removes the dynamic element from this
+/// composition so unavailable data cannot be mistaken for a measured value.
+fn bind_optional_text(options: &mut ComposeOptions, name: &str, value: Option<String>) {
+    match value {
+        Some(value) => {
+            options.text_overrides.insert(name.to_string(), value);
+        }
+        None => {
+            options.hidden_elements.insert(name.to_string());
+        }
+    }
+}
+
+/// Bind a measured progress fraction. An unavailable progress value omits the
+/// bar; it never selects frame/fill zero and never exposes the authored frame.
+fn bind_optional_progress(options: &mut ComposeOptions, name: &str, value: Option<f32>) {
+    match value {
+        Some(value) => {
+            options.progress_overrides.insert(name.to_string(), value);
+        }
+        None => {
+            options.hidden_elements.insert(name.to_string());
+        }
     }
 }
 
@@ -891,7 +909,10 @@ fn resolve_flag(resolver: &AssetResolver, binding: &TopbarBinding) -> Result<Opt
     Ok(None)
 }
 
-fn apply_mask(image: &mut RgbaImage, mask: &RgbaImage) {
+/// Apply the proven shield/masked-sprite coverage law. Kept crate-visible so
+/// the authenticated selected-Present interpreter cannot drift from the
+/// feature compositor that established the law.
+pub(crate) fn apply_mask(image: &mut RgbaImage, mask: &RgbaImage) {
     if image.width == 0 || image.height == 0 || mask.width == 0 || mask.height == 0 {
         return;
     }
@@ -1093,6 +1114,125 @@ mod tests {
         assert_eq!(format_scaled_short(66_100), "66.10K");
         assert_eq!(format_scaled_short(2_500_000), "2.50M");
         assert_eq!(format_percent(0.735), "74%");
+    }
+
+    #[test]
+    fn unavailable_binding_omits_every_dynamic_default() {
+        let mut options = ComposeOptions::new(1920, 1080);
+        apply_binding(
+            &mut options,
+            &TopbarBinding::default(),
+            &SpriteRegistry::default(),
+        );
+
+        let omitted = [
+            "pol_power",
+            "manpower",
+            "stability",
+            "war_support",
+            "command_power_value",
+            "experience_value",
+            "navy_experience_value",
+            "air_experience_value",
+            "nukes_value",
+            "industrial_capacity",
+            "convoys_count",
+            "fuel_value",
+            "supply_value",
+            "threat_button",
+            "threat_icon_glow",
+            "threat_value_button",
+            "threat_value",
+            "DateText",
+            "initiative_text",
+            "decisionview_amount_timeout_bg",
+            "decisionview_amount_timeout_items",
+            "decisionview_amount_to_take_bg",
+            "decisionview_amount_to_take_items",
+            "intelview_ops_prepared_or_completed_bg",
+            "intelview_ops_prepared_or_completed_items",
+            "intelview_ops_available_bg",
+            "intelview_ops_available_items",
+            "prototype_rewards_aquired_bg",
+            "prototype_rewards_aquired",
+            "non_delivering_contracts",
+            "non_delivering_contract_amount",
+            "delivering_contracts",
+            "ongoing_contract_amount",
+            "industrial_ratio_bar",
+            "convoys_ratio_bar",
+            "fuel_ratio_bar",
+            "supply_ratio_bar",
+            "button_speedstep1",
+            "button_speedstep2",
+            "button_speedstep3",
+            "button_speedstep4",
+            "button_speedstep5",
+        ];
+        for name in omitted {
+            assert!(
+                options.hidden_elements.contains(name),
+                "unavailable `{name}` was not omitted"
+            );
+            assert!(
+                !options.text_overrides.contains_key(name),
+                "unavailable `{name}` received text"
+            );
+            assert!(
+                !options.progress_overrides.contains_key(name),
+                "unavailable `{name}` received progress"
+            );
+            assert!(
+                !options.frame_overrides.contains_key(name),
+                "unavailable `{name}` received a frame"
+            );
+        }
+    }
+
+    #[test]
+    fn measured_zero_remains_distinct_from_unavailable() {
+        let binding = TopbarBinding {
+            political_power: Some("0".to_string()),
+            stability_percent: Some("0%".to_string()),
+            industrial_ratio: Some(0.0),
+            world_tension_percent: Some("0%".to_string()),
+            world_tension: Some(0.0),
+            speed: Some(0),
+            ..TopbarBinding::default()
+        };
+        let mut options = ComposeOptions::new(1920, 1080);
+        apply_binding(&mut options, &binding, &SpriteRegistry::default());
+
+        assert_eq!(
+            options.text_overrides.get("pol_power").map(String::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            options.text_overrides.get("stability").map(String::as_str),
+            Some("0%")
+        );
+        assert_eq!(
+            options.progress_overrides.get("industrial_ratio_bar"),
+            Some(&0.0)
+        );
+        assert_eq!(
+            options
+                .text_overrides
+                .get("threat_value")
+                .map(String::as_str),
+            Some("0%")
+        );
+        assert!(!options.hidden_elements.contains("pol_power"));
+        assert!(!options.hidden_elements.contains("industrial_ratio_bar"));
+        assert!(!options.hidden_elements.contains("threat_button"));
+        for step in 1..=5 {
+            assert_eq!(
+                options
+                    .frame_overrides
+                    .get(&format!("button_speedstep{step}")),
+                Some(&0)
+            );
+        }
     }
 
     fn hoi4_root() -> Option<PathBuf> {

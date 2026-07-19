@@ -25,6 +25,7 @@ for _p in (str(_GAME_ASSETS), str(_DEFS)):
 
 from paradox_parser import parse, Node  # noqa: E402
 import clausewitz_ops as C              # noqa: E402
+import parse_catalogs as catalogs       # noqa: E402
 
 
 # --------------------------------------------------------------------------
@@ -113,6 +114,27 @@ def test_duplicate_keys_all_kept():
     blk = root.get("x")
     cores = blk.get_all("add_core_of")
     assert cores == ["GER", "ITA", "JAP"], cores
+
+
+def test_power_balance_effect_json_preserves_duplicate_sibling_commands():
+    """The BOP catalog must not normalize repeated effect keys away."""
+    block = parse("""
+        range = {
+            id = duplicate_gfx_range
+            min = -1
+            max = 0
+            on_activate = {
+                set_power_balance_gfx = { side = left gfx = GFX_left }
+                set_power_balance_gfx = { side = right gfx = GFX_right }
+                add_power_balance_modifier = one_modifier
+            }
+        }
+    """).get("range")
+    row = catalogs._bop_range(block, "common/bop/test.txt")
+    gfx = row["on_activate"]["set_power_balance_gfx"]
+    assert isinstance(gfx, list)
+    assert [entry["side"] for entry in gfx] == ["left", "right"]
+    assert row["on_activate"]["add_power_balance_modifier"] == "one_modifier"
 
 
 def test_quoted_string_special_chars_preserved():

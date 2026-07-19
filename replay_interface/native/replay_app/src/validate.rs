@@ -98,11 +98,7 @@ impl OpenOutcome {
 /// here will open for playback, and a negative that is rejected here is
 /// rejected for playback.
 pub fn open_and_validate(path: &Path) -> OpenOutcome {
-    let source = match open_recording(path) {
-        Ok(source) => source,
-        Err(err) => return classify_source_error(err),
-    };
-    match WorldTimeline::open(source) {
+    match open_timeline(path) {
         Ok(timeline) => OpenOutcome::Opened(OpenReport {
             game_id: timeline.game_id().to_string(),
             hour_count: timeline.hours().len(),
@@ -110,11 +106,18 @@ pub fn open_and_validate(path: &Path) -> OpenOutcome {
             last_hour: timeline.last_hour(),
             warnings: timeline.warnings().to_vec(),
         }),
-        Err(err) => OpenOutcome::Rejected {
-            kind: RejectionKind::Timeline,
-            message: format!("recording opened but its timeline is unusable: {err}"),
-        },
+        Err(outcome) => outcome,
     }
+}
+
+/// Open through the same shared container/timeline path while retaining the
+/// timeline for the selected-installation compatibility gate.
+pub fn open_timeline(path: &Path) -> Result<WorldTimeline, OpenOutcome> {
+    let source = open_recording(path).map_err(classify_source_error)?;
+    WorldTimeline::open(source).map_err(|err| OpenOutcome::Rejected {
+        kind: RejectionKind::Timeline,
+        message: format!("recording opened but its timeline is unusable: {err}"),
+    })
 }
 
 fn classify_source_error(err: SourceError) -> OpenOutcome {
@@ -216,7 +219,9 @@ mod tests {
     }
 
     fn outcome_summary_contains(_name: &str, root: &Path, rel: &str, needle: &str) -> bool {
-        open_and_validate(&root.join(rel)).summary().contains(needle)
+        open_and_validate(&root.join(rel))
+            .summary()
+            .contains(needle)
     }
 
     #[test]
@@ -226,5 +231,26 @@ mod tests {
             OpenOutcome::Rejected { kind, .. } => assert_eq!(kind, RejectionKind::NotFound),
             OpenOutcome::Opened(_) => panic!("missing path must be rejected"),
         }
+    }
+
+    #[test]
+    fn relocated_replay_opens_without_source_machine_or_config_paths() {
+        let source = fixture_root().join("positive/fx_owner_controller_flip.battleplan");
+        let root = std::env::temp_dir().join(format!(
+            "replay-app-relocated-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let moved = root
+            .join("shared-by-another-user")
+            .join("renamed-recording.battleplan");
+        std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        std::fs::copy(&source, &moved).unwrap();
+        let outcome = open_and_validate(&moved);
+        assert!(outcome.is_opened(), "{}", outcome.summary());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -7,6 +7,8 @@ Deep-layer extension capturing two unit-movement layers no existing module owns:
   (A) DEPLOYMENT CONVEYOR / REINFORCEMENT QUEUE — per country, the divisions
       being raised in the deployment queue (the "conveyor"). Stored at
       ``countries.<TAG>.deployment.military_deployment_conveyor[]``. Per conveyor:
+        - ``id``                  : exact conveyor identity (id,type).
+        - ``ordinal``             : zero-based source-vector order.
         - ``name``                : division name being deployed (e.g. "Infantry
                                     1936 V").
         - ``template_id``         : division_template_id (id,type) being raised.
@@ -14,9 +16,13 @@ Deep-layer extension capturing two unit-movement layers no existing module owns:
         - ``location``            : province id where they deploy.
         - ``priority``            : the conveyor's deployment priority.
         - ``role``                : deployment role (e.g. ``garrison``).
-        - ``closed``              : whether the conveyor is paused.
+        - ``closed``              : exact serialized conveyor closed/collapsed bit.
+                                    This is distinct from the runtime deployability/
+                                    stalled checks; it must not be relabelled as a
+                                    pause or cancellation state.
         - ``lines``               : the per-unit ``military_deployment_line[]``,
                                     each = one unit in progress:
+            * ``ordinal``         : zero-based source-vector order.
             * ``id``              : the deployment-line id (id,type).
             * ``name_order``      : division_name.name_order (name slot).
             * ``amount``          : units on this line.
@@ -27,6 +33,8 @@ Deep-layer extension capturing two unit-movement layers no existing module owns:
             * ``equipment``       : EQUIPMENT-IN-TRANSIT — [{equip_id,equip_type,
                                     archetype,amount}] already allocated to this
                                     deploying unit (joined to the equipments index).
+      Every parsed country is emitted with ``queue_complete=true`` and an explicit
+      conveyor list, so ``[]`` is proven empty rather than unreadable.
       The per-country country-level ``deployment`` block ALSO carries deployment
       *settings* (``default_hq_template``, ``initial_carrier_air_wing_deployment``,
       ``unit_modifiers``, ``unlocked_subunits``) — those are doctrine/template
@@ -60,8 +68,8 @@ mid-deployment and who was holding whose troops.
 stdlib only. Reuses the parse_save tokenizer via deep_common. NEW file: does not
 edit oob.json / divisions.json / parse_oob.py / parse_divisions_full.py.
 
-Verified against re_scratch/campaign_melt_1940.txt (paused 1940, 143-country
-world) and refuted with an adversarial Codex pass.
+Verified against the frozen multi-save a729 deployment corpus. Serialized
+``closed`` is preserved without assigning pause/cancel semantics.
 """
 
 from __future__ import annotations
@@ -213,17 +221,19 @@ def _parse_conveyor(tz):
     """military_deployment_conveyor={ id division_template_id name amount location
        priority role closed military_deployment_line[] }."""
     rec = {
-        "name": None, "template_id": None, "amount": None, "location": None,
+        "id": None, "name": None, "template_id": None,
+        "amount": None, "location": None,
         "priority": None, "role": None, "closed": None, "lines": [],
     }
     for key, opener in iter_block_entries(tz):
         if opener is LBRACE:
-            if key == "division_template_id":
+            if key == "id":
+                rec["id"] = read_id_block(tz)
+            elif key == "division_template_id":
                 rec["template_id"] = read_id_block(tz)
             elif key == "military_deployment_line":
                 rec["lines"].append(_parse_deployment_line(tz))
             else:
-                # id={..} and any other block we don't surface
                 _skip_block_body(tz)
             continue
         v = atom_value(opener)
@@ -334,8 +344,10 @@ def _parse_countries(tz, conv_by_tag, rein_by_tag, exped):
                     _parse_units_for_expeditionary(tz, tag, exped)
                 else:
                     _skip_block_body(tz)
-        if crec["conveyors"]:
-            conv_by_tag[tag] = crec["conveyors"]
+        # A successfully parsed country is an exact save-side completeness
+        # witness even when its deployment vector is absent/empty.  Preserve
+        # that distinction instead of dropping proven-empty countries.
+        conv_by_tag[tag] = crec["conveyors"]
 
 
 # ---------------------------------------------------------------------------
@@ -344,11 +356,12 @@ def _parse_countries(tz, conv_by_tag, rein_by_tag, exped):
 
 def _join_equipment(raw, arch_index, unknown):
     out = []
-    for eid, etype, amount in raw:
+    for ordinal, (eid, etype, amount) in enumerate(raw):
         name = arch_index.get((eid, etype))
         if name is None:
             unknown.add((eid, etype))
-        out.append({"equip_id": eid, "equip_type": etype,
+        out.append({"ordinal": ordinal,
+                    "equip_id": eid, "equip_type": etype,
                     "archetype": name, "amount": amount})
     return out
 
@@ -366,7 +379,11 @@ def build(text, source, was_melted):
             "countries": lambda tz: _parse_countries(
                 tz, conv_by_tag, rein_by_tag, exped),
         },
-        scalar_keys=("date", "version", "player"),
+        scalar_keys=(
+            "date", "version", "player",
+            "military_deployment_conveyor_index",
+            "military_deployment_line_index",
+        ),
     )
 
     unknown: set = set()
@@ -378,12 +395,13 @@ def build(text, source, was_melted):
     n_equip = 0
     for tag in sorted(set(conv_by_tag) | set(rein_by_tag)):
         conveyors = []
-        for c in conv_by_tag.get(tag, []):
+        for conveyor_ordinal, c in enumerate(conv_by_tag.get(tag, [])):
             lines = []
-            for ln in c["lines"]:
+            for line_ordinal, ln in enumerate(c["lines"]):
                 eq = _join_equipment(ln["equipment_raw"], arch_index, unknown)
                 n_equip += len(eq)
                 lines.append({
+                    "ordinal": line_ordinal,
                     "id": ln["id"], "name_order": ln["name_order"],
                     "amount": ln["amount"], "training": ln["training"],
                     "max_training": ln["max_training"],
@@ -394,13 +412,16 @@ def build(text, source, was_melted):
                 })
             n_lines += len(lines)
             conveyors.append({
-                "name": c["name"], "template_id": c["template_id"],
+                "ordinal": conveyor_ordinal,
+                "id": c["id"], "name": c["name"],
+                "template_id": c["template_id"],
                 "amount": c["amount"], "location": c["location"],
                 "priority": c["priority"], "role": c["role"],
                 "closed": c["closed"], "lines": lines,
             })
         n_conveyors += len(conveyors)
         countries[tag] = {
+            "queue_complete": True,
             "reinforcement_priority": rein_by_tag.get(tag),
             "conveyors": conveyors,
             "conveyor_count": len(conveyors),
@@ -421,12 +442,19 @@ def build(text, source, was_melted):
             "save_date": meta.get("date"),
             "save_version": meta.get("version"),
             "player": meta.get("player"),
+            "military_deployment_conveyor_index": meta.get(
+                "military_deployment_conveyor_index"),
+            "military_deployment_line_index": meta.get(
+                "military_deployment_line_index"),
             "notes": {
                 "deployment_conveyor": "countries.<TAG>.deployment."
                 "military_deployment_conveyor[] = the deployment queue (divisions "
-                "being raised). Each conveyor has name/template/amount/location/"
+                "being raised). Each conveyor has its exact id, source ordinal, "
+                "name/template/amount/location/"
                 "priority/role/closed + per-unit lines carrying training %, "
-                "manpower progress, and equipment-in-transit. The sibling "
+                "manpower progress, and ordered equipment-in-transit. Every parsed "
+                "country is emitted with queue_complete=true, including an exact "
+                "empty conveyor vector. The sibling "
                 "deployment SETTINGS blocks (default_hq_template / "
                 "initial_carrier_air_wing_deployment / unit_modifiers / "
                 "unlocked_subunits) are deployment defaults, intentionally skipped.",
@@ -446,7 +474,9 @@ def build(text, source, was_melted):
                 "Unresolved ids keep archetype=null; counted in unknown_equipment_ids.",
             },
             "stats": {
-                "countries_with_conveyor": len(conv_by_tag),
+                "countries_queue_complete": len(conv_by_tag),
+                "countries_with_conveyor": sum(
+                    1 for conveyors in conv_by_tag.values() if conveyors),
                 "countries_with_reinforcement_priority": len(rein_by_tag),
                 "total_conveyors": n_conveyors,
                 "total_deploying_unit_lines": n_lines,
@@ -465,8 +495,12 @@ def build(text, source, was_melted):
     lines_out = ["=== DEPLOYMENT CONVEYOR + LEGACY EXPEDITIONARY VALIDATION ==="]
     lines_out.append(f"source                 : {source.name} (melted={was_melted})")
     lines_out.append(f"save date              : {meta.get('date')}")
-    lines_out.append(f"countries w/ conveyor  : {len(conv_by_tag)}  "
-                     f"(conveyors={n_conveyors}  deploying-unit lines={n_lines}  "
+    n_countries_with_conveyor = sum(
+        1 for conveyors in conv_by_tag.values() if conveyors)
+    lines_out.append(f"countries queue-complete: {len(conv_by_tag)}  "
+                     f"(with conveyor={n_countries_with_conveyor})")
+    lines_out.append(f"deployment conveyors  : {n_conveyors}  "
+                     f"(deploying-unit lines={n_lines}  "
                      f"equip-in-transit entries={n_equip})")
     lines_out.append(f"reinforcement-priority : {len(rein_by_tag)} countries")
     lines_out.append(f"expeditionary pairs    : {len(expeditionary)}  "

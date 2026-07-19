@@ -29,7 +29,7 @@ from typing import Any, Iterable
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[1]
 BUNDLE_SCHEMA = "extractor.static_bundle.v2"
-SOURCE_INVENTORY_SCHEMA = "extractor.live_binding_source_inventory.v2"
+SOURCE_INVENTORY_SCHEMA = "extractor.live_binding_source_inventory.v3"
 SOURCE_JOIN_SCHEMA = "extractor.static_catalog_source_join.v1"
 JOIN_SCHEMA = "extractor.static_token_join.v1"
 FINAL_JOIN_SCHEMA = "extractor.static_token_join_finalized.v1"
@@ -432,7 +432,8 @@ def load_source_inventory(path: Path) -> dict[str, Any]:
     for ordinal, namespace in enumerate(namespaces):
         if not isinstance(namespace, dict) or set(namespace) != {
             "ordinal", "kind", "binding", "id", "label", "replace_paths", "file_count",
-            "content_sha256", "binding_content_sha256"
+            "content_sha256", "binding_content_sha256", "storage_kind",
+            "source_container_sha256", "source_container_bytes"
         }:
             raise BundleError(f"live source namespace {ordinal} is malformed")
         if namespace.get("ordinal") != ordinal or namespace.get("kind") not in {
@@ -453,6 +454,25 @@ def load_source_inventory(path: Path) -> dict[str, Any]:
         file_count = namespace.get("file_count")
         if not isinstance(file_count, int) or isinstance(file_count, bool) or file_count < 0:
             raise BundleError(f"source namespace {ordinal}.file_count is invalid")
+        storage_kind = namespace.get("storage_kind")
+        source_container_sha256 = namespace.get("source_container_sha256")
+        source_container_bytes = namespace.get("source_container_bytes")
+        if storage_kind == "directory":
+            if source_container_sha256 is not None or source_container_bytes is not None:
+                raise BundleError(f"source namespace {ordinal} directory carries container identity")
+        elif storage_kind == "zip_archive":
+            source_container_sha256 = _required_sha(
+                source_container_sha256,
+                f"source namespace {ordinal}.source_container_sha256",
+            )
+            if (
+                not isinstance(source_container_bytes, int)
+                or isinstance(source_container_bytes, bool)
+                or source_container_bytes <= 0
+            ):
+                raise BundleError(f"source namespace {ordinal}.source_container_bytes is invalid")
+        else:
+            raise BundleError(f"source namespace {ordinal}.storage_kind is invalid")
         normalized_namespaces.append({
             "ordinal": ordinal,
             "kind": namespace["kind"],
@@ -460,6 +480,9 @@ def load_source_inventory(path: Path) -> dict[str, Any]:
             "id": _required_string(namespace.get("id"), f"source namespace {ordinal}.id"),
             "label": label,
             "replace_paths": replace_paths,
+            "storage_kind": storage_kind,
+            "source_container_sha256": source_container_sha256,
+            "source_container_bytes": source_container_bytes,
             "file_count": file_count,
             "content_sha256": _required_sha(namespace.get("content_sha256"), f"source namespace {ordinal}.content_sha256"),
             "binding_content_sha256": _required_sha(
@@ -471,7 +494,9 @@ def load_source_inventory(path: Path) -> dict[str, Any]:
     seen_rows: set[tuple[int, str]] = set()
     for index, row in enumerate(rows):
         if not isinstance(row, dict) or set(row) != {
-            "namespace_ordinal", "layer_kind", "layer_id", "relpath", "bytes", "sha256"
+            "namespace_ordinal", "layer_kind", "layer_id", "relpath", "bytes", "sha256",
+            "storage_kind", "source_container_sha256", "source_byte_offset",
+            "source_byte_count", "source_range_sha256"
         }:
             raise BundleError(f"live source inventory row {index} is malformed")
         ordinal = row.get("namespace_ordinal")
@@ -497,13 +522,50 @@ def load_source_inventory(path: Path) -> dict[str, Any]:
         byte_count = row.get("bytes")
         if not isinstance(byte_count, int) or isinstance(byte_count, bool) or byte_count < 0:
             raise BundleError(f"live source row {index}.bytes is invalid")
+        payload_sha256 = _required_sha(row.get("sha256"), f"live source row {index}.sha256")
+        source_byte_offset = row.get("source_byte_offset")
+        source_byte_count = row.get("source_byte_count")
+        if (
+            not isinstance(source_byte_offset, int)
+            or isinstance(source_byte_offset, bool)
+            or source_byte_offset < 0
+            or not isinstance(source_byte_count, int)
+            or isinstance(source_byte_count, bool)
+            or source_byte_count < 0
+        ):
+            raise BundleError(f"live source row {index} physical range is invalid")
+        source_range_sha256 = _required_sha(
+            row.get("source_range_sha256"),
+            f"live source row {index}.source_range_sha256",
+        )
+        if row.get("storage_kind") != namespace["storage_kind"]:
+            raise BundleError(f"live source row {index} storage kind mismatch")
+        if namespace["storage_kind"] == "directory":
+            if (
+                row.get("source_container_sha256") is not None
+                or source_byte_offset != 0
+                or source_byte_count != byte_count
+                or source_range_sha256 != payload_sha256
+            ):
+                raise BundleError(f"live source row {index} loose-file range is invalid")
+        else:
+            if (
+                row.get("source_container_sha256") != namespace["source_container_sha256"]
+                or source_byte_offset + source_byte_count > namespace["source_container_bytes"]
+            ):
+                raise BundleError(f"live source row {index} archive range is invalid")
         normalized_rows.append({
             "namespace_ordinal": ordinal,
             "layer_kind": namespace["kind"],
             "layer_id": namespace["id"],
             "relpath": relpath,
             "bytes": byte_count,
-            "sha256": _required_sha(row.get("sha256"), f"live source row {index}.sha256"),
+            "sha256": payload_sha256,
+            "storage_kind": namespace["storage_kind"],
+            "source_container_sha256": namespace["source_container_sha256"],
+            "source_byte_offset": source_byte_offset,
+            "source_byte_count": source_byte_count,
+            "source_range_sha256": source_range_sha256,
         })
     for namespace in normalized_namespaces:
         ns_rows = [row for row in normalized_rows if row["namespace_ordinal"] == namespace["ordinal"]]
@@ -656,10 +718,16 @@ def validate_source_inventory_bindings(
     namespaces = inventory["namespaces"]
     if namespaces[0]["kind"] != "vanilla" or namespaces[0]["binding"] != "base":
         raise BundleError("live source inventory must begin with the base vanilla namespace")
-    phase = {"vanilla": 0, "integrated_dlc": 1, "dlc": 2, "mod": 3}
-    phases = [phase[row["kind"]] for row in namespaces]
-    if phases != sorted(phases):
-        raise BundleError("live source inventory namespace precedence is invalid")
+    integrated_ordinals = [
+        row["ordinal"] for row in namespaces if row["kind"] == "integrated_dlc"
+    ]
+    if integrated_ordinals != list(range(1, 1 + len(integrated_ordinals))):
+        raise BundleError("live source inventory integrated DLC precedence is invalid")
+    if any(
+        row["kind"] == "integrated_dlc" and row["binding"] != "integrated"
+        for row in namespaces
+    ):
+        raise BundleError("live source inventory integrated DLC binding is invalid")
     load_items = state_bindings["load_order"]["items"]
     wanted_mod_ids = [row["id"] for row in load_items if row["kind"] == "mod"]
     wanted_dlc_ids = [row["id"] for row in load_items if row["kind"] == "dlc"]
@@ -671,6 +739,20 @@ def validate_source_inventory_bindings(
     }
     mod_namespaces = [row for row in namespaces if row["binding"] == "active_mod"]
     product_namespaces = [row for row in namespaces if row["binding"] == "active_product"]
+    planned_namespaces = [
+        (row["kind"], row["id"])
+        for row in namespaces
+        if row["binding"] in {"active_product", "active_mod"}
+    ]
+    planned_load_items = [
+        (row["kind"], row["id"])
+        for row in load_items
+        if row["kind"] in {"dlc", "mod"}
+    ]
+    if planned_namespaces != planned_load_items:
+        raise BundleError(
+            "live source inventory combined DLC/mod order does not match load order"
+        )
     if [row["id"] for row in mod_namespaces] != wanted_mod_ids:
         raise BundleError("live source inventory active mod order does not match load order")
     if [row["id"] for row in product_namespaces] != wanted_dlc_ids:

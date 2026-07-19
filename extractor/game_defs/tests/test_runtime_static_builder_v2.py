@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -13,11 +14,46 @@ sys.path.insert(0, str(HERE))
 import build_runtime_static_bundle as B  # noqa: E402
 import build_all as BUILD_ALL  # noqa: E402
 import live_binding_resolver as LR  # noqa: E402
+import source_inventory_layers as SIL  # noqa: E402
 import static_bundle as SB  # noqa: E402
 
 
 def test_all_static_entrypoints_treat_empty_explicit_modset_as_vanilla_only():
     assert BUILD_ALL.mods_from_arg("") == []
+
+
+def test_definition_layers_ignores_generated_dlc_staging_as_active_mod(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    vanilla = tmp_path / "game"
+    vanilla.mkdir()
+    inventory = {
+        "inventory_sha256": "1" * 64,
+        "namespaces": [
+            {
+                "binding": "base",
+                "kind": "base",
+                "id": "base",
+                "label": "vanilla",
+                "replace_paths": [],
+            }
+        ],
+    }
+    monkeypatch.setattr(SIL.LR, "validate_source_inventory_document", lambda raw: raw)
+    inventory_path = tmp_path / "source_inventory.json"
+    inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+    base = SIL.R._ex.Layer("vanilla", vanilla, [], {"kind": "base"})
+    staged_dlc = SIL.R._ex.Layer(
+        "dlc003_rocket_launcher_unit_pack",
+        tmp_path / "runtime_userdir/_materialized_dlc/0002",
+        [],
+        {"kind": "mod", "generated_dlc_staging": True},
+    )
+
+    selected, proof = SIL.definition_layers([base, staged_dlc], inventory_path)
+
+    assert selected == [base]
+    assert proof["selected_namespace_labels"] == ["vanilla"]
 
 
 def _write_json(path: Path, value: dict) -> None:
@@ -32,15 +68,23 @@ def _write_mod_source(
     name: str,
     content_ref: str,
     payload: str,
+    archive: bool = False,
 ) -> tuple[dict, dict]:
     descriptor = root / token
     descriptor.parent.mkdir(parents=True, exist_ok=True)
-    descriptor.write_text(f'name="{name}"\npath="{content_ref}"\n', encoding="utf-8")
     content = root / content_ref
-    (content / "common").mkdir(parents=True)
-    (content / "common" / "fixture.txt").write_text(payload, encoding="utf-8")
+    if archive:
+        descriptor.write_text(f'name="{name}"\narchive="{content_ref}"\n', encoding="utf-8")
+        content.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(content, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("common/fixture.txt", payload.encode("utf-8"))
+        content_sha = SB.sha256_file(content)
+    else:
+        descriptor.write_text(f'name="{name}"\npath="{content_ref}"\n', encoding="utf-8")
+        (content / "common").mkdir(parents=True)
+        (content / "common" / "fixture.txt").write_text(payload, encoding="utf-8")
+        content_sha, _ = LR.hash_tree(content, layer_kind="mod", layer_id=token)
     descriptor_sha = SB.sha256_file(descriptor)
-    content_sha, _ = LR.hash_tree(content, layer_kind="mod", layer_id=token)
     binding = {
         "id": token,
         "name": name,
@@ -54,14 +98,16 @@ def _write_mod_source(
         "name": name,
         "descriptor_path": str(descriptor),
         "descriptor_sha256": descriptor_sha,
-        "content_kind": "directory",
+        "content_kind": "archive" if archive else "directory",
         "content_path": str(content),
         "content_sha256": content_sha,
     }
     return binding, source
 
 
-def _binding_fixture(tmp_path: Path, *, two_mods: bool = False):
+def _binding_fixture(
+    tmp_path: Path, *, two_mods: bool = False, archive_mod: bool = False
+):
     userdir = tmp_path / "source_userdir"
     specs = [
         ("mod/z-last.mod", "Zed Mod", "mods/zed", "zed"),
@@ -73,10 +119,11 @@ def _binding_fixture(tmp_path: Path, *, two_mods: bool = False):
             userdir,
             token=token,
             name=name,
-            content_ref=content_ref,
+            content_ref=(content_ref + ".zip") if archive_mod and index == 0 else content_ref,
             payload=payload,
+            archive=archive_mod and index == 0,
         )
-        for token, name, content_ref, payload in specs
+        for index, (token, name, content_ref, payload) in enumerate(specs)
     ]
     bindings = [pair[0] for pair in pairs]
     sources = [{**pair[1], "ordinal": ordinal} for ordinal, pair in enumerate(pairs)]
@@ -122,6 +169,31 @@ def _binding_fixture(tmp_path: Path, *, two_mods: bool = False):
         },
     )
     _write_json(bindings_dir / "resolution_report.json", {"resolved_mod_sources": sources})
+    winner_rows = []
+    if len(sources) > 1:
+        winner_path = Path(sources[-1]["content_path"]) / "common/fixture.txt"
+        winner_rows.append({
+            "relpath": "common/fixture.txt",
+            "winner_id": sources[-1]["id"],
+            "sha256": SB.sha256_file(winner_path),
+        })
+    _write_json(
+        bindings_dir / B.UI14_ENGINE_VFS_FILE,
+        {
+            "schema": LR.UI14_ENGINE_VFS_SCHEMA,
+            "executable_sha256": LR.EXPECTED_EXE_SHA256,
+            "layers": [
+                {
+                    "id": source["id"],
+                    "descriptor_sha256": source["descriptor_sha256"],
+                    "engine_descriptor_ordinal": ordinal * 15,
+                    "engine_mount_ordinal": ordinal,
+                }
+                for ordinal, source in enumerate(sources)
+            ],
+            "effective_winners": winner_rows,
+        },
+    )
     return bindings_dir, mod_state, sources
 
 
@@ -150,13 +222,36 @@ def test_descriptor_rejects_duplicate_identity_or_content_field(tmp_path: Path, 
         LR.parse_descriptor(descriptor)
 
 
-def test_resolved_mod_sources_retain_launcher_order_not_binding_sort_order(tmp_path: Path):
+def test_resolved_mod_sources_retain_recorded_engine_order_not_binding_sort_order(tmp_path: Path):
     bindings_dir, mod_state, expected = _binding_fixture(tmp_path, two_mods=True)
 
     loaded = B._load_resolved_mod_sources(bindings_dir, mod_state)
 
     assert [row["id"] for row in loaded] == [row["id"] for row in expected]
     assert [row["ordinal"] for row in loaded] == [0, 1]
+
+
+def test_runtime_staging_and_resume_reject_unattested_archive_mod_before_writes(
+    tmp_path: Path,
+):
+    bindings_dir, mod_state, sources = _binding_fixture(tmp_path, archive_mod=True)
+    vanilla = tmp_path / "vanilla"
+    (vanilla / "common").mkdir(parents=True)
+    (vanilla / "common/base.txt").write_text("vanilla", encoding="utf-8")
+    _write_json(
+        bindings_dir / "source_inventory.json",
+        LR.recompute_source_inventory(vanilla, sources, [], [], mod_state["identity"]),
+    )
+    destination = tmp_path / "runtime_userdir"
+    error = r"unattested archive mod is not admitted without a proven native-collision attestation"
+
+    with pytest.raises(LR.ResolutionError, match=error):
+        B.prepare_runtime_userdir(bindings_dir, vanilla, destination)
+    assert not destination.exists()
+
+    destination.mkdir()
+    with pytest.raises(LR.ResolutionError, match=error):
+        B._validate_runtime_userdir(bindings_dir, vanilla, destination)
 
 
 @pytest.mark.parametrize(
@@ -200,6 +295,7 @@ def test_input_fingerprint_binds_the_resolved_vanilla_root(tmp_path: Path, monke
         "load_order.json",
         "resolution_report.json",
         "source_inventory.json",
+        B.UI14_ENGINE_VFS_FILE,
     ):
         path = bindings / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -228,9 +324,16 @@ def test_input_fingerprint_binds_the_resolved_vanilla_root(tmp_path: Path, monke
 
 
 def test_runtime_userdir_validation_detects_staged_descriptor_tampering(tmp_path: Path):
-    bindings_dir, _mod_state, _sources = _binding_fixture(tmp_path)
+    bindings_dir, mod_state, sources = _binding_fixture(tmp_path)
     vanilla = tmp_path / "vanilla"
-    vanilla.mkdir()
+    (vanilla / "common").mkdir(parents=True)
+    (vanilla / "common/base.txt").write_text("vanilla", encoding="utf-8")
+    _write_json(
+        bindings_dir / "source_inventory.json",
+        LR.recompute_source_inventory(
+            vanilla, sources, [], [], mod_state["identity"]
+        ),
+    )
     destination = tmp_path / "runtime_userdir"
 
     expected_launcher = B.prepare_runtime_userdir(bindings_dir, vanilla, destination)
@@ -239,13 +342,143 @@ def test_runtime_userdir_validation_detects_staged_descriptor_tampering(tmp_path
     manifest = json.loads(
         (destination / "static_mod_staging_manifest.json").read_text(encoding="utf-8")
     )
+    assert manifest["mods"][0]["content_sha256"] == manifest["mods"][0][
+        "source_namespace_sha256"
+    ]
+    handoff = json.loads(
+        (destination / "renderer_game_file_handoff.json").read_text(encoding="utf-8")
+    )
+    assert handoff["schema"] == B.RENDERER_HANDOFF_SCHEMA
+    assert handoff["game_dir"] == str(vanilla.resolve())
+    assert handoff["userdata"] == str(destination.resolve())
+    assert handoff["use_dlc_load"] is True
+    assert handoff["cli_args"] == [
+        "--game", str(vanilla.resolve()),
+        "--use-dlc-load", "--userdata", str(destination.resolve()),
+    ]
     staged_descriptor = destination / manifest["mods"][0]["descriptor_relpath"]
     staged_descriptor.write_text(
         staged_descriptor.read_text(encoding="utf-8") + "# tampered\n",
         encoding="utf-8",
     )
 
-    with pytest.raises(LR.ResolutionError, match=r"runtime staged descriptor changed"):
+    with pytest.raises(LR.ResolutionError, match=r"runtime (staged descriptor|UI14 engine VFS receipt) changed"):
+        B._validate_runtime_userdir(bindings_dir, vanilla, destination)
+
+
+def test_descriptor_backed_dlc_archive_is_materialized_and_handed_to_renderer(
+    tmp_path: Path,
+):
+    vanilla = tmp_path / "vanilla"
+    (vanilla / "common").mkdir(parents=True)
+    (vanilla / "common/base.txt").write_text("vanilla", encoding="utf-8")
+    dlc_root = vanilla / "dlc/dlc003"
+    dlc_root.mkdir(parents=True)
+    descriptor = dlc_root / "dlc003.dlc"
+    descriptor.write_text(
+        'name="DLC Pack"\n'
+        'archive="dlc/dlc003/dlc003.zip"\n'
+        'replace_path="gfx/models"\n',
+        encoding="utf-8",
+    )
+    archive = dlc_root / "dlc003.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("gfx/models/tank.asset", b"tank")
+        zf.writestr("common/units/dlc.txt", b"dlc")
+
+    identity = {"playset_id": "fixture-playset", "profile_id": "fixture-profile"}
+    mod_state = {
+        "schema": SB.MOD_STATE_SCHEMA,
+        "identity": identity,
+        "mods": [],
+        "effective_content_sha256": SB._content_digest([]),
+    }
+    binding_sha, _ = LR.hash_tree(
+        dlc_root, layer_kind="dlc", layer_id="dlc003", allow_empty=True
+    )
+    dlc_rows = [{
+        "id": "dlc003",
+        "name": "DLC Pack",
+        "content_sha256": binding_sha,
+        "enabled": True,
+    }]
+    dlc_state = {
+        "schema": SB.DLC_STATE_SCHEMA,
+        "identity": identity,
+        "dlc": dlc_rows,
+        "effective_content_sha256": SB._content_digest(dlc_rows),
+    }
+    load_rows = [
+        {
+            "id": "vanilla",
+            "kind": "vanilla",
+            "ordinal": 0,
+            "content_sha256": SB.sha256_bytes(b"vanilla"),
+        },
+        {
+            "id": "dlc003",
+            "kind": "dlc",
+            "ordinal": 1,
+            "content_sha256": binding_sha,
+        },
+    ]
+    bindings_dir = tmp_path / "bindings"
+    _write_json(bindings_dir / "mod_state.json", mod_state)
+    _write_json(bindings_dir / "dlc_state.json", dlc_state)
+    _write_json(
+        bindings_dir / "load_order.json",
+        {
+            "schema": SB.LOAD_ORDER_SCHEMA,
+            "identity": identity,
+            "entries": load_rows,
+            "effective_content_sha256": SB._content_digest(load_rows),
+        },
+    )
+    _write_json(bindings_dir / "resolution_report.json", {"resolved_mod_sources": []})
+    _write_json(
+        bindings_dir / B.UI14_ENGINE_VFS_FILE,
+        {
+            "schema": LR.UI14_ENGINE_VFS_SCHEMA,
+            "executable_sha256": LR.EXPECTED_EXE_SHA256,
+            "layers": [],
+            "effective_winners": [],
+        },
+    )
+    source_inventory = LR.recompute_source_inventory(
+        vanilla, [], ["dlc003"], [], identity
+    )
+    _write_json(bindings_dir / "source_inventory.json", source_inventory)
+
+    destination = tmp_path / "runtime_userdir"
+    launcher = B.prepare_runtime_userdir(bindings_dir, vanilla, destination)
+    assert launcher["enabled_mods"] == ["_ui15_dlc/0000-dlc003.mod"]
+    assert B._validate_runtime_userdir(bindings_dir, vanilla, destination) == launcher
+
+    manifest = json.loads(
+        (destination / "static_mod_staging_manifest.json").read_text(encoding="utf-8")
+    )
+    row = manifest["dlc_archives"][0]
+    source_namespace = next(
+        item for item in source_inventory["namespaces"]
+        if item["kind"] == "dlc" and item["id"] == "dlc003"
+    )
+    assert row["source_namespace_sha256"] == source_namespace["content_sha256"]
+    assert row["content_sha256"] == source_namespace["content_sha256"]
+    assert row["source_archive_sha256"] == SB.sha256_file(archive)
+    staged_fields = LR.parse_descriptor(destination / row["descriptor_relpath"])
+    assert "path" in staged_fields and "archive" not in staged_fields
+    assert staged_fields["replace_path"] == ["gfx/models"]
+    handoff = json.loads(
+        (destination / "renderer_game_file_handoff.json").read_text(encoding="utf-8")
+    )
+    assert handoff["userdata"] == str(destination.resolve())
+    assert handoff["cli_args"][-2:] == ["--userdata", str(destination.resolve())]
+
+    staged_root = Path(row["content_path"])
+    (staged_root / "common/units/dlc.txt").write_bytes(b"tampered")
+    with pytest.raises(
+        LR.ResolutionError, match=r"runtime staged DLC namespace changed"
+    ):
         B._validate_runtime_userdir(bindings_dir, vanilla, destination)
 
 

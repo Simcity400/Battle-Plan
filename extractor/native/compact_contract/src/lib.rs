@@ -4,18 +4,23 @@
 //!
 //! The collector DLL, the recorder host, and every lane crate must consume
 //! these definitions instead of keeping local copies. Domain IDs are assigned
-//! in `extractor/native/domain_registry.json`; the `ASSIGNED_COMPACT_DOMAINS`
-//! table below is the code-authoritative mirror and must stay in sync with that
-//! registry. (The old `DOMAIN_REGISTRY.md` was retired 2026-07-05 — now a
-//! routing stub.)
+//! in `extractor/documents/DOMAIN_REGISTRY.md`; the `ASSIGNED_COMPACT_DOMAINS`
+//! table below must stay in sync with that registry.
 
 pub mod bound_trips;
 pub mod build_profile;
+pub mod building_registry;
 pub mod calendar;
 pub mod campaign_identity;
 pub mod control_transport;
+pub mod early_render_content_manifest;
+pub mod early_render_control;
+pub mod early_render_runtime_dlc;
+pub mod early_render_vfs;
+pub mod early_render_vfs_payload;
 pub mod first_compact_ack;
 pub mod identity_control;
+pub mod naval_history;
 pub mod record_header;
 pub mod record_semantics;
 pub mod sink_failure;
@@ -974,8 +979,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
     // C1 (2026-07-05): per-country CUMULATIVE air-combat loss statistics (statistic id 23,
     // the 89-field CLoopHistory record). The corrected yearly-window chain is
     // D04 value-validated: 23/23 countries, 2047/2047 fields, 0 mismatches.
-    // Only the six value-pinned channels are labeled; other channels remain
-    // unpromoted.
+    // All 24 strategic-air details channels are engine-table/localisation proven and emitted.
     domain(
         61,
         "air_loss_stats_live",
@@ -985,10 +989,10 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         true,
         &[],
     ),
-    // P1 (2026-07-05): node-level supply-hub motorization membership from the
-    // persistent CCountrySupplySystem settings object. D04 value validation:
-    // 223/223 rows, 1338/1338 emitted fields, 483/483 map entries, 0 mismatches.
-    // Inner per-tag level attribution remains intentionally unpromoted.
+    // P1/A1: exact node-level supply-hub motorization from the persistent
+    // CCountrySupplySystem settings object. D04 validates 223/223 outer rows,
+    // 1338/1338 fields, and 483/483 map entries; schema v2 also carries the
+    // proven inner actor attribution and exact levels 1/2 (XN07 joint gate).
     domain(
         62,
         "hub_motorization_live",
@@ -1158,6 +1162,155 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         "tech_sharing_groups_live",
         CompactDomainStatus::ValidatedSliceOpenGaps,
         true,
+        true,
+        &[],
+    ),
+    // A21/B4 (2026-07-17): global sunk-convoy history. The authoritative root
+    // is CGameState+0x5A8 (pointer vector; count +0x5B4), whose 0x18-byte
+    // CSunkConvoyInfo rows store month/count/killer/owner at +0x08..+0x14.
+    // This is a full persistent history snapshot and is intentionally distinct
+    // from d49 active naval combats and CShip cumulative counters.
+    domain(
+        70,
+        "sunk_convoy_history_live",
+        "sunk_convoy_history_live",
+        CompactDomainStatus::ValidatedSlice,
+        true,
+        true,
+        &[],
+    ),
+    // A28/XUI03 (2026-07-17): exact UI controller collection trace. The full
+    // d71 payload grammar/validator/fold is implemented, but the a729
+    // controller hook addresses are not yet authenticated. Keep reserved and
+    // unscheduled so production cannot emit inferred screen/layout state.
+    domain(
+        71,
+        "dynamic_collection_trace_live",
+        "dynamic_collection_trace_live",
+        CompactDomainStatus::Reserved,
+        false,
+        true,
+        &[],
+    ),
+    // A26/XUI05 (2026-07-17): exact resolved tooltip rectangles and ordered,
+    // engine-evaluated rows from the signature-gated a729 generic tooltip
+    // controller, shared A25 final-setter/destructor observers, and exact
+    // post-layout extent accessor. The d72 carrier, live hook, collector seam,
+    // and world fold are implemented; RenderDoc/OCR remain validation evidence.
+    domain(
+        72,
+        "resolved_tooltip_instances_live",
+        "resolved_tooltip_instances_live",
+        CompactDomainStatus::ValidatedSlice,
+        true,
+        true,
+        &[],
+    ),
+    // A24/XUI11 (2026-07-17): exact engine-evaluated politics tooltip inputs.
+    // The d73 carrier preserves typed trigger reason trees, effective costs,
+    // modifier terms, advisor-slot state, timed modifier provenance, and party
+    // popularity source terms. Keep reserved and unscheduled until the proven
+    // a729 politicalitems producer seam supplies a complete live fixture.
+    domain(
+        73,
+        "politics_tooltip_inputs_live",
+        "politics_tooltip_inputs_live",
+        CompactDomainStatus::Reserved,
+        false,
+        true,
+        &[],
+    ),
+    // A37/XUI18 (2026-07-17): exact power-balance presentation state. The d74
+    // carrier preserves active ranges, indicator frame/state, exact trend,
+    // resolved text references, ordered modifiers, and ordered decisions.
+    // Keep reserved and unscheduled until its authenticated a729 controller
+    // hook supplies a complete producer frame.
+    domain(
+        74,
+        "power_balance_presentation_live",
+        "power_balance_presentation_live",
+        CompactDomainStatus::Reserved,
+        false,
+        true,
+        &[],
+    ),
+    // XUI21: authenticated fired-event hook stream. The d75 carrier is
+    // intentionally distinct from d64 pending delayed-event polling. Keep it
+    // unscheduled until the collector supplies the authenticated game-file
+    // registry bridge and installs/uninstalls the callback graph atomically.
+    domain(
+        75,
+        "fired_event_popups_live",
+        "fired_event_popups_live",
+        CompactDomainStatus::Reserved,
+        false,
+        true,
+        &[],
+    ),
+    // A25/XUI06 (2026-07-17): exact runtime-localised text. The d76 carrier
+    // binds the authenticated fixed-window/textbox registration hook to the
+    // final a729 text setter, retaining final bytes and exact authored
+    // view/element identity. Scheduling remains explicit until recorder fold
+    // integration is enabled as one atomic promotion.
+    domain(
+        76,
+        "runtime_text_inputs_live",
+        "runtime_text_inputs_live",
+        CompactDomainStatus::Reserved,
+        false,
+        true,
+        &[],
+    ),
+    // XN12/XN13/XN14/XN15: exact post-simulation non-UI render submissions.
+    // The neutral carrier, recorder fold, standalone ingest, and fail-closed
+    // observer seams are implemented, but no live current-process descriptor
+    // catalog builder exists. Gameplay domains and prebuilt pointer catalogs
+    // are explicitly not substitutes, so d77 remains omitted from production.
+    domain(
+        77,
+        "production_render_submits_live",
+        "production_render_submits_live",
+        CompactDomainStatus::Reserved,
+        false,
+        true,
+        &[],
+    ),
+    // A27/XUI13: exact equipment-designer view state captured after the
+    // visibility-triggered a729 refresh. Pointer-free d78 contains current
+    // country, raw selected-tag vector, filter toggles, family, and final
+    // accepted design-id order. It is distinct from d59's static catalog.
+    domain(
+        78,
+        "design_catalog_context_live",
+        "design_catalog_context_live",
+        CompactDomainStatus::ValidatedSlice,
+        true,
+        true,
+        &[],
+    ),
+    // Runtime proof for the four fixed HUD controller roots and the optional
+    // active A27 designer family. Pointer-free d79 is consumed only to select
+    // exact post-capture effective-VFS dependency closures.
+    domain(
+        79,
+        "hud_surface_activation_live",
+        "hud_surface_activation_live",
+        CompactDomainStatus::ValidatedSlice,
+        true,
+        true,
+        &[],
+    ),
+    // Exact pointer-free effective-VFS content observations for the 11
+    // production-map semantic consumers. d80 is deliberately separate from
+    // d77's ProductionRenderFrame codec. The fixed filename classifier was
+    // removed; keep omitted until normal --production builds the semantic-role
+    // closures itself from the admitted install/profile/effective-VFS inputs.
+    domain(
+        80,
+        "production_map_content_snapshot_live",
+        "production_map_content_snapshot_live",
+        CompactDomainStatus::Reserved,
+        false,
         true,
         &[],
     ),
@@ -1332,7 +1485,8 @@ mod tests {
         let expected: &[CompactDomainId] = &[
             1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32,
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
-            55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 1000,
+            55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76,
+            77, 78, 79, 80, 1000,
         ];
         for id in expected {
             assert!(
@@ -1524,7 +1678,11 @@ mod tests {
             "domain 69 (tech_sharing_groups_live) is a validated slice \
              with explicit open gaps"
         );
-        for excluded in [1, 18, 58, 59, 1000] {
+        assert!(
+            profile_ids.contains(&70),
+            "domain 70 (sunk_convoy_history_live) is a production-ready validated slice"
+        );
+        for excluded in [1, 18, 58, 59, 71, 73, 74, 76, 77, 1000] {
             assert!(
                 !profile_ids.contains(&excluded),
                 "domain {excluded} must stay out of the production profile"

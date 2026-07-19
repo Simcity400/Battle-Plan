@@ -22,7 +22,7 @@ use crate::{Result, TimelineMode};
 /// Build the owner provider + mode label for a timeline mode. Shared by the
 /// interactive window loop and the headless frame-dump path.
 pub fn build_provider(
-    bundle: &MapBundle,
+    bundle: Option<&MapBundle>,
     mode: &TimelineMode,
 ) -> Result<(Box<dyn OwnerProvider>, String)> {
     match mode {
@@ -48,9 +48,14 @@ pub fn build_provider(
             // not per-hour snapshots) — but it still DECODES every frame once
             // at open, an O(hours) LATENCY residual on multi-year recordings
             // (plan F2 row). An incremental/lazy scan is future work.
-            let known_provinces: BTreeSet<u32> =
-                bundle.province_to_state.keys().copied().collect();
-            let policy = scan_timeline(&timeline, Some(known_provinces));
+            let known_provinces = bundle.map(|bundle| {
+                bundle
+                    .province_to_state
+                    .keys()
+                    .copied()
+                    .collect::<BTreeSet<u32>>()
+            });
+            let policy = scan_timeline(&timeline, known_provinces);
             for diagnostic in policy.diagnostics() {
                 eprintln!("{}", diagnostic.log_line());
             }
@@ -58,10 +63,15 @@ pub fn build_provider(
             let label = format!("recording {}", recording.game_id());
             Ok((Box::new(recording), label))
         }
-        TimelineMode::Static1936 => Ok((
-            Box::new(Static1936::new(bundle.state_owner_1936.clone())),
-            String::from("static 1936"),
-        )),
+        TimelineMode::Static1936 => {
+            let bundle = bundle.ok_or(
+                "static 1936 debug mode requires --bundle; production playback uses --recording and never requires a pre-generated map bundle",
+            )?;
+            Ok((
+                Box::new(Static1936::new(bundle.state_owner_1936.clone())),
+                String::from("static 1936"),
+            ))
+        }
     }
 }
 
@@ -93,6 +103,35 @@ pub trait OwnerProvider {
     /// or `None` when nothing is held. Defaults to `None` (no anomaly policy).
     fn anomaly_note(&self, _hour: i64) -> Option<String> {
         None
+    }
+
+    /// Exact typed frame for production UI binding. Static baselines and
+    /// failed timeline reads return `None`; callers omit data-bound UI rather
+    /// than parsing raw snapshots or manufacturing defaults.
+    fn world_frame_at(&self, _hour: i64) -> Option<Arc<replay_core::WorldFrame>> {
+        None
+    }
+
+    fn content_manifest(&self) -> Option<&replay_core::ContentManifest> {
+        None
+    }
+
+    fn admit_playback_content(
+        &self,
+        _inventory: &replay_core::PlaybackContentInventory,
+    ) -> std::result::Result<
+        replay_core::ValidatedContentAdmission,
+        replay_core::ContentValidationReport,
+    > {
+        Err(replay_core::ContentValidationReport {
+            compatible: false,
+            verified_required_content: 0,
+            issues: vec![replay_core::ContentIssue {
+                code: replay_core::ContentIssueCode::InvalidManifest,
+                subject: "timeline".into(),
+                message: "static timeline has no portable content manifest".into(),
+            }],
+        })
     }
 }
 
@@ -203,7 +242,10 @@ impl RecordingTimeline {
     /// conformance gate); the interactive scrub reads owners through the same
     /// `state_at` primitive.
     pub fn seek_hour(&self, hour: i64) -> Option<i64> {
-        self.timeline.seek(hour).ok().map(|frame| frame.hour_index())
+        self.timeline
+            .seek(hour)
+            .ok()
+            .map(|frame| frame.hour_index())
     }
 
     /// E1 wiring: linear play-to through the `replay_core` hook.
@@ -293,14 +335,32 @@ impl OwnerProvider for RecordingTimeline {
         // session view through the typed seam (never a raw snapshot parse).
         match self.timeline.state_at(self.timeline.first_hour()) {
             Ok(frame) => crate::observer::povs_from_session(frame.session_metadata()),
-            Err(err) => crate::observer::PovPicker::Unavailable(format!(
-                "session view unavailable: {err}"
-            )),
+            Err(err) => {
+                crate::observer::PovPicker::Unavailable(format!("session view unavailable: {err}"))
+            }
         }
     }
 
     fn anomaly_note(&self, hour: i64) -> Option<String> {
         self.anomaly_note_at(hour)
+    }
+
+    fn world_frame_at(&self, hour: i64) -> Option<Arc<replay_core::WorldFrame>> {
+        self.timeline.state_at(hour).ok()
+    }
+
+    fn content_manifest(&self) -> Option<&replay_core::ContentManifest> {
+        self.timeline.content_manifest()
+    }
+
+    fn admit_playback_content(
+        &self,
+        inventory: &replay_core::PlaybackContentInventory,
+    ) -> std::result::Result<
+        replay_core::ValidatedContentAdmission,
+        replay_core::ContentValidationReport,
+    > {
+        self.timeline.admit_playback_content(inventory)
     }
 }
 

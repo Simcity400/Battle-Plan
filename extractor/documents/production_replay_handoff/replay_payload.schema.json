@@ -1,0 +1,684 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hoi4.extractor.production_replay_handoff.payload.v1",
+  "title": "Promoted extractor replay surfaces",
+  "description": "Target replay projection for the frozen A1/A2/A4/A12/A14/A15/A21/A22/B8-X6 batch. Other snapshot fields are intentionally allowed.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "countries": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/countryProjection"}
+    },
+    "states": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/stateProjection"}
+    },
+    "provinces": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/provinceProjection"}
+    },
+    "strategic_air": {"$ref": "#/$defs/strategicAir"},
+    "supply": {"$ref": "#/$defs/supply"},
+    "world_events": {"$ref": "#/$defs/worldEvents"},
+    "runtime_text": {"$ref": "#/$defs/runtimeText"},
+    "resolved_tooltip_instances": {"$ref": "#/$defs/resolvedTooltipInstances"},
+    "_r2_session_multiplayer_metadata_live": {"$ref": "#/$defs/sessionMetadata"}
+  },
+  "$defs": {
+    "countryRef": {
+      "oneOf": [
+        {"type": "string", "pattern": "^[A-Z0-9_]{3,}$"},
+        {"type": "integer", "minimum": 1, "maximum": 4294967295}
+      ]
+    },
+    "notSourced": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {"state": {"const": "not_sourced"}}
+    },
+    "focusEvent": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {"paused": {"type": ["boolean", "null"]}}
+    },
+    "decisionStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["active_timed_count", "targeted_count", "targeted_timed_count", "decisions_taken_bucket_count", "re_enable_count", "timed_live_count"],
+      "properties": {
+        "active_timed_count": {"type": "integer", "minimum": 0},
+        "targeted_count": {"type": "integer", "minimum": 0},
+        "targeted_timed_count": {"type": "integer", "minimum": 0},
+        "decisions_taken_bucket_count": {"type": "integer", "minimum": 0},
+        "re_enable_count": {"type": "integer", "minimum": 0},
+        "timed_live_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "decisionTarget": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["decision", "target_kind", "target", "target_tag_db_id", "flags", "source_kind", "source"],
+          "properties": {
+            "decision": {"type": "string", "minLength": 1},
+            "target_kind": {"const": "country"},
+            "target": {"$ref": "#/$defs/countryRef"},
+            "target_tag_db_id": {"type": "integer", "minimum": 1},
+            "flags": {"type": "integer", "minimum": 0},
+            "source_kind": {"type": "integer", "minimum": 0},
+            "source": {"const": "CDecisionStatus+0xE8 record+0x20"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["decision", "target_kind", "target_id", "flags", "source_kind", "source"],
+          "properties": {
+            "decision": {"type": "string", "minLength": 1},
+            "target_kind": {"const": "numeric"},
+            "target_id": {"type": "integer", "minimum": 1, "maximum": 1000000},
+            "flags": {"type": "integer", "minimum": 0},
+            "source_kind": {"type": "integer", "minimum": 0},
+            "source": {"const": "CDecisionStatus+0xE8 record+0x24"}
+          }
+        }
+      ]
+    },
+    "decisionEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "previous_days", "current_days", "previous_state", "current_state", "decision"],
+      "properties": {
+        "kind": {"type": "integer", "minimum": 0},
+        "previous_days": {"type": "integer"},
+        "current_days": {"type": "integer"},
+        "previous_state": {"type": "integer"},
+        "current_state": {"type": "integer"},
+        "decision": {"type": "string", "minLength": 1}
+      }
+    },
+    "countryProjection": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "focus": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {"_r2_depth_events": {"type": "array", "items": {"$ref": "#/$defs/focusEvent"}}}
+        },
+        "decisions": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "_r2_depth_status": {"$ref": "#/$defs/decisionStatus"},
+            "_r2_depth_targets": {
+              "oneOf": [
+                {"type": "null"},
+                {"type": "array", "items": {"$ref": "#/$defs/decisionTarget"}}
+              ]
+            },
+            "_r2_depth_events": {"type": "array", "items": {"$ref": "#/$defs/decisionEvent"}}
+          }
+        },
+        "production": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "construction_buildings_state_damage_live": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "construction_queue": {"type": "array", "items": {"$ref": "#/$defs/constructionRow"}}
+              }
+            }
+          }
+        }
+      }
+    },
+    "constructionRow": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "target_location_id": {"type": "integer", "minimum": 1},
+        "target_scope": {"enum": ["state", "province"]},
+        "repair_levels_remaining": {"type": "integer", "minimum": 0},
+        "is_repair": {"type": "boolean"}
+      },
+      "dependentRequired": {
+        "target_location_id": ["target_scope"],
+        "target_scope": ["target_location_id"],
+        "repair_levels_remaining": ["is_repair"],
+        "is_repair": ["repair_levels_remaining"]
+      }
+    },
+    "buildingDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "healthy_level", "damaged"],
+      "properties": {
+        "level": {"type": "integer", "minimum": 0},
+        "healthy_level": {"type": ["integer", "null"], "minimum": 0},
+        "partial_health_raw": {"type": "integer", "minimum": 0, "maximum": 10000000},
+        "damaged": {"type": "boolean"},
+        "token": {"type": "string", "minLength": 1}
+      }
+    },
+    "buildingMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^type_0x[0-9a-f]{8}$": {"$ref": "#/$defs/buildingDetail"}
+      }
+    },
+    "stateProjection": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "construction_buildings_state_damage_live": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {"state_buildings": {"$ref": "#/$defs/buildingMap"}}
+        }
+      }
+    },
+    "provinceProjection": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "construction_buildings_state_damage_live": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "state_id": {"type": "integer", "minimum": 1},
+            "buildings": {"$ref": "#/$defs/buildingMap"}
+          }
+        }
+      }
+    },
+    "airDamage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channel", "cause_type", "cause", "amount", "amount_raw", "scale_raw"],
+      "properties": {
+        "channel": {"enum": ["damage_done", "losses_disruption"]},
+        "cause_type": {"type": "integer", "minimum": 0, "maximum": 10},
+        "cause": {"enum": ["buildings_bombed", "ships_bombed", "damage_to_divisions", "planes_disrupted", "planes_shot_down_by_enemy_planes", "planes_downed_by_anti_air", "logistics_bombed", "railway_guns_bombed", "unused", "planes_shot_down_en_route", "planes_downed_by_armored_trains"]},
+        "amount": {"type": "number"},
+        "amount_raw": {"type": "integer"},
+        "scale_raw": {"const": 100000}
+      }
+    },
+    "airRegionCombatRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "owner_tag_db_id", "region_id", "side_vector", "selection_flag", "classification_flag", "copied_flag", "wing_id", "date_raw", "plane_count", "mission_mask", "attributed_country", "attributed_country_tag_db_id", "damage"],
+      "properties": {
+        "owner": {"$ref": "#/$defs/countryRef"},
+        "owner_tag_db_id": {"type": "integer", "minimum": 1},
+        "region_id": {"type": "integer", "minimum": 0},
+        "side_vector": {"type": "integer", "minimum": 0, "maximum": 1},
+        "selection_flag": {"type": "integer", "minimum": 0, "maximum": 1},
+        "classification_flag": {"type": "integer", "minimum": 0, "maximum": 1},
+        "copied_flag": {"type": "integer", "minimum": 0, "maximum": 1},
+        "wing_id": {"type": "integer", "minimum": 0},
+        "date_raw": {"type": "integer"},
+        "plane_count": {"type": "integer", "minimum": 0},
+        "mission_mask": {"type": "integer", "minimum": 0},
+        "attributed_country": {"$ref": "#/$defs/countryRef"},
+        "attributed_country_tag_db_id": {"type": "integer", "minimum": 1},
+        "damage": {"type": "array", "items": {"$ref": "#/$defs/airDamage"}}
+      }
+    },
+    "airChannelValues": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["our_buildings_bombed", "our_troops_bombed", "our_ships_bombed", "our_fighters_lost", "our_bombers_lost", "our_cas_lost", "our_transports_lost", "our_bombers_disrupted", "our_trains_lost", "our_trucks_lost", "our_railway_guns_lost", "our_missiles_lost", "enemy_buildings_bombed", "enemy_troops_bombed", "enemy_ships_sunk", "enemy_fighters_lost", "enemy_bombers_lost", "enemy_cas_lost", "enemy_transports_lost", "enemy_bombers_disrupted", "enemy_trains_lost", "enemy_trucks_lost", "enemy_railway_guns_lost", "enemy_missiles_lost"],
+      "properties": {
+        "our_buildings_bombed": {"type": "number"}, "our_troops_bombed": {"type": "number"}, "our_ships_bombed": {"type": "number"}, "our_fighters_lost": {"type": "number"}, "our_bombers_lost": {"type": "number"}, "our_cas_lost": {"type": "number"}, "our_transports_lost": {"type": "number"}, "our_bombers_disrupted": {"type": "number"}, "our_trains_lost": {"type": "number"}, "our_trucks_lost": {"type": "number"}, "our_railway_guns_lost": {"type": "number"}, "our_missiles_lost": {"type": "number"},
+        "enemy_buildings_bombed": {"type": "number"}, "enemy_troops_bombed": {"type": "number"}, "enemy_ships_sunk": {"type": "number"}, "enemy_fighters_lost": {"type": "number"}, "enemy_bombers_lost": {"type": "number"}, "enemy_cas_lost": {"type": "number"}, "enemy_transports_lost": {"type": "number"}, "enemy_bombers_disrupted": {"type": "number"}, "enemy_trains_lost": {"type": "number"}, "enemy_trucks_lost": {"type": "number"}, "enemy_railway_guns_lost": {"type": "number"}, "enemy_missiles_lost": {"type": "number"}
+      }
+    },
+    "airChannelRaw": {
+      "type": "object",
+      "required": ["our_buildings_bombed", "our_troops_bombed", "our_ships_bombed", "our_fighters_lost", "our_bombers_lost", "our_cas_lost", "our_transports_lost", "our_bombers_disrupted", "our_trains_lost", "our_trucks_lost", "our_railway_guns_lost", "our_missiles_lost", "enemy_buildings_bombed", "enemy_troops_bombed", "enemy_ships_sunk", "enemy_fighters_lost", "enemy_bombers_lost", "enemy_cas_lost", "enemy_transports_lost", "enemy_bombers_disrupted", "enemy_trains_lost", "enemy_trucks_lost", "enemy_railway_guns_lost", "enemy_missiles_lost"],
+      "minProperties": 24,
+      "maxProperties": 24,
+      "propertyNames": {"enum": ["our_buildings_bombed", "our_troops_bombed", "our_ships_bombed", "our_fighters_lost", "our_bombers_lost", "our_cas_lost", "our_transports_lost", "our_bombers_disrupted", "our_trains_lost", "our_trucks_lost", "our_railway_guns_lost", "our_missiles_lost", "enemy_buildings_bombed", "enemy_troops_bombed", "enemy_ships_sunk", "enemy_fighters_lost", "enemy_bombers_lost", "enemy_cas_lost", "enemy_transports_lost", "enemy_bombers_disrupted", "enemy_trains_lost", "enemy_trucks_lost", "enemy_railway_guns_lost", "enemy_missiles_lost"]},
+      "additionalProperties": {"type": "integer"}
+    },
+    "airDisplayDivisors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["our_buildings_bombed", "our_troops_bombed", "our_ships_bombed", "our_fighters_lost", "our_bombers_lost", "our_cas_lost", "our_transports_lost", "our_bombers_disrupted", "our_trains_lost", "our_trucks_lost", "our_railway_guns_lost", "our_missiles_lost", "enemy_buildings_bombed", "enemy_troops_bombed", "enemy_ships_sunk", "enemy_fighters_lost", "enemy_bombers_lost", "enemy_cas_lost", "enemy_transports_lost", "enemy_bombers_disrupted", "enemy_trains_lost", "enemy_trucks_lost", "enemy_railway_guns_lost", "enemy_missiles_lost"],
+      "properties": {
+        "our_buildings_bombed": {"const": 1000}, "enemy_buildings_bombed": {"const": 1000},
+        "our_troops_bombed": {"const": 100000}, "our_ships_bombed": {"const": 100000}, "our_fighters_lost": {"const": 100000}, "our_bombers_lost": {"const": 100000}, "our_cas_lost": {"const": 100000}, "our_transports_lost": {"const": 100000}, "our_bombers_disrupted": {"const": 100000}, "our_trains_lost": {"const": 100000}, "our_trucks_lost": {"const": 100000}, "our_railway_guns_lost": {"const": 100000}, "our_missiles_lost": {"const": 100000},
+        "enemy_troops_bombed": {"const": 100000}, "enemy_ships_sunk": {"const": 100000}, "enemy_fighters_lost": {"const": 100000}, "enemy_bombers_lost": {"const": 100000}, "enemy_cas_lost": {"const": 100000}, "enemy_transports_lost": {"const": 100000}, "enemy_bombers_disrupted": {"const": 100000}, "enemy_trains_lost": {"const": 100000}, "enemy_trucks_lost": {"const": 100000}, "enemy_railway_guns_lost": {"const": 100000}, "enemy_missiles_lost": {"const": 100000}
+      }
+    },
+    "airLossRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["country", "owner_tag_db_id", "country_idx", "channels", "raw", "display_divisors"],
+      "properties": {
+        "country": {"$ref": "#/$defs/countryRef"},
+        "owner_tag_db_id": {"type": "integer", "minimum": 1},
+        "country_idx": {"type": "integer", "minimum": 1},
+        "channels": {"$ref": "#/$defs/airChannelValues"},
+        "raw": {"$ref": "#/$defs/airChannelRaw"},
+        "display_divisors": {"$ref": "#/$defs/airDisplayDivisors"}
+      }
+    },
+    "strategicAir": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "_r2_air_region_combat_stats": {"oneOf": [{"type": "null"}, {"type": "array", "items": {"$ref": "#/$defs/airRegionCombatRow"}}]},
+        "_r2_air_loss_stats_live": {"oneOf": [{"type": "null"}, {"type": "array", "items": {"$ref": "#/$defs/airLossRow"}}]}
+      }
+    },
+    "hubMotorizationRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["country", "owner_tag_db_id", "motorization_country", "actor_tag_db_id", "province_id", "state_id", "record_index", "map_entry_index", "motorization_level", "truck_fraction_raw", "node_motorized", "scope"],
+      "properties": {
+        "country": {"$ref": "#/$defs/countryRef"},
+        "owner_tag_db_id": {"type": "integer", "minimum": 1},
+        "motorization_country": {"$ref": "#/$defs/countryRef"},
+        "actor_tag_db_id": {"type": "integer", "minimum": 1},
+        "province_id": {"type": "integer", "minimum": 1},
+        "state_id": {"type": "integer", "minimum": 1},
+        "record_index": {"type": "integer", "minimum": 0},
+        "map_entry_index": {"type": "integer", "minimum": 0},
+        "motorization_level": {"enum": [1, 2]},
+        "truck_fraction_raw": {"enum": [50000, 100000]},
+        "node_motorized": {"const": true},
+        "scope": {"const": "country_level"}
+      },
+      "allOf": [
+        {"if": {"properties": {"motorization_level": {"const": 1}}}, "then": {"properties": {"truck_fraction_raw": {"const": 50000}}}},
+        {"if": {"properties": {"motorization_level": {"const": 2}}}, "then": {"properties": {"truck_fraction_raw": {"const": 100000}}}}
+      ]
+    },
+    "supply": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "_r2_hub_motorization_live": {"oneOf": [{"type": "null"}, {"type": "array", "items": {"$ref": "#/$defs/hubMotorizationRow"}}]}
+      }
+    },
+    "sunkConvoyRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["month", "convoys", "killer_country", "owner"],
+      "properties": {
+        "month": {"type": "integer", "minimum": 0},
+        "convoys": {"type": "integer", "minimum": 0},
+        "killer_country": {"$ref": "#/$defs/countryRef"},
+        "owner": {"$ref": "#/$defs/countryRef"}
+      }
+    },
+    "worldEvents": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "sunk_convoys": {"oneOf": [{"type": "null"}, {"type": "array", "items": {"$ref": "#/$defs/sunkConvoyRow"}}]}
+      }
+    },
+    "playerCountryRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["country_tag", "tag_db_id", "is_human_controlled", "human_marker", "human_name", "player_key_hash", "session_slot", "host", "connected", "valid_from_hour_raw"],
+      "properties": {
+        "country_tag": {"type": "string", "pattern": "^[A-Z0-9_]{3,}$"},
+        "tag_db_id": {"type": "integer", "minimum": 1},
+        "is_human_controlled": {"const": true},
+        "human_marker": {"const": true},
+        "human_name": {"$ref": "#/$defs/notSourced"},
+        "player_key_hash": {"$ref": "#/$defs/notSourced"},
+        "session_slot": {"$ref": "#/$defs/notSourced"},
+        "host": {"$ref": "#/$defs/notSourced"},
+        "connected": {"$ref": "#/$defs/notSourced"},
+        "valid_from_hour_raw": {"type": "integer"}
+      }
+    },
+    "knownRows": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "rows"],
+      "properties": {
+        "state": {"enum": ["known", "unavailable"]},
+        "rows": {"type": "array"}
+      },
+      "allOf": [
+        {"if": {"properties": {"state": {"const": "unavailable"}}}, "then": {"properties": {"rows": {"maxItems": 0}}}}
+      ]
+    },
+    "sessionEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "flags", "actor_key_hash", "actor_name", "text", "tag_db_id", "value_i32", "related_value_i32", "command_sequence", "event_hour_raw", "event_source_id", "event_state"],
+      "properties": {
+        "kind": {"enum": ["hotjoin", "tag_switch", "chat", "system_message"]},
+        "flags": {"type": "integer", "minimum": 0},
+        "actor_key_hash": {"type": "integer", "minimum": 0},
+        "actor_name": {"type": "string"},
+        "text": {"type": "string"},
+        "tag_db_id": {"type": "integer", "minimum": 0},
+        "value_i32": {"type": "integer"},
+        "related_value_i32": {"type": "integer"},
+        "command_sequence": {"type": "integer", "minimum": 0},
+        "event_hour_raw": {"type": "integer"},
+        "event_source_id": {"enum": [1, 2]},
+        "event_state": {"type": "integer", "minimum": 0}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"enum": ["chat", "system_message"]}}}, "then": {"properties": {"text": {"minLength": 1}, "event_source_id": {"const": 2}}}},
+        {"if": {"properties": {"kind": {"enum": ["hotjoin", "tag_switch"]}}}, "then": {"properties": {"actor_name": {"minLength": 1}, "event_source_id": {"const": 1}}}}
+      ]
+    },
+    "runtimeTextSource": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "identity"],
+          "properties": {
+            "kind": {"const": "localisation_key"},
+            "identity": {"type": "string", "minLength": 1}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "identity"],
+          "properties": {
+            "kind": {"const": "literal"},
+            "identity": {"type": "string"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "identity"],
+          "properties": {
+            "kind": {"const": "authored_token"},
+            "identity": {"type": "string", "minLength": 1}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "rva"],
+          "properties": {
+            "kind": {"const": "setter_caller_rva"},
+            "rva": {"type": "integer", "minimum": 1, "maximum": 4294967295}
+          }
+        }
+      ]
+    },
+    "runtimeTextFinal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bytes_hex", "utf8", "sha256"],
+      "properties": {
+        "bytes_hex": {"type": "string", "pattern": "^(?:[0-9A-Fa-f]{2})*$"},
+        "utf8": {"type": "string"},
+        "sha256": {"type": "string", "pattern": "^[0-9A-Fa-f]{64}$"}
+      }
+    },
+    "runtimeGlyph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["font", "glyph_id", "x", "y", "rgba"],
+      "properties": {
+        "font": {"type": "string", "minLength": 1},
+        "glyph_id": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "x": {"type": "integer"},
+        "y": {"type": "integer"},
+        "rgba": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {"type": "integer", "minimum": 0, "maximum": 255}
+        }
+      }
+    },
+    "runtimeInlineIcon": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sprite", "frame", "x", "y", "baseline", "advance"],
+      "properties": {
+        "sprite": {"type": "string", "minLength": 1},
+        "frame": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "x": {"type": "integer"},
+        "y": {"type": "integer"},
+        "baseline": {"type": "integer"},
+        "advance": {"type": "integer"}
+      }
+    },
+    "runtimeTextLayout": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": {"mode": {"const": "authored_reproducible"}}
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "glyphs", "inline_icons"],
+          "properties": {
+            "mode": {"const": "captured_runtime"},
+            "clip": {
+              "type": ["array", "null"],
+              "minItems": 4,
+              "maxItems": 4,
+              "items": {"type": "integer"}
+            },
+            "glyphs": {"type": "array", "items": {"$ref": "#/$defs/runtimeGlyph"}},
+            "inline_icons": {"type": "array", "items": {"$ref": "#/$defs/runtimeInlineIcon"}}
+          }
+        }
+      ]
+    },
+    "runtimeTextProducer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["setter_entry_rva", "setter_caller_rva", "formatter_entry_rva", "identity_source"],
+      "properties": {
+        "setter_entry_rva": {"const": 36395488},
+        "setter_caller_rva": {
+          "oneOf": [
+            {"type": "integer", "minimum": 1, "maximum": 4294967295},
+            {"type": "null"}
+          ]
+        },
+        "formatter_entry_rva": {"type": ["integer", "null"], "enum": [35859120, null]},
+        "identity_source": {"enum": ["authored_widget_registration", "proven_setter_caller"]}
+      }
+    },
+    "runtimeTextRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["context_id", "frame_hour", "pov_country_or_global", "view_id", "element_id", "source", "final_text", "layout", "producer"],
+      "properties": {
+        "context_id": {"type": "string", "minLength": 1},
+        "frame_hour": {"type": "integer"},
+        "pov_country_or_global": {"type": "string", "minLength": 1},
+        "view_id": {"type": "string", "minLength": 1},
+        "element_id": {"type": "string", "minLength": 1},
+        "source": {"$ref": "#/$defs/runtimeTextSource"},
+        "final_text": {"$ref": "#/$defs/runtimeTextFinal"},
+        "variables": {"type": "object", "additionalProperties": {"type": "string"}},
+        "data_functions": {"type": "object", "additionalProperties": {"type": "string"}},
+        "dynamic_colors": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 1}},
+        "layout": {"$ref": "#/$defs/runtimeTextLayout"},
+        "producer": {"$ref": "#/$defs/runtimeTextProducer"}
+      }
+    },
+    "runtimeText": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema", "state"],
+          "properties": {
+            "schema": {"const": "hoi4-runtime-text-v1"},
+            "state": {"const": "unobtained"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema", "state", "contexts_complete", "contexts"],
+          "properties": {
+            "schema": {"const": "hoi4-runtime-text-v1"},
+            "state": {"const": "measured"},
+            "contexts_complete": {"type": "boolean"},
+            "contexts": {"type": "array", "items": {"$ref": "#/$defs/runtimeTextRecord"}}
+          }
+        }
+      ]
+    },
+    "resolvedTooltipRowAvailability": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state"],
+          "properties": {"state": {"const": "resolved"}}
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state"],
+          "properties": {"state": {"const": "not_applicable"}}
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "field"],
+          "properties": {
+            "state": {"const": "data_blocked"},
+            "field": {"type": "string", "minLength": 1, "maxLength": 65536}
+          }
+        }
+      ]
+    },
+    "resolvedTooltipRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_ordinal", "line_kind", "source_identity", "evaluation_context", "availability", "resolved_text"],
+      "properties": {
+        "source_ordinal": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "line_kind": {"enum": ["header", "description", "value", "breakdown", "scripted", "spacer", "resolved"]},
+        "source_identity": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "evaluation_context": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "availability": {"$ref": "#/$defs/resolvedTooltipRowAvailability"},
+        "resolved_text": {"type": "string", "maxLength": 65536}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"availability": {"properties": {"state": {"const": "resolved"}}}}},
+          "then": {"properties": {"resolved_text": {"minLength": 1}}}
+        },
+        {
+          "if": {"properties": {"availability": {"properties": {"state": {"enum": ["not_applicable", "data_blocked"]}}}}},
+          "then": {"properties": {"resolved_text": {"maxLength": 0}}}
+        }
+      ]
+    },
+    "resolvedTooltipRect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": {"type": "integer"},
+        "y": {"type": "integer"},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1}
+      }
+    },
+    "resolvedTooltipInstance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frame_hour", "pov_country_or_global", "view_id", "element_path", "repeat_index", "screen_rect", "viewport_width_px", "viewport_height_px", "producer_record_identity", "rows"],
+      "properties": {
+        "frame_hour": {"type": "integer", "minimum": 0},
+        "pov_country_or_global": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "view_id": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "element_path": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "repeat_index": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "screen_rect": {"$ref": "#/$defs/resolvedTooltipRect"},
+        "viewport_width_px": {"type": "integer", "minimum": 1},
+        "viewport_height_px": {"type": "integer", "minimum": 1},
+        "producer_record_identity": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "rows": {"type": "array", "maxItems": 4096, "items": {"$ref": "#/$defs/resolvedTooltipRow"}}
+      }
+    },
+    "resolvedTooltipInstances": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema", "state"],
+          "properties": {
+            "schema": {"const": "hoi4-resolved-tooltip-instances-v1"},
+            "state": {"const": "unobtained"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema", "state", "frame_hour", "producer_manifest_sha256", "completeness_record_identity", "expected_instance_count", "instances"],
+          "properties": {
+            "schema": {"const": "hoi4-resolved-tooltip-instances-v1"},
+            "state": {"const": "measured"},
+            "frame_hour": {"type": "integer", "minimum": 0},
+            "producer_manifest_sha256": {"type": "string", "pattern": "^[0-9A-Fa-f]{64}$", "not": {"pattern": "^0{64}$"}},
+            "completeness_record_identity": {"type": "string", "minLength": 1, "maxLength": 65536},
+            "expected_instance_count": {"type": "integer", "minimum": 0, "maximum": 4096},
+            "instances": {"type": "array", "maxItems": 4096, "items": {"$ref": "#/$defs/resolvedTooltipInstance"}}
+          }
+        }
+      ]
+    },
+    "sessionMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["players_by_country", "pause", "events"],
+      "properties": {
+        "players_by_country": {
+          "allOf": [
+            {"$ref": "#/$defs/knownRows"},
+            {"properties": {"rows": {"items": {"$ref": "#/$defs/playerCountryRow"}}}}
+          ]
+        },
+        "pause": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "is_paused"],
+          "properties": {
+            "state": {"enum": ["known", "unavailable"]},
+            "is_paused": {"type": ["boolean", "null"]}
+          },
+          "allOf": [
+            {"if": {"properties": {"state": {"const": "known"}}}, "then": {"properties": {"is_paused": {"type": "boolean"}}}},
+            {"if": {"properties": {"state": {"const": "unavailable"}}}, "then": {"properties": {"is_paused": {"type": "null"}}}}
+          ]
+        },
+        "events": {
+          "allOf": [
+            {"$ref": "#/$defs/knownRows"},
+            {"properties": {"rows": {"items": {"$ref": "#/$defs/sessionEvent"}}}}
+          ]
+        }
+      }
+    }
+  }
+}

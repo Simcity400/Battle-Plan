@@ -1,0 +1,823 @@
+{
+  "authority": {
+    "production_head": "2069d17b707320fe2551bced1581ecea9b812d2f",
+    "production_root": "C:\\Users\\Example\\OneDrive\\Documents\\Paradox Interactive\\Hearts of Iron IV\\mod\\battle-plan",
+    "source_sha256": {
+      "d3d11_device.rs": "f5cb1dc0eb97d7ba41f4f210749deead33a13e30c98c4a88064d882fe4402c71",
+      "frame_bundle.rs": "c6919d0a0984b7640133292b15d61cbda5674aae1b144fafed9991a80109c1e5",
+      "light_depth_projection.rs": "df770f28647588de84674cf982927366e23e29cfd498d5962fbed87c404d13c9",
+      "m01_runtime_admission.rs": "83adf48584082dd1b27437796c20e4526e936cafa679c5ac9dae48bb85c63eda",
+      "map_label_law.rs": "d255a84fda0978390f5c606e90fa0ef61df4f7aa308cbdfe899b5662a56a9851",
+      "mod_resolver.rs": "7d0d97f58df2ec5ab755cee9aa77523fc4e86a7a6859545541e5c75b7dedfd99",
+      "o05_fixed_object_law.rs": "beea1010aac0936ff7e2bc53ff4edc441cccdd061623ef0ac53e2595bbc074a1",
+      "pass_graph.rs": "ff6282072282184ce8db0fe67dbb35bd18b0d541545245365842c283423cd09c",
+      "research_canvas.rs": "9be186579fb8241d8cac2d20c1514f88270cdc6fe322b8bb1cf98c91419e5605",
+      "scrollbar_law.rs": "0b01cce06c9310f1335ecb5770b5799088594cfb618a6b5d1192dcc2047835bd",
+      "shadow_law.rs": "73a9aad64890f42af997c28bf6d39c2df898b5dbec9f16661211f776866f70f7",
+      "terrain_lod_law.rs": "930ec0a5918685d985176716f5d5d298bfb8e192491890c579d36909600b628c"
+    },
+    "workspace": "C:\\Users\\Example\\OneDrive\\Documents\\Paradox Interactive\\Hearts of Iron IV\\mod\\battle-plan"
+  },
+  "classified_passed": 0,
+  "external_capture_gaps": 4,
+  "failed": 0,
+  "gate_count": 36,
+  "gates": [
+    {
+      "class": "production_promotion",
+      "exit_code": 0,
+      "id": "L02_shadow_matrix_composition",
+      "packet": "L02",
+      "promotion_artifacts": [
+        {
+          "bytes": 8450,
+          "path": "replay_interface/re_evidence/rendering_laws/L02/promotion_manifest.json",
+          "sha256": "d27cd4b005eabfba62940cca3c9a6f217e33a9f8754a414fc40ede9a6f95dd02"
+        },
+        {
+          "bytes": 2719,
+          "path": "replay_interface/re_evidence/rendering_laws/L02/production_port_verification.json",
+          "sha256": "9e5062493ac3d57c81bacac5e751dae555c94517d8092c2387c737330e725144"
+        },
+        {
+          "bytes": 35249,
+          "path": "replay_interface/native/map_viewer/src/shadow_law.rs",
+          "sha256": "73a9aad64890f42af997c28bf6d39c2df898b5dbec9f16661211f776866f70f7"
+        }
+      ],
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/L02_shadow_matrix_composition.stderr.log",
+        "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+      },
+      "stdout": {
+        "path": "runs/L02_shadow_matrix_composition.stdout.log",
+        "sha256": "6f7821a01f9da6237809d0c396bd9d9e0af752dadf05aa72d5ad5ebca1bd8d70"
+      }
+    },
+    {
+      "class": "production_promotion",
+      "exit_code": 0,
+      "id": "L03_object_pass_projection",
+      "packet": "L03",
+      "promotion_artifacts": [
+        {
+          "bytes": 10615,
+          "path": "replay_interface/re_evidence/rendering_laws/L03/manifest.json",
+          "sha256": "67b733ea6bb619600807a1f21d59bd14b3e013faf819c488c73506fa5554c91c"
+        },
+        {
+          "bytes": 1634,
+          "path": "replay_interface/re_evidence/rendering_laws/L03/production_projection/verification.json",
+          "sha256": "01da076eb40aa55b04d31b832af265cf82d5a4af157a4fc680c0402984b8181c"
+        },
+        {
+          "bytes": 30762,
+          "path": "replay_interface/native/map_viewer/src/light_depth_projection.rs",
+          "sha256": "df770f28647588de84674cf982927366e23e29cfd498d5962fbed87c404d13c9"
+        }
+      ],
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/L03_object_pass_projection.stderr.log",
+        "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+      },
+      "stdout": {
+        "path": "runs/L03_object_pass_projection.stdout.log",
+        "sha256": "5755328d0b8db2868e9794418cb53b234a5a965bab4684d5a06f03d8a9c8c6e3"
+      }
+    },
+    {
+      "class": "captured_pixel_join",
+      "exit_code": 0,
+      "id": "L06_snowmud_pixel_join",
+      "packet": "L06",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/L06_snowmud_pixel_join.stderr.log",
+        "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+      },
+      "stdout": {
+        "path": "runs/L06_snowmud_pixel_join.stdout.log",
+        "sha256": "9ea7330d9f39f3a87819302e6bd0ae3eabac99d201a147b1d3059540254fabb7"
+      }
+    },
+    {
+      "class": "production_promotion",
+      "exit_code": 0,
+      "id": "M01_unit_event_pass",
+      "packet": "M01",
+      "promotion_artifacts": [
+        {
+          "bytes": 4934,
+          "path": "replay_interface/re_evidence/rendering_laws/M01/evidence_manifest.json",
+          "sha256": "19efa74a0f55f002b78381e6d05371751e85939adced6383842c21da78ff5a98"
+        },
+        {
+          "bytes": 942,
+          "path": "replay_interface/re_evidence/rendering_laws/M01/runtime_admission/verification_result.json",
+          "sha256": "900b8ed4fb87d18ac4a981f4ec476c5c4d22c9ba7ac0904080071c91379ca938"
+        },
+        {
+          "bytes": 14072,
+          "path": "replay_interface/native/map_viewer/src/m01_runtime_admission.rs",
+          "sha256": "83adf48584082dd1b27437796c20e4526e936cafa679c5ac9dae48bb85c63eda"
+        }
+      ],
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/M01_unit_event_pass.stderr.log",
+        "sha256": "a4de0590a9de837986176964654d687b59f11de7534c40602fbfb1bf782b1a52"
+      },
+      "stdout": {
+        "path": "runs/M01_unit_event_pass.stdout.log",
+        "sha256": "221c291feff179afe18d9e9d64e28d2b0c5df0a8e819d3864862d3c0893de938"
+      }
+    },
+    {
+      "class": "pixel_consumer_contract",
+      "exit_code": 0,
+      "id": "M03_arrow_pixel_contract",
+      "packet": "M03",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/M03_arrow_pixel_contract.stderr.log",
+        "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+      },
+      "stdout": {
+        "path": "runs/M03_arrow_pixel_contract.stdout.log",
+        "sha256": "e8d6462c12609460fa1b323c96a5e7415d3a6448ec2c26f82aaa4a61ef89b6ef"
+      }
+    },
+    {
+      "class": "production_promotion",
+      "exit_code": 0,
+      "id": "N02_map_label_projection",
+      "packet": "N02",
+      "promotion_artifacts": [
+        {
+          "bytes": 2701,
+          "path": "replay_interface/re_evidence/rendering_laws/N02/promotion_manifest.json",
+          "sha256": "6d574bc8e7820caf7e9d4cf844d8fd86a2c0494336c505c99d57da28c7094ac0"
+        },
+        {
+          "bytes": 290,
+          "path": "replay_interface/re_evidence/rendering_laws/N02/promotion_manifest_verification.json",
+          "sha256": "a3c5983cf9d511296b3fdd0b9333d0f2a7a8c064f01b9bbb5ba7fd9ace7825d5"
+        },
+        {
+          "bytes": 133626,
+          "path": "replay_interface/native/map_viewer/src/map_label_law.rs",
+          "sha256": "d255a84fda0978390f5c606e90fa0ef61df4f7aa308cbdfe899b5662a56a9851"
+        }
+      ],
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/N02_map_label_projection.stderr.log",
+        "sha256": "a4de0590a9de837986176964654d687b59f11de7534c40602fbfb1bf782b1a52"
+      },
+      "stdout": {
+        "path": "runs/N02_map_label_projection.stdout.log",
+        "sha256": "1e24cfcd9786685173cf145189a09c8c4c0e71c56f659159449d1c23bced3635"
+      }
+    },
+    {
+      "class": "event_pixel_evidence",
+      "exit_code": 0,
+      "id": "O04_city_event_pixel_join",
+      "packet": "O04",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/O04_city_event_pixel_join.stderr.log",
+        "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+      },
+      "stdout": {
+        "path": "runs/O04_city_event_pixel_join.stdout.log",
+        "sha256": "33060f0928fd78d721db151679f7dc13830d115eca618f915d057c9bafa599f6"
+      }
+    },
+    {
+      "class": "production_promotion",
+      "exit_code": 0,
+      "id": "O05_object_event_pixel_gate",
+      "packet": "O05",
+      "promotion_artifacts": [
+        {
+          "bytes": 5066,
+          "path": "replay_interface/re_evidence/rendering_laws/O05/production_promotion.json",
+          "sha256": "1c8203dfe9fb59580389c6386622538c7eeb4d329466af6f714e5a597f6a8b6b"
+        },
+        {
+          "bytes": 277,
+          "path": "replay_interface/re_evidence/rendering_laws/O05/production_promotion_verification.json",
+          "sha256": "bc94d734d739adf0fcca7c5c2ea27c59bf07b1c0e166e54c65fc81ca91c7d806"
+        },
+        {
+          "bytes": 13951,
+          "path": "replay_interface/native/map_viewer/src/o05_fixed_object_law.rs",
+          "sha256": "beea1010aac0936ff7e2bc53ff4edc441cccdd061623ef0ac53e2595bbc074a1"
+        }
+      ],
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/O05_object_event_pixel_gate.stderr.log",
+        "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+      },
+      "stdout": {
+        "path": "runs/O05_object_event_pixel_gate.stdout.log",
+        "sha256": "3cb2aa234684c54e21b37b6730f69ec6381414a2a2735e6ac9e272ef07109ffe"
+      }
+    },
+    {
+      "class": "event_pass_order",
+      "exit_code": 0,
+      "id": "R02_river_event_order",
+      "packet": "R02",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/R02_river_event_order.stderr.log",
+        "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+      },
+      "stdout": {
+        "path": "runs/R02_river_event_order.stdout.log",
+        "sha256": "90f9ca322cf2b57a52faaea0b03af8d8dfe13a5743d446345f79ebc3df8818b0"
+      }
+    },
+    {
+      "class": "production_promotion",
+      "exit_code": 0,
+      "id": "UI06_legacy_pixel_join",
+      "packet": "UI06",
+      "promotion_artifacts": [
+        {
+          "bytes": 3883,
+          "path": "replay_interface/re_evidence/rendering_laws/UI06/production_manifest.json",
+          "sha256": "3bb68a0a0da492724357aafc2fee7181675f4a22c41fe3d5705a1ab6850912e9"
+        },
+        {
+          "bytes": 3229,
+          "path": "replay_interface/re_evidence/rendering_laws/UI06/production_promotion.json",
+          "sha256": "fa00b2687639036ed82683d6a72d34c09bfb9e8bd5519e5d75b3bc63b60a7d42"
+        },
+        {
+          "bytes": 7166,
+          "path": "replay_interface/native/game_ui/src/scrollbar_law.rs",
+          "sha256": "0b01cce06c9310f1335ecb5770b5799088594cfb618a6b5d1192dcc2047835bd"
+        }
+      ],
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/UI06_legacy_pixel_join.stderr.log",
+        "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+      },
+      "stdout": {
+        "path": "runs/UI06_legacy_pixel_join.stdout.log",
+        "sha256": "9f884eef32577fd8d46cb8420338445fc095922b61b9ca97514eea5105fe2074"
+      }
+    },
+    {
+      "class": "production_promotion",
+      "exit_code": 0,
+      "id": "UI09_UI10_current_canvas_join",
+      "packet": "UI09+UI10",
+      "promotion_artifacts": [
+        {
+          "bytes": 2800,
+          "path": "replay_interface/re_evidence/rendering_laws/UI09/production_completion/manifest.json",
+          "sha256": "bbd78550e276bc7f313a3faea06329bf1eee5f43b34337768186e1defee349de"
+        },
+        {
+          "bytes": 11852,
+          "path": "replay_interface/native/game_ui/src/research_canvas.rs",
+          "sha256": "9be186579fb8241d8cac2d20c1514f88270cdc6fe322b8bb1cf98c91419e5605"
+        },
+        {
+          "bytes": 8960,
+          "path": "replay_interface/native/game_ui/tests/ui09_canvas_admission.rs",
+          "sha256": "4ed28d6316eb7ad9c0e7d51655fa4019a39a2ec8e9f256259fbe9a18c07199c2"
+        }
+      ],
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/UI09_UI10_current_canvas_join.stderr.log",
+        "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+      },
+      "stdout": {
+        "path": "runs/UI09_UI10_current_canvas_join.stdout.log",
+        "sha256": "2c6f51832191d56a27600fa2f2431f170e5c895d2507ce56970fb4adf35f48c9"
+      }
+    },
+    {
+      "class": "production_promotion",
+      "exit_code": 0,
+      "id": "UI15_archive_mount_promotion",
+      "packet": "UI15",
+      "promotion_artifacts": [
+        {
+          "bytes": 3236,
+          "path": "replay_interface/re_evidence/rendering_laws/UI15/manifest.json",
+          "sha256": "2ec90335998c0c5b05af13a18af9815ce77c4300b729a7579f2dba1c89047b21"
+        },
+        {
+          "bytes": 9418,
+          "path": "replay_interface/re_evidence/rendering_laws/UI15/verifier_result.json",
+          "sha256": "de7af846d92792cac6d2bb20c9c507f87d044624c35582f408984739504fa041"
+        },
+        {
+          "bytes": 52571,
+          "path": "replay_interface/native/map_viewer/src/mod_resolver.rs",
+          "sha256": "7d0d97f58df2ec5ab755cee9aa77523fc4e86a7a6859545541e5c75b7dedfd99"
+        }
+      ],
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/UI15_archive_mount_promotion.stderr.log",
+        "sha256": "8792a7731205d42a4081f6fb6b0856647d8b1e3bfa98aa943b0e0f7c31d227ff"
+      },
+      "stdout": {
+        "path": "runs/UI15_archive_mount_promotion.stdout.log",
+        "sha256": "361d9e6aa8178f1e0cd2e4fd59245d787419d914bd09389d5356943fff9ff85a"
+      }
+    },
+    {
+      "class": "ported_merge_infrastructure",
+      "exit_code": 0,
+      "id": "production_pass_graph_tests",
+      "packet": "production_authority",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/production_pass_graph_tests.stderr.log",
+        "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+      },
+      "stdout": {
+        "path": "runs/production_pass_graph_tests.stdout.log",
+        "sha256": "77f5e6ea9eafd2f441435e3f07d81d4e2d5e95b48f0a5abc0828fa89fbdb5c5d"
+      }
+    },
+    {
+      "class": "ported_merge_infrastructure",
+      "exit_code": 0,
+      "id": "production_shadow_law_tests",
+      "packet": "production_authority",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/production_shadow_law_tests.stderr.log",
+        "sha256": "debf8ce82c2c607b3e769f724297ca19891759a35091afc8b0e06badfa73f99f"
+      },
+      "stdout": {
+        "path": "runs/production_shadow_law_tests.stdout.log",
+        "sha256": "274f1775461fd83d415c5a2a16737d4e85b4b02b667b47922c585593c59af3ff"
+      }
+    },
+    {
+      "class": "ported_merge_infrastructure",
+      "exit_code": 0,
+      "id": "production_terrain_lod_compose_tests",
+      "packet": "production_authority",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/production_terrain_lod_compose_tests.stderr.log",
+        "sha256": "d9462c7b452194938d93f024571e9f41b1a038412adbae5d06f5502a0ca02e55"
+      },
+      "stdout": {
+        "path": "runs/production_terrain_lod_compose_tests.stdout.log",
+        "sha256": "cc61ecf4f4037af2e7a1893f4e97e45daa33611041d1ad5ff5c08dfafe6bdd54"
+      }
+    },
+    {
+      "class": "ported_merge_infrastructure",
+      "exit_code": 0,
+      "id": "production_o05_fixed_object_gate_tests",
+      "packet": "production_authority",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/production_o05_fixed_object_gate_tests.stderr.log",
+        "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+      },
+      "stdout": {
+        "path": "runs/production_o05_fixed_object_gate_tests.stdout.log",
+        "sha256": "7a447caa86f9fe058fb9bfa664ba9e84ef7fe61b0bde9588f331496647f35d5f"
+      }
+    },
+    {
+      "capture": "C:\\Users\\Example\\hoi4_capture_corpus_preserved\\live_PAN2",
+      "class": "ported_real_corpus_compose",
+      "exit_code": 0,
+      "id": "production_t01_lod_selection_pan2",
+      "packet": "T01+production_authority",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/production_t01_lod_selection_pan2.stderr.log",
+        "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+      },
+      "stdout": {
+        "path": "runs/production_t01_lod_selection_pan2.stdout.log",
+        "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+      }
+    },
+    {
+      "capture": "C:\\Users\\Example\\hoi4_capture_corpus_preserved\\live_PAN2",
+      "class": "ported_real_corpus_compose",
+      "exit_code": 0,
+      "id": "production_t01_vsnap_corpus_pan2",
+      "packet": "T01+production_authority",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/production_t01_vsnap_corpus_pan2.stderr.log",
+        "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+      },
+      "stdout": {
+        "path": "runs/production_t01_vsnap_corpus_pan2.stdout.log",
+        "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+      }
+    },
+    {
+      "capture": "C:\\Users\\Example\\hoi4_capture_corpus_preserved\\live_PAN2",
+      "class": "ported_real_corpus_compose",
+      "exit_code": 0,
+      "id": "production_t01_mesh_corpus_pan2",
+      "packet": "T01+production_authority",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/production_t01_mesh_corpus_pan2.stderr.log",
+        "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+      },
+      "stdout": {
+        "path": "runs/production_t01_mesh_corpus_pan2.stdout.log",
+        "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+      }
+    },
+    {
+      "capture": "C:\\Users\\Example\\hoi4_capture_corpus_preserved\\live_PAN_chunks",
+      "class": "ported_real_corpus_compose",
+      "exit_code": 0,
+      "id": "production_t01_lod_selection_pan_chunks",
+      "packet": "T01+production_authority",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/production_t01_lod_selection_pan_chunks.stderr.log",
+        "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+      },
+      "stdout": {
+        "path": "runs/production_t01_lod_selection_pan_chunks.stdout.log",
+        "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+      }
+    },
+    {
+      "capture": "C:\\Users\\Example\\hoi4_capture_corpus_preserved\\live_PAN_chunks",
+      "class": "ported_real_corpus_compose",
+      "exit_code": 0,
+      "id": "production_t01_vsnap_corpus_pan_chunks",
+      "packet": "T01+production_authority",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/production_t01_vsnap_corpus_pan_chunks.stderr.log",
+        "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+      },
+      "stdout": {
+        "path": "runs/production_t01_vsnap_corpus_pan_chunks.stdout.log",
+        "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+      }
+    },
+    {
+      "capture": "C:\\Users\\Example\\hoi4_capture_corpus_preserved\\live_PAN_chunks",
+      "class": "ported_real_corpus_compose",
+      "exit_code": 0,
+      "id": "production_t01_mesh_corpus_pan_chunks",
+      "packet": "T01+production_authority",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/production_t01_mesh_corpus_pan_chunks.stderr.log",
+        "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+      },
+      "stdout": {
+        "path": "runs/production_t01_mesh_corpus_pan_chunks.stdout.log",
+        "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+      }
+    },
+    {
+      "capture": "C:\\Users\\Example\\hoi4_capture_corpus_preserved\\live_FINAL_full",
+      "class": "ported_real_corpus_compose",
+      "exit_code": 0,
+      "id": "production_t01_lod_selection_final_full",
+      "packet": "T01+production_authority",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/production_t01_lod_selection_final_full.stderr.log",
+        "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+      },
+      "stdout": {
+        "path": "runs/production_t01_lod_selection_final_full.stdout.log",
+        "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+      }
+    },
+    {
+      "capture": "C:\\Users\\Example\\hoi4_capture_corpus_preserved\\live_FINAL_full",
+      "class": "ported_real_corpus_compose",
+      "exit_code": 0,
+      "id": "production_t01_vsnap_corpus_final_full",
+      "packet": "T01+production_authority",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/production_t01_vsnap_corpus_final_full.stderr.log",
+        "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+      },
+      "stdout": {
+        "path": "runs/production_t01_vsnap_corpus_final_full.stdout.log",
+        "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+      }
+    },
+    {
+      "capture": "C:\\Users\\Example\\hoi4_capture_corpus_preserved\\live_FINAL_full",
+      "class": "ported_real_corpus_compose",
+      "exit_code": 0,
+      "id": "production_t01_mesh_corpus_final_full",
+      "packet": "T01+production_authority",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/production_t01_mesh_corpus_final_full.stderr.log",
+        "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+      },
+      "stdout": {
+        "path": "runs/production_t01_mesh_corpus_final_full.stdout.log",
+        "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+      }
+    },
+    {
+      "capture": "C:\\Users\\Example\\hoi4_capture_corpus_preserved\\gate18_final",
+      "class": "ported_real_corpus_compose",
+      "exit_code": 0,
+      "id": "production_t01_lod_selection_gate18",
+      "packet": "T01+production_authority",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/production_t01_lod_selection_gate18.stderr.log",
+        "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+      },
+      "stdout": {
+        "path": "runs/production_t01_lod_selection_gate18.stdout.log",
+        "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+      }
+    },
+    {
+      "capture": "C:\\Users\\Example\\hoi4_capture_corpus_preserved\\gate18_final",
+      "class": "ported_real_corpus_compose",
+      "exit_code": 0,
+      "id": "production_t01_vsnap_corpus_gate18",
+      "packet": "T01+production_authority",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/production_t01_vsnap_corpus_gate18.stderr.log",
+        "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+      },
+      "stdout": {
+        "path": "runs/production_t01_vsnap_corpus_gate18.stdout.log",
+        "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+      }
+    },
+    {
+      "capture": "C:\\Users\\Example\\hoi4_capture_corpus_preserved\\gate18_final",
+      "class": "ported_real_corpus_compose",
+      "exit_code": 0,
+      "id": "production_t01_mesh_corpus_gate18",
+      "packet": "T01+production_authority",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/production_t01_mesh_corpus_gate18.stderr.log",
+        "sha256": "335f1f29c8070395ad29ce476fc22247f2d524104d22bcc36af382731dc31863"
+      },
+      "stdout": {
+        "path": "runs/production_t01_mesh_corpus_gate18.stdout.log",
+        "sha256": "7a1460d43b843b43b20a673c943982c61d5d447d94da530ebf477064167d23b9"
+      }
+    },
+    {
+      "class": "ported_final_frame_infrastructure",
+      "exit_code": 0,
+      "id": "production_renderer_build",
+      "packet": "production_authority",
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/production_renderer_build.stderr.log",
+        "sha256": "d1584e75432e295f8e5dd1374e054a59067e8f6a7e53ea018b72787728bd6d57"
+      },
+      "stdout": {
+        "path": "runs/production_renderer_build.stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "capture": "C:\\Users\\Example\\hoi4_capture_corpus_preserved\\gate18_final",
+      "class": "ported_final_frame_parity",
+      "classification": "the preserved gate18 TerrainIDMap mismatch is a pinned fail-closed negative control, not a final-frame parity oracle",
+      "dependency_graph": [
+        "terrain"
+      ],
+      "exit_code": 1,
+      "id": "production_final_frame_gate18",
+      "missing_dependency_bundles": [],
+      "packet": "production_authority",
+      "required_dependency_graph": null,
+      "status": "NOT_APPLICABLE_KNOWN_NEGATIVE_CONTROL",
+      "stderr": {
+        "path": "runs/production_final_frame_gate18.stderr.log",
+        "sha256": "081b4262ca2546404bc8a5858d6dc05f9ab1d6c3b279f5c876e0cea7e9256aa7"
+      },
+      "stdout": {
+        "path": "runs/production_final_frame_gate18.stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "capture": "C:\\Users\\Example\\hoi4_capture_corpus_preserved\\live_FINAL_full",
+      "class": "ported_final_frame_parity",
+      "classification": "the retained rivers capture was exported before the pass-close boundary and has no required post-pass output-merger payload",
+      "dependency_graph": [
+        "terrain",
+        "water",
+        "rivers"
+      ],
+      "exit_code": 1,
+      "id": "production_final_frame_final_full",
+      "missing_dependency_bundles": [],
+      "packet": "production_authority",
+      "required_dependency_graph": null,
+      "status": "NOT_RUNNABLE_EXTERNAL_CAPTURE_PASS_NOT_CLOSED",
+      "stderr": {
+        "path": "runs/production_final_frame_final_full.stderr.log",
+        "sha256": "68627b3946172f49cb900713c554903733e6469273583ad3789a3c6e9004c5ba"
+      },
+      "stdout": {
+        "path": "runs/production_final_frame_final_full.stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "capture": "C:\\Users\\Example\\hoi4_capture_corpus_preserved\\live_PAN2",
+      "class": "ported_final_frame_parity",
+      "classification": "the retained capture omits exact render-target and depth-stencil clear provenance required before the first depth-tested draw",
+      "dependency_graph": [
+        "terrain",
+        "water",
+        "rivers",
+        "trees"
+      ],
+      "exit_code": 1,
+      "id": "production_final_frame_pan2",
+      "missing_dependency_bundles": [],
+      "packet": "production_authority",
+      "required_dependency_graph": null,
+      "status": "NOT_RUNNABLE_EXTERNAL_CAPTURE_CLEAR_PROVENANCE",
+      "stderr": {
+        "path": "runs/production_final_frame_pan2.stderr.log",
+        "sha256": "e0103adb1fa308ed1c2337b4269201649b02b631a4e00d37458d8bf2af75e1a9"
+      },
+      "stdout": {
+        "path": "runs/production_final_frame_pan2.stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "capture": "C:\\Users\\Example\\hoi4_capture_corpus_preserved\\live_PAN_chunks",
+      "capture_access_failures": [
+        {
+          "path": "water_frame_draw_map_frame_shared_payload_ps_srv_GradientBorderChannel1_00f31d499c07dde0.d3d11",
+          "winerror": null
+        }
+      ],
+      "class": "ported_final_frame_parity",
+      "classification": "the preserved capture contains a file whose ACL denies read access; no capture bytes were substituted or modified",
+      "dependency_graph": [
+        "terrain",
+        "water",
+        "rivers",
+        "trees"
+      ],
+      "exit_code": 1,
+      "id": "production_final_frame_pan_chunks",
+      "missing_dependency_bundles": [],
+      "packet": "production_authority",
+      "required_dependency_graph": null,
+      "status": "NOT_RUNNABLE_EXTERNAL_CAPTURE_FILE_ACCESS",
+      "stderr": {
+        "path": "runs/production_final_frame_pan_chunks.stderr.log",
+        "sha256": "e296210ce613dab53f44850c48ed3da7816755b19bbe8c1f780deb25c541d2a7"
+      },
+      "stdout": {
+        "path": "runs/production_final_frame_pan_chunks.stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "capture": "C:\\Users\\Example\\hoi4_capture_corpus_preserved\\live_trees_measure",
+      "class": "ported_final_frame_parity",
+      "classification": "the preserved capture lacks one or more upstream pass bundles required by the canonical terrain -> water -> rivers -> trees graph",
+      "dependency_graph": [
+        "terrain",
+        "trees"
+      ],
+      "exit_code": 1,
+      "id": "production_final_frame_trees_measure",
+      "missing_dependency_bundles": [
+        "map_frame_water_pass_bundle.json",
+        "map_frame_rivers_pass_bundle.json"
+      ],
+      "packet": "production_authority",
+      "required_dependency_graph": [
+        "terrain",
+        "water",
+        "rivers",
+        "trees"
+      ],
+      "status": "NOT_RUNNABLE_EXTERNAL_CAPTURE_DEPENDENCY_GRAPH",
+      "stderr": {
+        "path": "runs/production_final_frame_trees_measure.stderr.log",
+        "sha256": "f5eb2a9e5ad6fa0b4f5bfddb6837feaeaf5946753b2fbcb656927851d9cd0905"
+      },
+      "stdout": {
+        "path": "runs/production_final_frame_trees_measure.stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "capture": "C:\\Users\\Example\\hoi4_capture_corpus_preserved\\session_WAVE1_CAP4_rounds\\fow_off_observer_front",
+      "class": "ported_final_frame_parity",
+      "dependency_graph": [
+        "terrain",
+        "water",
+        "rivers",
+        "trees"
+      ],
+      "exit_code": 0,
+      "id": "production_final_frame_fow_off",
+      "missing_dependency_bundles": [],
+      "packet": "production_authority",
+      "required_dependency_graph": [
+        "terrain",
+        "water",
+        "rivers",
+        "trees"
+      ],
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/production_final_frame_fow_off.stderr.log",
+        "sha256": "22c658a96603cd6144fcad274612b3e8276e05cf630f178f535950ab18f81a25"
+      },
+      "stdout": {
+        "path": "runs/production_final_frame_fow_off.stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "capture": "C:\\Users\\Example\\hoi4_capture_corpus_preserved\\session_WAVE1_CAP4_rounds\\fow_on_pov_front",
+      "class": "ported_final_frame_parity",
+      "dependency_graph": [
+        "terrain",
+        "water",
+        "rivers",
+        "trees"
+      ],
+      "exit_code": 0,
+      "id": "production_final_frame_fow_on",
+      "missing_dependency_bundles": [],
+      "packet": "production_authority",
+      "required_dependency_graph": [
+        "terrain",
+        "water",
+        "rivers",
+        "trees"
+      ],
+      "status": "PASS",
+      "stderr": {
+        "path": "runs/production_final_frame_fow_on.stderr.log",
+        "sha256": "0d27842c9a8522b76b0e90362d6ee2c406f38194b21201c88697523a0bd679db"
+      },
+      "stdout": {
+        "path": "runs/production_final_frame_fow_on.stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  ],
+  "not_applicable": 1,
+  "passed": 31,
+  "post_port_fixture_gaps": 0,
+  "schema": "hoi4-rendering-laws-final-event-compose-audit-v1",
+  "static_srv_closure": {
+    "frame_bundle": {
+      "bytes": 260095,
+      "path": "replay_interface/native/map_viewer/src/frame_bundle.rs",
+      "sha256": "c6919d0a0984b7640133292b15d61cbda5674aae1b144fafed9991a80109c1e5"
+    },
+    "trees_oracle_manifest": {
+      "bytes": 1051,
+      "path": "trees_measure_legacy_join/manifest.json",
+      "sha256": "875047b57fb58e8a9faa4d8b62e21d29f04ab11be2fb6f0372e181c9b852af01"
+    },
+    "verification": {
+      "bytes": 1430,
+      "path": "static_srv_resolver_join/verification.json",
+      "sha256": "468035b76a967ad1c070967faa7d2199d0e2e1e20b4f7e452bf1e326beff932d"
+    }
+  },
+  "status": "PASS"
+}

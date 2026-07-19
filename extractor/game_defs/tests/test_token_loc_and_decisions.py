@@ -124,10 +124,17 @@ political_actions = {
     fire_only_once = yes
     days_re_enable = 30
     days_remove = 15
+    do_not_show_alert = yes
+    is_good = no
+    sort_order = 12
+    priority = 7
     country_target = yes
     visible = { always = yes }
     available = { has_political_power > 75 }
     target_trigger = { tag = GER }
+  }
+  selector_target_decision = {
+    state_target = any_controlled_state
   }
   bad_decision = { name = { bad = yes } }
 }
@@ -282,14 +289,23 @@ def test_decisions_parser_categories_override_explicit_and_fail_closed(tmp_path)
     assert metadata["fire_only_once"] is True
     assert metadata["cooldowns"]["days_re_enable"] == "30"
     assert metadata["cooldowns"]["days_remove"] == "15"
+    assert metadata["do_not_show_alert"] is True
+    assert metadata["is_good"] is False
+    assert metadata["sort_order"] == "12"
+    assert metadata["priority"] == "7"
     assert metadata["targets"]["target_scope"] == "country"
     assert metadata["targets"]["has_target_trigger"] is True
     assert metadata["visibility"]["has_visible"] is True
     assert metadata["visibility"]["has_available"] is True
 
+    selector_target = out["decisions"]["selector_target_decision"]
+    assert selector_target["targets"]["state_target"] is True
+    assert selector_target["targets"]["state_target_selector"] == "any_controlled_state"
+    assert selector_target["targets"]["target_scope"] == "state"
+
     assert "visible" not in out["decisions"]
     assert [r["id"] for r in out["omitted"]] == ["bad_decision"]
-    assert out["meta"]["decision_count"] == 4
+    assert out["meta"]["decision_count"] == 5
 
 
 def test_malformed_braces_fail_strict_decisions(tmp_path):
@@ -407,7 +423,7 @@ def test_localisation_coverage_reports_unresolvable_without_faking(tmp_path):
     assert cats["tech"]["resolved"] == 7
     assert cats["tech"]["resolved_by_rule"]["id"] == 1
     assert cats["tech"]["resolved_by_rule"]["resolved_via_equipment_loc"] == 5
-    assert cats["decision"]["total_seen"] == 4
+    assert cats["decision"]["total_seen"] == 5
     assert cats["decision"]["resolved"] == 1
     assert cats["equipment"]["total_seen"] == 2
     assert cats["equipment"]["resolved"] == 1

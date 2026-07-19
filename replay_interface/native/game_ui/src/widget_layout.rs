@@ -3,7 +3,12 @@ use crate::compose::{
 };
 use crate::gui::{parse_measure_pair, GuiElement, MeasurePair};
 use crate::paradox_text::{first_scalar_any, scalar_f32, scalar_i32, Value};
+use crate::scrollbar_law::{
+    extended_thumb_pixel, legacy_thumb_rect, ExtendedScrollbarCarrier, LegacyScrollbarCarrier,
+};
 use crate::{GameUiError, Result};
+
+pub use crate::scrollbar_law::ScrollbarAxis;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListFlow {
@@ -87,14 +92,15 @@ pub enum ScrollbarSide {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScrollbarAxis {
-    Vertical,
-    Horizontal,
+pub enum ScrollbarFamily {
+    Legacy,
+    Extended,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScrollbarLayout {
     pub rect: Rect,
+    pub family: ScrollbarFamily,
     pub axis: ScrollbarAxis,
     pub border_size: Option<(i32, i32)>,
     pub min_value: Option<f32>,
@@ -112,6 +118,32 @@ impl ScrollbarLayout {
         Err(untraced(
             "scrollbar thumb travel/value mapping is not pinned by the captured CScrollbarType evidence",
         ))
+    }
+
+    /// Production UI06 legacy path. The runtime carrier is mandatory because
+    /// authored layout values do not carry resolved child sizes or the current
+    /// caller-clamped value.
+    pub fn thumb_rect_from_legacy_carrier(&self, carrier: LegacyScrollbarCarrier) -> Result<Rect> {
+        if self.family != ScrollbarFamily::Legacy || self.axis != carrier.axis {
+            return Err(untraced(
+                "legacy scrollbar carrier does not match authored family/axis",
+            ));
+        }
+        legacy_thumb_rect(carrier)
+    }
+
+    /// Production UI06 extended path. Geometry remains a pixel point because
+    /// the resolved slider child owns its authored size.
+    pub fn thumb_pixel_from_extended_carrier(
+        &self,
+        carrier: ExtendedScrollbarCarrier,
+    ) -> Result<(i32, i32)> {
+        if self.family != ScrollbarFamily::Extended || self.axis != carrier.axis {
+            return Err(untraced(
+                "extended scrollbar carrier does not match authored family/axis",
+            ));
+        }
+        extended_thumb_pixel(carrier)
     }
 }
 
@@ -237,6 +269,14 @@ pub fn scrollbar_layout(
 
     Ok(ScrollbarLayout {
         rect,
+        family: if element
+            .element_type
+            .eq_ignore_ascii_case("extendedScrollbarType")
+        {
+            ScrollbarFamily::Extended
+        } else {
+            ScrollbarFamily::Legacy
+        },
         axis,
         border_size,
         min_value: scalar_f32_ci(&element.raw, "minValue"),

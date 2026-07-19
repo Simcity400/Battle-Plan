@@ -21,7 +21,7 @@ Also: what fraction of each cycle is OUR sweep?  ft_i / wall_delta_i
 """
 import struct, sys
 
-STREAM = r"C:\Users\Example\OneDrive\Documents\Paradox Interactive\Hearts of Iron IV\mod\battle-plan\extractor\native\runs\live_validation_20260709_221706\stage2_shortspeed5\collector_stream.bin"
+STREAM = r"extractor\native\runs\live_validation_20260709_221706\stage2_shortspeed5\collector_stream.bin"
 HDR, FRAME_END = 32, 2
 rec = []
 with open(STREAM, "rb") as f:

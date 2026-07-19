@@ -92,58 +92,31 @@ Future revisit:
 
 ## Hotjoin / Tag-Switch
 
-Disposition: `FIXTURE_BLOCKED_MP`.
+Disposition: `PROVEN_STATIC_ROOT`.
 
-Reason:
-
-- The lane README records the `CGameLobby` / `CPlayerLobby` machinery as MP-only
-  and states that hotjoin/chat/tag-switch cannot be validated from an SP fixture
-  (`README.md:82`, `:84`, `:89`, `:90`).
-- The compact schema is replay-proven: `Hotjoin = 1`, `TagSwitch = 2`, and the
-  command-family source gate exists as `SOURCE_FLAG_COMMAND_HOOK_VALIDATED`
-  (`src/lib.rs:34`, `:69`, `:70`).
-- An SP save cannot create a join, leave, reconnect, or tag-switch event.
-
-Required fixture:
-
-- Live same-build MP session with at least two players.
-- Controlled player join/hotjoin event.
-- Controlled tag-switch or host/player country reassignment.
-- Root to validate: MP session-slot/player array deltas plus the existing
-  domain-57 human-country array deltas. Acceptance requires a stable pollable
-  root/container or source whose rows change monotonically with the join and
-  tag-switch actions.
-- If the only precise observation point is a code hook, keep this deferred until
-  shared hook infrastructure exists.
-
+- Stable source: `CGameState = u64[module+0x3316E90]`, player-vector pointer
+  `+0xF8`, count `+0x104`, stride `0xA0`, name `+0x40`, country id `+0x98`.
+- New/removed names emit Hotjoin join/leave rows; a retained name whose country
+  changes emits TagSwitch with exact old/new ids.
+- The collector baselines the first stable snapshot, emits only deltas, and
+  exposes the command-family source flag only while this root validates.
+- Exact evidence and mechanical verification are frozen in `A15_RE_REPORT.md`.
 ## Chat / System Messages
 
-Disposition: `FIXTURE_BLOCKED_MP`.
+Disposition: `PROVEN_STATIC_ROOT`.
 
-Reason:
-
-- SP cannot send or receive multiplayer chat, and system join/leave messages are
-  tied to an MP session.
-- The compact schema is replay-proven: `Chat = 5`, `SystemMessage = 6`, and the
-  message-family source gate exists as `SOURCE_FLAG_MESSAGE_HOOK_VALIDATED`
-  (`src/lib.rs:35`, `:73`, `:74`, `:696`, `:699`).
-- A loose heap string or RTTI class is insufficient without a pollable message
-  root.
-
-Required fixture:
-
-- Live same-build MP session with at least two players.
-- Send a unique chat line, for example `D57_CHAT_PROBE_<timestamp>`.
-- Generate at least one system message, preferably join/leave.
-- Run the message probe with `--expect-text` for the unique chat line.
-- Acceptance requires both text observation and a stable pollable root/container
-  showing a count/text delta. Text observation alone remains insufficient.
-
+- Stable source: `CChat = u64[module+0x33711B0]`, retained metadata vector at
+  `CChat+0xA8/+0xB0/+0xB4`, stride `0x48`, text `+0x00`, sender `+0x20`.
+- The exact engine classifier is reproduced: sender present in the CChat user
+  table is Chat; no user-table match is SystemMessage.
+- The collector baselines the first stable snapshot, emits appended rows only,
+  and exposes the message-family source flag only while this root validates.
+- Exact evidence and mechanical verification are frozen in `A15_RE_REPORT.md`.
 ## Schema Note
 
-The existing event schema covers all three families. The unresolved gap is live
-source/root validation for MP-only rows; alerts are rejected for v1 as derived UI
-state rather than as direct memory-extracted rows.
+The existing event schema covers all three families. Hotjoin, TagSwitch, Chat,
+and SystemMessage now have proven pollable static roots. Alerts remain rejected
+for v1 as derived UI state rather than direct memory-extracted rows.
 
 - Kinds: `Hotjoin`, `TagSwitch`, `Chat`, `SystemMessage`, `Alert`,
   `Notification` (`src/lib.rs:69`, `:70`, `:73`, `:74`, `:75`, `:76`).

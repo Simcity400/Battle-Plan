@@ -1,0 +1,12 @@
+[package]
+name = "production_render_catalog_capture_contract"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "production_render_catalog_capture_contract"
+path = "src/lib.rs"
+
+[dependencies]
+portable_content_manifest = { path = "../../../../portable_replay/native/content_manifest" }
+sha2 = "0.10"

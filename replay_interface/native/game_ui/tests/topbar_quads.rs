@@ -11,8 +11,8 @@
 //!
 //! Skipped when the game install is absent.
 
-use game_ui::probe::parse_gfx_files;
 use game_ui::assets::AssetResolver;
+use game_ui::probe::parse_gfx_files;
 use game_ui::topbar::{compose_topbar, TopbarBinding};
 use std::path::PathBuf;
 
@@ -38,8 +38,20 @@ struct EngineQuad {
 }
 
 const ENGINE_QUADS: &[EngineQuad] = &[
-    EngineQuad { name: "background", x0: -4.0, y0: -1.0, x1: 2342.0, y1: 86.0 },
-    EngineQuad { name: "player_flag", x0: 8.0, y0: 14.0, x1: 90.0, y1: 66.0 },
+    EngineQuad {
+        name: "background",
+        x0: -4.0,
+        y0: -1.0,
+        x1: 2342.0,
+        y1: 86.0,
+    },
+    EngineQuad {
+        name: "player_flag",
+        x0: 8.0,
+        y0: 14.0,
+        x1: 90.0,
+        y1: 66.0,
+    },
 ];
 
 const TOL: f32 = 1.0;
@@ -52,8 +64,8 @@ fn topbar_element_rects_match_mined_engine_quads() {
     };
     let resolver = AssetResolver::new(vec![root]);
     let (registry, _stats) = parse_gfx_files(&resolver).expect("gfx");
-    let result = compose_topbar(&resolver, &registry, &TopbarBinding::default())
-        .expect("compose topbar");
+    let result =
+        compose_topbar(&resolver, &registry, &TopbarBinding::default()).expect("compose topbar");
     let rects = &result.output.debug_rects;
 
     let mut failures = Vec::new();
@@ -76,8 +88,14 @@ fn topbar_element_rects_match_mined_engine_quads() {
         );
         let worst = d.iter().cloned().fold(0.0f32, f32::max);
         if worst > TOL {
-            failures.push(format!("{}: max edge delta {:.1}px > {}px", eq.name, worst, TOL));
+            failures.push(format!(
+                "{}: max edge delta {:.1}px > {}px",
+                eq.name, worst, TOL
+            ));
         }
     }
-    assert!(failures.is_empty(), "engine-quad gate failures: {failures:?}");
+    assert!(
+        failures.is_empty(),
+        "engine-quad gate failures: {failures:?}"
+    );
 }

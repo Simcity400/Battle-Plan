@@ -36,9 +36,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use replay_core::{
-    open_recording, RawFrame, ReplaySource, SourceError, WorldFrame, WorldTimeline,
-};
+use replay_core::{open_recording, RawFrame, ReplaySource, SourceError, WorldFrame, WorldTimeline};
 use serde_json::{json, Map, Value};
 
 // ---------------------------------------------------------------------------
@@ -219,7 +217,11 @@ fn soak_real_fixture_leakfree_and_invariant() {
     let sweeps = env_usize("BATTLE_PLAN_SOAK_SWEEPS", 2000);
 
     let path = fixture_path("fx_owner_controller_flip.battleplan");
-    assert!(path.exists(), "missing committed fixture: {}", path.display());
+    assert!(
+        path.exists(),
+        "missing committed fixture: {}",
+        path.display()
+    );
 
     let source = open_recording(&path).expect("open committed fixture");
     let timeline = WorldTimeline::open(source).expect("open timeline");

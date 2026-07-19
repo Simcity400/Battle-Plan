@@ -174,6 +174,17 @@ unsafe fn preferred_adapter() -> Option<ComPtr<winapi::shared::dxgi::IDXGIAdapte
 }
 
 impl Gfx {
+    /// Clear and bind the product target when no admitted non-UI pass is
+    /// available. This is a neutral compositor surface, not a fabricated map.
+    pub fn clear_target(&self, color: [f32; 4]) -> Result<()> {
+        unsafe {
+            let rtv = self.rtv()?.as_raw();
+            (*self.context.as_raw()).ClearRenderTargetView(rtv, &color);
+            (*self.context.as_raw()).OMSetRenderTargets(1, &rtv, ptr::null_mut());
+        }
+        Ok(())
+    }
+
     /// Create a hardware device and a windowed BGRA8 swapchain. Prefers
     /// flip-model (FLIP_DISCARD); falls back to blt-model (DISCARD) when
     /// the OS/driver rejects it.

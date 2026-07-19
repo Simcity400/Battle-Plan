@@ -26,9 +26,7 @@ use std::path::PathBuf;
 
 use replay_core::{open_recording, Leaf, WorldFrame, WorldTimeline};
 
-use crate::observer::{
-    ObserverMode, PovPicker, PovRenderStatus, PovState, FOW_NOT_LAW_CERTIFIED,
-};
+use crate::observer::{ObserverMode, PovPicker, PovRenderStatus, PovState, FOW_NOT_LAW_CERTIFIED};
 use crate::timeline::{OwnerProvider, RecordingTimeline};
 use crate::validate::{open_and_validate, OpenOutcome};
 
@@ -257,7 +255,11 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
     };
     assert_eq!(report.game_id, "fx_pov_visibility");
     assert_eq!(report.hour_count, 12, "fx_pov_visibility hour count");
-    assert!(report.warnings.is_empty(), "clean fixture: {:?}", report.warnings);
+    assert!(
+        report.warnings.is_empty(),
+        "clean fixture: {:?}",
+        report.warnings
+    );
 
     // Build the timeline + the product scrub provider.
     let (timeline, provider) = open_recording_timeline(rel);
@@ -310,7 +312,10 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
     // 3. DETERMINISM: two independent passes produce identical hash sequences.
     let pass_a = run_pass();
     let pass_b = run_pass();
-    assert_eq!(pass_a, pass_b, "hash sequence must be deterministic across runs");
+    assert_eq!(
+        pass_a, pass_b,
+        "hash sequence must be deterministic across runs"
+    );
 
     // 4. POV-vs-world diff is the expected fogged set + toggle-back idempotence.
     for (i, &tick) in checkpoints.iter().enumerate() {
@@ -321,7 +326,10 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
         let world = PovState::new();
         let world_visible = effective_visible_set(&frame, &world);
         let expected_universe: BTreeSet<u32> = POV_UNIVERSE.iter().copied().collect();
-        assert_eq!(world_visible, expected_universe, "omniscient universe @tick {tick}");
+        assert_eq!(
+            world_visible, expected_universe,
+            "omniscient universe @tick {tick}"
+        );
 
         // Enter GER POV via the e-shell observer state.
         let mut pov = PovState::new();
@@ -337,19 +345,32 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
         }
 
         let pov_visible = effective_visible_set(&frame, &pov);
-        assert_eq!(pov_visible, expected_ger_visible(tick), "GER visible @tick {tick}");
+        assert_eq!(
+            pov_visible,
+            expected_ger_visible(tick),
+            "GER visible @tick {tick}"
+        );
 
         // The diff (world visible MINUS pov visible) is exactly the fogged set,
         // non-empty (POV hides ≥1 province), and pov ⊂ world.
         let diff: BTreeSet<u32> = world_visible.difference(&pov_visible).copied().collect();
         assert_eq!(diff, expected_ger_fogged(tick), "fogged diff @tick {tick}");
-        assert!(!diff.is_empty(), "POV must hide at least one province @tick {tick}");
-        assert!(pov_visible.is_subset(&world_visible), "pov ⊂ world @tick {tick}");
+        assert!(
+            !diff.is_empty(),
+            "POV must hide at least one province @tick {tick}"
+        );
+        assert!(
+            pov_visible.is_subset(&world_visible),
+            "pov ⊂ world @tick {tick}"
+        );
 
         // Hash relations: POV differs from world; world hash matches the record.
         let (rec_hour, rec_world, rec_pov) = pass_a[i];
         assert_eq!(rec_hour, hour);
-        assert_ne!(rec_world, rec_pov, "POV must change the keyed state @tick {tick}");
+        assert_ne!(
+            rec_world, rec_pov,
+            "POV must change the keyed state @tick {tick}"
+        );
         assert_eq!(
             state_hash(&frame, &pov, &topbar_tags),
             rec_pov,
@@ -371,7 +392,10 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
             p.toggle();
             state_hash(&frame, &p, &topbar_tags)
         };
-        assert_eq!(paired, rec_pov, "paired toggle returns to POV hash @tick {tick}");
+        assert_eq!(
+            paired, rec_pov,
+            "paired toggle returns to POV hash @tick {tick}"
+        );
     }
 
     // 6. UNIT HIDING: at tick 0 GER spots the foreign SOV division; from tick 5
@@ -384,7 +408,11 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
 
     let frame5 = timeline.state_at(hours[5]).expect("frame5");
     let ger5 = frame5.spotted_units_for("GER");
-    assert_eq!(ger5.divisions, Leaf::Measured(Vec::new()), "GER spots nothing @tick 5");
+    assert_eq!(
+        ger5.divisions,
+        Leaf::Measured(Vec::new()),
+        "GER spots nothing @tick 5"
+    );
     let world_still_has_sov_div = frame5
         .divisions()
         .iter()
@@ -416,7 +444,10 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
 fn e2e_topbar_bindings_scrub_determinism() {
     let rel = "positive/fx_topbar_scalars_sweep.battleplan";
     let outcome = open_and_validate(&fixture_path(rel));
-    assert!(matches!(outcome, OpenOutcome::Opened(_)), "topbar fixture opens: {outcome:?}");
+    assert!(
+        matches!(outcome, OpenOutcome::Opened(_)),
+        "topbar fixture opens: {outcome:?}"
+    );
 
     let (timeline, provider) = open_recording_timeline(rel);
     let hours: Vec<i64> = timeline.hours().to_vec();
@@ -436,7 +467,15 @@ fn e2e_topbar_bindings_scrub_determinism() {
     let a = run();
     let b = run();
     assert_eq!(a, b, "topbar hash sequence deterministic across runs");
-    assert_ne!(a.first(), a.last(), "topbar bindings must update across the scrub");
+    assert_ne!(
+        a.first(),
+        a.last(),
+        "topbar bindings must update across the scrub"
+    );
     let distinct: BTreeSet<u64> = a.iter().copied().collect();
-    assert_eq!(distinct.len(), a.len(), "each swept hour has a distinct binding hash");
+    assert_eq!(
+        distinct.len(),
+        a.len(),
+        "each swept hour has a distinct binding hash"
+    );
 }

@@ -4,8 +4,11 @@
 Deep-layer extension of the save oracle. Per country it extracts:
   - ``equipment_lines``  : military + naval + ship-refit production lines, each
                            {kind, line_id, equipment_variant=(id,type),
+                           industrial_manufacturer=(id,type=79), mio_id,
                            archetype(joined), produced, active_factories,
                            requested_factories, priority, amount, speed, cost}.
+                           The ordered ``factory_efficiencies`` vector is also
+                           preserved exactly when present.
   - ``stockpile``        : equipment on hand, list of {equip_id, equip_type,
                            archetype, amount} from production.equipments.
   - ``convoys``          : convoy/transport equipment on hand (same shape).
@@ -22,7 +25,9 @@ Key paths (verified against a real 1.19 melt):
       -> the top-level archetype/variant index (block KEY = archetype name).
   countries.<TAG>.production.military_lines = {
       id={id type} equipment_variant_index={id type}
+      industrial_manufacturer={id type=79}
       produced active_factories requested_factories priority amount speed cost }
+      factory_efficiencies={ <ordered per-factory percentages> }
   countries.<TAG>.production.naval_lines / ship_refit_lines  (same shape)
   countries.<TAG>.production.equipments.equipment = { id={id type} amount }
   countries.<TAG>.convoys.equipment.equipment     = { id={id type} amount }
@@ -42,7 +47,7 @@ from __future__ import annotations
 import deep_common as dc
 from deep_common import (
     LBRACE, atom_value, iter_block_entries, _skip_block_body,
-    to_int, to_float, read_id_block,
+    to_int, to_float, read_id_block, read_scalar_list,
 )
 
 
@@ -88,9 +93,13 @@ def _parse_line(tz, kind):
     rec = {
         "kind": kind, "line_id": None,
         "equipment_variant": None,  # (id,type)
+        "industrial_manufacturer": None,  # assigned MIO (id,type=79), or null
         "produced": None, "active_factories": None,
         "requested_factories": None, "priority": None,
         "amount": None, "speed": None, "cost": None,
+        # Ordered, authoritative per-factory save values. This is intentionally
+        # not replaced by a value reconstructed from speed/factory counts.
+        "factory_efficiencies": None,
     }
     for k, op in iter_block_entries(tz):
         if op is LBRACE:
@@ -99,6 +108,14 @@ def _parse_line(tz, kind):
                 rec["line_id"] = _id
             elif k == "equipment_variant_index":
                 rec["equipment_variant"] = read_id_block(tz)
+            elif k == "industrial_manufacturer":
+                rec["industrial_manufacturer"] = read_id_block(tz)
+            elif k == "factory_efficiencies":
+                raw_values = read_scalar_list(tz)
+                values = [to_float(value) for value in raw_values]
+                rec["factory_efficiencies"] = (
+                    values if all(value is not None for value in values) else None
+                )
             else:
                 _skip_block_body(tz)
             continue
@@ -245,6 +262,16 @@ def build(text, source, was_melted):
                 "equip_id": ev[0] if ev else None,
                 "equip_type": ev[1] if ev else None,
                 "archetype": info["name"] if info else None,
+                "industrial_manufacturer": (
+                    list(ln["industrial_manufacturer"])
+                    if ln["industrial_manufacturer"] else None
+                ),
+                "mio_id": (
+                    ln["industrial_manufacturer"][0]
+                    if ln["industrial_manufacturer"]
+                    and ln["industrial_manufacturer"][1] == 79
+                    else None
+                ),
                 "produced": ln["produced"],
                 "active_factories": ln["active_factories"],
                 "requested_factories": ln["requested_factories"],
@@ -252,6 +279,7 @@ def build(text, source, was_melted):
                 "amount": ln["amount"],
                 "speed": ln["speed"],
                 "cost": ln["cost"],
+                "factory_efficiencies": ln["factory_efficiencies"],
             })
         stockpile = _join_amounts(rec["stockpile_raw"], arch_index, unknown)
         convoys = _join_amounts(rec["convoys_raw"], arch_index, unknown)
@@ -269,6 +297,15 @@ def build(text, source, was_melted):
     arch_out = {f"{k[0]}:{k[1]}": v for k, v in arch_index.items()}
 
     n_lines = sum(len(c["equipment_lines"]) for c in countries.values())
+    n_lines_with_mio = sum(
+        1 for c in countries.values() for line in c["equipment_lines"]
+        if line["mio_id"] is not None
+    )
+    n_lines_with_invalid_mio_type = sum(
+        1 for c in countries.values() for line in c["equipment_lines"]
+        if line["industrial_manufacturer"] is not None
+        and line["industrial_manufacturer"][1] != 79
+    )
     n_stock = sum(len(c["stockpile"]) for c in countries.values())
     out = {
         "meta": {
@@ -288,6 +325,9 @@ def build(text, source, was_melted):
                 "countries_with_production": len(countries),
                 "equipment_archetypes": len(arch_index),
                 "total_production_lines": n_lines,
+                "production_lines_with_mio": n_lines_with_mio,
+                "production_lines_with_invalid_mio_type":
+                    n_lines_with_invalid_mio_type,
                 "total_stockpile_entries": n_stock,
                 "unknown_equipment_ids": len(unknown),
             },

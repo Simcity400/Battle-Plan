@@ -6,7 +6,7 @@ that the save exposes at the top-level ``combat={}`` section. This seeds the
 later high-frequency combat work; it documents exactly what the SAVE has vs what
 will only ever come from live memory.
 
-Per combat (top-level ``combat.land_combat`` — see REALITY NOTE on naval/air):
+Per combat (top-level ``combat.<kind>_combat``):
   - ``combat_id``  : the combat (id,type).
   - ``kind``       : "land" / "naval" / "air".
   - ``location``   : province id where the battle is happening.
@@ -27,12 +27,13 @@ Key paths (verified against a real 1.19 melt):
                  log={ ... progress=14.55 } }
       defender={ ... log={ ... progress=135.41 } } }
 
-REALITY NOTE — what the save does vs does NOT expose:
-  - This melt contains ONLY ``land_combat`` entries; there are NO
-    ``naval_combat`` / ``air_combat`` blocks in the save. Naval and air battles
-    are transient and are NOT persisted to the melted save — they live in live
-    memory only. We still scan for ``naval_combat``/``air_combat`` keys so the
-    schema is future-proof, and report what was/wasn't found.
+SAVE PERSISTENCE NOTE:
+  - Persisted active kinds are save-dependent. A validated D04 1944.2.11.18
+    save contains 50 ``land_combat`` and four ``naval_combat`` blocks; absence
+    in another save is not evidence that a kind is globally transient.
+  - ``combat.history.history`` persists an anonymous list of exact terminal
+    rows: location, attacker, defender, end_date, and uninterpreted integer
+    ``type``. It carries no stable active-combat id or loss payload.
   - The combat ``progress`` is per SIDE (attacker.log.progress vs
     defender.log.progress). It is the engine's accumulating combat-resolution
     figure, not a 0-100 percentage; reported verbatim.
@@ -46,7 +47,7 @@ from __future__ import annotations
 
 import deep_common as dc
 from deep_common import (
-    LBRACE, atom_value, iter_block_entries, _skip_block_body,
+    LBRACE, RBRACE, atom_value, iter_block_entries, _skip_block_body,
     to_int, to_float, read_id_block,
 )
 
@@ -135,7 +136,55 @@ def _parse_one_combat(tz, kind):
     return rec
 
 
-def _parse_combat_section(tz, combats, kind_counts):
+def _parse_history_record(tz):
+    row = {
+        "location": None,
+        "attacker": None,
+        "defender": None,
+        "end_date": None,
+        "type_raw": None,
+    }
+    for key, opener in iter_block_entries(tz):
+        if opener is LBRACE:
+            _skip_block_body(tz)
+            continue
+        value = atom_value(opener)
+        if value is None:
+            continue
+        if key == "location":
+            row["location"] = to_int(value)
+        elif key == "attacker":
+            row["attacker"] = value
+        elif key == "defender":
+            row["defender"] = value
+        elif key == "end_date":
+            row["end_date"] = value
+        elif key == "type":
+            row["type_raw"] = to_int(value)
+    return row
+
+
+def _parse_history_list(tz, history_rows):
+    """Read the anonymous ``history={ {row} {row} ... }`` list."""
+    while True:
+        token = tz.next()
+        if token is None or token is RBRACE:
+            return
+        if token is LBRACE:
+            history_rows.append(_parse_history_record(tz))
+
+
+def _parse_history_outer(tz, history_rows):
+    for key, opener in iter_block_entries(tz):
+        if opener is not LBRACE:
+            continue
+        if key == "history":
+            _parse_history_list(tz, history_rows)
+        else:
+            _skip_block_body(tz)
+
+
+def _parse_combat_section(tz, combats, kind_counts, history_rows):
     """combat={ land_combat={..} naval_combat={..} air_combat={..} ... }."""
     for key, opener in iter_block_entries(tz):
         if opener is not LBRACE:
@@ -144,24 +193,33 @@ def _parse_combat_section(tz, combats, kind_counts):
             kind = key.replace("_combat", "")
             kind_counts[kind] = kind_counts.get(kind, 0) + 1
             combats.append(_parse_one_combat(tz, kind))
+        elif key == "history":
+            _parse_history_outer(tz, history_rows)
         else:
-            # 'history' (ended-combat archive) and anything else -> skip
             _skip_block_body(tz)
 
 
 def parse_combats_text(text: str):
     combats: list = []
     kind_counts: dict = {}
+    history_rows: list = []
     meta = dc.top_level_pass(
         text,
-        {"combat": lambda tz: _parse_combat_section(tz, combats, kind_counts)},
+        {"combat": lambda tz: _parse_combat_section(
+            tz, combats, kind_counts, history_rows
+        )},
         scalar_keys=("date", "version", "player"),
     )
-    return combats, kind_counts, meta
+    return combats, kind_counts, history_rows, meta
 
 
 def build(text, source, was_melted):
-    combats, kind_counts, meta = parse_combats_text(text)
+    combats, kind_counts, history_rows, meta = parse_combats_text(text)
+    persisted_kinds = sorted(kind_counts)
+    history_type_counts = {}
+    for row in history_rows:
+        key = str(row["type_raw"])
+        history_type_counts[key] = history_type_counts.get(key, 0) + 1
 
     out = {
         "meta": {
@@ -172,9 +230,11 @@ def build(text, source, was_melted):
             "save_version": meta.get("version"),
             "player": meta.get("player"),
             "notes": {
-                "naval_air": "this save exposes only land_combat; naval/air "
-                "battles are transient and NOT persisted to the melt (live-memory "
-                "only). Keys are scanned for anyway.",
+                "persistence": "persisted active combat kinds are save-dependent; "
+                "absence in one save is not proof that a kind is globally transient.",
+                "combat_history": "combat.history terminal rows are preserved exactly; "
+                "type_raw is intentionally uninterpreted, and rows contain no stable "
+                "active-combat id or loss payload.",
                 "progress": "per-side log.progress is the engine's accumulating "
                 "combat figure, not a 0-100 percent.",
                 "units": "side unit ids are (id,type) handle refs; join to "
@@ -183,16 +243,23 @@ def build(text, source, was_melted):
             "stats": {
                 "total_combats": len(combats),
                 "by_kind": kind_counts,
+                "persisted_kinds": persisted_kinds,
+                "combat_history_rows": len(history_rows),
+                "combat_history_type_raw_counts": history_type_counts,
             },
         },
         "combats": combats,
+        "combat_history": history_rows,
     }
 
     lines = ["=== COMBAT ORACLE VALIDATION ==="]
     lines.append(f"source        : {source.name} (melted={was_melted})")
     lines.append(f"save date     : {meta.get('date')}")
     lines.append(f"combats       : {len(combats)}  by kind={kind_counts}")
-    lines.append("(naval/air combats are NOT persisted to saves; land only)")
+    lines.append(f"persisted kinds: {persisted_kinds}")
+    lines.append(
+        f"history rows  : {len(history_rows)}  raw types={history_type_counts}"
+    )
     for c in combats[:4]:
         a = c["attacker"] or {}
         d = c["defender"] or {}

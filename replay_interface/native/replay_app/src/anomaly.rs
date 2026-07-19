@@ -501,8 +501,14 @@ impl AnomalyPolicy {
         }
     }
 
-    fn range_check<F>(&mut self, hour: i64, monitor: &str, out_of_range: bool, value: f64, detail: F)
-    where
+    fn range_check<F>(
+        &mut self,
+        hour: i64,
+        monitor: &str,
+        out_of_range: bool,
+        value: f64,
+        detail: F,
+    ) where
         F: FnOnce(f64) -> String,
     {
         let key = format!("range:{monitor}");
@@ -645,8 +651,9 @@ mod tests {
     fn open_anomaly(name: &str) -> WorldTimeline {
         let entry = anomaly_entry(name);
         let rel = entry["path"].as_str().expect("path");
-        let source = open_recording(&fixture_root().join(rel))
-            .unwrap_or_else(|e| panic!("{name}: anomaly fixture must OPEN (degrades, not rejects): {e}"));
+        let source = open_recording(&fixture_root().join(rel)).unwrap_or_else(|e| {
+            panic!("{name}: anomaly fixture must OPEN (degrades, not rejects): {e}")
+        });
         WorldTimeline::open(source).unwrap_or_else(|e| panic!("{name}: timeline: {e}"))
     }
 
@@ -804,7 +811,11 @@ mod tests {
         assert_eq!(policy.classify_hour(before), HourResolution::Exact);
         assert_eq!(policy.classify_hour(after), HourResolution::Exact);
         match policy.classify_hour(missing) {
-            HourResolution::GapUnavailable { from, to, missing: m } => {
+            HourResolution::GapUnavailable {
+                from,
+                to,
+                missing: m,
+            } => {
                 assert_eq!(from, before);
                 assert_eq!(to, after);
                 assert_eq!(m, vec![missing]);
@@ -825,7 +836,9 @@ mod tests {
         assert_eq!(hits.len(), 1, "exactly one IdentityMutation diagnostic");
         assert_eq!(hits[0].hour, crossing);
 
-        assert!(policy.active_holds_at(entry["anomaly"]["last_good_hour"].as_i64().unwrap()).is_empty());
+        assert!(policy
+            .active_holds_at(entry["anomaly"]["last_good_hour"].as_i64().unwrap())
+            .is_empty());
         let held = policy.active_holds_at(crossing);
         let id = held
             .iter()

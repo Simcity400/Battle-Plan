@@ -1519,8 +1519,7 @@ mod tests {
         );
         // normal map intentionally absent -> must be reported unresolved.
         let resolver = GameFileResolver::vanilla(vanilla).expect("resolver");
-        let report =
-            resolve_building_material_textures(&resolver, &models, &[]).expect("textures");
+        let report = resolve_building_material_textures(&resolver, &models, &[]).expect("textures");
         assert_eq!(report.total, 2);
         assert_eq!(report.resolved, 1);
         let diffuse = report
@@ -1543,7 +1542,9 @@ mod tests {
     fn gate_vanilla_building_material_textures_resolve() {
         let game_dir = PathBuf::from(VANILLA_GAME_DIR);
         if !game_dir.is_dir() {
-            eprintln!("skipping vanilla building material texture gate: {VANILLA_GAME_DIR} is absent");
+            eprintln!(
+                "skipping vanilla building material texture gate: {VANILLA_GAME_DIR} is absent"
+            );
             return;
         }
         let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
@@ -1577,7 +1578,8 @@ mod tests {
         // FILE gate: every diffuse/normal/specular texture on a resolved
         // vanilla building mesh resolves through the resolver, mesh-dir first.
         assert_eq!(
-            report.resolved, report.total,
+            report.resolved,
+            report.total,
             "unresolved building material textures: {:?}",
             report
                 .unresolved()

@@ -67,9 +67,8 @@ pub const VANILLA_INFRA_GRADIENT_COLORS: InfraGradientColors = InfraGradientColo
 pub const VANILLA_INFRA_STATE_MAX: u32 = 5;
 
 fn parse_color4(source: &str, key: &str) -> Result<[f32; 4]> {
-    let values = crate::map_furniture::parse_lua_number_list(source, key).ok_or_else(|| {
-        format!("{INFRA_GRAPHICS_DEFINES_SOURCE}: missing colour define {key}")
-    })?;
+    let values = crate::map_furniture::parse_lua_number_list(source, key)
+        .ok_or_else(|| format!("{INFRA_GRAPHICS_DEFINES_SOURCE}: missing colour define {key}"))?;
     if values.len() != 4 {
         return Err(format!(
             "{INFRA_GRAPHICS_DEFINES_SOURCE}: {key} expected 4 components, got {}",
@@ -229,10 +228,7 @@ pub fn infra_state_max_from_resolver(resolver: &GameFileResolver) -> Result<u32>
         resolver.resolve_required(INFRA_BUILDINGS_SOURCE, "infrastructure level_cap.state_max")?;
     let source = crate::read_latin1(&path)?;
     parse_infrastructure_state_max(&source).ok_or_else(|| {
-        format!(
-            "{INFRA_BUILDINGS_SOURCE}: infrastructure level_cap.state_max not found"
-        )
-        .into()
+        format!("{INFRA_BUILDINGS_SOURCE}: infrastructure level_cap.state_max not found").into()
     })
 }
 
@@ -324,7 +320,10 @@ pub fn infra_state_tints(
     inputs
         .iter()
         .map(|(&state_id, input)| {
-            (state_id, infra_state_tint(state_id, input, state_max, colors))
+            (
+                state_id,
+                infra_state_tint(state_id, input, state_max, colors),
+            )
         })
         .collect()
 }

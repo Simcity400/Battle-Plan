@@ -195,6 +195,10 @@ DOMAINS = (
 
 # Resource keys used across economy.resources.* sub-maps (SCHEMA §3.1).
 RESOURCE_KEYS = ("steel", "oil", "aluminium", "tungsten", "chromium", "rubber", "coal")
+# Exact controller order for countrytradeview resource cards (XUI15).  Keep
+# this separate from RESOURCE_KEYS, whose historical order is a schema-wide
+# vocabulary and is not a rendering-order contract.
+TRADE_RESOURCE_ORDER = ("oil", "aluminium", "rubber", "tungsten", "steel", "chromium", "coal")
 
 # Building keys for State.buildings (SCHEMA §4). Extensible; unknown keys allowed.
 BUILDING_KEYS = (
@@ -302,6 +306,10 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.economy.resources.to_export": "S",
     "countries.*.economy.resources.available_derived": "S/D",
     "countries.*.economy.resources.imported": "S",
+    "countries.*.economy.resources.used": "M/S",
+    "countries.*.economy.resources.base_export": "M/S",
+    "countries.*.economy.resources.complete": "M",
+    "countries.*.economy.resource_trade": "M",
     # fuel is LIVE-first via scheduled collector frames (fuel_live, C/M) with the save
     # as the backstop: the collector reads the canonical i64 fixed-point store from the
     # validated CCountry object (CCountry+0x1580 fuel_status; /32768). Worker polls stay
@@ -415,6 +423,12 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.research.in_progress.*.progress_basis": "D",
     "countries.*.research.in_progress.*.progress_unavailable_reason": "D",
     "countries.*.research.in_progress.*.eta_unavailable_reason": "D",
+    # XUI09 effective ahead values are producer inputs, never replay-side
+    # reconstructions from BASE_YEAR_AHEAD_PENALTY_FACTOR.
+    "countries.*.research.in_progress.*.ahead_of_time_years": "C/M",
+    "countries.*.research.in_progress.*.ahead_of_time_penalty_pct": "C/M",
+    "countries.*.research.in_progress.*.ahead_of_time_reduction_years": "C/M",
+    "countries.*.research.in_progress.*.ahead_of_time_reduced_penalty_pct": "C/M",
     # LIVE active-research rows live in a SEPARATE leaf (raw-handle shape, distinct
     # from the save's {name, points_factor} in_progress) so the two shapes never mix.
     # Carries {slot_index, tech_handle_raw, tech_def_index_raw, progress_raw,
@@ -465,6 +479,10 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.research.in_progress_live.*.progress_basis": "D",
     "countries.*.research.in_progress_live.*.progress_unavailable_reason": "D",
     "countries.*.research.in_progress_live.*.eta_unavailable_reason": "D",
+    "countries.*.research.in_progress_live.*.ahead_of_time_years": "C/M",
+    "countries.*.research.in_progress_live.*.ahead_of_time_penalty_pct": "C/M",
+    "countries.*.research.in_progress_live.*.ahead_of_time_reduction_years": "C/M",
+    "countries.*.research.in_progress_live.*.ahead_of_time_reduced_penalty_pct": "C/M",
     "countries.*.research.research_slots": "C/M/S",
     "countries.*.research.original_research_slots": "S",
     "countries.*.research.research_bonuses": "S",
@@ -534,6 +552,28 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.intel.agency.capacity.max_operatives": "M/S",
     "countries.*.intel.agency.capacity.usable_slots": "M/S",
     "countries.*.intel.agency.capacity.defense": "M/S",
+    # Domain 53 already carries an exact raw a729 slice under a deliberately
+    # non-semantic sidecar. These fields are reusable A30 producer inputs, but
+    # the `_unresolved` / `_unvalidated` names are contractual: replay must not
+    # promote them to final agency-capacity or operative-capture semantics.
+    "countries.*.intel.domain53_extra.agency_scalars.max_operatives_unresolved": "C/M",
+    "countries.*.intel.domain53_extra.agency_scalars.usable_slots_unresolved": "C/M",
+    "countries.*.intel.domain53_extra.agency_scalars.operative_count": "C/M",
+    "countries.*.intel.domain53_extra.agency_scalars.cryptology_target_count": "C/M",
+    # These two legacy wire names are retained for compatibility only. A30
+    # neutralizes them as value_0x128_unvalidated/value_0xc8_unvalidated in the
+    # typed view until the serializer representations and scales are reconciled.
+    "countries.*.intel.domain53_extra.agency_scalars.defense_raw": "C/M",
+    "countries.*.intel.domain53_extra.agency_scalars.upgrade_progress_raw": "C/M",
+    "countries.*.intel.domain53_extra.agency_scalars.name_hash": "C/M",
+    "countries.*.intel.domain53_extra.agency_scalars.icon_hash": "C/M",
+    "countries.*.intel.domain53_extra.raw_capacity_cluster.value_0xe4": "C/M",
+    "countries.*.intel.domain53_extra.raw_capacity_cluster.value_0xf0": "C/M",
+    "countries.*.intel.domain53_extra.raw_capacity_cluster.value_0xf4": "C/M",
+    "countries.*.intel.domain53_extra.raw_capacity_cluster.proof_hash": "C/M",
+    "countries.*.intel.domain53_extra.raw_capacity_cluster.semantic_status": "C/M",
+    "countries.*.intel.domain53_extra.operative_lifecycle_rows": "C/M",
+    "countries.*.intel.domain53_extra.cryptology_targets": "C/M",
     "countries.*.intel.operatives": "S",
     # LIVE operative roster (intel_deep_live, M): the agency's active-owned operatives, each
     # {op_id, name, detected}. DISTINCT live-only leaf from the save-shaped intel.operatives.
@@ -610,6 +650,25 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.abilities.officer_corps": "S",
     "countries.*.abilities.officer_corps.captured_enemy_generals": "D",
     "countries.*.abilities.officer_corps.own_generals_captured": "D",
+    # XUI23 frame-authoritative selected-context command-ability bar.  Static
+    # definitions corroborate identity/base art only; every display row is C/M.
+    "countries.*.active_abilities.complete": "C/M",
+    "countries.*.active_abilities.rows": "C/M",
+    "countries.*.active_abilities.rows.*.ability_id": "C/M",
+    "countries.*.active_abilities.rows.*.available": "C/M",
+    "countries.*.active_abilities.rows.*.active": "C/M",
+    "countries.*.active_abilities.rows.*.activation_hour": "C/M",
+    "countries.*.active_abilities.rows.*.cooldown_hours": "C/M",
+    "countries.*.active_abilities.rows.*.cooldown_remaining_hours": "C/M",
+    "countries.*.active_abilities.rows.*.cost_command_power": "C/M",
+    "countries.*.active_abilities.rows.*.target_kind": "C/M",
+    "countries.*.active_abilities.rows.*.target_id": "C/M",
+    "countries.*.active_abilities.rows.*.duration_hours": "C/M",
+    "countries.*.active_abilities.rows.*.duration_remaining_hours": "C/M",
+    "countries.*.active_abilities.rows.*.display_order": "C/M",
+    "countries.*.active_abilities.rows.*.icon": "C/M",
+    "countries.*.active_abilities.rows.*.tooltip": "C/M",
+    "countries.*.active_abilities.rows.*.disabled_reason": "C/M",
     # --- country.projects + scientists (§3.16, from projects.json). S, two joins D. ---
     "countries.*.projects": "S",
     "countries.*.projects.facilities.*.scientist_token": "D",
@@ -666,8 +725,11 @@ FIELD_SOURCES: Dict[str, str] = {
     # summed FROM the measured stockpile -> derived-from-live (C/M/D). ---
     "countries.*.production.stockpile": "C/M",
     "countries.*.production.stockpile_total": "C/M/D",   # summed from measured stockpile
+    "countries.*.production.stockpile_complete": "C/M",
     "countries.*.production.military_lines": "C/M",
     "countries.*.production.naval_lines": "C/M",
+    "countries.*.production.military_lines_complete": "C/M",
+    "countries.*.production.naval_lines_complete": "C/M",
     "countries.*.production.military_factories": "C/M",
     "countries.*.production.naval_factories": "C/M",
     # LIVE construction queue (production_live, C/M). DISTINCT live-only leaf: the
@@ -770,6 +832,12 @@ FIELD_SOURCES: Dict[str, str] = {
     "states.*.occupation.resistance": "M/S",
     "states.*.occupation.compliance": "M/S",
     "states.*.occupation_law": "S",
+    "states.*.occupation.garrison_equipment": "S",
+    "states.*.occupation.garrison_equipment_complete": "S",
+    "states.*.occupation.garrison_equipment_need": "S",
+    "states.*.occupation.garrison_reinforcement_requests": "S",
+    "occupation_history": "S",
+    "occupation_history_complete": "S",
     "states.*.demilitarized": "S",
     "states.*.supply": "S/M*",
     # --- province (§5) ---
@@ -909,7 +977,8 @@ FIELD_SOURCES: Dict[str, str] = {
     "raids.counters": "S",
     "raids.targets": "S",
     "raids.countries": "S",
-    "world_events.fired_events": "S",
+    "world_events.fired_events": "C/M/S",
+    "world_events.fired_events_complete": "C/M",
     "world_events.pending_events": "S",
     "world_events.threat": "S",
     "world_events.sunk_convoys": "S",
@@ -1056,6 +1125,10 @@ class Economy:
     factories: Dict[str, Any] = field(default_factory=_none_dict)
     construction_queue: List[Dict[str, Any]] = field(default_factory=list)
     resources: Dict[str, Any] = field(default_factory=_none_dict)
+    # XUI15 exact semantic surface for classic resource trade.  None means the
+    # controller/extractor did not record it; a measured object carries ordered
+    # resource_rows, ordered deals, completeness witnesses, and factory counts.
+    resource_trade: Optional[Dict[str, Any]] = None
     fuel: Dict[str, Any] = field(default_factory=_none_dict)
     gross_ic_by_equipment: Optional[Dict[str, float]] = None
     # supply_system_2 per-country logistics (from supply.json). null until ingested;
@@ -1184,18 +1257,23 @@ class Production:
     ``stockpile`` maps a save equipment-VARIANT id (str/int key) to the banked amount
     (float, i64 fixed-point /100000). ``stockpile_total`` is the sum of those amounts
     (derived-from-live, C/M/D). ``military_lines`` / ``naval_lines`` each carry the
-    measured per-line {id, active_factories, cost, speed, produced, amount}. The factory
-    totals are SUM(active_factories) over the respective line list.
+    exact legacy {id, active_factories, cost, speed, produced, amount}. Successor rows
+    may additionally carry explicit priority, subtype, variant, requested-factory,
+    efficiency, MIO and display-role leaves. Missing successor fields stay absent/null:
+    replay never infers progress, daily output or completion time from legacy raw values.
+    The *_complete booleans distinguish proven-empty vectors from unreadable vectors.
 
     RESISTED (absent, never fabricated — see production_offsets.draft.json open tickets):
-    per-line priority / requested_factories / equipment_variant_index (not offset-pinned,
-    no distinguishing variance this frame); construction queue target state/location.
+    construction queue target state/location.
     null-but-present until a live read folds it.
     """
     stockpile: Optional[Dict[str, Any]] = None
     stockpile_total: Optional[float] = None
+    stockpile_complete: Optional[bool] = None
     military_lines: Optional[List[Dict[str, Any]]] = None
     naval_lines: Optional[List[Dict[str, Any]]] = None
+    military_lines_complete: Optional[bool] = None
+    naval_lines_complete: Optional[bool] = None
     military_factories: Optional[int] = None
     naval_factories: Optional[int] = None
     # LIVE construction queue (production_live, C/M). DISTINCT live-only leaf: the
@@ -1389,6 +1467,9 @@ class Country:
     # abilities.json (WAVE-2) — aces + commander cooldowns + officer corps (§3.15).
     # null until ingested; the deep ace/cooldown/officer-corps reach (S, two D tallies).
     abilities: Optional[Dict[str, Any]] = None
+    # XUI23 live selected-context ability bar.  This is deliberately separate
+    # from save-side abilities (aces/leader reassignment cooldowns/officer corps).
+    active_abilities: Optional[Dict[str, Any]] = None
     # projects.json (WAVE-2) — special-projects / facilities / breakthrough deep reach
     # (§3.16). null until ingested. All S except two cross-ref join fields (D).
     projects: Optional[Dict[str, Any]] = None
@@ -1699,14 +1780,18 @@ class Raids:
 class WorldEvents:
     """Persisted event ledgers (from events.json, §17). Always present.
 
-    ``fired_events`` = list of scripted-event ids that fired this game (persisted);
+    ``fired_events`` accepts legacy scripted-event ids from saves and rich XUI21
+    producer rows. Only rich rows plus ``fired_events_complete=true`` are
+    production-admissible for popup replay; the legacy id ledger remains
+    deliberately insufficient.
     ``pending_events`` = scheduled-but-unfired (empty in most saves; future-proofed);
     ``threat`` = the world-tension CONTRIBUTOR ledger (per threat-action entry, NOT
     the aggregate tension scalar); ``sunk_convoys`` = per-month convoy-loss ledger;
     ``convoy_losses_by_killer`` / ``convoy_losses_by_owner`` = rolled-up tallies.
     Lists default empty; rollup dicts null until measured.
     """
-    fired_events: List[str] = field(default_factory=list)
+    fired_events: List[Any] = field(default_factory=list)
+    fired_events_complete: Optional[bool] = None
     pending_events: List[Dict[str, Any]] = field(default_factory=list)
     threat: List[Dict[str, Any]] = field(default_factory=list)
     sunk_convoys: List[Dict[str, Any]] = field(default_factory=list)
@@ -2173,6 +2258,11 @@ def empty_snapshot(game_id: str, date: Optional[str] = None) -> Dict[str, Any]:
         "world_events": empty_world_events(),
         "world": empty_world(),
         "events": [],
+        # Save-persisted resistance activity log.  Empty is measured only when
+        # occupation.json was present; the separate completeness badge prevents
+        # an absent/malformed producer from masquerading as an empty history.
+        "occupation_history": [],
+        "occupation_history_complete": None,
     }
 
 
@@ -2185,7 +2275,8 @@ def empty_snapshot(game_id: str, date: Optional[str] = None) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 _TOP_CONTAINERS = {
     "countries": dict, "states": dict, "provinces": dict,
-    "divisions": list, "combats": list, "events": list, "map": dict,
+    "divisions": list, "combats": list, "events": list, "occupation_history": list,
+    "map": dict,
     "provenance": dict, "diplomacy_world": dict,
     "designs": dict, "order_of_battle": dict,
     # top-level LIVE catalogs (§11b mio_live source M, §11c special_projects source C/M).
@@ -2269,6 +2360,10 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
         elif not isinstance(snap[key], kind):
             problems.append(f"{key!r} should be {kind.__name__}, got {type(snap[key]).__name__}")
 
+    world_events = snap.get("world_events")
+    if isinstance(world_events, dict):
+        problems.extend(_validate_fired_event_history(world_events))
+
     # provenance.mod (the additive per-replay MOD IDENTITY, §K): None (launcher
     # config not read — NO FABRICATION) or a ModSet dict. When a dict, the
     # identity fields must be the right kind so the native auto-matcher (which keys
@@ -2341,6 +2436,11 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                 if lo is not None and not isinstance(lo, list):
                     problems.append(f"provenance.mod.load_order {lo!r} not list|null")
 
+    # Deployment identities are engine-global CReferenceObject ids.  Track them
+    # across every country so a malformed snapshot cannot silently alias rows.
+    seen_deployment_conveyor_ids = set()
+    seen_deployment_line_ids = set()
+
     # Countries: keys look like TAGs; each has the 8 domains as dicts.
     for tag, c in (snap.get("countries") or {}).items():
         if not (isinstance(tag, str) and 2 <= len(tag) <= 4):
@@ -2378,8 +2478,291 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                         problems.append(
                             f"country {tag!r}.extra.strategic_navy.{k} "
                             f"{v!r} not int|null")
+
+        military = c.get("military")
+        if isinstance(military, dict):
+            queue = military.get("deployment_queue")
+            if queue is not None and not isinstance(queue, list):
+                problems.append(
+                    f"country {tag!r}.military.deployment_queue "
+                    f"{queue!r} not list|null")
+            elif isinstance(queue, list):
+                for conveyor_ordinal, conveyor in enumerate(queue):
+                    path = (f"country {tag!r}.military.deployment_queue"
+                            f"[{conveyor_ordinal}]")
+                    if not isinstance(conveyor, dict):
+                        problems.append(f"{path} {conveyor!r} not dict")
+                        continue
+                    cid = conveyor.get("id")
+                    if (not isinstance(cid, list) or len(cid) != 2
+                            or any(type(value) is not int for value in cid)
+                            or cid[1] != 64):
+                        problems.append(f"{path}.id {cid!r} not exact type-64 id")
+                    else:
+                        cid_key = tuple(cid)
+                        if cid_key in seen_deployment_conveyor_ids:
+                            problems.append(f"{path}.id {cid!r} duplicate")
+                        seen_deployment_conveyor_ids.add(cid_key)
+                    if conveyor.get("ordinal") != conveyor_ordinal:
+                        problems.append(
+                            f"{path}.ordinal {conveyor.get('ordinal')!r} "
+                            f"!= {conveyor_ordinal}")
+                    template_id = conveyor.get("template_id")
+                    if (not isinstance(template_id, list) or len(template_id) != 2
+                            or any(type(value) is not int for value in template_id)
+                            or template_id[1] != 52):
+                        problems.append(
+                            f"{path}.template_id {template_id!r} not type-52 id")
+                    for field in ("amount", "location", "priority"):
+                        if type(conveyor.get(field)) is not int:
+                            problems.append(
+                                f"{path}.{field} {conveyor.get(field)!r} not int")
+                    for field in ("name", "role"):
+                        if not isinstance(conveyor.get(field), str):
+                            problems.append(
+                                f"{path}.{field} {conveyor.get(field)!r} not str")
+                    if not isinstance(conveyor.get("closed"), bool):
+                        problems.append(
+                            f"{path}.closed {conveyor.get('closed')!r} not bool")
+                    lines = conveyor.get("lines")
+                    if not isinstance(lines, list):
+                        problems.append(f"{path}.lines {lines!r} not list")
+                        continue
+                    for line_ordinal, line in enumerate(lines):
+                        line_path = f"{path}.lines[{line_ordinal}]"
+                        if not isinstance(line, dict):
+                            problems.append(f"{line_path} {line!r} not dict")
+                            continue
+                        lid = line.get("id")
+                        if (not isinstance(lid, list) or len(lid) != 2
+                                or any(type(value) is not int for value in lid)
+                                or lid[1] != 63):
+                            problems.append(
+                                f"{line_path}.id {lid!r} not exact type-63 id")
+                        else:
+                            lid_key = tuple(lid)
+                            if lid_key in seen_deployment_line_ids:
+                                problems.append(f"{line_path}.id {lid!r} duplicate")
+                            seen_deployment_line_ids.add(lid_key)
+                        if line.get("ordinal") != line_ordinal:
+                            problems.append(
+                                f"{line_path}.ordinal {line.get('ordinal')!r} "
+                                f"!= {line_ordinal}")
+                        if type(line.get("amount")) is not int:
+                            problems.append(
+                                f"{line_path}.amount {line.get('amount')!r} not int")
+                        name_order = line.get("name_order")
+                        if name_order is not None and type(name_order) is not int:
+                            problems.append(
+                                f"{line_path}.name_order {name_order!r} not int|null")
+                        for field in ("training", "max_training"):
+                            value = line.get(field)
+                            if value is not None and not _is_finite_number(value):
+                                problems.append(
+                                    f"{line_path}.{field} {value!r} not finite|null")
+                        for field in ("manpower_have", "manpower_need", "max_manpower"):
+                            value = line.get(field)
+                            if value is not None and type(value) is not int:
+                                problems.append(
+                                    f"{line_path}.{field} {value!r} not int|null")
+                        equipment = line.get("equipment_in_transit")
+                        if not isinstance(equipment, list):
+                            problems.append(
+                                f"{line_path}.equipment_in_transit {equipment!r} not list")
+                            continue
+                        for equipment_ordinal, item in enumerate(equipment):
+                            item_path = (f"{line_path}.equipment_in_transit"
+                                         f"[{equipment_ordinal}]")
+                            if not isinstance(item, dict):
+                                problems.append(f"{item_path} {item!r} not dict")
+                                continue
+                            if item.get("ordinal") != equipment_ordinal:
+                                problems.append(
+                                    f"{item_path}.ordinal {item.get('ordinal')!r} "
+                                    f"!= {equipment_ordinal}")
+                            if type(item.get("equip_id")) is not int:
+                                problems.append(
+                                    f"{item_path}.equip_id {item.get('equip_id')!r} not int")
+                            if item.get("equip_type") != 70:
+                                problems.append(
+                                    f"{item_path}.equip_type {item.get('equip_type')!r} != 70")
+                            archetype = item.get("archetype")
+                            if archetype is not None and not isinstance(archetype, str):
+                                problems.append(
+                                    f"{item_path}.archetype {archetype!r} not str|null")
+                            if not _is_finite_number(item.get("amount")):
+                                problems.append(
+                                    f"{item_path}.amount {item.get('amount')!r} not finite")
         econ = c.get("economy")
         if isinstance(econ, dict):
+            resources = econ.get("resources")
+            if resources is not None and not isinstance(resources, dict):
+                problems.append(
+                    f"country {tag!r}.economy.resources {resources!r} not dict|null")
+            elif isinstance(resources, dict):
+                complete = resources.get("complete")
+                if complete is not None and not isinstance(complete, bool):
+                    problems.append(
+                        f"country {tag!r}.economy.resources.complete "
+                        f"{complete!r} not bool|null")
+                for flow in ("produced", "imported", "used", "to_export",
+                             "base_export", "exported", "available_derived"):
+                    values = resources.get(flow)
+                    if values is None:
+                        continue
+                    if not isinstance(values, dict):
+                        problems.append(
+                            f"country {tag!r}.economy.resources.{flow} "
+                            f"{values!r} not dict|null")
+                        continue
+                    for resource, value in values.items():
+                        if resource not in RESOURCE_KEYS:
+                            problems.append(
+                                f"country {tag!r}.economy.resources.{flow} "
+                                f"unknown resource {resource!r}")
+                        if not _is_finite_number(value):
+                            problems.append(
+                                f"country {tag!r}.economy.resources.{flow}."
+                                f"{resource} {value!r} not finite number")
+                if complete is True:
+                    for flow in ("produced", "imported", "used", "to_export",
+                                 "base_export", "exported"):
+                        values = resources.get(flow)
+                        if not isinstance(values, dict) or set(values) != set(TRADE_RESOURCE_ORDER):
+                            problems.append(
+                                f"country {tag!r}.economy.resources.{flow} complete "
+                                "without exactly seven canonical resources")
+
+            resource_trade = econ.get("resource_trade")
+            if resource_trade is not None and not isinstance(resource_trade, dict):
+                problems.append(
+                    f"country {tag!r}.economy.resource_trade "
+                    f"{resource_trade!r} not dict|null")
+            elif isinstance(resource_trade, dict):
+                for complete_key, rows_key in (
+                    ("resource_rows_complete", "resource_rows"),
+                    ("deals_complete", "deals"),
+                ):
+                    complete = resource_trade.get(complete_key)
+                    rows = resource_trade.get(rows_key)
+                    if complete is not None and not isinstance(complete, bool):
+                        problems.append(
+                            f"country {tag!r}.economy.resource_trade."
+                            f"{complete_key} {complete!r} not bool|null")
+                    if rows is not None and not isinstance(rows, list):
+                        problems.append(
+                            f"country {tag!r}.economy.resource_trade."
+                            f"{rows_key} {rows!r} not list|null")
+                    if complete is True and not isinstance(rows, list):
+                        problems.append(
+                            f"country {tag!r}.economy.resource_trade."
+                            f"{complete_key} true without measured {rows_key}")
+
+                rows = resource_trade.get("resource_rows")
+                if isinstance(rows, list):
+                    for i, row in enumerate(rows):
+                        path = (f"country {tag!r}.economy.resource_trade."
+                                f"resource_rows[{i}]")
+                        if not isinstance(row, dict):
+                            problems.append(f"{path} {row!r} not dict")
+                            continue
+                        if row.get("resource") not in RESOURCE_KEYS:
+                            problems.append(
+                                f"{path}.resource {row.get('resource')!r} not canonical")
+                        if row.get("visible_order") != i:
+                            problems.append(
+                                f"{path}.visible_order {row.get('visible_order')!r} != {i}")
+                        for key in ("balance", "produced", "imported", "exported",
+                                    "special_project", "production_line", "needed"):
+                            if not _is_finite_number(row.get(key)):
+                                problems.append(
+                                    f"{path}.{key} {row.get(key)!r} not finite number")
+                        for key in ("needed_current", "needed_max"):
+                            value = row.get(key)
+                            if value is not None and not _is_finite_number(value):
+                                problems.append(
+                                    f"{path}.{key} {value!r} not finite number|null")
+                        if row.get("resource") == "oil":
+                            for key in ("needed_current", "needed_max"):
+                                if not _is_finite_number(row.get(key)):
+                                    problems.append(
+                                        f"{path}.{key} {row.get(key)!r} not finite oil value")
+                        if not isinstance(row.get("needed_type"), str):
+                            problems.append(
+                                f"{path}.needed_type {row.get('needed_type')!r} not str")
+                    if resource_trade.get("resource_rows_complete") is True:
+                        observed = [
+                            row.get("resource") if isinstance(row, dict) else None
+                            for row in rows
+                        ]
+                        if observed != list(TRADE_RESOURCE_ORDER):
+                            problems.append(
+                                f"country {tag!r}.economy.resource_trade.resource_rows "
+                                "complete list does not match exact seven-resource order")
+
+                deals = resource_trade.get("deals")
+                if isinstance(deals, list):
+                    for i, row in enumerate(deals):
+                        path = (f"country {tag!r}.economy.resource_trade."
+                                f"deals[{i}]")
+                        if not isinstance(row, dict):
+                            problems.append(f"{path} {row!r} not dict")
+                            continue
+                        if row.get("visible_order") != i:
+                            problems.append(
+                                f"{path}.visible_order {row.get('visible_order')!r} != {i}")
+                        if not isinstance(row.get("deal_id"), int):
+                            problems.append(
+                                f"{path}.deal_id {row.get('deal_id')!r} not int")
+                        if not isinstance(row.get("counterpart"), str):
+                            problems.append(
+                                f"{path}.counterpart {row.get('counterpart')!r} not str")
+                        if row.get("direction") not in ("import", "export"):
+                            problems.append(
+                                f"{path}.direction {row.get('direction')!r} not import/export")
+                        if row.get("resource") not in RESOURCE_KEYS:
+                            problems.append(
+                                f"{path}.resource {row.get('resource')!r} not canonical")
+                        if row.get("route_kind") not in ("land", "sea", "locked"):
+                            problems.append(
+                                f"{path}.route_kind {row.get('route_kind')!r} invalid")
+                        for key in ("requested", "delivered", "available_export",
+                                    "factory_cost_per_resource", "delivery_efficiency"):
+                            if not _is_finite_number(row.get(key)):
+                                problems.append(
+                                    f"{path}.{key} {row.get(key)!r} not finite number")
+                        if not isinstance(row.get("civilian_factories"), int):
+                            problems.append(
+                                f"{path}.civilian_factories "
+                                f"{row.get('civilian_factories')!r} not int")
+                        for key in ("no_trade_influence", "no_resources"):
+                            value = row.get(key)
+                            if value is not None and not isinstance(value, bool):
+                                problems.append(
+                                    f"{path}.{key} {value!r} not bool|null")
+                        convoys = row.get("convoys")
+                        if not isinstance(convoys, dict):
+                            problems.append(f"{path}.convoys {convoys!r} not dict")
+                        else:
+                            for key in ("assigned", "required"):
+                                if not isinstance(convoys.get(key), int):
+                                    problems.append(
+                                        f"{path}.convoys.{key} "
+                                        f"{convoys.get(key)!r} not int")
+
+                factories = resource_trade.get("factories")
+                if factories is not None and not isinstance(factories, dict):
+                    problems.append(
+                        f"country {tag!r}.economy.resource_trade.factories "
+                        f"{factories!r} not dict|null")
+                elif isinstance(factories, dict):
+                    for key in ("total", "used", "available"):
+                        value = factories.get(key)
+                        if value is not None and not isinstance(value, int):
+                            problems.append(
+                                f"country {tag!r}.economy.resource_trade."
+                                f"factories.{key} {value!r} not int|null")
+
             fuel = econ.get("fuel")
             if fuel is not None and not isinstance(fuel, dict):
                 problems.append(f"country {tag!r}.economy.fuel {fuel!r} not dict|null")
@@ -2507,6 +2890,15 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                 problems.append(
                     f"country {tag!r}.production.stockpile_total {st_total!r} "
                     "not number|null")
+            for k in (
+                "stockpile_complete",
+                "military_lines_complete",
+                "naval_lines_complete",
+            ):
+                complete = prod.get(k)
+                if complete is not None and not isinstance(complete, bool):
+                    problems.append(
+                        f"country {tag!r}.production.{k} {complete!r} not bool|null")
             for k in ("military_lines", "naval_lines"):
                 v = prod.get(k)
                 if v is not None and not isinstance(v, list):
@@ -2780,6 +3172,78 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                             f"{prefix}.state_name {state_name!r} not token|null")
                     if problems and any(f"timed_live[{idx}]" in p for p in problems):
                         break
+        active_abilities = c.get("active_abilities")
+        if active_abilities is not None and not isinstance(active_abilities, dict):
+            problems.append(
+                f"country {tag!r}.active_abilities {active_abilities!r} not dict|null")
+        elif isinstance(active_abilities, dict):
+            complete = active_abilities.get("complete")
+            rows = active_abilities.get("rows")
+            if complete is not None and not isinstance(complete, bool):
+                problems.append(
+                    f"country {tag!r}.active_abilities.complete {complete!r} not bool|null")
+            if rows is not None and not isinstance(rows, list):
+                problems.append(
+                    f"country {tag!r}.active_abilities.rows {rows!r} not list|null")
+            if complete is True and not isinstance(rows, list):
+                problems.append(
+                    f"country {tag!r}.active_abilities.complete true without measured rows")
+            if isinstance(rows, list):
+                seen_orders = set()
+                seen_keys = set()
+                for idx, row in enumerate(rows):
+                    prefix = f"country {tag!r}.active_abilities.rows[{idx}]"
+                    if not isinstance(row, dict):
+                        problems.append(f"{prefix} {row!r} not dict")
+                        continue
+                    ability_id = row.get("ability_id")
+                    if not valid_script_token(ability_id):
+                        problems.append(f"{prefix}.ability_id {ability_id!r} not token")
+                    for key in ("available", "active"):
+                        if not isinstance(row.get(key), bool):
+                            problems.append(f"{prefix}.{key} {row.get(key)!r} not bool")
+                    for key in (
+                        "activation_hour", "cooldown_hours",
+                        "cooldown_remaining_hours", "duration_hours",
+                        "duration_remaining_hours", "display_order",
+                    ):
+                        value = row.get(key)
+                        if not isinstance(value, int) or isinstance(value, bool) or value < -1:
+                            problems.append(f"{prefix}.{key} {value!r} not int >= -1")
+                    cost = row.get("cost_command_power")
+                    if not _is_finite_number(cost) or cost < 0:
+                        problems.append(
+                            f"{prefix}.cost_command_power {cost!r} not finite nonnegative")
+                    for key in ("target_kind", "target_id", "icon", "tooltip", "disabled_reason"):
+                        if not isinstance(row.get(key), str):
+                            problems.append(f"{prefix}.{key} {row.get(key)!r} not str")
+                    order = row.get("display_order")
+                    if isinstance(order, int) and not isinstance(order, bool):
+                        if order in seen_orders:
+                            problems.append(f"{prefix}.display_order {order!r} duplicate")
+                        seen_orders.add(order)
+                    identity = (ability_id, row.get("target_kind"), row.get("target_id"))
+                    if identity in seen_keys:
+                        problems.append(f"{prefix} duplicate ability/target identity")
+                    seen_keys.add(identity)
+                    active = row.get("active")
+                    remaining = row.get("duration_remaining_hours")
+                    if active is True and isinstance(remaining, int) and remaining == 0:
+                        problems.append(f"{prefix} active with zero remaining duration")
+                    cooldown = row.get("cooldown_remaining_hours")
+                    cooldown_total = row.get("cooldown_hours")
+                    if (isinstance(cooldown, int) and isinstance(cooldown_total, int)
+                            and cooldown >= 0 and cooldown_total >= 0
+                            and cooldown > cooldown_total):
+                        problems.append(f"{prefix} cooldown remaining exceeds total")
+                    duration = row.get("duration_hours")
+                    if (isinstance(remaining, int) and isinstance(duration, int)
+                            and remaining >= 0 and duration >= 0 and remaining > duration):
+                        problems.append(f"{prefix} duration remaining exceeds total")
+                if complete is True and seen_orders != set(range(len(rows))):
+                    problems.append(
+                        f"country {tag!r}.active_abilities display_order not exact 0..N-1")
+
         st = c.get("politics", {}).get("stability")
         if st is not None and not (isinstance(st, (int, float)) and -0.01 <= st <= 1.01):
             problems.append(f"country {tag!r} stability {st!r} out of 0..1")
@@ -3100,6 +3564,158 @@ def _validate_production_line(
         )
     ):
         problems.append(f"{prefix}.amount not -1 or nonnegative int in range")
+    optional_ints = {
+        "priority": (0, 4096),
+        "requested_factories": (0, PRODUCTION_FACTORY_COUNT_MAX),
+    }
+    for field, (minimum, maximum) in optional_ints.items():
+        value = line.get(field)
+        if value is not None and not _valid_bounded_int(
+            value, minimum=minimum, maximum=maximum
+        ):
+            problems.append(f"{prefix}.{field} not int|null in range")
+    variant_id = line.get("equipment_variant_id")
+    if variant_id is not None and not _valid_positive_int_key(
+        variant_id, max_value=PRODUCTION_VARIANT_ID_MAX
+    ):
+        problems.append(f"{prefix}.equipment_variant_id not positive int id|null")
+    line_subtype = line.get("line_subtype")
+    if line_subtype is not None and line_subtype not in {
+        "military", "naval", "ship_refit", "railway_gun"
+    }:
+        problems.append(f"{prefix}.line_subtype not admitted subtype|null")
+    for field in (
+        "efficiency",
+        "efficiency_cap",
+        "efficiency_growth",
+        "daily_output",
+        "days_to_next_unit",
+    ):
+        value = line.get(field)
+        if value is not None and not _valid_nonnegative_measure(value):
+            problems.append(f"{prefix}.{field} not finite nonnegative number|null")
+    progress = line.get("progress_ratio")
+    if progress is not None and not (
+        _is_finite_number(progress) and 0.0 <= float(progress) <= 1.0
+    ):
+        problems.append(f"{prefix}.progress_ratio not finite 0..1 number|null")
+    mio_id = line.get("mio_id")
+    if mio_id is not None and not (
+        (isinstance(mio_id, str) and bool(mio_id.strip()))
+        or _valid_bounded_int(mio_id, minimum=0, maximum=2**31 - 1)
+    ):
+        problems.append(f"{prefix}.mio_id not nonempty string|int|null")
+    return problems
+
+
+def _validate_fired_event_history(world_events: Dict[str, Any]) -> List[str]:
+    """Validate the XUI21 rich stream without upgrading the save's id ledger."""
+    problems: List[str] = []
+    complete = world_events.get("fired_events_complete")
+    if complete is not None and not isinstance(complete, bool):
+        problems.append(
+            f"world_events.fired_events_complete {complete!r} not bool|null")
+    rows = world_events.get("fired_events")
+    if not isinstance(rows, list):
+        return [f"world_events.fired_events {rows!r} not list"]
+    if len(rows) > 1_000_000:
+        problems.append("world_events.fired_events too many entries")
+    prior_sequence: Optional[int] = None
+    prior_tick: Optional[int] = None
+    for index, row in enumerate(rows):
+        prefix = f"world_events.fired_events[{index}]"
+        if isinstance(row, str) or (isinstance(row, int) and not isinstance(row, bool)):
+            # Persisted save ledger: valid historical identity, intentionally no
+            # claim about recipient, chronology, choice, or presentation.
+            if not str(row).strip():
+                problems.append(f"{prefix} empty legacy event id")
+            if complete is True:
+                problems.append(
+                    f"{prefix} legacy identity cannot satisfy fired_events_complete")
+            continue
+        if not isinstance(row, dict):
+            problems.append(f"{prefix} not event id|dict")
+            continue
+        event_id = row.get("event_id")
+        if not isinstance(event_id, (str, int)) or isinstance(event_id, bool) or not str(event_id).strip():
+            problems.append(f"{prefix}.event_id {event_id!r} not nonempty id")
+        recipient = row.get("recipient_tag")
+        if not valid_tag(recipient):
+            problems.append(f"{prefix}.recipient_tag {recipient!r} not TAG")
+        fire_date = row.get("fire_date")
+        fire_hour = row.get("fire_hour")
+        if date_to_hour_index(fire_date) != fire_hour:
+            problems.append(f"{prefix}.fire_hour does not match fire_date")
+        for key in ("fire_hour", "fire_tick", "event_sequence"):
+            if not _valid_bounded_int(row.get(key), minimum=0, maximum=9_223_372_036_854_775_807):
+                problems.append(f"{prefix}.{key} {row.get(key)!r} not nonnegative int")
+        fire_tick = row.get("fire_tick")
+        sequence = row.get("event_sequence")
+        if isinstance(sequence, int) and not isinstance(sequence, bool):
+            if prior_sequence is not None and sequence <= prior_sequence:
+                problems.append(f"{prefix}.event_sequence not strictly increasing")
+            prior_sequence = sequence
+        if isinstance(fire_tick, int) and not isinstance(fire_tick, bool):
+            if prior_tick is not None and fire_tick < prior_tick:
+                problems.append(f"{prefix}.fire_tick regresses")
+            prior_tick = fire_tick
+
+        visible = row.get("visible_option_ordinals")
+        if not isinstance(visible, list):
+            problems.append(f"{prefix}.visible_option_ordinals not list")
+            visible_set: set[int] = set()
+        else:
+            valid_visible = all(
+                _valid_bounded_int(value, minimum=0, maximum=65_535)
+                for value in visible
+            )
+            if not valid_visible or any(a >= b for a, b in zip(visible, visible[1:])):
+                problems.append(f"{prefix}.visible_option_ordinals not strictly ordered ordinals")
+            visible_set = set(visible) if valid_visible else set()
+        chosen = row.get("chosen_option_ordinal")
+        if chosen is not None and not _valid_bounded_int(
+            chosen, minimum=0, maximum=65_535
+        ):
+            problems.append(f"{prefix}.chosen_option_ordinal not ordinal|null")
+        presentation_signal = bool(visible_set)
+        for key in ("selected_desc_key", "shown_picture_gfx", "runtime_text_context_id"):
+            value = row.get(key)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                problems.append(f"{prefix}.{key} {value!r} not nonempty str|null")
+            if key != "runtime_text_context_id" and isinstance(value, str) and value.strip():
+                presentation_signal = True
+        if presentation_signal and chosen is not None and chosen not in visible_set:
+            problems.append(f"{prefix}.chosen_option_ordinal not a materialised ordinal|null")
+        subtype = row.get("popup_subtype")
+        if subtype is not None and subtype not in {
+            "country", "news", "state", "unit_leader", "operative_leader"
+        }:
+            problems.append(f"{prefix}.popup_subtype {subtype!r} invalid")
+        if presentation_signal and subtype is None:
+            problems.append(f"{prefix}.popup_subtype missing for materialised presentation")
+        timeout_hours = row.get("effective_timeout_hours")
+        timeout_tick = row.get("timeout_tick")
+        if not _valid_bounded_int(timeout_hours, minimum=1, maximum=1_000_000):
+            problems.append(f"{prefix}.effective_timeout_hours invalid")
+        if not _valid_bounded_int(timeout_tick, minimum=0, maximum=9_223_372_036_854_775_807):
+            problems.append(f"{prefix}.timeout_tick invalid")
+        elif isinstance(fire_tick, int) and timeout_tick <= fire_tick:
+            problems.append(f"{prefix}.timeout_tick not after fire_tick")
+        resolved = row.get("resolved_tick")
+        if resolved is not None and (
+            not _valid_bounded_int(resolved, minimum=0, maximum=9_223_372_036_854_775_807)
+            or (isinstance(fire_tick, int) and resolved < fire_tick)
+        ):
+            problems.append(f"{prefix}.resolved_tick invalid")
+        reason = row.get("resolution_reason")
+        valid_resolution = (
+            (reason == "pending" and resolved is None and chosen is None)
+            or (reason == "selected" and resolved is not None and chosen is not None)
+            or (reason == "timeout" and resolved is not None)
+            or (reason == "dismissed" and resolved is not None and chosen is None)
+        )
+        if not valid_resolution:
+            problems.append(f"{prefix}.resolution state inconsistent")
     return problems
 
 

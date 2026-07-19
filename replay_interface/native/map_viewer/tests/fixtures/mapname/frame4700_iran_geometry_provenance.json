@@ -1,0 +1,60 @@
+{
+  "schema": "battle-plan-frame4700-iran-geometry-provenance-v1",
+  "target_binary": {
+    "version": "1.19.2.0.a729",
+    "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+  },
+  "designated_ghidra_program": {
+    "sha256": "16022851eaa571728aa3a0b5fd5f990a56da57e2249a4c1b9cfb30336f59b120",
+    "matches_target": false
+  },
+  "binary_join_status": "UNPROVEN: designated Ghidra program identity mismatches target; historical label functions have not been relocated",
+  "game_files": {
+    "map/definition.csv_sha256": "86846be71198d6772c651638aa22e3656133198de9b7c49c6234ed48cf33d87b",
+    "map/provinces.bmp_sha256": "e131d30e5dcb13d9c2a8598f820a2de0ae9828f3a24f2bddc1bcfff40f71660a"
+  },
+  "capture_artifacts": {
+    "answer_key": {
+      "path": "tests/fixtures/mapname/frame4700_labels.json",
+      "sha256": "e0f37b8cb73f1869a11f95a9f1f504dc76ece98facf1761ea3f3f94b1a108da0"
+    },
+    "event_provenance": {
+      "path": "tests/fixtures/mapname/frame4700_iran_provenance.json",
+      "sha256": "4d563cca2195965a86d2edd2c4f5b90f52d41f4e4dd84fdcf9e0f705f0b49992"
+    },
+    "vertex_buffer": {
+      "path": "tests/fixtures/mapname/mined_artifacts/hoi4_vanilla_frame4700/vb_132899_f6d069daf2eef51b.bin",
+      "byte_length": 480,
+      "sha256": "7a8530de8ba766957e2b9f87e40c9d4760b636c0d491e3ab5995e5424fe463cf",
+      "fnv1a64": "f6d069daf2eef51b"
+    }
+  },
+  "country_tag": "PER",
+  "display_text": "IRAN",
+  "main_passable_land_pixels": 43242,
+  "lake_urmia_pixels": 122,
+  "inclusive_numerator": 43364,
+  "detached_component_pixels": 42,
+  "selected_segment": {
+    "start": [3525, 802],
+    "end": [3761, 897],
+    "half_length_f32": 127.20161437988281,
+    "length_f32": 254.40322875976562
+  },
+  "font": {
+    "text_width": 183.0,
+    "line_height": 84.0,
+    "cap_height": 55.0
+  },
+  "expected": {
+    "n_over_len_f32": 170.4538116455078,
+    "fit_scale_f32": 1.0009307861328125,
+    "cap_scale_f32": 0.8116848468780518,
+    "predicted_cap_height_f32": 44.64266586303711,
+    "fixture_cap_height_f32": 44.714,
+    "predicted_to_fixture_ratio_f32": 0.9984046220779419,
+    "raw_vb_mean_cap_height": 44.68599635588,
+    "predicted_to_raw_ratio_f32": 0.9990302920341492
+  },
+  "evidence_report": "replay_interface/documents/lane_reports/w16-iran-recheck.md"
+}

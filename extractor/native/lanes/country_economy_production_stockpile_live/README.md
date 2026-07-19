@@ -34,9 +34,13 @@ the shared collector today, but this lane keeps its proof and decoder local.
   type field `+0x08 == 70`, id field `+0x0C == variant_id`
 - production line vector `CProductionManager + 0x58/+0x60/+0x64`, pointer stride
   `0x08`
-- production line fields: type `+0x08` (`56` military, `57` naval), id `+0x0C`,
-  active factories `+0x18`, cost `+0x28`, speed `+0x30`, produced `+0x38`,
-  amount `+0x48`
+- production line fields: exact primary vtable at `+0x00` (military
+  `module+0x2965050`, naval `+0x2965238`, railway-gun `+0x2965398`, ship-refit
+  `+0x2965858`), legacy type `+0x08`, id `+0x0C`, active factories `+0x18`,
+  cost `+0x28`, speed `+0x30`, produced `+0x38`, amount `+0x48`, exact
+  equipment-variant pointer `+0x88`, industrial-manufacturer CID `+0x90`, and
+  requested factories `+0xE8`; the CID is `{type:u32,id:u32}`, where `{0,0}` is
+  proven null and `{79,id>0}` is an assigned industrial organisation
 - construction queue vector `CProductionManager + 0x70/+0x78/+0x7C`, pointer
   stride `0x08`, type `+0x08 == 59`, template subobject at line `+0x70`, template
   id at subobject `+0x08`
@@ -48,7 +52,9 @@ the shared collector today, but this lane keeps its proof and decoder local.
 
 - `10 fuel_live`: country fuel rows, fixed scale `32768`
 - `11 production_live`: stockpiles, military/naval production lines, construction
-  queue rows, fixed scale `100000`
+  queue rows, fixed scale `100000`; additive `PVJ1`, `PFR1`, `PLS1`, `PEF1`,
+  `PMI1`, and `PCP1` self-sized segments carry exact variant, requested-factory,
+  subtype, efficiency, line-owned MIO, and vector-completeness state
 - `37 stockpile_variant_defs`: stockpile-sourced variant catalog rows and module
   token children
 - `40 stockpile_variant_upgrades`: stockpile-sourced variant upgrade rows
@@ -60,10 +66,6 @@ the shared collector today, but this lane keeps its proof and decoder local.
 The accepted production/fuel/stockpile streams do not encode every economy
 surface. The lane-local `gap_report` proof fail-closes the remainder:
 
-- `requested_factory_counts`: schema-blocked. Save path exists at
-  `countries.<TAG>.production.*_lines.requested_factories`, but current domain
-  `11` line rows are only `tag_db_id`, `kind`, `line_id`, `active_factories`,
-  `cost`, `speed`, `produced`, and `amount`.
 - `consumer_goods`: source-blocked. Scripted consumer-goods variables exist in
   coverage-audit paths, but no validated numeric country consumer-goods live root
   is in the hot-loop compact path.
@@ -73,13 +75,14 @@ surface. The lane-local `gap_report` proof fail-closes the remainder:
 - `deployment_queues`: source-blocked. Save path
   `countries.<TAG>.deployment.military_deployment_conveyor[]` exists, but no live
   conveyor vector/root is validated.
-- `mio_design_variant_production_joins`: schema-blocked. Variant defs/upgrades
-  are present, but production line rows do not include `equipment_variant_index`
-  or MIO ids.
 - `economy_law_derived_state`: owned-elsewhere badge. Law/idea identity belongs
   to characters/politics; this lane only owns numeric economy effects once rooted.
 - `trade_factory_impact`: owned-elsewhere badge. Market/trade owns contract-level
   factory impact; this lane may later consume granted aggregate joins only.
+
+X4-P5 is promoted: `PMI1` now carries one exact assigned or proven-null MIO id
+for every admitted production-line key. Missing, unreadable, type-invalid,
+duplicate, or non-bijective input suppresses the entire segment.
 
 ## Local commands
 

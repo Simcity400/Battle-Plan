@@ -2,7 +2,7 @@
 
 //! Integration tests over synthetic fixtures: a 3-hour snapshot store
 //! (directory and packed `.battleplan`), a compact-stream-only production
-//! container (must fail closed), scrub semantics, and the Absent /
+//! container that must fail closed, scrub semantics, and the Absent /
 //! Unobtained / Measured trichotomy.
 
 use replay_core::world::FactionRosterStatus;
@@ -709,27 +709,62 @@ fn production_encode_decode_fold_typed_unavailable_beats_present_legacy_json() {
     // well-framed d53 record with a deliberately malformed payload, exercising
     // the production decoder rejection and fold suppression path.
     let mut encoded = fs::read(&proof_record).unwrap();
-    assert_eq!(&encoded[..4], b"H4CR");
-    assert_eq!(u16::from_le_bytes(encoded[20..22].try_into().unwrap()), 53);
-    assert_eq!(u16::from_le_bytes(encoded[22..24].try_into().unwrap()), 3);
+    let mut offsets = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < encoded.len() {
+        assert_eq!(&encoded[cursor..cursor + 4], b"H4CR");
+        let header_len =
+            u16::from_le_bytes(encoded[cursor + 6..cursor + 8].try_into().unwrap()) as usize;
+        let payload_len =
+            u32::from_le_bytes(encoded[cursor + 24..cursor + 28].try_into().unwrap()) as usize;
+        offsets.push(cursor);
+        cursor += header_len + payload_len;
+    }
+    assert_eq!(cursor, encoded.len());
+    assert_eq!(
+        offsets.len(),
+        3,
+        "canonical proof must be PERF/DATA/FRAME_END"
+    );
+    assert_eq!(
+        offsets
+            .iter()
+            .map(|offset| {
+                u16::from_le_bytes(encoded[offset + 22..offset + 24].try_into().unwrap())
+            })
+            .collect::<Vec<_>>(),
+        vec![1, 3, 2]
+    );
+    let data_offset = offsets[1];
+    assert_eq!(
+        u16::from_le_bytes(
+            encoded[data_offset + 20..data_offset + 22]
+                .try_into()
+                .unwrap()
+        ),
+        53
+    );
     // The proof CLI's historical 24-hour smoke timestamp predates the fold's
     // plausible-calendar gate. Keep its production-encoded payload and move
     // only the H4CR test clock into the canonical 1936 window.
     let raw_hour = 43_799_999i32 + (1936 * 365 * 24);
-    encoded[16..20].copy_from_slice(&raw_hour.to_le_bytes());
-    let mut stream = encoded.clone();
+    for (index, offset) in offsets.into_iter().enumerate() {
+        encoded[offset + 8..offset + 16].copy_from_slice(&(index as u64 + 1).to_le_bytes());
+        encoded[offset + 16..offset + 20].copy_from_slice(&raw_hour.to_le_bytes());
+    }
+    let template = encoded[..32].to_vec();
+    let mut stream = encoded;
     let frame_end = vec![0u8; 28];
-    push_h4cr_record(&mut stream, &encoded, 2, raw_hour, 1000, 2, &frame_end);
     push_h4cr_record(
         &mut stream,
-        &encoded,
-        3,
+        &template,
+        4,
         raw_hour + 1,
         53,
         3,
         &[0x00, 0x01, 0x02],
     );
-    push_h4cr_record(&mut stream, &encoded, 4, raw_hour + 1, 1000, 2, &frame_end);
+    push_h4cr_record(&mut stream, &template, 5, raw_hour + 1, 1000, 2, &frame_end);
     let stream_path = root.join("collector_stream.bin");
     fs::write(&stream_path, stream).unwrap();
 
@@ -1325,8 +1360,93 @@ fn container_and_dir_store_agree() {
     let _ = fs::remove_dir_all(&root);
 }
 
+#[test]
+fn relocated_portable_replay_file_ingests_without_extractor_tree() {
+    let source_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("fixtures")
+        .join("positive")
+        .join("fx_topbar_scalars_sweep.battleplan");
+    let unrelated_root = unique_temp_dir("portable_relocated").join("standalone-install-data");
+    fs::create_dir_all(&unrelated_root).unwrap();
+    let relocated = unrelated_root.join("copied-session.battleplan");
+    fs::copy(&source_path, &relocated).unwrap();
+
+    let timeline = WorldTimeline::open(open_recording(&relocated).unwrap()).unwrap();
+    let frame = timeline.state_at(timeline.first_hour()).unwrap();
+    assert_eq!(
+        frame.session_metadata().localisation_language,
+        Leaf::Measured("l_english".to_string())
+    );
+    let display = match &frame.session_metadata().display_variant {
+        Leaf::Measured(value) => value,
+        other => panic!("expected measured XUI25 display variant, got {other:?}"),
+    };
+    assert_eq!(
+        (display.physical_width, display.physical_height),
+        (1920, 1080)
+    );
+    assert_eq!((display.min_gui_width, display.min_gui_height), (1280, 720));
+    assert_eq!(display.gui_scale_f32_bits, 1.0f32.to_bits());
+    assert_eq!(display.display_mode, "borderless_fullscreen");
+
+    drop(timeline);
+    fs::remove_dir_all(unrelated_root.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn incompatible_replay_index_schema_version_fails_clearly() {
+    let root = unique_temp_dir("unsupported_schema");
+    let game = "unsupported_schema_fixture";
+    let snapshot = json!({
+        "game_id": game,
+        "hour_index": 1,
+        "date": "1936.1.1.1",
+        "schema_version": "999"
+    });
+    let entries = vec![
+        PackEntry {
+            path: format!("payload/{game}/index.json"),
+            bytes: serde_json::to_vec(&json!({
+                "game_id": game,
+                "schema_version": "999",
+                "snapshots": [{"hour_index": 1, "file": "000000000001.snapshot.json"}]
+            }))
+            .unwrap(),
+            role: "index",
+            hour_index: None,
+        },
+        PackEntry {
+            path: format!("payload/{game}/000000000001.snapshot.json"),
+            bytes: serde_json::to_vec(&snapshot).unwrap(),
+            role: "snapshot",
+            hour_index: Some(1),
+        },
+    ];
+    let path = root.join("unsupported-schema.battleplan");
+    fs::write(
+        &path,
+        pack(game, &entries, &PackIdentity::default(), false).unwrap(),
+    )
+    .unwrap();
+
+    let error = open_recording(&path)
+        .err()
+        .expect("must reject unknown schema");
+    match error {
+        SourceError::Unsupported(message) => {
+            assert!(message.contains("incompatible replay index schema_version"));
+            assert!(message.contains("999"));
+            assert!(message.contains("supports schema_version \"1\""));
+        }
+        other => panic!("expected Unsupported, got {other:?}"),
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
 // ---------------------------------------------------------------------------
-// compact-stream production container fails closed
+// compact-stream-only production container must fail closed
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1374,7 +1494,16 @@ fn compact_stream_container_fails_closed() {
                     "errors": [],
                     "dlc": { "enabled": [] },
                     "dlc_display_names": {},
-                    "localisation_language": "l_english"
+                    "localisation_language": "l_english",
+                    "display_variant": {
+                        "physical_width": 2752, "physical_height": 1152,
+                        "min_gui_width": 1280, "min_gui_height": 720,
+                        "gui_scale_f32_bits": 1.0f32.to_bits(),
+                        "refresh_rate_hz": 60, "max_refresh_rate_hz": 75,
+                        "fullscreen": false, "borderless": true,
+                        "display_mode": "borderless_fullscreen",
+                        "settings_file_sha256": "aa".repeat(32)
+                    }
                 }
             }))
             .unwrap(),
@@ -1417,7 +1546,16 @@ fn resolved_recorder_manifest() -> Value {
                 "dlc/a.dlc": "DLC A",
                 "dlc/b.dlc": "DLC B"
             },
-            "localisation_language": "l_english"
+            "localisation_language": "l_english",
+            "display_variant": {
+                "physical_width": 2752, "physical_height": 1152,
+                "min_gui_width": 1280, "min_gui_height": 720,
+                "gui_scale_f32_bits": 1.0f32.to_bits(),
+                "refresh_rate_hz": 60, "max_refresh_rate_hz": 75,
+                "fullscreen": false, "borderless": true,
+                "display_mode": "borderless_fullscreen",
+                "settings_file_sha256": "aa".repeat(32)
+            }
         }
     })
 }
@@ -1588,6 +1726,13 @@ fn recorder_metadata_binds_session_metadata_end_to_end() {
         frame.session_metadata().localisation_language,
         Leaf::Measured("l_english".to_string())
     );
+    assert!(matches!(
+        &frame.session_metadata().display_variant,
+        Leaf::Measured(display)
+            if display.physical_width == 2752
+                && display.gui_scale_f32_bits == 1.0f32.to_bits()
+                && display.display_mode == "borderless_fullscreen"
+    ));
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1605,6 +1750,7 @@ fn genuinely_unreferenced_snapshot_container_remains_legacy() {
     let frame = timeline.frame(1).unwrap();
     assert_eq!(frame.session_metadata().active_dlcs, Leaf::Absent);
     assert_eq!(frame.session_metadata().localisation_language, Leaf::Absent);
+    assert_eq!(frame.session_metadata().display_variant, Leaf::Absent);
     let _ = fs::remove_dir_all(root);
 }
 #[test]

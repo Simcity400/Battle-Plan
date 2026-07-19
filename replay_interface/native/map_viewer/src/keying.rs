@@ -128,7 +128,10 @@ mod tests {
         fn warnings(&self) -> &[String] {
             &self.warnings
         }
-        fn frame(&self, hour_index: i64) -> Result<replay_core::RawFrame, replay_core::SourceError> {
+        fn frame(
+            &self,
+            hour_index: i64,
+        ) -> Result<replay_core::RawFrame, replay_core::SourceError> {
             self.frames.get(&hour_index).cloned().ok_or_else(|| {
                 replay_core::SourceError::Open(format!("no inline frame at {hour_index}"))
             })
@@ -162,12 +165,7 @@ mod tests {
     }
 
     /// One minimal snapshot with the map layers the owner/control views read.
-    fn snapshot(
-        hour: i64,
-        states: Value,
-        provinces: Value,
-        countries: Value,
-    ) -> Value {
+    fn snapshot(hour: i64, states: Value, provinces: Value, countries: Value) -> Value {
         // Build the map mirrors the way the recorder/fixture does.
         let mut owners = Map::new();
         for (sid, st) in states.as_object().unwrap() {
@@ -263,7 +261,9 @@ mod tests {
         (defs, p2s, states)
     }
 
-    fn fill_colors(keying: &KeyingTables) -> BTreeMap<u32, (PoliticalColorTexelClass, Option<[u8; 4]>, Option<[u8; 4]>)> {
+    fn fill_colors(
+        keying: &KeyingTables,
+    ) -> BTreeMap<u32, (PoliticalColorTexelClass, Option<[u8; 4]>, Option<[u8; 4]>)> {
         let (defs, p2s, states) = fill_world();
         // Distinct base colors + a synthetic cosmetic color map so a cosmetic
         // flip is observable in the owner color.
@@ -314,13 +314,32 @@ mod tests {
         let static_keying = KeyingTables {
             state_owners: BTreeMap::from([(10u32, "GER".to_string()), (20u32, "SOV".to_string())]),
             state_controls: BTreeMap::from([
-                (10u32, InitialStateControl { owner: Some("GER".into()), controller: Some("GER".into()) }),
-                (20u32, InitialStateControl { owner: Some("SOV".into()), controller: Some("SOV".into()) }),
+                (
+                    10u32,
+                    InitialStateControl {
+                        owner: Some("GER".into()),
+                        controller: Some("GER".into()),
+                    },
+                ),
+                (
+                    20u32,
+                    InitialStateControl {
+                        owner: Some("SOV".into()),
+                        controller: Some("SOV".into()),
+                    },
+                ),
             ]),
-            cosmetic_by_tag: BTreeMap::from([("GER".to_string(), "GER_reichskommissariat".to_string())]),
+            cosmetic_by_tag: BTreeMap::from([(
+                "GER".to_string(),
+                "GER_reichskommissariat".to_string(),
+            )]),
         };
 
-        assert_eq!(fill_colors(&timeline_keying), fill_colors(&static_keying), "t0 fill output must match");
+        assert_eq!(
+            fill_colors(&timeline_keying),
+            fill_colors(&static_keying),
+            "t0 fill output must match"
+        );
     }
 
     // ==================================================================
@@ -372,19 +391,38 @@ mod tests {
         // Owner flip: state 10 GER->SOV at tick 5, and nothing else EVER.
         let before = keying_at(&t, h(4));
         let after = keying_at(&t, h(5));
-        assert_eq!(owner_diff(&before, &after), BTreeSet::from([10]), "owner flip @ tick5 = {{10}}");
+        assert_eq!(
+            owner_diff(&before, &after),
+            BTreeSet::from([10]),
+            "owner flip @ tick5 = {{10}}"
+        );
         assert_eq!(after.state_owners.get(&10), Some(&"SOV".to_string()));
         // Controller flip rides the same hour for state 10.
-        assert_eq!(control_diff(&before, &after), BTreeSet::from([10]), "control flip @ tick5 = {{10}}");
+        assert_eq!(
+            control_diff(&before, &after),
+            BTreeSet::from([10]),
+            "control flip @ tick5 = {{10}}"
+        );
 
         // Second flip: state 20 controller GER at tick 9 (owner UNCHANGED).
         let before9 = keying_at(&t, h(8));
         let after9 = keying_at(&t, h(9));
-        assert_eq!(owner_diff(&before9, &after9), BTreeSet::new(), "no owner change @ tick9");
-        assert_eq!(control_diff(&before9, &after9), BTreeSet::from([20]), "control flip @ tick9 = {{20}}");
+        assert_eq!(
+            owner_diff(&before9, &after9),
+            BTreeSet::new(),
+            "no owner change @ tick9"
+        );
+        assert_eq!(
+            control_diff(&before9, &after9),
+            BTreeSet::from([20]),
+            "control flip @ tick9 = {{20}}"
+        );
         assert_eq!(
             after9.state_controls.get(&20),
-            Some(&InitialStateControl { owner: Some("SOV".into()), controller: Some("GER".into()) })
+            Some(&InitialStateControl {
+                owner: Some("SOV".into()),
+                controller: Some("GER".into())
+            })
         );
 
         // Whole-timeline: the ONLY owner change across all hours is state 10.
@@ -394,7 +432,11 @@ mod tests {
             let b = keying_at(&t, w[1]);
             all_owner_changes.extend(owner_diff(&a, &b));
         }
-        assert_eq!(all_owner_changes, BTreeSet::from([10]), "only state 10 ever changes owner");
+        assert_eq!(
+            all_owner_changes,
+            BTreeSet::from([10]),
+            "only state 10 ever changes owner"
+        );
     }
 
     #[test]
@@ -405,17 +447,30 @@ mod tests {
 
         // tick<4: GER cosmetic null (Unobtained) -> omitted.
         let k3 = keying_at(&t, h(3));
-        assert_eq!(k3.cosmetic_by_tag.get("GER"), None, "GER cosmetic unobtained @ tick3");
+        assert_eq!(
+            k3.cosmetic_by_tag.get("GER"),
+            None,
+            "GER cosmetic unobtained @ tick3"
+        );
         // tick 4..8: GER_civil_war_democratic.
         let k4 = keying_at(&t, h(4));
-        assert_eq!(k4.cosmetic_by_tag.get("GER").map(String::as_str), Some("GER_civil_war_democratic"));
+        assert_eq!(
+            k4.cosmetic_by_tag.get("GER").map(String::as_str),
+            Some("GER_civil_war_democratic")
+        );
         // tick>=8: GER_reichskommissariat.
         let k8 = keying_at(&t, h(8));
-        assert_eq!(k8.cosmetic_by_tag.get("GER").map(String::as_str), Some("GER_reichskommissariat"));
+        assert_eq!(
+            k8.cosmetic_by_tag.get("GER").map(String::as_str),
+            Some("GER_reichskommissariat")
+        );
         // No other tag ever carries a cosmetic in this fixture.
         for k in [&k3, &k4, &k8] {
             let tags: BTreeSet<&String> = k.cosmetic_by_tag.keys().collect();
-            assert!(tags.iter().all(|t| *t == "GER"), "only GER has a cosmetic tag");
+            assert!(
+                tags.iter().all(|t| *t == "GER"),
+                "only GER has a cosmetic tag"
+            );
         }
 
         // The cosmetic flip must reach the political FILL owner color. The
@@ -424,10 +479,25 @@ mod tests {
         // (Owner table is stable in this fixture; we key state 10 to GER.)
         let ger_state = |k: &KeyingTables| -> KeyingTables {
             KeyingTables {
-                state_owners: BTreeMap::from([(10u32, "GER".to_string()), (20u32, "SOV".to_string())]),
+                state_owners: BTreeMap::from([
+                    (10u32, "GER".to_string()),
+                    (20u32, "SOV".to_string()),
+                ]),
                 state_controls: BTreeMap::from([
-                    (10u32, InitialStateControl { owner: Some("GER".into()), controller: Some("GER".into()) }),
-                    (20u32, InitialStateControl { owner: Some("SOV".into()), controller: Some("SOV".into()) }),
+                    (
+                        10u32,
+                        InitialStateControl {
+                            owner: Some("GER".into()),
+                            controller: Some("GER".into()),
+                        },
+                    ),
+                    (
+                        20u32,
+                        InitialStateControl {
+                            owner: Some("SOV".into()),
+                            controller: Some("SOV".into()),
+                        },
+                    ),
                 ]),
                 cosmetic_by_tag: k.cosmetic_by_tag.clone(),
             }
@@ -435,12 +505,30 @@ mod tests {
         let fill3 = fill_colors(&ger_state(&k3)); // base GER color [10,20,30]
         let fill4 = fill_colors(&ger_state(&k4)); // cosmetic -> [0,200,0]
         let fill8 = fill_colors(&ger_state(&k8)); // cosmetic -> [200,0,0]
-        let owner_color = |m: &BTreeMap<u32, (PoliticalColorTexelClass, Option<[u8; 4]>, Option<[u8; 4]>)>, p: u32| m[&p].1;
-        assert_eq!(owner_color(&fill3, 1000), Some([10, 20, 30, 255]), "no cosmetic -> base color");
-        assert_eq!(owner_color(&fill4, 1000), Some([0, 200, 0, 255]), "civil_war cosmetic color");
-        assert_eq!(owner_color(&fill8, 1000), Some([200, 0, 0, 255]), "reichskommissariat cosmetic color");
+        let owner_color =
+            |m: &BTreeMap<u32, (PoliticalColorTexelClass, Option<[u8; 4]>, Option<[u8; 4]>)>,
+             p: u32| m[&p].1;
+        assert_eq!(
+            owner_color(&fill3, 1000),
+            Some([10, 20, 30, 255]),
+            "no cosmetic -> base color"
+        );
+        assert_eq!(
+            owner_color(&fill4, 1000),
+            Some([0, 200, 0, 255]),
+            "civil_war cosmetic color"
+        );
+        assert_eq!(
+            owner_color(&fill8, 1000),
+            Some([200, 0, 0, 255]),
+            "reichskommissariat cosmetic color"
+        );
         // The SOV state (province 2000) never moves.
-        assert_eq!(owner_color(&fill3, 2000), owner_color(&fill8, 2000), "SOV color stable");
+        assert_eq!(
+            owner_color(&fill3, 2000),
+            owner_color(&fill8, 2000),
+            "SOV color stable"
+        );
     }
 
     // Fill a solid rectangle [x0,x1) x [y0,y1) of a raster with a province id.
@@ -467,7 +555,8 @@ mod tests {
         let ptype = BTreeMap::from([(1u32, ProvinceKind::Land), (2u32, ProvinceKind::Land)]);
         let impassable = BTreeSet::new();
 
-        let owners_before = BTreeMap::from([(10u32, "GER".to_string()), (20u32, "SOV".to_string())]);
+        let owners_before =
+            BTreeMap::from([(10u32, "GER".to_string()), (20u32, "SOV".to_string())]);
         let owners_after = BTreeMap::from([(10u32, "SOV".to_string()), (20u32, "SOV".to_string())]);
 
         let label_tags = |owners: &BTreeMap<u32, String>| -> BTreeSet<String> {
@@ -487,9 +576,18 @@ mod tests {
         };
         let before = label_tags(&owners_before);
         let after = label_tags(&owners_after);
-        assert!(before.contains("GER"), "GER labelled before flip: {before:?}");
-        assert!(!after.contains("GER"), "GER label gone after flip: {after:?}");
-        assert!(before.contains("SOV") && after.contains("SOV"), "SOV label stable");
+        assert!(
+            before.contains("GER"),
+            "GER labelled before flip: {before:?}"
+        );
+        assert!(
+            !after.contains("GER"),
+            "GER label gone after flip: {after:?}"
+        );
+        assert!(
+            before.contains("SOV") && after.contains("SOV"),
+            "SOV label stable"
+        );
 
         // Furniture: give each state a VP province so a marker is emitted.
         let vps = BTreeMap::from([
@@ -516,8 +614,16 @@ mod tests {
         };
         let mb = markers(&owners_before);
         let ma = markers(&owners_after);
-        assert_eq!(mb.get(&1).map(String::as_str), Some("GER"), "marker p1 owner GER before");
-        assert_eq!(ma.get(&1).map(String::as_str), Some("SOV"), "marker p1 owner SOV after");
+        assert_eq!(
+            mb.get(&1).map(String::as_str),
+            Some("GER"),
+            "marker p1 owner GER before"
+        );
+        assert_eq!(
+            ma.get(&1).map(String::as_str),
+            Some("SOV"),
+            "marker p1 owner SOV after"
+        );
         assert_eq!(mb.get(&2), ma.get(&2), "state 20 marker unchanged");
     }
 
@@ -536,19 +642,33 @@ mod tests {
         let keying = KeyingTables::from_world_frame(&t.frame(0).unwrap());
 
         // Fail-closed: state 10 omitted from the owner/control tables entirely.
-        assert!(!keying.state_owners.contains_key(&10), "unobtained owner omitted");
         assert!(
-            keying.state_controls.get(&10).map(|c| c.owner.is_none()).unwrap_or(true),
+            !keying.state_owners.contains_key(&10),
+            "unobtained owner omitted"
+        );
+        assert!(
+            keying
+                .state_controls
+                .get(&10)
+                .map(|c| c.owner.is_none())
+                .unwrap_or(true),
             "no invented owner for state 10"
         );
 
         // The fill law then classifies province 1000 (state 10) as NoOwner —
         // the absent form, not a stale/default color.
         let colors = fill_colors(&keying);
-        assert_eq!(colors[&1000].0, PoliticalColorTexelClass::NoOwner, "absent form");
+        assert_eq!(
+            colors[&1000].0,
+            PoliticalColorTexelClass::NoOwner,
+            "absent form"
+        );
         assert_eq!(colors[&1000].1, None, "no owner color emitted");
         // State 20 still renders normally.
-        assert_eq!(colors[&2000].0, PoliticalColorTexelClass::OwnerControllerEqual);
+        assert_eq!(
+            colors[&2000].0,
+            PoliticalColorTexelClass::OwnerControllerEqual
+        );
     }
 
     fn st_null_owner() -> Value {
