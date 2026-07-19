@@ -129,3 +129,9 @@ ghidra_scripts/
 # (deterministic, seed-exact, ~732K total; real recordings stay ignored)
 !replay_interface/fixtures/**/*.battleplan
 *.hoi4replay
+
+# Codex/agent scratch dirs (recreated by tooling)
+.codex-temp/
+.codex_tmp/
+.tmp_targets/
+.audit_targets/

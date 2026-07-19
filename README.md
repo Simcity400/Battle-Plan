@@ -1,46 +1,29 @@
 # Battle Plan / Replay
 
-Private, read-only tooling for recording and replaying the owner's Hearts of Iron
-IV multiplayer games.
+Private, read-only tooling for recording and replaying the owner's Hearts of
+Iron IV multiplayer games.
 
-The repo is organized around three working areas:
+**Current status and remaining work live in exactly two documents:**
+
+- `documents/STATUS.md` — where each half of the project stands
+- `documents/REMAINING_WORK.md` — the single deduped backlog
+
+Start there. `documents/SEAM_CONTRACTS.md` tracks what each half is waiting on
+from the other.
+
+## Layout
 
 | Path | Purpose |
 | --- | --- |
-| `extractor/` | Runtime extraction and recording work: DLL collector, Rust recorder host, compact domains, Python dev/proof harnesses, memory-reader research, save-oracle validation, static definition parsing, and extraction status documents. |
-| `replay_interface/` | Replay-consumer work: `.battleplan` schema/reader code, map and visual replay work, game asset extraction, renderer/model helpers, and replay-interface documents. |
-| `documents/` | Cross-cutting project docs and agent operating rules. |
+| `extractor/` | Recording half: injected DLL collector, Rust recorder host, compact domains, save-oracle validation, static parsing. Deep ledgers in `extractor/documents/`. |
+| `replay_interface/` | Playback half: replay app, map/UI rendering, container reader, RE evidence. Specs and the rendering-laws program board in `replay_interface/documents/`. |
+| `portable_replay/` | Neutral format crates both halves statically link. |
+| `documents/` | STATUS / REMAINING_WORK / SEAM_CONTRACTS / DESIGN + `archive/`. |
 
-Root files are intentionally minimal. `AGENTS.md` is a pointer for agent tooling,
-`.gitignore` keeps generated artifacts out of Git, and this README is only a
-directory map.
+Anything in an `archive/` folder is historical evidence, never the current
+plan. The repo carries no process/rules docs (archived 2026-07-19).
 
-## Source Of Truth
-
-- Product vision: `documents/DESIGN.md`
-- Agent rules: `documents/AGENTS.md`
-- Extraction completion and remaining backlog:
-  `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
-- Extraction domain IDs: `extractor/documents/DOMAIN_REGISTRY.md`
-- Reverse-engineering/tooling setup:
-  `extractor/documents/REVERSE_ENGINEERING_TOOLING.md`
-- Replay-layer architecture (crates, data flow, ingest boundary, sequencing):
-  `replay_interface/documents/REPLAY_ARCHITECTURE.md`
-- Replay->extraction seam requests:
-  `replay_interface/documents/EXTRACTION_INTERFACE_REQUESTS.md`
-- Replay container format:
-  `replay_interface/documents/HOI4REPLAY_CONTAINER_SPEC.md`
-- Replay schema: `replay_interface/documents/REPLAY_SCHEMA.md`
-- Replay map/interface standards:
-  `replay_interface/documents/MAP_REPLICA_PLAN.md` and
-  `replay_interface/documents/UI_SOURCE_OF_TRUTH_REPORT.md`
-
-Historical plans, old status reports, research notes, and lane packets are kept
-under `documents/archive/` or `extractor/documents/archive/`. Treat archived
-files as evidence only; do not use them as the current plan unless the active
-source-of-truth document explicitly promotes them.
-
-## Common Checks
+## Common checks
 
 ```powershell
 cargo metadata --manifest-path extractor\native\Cargo.toml --no-deps --format-version 1
@@ -50,11 +33,11 @@ python -m pytest extractor\save_oracle extractor\game_defs replay_interface\repl
 python extractor\coverage_audit\check_coverage.py
 ```
 
-Production live capture remains:
+Production live capture:
 
 ```text
 hoi4.exe -> one injected DLL collector/coordinator -> typed compact records -> Rust recorder -> .battleplan
 ```
 
-Python remains development/proof/validation tooling only, not the production hot
+Python is development/proof/validation tooling only, never the production hot
 extraction loop.
