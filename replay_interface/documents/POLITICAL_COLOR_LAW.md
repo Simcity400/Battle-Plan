@@ -163,7 +163,7 @@ Determinism was checked by writing a second run to
 
 > **STORE NOTES (audited 2026-07-19):** `hoi4_captures` paths in this doc are
 > stale — the store was retired. `live_PAN2` survives at
-> `C:\Users\Example\hoi4_capture_corpus_preserved\live_PAN2\`. The
+> `<local-path>`. The
 > `restore_gate_1` capture is **LOST** (not preserved anywhere on this
 > machine); the recorded results below stand as evidence of record, and
 > re-validation needs a recapture. See the store index in

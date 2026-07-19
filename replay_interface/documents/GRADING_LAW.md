@@ -20,7 +20,7 @@ Ground-truth capture: `C:\Users\Example\AppData\Local\hoi4_captures\restore_gate
 (vanilla, captured 2026-07-06).
 > **STORE LOST (audited 2026-07-19):** the `restore_gate_1` capture no longer
 > exists on this machine (the `hoi4_captures` store was retired; other sessions
-> were preserved in `C:\Users\Example\hoi4_capture_corpus_preserved\`, but
+> were preserved in `<local-path>`, but
 > `restore_gate_1` was not among them). The validation RESULTS recorded in this
 > doc remain the evidence of record; RE-validating this law requires a fresh
 > restore-pass capture. See the store index in

@@ -75,17 +75,19 @@ often relocated into shared crates such as `compact_contract`).
 | `rescue/acceptance-telemetry-f5` | commit `3ea756d8` (2026-07-16) | Recorder-side F5 telemetry (`WriteLatencyHistogram`, `ClockSkewSample`, percentile summaries + tests) — absent from master's Rust (PS-side ladder F6 did ship). | Port or explicitly descope. |
 | `rescue/replay-layer-checkpoint` | tip `7f68bebd` (claude/replay-layer) | The pre-consolidation granular game_ui architecture (~20 per-domain `*_binding.rs`/`*_panels.rs`, `compositor*.rs`) + the 15-file `replay_interface/audit/` mutation-test harness. Master's consolidated game_ui covers the same domains; functional parity not proven by archaeology. | Owner parity review of game_ui laws + decide whether to port the mutation harness; then drop. |
 
-Superseded-but-kept: `hoi4_worktree_uncommitted_backup\agent-add8ba76*.patch`
+Superseded-but-kept: `worktree_uncommitted_backup\agent-add8ba76*.patch`
 (transitional CCSS scan-audit scaffold; the shipped anchored-walk supersedes it).
 
 **History safety net:** the pre-consolidation bundle now exists in TWO
-locations — `C:\tmp\hoi4-preconsolidation-20260719.bundle` (original) and
-`C:\Users\Example\hoi4_git_history_backup\hoi4-preconsolidation-20260719.bundle`
-(durable copy, `git bundle verify` OK 2026-07-19). The `C:\tmp` copy should be
-treated as expendable. `refs/codex/turn-diffs/checkpoints/*` (11 refs) point at
+locations — `<local-path>`
+(durable copy, `git bundle verify` OK 2026-07-19) and
+`C:\tmp\hoi4-preconsolidation-20260719.bundle` (original; expendable).
+`refs/codex/turn-diffs/checkpoints/*` (11 refs) point at
 working-tree snapshots, not commits; low value, safe to ignore.
 
-**Off-repo orchestration state a future agent may need:**
-`C:\Users\Example\hoi4_lanes\` (lane logs, verdicts, Codex thread ids in
+**Off-repo orchestration state a future agent may need** (all machine-local
+evidence was physically consolidated 2026-07-19 under **`C:\hoi4_evidence\`**
+— see its `README.md` manifest; junctions remain at every pre-consolidation
+path): `<local-path>` (lane logs, verdicts, Codex thread ids in
 `threads/*.tid`, `FIX_LIST.md` handoff snapshot, wave boards) and
-`C:\Users\Example\hoi4_worktree_uncommitted_backup\` (07-08 patch set).
+`<local-path>` (07-08 patch set).
