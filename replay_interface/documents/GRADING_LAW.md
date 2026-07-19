@@ -17,7 +17,14 @@ All game-file reads go through the mod-aware `GameFileResolver`
 (`map_viewer/src/mod_resolver.rs`, see `MOD_COMPATIBILITY.md`), never bare paths.
 
 Ground-truth capture: `C:\Users\Example\AppData\Local\hoi4_captures\restore_gate_1\`
-(vanilla, captured 2026-07-06). Implementation: `replay_app/src/grading_law.rs`
+(vanilla, captured 2026-07-06).
+> **STORE LOST (audited 2026-07-19):** the `restore_gate_1` capture no longer
+> exists on this machine (the `hoi4_captures` store was retired; other sessions
+> were preserved in `C:\Users\Example\hoi4_capture_corpus_preserved\`, but
+> `restore_gate_1` was not among them). The validation RESULTS recorded in this
+> doc remain the evidence of record; RE-validating this law requires a fresh
+> restore-pass capture. See the store index in
+> `lane_reports/rendering_laws/PROGRAM_STATUS.md`. Implementation: `replay_app/src/grading_law.rs`
 (law), `replay_app/src/render.rs` (`restore_full_postfx_from_files`,
 `restore_full_postfx_validate_capture`).
 

@@ -55,3 +55,37 @@ unproven/fitted river, tree, resource-fill, or mapmode implementations.
 - First consolidated commit on the baseline: `b0dbf0fe`.
 - The canonical branch is `master`; the temporary local `main` integration
   name is removed during final branch cleanup and is never pushed.
+
+## Post-consolidation archaeology (2026-07-19, replay-layer orchestrator)
+
+A full disposition of the ~756 unreachable commits, 3 dropped stashes, the
+8 uncommitted-work patches in `C:\Users\Example\hoi4_worktree_uncommitted_backup\`,
+and the 12-lane `EXTRACTOR_SESSION_UNSHIPPED_WORK.md` (2026-07-14) table was
+run after consolidation. Verdict: the consolidation is trustworthy — the
+amend-predecessor snapshot, all 2026-07-16 extractor feature tips, 7 of 8
+backup patches, all 12 unshipped-work rows (incl. auto_attach and stitching),
+and the pre-07-15 lane pool are subsumed by `master` (symbols verified present,
+often relocated into shared crates such as `compact_contract`).
+
+**Genuinely stranded work, preserved as local rescue branches (do not prune):**
+
+| Branch | Source | Content | Action owed |
+| --- | --- | --- | --- |
+| `rescue/weather-leaf-soundness` | stash `7e499eca` (port/w1-atlas) | coverage_audit open-vocab weather-leaf fail-closed fix (`_owed_open_vocab_weather_leaf`, `_WEATHER_SUBCONTAINERS`) + 3 tests. **Master's rewritten `save_oracle.py` normalizes `weather.regions.*.<flag>` to the `*.*` blanket this fix exists to reject — possible soundness regression.** | Run the 3 rescued tests against master's oracle; port the fix if they fail. |
+| `rescue/acceptance-telemetry-f5` | commit `3ea756d8` (2026-07-16) | Recorder-side F5 telemetry (`WriteLatencyHistogram`, `ClockSkewSample`, percentile summaries + tests) — absent from master's Rust (PS-side ladder F6 did ship). | Port or explicitly descope. |
+| `rescue/replay-layer-checkpoint` | tip `7f68bebd` (claude/replay-layer) | The pre-consolidation granular game_ui architecture (~20 per-domain `*_binding.rs`/`*_panels.rs`, `compositor*.rs`) + the 15-file `replay_interface/audit/` mutation-test harness. Master's consolidated game_ui covers the same domains; functional parity not proven by archaeology. | Owner parity review of game_ui laws + decide whether to port the mutation harness; then drop. |
+
+Superseded-but-kept: `hoi4_worktree_uncommitted_backup\agent-add8ba76*.patch`
+(transitional CCSS scan-audit scaffold; the shipped anchored-walk supersedes it).
+
+**History safety net:** the pre-consolidation bundle now exists in TWO
+locations — `C:\tmp\hoi4-preconsolidation-20260719.bundle` (original) and
+`C:\Users\Example\hoi4_git_history_backup\hoi4-preconsolidation-20260719.bundle`
+(durable copy, `git bundle verify` OK 2026-07-19). The `C:\tmp` copy should be
+treated as expendable. `refs/codex/turn-diffs/checkpoints/*` (11 refs) point at
+working-tree snapshots, not commits; low value, safe to ignore.
+
+**Off-repo orchestration state a future agent may need:**
+`C:\Users\Example\hoi4_lanes\` (lane logs, verdicts, Codex thread ids in
+`threads/*.tid`, `FIX_LIST.md` handoff snapshot, wave boards) and
+`C:\Users\Example\hoi4_worktree_uncommitted_backup\` (07-08 patch set).

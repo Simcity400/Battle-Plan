@@ -6,6 +6,11 @@ shader/define/config files; the captured `restore_gate_1` pair is validation
 only (it is never a runtime input). The CPU port is
 `replay_interface/native/map_viewer/src/bloom.rs`; the validator is
 `map_viewer/src/bin/dump_bloom_validation.rs`.
+> **STORE LOST (audited 2026-07-19):** the `restore_gate_1` capture no longer
+> exists on this machine. Recorded validation results stand as the evidence of
+> record; re-running the validator requires a fresh capture. See
+> `GRADING_LAW.md` and the store index in
+> `lane_reports/rendering_laws/PROGRAM_STATUS.md`.
 
 Vanilla game root used for citations:
 `<local-path> of Iron IV`. All game-file reads go

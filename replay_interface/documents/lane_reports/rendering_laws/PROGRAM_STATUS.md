@@ -11,6 +11,9 @@ passed its evidence, verifier, composition, and final-review gates.
   `replay_interface/re_evidence/rendering_laws/AUTHORITY.json`.
 - Replay authority: `C:\Users\Example\battle-plan_main` at
   `6aab56e455b39bdb9f17a38078f59b5a6a8d4755` (read-only for this wave).
+  NOTE (2026-07-19): that checkout was a per-wave read-only worktree and is no
+  longer on disk; the commit itself is preserved in the pre-consolidation
+  bundle (see `documents/GIT_CONSOLIDATION_2026-07-19.md`).
 - Program: `hoi4.exe 1.19.2.0.a729`.
 - SHA-256: `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 - Image base: `0x140000000`.
@@ -220,3 +223,22 @@ No adversarial review runs during discovery, corpus mining, Ghidra export,
 capture preparation, law synthesis, or initial integration. The sole review
 wave starts only after all packet dispositions, evidence hashes, focused
 verifiers, and cross-packet composition results are frozen.
+
+## Evidence and capture stores (machine-local index, audited 2026-07-19)
+
+Everything below is machine-local (never committed — size and/or copyrighted
+game content). A cold agent should verify existence before relying on a row.
+
+| Store | Role | Status 2026-07-19 |
+| --- | --- | --- |
+| `%LOCALAPPDATA%\hoi4_renderdoc\` (`mined/` = 175 entries, `session_2026-07-10/12`, `mined_w11c/w13/w20/w23`) | RenderDoc mined-frame corpus — backbone of CORPUS_INVENTORY; includes the 38-frame parity-oracle ladder | EXISTS |
+| `C:\tmp\hoi4_rendering_law_capture\` (~54.7 GB, 12,404 files) | Live RenderDoc capture-session store feeding L03/L05/M02/M03/O04/UI13 | EXISTS |
+| `C:\Users\Example\hoi4_capture_corpus_preserved\` (~7 GB: `live_PAN2`, `live_PAN_chunks`, `live_trees_measure`, `live_FINAL_full`, `gate18_final`, `session_WAVE1_CAP4_rounds`) | Preserved relocation of the retired `%LOCALAPPDATA%\hoi4_captures\` live-capture store. Law docs citing the old path (POLITICAL_COLOR_LAW, GRADING_LAW, HANDOFF_2026-07-03) resolve here. | EXISTS |
+| `%LOCALAPPDATA%\hoi4_captures\restore_gate_1\` | Grading/bloom/political-v2 validation capture | **LOST** — absent from every store on this machine (exhaustive search 2026-07-19). Re-validation of those laws requires a recapture. |
+| `C:\Users\Example\hoi4_border_pool_preserved\session_BORDERZOOM_3` (+ `_backup` twin) | Border-pool ground-truth session | EXISTS |
+| `C:\Users\Example\ghidra_agent_exports\` (~1,966 entries) | Ghidra function/DAT evidence manifests cited by packet `ALL_FINDINGS.md` files | EXISTS |
+| `C:\Users\Example\ghidra_hoi4_proj\`, `ghidra_hoi4_current\`, `ghidra_hoi4_re_copy\`, `ghidra_hoi4_workers_v2\`, `C:\tmp\ghidra-hoi4-870ebf-identity\` | Ghidra projects / serialized program copies (870ebf identity) | EXIST |
+| `C:\Users\Example\hoi4_rederive\` (borders/cap6/col3/fow/lightlaw/name2/riversrails/seabase/titlesize2+3/treescatter/weathersnow) | Per-law re-derivation working dirs | EXISTS |
+| `C:\Users\Example\hoi4_lanes\` | Off-repo orchestration state: lane logs, verdicts, wave boards, `FIX_LIST.md` handoff, Codex thread ids (`threads/*.tid`) | EXISTS |
+| `C:\Users\Example\hoi4_worktree_uncommitted_backup\` | 2026-07-08 uncommitted-work patch set (7 of 8 subsumed by master; see GIT_CONSOLIDATION doc) | EXISTS |
+| `C:\Users\Example\hoi4_git_history_backup\hoi4-preconsolidation-20260719.bundle` (durable; original in `C:\tmp`) | Full 625-ref pre-consolidation git history (bundle-verified) | EXISTS |
