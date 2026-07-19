@@ -542,6 +542,7 @@ const DOMAIN53_R2_KEY: &str = "_r2_diplomacy_intel_operatives_live";
 const DOMAIN57_R2_KEY: &str = "_r2_session_multiplayer_metadata_live";
 const DOMAIN57_ROOT_PLAYER_COUNTRY: u32 = 1 << 0;
 const DOMAIN57_ROOT_PAUSE_CLOCK: u32 = 1 << 1;
+const DOMAIN57_ROOT_GAME_SPEED: u32 = 1 << 2;
 const DOMAIN57_ROOT_CHAT_MESSAGES: u32 = 1 << 3;
 const DOMAIN57_ROOT_PLAYER_EVENTS: u32 = 1 << 4;
 
@@ -1242,7 +1243,7 @@ pub struct WorldFold {
     hud_surface_activation_this_hour: Option<(u64, Value)>,
     /// XUI21/d75 cumulative exact fired-event history. The value persists, but
     /// it is admitted only after a clean d75 frame for the current hour.
-    fired_event_popups: Option<Value>,
+    fired_event_popups: Option<(u64, Value)>,
     fired_event_popups_known_this_hour: bool,
     /// D54 R2-projected active army battleplan depth annotations. D27 owns
     /// `battle_plan_orders`; D54 writes only its named extra bucket.
@@ -1250,6 +1251,7 @@ pub struct WorldFold {
     army_battleplans_depth_unknown_this_hour: bool,
     army_battleplans_depth_omitted_non_exact_this_hour: u64,
     army_battleplans_depth_path_omitted_this_hour: u64,
+    army_battleplans_depth_identity_or_active_omitted_this_hour: u64,
     air_wings: BTreeMap<AirWingKey, AirWingState>,
     air_wing_loadouts: BTreeMap<AirWingKey, AirWingLoadoutState>,
     /// D32 loadout keys touched this hour or invalidated by a D30 delete. At
@@ -1453,6 +1455,7 @@ type Domain48ResourceKey = (u32, u32);
 struct Domain57FoldState {
     players_by_country: Option<Vec<Domain57PlayerCountryProjection>>,
     pause_is_paused: Option<bool>,
+    game_speed_raw: Option<i32>,
     events: Option<Vec<Domain57SessionEventProjection>>,
 }
 
@@ -1611,6 +1614,7 @@ impl WorldFold {
             army_battleplans_depth_unknown_this_hour: false,
             army_battleplans_depth_omitted_non_exact_this_hour: 0,
             army_battleplans_depth_path_omitted_this_hour: 0,
+            army_battleplans_depth_identity_or_active_omitted_this_hour: 0,
             air_wings: BTreeMap::new(),
             air_aces: BTreeMap::new(),
             air_aces_fresh_this_hour: false,
@@ -1949,6 +1953,33 @@ impl WorldFold {
         }
     }
 
+    /// A tolerated PARTIAL record is only a sparse patch after a clean full
+    /// baseline has established the complete identity set. On the first record,
+    /// omitted rows have no retained identity to stand in for them; publishing
+    /// the observed subset would turn "unknown" into a fabricated complete set.
+    fn reject_expected_partial_before_baseline(
+        &mut self,
+        domain_id: u16,
+        domain_name: &'static str,
+        status_flags: u32,
+    ) -> bool {
+        if !self.boundary_validation
+            && compact_expected_partial_tolerance_applies(domain_id, status_flags)
+            && !self.delta_baselines_seen.contains(&domain_id)
+        {
+            self.mark_fold_domain_unknown(
+                domain_id,
+                "partial_before_baseline",
+                format!(
+                    "{domain_name} expected-partial record arrived before a complete identity baseline; owned snapshot leaf unknown this hour"
+                ),
+            );
+            true
+        } else {
+            false
+        }
+    }
+
     fn replace_or_sparse_after_first(&mut self, domain_id: u16, status_flags: u32) -> bool {
         let delta = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
         if compact_expected_partial_tolerance_applies(domain_id, status_flags) {
@@ -2039,6 +2070,7 @@ impl WorldFold {
         self.army_battleplans_depth_unknown_this_hour = false;
         self.army_battleplans_depth_omitted_non_exact_this_hour = 0;
         self.army_battleplans_depth_path_omitted_this_hour = 0;
+        self.army_battleplans_depth_identity_or_active_omitted_this_hour = 0;
         self.naval_combat_lifecycle_known_this_hour = false;
         self.naval_combat_members_known_this_hour = false;
         self.air_aces_fresh_this_hour = false;
@@ -2737,6 +2769,16 @@ impl WorldFold {
                 "is_paused": Value::Null,
             }),
         };
+        let game_speed = match state.game_speed_raw {
+            Some(raw) => json!({
+                "state": "known",
+                "raw": raw,
+            }),
+            None => json!({
+                "state": "unavailable",
+                "raw": Value::Null,
+            }),
+        };
         let events = if let Some(rows) = &state.events {
             json!({
                 "state": "known",
@@ -2751,7 +2793,26 @@ impl WorldFold {
         Some(json!({
             "players_by_country": players_by_country,
             "pause": pause,
+            "game_speed": game_speed,
             "events": events,
+        }))
+    }
+
+    /// Project the exact current-hour D57 speed/pause anchor into the replay
+    /// session shape. The canonical speed is the engine's raw 0..=4 slot; the
+    /// UI-visible 1..=5 value is a consumer derivation (`raw + 1`). This is not
+    /// claimed to be a sub-hour transition stream: absence of either validated
+    /// root keeps the entire anchor absent.
+    fn build_domain57_replay_session(&self, hour_index: i64) -> Option<Value> {
+        let state = self.session_multiplayer_metadata_this_hour.as_ref()?;
+        let speed = state.game_speed_raw?;
+        let paused = state.pause_is_paused?;
+        Some(json!({
+            "speed_events": [{
+                "hour_index": hour_index,
+                "speed": speed,
+                "paused": paused,
+            }],
         }))
     }
 
@@ -2839,29 +2900,37 @@ impl WorldFold {
         }))
     }
 
-    fn build_world_events_value(&self, unresolved: &mut BTreeSet<u32>) -> Value {
+    fn build_world_events_value(&self, hour_index: i64, unresolved: &mut BTreeSet<u32>) -> Value {
         let mut world_events = Map::new();
         if self.fold_domain_unknown(FIRED_EVENT_POPUPS_DOMAIN_ID)
             || !self.fired_event_popups_known_this_hour
         {
             world_events.insert("fired_events".into(), Value::Null);
             world_events.insert("fired_events_complete".into(), json!(false));
-        } else if let Some(value) = &self.fired_event_popups {
-            world_events.insert(
-                "fired_events".into(),
-                value.get("rows").cloned().unwrap_or(Value::Null),
-            );
-            world_events.insert(
-                "fired_events_complete".into(),
-                value
-                    .get("fired_events_complete")
-                    .cloned()
-                    .unwrap_or(json!(false)),
-            );
-            world_events.insert(
-                "fired_events_hook_telemetry".into(),
-                value.get("telemetry").cloned().unwrap_or(Value::Null),
-            );
+        } else if let Some((frame_hour, value)) = &self.fired_event_popups {
+            // FEV1 is cumulative, but its completeness witness belongs to the
+            // specific collector frame that sampled the ledger. Never attach
+            // an otherwise valid payload to a different H4CR hour.
+            if Some(*frame_hour) != u64::try_from(hour_index).ok() {
+                world_events.insert("fired_events".into(), Value::Null);
+                world_events.insert("fired_events_complete".into(), json!(false));
+            } else {
+                world_events.insert(
+                    "fired_events".into(),
+                    value.get("rows").cloned().unwrap_or(Value::Null),
+                );
+                world_events.insert(
+                    "fired_events_complete".into(),
+                    value
+                        .get("fired_events_complete")
+                        .cloned()
+                        .unwrap_or(json!(false)),
+                );
+                world_events.insert(
+                    "fired_events_hook_telemetry".into(),
+                    value.get("telemetry").cloned().unwrap_or(Value::Null),
+                );
+            }
         }
         if self.fold_domain_unknown(SUNK_CONVOY_HISTORY_DOMAIN_ID) {
             world_events.insert("sunk_convoys".into(), Value::Null);
@@ -3585,12 +3654,13 @@ impl WorldFold {
         let world_value = self.build_world_value();
         let special_projects_value = self.build_special_projects_value(&mut unresolved);
         let session_multiplayer_metadata_value = self.build_domain57_session_sidecar();
+        let replay_session_value = self.build_domain57_replay_session(hour_index);
         // W6: top-level session header (d68) + tech-sharing groups (d69). Both
         // can reference country tag_db_ids, so build them BEFORE the resolved
         // gate below so any unmapped id is counted.
         let session_header_value = self.build_session_header_value(&mut unresolved);
         let tech_sharing_groups_value = self.build_tech_sharing_groups_value(&mut unresolved);
-        let world_events_value = self.build_world_events_value(&mut unresolved);
+        let world_events_value = self.build_world_events_value(hour_index, &mut unresolved);
 
         // resolved only when we have a map AND every keyed/referenced id
         // resolved. Keep this after all section builders: OOB, designs, naval
@@ -3676,6 +3746,11 @@ impl WorldFold {
         if let Some(value) = session_multiplayer_metadata_value {
             if let Some(obj) = snapshot.as_object_mut() {
                 obj.insert(DOMAIN57_R2_KEY.into(), value);
+            }
+        }
+        if let Some(value) = replay_session_value {
+            if let Some(obj) = snapshot.as_object_mut() {
+                obj.insert("session".into(), value);
             }
         }
         // W6: attach the top-level session header (d68) and tech-sharing groups
@@ -3933,7 +4008,10 @@ impl WorldFold {
     /// badges. `fallback_generation` is used only when the enrichment never
     /// recorded its own generation. Returns `None` when no detail field is
     /// present, so the caller omits the key entirely (fail closed).
-    fn combat_detail_json(detail: &CombatDetailEnrichment, fallback_generation: u64) -> Option<Value> {
+    fn combat_detail_json(
+        detail: &CombatDetailEnrichment,
+        fallback_generation: u64,
+    ) -> Option<Value> {
         let mut detail_obj = Map::new();
         if let Some(phase_event) = &detail.phase_event {
             detail_obj.insert("phase_event".into(), json!(phase_event));
@@ -3969,14 +4047,22 @@ impl WorldFold {
                 detail_obj.insert(
                     "attacker".into(),
                     Self::attach_side_attribution(
-                        Self::side_detail_json(attacker),
+                        Self::side_detail_json(
+                            attacker,
+                            detail.attacker_reserve_members_known,
+                            &detail.attacker_reserve_members,
+                        ),
                         &detail.attacker_attribution,
                     ),
                 );
                 detail_obj.insert(
                     "defender".into(),
                     Self::attach_side_attribution(
-                        Self::side_detail_json(defender),
+                        Self::side_detail_json(
+                            defender,
+                            detail.defender_reserve_members_known,
+                            &detail.defender_reserve_members,
+                        ),
                         &detail.defender_attribution,
                     ),
                 );
@@ -4798,6 +4884,9 @@ impl WorldFold {
                             "surname": ace.surname,
                             "callsign": ace.callsign,
                             "alive": ace.alive,
+                            "handled": ace.handled,
+                            "kill_type_raw": ace.kill_type_raw,
+                            "lifecycle": ace46::ace_lifecycle_state(ace),
                         }),
                     );
                 }
@@ -4889,6 +4978,7 @@ impl WorldFold {
             .map(|order| {
                 json!({
                     "army_id": order.key.army_id,
+                    "engine_order_instance_id": order.key.engine_order_instance_id,
                     "generation": order.key.generation,
                     "slot_index": order.slot_index,
                     "order_type": order.order_type,
@@ -4898,8 +4988,11 @@ impl WorldFold {
                     "target_status": order.target_status,
                     "geometry_status": order.geometry_status,
                     "execution_status": order.execution_status,
+                    "assigned_division_ids": order.assigned_division_ids,
                     "assigned_units_status": order.assigned_units_status,
                     "order_linkage_status": order.order_linkage_status,
+                    "active": order.active,
+                    "active_status": order.active_status,
                     "stance_status": order.stance_status,
                     "aggressiveness_status": order.aggressiveness_status,
                 })
@@ -4908,11 +5001,17 @@ impl WorldFold {
         orders.sort_by(|a, b| {
             let ak = (
                 a.get("army_id").and_then(Value::as_u64).unwrap_or(0),
+                a.get("engine_order_instance_id")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
                 a.get("generation").and_then(Value::as_u64).unwrap_or(0),
                 a.get("slot_index").and_then(Value::as_u64).unwrap_or(0),
             );
             let bk = (
                 b.get("army_id").and_then(Value::as_u64).unwrap_or(0),
+                b.get("engine_order_instance_id")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
                 b.get("generation").and_then(Value::as_u64).unwrap_or(0),
                 b.get("slot_index").and_then(Value::as_u64).unwrap_or(0),
             );
@@ -4931,6 +5030,12 @@ impl WorldFold {
                 self.army_battleplans_depth_path_omitted_this_hour
             ));
         }
+        if self.army_battleplans_depth_identity_or_active_omitted_this_hour != 0 {
+            provenance_notes.push(format!(
+                "{} invalid order-identity/active-state row(s) omitted this hour",
+                self.army_battleplans_depth_identity_or_active_omitted_this_hour
+            ));
+        }
         json!({
             "known": !self.army_battleplans_depth_unknown_this_hour
                 && self.fold_domain_seen(ARMY_BATTLEPLANS_DEPTH_DOMAIN_ID),
@@ -4939,6 +5044,7 @@ impl WorldFold {
                 .contains(&ARMY_BATTLEPLANS_DEPTH_DOMAIN_ID),
             "omitted_non_exact_rows_this_hour": self.army_battleplans_depth_omitted_non_exact_this_hour,
             "path_geometry_omitted_rows_this_hour": self.army_battleplans_depth_path_omitted_this_hour,
+            "identity_or_active_omitted_rows_this_hour": self.army_battleplans_depth_identity_or_active_omitted_this_hour,
             "provenance_notes": provenance_notes,
             "orders": orders,
         })
@@ -4968,6 +5074,7 @@ impl WorldFold {
                 "ship_count": ship_count,
                 "dominant_hull_class": dominant_hull_class,
                 "mission_enum": option_u32_json(row.mission_enum),
+                "mission_name": row.mission_enum.and_then(naval56::naval_mission_enum_name),
                 "mission_state": option_u32_json(row.mission_state),
                 "home_base_province_id": option_u32_json(row.home_base_province_id),
                 "repair_base_province_id": option_u32_json(row.repair_base_province_id),
@@ -6623,6 +6730,14 @@ impl WorldFold {
     fn fold_fired_event_popups(&mut self, payload: &[u8]) -> Result<(), String> {
         let decoded = fired75::decode_payload(payload)
             .map_err(|error| format!("fired_event_popups FEV1 invalid: {error:?}"))?;
+        if !decoded.fired_events_complete {
+            self.mark_fold_domain_unknown(
+                FIRED_EVENT_POPUPS_DOMAIN_ID,
+                "incomplete_hook_coverage",
+                "fired_event_popups hook/baseline/queue/correlation coverage incomplete",
+            );
+            return Ok(());
+        }
         let rows = decoded
             .rows
             .into_iter()
@@ -6655,35 +6770,46 @@ impl WorldFold {
                     "timeout_tick": row.timeout_tick,
                     "resolved_tick": row.resolved_tick,
                     "resolution_reason": reason,
-                    "runtime_text_context_id": row.runtime_text_context_id,
+                    "runtime_title_text_context_id": row.runtime_title_text_context_id,
+                    "runtime_description_text_context_id": row.runtime_description_text_context_id,
+                    "runtime_option_text_contexts": row.runtime_option_text_contexts
+                        .into_iter()
+                        .map(|context| json!({
+                            "definition_ordinal": context.definition_ordinal,
+                            "context_id": context.context_id,
+                        }))
+                        .collect::<Vec<_>>(),
                 })
             })
             .collect::<Vec<_>>();
         let t = decoded.telemetry;
-        self.fired_event_popups = Some(json!({
-            "schema_version": fired75::SCHEMA_VERSION,
-            "authority": "exact_a729_inline_hooks",
-            "elapsed_wall_ms": decoded.elapsed_wall_ms,
-            "frame_hour": decoded.frame_hour,
-            "fired_events_complete": decoded.fired_events_complete,
-            "telemetry": {
-                "fire_hook_validated": t.fire_hook_validated,
-                "option_hook_validated": t.option_hook_validated,
-                "materialisation_hook_validated": t.materialisation_hook_validated,
-                "timeout_hook_validated": t.timeout_hook_validated,
-                "event_classes_covered": t.all_event_classes_covered,
-                "player_ai_timeout_no_choice_covered": t.player_ai_timeout_no_choice_covered,
-                "capture_start_baseline_complete": t.capture_start_baseline_complete,
-                "queue_capacity": t.queue_capacity,
-                "queue_high_water_mark": t.queue_high_water_mark,
-                "dropped_fire_rows": t.dropped_fire_rows,
-                "dropped_resolution_rows": t.dropped_resolution_rows,
-                "correlation_failures": t.correlation_failures,
-                "invalid_definition_joins": t.invalid_definition_joins,
-                "fired_ledger_shadow_mismatches": t.fired_ledger_shadow_mismatches,
-            },
-            "rows": rows,
-        }));
+        self.fired_event_popups = Some((
+            decoded.frame_hour,
+            json!({
+                "schema_version": fired75::SCHEMA_VERSION,
+                "authority": "exact_a729_inline_hooks",
+                "elapsed_wall_ms": decoded.elapsed_wall_ms,
+                "frame_hour": decoded.frame_hour,
+                "fired_events_complete": decoded.fired_events_complete,
+                "telemetry": {
+                    "fire_hook_validated": t.fire_hook_validated,
+                    "option_hook_validated": t.option_hook_validated,
+                    "materialisation_hook_validated": t.materialisation_hook_validated,
+                    "timeout_hook_validated": t.timeout_hook_validated,
+                    "event_classes_covered": t.all_event_classes_covered,
+                    "player_ai_timeout_no_choice_covered": t.player_ai_timeout_no_choice_covered,
+                    "capture_start_baseline_complete": t.capture_start_baseline_complete,
+                    "queue_capacity": t.queue_capacity,
+                    "queue_high_water_mark": t.queue_high_water_mark,
+                    "dropped_fire_rows": t.dropped_fire_rows,
+                    "dropped_resolution_rows": t.dropped_resolution_rows,
+                    "correlation_failures": t.correlation_failures,
+                    "invalid_definition_joins": t.invalid_definition_joins,
+                    "fired_ledger_shadow_mismatches": t.fired_ledger_shadow_mismatches,
+                },
+                "rows": rows,
+            }),
+        ));
         self.fired_event_popups_known_this_hour = true;
         self.mark_fold_domain_success(FIRED_EVENT_POPUPS_DOMAIN_ID);
         Ok(())
@@ -8147,6 +8273,13 @@ impl WorldFold {
         if self.handle_compact_failure(ARMY_ORDER_DOMAIN_ID, "army_orders", status_flags) {
             return Ok(());
         }
+        if self.reject_expected_partial_before_baseline(
+            ARMY_ORDER_DOMAIN_ID,
+            "army_orders",
+            status_flags,
+        ) {
+            return Ok(());
+        }
         if self.reject_delta_before_baseline(ARMY_ORDER_DOMAIN_ID, "army_orders", status_flags) {
             return Ok(());
         }
@@ -8247,6 +8380,13 @@ impl WorldFold {
         let status_flags = read_u32(payload, 16);
         let member_count = read_u32(payload, 32) as usize;
         if self.handle_compact_failure(OOB_COMMAND_DOMAIN_ID, "oob_command", status_flags) {
+            return Ok(());
+        }
+        if self.reject_expected_partial_before_baseline(
+            OOB_COMMAND_DOMAIN_ID,
+            "oob_command",
+            status_flags,
+        ) {
             return Ok(());
         }
         if self.reject_delta_before_baseline(OOB_COMMAND_DOMAIN_ID, "oob_command", status_flags) {
@@ -10016,6 +10156,9 @@ impl WorldFold {
                 "surname": row.surname,
                 "callsign": row.callsign,
                 "alive": row.alive,
+                "handled": row.handled,
+                "kill_type_raw": row.kill_type_raw,
+                "lifecycle": ace46::ace_lifecycle_state(&row),
                 "wing_id": row.wing_id,
                 "killer_ace_id": row.killer_ace_id,
                 "killer_country_tag_db_id": row.killer_country_tag_db_id,
@@ -10836,6 +10979,13 @@ impl WorldFold {
             compact_expected_partial_tolerance_applies(DIVISION_EQUIPMENT_DOMAIN_ID, status_flags);
         let sparse_partial = row_count > 0
             && (failure_flags_after_tolerance == COMPACT_STATUS_PARTIAL_DATA || tolerance_applies);
+        if self.reject_expected_partial_before_baseline(
+            DIVISION_EQUIPMENT_DOMAIN_ID,
+            "division_equipment",
+            status_flags,
+        ) {
+            return Ok(());
+        }
         if !self.boundary_validation && row_count == 0 && tolerance_applies {
             self.mark_fold_domain_unknown(
                 DIVISION_EQUIPMENT_DOMAIN_ID,
@@ -12695,8 +12845,14 @@ impl WorldFold {
                 .entry((row.combat_id, row.generation))
                 .or_default();
             match row.side {
-                land_detail55::CombatSide::Attacker => entry.attacker_detail = Some(row.detail),
-                land_detail55::CombatSide::Defender => entry.defender_detail = Some(row.detail),
+                land_detail55::CombatSide::Attacker => {
+                    entry.attacker_reserve_members_known = row.reserve_members_known;
+                    entry.attacker_detail = Some(row.detail);
+                }
+                land_detail55::CombatSide::Defender => {
+                    entry.defender_reserve_members_known = row.reserve_members_known;
+                    entry.defender_detail = Some(row.detail);
+                }
             }
         }
         for row in decoded.attribution_rows {
@@ -12709,15 +12865,30 @@ impl WorldFold {
                 land_detail55::CombatSide::Defender => entry.defender_attribution.push(row.entry),
             }
         }
+        for row in decoded.reserve_member_rows {
+            let entry = self
+                .combat_detail_events_this_hour
+                .entry((row.combat_id, row.generation))
+                .or_default();
+            match row.side {
+                land_detail55::CombatSide::Attacker => entry.attacker_reserve_members.push(row),
+                land_detail55::CombatSide::Defender => entry.defender_reserve_members.push(row),
+            }
+        }
         Ok(())
     }
 
-    /// JSON for one side's CCombatSide detail. Damage raws are i64 ×1e5;
-    /// tactic and losses are DELIBERATELY absent (unresolved / not
-    /// disambiguable on this build — see the lane badges).
-    fn side_detail_json(detail: &land_detail55::SideDetail) -> Value {
+    /// JSON for one side's CCombatSide detail. Damage raws are i64 x 1e5.
+    /// Tactic/progress and reserve identities are emitted only when their
+    /// authenticated row families carry authority. Casualty/equipment losses
+    /// remain explicitly unavailable until a current-combat carrier is joined.
+    fn side_detail_json(
+        detail: &land_detail55::SideDetail,
+        reserve_members_known: bool,
+        reserve_members: &[land_detail55::ReserveMemberRow],
+    ) -> Value {
         let scale = land_detail55::SIDE_DETAIL_FIXED_SCALE as f64;
-        json!({
+        let mut value = json!({
             "units": detail.units,
             "committed": detail.committed,
             "reserve": detail.reserve,
@@ -12750,12 +12921,36 @@ impl WorldFold {
             } else {
                 "unavailable_legacy_stream"
             },
-            "losses_status": "omitted_all_zero_oracle",
+            "losses_status": "unavailable_no_authenticated_live_carrier",
             // True when committed+reserve != units on a STABLE read (a genuine
             // mid-combat transient — the counts are momentarily inconsistent,
             // not authoritative). The damage/kill accumulators are still valid.
             "counts_incomplete": detail.counts_incomplete,
-        })
+        });
+        let obj = value.as_object_mut().expect("side detail is an object");
+        if reserve_members_known {
+            obj.insert(
+                "reserve_division_ids".into(),
+                Value::Array(
+                    reserve_members
+                        .iter()
+                        .map(|row| json!(row.division_id))
+                        .collect(),
+                ),
+            );
+            obj.insert(
+                "reserve_members_status".into(),
+                json!(if detail.counts_incomplete {
+                    "exact_counts_incomplete"
+                } else {
+                    "exact"
+                }),
+            );
+        } else {
+            obj.insert("reserve_division_ids".into(), Value::Null);
+            obj.insert("reserve_members_status".into(), json!("unavailable"));
+        }
+        value
     }
 
     fn attach_side_attribution(
@@ -13815,6 +14010,8 @@ impl WorldFold {
         let decoded = decode_army_battleplans_depth_payload(payload)?;
         self.army_battleplans_depth_omitted_non_exact_this_hour = decoded.omitted_non_exact_rows;
         self.army_battleplans_depth_path_omitted_this_hour = decoded.path_geometry_omitted_rows;
+        self.army_battleplans_depth_identity_or_active_omitted_this_hour =
+            decoded.identity_or_active_omitted_rows;
         if !decoded.is_delta {
             self.army_battleplans_depth.clear();
             self.delta_baselines_seen
@@ -13843,6 +14040,7 @@ impl WorldFold {
         }
 
         need(payload, session57::PAYLOAD_HEADER_LEN, "domain57 header")?;
+        let game_hour_raw = read_i32(payload, 16);
         let status_flags = read_u32(payload, 20);
         let source_flags = read_u32(payload, 24);
         let player_count = read_u32(payload, 28) as usize;
@@ -13912,6 +14110,8 @@ impl WorldFold {
             source_root_validated && (root_evidence_mask & DOMAIN57_ROOT_PLAYER_COUNTRY) != 0;
         let pause_root_validated =
             source_root_validated && (root_evidence_mask & DOMAIN57_ROOT_PAUSE_CLOCK) != 0;
+        let game_speed_root_validated =
+            source_root_validated && (root_evidence_mask & DOMAIN57_ROOT_GAME_SPEED) != 0;
         let message_family_witnessed = !hard_failure
             && source_root_validated
             && source_flags & session57::SOURCE_FLAG_MESSAGE_HOOK_VALIDATED != 0
@@ -13922,6 +14122,8 @@ impl WorldFold {
             && root_evidence_mask & DOMAIN57_ROOT_PLAYER_EVENTS != 0;
 
         let mut pause_is_paused = None;
+        let mut game_speed_raw = None;
+        let mut game_speed_invalid = false;
         let mut event_candidates = Vec::new();
         let mut message_family_invalid = false;
         let mut player_event_family_invalid = false;
@@ -13943,6 +14145,46 @@ impl WorldFold {
                 pause_is_paused = Some(value_i32 != 0);
                 continue;
             }
+            if kind == session57::SessionEventKind::GameSpeed {
+                let flags = read_u32(row, 4);
+                let actor_key_hash = read_u64(row, 8);
+                let actor_name = d57_string_ref(strings, read_u32(row, 16), read_u16(row, 20))?;
+                let text = d57_string_ref(strings, read_u32(row, 24), read_u16(row, 22))?;
+                let tag_db_id = read_u32(row, 28);
+                let value_i32 = read_i32(row, 32);
+                let related_value_i32 = read_i32(row, 36);
+                let command_sequence = read_u64(row, 40);
+                let event_hour_raw = read_i32(row, 48);
+                let event_source_id = read_u32(row, 52);
+                let event_state = read_u32(row, 56);
+                let exact_anchor_shape = flags == session57::EVENT_FLAG_DIRECT_CAPTURE
+                    && actor_key_hash == 0
+                    && actor_name.is_empty()
+                    && text.is_empty()
+                    && tag_db_id == 0
+                    && (0..=compact_contract::build_profile::DOMAIN57_MAX_GAME_SPEED)
+                        .contains(&value_i32)
+                    && related_value_i32 == 0
+                    && command_sequence == 0
+                    && event_hour_raw == game_hour_raw
+                    && event_source_id == 0
+                    && event_state == 0;
+                if !exact_anchor_shape
+                    || !game_speed_root_validated
+                    || game_speed_raw.is_some()
+                    || game_speed_invalid
+                {
+                    self.record_domain_problem(
+                        SESSION_MULTIPLAYER_METADATA_DOMAIN_ID,
+                        "game_speed_unavailable",
+                    );
+                    game_speed_invalid = true;
+                    game_speed_raw = None;
+                } else {
+                    game_speed_raw = Some(value_i32);
+                }
+                continue;
+            }
 
             let family =
                 match kind {
@@ -13950,10 +14192,11 @@ impl WorldFold {
                     | session57::SessionEventKind::TagSwitch => Domain57EventFamily::Player,
                     session57::SessionEventKind::Chat
                     | session57::SessionEventKind::SystemMessage => Domain57EventFamily::Message,
-                    session57::SessionEventKind::GameSpeed
-                    | session57::SessionEventKind::Alert
+                    session57::SessionEventKind::Alert
                     | session57::SessionEventKind::Notification => continue,
-                    session57::SessionEventKind::Pause => unreachable!(),
+                    session57::SessionEventKind::GameSpeed | session57::SessionEventKind::Pause => {
+                        unreachable!()
+                    }
                 };
             let flags = read_u32(row, 4);
             let actor_key_hash = read_u64(row, 8);
@@ -14030,6 +14273,10 @@ impl WorldFold {
 
         let players_known = !hard_failure && player_root_validated && !player_rows.is_empty();
         let pause_known = !hard_failure && pause_root_validated && pause_is_paused.is_some();
+        let game_speed_known = !hard_failure
+            && game_speed_root_validated
+            && !game_speed_invalid
+            && game_speed_raw.is_some();
         let message_family_known = message_family_witnessed && !message_family_invalid;
         let player_event_family_known =
             player_event_family_witnessed && !player_event_family_invalid;
@@ -14046,6 +14293,11 @@ impl WorldFold {
         self.session_multiplayer_metadata_this_hour = Some(Domain57FoldState {
             players_by_country: players_known.then_some(player_rows),
             pause_is_paused: if pause_known { pause_is_paused } else { None },
+            game_speed_raw: if game_speed_known {
+                game_speed_raw
+            } else {
+                None
+            },
             events: event_rows,
         });
 
@@ -14066,6 +14318,12 @@ impl WorldFold {
         }
         if !pause_known {
             self.record_domain_problem(SESSION_MULTIPLAYER_METADATA_DOMAIN_ID, "pause_unavailable");
+        }
+        if !game_speed_known {
+            self.record_domain_problem(
+                SESSION_MULTIPLAYER_METADATA_DOMAIN_ID,
+                "game_speed_unavailable",
+            );
         }
         if message_family_invalid {
             self.record_domain_problem(
@@ -15235,6 +15493,7 @@ struct ArmyOrderState {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ArmyBattleplanDepthKey {
     army_id: u32,
+    engine_order_instance_id: u32,
     generation: u64,
 }
 
@@ -15249,8 +15508,11 @@ struct ArmyBattleplanDepthOrder {
     target_status: &'static str,
     geometry_status: &'static str,
     execution_status: &'static str,
+    assigned_division_ids: Vec<u32>,
     assigned_units_status: &'static str,
     order_linkage_status: &'static str,
+    active: bool,
+    active_status: &'static str,
     stance_status: &'static str,
     aggressiveness_status: &'static str,
 }
@@ -15259,6 +15521,7 @@ struct DecodedArmyBattleplansDepthPayload {
     is_delta: bool,
     omitted_non_exact_rows: u64,
     path_geometry_omitted_rows: u64,
+    identity_or_active_omitted_rows: u64,
     rows: Vec<DecodedArmyBattleplansDepthRow>,
 }
 
@@ -15815,6 +16078,10 @@ struct CombatDetailEnrichment {
     defender_detail: Option<land_detail55::SideDetail>,
     attacker_attribution: Vec<land_detail55::AttributionEntry>,
     defender_attribution: Vec<land_detail55::AttributionEntry>,
+    attacker_reserve_members_known: bool,
+    defender_reserve_members_known: bool,
+    attacker_reserve_members: Vec<land_detail55::ReserveMemberRow>,
+    defender_reserve_members: Vec<land_detail55::ReserveMemberRow>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -16656,13 +16923,18 @@ fn decode_army_battleplans_depth_payload(
     let omitted_non_exact_rows = read_u32(payload, 40) as u64;
     let path_geometry_omitted_rows = read_u32(payload, 44) as u64;
     let path_count = read_u32(payload, 48) as usize;
+    let assigned_division_count = read_u32(payload, 52) as usize;
+    let identity_or_active_omitted_rows = read_u32(payload, 56) as u64;
     let rows_end =
         battleplans54::HEADER_LEN.saturating_add(row_count.saturating_mul(battleplans54::ROW_LEN));
     let target_table_start = rows_end;
     let path_table_start = target_table_start
         .saturating_add(target_count.saturating_mul(battleplans54::TARGET_ROW_LEN));
-    let expected_len = path_table_start
+    let assigned_table_start = path_table_start
         .saturating_add(path_count.saturating_mul(battleplans54::PATH_GEOMETRY_ROW_LEN));
+    let expected_len = assigned_table_start.saturating_add(
+        assigned_division_count.saturating_mul(battleplans54::ASSIGNED_DIVISION_ROW_LEN),
+    );
     if payload.len() != expected_len {
         return Err(format!(
             "army_battleplans_depth_live len {} != {expected_len}",
@@ -16673,6 +16945,7 @@ fn decode_army_battleplans_depth_payload(
     let mut rows = Vec::with_capacity(row_count);
     let mut declared_targets = 0usize;
     let mut declared_paths = 0usize;
+    let mut declared_assigned_divisions = 0usize;
     for row_index in 0..row_count {
         let base = battleplans54::HEADER_LEN + row_index * battleplans54::ROW_LEN;
         let army_id = read_u32(payload, base);
@@ -16690,6 +16963,11 @@ fn decode_army_battleplans_depth_payload(
         let order_linkage_status = read_u32(payload, base + 52);
         let stance_status = read_u32(payload, base + 56);
         let aggressiveness_status = read_u32(payload, base + 60);
+        let engine_order_instance_id = read_u32(payload, base + 64);
+        let assigned_first = read_u32(payload, base + 68) as usize;
+        let assigned_count = read_u32(payload, base + 72) as usize;
+        let active = read_u32(payload, base + 76) != 0;
+        let active_status = read_u32(payload, base + 80);
 
         let deleted = flags & battleplans54::FLAG_DELETED != 0;
         let has_targets = flags & battleplans54::FLAG_TARGET_STATES != 0;
@@ -16741,12 +17019,34 @@ fn decode_army_battleplans_depth_payload(
         };
         let target_declared_count =
             (flags & battleplans54::FLAG_TARGET_STATE_COUNT != 0).then_some(target_declared);
+        let assigned_division_ids = if assigned_count != 0 {
+            let end = assigned_first
+                .checked_add(assigned_count)
+                .ok_or_else(|| "army_battleplans_depth_live assigned range overflow".to_string())?;
+            if end > assigned_division_count {
+                return Err(format!(
+                    "army_battleplans_depth_live row {row_index} assigned range exceeds child table"
+                ));
+            }
+            declared_assigned_divisions =
+                declared_assigned_divisions.saturating_add(assigned_count);
+            read_depth_child_table(
+                payload,
+                assigned_table_start,
+                assigned_first,
+                assigned_count,
+                battleplans54::ASSIGNED_DIVISION_ROW_LEN,
+            )
+        } else {
+            Vec::new()
+        };
 
         rows.push(DecodedArmyBattleplansDepthRow {
             deleted,
             order: ArmyBattleplanDepthOrder {
                 key: ArmyBattleplanDepthKey {
                     army_id,
+                    engine_order_instance_id,
                     generation,
                 },
                 slot_index,
@@ -16757,8 +17057,11 @@ fn decode_army_battleplans_depth_payload(
                 target_status: battleplans_depth_status_name(target_status),
                 geometry_status: battleplans_depth_status_name(geometry_status),
                 execution_status: battleplans_depth_status_name(execution_status),
+                assigned_division_ids,
                 assigned_units_status: battleplans_depth_status_name(assigned_units_status),
                 order_linkage_status: battleplans_depth_status_name(order_linkage_status),
+                active,
+                active_status: battleplans_depth_status_name(active_status),
                 stance_status: battleplans_depth_status_name(stance_status),
                 aggressiveness_status: battleplans_depth_status_name(aggressiveness_status),
             },
@@ -16770,10 +17073,14 @@ fn decode_army_battleplans_depth_payload(
     if declared_paths != path_count {
         return Err("army_battleplans_depth_live path child count mismatch".into());
     }
+    if declared_assigned_divisions != assigned_division_count {
+        return Err("army_battleplans_depth_live assigned child count mismatch".into());
+    }
     Ok(DecodedArmyBattleplansDepthPayload {
         is_delta: status_flags & COMPACT_STATUS_DELTA_DATA != 0,
         omitted_non_exact_rows,
         path_geometry_omitted_rows,
+        identity_or_active_omitted_rows,
         rows,
     })
 }

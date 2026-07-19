@@ -3,12 +3,14 @@
 //! Local roots exist only while recording or playing. They are never serialized;
 //! portable identity is the exact [`UsedContentKey`] returned with every read.
 
+use crate::hud_role::validate_sha256;
 use crate::{normalize_game_relative_path, ContentLayerKind, LayerStorageKind, UsedContentKey};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug)]
 pub struct EffectiveVfsLayerMount {
@@ -37,6 +39,18 @@ struct MountedLayer {
     local_source: PathBuf,
     source_container_sha256: Option<String>,
     replace_paths: BTreeSet<String>,
+    /// Mount-time index for archive layers: the archive is opened and its
+    /// central directory scanned exactly once; every entry name is normalized
+    /// (and case-insensitive duplicates refused) up front so per-file resolve
+    /// and listing never re-parse the archive.
+    zip_index: Option<ZipLayerIndex>,
+}
+
+#[derive(Clone, Debug)]
+struct ZipLayerIndex {
+    /// Normalized (lowercase, game-relative) entry name -> archive entry index.
+    entries: BTreeMap<String, usize>,
+    archive: Arc<Mutex<zip::ZipArchive<fs::File>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -54,12 +68,13 @@ impl EffectiveVfs {
         validate_sha256(&authority_manifest_sha256, "effective VFS authority")?;
         let mut layers = Vec::new();
         let mut prior_ordinal = None;
-        let mut identities = BTreeSet::new();
         for mount in mounts {
+            // Strictly increasing ordinals already make every
+            // (ordinal, kind, id) tuple unique; no separate identity set is
+            // needed.
             if mount.layer_id.trim().is_empty()
                 || mount.layer_id.chars().any(char::is_control)
                 || prior_ordinal.is_some_and(|prior| prior >= mount.ordinal)
-                || !identities.insert((mount.ordinal, mount.layer_kind, mount.layer_id.clone()))
             {
                 return Err("effective VFS layer order/identity is invalid".into());
             }
@@ -72,8 +87,11 @@ impl EffectiveVfs {
                 return Err("effective VFS repeats base content".into());
             }
             prior_ordinal = Some(mount.ordinal);
-            let metadata = fs::metadata(&mount.local_source)
+            let metadata = fs::symlink_metadata(&mount.local_source)
                 .map_err(|error| format!("effective VFS layer source metadata failed: {error}"))?;
+            if metadata.file_type().is_symlink() {
+                return Err("effective VFS refuses a symlinked layer source".into());
+            }
             match mount.storage_kind {
                 LayerStorageKind::Directory if !metadata.is_dir() => {
                     return Err("effective VFS directory layer is not a directory".into())
@@ -83,25 +101,25 @@ impl EffectiveVfs {
                 }
                 _ => {}
             }
-            let source_container_sha256 = match mount.storage_kind {
+            let local_source = fs::canonicalize(&mount.local_source).map_err(|error| {
+                format!("canonicalize effective VFS layer source failed: {error}")
+            })?;
+            let (source_container_sha256, zip_index) = match mount.storage_kind {
                 LayerStorageKind::Directory => {
                     if mount.source_container_sha256.is_some() {
                         return Err(
                             "directory VFS layer unexpectedly carries an archive digest".into()
                         );
                     }
-                    None
+                    (None, None)
                 }
                 LayerStorageKind::ZipArchive => {
                     let expected = mount
                         .source_container_sha256
                         .ok_or("archive VFS layer omits its portable source-container digest")?;
                     validate_sha256(&expected, "archive source-container")?;
-                    let actual = sha256_file(&mount.local_source)?;
-                    if actual != expected {
-                        return Err("archive VFS layer source-container digest mismatch".into());
-                    }
-                    Some(expected)
+                    let zip_index = index_zip_layer(&local_source, &expected)?;
+                    (Some(expected), Some(zip_index))
                 }
             };
             let mut replace_paths = BTreeSet::new();
@@ -118,9 +136,10 @@ impl EffectiveVfs {
                 layer_kind: mount.layer_kind,
                 layer_id: mount.layer_id,
                 storage_kind: mount.storage_kind,
-                local_source: mount.local_source,
+                local_source,
                 source_container_sha256,
                 replace_paths,
+                zip_index,
             });
         }
         if layers.is_empty() {
@@ -239,47 +258,114 @@ impl EffectiveVfs {
 fn read_layer_file(layer: &MountedLayer, logical_path: &str) -> Result<Option<Vec<u8>>, String> {
     match layer.storage_kind {
         LayerStorageKind::Directory => {
-            let path = path_from_logical(&layer.local_source, logical_path);
-            match fs::symlink_metadata(&path) {
-                Ok(metadata) if metadata.file_type().is_symlink() => {
-                    Err("effective VFS refuses a symlinked content file".into())
+            match checked_directory_path(&layer.local_source, logical_path)? {
+                Some((path, metadata)) if metadata.is_file() => {
+                    let canonical = fs::canonicalize(&path).map_err(|error| {
+                        format!("canonicalize effective VFS file failed: {error}")
+                    })?;
+                    if !canonical.starts_with(&layer.local_source) {
+                        return Err("effective VFS file escaped its layer root".into());
+                    }
+                    fs::read(canonical)
+                        .map(Some)
+                        .map_err(|error| format!("read effective VFS file failed: {error}"))
                 }
-                Ok(metadata) if metadata.is_file() => fs::read(path)
-                    .map(Some)
-                    .map_err(|error| format!("read effective VFS file failed: {error}")),
-                Ok(_) => Ok(None),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                Err(error) => Err(format!("inspect effective VFS file failed: {error}")),
+                Some(_) | None => Ok(None),
             }
         }
         LayerStorageKind::ZipArchive => {
-            let file = fs::File::open(&layer.local_source)
-                .map_err(|error| format!("open effective VFS archive failed: {error}"))?;
-            let mut archive = zip::ZipArchive::new(file)
-                .map_err(|error| format!("parse effective VFS archive failed: {error}"))?;
-            let mut matching = None;
-            for index in 0..archive.len() {
-                let mut entry = archive
-                    .by_index(index)
-                    .map_err(|error| format!("read effective VFS archive entry failed: {error}"))?;
-                if entry.is_dir() {
-                    continue;
-                }
-                let name = normalize_archive_entry(entry.name())?;
-                if name.eq_ignore_ascii_case(logical_path) {
-                    if matching.is_some() {
-                        return Err("effective VFS archive repeats a case-insensitive path".into());
-                    }
-                    let mut bytes = Vec::new();
-                    entry.read_to_end(&mut bytes).map_err(|error| {
-                        format!("read effective VFS archive payload failed: {error}")
-                    })?;
-                    matching = Some(bytes);
-                }
-            }
-            Ok(matching)
+            let index = layer
+                .zip_index
+                .as_ref()
+                .ok_or("effective VFS archive layer is missing its mount-time index")?;
+            let Some(&entry_index) = index.entries.get(logical_path) else {
+                return Ok(None);
+            };
+            let mut archive = index
+                .archive
+                .lock()
+                .map_err(|_| "effective VFS archive handle is poisoned".to_string())?;
+            let mut entry = archive
+                .by_index(entry_index)
+                .map_err(|error| format!("read effective VFS archive entry failed: {error}"))?;
+            let mut bytes = Vec::new();
+            entry
+                .read_to_end(&mut bytes)
+                .map_err(|error| format!("read effective VFS archive payload failed: {error}"))?;
+            Ok(Some(bytes))
         }
     }
+}
+
+fn checked_directory_path(
+    root: &Path,
+    logical_path: &str,
+) -> Result<Option<(PathBuf, fs::Metadata)>, String> {
+    let mut path = root.to_path_buf();
+    let mut last_metadata = None;
+    for part in logical_path.split('/') {
+        path.push(part);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err("effective VFS refuses symlinked content".into());
+            }
+            Ok(metadata) => last_metadata = Some(metadata),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(format!("inspect effective VFS file failed: {error}"));
+            }
+        }
+    }
+    Ok(last_metadata.map(|metadata| (path, metadata)))
+}
+
+/// Open and scan an archive layer exactly once at mount, refusing invalid or
+/// case-insensitively duplicate entry names up front (the same refusals the
+/// per-read/per-list paths used to raise lazily).
+fn index_zip_layer(local_source: &Path, expected_sha256: &str) -> Result<ZipLayerIndex, String> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        // Retain one exact archive object for the mount lifetime and refuse
+        // concurrent replacement or writer opens on the production platform.
+        // FILE_SHARE_READ is deliberately allowed for independent readers.
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        options.share_mode(FILE_SHARE_READ);
+    }
+    let mut file = options
+        .open(local_source)
+        .map_err(|error| format!("open effective VFS archive failed: {error}"))?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher)
+        .map_err(|error| format!("hash effective VFS source failed: {error}"))?;
+    let actual_sha256 = format!("{:x}", hasher.finalize());
+    if actual_sha256 != expected_sha256 {
+        return Err("archive VFS layer source-container digest mismatch".into());
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| format!("rewind effective VFS archive failed: {error}"))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|error| format!("parse effective VFS archive failed: {error}"))?;
+    let mut entries = BTreeMap::new();
+    for index in 0..archive.len() {
+        let entry = archive
+            .by_index(index)
+            .map_err(|error| format!("read effective VFS archive entry failed: {error}"))?;
+        if entry.is_dir() {
+            continue;
+        }
+        let name = normalize_archive_entry(entry.name())?;
+        if entries.insert(name, index).is_some() {
+            return Err("effective VFS archive repeats a case-insensitive path".into());
+        }
+    }
+    Ok(ZipLayerIndex {
+        entries,
+        archive: Arc::new(Mutex::new(archive)),
+    })
 }
 
 fn list_layer_files(
@@ -301,22 +387,15 @@ fn list_layer_files(
             walk_directory(&layer.local_source, &start, extension, &mut paths)?;
         }
         LayerStorageKind::ZipArchive => {
-            let file = fs::File::open(&layer.local_source)
-                .map_err(|error| format!("open effective VFS archive failed: {error}"))?;
-            let mut archive = zip::ZipArchive::new(file)
-                .map_err(|error| format!("parse effective VFS archive failed: {error}"))?;
-            for index in 0..archive.len() {
-                let entry = archive
-                    .by_index(index)
-                    .map_err(|error| format!("read effective VFS archive entry failed: {error}"))?;
-                if entry.is_dir() {
-                    continue;
-                }
-                let path = normalize_archive_entry(entry.name())?;
-                if path_is_under(&path, prefix) && extension_matches(&path, extension) {
-                    if paths.insert(path.to_ascii_lowercase(), path).is_some() {
-                        return Err("effective VFS archive repeats a case-insensitive path".into());
-                    }
+            let index = layer
+                .zip_index
+                .as_ref()
+                .ok_or("effective VFS archive layer is missing its mount-time index")?;
+            // Entry names were normalized and de-duplicated at mount; listing
+            // is a pure walk over the prebuilt index with no archive I/O.
+            for path in index.entries.keys() {
+                if path_is_under(path, prefix) && extension_matches(path, extension) {
+                    paths.insert(path.to_ascii_lowercase(), path.clone());
                 }
             }
         }
@@ -341,15 +420,15 @@ fn walk_directory(
         .map_err(|error| format!("list effective VFS entry failed: {error}"))?;
     entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase());
     for entry in entries {
-        let metadata = entry
-            .metadata()
+        let file_type = entry
+            .file_type()
             .map_err(|error| format!("inspect effective VFS entry failed: {error}"))?;
-        if metadata.file_type().is_symlink() {
+        if file_type.is_symlink() {
             return Err("effective VFS refuses symlinked content".into());
         }
-        if metadata.is_dir() {
+        if file_type.is_dir() {
             walk_directory(root, &entry.path(), extension, out)?;
-        } else if metadata.is_file() {
+        } else if file_type.is_file() {
             let relative = entry
                 .path()
                 .strip_prefix(root)
@@ -369,7 +448,10 @@ fn walk_directory(
 
 fn normalize_archive_entry(name: &str) -> Result<String, String> {
     let normalized = name.replace('\\', "/");
-    normalize_game_relative_path(normalized.trim_start_matches('/'))
+    if normalized.starts_with('/') {
+        return Err("effective VFS archive contains an absolute entry path".into());
+    }
+    normalize_game_relative_path(&normalized)
 }
 
 fn path_from_logical(root: &Path, logical_path: &str) -> PathBuf {
@@ -403,26 +485,8 @@ fn logical_parent(path: &str) -> String {
         .unwrap_or_default()
 }
 
-fn sha256_file(path: &Path) -> Result<String, String> {
-    fs::read(path)
-        .map(|bytes| sha256_bytes(&bytes))
-        .map_err(|error| format!("hash effective VFS source failed: {error}"))
-}
-
 fn sha256_bytes(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
-}
-
-fn validate_sha256(value: &str, label: &str) -> Result<(), String> {
-    if value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    {
-        Ok(())
-    } else {
-        Err(format!("{label} is not lowercase SHA-256"))
-    }
 }
 
 #[cfg(test)]
@@ -520,7 +584,7 @@ mod tests {
             .unwrap();
         writer.write_all(b"selected-dlc").unwrap();
         writer.finish().unwrap();
-        let archive_sha = sha256_file(&archive_path).unwrap();
+        let archive_sha = sha256_bytes(&fs::read(&archive_path).unwrap());
         let base_mount = EffectiveVfsLayerMount {
             ordinal: 0,
             layer_kind: ContentLayerKind::Base,
@@ -559,6 +623,60 @@ mod tests {
         assert_eq!(winner.bytes, b"selected-dlc");
         assert_eq!(winner.content.winning_layer_ordinal, 4);
         assert_eq!(winner.content.layer_kind, ContentLayerKind::Dlc);
+        drop(selected);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn archive_with_case_insensitive_duplicate_entries_is_refused_at_mount() {
+        let root = temp("dup_archive");
+        fs::create_dir_all(root.join("game")).unwrap();
+        write(&root.join("game"), "gfx/fx/value.shader", b"base");
+        let archive_path = root.join("duplicate.zip");
+        let file = fs::File::create(&archive_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        for name in ["gfx/fx/Case.shader", "gfx/fx/case.shader"] {
+            writer
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(b"payload").unwrap();
+        }
+        writer.finish().unwrap();
+        let archive_sha = sha256_bytes(&fs::read(&archive_path).unwrap());
+        let error = EffectiveVfs::new(
+            "c".repeat(64),
+            [
+                EffectiveVfsLayerMount {
+                    ordinal: 0,
+                    layer_kind: ContentLayerKind::Base,
+                    layer_id: "base".into(),
+                    storage_kind: LayerStorageKind::Directory,
+                    local_source: root.join("game"),
+                    source_container_sha256: None,
+                    replace_paths: Vec::new(),
+                },
+                EffectiveVfsLayerMount {
+                    ordinal: 1,
+                    layer_kind: ContentLayerKind::Dlc,
+                    layer_id: "dlc/dup/dup.dlc".into(),
+                    storage_kind: LayerStorageKind::ZipArchive,
+                    local_source: archive_path,
+                    source_container_sha256: Some(archive_sha),
+                    replace_paths: Vec::new(),
+                },
+            ],
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("repeats a case-insensitive path"),
+            "unexpected mount error: {error}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn archive_entry_normalization_refuses_absolute_names() {
+        assert!(normalize_archive_entry("/gfx/fx/value.shader").is_err());
+        assert!(normalize_archive_entry(r"\gfx\fx\value.shader").is_err());
     }
 }

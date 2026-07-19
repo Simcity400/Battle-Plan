@@ -8,6 +8,12 @@ const DDPF_FOURCC: u32 = 0x4;
 const DDPF_RGB: u32 = 0x40;
 const DDSCAPS2_CUBEMAP: u32 = 0x200;
 const DDSCAPS2_VOLUME: u32 = 0x20_0000;
+/// Upper bound on header-claimed pixel count (8192x8192). Header dimensions
+/// are attacker-controlled bytes from mod content that is hash-pinned but not
+/// structurally validated; without this gate a crafted header can wrap the
+/// size arithmetic or force a multi-gigabyte allocation. Fail-closed: reject
+/// with a typed `InvalidTexture` error, never panic or abort.
+const DDS_MAX_PIXELS: usize = 1 << 26;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RgbaImage {
@@ -159,6 +165,15 @@ impl Header {
                 format!("invalid DDS dimensions {width}x{height}"),
             ));
         }
+        if width
+            .checked_mul(height)
+            .is_none_or(|pixels| pixels > DDS_MAX_PIXELS)
+        {
+            return Err(GameUiError::new(
+                ErrorKind::InvalidTexture("dimensions".to_string()),
+                format!("DDS dimensions {width}x{height} exceed the {DDS_MAX_PIXELS}-pixel cap"),
+            ));
+        }
         Ok(Self {
             width,
             height,
@@ -223,12 +238,29 @@ fn dds_format(
     }
 }
 
+/// Checked `factors product + offset` for header-derived sizes. Overflow maps
+/// to a typed `InvalidTexture("dimensions")` refusal — the header math cannot
+/// overflow under the `DDS_MAX_PIXELS` gate, but every size expression stays
+/// checked so no future path can silently wrap.
+fn checked_size(factors: [usize; 3], offset: usize, label: &str) -> Result<usize> {
+    factors
+        .iter()
+        .try_fold(1usize, |acc, factor| acc.checked_mul(*factor))
+        .and_then(|bytes| bytes.checked_add(offset))
+        .ok_or_else(|| {
+            GameUiError::new(
+                ErrorKind::InvalidTexture("dimensions".to_string()),
+                format!("{label} DDS size arithmetic overflows"),
+            )
+        })
+}
+
 fn decode_bc1(data: &[u8], header: &Header, offset: usize, transparent: bool) -> Result<RgbaImage> {
     let block_w = header.width.div_ceil(4);
     let block_h = header.height.div_ceil(4);
-    let needed = offset + block_w * block_h * 8;
+    let needed = checked_size([block_w, block_h, 8], offset, "DXT1")?;
     require_len(data, needed, "DXT1")?;
-    let mut pixels = vec![0u8; header.width * header.height * 4];
+    let mut pixels = vec![0u8; checked_size([header.width, header.height, 4], 0, "DXT1")?];
     for by in 0..block_h {
         for bx in 0..block_w {
             let block = offset + (by * block_w + bx) * 8;
@@ -272,9 +304,9 @@ fn decode_bc1(data: &[u8], header: &Header, offset: usize, transparent: bool) ->
 fn decode_bc2(data: &[u8], header: &Header, offset: usize) -> Result<RgbaImage> {
     let block_w = header.width.div_ceil(4);
     let block_h = header.height.div_ceil(4);
-    let needed = offset + block_w * block_h * 16;
+    let needed = checked_size([block_w, block_h, 16], offset, "DXT3")?;
     require_len(data, needed, "DXT3")?;
-    let mut pixels = vec![0u8; header.width * header.height * 4];
+    let mut pixels = vec![0u8; checked_size([header.width, header.height, 4], 0, "DXT3")?];
     for by in 0..block_h {
         for bx in 0..block_w {
             let block = offset + (by * block_w + bx) * 16;
@@ -321,9 +353,9 @@ fn decode_bc2(data: &[u8], header: &Header, offset: usize) -> Result<RgbaImage> 
 fn decode_bc3(data: &[u8], header: &Header, offset: usize) -> Result<RgbaImage> {
     let block_w = header.width.div_ceil(4);
     let block_h = header.height.div_ceil(4);
-    let needed = offset + block_w * block_h * 16;
+    let needed = checked_size([block_w, block_h, 16], offset, "DXT5")?;
     require_len(data, needed, "DXT5")?;
-    let mut pixels = vec![0u8; header.width * header.height * 4];
+    let mut pixels = vec![0u8; checked_size([header.width, header.height, 4], 0, "DXT5")?];
     for by in 0..block_h {
         for bx in 0..block_w {
             let block = offset + (by * block_w + bx) * 16;
@@ -393,9 +425,9 @@ fn decode_uncompressed_level(
             format!("unsupported DDS RGB bit depth {}", header.rgb_bits),
         ));
     }
-    let needed = offset + width * height * bytes_per_pixel;
+    let needed = checked_size([width, height, bytes_per_pixel], offset, &header.format)?;
     require_len(data, needed, &header.format)?;
-    let mut pixels = vec![0u8; width * height * 4];
+    let mut pixels = vec![0u8; checked_size([width, height, 4], 0, &header.format)?];
     for i in 0..width * height {
         let start = offset + i * bytes_per_pixel;
         let mut raw = 0u32;
@@ -448,7 +480,7 @@ pub fn decode_mip_chain_bytes(data: &[u8]) -> Result<Vec<RgbaImage>> {
         levels.push(decode_uncompressed_level(
             data, &header, offset, width, height,
         )?);
-        offset += width * height * bytes_per_pixel;
+        offset = checked_size([width, height, bytes_per_pixel], offset, &header.format)?;
         width = (width / 2).max(1);
         height = (height / 2).max(1);
     }
@@ -636,6 +668,159 @@ mod tests {
         let decoded = decode_bytes(&data).expect("decode argb");
         assert_eq!(decoded.format, "A8R8G8B8");
         assert_eq!(decoded.image.pixels, vec![0x11, 0x22, 0x33, 0x44]);
+    }
+
+    #[test]
+    fn dxt3_known_block_decodes_color_and_nibble_alpha() {
+        let mut data = minimal_header(4, 4, b"DXT3", 0, 0, 0, 0, 0);
+        // 8 bytes of 4-bit alpha (all 0xF -> 255), then color0/color1/codes.
+        data.extend_from_slice(&[0xff; 8]);
+        data.extend_from_slice(&0xf800u16.to_le_bytes()); // color0 = pure red
+        data.extend_from_slice(&0x001fu16.to_le_bytes()); // color1 = pure blue
+        data.extend_from_slice(&0u32.to_le_bytes()); // all codes select color0
+        let decoded = decode_bytes(&data).expect("decode dxt3");
+        assert_eq!(decoded.format, "DXT3");
+        assert_eq!(decoded.image.pixels.len(), 4 * 4 * 4);
+        for pixel in decoded.image.pixels.chunks_exact(4) {
+            assert_eq!(pixel, [255, 0, 0, 255]);
+        }
+    }
+
+    #[test]
+    fn dxt5_known_block_decodes_color_and_interpolated_alpha() {
+        let mut data = minimal_header(4, 4, b"DXT5", 0, 0, 0, 0, 0);
+        data.push(200); // alpha0
+        data.push(0); // alpha1
+        data.extend_from_slice(&[0u8; 6]); // all alpha codes select alpha0
+        data.extend_from_slice(&0xf800u16.to_le_bytes()); // color0 = pure red
+        data.extend_from_slice(&0u16.to_le_bytes()); // color1 = black
+        data.extend_from_slice(&0u32.to_le_bytes()); // all codes select color0
+        let decoded = decode_bytes(&data).expect("decode dxt5");
+        assert_eq!(decoded.format, "DXT5");
+        for pixel in decoded.image.pixels.chunks_exact(4) {
+            assert_eq!(pixel, [255, 0, 0, 200]);
+        }
+    }
+
+    #[test]
+    fn cubemap_is_rejected_with_typed_error() {
+        let mut data = minimal_header(4, 4, b"DXT1", 0, 0, 0, 0, 0);
+        data[112..116].copy_from_slice(&DDSCAPS2_CUBEMAP.to_le_bytes());
+        let err = decode_bytes(&data).expect_err("cubemap must be rejected");
+        assert_eq!(err.kind, ErrorKind::InvalidTexture("cubemap".to_string()));
+    }
+
+    #[test]
+    fn volume_is_rejected_with_typed_error() {
+        let mut data = minimal_header(4, 4, b"DXT1", 0, 0, 0, 0, 0);
+        data[112..116].copy_from_slice(&DDSCAPS2_VOLUME.to_le_bytes());
+        let err = decode_bytes(&data).expect_err("volume must be rejected");
+        assert_eq!(err.kind, ErrorKind::InvalidTexture("volume".to_string()));
+    }
+
+    #[test]
+    fn truncated_header_is_rejected() {
+        let data = b"DDS \x7c\x00\x00\x00".to_vec();
+        let err = decode_bytes(&data).expect_err("short header must be rejected");
+        assert_eq!(err.kind, ErrorKind::InvalidTexture("truncated".to_string()));
+    }
+
+    #[test]
+    fn truncated_dxt1_payload_is_rejected() {
+        let mut data = minimal_header(4, 4, b"DXT1", 0, 0, 0, 0, 0);
+        data.extend_from_slice(&[0u8; 7]); // one block needs 8 bytes
+        let err = decode_bytes(&data).expect_err("short payload must be rejected");
+        assert_eq!(err.kind, ErrorKind::InvalidTexture("truncated".to_string()));
+    }
+
+    #[test]
+    fn huge_uncompressed_dimensions_are_a_typed_refusal_not_a_panic() {
+        // width = height = 2^31: unchecked release-mode math would wrap
+        // width*height*4 to 0 and index out of bounds. Must refuse instead.
+        let mut data = minimal_header(
+            0x8000_0000,
+            0x8000_0000,
+            b"\0\0\0\0",
+            DDPF_RGB,
+            32,
+            0x00ff_0000,
+            0x0000_ff00,
+            0x0000_00ff,
+        );
+        data[104..108].copy_from_slice(&0xff00_0000u32.to_le_bytes());
+        let err = decode_bytes(&data).expect_err("huge dimensions must be rejected");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidTexture("dimensions".to_string())
+        );
+    }
+
+    #[test]
+    fn huge_dxt1_dimensions_are_a_typed_refusal_not_a_panic() {
+        let data = minimal_header(u32::MAX, u32::MAX, b"DXT1", 0, 0, 0, 0, 0);
+        let err = decode_bytes(&data).expect_err("huge dimensions must be rejected");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidTexture("dimensions".to_string())
+        );
+    }
+
+    #[test]
+    fn mip_chain_decodes_every_shipped_level() {
+        let mut data = minimal_header(
+            2,
+            2,
+            b"\0\0\0\0",
+            DDPF_RGB,
+            32,
+            0x00ff_0000,
+            0x0000_ff00,
+            0x0000_00ff,
+        );
+        data[28..32].copy_from_slice(&2u32.to_le_bytes()); // mip_count = 2
+        data[104..108].copy_from_slice(&0xff00_0000u32.to_le_bytes());
+        for _ in 0..4 {
+            data.extend_from_slice(&[0x33, 0x22, 0x11, 0x44]); // level 0 (BGRA)
+        }
+        data.extend_from_slice(&[0x66, 0x55, 0x44, 0x77]); // level 1 (BGRA)
+        let levels = decode_mip_chain_bytes(&data).expect("decode mip chain");
+        assert_eq!(levels.len(), 2);
+        assert_eq!((levels[0].width, levels[0].height), (2, 2));
+        assert_eq!((levels[1].width, levels[1].height), (1, 1));
+        assert_eq!(&levels[0].pixels[0..4], [0x11, 0x22, 0x33, 0x44]);
+        assert_eq!(levels[1].pixels, vec![0x44, 0x55, 0x66, 0x77]);
+    }
+
+    #[test]
+    fn truncated_mip_chain_is_rejected() {
+        let mut data = minimal_header(
+            2,
+            2,
+            b"\0\0\0\0",
+            DDPF_RGB,
+            32,
+            0x00ff_0000,
+            0x0000_ff00,
+            0x0000_00ff,
+        );
+        data[28..32].copy_from_slice(&2u32.to_le_bytes());
+        data[104..108].copy_from_slice(&0xff00_0000u32.to_le_bytes());
+        for _ in 0..4 {
+            data.extend_from_slice(&[0x33, 0x22, 0x11, 0x44]); // level 0 only
+        }
+        let err = decode_mip_chain_bytes(&data).expect_err("missing level 1 must be rejected");
+        assert_eq!(err.kind, ErrorKind::InvalidTexture("truncated".to_string()));
+    }
+
+    #[test]
+    fn mip_chain_rejects_compressed_formats() {
+        let mut data = minimal_header(4, 4, b"DXT1", 0, 0, 0, 0, 0);
+        data.extend_from_slice(&[0u8; 8]);
+        let err = decode_mip_chain_bytes(&data).expect_err("compressed chain must fail closed");
+        assert_eq!(
+            err.kind,
+            ErrorKind::UnsupportedDdsFormat("DXT1".to_string())
+        );
     }
 
     fn minimal_header(

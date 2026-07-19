@@ -20,6 +20,7 @@ pub mod frontend_meta;
 pub mod gfx;
 pub mod gui;
 pub mod gui_runtime_law;
+pub(crate) mod gui_scene_util;
 pub mod hud;
 pub mod hud_role_index;
 pub mod intelligence_ui;
@@ -57,6 +58,15 @@ use std::fmt;
 use std::io;
 
 pub type Result<T> = std::result::Result<T, GameUiError>;
+
+/// Shared hash-format law: exactly 64 lowercase ASCII hexadecimal digits, the
+/// canonical rendering of a SHA-256 digest in this crate's manifests.
+pub(crate) fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorKind {

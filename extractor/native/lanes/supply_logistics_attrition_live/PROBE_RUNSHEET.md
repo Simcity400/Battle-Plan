@@ -16,7 +16,7 @@ Read first in this lane:
 Carried-forward candidates:
 
 - Exact tooltip: `CSupplySystem+0x10` rows are already decoded as bounded low-`i32` `/100000` province inputs. They are not exact remaining supply. Current CProvince probing narrowed exact-value candidates to `CProvince+0x2C8` two-deref leaves at second offsets `+0x218`, `+0x230`, `+0x2F8`, `+0x310`, `+0x348`, `+0x3D8`, and `+0x428`; all require same-frame tooltip anchors and a temporal/network differential.
-- Foreign-homebase pressure: `CCountrySupplySystem+0x1E0` is the validated candidate family: `0x70` stride, province `+0x00`, supply `i32/100000@+0x08`, penalty `i32/100000@+0x18`, duplicate province `+0x50`. Prior stale-save oracle matched `25/25` joined provinces and `20` exact raw supply+penalty pairs. This is still candidate-only.
+- Stored disruption: a729 serializer/parser evidence proves a robin-hood table rooted at `CCountrySupplySystem+0x88` (bucket pointer `+0x90`, occupied count `+0x98`, mask `+0x9C`, sentinel/displacement byte `+0xA0`, `0x18` bucket stride). Bucket `+0x08` is the `(province,node_type)` key and `+0x10` is signed `i64/100000`. Retained exact anchors are D04 `(7081,3)=4017` and FRA `(911,3)=22173`. `+0x1E0` is instead the exact foreign-homebase vector. Neither field may be promoted until a bounded production root replaces the RTTI heap sweep.
 - Attrition: existing division-body scalar scan found no production-safe attrition flag/reason without a same-frame visible/saved attrition oracle.
 
 Proof-backed rejections that must not be retried without new evidence:

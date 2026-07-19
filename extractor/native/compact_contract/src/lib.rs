@@ -12,6 +12,7 @@ pub mod build_profile;
 pub mod building_registry;
 pub mod calendar;
 pub mod campaign_identity;
+pub mod campaign_rollover;
 pub mod control_transport;
 pub mod early_render_content_manifest;
 pub mod early_render_control;
@@ -1234,16 +1235,16 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         true,
         &[],
     ),
-    // XUI21: authenticated fired-event hook stream. The d75 carrier is
-    // intentionally distinct from d64 pending delayed-event polling. Keep it
-    // unscheduled until the collector supplies the authenticated game-file
-    // registry bridge and installs/uninstalls the callback graph atomically.
+    // XUI21: authenticated fired-event hook stream, intentionally distinct
+    // from d64 pending delayed-event polling. The collector owns the hash-gated
+    // game-file registry bridge, exact a729 install/uninstall lifecycle, hourly
+    // FEV1 emission, and typed incomplete-frame fallback.
     domain(
         75,
         "fired_event_popups_live",
         "fired_event_popups_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ValidatedSlice,
+        true,
         true,
         &[],
     ),

@@ -1,61 +1,107 @@
-# XUI27 - terminal replay-layer freeze
+# XUI27 - final replay UI composition audit
 
-Status: **PASS - REPLAY LAYER CERTIFIED; EXTRACTOR PHASE IS THE NEXT BOUNDARY**.
+Status: **BLOCKED - NOT PRODUCTION PROMOTABLE**.
 
-This is the clean demarcation requested before extractor completion. It
-certifies only `replay_interface` / `portable_replay` production behavior and
-committed replay fixtures. It does not certify extractor code, a new recording,
-or extractor-to-replayer end-to-end playback.
+This is the strongest offline result possible from the consolidated checkout
+and retained evidence on 2026-07-19. No the game process was launched. The gate
+does not promote sample canvases, packet-specific hook traces, or replay
+self-determinism into engine pixel parity.
 
-## Mechanical closure and authorities
+## Current product result
 
-The final mechanical closure contains 294 current replay inputs: 260 Rust/Cargo
-dependency sources, 29 committed runtime fixtures opened or enumerated by the
-locked tests, and five workspace or compile-time inputs. It includes the current
-portable schema/core, `selected_present.rs`, `production_renderer.rs`,
-`ui_runtime.rs`, `app.rs`, `headless.rs`, `replay_fixture_gen`, and Cargo.lock.
+The current normal product route still admits only XUI24, XUI25, and XUI27's
+four authenticated HUD roots: `topbar`, `mini_map_interface`,
+`MapmodesInterface_Ingame`, and `theatre_selection_window`. Twenty-four
+historical packets are omitted from product pixels. That fail-closed subset is
+useful, but it is not a complete the game UI.
 
-Seven replay authorities are hash-bound and recursively current: the portable
-schema, non-UI production contract, static-program consumer manifest, effective
-VFS, playback profile, map-interpreter output, and M02/M03/A48/O04 replay
-promotion. Current replay failures are zero.
+The current installed-file probe parses 162 GFX files / 25,379 sprites and 453
+GUI files / 9,153 windows / 27,123 elements with zero parser failures. The HUD
+sample emits 183 commands with zero missing or undecodable sprites. Eight major
+view samples also decode their referenced sample assets, but every one records
+runtime-populated collections or hidden-state skips. They are offline
+parser/compositor coverage, not authenticated product panels.
 
-## Locked verification
+The focused product renderer is green at 11/11. The complete `game_ui` run is
+not green: its library tier passed 134 tests with two ignored, but
+`diplomacy_binding::measured_nonempty_real_fold_without_country_names_keeps_d53_roster`
+failed because the concurrently changing extractor could not compile
+`recorder_host`. The exact errors were missing
+`ControlCapabilities::auto_attach_duplex_v1` and a `PackIdentity` initializer
+without `content_manifest`.
 
-Two isolated `--locked` replay-only passes produced byte-identical receipts,
-SHA-256 `dd60ceb232460fd7b97e8faedc51dbe9ad973d81a54ec2abf10904729b768457`:
+## Recursive evidence result
 
-- `replay_fixture_gen`: 2 passed, 0 failed.
-- `game_ui`: 389 passed, 0 failed, 2 ignored.
-- `replay_app`: 233 passed, 0 failed.
-- Extractor packages built or tested: 0.
+`recursive_upstream_audit.json` validates 458 path/hash/byte or Ghidra-manifest
+entries and 107 status values across XUI01-XUI26, after treating CRLF checkout
+conversion as the same Git-normalized text. It still finds 165 real stale or
+unresolved bindings. Shared integration files such as `world.rs`, `lib.rs`,
+`schema.py`, recorder folding, and packet-specific sources have changed after
+their packet manifests were frozen. Therefore the historical packet statuses
+cannot be used as a current recursive promotion proof.
 
-Both passes retained the same post-pass input digest,
-`7c883ebcbe2e59788dbf895911333ac76e88c3d023927dd88831e38356d74333`.
-The terminal manifest is
-`PASS_REPLAY_LAYER_CERTIFIED_EXTERNAL_EXTRACTOR_BOUNDARY_PENDING`, SHA-256
-`2af5b97e5424c8dd87df5431a91f188afa9cc8f2681a0c36c7f02dfc4b709c27`.
-Independent recursive verification passed; receipt SHA-256
-`ee7c5af361cbb85492724bcdb1e259e8e7b4a0d664aa024c9fc47c363428589c`.
+The independent production UI promotion manifest is also stale. Its route
+partition still parses, but 12 artifact pins no longer match the consolidated
+checkout. Several expected hashes never existed in Git history; they describe
+pre-commit working bytes rather than the committed integration state.
+`production_authority_audit.json` records expected, current raw, and current
+LF-normalized SHA-256 values for every mismatch.
 
-## Non-certifying history and extractor boundary
+## Retained engine/capture evidence
 
-The audit records 59 superseded replay-history failures and 28
-extractor-boundary failures without promoting either. The older mixed UI
-manifest contributes 22 replay-history rows (8 stale) and six extractor rows
-(2 stale); every one has `certification_gate=false`. These counts do not weaken
-the current 294-file replay certification.
+The old XUI27 audit searched only the RenderDoc and preserved-map roots and
+incorrectly reported zero synchronized CPU state. The canonical
+`<local-path>` store has 77 relevant sessions: 76
+with `cpu_state.jsonl`, 24 with UI-pass bundles, 42 with RDCs, nine with
+screenshots, and 34 with manifests.
 
-The two isolated Cargo targets were cleaned after the freeze (19,658 files,
-27.4 GiB total), and the XUI27 Python cache was removed.
+The strongest retained UI session is
+`20260717T013524Z-ui13-human-final`: its 1,895,403,256-byte producer trace is
+SHA-256 `147248c4be2dca0f35ede4dfe7d746e69ce498213fb24268c8f6263c4ccb4f83`.
+Its three action markers do not form three clean engine image joins. The
+decision-open marker points to a Codex-window screenshot; the clicked-decision
+image is occluded by a TeamViewer notice; only the war-open marker points to a
+clean the game image. A separate clean decision screenshot exists in the same
+session but is not the file named by its action marker. The producer trace is
+authenticated packet-specific formatter/setter evidence, not a complete replay
+`WorldFrame`.
 
-## Frozen receipts
+An exhaustive filename scan of the canonical evidence root finds zero
+`.battleplan` files paired to any engine UI image. Consequently an honest
+engine-vs-replay pixel diff cannot be computed: the pixels alone do not recover
+all dynamic values, visibility decisions, list order, modal/focus/tooltip state,
+or the XUI25 input envelope. The former `map_hud_topbar.png` and
+`map_modal_production.png` are superseded; they composited replay UI over an
+engine frame that already contained UI and are not parity proofs.
 
-- `REPLAY_UI_FINALIZATION.json`: `aa08d15310c11273c51eadb678bdd07783512158cb89ca0fba68f75671c4c0b9`
-- `replay_owned_freeze_preparation.json`: `19b04a3858e317d1d346400c40119eed78d140faafdee13e7e8f9fdce4973c03`
-- `recursive_upstream_audit.json`: `09546c7bc826d377c31e50b14be8615fae0c5582fea3b096a9003e74869da2d3`
-- `replay_owned_manifest.json`: `2af5b97e5424c8dd87df5431a91f188afa9cc8f2681a0c36c7f02dfc4b709c27`
-- `replay_owned_terminal_verification.json`: `ee7c5af361cbb85492724bcdb1e259e8e7b4a0d664aa024c9fc47c363428589c`
+The retained-corpus parity utility cannot close this gap: its own command-line
+contract is explicitly **non-UI** and admits only byte-bound event-scoped
+pass-final pairs. The map parity scoreboard is likewise not a UI composition
+oracle. Neither was repurposed to manufacture XUI evidence.
 
-No new Ghidra operation was required. Function address, job ID, artifact path,
-and Ghidra manifest hash are `N/A`; this is a replay-owned mechanical freeze.
+## Exact remaining human input
+
+There is one XUI27 human card, frozen in `human_input_requirements.json`:
+`XUI27-H1-SAME-PRESENT-ENGINE-REPLAY-PAIR`. It requires a lossless engine final
+UI image and the matching flushed production `.battleplan`/`WorldFrame` at the
+same Present boundary, plus the exact window/modal/focus/tooltip state,
+selection/map-mode state, ordered content identities, and XUI25
+display/language/input key. A screenshot alone does not satisfy it.
+
+The minimum boundary set is: measured HUD; panel/modal; tooltip above the
+panel; every dynamic leaf unavailable; and one selectively unavailable leaf
+with measured peers retained. Closure requires a mechanical engine-vs-replay
+pixel diff with exact mismatch coordinates and counts.
+
+## Machine-readable authorities
+
+- `compose_contract.json` - fail-closed result and current test disposition.
+- `recursive_upstream_audit.json` - all 26 packet manifests and 165 failures.
+- `production_authority_audit.json` - 12 stale central promotion pins.
+- `engine_oracle_audit.json` - complete retained-root/session census and the
+  authenticated UI13 join.
+- `human_input_requirements.json` - the single exact capture card.
+
+No new Ghidra operation was needed for this composition audit. Packet-level
+Ghidra provenance is recursively inspected through the existing manifests;
+XUI27 function address, job ID, and new export manifest are `N/A`.

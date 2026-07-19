@@ -793,6 +793,7 @@ fn admitted_diagnostic_client(
         identity(),
         DuplexClientPolicy::DEFAULT,
         Some(binding),
+        ControlCapabilities::early_render_duplex_v1(),
     );
     client.phase = ClientPhase::Attached;
     client.early_render_first_game_d3d_sent = true;

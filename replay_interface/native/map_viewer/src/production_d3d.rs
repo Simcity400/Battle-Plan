@@ -278,6 +278,15 @@ pub fn execute_production_d3d_frame(
                 "static map programs have no authoritative cross-family execution order".into(),
             );
         }
+        if frame
+            .m03_arrows
+            .as_ref()
+            .is_some_and(|m03| !m03.draws.is_empty())
+        {
+            return Err(
+                "M03 arrow draws have no authoritative cross-family execution order".into(),
+            );
+        }
         for draw in &frame.ordered_runtime_draws {
             bridge.execute_runtime_draw(ordinal, &frame.ordered_scene_constant_buffers, draw)?;
             collect_runtime_draw_content(draw, &mut used);
@@ -309,6 +318,26 @@ pub fn execute_production_d3d_frame(
                 "cross-family execution order does not cover every static/runtime operation".into(),
             );
         }
+        let mut static_operations = BTreeMap::new();
+        for program in &frame.ordered_static_programs {
+            for operation in &program.ordered_operations {
+                if static_operations
+                    .insert(operation.operation_ordinal, (program, operation))
+                    .is_some()
+                {
+                    return Err("static map programs repeat an operation ordinal".into());
+                }
+            }
+        }
+        let mut runtime_draws = BTreeMap::new();
+        for draw in &frame.ordered_runtime_draws {
+            let (PreparedRuntimeDraw::Particle { ordered_draw, .. }
+            | PreparedRuntimeDraw::Entity { ordered_draw, .. }
+            | PreparedRuntimeDraw::O04City { ordered_draw, .. }) = draw;
+            if runtime_draws.insert(ordered_draw, draw).is_some() {
+                return Err("runtime draws repeat an ordered-draw reference".into());
+            }
+        }
         let mut seen_static = std::collections::BTreeSet::new();
         let mut seen_runtime = std::collections::BTreeSet::new();
         let mut seen_m03 = std::collections::BTreeSet::new();
@@ -318,16 +347,9 @@ pub fn execute_production_d3d_frame(
                     if !seen_static.insert(*operation_ordinal) {
                         return Err("cross-family order repeats a static operation".into());
                     }
-                    let (program, operation) = frame
-                        .ordered_static_programs
-                        .iter()
-                        .find_map(|program| {
-                            program
-                                .ordered_operations
-                                .iter()
-                                .find(|operation| operation.operation_ordinal == *operation_ordinal)
-                                .map(|operation| (program, operation))
-                        })
+                    let (program, operation) = static_operations
+                        .get(operation_ordinal)
+                        .copied()
                         .ok_or("cross-family order references an absent static operation")?;
                     bridge.execute_static_operation(
                         ordinal,
@@ -343,20 +365,11 @@ pub fn execute_production_d3d_frame(
                     });
                 }
                 RenderExecutionRef::Runtime { output } => {
-                    let token = serde_json::to_string(output)?;
-                    if !seen_runtime.insert(token) {
+                    if !seen_runtime.insert(output) {
                         return Err("cross-family order repeats a runtime draw".into());
                     }
-                    let draw = frame
-                        .ordered_runtime_draws
-                        .iter()
-                        .find(|draw| match draw {
-                            PreparedRuntimeDraw::Particle { ordered_draw, .. }
-                            | PreparedRuntimeDraw::Entity { ordered_draw, .. }
-                            | PreparedRuntimeDraw::O04City { ordered_draw, .. } => {
-                                ordered_draw == output
-                            }
-                        })
+                    let draw = *runtime_draws
+                        .get(output)
                         .ok_or("cross-family order references an absent runtime draw")?;
                     bridge.execute_runtime_draw(
                         ordinal,
@@ -530,17 +543,17 @@ fn validate_static_operation(
         {
             require_content(content, resources)?;
             for subresource in &resource.ordered_subresources {
-                validate_buffer_source(&subresource.source, &[], resources)?;
+                validate_buffer_source(&subresource.source, resources)?;
             }
         }
     }
     match &draw.geometry {
         StaticGeometrySource::Exact { geometry } => {
             for vertex in &geometry.ordered_vertex_buffers {
-                validate_buffer_source(&vertex.source, &[], resources)?;
+                validate_buffer_source(&vertex.source, resources)?;
             }
             if let Some(index) = &geometry.index_buffer {
-                validate_buffer_source(&index.source, &[], resources)?;
+                validate_buffer_source(&index.source, resources)?;
             }
         }
         StaticGeometrySource::InterpreterOutput {
@@ -656,20 +669,15 @@ fn validate_shader_payload(bytes: &[u8], expected: &str, role: &str) -> Result<(
 
 fn validate_buffer_source(
     source: &BufferSource,
-    particle_instance_records: &[u8],
     resources: &BTreeMap<String, ProductionMapResource>,
 ) -> Result<()> {
     match source {
         BufferSource::Inline { bytes, sha256 } => {
             validate_shader_payload(bytes, sha256, "inline buffer")
         }
-        BufferSource::ParticleInstanceRecords => {
-            if particle_instance_records.is_empty() {
-                Err("ParticleInstanceRecords source has no carried instance bytes".into())
-            } else {
-                Ok(())
-            }
-        }
+        BufferSource::ParticleInstanceRecords => Err(
+            "ParticleInstanceRecords buffer source is not valid in static map validation".into(),
+        ),
         BufferSource::UsedContentRange {
             content,
             source_byte_offset,
@@ -722,16 +730,7 @@ fn collect_static_operation_content(
         collect_render_target_content(target, out);
         return;
     };
-    let mut insert = |value: &UsedContentKey| {
-        let key = format!(
-            "{}:{}:{}:{}",
-            value.winning_layer_ordinal,
-            value.layer_id,
-            value.normalized_game_relative_path,
-            value.payload_sha256
-        );
-        out.insert(key, value.clone());
-    };
+    let mut insert = |value: &UsedContentKey| insert_content(out, value);
     insert(&draw.shader_program.source);
     for binding in &draw.ordered_shader_resources {
         if let StaticShaderResourceSource::UsedContent {

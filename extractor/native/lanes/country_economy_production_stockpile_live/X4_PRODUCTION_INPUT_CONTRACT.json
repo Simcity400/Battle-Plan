@@ -104,6 +104,23 @@
     ],
     "fail_closed": "any unreadable required field or missing completeness witness rejects that country production block"
   },
+  "deployment_queue_carrier": {
+    "schema": "deployment_queue v1",
+    "domain_id_reserved": 614,
+    "status": "CARRIER_COMPLETE_LIVE_PRODUCER_SOURCE_BLOCKED",
+    "implementation": "extractor/native/lanes/country_economy_production_stockpile_live/src/deployment_queue.rs",
+    "identity": {
+      "conveyor": "serialized {id,type=64}",
+      "line": "serialized {id,type=63}",
+      "template": "serialized {id,type=52}",
+      "equipment": "serialized {id,type=70}"
+    },
+    "completeness": "one row per admitted country; queue_complete=true authenticates the complete vector including empty, queue_complete=false is unknown and must carry zero conveyors",
+    "ordering": "country-local conveyor ordinals, conveyor-local line ordinals, and line-local equipment ordinals are contiguous from zero",
+    "fail_closed": "wrong/duplicate identities, non-contiguous order, malformed optional leaves, declared/observed count mismatch, invalid UTF-8, and trailing bytes reject the payload",
+    "evidence": "extractor/re_evidence/X4_DEPLOYMENT_QUEUES/verification.json",
+    "live_blocker": "no authenticated a729 live conveyor root/vector/type offsets; do not infer from civil construction_queue"
+  },
   "not_owned_here": [
     "production-panel formatting",
     "progress/output display formulas",

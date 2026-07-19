@@ -19,7 +19,8 @@ portable_content_manifest = { path = "../../../portable_replay/native/content_ma
 name = "ui_probe"
 path = "src/bin/ui_probe.rs"
 
-[[test]]
+[[bin]]
 name = "acceptance"
-path = "tests/acceptance.rs"
-harness = false
+path = "src/bin/acceptance.rs"
+test = false
+bench = false

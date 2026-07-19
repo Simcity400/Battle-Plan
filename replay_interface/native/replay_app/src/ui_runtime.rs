@@ -192,18 +192,13 @@ impl ProductSelectedPresentRuntime {
                     }
                 }
                 game_ui::selected_present::PreparedUiPassOperation::InterpretedPaint {
-                    command,
+                    image,
+                    ..
                 } => {
-                    let pixels = game_ui::selected_present::execute_interpreted_paint(
-                        &self.resolver,
-                        &self.registry,
-                        runtime_text,
-                        playback_context,
-                        command,
-                        prepared.width,
-                        prepared.height,
-                    )?;
-                    self.image.set_rgba(gfx, &pixels)?;
+                    // The layer was fully rendered during the prepare
+                    // preflight; upload the proven pixels instead of decoding
+                    // and rasterizing the command a second time.
+                    self.image.set_rgba(gfx, image)?;
                     self.image.draw(gfx)?;
                 }
             }

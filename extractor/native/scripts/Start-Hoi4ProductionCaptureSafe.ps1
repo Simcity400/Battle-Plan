@@ -30,6 +30,8 @@ param(
     [int]$CancellationGraceSeconds = 5,
     [string]$AttemptStateRoot = "",
     [string]$Rung = "",
+    [ValidateSet("production", "synthetic-fault", "paused")][string]$AcceptanceMode = "production",
+    [string]$AcceptanceTestNonce = "",
     [switch]$SkipBuild,
     [switch]$DryRun,
     [switch]$AllowOneDriveOutput,
@@ -41,7 +43,9 @@ Set-StrictMode -Version Latest
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $nativeRoot = (Resolve-Path -LiteralPath (Join-Path $scriptDir "..")).Path
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $nativeRoot "..\..")).Path
-$releaseRoot = Join-Path $nativeRoot "target\release"
+$targetRoot = if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) { Join-Path $repoRoot '.cargo-target' } else { [System.IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) }
+$env:CARGO_TARGET_DIR = $targetRoot
+$releaseRoot = Join-Path $targetRoot "release"
 $sourceDll = Join-Path $releaseRoot "collector.dll"
 $recorder = Join-Path $releaseRoot "collector_record.exe"
 $foldCheck = Join-Path $releaseRoot "fold_check.exe"
@@ -55,7 +59,7 @@ $speedEvidenceVerifier = Join-Path $scriptDir "verify_speed_root_evidence_v2.py"
 $speedEvidenceProbe = Join-Path $scriptDir "collect_speed_root_evidence_v2.py"
 $speedEvidenceSchema = Join-Path $scriptDir "speed_root_evidence_v2.schema.json"
 $expectedSpeedEvidenceVerifierSha = "1a8057e0084e8507b1c8cde6a7d7c0198652db6efca0bbcb891bc7dc99cb8e28"
-$expectedSpeedEvidenceProbeSha = "308b516a1b3006cc421a30df6cb7f042217f8fb9c87882b7e9096be13502a271"
+$expectedSpeedEvidenceProbeSha = "7302d6981b74b5eba149a58b30e359c9e519e7b7e275273c07ca4214615b406b"
 $expectedSpeedEvidenceSchemaSha = "84ff925213ada78f2302fc2115350067dd4975f3ccc6fc295a7ff86c49d22f59"
 $expectedHoi4ExeSha = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
 . (Join-Path $scriptDir "ProductionCapture.Validation.ps1")
@@ -87,6 +91,13 @@ if ($HourLatchPollMs -lt 1 -or $HourLatchPollMs -gt 25) { throw "hour latch poll
 if ($HourLatchQueueCap -lt 1 -or $HourLatchQueueCap -gt 65535) { throw "hour latch queue cap must be 1..65535" }
 if ($SpeedMonitorMs -lt 50 -or $SpeedMonitorMs -gt 1000) { throw "speed monitor must be 50..1000 ms" }
 if ($MaxFinalizeSeconds -lt 1 -or $CancellationGraceSeconds -lt 1) { throw "finalize and cancellation limits must be positive" }
+if ($AcceptanceMode -eq "production") {
+    if (-not [string]::IsNullOrWhiteSpace($AcceptanceTestNonce)) { throw "production mode forbids an acceptance-test nonce" }
+} else {
+    if ($AcceptanceTestNonce -cnotmatch '^[0-9a-f]{64}$') { throw "acceptance test mode requires a 64-character lowercase-hex nonce" }
+    $expectedRung = if ($AcceptanceMode -eq "synthetic-fault") { "synthetic-fault" } else { "paused-short-proof" }
+    if ($Rung -cne $expectedRung) { throw "acceptance mode $AcceptanceMode requires rung $expectedRung" }
+}
 if ([string]::IsNullOrWhiteSpace($AttemptStateRoot)) {
     if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw "LOCALAPPDATA is unavailable; pass -AttemptStateRoot" }
     $AttemptStateRoot = Join-Path $env:LOCALAPPDATA "Hoi4MpStats\capture_attempts"
@@ -211,7 +222,7 @@ $args = @(
     "--duration-s", ([string]::Format([Globalization.CultureInfo]::InvariantCulture, "{0:0.###}", $DurationSeconds)),
     "--sample-ms", "1", "--min-game-hours", "$MinGameHours", "--profile", "production",
     "--reader-concurrency", "$ReaderConcurrency",
-    "--session-id", $SessionId, "--hour-latch", "--hour-latch-poll-ms", "$HourLatchPollMs",
+    "--session-id", $SessionId, "--capture-id", $CaptureId, "--hour-latch", "--hour-latch-poll-ms", "$HourLatchPollMs",
     "--hour-latch-queue-cap", "$HourLatchQueueCap",
     "--domain57-game-speed-gate-v2", $SpeedRootGatePath,
     "--domain57-game-speed-transcript-file-sha256", $SpeedEvidenceTranscriptFileSha256,
@@ -225,11 +236,14 @@ $args = @(
     "--static-bundle-python", $PythonExe,
     "--static-bundle-timeout-ms", "300000"
 )
+if ($AcceptanceMode -ne "production") {
+    $args += @("--acceptance-test-mode", $AcceptanceMode, "--acceptance-test-nonce", $AcceptanceTestNonce)
+}
 $plan = [ordered]@{
     schema = "battle-plan.production_capture_plan.v1"; capture_id = $CaptureId; session_id = $SessionId; pid = $Hoi4Pid
     injection_attempt_budget = 1; source_dll_sha256 = $sourceSha; staged_dll = $stagedDll
     staged_dll_sha256 = $stagedSha; output_dir = $OutDir; speed_required_raw = 4
-    unpaused_required = $true; hour_latch_required = $true
+    unpaused_required = ($AcceptanceMode -ne "paused"); hour_latch_required = $true
     domain57_game_speed_gate_v2 = $SpeedRootGatePath; domain57_game_speed_gate_v2_sha256 = $speedRootGateSha
     speed_evidence_transcript_sha256 = $SpeedEvidenceTranscriptSha256; speed_evidence_session_id = $SpeedEvidenceSessionId
     speed_evidence_transcript_file_sha256 = $SpeedEvidenceTranscriptFileSha256
@@ -249,6 +263,11 @@ $plan = [ordered]@{
     token_omissions_inventory = $TokenOmissionsPath
     production_profile_domain_ids = @(Get-RegistryCaptureDomains $registryPath | ForEach-Object { [int]$_.id })
     recorder_arguments = $args
+}
+if ($AcceptanceMode -ne "production") {
+    $plan["acceptance_mode"] = $AcceptanceMode
+    $plan["acceptance_test_nonce"] = $AcceptanceTestNonce
+    $plan["admissible_for_production"] = $false
 }
 # Optional rung-identity binding (additive): when the acceptance ladder drives this
 # launcher for a specific F6 rung it passes -Rung, which is recorded in the plan so the
@@ -350,6 +369,7 @@ $process=$null
 $recorderStdoutTask=$null; $recorderStderrTask=$null
 $samples = [System.Collections.Generic.List[object]]::new()
 $monitorWriter=$null
+$expectedPaused = ($AcceptanceMode -eq "paused")
 try {
     $dailyExpected = @(([string]$profile.hooks.daily_update.sentinel_bytes -split ' ') | ForEach-Object { [Convert]::ToByte($_,16) })
     $dailyActual = @(Read-LiveBytes $handle ($base + 0x1D4390) 16)
@@ -358,7 +378,7 @@ try {
     1..3 | ForEach-Object {
         $sample = Get-LiveSample $handle $base
         $samples.Add($sample); $monitorWriter.WriteLine(($sample | ConvertTo-Json -Compress))
-        if ($sample.speed_raw -ne 4 -or $sample.paused) { throw "preflight requires unpaused Speed5 (raw=4)" }
+        if ($sample.speed_raw -ne 4 -or [bool]$sample.paused -ne $expectedPaused) { throw "preflight speed/pause state does not match acceptance mode $AcceptanceMode" }
         Start-Sleep -Milliseconds 100
     }
     # This is the sole recorder launch and therefore the sole injection attempt.
@@ -375,7 +395,7 @@ try {
         if ([DateTime]::UtcNow -ge $deadline) { throw "collector_record exceeded bounded capture/finalize deadline" }
         $sample = Get-LiveSample $handle $base
         $samples.Add($sample); $monitorWriter.WriteLine(($sample | ConvertTo-Json -Compress))
-        if ($sample.speed_raw -ne 4 -or $sample.paused) { throw "live monitor detected a Speed5/unpaused violation" }
+        if ($sample.speed_raw -ne 4 -or [bool]$sample.paused -ne $expectedPaused) { throw "live monitor detected a speed/pause violation for acceptance mode $AcceptanceMode" }
         Start-Sleep -Milliseconds $SpeedMonitorMs
         $process.Refresh()
     }
@@ -395,7 +415,7 @@ try {
         schema = "battle-plan.speed5_proof.v2"; session_id=$SessionId; pid = $Hoi4Pid; exe_path = $exePath; exe_sha256 = $exeSha.ToLowerInvariant()
         domain57_game_speed_gate_v2_sha256 = $speedRootGateSha; capture_plan_sha256=$planSha; monitor_sha256=$monitorSha
         collector_control_sha256=$collectorControlSha
-        sample_count = $samples.Count; speed_raw = 4
+        sample_count = $samples.Count; speed_raw = 4; paused = $expectedPaused; acceptance_mode = $AcceptanceMode
         first_game_hour_raw = [int]$samples[0].game_hour_raw; last_game_hour_raw = [int]$samples[$samples.Count-1].game_hour_raw
         capture_first_game_hour_raw=[int]$captureManifest.first_game_hour_raw; capture_last_game_hour_raw=[int]$captureManifest.last_game_hour_raw
     }
@@ -460,10 +480,30 @@ finally {
     if ($null -ne $process) { $process.Dispose() }
 }
 
-$validation = Test-ProductionCaptureArtifacts -RunDir $OutDir -RegistryPath $registryPath -SpeedProofPath (Join-Path $OutDir "speed5_proof.json") -StaticArtifactPaths $static -ExpectedStagedDll $stagedDll -CompactGateExe $compactGate -FoldCheckExe $foldCheck -ContainerVerifyExe $packReplay -PythonExe $PythonExe -StaticBundleScript $staticBundleScript -StaticBundleDir $StaticBundleDir -GameExePath $exePath -ModStatePath $ModStatePath -DlcStatePath $DlcStatePath -LoadOrderPath $LoadOrderPath -SourceInventoryPath $SourceInventoryPath -LiveResolutionReportPath $LiveResolutionReportPath -CapturePlanPath $planPath -SpeedRootGatePath $SpeedRootGatePath -CollectorControlPath $collectorControlPath -SpeedMonitorPath $speedLog -SpeedStreamVerifier $speedStreamVerifier -SpeedEvidenceTranscriptPath $SpeedEvidenceTranscriptPath -SpeedEvidenceNonceLedgerRoot $SpeedEvidenceNonceLedgerRoot -SpeedEvidenceVerifier $speedEvidenceVerifier -ExpectedSpeedEvidenceVerifierSha256 $expectedSpeedEvidenceVerifierSha -ExpectedSpeedEvidenceProbeSha256 $expectedSpeedEvidenceProbeSha -ExpectedSpeedStaticDisasmSha256 $SpeedStaticDisasmSha256 -ToolTimeoutSeconds $MaxFinalizeSeconds -CancellationGraceSeconds $CancellationGraceSeconds
-$validation | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $OutDir "production_validation_report.json") -Encoding UTF8
-if (-not $validation.ok) { throw "production validation failed: $($validation.problems -join ', ')" }
+$validationReportPath = Join-Path $OutDir "production_validation_report.json"
+if ($AcceptanceMode -eq "production") {
+    $validation = Test-ProductionCaptureArtifacts -RunDir $OutDir -RegistryPath $registryPath -SpeedProofPath (Join-Path $OutDir "speed5_proof.json") -StaticArtifactPaths $static -ExpectedStagedDll $stagedDll -CompactGateExe $compactGate -FoldCheckExe $foldCheck -ContainerVerifyExe $packReplay -PythonExe $PythonExe -StaticBundleScript $staticBundleScript -StaticBundleDir $StaticBundleDir -GameExePath $exePath -ModStatePath $ModStatePath -DlcStatePath $DlcStatePath -LoadOrderPath $LoadOrderPath -SourceInventoryPath $SourceInventoryPath -LiveResolutionReportPath $LiveResolutionReportPath -CapturePlanPath $planPath -SpeedRootGatePath $SpeedRootGatePath -CollectorControlPath $collectorControlPath -SpeedMonitorPath $speedLog -SpeedStreamVerifier $speedStreamVerifier -SpeedEvidenceTranscriptPath $SpeedEvidenceTranscriptPath -SpeedEvidenceNonceLedgerRoot $SpeedEvidenceNonceLedgerRoot -SpeedEvidenceVerifier $speedEvidenceVerifier -ExpectedSpeedEvidenceVerifierSha256 $expectedSpeedEvidenceVerifierSha -ExpectedSpeedEvidenceProbeSha256 $expectedSpeedEvidenceProbeSha -ExpectedSpeedStaticDisasmSha256 $SpeedStaticDisasmSha256 -ToolTimeoutSeconds $MaxFinalizeSeconds -CancellationGraceSeconds $CancellationGraceSeconds
+    $validation | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $validationReportPath -Encoding UTF8
+    if (-not $validation.ok) { throw "production validation failed: $($validation.problems -join ', ')" }
+} else {
+    $manifest = Get-Content -LiteralPath (Join-Path $OutDir "native_session_manifest.json") -Raw | ConvertFrom-Json
+    $replayFile = [string]$manifest.replay_file
+    if ([string]::IsNullOrWhiteSpace($replayFile)) { throw "acceptance manifest has no replay_file" }
+    $replayPath = Join-Path $OutDir $replayFile
+    $snapshotDir = Join-Path $OutDir "acceptance_snapshots"
+    $extractionReport = Join-Path $OutDir "acceptance_snapshot_extraction.json"
+    $extractGate = Invoke-IndependentCaptureGate -Name "extract_acceptance_snapshots" -FilePath $PythonExe -Arguments @((Join-Path $scriptDir "extract_f6_replay_snapshots.py"),"--replay",$replayPath,"--out-dir",$snapshotDir,"--report",$extractionReport) -LogDir (Join-Path $OutDir "acceptance_proof_logs") -TimeoutSeconds $MaxFinalizeSeconds -CancellationGraceSeconds $CancellationGraceSeconds
+    if (-not $extractGate.passed -or -not (Test-Path -LiteralPath $extractionReport -PathType Leaf)) { throw "acceptance snapshot extraction failed" }
+    $proofScript = if ($AcceptanceMode -eq "synthetic-fault") { Join-Path $scriptDir "verify_f6_synthetic_fault_proof.py" } else { Join-Path $scriptDir "verify_f6_pause_proof.py" }
+    $proofReport = Join-Path $OutDir "acceptance_validation_report.json"
+    $proofGate = Invoke-IndependentCaptureGate -Name "verify_acceptance_proof" -FilePath $PythonExe -Arguments @($proofScript,"--run-dir",$OutDir,"--snapshot-dir",$snapshotDir,"--extraction-report",$extractionReport,"--out",$proofReport) -LogDir (Join-Path $OutDir "acceptance_proof_logs") -TimeoutSeconds $MaxFinalizeSeconds -CancellationGraceSeconds $CancellationGraceSeconds
+    if (-not $proofGate.passed -or -not (Test-Path -LiteralPath $proofReport -PathType Leaf)) { throw "acceptance proof verification failed" }
+    $validation = Get-Content -LiteralPath $proofReport -Raw | ConvertFrom-Json
+    if ($validation.ok -ne $true) { throw "acceptance proof failed: $($validation.problems -join ', ')" }
+    $validationReportPath = $proofReport
+}
 $resolvedMarker=Join-Path $AttemptStateRoot ("$SessionId.resolved.json")
-Update-AttemptMarker $attemptMarkerPath $attemptMarker "validation_passed" @{validation_report=(Join-Path $OutDir "production_validation_report.json")}
+$validationState = if ($AcceptanceMode -eq "production") { "validation_passed" } else { "acceptance_validation_passed" }
+Update-AttemptMarker $attemptMarkerPath $attemptMarker $validationState @{validation_report=$validationReportPath; admissible_for_production=($AcceptanceMode -eq "production")}
 Move-Item -LiteralPath $attemptMarkerPath -Destination $resolvedMarker
-Write-Host "production capture validated: $OutDir"
+Write-Host "$AcceptanceMode capture validated: $OutDir"

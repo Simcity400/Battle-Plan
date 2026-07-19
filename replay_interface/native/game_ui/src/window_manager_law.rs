@@ -10,6 +10,7 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
+use std::sync::OnceLock;
 
 pub const XUI02_ACTIVE_GUI_FILES: usize = FROZEN_FILE_COUNT;
 pub const XUI02_WINDOW_DEFINITIONS: usize = FROZEN_WINDOW_COUNT;
@@ -349,11 +350,26 @@ fn activation_class(value: &str) -> Option<ResolvableActivationClass> {
     }
 }
 
+/// Parse the embedded activation inventory exactly once per process. The JSON
+/// is a compile-time constant, so the parse outcome is deterministic; a parse
+/// failure stays a typed fatal rejection on every call.
+fn parsed_activation_inventory(
+) -> Result<&'static FrozenActivationInventory, WindowManagerRejection> {
+    static PARSED: OnceLock<Result<FrozenActivationInventory, WindowManagerRejection>> =
+        OnceLock::new();
+    PARSED
+        .get_or_init(|| {
+            serde_json::from_str(ACTIVATION_INVENTORY_JSON)
+                .map_err(|_| WindowManagerRejection::ActivationInventoryDrift)
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
 fn activation_inventory(
     registry: &DormantWindowManagerRegistry,
-) -> Result<FrozenActivationInventory, WindowManagerRejection> {
-    let inventory: FrozenActivationInventory = serde_json::from_str(ACTIVATION_INVENTORY_JSON)
-        .map_err(|_| WindowManagerRejection::ActivationInventoryDrift)?;
+) -> Result<&'static FrozenActivationInventory, WindowManagerRejection> {
+    let inventory = parsed_activation_inventory()?;
     let registry_ids = registry
         .windows
         .iter()
@@ -380,8 +396,12 @@ pub fn resolvable_activation_sources(
     registry: &DormantWindowManagerRegistry,
 ) -> Result<Vec<RuntimeActivationSource>, WindowManagerRejection> {
     let inventory = activation_inventory(registry)?;
+    Ok(resolvable_sources_from(inventory))
+}
+
+fn resolvable_sources_from(inventory: &FrozenActivationInventory) -> Vec<RuntimeActivationSource> {
     let mut sources = BTreeMap::new();
-    for row in inventory.windows {
+    for row in &inventory.windows {
         if let Some(class) = activation_class(&row.effective_activation_class) {
             sources
                 .entry(row.effective_activation_source_window_id.clone())
@@ -393,10 +413,10 @@ pub fn resolvable_activation_sources(
                 .or_insert(class);
         }
     }
-    Ok(sources
+    sources
         .into_iter()
         .map(|(window_id, class)| RuntimeActivationSource { window_id, class })
-        .collect())
+        .collect()
 }
 
 fn nonblank(value: &Option<String>) -> bool {
@@ -408,20 +428,13 @@ fn valid_traversal(values: &[String]) -> bool {
         && values.iter().collect::<BTreeSet<_>>().len() == values.len()
 }
 
-fn valid_manifest_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
 fn validate_runtime_state(state: &RuntimeWindowManagerState) -> bool {
     let has_variant_state = state.focus_owner.is_some()
         || state.restore_focus_to.is_some()
         || !state.keyboard_traversal.is_empty()
         || !state.controller_traversal.is_empty();
     if state.producer_packet_id.trim().is_empty()
-        || !valid_manifest_sha256(&state.producer_manifest_sha256)
+        || !crate::is_lowercase_sha256(&state.producer_manifest_sha256)
         || state.producer_record.trim().is_empty()
         || !nonblank(&state.modal_owner)
         || !nonblank(&state.focus_owner)
@@ -467,7 +480,7 @@ pub fn apply_runtime_activation_frame(
     runtime_states: &[RuntimeWindowManagerState],
 ) -> Result<ActiveWindowManagerFrame, WindowManagerRejection> {
     let inventory = activation_inventory(registry)?;
-    let sources = resolvable_activation_sources(registry)?
+    let sources = resolvable_sources_from(inventory)
         .into_iter()
         .map(|source| (source.window_id, source.class))
         .collect::<BTreeMap<_, _>>();

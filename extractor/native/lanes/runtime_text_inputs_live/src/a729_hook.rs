@@ -20,7 +20,8 @@ pub const TEXTBOX_TERNARY_VTABLE_RVA: usize = 0x02B3_8350;
 const TEXTBOX_VTABLE_RVA: usize = 0x02B2_B418;
 const TEXTBOX_CHILD_OWNER_OFFSET: usize = 0x148;
 const TEXTBOX_GRAPHICS_CHILD_OFFSET: usize = 0x88;
-const GRAPHICS_CHILD_FINAL_TEXT_OFFSET: usize = 0x110;
+const GRAPHICS_CHILD_LAYOUT_OBJECT_OFFSET: usize = 0xC8;
+const LAYOUT_OBJECT_FINAL_TEXT_OFFSET: usize = 0x188;
 const FIXED_WINDOW_MAP_OFFSET: usize = 0x1C60;
 const FIXED_WINDOW_CGUI_TYPE_OFFSET: usize = 0x90;
 const CGUI_TYPE_NAME_OFFSET: usize = 0x28;
@@ -50,7 +51,12 @@ static ORIGINAL_DESTRUCTOR: AtomicUsize = AtomicUsize::new(0);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 static BASELINE_COMPLETE: AtomicBool = AtomicBool::new(false);
-static POST_SETTER_OBSERVER: AtomicUsize = AtomicUsize::new(0);
+// A25 owns the sole setter detour but several exact lanes may observe it.
+// Fixed atomic slots keep dispatch lock-free on the game thread.
+static POST_SETTER_OBSERVER_0: AtomicUsize = AtomicUsize::new(0);
+static POST_SETTER_OBSERVER_1: AtomicUsize = AtomicUsize::new(0);
+static POST_SETTER_OBSERVER_2: AtomicUsize = AtomicUsize::new(0);
+static POST_SETTER_OBSERVER_3: AtomicUsize = AtomicUsize::new(0);
 static PRE_DESTRUCTOR_OBSERVER: AtomicUsize = AtomicUsize::new(0);
 static STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
 
@@ -72,6 +78,8 @@ struct SetterValue {
 struct HookState {
     identities: HashMap<usize, WidgetIdentity>,
     latest: HashMap<usize, SetterValue>,
+    /// Exact rows pinned by lifecycle consumers before textbox destruction.
+    pinned: BTreeMap<String, (WidgetIdentity, SetterValue)>,
     next_ordinal: BTreeMap<(String, String), u32>,
     rejected_identity: u64,
     rejected_text: u64,
@@ -124,14 +132,35 @@ pub fn baseline_complete() -> bool {
 pub type PostSetterObserver =
     unsafe extern "system" fn(owner: usize, setter_widget: usize, caller_rva: u32);
 
-/// Register one post-setter observer (used by A26 for global `ToolTip`). The
+/// Register a post-setter observer (used by A26 and XUI21). The
 /// callback does not install another detour and therefore cannot conflict with
 /// A25 hook ownership.
 pub fn register_post_setter_observer(observer: PostSetterObserver) -> Result<(), String> {
-    POST_SETTER_OBSERVER
-        .compare_exchange(0, observer as usize, Ordering::AcqRel, Ordering::Acquire)
-        .map(|_| ())
-        .map_err(|_| "a runtime-text post-setter observer is already registered".to_string())
+    let value = observer as usize;
+    if post_setter_observer_slots()
+        .iter()
+        .any(|slot| slot.load(Ordering::Acquire) == value)
+    {
+        return Ok(());
+    }
+    for slot in post_setter_observer_slots() {
+        if slot
+            .compare_exchange(0, value, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+    Err("all runtime-text post-setter observer slots are occupied".to_string())
+}
+
+fn post_setter_observer_slots() -> [&'static AtomicUsize; 4] {
+    [
+        &POST_SETTER_OBSERVER_0,
+        &POST_SETTER_OBSERVER_1,
+        &POST_SETTER_OBSERVER_2,
+        &POST_SETTER_OBSERVER_3,
+    ]
 }
 
 /// Non-owning observer invoked for a validated CTextBox owner immediately
@@ -187,34 +216,54 @@ impl A729RuntimeTextHookSource {
             .ok_or_else(|| "a729 runtime-text hook state is not initialized".to_string())?
             .lock()
             .map_err(|_| "a729 runtime-text hook state mutex poisoned".to_string())?;
-        let mut rows = state
-            .identities
-            .iter()
-            .filter_map(|(widget, identity)| {
-                let value = state.latest.get(widget)?;
-                let context_id = format!(
-                    "{}::{}::{}",
-                    identity.view_id, identity.element_id, identity.ordinal
-                );
-                Some(RuntimeTextInput {
-                    context_id,
-                    pov_country_or_global: pov.to_string(),
-                    view_id: identity.view_id.clone(),
-                    element_id: identity.element_id.clone(),
-                    source: if identity.source_token.is_empty() {
-                        RuntimeTextSourceIdentity::SetterCallerRva(value.caller_rva)
-                    } else {
-                        RuntimeTextSourceIdentity::AuthoredToken(identity.source_token.clone())
-                    },
-                    final_text_bytes: value.bytes.clone(),
-                    setter_caller_rva: value.caller_rva,
-                    formatter_observed: false,
-                    layout: RuntimeTextLayout::AuthoredReproducible,
-                })
-            })
-            .collect::<Vec<_>>();
-        rows.sort_by(|left, right| left.context_id.cmp(&right.context_id));
-        Ok(rows)
+        let mut rows = BTreeMap::new();
+        for (context_id, (identity, value)) in &state.pinned {
+            rows.insert(
+                context_id.clone(),
+                runtime_text_input(context_id.clone(), identity, value, pov),
+            );
+        }
+        for (widget, identity) in &state.identities {
+            let Some(value) = state.latest.get(widget) else {
+                continue;
+            };
+            let context_id = textbox_context_id(identity);
+            rows.insert(
+                context_id.clone(),
+                runtime_text_input(context_id, identity, value, pov),
+            );
+        }
+        Ok(rows.into_values().collect())
+    }
+}
+
+fn textbox_context_id(identity: &WidgetIdentity) -> String {
+    format!(
+        "{}::{}::{}",
+        identity.view_id, identity.element_id, identity.ordinal
+    )
+}
+
+fn runtime_text_input(
+    context_id: String,
+    identity: &WidgetIdentity,
+    value: &SetterValue,
+    pov: &str,
+) -> RuntimeTextInput {
+    RuntimeTextInput {
+        context_id,
+        pov_country_or_global: pov.to_string(),
+        view_id: identity.view_id.clone(),
+        element_id: identity.element_id.clone(),
+        source: if identity.source_token.is_empty() {
+            RuntimeTextSourceIdentity::SetterCallerRva(value.caller_rva)
+        } else {
+            RuntimeTextSourceIdentity::AuthoredToken(identity.source_token.clone())
+        },
+        final_text_bytes: value.bytes.clone(),
+        setter_caller_rva: value.caller_rva,
+        formatter_observed: false,
+        layout: RuntimeTextLayout::AuthoredReproducible,
     }
 }
 
@@ -390,7 +439,9 @@ pub fn uninstall_a729_runtime_text_hooks() -> Result<(), String> {
     ORIGINAL_REGISTRATION.store(0, Ordering::Release);
     ORIGINAL_SETTER.store(0, Ordering::Release);
     ORIGINAL_DESTRUCTOR.store(0, Ordering::Release);
-    POST_SETTER_OBSERVER.store(0, Ordering::Release);
+    for observer in post_setter_observer_slots() {
+        observer.store(0, Ordering::Release);
+    }
     PRE_DESTRUCTOR_OBSERVER.store(0, Ordering::Release);
     if let Some(state) = STATE.get() {
         let mut state = state
@@ -476,12 +527,8 @@ pub fn seed_existing_textbox_maps(
                     .ok_or("textbox child address overflow")?,
             )
             .ok_or_else(|| format!("textbox 0x{owner:X} has no graphics child"))?;
-            read_engine_string(
-                child
-                    .checked_add(GRAPHICS_CHILD_FINAL_TEXT_OFFSET)
-                    .ok_or("graphics-child text address overflow")?,
-            )
-            .ok_or_else(|| format!("textbox 0x{owner:X} final text is unreadable"))?;
+            read_post_layout_text(child)
+                .ok_or_else(|| format!("textbox 0x{owner:X} post-layout text is unreadable"))?;
             candidates.push(BaselineCandidate {
                 map,
                 owner,
@@ -564,14 +611,10 @@ pub fn seed_existing_textbox_maps(
                         .ok_or("textbox child address overflow")?,
                 )
                 .ok_or_else(|| format!("textbox 0x{:X} has no graphics child", candidate.owner))?;
-                let final_text_bytes = read_engine_string(
-                    child
-                        .checked_add(GRAPHICS_CHILD_FINAL_TEXT_OFFSET)
-                        .ok_or("graphics-child text address overflow")?,
-                )
+                let final_text_bytes = read_post_layout_text(child)
                 .ok_or_else(|| {
                     format!(
-                        "textbox 0x{:X} final text changed or became unreadable before admission",
+                        "textbox 0x{:X} post-layout text changed or became unreadable before admission",
                         candidate.owner
                     )
                 })?;
@@ -711,11 +754,22 @@ unsafe extern "system" fn hook_textbox_registration(map: usize, key: usize, widg
 
 unsafe extern "system" fn hook_text_setter(widget: usize, text_object: usize) {
     let caller_rva = immediate_game_return_rva();
-    let bytes = read_engine_string(text_object);
+    // Admit the setter input only as proof that this is a readable final-text
+    // invocation. Replay bytes are read after the original returns, from the
+    // CInstantTextObject string selected by the engine's layout virtual.
+    let setter_input = read_engine_string(text_object);
     let owner = setter_owner(widget);
+    let original = ORIGINAL_SETTER.load(Ordering::Acquire);
+    if original != 0 {
+        let original: SetterFn = unsafe { mem::transmute(original) };
+        unsafe { original(widget, text_object) };
+    }
+    let post_layout_bytes = (original != 0)
+        .then(|| read_post_layout_text(widget))
+        .flatten();
     if let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) {
-        match (owner, bytes, caller_rva) {
-            (Some(owner), Some(bytes), Some(caller_rva)) => {
+        match (owner, setter_input, post_layout_bytes, caller_rva) {
+            (Some(owner), Some(_), Some(bytes), Some(caller_rva)) => {
                 if state.latest.len() >= MAX_PENDING && !state.latest.contains_key(&owner) {
                     state.evicted_pending = state.evicted_pending.saturating_add(1);
                 } else {
@@ -727,16 +781,13 @@ unsafe extern "system" fn hook_text_setter(widget: usize, text_object: usize) {
             _ => state.rejected_text = state.rejected_text.saturating_add(1),
         }
     }
-    let original = ORIGINAL_SETTER.load(Ordering::Acquire);
-    if original != 0 {
-        let original: SetterFn = unsafe { mem::transmute(original) };
-        unsafe { original(widget, text_object) };
-    }
     if let (Some(owner), Some(caller_rva)) = (owner, caller_rva) {
-        let observer = POST_SETTER_OBSERVER.load(Ordering::Acquire);
-        if observer != 0 {
-            let observer: PostSetterObserver = unsafe { mem::transmute(observer) };
-            unsafe { observer(owner, widget, caller_rva) };
+        for observer in post_setter_observer_slots() {
+            let observer = observer.load(Ordering::Acquire);
+            if observer != 0 {
+                let observer: PostSetterObserver = unsafe { mem::transmute(observer) };
+                unsafe { observer(owner, widget, caller_rva) };
+            }
         }
     }
 }
@@ -830,6 +881,60 @@ fn read_engine_string(address: usize) -> Option<Vec<u8>> {
     rpm(data, len)
 }
 
+/// Process-local identity needed by exact cross-lane joins such as XUI21.
+/// The owner pointer is accepted only as a lookup key and is never serialized.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObservedTextboxContext {
+    pub context_id: String,
+    pub view_id: String,
+    pub element_id: String,
+}
+
+/// Resolve one currently live, setter-observed textbox owner to the same A25
+/// context id that `rows()` will emit. Returning `None` keeps consumers
+/// fail-closed when registration, setter output, or ownership is unavailable.
+pub fn observed_textbox_context(owner: usize) -> Option<ObservedTextboxContext> {
+    let state = STATE.get()?.lock().ok()?;
+    let identity = state.identities.get(&owner)?;
+    state.latest.get(&owner)?;
+    Some(ObservedTextboxContext {
+        context_id: textbox_context_id(identity),
+        view_id: identity.view_id.clone(),
+        element_id: identity.element_id.clone(),
+    })
+}
+
+/// Pin the exact owner row so d76 can still emit it after the transient event
+/// window is destroyed. This is required for historical d75 lifecycle rows:
+/// a context id without a surviving A25 row is not a replay-admissible join.
+pub fn pin_observed_textbox_context(owner: usize) -> Option<ObservedTextboxContext> {
+    let mut state = STATE.get()?.lock().ok()?;
+    pin_textbox_context(&mut state, owner)
+}
+
+fn pin_textbox_context(state: &mut HookState, owner: usize) -> Option<ObservedTextboxContext> {
+    let identity = state.identities.get(&owner)?.clone();
+    let value = state.latest.get(&owner)?.clone();
+    let context_id = textbox_context_id(&identity);
+    if state.pinned.len() >= MAX_PENDING && !state.pinned.contains_key(&context_id) {
+        state.evicted_pending = state.evicted_pending.saturating_add(1);
+        return None;
+    }
+    state
+        .pinned
+        .insert(context_id.clone(), (identity.clone(), value));
+    Some(ObservedTextboxContext {
+        context_id,
+        view_id: identity.view_id,
+        element_id: identity.element_id,
+    })
+}
+
+fn read_post_layout_text(graphics_child: usize) -> Option<Vec<u8>> {
+    let layout = read_usize(graphics_child.checked_add(GRAPHICS_CHILD_LAYOUT_OBJECT_OFFSET)?)?;
+    read_engine_string(layout.checked_add(LAYOUT_OBJECT_FINAL_TEXT_OFFSET)?)
+}
+
 fn read_usize(address: usize) -> Option<usize> {
     Some(usize::from_le_bytes(
         rpm(address, mem::size_of::<usize>())?.try_into().ok()?,
@@ -901,5 +1006,53 @@ mod tests {
         write_u32(&mut map[..], 0x14, 2);
 
         assert!(enumerate_textbox_map_owners(map.as_ptr() as usize).is_err());
+    }
+
+    #[test]
+    fn post_layout_reader_uses_cinstanttext_selected_string() {
+        let mut selected = Box::new([0u8; 0x1b0]);
+        selected[0x188..0x18e].copy_from_slice(b"A\nB...");
+        write_usize(&mut selected[..], 0x198, 6);
+        write_usize(&mut selected[..], 0x1a0, 15);
+
+        let mut child = Box::new([0u8; 0xd0]);
+        write_usize(&mut child[..], 0xc8, selected.as_ptr() as usize);
+
+        assert_eq!(
+            read_post_layout_text(child.as_ptr() as usize).unwrap(),
+            b"A\nB..."
+        );
+    }
+
+    #[test]
+    fn pinned_event_context_survives_transient_owner_destruction() {
+        let owner = 0x1234;
+        let mut state = HookState::default();
+        state.identities.insert(
+            owner,
+            WidgetIdentity {
+                view_id: "EventWindow".into(),
+                element_id: "Description".into(),
+                source_token: "probe.1.d".into(),
+                ordinal: 7,
+            },
+        );
+        state.latest.insert(
+            owner,
+            SetterValue {
+                bytes: b"Scoped description".to_vec(),
+                caller_rva: 0x123456,
+            },
+        );
+        let context = pin_textbox_context(&mut state, owner).expect("pin context");
+        state.identities.remove(&owner);
+        state.latest.remove(&owner);
+        let (identity, value) = state
+            .pinned
+            .get(&context.context_id)
+            .expect("pinned row survives owner destruction");
+        let row = runtime_text_input(context.context_id, identity, value, "GER");
+        assert_eq!(row.final_text_bytes, b"Scoped description");
+        assert_eq!(row.pov_country_or_global, "GER");
     }
 }

@@ -970,7 +970,6 @@ pub(crate) fn import_terrain_runtime_inputs(options: &ImportTerrainRuntimeOption
         &options.bundle.join(&manifest.files.terrain_runtime),
         &runtime,
     )?;
-    write_json(&manifest_path, &manifest)?;
     println!(
         "imported TerrainIDMap {}x{} ({} bytes), MAP_POW2 {}, {}, and FOW_POW2 {}, {} into {}",
         runtime.terrain_id_map.width,
@@ -1054,7 +1053,6 @@ pub(crate) fn import_runtime_texture_input(options: &ImportRuntimeTextureOptions
     validate_terrain_runtime_inputs(&runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
     validate_runtime_texture_sampler_contract(&runtime, &pdxmap_shader_source)?;
     write_json(&terrain_runtime, &runtime)?;
-    write_json(&manifest_path, &manifest)?;
     println!(
         "imported {} {}x{} ({} bytes) into {}",
         options.shader_symbol,
@@ -1131,7 +1129,6 @@ pub(crate) fn import_runtime_constant_buffer_input(
 
     validate_terrain_runtime_inputs(&runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
     write_json(&terrain_runtime, &runtime)?;
-    write_json(&manifest_path, &manifest)?;
     println!(
         "imported {} constant buffer {} bytes into {}",
         options.shader_symbol,
@@ -1242,7 +1239,6 @@ pub(crate) fn import_runtime_vertex_buffer_input(
 
     validate_terrain_runtime_inputs(&runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
     write_json(&terrain_runtime, &runtime)?;
-    write_json(&manifest_path, &manifest)?;
     println!(
         "imported {} vertex buffer sample {} bytes, stride {}, draw {} into {}",
         options.shader_symbol,
@@ -1316,7 +1312,6 @@ pub(crate) fn import_runtime_input_layout(options: &ImportRuntimeInputLayoutOpti
 
     validate_terrain_runtime_inputs(&runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
     write_json(&terrain_runtime, &runtime)?;
-    write_json(&manifest_path, &manifest)?;
     println!(
         "imported {} input layout {} elements, stride {}, draw {} into {}",
         options.shader_symbol,

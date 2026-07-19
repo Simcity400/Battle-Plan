@@ -417,3 +417,62 @@ fn surface_from_consumer(consumer: &str) -> Result<HudSurface, String> {
         .find(|surface| consumer.starts_with(&format!("{CONSUMER_PREFIX}/{}/", surface.token())))
         .ok_or_else(|| "HUD observation consumer has no authenticated surface prefix".into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_and_root_name_validation_fail_closed() {
+        assert!(validate_token("topbar_root", "token").is_ok());
+        assert!(validate_token("", "token").is_err());
+        assert!(validate_token("   ", "token").is_err());
+        assert!(validate_token("a/b", "token").is_err());
+        assert!(validate_token("a\\b", "token").is_err());
+        assert!(validate_token("a\u{7}b", "token").is_err());
+
+        assert!(validate_runtime_root_name("hud_root").is_ok());
+        let oversized = "r".repeat(MAX_RUNTIME_ROOT_NAME_BYTES + 1);
+        assert_eq!(
+            validate_runtime_root_name(&oversized).unwrap_err(),
+            "HUD runtime root name exceeds its bound"
+        );
+    }
+
+    #[test]
+    fn sha256_validation_accepts_only_64_lowercase_hex() {
+        assert!(validate_sha256(&"a".repeat(64), "digest").is_ok());
+        assert_eq!(
+            validate_sha256(&"A".repeat(64), "digest").unwrap_err(),
+            "digest is not lowercase SHA-256"
+        );
+        assert!(validate_sha256(&"a".repeat(63), "digest").is_err());
+        assert!(validate_sha256(&"g".repeat(64), "digest").is_err());
+        assert!(validate_sha256("", "digest").is_err());
+    }
+
+    #[test]
+    fn semantic_role_consumers_are_surface_scoped_and_validated() {
+        let role = HudSemanticRole::Sprite {
+            element: "topbar_e0_icon".into(),
+            sprite_id: "GFX_topbar".into(),
+        };
+        assert_eq!(
+            role.consumer(HudSurface::Topbar).unwrap(),
+            "hud_role/v1/topbar/sprite/topbar_e0_icon/GFX_topbar"
+        );
+        let bad = HudSemanticRole::Sprite {
+            element: "with/slash".into(),
+            sprite_id: "GFX_topbar".into(),
+        };
+        assert!(bad.consumer(HudSurface::Topbar).is_err());
+        let root = HudSemanticRole::GuiRoot {
+            window_or_root: "hud_root".into(),
+            layout_identity_sha256: "b".repeat(64),
+        };
+        assert_eq!(
+            root.consumer(HudSurface::Minimap).unwrap(),
+            format!("hud_role/v1/minimap/gui/hud_root/{}", "b".repeat(64))
+        );
+    }
+}

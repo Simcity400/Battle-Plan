@@ -164,6 +164,27 @@ pub struct CombatRow {
     pub detail: Leaf<LandCombatDetail>,
 }
 
+/// One terminal land-combat lifecycle row from top-level `ended_combats[]`.
+///
+/// This is deliberately a different type and collection from [`CombatRow`]:
+/// ended rows must never be rendered as live battles. Identity is the complete
+/// `(combat_id, generation)` pair because combat ids can be reused.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EndedCombatRow {
+    pub combat_id: i64,
+    pub generation: i64,
+    pub kind: Leaf<String>,
+    pub lifecycle: Leaf<String>,
+    pub location_province: Leaf<u32>,
+    pub attackers: Leaf<Vec<i64>>,
+    pub defenders: Leaf<Vec<i64>>,
+    pub combat_width: Leaf<f64>,
+    pub terrain: Leaf<String>,
+    pub progress: Leaf<f64>,
+    pub side_detail_availability: Leaf<String>,
+    pub detail: Leaf<LandCombatDetail>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CombatParticipantEvent {
     pub event: Leaf<String>,
@@ -214,6 +235,10 @@ pub struct LandCombatSideDetail {
     pub tactic_status: Leaf<String>,
     pub losses_status: Leaf<String>,
     pub counts_incomplete: Leaf<bool>,
+    /// Exact reserve-vector identities in engine order. Null/unobtained is
+    /// distinct from a measured empty vector.
+    pub reserve_division_ids: Leaf<Vec<i64>>,
+    pub reserve_members_status: Leaf<String>,
     pub damage_attribution: Leaf<Vec<LandDamageAttributionRow>>,
 }
 
@@ -304,10 +329,12 @@ pub struct WingUnitRow {
 
 /// Session metadata needed for playback pacing and player-country POVs.
 ///
-/// TODO(A3/A4): REPLAY_SCHEMA.md has not pinned a first-class session event
-/// payload for speed/pause changes yet. This view consumes a conservative
-/// internal `session` object when present, with fallback only to already
-/// schema-shaped `world.scenario` leaves for DLC/language. Missing fields stay
+/// A3 pins `session.speed_events[*].speed` to the canonical raw engine slot
+/// `0..=4`; [`SpeedEvent::displayed_speed`] derives the UI label `1..=5`.
+/// Current extractor frames provide exact hourly speed/pause anchors. X12's
+/// separate sub-hour transition producer remains required before the list can
+/// claim gap-free transition history. Fallback is limited to already
+/// schema-shaped `world.scenario` leaves for DLC/language; missing fields stay
 /// absent/unavailable rather than inferred.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionMetadataView {
@@ -344,8 +371,22 @@ pub struct PlayerCountry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpeedEvent {
     pub hour_index: Leaf<i64>,
+    /// Canonical engine speed slot, exactly as captured (`0..=4`).
     pub speed: Leaf<i64>,
     pub paused: Leaf<bool>,
+}
+
+impl SpeedEvent {
+    /// UI-visible speed label (`1..=5`) derived losslessly from the canonical
+    /// engine slot. No second speed value is stored in the recording.
+    pub fn displayed_speed(&self) -> Leaf<i64> {
+        match &self.speed {
+            Leaf::Absent => Leaf::Absent,
+            Leaf::Unobtained => Leaf::Unobtained,
+            Leaf::Measured(raw) if (0..=4).contains(raw) => Leaf::Measured(*raw + 1),
+            Leaf::Measured(_) => Leaf::Unobtained,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -988,6 +1029,8 @@ pub struct WorldFrame {
     wings: Vec<WingUnitRow>,
     wings_status: ViewStatus,
     combats: Vec<CombatRow>,
+    ended_combats: BTreeMap<(i64, i64), EndedCombatRow>,
+    ended_combats_status: ViewStatus,
     countries: BTreeMap<String, CountryCore>,
     countries_status: ViewStatus,
     session_metadata: SessionMetadataView,
@@ -1122,6 +1165,13 @@ impl WorldFrame {
     }
     pub fn combats(&self) -> &[CombatRow] {
         &self.combats
+    }
+    /// Terminal lifecycle rows keyed by `(combat_id, generation)`.
+    pub fn ended_combats(&self) -> &BTreeMap<(i64, i64), EndedCombatRow> {
+        &self.ended_combats
+    }
+    pub fn ended_combats_status(&self) -> ViewStatus {
+        self.ended_combats_status
     }
     pub fn countries(&self) -> &BTreeMap<String, CountryCore> {
         &self.countries
@@ -1304,6 +1354,7 @@ impl WorldFrame {
         let (wings, wings_status) = build_wings(&frame.rest, &mut warnings);
         let divisions = build_divisions(&frame.rest, &mut warnings);
         let combats = build_combats(&frame.rest, &mut warnings);
+        let (ended_combats, ended_combats_status) = build_ended_combats(&frame.rest, &mut warnings);
         let (countries, countries_status) = build_countries(&frame.rest, &mut warnings);
         let session_metadata = build_session_metadata(&frame.rest, &mut warnings);
         let (naval_supremacy_by_region, naval_supremacy_status) =
@@ -1335,8 +1386,8 @@ impl WorldFrame {
         let (
             character_rosters_exact,
             character_rosters_exact_status,
-            ace_rosters_exact,
-            ace_rosters_exact_status,
+            mut ace_rosters_exact,
+            mut ace_rosters_exact_status,
         ) = build_xui17_exact_rosters(&frame.rest, &mut warnings);
         let (occupation_by_state, occupation_status) = build_occupation(&frame.rest, &mut warnings);
         let (occupation_history, occupation_history_complete) =
@@ -1360,6 +1411,8 @@ impl WorldFrame {
             &mut focus_status,
             &mut leaders_status,
             &mut diplomacy.status,
+            &mut ace_rosters_exact,
+            &mut ace_rosters_exact_status,
         );
         WorldFrame {
             hour_index: frame.hour_index,
@@ -1383,6 +1436,8 @@ impl WorldFrame {
             wings,
             wings_status,
             combats,
+            ended_combats,
+            ended_combats_status,
             countries,
             countries_status,
             session_metadata,
@@ -2392,18 +2447,46 @@ fn build_division_units(
     (rows, ViewStatus::Present)
 }
 
+/// Shared division identity derivation for `divisions()` and
+/// `division_units()`. Both views derive identity from the same rows into the
+/// same per-frame warnings vec, so each degradation warning is pushed once per
+/// frame (the messages embed the row index, so the duplicate guard only
+/// collapses the double emission across the two views — distinct rows still
+/// warn individually).
 fn division_uid_from_obj(
     obj: &Map<String, Value>,
     div_id: i64,
-    _index: usize,
-    _warnings: &mut Vec<String>,
+    index: usize,
+    warnings: &mut Vec<String>,
 ) -> String {
+    let mut warn_once = |message: String| {
+        if !warnings.contains(&message) {
+            warnings.push(message);
+        }
+    };
     match obj.get("div_type") {
+        // absent div_type is the schema-sanctioned bare-id identity
         None => format!("{div_id}"),
-        Some(Value::Null) => format!("{div_id}"),
+        // null is captured-but-unobtained, not schema-absent: identity
+        // still degrades to the bare id (§6 untyped-channel matching),
+        // but the degradation is surfaced, never silent
+        Some(Value::Null) => {
+            warn_once(format!(
+                "divisions[{index}].div_type is null (unobtained); falling back to \
+                 bare div_id identity"
+            ));
+            format!("{div_id}")
+        }
         Some(v) => match v.as_i64() {
             Some(t) => format!("{div_id}:{t}"),
-            None => format!("{div_id}"),
+            None => {
+                warn_once(format!(
+                    "divisions[{index}].div_type: present but wrong-typed (expected \
+                     integer, found {}); falling back to bare div_id identity",
+                    json_type_name(v)
+                ));
+                format!("{div_id}")
+            }
         },
     }
 }
@@ -2720,31 +2803,7 @@ fn build_divisions(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> Vec
                 continue;
             }
         };
-        let div_uid = match obj.get("div_type") {
-            // absent div_type is the schema-sanctioned bare-id identity
-            None => format!("{div_id}"),
-            // null is captured-but-unobtained, not schema-absent: identity
-            // still degrades to the bare id (§6 untyped-channel matching),
-            // but the degradation is surfaced, never silent
-            Some(Value::Null) => {
-                warnings.push(format!(
-                    "divisions[{i}].div_type is null (unobtained); falling back to \
-                     bare div_id identity"
-                ));
-                format!("{div_id}")
-            }
-            Some(v) => match v.as_i64() {
-                Some(t) => format!("{div_id}:{t}"),
-                None => {
-                    warnings.push(format!(
-                        "divisions[{i}].div_type: present but wrong-typed (expected \
-                         integer, found {}); falling back to bare div_id identity",
-                        json_type_name(v)
-                    ));
-                    format!("{div_id}")
-                }
-            },
-        };
+        let div_uid = division_uid_from_obj(obj, div_id, i, warnings);
         let ctx = format!("divisions[{i}]");
         rows.push(DivisionRow {
             div_uid,
@@ -2837,6 +2896,91 @@ fn build_combats(rest: &Map<String, Value>, warnings: &mut Vec<String>) -> Vec<C
         });
     }
     rows
+}
+
+fn build_ended_combats(
+    rest: &Map<String, Value>,
+    warnings: &mut Vec<String>,
+) -> (BTreeMap<(i64, i64), EndedCombatRow>, ViewStatus) {
+    let items = match rest.get("ended_combats") {
+        None => return (BTreeMap::new(), ViewStatus::DomainAbsent),
+        Some(Value::Null) => return (BTreeMap::new(), ViewStatus::DomainUnavailable),
+        Some(Value::Array(items)) => items,
+        Some(other) => {
+            warnings.push(format!(
+                "ended_combats: present but wrong-typed (expected array, found {}); \
+                 terminal combat view is unavailable",
+                json_type_name(other)
+            ));
+            return (BTreeMap::new(), ViewStatus::DomainUnavailable);
+        }
+    };
+
+    let mut rows = BTreeMap::new();
+    for (i, item) in items.iter().enumerate() {
+        let Some(obj) = item.as_object() else {
+            warnings.push(format!(
+                "ended_combats[{i}]: expected object, found {}; row skipped",
+                json_type_name(item)
+            ));
+            continue;
+        };
+        let ctx = format!("ended_combats[{i}]");
+        let Some(combat_id) = obj.get("combat_id").and_then(Value::as_i64) else {
+            warnings.push(format!(
+                "{ctx}: missing or non-integer combat_id; row skipped"
+            ));
+            continue;
+        };
+        let Some(generation) = obj.get("generation").and_then(Value::as_i64) else {
+            warnings.push(format!(
+                "{ctx}: missing or non-integer generation; row skipped"
+            ));
+            continue;
+        };
+        if combat_id <= 0 || generation <= 0 {
+            warnings.push(format!(
+                "{ctx}: non-positive terminal identity; row skipped"
+            ));
+            continue;
+        }
+        if obj.get("lifecycle").and_then(Value::as_str) != Some("ended") {
+            warnings.push(format!(
+                "{ctx}: lifecycle is not exactly 'ended'; row skipped rather than exposed as terminal"
+            ));
+            continue;
+        }
+        let key = (combat_id, generation);
+        if rows.contains_key(&key) {
+            warnings.push(format!(
+                "{ctx}: duplicate terminal combat identity ({combat_id},{generation}); later row skipped"
+            ));
+            continue;
+        }
+        rows.insert(
+            key,
+            EndedCombatRow {
+                combat_id,
+                generation,
+                kind: leaf_string(obj, &["kind"], &ctx, warnings),
+                lifecycle: leaf_string(obj, &["lifecycle"], &ctx, warnings),
+                location_province: leaf_u32(obj, &["location_province"], &ctx, warnings),
+                attackers: leaf_id_list(obj, "attackers", &ctx, warnings),
+                defenders: leaf_id_list(obj, "defenders", &ctx, warnings),
+                combat_width: leaf_f64(obj, &["combat_width"], &ctx, warnings),
+                terrain: leaf_string(obj, &["terrain"], &ctx, warnings),
+                progress: leaf_f64(obj, &["progress"], &ctx, warnings),
+                side_detail_availability: leaf_string(
+                    obj,
+                    &["side_detail_availability"],
+                    &ctx,
+                    warnings,
+                ),
+                detail: parse_land_combat_detail(obj, &ctx, warnings),
+            },
+        );
+    }
+    (rows, ViewStatus::Present)
 }
 
 fn parse_land_combat_detail(
@@ -2949,6 +3093,8 @@ fn parse_land_side(
         tactic_status: leaf_string(obj, &["tactic_status"], &sctx, warnings),
         losses_status: leaf_string(obj, &["losses_status"], &sctx, warnings),
         counts_incomplete: leaf_bool(obj, &["counts_incomplete"], &sctx, warnings),
+        reserve_division_ids: leaf_i64_list(obj, &["reserve_division_ids"], &sctx, warnings),
+        reserve_members_status: leaf_string(obj, &["reserve_members_status"], &sctx, warnings),
         damage_attribution: parse_damage_attribution(obj, &sctx, warnings),
     })
 }
@@ -3105,7 +3251,7 @@ fn leaf_display_variant(
     let Some(value) = session.get("display_variant") else {
         return Leaf::Absent;
     };
-    let display: DisplayVariantMetadata = match serde_json::from_value(value.clone()) {
+    let display: DisplayVariantMetadata = match serde::Deserialize::deserialize(value) {
         Ok(display) => display,
         Err(error) => {
             warnings.push(format!(
@@ -3242,9 +3388,16 @@ fn leaf_speed_events(
                     }
                 };
                 let ctx = format!("session.speed_events[{i}]");
+                let speed = leaf_i64(obj, &["speed"], &ctx, warnings);
+                if matches!(&speed, Leaf::Measured(raw) if !(0..=4).contains(raw)) {
+                    warnings.push(format!(
+                        "{ctx}.speed: raw engine slot outside 0..=4; whole list treated as unobtained"
+                    ));
+                    return Leaf::Unobtained;
+                }
                 events.push(SpeedEvent {
                     hour_index: leaf_i64(obj, &["hour_index"], &ctx, warnings),
-                    speed: leaf_i64(obj, &["speed"], &ctx, warnings),
+                    speed,
                     paused: leaf_bool(obj, &["paused"], &ctx, warnings),
                 });
             }
@@ -3265,18 +3418,17 @@ fn build_naval_supremacy(
     rest: &Map<String, Value>,
     warnings: &mut Vec<String>,
 ) -> (BTreeMap<u32, NavalSupremacyRow>, ViewStatus) {
-    if let (Some(obj), status) =
-        object_at_path(rest, &["naval_supremacy"], "naval_supremacy", warnings)
-    {
-        return (
-            parse_naval_supremacy_map(obj, "naval_supremacy", warnings),
-            status,
-        );
-    } else {
-        let (_, status) = object_at_path(rest, &["naval_supremacy"], "naval_supremacy", warnings);
-        if status == ViewStatus::DomainUnavailable {
-            return (BTreeMap::new(), status);
+    let (obj, status) = object_at_path(rest, &["naval_supremacy"], "naval_supremacy", warnings);
+    match obj {
+        Some(obj) => {
+            return (
+                parse_naval_supremacy_map(obj, "naval_supremacy", warnings),
+                status,
+            )
         }
+        None if status == ViewStatus::DomainUnavailable => return (BTreeMap::new(), status),
+        // DomainAbsent: fall through to the naval_air.region_control fallback.
+        None => {}
     }
 
     let (region_control, status) = object_at_path(
@@ -3300,7 +3452,15 @@ fn build_naval_supremacy(
             }
         };
         let row_obj = match value {
-            Value::Array(items) => items.iter().find_map(Value::as_object),
+            Value::Array(items) => {
+                let object_count = items.iter().filter(|item| item.is_object()).count();
+                if object_count > 1 {
+                    warnings.push(format!(
+                        "naval_air.region_control.{key}: array has {object_count} object elements; first used, extras ignored"
+                    ));
+                }
+                items.iter().find_map(Value::as_object)
+            }
             Value::Object(obj) => Some(obj),
             Value::Null => {
                 out.insert(
@@ -3343,6 +3503,20 @@ fn build_naval_supremacy(
                         leaf_f64(obj, &["supremacy"], &ctx, warnings),
                         leaf_f64(obj, &["value"], &ctx, warnings),
                     ]),
+                },
+            );
+        } else {
+            // Array-shaped row with no object element: surfaced as an
+            // all-unobtained placeholder, never silently dropped.
+            warnings.push(format!(
+                "naval_air.region_control.{key}: array contains no object element; treated as unobtained"
+            ));
+            out.insert(
+                id,
+                NavalSupremacyRow {
+                    controller: Leaf::Unobtained,
+                    state: Leaf::Unobtained,
+                    supremacy: Leaf::Unobtained,
                 },
             );
         }
@@ -3581,16 +3755,7 @@ fn build_production_render(
     if value.is_null() {
         return (None, ViewStatus::DomainUnavailable);
     }
-    let bytes = match serde_json::to_vec(value) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            warnings.push(format!(
-                "production_render: JSON serialization failed: {error}"
-            ));
-            return (None, ViewStatus::DomainUnavailable);
-        }
-    };
-    match ProductionRenderFrame::decode_json(&bytes) {
+    match ProductionRenderFrame::decode_value(value) {
         Ok(frame) => {
             if let Some(pass) = &frame.authenticated_ui_pass {
                 let runtime_text =
@@ -3788,12 +3953,13 @@ fn build_country_identities(
                 out.insert(
                     tag.clone(),
                     CountryIdentity {
-                        // A3 round-trip: the cosmetic tag (requirements item 7b)
-                        // is mirrored under both `extra` and `misc`; accept
-                        // either so a country that carries only one still keys.
+                        // A3 round-trip: legacy/save snapshots mirror the
+                        // cosmetic tag under `extra` or `misc`, while domain 18
+                        // compact folding writes the canonical root leaf.
                         cosmetic_tag: first_available_string([
                             leaf_string(obj, &["extra", "cosmetic_tag"], &ctx, warnings),
                             leaf_string(obj, &["misc", "cosmetic_tag"], &ctx, warnings),
+                            leaf_string(obj, &["cosmetic_tag"], &ctx, warnings),
                         ]),
                         ruling_ideology: leaf_string(
                             obj,
@@ -5623,6 +5789,7 @@ enum ProblemBackedView {
     Focus,
     Leaders,
     Diplomacy,
+    AceRosters,
 }
 
 const DOMAIN_PROBLEM_VIEW_MAP: &[(i64, ProblemBackedView)] = &[
@@ -5630,6 +5797,7 @@ const DOMAIN_PROBLEM_VIEW_MAP: &[(i64, ProblemBackedView)] = &[
     (26, ProblemBackedView::DivisionUnits),
     (28, ProblemBackedView::Fleets),
     (45, ProblemBackedView::Focus),
+    (46, ProblemBackedView::AceRosters),
     (47, ProblemBackedView::Leaders),
     (53, ProblemBackedView::Diplomacy),
 ];
@@ -5642,6 +5810,8 @@ fn reconcile_domain_problem_statuses(
     focus_status: &mut ViewStatus,
     leaders_status: &mut ViewStatus,
     diplomacy_status: &mut ViewStatus,
+    ace_rosters: &mut BTreeMap<String, AceRosterExactView>,
+    ace_rosters_status: &mut ViewStatus,
 ) {
     // This enforcing consumer deliberately re-derives coverage from raw JSON;
     // it does not trust build_provenance's presentation-oriented problem list.
@@ -5659,6 +5829,7 @@ fn reconcile_domain_problem_statuses(
             ] {
                 downgrade_present_status(status);
             }
+            downgrade_ace_rosters(ace_rosters, ace_rosters_status);
             return;
         }
     };
@@ -5674,6 +5845,9 @@ fn reconcile_domain_problem_statuses(
                 ProblemBackedView::Focus => downgrade_present_status(focus_status),
                 ProblemBackedView::Leaders => downgrade_present_status(leaders_status),
                 ProblemBackedView::Diplomacy => downgrade_present_status(diplomacy_status),
+                ProblemBackedView::AceRosters => {
+                    downgrade_ace_rosters(ace_rosters, ace_rosters_status)
+                }
             }
         }
     }
@@ -5698,6 +5872,16 @@ fn rederive_collector_domain_problems(
 fn downgrade_present_status(status: &mut ViewStatus) {
     if *status == ViewStatus::Present {
         *status = ViewStatus::DomainUnavailable;
+    }
+}
+
+fn downgrade_ace_rosters(
+    rosters: &mut BTreeMap<String, AceRosterExactView>,
+    status: &mut ViewStatus,
+) {
+    downgrade_present_status(status);
+    for roster in rosters.values_mut() {
+        downgrade_present_status(&mut roster.status);
     }
 }
 
@@ -6575,6 +6759,13 @@ impl CharacterRosterExactView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AceLifecycleState {
+    Alive,
+    DeadUnhandled,
+    DeadHandled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AceExactRow {
     pub ace_id: u64,
     /// Exact per-country roster-vector index authenticated by domain 46.
@@ -6583,6 +6774,13 @@ pub struct AceExactRow {
     pub surname: String,
     pub callsign: String,
     pub alive: bool,
+    /// Serializer-owned `CAceEntry+0x16C`; absent on trailer-v1 captures.
+    pub handled: Option<bool>,
+    /// Serializer-owned raw `CAceEntry+0x15C`; intentionally not relabelled
+    /// as an enum until more than raw value 1 is authenticated.
+    pub kill_type_raw: Option<u64>,
+    /// Mechanical projection of (`alive`, `handled`), never visual inference.
+    pub lifecycle: Option<AceLifecycleState>,
     pub wing_id: u64,
     pub killer_ace_id: u64,
     pub killer_country_tag_db_id: u64,
@@ -6825,6 +7023,12 @@ impl RaidStateView {
 // live presentation leaves remain `Absent`, so production admission cannot
 // mistake a historical id set for an ordered fired-event stream.
 #[derive(Debug, Clone, PartialEq)]
+pub struct FiredEventOptionTextContextRow {
+    pub definition_ordinal: Leaf<i64>,
+    pub context_id: Leaf<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct FiredEventRow {
     pub event_id: Leaf<String>,
     pub recipient_tag: Leaf<String>,
@@ -6845,8 +7049,11 @@ pub struct FiredEventRow {
     pub timeout_tick: Leaf<i64>,
     pub resolved_tick: Leaf<i64>,
     pub resolution_reason: Leaf<String>,
-    /// Join key into the generic XUI06/A25 exact runtime-text carrier.
-    pub runtime_text_context_id: Leaf<String>,
+    /// Independent joins into the generic XUI06/A25 runtime-text carrier.
+    /// One singular context cannot authenticate multiple textbox source ids.
+    pub runtime_title_text_context_id: Leaf<String>,
+    pub runtime_description_text_context_id: Leaf<String>,
+    pub runtime_option_text_contexts: Leaf<Vec<FiredEventOptionTextContextRow>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -7286,13 +7493,13 @@ fn leaf_scripted_gui_runtime_inputs(
                     return Leaf::Unobtained;
                 }
                 let rctx = format!("{ctx}.{}.{gui}", path.join("."));
-                let Some(triggers) = bool_map(input, "triggers", &rctx, warnings)
-                    .or_else(|| (!input.contains_key("triggers")).then(BTreeMap::new))
-                else {
+                // The exact-keys check above guarantees "triggers" and
+                // "effect_enabled" are present, so a None from bool_map always
+                // means malformed, never missing.
+                let Some(triggers) = bool_map(input, "triggers", &rctx, warnings) else {
                     return Leaf::Unobtained;
                 };
                 let Some(effect_enabled) = bool_map(input, "effect_enabled", &rctx, warnings)
-                    .or_else(|| (!input.contains_key("effect_enabled")).then(BTreeMap::new))
                 else {
                     return Leaf::Unobtained;
                 };
@@ -8196,6 +8403,34 @@ fn xui17_bool(obj: &Map<String, Value>, key: &str, ctx: &str) -> std::result::Re
         .ok_or_else(|| format!("{ctx}.{key}: required bool is absent or wrong-typed"))
 }
 
+fn xui17_optional_u64(
+    obj: &Map<String, Value>,
+    key: &str,
+    ctx: &str,
+) -> std::result::Result<Option<u64>, String> {
+    match obj.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| format!("{ctx}.{key}: expected non-negative integer or null")),
+    }
+}
+
+fn xui17_optional_bool(
+    obj: &Map<String, Value>,
+    key: &str,
+    ctx: &str,
+) -> std::result::Result<Option<bool>, String> {
+    match obj.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_bool()
+            .map(Some)
+            .ok_or_else(|| format!("{ctx}.{key}: expected bool or null")),
+    }
+}
+
 fn xui17_string(
     obj: &Map<String, Value>,
     key: &str,
@@ -8503,11 +8738,52 @@ fn parse_xui17_ace_roster(
                 "{rctx}.country_ace_index: expected {ordinal}, found {country_ace_index}"
             ));
         }
-        let wing_id = xui17_u64(row, "wing_id", &rctx)?;
+        let wing_id = xui17_optional_u64(row, "wing_id", &rctx)?.unwrap_or(0);
         if wing_id != 0 && !assigned_wings.insert(wing_id) {
             return Err(format!(
                 "{rctx}.wing_id: duplicate nonzero assignment {wing_id}"
             ));
+        }
+        let alive = xui17_bool(row, "alive", &rctx)?;
+        let handled = xui17_optional_bool(row, "handled", &rctx)?;
+        let kill_type_raw = xui17_optional_u64(row, "kill_type_raw", &rctx)?;
+        if handled.is_some() != kill_type_raw.is_some() {
+            return Err(format!(
+                "{rctx}: handled and kill_type_raw must be jointly present or absent"
+            ));
+        }
+        let lifecycle = match (alive, handled) {
+            (_, None) => None,
+            (true, Some(false)) => Some(AceLifecycleState::Alive),
+            (false, Some(false)) => Some(AceLifecycleState::DeadUnhandled),
+            (false, Some(true)) => Some(AceLifecycleState::DeadHandled),
+            (true, Some(true)) => {
+                return Err(format!(
+                    "{rctx}: contradictory lifecycle tuple alive=true handled=true"
+                ))
+            }
+        };
+        if let Some(value) = row.get("lifecycle") {
+            let claimed = match value {
+                Value::Null if lifecycle.is_none() => None,
+                Value::String(value) if value == "alive" => Some(AceLifecycleState::Alive),
+                Value::String(value) if value == "dead_unhandled" => {
+                    Some(AceLifecycleState::DeadUnhandled)
+                }
+                Value::String(value) if value == "dead_handled" => {
+                    Some(AceLifecycleState::DeadHandled)
+                }
+                _ => {
+                    return Err(format!(
+                        "{rctx}.lifecycle: expected exact derived lifecycle or null"
+                    ))
+                }
+            };
+            if claimed != lifecycle {
+                return Err(format!(
+                    "{rctx}.lifecycle: does not match alive/handled tuple"
+                ));
+            }
         }
         aces.push(AceExactRow {
             ace_id,
@@ -8515,10 +8791,14 @@ fn parse_xui17_ace_roster(
             name: xui17_string(row, "name", &rctx)?,
             surname: xui17_string(row, "surname", &rctx)?,
             callsign: xui17_string(row, "callsign", &rctx)?,
-            alive: xui17_bool(row, "alive", &rctx)?,
+            alive,
+            handled,
+            kill_type_raw,
+            lifecycle,
             wing_id,
-            killer_ace_id: xui17_u64(row, "killer_ace_id", &rctx)?,
-            killer_country_tag_db_id: xui17_u64(row, "killer_country_tag_db_id", &rctx)?,
+            killer_ace_id: xui17_optional_u64(row, "killer_ace_id", &rctx)?.unwrap_or(0),
+            killer_country_tag_db_id: xui17_optional_u64(row, "killer_country_tag_db_id", &rctx)?
+                .unwrap_or(0),
         });
     }
     Ok(AceRosterExactView {
@@ -9321,6 +9601,10 @@ fn parse_air_losses(
     let mut rows = Vec::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
         let Some(obj) = item.as_object() else {
+            warnings.push(format!(
+                "naval_air._r2_air_combat_losses_live[{index}]: expected object, found {}; whole list treated as unobtained",
+                json_type_name(item)
+            ));
             return Leaf::Unobtained;
         };
         let ctx = format!("naval_air._r2_air_combat_losses_live[{index}]");
@@ -9357,6 +9641,10 @@ fn parse_air_region_combat(
     let mut rows = Vec::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
         let Some(obj) = item.as_object() else {
+            warnings.push(format!(
+                "naval_air._r2_air_region_combat_stats[{index}]: expected object, found {}; whole list treated as unobtained",
+                json_type_name(item)
+            ));
             return Leaf::Unobtained;
         };
         let ctx = format!("naval_air._r2_air_region_combat_stats[{index}]");
@@ -9394,11 +9682,21 @@ fn parse_air_damage(
         None => return Leaf::Absent,
         Some(Value::Null) => return Leaf::Unobtained,
         Some(Value::Array(items)) => items,
-        Some(_) => return Leaf::Unobtained,
+        Some(other) => {
+            warnings.push(format!(
+                "{ctx}.damage: expected array, found {}; treated as unobtained",
+                json_type_name(other)
+            ));
+            return Leaf::Unobtained;
+        }
     };
     let mut rows = Vec::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
         let Some(row) = item.as_object() else {
+            warnings.push(format!(
+                "{ctx}.damage[{index}]: expected object, found {}; whole list treated as unobtained",
+                json_type_name(item)
+            ));
             return Leaf::Unobtained;
         };
         let rctx = format!("{ctx}.damage[{index}]");
@@ -9440,7 +9738,7 @@ fn build_dynamic_collection_trace(
             collections: Vec::new(),
         };
     }
-    let root: Root = match serde_json::from_value(value.clone()) {
+    let root: Root = match serde::Deserialize::deserialize(value) {
         Ok(root) => root,
         Err(error) => {
             warnings.push(format!(
@@ -9492,7 +9790,7 @@ fn build_design_catalog_context(
             context: None,
         };
     }
-    let context: DesignCatalogContext = match serde_json::from_value(value.clone()) {
+    let context: DesignCatalogContext = match serde::Deserialize::deserialize(value) {
         Ok(context) => context,
         Err(error) => {
             warnings.push(format!("{key} malformed: {error}; treated as unavailable"));
@@ -9560,7 +9858,7 @@ fn build_hud_surface_activation(
             activation: None,
         };
     }
-    let activation: HudSurfaceActivation = match serde_json::from_value(value.clone()) {
+    let activation: HudSurfaceActivation = match serde::Deserialize::deserialize(value) {
         Ok(activation) => activation,
         Err(error) => {
             warnings.push(format!("{key} malformed: {error}; treated as unavailable"));
@@ -9716,7 +10014,50 @@ fn legacy_fired_event(event_id: String) -> FiredEventRow {
         timeout_tick: Leaf::Absent,
         resolved_tick: Leaf::Absent,
         resolution_reason: Leaf::Absent,
-        runtime_text_context_id: Leaf::Absent,
+        runtime_title_text_context_id: Leaf::Absent,
+        runtime_description_text_context_id: Leaf::Absent,
+        runtime_option_text_contexts: Leaf::Absent,
+    }
+}
+
+fn leaf_fired_event_option_text_contexts(
+    obj: &Map<String, Value>,
+    ctx: &str,
+    warnings: &mut Vec<String>,
+) -> Leaf<Vec<FiredEventOptionTextContextRow>> {
+    match obj.get("runtime_option_text_contexts") {
+        None => Leaf::Absent,
+        Some(Value::Null) => Leaf::Unobtained,
+        Some(Value::Array(items)) => {
+            let mut rows = Vec::with_capacity(items.len());
+            for (index, item) in items.iter().enumerate() {
+                let Some(item) = item.as_object() else {
+                    warnings.push(format!(
+                        "{ctx}.runtime_option_text_contexts[{index}]: expected object, found {}; list treated as unobtained",
+                        json_type_name(item)
+                    ));
+                    return Leaf::Unobtained;
+                };
+                let item_ctx = format!("{ctx}.runtime_option_text_contexts[{index}]");
+                rows.push(FiredEventOptionTextContextRow {
+                    definition_ordinal: leaf_i64(
+                        item,
+                        &["definition_ordinal"],
+                        &item_ctx,
+                        warnings,
+                    ),
+                    context_id: leaf_string(item, &["context_id"], &item_ctx, warnings),
+                });
+            }
+            Leaf::Measured(rows)
+        }
+        Some(other) => {
+            warnings.push(format!(
+                "{ctx}.runtime_option_text_contexts: expected array, found {}; treated as unobtained",
+                json_type_name(other)
+            ));
+            Leaf::Unobtained
+        }
     }
 }
 
@@ -9789,11 +10130,20 @@ fn build_fired_events(
                     timeout_tick: leaf_i64(obj, &["timeout_tick"], &ctx, warnings),
                     resolved_tick: leaf_i64(obj, &["resolved_tick"], &ctx, warnings),
                     resolution_reason: leaf_string(obj, &["resolution_reason"], &ctx, warnings),
-                    runtime_text_context_id: leaf_string(
+                    runtime_title_text_context_id: leaf_string(
                         obj,
-                        &["runtime_text_context_id"],
+                        &["runtime_title_text_context_id"],
                         &ctx,
                         warnings,
+                    ),
+                    runtime_description_text_context_id: leaf_string(
+                        obj,
+                        &["runtime_description_text_context_id"],
+                        &ctx,
+                        warnings,
+                    ),
+                    runtime_option_text_contexts: leaf_fired_event_option_text_contexts(
+                        obj, &ctx, warnings,
                     ),
                 });
             }
@@ -9837,6 +10187,57 @@ mod tests {
     const DATE_EPOCH_CONST: i32 = 43_799_999;
 
     #[test]
+    fn a3_speed_events_keep_raw_canonical_and_reject_out_of_range() {
+        let valid = serde_json::json!({
+            "speed_events": [{"hour_index": 100, "speed": 4, "paused": false}]
+        });
+        let mut warnings = Vec::new();
+        let parsed = leaf_speed_events(valid.as_object().unwrap(), &mut warnings);
+        let rows = parsed.measured().expect("valid raw speed rows").clone();
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        assert_eq!(rows[0].speed, Leaf::Measured(4));
+        assert_eq!(rows[0].displayed_speed(), Leaf::Measured(5));
+
+        let invalid = serde_json::json!({
+            "speed_events": [{"hour_index": 100, "speed": 5, "paused": false}]
+        });
+        let mut warnings = Vec::new();
+        assert_eq!(
+            leaf_speed_events(invalid.as_object().unwrap(), &mut warnings),
+            Leaf::Unobtained
+        );
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("outside 0..=4")));
+    }
+
+    #[test]
+    fn country_identity_accepts_domain18_root_cosmetic_tag() {
+        let value = serde_json::json!({
+            "countries": {
+                "GER": {
+                    "cosmetic_tag": "GER_reich",
+                    "politics": {"ruling_party": "fascism"}
+                }
+            }
+        });
+        let mut warnings = Vec::new();
+        let (countries, status) =
+            build_country_identities(value.as_object().unwrap(), &mut warnings);
+
+        assert_eq!(status, ViewStatus::Present);
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        assert_eq!(
+            countries["GER"].cosmetic_tag,
+            Leaf::Measured("GER_reich".to_string())
+        );
+        assert_eq!(
+            countries["GER"].ruling_ideology,
+            Leaf::Measured("fascism".to_string())
+        );
+    }
+
+    #[test]
     fn fired_event_view_preserves_rich_history_order_and_legacy_ids() {
         let value = serde_json::json!({
             "world_events": {
@@ -9858,7 +10259,11 @@ mod tests {
                         "timeout_tick": 28000,
                         "resolved_tick": 27009,
                         "resolution_reason": "selected",
-                        "runtime_text_context_id": "event:8"
+                        "runtime_title_text_context_id": "event:title:8",
+                        "runtime_description_text_context_id": "event:description:8",
+                        "runtime_option_text_contexts": [
+                            {"definition_ordinal": 2, "context_id": "event:option:8:2"}
+                        ]
                     },
                     "legacy.2"
                 ]
@@ -9874,6 +10279,18 @@ mod tests {
         assert_eq!(rows[0].event_id, Leaf::Measured("test.1".into()));
         assert_eq!(rows[0].visible_option_ordinals, Leaf::Measured(vec![0, 2]));
         assert_eq!(rows[0].event_sequence, Leaf::Measured(8));
+        assert_eq!(
+            rows[0].runtime_title_text_context_id,
+            Leaf::Measured("event:title:8".into())
+        );
+        assert_eq!(
+            rows[0]
+                .runtime_option_text_contexts
+                .measured()
+                .expect("option contexts")[0]
+                .definition_ordinal,
+            Leaf::Measured(2)
+        );
         assert_eq!(rows[1].event_id, Leaf::Measured("legacy.2".into()));
         assert_eq!(rows[1].recipient_tag, Leaf::Absent);
         assert_eq!(rows[1].event_sequence, Leaf::Absent);
@@ -10676,8 +11093,8 @@ mod tests {
                         },
                         "_r2_air_ace_roster_live": {
                             "aces": [
-                                {"ace_id": 900, "country_ace_index": 0, "name": "Max", "surname": "Mustermann", "callsign": "Falke", "alive": true, "wing_id": 700, "killer_ace_id": 0, "killer_country_tag_db_id": 0},
-                                {"ace_id": 901, "country_ace_index": 1, "name": "Erika", "surname": "Musterfrau", "callsign": "Adler", "alive": false, "wing_id": 0, "killer_ace_id": 42, "killer_country_tag_db_id": 3}
+                                {"ace_id": 900, "country_ace_index": 0, "name": "Max", "surname": "Mustermann", "callsign": "Falke", "alive": true, "handled": false, "kill_type_raw": 0, "lifecycle": "alive", "wing_id": 700, "killer_ace_id": 0, "killer_country_tag_db_id": 0},
+                                {"ace_id": 901, "country_ace_index": 1, "name": "Erika", "surname": "Musterfrau", "callsign": "Adler", "alive": false, "handled": true, "kill_type_raw": 1, "lifecycle": "dead_handled", "wing_id": 0, "killer_ace_id": 42, "killer_country_tag_db_id": 3}
                             ]
                         }
                     }
@@ -10731,6 +11148,10 @@ mod tests {
         let aces = frame.ace_roster_exact("GER").expect("GER exact aces");
         assert!(aces.wing_assignment_complete);
         assert_eq!(aces.aces[1].country_ace_index, 1);
+        assert_eq!(aces.aces[0].lifecycle, Some(AceLifecycleState::Alive));
+        assert_eq!(aces.aces[1].handled, Some(true));
+        assert_eq!(aces.aces[1].kill_type_raw, Some(1));
+        assert_eq!(aces.aces[1].lifecycle, Some(AceLifecycleState::DeadHandled));
         assert_eq!(aces.aces[1].killer_ace_id, 42);
     }
 
@@ -10796,6 +11217,77 @@ mod tests {
             .coverage_warnings()
             .iter()
             .any(|warning| warning.contains("expected 1, found 7")));
+    }
+
+    #[test]
+    fn xui17_rejects_claimed_ace_lifecycle_that_disagrees_with_raw_tuple() {
+        let mut root = xui17_exact_root();
+        root["countries"]["GER"]["extra"]["_r2_air_ace_roster_live"]["aces"][1]["lifecycle"] =
+            serde_json::json!("alive");
+        let frame = world_frame_from_json(root);
+        assert_eq!(
+            frame.ace_rosters_exact_status(),
+            ViewStatus::DomainUnavailable
+        );
+        assert!(frame
+            .coverage_warnings()
+            .iter()
+            .any(|warning| warning.contains("does not match alive/handled tuple")));
+    }
+
+    #[test]
+    fn xui17_domain46_problem_downgrades_retained_ace_sidecar() {
+        let mut root = xui17_exact_root();
+        root["provenance"] = serde_json::json!({
+            "collector": {
+                "domain_problems": [
+                    {"domain_id": 46, "problem": "ace_roster_partial"}
+                ]
+            }
+        });
+
+        let frame = world_frame_from_json(root);
+        assert_eq!(
+            frame.ace_rosters_exact_status(),
+            ViewStatus::DomainUnavailable
+        );
+        assert_eq!(
+            frame
+                .ace_roster_exact("GER")
+                .expect("retained sidecar stays available for diagnostics")
+                .status,
+            ViewStatus::DomainUnavailable
+        );
+        assert_eq!(
+            frame
+                .ace_roster_exact("GER")
+                .expect("retained diagnostic rows")
+                .aces
+                .len(),
+            2,
+            "raw retained rows remain diagnostic but are not Present"
+        );
+    }
+
+    #[test]
+    fn xui17_accepts_v1_ace_rows_without_fabricating_v2_lifecycle() {
+        let mut root = xui17_exact_root();
+        let rows = root["countries"]["GER"]["extra"]["_r2_air_ace_roster_live"]["aces"]
+            .as_array_mut()
+            .expect("ace rows");
+        for row in rows {
+            let row = row.as_object_mut().expect("ace row");
+            row.remove("handled");
+            row.remove("kill_type_raw");
+            row.remove("lifecycle");
+        }
+
+        let frame = world_frame_from_json(root);
+        assert_eq!(frame.ace_rosters_exact_status(), ViewStatus::Present);
+        let aces = frame.ace_roster_exact("GER").expect("v1 ace rows");
+        assert!(aces.aces.iter().all(|row| row.handled.is_none()
+            && row.kill_type_raw.is_none()
+            && row.lifecycle.is_none()));
     }
 
     fn carried_problem_backed_json(domain_problems: Option<Value>) -> Value {
@@ -11763,8 +12255,8 @@ mod tests {
                     {"event":"participant_joined","generation":5,"side":"attacker","division_id":2,"old_side_count":1,"new_side_count":2},
                     {"event":"participant_left_unclassified","generation":5,"side":"defender","division_id":4,"old_side_count":2,"new_side_count":1,"semantic":"left_unclassified"}],
                 "side_detail_completeness":"both",
-                "attacker":{"units":2,"committed":1,"reserve":1,"air_kills":3,"counts_incomplete":false,"progress":0.53,"progress_raw":53000,"tactic":{"id":7,"token":"tactic_basic_attack","name":"TACTIC_BASIC_ATTACK"},"tactic_status":"exact","losses_status":"omitted_all_zero_oracle"},
-                "defender":{"units":1,"committed":1,"reserve":0,"air_kills":0,"counts_incomplete":false,"progress":-0.175,"progress_raw":-17500,"tactic":null,"tactic_status":"exact_none","losses_status":"omitted_all_zero_oracle"}}
+                "attacker":{"units":2,"committed":1,"reserve":1,"air_kills":3,"counts_incomplete":false,"progress":0.53,"progress_raw":53000,"tactic":{"id":7,"token":"tactic_basic_attack","name":"TACTIC_BASIC_ATTACK"},"tactic_status":"exact","losses_status":"unavailable_no_authenticated_live_carrier","reserve_division_ids":[102],"reserve_members_status":"exact"},
+                "defender":{"units":1,"committed":1,"reserve":0,"air_kills":0,"counts_incomplete":false,"progress":-0.175,"progress_raw":-17500,"tactic":null,"tactic_status":"exact_none","losses_status":"unavailable_no_authenticated_live_carrier","reserve_division_ids":[],"reserve_members_status":"exact"}}
         }]}).as_object().unwrap().clone();
         let mut warnings = Vec::new();
         let rows = build_combats(&rest, &mut warnings);
@@ -11776,6 +12268,11 @@ mod tests {
         );
         let attacker = detail.attacker.measured().unwrap();
         assert_eq!(attacker.progress_raw, Leaf::Measured(53_000));
+        assert_eq!(attacker.reserve_division_ids, Leaf::Measured(vec![102]));
+        assert_eq!(
+            attacker.reserve_members_status,
+            Leaf::Measured("exact".into())
+        );
         let tactic = attacker.tactic.measured().unwrap().as_ref().unwrap();
         assert_eq!(tactic.id, Leaf::Measured(7));
         assert_eq!(tactic.token, Leaf::Measured("tactic_basic_attack".into()));
@@ -11790,6 +12287,51 @@ mod tests {
             Leaf::Measured("left_unclassified".into())
         );
         assert_eq!(rows[0].combat_width, Leaf::Unobtained);
+    }
+
+    #[test]
+    fn xui20_ended_combats_are_separate_and_keyed_by_id_generation() {
+        let rest = serde_json::json!({
+            "combats":[{"combat_id":77,"kind":"land","location_province":12,
+                "attackers":[1],"defenders":[2]}],
+            "ended_combats":[
+                {"combat_id":77,"generation":4,"kind":"land","lifecycle":"ended",
+                 "location_province":12,"side_detail_availability":"unavailable",
+                 "land_combat_detail_events_live":{"phase_event":"ended","generation":4}},
+                {"combat_id":77,"generation":3,"kind":"land","lifecycle":"ended",
+                 "location_province":11,"side_detail_availability":"present",
+                 "land_combat_detail_events_live":{"phase_event":"ended","generation":3}}
+            ]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let mut warnings = Vec::new();
+        let active = build_combats(&rest, &mut warnings);
+        let (ended, status) = build_ended_combats(&rest, &mut warnings);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(active.len(), 1);
+        assert_eq!(status, ViewStatus::Present);
+        assert_eq!(ended.len(), 2);
+        assert_eq!(ended[&(77, 4)].lifecycle, Leaf::Measured("ended".into()));
+        assert_eq!(ended[&(77, 3)].location_province, Leaf::Measured(11));
+    }
+
+    #[test]
+    fn xui20_ended_combats_reject_nonterminal_and_duplicate_rows() {
+        let rest = serde_json::json!({"ended_combats":[
+            {"combat_id":5,"generation":2,"kind":"land","lifecycle":"active"},
+            {"combat_id":5,"generation":3,"kind":"land","lifecycle":"ended"},
+            {"combat_id":5,"generation":3,"kind":"land","lifecycle":"ended"}
+        ]})
+        .as_object()
+        .unwrap()
+        .clone();
+        let mut warnings = Vec::new();
+        let (ended, status) = build_ended_combats(&rest, &mut warnings);
+        assert_eq!(status, ViewStatus::Present);
+        assert_eq!(ended.keys().copied().collect::<Vec<_>>(), vec![(5, 3)]);
+        assert_eq!(warnings.len(), 2);
     }
 
     #[test]

@@ -143,7 +143,41 @@ struct RawCatalogRoot {
 
 #[derive(Deserialize)]
 struct RawCatalogs {
-    power_balances: BTreeMap<String, RawBalance>,
+    /// Kept as ordered entries rather than a map so that duplicate textual
+    /// keys in the extractor JSON survive deserialization and are refused as
+    /// `StaticCatalogError::DuplicateBalance` instead of silently last-winning.
+    #[serde(deserialize_with = "deserialize_balance_entries")]
+    power_balances: Vec<(String, RawBalance)>,
+}
+
+fn deserialize_balance_entries<'de, D>(
+    deserializer: D,
+) -> Result<Vec<(String, RawBalance)>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct EntriesVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for EntriesVisitor {
+        type Value = Vec<(String, RawBalance)>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a map of power balance definitions")
+        }
+
+        fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            let mut entries = Vec::with_capacity(access.size_hint().unwrap_or(0));
+            while let Some(entry) = access.next_entry::<String, RawBalance>()? {
+                entries.push(entry);
+            }
+            Ok(entries)
+        }
+    }
+
+    deserializer.deserialize_map(EntriesVisitor)
 }
 
 #[derive(Deserialize)]
@@ -928,4 +962,70 @@ pub fn sample_panel_transition(
         },
         dt,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PowerBalanceDefinitionCatalog, StaticCatalogError};
+
+    /// A minimal balance body that passes `convert_definition` unchanged, so a
+    /// duplicated key exercises the `DuplicateBalance` refusal rather than an
+    /// earlier structural error.
+    fn balance_body(id: &str) -> String {
+        format!(
+            r#"{{
+                "id": "{id}",
+                "initial_value": "0.0",
+                "left_side": "left",
+                "right_side": "right",
+                "decision_category": null,
+                "sides": [
+                    {{
+                        "id": "left",
+                        "order": 0,
+                        "icon": "GFX_left",
+                        "ranges": [],
+                        "range_count": 0,
+                        "source_file": "common/bop/test.txt"
+                    }},
+                    {{
+                        "id": "right",
+                        "order": 1,
+                        "icon": "GFX_right",
+                        "ranges": [],
+                        "range_count": 0,
+                        "source_file": "common/bop/test.txt"
+                    }}
+                ],
+                "range_count": 0,
+                "source_file": "common/bop/test.txt"
+            }}"#
+        )
+    }
+
+    #[test]
+    fn duplicate_power_balance_key_is_refused() {
+        let body = balance_body("bop_test");
+        let input = format!(
+            r#"{{"catalogs":{{"power_balances":{{"bop_test":{body},"bop_test":{body}}}}}}}"#
+        );
+        assert_eq!(
+            PowerBalanceDefinitionCatalog::from_catalogs_json(&input),
+            Err(StaticCatalogError::DuplicateBalance("bop_test".to_string()))
+        );
+    }
+
+    #[test]
+    fn distinct_power_balance_keys_are_admitted() {
+        let first = balance_body("bop_first");
+        let second = balance_body("bop_second");
+        let input = format!(
+            r#"{{"catalogs":{{"power_balances":{{"bop_first":{first},"bop_second":{second}}}}}}}"#
+        );
+        let catalog = PowerBalanceDefinitionCatalog::from_catalogs_json(&input)
+            .expect("distinct keys must parse");
+        assert_eq!(catalog.len(), 2);
+        assert!(catalog.get("bop_first").is_some());
+        assert!(catalog.get("bop_second").is_some());
+    }
 }

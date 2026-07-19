@@ -78,14 +78,15 @@ def derive_layers(snapshot: Dict[str, Any],
     filled["encircled"] = {"true": n_true, "false": n_false,
                            "uncertain_or_unknown": n_none}
 
-    # --- ships_by_hull (always overwritten; null when tag never in a fleet) --
+    # --- ships_by_hull (always overwritten; {} = measured in the OOB with
+    # zero ships, null = tag never seen in any fleet) ------------------------
     sbh = _layers.ships_by_hull(snap)
     n_hull = 0
     for tag, c in snap.get("countries", {}).items():
         mil = c.setdefault("military", {})
         val = sbh.get(tag)            # dict (maybe empty) or None
-        mil["ships_by_hull"] = val if val else None
-        if val:
+        mil["ships_by_hull"] = val
+        if val is not None:
             n_hull += 1
     filled["ships_by_hull"] = n_hull
 

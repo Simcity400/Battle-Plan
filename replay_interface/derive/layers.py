@@ -18,7 +18,6 @@ Honesty rules (DESIGN no-fabrication; reinforced by the Codex model review):
 
 from __future__ import annotations
 
-import copy
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Optional, Set, Tuple
 

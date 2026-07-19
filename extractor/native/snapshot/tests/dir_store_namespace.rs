@@ -3,6 +3,7 @@
 use snapshot::Store;
 use std::fs;
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use windows_sys::Win32::Foundation::GetLastError;
@@ -48,6 +49,65 @@ fn wide(path: &Path) -> Vec<u16> {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect()
+}
+
+const FILE_ATTRIBUTE_OFFLINE_RAW: u32 = 0x0000_1000;
+const FILE_ATTRIBUTE_REPARSE_POINT_RAW: u32 = 0x0000_0400;
+const FILE_ATTRIBUTE_RECALL_ON_OPEN_RAW: u32 = 0x0004_0000;
+const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS_RAW: u32 = 0x0040_0000;
+
+fn carries_dehydrated_payload_metadata(attributes: u32) -> bool {
+    attributes
+        & (FILE_ATTRIBUTE_OFFLINE_RAW
+            | FILE_ATTRIBUTE_RECALL_ON_OPEN_RAW
+            | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS_RAW)
+        != 0
+}
+
+/// Metadata-only preflight. This never opens a file for data access, so it
+/// cannot accidentally hydrate the fixture merely while deciding whether the
+/// ignored integration gate is valid to run.
+fn dehydrated_payload_metadata_count(root: &Path) -> Result<(usize, usize), String> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut scanned_files = 0usize;
+    let mut dehydrated_files = 0usize;
+    while let Some(directory) = pending.pop() {
+        let entries = fs::read_dir(&directory).map_err(|error| {
+            format!("enumerate metadata under {}: {error}", directory.display())
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                format!("read metadata entry under {}: {error}", directory.display())
+            })?;
+            let metadata = fs::symlink_metadata(entry.path()).map_err(|error| {
+                format!(
+                    "query link-safe metadata for {}: {error}",
+                    entry.path().display()
+                )
+            })?;
+            let attributes = metadata.file_attributes();
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                // The preflight does not resolve descendant reparse directories;
+                // the real anchored loader owns tag classification and refusal.
+                if attributes & FILE_ATTRIBUTE_REPARSE_POINT_RAW == 0 {
+                    pending.push(entry.path());
+                }
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            scanned_files += 1;
+            if carries_dehydrated_payload_metadata(attributes) {
+                dehydrated_files += 1;
+            }
+        }
+    }
+    Ok((scanned_files, dehydrated_files))
 }
 
 #[test]
@@ -112,8 +172,13 @@ fn file_symlink_capability_and_rejection_are_mandatory() {
     };
     if !created {
         let code = unsafe { GetLastError() };
+        if code == 1314 {
+            panic!(
+                "F3_ENV_GATE=SYMLINK_PRIVILEGE_NOT_HELD: CreateSymbolicLinkW failed with Win32 1314; enable Windows Developer Mode (or supply SeCreateSymbolicLinkPrivilege), then rerun this exact gate"
+            );
+        }
         panic!(
-            "file-symlink provisioning gate failed (Win32 {code}); enable Windows Developer Mode, then rerun this mandatory test"
+            "F3_ENV_GATE=SYMLINK_PROVISION_UNEXPECTED_ERROR: CreateSymbolicLinkW failed with Win32 {code}; Developer Mode alone may not resolve this error"
         );
     }
 
@@ -152,7 +217,13 @@ fn linked_root_is_permitted_and_descendants_remain_anchored() {
 fn windows_onedrive_dehydrated_placeholder_store_must_pass_before_ship() {
     let path = std::env::var_os("BATTLE_PLAN_ONEDRIVE_DEHYDRATED_REPLAY_STORE").or_else(|| std::env::var_os("HOI4_ONEDRIVE_DEHYDRATED_REPLAY_STORE"))
         .map(PathBuf::from)
-        .expect("set BATTLE_PLAN_ONEDRIVE_DEHYDRATED_REPLAY_STORE to the dehydrated store");
+        .expect("F3_ENV_GATE=ONEDRIVE_STORE_ENV_NOT_SET: set BATTLE_PLAN_ONEDRIVE_DEHYDRATED_REPLAY_STORE to a genuinely dehydrated directory store");
+    let (scanned_files, dehydrated_files) = dehydrated_payload_metadata_count(&path)
+        .unwrap_or_else(|error| panic!("F3_ENV_GATE=ONEDRIVE_METADATA_PROBE_FAILED: {error}"));
+    assert!(
+        dehydrated_files > 0,
+        "F3_ENV_GATE=ONEDRIVE_STORE_NOT_DEHYDRATED: metadata-only scan found {dehydrated_files} dehydrated payloads among {scanned_files} files; refusing a vacuous hydrated-store pass"
+    );
     let store = Store::open_directory(&path).unwrap();
     let games = store.games().unwrap();
     let game = games
@@ -165,4 +236,19 @@ fn windows_onedrive_dehydrated_placeholder_store_must_pass_before_ship() {
         .expect("dehydrated integration store must have a snapshot");
     let snapshot = store.load_file(game, &first.file).unwrap();
     assert_eq!(snapshot.game_id.as_deref(), Some(game.as_str()));
+}
+
+#[test]
+fn dehydrated_placeholder_attribute_probe_is_exact_and_non_vacuous() {
+    assert!(!carries_dehydrated_payload_metadata(0));
+    assert!(!carries_dehydrated_payload_metadata(
+        FILE_ATTRIBUTE_REPARSE_POINT_RAW
+    ));
+    for attribute in [
+        FILE_ATTRIBUTE_OFFLINE_RAW,
+        FILE_ATTRIBUTE_RECALL_ON_OPEN_RAW,
+        FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS_RAW,
+    ] {
+        assert!(carries_dehydrated_payload_metadata(attribute));
+    }
 }

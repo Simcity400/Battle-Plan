@@ -176,8 +176,8 @@ pub(crate) const GB_STRENGTH_CH1: f32 = 1.0;
 pub(crate) const GB_STRENGTH_CH2: f32 = 1.0;
 pub(crate) const GB_FIRST_LAYER_PRIORITY: f32 = 0.4;
 
-// gfx/FX/constants.fxh:216.
-pub(crate) const SEC_MAP_TILE: f32 = 6000.0;
+// SEC_MAP_TILE lives in occupation_stripe_law.rs (the lib.rs re-export wins
+// over this module's glob, so a copy here would be dead and could drift).
 
 // gfx/FX/standardfuncsgfx.fxh:965-976, CalculateOccupationMask camera fade.
 pub(crate) const SEC_CAM_MIN: f32 = 300.0;
@@ -188,8 +188,8 @@ pub(crate) const BORDER_NIGHT_DESATURATION_MAX: f32 = 0.2;
 pub(crate) const BORDER_FOW_REMOVAL_FACTOR: f32 = 0.8;
 pub(crate) const BORDER_LIGHT_REMOVAL_FACTOR: f32 = 0.8;
 
-// gfx/FX/constants.fxh:170.
-pub(crate) const SHADOW_WEIGHT_TERRAIN: f32 = 0.7;
+// SHADOW_WEIGHT_TERRAIN lives in shadow_law.rs (the lib.rs re-export wins
+// over this module's glob, so a copy here would be dead and could drift).
 
 // gfx/FX/tiled_pointlights.fxh:11-12.
 pub(crate) const LIGHT_INDEX_TEXTURE_SIZE: usize = 64;
@@ -552,10 +552,12 @@ pub(crate) const TERRAIN_SCENE_CB0_LAYOUT_SOURCE: &str =
     "gfx/FX/standardfuncsgfx.fxh:ConstantBuffer(0,0)";
 pub(crate) const BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE: &str = "common/defines/00_graphics.lua";
 pub(crate) const TERRAIN_DRAW_CB1_BIND_POINT: u32 = 1;
+pub(crate) const TERRAIN_DRAW_CB1_FXH_SOURCE: &str = "gfx/FX/pdxmap.fxh";
 pub(crate) const TERRAIN_DRAW_CB1_LAYOUT_SOURCE: &str = "gfx/FX/pdxmap.fxh:ConstantBuffer(1,32)";
 pub(crate) const TERRAIN_DRAW_CB1_QUAD_OFFSET_SCALE_BYTE_OFFSET: usize = 64;
 pub(crate) const TERRAIN_DRAW_CB1_DETAIL_EDGE_FLAGS_BYTE_OFFSET: usize = 80;
 pub(crate) const TERRAIN_POINT_LIGHT_CB2_BIND_POINT: u32 = 2;
+pub(crate) const TERRAIN_POINT_LIGHT_CB2_FXH_SOURCE: &str = "gfx/FX/tiled_pointlights.fxh";
 pub(crate) const TERRAIN_POINT_LIGHT_CB2_LAYOUT_SOURCE: &str =
     "gfx/FX/tiled_pointlights.fxh:ConstantBuffer(2,62)";
 pub(crate) const PROVINCE_SECONDARY_COLOR_MAP_SYMBOL: &str = "ProvinceSecondaryColorMap";

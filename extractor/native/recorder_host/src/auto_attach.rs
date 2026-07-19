@@ -11,24 +11,20 @@
 //!
 //! ## What this lane ships vs. what it depends on
 //!
-//! This module (the coordinator core + identity/journal/policy/reducer/state +
-//! the Toolhelp probe + FS stager) is complete and unit-tested with fakes. The
-//! production end-to-end path additionally needs the design §9 changes that are
-//! OUTSIDE this lane's fence — a real WMI `Win32_ProcessStartTrace` event source
-//! (needs a COM binding in `Cargo.toml`), the collector heartbeat/first-frame
-//! proof protocol and pipe-listening barrier (`collector/src/lib.rs`,
-//! `main.rs`), and the `--until-process-exit` worker mode. Until those land, the
-//! real adapters here degrade honestly: the event source runs snapshot-only
-//! (the design's bounded fallback), and the worker handle gates on child-process
-//! liveness/exit rather than a heartbeat it cannot yet observe. The dossier
-//! (`extractor/documents/dossiers/W12C_AUTOATTACH_IMPL.md`) tracks every such
-//! deviation and the live-validation matrix.
+//! The coordinator, WMI+reconciliation discovery, identity/journal/policy,
+//! restrictive paired H4CR/H4CT backend, heartbeat/first-frame authority, and
+//! installed-payload resolution have offline implementations. The live product
+//! still runs the legacy child adapter because duplex activation is deliberately
+//! frozen; that adapter's stdout proof is finite and explicit stop still cannot
+//! claim graceful collector finalization. The dormant duplex worker is the only
+//! intended replacement and remains fail-closed until its lifecycle matrix passes.
 
 pub mod coordinator;
 pub mod duplex_worker;
 pub mod identity;
 pub mod journal;
 pub mod policy;
+pub mod product_runtime;
 pub mod proof;
 pub mod reducer;
 #[cfg(windows)]

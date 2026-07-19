@@ -309,6 +309,10 @@ pub struct CloudRenderLaw {
     /// The animation-curve name modulating alpha (`smoke_fade`/`cloud_fade`), if
     /// any.
     pub alpha_anim: Option<String>,
+    /// The peak (maximum) value of `alpha_anim`'s curve — the multiplier at the
+    /// particle's brightest life phase ([`animation_curve_peak`]); 1.0 when no
+    /// curve is declared. The static overlay samples the curve at this peak.
+    pub alpha_anim_peak: f32,
     /// The mean billboard world size (asset `size` mean).
     pub size_mean: f32,
     /// The mean particle life in seconds (asset `life` mean).
@@ -576,6 +580,12 @@ pub fn cloud_law_from_asset(
     let alpha_raw =
         braced_field(&color_block, "alpha").ok_or("cloud asset: color missing alpha")?;
     let (base_alpha_255, alpha_anim) = parse_alpha_field(&alpha_raw);
+    // The representative static frame samples the alpha curve at its peak
+    // (e.g. snow_clouds' smoke_fade peaks at 0.914, NOT 1.0).
+    let alpha_anim_peak = alpha_anim
+        .as_deref()
+        .map(|name| animation_curve_peak(asset_source, name))
+        .unwrap_or(1.0);
 
     let size_mean = parse_first_number(&braced_field(&subsystem, "size").unwrap_or_default())
         .ok_or("cloud asset: subsystem missing size")?;
@@ -593,6 +603,7 @@ pub fn cloud_law_from_asset(
         color_rgb_255,
         base_alpha_255,
         alpha_anim,
+        alpha_anim_peak,
         size_mean,
         life_mean,
         sort,
@@ -832,17 +843,11 @@ pub fn render_weather_overlay(
         let Some((law, tex)) = resolved.get(&pos.size) else {
             continue;
         };
-        let anim_mul = law
-            .alpha_anim
-            .as_deref()
-            .map(|name| {
-                // Peak phase of the alpha curve is the representative frame.
-                // (Re-read from the asset would need re-resolution; the curve
-                // peak for the shipped clouds is 1.0, so use the base alpha.)
-                let _ = name;
-                1.0f32
-            })
-            .unwrap_or(1.0);
+        // Peak phase of the alpha curve is the representative frame — the
+        // curve's actual maximum, computed from the asset when the law was
+        // resolved (the shipped snow_clouds smoke_fade peaks at 0.914, not
+        // 1.0).
+        let anim_mul = law.alpha_anim_peak;
         let vcolor = law.linear_vertex_color(anim_mul);
         splat_sprite(
             &mut acc,
@@ -1506,6 +1511,8 @@ entity = {
         assert_eq!(law.color_rgb_255, [110.0, 120.0, 150.0]);
         assert_eq!(law.base_alpha_255, 180.0);
         assert_eq!(law.alpha_anim.as_deref(), Some("smoke_fade"));
+        // rain smoke_fade peaks at 1.0.
+        assert!((law.alpha_anim_peak - 1.0).abs() < 1e-6);
         assert!((law.size_mean - 60.5).abs() < 1e-6);
         assert!((law.life_mean - 2.6).abs() < 1e-6);
         // rain clouds declare no depth sort.
@@ -1520,6 +1527,9 @@ entity = {
         assert_eq!(law.color_rgb_255, [200.0, 200.0, 200.0]);
         assert_eq!(law.base_alpha_255, 60.0);
         assert_eq!(law.alpha_anim.as_deref(), Some("smoke_fade"));
+        // snow smoke_fade curve (0.000 0.000 0.321 0.750 0.635 0.914 1.000
+        // 0.000) peaks at 0.914 — NOT 1.0; the static overlay must use it.
+        assert!((law.alpha_anim_peak - 0.914).abs() < 1e-6);
     }
 
     #[test]
@@ -1532,6 +1542,8 @@ entity = {
         assert_eq!(law.color_rgb_255, [160.0, 160.0, 160.0]);
         assert_eq!(law.base_alpha_255, 150.0);
         assert_eq!(law.alpha_anim.as_deref(), Some("cloud_fade"));
+        // cloud_fade (0.1 -> 1.0 -> 1.0 -> 0.0) peaks at 1.0.
+        assert!((law.alpha_anim_peak - 1.0).abs() < 1e-6);
         // The lightning cloud layer declares depth sorting.
         assert_eq!(law.sort.as_deref(), Some("depth"));
     }

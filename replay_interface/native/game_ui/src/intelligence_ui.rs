@@ -701,12 +701,12 @@ fn validate_family<T: StableItem>(
     surface: IntelligenceSurface,
     frame_hour: u64,
     gates: &BTreeMap<IntelligenceSurface, VisibilityDisposition>,
-) -> Result<BTreeSet<String>> {
+) -> Result<()> {
     match value {
         ProducerValue::Unobtained { reason } => {
             nonempty(reason, "family unobtained reason")?;
             require_available(gates, surface, false)?;
-            Ok(BTreeSet::new())
+            Ok(())
         }
         ProducerValue::Measured(list) => {
             require_available(gates, surface, true)?;
@@ -732,7 +732,7 @@ fn validate_family<T: StableItem>(
             if ids != source {
                 return Err(fail("producer rows do not equal collection source items"));
             }
-            Ok(ids)
+            Ok(())
         }
     }
 }

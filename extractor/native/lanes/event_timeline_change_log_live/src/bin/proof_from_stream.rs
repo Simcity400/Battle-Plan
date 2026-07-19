@@ -458,6 +458,7 @@ fn pack_and_verify(
             build_pinned: false,
             mod_identity: None,
             created_utc: None,
+            content_manifest: None,
         },
         true,
     )

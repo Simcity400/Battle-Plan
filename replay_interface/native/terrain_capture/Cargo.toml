@@ -26,8 +26,9 @@ serde_json = "1.0.145"
 snapshot = { package = "portable_replay_format", path = "../../../portable_replay/native/snapshot" }
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
+    # Win32_Graphics_Gdi is not referenced directly, but WNDCLASSW (used by
+    # capture_harness) is gated behind it in windows-sys because of its HBRUSH field.
     "Win32_Graphics_Gdi",
-    "Win32_Security",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",

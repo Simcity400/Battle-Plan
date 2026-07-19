@@ -51,6 +51,15 @@ struct MetadataRoute {
 pub enum SourceError {
     /// The recording could not be opened, read, or validated.
     Open(String),
+    /// The recording path does not exist. A sibling of [`SourceError::Open`]
+    /// (identical Display shape) typed so consumers can classify "not found"
+    /// without matching on error text.
+    NotFound(String),
+    /// The recording's manifest mod identity disagrees with its snapshot
+    /// provenance ([`snapshot::ContainerError::ModsetMismatch`]), typed through
+    /// so the product surface classifies a modset mismatch without string
+    /// matching across crate boundaries.
+    ModsetMismatch(String),
     /// The recording was recognized but this build cannot play it back.
     Unsupported(String),
     /// The store holds several games; pick one with [`open_recording_game`].
@@ -60,7 +69,11 @@ pub enum SourceError {
 impl std::fmt::Display for SourceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SourceError::Open(m) => write!(f, "open: {m}"),
+            // NotFound/ModsetMismatch keep the exact "open: ..." rendering the
+            // untyped Open produced, so every message contract holds verbatim.
+            SourceError::Open(m) | SourceError::NotFound(m) | SourceError::ModsetMismatch(m) => {
+                write!(f, "open: {m}")
+            }
             SourceError::Unsupported(m) => write!(f, "unsupported recording: {m}"),
             SourceError::MultipleGames(games) => write!(
                 f,
@@ -125,6 +138,23 @@ pub fn open_recording_game(
     open_recording_impl(path, Some(game_id))
 }
 
+/// Admit a neutral set of canonical snapshots that was fully folded before it
+/// crossed into the standalone replay layer.
+///
+/// This is intentionally a different boundary from [`open_recording`]. It does
+/// not accept H4CR bytes, a compact-stream cursor, or an extractor callback.
+/// Compact-only packages therefore remain fail-closed until an extractor-side
+/// producer has completed/certified the fold and supplied [`snapshot::PrefoldedReplay`].
+pub fn open_prefolded_replay(
+    replay: snapshot::PrefoldedReplay,
+) -> Result<Box<dyn ReplaySource>, SourceError> {
+    validate_index_schema_version(Some(replay.index().schema_version()))?;
+    Ok(Box::new(PrefoldedSource {
+        replay,
+        warnings: Vec::new(),
+    }))
+}
+
 fn open_recording_impl(
     path: &Path,
     requested_game: Option<&str>,
@@ -141,13 +171,22 @@ where
     F: FnOnce(&Store),
 {
     let store = if path.is_file() {
-        Store::open_replay(path, &ExpectedIdentity::default())
-            .map_err(|e| SourceError::Open(format!("open .battleplan: {e}")))?
+        Store::open_replay(path, &ExpectedIdentity::default()).map_err(|e| {
+            let message = format!("open .battleplan: {e}");
+            // Preserve the snapshot layer's typed modset mismatch across the
+            // adapter (no string matching): everything else stays Open.
+            match &e {
+                snapshot::LoadError::Container(snapshot::ContainerError::ModsetMismatch {
+                    ..
+                }) => SourceError::ModsetMismatch(message),
+                _ => SourceError::Open(message),
+            }
+        })?
     } else if path.is_dir() {
         Store::open_directory(path)
             .map_err(|e| SourceError::Open(format!("anchor directory store: {e}")))?
     } else {
-        return Err(SourceError::Open(format!(
+        return Err(SourceError::NotFound(format!(
             "path does not exist (expected a .battleplan file or a snapshot store directory): {}",
             path.display()
         )));
@@ -714,6 +753,45 @@ struct StoreSource {
     design_catalog: Option<Arc<crate::design_catalog::PortableDesignCatalog>>,
 }
 
+/// Neutral, immutable already-folded backend. The portable contract owns the
+/// index/entry identity checks; this adapter only projects each typed snapshot
+/// into replay_core's existing raw-frame boundary.
+struct PrefoldedSource {
+    replay: snapshot::PrefoldedReplay,
+    warnings: Vec<String>,
+}
+
+impl ReplaySource for PrefoldedSource {
+    fn game_id(&self) -> &str {
+        self.replay.index().game_id()
+    }
+
+    fn hours(&self) -> &[i64] {
+        self.replay.index().hours()
+    }
+
+    fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
+        let entry = self.replay.entry(hour_index).ok_or_else(|| {
+            SourceError::Open(format!(
+                "no prefolded snapshot for hour_index {hour_index} in game {:?}",
+                self.game_id()
+            ))
+        })?;
+        let snapshot = entry.snapshot();
+        Ok(RawFrame {
+            hour_index,
+            date: snapshot.date.clone(),
+            save_version: snapshot.save_version.clone(),
+            schema_version: snapshot.schema_version.clone(),
+            rest: snapshot.rest.clone(),
+        })
+    }
+}
+
 impl ReplaySource for StoreSource {
     fn game_id(&self) -> &str {
         &self.game_id
@@ -1002,6 +1080,89 @@ mod tests {
         } else {
             fs::write(game_dir.join("timeline.json"), br#"{"legacy":true}"#).unwrap();
         }
+    }
+
+    fn prefolded_entry(hour: i64, schema: &str) -> snapshot::PrefoldedHourEntry {
+        let bytes = serde_json::to_vec(&json!({
+            "game_id": "prefolded-game",
+            "schema_version": schema,
+            "hour_index": hour,
+            "date": "1936.1.1.12",
+            "save_version": "a729",
+            "countries": {"FRA": {"stability": 0.5}}
+        }))
+        .unwrap();
+        snapshot::PrefoldedHourEntry::from_json(hour, &bytes).unwrap()
+    }
+
+    #[test]
+    fn neutral_prefolded_hours_are_admitted_through_the_existing_frame_boundary() {
+        let replay = snapshot::PrefoldedReplay::try_new(
+            "prefolded-game",
+            Value::String("1".into()),
+            vec![prefolded_entry(10, "1"), prefolded_entry(12, "1")],
+        )
+        .unwrap();
+        let source = open_prefolded_replay(replay).unwrap();
+
+        assert_eq!(source.game_id(), "prefolded-game");
+        assert_eq!(source.hours(), &[10, 12]);
+        assert!(source.warnings().is_empty());
+        let frame = source.frame(12).unwrap();
+        assert_eq!(frame.hour_index, 12);
+        assert_eq!(frame.date.as_deref(), Some("1936.1.1.12"));
+        assert_eq!(frame.save_version.as_deref(), Some("a729"));
+        assert_eq!(frame.schema_version, Some(Value::String("1".into())));
+        assert_eq!(frame.rest["countries"]["FRA"]["stability"], json!(0.5));
+        assert!(source.frame(11).is_err());
+    }
+
+    #[test]
+    fn prefolded_admission_rejects_an_unsupported_schema_before_exposing_a_source() {
+        let replay = snapshot::PrefoldedReplay::try_new(
+            "prefolded-game",
+            Value::String("2".into()),
+            vec![prefolded_entry(10, "2")],
+        )
+        .unwrap();
+        assert!(matches!(
+            open_prefolded_replay(replay),
+            Err(SourceError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn raw_h4cr_compact_package_remains_fail_closed_at_the_file_boundary() {
+        let root = temp_root("raw_h4cr_stays_closed");
+        let game = root.join("g");
+        fs::create_dir_all(&game).unwrap();
+        fs::write(
+            game.join("index.json"),
+            br#"{"game_id":"g","schema_version":"1","snapshots":[]}"#,
+        )
+        .unwrap();
+        fs::write(
+            game.join("timeline.json"),
+            br#"{"format":"hoi4_compact_stream_timeline_v1","raw_stream_role":"collector_compact_stream"}"#,
+        )
+        .unwrap();
+        fs::write(game.join("collector_stream.bin"), b"H4CR").unwrap();
+
+        let error = match open_recording(&root) {
+            Err(error) => error,
+            Ok(_) => panic!("raw H4CR package must not enter replay_core directly"),
+        };
+        assert!(matches!(error, SourceError::Unsupported(_)));
+        let message = error.to_string();
+        assert!(message.contains("compact-stream-only"), "{message}");
+        assert!(message.contains("collector_compact_stream"), "{message}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn standalone_replay_manifest_has_no_extractor_dependency() {
+        let manifest = include_str!("../Cargo.toml").replace('\\', "/");
+        assert!(!manifest.contains("extractor/"), "{manifest}");
     }
 
     #[test]
@@ -2041,12 +2202,23 @@ fn production(root: &std::path::Path) {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let mut modules = discover_rust_sources("replay_core", &manifest_dir.join("src"))
             .expect("discover every replay_core production source");
+        // The REAL container/loader implementation replay_core links lives in
+        // portable_replay/native/snapshot (Cargo.toml: snapshot = portable);
+        // the extractor-side crate is only a re-export facade + bin tools, but
+        // is kept scanned so its bins stay covered too.
+        modules.extend(
+            discover_rust_sources(
+                "snapshot",
+                &manifest_dir.join("../../../portable_replay/native/snapshot/src"),
+            )
+            .expect("discover every portable snapshot production source"),
+        );
         modules.extend(
             discover_rust_sources(
                 "snapshot",
                 &manifest_dir.join("../../../extractor/native/snapshot/src"),
             )
-            .expect("discover every snapshot production source"),
+            .expect("discover every snapshot facade production source"),
         );
         let discovered = modules.len();
         let mut classified = 0;

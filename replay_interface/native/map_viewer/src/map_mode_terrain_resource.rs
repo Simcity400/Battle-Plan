@@ -176,8 +176,8 @@ fn iter_top_level_blocks(block: &str) -> Vec<(String, String)> {
 ///
 /// Reads only the `categories = { ... }` block (the graphical `terrain = { ... }`
 /// palette block is deliberately ignored). Each category's `color = { r g b }`
-/// becomes its map-mode fill RGB. Categories without a 3-component colour are
-/// skipped (fail-closed).
+/// becomes its map-mode fill RGB. Categories without a 3-component colour, or
+/// with any component out of range (> 255), are skipped (fail-closed).
 pub fn parse_terrain_category_colors(source: &str) -> Result<BTreeMap<String, [u8; 3]>> {
     let text = crate::strip_comments(source);
     let (inner, _) = crate::extract_block_after(&text, "categories", 0)
@@ -188,7 +188,7 @@ pub fn parse_terrain_category_colors(source: &str) -> Result<BTreeMap<String, [u
             continue;
         };
         let nums = crate::parse_u32s(&color_inner);
-        if nums.len() < 3 {
+        if nums.len() < 3 || nums[..3].iter().any(|v| *v > 255) {
             continue;
         }
         let rgb = [nums[0] as u8, nums[1] as u8, nums[2] as u8];
@@ -504,6 +504,21 @@ resources = {
         assert!(!colors.contains_key("terrain_0"));
         assert!(!colors.contains_key("ocean_15"));
         assert_eq!(colors.len(), 4);
+    }
+
+    #[test]
+    fn terrain_category_color_out_of_range_component_is_skipped() {
+        let snippet = r#"
+categories = {
+	bad = { color = { 300 10 10 } }
+	good = { color = { 10 20 30 } }
+}
+"#;
+        let colors = parse_terrain_category_colors(snippet).expect("parse");
+        // A component > 255 must skip the category (fail-closed), never wrap.
+        assert!(!colors.contains_key("bad"));
+        assert_eq!(colors.get("good"), Some(&[10u8, 20, 30]));
+        assert_eq!(colors.len(), 1);
     }
 
     #[test]

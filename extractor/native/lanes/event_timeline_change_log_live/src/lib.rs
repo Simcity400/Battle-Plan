@@ -2127,12 +2127,12 @@ mod tests {
         payload.extend_from_slice(&100_000u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&47u32.to_le_bytes());
-        payload.extend_from_slice(&0b11_1111u32.to_le_bytes());
-        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&0b11_0111u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1_350_000i32.to_le_bytes());
         append_compact_string(&mut payload, "portugal_focus");
         append_compact_string(&mut payload, "POR_industrial_focus");
-        append_compact_string(&mut payload, "POR_continuous_focus");
+        append_compact_string(&mut payload, "");
         payload.extend_from_slice(&47u32.to_le_bytes());
         append_compact_string(&mut payload, "POR_completed_focus");
         payload

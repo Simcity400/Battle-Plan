@@ -442,7 +442,21 @@ fn split_posteffect_blocks(
             }
             continue;
         }
-        if line.contains('}') {
+        // Per-line brace accounting on the comment-stripped line (same
+        // convention as parse_posteffect_volume_table in grading_law.rs).
+        let opens = line.matches('{').count();
+        let closes = line.matches('}').count();
+        if opens > closes {
+            // A nested sub-block would silently swallow every bloom key after
+            // it under the old `contains('}')` close rule; refuse instead.
+            return Err(format!(
+                "bloom chain blocked: posteffect_volumes.txt volume {} contains a nested block, \
+                 which this parser does not support",
+                current_name.as_deref().unwrap_or("<unnamed>")
+            )
+            .into());
+        }
+        if closes > opens {
             // Close the block; require a name.
             let name = current_name
                 .take()
@@ -451,13 +465,20 @@ fn split_posteffect_blocks(
             in_block = false;
             continue;
         }
-        if let Some(value) = strip_kv(line, "name") {
-            current_name = Some(value.to_string());
-            continue;
-        }
-        if let Some(value) = strip_kv(line, "inherit") {
-            current.inherit = Some(value.to_string());
-            continue;
+        // opens == closes: either a plain key/value line or an inline
+        // net-zero brace line (`foo = { 1 2 3 }`) — the latter is not a block
+        // terminator. `name`/`inherit` only make sense on brace-free lines; a
+        // bloom key with a brace value still fails closed below via the
+        // not-a-number parse error.
+        if opens == 0 {
+            if let Some(value) = strip_kv(line, "name") {
+                current_name = Some(value.to_string());
+                continue;
+            }
+            if let Some(value) = strip_kv(line, "inherit") {
+                current.inherit = Some(value.to_string());
+                continue;
+            }
         }
         for key in BLOOM_KEYS {
             if let Some(value) = strip_kv(line, key) {
@@ -991,6 +1012,44 @@ posteffect_values = {
         // The child inherits the parent's bloom keys since its own are commented.
         let default = parse_posteffect_volume(src, "default").unwrap();
         assert!((default["BLOOM_WIDTH"] - 1.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_posteffect_volume_refuses_nested_block() {
+        // A nested sub-block must be a typed refusal naming the volume, not a
+        // silent early close that drops the trailing bloom keys.
+        let src = "\
+posteffect_values = {
+    name = standard
+    BLOOM_WIDTH = 1.5
+    nested_table = {
+        foo = 1.0
+    }
+    BLOOM_SCALE = 0.9
+}
+";
+        let err = parse_posteffect_volume(src, "standard").unwrap_err();
+        assert!(err.to_string().contains("nested block"), "{err}");
+        assert!(err.to_string().contains("standard"), "{err}");
+    }
+
+    #[test]
+    fn parse_posteffect_volume_inline_brace_line_does_not_close_block() {
+        // An inline net-zero brace line (`foo = { 1 2 3 }`) is not a block
+        // terminator; bloom keys after it must still be read.
+        let src = "\
+posteffect_values = {
+    name = standard
+    fog_color = { 0.5 0.6 0.7 }
+    BLOOM_WIDTH = 1.5
+    BLOOM_SCALE = 0.9
+    BRIGHT_THRESHOLD = 0.9
+}
+";
+        let standard = parse_posteffect_volume(src, "standard").unwrap();
+        assert!((standard["BLOOM_WIDTH"] - 1.5).abs() < 1e-6);
+        assert!((standard["BLOOM_SCALE"] - 0.9).abs() < 1e-6);
+        assert!((standard["BRIGHT_THRESHOLD"] - 0.9).abs() < 1e-6);
     }
 
     #[test]

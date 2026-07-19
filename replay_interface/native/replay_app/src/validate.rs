@@ -114,26 +114,41 @@ pub fn open_and_validate(path: &Path) -> OpenOutcome {
 /// timeline for the selected-installation compatibility gate.
 pub fn open_timeline(path: &Path) -> Result<WorldTimeline, OpenOutcome> {
     let source = open_recording(path).map_err(classify_source_error)?;
-    WorldTimeline::open(source).map_err(|err| OpenOutcome::Rejected {
+    let timeline = WorldTimeline::open(source).map_err(|err| OpenOutcome::Rejected {
         kind: RejectionKind::Timeline,
         message: format!("recording opened but its timeline is unusable: {err}"),
-    })
+    })?;
+    validate_all_frame_payloads(&timeline)?;
+    Ok(timeline)
+}
+
+/// Verify every indexed snapshot payload before declaring a recording clean.
+/// Container open validates structure/identity, but lazy entry verification
+/// means a later SHA/CRC failure otherwise remains hidden until playback seeks
+/// that hour. The explicit validation commands and startup compatibility gate
+/// are certification surfaces, so they must reject the whole recording.
+fn validate_all_frame_payloads(timeline: &WorldTimeline) -> Result<(), OpenOutcome> {
+    for &hour in timeline.hours() {
+        timeline.frame(hour).map_err(|error| OpenOutcome::Rejected {
+            kind: RejectionKind::ContainerOrSchema,
+            message: format!(
+                "recording frame at canonical hour {hour} failed payload integrity/decode validation: {error}"
+            ),
+        })?;
+    }
+    Ok(())
 }
 
 fn classify_source_error(err: SourceError) -> OpenOutcome {
     let message = err.to_string();
+    // Total match on the TYPED error — no `.contains()` on error text. The
+    // wording of an underlying message can change freely without silently
+    // reclassifying a rejection (the modset/not-found signals are typed all the
+    // way from the snapshot crate).
     let kind = match &err {
-        SourceError::Open(inner) => {
-            if inner.contains("path does not exist") {
-                RejectionKind::NotFound
-            } else if inner.contains("disagrees with snapshot provenance.mod")
-                || inner.contains("modset")
-            {
-                RejectionKind::Modset
-            } else {
-                RejectionKind::ContainerOrSchema
-            }
-        }
+        SourceError::NotFound(_) => RejectionKind::NotFound,
+        SourceError::ModsetMismatch(_) => RejectionKind::Modset,
+        SourceError::Open(_) => RejectionKind::ContainerOrSchema,
         SourceError::Unsupported(_) => RejectionKind::Unsupported,
         SourceError::MultipleGames(_) => RejectionKind::MultipleGames,
     };
@@ -222,6 +237,99 @@ mod tests {
         open_and_validate(&root.join(rel))
             .summary()
             .contains(needle)
+    }
+
+    #[test]
+    fn classification_is_typed_not_string_matched() {
+        // A malformed-modset MANIFEST message (produced by replay_core's
+        // recorder-manifest validation) contains the word "modset" but is a
+        // container/schema malformation, not a modset MISMATCH: only the typed
+        // variant may classify as Modset.
+        let malformed = classify_source_error(SourceError::Open(
+            "recorder manifest \"session.json\" modset is missing or not an object".into(),
+        ));
+        match malformed {
+            OpenOutcome::Rejected { kind, .. } => {
+                assert_eq!(kind, RejectionKind::ContainerOrSchema)
+            }
+            OpenOutcome::Opened(_) => unreachable!(),
+        }
+
+        let mismatch = classify_source_error(SourceError::ModsetMismatch(
+            "open .battleplan: container: container rejected: manifest modset_id \"a\" disagrees with snapshot provenance.mod \"b\"".into(),
+        ));
+        match mismatch {
+            OpenOutcome::Rejected { kind, message } => {
+                assert_eq!(kind, RejectionKind::Modset);
+                assert!(message.contains("disagrees with snapshot provenance.mod"));
+            }
+            OpenOutcome::Opened(_) => unreachable!(),
+        }
+
+        let not_found = classify_source_error(SourceError::NotFound(
+            "path does not exist (expected a .battleplan file or a snapshot store directory): x"
+                .into(),
+        ));
+        match not_found {
+            OpenOutcome::Rejected { kind, .. } => assert_eq!(kind, RejectionKind::NotFound),
+            OpenOutcome::Opened(_) => unreachable!(),
+        }
+    }
+
+    struct LazyIntegrityFailureSource {
+        hours: Vec<i64>,
+    }
+
+    impl replay_core::ReplaySource for LazyIntegrityFailureSource {
+        fn game_id(&self) -> &str {
+            "lazy-integrity-failure"
+        }
+
+        fn hours(&self) -> &[i64] {
+            &self.hours
+        }
+
+        fn warnings(&self) -> &[String] {
+            &[]
+        }
+
+        fn frame(
+            &self,
+            hour_index: i64,
+        ) -> std::result::Result<replay_core::RawFrame, replay_core::SourceError> {
+            if hour_index == 7 {
+                return Err(replay_core::SourceError::Open(
+                    "snapshot sha256 mismatch at lazy payload read".into(),
+                ));
+            }
+            Ok(replay_core::RawFrame {
+                hour_index,
+                date: None,
+                save_version: None,
+                schema_version: None,
+                rest: Default::default(),
+            })
+        }
+    }
+
+    #[test]
+    fn exhaustive_validation_rejects_a_lazy_midstream_sha_mismatch() {
+        let timeline = WorldTimeline::open(Box::new(LazyIntegrityFailureSource {
+            hours: vec![5, 6, 7, 8],
+        }))
+        .expect("timeline index opens before lazy payload read");
+        let outcome = match validate_all_frame_payloads(&timeline) {
+            Err(outcome) => outcome,
+            Ok(()) => panic!("lazy SHA mismatch must reject validation"),
+        };
+        match outcome {
+            OpenOutcome::Rejected { kind, message } => {
+                assert_eq!(kind, RejectionKind::ContainerOrSchema);
+                assert!(message.contains("canonical hour 7"), "{message}");
+                assert!(message.contains("sha256 mismatch"), "{message}");
+            }
+            OpenOutcome::Opened(_) => panic!("integrity failure cannot open"),
+        }
     }
 
     #[test]

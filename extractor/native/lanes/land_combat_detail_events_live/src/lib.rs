@@ -14,10 +14,11 @@ pub const DOMAIN_LAND_COMBAT_DETAIL_EVENTS_NAME: &str = "land_combat_detail_even
 // rows, extending the header with a side-detail count. v1 payloads (no side
 // detail) remain decodable: a v1 header omits the trailing count field, so the
 // version gate selects the header/parse shape (never a payload-byte sniff).
-pub const SCHEMA_VERSION: u16 = 4;
+pub const SCHEMA_VERSION: u16 = 5;
 pub const SCHEMA_VERSION_V1_NO_SIDE_DETAIL: u16 = 1;
 pub const SCHEMA_VERSION_V2_SIDE_DETAIL: u16 = 2;
 pub const SCHEMA_VERSION_V3_ATTRIBUTION: u16 = 3;
+pub const SCHEMA_VERSION_V4_TACTIC_PROGRESS: u16 = 4;
 /// v1 header (event rows only). Kept for decoding older streams.
 pub const PAYLOAD_HEADER_LEN_V1: usize = 28;
 /// v2 header adds a u32 side_detail_row_count after the event-row count block.
@@ -25,7 +26,9 @@ pub const PAYLOAD_HEADER_LEN_V2: usize = 32;
 /// v3/v4 header adds a u32 attribution_row_count after the side-detail count.
 /// In v4 the existing string_count word describes the canonical tactic string
 /// table appended after all fixed rows.
-pub const PAYLOAD_HEADER_LEN: usize = 36;
+pub const PAYLOAD_HEADER_LEN_V4: usize = 36;
+/// v5 appends the exact reserve-member row count after attribution_row_count.
+pub const PAYLOAD_HEADER_LEN: usize = 40;
 pub const DETAIL_EVENT_ROW_LEN: usize = 52;
 
 // --- Per-side combat DETAIL row (E2, CCombatSide scalars) -----------------
@@ -70,6 +73,9 @@ pub const SIDE_DETAIL_FLAG_COUNTS_INCOMPLETE: u32 = 1 << 5;
 pub const SIDE_DETAIL_FLAG_PROGRESS_PRESENT: u32 = 1 << 6;
 pub const SIDE_DETAIL_FLAG_TACTIC_KNOWN: u32 = 1 << 7;
 pub const SIDE_DETAIL_FLAG_TACTIC_PRESENT: u32 = 1 << 8;
+/// Schema v5 proves that the reserve-member vector was read stably. When this
+/// bit is absent, reserve_member_rows are unknown rather than known-empty.
+pub const SIDE_DETAIL_FLAG_RESERVE_MEMBERS_KNOWN: u32 = 1 << 9;
 pub const SIDE_DETAIL_KNOWN_FLAG_MASK: u32 = SIDE_DETAIL_FLAG_ATTACKER
     | SIDE_DETAIL_FLAG_DEFENDER
     | SIDE_DETAIL_FLAG_SIDE_VALIDATED
@@ -78,7 +84,8 @@ pub const SIDE_DETAIL_KNOWN_FLAG_MASK: u32 = SIDE_DETAIL_FLAG_ATTACKER
     | SIDE_DETAIL_FLAG_COUNTS_INCOMPLETE
     | SIDE_DETAIL_FLAG_PROGRESS_PRESENT
     | SIDE_DETAIL_FLAG_TACTIC_KNOWN
-    | SIDE_DETAIL_FLAG_TACTIC_PRESENT;
+    | SIDE_DETAIL_FLAG_TACTIC_PRESENT
+    | SIDE_DETAIL_FLAG_RESERVE_MEMBERS_KNOWN;
 
 /// Sanity ceiling on a fixed-point damage accumulator (±~9.2e12 raw = ±92M
 /// after the /1e5 scale — generous for a single combat, still rejects garbage).
@@ -148,6 +155,20 @@ pub const MAX_DETAIL_EVENT_ROWS: usize = 4_000 * (4 * MAX_SIDE_UNITS + 1);
 /// Two sides per combat; bound the side-detail family the same as MAX_LAND_COMBATS.
 pub const MAX_LAND_COMBATS_SIDE_DETAIL: usize = 8_000;
 pub const MAX_LAND_COMBATS_ATTRIBUTION: usize = 32_000;
+pub const MAX_LAND_COMBATS_RESERVE_MEMBERS: usize = 8_000 * MAX_SIDE_UNITS;
+
+/// Exact reserve identity, read from CCombatSide's reserve vector (+0xE0/+0xEC).
+/// Layout: combat_id u32 | generation u64 | side u32 | flags u32 |
+/// ordinal u32 | division_id u32 | reserved u32.
+pub const RESERVE_MEMBER_ROW_LEN: usize = 32;
+pub const RESERVE_MEMBER_FLAG_ATTACKER: u32 = 1 << 0;
+pub const RESERVE_MEMBER_FLAG_DEFENDER: u32 = 1 << 1;
+pub const RESERVE_MEMBER_FLAG_SIDE_VALIDATED: u32 = 1 << 2;
+pub const RESERVE_MEMBER_FLAG_VECTOR_STABLE: u32 = 1 << 3;
+pub const RESERVE_MEMBER_KNOWN_FLAG_MASK: u32 = RESERVE_MEMBER_FLAG_ATTACKER
+    | RESERVE_MEMBER_FLAG_DEFENDER
+    | RESERVE_MEMBER_FLAG_SIDE_VALIDATED
+    | RESERVE_MEMBER_FLAG_VECTOR_STABLE;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CombatSide {
@@ -212,6 +233,9 @@ pub struct SideDetailRow {
     pub generation: u64,
     pub side: CombatSide,
     pub detail: SideDetail,
+    /// Whether the matching reserve-member vector passed the stable container
+    /// read. False is unavailable, not known-empty.
+    pub reserve_members_known: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -229,6 +253,16 @@ pub struct AttributionRow {
     pub entry: AttributionEntry,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReserveMemberRow {
+    pub combat_id: u32,
+    pub generation: u64,
+    pub side: CombatSide,
+    /// Stable engine-vector order. Consumers must not infer battle position.
+    pub ordinal: u32,
+    pub division_id: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LandCombatSnapshot {
     pub combat_id: u32,
@@ -244,6 +278,10 @@ pub struct LandCombatSnapshot {
     pub defender_detail: Option<SideDetail>,
     pub attacker_attribution: Vec<AttributionEntry>,
     pub defender_attribution: Vec<AttributionEntry>,
+    /// Exact reserve identities from the side reserve vector. None means the
+    /// vector did not pass the stable container/partition validation.
+    pub attacker_reserve_divisions: Option<Vec<u32>>,
+    pub defender_reserve_divisions: Option<Vec<u32>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -273,6 +311,7 @@ pub struct GateSummary {
     pub unclassified_rows: u64,
     pub side_detail_rows: u64,
     pub attribution_rows: u64,
+    pub reserve_member_rows: u64,
     pub domains_seen: BTreeSet<u16>,
     pub status_flags_or: u32,
 }
@@ -538,6 +577,8 @@ pub struct CaptureFrame {
     pub side_detail_rows: Vec<SideDetailRow>,
     /// E5: per-side current-state damage attribution rows.
     pub attribution_rows: Vec<AttributionRow>,
+    /// X2b: exact reserve division identities in stable engine-vector order.
+    pub reserve_member_rows: Vec<ReserveMemberRow>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -578,12 +619,14 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
         // rebaseline frame — the fold needs the live scalars every hour.
         let side_detail_rows = side_detail_rows_from_snapshots(&current);
         let attribution_rows = attribution_rows_from_snapshots(&current);
-        let payload = encode_detail_events_payload_v4(
+        let reserve_member_rows = reserve_member_rows_from_snapshots(&current);
+        let payload = encode_detail_events_payload_v5(
             elapsed_wall_ms,
             STATUS_DELTA_DATA | STATUS_PARTIAL_DATA | STATUS_TRANSITION_BASELINE_RESET,
             &[],
             &side_detail_rows,
             &attribution_rows,
+            &reserve_member_rows,
         );
         let mut compact_stream = Vec::new();
         append_compact_record(
@@ -603,6 +646,7 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
             rows: Vec::new(),
             side_detail_rows,
             attribution_rows,
+            reserve_member_rows,
         });
     }
     let frame = build_transition_capture_frame(
@@ -629,6 +673,7 @@ pub fn side_detail_rows_from_snapshots(current: &[LandCombatSnapshot]) -> Vec<Si
                 generation: snapshot.generation,
                 side: CombatSide::Attacker,
                 detail,
+                reserve_members_known: snapshot.attacker_reserve_divisions.is_some(),
             });
         }
         if let Some(detail) = snapshot.defender_detail.clone() {
@@ -637,6 +682,7 @@ pub fn side_detail_rows_from_snapshots(current: &[LandCombatSnapshot]) -> Vec<Si
                 generation: snapshot.generation,
                 side: CombatSide::Defender,
                 detail,
+                reserve_members_known: snapshot.defender_reserve_divisions.is_some(),
             });
         }
     }
@@ -666,6 +712,35 @@ pub fn attribution_rows_from_snapshots(current: &[LandCombatSnapshot]) -> Vec<At
     rows
 }
 
+pub fn reserve_member_rows_from_snapshots(current: &[LandCombatSnapshot]) -> Vec<ReserveMemberRow> {
+    let mut rows = Vec::new();
+    for snapshot in current {
+        for (side, members) in [
+            (
+                CombatSide::Attacker,
+                snapshot.attacker_reserve_divisions.as_ref(),
+            ),
+            (
+                CombatSide::Defender,
+                snapshot.defender_reserve_divisions.as_ref(),
+            ),
+        ] {
+            if let Some(members) = members {
+                for (ordinal, division_id) in members.iter().copied().enumerate() {
+                    rows.push(ReserveMemberRow {
+                        combat_id: snapshot.combat_id,
+                        generation: snapshot.generation,
+                        side,
+                        ordinal: ordinal as u32,
+                        division_id,
+                    });
+                }
+            }
+        }
+    }
+    rows
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedDetailEventsPayload {
     pub elapsed_wall_ms: u64,
@@ -675,6 +750,8 @@ pub struct DecodedDetailEventsPayload {
     pub side_detail_rows: Vec<SideDetailRow>,
     /// E5: per-side current-state damage attribution rows (empty before v3).
     pub attribution_rows: Vec<AttributionRow>,
+    /// X2b: exact reserve identities (empty before v5).
+    pub reserve_member_rows: Vec<ReserveMemberRow>,
 }
 
 pub fn build_transition_capture_frame(
@@ -687,12 +764,14 @@ pub fn build_transition_capture_frame(
     let rows = build_detail_event_rows(previous, current)?;
     let side_detail_rows = side_detail_rows_from_snapshots(current);
     let attribution_rows = attribution_rows_from_snapshots(current);
-    let payload = encode_detail_events_payload_v4(
+    let reserve_member_rows = reserve_member_rows_from_snapshots(current);
+    let payload = encode_detail_events_payload_v5(
         elapsed_wall_ms,
         STATUS_DELTA_DATA,
         &rows,
         &side_detail_rows,
         &attribution_rows,
+        &reserve_member_rows,
     );
     let mut compact_stream = Vec::new();
     append_compact_record(
@@ -709,6 +788,7 @@ pub fn build_transition_capture_frame(
         rows,
         side_detail_rows,
         attribution_rows,
+        reserve_member_rows,
     })
 }
 
@@ -826,7 +906,7 @@ pub fn encode_detail_events_payload_v3(
     attribution_rows: &[AttributionRow],
 ) -> Vec<u8> {
     let mut payload = Vec::with_capacity(
-        PAYLOAD_HEADER_LEN
+        PAYLOAD_HEADER_LEN_V4
             + rows.len() * DETAIL_EVENT_ROW_LEN
             + side_detail_rows.len() * SIDE_DETAIL_ROW_LEN_V3
             + attribution_rows.len() * ATTRIBUTION_ROW_LEN,
@@ -869,13 +949,13 @@ pub fn encode_detail_events_payload_v4(
         .collect::<BTreeMap<_, _>>();
     let string_bytes = strings.iter().map(|s| 4 + s.len()).sum::<usize>();
     let mut payload = Vec::with_capacity(
-        PAYLOAD_HEADER_LEN
+        PAYLOAD_HEADER_LEN_V4
             + rows.len() * DETAIL_EVENT_ROW_LEN
             + side_detail_rows.len() * SIDE_DETAIL_ROW_LEN
             + attribution_rows.len() * ATTRIBUTION_ROW_LEN
             + string_bytes,
     );
-    payload.extend_from_slice(&SCHEMA_VERSION.to_le_bytes());
+    payload.extend_from_slice(&SCHEMA_VERSION_V4_TACTIC_PROGRESS.to_le_bytes());
     payload.extend_from_slice(&(DETAIL_EVENT_ROW_LEN as u16).to_le_bytes());
     payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
     payload.extend_from_slice(&status_flags.to_le_bytes());
@@ -888,10 +968,65 @@ pub fn encode_detail_events_payload_v4(
     payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
     append_event_rows(&mut payload, rows);
     for row in side_detail_rows {
-        append_side_detail_row(&mut payload, row, &string_indices);
+        append_side_detail_row(&mut payload, row, &string_indices, false);
     }
     for row in attribution_rows {
         append_attribution_row(&mut payload, row);
+    }
+    for value in strings {
+        payload.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        payload.extend_from_slice(value.as_bytes());
+    }
+    payload
+}
+
+/// v5 production encoder: v4 tactic/progress + exact reserve identities.
+pub fn encode_detail_events_payload_v5(
+    elapsed_wall_ms: u64,
+    status_flags: u32,
+    rows: &[DetailEventRow],
+    side_detail_rows: &[SideDetailRow],
+    attribution_rows: &[AttributionRow],
+    reserve_member_rows: &[ReserveMemberRow],
+) -> Vec<u8> {
+    let strings = canonical_tactic_strings(side_detail_rows);
+    let string_indices = strings
+        .iter()
+        .enumerate()
+        .map(|(index, value)| (value.as_str(), index as u32))
+        .collect::<BTreeMap<_, _>>();
+    let string_bytes = strings.iter().map(|s| 4 + s.len()).sum::<usize>();
+    let mut payload = Vec::with_capacity(
+        PAYLOAD_HEADER_LEN
+            + rows.len() * DETAIL_EVENT_ROW_LEN
+            + side_detail_rows.len() * SIDE_DETAIL_ROW_LEN
+            + attribution_rows.len() * ATTRIBUTION_ROW_LEN
+            + reserve_member_rows.len() * RESERVE_MEMBER_ROW_LEN
+            + string_bytes,
+    );
+    payload.extend_from_slice(&SCHEMA_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(DETAIL_EVENT_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+    payload.extend_from_slice(&status_flags.to_le_bytes());
+    payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    payload.extend_from_slice(&(strings.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    payload
+        .extend_from_slice(&(side_detail_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    payload
+        .extend_from_slice(&(attribution_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    payload.extend_from_slice(
+        &(reserve_member_rows.len().min(u32::MAX as usize) as u32).to_le_bytes(),
+    );
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    append_event_rows(&mut payload, rows);
+    for row in side_detail_rows {
+        append_side_detail_row(&mut payload, row, &string_indices, true);
+    }
+    for row in attribution_rows {
+        append_attribution_row(&mut payload, row);
+    }
+    for row in reserve_member_rows {
+        append_reserve_member_row(&mut payload, row);
     }
     for value in strings {
         payload.extend_from_slice(&(value.len() as u32).to_le_bytes());
@@ -972,6 +1107,7 @@ fn append_side_detail_row(
     payload: &mut Vec<u8>,
     row: &SideDetailRow,
     string_indices: &BTreeMap<&str, u32>,
+    emit_reserve_authority: bool,
 ) {
     assert!(
         row.detail.progress_raw.is_some(),
@@ -999,6 +1135,9 @@ fn append_side_detail_row(
     }
     if row.detail.tactic.is_some() {
         flags |= SIDE_DETAIL_FLAG_TACTIC_PRESENT;
+    }
+    if emit_reserve_authority && row.reserve_members_known {
+        flags |= SIDE_DETAIL_FLAG_RESERVE_MEMBERS_KNOWN;
     }
     payload.extend_from_slice(&row.combat_id.to_le_bytes());
     payload.extend_from_slice(&row.generation.to_le_bytes());
@@ -1045,6 +1184,26 @@ fn append_attribution_row(payload: &mut Vec<u8>, row: &AttributionRow) {
     payload.extend_from_slice(&row.entry.dealer_tag_db_id.to_le_bytes());
     payload.extend_from_slice(&row.entry.victim_tag_db_id.to_le_bytes());
     payload.extend_from_slice(&row.entry.damage_raw.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+}
+
+fn append_reserve_member_row(payload: &mut Vec<u8>, row: &ReserveMemberRow) {
+    assert!(row.combat_id > 0 && row.combat_id <= MAX_COMBAT_ID);
+    assert!(row.generation > 0);
+    assert!(row.division_id > 0 && row.division_id <= MAX_DIVISION_ID);
+    assert!(row.ordinal < MAX_SIDE_UNITS as u32);
+    let flags = RESERVE_MEMBER_FLAG_SIDE_VALIDATED
+        | RESERVE_MEMBER_FLAG_VECTOR_STABLE
+        | match row.side {
+            CombatSide::Attacker => RESERVE_MEMBER_FLAG_ATTACKER,
+            CombatSide::Defender => RESERVE_MEMBER_FLAG_DEFENDER,
+        };
+    payload.extend_from_slice(&row.combat_id.to_le_bytes());
+    payload.extend_from_slice(&row.generation.to_le_bytes());
+    payload.extend_from_slice(&row.side.wire_id().to_le_bytes());
+    payload.extend_from_slice(&flags.to_le_bytes());
+    payload.extend_from_slice(&row.ordinal.to_le_bytes());
+    payload.extend_from_slice(&row.division_id.to_le_bytes());
     payload.extend_from_slice(&0u32.to_le_bytes());
 }
 
@@ -1277,6 +1436,7 @@ pub fn result_json(gate: &GateResult) -> String {
             "  \"unclassified_rows\": {},\n",
             "  \"side_detail_rows\": {},\n",
             "  \"attribution_rows\": {},\n",
+            "  \"reserve_member_rows\": {},\n",
             "  \"status_flags_or\": {}\n",
             "}}\n"
         ),
@@ -1292,6 +1452,7 @@ pub fn result_json(gate: &GateResult) -> String {
         gate.summary.unclassified_rows,
         gate.summary.side_detail_rows,
         gate.summary.attribution_rows,
+        gate.summary.reserve_member_rows,
         gate.summary.status_flags_or
     )
 }
@@ -1303,59 +1464,82 @@ pub fn decode_detail_events_payload(
     let mut errors = Vec::new();
     // The version selects the header/parse shape (framing-level, never a
     // payload-byte sniff). v1 = events only, v2 = side detail, v3 = side detail
-    // plus damage attribution, v4 = exact side progress and tactic identity.
+    // plus damage attribution, v4 = exact side progress and tactic identity,
+    // v5 = exact reserve-member identities.
     if payload.len() < 4 {
         return Err(vec![format!("offset {offset}: detail payload too short")]);
     }
     let version = read_u16(payload, 0);
-    let (header_len, side_detail_row_count, attribution_row_count, side_detail_row_len) =
-        match version {
-            SCHEMA_VERSION_V1_NO_SIDE_DETAIL => (PAYLOAD_HEADER_LEN_V1, 0usize, 0usize, 0usize),
-            SCHEMA_VERSION_V2_SIDE_DETAIL => {
-                if payload.len() < PAYLOAD_HEADER_LEN_V2 {
-                    return Err(vec![format!(
-                        "offset {offset}: detail v2 payload too short"
-                    )]);
-                }
-                (
-                    PAYLOAD_HEADER_LEN_V2,
-                    read_u32(payload, 24) as usize,
-                    0usize,
-                    SIDE_DETAIL_ROW_LEN_V3,
-                )
-            }
-            SCHEMA_VERSION_V3_ATTRIBUTION => {
-                if payload.len() < PAYLOAD_HEADER_LEN {
-                    return Err(vec![format!(
-                        "offset {offset}: detail v3 payload too short"
-                    )]);
-                }
-                (
-                    PAYLOAD_HEADER_LEN,
-                    read_u32(payload, 24) as usize,
-                    read_u32(payload, 28) as usize,
-                    SIDE_DETAIL_ROW_LEN_V3,
-                )
-            }
-            SCHEMA_VERSION => {
-                if payload.len() < PAYLOAD_HEADER_LEN {
-                    return Err(vec![format!(
-                        "offset {offset}: detail v4 payload too short"
-                    )]);
-                }
-                (
-                    PAYLOAD_HEADER_LEN,
-                    read_u32(payload, 24) as usize,
-                    read_u32(payload, 28) as usize,
-                    SIDE_DETAIL_ROW_LEN,
-                )
-            }
-            other => {
+    let (
+        header_len,
+        side_detail_row_count,
+        attribution_row_count,
+        reserve_member_row_count,
+        side_detail_row_len,
+    ) = match version {
+        SCHEMA_VERSION_V1_NO_SIDE_DETAIL => (PAYLOAD_HEADER_LEN_V1, 0usize, 0usize, 0usize, 0usize),
+        SCHEMA_VERSION_V2_SIDE_DETAIL => {
+            if payload.len() < PAYLOAD_HEADER_LEN_V2 {
                 return Err(vec![format!(
-                    "offset {offset}: detail schema version {other} unsupported"
+                    "offset {offset}: detail v2 payload too short"
                 )]);
             }
-        };
+            (
+                PAYLOAD_HEADER_LEN_V2,
+                read_u32(payload, 24) as usize,
+                0usize,
+                0usize,
+                SIDE_DETAIL_ROW_LEN_V3,
+            )
+        }
+        SCHEMA_VERSION_V3_ATTRIBUTION => {
+            if payload.len() < PAYLOAD_HEADER_LEN_V4 {
+                return Err(vec![format!(
+                    "offset {offset}: detail v3 payload too short"
+                )]);
+            }
+            (
+                PAYLOAD_HEADER_LEN_V4,
+                read_u32(payload, 24) as usize,
+                read_u32(payload, 28) as usize,
+                0usize,
+                SIDE_DETAIL_ROW_LEN_V3,
+            )
+        }
+        SCHEMA_VERSION_V4_TACTIC_PROGRESS => {
+            if payload.len() < PAYLOAD_HEADER_LEN_V4 {
+                return Err(vec![format!(
+                    "offset {offset}: detail v4 payload too short"
+                )]);
+            }
+            (
+                PAYLOAD_HEADER_LEN_V4,
+                read_u32(payload, 24) as usize,
+                read_u32(payload, 28) as usize,
+                0usize,
+                SIDE_DETAIL_ROW_LEN,
+            )
+        }
+        SCHEMA_VERSION => {
+            if payload.len() < PAYLOAD_HEADER_LEN {
+                return Err(vec![format!(
+                    "offset {offset}: detail v5 payload too short"
+                )]);
+            }
+            (
+                PAYLOAD_HEADER_LEN,
+                read_u32(payload, 24) as usize,
+                read_u32(payload, 28) as usize,
+                read_u32(payload, 32) as usize,
+                SIDE_DETAIL_ROW_LEN,
+            )
+        }
+        other => {
+            return Err(vec![format!(
+                "offset {offset}: detail schema version {other} unsupported"
+            )]);
+        }
+    };
     if payload.len() < header_len {
         return Err(vec![format!("offset {offset}: detail payload too short")]);
     }
@@ -1389,7 +1573,9 @@ pub fn decode_detail_events_payload(
             "offset {offset}: transition baseline reset is not badged PARTIAL_DATA"
         ));
     }
-    if (version != SCHEMA_VERSION && string_count != 0) || reserved != 0 {
+    if (!matches!(version, SCHEMA_VERSION_V4_TACTIC_PROGRESS | SCHEMA_VERSION) && string_count != 0)
+        || reserved != 0
+    {
         errors.push(format!(
             "offset {offset}: detail payload header reserved/string fields nonzero"
         ));
@@ -1414,13 +1600,19 @@ pub fn decode_detail_events_payload(
             "offset {offset}: attribution_row_count {attribution_row_count} exceeds max"
         ));
     }
+    if reserve_member_row_count > MAX_LAND_COMBATS_RESERVE_MEMBERS {
+        errors.push(format!(
+            "offset {offset}: reserve_member_row_count {reserve_member_row_count} exceeds max"
+        ));
+    }
     if !errors.is_empty() {
         return Err(errors);
     }
     let fixed_len = header_len
         .saturating_add(row_count.saturating_mul(row_len))
         .saturating_add(side_detail_row_count.saturating_mul(side_detail_row_len))
-        .saturating_add(attribution_row_count.saturating_mul(ATTRIBUTION_ROW_LEN));
+        .saturating_add(attribution_row_count.saturating_mul(ATTRIBUTION_ROW_LEN))
+        .saturating_add(reserve_member_row_count.saturating_mul(RESERVE_MEMBER_ROW_LEN));
     if payload.len() < fixed_len {
         errors.push(format!(
             "offset {offset}: detail payload len {} shorter than fixed rows {fixed_len}",
@@ -1560,11 +1752,22 @@ pub fn decode_detail_events_payload(
         cursor += ATTRIBUTION_ROW_LEN;
     }
 
+    let mut reserve_member_rows = Vec::with_capacity(reserve_member_row_count);
+    let mut seen_reserve = BTreeSet::new();
+    for row_index in 0..reserve_member_row_count {
+        match decode_reserve_member_row(offset, row_index, payload, cursor, &mut seen_reserve) {
+            Ok(row) => reserve_member_rows.push(row),
+            Err(err) => errors.push(err),
+        }
+        cursor += RESERVE_MEMBER_ROW_LEN;
+    }
+
     validate_payload_referential_consistency(
         offset,
         &rows,
         &side_detail_rows,
         &attribution_rows,
+        &reserve_member_rows,
         &mut errors,
     );
 
@@ -1575,6 +1778,7 @@ pub fn decode_detail_events_payload(
             rows,
             side_detail_rows,
             attribution_rows,
+            reserve_member_rows,
         })
     } else {
         Err(errors)
@@ -1607,12 +1811,16 @@ fn decode_side_detail_row(
     let ground_damage_org_raw = read_i64(payload, cursor + 76);
     let prevented_damage_str_raw = read_i64(payload, cursor + 84);
     let prevented_damage_org_raw = read_i64(payload, cursor + 92);
-    let progress_raw = (schema_version == SCHEMA_VERSION).then(|| read_i32(payload, cursor + 100));
-    let tactic_id = (schema_version == SCHEMA_VERSION).then(|| read_i32(payload, cursor + 104));
-    let tactic_token_index = (schema_version == SCHEMA_VERSION)
+    let has_tactic_progress = matches!(
+        schema_version,
+        SCHEMA_VERSION_V4_TACTIC_PROGRESS | SCHEMA_VERSION
+    );
+    let progress_raw = has_tactic_progress.then(|| read_i32(payload, cursor + 100));
+    let tactic_id = has_tactic_progress.then(|| read_i32(payload, cursor + 104));
+    let tactic_token_index = has_tactic_progress
         .then(|| read_u32(payload, cursor + 108))
         .unwrap_or(TACTIC_STRING_INDEX_NONE);
-    let tactic_name_index = (schema_version == SCHEMA_VERSION)
+    let tactic_name_index = has_tactic_progress
         .then(|| read_u32(payload, cursor + 112))
         .unwrap_or(TACTIC_STRING_INDEX_NONE);
 
@@ -1637,7 +1845,7 @@ fn decode_side_detail_row(
             "offset {offset}: side detail row {row_index} lacks side-validated flag"
         ));
     }
-    if schema_version == SCHEMA_VERSION {
+    if has_tactic_progress {
         if flags & SIDE_DETAIL_FLAG_PROGRESS_PRESENT == 0 {
             return Err(format!(
                 "offset {offset}: side detail row {row_index} lacks exact progress"
@@ -1750,6 +1958,7 @@ fn decode_side_detail_row(
         combat_id,
         generation,
         side,
+        reserve_members_known: flags & SIDE_DETAIL_FLAG_RESERVE_MEMBERS_KNOWN != 0,
         detail: SideDetail {
             units,
             committed,
@@ -1766,7 +1975,7 @@ fn decode_side_detail_row(
             prevented_damage_org_raw,
             progress_raw,
             tactic,
-            tactic_known: schema_version == SCHEMA_VERSION,
+            tactic_known: has_tactic_progress,
             counts_incomplete,
         },
     })
@@ -1785,6 +1994,7 @@ fn validate_payload_referential_consistency(
     rows: &[DetailEventRow],
     side_detail_rows: &[SideDetailRow],
     attribution_rows: &[AttributionRow],
+    reserve_member_rows: &[ReserveMemberRow],
     errors: &mut Vec<String>,
 ) {
     let mut metadata_by_combat = BTreeMap::new();
@@ -1794,7 +2004,7 @@ fn validate_payload_referential_consistency(
     let mut participant_identity = BTreeSet::new();
     let side_details = side_detail_rows
         .iter()
-        .map(|row| ((row.combat_id, row.generation, row.side), &row.detail))
+        .map(|row| ((row.combat_id, row.generation, row.side), row))
         .collect::<BTreeMap<_, _>>();
 
     for (row_index, row) in rows.iter().enumerate() {
@@ -1882,10 +2092,10 @@ fn validate_payload_referential_consistency(
             ));
         }
         if let Some(detail) = side_details.get(&(combat_id, generation, side)) {
-            if !detail.counts_incomplete && detail.units != set.new_count {
+            if !detail.detail.counts_incomplete && detail.detail.units != set.new_count {
                 errors.push(format!(
                     "offset {offset}: participant delta new count {} disagrees with side-detail units {} for combat {combat_id}:{generation}",
-                    set.new_count, detail.units
+                    set.new_count, detail.detail.units
                 ));
             }
         }
@@ -1899,6 +2109,135 @@ fn validate_payload_referential_consistency(
             ));
         }
     }
+
+    let mut reserve_counts = BTreeMap::<(u32, u64, CombatSide), usize>::new();
+    let mut reserve_identities = BTreeMap::<(u32, u64, CombatSide), BTreeSet<u32>>::new();
+    for row in reserve_member_rows {
+        let key = (row.combat_id, row.generation, row.side);
+        match side_details.get(&key) {
+            None => errors.push(format!(
+                "offset {offset}: reserve member for combat {}:{} has no matching side-detail row",
+                row.combat_id, row.generation
+            )),
+            Some(detail) if !detail.reserve_members_known => errors.push(format!(
+                "offset {offset}: reserve member for combat {}:{} is present without reserve-vector authority",
+                row.combat_id, row.generation
+            )),
+            Some(_) => {}
+        }
+        let count = reserve_counts.entry(key).or_default();
+        if row.ordinal as usize != *count {
+            errors.push(format!(
+                "offset {offset}: reserve member ordinal {} is not contiguous expected {} for combat {}:{}",
+                row.ordinal, *count, row.combat_id, row.generation
+            ));
+        }
+        *count += 1;
+        if !reserve_identities
+            .entry(key)
+            .or_default()
+            .insert(row.division_id)
+        {
+            errors.push(format!(
+                "offset {offset}: reserve division {} repeats for combat {}:{}",
+                row.division_id, row.combat_id, row.generation
+            ));
+        }
+    }
+    for (key, row) in side_details {
+        if row.detail.counts_incomplete || !row.reserve_members_known {
+            continue;
+        }
+        let actual = reserve_counts.get(&key).copied().unwrap_or(0);
+        if actual != row.detail.reserve as usize {
+            errors.push(format!(
+                "offset {offset}: reserve member count {actual} disagrees with side-detail reserve {} for combat {}:{}",
+                row.detail.reserve, key.0, key.1
+            ));
+        }
+    }
+}
+
+fn decode_reserve_member_row(
+    offset: usize,
+    row_index: usize,
+    payload: &[u8],
+    cursor: usize,
+    seen: &mut BTreeSet<(u32, u64, u32, u32, u32)>,
+) -> Result<ReserveMemberRow, String> {
+    let combat_id = read_u32(payload, cursor);
+    let generation = read_u64(payload, cursor + 4);
+    let side_wire = read_u32(payload, cursor + 12);
+    let flags = read_u32(payload, cursor + 16);
+    let ordinal = read_u32(payload, cursor + 20);
+    let division_id = read_u32(payload, cursor + 24);
+    let reserved = read_u32(payload, cursor + 28);
+    if combat_id == 0 || combat_id > MAX_COMBAT_ID || generation == 0 {
+        return Err(format!(
+            "offset {offset}: reserve member row {row_index} invalid combat identity"
+        ));
+    }
+    if division_id == 0 || division_id > MAX_DIVISION_ID || ordinal >= MAX_SIDE_UNITS as u32 {
+        return Err(format!(
+            "offset {offset}: reserve member row {row_index} invalid ordinal/division"
+        ));
+    }
+    if reserved != 0 || flags & !RESERVE_MEMBER_KNOWN_FLAG_MASK != 0 {
+        return Err(format!(
+            "offset {offset}: reserve member row {row_index} invalid flags/reserved"
+        ));
+    }
+    if flags & (RESERVE_MEMBER_FLAG_SIDE_VALIDATED | RESERVE_MEMBER_FLAG_VECTOR_STABLE)
+        != RESERVE_MEMBER_FLAG_SIDE_VALIDATED | RESERVE_MEMBER_FLAG_VECTOR_STABLE
+    {
+        return Err(format!(
+            "offset {offset}: reserve member row {row_index} lacks validation flags"
+        ));
+    }
+    let side = match side_wire {
+        SIDE_ATTACKER
+            if flags & (RESERVE_MEMBER_FLAG_ATTACKER | RESERVE_MEMBER_FLAG_DEFENDER)
+                == RESERVE_MEMBER_FLAG_ATTACKER =>
+        {
+            CombatSide::Attacker
+        }
+        SIDE_DEFENDER
+            if flags & (RESERVE_MEMBER_FLAG_ATTACKER | RESERVE_MEMBER_FLAG_DEFENDER)
+                == RESERVE_MEMBER_FLAG_DEFENDER =>
+        {
+            CombatSide::Defender
+        }
+        _ => {
+            return Err(format!(
+                "offset {offset}: reserve member row {row_index} side/flag mismatch"
+            ));
+        }
+    };
+    if !seen.insert((combat_id, generation, side_wire, ordinal, division_id)) {
+        return Err(format!(
+            "offset {offset}: reserve member row {row_index} duplicates identity"
+        ));
+    }
+    // An ID may appear only once per side even if a corrupt payload changes its ordinal.
+    if seen
+        .iter()
+        .filter(|(c, g, s, _, d)| {
+            *c == combat_id && *g == generation && *s == side_wire && *d == division_id
+        })
+        .count()
+        != 1
+    {
+        return Err(format!(
+            "offset {offset}: reserve member row {row_index} repeats division_id"
+        ));
+    }
+    Ok(ReserveMemberRow {
+        combat_id,
+        generation,
+        side,
+        ordinal,
+        division_id,
+    })
 }
 
 fn decode_attribution_row(
@@ -2019,7 +2358,8 @@ fn decode_detail_events_payload_into_summary(
         .rows
         .len()
         .saturating_add(decoded.side_detail_rows.len())
-        .saturating_add(decoded.attribution_rows.len());
+        .saturating_add(decoded.attribution_rows.len())
+        .saturating_add(decoded.reserve_member_rows.len());
     let authority = D55DataAuthority {
         elapsed_wall_ms: decoded.elapsed_wall_ms,
         status_flags: decoded.status_flags,
@@ -2032,6 +2372,9 @@ fn decode_detail_events_payload_into_summary(
     summary.attribution_rows = summary
         .attribution_rows
         .saturating_add(decoded.attribution_rows.len() as u64);
+    summary.reserve_member_rows = summary
+        .reserve_member_rows
+        .saturating_add(decoded.reserve_member_rows.len() as u64);
     for row in decoded.rows {
         match row.event_kind {
             EVENT_PHASE_STARTED => summary.phase_started_rows += 1,
@@ -2544,17 +2887,25 @@ mod tests {
         } else {
             0
         };
-        let attribution_rows = if version >= SCHEMA_VERSION && payload.len() >= PAYLOAD_HEADER_LEN {
-            read_u32(payload, 28)
-        } else {
-            0
-        };
+        let attribution_rows =
+            if version >= SCHEMA_VERSION_V3_ATTRIBUTION && payload.len() >= PAYLOAD_HEADER_LEN_V4 {
+                read_u32(payload, 28)
+            } else {
+                0
+            };
+        let reserve_member_rows =
+            if version >= SCHEMA_VERSION && payload.len() >= PAYLOAD_HEADER_LEN {
+                read_u32(payload, 32)
+            } else {
+                0
+            };
         (
             read_u64(payload, 4),
             read_u32(payload, 12),
             event_rows
                 .saturating_add(side_detail_rows)
-                .saturating_add(attribution_rows),
+                .saturating_add(attribution_rows)
+                .saturating_add(reserve_member_rows),
         )
     }
 
@@ -3528,6 +3879,8 @@ mod tests {
             defender_detail: None,
             attacker_attribution: Vec::new(),
             defender_attribution: Vec::new(),
+            attacker_reserve_divisions: None,
+            defender_reserve_divisions: None,
         }
     }
 
@@ -3577,11 +3930,13 @@ mod tests {
             defender_detail,
             attacker_attribution: Vec::new(),
             defender_attribution: Vec::new(),
+            attacker_reserve_divisions: None,
+            defender_reserve_divisions: None,
         }
     }
 
     #[test]
-    fn side_detail_rows_roundtrip_through_v4_payload() {
+    fn side_detail_rows_roundtrip_through_v5_payload() {
         let att = sample_side_detail(2, 2);
         let def = sample_side_detail(2, 0);
         let current = vec![snapshot_with_detail(
@@ -3621,7 +3976,7 @@ mod tests {
     }
 
     #[test]
-    fn attribution_rows_roundtrip_through_v4_payload() {
+    fn attribution_rows_roundtrip_through_v5_payload() {
         let mut current = vec![snapshot_with_detail(
             21381,
             7,
@@ -3653,6 +4008,43 @@ mod tests {
     }
 
     #[test]
+    fn reserve_member_rows_roundtrip_with_known_empty_distinguished_from_unknown() {
+        let mut current = vec![snapshot_with_detail(
+            21_381,
+            7,
+            &[8001, 8002, 8003, 8004],
+            &[9001],
+            Some(sample_side_detail(2, 2)),
+            Some(sample_side_detail(1, 0)),
+        )];
+        current[0].attacker_reserve_divisions = Some(vec![8003, 8004]);
+        current[0].defender_reserve_divisions = Some(Vec::new());
+        let frame = build_transition_capture_frame(&[], &current, 1, 60_787_539, 1).unwrap();
+        assert_eq!(frame.reserve_member_rows.len(), 2);
+        let payload = &frame.compact_stream[COMPACT_RECORD_HEADER_LEN..];
+        assert_eq!(read_u16(payload, 0), SCHEMA_VERSION);
+        assert_eq!(read_u32(payload, 32), 2);
+        let decoded = decode_detail_events_payload(COMPACT_RECORD_HEADER_LEN, payload).unwrap();
+        assert_eq!(decoded.reserve_member_rows, frame.reserve_member_rows);
+        assert!(decoded
+            .side_detail_rows
+            .iter()
+            .all(|row| row.reserve_members_known));
+        let gate = gate_stream(&certify_lane_data_record(frame.compact_stream));
+        assert!(gate.ok, "{:?}", gate.errors);
+        assert_eq!(gate.summary.reserve_member_rows, 2);
+
+        let mut incomplete = current;
+        incomplete[0].attacker_reserve_divisions = Some(vec![8003]);
+        let frame = build_transition_capture_frame(&[], &incomplete, 1, 60_787_539, 1).unwrap();
+        let payload = &frame.compact_stream[COMPACT_RECORD_HEADER_LEN..];
+        assert!(decode_detail_events_payload(0, payload)
+            .unwrap_err()
+            .iter()
+            .any(|error| error.contains("reserve member count 1 disagrees")));
+    }
+
+    #[test]
     fn v3_payload_decodes_with_explicit_legacy_tactic_progress_authority() {
         let detail = sample_side_detail(2, 0);
         let rows = vec![SideDetailRow {
@@ -3660,6 +4052,7 @@ mod tests {
             generation: 7,
             side: CombatSide::Attacker,
             detail: detail.clone(),
+            reserve_members_known: false,
         }];
         let payload = encode_detail_events_payload_v3(1, STATUS_DELTA_DATA, &[], &rows, &[]);
         assert_eq!(read_u16(&payload, 0), SCHEMA_VERSION_V3_ATTRIBUTION);

@@ -14,8 +14,11 @@
 //! typed views the renderer keys off: owner/controller maps, per-POV province
 //! visibility set, spotted-unit set, and topbar bindings, PLUS the fail-closed
 //! render marker (`observer::FOW_NOT_LAW_CERTIFIED`). Each checkpoint is folded
-//! into a deterministic FNV-1a state hash; the gate is (a) the hash sequence is
-//! stable across independent runs and (b) the POV-vs-world diff is exactly the
+//! into a deterministic FNV-1a state hash; the gate is (a) the hash sequence
+//! matches the pinned golden values (`GOLDEN_CHECKPOINTS` /
+//! `GOLDEN_TOPBAR_SEQ`, harvested from the committed fixtures), (b) the
+//! sequence is stable across two intra-process passes (a secondary check for
+//! intra-process nondeterminism), and (c) the POV-vs-world diff is exactly the
 //! fixture's fogged set.
 //!
 //! POV expectations are derived from the fixture generator SOURCE
@@ -241,6 +244,49 @@ fn expected_eng_visible(tick: usize) -> BTreeSet<u32> {
 }
 
 // ---------------------------------------------------------------------------
+// Pinned golden hashes.
+//
+// Both tables were harvested by running these tests over the committed
+// fixtures (two independent `cargo test -p replay_app e2e_` processes agreed
+// bit-for-bit) and are stable by construction: the canonical string feeding
+// `fnv1a` is built exclusively from BTreeMap/BTreeSet iteration and explicit
+// `Leaf` variants. They change ONLY with a deliberate typed-view or encoding
+// change (owner/controller encoding, visibility levels, spotted-unit
+// encoding, topbar `Debug` format, `hour_index`, the render marker) or a
+// regenerated fixture. A failure against these constants means an encoded
+// surface drifted — update them only alongside the intentional change that
+// moved the surface, never to silence a regression.
+// ---------------------------------------------------------------------------
+
+/// Golden `(hour, world_hash, pov_hash)` triples for the four scrub
+/// checkpoints (ticks 0, 5, 7, 11) of `fx_pov_visibility.battleplan` in
+/// `e2e_pov_visibility_open_play_scrub_pov_toggle`.
+const GOLDEN_CHECKPOINTS: [(i64, u64, u64); 4] = [
+    (16959365, 17270081818805149942, 6144089801615558050),
+    (16959370, 6551351422545227256, 2012908130392971866),
+    (16959372, 8281673079917680402, 824996207530415716),
+    (16959376, 11448956550244400262, 8350529044689850136),
+];
+
+/// Golden per-hour world-view binding hashes for all 12 hours of
+/// `fx_topbar_scalars_sweep.battleplan` in
+/// `e2e_topbar_bindings_scrub_determinism`.
+const GOLDEN_TOPBAR_SEQ: [u64; 12] = [
+    1030756908451939210,
+    8665553265168108737,
+    1662992969762861364,
+    13491873224961300449,
+    17663076936305794374,
+    7409852304534700135,
+    11748552559880690602,
+    11783490699026290609,
+    4074798863296947044,
+    8412279651117543301,
+    12190563324056861979,
+    9200079622336996883,
+];
+
+// ---------------------------------------------------------------------------
 // The scripted G2 end-to-end run.
 // ---------------------------------------------------------------------------
 
@@ -309,12 +355,20 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
         record
     };
 
-    // 3. DETERMINISM: two independent passes produce identical hash sequences.
+    // 3. DETERMINISM: the hash sequence matches the pinned golden values
+    //    (cross-run/cross-build drift gate) AND two intra-process passes agree
+    //    (secondary check for intra-process nondeterminism).
     let pass_a = run_pass();
+    assert_eq!(
+        pass_a,
+        GOLDEN_CHECKPOINTS.to_vec(),
+        "checkpoint hash sequence must match the pinned golden values \
+         (an encoded surface drifted)"
+    );
     let pass_b = run_pass();
     assert_eq!(
         pass_a, pass_b,
-        "hash sequence must be deterministic across runs"
+        "hash sequence must be deterministic across passes"
     );
 
     // 4. POV-vs-world diff is the expected fogged set + toggle-back idempotence.
@@ -438,8 +492,9 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
 
 /// Companion gate for the topbar-binding surface: the topbar-scalar sweep
 /// fixture has no visibility domain, so it isolates the derived topbar bindings.
-/// Open → scrub every hour → the binding hash sequence is deterministic across
-/// runs AND every swept hour has a distinct binding (the surface updates).
+/// Open → scrub every hour → the binding hash sequence matches the pinned
+/// `GOLDEN_TOPBAR_SEQ`, is stable across two intra-process passes, AND every
+/// swept hour has a distinct binding (the surface updates).
 #[test]
 fn e2e_topbar_bindings_scrub_determinism() {
     let rel = "positive/fx_topbar_scalars_sweep.battleplan";
@@ -465,8 +520,14 @@ fn e2e_topbar_bindings_scrub_determinism() {
         seq
     };
     let a = run();
+    assert_eq!(
+        a,
+        GOLDEN_TOPBAR_SEQ.to_vec(),
+        "topbar hash sequence must match the pinned golden values \
+         (an encoded surface drifted)"
+    );
     let b = run();
-    assert_eq!(a, b, "topbar hash sequence deterministic across runs");
+    assert_eq!(a, b, "topbar hash sequence deterministic across passes");
     assert_ne!(
         a.first(),
         a.last(),

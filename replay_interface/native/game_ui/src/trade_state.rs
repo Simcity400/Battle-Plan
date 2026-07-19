@@ -7,12 +7,15 @@
 use crate::assets::AssetResolver;
 use crate::compose::{ComposeOptions, ComposeOutput, Compositor};
 use crate::gfx::SpriteRegistry;
-use crate::gui::{parse_measure, parse_measure_pair, GuiElement, LayoutSet, MeasurePair};
+use crate::gui::{GuiElement, LayoutSet};
+use crate::gui_scene_util::{
+    load_named_element, pair, prefix_element_names, promote_show_position, set_position_upper_left,
+};
 use crate::loc::Localisation;
-use crate::paradox_text::{parse_file, Value};
-use crate::{GameUiError, Result};
+use crate::paradox_text::Value;
+use crate::Result;
 use replay_core::{Leaf, ResourceTradeDealRow, TradeResourceRow, TradeView, ViewStatus};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const TRADE_RESOURCE_ORDER: [&str; 7] = [
     "oil",
@@ -430,7 +433,11 @@ pub fn build_trade_compose_scene(
     viewport_width: usize,
     viewport_height: usize,
 ) -> Result<TradeComposeScene> {
+    // The identical countrytradeview.gui document backs the root, every
+    // resource card, and every deal row: parse it once per scene.
+    let mut layout_cache: BTreeMap<String, LayoutSet> = BTreeMap::new();
     let mut country_trade = load_named_element(
+        &mut layout_cache,
         resolver,
         "interface/countrytradeview.gui",
         "countrytradeview",
@@ -456,11 +463,12 @@ pub fn build_trade_compose_scene(
                 for (index, _) in rows.iter().enumerate() {
                     let prefix = format!("xui15_resource_{index}_");
                     let mut element = load_named_element(
+                        &mut layout_cache,
                         resolver,
                         "interface/countrytradeview.gui",
                         "resources_info_entry",
                     )?;
-                    set_position(&mut element, 106 + index as i32 * 79, 193);
+                    set_position_upper_left(&mut element, 106 + index as i32 * 79, 193);
                     prefix_element_names(&mut element, &prefix);
                     children.push(element);
                 }
@@ -476,11 +484,12 @@ pub fn build_trade_compose_scene(
                 for (index, _) in rows.iter().enumerate() {
                     let prefix = format!("xui15_deal_{index}_");
                     let mut element = load_named_element(
+                        &mut layout_cache,
                         resolver,
                         "interface/countrytradeview.gui",
                         "country_trade_entry",
                     )?;
-                    set_position(&mut element, 9, 540 + index as i32 * 45);
+                    set_position_upper_left(&mut element, 9, 540 + index as i32 * 45);
                     prefix_element_names(&mut element, &prefix);
                     children.push(element);
                 }
@@ -613,41 +622,6 @@ fn set_text(options: &mut ComposeOptions, name: &str, value: impl Into<String>) 
         .insert(name.to_string(), value.into());
 }
 
-fn load_named_element(resolver: &AssetResolver, file: &str, name: &str) -> Result<GuiElement> {
-    let resolved = resolver.resolve_file(file)?;
-    let doc = parse_file(&resolved.path)?;
-    let mut layouts = LayoutSet::default();
-    layouts.add_document(&resolved.rel_path, &doc);
-    layouts
-        .find_by_name(name)
-        .into_iter()
-        .next()
-        .cloned()
-        .ok_or_else(|| GameUiError::missing(format!("{file}: element {name} not found")))
-}
-
-fn promote_show_position(element: &mut GuiElement) {
-    if let Some(position) = element
-        .raw
-        .first_value_ci("show_position")
-        .and_then(parse_measure_pair)
-    {
-        element.position = Some(position);
-    }
-}
-
-fn set_position(element: &mut GuiElement, x: i32, y: i32) {
-    element.position = Some(pair(x, y));
-    element.orientation = Some("UPPER_LEFT".to_string());
-}
-
-fn prefix_element_names(element: &mut GuiElement, prefix: &str) {
-    element.name = format!("{prefix}{}", element.name);
-    for child in &mut element.children {
-        prefix_element_names(child, prefix);
-    }
-}
-
 fn wrapper_root(width: usize, height: usize, children: Vec<GuiElement>) -> GuiElement {
     GuiElement {
         element_type: "containerWindowType".to_string(),
@@ -685,12 +659,5 @@ fn screen_unavailable_text(reason: TradeScreenUnavailable) -> &'static str {
         TradeScreenUnavailable::DomainAbsent => "TRADE DATA NOT RECORDED",
         TradeScreenUnavailable::DomainUnavailable => "TRADE DATA UNAVAILABLE FOR THIS HOUR",
         TradeScreenUnavailable::CountryAbsent => "COUNTRY TRADE DATA UNAVAILABLE",
-    }
-}
-
-fn pair(x: i32, y: i32) -> MeasurePair {
-    MeasurePair {
-        x: parse_measure(&x.to_string()),
-        y: parse_measure(&y.to_string()),
     }
 }

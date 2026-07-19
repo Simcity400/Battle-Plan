@@ -4,7 +4,7 @@
 //! This module supplies the remaining production boundary: every referenced
 //! game payload is reopened only through a validated effective-VFS admission,
 //! every D3D descriptor is reconstructed literally, and draw interleave is
-//! taken only from `RenderSubmit::ordered_draws`.
+//! taken only from the prepared frame's authoritative cross-family order.
 
 use std::collections::BTreeMap;
 use std::ffi::CString;
@@ -14,9 +14,8 @@ use std::ptr;
 use crate::GameFileResolver;
 use replay_core::{
     AdditionalShaderStage, AddressMode, BlendFactor, BlendOperation, BufferSource, Comparison,
-    ConstantBufferBinding, CullMode, DrawCommand, EntitySubmission, FillMode, Filter,
-    GeometryBinding, IndexFormat, ParticlePacket, PipelineDesc, PreparedRenderTarget,
-    PrimitiveTopology, RasterizerDesc, RenderOutputRef, RenderOutputState, RenderSubmit,
+    ConstantBufferBinding, CullMode, DrawCommand, FillMode, Filter, GeometryBinding, IndexFormat,
+    PipelineDesc, PreparedRenderTarget, PrimitiveTopology, RasterizerDesc, RenderOutputState,
     RenderTargetBlendDesc, SamplerDesc, ShaderProgram, ShaderResourceViewDesc, ShaderStage,
     StencilFaceDesc, StencilOperation, TextureBinding, TextureResourceDesc,
     TextureResourceDimension, TextureSubresourcePayload,
@@ -100,159 +99,6 @@ pub(super) struct PreparedTargetTexture {
     pub target: PreparedRenderTarget,
     pub producer: replay_core::RenderExecutionRef,
     pub resource: *mut ID3D11Resource,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SubmittedDrawStats {
-    pub particle_draws: usize,
-    pub entity_draws: usize,
-    pub direct_visual_joins: usize,
-    pub weather_joins: usize,
-}
-
-#[derive(Debug)]
-enum OrderedDraw<'a> {
-    Particle(&'a ParticlePacket),
-    Entity(&'a EntitySubmission),
-}
-
-/// Resolve the authoritative cross-family sequence without sorting or
-/// inference. `portable_render_stream` validation guarantees every submitted
-/// particle/entity appears exactly once; this lookup repeats the identity
-/// check at the execution boundary so malformed in-memory callers fail closed.
-fn ordered_draws<'a>(submit: &'a RenderSubmit) -> Result<Vec<OrderedDraw<'a>>> {
-    let mut out = Vec::with_capacity(submit.ordered_draws.len());
-    let mut seen_particles = vec![false; submit.particles.len()];
-    let mut seen_entities = vec![false; submit.entities.len()];
-    for draw in &submit.ordered_draws {
-        match draw {
-            RenderOutputRef::Particle {
-                effect_instance_id,
-                bucket,
-                packet_ordinal,
-                draw_order,
-            } => {
-                let (packet_index, packet) = submit
-                    .particles
-                    .iter()
-                    .enumerate()
-                    .find(|packet| {
-                        packet.1.effect_instance_id == *effect_instance_id
-                            && packet.1.bucket == *bucket
-                            && packet.1.packet_ordinal == *packet_ordinal
-                            && packet.1.draw_order == *draw_order
-                    })
-                    .ok_or("ordered particle draw references an absent packet")?;
-                if !mark_once(&mut seen_particles, packet_index) {
-                    return Err("ordered particle draw references the same packet twice".into());
-                }
-                out.push(OrderedDraw::Particle(packet));
-            }
-            RenderOutputRef::Entity {
-                pass_ordinal,
-                entity_instance_id,
-                draw_order,
-            } => {
-                let (entity_index, entity) = submit
-                    .entities
-                    .iter()
-                    .enumerate()
-                    .find(|entity| {
-                        entity.1.pass_ordinal == *pass_ordinal
-                            && entity.1.entity_instance_id == *entity_instance_id
-                            && entity.1.draw_order == *draw_order
-                    })
-                    .ok_or("ordered entity draw references an absent submission")?;
-                if !mark_once(&mut seen_entities, entity_index) {
-                    return Err("ordered entity draw references the same submission twice".into());
-                }
-                out.push(OrderedDraw::Entity(entity));
-            }
-        }
-    }
-    if seen_particles.iter().any(|seen| !seen) || seen_entities.iter().any(|seen| !seen) {
-        return Err("ordered draw list does not cover the complete submitted draw set".into());
-    }
-    Ok(out)
-}
-
-fn mark_once(seen: &mut [bool], index: usize) -> bool {
-    !std::mem::replace(&mut seen[index], true)
-}
-
-/// Execute the selected submit into an already prepared MainScene target.
-///
-/// # Safety
-/// `target` views must belong to `gfx.device`, remain alive for this call, and
-/// refer to the descriptors supplied alongside them.
-pub unsafe fn execute_submitted_draws(
-    gfx: &Gfx,
-    resolver: &GameFileResolver,
-    submit: &RenderSubmit,
-    target: &SubmittedMainSceneTarget,
-) -> Result<SubmittedDrawStats> {
-    if !resolver.has_content_admission() {
-        return Err("submitted draw execution requires validated effective-VFS admission".into());
-    }
-    let ordered = ordered_draws(submit)?;
-    let mut stream_output = StreamOutputBuffers::default();
-    let mut stats = SubmittedDrawStats {
-        direct_visual_joins: submit.direct_visuals.len(),
-        weather_joins: submit
-            .weather_membership
-            .iter()
-            .map(|row| row.ordered_weather_instances.len())
-            .sum(),
-        ..SubmittedDrawStats::default()
-    };
-    for draw in ordered {
-        match draw {
-            OrderedDraw::Particle(packet) => {
-                execute_draw(
-                    gfx,
-                    resolver,
-                    &submit.ordered_scene_constant_buffers,
-                    &packet.shader_program,
-                    &packet.ordered_texture_bindings,
-                    &packet.pipeline,
-                    &packet.geometry,
-                    &packet.ordered_constant_buffers,
-                    Some(&packet.ordered_gpu_instance_records),
-                    Vec::new(),
-                    &packet.output_state,
-                    target,
-                    &[],
-                    &mut stream_output,
-                )?;
-                stats.particle_draws += 1;
-            }
-            OrderedDraw::Entity(entity) => {
-                // Shader/material/mesh identity is a VFS admission gate even
-                // when the exact IA bytes are carried inline.
-                resolver
-                    .read_admitted_used_content(&entity.content_identity.resolved_entity_asset)?;
-                resolver.read_admitted_used_content(&entity.content_identity.mesh)?;
-                execute_draw(
-                    gfx,
-                    resolver,
-                    &submit.ordered_scene_constant_buffers,
-                    &entity.shader_program,
-                    &entity.ordered_texture_bindings,
-                    &entity.pipeline,
-                    &entity.geometry,
-                    &entity.ordered_constant_buffers,
-                    None,
-                    Vec::new(),
-                    &entity.output_state,
-                    target,
-                    &[],
-                    &mut stream_output,
-                )?;
-                stats.entity_draws += 1;
-            }
-        }
-    }
-    Ok(stats)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -407,25 +253,6 @@ unsafe fn execute_draw(
 #[derive(Default)]
 pub(super) struct StreamOutputBuffers {
     by_identity: BTreeMap<String, (u32, ComPtr<ID3D11Buffer>)>,
-}
-
-pub(super) unsafe fn execute_prepared_runtime_draw(
-    gfx: &Gfx,
-    resolver: &GameFileResolver,
-    scene_constant_buffers: &[ConstantBufferBinding],
-    draw: &crate::PreparedRuntimeDraw,
-    target: &SubmittedMainSceneTarget,
-    stream_output: &mut StreamOutputBuffers,
-) -> Result<()> {
-    execute_prepared_runtime_draw_mrt(
-        gfx,
-        resolver,
-        scene_constant_buffers,
-        draw,
-        target,
-        &[],
-        stream_output,
-    )
 }
 
 pub(super) unsafe fn execute_prepared_runtime_draw_mrt(
@@ -776,12 +603,39 @@ fn stream_output_layout(
     Ok((count, slots, offsets))
 }
 
+/// Draw-boundary admission for carried viewport/scissor state shared by every
+/// production bind path. The stream is validated at decode time, but the
+/// execution boundary re-checks in-memory callers so raw f32 bits can never
+/// hand the driver a non-finite or empty viewport, nor an inverted scissor.
+pub(super) fn validate_output_viewport_scissor(output: &RenderOutputState) -> Result<()> {
+    let viewport = [
+        f32::from_bits(output.viewport.top_left_x_f32_bits),
+        f32::from_bits(output.viewport.top_left_y_f32_bits),
+        f32::from_bits(output.viewport.width_f32_bits),
+        f32::from_bits(output.viewport.height_f32_bits),
+        f32::from_bits(output.viewport.min_depth_f32_bits),
+        f32::from_bits(output.viewport.max_depth_f32_bits),
+    ];
+    if !viewport.into_iter().all(f32::is_finite) || viewport[2] <= 0.0 || viewport[3] <= 0.0 {
+        return Err("portable viewport is non-finite or empty".into());
+    }
+    if let Some(scissor) = &output.scissor {
+        if scissor.right_i32 <= scissor.left_i32 || scissor.bottom_i32 <= scissor.top_i32 {
+            return Err("portable scissor is empty or inverted".into());
+        }
+    }
+    Ok(())
+}
+
 unsafe fn bind_output(
     gfx: &Gfx,
     output: &RenderOutputState,
     target: &SubmittedMainSceneTarget,
     additional_colors: &[SubmittedColorTarget],
 ) -> Result<()> {
+    // Reject malformed carried state before any context mutation so a refused
+    // draw leaves no partially bound output behind.
+    validate_output_viewport_scissor(output)?;
     if output.ordered_color_targets.len() != 1 + additional_colors.len() {
         return Err("submitted draw color-target count disagrees with prepared MRT target".into());
     }
@@ -1328,6 +1182,95 @@ unsafe fn create_inline_texture_view(
     })
 }
 
+/// BC1-BC7 block-compressed DXGI format ids, including the TYPELESS and SRGB
+/// variants (BC1..BC5 occupy 70..=84, BC6H/BC7 occupy 94..=99).
+fn is_block_compressed_dxgi_format(format: u32) -> bool {
+    matches!(format, 70..=84 | 94..=99)
+}
+
+/// Physical row count the D3D11 runtime reads for one mip: ceil(height/4)
+/// block rows for BC formats, `height` texel rows otherwise. Unknown formats
+/// use the uncompressed row count, which reads the most bytes and is therefore
+/// the conservative admission bound.
+fn physical_row_count(format: u32, mip_height: u32) -> u32 {
+    if is_block_compressed_dxgi_format(format) {
+        mip_height.max(1).div_ceil(4)
+    } else {
+        mip_height
+    }
+}
+
+/// Validate one carried texture subresource against what the D3D11 runtime
+/// will actually read from the materialized payload before its pointer is
+/// handed to `CreateTexture*`/`UpdateSubresource`. Carried pitches are
+/// otherwise trusted raw bits: a self-consistent hostile container could
+/// declare a row pitch far larger than its payload and make the driver read
+/// past the allocation. Sizes are lower bounds (padded captures stay valid);
+/// exact-format tightness is enforced only for formats the legacy table knows.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn validate_texture_subresource_payload(
+    dimension: TextureResourceDimension,
+    dxgi_format_u32: u32,
+    width: u32,
+    height: u32,
+    depth: u32,
+    mip_level: u32,
+    row_pitch: u32,
+    slice_pitch: u32,
+    payload_len: usize,
+) -> Result<()> {
+    let mip_w = width.checked_shr(mip_level).unwrap_or(0).max(1);
+    let mip_h = height.checked_shr(mip_level).unwrap_or(0).max(1);
+    let mip_d = depth.checked_shr(mip_level).unwrap_or(0).max(1);
+    if row_pitch == 0 {
+        return Err(format!("texture subresource mip {mip_level} carries a zero row pitch").into());
+    }
+    if let Ok(minimum) = crate::d3d11_replay::native_d3d11_minimum_row_pitch(dxgi_format_u32, mip_w)
+    {
+        if row_pitch < minimum {
+            return Err(format!(
+                "texture subresource mip {mip_level} row_pitch {row_pitch} is below minimum \
+                 {minimum} for DXGI format {dxgi_format_u32}"
+            )
+            .into());
+        }
+    }
+    let rows = u64::from(physical_row_count(dxgi_format_u32, mip_h));
+    let row_pitch_u64 = u64::from(row_pitch);
+    let required = match dimension {
+        TextureResourceDimension::Texture1d => row_pitch_u64,
+        TextureResourceDimension::Texture2d | TextureResourceDimension::TextureCube => {
+            row_pitch_u64
+                .checked_mul(rows)
+                .ok_or("texture subresource required size overflows")?
+        }
+        TextureResourceDimension::Texture3d => {
+            let slice_rows = row_pitch_u64
+                .checked_mul(rows)
+                .ok_or("texture subresource required size overflows")?;
+            if u64::from(slice_pitch) < slice_rows {
+                return Err(format!(
+                    "texture subresource mip {mip_level} slice_pitch {slice_pitch} is below \
+                     row_pitch {row_pitch} * rows {rows}"
+                )
+                .into());
+            }
+            u64::from(slice_pitch)
+                .checked_mul(u64::from(mip_d) - 1)
+                .and_then(|value| value.checked_add(slice_rows))
+                .ok_or("texture subresource required size overflows")?
+        }
+    };
+    if u64::try_from(payload_len)? < required {
+        return Err(format!(
+            "texture subresource mip {mip_level} payload has {payload_len} bytes but the D3D11 \
+             runtime reads {required}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 unsafe fn create_texture_resource(
     gfx: &Gfx,
     resolver: &GameFileResolver,
@@ -1343,6 +1286,19 @@ unsafe fn create_texture_resource(
         .iter()
         .map(|subresource| materialize_buffer(&subresource.source, resolver, particle_records))
         .collect::<Result<Vec<_>>>()?;
+    for (subresource, bytes) in desc.ordered_subresources.iter().zip(&storage) {
+        validate_texture_subresource_payload(
+            desc.dimension,
+            desc.dxgi_format_u32,
+            desc.width,
+            desc.height,
+            desc.depth,
+            subresource.mip_level,
+            subresource.row_pitch,
+            subresource.slice_pitch,
+            bytes.len(),
+        )?;
+    }
     let init = desc
         .ordered_subresources
         .iter()
@@ -1897,27 +1853,308 @@ fn filter(value: &SamplerDesc) -> Result<D3D11_FILTER> {
 mod tests {
     use super::*;
 
-    fn empty_submit() -> RenderSubmit {
-        RenderSubmit {
-            submit_index: 1,
-            global_order: 1,
-            presentation_qpc_ticks: 1,
-            interpolation_phase_f32_bits: 0,
-            ordered_scene_constant_buffers: Vec::new(),
-            ordered_static_map_programs: Vec::new(),
-            effect_lifecycle_events: Vec::new(),
-            particles: Vec::new(),
-            entity_presentations: Vec::new(),
-            particle_packet_set_sha256: "0".repeat(64),
-            entities: Vec::new(),
-            ordered_draws: Vec::new(),
-            ordered_render_operations: Vec::new(),
-            direct_visuals: Vec::new(),
-            light_lifecycle_events: Vec::new(),
-            tiled_lights: Vec::new(),
-            weather_membership: Vec::new(),
-            political_textures: Vec::new(),
+    #[test]
+    fn texture_subresource_admission_refuses_payloads_smaller_than_driver_reads() {
+        // 8x4 RGBA8 (DXGI 28): the driver reads row_pitch * 4 rows = 128 bytes.
+        let error = validate_texture_subresource_payload(
+            TextureResourceDimension::Texture2d,
+            28,
+            8,
+            4,
+            1,
+            0,
+            32,
+            128,
+            100,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("runtime reads 128"), "{error}");
+        // Hostile shape: sha-consistent 4-byte inline payload with an inflated
+        // row pitch would make the driver read ~1 MiB past the allocation.
+        let error = validate_texture_subresource_payload(
+            TextureResourceDimension::Texture2d,
+            28,
+            8,
+            256,
+            1,
+            0,
+            4096,
+            4096 * 256,
+            4,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("payload has 4 bytes"), "{error}");
+        // The same geometry with a complete payload is admitted unchanged.
+        validate_texture_subresource_payload(
+            TextureResourceDimension::Texture2d,
+            28,
+            8,
+            4,
+            1,
+            0,
+            32,
+            128,
+            128,
+        )
+        .unwrap();
+        // Padded captures stay valid: larger payloads are lower-bounded only.
+        validate_texture_subresource_payload(
+            TextureResourceDimension::Texture2d,
+            28,
+            8,
+            4,
+            1,
+            0,
+            32,
+            128,
+            256,
+        )
+        .unwrap();
+        assert!(validate_texture_subresource_payload(
+            TextureResourceDimension::Texture2d,
+            28,
+            8,
+            4,
+            1,
+            0,
+            0,
+            128,
+            128,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("zero row pitch"));
+    }
+
+    #[test]
+    fn texture_subresource_admission_uses_bc_block_rows_not_texel_rows() {
+        // BC1 8x8 (DXGI 71): 2 block rows of 16 bytes, not 8 texel rows.
+        validate_texture_subresource_payload(
+            TextureResourceDimension::Texture2d,
+            71,
+            8,
+            8,
+            1,
+            0,
+            16,
+            32,
+            32,
+        )
+        .unwrap();
+        let error = validate_texture_subresource_payload(
+            TextureResourceDimension::Texture2d,
+            71,
+            8,
+            8,
+            1,
+            0,
+            16,
+            32,
+            31,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("runtime reads 32"), "{error}");
+    }
+
+    #[test]
+    fn texture_subresource_admission_enforces_known_format_minimum_row_pitch() {
+        // DXGI 28 at width 8 requires at least 32 bytes per row.
+        let error = validate_texture_subresource_payload(
+            TextureResourceDimension::Texture2d,
+            28,
+            8,
+            4,
+            1,
+            0,
+            16,
+            64,
+            1024,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("below minimum 32"), "{error}");
+        // Formats outside the exact table (DXGI 24, R10G10B10A2_TYPELESS) are
+        // not refused for tightness; the conservative geometric bound remains.
+        validate_texture_subresource_payload(
+            TextureResourceDimension::Texture2d,
+            24,
+            4,
+            4,
+            1,
+            0,
+            4,
+            16,
+            16,
+        )
+        .unwrap();
+        assert!(validate_texture_subresource_payload(
+            TextureResourceDimension::Texture2d,
+            24,
+            4,
+            4,
+            1,
+            0,
+            4,
+            16,
+            15,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn texture3d_subresource_admission_covers_slice_pitch_and_depth() {
+        // slice_pitch == row_pitch with 4 rows hides three rows of reads.
+        let error = validate_texture_subresource_payload(
+            TextureResourceDimension::Texture3d,
+            28,
+            4,
+            4,
+            2,
+            0,
+            16,
+            16,
+            1 << 20,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("slice_pitch 16 is below"), "{error}");
+        // Depth 2 reads slice_pitch * 1 + row_pitch * rows = 64 + 64 = 128.
+        validate_texture_subresource_payload(
+            TextureResourceDimension::Texture3d,
+            28,
+            4,
+            4,
+            2,
+            0,
+            16,
+            64,
+            128,
+        )
+        .unwrap();
+        assert!(validate_texture_subresource_payload(
+            TextureResourceDimension::Texture3d,
+            28,
+            4,
+            4,
+            2,
+            0,
+            16,
+            64,
+            127,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn texture_subresource_admission_shrinks_geometry_per_mip() {
+        // Mip 1 of 8x4 RGBA8 is 4x2: two rows of at least 16 bytes.
+        validate_texture_subresource_payload(
+            TextureResourceDimension::Texture2d,
+            28,
+            8,
+            4,
+            1,
+            1,
+            16,
+            32,
+            32,
+        )
+        .unwrap();
+        // Texture3D depth shrinks per mip too: mip 1 of depth 4 reads 2 slices.
+        validate_texture_subresource_payload(
+            TextureResourceDimension::Texture3d,
+            28,
+            8,
+            4,
+            4,
+            1,
+            16,
+            32,
+            64,
+        )
+        .unwrap();
+        assert!(validate_texture_subresource_payload(
+            TextureResourceDimension::Texture3d,
+            28,
+            8,
+            4,
+            4,
+            1,
+            16,
+            32,
+            63,
+        )
+        .is_err());
+    }
+
+    fn viewport_output(
+        width_f32_bits: u32,
+        height_f32_bits: u32,
+        scissor: Option<replay_core::ScissorDesc>,
+    ) -> RenderOutputState {
+        RenderOutputState {
+            ordered_color_targets: Vec::new(),
+            depth_target: None,
+            viewport: replay_core::ViewportDesc {
+                top_left_x_f32_bits: 0,
+                top_left_y_f32_bits: 0,
+                width_f32_bits,
+                height_f32_bits,
+                min_depth_f32_bits: 0,
+                max_depth_f32_bits: 1f32.to_bits(),
+            },
+            scissor,
         }
+    }
+
+    #[test]
+    fn output_admission_rejects_non_finite_empty_or_inverted_state() {
+        validate_output_viewport_scissor(&viewport_output(8f32.to_bits(), 4f32.to_bits(), None))
+            .unwrap();
+        let nan = validate_output_viewport_scissor(&viewport_output(
+            f32::NAN.to_bits(),
+            4f32.to_bits(),
+            None,
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(nan.contains("non-finite or empty"), "{nan}");
+        assert!(
+            validate_output_viewport_scissor(&viewport_output(8f32.to_bits(), 0, None)).is_err()
+        );
+        assert!(validate_output_viewport_scissor(&viewport_output(
+            8f32.to_bits(),
+            (-4f32).to_bits(),
+            None,
+        ))
+        .is_err());
+        let inverted = validate_output_viewport_scissor(&viewport_output(
+            8f32.to_bits(),
+            4f32.to_bits(),
+            Some(replay_core::ScissorDesc {
+                left_i32: 4,
+                top_i32: 0,
+                right_i32: 4,
+                bottom_i32: 4,
+            }),
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(inverted.contains("empty or inverted"), "{inverted}");
+        validate_output_viewport_scissor(&viewport_output(
+            8f32.to_bits(),
+            4f32.to_bits(),
+            Some(replay_core::ScissorDesc {
+                left_i32: 0,
+                top_i32: 0,
+                right_i32: 8,
+                bottom_i32: 4,
+            }),
+        ))
+        .unwrap();
     }
 
     #[test]
@@ -1935,33 +2172,6 @@ mod tests {
             D3D11_COMPARISON_LESS_EQUAL
         );
         assert_eq!(address(AddressMode::Border), D3D11_TEXTURE_ADDRESS_BORDER);
-    }
-
-    #[test]
-    fn ordered_draw_execution_never_accepts_unknown_or_inferred_rows() {
-        assert!(ordered_draws(&empty_submit())
-            .expect("empty order")
-            .is_empty());
-        let mut submit = empty_submit();
-        submit.ordered_draws.push(RenderOutputRef::Particle {
-            effect_instance_id: 9,
-            bucket: 2,
-            packet_ordinal: 3,
-            draw_order: 4,
-        });
-        assert!(ordered_draws(&submit)
-            .expect_err("unknown ordered draw")
-            .to_string()
-            .contains("absent packet"));
-    }
-
-    #[test]
-    fn duplicate_reference_marker_rejects_a_second_visit() {
-        let mut seen = [false, false];
-        assert!(mark_once(&mut seen, 0));
-        assert!(!mark_once(&mut seen, 0));
-        assert!(mark_once(&mut seen, 1));
-        assert!(seen.into_iter().all(|value| value));
     }
 
     #[test]

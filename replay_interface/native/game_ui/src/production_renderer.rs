@@ -10,6 +10,7 @@ use crate::assets::AssetResolver;
 use crate::binding::{
     apply_clock, clock_binding_from_frame, outliner_binding_from_frame, topbar_binding_from_frame,
 };
+use crate::compose::UiAssetCache;
 use crate::dds::RgbaImage;
 use crate::gfx::SpriteRegistry;
 use crate::hud::{compose_authenticated_hud, HudBinding, HudSpriteStats, MinimapBinding};
@@ -18,6 +19,7 @@ use crate::variant_admission::{DisplayMode, DisplayVariantKey, InputVariant, Pix
 use crate::{GameUiError, Result};
 use replay_core::{MapmodeProvenance, RecordedInputVariant, ValidatedContentAdmission, WorldFrame};
 use std::collections::BTreeSet;
+use std::sync::Mutex;
 
 pub const PRODUCTION_UI_WIDTH: usize = 1920;
 pub const PRODUCTION_UI_HEIGHT: usize = 1080;
@@ -269,6 +271,10 @@ pub struct ProductionUiRenderer {
     registry: SpriteRegistry,
     localisation: Localisation,
     content_admission: ValidatedContentAdmission,
+    /// Decoded sprite/texture/font cache reused across composed frames. Owned
+    /// alongside its exact resolver + registry pair and interior-mutable so
+    /// `compose_hud_frame` keeps its `&self` signature.
+    asset_cache: Mutex<UiAssetCache>,
 }
 
 impl ProductionUiRenderer {
@@ -310,6 +316,7 @@ impl ProductionUiRenderer {
             registry,
             localisation,
             content_admission: content_admission.clone(),
+            asset_cache: Mutex::new(UiAssetCache::default()),
         })
     }
 
@@ -427,14 +434,23 @@ impl ProductionUiRenderer {
         // placeholder is composed.
         binding.tooltip = None;
 
+        // A poisoned lock only means a previous compose panicked after fully
+        // inserted cache entries; the cache itself stays coherent.
+        let mut asset_cache = self
+            .asset_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let composed = compose_authenticated_hud(
             &self.resolver,
             &self.registry,
             &binding,
+            &self.localisation,
+            &mut asset_cache,
             viewport_width,
             viewport_height,
         )
         .map_err(|error| ProductionUiRejection::Asset(error.to_string()))?;
+        drop(asset_cache);
         validate_complete_hud(&composed.sprite_stats, &composed.output.report)
             .map_err(ProductionUiRejection::IncompleteComposition)?;
 

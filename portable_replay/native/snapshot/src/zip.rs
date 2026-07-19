@@ -14,8 +14,9 @@
 //! cap.
 
 use flate2::read::DeflateDecoder;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
+use unicode_normalization::UnicodeNormalization;
 
 const EOCD_SIG: u32 = 0x0605_4b50;
 const ZIP64_EOCD_SIG: u32 = 0x0606_4b50;
@@ -131,6 +132,10 @@ fn rd_u64(b: &[u8], off: usize) -> Option<u64> {
 pub struct ZipArchive {
     data: Vec<u8>,
     entries: Vec<ZipEntry>,
+    /// exact entry name -> index into `entries` (names are unique: exact and
+    /// case-insensitive duplicates are rejected at parse), so [`ZipArchive::by_name`]
+    /// is O(1) instead of a linear scan per lookup.
+    name_index: HashMap<String, usize>,
     central_directory_off: usize,
 }
 
@@ -250,6 +255,7 @@ impl ZipArchive {
         }
 
         let mut entries = Vec::with_capacity(total.min(INITIAL_ENTRY_RESERVE));
+        let mut name_index: HashMap<String, usize> = HashMap::new();
         let mut seen: HashSet<String> = HashSet::new();
         let mut seen_ci: HashSet<String> = HashSet::new();
         let mut p = cd_off;
@@ -331,12 +337,13 @@ impl ZipArchive {
                 return Err(ZipError::DuplicateName(name));
             }
             // case-insensitive collision (would clobber on Windows/macOS unpack)
-            if !seen_ci.insert(name.to_ascii_lowercase()) {
+            if !seen_ci.insert(portable_path_key(&name)?) {
                 return Err(ZipError::DuplicateName(format!(
                     "{name} (case-insensitive)"
                 )));
             }
 
+            name_index.insert(name.clone(), entries.len());
             entries.push(ZipEntry {
                 name,
                 version_needed,
@@ -369,12 +376,15 @@ impl ZipArchive {
         Ok(ZipArchive {
             data,
             entries,
+            name_index,
             central_directory_off: cd_off,
         })
     }
 
+    /// Exact-name lookup (deliberately NOT case-insensitive: case lookalikes are
+    /// already rejected at parse, and lookups must stay byte-exact).
     pub fn by_name(&self, name: &str) -> Option<&ZipEntry> {
-        self.entries.iter().find(|e| e.name == name)
+        self.name_index.get(name).map(|&i| &self.entries[i])
     }
 
     /// Cross-check every local file header against its central-directory record
@@ -621,10 +631,21 @@ impl ZipArchive {
         let comp = &self.data[region.data_start..region.data_end];
         let (crc32, uncompressed_len) = match entry.method {
             ZIP_METHOD_STORE => (crc32fast::hash(comp), comp.len() as u64),
-            ZIP_METHOD_DEFLATE => crc32_and_len(
-                DeflateDecoder::new(comp),
-                entry.uncomp_size.saturating_add(1),
-            )?,
+            ZIP_METHOD_DEFLATE => {
+                let mut dec = DeflateDecoder::new(comp);
+                let derived = crc32_and_len(&mut dec, entry.uncomp_size.saturating_add(1))?;
+                // A read-side deflate decoder stops at deflate stream end
+                // without touching trailing input; bytes smuggled after the
+                // stream (but inside comp_size) would otherwise pass every
+                // integrity check while never being covered by any hash.
+                if dec.total_in() != comp.len() as u64 {
+                    return Err(ZipError::Decompress(format!(
+                        "entry {}: trailing bytes after deflate stream",
+                        entry.name
+                    )));
+                }
+                derived
+            }
             ZIP_METHOD_ZSTD => {
                 let mut dec = zstd::stream::read::Decoder::new(comp)
                     .map_err(|err| ZipError::Decompress(err.to_string()))?;
@@ -687,9 +708,19 @@ impl ZipArchive {
             ZIP_METHOD_DEFLATE => {
                 let mut out = Vec::with_capacity(e.uncomp_size.min(1 << 20) as usize);
                 let cap = e.uncomp_size.saturating_add(1);
-                let mut dec = DeflateDecoder::new(comp).take(cap);
-                dec.read_to_end(&mut out)
+                let mut dec = DeflateDecoder::new(comp);
+                (&mut dec)
+                    .take(cap)
+                    .read_to_end(&mut out)
                     .map_err(|err| ZipError::Decompress(err.to_string()))?;
+                // See validate_payload_crc: trailing bytes inside the declared
+                // comp region are uncovered by any integrity layer — refuse.
+                if dec.total_in() != comp.len() as u64 {
+                    return Err(ZipError::Decompress(format!(
+                        "entry {}: trailing bytes after deflate stream",
+                        e.name
+                    )));
+                }
                 out
             }
             ZIP_METHOD_ZSTD => {
@@ -771,13 +802,13 @@ fn data_descriptor_candidate(
 }
 
 #[derive(Default)]
-struct Zip64Extra {
-    uncomp_size: Option<u64>,
-    comp_size: Option<u64>,
-    local_header_off: Option<u64>,
+pub(crate) struct Zip64Extra {
+    pub(crate) uncomp_size: Option<u64>,
+    pub(crate) comp_size: Option<u64>,
+    pub(crate) local_header_off: Option<u64>,
 }
 
-fn validate_ordinary_zip64_field(
+pub(crate) fn validate_ordinary_zip64_field(
     name: &str,
     ordinary: u64,
     sentinel: u64,
@@ -843,7 +874,7 @@ fn parse_zip64_eocd(data: &[u8], locator: usize) -> Result<(u64, u64, u64, u64),
     Ok((total_entries, cd_size, cd_off, zip64_eocd_off))
 }
 
-fn parse_zip64_extra(
+pub(crate) fn parse_zip64_extra(
     extra: &[u8],
     need_uncomp: bool,
     need_comp: bool,
@@ -891,6 +922,70 @@ fn parse_zip64_extra(
         return Err(ZipError::Unsupported("Zip64 extra field missing".into()));
     }
     Ok(zip64.unwrap_or_default())
+}
+
+/// Test-only fixture builder shared with `stream_verify` tests: a minimal
+/// one-entry ZIP whose DEFLATE comp region is `[valid deflate stream][garbage]`
+/// with `comp_size` covering both (`garbage == 0` is the clean control).
+/// CRC/uncomp_size are correct for the decoded stream, so ONLY a
+/// consumed-all-input check can catch the smuggled bytes.
+#[cfg(test)]
+pub(crate) fn test_deflate_zip_with_trailing(garbage: usize) -> Vec<u8> {
+    use std::io::Write;
+    let plain: Vec<u8> = b"trailing-byte coverage payload ".repeat(8);
+    let crc = crc32fast::hash(&plain);
+    let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(&plain).unwrap();
+    let mut comp = enc.finish().unwrap();
+    comp.extend(std::iter::repeat(0xAAu8).take(garbage));
+    let name = b"payload/g/blob.bin";
+
+    let mut out = Vec::new();
+    // local file header
+    out.extend_from_slice(&LFH_SIG.to_le_bytes());
+    out.extend_from_slice(&20u16.to_le_bytes()); // version needed
+    out.extend_from_slice(&0u16.to_le_bytes()); // flags
+    out.extend_from_slice(&ZIP_METHOD_DEFLATE.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // mod time
+    out.extend_from_slice(&0u16.to_le_bytes()); // mod date
+    out.extend_from_slice(&crc.to_le_bytes());
+    out.extend_from_slice(&(comp.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(plain.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // extra len
+    out.extend_from_slice(name);
+    out.extend_from_slice(&comp);
+    let cd_off = out.len();
+    // central directory header
+    out.extend_from_slice(&CDH_SIG.to_le_bytes());
+    out.extend_from_slice(&20u16.to_le_bytes()); // version made by
+    out.extend_from_slice(&20u16.to_le_bytes()); // version needed
+    out.extend_from_slice(&0u16.to_le_bytes()); // flags
+    out.extend_from_slice(&ZIP_METHOD_DEFLATE.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // mod time
+    out.extend_from_slice(&0u16.to_le_bytes()); // mod date
+    out.extend_from_slice(&crc.to_le_bytes());
+    out.extend_from_slice(&(comp.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(plain.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // extra len
+    out.extend_from_slice(&0u16.to_le_bytes()); // comment len
+    out.extend_from_slice(&0u16.to_le_bytes()); // disk start
+    out.extend_from_slice(&0u16.to_le_bytes()); // internal attrs
+    out.extend_from_slice(&0u32.to_le_bytes()); // external attrs
+    out.extend_from_slice(&0u32.to_le_bytes()); // local header offset
+    out.extend_from_slice(name);
+    let cd_size = out.len() - cd_off;
+    // EOCD
+    out.extend_from_slice(&EOCD_SIG.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // disk no
+    out.extend_from_slice(&0u16.to_le_bytes()); // cd disk
+    out.extend_from_slice(&1u16.to_le_bytes()); // entries on disk
+    out.extend_from_slice(&1u16.to_le_bytes()); // total entries
+    out.extend_from_slice(&(cd_size as u32).to_le_bytes());
+    out.extend_from_slice(&(cd_off as u32).to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // comment len
+    out
 }
 
 /// Scan backwards for the End-Of-Central-Directory signature (handles a ZIP
@@ -943,12 +1038,23 @@ pub fn validate_path(name: &str) -> Result<(), ZipError> {
     if name.contains(':') {
         return bad(name);
     }
+    if name.chars().any(char::is_control) || name.nfc().ne(name.chars()) {
+        return bad(name); // unstable/control-bearing filesystem identity
+    }
     for comp in name.split('/') {
         if comp == "." || comp == ".." {
             return bad(name); // traversal
         }
+        if comp.ends_with(' ') || comp.ends_with('.') {
+            return bad(name); // Windows trims these and aliases another name
+        }
         // Windows reserved device names (case-insensitive, with or without ext)
-        let stem = comp.split('.').next().unwrap_or(comp).to_ascii_uppercase();
+        let stem = comp
+            .split('.')
+            .next()
+            .unwrap_or(comp)
+            .trim_end_matches(' ')
+            .to_ascii_uppercase();
         const RESERVED: &[&str] = &[
             "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
             "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
@@ -958,6 +1064,14 @@ pub fn validate_path(name: &str) -> Result<(), ZipError> {
         }
     }
     Ok(())
+}
+
+/// Filesystem collision key shared by the in-memory and streaming readers.
+/// Paths are required to be NFC first; Unicode lowercase then catches aliases
+/// beyond ASCII-only case folding without changing the serialized path.
+pub(crate) fn portable_path_key(name: &str) -> Result<String, ZipError> {
+    validate_path(name)?;
+    Ok(name.chars().flat_map(char::to_lowercase).collect())
 }
 
 #[cfg(test)]
@@ -1013,9 +1127,16 @@ mod tests {
         assert!(validate_path("C:/x").is_err());
         assert!(validate_path("payload//x").is_err());
         assert!(validate_path("payload/CON").is_err());
+        assert!(validate_path("payload/CON .txt").is_err());
         assert!(validate_path("payload/nul.json").is_err());
         assert!(validate_path("payload/g/index.json").is_ok());
         assert!(validate_path("manifest.json").is_ok());
+        assert!(validate_path("payload/g/trailing. ").is_err());
+        assert!(validate_path("payload/g/cafe\u{301}.json").is_err());
+        assert_eq!(
+            portable_path_key("payload/g/CAF\u{c9}.json").unwrap(),
+            portable_path_key("payload/g/caf\u{e9}.json").unwrap()
+        );
     }
 
     #[test]
@@ -1055,6 +1176,45 @@ mod tests {
         };
         assert!(
             matches!(&err, ZipError::Unsupported(msg) if msg.contains("entry count") && msg.contains("reader cap")),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn deflate_trailing_bytes_inside_comp_region_are_refused() {
+        // Control: an exact-length deflate stream passes CRC validation and reads.
+        let clean = test_deflate_zip_with_trailing(0);
+        let archive = ZipArchive::parse(clean).expect("clean archive parses");
+        archive
+            .validate_payloads()
+            .expect("clean deflate payload passes CRC validation");
+        let entry = archive
+            .by_name("payload/g/blob.bin")
+            .expect("entry present")
+            .clone();
+        archive.read_entry(&entry).expect("clean entry reads");
+
+        // Hostile: garbage after the deflate stream, inside the declared
+        // comp_size. Length, CRC, and (any) content hash all cover only the
+        // DECODED stream, so the trailing check is the only line of defense.
+        let dirty = test_deflate_zip_with_trailing(16);
+        let archive = ZipArchive::parse(dirty).expect("structure still parses");
+        let err = archive
+            .validate_payloads()
+            .expect_err("trailing bytes must fail payload validation");
+        assert!(
+            matches!(&err, ZipError::Decompress(m) if m.contains("trailing bytes")),
+            "unexpected error: {err}"
+        );
+        let entry = archive
+            .by_name("payload/g/blob.bin")
+            .expect("entry present")
+            .clone();
+        let err = archive
+            .read_entry(&entry)
+            .expect_err("read_entry must also refuse trailing bytes");
+        assert!(
+            matches!(&err, ZipError::Decompress(m) if m.contains("trailing bytes")),
             "unexpected error: {err}"
         );
     }

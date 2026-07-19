@@ -199,17 +199,19 @@ The current blockers are exact fixture/root blockers, not acceptable omissions:
   and the best live candidate `u8@record+0x2D` still mismatches `20/117` matched
   actor-level records. The remaining blocker is a same-frame hub toggle fixture with at least
   two known levels, ideally one level `1` and one level `3`;
-- convoy/logistics pressure requires a controlled overseas/convoy supply-pressure fixture and a
-  current-build pressure field. The stale per-country supply-system path is rejected on 870ebf,
-  while the current RTTI class pool is pinned. `foreign_homebase_pressure_record_probe.py`
-  validates a concrete foreign-homebase pressure candidate:
-  `CCountrySupplySystem+0x1E0` points to `0x70`-stride records with province `+0x00`,
-  supply `i32/100000@+0x08`, penalty `i32/100000@+0x18`, and duplicate province `+0x50`.
-  It matched `25/25` joined foreign-homebase provinces, `20` exact raw supply+penalty pairs,
-  and all `25` duplicate province fields against the stale save oracle. This is still not
-  emitted: the oracle is eight in-game days stale, tag `D04` is missing from the live join, the
-  current save has zero disrupted-supply anchors, and convoy/port pressure semantics still need
-  same-frame validation;
+- the a729 serializer and parser now prove the stored disrupted-supply field exactly. The
+  robin-hood table begins at `CCountrySupplySystem+0x88`: bucket pointer `+0x90`, occupied
+  count `+0x98`, mask `+0x9C`, displacement/sentinel byte `+0xA0`, bucket stride `0x18`,
+  key `(province:u32,node_type:u32)` at bucket `+0x08`, and signed fixed-point value
+  `i64/100000` at bucket `+0x10`. The retained `1944.4.1.2` autosave contains D04
+  `(7081,3)->4017` and FRA `(911,3)->22173`, matching melted values `0.04017` and
+  `0.22173`. `CCountrySupplySystem+0x1E0` is separately proved as the foreign-homebase
+  vector (pointer `+0x1E0`, count `+0x1EC`, stride `0x70`); it is not disrupted supply.
+  Production emission remains fail-closed because collector-time discovery of each
+  `CCountrySupplySystem` still has only the RTTI heap sweep, not a bounded root path. The
+  retained save also proves that terminal convoy-loss history is monthly owner/killer/count
+  aggregation without route/client identity; active convoy combats retain location and client
+  handles but cannot backfill terminal route context;
 - any new `CSupplySystem` sibling path must satisfy province-indexed bounds and semantic oracle
   validation before it can replace the mandatory badge row.
 

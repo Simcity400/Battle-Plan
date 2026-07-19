@@ -25,8 +25,10 @@
 use map_viewer::{light_defines as defines, render_sun_dir_yzw, Result};
 use std::env;
 use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+#[path = "dump_shared/bmp_out.rs"]
+mod bmp_out;
 
 // --- shipped constants (mirrored from standardfuncsgfx.fxh via light_defines) ---
 const SOUTH_POLE_OFFSET: f32 = 0.17;
@@ -126,43 +128,6 @@ fn to_u8(x: f32) -> u8 {
     (saturate(x) * 255.0 + 0.5) as u8
 }
 
-fn write_bmp_bgr(path: &Path, width: usize, height: usize, rgb: &[[u8; 3]]) -> Result<()> {
-    let row_padded = (width * 3 + 3) & !3;
-    let image_size = row_padded * height;
-    let file_size = 54 + image_size;
-    let mut buf = Vec::with_capacity(file_size);
-    buf.extend_from_slice(b"BM");
-    buf.extend_from_slice(&(file_size as u32).to_le_bytes());
-    buf.extend_from_slice(&0u32.to_le_bytes());
-    buf.extend_from_slice(&54u32.to_le_bytes());
-    buf.extend_from_slice(&40u32.to_le_bytes());
-    buf.extend_from_slice(&(width as i32).to_le_bytes());
-    buf.extend_from_slice(&(height as i32).to_le_bytes());
-    buf.extend_from_slice(&1u16.to_le_bytes());
-    buf.extend_from_slice(&24u16.to_le_bytes());
-    buf.extend_from_slice(&0u32.to_le_bytes());
-    buf.extend_from_slice(&(image_size as u32).to_le_bytes());
-    buf.extend_from_slice(&2835i32.to_le_bytes());
-    buf.extend_from_slice(&2835i32.to_le_bytes());
-    buf.extend_from_slice(&0u32.to_le_bytes());
-    buf.extend_from_slice(&0u32.to_le_bytes());
-    for y in (0..height).rev() {
-        for x in 0..width {
-            let [r, g, b] = rgb[y * width + x];
-            buf.push(b);
-            buf.push(g);
-            buf.push(r);
-        }
-        for _ in 0..(row_padded - width * 3) {
-            buf.push(0);
-        }
-    }
-    let mut file = fs::File::create(path).map_err(|e| format!("create {}: {e}", path.display()))?;
-    file.write_all(&buf)
-        .map_err(|e| format!("write {}: {e}", path.display()))?;
-    Ok(())
-}
-
 fn main() -> Result<()> {
     let mut out_dir: Option<PathBuf> = None;
     let mut hours = 24usize;
@@ -246,7 +211,7 @@ fn main() -> Result<()> {
             row.push([to_u8(c.x), to_u8(c.y), to_u8(c.z)]);
         }
         // Per-hour BMP.
-        write_bmp_bgr(
+        bmp_out::write_bmp24_rgb(
             &out_dir.join(format!("night_hour_{:02}_{:04.1}h.bmp", h, hour24)),
             width,
             1,
@@ -260,7 +225,7 @@ fn main() -> Result<()> {
             }
         }
     }
-    write_bmp_bgr(
+    bmp_out::write_bmp24_rgb(
         &out_dir.join("night_strip.bmp"),
         width,
         hours * strip_row_h,

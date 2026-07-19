@@ -6,3 +6,11 @@ description = "Neutral raw/zstd file-boundary codec for portable Battle Plan str
 
 [dependencies]
 zstd = "0.13.3"
+
+# Fail-closed doctrine: untrusted-input parsing must panic on integer overflow
+# in release builds rather than silently wrap. When this crate is built as a
+# path dependency of the replay_interface workspace, Cargo prints "profiles
+# for the non root package will be ignored" — that warning is expected and
+# benign (the workspace root carries the same setting).
+[profile.release]
+overflow-checks = true

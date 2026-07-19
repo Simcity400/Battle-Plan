@@ -7,6 +7,7 @@
 //! but a changed viewport, GUI scale, language, glyph set, or input mode is a
 //! distinct envelope.
 
+use crate::is_lowercase_sha256;
 use crate::runtime_graphics::ClipRect;
 use replay_core::world::DisplayVariantMetadata;
 use std::collections::BTreeSet;
@@ -229,7 +230,7 @@ fn validate_envelope(envelope: &VariantEnvelope) -> Result<(), VariantRejection>
     if envelope.source_record_id.trim().is_empty() {
         return Err(invalid("missing source record id"));
     }
-    if !is_sha256(&envelope.evidence_manifest_sha256) {
+    if !is_lowercase_sha256(&envelope.evidence_manifest_sha256) {
         return Err(invalid("invalid evidence manifest SHA-256"));
     }
     if !envelope.key.valid() || !envelope.logical_root.valid() {
@@ -237,7 +238,9 @@ fn validate_envelope(envelope: &VariantEnvelope) -> Result<(), VariantRejection>
             "invalid viewport, logical root, scale, or language",
         ));
     }
-    if !is_sha256(&envelope.logical_layout_sha256) || !is_sha256(&envelope.pixel_oracle_sha256) {
+    if !is_lowercase_sha256(&envelope.logical_layout_sha256)
+        || !is_lowercase_sha256(&envelope.pixel_oracle_sha256)
+    {
         return Err(invalid("invalid layout or pixel-oracle SHA-256"));
     }
     if envelope.key.input_variant != InputVariant::MouseKeyboard {
@@ -250,9 +253,9 @@ fn validate_envelope(envelope: &VariantEnvelope) -> Result<(), VariantRejection>
     }
     for run in &envelope.font_runs {
         if run.font_id.trim().is_empty()
-            || !is_sha256(&run.font_file_sha256)
-            || !is_sha256(&run.glyph_atlas_sha256)
-            || !is_sha256(&run.glyph_set_sha256)
+            || !is_lowercase_sha256(&run.font_file_sha256)
+            || !is_lowercase_sha256(&run.glyph_atlas_sha256)
+            || !is_lowercase_sha256(&run.glyph_set_sha256)
             || run.glyph_count == 0
             || run.first_glyph.checked_add(run.glyph_count).is_none()
         {
@@ -286,18 +289,11 @@ fn validate_envelope(envelope: &VariantEnvelope) -> Result<(), VariantRejection>
         if transition.current_key != envelope.key
             || transition.previous_key == transition.current_key
             || transition.transition_ordinal == 0
-            || !is_sha256(&transition.post_resize_layout_sha256)
+            || !is_lowercase_sha256(&transition.post_resize_layout_sha256)
             || transition.post_resize_layout_sha256 != envelope.logical_layout_sha256
         {
             return Err(invalid("invalid resize transition"));
         }
     }
     Ok(())
-}
-
-fn is_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }

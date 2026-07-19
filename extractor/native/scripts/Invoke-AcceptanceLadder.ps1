@@ -24,7 +24,9 @@
       6. six-hour-soak          - six-hour soak: hourly met, zero skipped + zero
                                   coalesced hours, frame budget held for the run.
 
-    This script builds and TESTS the machinery. Actually launching the game is
+    This script orchestrates and can self-test the machinery. It never builds per
+    rung: live launches pass -SkipBuild and reuse the final prebuilt binaries.
+    Actually launching the game is
     owner-gated: a live rung requires the explicit -Live switch AND a running
     hoi4.exe. Every rung verdict must rest on evidence PROVABLY produced by THIS
     capture attempt. A rung is graded by RUNNING THE AUTHORITATIVE VALIDATOR
@@ -36,10 +38,11 @@
     and predecessor ordering re-verifies each earlier rung by re-grading its bound
     run IN-PROCESS — refusing a run bound to a different rung and refusing two rungs
     that share one run_dir — rather than trusting the mutable state JSON status
-    field. Where an authoritative attempt-bound live producer does not yet exist,
-    the live path FAILS CLOSED (refuses to certify) rather than accept a forgeable
-    boolean; the owed live producers are enumerated in Get-RungBoundProducerOwed
-    and tracked under F6 in MASTER_EXTRACTION_CONTRACT.md. The state machine,
+    field. The two diagnostic proof rungs use an explicitly authenticated,
+    non-production acceptance mode and independently regrade safely extracted
+    folded snapshots; ordinary production defaults cannot activate that mode.
+    Get-RungBoundProducerOwed remains as the fail-closed producer inventory seam.
+    The state machine,
     ordering, rung binding, in-process grading, quoting, and CPU-affinity math are
     all covered by -SelfTest (which injects a validator override over fabricated
     runs) and never touch the game.
@@ -72,6 +75,7 @@ param(
     [switch]$Live,
     [string]$StateFile = "",
     [string]$PinsFile = "",
+    [string]$RunRoot = "",
     [switch]$SelfTest
 )
 
@@ -485,8 +489,7 @@ $script:SafeLauncherRequiredStringPins = @(
     "DlcStatePath",
     "LoadOrderPath",
     "SourceInventoryPath",
-    "LiveResolutionReportPath",
-    "OutDir"
+    "LiveResolutionReportPath"
 )
 
 function Get-SafeLauncherPins {
@@ -494,9 +497,9 @@ function Get-SafeLauncherPins {
         Load and validate the owner-supplied evidence-pins JSON for the bound-report
         launcher. FAIL-CLOSED: a missing file, non-JSON, a non-positive Hoi4Pid, or any
         blank/absent required string pin THROWS with the offending pin named — the ladder
-        never fabricates a pin. `OutDir` is required and must be a caller-chosen LOCAL,
-        non-OneDrive path (Start-Hoi4ProductionCaptureSafe.ps1 refuses OneDrive/repo
-        output): the ladder does not force its own in-repo run dir on the launcher.
+        never fabricates a pin. OutDir is deliberately not a pin: the ladder allocates
+        a fresh unpredictable local run directory and hands that exact empty directory
+        to the Safe launcher.
         Returns the parsed pins object. Optional passthrough knobs (DurationSeconds,
         MinGameHours, EmittedTokensPath, TokenOmissionsPath, PythonExe, AttemptStateRoot,
         AffinityTarget) are returned as-is when present.
@@ -525,24 +528,27 @@ function Get-SafeLauncherArgs {
         Assemble the PowerShell child-process argument array that drives
         Start-Hoi4ProductionCaptureSafe.ps1 for one graded rung from a validated pin set
         (Get-SafeLauncherPins). -Rung binds the produced run to this rung; -OutDir is the
-        owner-chosen local path from the pins; -AllowExistingEmptyOutDir is NOT passed
-        (the launcher creates its own dir). Optional DurationSeconds/MinGameHours and the
+        ladder-allocated fresh local path; -AllowExistingEmptyOutDir is passed because
+        the ladder created and checked it immediately before launch. Optional DurationSeconds/MinGameHours and the
         emitted/omitted-token and python/attempt-state pins are forwarded when present.
     #>
     param(
         [Parameter(Mandatory = $true)]$RungDef,
         [Parameter(Mandatory = $true)][string]$CaptureScript,
-        [Parameter(Mandatory = $true)]$Pins
+        [Parameter(Mandatory = $true)]$Pins,
+        [Parameter(Mandatory = $true)][string]$RunDir,
+        [string]$AcceptanceTestNonce = ""
     )
     $a = @(
         "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
         "-File", $CaptureScript,
         "-Rung", [string]$RungDef.name,
         "-Hoi4Pid", ([string][int64](Get-ObjectProperty $Pins "Hoi4Pid")),
-        "-OutDir", ([string](Get-ObjectProperty $Pins "OutDir"))
+        "-OutDir", $RunDir,
+        "-AllowExistingEmptyOutDir",
+        "-SkipBuild"
     )
     foreach ($pinName in $script:SafeLauncherRequiredStringPins) {
-        if ($pinName -eq "OutDir") { continue }
         $a += @(("-" + $pinName), ([string](Get-ObjectProperty $Pins $pinName)))
     }
     foreach ($opt in @("DurationSeconds", "MinGameHours", "EmittedTokensPath", "TokenOmissionsPath", "PythonExe", "AttemptStateRoot")) {
@@ -550,6 +556,12 @@ function Get-SafeLauncherArgs {
         if ($null -ne $val -and -not ([string]::IsNullOrWhiteSpace([string]$val))) {
             $a += @(("-" + $opt), ([string]$val))
         }
+    }
+    $proofKind = Get-RungProofKind -RungDef $RungDef
+    if ($proofKind -in @("synthetic_fault", "paused")) {
+        if ($AcceptanceTestNonce -cnotmatch '^[0-9a-f]{64}$') { throw "proof rung requires a fresh canonical acceptance-test nonce" }
+        $mode = if ($proofKind -eq "synthetic_fault") { "synthetic-fault" } else { "paused" }
+        $a += @("-AcceptanceMode", $mode, "-AcceptanceTestNonce", $AcceptanceTestNonce)
     }
     return $a
 }
@@ -568,24 +580,10 @@ function Get-RungBoundProducerOwed {
         MASTER_EXTRACTION_CONTRACT.md under F6):
 
           * GRADED rungs (speed5-short-proof, five-minute-full-roster,
-            weak-pc-six-core, six-hour-soak) need a launcher that emits an
-            attempt-bound production_validation_report.json (manifest_sha256 +
-            capture_id/session_id) AND an IN-PROCESS re-grade of that run (finding 1 —
-            never trust the sidecar). The DRIVE half is wired-at-the-seam: the pin
-            plumbing (Get-SafeLauncherPins / Get-SafeLauncherArgs), rung binding
-            (Start-Hoi4ProductionCaptureSafe.ps1 -Rung), the empty-dir hand-off
-            (-AllowExistingEmptyOutDir) and CPU-affinity application
-            (Set-ProcessAffinityFailClosed) are built and unit-tested. STILL OWED: the
-            finding-1 IN-PROCESS re-grade of a Safe-produced run. Get-LadderAuthoritative
-            Verdict deliberately passes an EMPTY validator config (so it fail-closes on
-            independent_gate_configuration_missing) and predecessor re-verification
-            re-grades each bound run through that SAME empty-config path — so a Safe run
-            cannot yet be re-graded (or serve as a passed predecessor) until the full
-            validator config (collector-control / speed-root-gate / finalized static
-            bundle / mod-dlc-load-order / live-resolution / evidence pins) is
-            reconstructed per bound run dir. That reconstruction is not wired, so a live
-            graded rung is still refused fail-closed rather than certified on the
-            launcher's own (untrusted) sidecar.
+            weak-pc-six-core, six-hour-soak) are wired through the Safe launcher.
+            The ladder reconstructs the validator inputs from the bound run and
+            performs its own in-process production grade; it never trusts the
+            launcher's production_validation_report.json as the verdict.
 
           * synthetic-fault needs an INJECTED-FAULT HARNESS that provokes a real
             fault and records attempt-linked synthetic_fault_proof evidence in the
@@ -608,17 +606,9 @@ function Get-RungBoundProducerOwed {
         producer uses Get-SafeLauncherArgs.
     #>
     param([Parameter(Mandatory = $true)]$RungDef)
-    $kind = Get-RungProofKind -RungDef $RungDef
-    if ($kind -eq "synthetic_fault") {
-        return "injected_fault_evidence_producer_owed: no harness yet provokes a real fault and records attempt-linked synthetic_fault_proof in this attempt's manifest (no fault-injection mechanism exists in the recorder/collector); refusing to certify (fail-closed)"
-    }
-    if ($kind -eq "paused") {
-        return "pause_evidence_producer_owed: no prover yet records attempt-linked pause_proof in this attempt's manifest (the recorder emits no pause_proof block; a pause is only per-frame stream status, not attempt-bound manifest evidence); refusing to certify (fail-closed)"
-    }
-    # Graded rungs: the DRIVE seam is wired (pins + args + rung binding + affinity), but
-    # the finding-1 IN-PROCESS re-grade of a Safe-produced run is owed (see above), so
-    # certifying is still refused fail-closed.
-    return "bound_report_in_process_regrade_owed: the pin plumbing to drive Start-Hoi4ProductionCaptureSafe.ps1 is wired (Get-SafeLauncherPins/Get-SafeLauncherArgs, -Rung binding, Set-ProcessAffinityFailClosed), but re-grading a Safe-produced run IN-PROCESS (finding 1) requires reconstructing the full validator config per bound run dir (collector-control/speed-root-gate/finalized-static-bundle/mod-dlc-load-order/live-resolution/evidence pins); until that is wired the ladder cannot re-grade the run (or re-verify it as a passed predecessor); refusing to certify (fail-closed)"
+    # Every rung now has a real Safe-launcher producer and an independent
+    # attempt-bound re-grade over retained artifacts.
+    return $null
 }
 
 function Invoke-LiveCapture {
@@ -630,28 +620,79 @@ function Invoke-LiveCapture {
     # requires an attempt-bound evidence producer to exist. No forgeable shortcut:
     # if the bound producer for this rung is not fully wired, refuse HERE rather than
     # launch a capture whose evidence could not be bound-and-regraded for this attempt.
-    # Graded rungs have their pin plumbing + rung binding wired (Get-SafeLauncherPins /
-    # Get-SafeLauncherArgs, -Rung) but the finding-1 IN-PROCESS re-grade of a Safe-
-    # produced run is owed; fault/pause rungs have no producing mechanism at all.
+    # Graded rungs have pin plumbing, rung binding, a Safe-launcher producer and an
+    # independent in-process re-grade. Fault/pause rungs remain refused until their
+    # real evidence producers exist.
     $owed = Get-RungBoundProducerOwed -RungDef $RungDef
     if ($null -ne $owed) {
         throw "cannot run live rung '$($RungDef.name)' (evidence producer not available): $owed"
     }
 
-    # Reachable only once every bound producer (drive + in-process re-grade) is wired
-    # (see Get-RungBoundProducerOwed). The pin resolution / launcher-argument assembly
-    # (Get-SafeLauncherPins, Get-SafeLauncherArgs) and CPU-affinity application
-    # (Set-ProcessAffinityFailClosed) are the built, unit-tested seam a completed wire
-    # will use; they are intentionally NOT reached while the re-grade is owed.
     $captureScript = Join-Path $scriptDir "Start-Hoi4ProductionCaptureSafe.ps1"
     if (-not (Test-Path -LiteralPath $captureScript -PathType Leaf)) {
         throw "bound-report capture launcher not found: $captureScript"
     }
-    $running = @(Get-Process -Name the game -ErrorAction SilentlyContinue)
-    if ($running.Count -eq 0) {
-        throw "no running hoi4.exe; a live acceptance rung needs the game running (owner-gated step)"
+    if ([string]::IsNullOrWhiteSpace($script:LadderSafeLauncherPinsFile)) {
+        throw "graded rung '$($RungDef.name)' requires -PinsFile (or BATTLE_PLAN_LADDER_SAFE_PINS); fail-closed"
     }
-    throw "live capture producer wiring is owed for rung '$($RungDef.name)' (see Get-RungBoundProducerOwed); refusing to certify (fail-closed)"
+    $pins = Get-SafeLauncherPins -PinsFile $script:LadderSafeLauncherPinsFile
+    $pid = [int](Get-ObjectProperty $pins "Hoi4Pid")
+    $target = Get-Process -Id $pid -ErrorAction Stop
+    if ($target.ProcessName -cne "the game") { throw "pinned Hoi4Pid $pid resolves to '$($target.ProcessName)', not the game; fail-closed" }
+
+    $originalAffinity = $null
+    $affinityProofPath = Join-Path $RunDir "affinity_proof.json"
+    $affinityProof = $null
+    if ($RungDef.Contains("affinityCores")) {
+        $affinityTarget = [string](Get-ObjectProperty $pins "AffinityTarget")
+        if ($affinityTarget -cne "game") {
+            throw "weak-pc-six-core requires pins AffinityTarget='game'; recorder targeting is not implemented and cannot be guessed"
+        }
+        $mask = Get-CpuAffinityMask -CoreCount ([int]$RungDef.affinityCores)
+        $originalAffinity = [int64]($target.ProcessorAffinity.ToInt64())
+        $appliedMask = Set-ProcessAffinityFailClosed -ProcessId $pid -Mask $mask
+        $affinityProof = [ordered]@{
+            schema = "battle-plan.f6_affinity_proof.v1"
+            target = "game"
+            pid = $pid
+            process_creation_filetime_utc = [int64]$target.StartTime.ToUniversalTime().ToFileTimeUtc()
+            requested_core_count = [int]$RungDef.affinityCores
+            requested_mask = [int64]$mask
+            applied_mask = [int64]$appliedMask
+            readback_mask = [int64]((Get-Process -Id $pid -ErrorAction Stop).ProcessorAffinity.ToInt64())
+            applied_before_capture = $true
+            original_mask = [int64]$originalAffinity
+            restored_after_capture = $false
+            restored_mask = $null
+        }
+        $affinityProof | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $affinityProofPath -Encoding UTF8
+    }
+
+    $acceptanceNonce = ""
+    if ((Get-RungProofKind -RungDef $RungDef) -in @("synthetic_fault", "paused")) {
+        $nonceBytes = [byte[]]::new(32)
+        $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+        try { $rng.GetBytes($nonceBytes) } finally { $rng.Dispose() }
+        $acceptanceNonce = -join ($nonceBytes | ForEach-Object { $_.ToString('x2') })
+    }
+    $args = Get-SafeLauncherArgs -RungDef $RungDef -CaptureScript $captureScript -Pins $pins -RunDir $RunDir -AcceptanceTestNonce $acceptanceNonce
+    $stdout = Join-Path $RunDir "ladder_safe_launcher.stdout.log"
+    $stderr = Join-Path $RunDir "ladder_safe_launcher.stderr.log"
+    $proc = $null
+    try {
+        $proc = Start-Process -FilePath "powershell.exe" -ArgumentList (ConvertTo-QuotedArgumentLine -Arguments $args) -PassThru -Wait -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        if ($proc.ExitCode -ne 0) {
+            throw "Safe capture launcher failed for rung '$($RungDef.name)' with exit code $($proc.ExitCode); see $stderr"
+        }
+    } finally {
+        if ($null -ne $originalAffinity -and $null -ne $affinityProof) {
+            $restored = Set-ProcessAffinityFailClosed -ProcessId $pid -Mask $originalAffinity
+            $affinityProof.restored_after_capture = $true
+            $affinityProof.restored_mask = [int64]$restored
+            $affinityProof | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $affinityProofPath -Encoding UTF8
+        }
+    }
+    return $RunDir
 }
 
 # ---------------------------------------------------------------------------
@@ -675,36 +716,150 @@ function Invoke-LiveCapture {
 
 $script:LadderArtifactValidatorOverride = $null
 
+function Get-RecordedArgumentValue {
+    <# Return one exact value from a persisted recorder argument vector. #>
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    $matches = [System.Collections.Generic.List[string]]::new()
+    for ($i = 0; $i -lt $Arguments.Count; $i++) {
+        if ([string]$Arguments[$i] -cne $Name) { continue }
+        if (($i + 1) -ge $Arguments.Count) { throw "capture plan recorder argument '$Name' has no value" }
+        $matches.Add([string]$Arguments[$i + 1])
+    }
+    if ($matches.Count -ne 1 -or [string]::IsNullOrWhiteSpace($matches[0])) {
+        throw "capture plan must contain exactly one nonblank '$Name' recorder argument (found $($matches.Count)); fail-closed"
+    }
+    return $matches[0]
+}
+
+function Get-RunStaticArtifactPaths {
+    <# Reconstruct the exact seven finalized static artifacts from the bound run. #>
+    param([Parameter(Mandatory = $true)][string]$BundleDir)
+    $manifestPath = Join-Path $BundleDir "static_bundle_manifest.json"
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "finalized static bundle manifest missing: $manifestPath"
+    }
+    $bundle = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $paths = @{}
+    foreach ($entry in @(Get-ObjectProperty $bundle "artifacts")) {
+        $role = [string](Get-ObjectProperty $entry "role")
+        $file = [string](Get-ObjectProperty $entry "file")
+        if ($script:RequiredStaticArtifactNames -notcontains $role -or $paths.ContainsKey($role) -or [string]::IsNullOrWhiteSpace($file)) {
+            throw "finalized static bundle has duplicate, unknown, or blank artifact role '$role'"
+        }
+        $path = Join-Path $BundleDir $file
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "finalized static artifact missing ($role): $path" }
+        $paths[$role] = $path
+    }
+    if ($paths.Count -ne $script:RequiredStaticArtifactNames.Count) {
+        throw "finalized static bundle does not contain the exact seven required roles"
+    }
+    return $paths
+}
+
 function Get-LadderAuthoritativeVerdict {
     <#
         DEFAULT authoritative grade: run the SAME heavyweight production gate a real
         production PASS uses (Test-ProductionCaptureArtifacts) over THIS attempt's
         run directory, returning the validator's own verdict object (schema / ok /
-        problems). Repo-fixed inputs (domain registry, the native gate exes, the
-        python verifiers) resolve from the native root; run-local inputs resolve
-        from $RunDir. Evidence pins the ladder does not yet collect are passed empty
-        so the validator FAILS CLOSED until a bound live producer supplies them
-        (see Get-RungBoundProducerOwed). Reached in production only once such a
-        producer is wired; today every live rung fails closed earlier in
-        Invoke-LiveCapture, so this default path is exercised by the self-test's
-        override seam rather than by a live capture.
+        problems). Repo-fixed inputs (domain registry, native gate exes, Python
+        verifiers) resolve from the native root. Every attempt-specific input is
+        reconstructed from the run's capture plan, finalized static-bundle manifest,
+        speed proof, and speed-root gate. The pre-existing validation sidecar is not
+        read. Missing/duplicate plan arguments or missing artifacts throw fail-closed.
     #>
     param([Parameter(Mandatory = $true)][string]$RunDir)
     $nativeRoot = Split-Path -Parent $scriptDir
-    $releaseRoot = Join-Path (Join-Path $nativeRoot "target") "release"
+    $repoRoot = Split-Path -Parent (Split-Path -Parent $nativeRoot)
+    $targetRoot = if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) { Join-Path $repoRoot '.cargo-target' } else { [System.IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) }
+    $releaseRoot = Join-Path $targetRoot "release"
+    $planPath = Join-Path $RunDir "production_capture_plan.json"
+    if (-not (Test-Path -LiteralPath $planPath -PathType Leaf)) { throw "capture plan missing: $planPath" }
+    $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+    $arguments = @(Get-ObjectProperty $plan "recorder_arguments")
+    if ($arguments.Count -eq 0) { throw "capture plan recorder_arguments missing" }
+    $acceptanceMode = [string](Get-ObjectProperty $plan "acceptance_mode")
+    if ($acceptanceMode -in @("synthetic-fault", "paused")) {
+        if ((Get-ObjectProperty $plan "admissible_for_production") -isnot [bool] -or (Get-ObjectProperty $plan "admissible_for_production") -ne $false) {
+            throw "acceptance plan does not explicitly deny production admission"
+        }
+        $pythonPath = Get-RecordedArgumentValue -Arguments $arguments -Name "--static-bundle-python"
+        if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) { throw "recorded Python executable is unavailable: $pythonPath" }
+        $proofScript = if ($acceptanceMode -eq "synthetic-fault") { Join-Path $scriptDir "verify_f6_synthetic_fault_proof.py" } else { Join-Path $scriptDir "verify_f6_pause_proof.py" }
+        $snapshotDir = Join-Path $RunDir "acceptance_snapshots"
+        $extractionReport = Join-Path $RunDir "acceptance_snapshot_extraction.json"
+        $regradePath = Join-Path $RunDir "ladder_acceptance_regrade.json"
+        & $pythonPath $proofScript --run-dir $RunDir --snapshot-dir $snapshotDir --extraction-report $extractionReport --out $regradePath | Out-Null
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $regradePath -PathType Leaf)) {
+            return [pscustomobject]@{ schema = "battle-plan.production_capture_validation.v2"; ok = $false; problems = @("independent acceptance proof re-grade failed") }
+        }
+        $proof = Get-Content -LiteralPath $regradePath -Raw | ConvertFrom-Json
+        $proofOk = (Get-ObjectProperty $proof "ok")
+        $proofProblems = if ($proofOk -is [bool] -and $proofOk -eq $true) { @() } else { @(Get-ObjectProperty $proof "problems") }
+        return [pscustomobject]@{
+            schema = "battle-plan.production_capture_validation.v2"
+            ok = ($proofOk -is [bool] -and $proofOk -eq $true)
+            problems = $proofProblems
+            acceptance_proof = $proof
+        }
+    }
+
+    $bundleDir = [string](Get-ObjectProperty $plan "finalized_static_bundle")
+    if ([string]::IsNullOrWhiteSpace($bundleDir) -or -not (Test-Path -LiteralPath $bundleDir -PathType Container)) {
+        throw "capture plan finalized_static_bundle is missing or unavailable: '$bundleDir'"
+    }
+    $staticPaths = Get-RunStaticArtifactPaths -BundleDir $bundleDir
+
+    $speedProofPath = Join-Path $RunDir "speed5_proof.json"
+    if (-not (Test-Path -LiteralPath $speedProofPath -PathType Leaf)) { throw "speed proof missing: $speedProofPath" }
+    $speedProof = Get-Content -LiteralPath $speedProofPath -Raw | ConvertFrom-Json
+    $gameExePath = [string](Get-ObjectProperty $speedProof "exe_path")
+    if ([string]::IsNullOrWhiteSpace($gameExePath)) { throw "speed proof exe_path missing" }
+
+    $speedRootGatePath = [string](Get-ObjectProperty $plan "domain57_game_speed_gate_v2")
+    if ([string]::IsNullOrWhiteSpace($speedRootGatePath) -or -not (Test-Path -LiteralPath $speedRootGatePath -PathType Leaf)) {
+        throw "capture plan speed-root gate path missing or unavailable"
+    }
+    $speedRootGate = Get-Content -LiteralPath $speedRootGatePath -Raw | ConvertFrom-Json
+    $expectedStaticDisasmSha = [string](Get-ObjectProperty $speedRootGate "static_disasm_sha256")
+    if ($expectedStaticDisasmSha -cnotmatch '^[0-9a-f]{64}$') { throw "speed-root gate static disassembly hash is noncanonical" }
+
+    $stagedDll = [string](Get-ObjectProperty $plan "staged_dll")
+    if ([string]::IsNullOrWhiteSpace($stagedDll)) { throw "capture plan staged_dll missing" }
+    $collectorControlPath = Join-Path (Split-Path -Parent $stagedDll) "collector_control.json"
+    $pythonPath = Get-RecordedArgumentValue -Arguments $arguments -Name "--static-bundle-python"
+    if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) { throw "recorded Python executable is unavailable: $pythonPath" }
     return (Test-ProductionCaptureArtifacts `
         -RunDir $RunDir `
         -RegistryPath (Join-Path $nativeRoot "domain_registry.json") `
-        -SpeedProofPath (Join-Path $RunDir "speed5_proof.json") `
+        -SpeedProofPath $speedProofPath `
+        -StaticArtifactPaths $staticPaths `
+        -ExpectedStagedDll $stagedDll `
         -CompactGateExe (Join-Path $releaseRoot "compact_replay_gate.exe") `
         -FoldCheckExe (Join-Path $releaseRoot "fold_check.exe") `
         -ContainerVerifyExe (Join-Path $releaseRoot "pack_replay.exe") `
-        -PythonExe "python" `
+        -PythonExe $pythonPath `
         -StaticBundleScript (Join-Path (Join-Path (Split-Path -Parent $nativeRoot) "game_defs") "static_bundle.py") `
-        -StaticBundleDir $RunDir `
-        -CapturePlanPath (Join-Path $RunDir "production_capture_plan.json") `
+        -StaticBundleDir $bundleDir `
+        -GameExePath $gameExePath `
+        -ModStatePath (Get-RecordedArgumentValue -Arguments $arguments -Name "--static-bundle-mod-state") `
+        -DlcStatePath (Get-RecordedArgumentValue -Arguments $arguments -Name "--static-bundle-dlc-state") `
+        -LoadOrderPath (Get-RecordedArgumentValue -Arguments $arguments -Name "--static-bundle-load-order") `
+        -SourceInventoryPath ([string](Get-ObjectProperty $plan "static_bundle_source_inventory")) `
+        -LiveResolutionReportPath ([string](Get-ObjectProperty $plan "static_bundle_live_resolution_report")) `
+        -CapturePlanPath $planPath `
+        -SpeedRootGatePath $speedRootGatePath `
+        -CollectorControlPath $collectorControlPath `
+        -SpeedMonitorPath (Join-Path $RunDir "speed5_monitor.jsonl") `
         -SpeedStreamVerifier (Join-Path $scriptDir "verify_speed5_stream.py") `
-        -SpeedEvidenceVerifier (Join-Path $scriptDir "verify_speed_root_evidence_v2.py"))
+        -SpeedEvidenceTranscriptPath ([string](Get-ObjectProperty $plan "speed_evidence_transcript_path")) `
+        -SpeedEvidenceNonceLedgerRoot ([string](Get-ObjectProperty $plan "speed_evidence_nonce_ledger_root")) `
+        -SpeedEvidenceVerifier (Join-Path $scriptDir "verify_speed_root_evidence_v2.py") `
+        -ExpectedSpeedEvidenceVerifierSha256 "1a8057e0084e8507b1c8cde6a7d7c0198652db6efca0bbcb891bc7dc99cb8e28" `
+        -ExpectedSpeedEvidenceProbeSha256 "7302d6981b74b5eba149a58b30e359c9e519e7b7e275273c07ca4214615b406b" `
+        -ExpectedSpeedStaticDisasmSha256 $expectedStaticDisasmSha)
 }
 
 function Invoke-LadderArtifactValidator {
@@ -799,10 +954,32 @@ function Test-LadderRungProof {
     #>
     param(
         [Parameter(Mandatory = $true)]$RungDef,
-        [Parameter(Mandatory = $true)]$Manifest
+        [Parameter(Mandatory = $true)]$Manifest,
+        [string]$RunDir = ""
     )
     $problems = [System.Collections.Generic.List[string]]::new()
     $kind = Get-RungProofKind -RungDef $RungDef
+
+    if ($kind -in @("synthetic_fault", "paused") -and -not [string]::IsNullOrWhiteSpace($RunDir)) {
+        $planPath = Join-Path $RunDir "production_capture_plan.json"
+        if (Test-Path -LiteralPath $planPath -PathType Leaf) {
+            $boundPlan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+            $expectedMode = if ($kind -eq "synthetic_fault") { "synthetic-fault" } else { "paused" }
+            if ([string](Get-ObjectProperty $boundPlan "acceptance_mode") -eq $expectedMode) {
+                try { $regrade = Get-LadderAuthoritativeVerdict -RunDir $RunDir }
+                catch {
+                    $problems.Add("acceptance_proof_regrade_threw: $($_.Exception.Message)")
+                    return [pscustomobject]@{ Passed = $false; Problems = $problems.ToArray() }
+                }
+                $boundProof = Get-ObjectProperty $regrade "acceptance_proof"
+                $expectedSchema = if ($kind -eq "synthetic_fault") { "battle-plan.f6_synthetic_fault_proof.v1" } else { "battle-plan.f6_pause_proof.v1" }
+                if ([string](Get-ObjectProperty $boundProof "schema") -cne $expectedSchema -or (Get-ObjectProperty $boundProof "ok") -isnot [bool] -or (Get-ObjectProperty $boundProof "ok") -ne $true) {
+                    $problems.Add("attempt-bound acceptance proof did not independently verify")
+                }
+                return [pscustomobject]@{ Passed = ($problems.Count -eq 0); Problems = $problems.ToArray() }
+            }
+        }
+    }
 
     function Test-ProofFlag {
         param($Manifest, [string]$Path, [string]$Label, $Problems)
@@ -826,6 +1003,70 @@ function Test-LadderRungProof {
         }
     }
 
+    return [pscustomobject]@{ Passed = ($problems.Count -eq 0); Problems = $problems.ToArray() }
+}
+
+function Test-LadderAffinityProof {
+    <# Grade the weak-PC rung's OS apply/readback/restore evidence. #>
+    param(
+        [Parameter(Mandatory = $true)]$RungDef,
+        [Parameter(Mandatory = $true)][string]$RunDir
+    )
+    $problems = [System.Collections.Generic.List[string]]::new()
+    if (-not $RungDef.Contains("affinityCores")) {
+        return [pscustomobject]@{ Passed = $true; Problems = @() }
+    }
+    $path = Join-Path $RunDir "affinity_proof.json"
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        $problems.Add("affinity_proof_missing")
+        return [pscustomobject]@{ Passed = $false; Problems = $problems.ToArray() }
+    }
+    try { $proof = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json }
+    catch {
+        $problems.Add("affinity_proof_not_json")
+        return [pscustomobject]@{ Passed = $false; Problems = $problems.ToArray() }
+    }
+    $expectedMask = Get-CpuAffinityMask -CoreCount ([int]$RungDef.affinityCores)
+    if ([string](Get-ObjectProperty $proof "schema") -cne "battle-plan.f6_affinity_proof.v1") { $problems.Add("affinity_proof_wrong_schema") }
+    if ([string](Get-ObjectProperty $proof "target") -cne "game") { $problems.Add("affinity_target_not_game") }
+    $integerFieldsOk = $true
+    foreach ($field in @("pid", "process_creation_filetime_utc", "requested_core_count", "requested_mask", "applied_mask", "readback_mask", "original_mask", "restored_mask")) {
+        if (-not (Test-IsJsonInteger (Get-ObjectProperty $proof $field))) {
+            $problems.Add("affinity_$field`_not_integer")
+            $integerFieldsOk = $false
+        }
+    }
+    if ($integerFieldsOk) {
+        if ([int64](Get-ObjectProperty $proof "pid") -le 0) { $problems.Add("affinity_pid_not_positive") }
+        if ([int64](Get-ObjectProperty $proof "process_creation_filetime_utc") -le 0) { $problems.Add("affinity_process_creation_not_positive") }
+        if ([int64](Get-ObjectProperty $proof "requested_core_count") -ne [int64]$RungDef.affinityCores) { $problems.Add("affinity_requested_core_count_mismatch") }
+        if ([int64](Get-ObjectProperty $proof "requested_mask") -ne $expectedMask -or [int64](Get-ObjectProperty $proof "applied_mask") -ne $expectedMask -or [int64](Get-ObjectProperty $proof "readback_mask") -ne $expectedMask) { $problems.Add("affinity_requested_applied_readback_mismatch") }
+        if ([int64](Get-ObjectProperty $proof "original_mask") -le 0 -or [int64](Get-ObjectProperty $proof "restored_mask") -le 0) { $problems.Add("affinity_original_or_restored_mask_not_positive") }
+        if ([int64](Get-ObjectProperty $proof "restored_mask") -ne [int64](Get-ObjectProperty $proof "original_mask")) { $problems.Add("affinity_restore_readback_mismatch") }
+    }
+    if ((Get-ObjectProperty $proof "applied_before_capture") -isnot [bool] -or (Get-ObjectProperty $proof "applied_before_capture") -ne $true) { $problems.Add("affinity_not_applied_before_capture") }
+    if ((Get-ObjectProperty $proof "restored_after_capture") -isnot [bool] -or (Get-ObjectProperty $proof "restored_after_capture") -ne $true) { $problems.Add("affinity_not_restored_after_capture") }
+    $planPath = Join-Path $RunDir "production_capture_plan.json"
+    try { $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json }
+    catch { $plan = $null; $problems.Add("affinity_capture_plan_unreadable") }
+    if ($null -ne $plan) {
+        $planPid = Get-ObjectProperty $plan "pid"
+        $planCreated = Get-ObjectProperty $plan "process_creation_filetime_utc"
+        if (-not (Test-IsJsonInteger $planPid)) {
+            $problems.Add("affinity_capture_plan_pid_not_integer")
+        }
+        if (-not (Test-IsJsonInteger $planCreated)) {
+            $problems.Add("affinity_capture_plan_process_creation_not_integer")
+        }
+        if ($integerFieldsOk) {
+            if (Test-IsJsonInteger $planPid) {
+                if ([int64]$planPid -ne [int64](Get-ObjectProperty $proof "pid")) { $problems.Add("affinity_pid_not_bound_to_capture_plan") }
+            }
+            if (Test-IsJsonInteger $planCreated) {
+                if ([int64]$planCreated -ne [int64](Get-ObjectProperty $proof "process_creation_filetime_utc")) { $problems.Add("affinity_process_creation_not_bound_to_capture_plan") }
+            }
+        }
+    }
     return [pscustomobject]@{ Passed = ($problems.Count -eq 0); Problems = $problems.ToArray() }
 }
 
@@ -974,9 +1215,15 @@ function Test-RungBoundVerdict {
         $manifest = $null
         try { $manifest = Read-CaptureManifest -RunDir $runDir }
         catch { return [pscustomobject]@{ Passed = $false; Reason = "bound_manifest_unreadable_for_proof_reverify: $($_.Exception.Message)" } }
-        $proof = Test-LadderRungProof -RungDef $rungDef -Manifest $manifest
+        $proof = Test-LadderRungProof -RungDef $rungDef -Manifest $manifest -RunDir $runDir
         if (-not $proof.Passed) {
             return [pscustomobject]@{ Passed = $false; Reason = "bound_proof_no_longer_verifies: $($proof.Problems -join '; ')" }
+        }
+    }
+    if ($null -ne $rungDef) {
+        $affinity = Test-LadderAffinityProof -RungDef $rungDef -RunDir $runDir
+        if (-not $affinity.Passed) {
+            return [pscustomobject]@{ Passed = $false; Reason = "bound_affinity_proof_no_longer_verifies: $($affinity.Problems -join '; ')" }
         }
     }
     return [pscustomobject]@{ Passed = $true; Reason = $null }
@@ -1115,9 +1362,11 @@ function Invoke-LadderRung {
     try { $manifest = Read-CaptureManifest -RunDir $producedDir }
     catch { $problems.Add("manifest_unreadable_for_rung_proof: $($_.Exception.Message)") }
     if ($null -ne $manifest) {
-        $proof = Test-LadderRungProof -RungDef $rungDef -Manifest $manifest
+        $proof = Test-LadderRungProof -RungDef $rungDef -Manifest $manifest -RunDir $producedDir
         foreach ($p in $proof.Problems) { $problems.Add($p) }
     }
+    $affinity = Test-LadderAffinityProof -RungDef $rungDef -RunDir $producedDir
+    foreach ($p in $affinity.Problems) { $problems.Add($p) }
 
     $verdict = [pscustomobject]@{
         Passed   = ($problems.Count -eq 0)
@@ -1255,8 +1504,16 @@ function New-FakeCaptureForRung {
 
     # Capture plan: records the attempt's capture_id/session_id AND the rung this run
     # is for (finding 3 identity binding), as a real bound producer must.
-    $plan = [ordered]@{ schema = "battle-plan.production_capture_plan.v1"; capture_id = $captureId; session_id = $sessionId; rung = $RungName }
+    $plan = [ordered]@{ schema = "battle-plan.production_capture_plan.v1"; capture_id = $captureId; session_id = $sessionId; pid = 4242; process_creation_filetime_utc = 133000000000000000; rung = $RungName }
     $plan | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $RunDir "production_capture_plan.json") -Encoding UTF8
+    if ($RungName -eq "weak-pc-six-core") {
+        [ordered]@{
+            schema = "battle-plan.f6_affinity_proof.v1"; target = "game"; pid = 4242
+            process_creation_filetime_utc = 133000000000000000
+            requested_core_count = 6; requested_mask = 63; applied_mask = 63; readback_mask = 63
+            applied_before_capture = $true; original_mask = 255; restored_after_capture = $true; restored_mask = 255
+        } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $RunDir "affinity_proof.json") -Encoding UTF8
+    }
 
     if ($WriteSidecar) {
         # A fully-bound, rosy sidecar for provenance. It is IGNORED by the grader:
@@ -1555,25 +1812,15 @@ Set-Content -LiteralPath $Sentinel -Value ("MODE=$Mode`nOUTDIR=$OutDir") -Encodi
         $emptyLine = ConvertTo-QuotedArgumentLine -Arguments @("-A", "", "-B", "x")
         Assert-True ($emptyLine -eq '-A "" -B x') "an empty argument must be emitted as `"`" (got: [$emptyLine])"
 
-        # 14. F2/F3 live producer fail-closed: the live producer refuses to certify
-        #     any rung whose attempt-bound evidence producer is not wired (owed),
-        #     rather than launch a capture that cannot emit bound evidence.
+        # 14. Every rung now has an explicit Safe-launcher producer. Proof rungs
+        #     remain non-production and are independently regraded from extracted
+        #     replay snapshots rather than trusting manifest booleans.
         $defsOwed = Get-LadderRungDefinitions
-        foreach ($rn in @("synthetic-fault", "paused-short-proof", "speed5-short-proof", "six-hour-soak")) {
+        foreach ($rn in @("synthetic-fault", "paused-short-proof", "speed5-short-proof", "five-minute-full-roster", "weak-pc-six-core", "six-hour-soak")) {
             $rd = @($defsOwed | Where-Object { $_.name -eq $rn })[0]
             $owed = Get-RungBoundProducerOwed -RungDef $rd
-            Assert-True ($null -ne $owed) "rung $rn must report an owed bound producer"
-            $threwOwed = $false; $owedMsg = ""
-            try { Invoke-LiveCapture -RungDef $rd -RunDir $runRoot } catch { $threwOwed = $true; $owedMsg = $_.Exception.Message }
-            Assert-True $threwOwed "the live producer for $rn must fail-closed (throw) while its bound producer is owed"
-            Assert-True ($owedMsg -match "evidence producer not available") "the fail-closed message must name the owed producer for $rn"
+            Assert-True ($null -eq $owed) "rung $rn must use a wired Safe-launcher producer and in-process re-grade"
         }
-        $faultOwed = Get-RungBoundProducerOwed -RungDef (@($defsOwed | Where-Object { $_.name -eq "synthetic-fault" })[0])
-        Assert-True ($faultOwed -match "injected_fault_evidence_producer_owed") "synthetic-fault must name the injected-fault harness as owed"
-        $pauseOwed = Get-RungBoundProducerOwed -RungDef (@($defsOwed | Where-Object { $_.name -eq "paused-short-proof" })[0])
-        Assert-True ($pauseOwed -match "pause_evidence_producer_owed") "paused rung must name the pause prover as owed"
-        $gradedOwed = Get-RungBoundProducerOwed -RungDef (@($defsOwed | Where-Object { $_.name -eq "speed5-short-proof" })[0])
-        Assert-True ($gradedOwed -match "bound_report_in_process_regrade_owed") "graded rung must name the in-process re-grade as the owed piece"
 
         # 15. F6 forged predecessor: hand-editing a predecessor's status to "passed"
         #     without a verifying bound artifact must NOT unlock a later rung; the
@@ -1898,7 +2145,7 @@ Set-Content -LiteralPath $Sentinel -Value ("A=[$A]`nB=[$B]`nC=[$C]") -Encoding U
         #     mandatory pin set + rung binding + OutDir into the Safe-launcher argument
         #     array, and forwards optional knobs that are present.
         $speed5Def = @(Get-LadderRungDefinitions | Where-Object { $_.name -eq "speed5-short-proof" })[0]
-        $safeArgsAssembled = Get-SafeLauncherArgs -RungDef $speed5Def -CaptureScript "C:\some path\Start-Hoi4ProductionCaptureSafe.ps1" -Pins $parsedPins
+        $safeArgsAssembled = Get-SafeLauncherArgs -RungDef $speed5Def -CaptureScript "C:\some path\Start-Hoi4ProductionCaptureSafe.ps1" -Pins $parsedPins -RunDir "D:\hoi4_local_captures\rung"
         Assert-True ($safeArgsAssembled -contains "-Rung") "assembled args must bind the rung"
         Assert-True ($safeArgsAssembled -contains "speed5-short-proof") "assembled args must name this rung"
         Assert-True ($safeArgsAssembled -contains "-Hoi4Pid" -and $safeArgsAssembled -contains "4321") "assembled args must carry the pinned Hoi4Pid"
@@ -1907,20 +2154,16 @@ Set-Content -LiteralPath $Sentinel -Value ("A=[$A]`nB=[$B]`nC=[$C]") -Encoding U
             Assert-True ($safeArgsAssembled -contains $needPin) "assembled args must include mandatory pin flag $needPin"
         }
         Assert-True ($safeArgsAssembled -contains "-DurationSeconds" -and $safeArgsAssembled -contains "300") "an optional knob present in the pins must be forwarded"
-        Assert-True (-not ($safeArgsAssembled -contains "-AllowExistingEmptyOutDir")) "arg assembly must not pass -AllowExistingEmptyOutDir (the launcher owns its dir)"
+        Assert-True ($safeArgsAssembled -contains "-AllowExistingEmptyOutDir") "arg assembly must explicitly hand off the ladder's fresh empty run directory"
+        Assert-True ($safeArgsAssembled -contains "-SkipBuild") "each rung must reuse the final prebuilt binaries instead of compiling per rung"
 
-        # 27. Owed-producer mapping post-wiring: the graded rung now names the IN-PROCESS
-        #     re-grade as the precise owed piece (drive seam wired); fault/pause still name
-        #     their missing mechanism. No graded rung silently reports "no owed producer".
-        foreach ($gradedName in @("speed5-short-proof", "five-minute-full-roster", "weak-pc-six-core", "six-hour-soak")) {
+        # 27. Owed-producer mapping post-wiring: all rungs have a Safe-launcher
+        #     producer plus independent in-process re-grade.
+        foreach ($gradedName in @("synthetic-fault", "paused-short-proof", "speed5-short-proof", "five-minute-full-roster", "weak-pc-six-core", "six-hour-soak")) {
             $gDef = @(Get-LadderRungDefinitions | Where-Object { $_.name -eq $gradedName })[0]
             $gOwed = Get-RungBoundProducerOwed -RungDef $gDef
-            Assert-True ($null -ne $gOwed -and $gOwed -match "bound_report_in_process_regrade_owed") "$gradedName must remain fail-closed on the owed in-process re-grade"
+            Assert-True ($null -eq $gOwed) "$gradedName must have a bound producer and independent in-process re-grade"
         }
-        $faultOwed27 = Get-RungBoundProducerOwed -RungDef (@(Get-LadderRungDefinitions | Where-Object { $_.name -eq "synthetic-fault" })[0])
-        Assert-True ($faultOwed27 -match "injected_fault_evidence_producer_owed" -and $faultOwed27 -match "no fault-injection mechanism") "synthetic-fault must remain owed on the absent fault-injection mechanism"
-        $pauseOwed27 = Get-RungBoundProducerOwed -RungDef (@(Get-LadderRungDefinitions | Where-Object { $_.name -eq "paused-short-proof" })[0])
-        Assert-True ($pauseOwed27 -match "pause_evidence_producer_owed" -and $pauseOwed27 -match "no pause_proof block") "paused rung must remain owed on the absent pause_proof emission"
 
     } finally {
         # Clear the in-process validator seam so it never leaks past the self-test.
@@ -1991,7 +2234,16 @@ if (-not $Live) {
     throw "refusing to run rung '$targetRung' without -Live: launching the game is owner-gated. Re-run with -Live once the game is up, or use -SelfTest for the offline machinery checks."
 }
 
-$runRoot = Join-Path (Split-Path -Parent $scriptDir) "runs"
+$runRoot = $RunRoot
+if ([string]::IsNullOrWhiteSpace($runRoot)) {
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        throw "LOCALAPPDATA is unavailable; pass -RunRoot with a local non-repository capture root"
+    }
+    $runRoot = Join-Path $env:LOCALAPPDATA "Hoi4MpStats\acceptance_ladder_runs"
+}
+if (-not (Test-Path -LiteralPath $runRoot -PathType Container)) {
+    New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
+}
 $verdict = Invoke-LadderRung -State $state -Name $targetRung -StateFile $StateFile `
     -CaptureFunction ${function:Invoke-LiveCapture} -RunRoot $runRoot
 Show-LadderStatus -State $state

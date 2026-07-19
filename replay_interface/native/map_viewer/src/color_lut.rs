@@ -99,9 +99,9 @@ pub fn parse_color_correction_tga(bytes: &[u8], label: &str) -> Result<ColorCorr
     if !(bits_per_pixel == 24 || bits_per_pixel == 32) {
         return Err(format!("{label}: unsupported TGA bpp {bits_per_pixel}").into());
     }
-    if width == 0 || height == 0 || width % height != 0 {
+    if width == 0 || height == 0 || width != height * height {
         return Err(format!(
-            "{label}: {width}x{height} is not a LUT strip (width must be a multiple of height)"
+            "{label}: {width}x{height} is not a LUT strip (width must equal height*height)"
         )
         .into());
     }
@@ -298,6 +298,24 @@ mod tests {
         // Nearest index of 0.5*7 = 4 -> 4/7 etc.
         assert!((sampled[0] - (4.0f32 * 255.0 / 7.0).round() / 255.0).abs() < 1e-6);
         assert!((sampled[2] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn non_cube_strip_is_a_typed_refusal_not_a_panic() {
+        // 64x32 passes the old `width % height == 0` check but is not a
+        // LUT strip (width must equal height*height = 1024); texel()
+        // would index out of bounds. Must fail closed at parse time.
+        let mut bytes = vec![0u8; 18];
+        bytes[2] = 2;
+        bytes[12..14].copy_from_slice(&64u16.to_le_bytes());
+        bytes[14..16].copy_from_slice(&32u16.to_le_bytes());
+        bytes[16] = 24;
+        bytes.extend_from_slice(&[0u8; 64 * 32 * 3]);
+        let err = parse_color_correction_tga(&bytes, "non_cube").expect_err("non-cube strip");
+        assert!(
+            err.to_string().contains("not a LUT strip"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

@@ -47,19 +47,17 @@ pub struct ActiveAbilityPresentation {
 pub struct ActiveAbilityRejection(pub String);
 
 /// Parse the effective `common/abilities` namespace and resolve every icon
-/// against the effective interface sprite registry. The resolver is the same
-/// authenticated UI14/UI15 VFS used by XUI24; duplicate identities, parse
-/// recoveries, unknown top-level constructs, missing required fields and
-/// unresolved icons reject the whole catalog.
+/// against the effective interface sprite registry supplied by the caller
+/// (the same authenticated one the runtime builds, e.g. replay_app
+/// ui_runtime). The resolver is the same authenticated UI14/UI15 VFS used by
+/// XUI24; duplicate identities, parse recoveries, unknown top-level
+/// constructs, missing required fields and unresolved icons reject the whole
+/// catalog.
 pub fn load_active_ability_definitions(
     resolver: &AssetResolver,
+    sprites: &SpriteRegistry,
 ) -> UiResult<BTreeMap<String, AbilityDefinition>> {
     let ability_files = resolver.list_files_recursive("common/abilities", Some("txt"))?;
-    let gfx_files = resolver.list_files_recursive("interface", Some("gfx"))?;
-    let mut sprites = SpriteRegistry::new();
-    for file in &gfx_files {
-        sprites.parse_file(&file.path, &file.rel_path)?;
-    }
     let mut documents = Vec::with_capacity(ability_files.len());
     for file in &ability_files {
         let document = parse_file(&file.path)?;
@@ -71,7 +69,7 @@ pub fn load_active_ability_definitions(
         }
         documents.push((file.rel_path.clone(), document));
     }
-    definitions_from_documents(&documents, &sprites)
+    definitions_from_documents(&documents, sprites)
 }
 
 fn definitions_from_documents(

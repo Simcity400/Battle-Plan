@@ -733,7 +733,6 @@ impl<S: IdentityDurableCandidateSink> RecorderIdentityControlDispatcher<S> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

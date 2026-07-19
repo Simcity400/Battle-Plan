@@ -12,6 +12,51 @@ sys.path.insert(0, str(HERE))
 import static_bundle as SB  # noqa: E402
 
 
+@pytest.mark.parametrize(
+    ("payload", "detail"),
+    [
+        (b'{"schema":"first","schema":"second"}', "duplicate JSON object member"),
+        (b'{"outer":{"value":1,"value":2}}', "duplicate JSON object member"),
+        (b'{"value":NaN}', "non-finite JSON constant"),
+        (b'{"value":Infinity}', "non-finite JSON constant"),
+    ],
+)
+def test_shared_json_loader_rejects_ambiguous_or_nonstandard_objects(
+    tmp_path: Path, payload: bytes, detail: str
+):
+    path = tmp_path / "ambiguous.json"
+    path.write_bytes(payload)
+
+    with pytest.raises(SB.BundleError, match=detail):
+        SB.load_object(path, "fixture authority")
+
+
+def test_emitted_token_inventory_uses_the_shared_strict_json_loader(tmp_path: Path):
+    path = tmp_path / "emitted_tokens.json"
+    path.write_bytes(
+        b'{"schema":"extractor.emitted_token_inventory.v1",'
+        b'"tokens":[],"tokens":[],'
+        b'"provenance":{"capture_id":"capture",'
+        b'"session_id":"session",'
+        b'"stream_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        b'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'
+    )
+
+    with pytest.raises(SB.BundleError, match="duplicate JSON object member"):
+        SB._load_token_inventory(
+            path,
+            "emitted token inventory",
+            SB.EMITTED_INVENTORY_SCHEMA,
+            require_capture_provenance=True,
+        )
+
+
+@pytest.mark.parametrize("encoder", [SB.canonical_json, SB.pretty_json])
+def test_bundle_json_encoders_refuse_nonfinite_numbers(encoder):
+    with pytest.raises(ValueError, match="Out of range float values"):
+        encoder({"value": float("nan")})
+
+
 def _source_row(
     namespace_ordinal: int,
     layer_kind: str,

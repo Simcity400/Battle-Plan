@@ -7,10 +7,10 @@
 
 use replay_core::{
     AirCombatLossRow, AirRegionCombatRow, CombatParticipantEvent, CombatRow, ConvoyLossRow,
-    DiplomacyView, LandCombatSideDetail, Leaf, NavalCombatRow, WarObjectRow, WarRelationRow,
-    WorldFrame,
+    DiplomacyView, EndedCombatRow, LandCombatSideDetail, Leaf, NavalCombatRow, ViewStatus,
+    WarObjectRow, WarRelationRow, WorldFrame,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LandCombatPanel {
@@ -40,6 +40,10 @@ pub struct LandCombatPanel {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Xui20CombatDetailLosses {
     pub land: Vec<LandCombatPanel>,
+    /// Terminal lifecycle rows are a separate keyed collection and are never
+    /// passed through the active-combat panel renderer.
+    pub ended_land: BTreeMap<(i64, i64), EndedCombatRow>,
+    pub ended_land_status: ViewStatus,
     pub naval: Vec<NavalCombatRow>,
     pub air_losses: Leaf<Vec<AirCombatLossRow>>,
     pub air_region_combat: Leaf<Vec<AirRegionCombatRow>>,
@@ -54,6 +58,7 @@ impl Xui20CombatDetailLosses {
     /// unavailable producer leaves remain distinguishable.
     pub fn has_any_measured_surface(&self) -> bool {
         !self.land.is_empty()
+            || !self.ended_land.is_empty()
             || !self.naval.is_empty()
             || self.air_losses.measured().is_some()
             || self.air_region_combat.measured().is_some()
@@ -75,6 +80,7 @@ pub enum Xui20SurfaceState {
 pub struct Xui20ReplayAdmission {
     pub land_active: Xui20SurfaceState,
     pub land_side_detail: Xui20SurfaceState,
+    pub land_ended_lifecycle: Xui20SurfaceState,
     pub land_terminal: Xui20SurfaceState,
     pub naval_active: Xui20SurfaceState,
     pub naval_terminal: Xui20SurfaceState,
@@ -164,6 +170,44 @@ fn validate_land_active(rows: &[LandCombatPanel]) -> Result<(), GateFailure> {
     Ok(())
 }
 
+fn validate_ended_land(rows: &BTreeMap<(i64, i64), EndedCombatRow>) -> Result<(), GateFailure> {
+    for ((combat_id, generation), row) in rows {
+        let prefix = format!("ended_land[{combat_id},{generation}]");
+        if *combat_id != row.combat_id || *generation != row.generation {
+            return Err(invalid(format!("{prefix} key/row identity mismatch")));
+        }
+        if *combat_id <= 0 || *generation <= 0 {
+            return Err(invalid(format!("{prefix} identity is non-positive")));
+        }
+        if required(&row.lifecycle, &format!("{prefix}.lifecycle"))? != "ended" {
+            return Err(invalid(format!("{prefix}.lifecycle is not ended")));
+        }
+        if required(&row.kind, &format!("{prefix}.kind"))? != "land" {
+            return Err(invalid(format!("{prefix}.kind is not land")));
+        }
+        if let Leaf::Measured(detail) = &row.detail {
+            if required(&detail.phase_event, &format!("{prefix}.phase_event"))? != "ended" {
+                return Err(invalid(format!("{prefix}.phase_event is not ended")));
+            }
+            if detail.generation.measured().copied() != Some(*generation) {
+                return Err(invalid(format!("{prefix}.detail generation mismatch")));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_ended_land_surface(
+    status: ViewStatus,
+    rows: &BTreeMap<(i64, i64), EndedCombatRow>,
+) -> Result<(), GateFailure> {
+    match status {
+        ViewStatus::Present => validate_ended_land(rows),
+        ViewStatus::DomainAbsent => Err(external("ended_combats field absent")),
+        ViewStatus::DomainUnavailable => Err(external("ended_combats unavailable")),
+    }
+}
+
 fn validate_land_side(side: &LandCombatSideDetail, prefix: &str) -> Result<(), GateFailure> {
     for (leaf, field) in [
         (&side.units, "units"),
@@ -197,6 +241,43 @@ fn validate_land_side(side: &LandCombatSideDetail, prefix: &str) -> Result<(), G
         &side.counts_incomplete,
         &format!("{prefix}.counts_incomplete"),
     )?;
+    let reserve_ids = required(
+        &side.reserve_division_ids,
+        &format!("{prefix}.reserve_division_ids"),
+    )?;
+    let reserve_status = required(
+        &side.reserve_members_status,
+        &format!("{prefix}.reserve_members_status"),
+    )?;
+    match reserve_status.as_str() {
+        "exact" => {
+            if matches!(side.counts_incomplete, Leaf::Measured(false))
+                && side.reserve.measured().copied() != Some(reserve_ids.len() as i64)
+            {
+                return Err(invalid(format!(
+                    "{prefix}.reserve_division_ids count mismatch"
+                )));
+            }
+        }
+        "exact_counts_incomplete" if matches!(side.counts_incomplete, Leaf::Measured(true)) => {}
+        "unavailable" => {
+            return Err(external(format!("{prefix}.reserve members unavailable")));
+        }
+        _ => {
+            return Err(invalid(format!(
+                "{prefix}.reserve_members_status is invalid"
+            )))
+        }
+    }
+    let mut seen_reserves = std::collections::BTreeSet::new();
+    if reserve_ids
+        .iter()
+        .any(|id| *id <= 0 || !seen_reserves.insert(*id))
+    {
+        return Err(invalid(format!(
+            "{prefix}.reserve_division_ids contains invalid/duplicate identity"
+        )));
+    }
     required(
         &side.damage_attribution,
         &format!("{prefix}.damage_attribution"),
@@ -716,6 +797,7 @@ pub fn admit_xui20_replay(binding: &Xui20CombatDetailLosses) -> Xui20ReplayAdmis
     let war_pairs = validate_war_pairs(&binding.wars);
     let war_overview = validate_war_overview(&binding.wars);
     let family_rows = binding.land.len()
+        + binding.ended_land.len()
         + binding.naval.len()
         + binding.air_losses.measured().map_or(0, Vec::len)
         + binding.air_region_combat.measured().map_or(0, Vec::len)
@@ -724,6 +806,10 @@ pub fn admit_xui20_replay(binding: &Xui20CombatDetailLosses) -> Xui20ReplayAdmis
         + binding.war_relations.measured().map_or(0, Vec::len);
     let land_active = state(binding.land.len(), validate_land_active(&binding.land));
     let land_side_detail = state(binding.land.len(), validate_land_side_detail(&binding.land));
+    let land_ended_lifecycle = state(
+        binding.ended_land.len(),
+        validate_ended_land_surface(binding.ended_land_status, &binding.ended_land),
+    );
     let naval_active = state(binding.naval.len(), validate_naval(&binding.naval));
     let air_history = state(air.as_ref().map_or(0, |count| *count), air.map(|_| ()));
     let air_region_history = state(
@@ -743,6 +829,7 @@ pub fn admit_xui20_replay(binding: &Xui20CombatDetailLosses) -> Xui20ReplayAdmis
         &[
             &land_active,
             &land_side_detail,
+            &land_ended_lifecycle,
             &naval_active,
             &air_history,
             &air_region_history,
@@ -753,6 +840,7 @@ pub fn admit_xui20_replay(binding: &Xui20CombatDetailLosses) -> Xui20ReplayAdmis
     Xui20ReplayAdmission {
         land_active,
         land_side_detail,
+        land_ended_lifecycle,
         land_terminal: Xui20SurfaceState::ExternalInputRequired {
             reason: "terminal land record owning-vector join is not carried".into(),
         },
@@ -851,6 +939,8 @@ pub fn combat_detail_losses_from_frame(frame: &WorldFrame) -> Xui20CombatDetailL
     let diplomacy: &DiplomacyView = frame.diplomacy();
     Xui20CombatDetailLosses {
         land: frame.combats().iter().map(land_panel).collect(),
+        ended_land: frame.ended_combats().clone(),
+        ended_land_status: frame.ended_combats_status(),
         naval: naval_air.naval_combats.clone(),
         air_losses: naval_air.air_losses.clone(),
         air_region_combat: naval_air.air_region_combat.clone(),
@@ -888,8 +978,10 @@ mod tests {
                 name: Leaf::Measured("TACTIC_BASIC_ATTACK".into()),
             })),
             tactic_status: Leaf::Measured("exact".into()),
-            losses_status: Leaf::Measured("omitted_all_zero_oracle".into()),
+            losses_status: Leaf::Measured("unavailable_no_authenticated_live_carrier".into()),
             counts_incomplete: Leaf::Measured(false),
+            reserve_division_ids: Leaf::Measured(vec![30]),
+            reserve_members_status: Leaf::Measured("exact".into()),
             damage_attribution: Leaf::Measured(Vec::new()),
         }
     }

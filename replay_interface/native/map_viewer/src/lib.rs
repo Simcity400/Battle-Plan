@@ -17,6 +17,7 @@ mod cli;
 mod color_lut;
 mod combat_indicator_assets;
 mod constants;
+mod counter_render;
 mod cpu_terrain;
 mod d3d11_device;
 mod d3d11_replay;
@@ -168,6 +169,18 @@ pub use color_lut::{
     color_correction_lut_from_resolver, lut_blend1, lut_blend2, parse_color_correction_tga,
     scan_color_correction_luts_from_resolver, ColorCorrectionLut, ColorLutProbeRow,
     COLOR_CORRECTION_DIR,
+};
+pub use counter_render::{
+    build_counter_instances, counter_render_assets_from_resolver,
+    counter_texture_rgba_from_resolver, select_counter_display_inputs, CounterBadgeKind,
+    CounterBadgeSelection, CounterColorMode, CounterDisplayOmission, CounterDisplayOmissionReason,
+    CounterDisplaySelection, CounterFrameSelection, CounterHonesty, CounterPlayerMapping,
+    CounterQuad, CounterQuadLayer, CounterQuadVertex, CounterRenderAssets, CounterRenderBatch,
+    CounterRenderDomain, CounterRenderInput, CounterRenderInstance, CounterRenderOmission,
+    CounterRenderOmissionReason, CounterScreenLaw, CounterStackingLaw, CounterTextureRgba,
+    ScreenPointPx, ACTIVE_ABILITY_ICON_SCALE_FILE, ACTIVE_ABILITY_ITEM_SIZE_GUI_FILE,
+    COUNTER_BAR_ROTATION_RADIANS_FILE, COUNTER_CAPTURE_STACK_STEP_GUI, COUNTER_FRAME_SPRITE,
+    COUNTER_ORG_BAR_SPRITE, COUNTER_STRENGTH_BAR_SPRITE,
 };
 pub use d3d11_replay::{
     accept_terrain_d3d11, accept_terrain_d3d11_with_resolver, render_production_map_d3d11,
@@ -400,14 +413,17 @@ pub use production_map_target::{
     ProductionMainSceneTargetDesc,
 };
 pub use rail_files::{
-    compute_province_centroids, parse_rail_geometry_defines, rail_file_derived_layer_from_resolver,
-    rail_geometry_defines_from_resolver, rail_polylines, rail_render_law, supply_hub_markers,
-    ProvinceCentroid, RailFileDerivedLayer, RailFileDerivedStats, RailGeometryDefines, RailLawRow,
-    RailPolyline, SupplyHubMarker, DEFINITION_CSV_SOURCE as RAIL_DEFINITION_CSV_SOURCE,
+    compute_province_centroids, cubic_bezier, parse_rail_geometry_defines, rail_control_handle_len,
+    rail_file_derived_layer_from_resolver, rail_geometry_defines_from_resolver, rail_level_v_band,
+    rail_max_level_from_resolver, rail_polylines, rail_render_law, rail_ribbon_edges,
+    supply_hub_markers, ProvinceCentroid, RailFileDerivedLayer, RailFileDerivedStats,
+    RailGeometryDefines, RailLawRow, RailPolyline, SupplyHubMarker,
+    DEFINES_SOURCE as RAIL_DEFINES_SOURCE, DEFINITION_CSV_SOURCE as RAIL_DEFINITION_CSV_SOURCE,
     GRAPHICS_DEFINES_SOURCE as RAIL_GRAPHICS_DEFINES_SOURCE, MAP_HEIGHT as RAIL_MAP_HEIGHT,
     MAP_WIDTH as RAIL_MAP_WIDTH, PROVINCES_BMP_SOURCE as RAIL_PROVINCES_BMP_SOURCE, RAIL_LEVEL_MAX,
-    RAIL_SHADER_EFFECT, RAIL_SHADER_SOURCE, RAIL_TEXTURE_DAMAGED_SOURCE, RAIL_TEXTURE_SOURCE,
-    SUPPLY_GFX_SOURCE, SUPPLY_HUB_ICON_FRAMES, SUPPLY_HUB_ICON_SPRITE, SUPPLY_HUB_ICON_TEXTURE,
+    RAIL_MAX_LEVEL_DEFINE, RAIL_SHADER_EFFECT, RAIL_SHADER_SOURCE, RAIL_TEXTURE_DAMAGED_SOURCE,
+    RAIL_TEXTURE_SOURCE, SUPPLY_GFX_SOURCE, SUPPLY_HUB_ICON_FRAMES, SUPPLY_HUB_ICON_SPRITE,
+    SUPPLY_HUB_ICON_TEXTURE,
 };
 pub use restore_evidence::{
     load_restore_scene_bundle, load_restore_scene_bundle_session_dir,

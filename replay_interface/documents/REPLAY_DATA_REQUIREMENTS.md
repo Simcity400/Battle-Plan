@@ -638,8 +638,11 @@ now defines one strict rich row per firing:
   description branch, actual picture, and country/news/state/leader/operative chrome.
 - `effective_timeout_hours`, `timeout_tick`, `resolved_tick`,
   `resolution_reason` — exact pending/selected/timeout/dismissed lifetime.
-- `runtime_text_context_id` — join to A25/XUI06 exact runtime text for scoped or
-  formatted localisation.
+- `runtime_title_text_context_id`, `runtime_description_text_context_id`, and
+  `runtime_option_text_contexts[] = {definition_ordinal, context_id}` — independent
+  joins to A25/XUI06 exact runtime text for each materialised textbox. A
+  popup-wide context is forbidden because its source identity cannot match the
+  title, description, and multiple option keys simultaneously.
 - `fired_events_complete=true` — mandatory completeness witness; legacy save ID
   ledgers and measured-empty lists without this witness are rejected.
 

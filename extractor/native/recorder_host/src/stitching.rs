@@ -39,7 +39,9 @@
 use std::collections::BTreeMap;
 
 pub mod formation;
+pub mod product;
 pub mod publish;
+pub mod runtime;
 
 use serde_json::{json, Map, Value};
 use snapshot::canon::write_canonical;
@@ -601,20 +603,30 @@ impl SegmentInput {
 
     /// Structural validation independent of stitching. Returns the first problem.
     pub fn validate(&self) -> Result<(), String> {
-        if self
-            .transition_coverage
-            .values()
-            .any(CoverageDisposition::is_snapshot)
-        {
-            return Err(format!(
-                "segment (play_order {}, ord {}) transition coverage cannot contain snapshots",
-                self.play_order, self.in_session_ordinal
-            ));
+        for (hour, disposition) in &self.transition_coverage {
+            if disposition.is_snapshot() {
+                return Err(format!(
+                    "segment (play_order {}, ord {}) transition coverage cannot contain snapshots",
+                    self.play_order, self.in_session_ordinal
+                ));
+            }
+            validate_coverage_disposition(disposition, None).map_err(|reason| {
+                format!(
+                    "segment (play_order {}, ord {}) transition hour {hour} has invalid evidence: {reason}",
+                    self.play_order, self.in_session_ordinal
+                )
+            })?;
         }
         if self.coverage.is_empty() {
             if !self.observations.is_empty() {
                 return Err(format!(
                     "segment (play_order {}, ord {}) has observations without coverage",
+                    self.play_order, self.in_session_ordinal
+                ));
+            }
+            if !self.transition_coverage.is_empty() {
+                return Err(format!(
+                    "segment (play_order {}, ord {}) is empty recovery but carries transition coverage without a cutover",
                     self.play_order, self.in_session_ordinal
                 ));
             }
@@ -630,16 +642,20 @@ impl SegmentInput {
         }
         let cutover = self.cutover().unwrap();
         let head = self.head().unwrap();
-        // Contiguity: every hour in cutover..=head must have a disposition. A hole
-        // is corrupt input, NOT a gap the stitcher may invent (design section 6 /
-        // self-refutation #3).
-        for h in cutover..=head {
-            if !self.coverage.contains_key(&h) {
+        // Contiguity is checked over retained keys instead of iterating the
+        // attacker-controlled numeric span. This makes an i64::MIN..=i64::MAX
+        // corrupt input a bounded rejection rather than a validation hang.
+        let coverage_hours: Vec<i64> = self.coverage.keys().copied().collect();
+        for adjacent in coverage_hours.windows(2) {
+            if adjacent[0].checked_add(1) != Some(adjacent[1]) {
                 return Err(format!(
-                    "segment (play_order {}, ord {}) missing coverage for hour {h} in {cutover}..={head}",
-                    self.play_order, self.in_session_ordinal
+                    "segment (play_order {}, ord {}) missing coverage between hours {} and {} in {cutover}..={head}",
+                    self.play_order, self.in_session_ordinal,
+                    adjacent[0], adjacent[1]
                 ));
             }
+        }
+        for h in coverage_hours {
             let observations = self.observations.get(&h).ok_or_else(|| {
                 format!(
                     "segment (play_order {}, ord {}) missing observation evidence for hour {h}",
@@ -660,6 +676,11 @@ impl SegmentInput {
                         "hour {h} has missing/duplicate observation evidence id"
                     ));
                 }
+                if !is_evidence_id(&observation.observation_id) {
+                    return Err(format!(
+                        "hour {h} observation evidence id has invalid grammar"
+                    ));
+                }
                 let (record_start, record_end) = observation.record_seq_bounds;
                 let (byte_start, byte_end) = observation.byte_bounds;
                 if record_start > record_end || byte_start >= byte_end {
@@ -672,16 +693,11 @@ impl SegmentInput {
                         "hour {h} observations have ambiguous/overlapping source order"
                     ));
                 }
-                if let CoverageDisposition::CaptureFailed { evidence_id, .. }
-                | CoverageDisposition::Coalesced { evidence_id, .. }
-                | CoverageDisposition::Gap { evidence_id, .. } = &observation.disposition
-                {
-                    if evidence_id != &observation.observation_id {
-                        return Err(format!(
-                            "hour {h} disposition evidence disagrees with observation evidence"
-                        ));
-                    }
-                }
+                validate_coverage_disposition(
+                    &observation.disposition,
+                    Some(&observation.observation_id),
+                )
+                .map_err(|reason| format!("hour {h} disposition is invalid: {reason}"))?;
                 previous_record_end = Some(record_end);
                 previous_byte_end = Some(byte_end);
             }
@@ -697,7 +713,63 @@ impl SegmentInput {
 }
 
 fn is_sha256_hex(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_evidence_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 256
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes.iter().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'_' | b':' | b'/' | b'-')
+        })
+}
+
+fn is_reason_text(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 4096
+        && value.trim() == value
+        && !value.chars().any(char::is_control)
+}
+
+fn validate_coverage_disposition(
+    disposition: &CoverageDisposition,
+    expected_evidence_id: Option<&str>,
+) -> Result<(), String> {
+    match disposition {
+        CoverageDisposition::Snapshot { sha256 } => {
+            if !is_sha256_hex(sha256) {
+                return Err("snapshot digest is not canonical lowercase SHA-256".into());
+            }
+        }
+        CoverageDisposition::CaptureFailed {
+            reason,
+            evidence_id,
+        }
+        | CoverageDisposition::Coalesced {
+            reason,
+            evidence_id,
+        }
+        | CoverageDisposition::Gap {
+            reason,
+            evidence_id,
+        } => {
+            if !is_reason_text(reason) {
+                return Err("reason is empty, padded, oversized, or contains controls".into());
+            }
+            if !is_evidence_id(evidence_id) {
+                return Err("evidence_id has invalid grammar".into());
+            }
+            if expected_evidence_id.is_some_and(|expected| expected != evidence_id) {
+                return Err("evidence_id disagrees with observation evidence".into());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_raw_source_for_segment(seg: &SegmentInput) -> Result<(), String> {
@@ -732,8 +804,8 @@ fn validate_raw_source_for_segment(seg: &SegmentInput) -> Result<(), String> {
     if source.participations.is_empty() {
         return Err("raw source participation ledger is missing".into());
     }
-    let mut previous_record_end = None;
-    let mut previous_byte_end = None;
+    let mut previous_record_end: Option<u64> = None;
+    let mut previous_byte_end: Option<u64> = None;
     let mut participation_ids = std::collections::BTreeSet::new();
     for participation in &source.participations {
         if participation.ticket.session_nonce != source.session_nonce
@@ -754,16 +826,38 @@ fn validate_raw_source_for_segment(seg: &SegmentInput) -> Result<(), String> {
         {
             return Err("raw source participation has invalid/out-of-source bounds".into());
         }
-        if previous_record_end.is_some_and(|end| record_start <= end)
-            || previous_byte_end.is_some_and(|end| byte_start < end)
-        {
-            return Err("raw source participations overlap or have ambiguous order".into());
+        match (previous_record_end, previous_byte_end) {
+            (None, None) => {
+                if record_start != source.record_seq_bounds.0 || byte_start != source.byte_bounds.0
+                {
+                    return Err(
+                        "raw source participation ledger does not start at the source extent"
+                            .into(),
+                    );
+                }
+            }
+            (Some(prior_record_end), Some(prior_byte_end)) => {
+                if prior_record_end.checked_add(1) != Some(record_start)
+                    || prior_byte_end != byte_start
+                {
+                    return Err(
+                        "raw source participations do not form one exact contiguous partition"
+                            .into(),
+                    );
+                }
+            }
+            _ => unreachable!("record and byte participation cursors advance together"),
         }
         if !participation_ids.insert(participation.participation_id()) {
             return Err("raw source has duplicate participation evidence".into());
         }
         previous_record_end = Some(record_end);
         previous_byte_end = Some(byte_end);
+    }
+    if previous_record_end != Some(source.record_seq_bounds.1)
+        || previous_byte_end != Some(source.byte_bounds.1)
+    {
+        return Err("raw source participation ledger does not cover the source tail".into());
     }
     if let RawSourceStorage::EmbeddedCampaign { campaign_key } = &source.storage {
         if campaign_key.is_empty()
@@ -1211,6 +1305,17 @@ pub fn plan_stitch(
             reason: "mandatory stitch input game_id is missing/empty".into(),
         };
     }
+    if game_id == "."
+        || game_id == ".."
+        || game_id.len() > 128
+        || !game_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        return StitchOutcome::Separate {
+            reason: "mandatory stitch input game_id has invalid path-component grammar".into(),
+        };
+    }
     if let Err(reason) = required_inputs.validate() {
         return StitchOutcome::Separate { reason };
     }
@@ -1278,6 +1383,12 @@ pub fn plan_stitch(
                 campaign_key: ck,
                 ..
             } => {
+                if *sm == 0 || ck.is_empty() {
+                    return StitchOutcome::Separate {
+                        reason: "verified campaign identity has an empty/zero mandatory binding"
+                            .into(),
+                    };
+                }
                 match scheme_major {
                     None => scheme_major = Some(*sm),
                     Some(prev) if prev != *sm => {
@@ -1322,6 +1433,11 @@ pub fn plan_stitch(
         }
         // stream major must be uniform (design section 9: no mixed majors).
         let sm = seg.provenance.stream_major;
+        if sm == 0 {
+            return StitchOutcome::Separate {
+                reason: "segment has zero stream major".into(),
+            };
+        }
         match stream_major {
             None => stream_major = Some(sm),
             Some(prev) if prev != sm => {

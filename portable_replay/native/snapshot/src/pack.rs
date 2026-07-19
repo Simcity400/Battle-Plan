@@ -13,14 +13,15 @@
 use crate::canon::manifest_canonical_bytes;
 use crate::sha256::{to_hex, Sha256};
 use crate::zip::{
-    validate_path, MAX_CONTAINER_ENTRY_BYTES, STREAMING_MAX_CONTAINER_ENTRY_BYTES,
-    ZIP32_MAX_ENTRY_COUNT, ZIP32_MAX_FIELD_VALUE, ZIP_METHOD_DEFLATE, ZIP_METHOD_STORE,
-    ZIP_METHOD_ZSTD, ZSTD_WINDOW_LOG,
+    portable_path_key, validate_path, MAX_CONTAINER_ENTRY_BYTES,
+    STREAMING_MAX_CONTAINER_ENTRY_BYTES, ZIP32_MAX_ENTRY_COUNT, ZIP32_MAX_FIELD_VALUE,
+    ZIP_METHOD_DEFLATE, ZIP_METHOD_STORE, ZIP_METHOD_ZSTD, ZSTD_WINDOW_LOG,
 };
 use flate2::write::DeflateEncoder;
 use flate2::Compression;
 use serde_json::{json, Value};
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -110,6 +111,17 @@ impl From<std::io::Error> for PackError {
     fn from(e: std::io::Error) -> Self {
         PackError::Io(e)
     }
+}
+
+fn validate_distinct_paths<'a>(paths: impl IntoIterator<Item = &'a str>) -> Result<(), PackError> {
+    let mut seen = HashSet::new();
+    for path in paths {
+        let key = portable_path_key(path).map_err(|_| PackError::BadPath(path.to_string()))?;
+        if !seen.insert(key) {
+            return Err(PackError::BadPath(path.to_string()));
+        }
+    }
+    Ok(())
 }
 
 const PORTABLE_CONTENT_FEATURE: &str = "portable_content_manifest_v1";
@@ -342,6 +354,12 @@ pub fn pack_mixed_to_writer<W: Write>(
     writer: &mut W,
 ) -> Result<(), PackError> {
     planned_zip_file_count(&[borrowed_entries.len(), file_entries.len()], 1)?;
+    validate_distinct_paths(
+        borrowed_entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .chain(file_entries.iter().map(|entry| entry.path.as_str())),
+    )?;
 
     let mut manifest_entries: Vec<Value> =
         Vec::with_capacity(borrowed_entries.len() + file_entries.len());
@@ -563,6 +581,13 @@ fn pack_streaming_to_writer_with_compression<W: Write>(
         ],
         1,
     )?;
+    validate_distinct_paths(
+        borrowed_entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .chain(file_entries.iter().map(|entry| entry.path.as_str()))
+            .chain(streaming_entries.iter().map(|entry| entry.path.as_str())),
+    )?;
 
     let mut manifest_entries: Vec<Value> =
         Vec::with_capacity(borrowed_entries.len() + file_entries.len() + streaming_entries.len());
@@ -749,6 +774,7 @@ pub fn pack_borrowed_with_writer<W: Write>(
         (if opts.inject_stowaway.is_some() { 1 } else { 0 })
             + (if !opts.omit_manifest { 1 } else { 0 }),
     )?;
+    validate_distinct_paths(entries.iter().map(|entry| entry.path.as_str()))?;
 
     // --- manifest entries (sha + bytes), in canonical path order ---
     let mut manifest_entries: Vec<Value> = Vec::with_capacity(entries.len());
@@ -1802,5 +1828,38 @@ mod tests {
         .expect_err("entry name length must not truncate");
         assert!(err.to_string().contains("entry name length"));
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn packer_refuses_unicode_case_collisions_and_non_nfc_paths() {
+        let entries = vec![
+            PackEntry {
+                path: "payload/g/CAF\u{c9}.json".into(),
+                bytes: b"one".to_vec(),
+                role: "other",
+                hour_index: None,
+            },
+            PackEntry {
+                path: "payload/g/caf\u{e9}.json".into(),
+                bytes: b"two".to_vec(),
+                role: "other",
+                hour_index: None,
+            },
+        ];
+        assert!(matches!(
+            pack("g", &entries, &PackIdentity::default(), false),
+            Err(PackError::BadPath(_))
+        ));
+
+        let non_nfc = [PackEntry {
+            path: "payload/g/cafe\u{301}.json".into(),
+            bytes: Vec::new(),
+            role: "other",
+            hour_index: None,
+        }];
+        assert!(matches!(
+            pack("g", &non_nfc, &PackIdentity::default(), false),
+            Err(PackError::BadPath(_))
+        ));
     }
 }

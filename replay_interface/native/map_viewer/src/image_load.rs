@@ -41,6 +41,22 @@ pub(crate) fn color_key(r: u8, g: u8, b: u8) -> u32 {
     u32::from(r) | (u32::from(g) << 8) | (u32::from(b) << 16)
 }
 
+/// Upper bound on image dimensions accepted from untrusted file headers. Anything
+/// larger (or zero) is refused with a typed error instead of risking arithmetic
+/// overflow or a multi-GB allocation abort.
+pub(crate) const MAX_IMAGE_DIMENSION: usize = 32_768;
+
+pub(crate) fn check_image_dimensions(path: &Path, width: usize, height: usize) -> Result<()> {
+    if width == 0 || height == 0 || width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION {
+        return Err(format!(
+            "{} has unsupported image dimensions {width}x{height} (limit {MAX_IMAGE_DIMENSION})",
+            path.display()
+        )
+        .into());
+    }
+    Ok(())
+}
+
 pub(crate) struct BmpIds {
     pub(crate) width: usize,
     pub(crate) height: usize,
@@ -69,6 +85,7 @@ pub(crate) fn load_provinces_bmp(path: &Path, color_to_id: &HashMap<u32, u32>) -
     }
     let width = width_raw as usize;
     let height = height_raw.unsigned_abs() as usize;
+    check_image_dimensions(path, width, height)?;
     let bottom_up = height_raw > 0;
     let stride = (width * 3 + 3) & !3;
     let needed = pixel_offset + stride * height;
@@ -124,6 +141,7 @@ pub(crate) fn load_bmp_indexed(path: &Path) -> Result<IndexImage> {
     }
     let width = width_raw as usize;
     let height = height_raw.unsigned_abs() as usize;
+    check_image_dimensions(path, width, height)?;
     let bottom_up = height_raw > 0;
     let stride = (width + 3) & !3;
     let needed = pixel_offset + stride * height;
@@ -165,6 +183,7 @@ pub(crate) fn load_bmp_rgbx(path: &Path) -> Result<RgbxImage> {
     }
     let width = width_raw as usize;
     let height = height_raw.unsigned_abs() as usize;
+    check_image_dimensions(path, width, height)?;
     let bottom_up = height_raw > 0;
     let bytes_per_pixel = bpp / 8;
     let stride = (width * bytes_per_pixel + 3) & !3;
@@ -202,6 +221,7 @@ pub(crate) fn load_dds_rgba(path: &Path) -> Result<RgbaImage> {
     }
     let height = le_u32(&data, 12)? as usize;
     let width = le_u32(&data, 16)? as usize;
+    check_image_dimensions(path, width, height)?;
     let pf_flags = le_u32(&data, 80)?;
     let fourcc = data.get(84..88).ok_or("truncated DDS pixel format")?;
     let rgb_bits = le_u32(&data, 88)? as usize;
@@ -216,6 +236,7 @@ pub(crate) fn load_dds_rgba_mips(path: &Path) -> Result<Vec<RgbaImage>> {
     }
     let height = le_u32(&data, 12)? as usize;
     let width = le_u32(&data, 16)? as usize;
+    check_image_dimensions(path, width, height)?;
     let mip_count = le_u32(&data, 28)?.max(1) as usize;
     let pf_flags = le_u32(&data, 80)?;
     let fourcc = data.get(84..88).ok_or("truncated DDS pixel format")?;
@@ -267,11 +288,19 @@ pub(crate) fn decode_dds_rgba_mip(
     if !(1..=4).contains(&bytes_per_pixel) {
         return Err(format!("unsupported DDS rgb bit depth {rgb_bits}").into());
     }
-    let needed = offset + width * height * bytes_per_pixel;
+    let needed = width
+        .checked_mul(height)
+        .and_then(|pixel_count| pixel_count.checked_mul(bytes_per_pixel))
+        .and_then(|byte_len| byte_len.checked_add(offset))
+        .ok_or_else(|| format!("{} DDS dimensions overflow byte length", path.display()))?;
     if data.len() < needed {
         return Err(format!("{} is truncated", path.display()).into());
     }
-    let mut pixels = vec![0u8; width * height * 4];
+    let pixel_bytes = width
+        .checked_mul(height)
+        .and_then(|pixel_count| pixel_count.checked_mul(4))
+        .ok_or_else(|| format!("{} DDS dimensions overflow pixel buffer", path.display()))?;
+    let mut pixels = vec![0u8; pixel_bytes];
     for i in 0..width * height {
         let start = offset + i * bytes_per_pixel;
         let mut raw = 0u32;
@@ -302,10 +331,22 @@ pub(crate) fn dds_mip_byte_len(
     rgb_bits: usize,
 ) -> Result<usize> {
     if fourcc == b"DXT1" {
-        return Ok(width.div_ceil(4) * height.div_ceil(4) * 8);
+        return width
+            .div_ceil(4)
+            .checked_mul(height.div_ceil(4))
+            .and_then(|blocks| blocks.checked_mul(8))
+            .ok_or_else(|| {
+                format!("DDS mip dimensions overflow byte length: {width}x{height}").into()
+            });
     }
     if fourcc == b"DXT5" {
-        return Ok(width.div_ceil(4) * height.div_ceil(4) * 16);
+        return width
+            .div_ceil(4)
+            .checked_mul(height.div_ceil(4))
+            .and_then(|blocks| blocks.checked_mul(16))
+            .ok_or_else(|| {
+                format!("DDS mip dimensions overflow byte length: {width}x{height}").into()
+            });
     }
     let bytes_per_pixel = rgb_bits / 8;
     if !(1..=4).contains(&bytes_per_pixel) {
@@ -379,13 +420,21 @@ pub(crate) fn decode_dds_dxt5_rgba(
     height: usize,
     offset: usize,
 ) -> Result<RgbaImage> {
-    let block_w = (width + 3) / 4;
-    let block_h = (height + 3) / 4;
-    let needed = offset + block_w * block_h * 16;
+    let block_w = width.div_ceil(4);
+    let block_h = height.div_ceil(4);
+    let needed = block_w
+        .checked_mul(block_h)
+        .and_then(|blocks| blocks.checked_mul(16))
+        .and_then(|byte_len| byte_len.checked_add(offset))
+        .ok_or_else(|| format!("{} DXT5 dimensions overflow byte length", path.display()))?;
     if data.len() < needed {
         return Err(format!("{} is truncated", path.display()).into());
     }
-    let mut pixels = vec![0u8; width * height * 4];
+    let pixel_bytes = width
+        .checked_mul(height)
+        .and_then(|pixel_count| pixel_count.checked_mul(4))
+        .ok_or_else(|| format!("{} DXT5 dimensions overflow pixel buffer", path.display()))?;
+    let mut pixels = vec![0u8; pixel_bytes];
     for by in 0..block_h {
         for bx in 0..block_w {
             let block = offset + (by * block_w + bx) * 16;
@@ -464,11 +513,19 @@ pub(crate) fn decode_dds_dxt1_rgba(
 ) -> Result<RgbaImage> {
     let block_w = width.div_ceil(4);
     let block_h = height.div_ceil(4);
-    let needed = offset + block_w * block_h * 8;
+    let needed = block_w
+        .checked_mul(block_h)
+        .and_then(|blocks| blocks.checked_mul(8))
+        .and_then(|byte_len| byte_len.checked_add(offset))
+        .ok_or_else(|| format!("{} DXT1 dimensions overflow byte length", path.display()))?;
     if data.len() < needed {
         return Err(format!("{} is truncated", path.display()).into());
     }
-    let mut pixels = vec![0u8; width * height * 4];
+    let pixel_bytes = width
+        .checked_mul(height)
+        .and_then(|pixel_count| pixel_count.checked_mul(4))
+        .ok_or_else(|| format!("{} DXT1 dimensions overflow pixel buffer", path.display()))?;
+    let mut pixels = vec![0u8; pixel_bytes];
     for by in 0..block_h {
         for bx in 0..block_w {
             let block = offset + (by * block_w + bx) * 8;
@@ -585,4 +642,86 @@ pub(crate) fn le_i32(data: &[u8], offset: usize) -> Result<i32> {
         .ok_or("truncated little-endian i32")?
         .try_into()?;
     Ok(i32::from_le_bytes(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn fake_path() -> PathBuf {
+        PathBuf::from("corrupt_asset.dds")
+    }
+
+    #[test]
+    fn dimension_cap_rejects_zero_and_oversized() {
+        let path = fake_path();
+        assert!(check_image_dimensions(&path, 0, 64).is_err());
+        assert!(check_image_dimensions(&path, 64, 0).is_err());
+        assert!(check_image_dimensions(&path, MAX_IMAGE_DIMENSION + 1, 64).is_err());
+        assert!(check_image_dimensions(&path, 64, MAX_IMAGE_DIMENSION + 1).is_err());
+        assert!(check_image_dimensions(&path, MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION).is_ok());
+        assert!(check_image_dimensions(&path, 1, 1).is_ok());
+    }
+
+    #[test]
+    fn uncompressed_mip_dimension_overflow_is_typed_error() {
+        let path = fake_path();
+        let data = vec![0u8; 128];
+        let result = decode_dds_rgba_mip(&path, &data, usize::MAX / 2, 3, 128, 0x40, b"NONE", 32);
+        let err = result.err().expect("overflowing dimensions must refuse");
+        assert!(err.to_string().contains("overflow"), "{err}");
+    }
+
+    #[test]
+    fn dxt_decoder_dimension_overflow_is_typed_error() {
+        let path = fake_path();
+        let data = vec![0u8; 16];
+        let dxt1 = decode_dds_dxt1_rgba(&path, &data, usize::MAX - 3, usize::MAX - 3, 0);
+        assert!(dxt1
+            .err()
+            .expect("DXT1 must refuse")
+            .to_string()
+            .contains("overflow"));
+        let dxt5 = decode_dds_dxt5_rgba(&path, &data, usize::MAX - 3, usize::MAX - 3, 0);
+        assert!(dxt5
+            .err()
+            .expect("DXT5 must refuse")
+            .to_string()
+            .contains("overflow"));
+    }
+
+    #[test]
+    fn dds_mip_byte_len_dxt_overflow_is_typed_error() {
+        assert!(dds_mip_byte_len(usize::MAX / 2, usize::MAX / 2, b"DXT1", 0).is_err());
+        assert!(dds_mip_byte_len(usize::MAX / 2, usize::MAX / 2, b"DXT5", 0).is_err());
+        assert_eq!(dds_mip_byte_len(8, 8, b"DXT1", 0).unwrap(), 32);
+        assert_eq!(dds_mip_byte_len(8, 8, b"DXT5", 0).unwrap(), 64);
+        assert_eq!(dds_mip_byte_len(1, 1, b"DXT1", 0).unwrap(), 8);
+    }
+
+    #[test]
+    fn dds_header_with_oversized_dimensions_is_refused() {
+        let dir = std::env::temp_dir().join(format!("image_load_cap_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("oversized.dds");
+        let mut header = vec![0u8; 128];
+        header[0..4].copy_from_slice(b"DDS ");
+        header[12..16].copy_from_slice(&u32::MAX.to_le_bytes()); // height
+        header[16..20].copy_from_slice(&u32::MAX.to_le_bytes()); // width
+        std::fs::write(&path, &header).unwrap();
+        let single = load_dds_rgba(&path);
+        assert!(single
+            .err()
+            .expect("oversized DDS must refuse")
+            .to_string()
+            .contains("unsupported image dimensions"));
+        let mips = load_dds_rgba_mips(&path);
+        assert!(mips
+            .err()
+            .expect("oversized DDS mips must refuse")
+            .to_string()
+            .contains("unsupported image dimensions"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

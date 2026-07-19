@@ -1,8 +1,9 @@
 use crate::domain46_air_ace_roster_live::{
     AirAceRosterHeader, AirAceRosterRow, ACE_STATUS_PARTIAL_DATA,
     ACE_STATUS_WING_ASSIGNMENT_BLOCKED, SOURCE_DEV_SAVE_LAYOUT_VALIDATION,
-    SOURCE_LIVE_ACE_DEATH_RECORD, SOURCE_LIVE_ACE_OBJECT_LAYOUT, SOURCE_LIVE_COUNTRY_ACE_VECTOR,
-    SOURCE_LIVE_WING_ACE_ID_ASSIGNMENT, SOURCE_WING_ASSIGNMENT_SCAN_BLOCKED,
+    SOURCE_LIVE_ACE_DEATH_RECORD, SOURCE_LIVE_ACE_LIFECYCLE_RECORD, SOURCE_LIVE_ACE_OBJECT_LAYOUT,
+    SOURCE_LIVE_COUNTRY_ACE_VECTOR, SOURCE_LIVE_WING_ACE_ID_ASSIGNMENT,
+    SOURCE_WING_ASSIGNMENT_SCAN_BLOCKED,
 };
 use crate::domain46_air_variant_archetypes_live::{
     AirVariantArchetypeHeader, AirVariantArchetypeRow, FIXED_SCALE_RAW, SOURCE_LIVE_STATS,
@@ -67,6 +68,12 @@ pub struct LiveAceRosterInput {
     /// Validated alive flag (+0x158): `Some(true)`=alive, `Some(false)`=dead,
     /// `None`=unknown (torn/out-of-domain byte) — never defaulted.
     pub alive: Option<bool>,
+    /// Serializer-owned handled flag (+0x16C). Unknown when the lifecycle
+    /// tuple is torn or out of domain.
+    pub handled: Option<bool>,
+    /// Serializer-owned raw kill type (+0x15C). Kept numeric because the
+    /// retained corpus does not prove an exhaustive enum mapping.
+    pub kill_type_raw: Option<u32>,
     /// Killer ace id (+0x164); only meaningful on a dead ace and
     /// independently present (two D04 dead aces have none).
     pub killer_ace_id: Option<u32>,
@@ -193,6 +200,9 @@ pub fn build_air_ace_roster_row(input: &LiveAceRosterInput) -> AirAceRosterRow {
     if input.alive.is_some() {
         source_mask |= SOURCE_LIVE_ACE_DEATH_RECORD;
     }
+    if input.handled.is_some() && input.kill_type_raw.is_some() {
+        source_mask |= SOURCE_LIVE_ACE_LIFECYCLE_RECORD;
+    }
     // Killer fields are only trusted on a confirmed-dead ace (fail closed:
     // their content on living/unknown aces was never validated).
     let dead = input.alive == Some(false);
@@ -203,6 +213,8 @@ pub fn build_air_ace_roster_row(input: &LiveAceRosterInput) -> AirAceRosterRow {
         country_ace_index: input.country_ace_index,
         wing_id,
         alive: input.alive,
+        handled: input.handled,
+        kill_type_raw: input.kill_type_raw,
         killer_ace_id: if dead { input.killer_ace_id } else { None },
         killer_country_tag_db_id: if dead {
             input.killer_country_tag_db_id
@@ -673,6 +685,8 @@ mod tests {
             surname: Some("Driess".to_string()),
             callsign: Some("Fighter of Libau".to_string()),
             alive,
+            handled: alive.map(|value| !value),
+            kill_type_raw: alive.map(|value| if value { 0 } else { 1 }),
             killer_ace_id: None,
             killer_country_tag_db_id: None,
         }

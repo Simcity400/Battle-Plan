@@ -4,8 +4,8 @@
 //! artifact. It does not contain live stable ids, owners, lifecycle, modules,
 //! upgrades, or UI order and is never relabelled as this catalog.
 
+use crate::sha256::Sha256;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 pub const A27_LIVE_CATALOG_SCHEMA: &str = "extractor.a27.live_heap_catalog.a729.v2";
@@ -147,7 +147,7 @@ impl PortableDesignCatalog {
         {
             return Err("A27 live catalog is not a complete full replacement".into());
         }
-        let source_sha256 = format!("{:x}", Sha256::digest(bytes));
+        let source_sha256 = Sha256::hex(bytes);
         let source_record_id = format!("a27-live-catalog:{source_sha256}");
         let mut records = Vec::with_capacity(
             raw.division_templates

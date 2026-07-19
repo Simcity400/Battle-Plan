@@ -297,6 +297,12 @@ def compute_variant_stats(variant: dict[str, Any],
             lvl = int(level)
         except (TypeError, ValueError):
             lvl = 0
+        if lvl < 0:
+            # Slider levels are never negative in the game; a negative level
+            # here means a corrupt/malformed designs.json. Refuse to apply it
+            # as a negative stat delta, but keep it visible.
+            unknown_upgrades.append(f"{up_name}(level={lvl})")
+            continue
         if lvl == 0:
             continue
         up = defs.upgrades.get(up_name)

@@ -7,12 +7,14 @@
 //! parsers; content and winning-layer provenance remain runtime data.
 
 use crate::assets::{AssetResolver, DecodedTexture};
+use crate::dds;
 use crate::font::BitmapFont;
 use crate::gfx::SpriteRegistry;
 use crate::gui::{parse_gui_document, GuiElement};
 use crate::loc::{parse_english_yml, Localisation};
 use crate::paradox_text::{decode_text, parse_bytes, Document};
 use crate::scripted_gui_runtime::{load_scripted_gui_registry, ScriptedGuiRegistry};
+use crate::tga;
 use crate::{GameUiError, Result};
 use map_viewer::{EffectFile, GameFileResolver, PdxAssetTree};
 use replay_core::{UsedContentKey, ValidatedContentAdmission};
@@ -181,15 +183,46 @@ impl<'a> ProductionContentInterpreter<'a> {
     pub fn decode_texture(&self, expected: &UsedContentKey) -> Result<Interpreted<DecodedTexture>> {
         require_one_extension(expected, &["dds", "tga", "png"])?;
         self.require_exact_key(expected)?;
-        let texture = self
-            .assets
-            .decode_texture(&expected.normalized_game_relative_path)?;
-        // Re-read through the central seam so an on-disk mutation between
-        // resolver construction and decode cannot escape admission checking.
-        self.read(expected)?;
+        // Read once through the central seam and decode those exact verified
+        // bytes, so an on-disk mutation between admission checking and decode
+        // cannot make the decoded payload diverge from the admitted payload.
+        let bytes = self.read(expected)?;
+        let rel_path = &expected.normalized_game_relative_path;
+        let ext = rel_path
+            .rsplit_once('.')
+            .map(|(_, extension)| extension.to_ascii_lowercase())
+            .unwrap_or_default();
+        let (format, image) = match ext.as_str() {
+            "dds" => {
+                let decoded = dds::decode_bytes(&bytes.value)
+                    .map_err(|error| add_logical_path(error, rel_path))?;
+                (decoded.format, decoded.image)
+            }
+            "tga" => {
+                let decoded = tga::decode_bytes(&bytes.value)
+                    .map_err(|error| add_logical_path(error, rel_path))?;
+                (decoded.format, decoded.image)
+            }
+            // `png` is admitted above but has no proven decoder, matching the
+            // existing AssetResolver::decode_texture refusal.
+            _ => {
+                return Err(GameUiError::unsupported_texture_extension(
+                    ext.clone(),
+                    format!("{rel_path} uses unsupported texture extension .{ext}"),
+                ));
+            }
+        };
+        // Metadata only: the decoded pixels above came from the admitted
+        // bytes, never from this resolved on-disk path.
+        let resolved = self.assets.resolve_texture_file(rel_path)?;
         Ok(Interpreted {
-            provenance: vec![expected.clone()],
-            value: texture,
+            provenance: bytes.provenance,
+            value: DecodedTexture {
+                rel_path: resolved.rel_path,
+                path: resolved.path,
+                format,
+                image,
+            },
         })
     }
 
@@ -271,6 +304,13 @@ impl<'a> ProductionContentInterpreter<'a> {
         }
         Ok(())
     }
+}
+
+/// Mirror the dds/tga `add_path` decoration, but with the logical admitted
+/// path: the decoded bytes came from admission, not from an on-disk file.
+fn add_logical_path(mut error: GameUiError, rel_path: &str) -> GameUiError {
+    error.message = format!("{rel_path}: {}", error.message);
+    error
 }
 
 fn reject_recoveries(expected: &UsedContentKey, document: &Document) -> Result<()> {

@@ -17,13 +17,13 @@
 //! The POV *state* still flips on entry (so the UI can show which country is
 //! observed and offer the toggle); only the fog RENDER is blocked.
 //!
-//! replay_core API GAP (recorded in LANE_REPORT.md): the session view's
-//! `player_countries` reads a top-level `session.player_countries`, which the
-//! current snapshot-flavor recordings do not carry — their player list lives
-//! under `world.scenario.players`, which the typed view does not yet surface.
-//! So [`povs_from_session`] returns [`PovPicker::Unavailable`] on today's
-//! fixtures, and the picker fails closed with [`SESSION_PLAYERS_GAP`] instead
-//! of parsing the raw snapshot behind the seam.
+//! Player-list sourcing: the session view's `player_countries` reads a
+//! top-level `session.player_countries` and, when that key is absent, falls
+//! through to `world.scenario.players` (the location snapshot-flavor
+//! recordings use). `Leaf::Absent` therefore means *neither* location carried
+//! a player-country list, and [`povs_from_session`] fails closed with
+//! [`SESSION_PLAYERS_GAP`] instead of parsing the raw snapshot behind the
+//! seam.
 
 use replay_core::{Leaf, SessionMetadataView};
 
@@ -33,12 +33,12 @@ pub const FOW_NOT_LAW_CERTIFIED: &str =
     "observer POV FoW layer not yet law-certified (plan C8 is tooling-only); \
      showing the omniscient world view, not a faked fog look";
 
-/// Fail-closed diagnostic surfaced when the recording carries no session
-/// player-country list the picker can use (see the module note / LANE_REPORT).
-pub const SESSION_PLAYERS_GAP: &str = "session player-country list unavailable: replay_core \
-     SessionMetadataView.player_countries is Absent for this recording (the \
-     player list lives under world.scenario.players, which the session view \
-     does not yet surface); country picker fails closed";
+/// Fail-closed diagnostic surfaced when the recording carries no
+/// player-country list the picker can use (see the module note).
+pub const SESSION_PLAYERS_GAP: &str = "session player-country list unavailable: this recording \
+     carries no player-country list under session.player_countries or \
+     world.scenario.players (replay_core SessionMetadataView.player_countries \
+     is Absent); country picker fails closed";
 
 /// Observer view mode.
 #[derive(Debug, Clone, PartialEq, Eq)]

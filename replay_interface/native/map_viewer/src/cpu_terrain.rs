@@ -1,4 +1,7 @@
 use crate::*;
+// Crate-canonical HLSL mirrors (single copies with the shipped-shader
+// citations, `standardfuncsgfx.fxh:184-187` for `cam_distance`).
+use crate::occupation_stripe_law::{cam_distance, saturate, smoothstep};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -149,6 +152,27 @@ pub(crate) fn decode_map_frame_terrain_draw_outputs(
     bundle_dir: &Path,
     constants: MapFrameTerrainShaderConstants,
 ) -> Result<(Vec<TerrainVertexShaderOutput>, usize)> {
+    decode_map_frame_terrain_draw_outputs_impl(draw, bundle_dir, constants, None)
+}
+
+/// Variant used by the per-draw render loop: the CB1 layout was already parsed
+/// once for the whole render call, so only this draw's own captured CB bytes
+/// are read and decoded here (all per-draw validation still runs).
+pub(crate) fn decode_map_frame_terrain_draw_outputs_with_cb1_layout(
+    draw: &MapFrameDraw,
+    bundle_dir: &Path,
+    constants: MapFrameTerrainShaderConstants,
+    cb1_layout: &ShaderConstantBufferLayout,
+) -> Result<(Vec<TerrainVertexShaderOutput>, usize)> {
+    decode_map_frame_terrain_draw_outputs_impl(draw, bundle_dir, constants, Some(cb1_layout))
+}
+
+fn decode_map_frame_terrain_draw_outputs_impl(
+    draw: &MapFrameDraw,
+    bundle_dir: &Path,
+    constants: MapFrameTerrainShaderConstants,
+    cb1_layout: Option<&ShaderConstantBufferLayout>,
+) -> Result<(Vec<TerrainVertexShaderOutput>, usize)> {
     validate_map_frame_shader_constants(constants)?;
     if draw.draw_call != "DrawIndexed" {
         return Err(format!(
@@ -186,7 +210,7 @@ pub(crate) fn decode_map_frame_terrain_draw_outputs(
         .ok_or("production terrain renderer blocked: DrawIndexed map-frame terrain replay has no index buffer")?;
     let index_bytes = read_map_frame_index_bytes(bundle_dir, index_buffer)?;
     let cb0 = decode_map_frame_terrain_scene_cb0(draw, bundle_dir)?;
-    let cb1 = decode_map_frame_terrain_draw_cb1(draw, bundle_dir)?;
+    let cb1 = decode_map_frame_terrain_draw_cb1_impl(draw, bundle_dir, cb1_layout)?;
 
     let mut unique_indices = BTreeSet::new();
     let mut outputs = Vec::with_capacity(usize::try_from(draw.draw_count)?);
@@ -443,9 +467,14 @@ pub(crate) fn map_frame_vertex_element_byte_offset(
         })
 }
 
-pub(crate) fn decode_map_frame_terrain_draw_cb1(
+/// Per-draw CB1 decode. When `layout` is `Some`, it was parsed once for the
+/// whole render call; the per-draw checks (VS slot presence, this draw's
+/// captured CB bytes, and the shader-identity citation of `gfx/FX/pdxmap.fxh`)
+/// still run for every draw — only the `pdxmap.fxh` read/parse is hoisted.
+fn decode_map_frame_terrain_draw_cb1_impl(
     draw: &MapFrameDraw,
     bundle_dir: &Path,
+    layout: Option<&ShaderConstantBufferLayout>,
 ) -> Result<TerrainDrawCb1Decoded> {
     let buffer = draw
         .constant_buffers
@@ -462,11 +491,18 @@ pub(crate) fn decode_map_frame_terrain_draw_cb1(
         .shader
         .source_evidence
         .iter()
-        .find(|source| source.as_str() == "gfx/FX/pdxmap.fxh")
+        .find(|source| source.as_str() == TERRAIN_DRAW_CB1_FXH_SOURCE)
         .ok_or("production terrain renderer blocked: map-frame shader identity must cite gfx/FX/pdxmap.fxh for terrain draw CB1 layout")?;
-    let source_path = bundle_dir.join("vanilla").join(source);
-    let layout = terrain_draw_cb1_layout(&read_latin1(&source_path)?)?;
-    decode_terrain_draw_cb1(&bytes, &layout)
+    let parsed;
+    let layout = match layout {
+        Some(layout) => layout,
+        None => {
+            let source_path = bundle_dir.join("vanilla").join(source);
+            parsed = terrain_draw_cb1_layout(&read_latin1(&source_path)?)?;
+            &parsed
+        }
+    };
+    decode_terrain_draw_cb1(&bytes, layout)
 }
 
 pub(crate) fn terrain_draw_cb1_layout(shader_source: &str) -> Result<ShaderConstantBufferLayout> {
@@ -544,9 +580,14 @@ pub(crate) fn decode_terrain_draw_cb1(
     Ok(decoded)
 }
 
-pub(crate) fn decode_map_frame_point_light_cb2(
+/// Per-draw point-light CB2 decode against a layout that was parsed once for
+/// the whole render call. The per-draw checks (PS slot presence and this
+/// draw's captured CB bytes) still run for every draw; only the
+/// `tiled_pointlights.fxh` read/parse is hoisted.
+pub(crate) fn decode_map_frame_point_light_cb2_with_layout(
     draw: &MapFrameDraw,
     bundle_dir: &Path,
+    layout: &ShaderConstantBufferLayout,
 ) -> Result<TerrainPointLightCb2Decoded> {
     let buffer = draw
         .constant_buffers
@@ -559,11 +600,28 @@ pub(crate) fn decode_map_frame_point_light_cb2(
             )
         })?;
     let bytes = read_map_frame_buffer_bytes(bundle_dir, buffer, "constant buffer")?;
-    let source_path = bundle_dir
+    decode_terrain_point_light_cb2(&bytes, layout)
+}
+
+/// Constant-buffer layouts parsed once per `render_map_frame_terrain` call.
+/// The layouts are pure functions of the shipped `.fxh` sources, so hoisting
+/// the read/parse out of the per-draw loop cannot change any decode result.
+pub(crate) struct MapFrameTerrainCbLayouts {
+    pub(crate) terrain_draw_cb1: ShaderConstantBufferLayout,
+    pub(crate) point_light_cb2: ShaderConstantBufferLayout,
+}
+
+pub(crate) fn load_map_frame_terrain_cb_layouts(
+    bundle_dir: &Path,
+) -> Result<MapFrameTerrainCbLayouts> {
+    let cb1_path = bundle_dir.join("vanilla").join(TERRAIN_DRAW_CB1_FXH_SOURCE);
+    let cb2_path = bundle_dir
         .join("vanilla")
-        .join("gfx/FX/tiled_pointlights.fxh");
-    let layout = terrain_point_light_cb2_layout(&read_latin1(&source_path)?)?;
-    decode_terrain_point_light_cb2(&bytes, &layout)
+        .join(TERRAIN_POINT_LIGHT_CB2_FXH_SOURCE);
+    Ok(MapFrameTerrainCbLayouts {
+        terrain_draw_cb1: terrain_draw_cb1_layout(&read_latin1(&cb1_path)?)?,
+        point_light_cb2: terrain_point_light_cb2_layout(&read_latin1(&cb2_path)?)?,
+    })
 }
 
 pub(crate) fn terrain_point_light_cb2_layout(
@@ -938,10 +996,9 @@ pub(crate) fn render_map_frame_terrain(
     output: &Path,
 ) -> Result<MapFrameTerrainRenderSummary> {
     let inputs = validate_production_terrain_renderer_for_map_frame(bundle)?;
-    let manifest: Manifest = serde_json::from_slice(&fs::read(bundle.join("manifest.json"))?)?;
-    let contract: MapMaterialContract = serde_json::from_slice(&fs::read(
-        bundle.join(&manifest.files.map_material_contract),
-    )?)?;
+    // One manifest/contract parse (with the schema + mip-output validation the
+    // per-draw loop used to redo for every draw) for the whole render call.
+    let (manifest, contract) = load_post_diffuse_bundle_context(bundle)?;
     let constants = load_map_frame_terrain_shader_constants(frame, bundle)?;
     validate_map_frame_base_terrain_shipped_resources(frame, bundle, &manifest, &contract)?;
     validate_map_frame_post_diffuse_inputs(frame, bundle, bundle_dir)?;
@@ -997,9 +1054,48 @@ pub(crate) fn render_map_frame_terrain(
     let mut covered = vec![false; map_w * map_h];
     let mut index_count = 0usize;
     let mut triangle_count = 0usize;
+    // Shader-source CB layouts are pure functions of the shipped `.fxh` files;
+    // parse them once for the whole render call instead of once per draw.
+    let cb_layouts = load_map_frame_terrain_cb_layouts(bundle_dir)?;
+    // Post-diffuse texture reads are reused across draws whose validated specs
+    // are identical (the common case). Every per-draw validation still runs
+    // for every draw, and the small per-draw CB/shadow state is always
+    // re-decoded from that draw's own capture.
+    let mut post_diffuse_cache: Option<(
+        MapFramePostDiffuseTextureSpecs,
+        TerrainPostDiffuseResources,
+    )> = None;
     for draw in &frame.draws {
-        let post_diffuse =
-            load_map_frame_post_diffuse_resources(frame, draw, bundle_dir, bundle, constants)?;
+        let specs = validate_map_frame_post_diffuse_texture_specs(
+            frame, draw, bundle_dir, bundle, &manifest, &contract,
+        )?;
+        let shadow_map = map_frame_shadow_map_state(draw)?;
+        let scene_cb0 = decode_map_frame_ps_terrain_scene_cb0(draw, bundle_dir)?;
+        let point_light_cb2 = decode_map_frame_point_light_cb2_with_layout(
+            draw,
+            bundle_dir,
+            &cb_layouts.point_light_cb2,
+        )?;
+        if matches!(&post_diffuse_cache, Some((cached_specs, _)) if *cached_specs == specs) {
+            let (_, cached) = post_diffuse_cache
+                .as_mut()
+                .expect("post-diffuse cache checked above");
+            cached.shadow_map = shadow_map;
+            cached.scene_cb0 = scene_cb0;
+            cached.point_light_cb2 = point_light_cb2;
+        } else {
+            let loaded = read_map_frame_post_diffuse_resources(
+                &specs,
+                shadow_map,
+                scene_cb0,
+                point_light_cb2,
+                constants,
+            )?;
+            post_diffuse_cache = Some((specs, loaded));
+        }
+        let (_, post_diffuse) = post_diffuse_cache
+            .as_ref()
+            .expect("post-diffuse cache populated above");
         let resources = TerrainPixelResources {
             map_w,
             map_h,
@@ -1008,10 +1104,15 @@ pub(crate) fn render_map_frame_terrain(
             terrain_normal_atlas: &terrain_normal_atlas,
             height_normal: &height_normal,
             terrain_color_tint: &terrain_color_tint,
-            post_diffuse: Some(&post_diffuse),
+            post_diffuse: Some(post_diffuse),
             lod,
         };
-        let (outputs, _) = decode_map_frame_terrain_draw_outputs(draw, bundle_dir, constants)?;
+        let (outputs, _) = decode_map_frame_terrain_draw_outputs_with_cb1_layout(
+            draw,
+            bundle_dir,
+            constants,
+            &cb_layouts.terrain_draw_cb1,
+        )?;
         index_count += outputs.len();
         let mut chunks = outputs.chunks_exact(3);
         for triangle in &mut chunks {
@@ -1047,68 +1148,120 @@ pub(crate) fn render_map_frame_terrain(
     })
 }
 
-pub(crate) fn load_map_frame_post_diffuse_resources(
+/// Resolved location + exact expected dimensions of one post-diffuse texture
+/// input, produced by the per-draw binding validation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MapFrameRgbaTextureSpec {
+    path: PathBuf,
+    width: usize,
+    height: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MapFrameRgbaChainSpec {
+    texture: MapFrameRgbaTextureSpec,
+    color_space: RgbaColorSpace,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum MapFrameMipChainSpec {
+    PackedMips {
+        path: PathBuf,
+        width: usize,
+        height: usize,
+        mip_count: u32,
+        color_space: RgbaColorSpace,
+    },
+    SingleLevel {
+        path: PathBuf,
+        width: usize,
+        height: usize,
+        color_space: RgbaColorSpace,
+    },
+}
+
+/// Everything the post-diffuse texture reads depend on, computed by running
+/// ALL the per-draw binding validation (resource presence, format,
+/// color-space, file-link, and exact-dimension checks). Two draws with equal
+/// specs are proven to reference byte-identical texture inputs, so
+/// `render_map_frame_terrain` may reuse the previously loaded pixels;
+/// validation itself always reruns per draw — only the disk reads are shared.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MapFramePostDiffuseTextureSpecs {
+    snow_mud_data: MapFrameRgbaTextureSpec,
+    snow_texture: MapFrameMipChainSpec,
+    city_lights_snow_noise: MapFrameMipChainSpec,
+    mud_diffuse_gloss: MapFrameMipChainSpec,
+    mud_normal_spec: MapFrameMipChainSpec,
+    province_secondary_color_map: MapFrameRgbaChainSpec,
+    gradient_border_channel1: MapFrameRgbaChainSpec,
+    gradient_border_channel2: MapFrameRgbaChainSpec,
+    light_index_map: MapFrameRgbaTextureSpec,
+    light_data_map: MapFrameRgbaTextureSpec,
+}
+
+pub(crate) fn validate_map_frame_post_diffuse_texture_specs(
     frame: &MapFrameRuntimeBundle,
     draw: &MapFrameDraw,
     bundle_dir: &Path,
     bundle: &Path,
-    constants: MapFrameTerrainShaderConstants,
-) -> Result<TerrainPostDiffuseResources> {
-    let (manifest, contract) = load_post_diffuse_bundle_context(bundle)?;
+    manifest: &Manifest,
+    contract: &MapMaterialContract,
+) -> Result<MapFramePostDiffuseTextureSpecs> {
     let snow_mud_data =
-        load_map_frame_resource_rgba(frame, draw, bundle_dir, SNOW_MUD_DATA_SYMBOL)?;
-    let snow_texture = load_shipped_material_mip_chain(
+        map_frame_runtime_rgba_texture_spec(frame, draw, bundle_dir, SNOW_MUD_DATA_SYMBOL)?;
+    let snow_texture = shipped_material_mip_chain_spec(
         bundle,
-        &manifest,
-        &contract,
+        manifest,
+        contract,
         draw,
         SNOW_TEXTURE_SYMBOL,
         "map/terrain/snow_normal_rgb_diffuse_a.dds",
     )?;
-    let city_lights_snow_noise = load_shipped_material_mip_chain(
+    let city_lights_snow_noise = shipped_material_mip_chain_spec(
         bundle,
-        &manifest,
-        &contract,
+        manifest,
+        contract,
         draw,
         CITY_LIGHTS_AND_SNOW_NOISE_SYMBOL,
         "map/terrain/citylights_rgb_snowmask_a_0.dds",
     )?;
-    let mud_diffuse_gloss = load_shipped_material_mip_chain(
+    let mud_diffuse_gloss = shipped_material_mip_chain_spec(
         bundle,
-        &manifest,
-        &contract,
+        manifest,
+        contract,
         draw,
         MUD_DIFFUSE_GLOSS_SYMBOL,
         "map/terrain/mud_diffuse_rgb_gloss_a_0.dds",
     )?;
-    let mud_normal_spec = load_shipped_material_mip_chain(
+    let mud_normal_spec = shipped_material_mip_chain_spec(
         bundle,
-        &manifest,
-        &contract,
+        manifest,
+        contract,
         draw,
         MUD_NORMAL_SPEC_SYMBOL,
         "map/terrain/mud_normal_rgb_spec_a_0.dds",
     )?;
-    let province_secondary_color_map = load_map_frame_resource_rgba_chain(
+    let province_secondary_color_map = map_frame_runtime_rgba_chain_spec(
         frame,
         draw,
         bundle_dir,
         PROVINCE_SECONDARY_COLOR_MAP_SYMBOL,
     )?;
-    let gradient_border_channel1 = load_map_frame_resource_rgba_chain(
+    let gradient_border_channel1 = map_frame_runtime_rgba_chain_spec(
         frame,
         draw,
         bundle_dir,
         GRADIENT_BORDER_CHANNEL1_SYMBOL,
     )?;
-    let gradient_border_channel2 = load_map_frame_resource_rgba_chain(
+    let gradient_border_channel2 = map_frame_runtime_rgba_chain_spec(
         frame,
         draw,
         bundle_dir,
         GRADIENT_BORDER_CHANNEL2_SYMBOL,
     )?;
     let light_index_map =
-        load_map_frame_resource_rgba(frame, draw, bundle_dir, LIGHT_INDEX_MAP_SYMBOL)?;
+        map_frame_runtime_rgba_texture_spec(frame, draw, bundle_dir, LIGHT_INDEX_MAP_SYMBOL)?;
     validate_exact_map_frame_resource_dimensions(
         LIGHT_INDEX_MAP_SYMBOL,
         light_index_map.width,
@@ -1117,7 +1270,7 @@ pub(crate) fn load_map_frame_post_diffuse_resources(
         LIGHT_INDEX_TEXTURE_SIZE,
     )?;
     let light_data_map =
-        load_map_frame_resource_rgba32f(frame, draw, bundle_dir, LIGHT_DATA_MAP_SYMBOL)?;
+        map_frame_runtime_rgba32f_texture_spec(frame, draw, bundle_dir, LIGHT_DATA_MAP_SYMBOL)?;
     validate_exact_map_frame_resource_dimensions(
         LIGHT_DATA_MAP_SYMBOL,
         light_data_map.width,
@@ -1125,7 +1278,7 @@ pub(crate) fn load_map_frame_post_diffuse_resources(
         LIGHT_DATA_TEXTURE_SIZE,
         1,
     )?;
-    Ok(TerrainPostDiffuseResources {
+    Ok(MapFramePostDiffuseTextureSpecs {
         snow_mud_data,
         snow_texture,
         city_lights_snow_noise,
@@ -1136,101 +1289,163 @@ pub(crate) fn load_map_frame_post_diffuse_resources(
         gradient_border_channel2,
         light_index_map,
         light_data_map,
-        shadow_map: map_frame_shadow_map_state(draw)?,
-        scene_cb0: decode_map_frame_ps_terrain_scene_cb0(draw, bundle_dir)?,
-        point_light_cb2: decode_map_frame_point_light_cb2(draw, bundle_dir)?,
+    })
+}
+
+/// Read every post-diffuse texture named by validated specs from disk and
+/// assemble the per-draw resource set.
+pub(crate) fn read_map_frame_post_diffuse_resources(
+    specs: &MapFramePostDiffuseTextureSpecs,
+    shadow_map: TerrainShadowMapState,
+    scene_cb0: TerrainSceneCb0Decoded,
+    point_light_cb2: TerrainPointLightCb2Decoded,
+    constants: MapFrameTerrainShaderConstants,
+) -> Result<TerrainPostDiffuseResources> {
+    Ok(TerrainPostDiffuseResources {
+        snow_mud_data: read_map_frame_rgba_texture_spec(&specs.snow_mud_data)?,
+        snow_texture: read_map_frame_mip_chain_spec(&specs.snow_texture)?,
+        city_lights_snow_noise: read_map_frame_mip_chain_spec(&specs.city_lights_snow_noise)?,
+        mud_diffuse_gloss: read_map_frame_mip_chain_spec(&specs.mud_diffuse_gloss)?,
+        mud_normal_spec: read_map_frame_mip_chain_spec(&specs.mud_normal_spec)?,
+        province_secondary_color_map: read_map_frame_rgba_chain_spec(
+            &specs.province_secondary_color_map,
+        )?,
+        gradient_border_channel1: read_map_frame_rgba_chain_spec(&specs.gradient_border_channel1)?,
+        gradient_border_channel2: read_map_frame_rgba_chain_spec(&specs.gradient_border_channel2)?,
+        light_index_map: read_map_frame_rgba_texture_spec(&specs.light_index_map)?,
+        light_data_map: read_map_frame_rgba32f_texture_spec(&specs.light_data_map)?,
+        shadow_map,
+        scene_cb0,
+        point_light_cb2,
         constants,
     })
 }
 
-pub(crate) fn load_map_frame_resource_rgba(
+pub(crate) fn map_frame_runtime_rgba_texture_spec(
     frame: &MapFrameRuntimeBundle,
     draw: &MapFrameDraw,
     bundle_dir: &Path,
     name: &str,
-) -> Result<RgbaImage> {
+) -> Result<MapFrameRgbaTextureSpec> {
     let resource = map_frame_shader_resource(draw, name)?;
     validate_map_frame_runtime_rgba_resource(name, resource)?;
     validate_map_frame_runtime_file_link(frame, resource, name)?;
-    let file = resource.file.as_ref().ok_or_else(|| {
-        format!("production terrain renderer blocked: runtime resource {name} has no file")
-    })?;
-    read_rgba_raw(
-        &bundle_dir.join(file),
-        usize::try_from(resource.width)?,
-        usize::try_from(resource.height)?,
-    )
+    map_frame_texture_spec_from_resource(bundle_dir, name, resource)
 }
 
-pub(crate) fn load_map_frame_resource_rgba_chain(
+pub(crate) fn map_frame_runtime_rgba_chain_spec(
     frame: &MapFrameRuntimeBundle,
     draw: &MapFrameDraw,
     bundle_dir: &Path,
     name: &str,
-) -> Result<RgbaMipChain> {
+) -> Result<MapFrameRgbaChainSpec> {
     let resource = map_frame_shader_resource(draw, name)?;
     validate_map_frame_runtime_rgba_resource(name, resource)?;
     validate_map_frame_runtime_file_link(frame, resource, name)?;
     let color_space = runtime_rgba_color_space(name, resource)?;
-    let file = resource.file.as_ref().ok_or_else(|| {
-        format!("production terrain renderer blocked: runtime resource {name} has no file")
-    })?;
-    Ok(RgbaMipChain {
-        levels: vec![read_rgba_raw(
-            &bundle_dir.join(file),
-            usize::try_from(resource.width)?,
-            usize::try_from(resource.height)?,
-        )?],
+    Ok(MapFrameRgbaChainSpec {
+        texture: map_frame_texture_spec_from_resource(bundle_dir, name, resource)?,
         color_space,
     })
 }
 
-pub(crate) fn load_map_frame_resource_rgba32f(
+fn map_frame_texture_spec_from_resource(
+    bundle_dir: &Path,
+    name: &str,
+    resource: &MapFrameTextureBinding,
+) -> Result<MapFrameRgbaTextureSpec> {
+    let file = resource.file.as_ref().ok_or_else(|| {
+        format!("production terrain renderer blocked: runtime resource {name} has no file")
+    })?;
+    Ok(MapFrameRgbaTextureSpec {
+        path: bundle_dir.join(file),
+        width: usize::try_from(resource.width)?,
+        height: usize::try_from(resource.height)?,
+    })
+}
+
+pub(crate) fn read_map_frame_rgba_texture_spec(
+    spec: &MapFrameRgbaTextureSpec,
+) -> Result<RgbaImage> {
+    read_rgba_raw(&spec.path, spec.width, spec.height)
+}
+
+pub(crate) fn read_map_frame_rgba32f_texture_spec(
+    spec: &MapFrameRgbaTextureSpec,
+) -> Result<Rgba32fImage> {
+    read_rgba32f_raw(&spec.path, spec.width, spec.height)
+}
+
+pub(crate) fn read_map_frame_rgba_chain_spec(spec: &MapFrameRgbaChainSpec) -> Result<RgbaMipChain> {
+    Ok(RgbaMipChain {
+        levels: vec![read_map_frame_rgba_texture_spec(&spec.texture)?],
+        color_space: spec.color_space,
+    })
+}
+
+pub(crate) fn read_map_frame_mip_chain_spec(spec: &MapFrameMipChainSpec) -> Result<RgbaMipChain> {
+    match spec {
+        MapFrameMipChainSpec::PackedMips {
+            path,
+            width,
+            height,
+            mip_count,
+            color_space,
+        } => read_rgba_mip_chain_raw_with_color_space(
+            path,
+            *width,
+            *height,
+            *mip_count,
+            *color_space,
+        ),
+        MapFrameMipChainSpec::SingleLevel {
+            path,
+            width,
+            height,
+            color_space,
+        } => Ok(RgbaMipChain {
+            levels: vec![read_rgba_raw(path, *width, *height)?],
+            color_space: *color_space,
+        }),
+    }
+}
+
+pub(crate) fn map_frame_runtime_rgba32f_texture_spec(
     frame: &MapFrameRuntimeBundle,
     draw: &MapFrameDraw,
     bundle_dir: &Path,
     name: &str,
-) -> Result<Rgba32fImage> {
+) -> Result<MapFrameRgbaTextureSpec> {
     let resource = map_frame_shader_resource(draw, name)?;
     validate_map_frame_runtime_r32g32b32a32_float_resource(name, resource)?;
     validate_map_frame_runtime_file_link(frame, resource, name)?;
-    let file = resource.file.as_ref().ok_or_else(|| {
-        format!("production terrain renderer blocked: runtime resource {name} has no file")
-    })?;
-    read_rgba32f_raw(
-        &bundle_dir.join(file),
-        usize::try_from(resource.width)?,
-        usize::try_from(resource.height)?,
-    )
+    map_frame_texture_spec_from_resource(bundle_dir, name, resource)
 }
 
-pub(crate) fn load_shipped_material_mip_chain(
+pub(crate) fn shipped_material_mip_chain_spec(
     bundle: &Path,
     manifest: &Manifest,
     contract: &MapMaterialContract,
     draw: &MapFrameDraw,
     symbol: &str,
     source: &str,
-) -> Result<RgbaMipChain> {
+) -> Result<MapFrameMipChainSpec> {
     let meta = material_source_meta(contract, source)?;
     let resource = map_frame_shader_resource(draw, symbol)?;
     let color_space = shipped_material_color_space(symbol, resource)?;
     if let Some(mip_output) = meta.mip_output.as_deref() {
-        return read_rgba_mip_chain_raw_with_color_space(
-            &required_bundle_file(bundle, source, mip_output)?,
-            meta.dimensions.width,
-            meta.dimensions.height,
-            meta.mip_count,
+        return Ok(MapFrameMipChainSpec::PackedMips {
+            path: required_bundle_file(bundle, source, mip_output)?,
+            width: meta.dimensions.width,
+            height: meta.dimensions.height,
+            mip_count: meta.mip_count,
             color_space,
-        );
+        });
     }
-    let base = required_shader_source_path(bundle, manifest, source)?;
-    Ok(RgbaMipChain {
-        levels: vec![read_rgba_raw(
-            &base,
-            meta.dimensions.width,
-            meta.dimensions.height,
-        )?],
+    Ok(MapFrameMipChainSpec::SingleLevel {
+        path: required_shader_source_path(bundle, manifest, source)?,
+        width: meta.dimensions.width,
+        height: meta.dimensions.height,
         color_space,
     })
 }
@@ -1823,12 +2038,10 @@ pub(crate) fn apply_terrain_secondary_mask(
 }
 
 pub(crate) fn calculate_occupation_mask(uv: Vec2, cam_y: f32) -> f32 {
-    // Port of gfx/FX/standardfuncsgfx.fxh:965-976 CalculateOccupationMask.
-    let t: f32 = 3.14159 / 8.0;
-    let mut stripe_val = (uv.x * t.cos() * SEC_MAP_TILE + uv.y * t.sin() * SEC_MAP_TILE).cos();
-    let cam_dist = cam_distance(cam_y, SEC_CAM_MIN, SEC_CAM_MAX);
-    stripe_val += cam_dist * 1.5;
-    smoothstep(0.0, 1.0, stripe_val * 1.7) * lerp_f32(1.0, 0.3, cam_dist)
+    // Keep the CPU terrain path on the single shipped-shader-derived law.
+    // The visible replay path still requires the authenticated per-hour
+    // ProvinceSecondaryColorMap; this helper supplies only its stripe mask.
+    occupation_stripe_mask(uv.x, uv.y, cam_y)
 }
 
 pub(crate) fn apply_border_light_removal(lit: Vec3, diffuse: Vec3, bloom_alpha: f32) -> Vec3 {
@@ -2672,10 +2885,6 @@ pub(crate) fn sample_uv_wrap_linear_rgba_vec4(image: &RgbaImage, u: f32, v: f32)
     ]
 }
 
-pub(crate) fn saturate(value: f32) -> f32 {
-    value.clamp(0.0, 1.0)
-}
-
 pub(crate) fn rasterize_map_frame_terrain_triangle(
     out: &mut [u32],
     covered: &mut [bool],
@@ -3173,15 +3382,6 @@ pub(crate) fn lerp_f32(left: f32, right: f32, t: f32) -> f32 {
     left + (right - left) * t
 }
 
-pub(crate) fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
-    let t = saturate((value - edge0) / (edge1 - edge0));
-    t * t * (3.0 - 2.0 * t)
-}
-
-pub(crate) fn cam_distance(cam_y: f32, min: f32, max: f32) -> f32 {
-    (cam_y.clamp(min, max) - min) / (max - min)
-}
-
 pub(crate) fn terrain_surface_sample_is_finite(surface: TerrainSurfaceSample) -> bool {
     [
         surface.diffuse.x,
@@ -3367,6 +3567,61 @@ mod tests {
     use crate::test_support::*;
 
     use std::fs;
+
+    #[test]
+    fn post_diffuse_texture_reuse_key_distinguishes_path_color_space_and_mips() {
+        use std::path::PathBuf;
+        let texture = |path: &str| MapFrameRgbaTextureSpec {
+            path: PathBuf::from(path),
+            width: 8,
+            height: 4,
+        };
+        let chain = |path: &str, color_space| MapFrameRgbaChainSpec {
+            texture: texture(path),
+            color_space,
+        };
+        // The render loop reuses loaded post-diffuse pixels only when the
+        // validated specs match exactly; a draw binding the same file with a
+        // different color space (or a different file) must reload.
+        assert_eq!(
+            chain("runtime/a.rgba", RgbaColorSpace::Linear),
+            chain("runtime/a.rgba", RgbaColorSpace::Linear)
+        );
+        assert_ne!(
+            chain("runtime/a.rgba", RgbaColorSpace::Linear),
+            chain("runtime/a.rgba", RgbaColorSpace::Srgb),
+            "color space must be part of the reuse key"
+        );
+        assert_ne!(
+            chain("runtime/a.rgba", RgbaColorSpace::Linear),
+            chain("runtime/b.rgba", RgbaColorSpace::Linear),
+            "file path must be part of the reuse key"
+        );
+        let packed = |mip_count| MapFrameMipChainSpec::PackedMips {
+            path: PathBuf::from("materials/atlas.mips"),
+            width: 16,
+            height: 16,
+            mip_count,
+            color_space: RgbaColorSpace::Srgb,
+        };
+        assert_eq!(packed(5), packed(5));
+        assert_ne!(
+            packed(5),
+            packed(4),
+            "mip count must be part of the reuse key"
+        );
+        let single = MapFrameMipChainSpec::SingleLevel {
+            path: PathBuf::from("materials/atlas.mips"),
+            width: 16,
+            height: 16,
+            color_space: RgbaColorSpace::Srgb,
+        };
+        assert_ne!(
+            packed(1),
+            single,
+            "packed-mip and single-level reads must never alias"
+        );
+    }
 
     #[test]
     fn map_frame_terrain_draw_replay_decodes_multistream_vertex_shader_outputs() {
@@ -3986,6 +4241,25 @@ mod tests {
         assert_close(sample.surface.glossiness, base_surface.glossiness);
         assert_close(sample.surface.specular, base_surface.specular);
         assert_close(sample.surface.snow_alpha, base_surface.snow_alpha);
+    }
+
+    #[test]
+    fn cpu_terrain_occupation_mask_is_the_canonical_shader_law() {
+        let samples = [
+            (Vec2 { x: 0.0, y: 0.0 }, SEC_CAM_MIN),
+            (Vec2 { x: 0.125, y: 0.75 }, 450.0),
+            (Vec2 { x: -0.25, y: 1.5 }, 900.0),
+            (Vec2 { x: 1.0, y: 1.0 }, SEC_CAM_MAX),
+        ];
+        for (uv, cam_y) in samples {
+            assert_eq!(
+                calculate_occupation_mask(uv, cam_y).to_bits(),
+                occupation_stripe_mask(uv.x, uv.y, cam_y).to_bits(),
+                "CPU terrain occupation law drifted at uv=({}, {}) cam_y={cam_y}",
+                uv.x,
+                uv.y
+            );
+        }
     }
 
     #[test]

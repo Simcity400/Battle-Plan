@@ -6,12 +6,12 @@
 //! manufacturing process pointers.
 
 use crate::a729_runtime::{
-    A729EventBridge, CoverageAttestation, PendingBaseline, RawFire, RawMaterialisation,
-    RawResolution, ResolutionPath,
+    A729EventBridge, CoverageAttestation, ObservedRuntimeTextOwner, PendingBaseline, RawFire,
+    RawMaterialisation, RawResolution, ResolutionPath,
 };
 use crate::{
-    FireInput, MaterialisationInput, PopupSubtype, ResolutionInput, ResolutionReason,
-    PRODUCER_MANIFEST_SHA256,
+    FireInput, MaterialisationInput, OptionRuntimeTextContext, PopupSubtype, ResolutionInput,
+    ResolutionReason, PRODUCER_MANIFEST_SHA256,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,6 +28,7 @@ const GS_PENDING_EVENTS_OFF: usize = 0x0560;
 const GS_PENDING_CAPACITY_OFF: usize = 0x0568;
 const GS_PENDING_COUNT_OFF: usize = 0x056C;
 const PENDING_STRIDE: usize = 0x38;
+const EVENT_WINDOW_DUE_TICK_OFF: usize = 0x1268;
 const MAX_PENDING_EVENTS: u32 = 1_000_000;
 const MAX_FIRED_BUCKETS: u32 = 1_000_000;
 const MAX_COUNTRY_TAGS: u32 = 100_000;
@@ -78,6 +79,27 @@ pub trait A729Memory: Send + Sync + 'static {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PopupTextOwnerBindings {
+    pub title_owner: Option<usize>,
+    pub description_owner: Option<usize>,
+    /// Definition-array ordinal paired with its exact CTextBox owner.
+    pub option_owners: Vec<(u16, usize)>,
+}
+
+/// Capture-authenticated classifier for A25 textbox owners observed inside one
+/// event materialisation call. Implementations return owners, not arbitrary
+/// context ids; the bridge mechanically joins them back to A25 observations.
+pub trait A729PopupTextOwnerJoin: Send + Sync + 'static {
+    fn classify(
+        &self,
+        event_window: usize,
+        event: usize,
+        visible_option_ordinals: &[u16],
+        observations: &[ObservedRuntimeTextOwner],
+    ) -> Result<PopupTextOwnerBindings, String>;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct FireKey {
     event: usize,
@@ -99,6 +121,7 @@ pub struct ExactA729CollectorBridge<M: A729Memory, R: A729DefinitionRegistry> {
     game_state: usize,
     next_sequence: AtomicU64,
     coverage: CoverageAttestation,
+    popup_text_owner_join: Option<Arc<dyn A729PopupTextOwnerJoin>>,
     state: Mutex<BridgeState>,
 }
 
@@ -126,6 +149,7 @@ impl<M: A729Memory, R: A729DefinitionRegistry> ExactA729CollectorBridge<M, R> {
             game_state,
             next_sequence: AtomicU64::new(u64::from(next)),
             coverage,
+            popup_text_owner_join: None,
             state: Mutex::new(BridgeState::default()),
         };
         let fired = bridge.read_fired_event_set()?;
@@ -135,6 +159,81 @@ impl<M: A729Memory, R: A729DefinitionRegistry> ExactA729CollectorBridge<M, R> {
             .map_err(|_| "XUI21 bridge mutex poisoned".to_string())?
             .fired_shadow_expected = fired;
         Ok(bridge)
+    }
+
+    /// Install only after the pinned capture proves the event-window/textbox
+    /// slot mapping. Without this classifier d75 intentionally emits no A25
+    /// context joins while preserving the authenticated lifecycle row.
+    pub fn with_popup_text_owner_join(mut self, join: Arc<dyn A729PopupTextOwnerJoin>) -> Self {
+        self.popup_text_owner_join = Some(join);
+        self
+    }
+
+    fn runtime_text_bindings(
+        &self,
+        raw: &RawMaterialisation,
+        visible_option_ordinals: &[u16],
+    ) -> Result<
+        (
+            Option<String>,
+            Option<String>,
+            Vec<OptionRuntimeTextContext>,
+        ),
+        String,
+    > {
+        let Some(join) = self.popup_text_owner_join.as_ref() else {
+            return Ok((None, None, Vec::new()));
+        };
+        let bindings = join.classify(
+            raw.event_window,
+            raw.event,
+            visible_option_ordinals,
+            &raw.runtime_text_owners,
+        )?;
+        let observed = raw
+            .runtime_text_owners
+            .iter()
+            .map(|row| (row.textbox_owner, row.context_id.as_str()))
+            .collect::<BTreeMap<_, _>>();
+        let mut used_owners = BTreeSet::new();
+        let mut context_for = |owner: usize, label: &str| -> Result<String, String> {
+            if owner == 0 || !used_owners.insert(owner) {
+                return Err(format!("XUI21 {label} textbox owner is null or reused"));
+            }
+            observed
+                .get(&owner)
+                .filter(|context| !context.trim().is_empty())
+                .map(|context| (*context).to_string())
+                .ok_or_else(|| format!("XUI21 {label} textbox owner was not observed by A25"))
+        };
+        let title = bindings
+            .title_owner
+            .map(|owner| context_for(owner, "title"))
+            .transpose()?;
+        let description = bindings
+            .description_owner
+            .map(|owner| context_for(owner, "description"))
+            .transpose()?;
+        let mut option_contexts = Vec::with_capacity(bindings.option_owners.len());
+        for (ordinal, owner) in bindings.option_owners {
+            if !visible_option_ordinals.contains(&ordinal) {
+                return Err(
+                    "XUI21 runtime option textbox is not a visible definition ordinal".into(),
+                );
+            }
+            option_contexts.push(OptionRuntimeTextContext {
+                definition_ordinal: ordinal,
+                context_id: context_for(owner, "option")?,
+            });
+        }
+        option_contexts.sort_by_key(|row| row.definition_ordinal);
+        if option_contexts
+            .windows(2)
+            .any(|pair| pair[0].definition_ordinal == pair[1].definition_ordinal)
+        {
+            return Err("XUI21 duplicate runtime option textbox ordinal".into());
+        }
+        Ok((title, description, option_contexts))
     }
 
     fn definition(&self, event: usize) -> Result<A729EventDefinition, String> {
@@ -242,6 +341,7 @@ impl<M: A729Memory, R: A729DefinitionRegistry> ExactA729CollectorBridge<M, R> {
         if fire_hour < 0 {
             return Err("XUI21 fire tick predates the engine epoch".into());
         }
+        let popup_subtype = runtime_popup_subtype(self.memory.as_ref(), event, definition.class)?;
         Ok(FireInput {
             event_id: definition.event_id,
             recipient_tag: self.tag_string(recipient_tag_id)?,
@@ -250,6 +350,7 @@ impl<M: A729Memory, R: A729DefinitionRegistry> ExactA729CollectorBridge<M, R> {
             fire_hour: fire_hour as u64,
             fire_tick: u64::from(fire_tick),
             event_sequence,
+            popup_subtype,
             effective_timeout_hours,
             timeout_tick: u64::from(timeout_tick),
         })
@@ -274,51 +375,63 @@ impl<M: A729Memory, R: A729DefinitionRegistry> ExactA729CollectorBridge<M, R> {
         }
         let mut rows = Vec::with_capacity(count as usize);
         for index in 0..count as usize {
-            let row = base
-                .checked_add(index * PENDING_STRIDE)
-                .ok_or_else(|| "XUI21 pending-event row address overflow".to_string())?;
-            let instance_id = self
-                .memory
-                .u32(row)
-                .filter(|value| *value != 0)
-                .ok_or_else(|| format!("XUI21 pending row {index} has invalid instance id"))?;
-            let event = self
-                .memory
-                .usize(row + 0x08)
-                .filter(|value| *value != 0)
-                .ok_or_else(|| format!("XUI21 pending row {index} has invalid CEvent"))?;
-            let scope = self
-                .memory
-                .usize(row + 0x10)
-                .filter(|value| *value != 0)
-                .ok_or_else(|| format!("XUI21 pending row {index} has invalid CEventScope"))?;
-            let actor_tag_id = self
-                .memory
-                .u32(row + 0x18)
-                .ok_or_else(|| format!("XUI21 pending row {index} actor is unreadable"))?;
-            let recipient_tag_id = self
-                .memory
-                .u32(scope + 0x08)
-                .filter(|value| *value != 0)
-                .ok_or_else(|| format!("XUI21 pending row {index} recipient is invalid"))?;
-            let due_tick = self
-                .memory
-                .u32(row + 0x28)
-                .ok_or_else(|| format!("XUI21 pending row {index} due tick is unreadable"))?;
-            rows.push(PendingRow {
-                instance_id,
-                event,
-                actor_tag_id,
-                recipient_tag_id,
-                due_tick,
-            });
+            rows.push(self.pending_row_at(base, index)?);
         }
         if self.memory.usize(self.game_state + GS_PENDING_EVENTS_OFF) != Some(base)
+            || self.memory.u32(self.game_state + GS_PENDING_CAPACITY_OFF) != Some(capacity)
             || self.memory.u32(self.game_state + GS_PENDING_COUNT_OFF) != Some(count)
         {
             return Err("XUI21 pending-event vector changed during enumeration".into());
         }
+        for (index, expected) in rows.iter().enumerate() {
+            if self.pending_row_at(base, index)? != *expected {
+                return Err(format!(
+                    "XUI21 pending row {index} changed during enumeration"
+                ));
+            }
+        }
         Ok(rows)
+    }
+
+    fn pending_row_at(&self, base: usize, index: usize) -> Result<PendingRow, String> {
+        let row = base
+            .checked_add(index * PENDING_STRIDE)
+            .ok_or_else(|| "XUI21 pending-event row address overflow".to_string())?;
+        let instance_id = self
+            .memory
+            .u32(row)
+            .filter(|value| *value != 0)
+            .ok_or_else(|| format!("XUI21 pending row {index} has invalid instance id"))?;
+        let event = self
+            .memory
+            .usize(row + 0x08)
+            .filter(|value| *value != 0)
+            .ok_or_else(|| format!("XUI21 pending row {index} has invalid CEvent"))?;
+        let scope = self
+            .memory
+            .usize(row + 0x10)
+            .filter(|value| *value != 0)
+            .ok_or_else(|| format!("XUI21 pending row {index} has invalid CEventScope"))?;
+        let actor_tag_id = self
+            .memory
+            .u32(row + 0x18)
+            .ok_or_else(|| format!("XUI21 pending row {index} actor is unreadable"))?;
+        let recipient_tag_id = self
+            .memory
+            .u32(scope + 0x08)
+            .filter(|value| *value != 0)
+            .ok_or_else(|| format!("XUI21 pending row {index} recipient is invalid"))?;
+        let due_tick = self
+            .memory
+            .u32(row + 0x28)
+            .ok_or_else(|| format!("XUI21 pending row {index} due tick is unreadable"))?;
+        Ok(PendingRow {
+            instance_id,
+            event,
+            actor_tag_id,
+            recipient_tag_id,
+            due_tick,
+        })
     }
 
     fn read_fired_event_set(&self) -> Result<BTreeSet<usize>, String> {
@@ -443,7 +556,7 @@ impl<M: A729Memory, R: A729DefinitionRegistry> ExactA729CollectorBridge<M, R> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PendingRow {
     instance_id: u32,
     event: usize,
@@ -610,7 +723,7 @@ impl<M: A729Memory, R: A729DefinitionRegistry> A729EventBridge for ExactA729Coll
             .usize(raw.event + 0x368)
             .ok_or_else(|| "XUI21 option table is unreadable".to_string())?;
         let mut visible_option_ordinals = Vec::with_capacity(raw.admitted_option_pointers.len());
-        for pointer in raw.admitted_option_pointers {
+        for pointer in raw.admitted_option_pointers.iter().copied() {
             let ordinal = (0..runtime_count)
                 .find(|ordinal| {
                     self.memory.usize(option_table + *ordinal as usize * 8) == Some(pointer)
@@ -639,13 +752,29 @@ impl<M: A729Memory, R: A729DefinitionRegistry> A729EventBridge for ExactA729Coll
             self.sequence_for_instance_or_event(instance_id, raw.event, recipient_tag_id)?;
         let popup_subtype =
             runtime_popup_subtype(self.memory.as_ref(), raw.event, definition.class)?;
+        // The materialised CEventWindow owns the engine's exact absolute due
+        // tick. This supersedes the provisional fire-time days*24 value and
+        // preserves the constructor's hour-boundary/default policy exactly.
+        let timeout_tick = self
+            .memory
+            .u32(raw.event_window + EVENT_WINDOW_DUE_TICK_OFF)
+            .filter(|value| *value != 0)
+            .ok_or_else(|| "XUI21 materialised due tick is unreadable".to_string())?;
+        let (
+            runtime_title_text_context_id,
+            runtime_description_text_context_id,
+            runtime_option_text_contexts,
+        ) = self.runtime_text_bindings(&raw, &visible_option_ordinals)?;
         Ok(MaterialisationInput {
             event_sequence,
             visible_option_ordinals,
             selected_desc_key: raw.selected_desc_key,
             shown_picture_gfx: raw.shown_picture_gfx,
             popup_subtype,
-            runtime_text_context_id: None,
+            timeout_tick: u64::from(timeout_tick),
+            runtime_title_text_context_id,
+            runtime_description_text_context_id,
+            runtime_option_text_contexts,
         })
     }
 
@@ -779,6 +908,28 @@ pub fn decode_datehour(stored: i32) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FixtureTextJoin;
+
+    impl A729PopupTextOwnerJoin for FixtureTextJoin {
+        fn classify(
+            &self,
+            _event_window: usize,
+            _event: usize,
+            visible_option_ordinals: &[u16],
+            observations: &[ObservedRuntimeTextOwner],
+        ) -> Result<PopupTextOwnerBindings, String> {
+            Ok(PopupTextOwnerBindings {
+                title_owner: Some(observations[0].textbox_owner),
+                description_owner: Some(observations[1].textbox_owner),
+                option_owners: visible_option_ordinals
+                    .iter()
+                    .zip(&observations[2..])
+                    .map(|(ordinal, observation)| (*ordinal, observation.textbox_owner))
+                    .collect(),
+            })
+        }
+    }
 
     #[derive(Default)]
     struct FixtureMemory(Mutex<BTreeMap<usize, u8>>);
@@ -971,6 +1122,10 @@ mod tests {
             memory.u32(WINDOW + 0x60, 7);
             memory.u64(WINDOW + 0x68, EVENT as u64);
             memory.u32(WINDOW + 0x80, 1);
+            memory.u32(
+                WINDOW + EVENT_WINDOW_DUE_TICK_OFF,
+                DATE_EPOCH_CONST as u32 + 1936 * 365 * 24 + 12 + 313,
+            );
             let bridge = ExactA729CollectorBridge::new(
                 memory,
                 registry,
@@ -981,7 +1136,8 @@ mod tests {
                     player_ai_timeout_no_choice: true,
                 },
             )
-            .unwrap();
+            .unwrap()
+            .with_popup_text_owner_join(Arc::new(FixtureTextJoin));
             bridge
                 .state
                 .lock()
@@ -995,10 +1151,57 @@ mod tests {
                     admitted_option_pointers: vec![0x3000_0000, 0x3000_0200],
                     selected_desc_key: Some("event.desc".into()),
                     shown_picture_gfx: Some("GFX_event".into()),
+                    runtime_text_owners: [
+                        (0x4100, "ctx:title", "Title"),
+                        (0x4200, "ctx:description", "Description"),
+                        (0x4300, "ctx:option:0", "Name"),
+                        (0x4400, "ctx:option:2", "Name"),
+                    ]
+                    .into_iter()
+                    .map(
+                        |(textbox_owner, context_id, element_id)| ObservedRuntimeTextOwner {
+                            textbox_owner,
+                            context_id: context_id.into(),
+                            view_id: "EventWindow".into(),
+                            element_id: element_id.into(),
+                        },
+                    )
+                    .collect(),
                 })
                 .unwrap();
             assert_eq!(row.visible_option_ordinals, vec![0, 2]);
             assert_eq!(row.event_sequence, 70);
+            assert_eq!(
+                row.runtime_title_text_context_id.as_deref(),
+                Some("ctx:title")
+            );
+            assert_eq!(
+                row.runtime_option_text_contexts,
+                vec![
+                    OptionRuntimeTextContext {
+                        definition_ordinal: 0,
+                        context_id: "ctx:option:0".into(),
+                    },
+                    OptionRuntimeTextContext {
+                        definition_ordinal: 2,
+                        context_id: "ctx:option:2".into(),
+                    },
+                ]
+            );
+            assert_eq!(
+                row.timeout_tick,
+                u64::from(DATE_EPOCH_CONST as u32 + 1936 * 365 * 24 + 12 + 313)
+            );
+            assert_eq!(
+                row.popup_subtype,
+                match class {
+                    A729EventClass::Country => PopupSubtype::Country,
+                    A729EventClass::News => PopupSubtype::News,
+                    A729EventClass::State => PopupSubtype::State,
+                    A729EventClass::UnitLeader => PopupSubtype::UnitLeader,
+                    A729EventClass::OperativeLeader => PopupSubtype::OperativeLeader,
+                }
+            );
         }
     }
 

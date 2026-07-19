@@ -21,8 +21,8 @@ use map_viewer::{
     RecordedSnowMudTexture, SnowMudAddressing, SnowMudFeedInputs, RESTORE_PASS_BUNDLE_FILE,
 };
 use replay_core::{
-    Leaf, PoliticalTextureFormat, ProductionRenderFrame, RenderSubmit, TiledLightSubmission,
-    ViewStatus, WorldFrame,
+    Leaf, PoliticalTextureFormat, PoliticalTextureKind, ProductionRenderFrame, RenderSubmit,
+    TiledLightSubmission, ViewStatus, WorldFrame,
 };
 use winapi::shared::dxgiformat::{
     DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_R16G16B16A16_FLOAT,
@@ -48,6 +48,7 @@ use winapi::um::d3dcompiler::D3DCompile;
 
 use crate::bundle::{MapBundle, PRODUCT_MAP_WIDTH};
 use crate::camera::Camera;
+use crate::counter_gpu::{CounterGpuFrameAdmission, CounterGpuPass};
 use crate::d3d::{hr_ok, ComPtr, Gfx};
 use crate::grading_law::{
     file_derived_grade, file_derived_grade_per_frame, load_graphics_grading_defines,
@@ -580,6 +581,8 @@ pub struct CapturedPassStats {
     pub weather_stream_omitted: bool,
     pub water_gap: Option<String>,
     pub layer_gaps: Vec<String>,
+    pub counter_gpu_draws: usize,
+    pub counter_gpu_omission: Option<String>,
 }
 
 struct CapturedPassLayer {
@@ -602,13 +605,16 @@ struct CapturedPassLayer {
     restore_postfx_cb: Option<ComPtr<ID3D11Buffer>>,
     restore_color_cube: Option<RestoreColorCubeGpu>,
     restore_bloom: Option<RestoreBloomGpu>,
+    /// CAP6 captured-map seam only. This pass never executes on the sealed
+    /// authenticated portable map/UI route. A CPU batch without an exact
+    /// frame tint/order/target receipt remains a feature-local zero draw.
+    counter_gpu: CounterGpuPass,
     /// COL3: the political-mapmode scene CB0 state (GB override/cutoffs +
     /// shadow-fade height law) written into every pass's scene CB0 on camera
     /// update. Defines are resolver-read (mod-aware); missing resolver data is
     /// a blocker rather than a baked vanilla fallback. See
     /// `map_viewer::PoliticalSceneCb0`.
     political_cb0: map_viewer::PoliticalSceneCb0,
-    recorded_snow_mud_bound: bool,
     recorded_political_bindings: std::collections::BTreeSet<String>,
     recorded_tiled_lights_bound: bool,
     reported_omitted_particles: bool,
@@ -686,6 +692,21 @@ fn recorded_snow_mud_texture(
     .map(Some)
 }
 
+/// Production admission for the dynamic snow/mud carrier. The captured PAN2
+/// bundle contains one historical `SnowMudTexture`, so treating a missing
+/// replay view as "no update" would silently display that unrelated capture.
+/// Exact replay therefore requires a present, fully measured view on every
+/// displayed hour.
+fn required_recorded_snow_mud_texture(
+    bundle: &MapBundle,
+    frame: &WorldFrame,
+) -> Result<RecordedSnowMudTexture> {
+    recorded_snow_mud_texture(bundle, frame)?.ok_or_else(|| {
+        "recorded SnowMudData blocked: this hour has no present snow/mud view; refusing the captured bundle texture"
+            .into()
+    })
+}
+
 fn production_display_submit(frame: &ProductionRenderFrame) -> Result<Option<&RenderSubmit>> {
     let Some(text) = frame.display_submit_index.as_deref() else {
         if frame.submits.is_empty() {
@@ -705,6 +726,24 @@ fn production_display_submit(frame: &ProductionRenderFrame) -> Result<Option<&Re
         )
         .into()
     })
+}
+
+fn require_secondary_political_texture(submit: Option<&RenderSubmit>) -> Result<&RenderSubmit> {
+    let submit = submit.ok_or_else(|| {
+        "occupation stripes DATA_BLOCKED: displayed hour has no production submit carrying ProvinceSecondaryColorMap; refusing the captured bundle texture"
+            .to_string()
+    })?;
+    let has_secondary = submit.political_textures.iter().any(|packet| {
+        packet.kind == PoliticalTextureKind::Secondary
+            && packet.target_binding_identity == "ProvinceSecondaryColorMap"
+    });
+    if !has_secondary {
+        return Err(
+            "occupation stripes DATA_BLOCKED: displayed submit has no exact ProvinceSecondaryColorMap packet; refusing the captured bundle texture"
+                .into(),
+        );
+    }
+    Ok(submit)
 }
 
 fn unique_display_tiled_light(submit: &RenderSubmit) -> Result<Option<&TiledLightSubmission>> {
@@ -815,7 +854,7 @@ impl CapturedPassLayer {
         let water_gap = None;
         let camera_projection = ProductionMapCameraProjection::from_camera(base_camera)?;
         layer_gaps.push(
-            "replay-driven political color substitution blocked: captured-pass rendering keeps the HOI4-captured ProvinceSecondaryColorMap and GradientBorderChannel SRVs until the engine's primary political fill and exact CGradientBorderManager generation law are ported"
+            "replay-driven political textures are DATA_BLOCKED on any displayed hour without exact byte-native packets; ProvinceSecondaryColorMap is never allowed to fall back to the captured PAN2 texture"
                 .to_string(),
         );
         let output_srv = create_captured_output_srv(
@@ -939,8 +978,8 @@ impl CapturedPassLayer {
             restore_postfx_cb,
             restore_color_cube,
             restore_bloom,
+            counter_gpu: CounterGpuPass::new(resolver.clone(), session_dir.to_path_buf()),
             political_cb0,
-            recorded_snow_mud_bound: false,
             recorded_political_bindings: std::collections::BTreeSet::new(),
             recorded_tiled_lights_bound: false,
             reported_omitted_particles: false,
@@ -969,15 +1008,7 @@ impl CapturedPassLayer {
         bundle: &MapBundle,
         frame: &WorldFrame,
     ) -> Result<()> {
-        let Some(texture) = recorded_snow_mud_texture(bundle, frame)? else {
-            if self.recorded_snow_mud_bound {
-                return Err(
-                    "recorded SnowMudData blocked: this hour has no present snow/mud view; refusing to display the previous hour's texture"
-                        .into(),
-                );
-            }
-            return Ok(());
-        };
+        let texture = required_recorded_snow_mud_texture(bundle, frame)?;
         let (_texture, srv) = create_immutable_texture(
             gfx,
             texture.width,
@@ -993,7 +1024,6 @@ impl CapturedPassLayer {
             );
         }
         self.political_cb0.snow_mud_fade = Some(texture.fade);
-        self.recorded_snow_mud_bound = true;
         self.mark_dirty();
         eprintln!(
             "replay_app: bound recorded SnowMudData ({} pass bindings, {} covered texels, {} land texels without a recorded level, fade {:.6})",
@@ -1013,15 +1043,7 @@ impl CapturedPassLayer {
         gfx: &Gfx,
         render_frame: &ProductionRenderFrame,
     ) -> Result<()> {
-        let Some(submit) = production_display_submit(render_frame)? else {
-            if !self.recorded_political_bindings.is_empty() {
-                return Err(
-                    "production political textures blocked: empty displayed submit would retain prior-hour bindings"
-                        .into(),
-                );
-            }
-            return Ok(());
-        };
+        let submit = require_secondary_political_texture(production_display_submit(render_frame)?)?;
         let mut packets: Vec<_> = submit.political_textures.iter().collect();
         packets.sort_by_key(|packet| packet.upload_order);
         let next_bindings: std::collections::BTreeSet<String> = packets
@@ -1168,12 +1190,6 @@ impl CapturedPassLayer {
         Ok(())
     }
 
-    fn clear_recorded_submitted_draws(&mut self) {
-        if self.displayed_submit.take().is_some() {
-            self.mark_dirty();
-        }
-    }
-
     /// `day_night_hour = None` keeps the captured CB0 day/night state (the
     /// game's default: terminator shading off). `Some(hour)` opts into the
     /// game's day/night toggle at that hour.
@@ -1317,7 +1333,14 @@ impl CapturedPassLayer {
             self.last_camera = Some(key);
             self.dirty = false;
         }
-        self.composite(gfx)
+        self.composite(gfx)?;
+        // CAPTURE ordering: hoi4_frame69242 RestoreScene chunk 29204 writes the
+        // R8G8B8A8 output later consumed by counter backing chunk 31499. The
+        // counter pass therefore runs after RestoreScene composition. Its own
+        // admission rejects the current B8G8R8A8 app target and all frames
+        // lacking a complete tint/order receipt, so this call is zero-draw by
+        // default rather than an inferred semantic overlay.
+        self.counter_gpu.draw(gfx)
     }
 
     /// GRADE2 render wiring: recompose the files-first grade for the actual
@@ -1448,13 +1471,16 @@ impl CapturedPassLayer {
             let samplers = [self.composite_sampler.as_raw()];
             (*context).PSSetSamplers(0, 1, samplers.as_ptr());
             (*context).Draw(3, 0);
-            // Unbind t0 (the scene) and t8 (bloom) so those textures can be
-            // render targets again next frame — the bloom chain re-renders into
-            // the same half-res target, and D3D11 forbids simultaneous SRV+RTV
-            // binding of one resource.
+            // Unbind t0 (the scene) so its texture can be a render target
+            // again next frame — D3D11 forbids simultaneous SRV+RTV binding of
+            // one resource, and leaving it bound relies on implicit hazard
+            // resolution (debug-layer warnings every frame) instead of the
+            // explicit state management the rest of this file keeps. t8
+            // (bloom) likewise when the bloom chain is active, since it
+            // re-renders into the same half-res target.
+            let null_srvs: [*mut ID3D11ShaderResourceView; 1] = [ptr::null_mut()];
+            (*context).PSSetShaderResources(0, 1, null_srvs.as_ptr());
             if self.restore_bloom.is_some() {
-                let null_srvs: [*mut ID3D11ShaderResourceView; 1] = [ptr::null_mut()];
-                (*context).PSSetShaderResources(0, 1, null_srvs.as_ptr());
                 (*context).PSSetShaderResources(8, 1, null_srvs.as_ptr());
             }
         }
@@ -1830,6 +1856,13 @@ impl CapturedPassLayer {
             weather_stream_omitted: self.reported_omitted_weather,
             water_gap: self.water_gap.clone(),
             layer_gaps: self.layer_gaps.clone(),
+            counter_gpu_draws: self.counter_gpu.last_outcome().draw_count,
+            counter_gpu_omission: self
+                .counter_gpu
+                .last_outcome()
+                .omission
+                .as_ref()
+                .map(|reason| reason.code().to_string()),
         }
     }
 }
@@ -1905,32 +1938,20 @@ impl MapRenderer {
             controllers,
             country_colors,
         )?;
-        if let Some(frame) = frame {
-            unsafe {
-                self.captured.update_recorded_snow_mud(gfx, bundle, frame)?;
-                if let Some(render_frame) = frame.production_render() {
-                    self.captured
-                        .update_recorded_submitted_draws(render_frame)?;
-                    self.captured
-                        .update_recorded_political_textures(gfx, render_frame)?;
-                    self.captured
-                        .update_recorded_tiled_lights(gfx, render_frame)?;
-                } else if !self.captured.recorded_political_bindings.is_empty() {
-                    return Err(
-                        "production political textures blocked: this hour has no production_render carrier; refusing stale prior-hour bindings"
-                            .into(),
-                    );
-                } else if self.captured.recorded_tiled_lights_bound {
-                    return Err(
-                        "production tiled lights blocked: this hour has no production_render carrier; refusing stale prior-hour bindings"
-                        .into(),
-                    );
-                } else {
-                    self.captured.clear_recorded_submitted_draws();
-                }
-            }
-        } else {
-            self.captured.clear_recorded_submitted_draws();
+        let frame = frame.ok_or(
+            "occupation stripes DATA_BLOCKED: displayed hour has no WorldFrame carrying ProvinceSecondaryColorMap; refusing the captured bundle texture",
+        )?;
+        let render_frame = frame.production_render().ok_or(
+            "occupation stripes DATA_BLOCKED: displayed hour has no production_render carrier carrying ProvinceSecondaryColorMap; refusing the captured bundle texture",
+        )?;
+        unsafe {
+            self.captured.update_recorded_snow_mud(gfx, bundle, frame)?;
+            self.captured
+                .update_recorded_submitted_draws(render_frame)?;
+            self.captured
+                .update_recorded_political_textures(gfx, render_frame)?;
+            self.captured
+                .update_recorded_tiled_lights(gfx, render_frame)?;
         }
         Ok(())
     }
@@ -1944,6 +1965,21 @@ impl MapRenderer {
     ) -> Result<()> {
         self.captured
             .render(gfx, camera, day_night_hour, map_clock_time)
+    }
+
+    /// CAP6 captured-map GPU handoff. Callers must supply the already
+    /// fail-closed CPU batch plus a mechanically joined frame admission.
+    /// `None` admission explicitly clears any previous receipt and guarantees
+    /// zero counter draws. This method is intentionally crate-only: the normal
+    /// portable route has its own authenticated UI operation stream.
+    #[allow(dead_code)]
+    pub(crate) fn update_counter_batch(
+        &mut self,
+        batch: map_viewer::CounterRenderBatch,
+        admission: Option<CounterGpuFrameAdmission>,
+    ) {
+        self.captured.counter_gpu.update(batch, admission);
+        self.captured.mark_dirty();
     }
 
     pub fn screen_to_map(
@@ -2541,19 +2577,7 @@ fn restore_full_postfx_from_files(
     // active volume never disagrees between bloom and LUT (restorescene.shader
     // composites both from the one PostEffectBase state). Fails closed under the
     // flag if the modset omits a bloom key (never a silent no-bloom).
-    let bloom_params =
-        resolve_bloom_params_for_volume(resolver, &grade.resolved.value_name).map_err(|err| {
-            format!(
-                "--postfx-restore-full bloom blocked: could not resolve files-first bloom params for volume '{}': {err}",
-                grade.resolved.value_name
-            )
-        })?;
-    let bloom_kernel =
-        BloomBlurKernel::from_gaussian(bloom_params.bloom_width, bloom_params.bloom_scale)?;
-    restore.bloom = Some(RestoreBloomLaw {
-        params: bloom_params,
-        kernel: bloom_kernel,
-    });
+    let bloom = restore_bloom_law_for_volume(resolver, &grade.resolved.value_name)?;
     // Files-first per-frame exposure adaptation (FIDELITY_LEDGER debt #2): the
     // `MinHdr_MaxHdr` clamp bounds come from the resolver-loaded defines and let
     // the composite pass recompute AvgLum from the rendered scene each frame via
@@ -2578,11 +2602,12 @@ fn restore_full_postfx_from_files(
         luminance_bounds.min_hdr_adjustment,
         luminance_bounds.max_hdr_adjustment,
         grade.resolved.value_name,
-        bloom_params.bloom_width,
-        bloom_params.bloom_scale,
-        bloom_params.bright_threshold,
-        bloom_params.emissive_bloom_strength,
+        bloom.params.bloom_width,
+        bloom.params.bloom_scale,
+        bloom.params.bright_threshold,
+        bloom.params.emissive_bloom_strength,
     );
+    restore.bloom = Some(bloom);
     Ok(restore)
 }
 
@@ -2593,10 +2618,14 @@ fn reject_snow_mud_env_overrides(
     snow_mud_override: Option<std::ffi::OsString>,
     snow_mud_fade: Option<std::ffi::OsString>,
 ) -> Result<()> {
-    if snow_mud_override.is_some() || snow_mud_fade.is_some() {
+    if snow_mud_override.is_some() {
         return Err(
-            "replay_app snow/mud environment overrides are blocked: SnowMudTexture and SnowMudFade must come from the captured engine pass or a documented game-file law, not REPLAY_SNOW_MUD_OVERRIDE / REPLAY_SNOW_MUD_FADE"
-                .into(),
+            crate::blockers::reason(crate::blockers::BlockerId::SnowMudTextureOverride).into(),
+        );
+    }
+    if snow_mud_fade.is_some() {
+        return Err(
+            crate::blockers::reason(crate::blockers::BlockerId::SnowMudFadeOverride).into(),
         );
     }
     Ok(())
@@ -3147,7 +3176,7 @@ MAX_HDR_ADJUSTMENT = 1.0,
     }
 
     #[test]
-    fn snow_mud_env_overrides_are_product_blocked() {
+    fn snow_mud_env_overrides_are_product_path_blocked() {
         reject_snow_mud_env_overrides(None, None).expect("absent overrides are fine");
 
         let err = reject_snow_mud_env_overrides(Some(std::ffi::OsString::from("snow.rgba")), None)
@@ -3211,6 +3240,57 @@ MAX_HDR_ADJUSTMENT = 1.0,
         );
 
         std::fs::remove_dir_all(relocated_dir).expect("clean relocated replay fixture");
+    }
+
+    #[test]
+    fn production_snow_mud_rejects_missing_first_hour_instead_of_captured_fallback() {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("fixtures/positive/fx_owner_controller_flip.battleplan");
+        let timeline = replay_core::WorldTimeline::open(
+            replay_core::open_recording(&source).expect("open snow/mud-negative replay"),
+        )
+        .expect("open snow/mud-negative timeline");
+        let hour = *timeline.hours().first().expect("recorded hour");
+        let frame = timeline.frame(hour).expect("typed frame");
+        assert_ne!(frame.snow_mud().status, ViewStatus::Present);
+
+        let bundle = MapBundle {
+            width: 1,
+            height: 1,
+            province_ids: vec![0],
+            province_to_state: BTreeMap::new(),
+            state_owner_1936: BTreeMap::new(),
+            country_colors: BTreeMap::new(),
+        };
+        let err = required_recorded_snow_mud_texture(&bundle, &frame)
+            .expect_err("missing first-hour SnowMudData must not retain PAN2's texture");
+        assert!(
+            err.to_string()
+                .contains("refusing the captured bundle texture"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn occupation_stripes_reject_missing_first_submit_secondary_texture() {
+        let err = require_secondary_political_texture(None)
+            .expect_err("missing first submit must not retain PAN2's secondary texture");
+        assert!(err.to_string().contains("DATA_BLOCKED"), "{err}");
+        assert!(
+            err.to_string()
+                .contains("refusing the captured bundle texture"),
+            "{err}"
+        );
+
+        let submit = empty_submit(1, 1, 1);
+        let err = require_secondary_political_texture(Some(&submit))
+            .expect_err("empty first submit must not retain PAN2's secondary texture");
+        assert!(
+            err.to_string()
+                .contains("no exact ProvinceSecondaryColorMap packet"),
+            "{err}"
+        );
     }
 
     fn empty_submit(submit_index: u64, global_order: u32, qpc: u64) -> RenderSubmit {

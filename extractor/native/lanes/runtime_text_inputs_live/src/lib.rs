@@ -2,18 +2,19 @@
 //!
 //! Two authenticated engine hooks form the identity join:
 //! `CTernary<CTextBox*>::insert` binds a runtime textbox to its owning authored
-//! fixed window, and the final text setter supplies the exact bytes selected by
-//! Clausewitz. Static localisation is intentionally not duplicated.
+//! fixed window, and the final text setter supplies the evaluated string.  The
+//! post-setter `CInstantTextObject` supplies Clausewitz's exact wrap/truncation-
+//! selected string. Static localisation is intentionally not duplicated.
 
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 pub const DOMAIN_ID: u16 = 76;
 pub const DOMAIN_NAME: &str = "runtime_text_inputs_live";
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const AUTHORITY_EXACT_A729_RUNTIME_TEXT_HOOKS: u32 = 1;
 pub const MAGIC: u32 = u32::from_le_bytes(*b"RTI1");
-pub const HEADER_LEN: usize = 112;
+pub const HEADER_LEN: usize = 144;
 pub const MAX_ROWS: usize = 262_144;
 pub const MAX_STRING_BYTES: usize = 65_536;
 pub const MAX_TEXT_BYTES: usize = 1 << 20;
@@ -29,6 +30,9 @@ pub const SETTER_MANIFEST_SHA256: [u8; 32] =
 /// SHA-256 of the manifest proving the fixed-window/textbox registration join.
 pub const REGISTRATION_MANIFEST_SHA256: [u8; 32] =
     hex32(b"6d83eea3192175ab51211198b195dd6f9c7546e8097b408863d7d700dd578123");
+/// SHA-256 of the manifest proving the post-setter `CInstantTextObject+0x188`
+pub const POST_LAYOUT_MANIFEST_SHA256: [u8; 32] =
+    hex32(b"28eab18b7243ed6b611e28ad8b8ce5710837c36642b26f8ee04a697476507a82");
 
 const fn hex32(input: &[u8; 64]) -> [u8; 32] {
     const fn nibble(byte: u8) -> u8 {
@@ -58,7 +62,8 @@ pub enum RuntimeTextSourceIdentity {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RuntimeTextLayout {
-    /// Final bytes can be laid out by the admitted authored rectangle/font law.
+    /// The engine-selected post-layout bytes can be laid out by the admitted
+    /// authored rectangle/font law. Inline controls are forbidden here.
     AuthoredReproducible,
     /// Existing RenderDoc/capture evidence supplied the irreducible final runs.
     CapturedRuntime {
@@ -221,20 +226,29 @@ pub fn validate_frame(frame: &RuntimeTextFrame) -> Result<(), CarrierError> {
             }
             RuntimeTextSourceIdentity::SetterCallerRva(_) => {}
         }
-        if let RuntimeTextLayout::CapturedRuntime {
-            clip: _,
-            glyphs,
-            inline_icons,
-        } = &row.layout
-        {
-            if !row.final_text_bytes.is_empty() && glyphs.is_empty() && inline_icons.is_empty() {
-                return invalid("captured layout has no runs for non-empty text");
+        match &row.layout {
+            RuntimeTextLayout::AuthoredReproducible => {
+                if requires_captured_layout(&row.final_text_bytes) {
+                    return invalid(
+                        "engine post-layout text contains inline/control data requiring captured layout",
+                    );
+                }
             }
-            for glyph in glyphs {
-                nonempty(&glyph.font, "glyph font")?;
-            }
-            for icon in inline_icons {
-                nonempty(&icon.sprite, "inline icon sprite")?;
+            RuntimeTextLayout::CapturedRuntime {
+                clip: _,
+                glyphs,
+                inline_icons,
+            } => {
+                if !row.final_text_bytes.is_empty() && glyphs.is_empty() && inline_icons.is_empty()
+                {
+                    return invalid("captured layout has no runs for non-empty text");
+                }
+                for glyph in glyphs {
+                    nonempty(&glyph.font, "glyph font")?;
+                }
+                for icon in inline_icons {
+                    nonempty(&icon.sprite, "inline icon sprite")?;
+                }
             }
         }
     }
@@ -252,6 +266,7 @@ pub fn encode_payload(frame: &RuntimeTextFrame) -> Result<Vec<u8>, CarrierError>
     u64v(&mut out, frame.frame_hour);
     out.extend_from_slice(&SETTER_MANIFEST_SHA256);
     out.extend_from_slice(&REGISTRATION_MANIFEST_SHA256);
+    out.extend_from_slice(&POST_LAYOUT_MANIFEST_SHA256);
     u32v(&mut out, frame.expected_context_count);
     u32v(&mut out, frame.rows.len() as u32);
     u32v(&mut out, HEADER_LEN as u32);
@@ -291,7 +306,10 @@ pub fn decode_payload(payload: &[u8]) -> Result<RuntimeTextFrame, CarrierError> 
     let status_flags = r.u32()?;
     let elapsed_wall_ms = r.u64()?;
     let frame_hour = r.u64()?;
-    if r.array32()? != SETTER_MANIFEST_SHA256 || r.array32()? != REGISTRATION_MANIFEST_SHA256 {
+    if r.array32()? != SETTER_MANIFEST_SHA256
+        || r.array32()? != REGISTRATION_MANIFEST_SHA256
+        || r.array32()? != POST_LAYOUT_MANIFEST_SHA256
+    {
         return invalid("Ghidra producer manifest hash mismatch");
     }
     let expected_context_count = r.u32()?;
@@ -534,6 +552,17 @@ fn nonempty(value: &str, label: &str) -> Result<(), CarrierError> {
         Ok(())
     }
 }
+
+/// Engine control U+0011 is the authenticated colour lead and explicit line
+/// breaks are reproduced from the post-layout string. Every other C0 control,
+/// plus authored pound-sign icon syntax, needs owner-scoped captured runs.
+fn requires_captured_layout(bytes: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return true;
+    };
+    text.chars()
+        .any(|ch| ch == '\u{00a3}' || (ch.is_control() && !matches!(ch, '\n' | '\r' | '\u{0011}')))
+}
 fn invalid<T>(message: impl Into<String>) -> Result<T, CarrierError> {
     Err(CarrierError::Invalid(message.into()))
 }
@@ -652,6 +681,10 @@ mod tests {
         let mut bad = encoded;
         bad[40] ^= 1;
         assert!(decode_payload(&bad).is_err());
+
+        let mut bad_layout_authority = encode_payload(&frame).unwrap();
+        bad_layout_authority[96] ^= 1;
+        assert!(decode_payload(&bad_layout_authority).is_err());
     }
 
     #[test]
@@ -675,6 +708,37 @@ mod tests {
         frame.rows[0].source = RuntimeTextSourceIdentity::SetterCallerRva(1);
         frame.rows[0].setter_caller_rva = 2;
         assert!(validate_frame(&frame).is_err());
+    }
+
+    #[test]
+    fn authored_layout_rejects_engine_inline_controls_and_pound_icons() {
+        let mut frame = RuntimeTextFrame {
+            elapsed_wall_ms: 0,
+            status_flags: 0,
+            frame_hour: 1,
+            completeness_record_identity: "complete".into(),
+            expected_context_count: 1,
+            rows: vec![row()],
+        };
+        frame.rows[0].final_text_bytes = b"cost \x13abc".to_vec();
+        assert!(validate_frame(&frame).is_err());
+
+        frame.rows[0].final_text_bytes = "cost £political_power".as_bytes().to_vec();
+        assert!(validate_frame(&frame).is_err());
+
+        frame.rows[0].layout = RuntimeTextLayout::CapturedRuntime {
+            clip: None,
+            glyphs: Vec::new(),
+            inline_icons: vec![InlineIconRun {
+                sprite: "GFX_pol_power".into(),
+                frame: 0,
+                x: 0,
+                y: 0,
+                baseline: 12,
+                advance: 12,
+            }],
+        };
+        validate_frame(&frame).unwrap();
     }
 
     #[test]

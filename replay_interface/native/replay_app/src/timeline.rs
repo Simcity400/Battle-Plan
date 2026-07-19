@@ -163,6 +163,7 @@ pub fn build_provider(
             // `--frame-cache` shrinks it for weak-PC profiles).
             let timeline = replay_core::WorldTimeline::open_with_config(source, *config)
                 .map_err(|err| format!("open timeline {}: {err}", path.display()))?;
+            let warning_count = timeline.warnings().len();
             for warning in timeline.warnings() {
                 eprintln!("replay_app: recording warning: {warning}");
             }
@@ -182,12 +183,27 @@ pub fn build_provider(
                     .copied()
                     .collect::<BTreeSet<u32>>()
             });
-            let policy = scan_timeline(&timeline, known_provinces);
+            let policy = scan_timeline(&timeline, known_provinces).map_err(|error| {
+                format!(
+                    "F4 fail-closed frame validation rejected recording {}: {error}",
+                    path.display()
+                )
+            })?;
             for diagnostic in policy.diagnostics() {
                 eprintln!("{}", diagnostic.log_line());
             }
             let recording = RecordingTimeline::new_with_policy(timeline, Some(policy));
-            let label = format!("recording {}", recording.game_id());
+            // Coverage/ingest warnings must stay visible in a windowed launch
+            // (stderr is invisible on a double-click start): fold a non-zero
+            // count into the mode label, which flows into the window title.
+            let label = if warning_count == 0 {
+                format!("recording {}", recording.game_id())
+            } else {
+                format!(
+                    "recording {} [{warning_count} recording warning(s) — see log]",
+                    recording.game_id()
+                )
+            };
             Ok((Box::new(recording), label))
         }
         TimelineMode::Static1936 => {
@@ -523,15 +539,6 @@ pub fn owners_from_leaves(leaves: &BTreeMap<u32, Leaf<String>>) -> BTreeMap<u32,
 }
 
 #[cfg(test)]
-fn month_day_from_clausewitz_date(date: &str) -> Option<(u32, u32)> {
-    let mut parts = date.split('.');
-    let _year = parts.next()?;
-    let month = parts.next()?.parse::<u32>().ok()?;
-    let day = parts.next()?.parse::<u32>().ok()?;
-    Some((month, day))
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -594,10 +601,55 @@ mod tests {
         ));
     }
 
-    // The historical branch supplied a synthetic failing ReplaySource for this
-    // test. That branch-local source is preserved in the Git bundle; the
-    // consolidated active gates cover the same public invalid-hour boundary.
-    #[cfg(any())]
+    /// Synthetic three-hour source whose last frame fails to load: exercises
+    /// the in-process provider seam the interactive scrub uses, so selection
+    /// and load errors can never degrade to an empty (all-underlay) map.
+    struct MidstreamLoadFailureSource {
+        hours: Vec<i64>,
+        warnings: Vec<String>,
+    }
+
+    impl MidstreamLoadFailureSource {
+        fn new() -> MidstreamLoadFailureSource {
+            MidstreamLoadFailureSource {
+                hours: vec![0, 1, 2],
+                warnings: Vec::new(),
+            }
+        }
+    }
+
+    impl replay_core::ReplaySource for MidstreamLoadFailureSource {
+        fn game_id(&self) -> &str {
+            "midstream-failure"
+        }
+
+        fn hours(&self) -> &[i64] {
+            &self.hours
+        }
+
+        fn warnings(&self) -> &[String] {
+            &self.warnings
+        }
+
+        fn frame(
+            &self,
+            hour_index: i64,
+        ) -> std::result::Result<replay_core::RawFrame, replay_core::SourceError> {
+            if hour_index == 2 {
+                return Err(replay_core::SourceError::Open(
+                    "synthetic mid-stream load failure".into(),
+                ));
+            }
+            Ok(replay_core::RawFrame {
+                hour_index,
+                date: None,
+                save_version: None,
+                schema_version: None,
+                rest: Default::default(),
+            })
+        }
+    }
+
     #[test]
     fn recording_provider_never_replaces_selection_or_load_errors_with_empty_maps() {
         let timeline = WorldTimeline::open(Box::new(MidstreamLoadFailureSource::new()))
@@ -653,268 +705,6 @@ mod tests {
             .join(rel)
     }
 
-    // Retained historical regression corpus for the superseded incremental
-    // anomaly scanner. The consolidated product uses the eager AnomalyPolicy
-    // constructed in build_provider, so these implementation-specific tests
-    // remain preserved but are not part of this architecture's test build.
-    #[cfg(any())]
-    mod retired_incremental_anomaly_tests {
-        fn committed_playable_fixtures() -> Vec<(String, std::path::PathBuf)> {
-            let manifest_path = fixture_path("manifest.json");
-            let bytes = std::fs::read(&manifest_path).expect("read fixture manifest");
-            let manifest: serde_json::Value =
-                serde_json::from_slice(&bytes).expect("parse fixture manifest");
-            let mut fixtures = Vec::new();
-            for section in ["positive", "anomaly"] {
-                for entry in manifest[section]
-                    .as_array()
-                    .expect("playable fixture section")
-                {
-                    let name = entry["name"].as_str().expect("fixture name");
-                    let rel = entry["path"].as_str().expect("fixture path");
-                    fixtures.push((name.to_string(), fixture_path(rel)));
-                }
-            }
-            assert!(!fixtures.is_empty(), "manifest has no playable fixtures");
-            fixtures
-        }
-
-        fn open_counted_recording(path: &std::path::Path) -> (RecordingTimeline, Arc<AtomicUsize>) {
-            let source = replay_core::open_recording(path)
-                .unwrap_or_else(|error| panic!("open counted fixture {}: {error}", path.display()));
-            let (source, decodes) = CountingReplaySource::new(source);
-            let timeline = WorldTimeline::open(Box::new(source)).unwrap_or_else(|error| {
-                panic!("open counted timeline {}: {error}", path.display())
-            });
-            let scan = IncrementalAnomalyScan::new(timeline.hours(), None);
-            (
-                RecordingTimeline::new_with_incremental_scan(timeline, scan),
-                decodes,
-            )
-        }
-
-        /// Gate E1 (app-open latency): run the exact `app::run` index-date
-        /// collection over the largest committed playable fixture. Container open,
-        /// timeline open, anomaly setup, and the complete date-spine pass perform
-        /// zero snapshot-body decodes and leave F4's watermark untouched.
-        #[test]
-        fn app_open_date_spine_is_zero_decode_on_largest_committed_fixture() {
-            let (name, path) = committed_playable_fixtures()
-                .into_iter()
-                .max_by_key(|(_, path)| {
-                    std::fs::metadata(path)
-                        .expect("playable fixture metadata")
-                        .len()
-                })
-                .expect("largest playable fixture");
-            let fixture_bytes = std::fs::metadata(&path)
-                .expect("largest fixture metadata")
-                .len();
-
-            let started = Instant::now();
-            let (recording, decodes) = open_counted_recording(&path);
-            let dates: Vec<Option<String>> = recording
-                .hours()
-                .iter()
-                .map(|hour| recording.date_at_indexed(*hour))
-                .collect();
-            let elapsed = started.elapsed();
-
-            assert_eq!(dates.len(), recording.hours().len(), "complete spine");
-            assert_eq!(
-                decodes.load(Ordering::SeqCst),
-                0,
-                "app-open index-date collection decoded a frame"
-            );
-            assert_eq!(
-                recording.anomaly_scanned_through(),
-                None,
-                "index-only dates must not advance the F4 watermark"
-            );
-            eprintln!(
-            "[e1-index-date-open] fixture={name} bytes={fixture_bytes} hours={} frame_decodes=0 open_and_spine_us={}",
-            dates.len(),
-            elapsed.as_micros()
-        );
-        }
-
-        /// Gate E1 (content): for every committed fixture that opens for playback,
-        /// the verified INDEX date bytes equal the decoded snapshot-body date bytes
-        /// at every canonical hour. The index pass itself remains zero-decode.
-        #[test]
-        fn indexed_dates_equal_decoded_dates_on_every_committed_playable_fixture() {
-            let fixtures = committed_playable_fixtures();
-            let mut compared_hours = 0usize;
-            for (name, path) in &fixtures {
-                let (recording, decodes) = open_counted_recording(path);
-                let hours = recording.hours().to_vec();
-                let indexed: Vec<Option<String>> = hours
-                    .iter()
-                    .map(|hour| recording.date_at_indexed(*hour))
-                    .collect();
-                assert_eq!(
-                    decodes.load(Ordering::SeqCst),
-                    0,
-                    "{name}: indexed date pass decoded a frame"
-                );
-                assert_eq!(
-                    recording.anomaly_scanned_through(),
-                    None,
-                    "{name}: indexed date pass advanced F4 watermark"
-                );
-
-                let decoded: Vec<Option<String>> = hours
-                    .iter()
-                    .map(|hour| recording.date_at(*hour).expect("decoded date"))
-                    .collect();
-                assert_eq!(
-                    indexed, decoded,
-                    "{name}: INDEX and decoded date bytes differ"
-                );
-                compared_hours += hours.len();
-            }
-            eprintln!(
-            "[e1-index-date-equivalence] playable_fixtures={} compared_hours={compared_hours} byte_differences=0",
-            fixtures.len()
-        );
-        }
-
-        #[derive(Clone, Copy)]
-        enum PublicQuery {
-            Anomaly(i64),
-            Date(i64),
-            Owners(i64),
-            Controllers(i64),
-            HourLabel(i64),
-            Seek(i64),
-            PlayTo(i64),
-        }
-
-        fn public_query_answer(recording: &RecordingTimeline, query: PublicQuery) -> String {
-            match query {
-                PublicQuery::Anomaly(hour) => {
-                    format!("anomaly({hour})={:?}", recording.anomaly_note(hour))
-                }
-                PublicQuery::Date(hour) => format!("date({hour})={:?}", recording.date_at(hour)),
-                PublicQuery::Owners(hour) => {
-                    format!("owners({hour})={:?}", recording.owners_at(hour))
-                }
-                PublicQuery::Controllers(hour) => {
-                    format!("controllers({hour})={:?}", recording.controllers_at(hour))
-                }
-                PublicQuery::HourLabel(hour) => {
-                    format!("hour_label({hour})={:?}", recording.hour_label(hour))
-                }
-                PublicQuery::Seek(hour) => format!("seek({hour})={:?}", recording.seek_hour(hour)),
-                PublicQuery::PlayTo(hour) => {
-                    format!("play_to({hour})={:?}", recording.play_to_hour(hour))
-                }
-            }
-        }
-
-        #[test]
-        fn recording_timeline_public_queries_match_eager_for_high_then_low_sequence() {
-            let path = fixture_path("anomaly/fx_anomaly_missing_domain.battleplan");
-            let eager_timeline = WorldTimeline::open(
-                replay_core::open_recording(&path).expect("open eager anomaly fixture"),
-            )
-            .expect("eager anomaly timeline");
-            let eager_policy = crate::anomaly::scan_timeline(
-                &eager_timeline,
-                Some([1000u32, 1001, 2000, 3000].into_iter().collect()),
-            );
-            let eager = RecordingTimeline::new_with_policy(eager_timeline, Some(eager_policy));
-
-            let lazy_timeline = WorldTimeline::open(
-                replay_core::open_recording(&path).expect("open lazy anomaly fixture"),
-            )
-            .expect("lazy anomaly timeline");
-            let lazy_scan = IncrementalAnomalyScan::new(
-                lazy_timeline.hours(),
-                Some([1000u32, 1001, 2000, 3000].into_iter().collect()),
-            );
-            let lazy = RecordingTimeline::new_with_incremental_scan(lazy_timeline, lazy_scan);
-
-            let hours = eager.hours();
-            let first = hours[0];
-            let crossing = hours[6];
-            let last = *hours.last().expect("fixture hours");
-            let queries = [
-                // A decoded date query is still a genuine playback visit and must
-                // advance every preceding frame-derived diagnostic. `app::run`
-                // now uses the separately gated index-only date path at open.
-                PublicQuery::Date(last),
-                PublicQuery::Anomaly(first),
-                PublicQuery::Owners(crossing),
-                PublicQuery::Date(crossing - 1),
-                PublicQuery::Controllers(last - 1),
-                PublicQuery::Anomaly(crossing),
-                PublicQuery::HourLabel(first + 1),
-                PublicQuery::Seek(last),
-                PublicQuery::PlayTo(first),
-                PublicQuery::Owners(last - 2),
-            ];
-
-            let mut eager_transcript = String::new();
-            let mut lazy_transcript = String::new();
-            for (index, query) in queries.into_iter().enumerate() {
-                let eager_answer = public_query_answer(&eager, query);
-                let lazy_answer = public_query_answer(&lazy, query);
-                assert_eq!(
-                    lazy_answer.as_bytes(),
-                    eager_answer.as_bytes(),
-                    "query {index}"
-                );
-                writeln!(&mut eager_transcript, "{eager_answer}").unwrap();
-                writeln!(&mut lazy_transcript, "{lazy_answer}").unwrap();
-                if index == 0 {
-                    assert_eq!(
-                        lazy.anomaly_scanned_through(),
-                        Some(last),
-                        "decoded date_at(last) must remain eager-policy-equivalent"
-                    );
-                }
-            }
-            assert_eq!(lazy_transcript.into_bytes(), eager_transcript.into_bytes());
-            assert_eq!(
-                lazy.anomaly_diagnostic_log_lines(),
-                eager.anomaly_diagnostic_log_lines(),
-                "stderr-visible diagnostic lines must end byte-identical"
-            );
-        }
-
-        #[test]
-        fn unreadable_recorded_frame_suppresses_index_only_anomaly_note() {
-            let eager_timeline = WorldTimeline::open(Box::new(MidstreamLoadFailureSource::new()))
-                .expect("eager failing timeline");
-            let eager_policy = crate::anomaly::scan_timeline(&eager_timeline, None);
-            let eager = RecordingTimeline::new_with_policy(eager_timeline, Some(eager_policy));
-
-            let lazy_timeline = WorldTimeline::open(Box::new(MidstreamLoadFailureSource::new()))
-                .expect("lazy failing timeline");
-            let lazy_scan = IncrementalAnomalyScan::new(lazy_timeline.hours(), None);
-            let lazy = RecordingTimeline::new_with_incremental_scan(lazy_timeline, lazy_scan);
-
-            assert_eq!(eager.anomaly_note(2), None, "eager load-failure answer");
-            assert_eq!(
-                lazy.anomaly_note(2),
-                None,
-                "lazy must not return the index-derived gap-before note for an unreadable frame"
-            );
-            assert_eq!(
-                lazy.anomaly_diagnostic_log_lines(),
-                eager.anomaly_diagnostic_log_lines(),
-                "load-failure diagnostics must remain eager-equivalent"
-            );
-            assert!(
-                lazy.anomaly_diagnostic_log_lines()
-                    .iter()
-                    .any(|line| line.contains("recorded frame failed to load")),
-                "constructed fixture must actually exercise the mid-stream load failure"
-            );
-        }
-    }
-
     #[test]
     fn seek_equals_play_to_on_every_recorded_hour() {
         // E1/A4: the replay_core seek/play_to hooks resolve identically, and
@@ -944,15 +734,5 @@ mod tests {
                 "typed WorldFrame is exposed at the exact recorded hour"
             );
         }
-    }
-
-    #[test]
-    fn clausewitz_date_parser_extracts_month_and_day() {
-        assert_eq!(month_day_from_clausewitz_date("1936.1.1.12"), Some((1, 1)));
-        assert_eq!(
-            month_day_from_clausewitz_date("1941.10.15.0"),
-            Some((10, 15))
-        );
-        assert_eq!(month_day_from_clausewitz_date("hour 12"), None);
     }
 }

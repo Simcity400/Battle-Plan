@@ -365,6 +365,39 @@ struct Config {
     /// schedule when its exact transcript-bound v2 gate pair was not supplied;
     /// unrelated FRAMEs remain admissible and no speed/pause value is invented.
     domain57_omission_reason: Option<&'static str>,
+    /// Explicit acceptance-only mode. Absent by default and from every normal
+    /// production invocation. The nonce is bound into collector control using
+    /// the recorder-generated pipe token before the DLL is loaded.
+    acceptance_test: Option<AcceptanceTestCli>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AcceptanceTestMode {
+    SyntheticFault,
+    Paused,
+}
+
+impl AcceptanceTestMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "synthetic-fault" => Some(Self::SyntheticFault),
+            "paused" => Some(Self::Paused),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SyntheticFault => "synthetic-fault",
+            Self::Paused => "paused",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AcceptanceTestCli {
+    mode: AcceptanceTestMode,
+    nonce: String,
 }
 
 #[derive(Clone, Debug)]
@@ -727,6 +760,12 @@ struct CompactSummary {
     // once per frame, so the Vecs hold per-frame values (avg/p95/max).
     lane_wall_frames: u64,
     lane_wall_worker_span_us_total: u64,
+    // F5 acceptance telemetry: exact per-frame prewarm cost and absolute
+    // frame-label/current-hour skew samples emitted by the collector. Missing
+    // skew reads are counted separately and make acceptance incomplete.
+    acceptance_prewarm_times_us: Vec<u64>,
+    acceptance_hour_label_skew_abs: Vec<u64>,
+    acceptance_hour_label_skew_missing: u64,
     lane_wall_crit_walls_us: Vec<u64>,
     lane_wall_crit_busy_us_total: u64,
     lane_wall_main_wall_us_total: u64,
@@ -774,6 +813,11 @@ struct CompactDomainSummary {
     effective_failure_status_flags_or: u32,
     expected_partial_tolerance_hours: BTreeSet<i32>,
     problems: BTreeMap<String, u64>,
+    /// Exact framed and payload bytes attributed to this domain across PERF +
+    /// DATA records. Probe and FRAME_END bytes remain top-level overhead.
+    record_bytes_total: u64,
+    payload_bytes_total: u64,
+    max_record_bytes: u64,
 }
 
 fn add_compact_global_status_flags(
@@ -867,9 +911,11 @@ fn main() {
 /// (roadmap task #36; design `extractor/documents/AUTO_ATTACH_DESIGN.md`). The
 /// full supervisor/coordinator logic lives in the `recorder_host::auto_attach`
 /// module (unit-tested with fakes); this is just the CLI seam that wires the
-/// real Windows adapters and runs the loop. The packaging/tray UI that drives
-/// graceful quit is design §9, outside this lane; here the supervisor runs
-/// until the process is terminated.
+/// real Windows adapters and runs the loop. The installed product resolves its
+/// collector payload beside this executable; `--dll` remains a support override.
+/// Console/session close signals enter coordinator-owned stop handling; the
+/// activation-frozen duplex worker remains the authority for graceful recorder
+/// finalization once its live lifecycle gates pass.
 #[cfg(windows)]
 fn run_auto_attach(args: &[String]) -> Result<(), String> {
     use recorder_host::auto_attach::{run_supervisor, SupervisorOptions};
@@ -922,11 +968,19 @@ fn run_auto_attach(args: &[String]) -> Result<(), String> {
         i += 1;
     }
 
-    let source_dll = source_dll.ok_or("--auto-attach requires --dll <packaged collector.dll>")?;
-    let out_root = out_root.ok_or("--auto-attach requires --out-root <dir>")?;
+    let out_root = match out_root {
+        Some(path) => path,
+        None => recorder_host::auto_attach::product_runtime::default_product_data_root()?,
+    };
     let staging_root = staging_root.unwrap_or_else(|| out_root.join("staging"));
     let journal_path = journal_path.unwrap_or_else(|| out_root.join("auto_attach_journal.jsonl"));
     let worker_exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let source_dll = recorder_host::auto_attach::product_runtime::resolve_packaged_collector_dll(
+        source_dll,
+        &worker_exe,
+    )?;
+    let graceful_stop =
+        recorder_host::auto_attach::product_runtime::GracefulStopRegistration::install()?;
 
     let opts = SupervisorOptions {
         source_dll,
@@ -937,9 +991,7 @@ fn run_auto_attach(args: &[String]) -> Result<(), String> {
         worker_extra_args,
         poll_ms,
     };
-    // Runs until the process is terminated by the tray/OS (graceful-quit UI is
-    // design §9, outside this lane).
-    run_supervisor(opts, || false)
+    run_supervisor(opts, || graceful_stop.is_requested())
 }
 
 #[cfg(not(windows))]
@@ -956,7 +1008,7 @@ fn run() -> Result<(), String> {
         return run_auto_attach(&args[1..]);
     }
     let mut cfg = parse_args(args)?;
-    if cfg.production && cfg.early_launch.is_none() {
+    if cfg.production && cfg.early_launch.is_none() && cfg.acceptance_test.is_none() {
         return Err(
             "production/profile capture requires authenticated --early-launch-exe so render creation cannot be missed"
                 .into(),
@@ -1036,6 +1088,10 @@ fn run() -> Result<(), String> {
             let exe = modset_report.exe_path.clone().ok_or_else(|| {
                 "static bundle admission requires a resolved target executable path".to_string()
             })?;
+            let expected_process_creation_filetime_utc = match early_pending.as_ref() {
+                Some(pending) => pending.process_start_nonce(),
+                None => RetainedProcessAuthority::open(cfg.pid, None)?.expected_creation_filetime,
+            };
             let request = StaticBundleRequest {
                 python: bundle.python.clone(),
                 verifier: bundle.verifier.clone(),
@@ -1046,6 +1102,8 @@ fn run() -> Result<(), String> {
                 load_order: bundle.load_order.clone(),
                 source_inventory: bundle.source_inventory.clone(),
                 live_resolution_report: bundle.live_resolution_report.clone(),
+                expected_process_id: cfg.pid,
+                expected_process_creation_filetime_utc,
                 timeout: bundle.timeout,
             };
             let verified =
@@ -1500,8 +1558,22 @@ fn run() -> Result<(), String> {
             let pipe_result = pipe_joiner
                 .join()
                 .map_err(|_| "pipe joiner thread panicked".to_string())?;
-            service_result?;
-            pipe_result??
+            match service_result? {
+                recorder_host::early_render_host_channel::EarlyRenderServiceOutcome::CaptureTeardown => {
+                    pipe_result??
+                }
+                recorder_host::early_render_host_channel::EarlyRenderServiceOutcome::SinkFailure(report) => {
+                    let pipe_status = match pipe_result {
+                        Ok(Ok(_)) => "data pipe closed cleanly after terminal sink report".to_string(),
+                        Ok(Err(error)) | Err(error) => error,
+                    };
+                    let receipt_path = write_authenticated_sink_failure_receipt(&cfg, &report)?;
+                    return Err(format!(
+                        "collector reported authenticated terminal sink failure; receipt={}; data_pipe={pipe_status}",
+                        receipt_path.display()
+                    ));
+                }
+            }
         } else {
             pipe_thread
                 .join()
@@ -1650,13 +1722,22 @@ fn run() -> Result<(), String> {
                 expected_domain_ids.contains(&COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE),
             ));
             hourly_problems.extend(hour_latch_gate_problems(&summary, cfg.hour_latch_enabled));
+            if cfg.production {
+                hourly_problems.extend(acceptance_telemetry_problems(
+                    &summary,
+                    &expected_domain_ids,
+                    Some(&capture),
+                ));
+            }
             let hourly_met = hourly_problems.is_empty();
             let compact_stream_manifest = compact_stream_manifest_json(
                 &summary,
                 &expected_domain_ids,
                 &coverage_errors,
                 &cfg.scheduled_domains,
+                Some(&capture),
             );
+            let acceptance_test_observation = acceptance_test_observation_json(&cfg, &summary);
             // W15: `Known` can be minted only by the opaque CID1 token retained
             // by the stateful stream validator. Legacy d68 observations remain
             // witnesses and can resolve only to unbound/unavailable.
@@ -1702,6 +1783,7 @@ fn run() -> Result<(), String> {
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
                     "advisor_token_filter_rows": encoded_row_count(cfg.advisor_token_filter.as_deref()),
                     "compact_stream": compact_stream_manifest,
+                    "acceptance_test_observation": acceptance_test_observation,
                     "campaign_identity": campaign_identity_binding,
                     "first_game_hour_raw": summary.first_hour,
                     "last_game_hour_raw": summary.last_hour,
@@ -1986,6 +2068,15 @@ fn run() -> Result<(), String> {
         .and_then(|value| value.to_str())
         .unwrap_or("native_session.battleplan")
         .to_string();
+    // The production validator's F5 contract is rooted at
+    // `acceptance_telemetry`. Keep the compact-stream copy for local diagnostic
+    // cohesion, but promote the exact same value rather than recomputing or
+    // allowing the two views to drift.
+    let root_acceptance_telemetry = manifest
+        .get("compact_stream")
+        .and_then(|stream| stream.get("acceptance_telemetry"))
+        .cloned()
+        .unwrap_or(Value::Null);
     if let Some(obj) = manifest.as_object_mut() {
         obj.insert("replay_file".to_string(), json!(replay_file_name.clone()));
         obj.insert("replay_game_id".to_string(), json!(replay_game_id));
@@ -2025,6 +2116,10 @@ fn run() -> Result<(), String> {
                 "stored_bytes": capture.stored_byte_count,
                 "decoded_sha256": capture.sha256,
             }),
+        );
+        obj.insert(
+            "acceptance_telemetry".to_string(),
+            root_acceptance_telemetry,
         );
         // M2: the recording's modset + game-build binding. `resolved:false`
         // means UNKNOWN modset (errors carried alongside) — downstream joins
@@ -2109,6 +2204,12 @@ fn run() -> Result<(), String> {
             );
         }
     }
+    let acceptance_test_met = cfg.acceptance_test.is_some()
+        && manifest
+            .get("acceptance_test_observation")
+            .and_then(|value| value.get("ok"))
+            .and_then(Value::as_bool)
+            == Some(true);
     if !hourly_met {
         eprintln!(
             "recorder warning: gates failed; writing recovery replay {} instead of normal replay {}; problems={}",
@@ -2136,6 +2237,11 @@ fn run() -> Result<(), String> {
                 );
             }
         }
+    }
+    if acceptance_test_met {
+        eprintln!(
+            "acceptance test observation passed; replay remains recovery-only and is not production-admissible"
+        );
     }
     // Fold the decoded compact records into per-game-hour world-state snapshots.
     // Only the compact stream carries H4CR records; the JSON debug stream has no
@@ -2294,7 +2400,7 @@ fn run() -> Result<(), String> {
         verify_report_telemetry.as_ref(),
     );
 
-    if !hourly_met {
+    if !hourly_met && !acceptance_test_met {
         let quarantine_detail = normal_quarantine
             .as_ref()
             .filter(|report| report.attempted && !report.ok)
@@ -2398,6 +2504,67 @@ fn write_diagnostic_probe_receipt(
         )
     })?;
     Ok(())
+}
+
+fn write_authenticated_sink_failure_receipt(
+    cfg: &Config,
+    report: &recorder_host::transport_status::SinkFailureReport,
+) -> Result<PathBuf, String> {
+    let document = json!({
+        "schema": "extractor.authenticated-sink-failure.v1",
+        "admissible_for_production": false,
+        "attempt_terminal": true,
+        "authenticated_h4ct_session": true,
+        "session_id": cfg.session_id,
+        "capture_id": cfg.capture_id,
+        "process_id": cfg.pid,
+        "kind": format!("{:?}", report.kind),
+        "requested_bits": report.requested.bits(),
+        "opened_bits": report.opened.bits(),
+        "failed_bits": report.failed.bits(),
+        "error_class": format!("{:?}", report.error_class),
+        "win32_error": report.win32_error,
+        "last_complete_sequence": report.last_complete_sequence,
+        "failed_sequence": report.failed_sequence,
+        "file_bytes_committed": report.file_bytes_committed,
+        "pipe_bytes_committed": report.pipe_bytes_committed,
+        "replay_created": false,
+    });
+    let bytes = serde_json::to_vec_pretty(&document)
+        .map_err(|error| format!("serialize authenticated sink-failure receipt: {error}"))?;
+    let path = cfg.out_dir.join("collector_sink_failure.json");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp = cfg.out_dir.join(format!(
+        ".collector_sink_failure.{}.{}.tmp",
+        std::process::id(),
+        nonce
+    ));
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temp)
+        .map_err(|error| format!("create sink-failure receipt temp: {error}"))?;
+    if let Err(error) = file
+        .write_all(&bytes)
+        .and_then(|_| file.write_all(b"\n"))
+        .and_then(|_| file.sync_all())
+    {
+        drop(file);
+        let _ = fs::remove_file(&temp);
+        return Err(format!("durably write sink-failure receipt: {error}"));
+    }
+    drop(file);
+    if let Err(error) = fs::rename(&temp, &path) {
+        let _ = fs::remove_file(&temp);
+        return Err(format!(
+            "publish sink-failure receipt {}: {error}",
+            path.display()
+        ));
+    }
+    Ok(path)
 }
 
 fn parse_repack_args(args: &[String]) -> Result<RepackConfig, String> {
@@ -2879,6 +3046,7 @@ fn repack_writer_config(
         domain57_game_speed_transcript_file_sha256: None,
         domain57_game_speed_gate: None,
         domain57_omission_reason: None,
+        acceptance_test: None,
     })
 }
 
@@ -3598,6 +3766,29 @@ fn fold_and_repack_existing_run_dir(mut repack: RepackConfig) -> Result<(), Stri
                     "fold-and-repack static bundle requires manifest modset.game.exe_path"
                         .to_string()
                 })?;
+            let process_identity = manifest
+                .get("static_bundle")
+                .and_then(|bundle| bundle.get("process_identity"))
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    "repack finalized static bundle lacks capture process identity".to_string()
+                })?;
+            let expected_process_id = process_identity
+                .get("process_id")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value != 0)
+                .ok_or_else(|| {
+                    "repack finalized static bundle has invalid capture process id".to_string()
+                })?;
+            let expected_process_creation_filetime_utc = process_identity
+                .get("process_creation_filetime_utc")
+                .and_then(Value::as_u64)
+                .filter(|value| *value != 0)
+                .ok_or_else(|| {
+                    "repack finalized static bundle has invalid capture process creation identity"
+                        .to_string()
+                })?;
             let request = StaticBundleRequest {
                 python: bundle.python.clone(),
                 verifier: bundle.verifier.clone(),
@@ -3608,6 +3799,8 @@ fn fold_and_repack_existing_run_dir(mut repack: RepackConfig) -> Result<(), Stri
                 load_order: bundle.load_order.clone(),
                 source_inventory: bundle.source_inventory.clone(),
                 live_resolution_report: bundle.live_resolution_report.clone(),
+                expected_process_id,
+                expected_process_creation_filetime_utc,
                 timeout: bundle.timeout,
             };
             let capture_id = manifest
@@ -3643,6 +3836,9 @@ fn fold_and_repack_existing_run_dir(mut repack: RepackConfig) -> Result<(), Stri
                 load_order: request.load_order.clone(),
                 source_inventory: request.source_inventory.clone(),
                 live_resolution_report: request.live_resolution_report.clone(),
+                expected_process_id: request.expected_process_id,
+                expected_process_creation_filetime_utc: request
+                    .expected_process_creation_filetime_utc,
                 expected_capture_id: capture_id.to_string(),
                 expected_session_id: session_id.to_string(),
                 expected_stream_sha256: stream_sha256.to_string(),
@@ -3753,6 +3949,8 @@ fn fold_and_repack_existing_run_dir(mut repack: RepackConfig) -> Result<(), Stri
         stored_byte_count: fs::metadata(&raw_path)
             .map_err(|e| format!("stat compact stream failed: {e}"))?
             .len(),
+        write_latency: WriteLatencyHistogram::default(),
+        clock_skew: ClockSkewSample::unmeasured(),
     };
     let raw_len = capture.stored_byte_count;
     let stream_is_compressed = compact_stream::detect(&raw_path)
@@ -3936,6 +4134,8 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut pdx_user_dir: Option<PathBuf> = None;
     let mut speed_root_gate_path: Option<PathBuf> = None;
     let mut domain57_game_speed_transcript_file_sha256: Option<String> = None;
+    let mut acceptance_test_mode: Option<AcceptanceTestMode> = None;
+    let mut acceptance_test_nonce: Option<String> = None;
     let mut i = 0usize;
     while i < args.len() {
         match args[i].as_str() {
@@ -4018,6 +4218,25 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             }
             "--scheduled-domains-exact" => scheduled_domains_exact = true,
             "--production" => production = true,
+            "--acceptance-test-mode" => {
+                i += 1;
+                let value = required(args.get(i), "--acceptance-test-mode")?;
+                acceptance_test_mode =
+                    Some(AcceptanceTestMode::parse(&value).ok_or_else(|| {
+                        "--acceptance-test-mode must be synthetic-fault or paused".to_string()
+                    })?);
+            }
+            "--acceptance-test-nonce" => {
+                i += 1;
+                let value = required(args.get(i), "--acceptance-test-nonce")?;
+                if !is_lower_sha256(&value) {
+                    return Err(
+                        "--acceptance-test-nonce must be exactly 64 lowercase hex characters"
+                            .into(),
+                    );
+                }
+                acceptance_test_nonce = Some(value);
+            }
             "--lightweight-root-frame" => lightweight_root_frame = Some(true),
             "--special-projects-scan" => special_projects_scan = true,
             "--skip-host-fold" => skip_host_fold = true,
@@ -4616,6 +4835,34 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         (None, false) => {}
     }
     let session_id = session_id.unwrap_or_else(|| format!("native_{}", pipe_token()));
+    let acceptance_test = match (acceptance_test_mode, acceptance_test_nonce) {
+        (None, None) => None,
+        (Some(mode), Some(nonce)) => {
+            if !production
+                || profile != Some(compact_contract::CaptureProfile::Production)
+                || stream_format != StreamFormat::Compact
+                || capture_id.is_none()
+            {
+                return Err("acceptance test mode requires the production profile, compact stream, and an explicit capture id".into());
+            }
+            if mode == AcceptanceTestMode::SyntheticFault
+                && !scheduled_domains
+                    .iter()
+                    .any(|domain| compact_domain_id(domain) == Some(24))
+            {
+                return Err(
+                    "synthetic-fault acceptance mode requires scheduled weather domain 24".into(),
+                );
+            }
+            Some(AcceptanceTestCli { mode, nonce })
+        }
+        _ => {
+            return Err(
+                "--acceptance-test-mode and --acceptance-test-nonce must be supplied together"
+                    .into(),
+            )
+        }
+    };
     if production && special_projects_scan && !is_canonical_lower_uuid(&session_id) {
         return Err(
             "production scientist DLL-scan capture requires a canonical lowercase UUID --session-id"
@@ -4674,6 +4921,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         domain57_game_speed_transcript_file_sha256,
         domain57_game_speed_gate: None,
         domain57_omission_reason,
+        acceptance_test,
     })
 }
 
@@ -4935,7 +5183,7 @@ fn static_artifact_flag_name(name: &str) -> &'static str {
 }
 
 fn usage() -> String {
-    "usage: collector_record (--pid <pid> | --early-launch-exe <hoi4.exe> [--early-launch-arg value]...) --pdx-user-dir <profile> --dll <collector.dll> --out-dir <dir> [--early-hook-timeout-ms N] [--session-id UUID] [--capture-id ID] [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--scheduled-domains-exact] [--profile production|debug] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--stream-compression zstd|none] [--replay-zstd-level N] [--replay-zstd-window-log N] [--skip-host-fold] [--hour-latch] [--hour-latch-poll-ms N] [--hour-latch-queue-cap N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-bundle-manifest path --static-bundle-mod-state path --static-bundle-dlc-state path --static-bundle-load-order path --static-bundle-source-inventory path --static-bundle-live-resolution-report path] [--portable-content-use-trace path] [--static-bundle-verifier path] [--static-bundle-python path] [--static-bundle-timeout-ms N] [--domain57-game-speed-gate-v2 path --domain57-game-speed-transcript-file-sha256 hex] [--design-catalog-live path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path] [--static-technology-sharing path]\n\
+    "usage: collector_record (--pid <pid> | --early-launch-exe <hoi4.exe> [--early-launch-arg value]...) --pdx-user-dir <profile> --dll <collector.dll> --out-dir <dir> [--early-hook-timeout-ms N] [--session-id UUID] [--capture-id ID] [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--scheduled-domains-exact] [--profile production|debug] [--production] [--acceptance-test-mode synthetic-fault|paused --acceptance-test-nonce 64hex] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--stream-compression zstd|none] [--replay-zstd-level N] [--replay-zstd-window-log N] [--skip-host-fold] [--hour-latch] [--hour-latch-poll-ms N] [--hour-latch-queue-cap N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-bundle-manifest path --static-bundle-mod-state path --static-bundle-dlc-state path --static-bundle-load-order path --static-bundle-source-inventory path --static-bundle-live-resolution-report path] [--portable-content-use-trace path] [--static-bundle-verifier path] [--static-bundle-python path] [--static-bundle-timeout-ms N] [--domain57-game-speed-gate-v2 path --domain57-game-speed-transcript-file-sha256 hex] [--design-catalog-live path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path] [--static-technology-sharing path]\n\
      \n\
      Static artifacts: non-production probes may omit them. Production requires one\n\
      admitted bundle containing all seven deterministic artifacts plus exact\n\
@@ -7697,10 +7945,48 @@ fn write_control_file(cfg: &Config, pipe_token: &str) -> Result<(), String> {
                 Value::String(sha256.clone()),
             );
     }
+    if let Some(acceptance) = cfg.acceptance_test.as_ref() {
+        let mode = acceptance.mode.as_str();
+        let authorization =
+            acceptance_test_authorization(pipe_token, &cfg.session_id, mode, &acceptance.nonce);
+        let object = payload
+            .as_object_mut()
+            .expect("collector control payload is an object");
+        object.insert(
+            "acceptance_test_mode_v1".to_string(),
+            Value::String(mode.to_string()),
+        );
+        object.insert(
+            "acceptance_test_nonce_v1".to_string(),
+            Value::String(acceptance.nonce.clone()),
+        );
+        object.insert(
+            "acceptance_test_authorization_v1".to_string(),
+            Value::String(authorization),
+        );
+    }
     let mut bytes = serde_json::to_vec(&payload)
         .map_err(|e| format!("serialize collector control failed: {e}"))?;
     bytes.push(b'\n');
     fs::write(&control_path, bytes).map_err(|e| format!("write control failed: {e}"))
+}
+
+fn acceptance_test_authorization(
+    pipe_token: &str,
+    session_id: &str,
+    mode: &str,
+    nonce: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"battle-plan.acceptance_test.v1\0");
+    hasher.update(pipe_token.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(session_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(mode.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(nonce.as_bytes());
+    to_hex(&hasher.finalize())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -9332,7 +9618,8 @@ impl AutoAttachWorkerContext {
 
 /// Product composition seam for the paired H4CR/H4CT backend. It is compiled
 /// against the real one-shot injector and real Win32 paired server, but the
-/// opaque permit is unmintable while the collector has no H4CT/CID1 client.
+/// opaque permit remains unmintable while offline-only collector/host lifecycle
+/// work is activation-frozen pending live proof.
 #[allow(dead_code)]
 fn prepare_activated_duplex_runner(
     cfg: &Config,
@@ -9396,12 +9683,141 @@ fn validate_process_creation_filetime(
 /// the old "packed stream bytes == pipe bytes" in-RAM compare — the container's
 /// packed stream entry is later verified (by re-reading from disk) to hash to
 /// exactly this value.
+const WRITE_LATENCY_BUCKETS: usize = 48;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WriteLatencyHistogram {
+    count: u64,
+    sum_us: u64,
+    max_us: u64,
+    buckets: [u64; WRITE_LATENCY_BUCKETS],
+}
+
+impl Default for WriteLatencyHistogram {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            sum_us: 0,
+            max_us: 0,
+            buckets: [0; WRITE_LATENCY_BUCKETS],
+        }
+    }
+}
+
+impl WriteLatencyHistogram {
+    fn record(&mut self, us: u64) {
+        self.count = self.count.saturating_add(1);
+        self.sum_us = self.sum_us.saturating_add(us);
+        self.max_us = self.max_us.max(us);
+        let index = if us == 0 {
+            0
+        } else {
+            (64 - us.leading_zeros() as usize).min(WRITE_LATENCY_BUCKETS - 1)
+        };
+        self.buckets[index] = self.buckets[index].saturating_add(1);
+    }
+
+    fn percentile_ceiling(&self, percentile: u64) -> Option<u64> {
+        if self.count == 0 {
+            return None;
+        }
+        let rank = self.count.saturating_mul(percentile).saturating_add(99) / 100;
+        let mut cumulative = 0u64;
+        for (index, count) in self.buckets.iter().copied().enumerate() {
+            cumulative = cumulative.saturating_add(count);
+            if cumulative >= rank.max(1) {
+                let upper = if index == 0 { 0 } else { 1u64 << index };
+                return Some(upper.min(self.max_us));
+            }
+        }
+        Some(self.max_us)
+    }
+}
+
+fn write_latency_summary_json(histogram: &WriteLatencyHistogram) -> Value {
+    if histogram.count == 0 {
+        return json!({
+            "count": 0,
+            "avg": null,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": null,
+            "percentile_semantics": "bucket_upper_bound_us",
+        });
+    }
+    json!({
+        "count": histogram.count,
+        "avg": (histogram.sum_us as f64) / (histogram.count as f64),
+        "p50": histogram.percentile_ceiling(50),
+        "p95": histogram.percentile_ceiling(95),
+        "p99": histogram.percentile_ceiling(99),
+        "max": histogram.max_us,
+        "percentile_semantics": "bucket_upper_bound_us",
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ClockSkewSample {
+    measured: bool,
+    wall_elapsed_us: i64,
+    mono_elapsed_us: u64,
+    drift_us: i64,
+    wall_monotonic_ok: bool,
+}
+
+impl ClockSkewSample {
+    fn unmeasured() -> Self {
+        Self {
+            measured: false,
+            wall_elapsed_us: 0,
+            mono_elapsed_us: 0,
+            drift_us: 0,
+            wall_monotonic_ok: false,
+        }
+    }
+
+    fn measure(wall_start: SystemTime, mono_start: Instant) -> Self {
+        let mono_elapsed_us = mono_start.elapsed().as_micros().min(i64::MAX as u128) as u64;
+        let (wall_elapsed_us, wall_monotonic_ok) =
+            match SystemTime::now().duration_since(wall_start) {
+                Ok(delta) => (delta.as_micros().min(i64::MAX as u128) as i64, true),
+                Err(error) => (
+                    -(error.duration().as_micros().min(i64::MAX as u128) as i64),
+                    false,
+                ),
+            };
+        Self {
+            measured: true,
+            wall_elapsed_us,
+            mono_elapsed_us,
+            drift_us: wall_elapsed_us.saturating_sub(mono_elapsed_us as i64),
+            wall_monotonic_ok,
+        }
+    }
+
+    fn as_json(self) -> Value {
+        if !self.measured {
+            return Value::Null;
+        }
+        json!({
+            "wall_elapsed_us": self.wall_elapsed_us,
+            "mono_elapsed_us": self.mono_elapsed_us,
+            "drift_us": self.drift_us,
+            "wall_monotonic_ok": self.wall_monotonic_ok,
+            "note": "drift_us = wall_elapsed_us - mono_elapsed_us across the live pipe read/storage-write loop",
+        })
+    }
+}
+
 struct PipeCapture {
     /// Exact decoded bytes received from the collector pipe.
     byte_count: u64,
     /// Bytes occupied by collector_stream.bin after file-boundary encoding.
     stored_byte_count: u64,
     sha256: String,
+    write_latency: WriteLatencyHistogram,
+    clock_skew: ClockSkewSample,
 }
 
 struct PipeCaptureOutcome {
@@ -9598,6 +10014,11 @@ fn capture_pipe_to_file(
     };
     let mut hasher = Sha256::new();
     let mut total: u64 = 0;
+    // F5 anchors both clocks immediately before the actual read/storage-write
+    // loop and retains sink latency in constant memory.
+    let mut write_latency = WriteLatencyHistogram::default();
+    let capture_wall_start = SystemTime::now();
+    let capture_mono_start = Instant::now();
     let read_deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut write_err: Option<String> = None;
     let mut read_err: Option<String> = None;
@@ -9621,10 +10042,12 @@ fn capture_pipe_to_file(
             }
             let chunk = &buf[..got as usize];
             hasher.update(chunk);
+            let write_started = Instant::now();
             if let Err(e) = writer.write_all(chunk) {
                 write_err = Some(format!("write raw stream failed: {e}"));
                 break;
             }
+            write_latency.record(write_started.elapsed().as_micros().min(u64::MAX as u128) as u64);
             total = total.saturating_add(got as u64);
             if proof_emitter.is_some() {
                 match first_record_gate.observe(chunk) {
@@ -9686,6 +10109,8 @@ fn capture_pipe_to_file(
                 byte_count: total,
                 stored_byte_count,
                 sha256: to_hex(&hasher.finalize()),
+                write_latency,
+                clock_skew: ClockSkewSample::measure(capture_wall_start, capture_mono_start),
             },
             loaded_dll_sha256,
         })
@@ -10101,6 +10526,21 @@ fn summarize_compact_stream_chunk(
             summary.late_records_after_frame_end =
                 summary.late_records_after_frame_end.saturating_add(1);
             add_compact_domain_problem(summary, domain_id, "late_record_after_frame_end", 1);
+        }
+        if matches!(
+            record_type,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF | COMPACT_RECORD_TYPE_DOMAIN_DATA
+        ) {
+            let domain = summary.per_domain.entry(domain_id).or_default();
+            domain.record_bytes_total = domain
+                .record_bytes_total
+                .saturating_add(u64::try_from(record_len).unwrap_or(u64::MAX));
+            domain.payload_bytes_total = domain
+                .payload_bytes_total
+                .saturating_add(u64::try_from(payload_len).unwrap_or(u64::MAX));
+            domain.max_record_bytes = domain
+                .max_record_bytes
+                .max(u64::try_from(record_len).unwrap_or(u64::MAX));
         }
         match record_type {
             COMPACT_RECORD_TYPE_DOMAIN_PERF => {
@@ -10630,6 +11070,9 @@ fn compact_domain_summaries_json(summary: &CompactSummary) -> Value {
                 "world_folded": FOLDED_DOMAIN_IDS.contains(domain_id),
                 "problems": domain.problems,
                 "read_time_us": timing_summary_json(&domain.read_times_us),
+                "record_bytes_total": domain.record_bytes_total,
+                "payload_bytes_total": domain.payload_bytes_total,
+                "max_record_bytes": domain.max_record_bytes,
             }),
         );
     }
@@ -10928,6 +11371,7 @@ fn compact_stream_manifest_json(
     expected_domain_ids: &[u16],
     coverage_errors: &[String],
     scheduled_domains: &[String],
+    capture: Option<&PipeCapture>,
 ) -> Value {
     let gate_status = compact_gate_status(summary);
     let failure_status_flags_or = gate_status.failure_status_flags_or;
@@ -11027,6 +11471,68 @@ fn compact_stream_manifest_json(
         "domain57_frame_evidence": domain57_frame_evidence_json(summary),
         "lane_wall": lane_wall_summary_json(summary),
         "hour_latch": hour_latch_summary_json(summary),
+        "acceptance_telemetry": acceptance_telemetry_json(summary, expected_domain_ids, capture),
+    })
+}
+
+fn acceptance_test_observation_json(cfg: &Config, summary: &CompactSummary) -> Value {
+    let Some(test) = cfg.acceptance_test.as_ref() else {
+        return Value::Null;
+    };
+    let framing_intact = summary.frame_end_record_count > 0
+        && summary.parse_errors.is_empty()
+        && summary.ordering_errors.is_empty()
+        && summary.late_records_after_frame_end == 0;
+    let weather = summary.per_domain.get(&24);
+    let weather_flags = weather
+        .map(|domain| domain.effective_failure_status_flags_or)
+        .unwrap_or(0);
+    let non_d57_failure_domains = summary
+        .per_domain
+        .iter()
+        .filter_map(|(domain_id, domain)| {
+            (*domain_id != COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE
+                && domain.effective_failure_status_flags_or != 0)
+                .then_some(*domain_id)
+        })
+        .collect::<Vec<_>>();
+    let non_d57_source_unavailable_domains = summary
+        .per_domain
+        .iter()
+        .filter_map(|(domain_id, domain)| {
+            (*domain_id != COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE
+                && domain.effective_failure_status_flags_or & COMPACT_STATUS_SOURCE_UNAVAILABLE
+                    != 0)
+                .then_some(*domain_id)
+        })
+        .collect::<Vec<_>>();
+    let paused_observed = summary.domain57_frames.iter().any(|frame| {
+        frame
+            .pause_rows
+            .iter()
+            .any(|row| row.value_i32 == 1 && row.event_hour_raw == frame.header_hour_raw)
+    });
+    let mode_observed = match test.mode {
+        AcceptanceTestMode::SyntheticFault => {
+            weather_flags & COMPACT_STATUS_WORKER_PANIC != 0
+                && weather_flags & COMPACT_STATUS_SOURCE_UNAVAILABLE != 0
+        }
+        AcceptanceTestMode::Paused => {
+            paused_observed && !non_d57_source_unavailable_domains.is_empty()
+        }
+    };
+    json!({
+        "schema": "battle-plan.acceptance_test_observation.v1",
+        "admissible_for_production": false,
+        "mode": test.mode.as_str(),
+        "acceptance_test_nonce": test.nonce,
+        "framing_intact": framing_intact,
+        "mode_observed": mode_observed,
+        "ok": framing_intact && mode_observed,
+        "weather_effective_failure_status_flags_or": weather_flags,
+        "paused_observed": paused_observed,
+        "non_d57_failure_domains": non_d57_failure_domains,
+        "non_d57_source_unavailable_domains": non_d57_source_unavailable_domains,
     })
 }
 
@@ -11070,13 +11576,32 @@ fn hour_latch_delivery_problems(summary: &CompactSummary) -> Vec<String> {
         "coalesced_flush",
         "coalesced_backward",
         "coalesced_anomalous",
+        "in_flight",
         "last_observe_failed",
         "latch_requested_but_inactive",
         "sink_write_failures",
+        "sink_open_attempts",
+        "sink_open_finishes",
+        "sink_requested_count",
+        "sink_opened_count",
+        "sink_open_failures",
+        "sink_write_attempts",
+        "sink_write_finishes",
+        "sink_write_commits",
+        "sink_write_in_flight",
+        "sink_time_sample_count",
+        "sink_time_total_us",
+        "sink_time_p50_us",
+        "sink_time_p99_us",
+        "sink_time_max_us",
         "transport_failed",
         "configured_sink_count",
         "pipe_sink_enabled",
         "file_sink_enabled",
+        "pipe_sink_requested",
+        "pipe_sink_opened",
+        "file_sink_requested",
+        "file_sink_opened",
         "finalized",
     ];
     let missing = required
@@ -11115,6 +11640,9 @@ fn hour_latch_delivery_problems(summary: &CompactSummary) -> Vec<String> {
     if observed != attempts.saturating_add(coalesced) || reason_sum != coalesced {
         problems.push("hour_latch_accounting_invalid".to_string());
     }
+    if get("in_flight").unwrap_or(1) != 0 {
+        problems.push("hour_latch_in_flight_not_flushed".to_string());
+    }
     if coalesced != 0 || observed != attempts {
         problems.push("hour_latch_coalesced_hours".to_string());
     }
@@ -11124,9 +11652,39 @@ fn hour_latch_delivery_problems(summary: &CompactSummary) -> Vec<String> {
     if get("sink_write_failures").unwrap_or(1) != 0 || get("transport_failed").unwrap_or(1) != 0 {
         problems.push("hour_latch_transport_failure".to_string());
     }
+    let sink_requested = get("sink_requested_count").unwrap_or(0);
+    let sink_opened = get("sink_opened_count").unwrap_or(0);
+    let sink_open_failures = get("sink_open_failures").unwrap_or(u64::MAX);
+    let sink_open_attempts = get("sink_open_attempts").unwrap_or(0);
+    let sink_open_finishes = get("sink_open_finishes").unwrap_or(0);
+    if sink_open_attempts != sink_requested
+        || sink_open_finishes != sink_open_attempts
+        || sink_opened.saturating_add(sink_open_failures) != sink_requested
+        || sink_open_failures != 0
+        || sink_opened != sink_requested
+    {
+        problems.push("hour_latch_sink_open_accounting_invalid".to_string());
+    }
+    let sink_write_attempts = get("sink_write_attempts").unwrap_or(0);
+    let sink_write_finishes = get("sink_write_finishes").unwrap_or(0);
+    let sink_write_commits = get("sink_write_commits").unwrap_or(0);
+    let sink_write_failures = get("sink_write_failures").unwrap_or(u64::MAX);
+    if sink_write_attempts != sink_write_finishes
+        || sink_write_finishes != sink_write_commits.saturating_add(sink_write_failures)
+        || get("sink_write_in_flight").unwrap_or(1) != 0
+    {
+        problems.push("hour_latch_sink_write_accounting_invalid".to_string());
+    }
+    if get("sink_time_sample_count") != Some(sink_write_finishes) {
+        problems.push("hour_latch_sink_time_accounting_invalid".to_string());
+    }
     if get("configured_sink_count") != Some(1)
         || get("pipe_sink_enabled") != Some(1)
         || get("file_sink_enabled") != Some(0)
+        || get("pipe_sink_requested") != Some(1)
+        || get("pipe_sink_opened") != Some(1)
+        || get("file_sink_requested") != Some(0)
+        || get("file_sink_opened") != Some(0)
     {
         problems.push("hour_latch_authoritative_pipe_not_sole_sink".to_string());
     }
@@ -11173,10 +11731,12 @@ fn hour_latch_summary_json(summary: &CompactSummary) -> Value {
         "unavailable"
     };
     let coalesced = get("coalesced");
-    // After the final flush in_flight==0, so observed == attempts + coalesced.
-    // The last emitted probe may predate a hard kill's in-flight tail; report the
-    // reconciliation as-observed so any gap is visible, never hidden.
-    let accounted = attempts.saturating_add(coalesced);
+    let in_flight = get("in_flight");
+    // The live invariant includes queued work. A valid terminal marker has
+    // in_flight==0 after flush; a last periodic marker retained after a hard
+    // kill can still reconcile truthfully without relabeling queued hours as
+    // captured or coalesced.
+    let accounted = attempts.saturating_add(coalesced).saturating_add(in_flight);
     let reason_sum = get("coalesced_superseded")
         .saturating_add(get("coalesced_overflow"))
         .saturating_add(get("coalesced_flush"))
@@ -11220,6 +11780,7 @@ fn hour_latch_summary_json(summary: &CompactSummary) -> Value {
         "note": "zero-silent-gap accounting through the last good observation, not zero-data-loss; coalesced hours are explicit reason-tagged loss",
         "hours_observed": observed,
         "capture_attempts": attempts,
+        "in_flight": summary.hour_latch.get("in_flight").copied(),
         "emission_semantics": emission_semantics,
         "legacy_semantics": legacy_semantics,
         "legacy_confirmed": if legacy_semantics { legacy_confirmed } else { None },
@@ -11231,6 +11792,28 @@ fn hour_latch_summary_json(summary: &CompactSummary) -> Value {
         "pipe_sink_enabled": summary.hour_latch.get("pipe_sink_enabled").copied(),
         "file_sink_enabled": summary.hour_latch.get("file_sink_enabled").copied(),
         "sink_write_failure_count": summary.hour_latch.get("sink_write_failures").copied(),
+        "sink_lifecycle": {
+            "open_attempts": summary.hour_latch.get("sink_open_attempts").copied(),
+            "open_finishes": summary.hour_latch.get("sink_open_finishes").copied(),
+            "requested": summary.hour_latch.get("sink_requested_count").copied(),
+            "opened": summary.hour_latch.get("sink_opened_count").copied(),
+            "open_failures": summary.hour_latch.get("sink_open_failures").copied(),
+            "write_attempts": summary.hour_latch.get("sink_write_attempts").copied(),
+            "write_finishes": summary.hour_latch.get("sink_write_finishes").copied(),
+            "write_commits": summary.hour_latch.get("sink_write_commits").copied(),
+            "write_failures": summary.hour_latch.get("sink_write_failures").copied(),
+            "write_in_flight": summary.hour_latch.get("sink_write_in_flight").copied(),
+            "file_bytes_committed": summary.hour_latch.get("sink_file_bytes_committed").copied(),
+            "pipe_bytes_committed": summary.hour_latch.get("sink_pipe_bytes_committed").copied(),
+        },
+        "sink_write_us": {
+            "scope": "finished synchronous sink writes preceding the in-band terminal marker",
+            "count": summary.hour_latch.get("sink_time_sample_count").copied(),
+            "total": summary.hour_latch.get("sink_time_total_us").copied(),
+            "p50": summary.hour_latch.get("sink_time_p50_us").copied(),
+            "p99": summary.hour_latch.get("sink_time_p99_us").copied(),
+            "max": summary.hour_latch.get("sink_time_max_us").copied(),
+        },
         "transport_failed": summary.hour_latch.get("transport_failed").copied().map(|value| value != 0),
         "per_hour_delivery_proof_complete": sink_write_success_verified,
         "sink_write_success_verified": sink_write_success_verified,
@@ -11252,6 +11835,163 @@ fn hour_latch_summary_json(summary: &CompactSummary) -> Value {
         "coverage_invariant_ok": invariant_ok && !latch_requested_but_inactive,
         "hours_unaccounted": observed.saturating_sub(accounted),
     })
+}
+
+/// F5 production-facing acceptance telemetry. This object combines facts
+/// decoded from the collector stream with measurements taken at the recorder's
+/// real pipe-to-storage boundary; neither side is a host configuration echo.
+/// Its `complete` bit is false whenever any required sample/counter is absent or
+/// internally inconsistent, so old streams remain readable but can never gain
+/// a false production green.
+fn acceptance_telemetry_json(
+    summary: &CompactSummary,
+    expected_domain_ids: &[u16],
+    capture: Option<&PipeCapture>,
+) -> Value {
+    let problems = acceptance_telemetry_problems(summary, expected_domain_ids, capture);
+    let expected: BTreeSet<u16> = expected_domain_ids.iter().copied().collect();
+    let actual: BTreeSet<u16> = summary.per_domain.keys().copied().collect();
+    let speed_required = expected.contains(&COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE);
+    let speed_problems = domain57_gate_problems(summary, speed_required);
+    let mut per_domain_bytes = serde_json::Map::new();
+    for domain_id in expected_domain_ids {
+        let domain = summary.per_domain.get(domain_id);
+        per_domain_bytes.insert(
+            compact_domain_name(*domain_id).to_string(),
+            json!({
+                "domain_id": domain_id,
+                "record_bytes": domain.map(|row| row.record_bytes_total),
+                "payload_bytes": domain.map(|row| row.payload_bytes_total),
+                "max_record_bytes": domain.map(|row| row.max_record_bytes),
+            }),
+        );
+    }
+    json!({
+        "schema": "battle-plan.acceptance_telemetry.v1",
+        "complete": problems.is_empty(),
+        "problems": problems,
+        "verified_game_speed": {
+            "required": speed_required,
+            "verified": speed_required && speed_problems.is_empty(),
+            "problems": speed_problems,
+            "frame_evidence": domain57_frame_evidence_json(summary),
+        },
+        "frame_time_us": timing_summary_json(&summary.frame_times_us),
+        "sink_write_us": capture
+            .map(|capture| write_latency_summary_json(&capture.write_latency))
+            .unwrap_or_else(|| write_latency_summary_json(&WriteLatencyHistogram::default())),
+        "sink_write_scope": "host StreamWriter::write_all calls over live named-pipe chunks",
+        "clock_skew": capture
+            .map(|capture| capture.clock_skew.as_json())
+            .unwrap_or(Value::Null),
+        "hour_label_skew": {
+            "definition": "absolute game-hour distance between the latch-owned frame label and an independent stable hour read at heavy-sweep start",
+            "unit": "game_hours",
+            "absolute": timing_summary_json(&summary.acceptance_hour_label_skew_abs),
+            "missing": summary.acceptance_hour_label_skew_missing,
+        },
+        "prewarm_time_us": timing_summary_json(&summary.acceptance_prewarm_times_us),
+        "capture_accounting": {
+            "observed": summary.hour_latch.get("observed").copied(),
+            "attempts": summary.hour_latch.get("attempts").copied(),
+            "coalesced": summary.hour_latch.get("coalesced").copied(),
+            "in_flight": summary.hour_latch.get("in_flight").copied(),
+            "emitted_to_sink": summary.hour_latch.get("emitted_to_sink").copied(),
+        },
+        "sink_lifecycle": {
+            "open_attempts": summary.hour_latch.get("sink_open_attempts").copied(),
+            "open_finishes": summary.hour_latch.get("sink_open_finishes").copied(),
+            "requested": summary.hour_latch.get("sink_requested_count").copied(),
+            "opened": summary.hour_latch.get("sink_opened_count").copied(),
+            "open_failures": summary.hour_latch.get("sink_open_failures").copied(),
+            "write_attempts": summary.hour_latch.get("sink_write_attempts").copied(),
+            "write_finishes": summary.hour_latch.get("sink_write_finishes").copied(),
+            "write_commits": summary.hour_latch.get("sink_write_commits").copied(),
+            "write_failures": summary.hour_latch.get("sink_write_failures").copied(),
+            "write_in_flight": summary.hour_latch.get("sink_write_in_flight").copied(),
+            "file_bytes_committed": summary.hour_latch.get("sink_file_bytes_committed").copied(),
+            "pipe_bytes_committed": summary.hour_latch.get("sink_pipe_bytes_committed").copied(),
+        },
+        "per_domain_bytes": Value::Object(per_domain_bytes),
+        "exact_roster": {
+            "expected": compact_domain_names_from_ids(expected_domain_ids),
+            "observed": compact_domain_names(&actual),
+            "exact": actual == expected,
+        },
+    })
+}
+
+fn acceptance_telemetry_problems(
+    summary: &CompactSummary,
+    expected_domain_ids: &[u16],
+    capture: Option<&PipeCapture>,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    let expected: BTreeSet<u16> = expected_domain_ids.iter().copied().collect();
+    let actual: BTreeSet<u16> = summary.per_domain.keys().copied().collect();
+    if actual != expected {
+        problems.push("acceptance_exact_roster_mismatch".to_string());
+    }
+    if summary.frame_end_record_count == 0
+        || summary.frame_times_us.len() != summary.frame_end_record_count
+    {
+        problems.push("acceptance_frame_time_samples_incomplete".to_string());
+    }
+    if summary.acceptance_prewarm_times_us.len() != summary.frame_end_record_count {
+        problems.push("acceptance_prewarm_samples_incomplete".to_string());
+    }
+    if summary.acceptance_hour_label_skew_missing != 0
+        || summary.acceptance_hour_label_skew_abs.len() != summary.frame_end_record_count
+    {
+        problems.push("acceptance_hour_label_skew_samples_incomplete".to_string());
+    }
+    if !expected.contains(&COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE) {
+        problems.push("acceptance_verified_game_speed_not_scheduled".to_string());
+    } else {
+        problems.extend(
+            domain57_gate_problems(summary, true)
+                .into_iter()
+                .map(|problem| format!("acceptance_{problem}")),
+        );
+    }
+    for domain_id in expected_domain_ids {
+        let complete = summary
+            .per_domain
+            .get(domain_id)
+            .map(|domain| domain.record_bytes_total != 0 && domain.payload_bytes_total != 0)
+            .unwrap_or(false);
+        if !complete {
+            problems.push(format!(
+                "acceptance_domain_bytes_missing:{}",
+                compact_domain_name(*domain_id)
+            ));
+        }
+    }
+    problems.extend(
+        hour_latch_delivery_problems(summary)
+            .into_iter()
+            .map(|problem| format!("acceptance_{problem}")),
+    );
+    if summary.hour_latch.get("sink_time_sample_count").copied() == Some(0) {
+        problems.push("acceptance_collector_sink_time_samples_empty".to_string());
+    }
+    match capture {
+        Some(capture) => {
+            if capture.write_latency.count == 0 {
+                problems.push("acceptance_host_sink_write_samples_empty".to_string());
+            }
+            if !capture.clock_skew.measured {
+                problems.push("acceptance_clock_skew_unmeasured".to_string());
+            } else if !capture.clock_skew.wall_monotonic_ok {
+                problems.push("acceptance_wall_clock_non_monotonic".to_string());
+            }
+        }
+        None => {
+            problems.push("acceptance_host_sink_write_unmeasured".to_string());
+            problems.push("acceptance_clock_skew_unmeasured".to_string());
+        }
+    }
+    problems
 }
 
 fn decode_compact_domain_perf_diagnostic_units(
@@ -11362,7 +12102,10 @@ fn add_compact_domain_perf_diagnostic_unit(
         // observe clears an earlier transient failure, while a failing final poll
         // must survive as the terminal truncation marker.
         if let Some(rest) = name.strip_prefix("hl_") {
-            if rest == "last_observe_failed" {
+            if matches!(
+                rest,
+                "last_observe_failed" | "sink_time_p50_us" | "sink_time_p99_us"
+            ) {
                 summary.hour_latch.insert(rest.to_string(), value);
             } else {
                 let entry = summary.hour_latch.entry(rest.to_string()).or_default();
@@ -11480,6 +12223,13 @@ fn add_compact_lane_wall_unit(summary: &mut CompactSummary, name: &str, value: u
         "worker_span_us" => {
             summary.lane_wall_worker_span_us_total =
                 summary.lane_wall_worker_span_us_total.saturating_add(value);
+        }
+        "prewarm_us" => summary.acceptance_prewarm_times_us.push(value),
+        "hour_label_skew_abs" => summary.acceptance_hour_label_skew_abs.push(value),
+        "hour_label_skew_missing" => {
+            summary.acceptance_hour_label_skew_missing = summary
+                .acceptance_hour_label_skew_missing
+                .saturating_add(value);
         }
         "crit_wall_us" => summary.lane_wall_crit_walls_us.push(value),
         "crit_busy_us" => {
@@ -11624,20 +12374,30 @@ fn timing_summary_json(values: &[u64]) -> Value {
         return json!({
             "count": 0,
             "avg": null,
+            "p50": null,
             "p95": null,
+            "p99": null,
             "max": null,
         });
     }
     let mut sorted = values.to_vec();
     sorted.sort_unstable();
-    let sum = sorted.iter().copied().sum::<u64>();
+    let sum = sorted.iter().copied().fold(0u64, u64::saturating_add);
     let p95_index = ((sorted.len() * 95).saturating_add(99) / 100)
+        .saturating_sub(1)
+        .min(sorted.len().saturating_sub(1));
+    let p50_index = ((sorted.len() * 50).saturating_add(99) / 100)
+        .saturating_sub(1)
+        .min(sorted.len().saturating_sub(1));
+    let p99_index = ((sorted.len() * 99).saturating_add(99) / 100)
         .saturating_sub(1)
         .min(sorted.len().saturating_sub(1));
     json!({
         "count": sorted.len(),
         "avg": (sum as f64) / (sorted.len() as f64),
+        "p50": sorted[p50_index],
         "p95": sorted[p95_index],
+        "p99": sorted[p99_index],
         "max": sorted[sorted.len() - 1],
     })
 }
@@ -12805,6 +13565,8 @@ mod tests {
             byte_count: 123,
             stored_byte_count: 45,
             sha256: "abc123".to_string(),
+            write_latency: WriteLatencyHistogram::default(),
+            clock_skew: ClockSkewSample::unmeasured(),
         };
         let fold_stats = recorder_host::stream_fold::FoldStreamStats {
             stream_bytes: 123,
@@ -13526,13 +14288,34 @@ mod tests {
             ("coalesced_flush", 0),
             ("coalesced_backward", 0),
             ("coalesced_anomalous", 0),
+            ("in_flight", 0),
             ("last_observe_failed", 0),
             ("latch_requested_but_inactive", 0),
             ("sink_write_failures", 0),
+            ("sink_open_attempts", 1),
+            ("sink_open_finishes", 1),
+            ("sink_requested_count", 1),
+            ("sink_opened_count", 1),
+            ("sink_open_failures", 0),
+            ("sink_write_attempts", attempts.saturating_sub(1)),
+            ("sink_write_finishes", attempts.saturating_sub(1)),
+            ("sink_write_commits", attempts.saturating_sub(1)),
+            ("sink_write_in_flight", 0),
+            ("sink_file_bytes_committed", 0),
+            ("sink_pipe_bytes_committed", 4096),
+            ("sink_time_sample_count", attempts.saturating_sub(1)),
+            ("sink_time_total_us", 300),
+            ("sink_time_p50_us", 100),
+            ("sink_time_p99_us", 200),
+            ("sink_time_max_us", 200),
             ("transport_failed", 0),
             ("configured_sink_count", 1),
             ("pipe_sink_enabled", 1),
             ("file_sink_enabled", 0),
+            ("pipe_sink_requested", 1),
+            ("pipe_sink_opened", 1),
+            ("file_sink_requested", 0),
+            ("file_sink_opened", 0),
             ("finalized", 1),
         ] {
             summary.hour_latch.insert(name.to_string(), value);
@@ -13583,6 +14366,105 @@ mod tests {
             hour_latch_summary_json(&mixed)["sink_write_success_verified"],
             json!(false)
         );
+    }
+
+    #[test]
+    fn hour_latch_manifest_rejects_requested_but_unopened_sink() {
+        let mut unopened = complete_hour_latch_summary(3);
+        unopened
+            .hour_latch
+            .insert("sink_opened_count".to_string(), 0);
+        unopened
+            .hour_latch
+            .insert("sink_open_failures".to_string(), 1);
+        unopened
+            .hour_latch
+            .insert("pipe_sink_opened".to_string(), 0);
+        let problems = hour_latch_gate_problems(&unopened, true);
+        assert!(problems.contains(&"hour_latch_sink_open_accounting_invalid".to_string()));
+        assert!(problems.contains(&"hour_latch_authoritative_pipe_not_sole_sink".to_string()));
+        assert_eq!(
+            hour_latch_summary_json(&unopened)["sink_write_success_verified"],
+            json!(false)
+        );
+    }
+
+    #[test]
+    fn timing_summary_reports_nearest_rank_p50_and_p99() {
+        let summary = timing_summary_json(&[1, 2, 3, 4, 100]);
+        assert_eq!(summary["p50"], json!(3));
+        assert_eq!(summary["p95"], json!(100));
+        assert_eq!(summary["p99"], json!(100));
+        assert_eq!(summary["max"], json!(100));
+    }
+
+    #[test]
+    fn host_write_latency_summary_is_bounded_and_validator_shaped() {
+        let mut histogram = WriteLatencyHistogram::default();
+        for sample in [0, 1, 2, 3, 4, 100] {
+            histogram.record(sample);
+        }
+        let summary = write_latency_summary_json(&histogram);
+        assert_eq!(summary["count"], json!(6));
+        assert!(summary["avg"].is_number());
+        assert!(summary["p50"].is_number());
+        assert!(summary["p95"].is_number());
+        assert!(summary["p99"].is_number());
+        assert_eq!(summary["max"], json!(100));
+        assert_eq!(
+            summary["percentile_semantics"],
+            json!("bucket_upper_bound_us")
+        );
+    }
+
+    #[test]
+    fn unmeasured_clock_skew_is_null_not_a_false_green() {
+        assert_eq!(ClockSkewSample::unmeasured().as_json(), Value::Null);
+    }
+
+    #[test]
+    fn acceptance_telemetry_host_fields_match_production_validator_contract() {
+        let mut capture = PipeCapture {
+            byte_count: 1,
+            stored_byte_count: 1,
+            sha256: "00".repeat(32),
+            write_latency: WriteLatencyHistogram::default(),
+            clock_skew: ClockSkewSample {
+                measured: true,
+                wall_elapsed_us: 1_000,
+                mono_elapsed_us: 1_001,
+                drift_us: -1,
+                wall_monotonic_ok: true,
+            },
+        };
+        capture.write_latency.record(10);
+        let telemetry = acceptance_telemetry_json(&CompactSummary::default(), &[], Some(&capture));
+        for field in ["count", "avg", "p50", "p95", "p99", "max"] {
+            assert!(telemetry["sink_write_us"].get(field).is_some());
+        }
+        for field in [
+            "wall_elapsed_us",
+            "mono_elapsed_us",
+            "drift_us",
+            "wall_monotonic_ok",
+        ] {
+            assert!(telemetry["clock_skew"].get(field).is_some());
+        }
+        assert_eq!(telemetry["clock_skew"]["wall_monotonic_ok"], json!(true));
+    }
+
+    #[test]
+    fn acceptance_telemetry_never_greens_absent_producer_evidence() {
+        let summary = CompactSummary::default();
+        let telemetry = acceptance_telemetry_json(
+            &summary,
+            &[COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE],
+            None,
+        );
+        assert_eq!(telemetry["complete"], json!(false));
+        assert_eq!(telemetry["frame_time_us"]["p50"], Value::Null);
+        assert_eq!(telemetry["sink_write_us"]["p99"], Value::Null);
+        assert_eq!(telemetry["exact_roster"]["exact"], json!(false));
     }
 
     #[test]
@@ -13874,6 +14756,7 @@ mod tests {
             &[COMPACT_DOMAIN_SCRIPTED_STATE_FLAGS_VARIABLES_LIVE],
             &coverage_errors,
             &["scripted_state_flags_variables_live".into()],
+            None,
         );
 
         assert!(
@@ -13939,6 +14822,7 @@ mod tests {
             &[27],
             &coverage_errors,
             &["army_orders".into()],
+            None,
         );
         let applied = compact_expected_partial_tolerances_applied_json(&summary);
 
@@ -14017,6 +14901,7 @@ mod tests {
             &[26, 27],
             &coverage_errors,
             &["division_equipment".into(), "army_orders".into()],
+            None,
         );
         let applied = compact_expected_partial_tolerances_applied_json(&summary);
 
@@ -14067,6 +14952,7 @@ mod tests {
             &[27],
             &coverage_errors,
             &["army_orders".into()],
+            None,
         );
         let applied = compact_expected_partial_tolerances_applied_json(&summary);
 
@@ -14119,6 +15005,7 @@ mod tests {
             &[27],
             &coverage_errors,
             &["army_orders".into()],
+            None,
         );
         let applied = compact_expected_partial_tolerances_applied_json(&summary);
 
@@ -14150,7 +15037,7 @@ mod tests {
             100,
             COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
-            &battleplans54::encode_depth_payload(&[], 0, status_flags, 0, 0, 0, 0, 0),
+            &battleplans54::encode_depth_payload(&[], 0, status_flags, 0, 0, 0, 0, 0, 0),
         );
         append_test_compact_record(
             &mut raw,
@@ -14170,6 +15057,7 @@ mod tests {
             &[COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE],
             &coverage_errors,
             &["army_battleplans_depth_live".into()],
+            None,
         );
         let applied = compact_expected_partial_tolerances_applied_json(&summary);
 
@@ -14191,9 +15079,34 @@ mod tests {
     fn compact_expected_partial_e2e_folds_domain27_partial_rows_with_manifest_tolerance() {
         let mut raw = Vec::new();
         let game_hour_raw = 60_759_359;
+        let baseline_hour_raw = game_hour_raw - 1;
         append_test_compact_record(
             &mut raw,
             1,
+            baseline_hour_raw,
+            27,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(500, 2, 2, 3, 2, 0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            baseline_hour_raw,
+            27,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_army_orders_data_payload(0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            baseline_hour_raw,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_100, 1),
+        );
+        append_test_compact_record(
+            &mut raw,
+            4,
             game_hour_raw,
             27,
             COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -14201,7 +15114,7 @@ mod tests {
         );
         append_test_compact_record(
             &mut raw,
-            2,
+            5,
             game_hour_raw,
             27,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -14209,7 +15122,7 @@ mod tests {
         );
         append_test_compact_record(
             &mut raw,
-            3,
+            6,
             game_hour_raw,
             1000,
             COMPACT_RECORD_TYPE_FRAME_END,
@@ -14225,10 +15138,13 @@ mod tests {
                 &[27],
                 &coverage_errors,
                 &["army_orders".into()],
+                None,
             ),
             "expected_partial_tolerances_applied": compact_expected_partial_tolerances_applied_json(&summary),
         });
-        let snapshot = fold_single_compact_snapshot(&raw);
+        let snapshots = fold_compact_snapshots(&raw);
+        assert_eq!(snapshots.len(), 2);
+        let snapshot = snapshots.last().unwrap();
 
         assert!(coverage_errors.is_empty(), "{coverage_errors:?}");
         assert!(problems.is_empty(), "{problems:?}");
@@ -22427,7 +23343,7 @@ mod tests {
             Some(1)
         );
         assert!(problems.contains(&"compact_delta_before_baseline".to_string()));
-        let manifest = compact_stream_manifest_json(&summary, &[20], &[], &[]);
+        let manifest = compact_stream_manifest_json(&summary, &[20], &[], &[], None);
         assert_eq!(
             manifest["world_fold"]["delta_before_baseline"][0]["domain"],
             json!("divisions")
@@ -22463,6 +23379,7 @@ mod tests {
             &[58],
             &coverage_errors,
             &["country_economy_counters_live".into()],
+            None,
         );
 
         assert!(summary.unfolded_domain_data.contains(&58));
@@ -22609,6 +23526,7 @@ mod tests {
                 "naval_combat_lifecycle_live".into(),
                 "naval_combat_members_live".into(),
             ],
+            None,
         );
         assert_eq!(
             manifest["world_fold"]["production_profile_unfolded_domains"],
@@ -22657,6 +23575,7 @@ mod tests {
             &[COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE],
             &[],
             &["land_combat_detail_events_live".into()],
+            None,
         );
         let problems = compact_hourly_problems(&summary, 0, &[]);
 
@@ -22955,6 +23874,7 @@ mod tests {
             domain57_game_speed_transcript_file_sha256: None,
             domain57_game_speed_gate: None,
             domain57_omission_reason: None,
+            acceptance_test: None,
         };
 
         let mut fold = WorldFold::new(replay_game_id("pack test/session"));
@@ -23058,6 +23978,8 @@ mod tests {
             byte_count: 8,
             stored_byte_count: 8,
             sha256: to_hex(&Sha256::digest(b"not-h4cr")),
+            write_latency: WriteLatencyHistogram::default(),
+            clock_skew: ClockSkewSample::unmeasured(),
         };
         let cfg = test_config(vec![], None);
 
@@ -23143,6 +24065,8 @@ mod tests {
             byte_count: raw.len() as u64,
             stored_byte_count: raw.len() as u64,
             sha256: to_hex(&Sha256::digest(&raw)),
+            write_latency: WriteLatencyHistogram::default(),
+            clock_skew: ClockSkewSample::unmeasured(),
         };
 
         let snapshot_path = spill_dir.join("000016959360.snapshot.json");
@@ -23506,6 +24430,8 @@ mod tests {
             byte_count: 0,
             stored_byte_count: 0,
             sha256: to_hex(&Sha256::digest(&[])),
+            write_latency: WriteLatencyHistogram::default(),
+            clock_skew: ClockSkewSample::unmeasured(),
         };
         let mut cfg = test_config(vec!["fuel_live"], None);
         cfg.session_id = session_a.to_string();
@@ -23589,6 +24515,8 @@ mod tests {
             byte_count: raw.len() as u64,
             stored_byte_count: raw.len() as u64,
             sha256: to_hex(&Sha256::digest(&raw)),
+            write_latency: WriteLatencyHistogram::default(),
+            clock_skew: ClockSkewSample::unmeasured(),
         };
         let manifest = json!({
             "schema": "native_collector_session_v1",
@@ -23704,6 +24632,8 @@ mod tests {
             sha256: to_hex(&Sha256::digest(&raw)),
             // Raw fixture: stored == decoded.
             stored_byte_count: raw.len() as u64,
+            write_latency: WriteLatencyHistogram::default(),
+            clock_skew: ClockSkewSample::unmeasured(),
         };
         let manifest = json!({
             "schema": "native_collector_session_v1",
@@ -24509,6 +25439,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn acceptance_test_mode_is_explicit_paired_and_default_off() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan-recorder_acceptance_mode_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let ordinary = parse_args(profile_test_args(&dir, &["--profile", "production"])).unwrap();
+        assert!(ordinary.acceptance_test.is_none());
+
+        let enabled = parse_args(profile_test_args(
+            &dir,
+            &[
+                "--profile",
+                "production",
+                "--acceptance-test-mode",
+                "synthetic-fault",
+                "--acceptance-test-nonce",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ],
+        ))
+        .unwrap();
+        let test = enabled.acceptance_test.expect("explicit test mode");
+        assert_eq!(test.mode, AcceptanceTestMode::SyntheticFault);
+        assert_eq!(test.nonce, "a".repeat(64));
+
+        let missing_nonce = parse_args(profile_test_args(
+            &dir,
+            &[
+                "--profile",
+                "production",
+                "--acceptance-test-mode",
+                "paused",
+            ],
+        ))
+        .unwrap_err();
+        assert!(missing_nonce.contains("must be supplied together"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     fn base_profile_test_args(dir: &Path, extra: &[&str]) -> Vec<String> {
         let dll = dir.join("collector.dll");
         fs::write(&dll, b"").unwrap();
@@ -25086,6 +26057,7 @@ mod tests {
             domain57_game_speed_transcript_file_sha256: None,
             domain57_game_speed_gate: None,
             domain57_omission_reason: None,
+            acceptance_test: None,
         }
     }
 
@@ -25107,16 +26079,6 @@ mod tests {
         payload.extend_from_slice(&status_flags.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
         payload
-    }
-
-    fn fold_single_compact_snapshot(raw: &[u8]) -> Value {
-        let snapshots = fold_compact_snapshots(raw);
-        assert_eq!(
-            snapshots.len(),
-            1,
-            "one folded snapshot for the single compact test hour"
-        );
-        snapshots.into_iter().next().unwrap()
     }
 
     fn fold_compact_snapshots(raw: &[u8]) -> Vec<Value> {

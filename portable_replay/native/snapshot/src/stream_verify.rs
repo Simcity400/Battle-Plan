@@ -16,9 +16,9 @@
 use crate::canon::manifest_canonical_bytes;
 use crate::sha256::{to_hex, Sha256};
 use crate::zip::{
-    validate_path, INITIAL_ENTRY_RESERVE, MAX_CONTAINER_ENTRY_BYTES, MAX_READER_ENTRIES,
-    STREAMING_MAX_CONTAINER_ENTRY_BYTES, ZIP32_MAX_FIELD_VALUE, ZIP_METHOD_DEFLATE,
-    ZIP_METHOD_STORE, ZIP_METHOD_ZSTD, ZSTD_WINDOW_LOG,
+    portable_path_key, validate_path, INITIAL_ENTRY_RESERVE, MAX_CONTAINER_ENTRY_BYTES,
+    MAX_READER_ENTRIES, STREAMING_MAX_CONTAINER_ENTRY_BYTES, ZIP32_MAX_FIELD_VALUE,
+    ZIP_METHOD_DEFLATE, ZIP_METHOD_STORE, ZIP_METHOD_ZSTD, ZSTD_WINDOW_LOG,
 };
 use flate2::write::DeflateDecoder;
 use serde_json::Value;
@@ -32,7 +32,6 @@ const ZIP64_EOCD_SIG: u32 = 0x0606_4b50;
 const ZIP64_LOCATOR_SIG: u32 = 0x0706_4b50;
 const CDH_SIG: u32 = 0x0201_4b50;
 const LFH_SIG: u32 = 0x0403_4b50;
-const ZIP64_EXTRA_ID: u16 = 0x0001;
 const EOCD_MIN_LEN: u64 = 22;
 const ZIP64_LOCATOR_LEN: u64 = 20;
 const ZIP64_EOCD_MIN_LEN: u64 = 56;
@@ -187,6 +186,8 @@ pub fn verify_replay_container_streaming_file_at_path(
             .get("sha256")
             .and_then(Value::as_str)
             .ok_or_else(|| format!("entry {p}: sha256 missing"))?;
+        portable_content_manifest::hud_role::validate_sha256(sha, "manifest entry sha256")
+            .map_err(|error| format!("entry {p}: {error}"))?;
         let bytes = ent
             .get("bytes")
             .and_then(Value::as_u64)
@@ -280,9 +281,12 @@ pub fn verify_replay_container_streaming_file_at_path(
         if e.name == "manifest.json" {
             continue;
         }
-        let rec = by_path
-            .get(&e.name)
-            .expect("coverage check populated by_path");
+        let rec = by_path.get(&e.name).ok_or_else(|| {
+            format!(
+                "internal coverage invariant lost manifest record for entry {}",
+                e.name
+            )
+        })?;
         let (sha, uncomp) = hash_entry_streaming(&mut file, e)?;
         if sha != rec.sha {
             return Err(format!(
@@ -323,20 +327,79 @@ fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>
         .map_err(|e| format!("read eocd tail: {e}"))?;
 
     let eocd = find_eocd(&tail).ok_or_else(|| "no EOCD record found".to_string())?;
+    // Mirror the in-RAM reader's EOCD strictness (zip.rs): multi-disk and split
+    // central directories are refused, and ordinary EOCD fields must agree with
+    // their Zip64 counterparts — a container the in-RAM reader refuses must
+    // never be promoted by the recorder-side verifier.
+    let disk_no = rd_u16(&tail, eocd + 4).ok_or("truncated eocd")?;
+    let cd_disk = rd_u16(&tail, eocd + 6).ok_or("truncated eocd")?;
+    if disk_no != 0 || cd_disk != 0 {
+        return Err("multi-disk ZIP archives are not supported".to_string());
+    }
+    let entries_on_disk16 = rd_u16(&tail, eocd + 8).ok_or("truncated eocd")?;
     let total16 = rd_u16(&tail, eocd + 10).ok_or("truncated eocd")?;
     let cd_size32 = rd_u32(&tail, eocd + 12).ok_or("truncated eocd")?;
     let cd_off32 = rd_u32(&tail, eocd + 16).ok_or("truncated eocd")?;
     let locator = find_zip64_locator(&tail, eocd);
-    let (total_u64, cd_size, cd_off) = if total16 == u16::MAX
+    let (total_u64, cd_size, cd_off, expected_cd_end) = if entries_on_disk16 == u16::MAX
+        || total16 == u16::MAX
         || cd_size32 == u32::MAX
         || cd_off32 == u32::MAX
         || locator.is_some()
     {
         let locator = locator.ok_or_else(|| "Zip64 locator missing".to_string())?;
-        parse_zip64_eocd(&tail, tail_start, locator)?
+        let (zip64_total, zip64_cd_size, zip64_cd_off, zip64_eocd_abs) =
+            parse_zip64_eocd(&tail, tail_start, locator)?;
+        crate::zip::validate_ordinary_zip64_field(
+            "entries-on-disk count",
+            entries_on_disk16 as u64,
+            u16::MAX as u64,
+            zip64_total,
+        )
+        .map_err(|e| e.to_string())?;
+        crate::zip::validate_ordinary_zip64_field(
+            "total-entry count",
+            total16 as u64,
+            u16::MAX as u64,
+            zip64_total,
+        )
+        .map_err(|e| e.to_string())?;
+        crate::zip::validate_ordinary_zip64_field(
+            "central-directory size",
+            cd_size32 as u64,
+            u32::MAX as u64,
+            zip64_cd_size,
+        )
+        .map_err(|e| e.to_string())?;
+        crate::zip::validate_ordinary_zip64_field(
+            "central-directory offset",
+            cd_off32 as u64,
+            u32::MAX as u64,
+            zip64_cd_off,
+        )
+        .map_err(|e| e.to_string())?;
+        (zip64_total, zip64_cd_size, zip64_cd_off, zip64_eocd_abs)
     } else {
-        (total16 as u64, cd_size32 as u64, cd_off32 as u64)
+        if entries_on_disk16 != total16 {
+            return Err("split ZIP central directories are not supported".to_string());
+        }
+        (
+            total16 as u64,
+            cd_size32 as u64,
+            cd_off32 as u64,
+            tail_start + eocd as u64,
+        )
     };
+    // The central directory must end exactly at its end record (same anchor the
+    // in-RAM reader enforces): no unaccounted bytes between CD and (Zip64) EOCD.
+    let actual_cd_end = cd_off
+        .checked_add(cd_size)
+        .ok_or_else(|| "central directory range overflows".to_string())?;
+    if actual_cd_end != expected_cd_end {
+        return Err(format!(
+            "central directory does not end at its end record: {actual_cd_end} != {expected_cd_end}"
+        ));
+    }
     if total_u64 > MAX_READER_ENTRIES {
         return Err(format!(
             "central directory entry count {total_u64} exceeds reader cap {MAX_READER_ENTRIES}"
@@ -358,6 +421,7 @@ fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>
 
     let mut entries = Vec::with_capacity(total.min(INITIAL_ENTRY_RESERVE));
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_ci: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut p = 0usize;
     while p + 46 <= cd.len() {
         let sig = rd_u32(&cd, p).ok_or("truncated cdh")?;
@@ -377,6 +441,12 @@ fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>
         let name_len = rd_u16(&cd, p + 28).ok_or("truncated cdh")? as usize;
         let extra_len = rd_u16(&cd, p + 30).ok_or("truncated cdh")? as usize;
         let comment_len = rd_u16(&cd, p + 32).ok_or("truncated cdh")? as usize;
+        let disk_start = rd_u16(&cd, p + 34).ok_or("truncated cdh")?;
+        if disk_start != 0 {
+            return Err(format!(
+                "entry at central-directory offset {p} starts on disk {disk_start}; multi-disk ZIP archives are not supported"
+            ));
+        }
         let lho32 = rd_u32(&cd, p + 42).ok_or("truncated cdh")?;
         let name_start = p + 46;
         let name_end = name_start + name_len;
@@ -423,6 +493,13 @@ fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>
         if !seen.insert(name.clone()) {
             return Err(format!("duplicate entry name {name}"));
         }
+        // case-insensitive collision (would clobber on Windows/macOS unpack);
+        // same rule as the in-RAM reader.
+        if !seen_ci
+            .insert(portable_path_key(&name).map_err(|e| format!("unsafe entry path {name}: {e}"))?)
+        {
+            return Err(format!("duplicate entry name {name} (case-insensitive)"));
+        }
         entries.push(CdEntry {
             name,
             flags,
@@ -453,13 +530,6 @@ fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>
     Ok(entries)
 }
 
-#[derive(Default)]
-struct Zip64Extra {
-    uncomp_size: Option<u64>,
-    comp_size: Option<u64>,
-    local_header_off: Option<u64>,
-}
-
 fn find_zip64_locator(tail: &[u8], eocd: usize) -> Option<usize> {
     if eocd < 20 {
         return None;
@@ -468,11 +538,14 @@ fn find_zip64_locator(tail: &[u8], eocd: usize) -> Option<usize> {
     (rd_u32(tail, off) == Some(ZIP64_LOCATOR_SIG)).then_some(off)
 }
 
+/// Returns `(total_entries, cd_size, cd_off, zip64_eocd_abs)` — the last is the
+/// ABSOLUTE file offset of the Zip64 EOCD record, i.e. where the central
+/// directory must end.
 fn parse_zip64_eocd(
     tail: &[u8],
     tail_start: u64,
     locator: usize,
-) -> Result<(u64, u64, u64), String> {
+) -> Result<(u64, u64, u64, u64), String> {
     if rd_u32(tail, locator + 4).ok_or("truncated zip64 locator")? != 0 {
         return Err("multi-disk Zip64 archives are not supported".to_string());
     }
@@ -508,46 +581,20 @@ fn parse_zip64_eocd(
     }
     let cd_size = rd_u64(tail, off + 40).ok_or("truncated zip64 eocd")?;
     let cd_off = rd_u64(tail, off + 48).ok_or("truncated zip64 eocd")?;
-    Ok((total_entries, cd_size, cd_off))
+    Ok((total_entries, cd_size, cd_off, zip64_eocd_abs))
 }
 
+/// Zip64 extra-field parsing is shared with the in-RAM reader (one parser, one
+/// strictness: duplicate 0x0001 fields and malformed extra buffers are refused
+/// identically by both readers).
 fn parse_zip64_extra(
     extra: &[u8],
     need_uncomp: bool,
     need_comp: bool,
     need_lho: bool,
-) -> Result<Zip64Extra, String> {
-    let mut p = 0usize;
-    while p + 4 <= extra.len() {
-        let id = rd_u16(extra, p).ok_or("truncated extra")?;
-        let len = rd_u16(extra, p + 2).ok_or("truncated extra")? as usize;
-        let start = p + 4;
-        let end = start.checked_add(len).ok_or("extra length overflow")?;
-        if end > extra.len() {
-            return Err("extra field past end".to_string());
-        }
-        if id == ZIP64_EXTRA_ID {
-            let mut q = start;
-            let mut z = Zip64Extra::default();
-            if need_uncomp {
-                z.uncomp_size = Some(rd_u64(extra, q).ok_or("truncated Zip64 extra")?);
-                q += 8;
-            }
-            if need_comp {
-                z.comp_size = Some(rd_u64(extra, q).ok_or("truncated Zip64 extra")?);
-                q += 8;
-            }
-            if need_lho {
-                z.local_header_off = Some(rd_u64(extra, q).ok_or("truncated Zip64 extra")?);
-            }
-            return Ok(z);
-        }
-        p = end;
-    }
-    if need_uncomp || need_comp || need_lho {
-        return Err("Zip64 extra field missing".to_string());
-    }
-    Ok(Zip64Extra::default())
+) -> Result<crate::zip::Zip64Extra, String> {
+    crate::zip::parse_zip64_extra(extra, need_uncomp, need_comp, need_lho)
+        .map_err(|e| e.to_string())
 }
 
 /// Read + decompress one entry FULLY into RAM. Only used for small entries
@@ -1113,6 +1160,35 @@ mod tests {
             .expect_err("a last-ordered decoy role must never bind the capture hash");
         assert!(error.contains("exactly one"), "{error}");
         assert!(error.contains("collector_compact_stream"), "{error}");
+    }
+
+    #[test]
+    fn streaming_decoder_refuses_deflate_trailing_bytes() {
+        // The same [valid deflate stream][garbage] fixture the in-RAM reader
+        // refuses: the write-side decoder must also fail (the two readers must
+        // never disagree about the same container).
+        let dir = TmpDir::new("deflate_trailing");
+        let clean_path = dir.join("clean.zip");
+        fs::write(&clean_path, crate::zip::test_deflate_zip_with_trailing(0)).unwrap();
+        let mut file = fs::File::open(&clean_path).unwrap();
+        let len = file.metadata().unwrap().len();
+        let entries = read_central_directory(&mut file, len).expect("clean CD parses");
+        hash_entry_streaming(&mut file, &entries[0]).expect("clean deflate entry hashes");
+
+        let dirty_path = dir.join("dirty.zip");
+        fs::write(&dirty_path, crate::zip::test_deflate_zip_with_trailing(16)).unwrap();
+        let mut file = fs::File::open(&dirty_path).unwrap();
+        let len = file.metadata().unwrap().len();
+        let entries = read_central_directory(&mut file, len).expect("structure still parses");
+        let err = hash_entry_streaming(&mut file, &entries[0])
+            .expect_err("trailing bytes after the deflate stream must be refused");
+        // The write-side decoder refuses trailing input as a short write
+        // (WriteZero, "failed to write whole buffer") or an inflate failure —
+        // either way a hard refusal, matching the in-RAM reader's rejection.
+        assert!(
+            err.contains("failed to write whole buffer") || err.contains("inflate failed"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

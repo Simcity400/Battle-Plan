@@ -37,7 +37,7 @@ at the bottom for the full rationale + sources):
   division MAX HP (strength) = SUM of every battalion's max_strength (incl support).
   division COMBAT WIDTH = SUM of combat_width over all sub-units (support = 0).
   division HARDNESS = simple average of per-battalion hardness.
-  division ARMOR    = 0.3*max_armor   + 0.7*avg_armor   (ARMOR_VS_AVERAGE = 0.3).
+  division ARMOR    = 0.4*max_armor   + 0.6*avg_armor   (ARMOR_VS_AVERAGE = 0.4).
   division PIERCING = 0.4*max_piercing + 0.6*avg_piercing (PEN_VS_AVERAGE = 0.4).
   division SPEED = the slowest sub-unit speed (affects_speed=no excluded);
       sub_unit maximum_speed is a MULTIPLIER on the equipment speed.
@@ -96,17 +96,6 @@ def _blend(values, max_weight: float) -> float:
     mx = max(values)
     avg = sum(values) / len(values)
     return max_weight * mx + (1.0 - max_weight) * avg
-
-
-# Stats we model. Order chosen to match the in-game unit view roughly.
-LAND_STATS = (
-    "soft_attack", "hard_attack", "air_attack", "ap_attack",  # ap_attack = piercing
-    "defense", "breakthrough", "armor_value", "hardness",
-    "max_organisation", "max_strength", "default_morale",
-    "maximum_speed", "supply_consumption", "fuel_consumption",
-    "reliability", "initiative", "entrenchment", "recon",
-    "suppression", "weight",
-)
 
 
 # ===========================================================================
@@ -368,8 +357,11 @@ class SubUnit:
     transport: Optional[str] = None    # archetype that sets speed (motorized/mech)
     battalion_mult: list[dict] = field(default_factory=list)
 
+    # NOTE: hardness and armor_value are NOT inline multipliers -- they are
+    # flat sub_unit fields (su.hardness / su.armor_value) applied additively in
+    # battalion_contribution; listing them here would double-count them.
     _INLINE_KEYS = ("soft_attack", "hard_attack", "air_attack", "ap_attack",
-                    "defense", "breakthrough", "armor_value", "hardness")
+                    "defense", "breakthrough")
 
     @classmethod
     def from_node(cls, name: str, node: Node) -> "SubUnit":
@@ -509,16 +501,18 @@ def battalion_contribution(su: SubUnit,
     # mechanized (`hard_attack = 4.0`) -- final = derived * (1 + inline).
     out: dict[str, float] = {}
     for k in ("soft_attack", "hard_attack", "air_attack", "ap_attack",
-              "defense", "breakthrough", "armor_value"):
+              "defense", "breakthrough"):
         base = derived.get(k, 0.0)
         mult = su.inline.get(k, 0.0)
         out[k] = base * (1.0 + mult)
 
-    # hardness: equipment hardness + sub_unit inline/flat hardness (additive).
+    # hardness: equipment hardness (max over equipment) + sub_unit flat
+    # hardness (additive).
     # source: mechanized.txt etc. carry hardness on the sub_unit (#hardness = 0.2).
-    out["hardness"] = derived.get("hardness", 0.0) + su.inline.get("hardness", 0.0) + su.hardness
-    # armor: equipment armor_value (max over the battalion's equipment) -- not
-    # need-scaled; kept for the division-level 0.3*max + 0.7*avg blend.
+    out["hardness"] = derived.get("hardness", 0.0) + su.hardness
+    # armor: flat-additive -- equipment armor_value (max over the battalion's
+    # equipment) + sub_unit flat armor_value; not need-scaled; kept for the
+    # division-level 0.4*max + 0.6*avg blend.
     out["armor_value"] = derived.get("armor_value", 0.0) + su.armor_value
 
     # size / org / hp / width come from the sub_unit itself (not equipment)
@@ -677,7 +671,7 @@ def compute_division_stats(template: dict,
     # --- ARMOR & PIERCING: defines blend of max + average over all sub-units.
     #   armor    = ARMOR_VS_AVERAGE * max_armor + (1-ARMOR_VS_AVERAGE) * avg_armor
     #   piercing = PEN_VS_AVERAGE   * max_pierce + (1-PEN_VS_AVERAGE)   * avg_pierce
-    # vanilla defines: ARMOR_VS_AVERAGE = 0.3, PEN_VS_AVERAGE = 0.4.
+    # vanilla defines: ARMOR_VS_AVERAGE = 0.4, PEN_VS_AVERAGE = 0.4.
     # source: 00_defines.lua NDefines.NMilitary; the game Land_units. (Codex-verified.)
     armor_vals = [c.get("armor_value", 0.0) for _, c in all_contribs]
     pierce_vals = [c.get("ap_attack", 0.0) for _, c in all_contribs]
@@ -725,16 +719,15 @@ def _apply_battalion_mults(defs: GameDefs, line_contribs, all_contribs):
                             tc[stat] = tc.get(stat, 0.0) * (1.0 + val)
 
 
-# category membership cache: sub_unit name -> set(categories)
-_CAT_CACHE: dict[int, dict[str, set]] = {}
-
-
 def _sub_in_category(defs: GameDefs, sub_name: str, cat: str) -> bool:
-    key = id(defs)
-    cache = _CAT_CACHE.get(key)
+    # Category membership is cached lazily on the GameDefs instance itself
+    # (getattr because _category_cache is not a declared dataclass field), so
+    # the cache's lifetime is tied to the instance -- no stale-id reuse, no
+    # module-level leak.
+    cache = getattr(defs, "_category_cache", None)
     if cache is None:
         cache = _build_category_cache(defs)
-        _CAT_CACHE[key] = cache
+        defs._category_cache = cache
     return cat in cache.get(sub_name, set())
 
 
@@ -869,7 +862,7 @@ F) COMBAT WIDTH = SUM of combat_width over all sub-units (support width = 0).
 G) HARDNESS / ARMOR / PIERCING -- max-vs-average blend. *** CORRECTED ***
    # source: the game Land_units + 00_defines.lua NDefines.NMilitary.
    hardness  = simple average of per-sub-unit hardness.
-   armor     = ARMOR_VS_AVERAGE * max + (1-ARMOR_VS_AVERAGE) * avg  (0.3 vanilla)
+   armor     = ARMOR_VS_AVERAGE * max + (1-ARMOR_VS_AVERAGE) * avg  (0.4 vanilla)
    piercing  = PEN_VS_AVERAGE   * max + (1-PEN_VS_AVERAGE)   * avg  (0.4 vanilla)
    (NOT HP-weighted, NOT max-only.) One tank battalion therefore does NOT give
    the whole division its full armor.

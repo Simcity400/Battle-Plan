@@ -2,7 +2,8 @@
 
 Read-only QA: loads every ``output/*.json`` produced by the parsers and checks
 that they agree with one another *before* the data flows into the replay layer.
-stdlib-only. Defensive: a missing file is a WARN, not a crash.
+stdlib-only. Defensive: a missing declared output is a FAIL, not a crash
+(``--allow-missing-outputs`` is the explicit parser-debug escape hatch).
 
 Design (hardened after an adversarial review):
 - A replay preflight must guard against a STALE MIX of outputs from different
@@ -25,6 +26,8 @@ import os
 import re
 import sys
 
+from output_contract import REQUIRED_OUTPUTS
+
 TAG_RE = re.compile(r"^[A-Z][A-Z0-9]{2}$")  # GER, ENG, and dynamic tags like D01
 SENTINELS = {"", "---"}                       # legal "no country" markers
 LEAK_HARD = ("redacted", "C:\\Users\\", "C:/Users/", "/c/Users/")
@@ -37,18 +40,9 @@ ASSOC = {
     "state_control.json": "control_meta.json",
 }
 
-ALL_FILES = (
-    "country_snapshot.json", "state_ownership.json", "state_detail.json",
-    "province_control.json", "state_control.json", "divisions.json",
-    "diplomacy.json", "economy.json", "focus.json", "tech.json",
-    "doctrine.json", "production.json", "combats.json", "oob.json", "meta.json", "control_meta.json",
-    "market.json", "occupation.json",
-    # Tier-2 EXTRACT additions (2026-06-25): new save domains + full record
-    # enumerations. These are loaded so source-coherence covers them too.
-    "supply.json", "strategic_air.json", "strategic_operatives.json",
-    "raids.json", "events.json", "world.json", "country_extra.json",
-    "players.json", "divisions_full.json",
-)
+# Backward-compatible name used throughout this validator.  The old inline list
+# silently omitted parser outputs including projects/intel/weather/designs.
+ALL_FILES = REQUIRED_OUTPUTS
 
 
 class Report:

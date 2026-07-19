@@ -10,6 +10,7 @@ standards.
 | `REPLAY_DATA_REQUIREMENTS.md` | Self-contained recorded-data contract handed to the extractor. |
 | `HOI4REPLAY_CONTAINER_SPEC.md` | `.battleplan` container format. |
 | `REPLAY_SCHEMA.md` | Canonical replay snapshot schema. |
+| `PACKAGE_RUNTIME_BOUNDARY.md` | Non-UI package manifest, signing, active-release, promotion, and rollback contract. |
 | `MAP_REPLICA_PLAN.md` | Map/renderer parity plan (grounding rules and per-layer evidence). |
 | `UI_SOURCE_OF_TRUTH_REPORT.md` | UI fidelity standard and evidence hierarchy. |
 

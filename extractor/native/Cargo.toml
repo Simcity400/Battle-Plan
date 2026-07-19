@@ -31,6 +31,7 @@ members = [
     "lanes/session_multiplayer_metadata_live",
     "lanes/supply_logistics_attrition_live",
     "lanes/dynamic_collection_trace_live",
+    "lanes/active_command_abilities_live",
     "lanes/resolved_tooltip_instances_live",
     "lanes/politics_tooltip_inputs_live",
     "lanes/power_balance_presentation_live",
@@ -42,6 +43,12 @@ members = [
     "lanes/design_catalog_context_live",
     "lanes/hud_role_observer_live",
 ]
+
+# Fail-closed doctrine for all untrusted compact-stream, replay-container, and
+# manifest parsers. Dependency-local profiles are ignored when this workspace
+# is the build root, so the production workspace must carry the policy itself.
+[profile.release]
+overflow-checks = true
 
 # Native extraction workspace: DLL collector, Rust recorder host, compact
 # extraction lane crates, and replay container support.

@@ -164,8 +164,8 @@ _NUM_RE = re.compile(r"^-?\d+(\.\d+)?$")
 
 
 def coerce_scalar(raw: str):
-    """Return int/float for clean numbers, else a {'raw': ...} dict for things
-    like '100%%' / '50%' / orientation strings, else the bare string.
+    """Return int/float for clean numbers; non-numeric tokens (e.g. '100%%',
+    '50%', orientation strings) are returned as the bare string.
     """
     if raw is None:
         return None

@@ -61,5 +61,6 @@
   {"id":70,"wire_name":"sunk_convoy_history_live","internal_name":"sunk_convoy_history_live","status":"ValidatedSlice","schedulable":true,"requires_data_record":true,"tags":[]},
   {"id":71,"wire_name":"dynamic_collection_trace_live","internal_name":"dynamic_collection_trace_live","status":"Reserved","schedulable":false,"requires_data_record":true,"tags":[]},
   {"id":74,"wire_name":"power_balance_presentation_live","internal_name":"power_balance_presentation_live","status":"Reserved","schedulable":false,"requires_data_record":true,"tags":[]},
+  {"id":75,"wire_name":"fired_event_popups_live","internal_name":"fired_event_popups_live","status":"ValidatedSlice","schedulable":true,"requires_data_record":true,"tags":[]},
   {"id":1000,"wire_name":"frame","internal_name":"frame","status":"Infrastructure","schedulable":false,"requires_data_record":false,"tags":[]}
 ]

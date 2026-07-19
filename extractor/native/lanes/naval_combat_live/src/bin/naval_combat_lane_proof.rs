@@ -660,6 +660,7 @@ fn write_and_verify_replay(
         build_pinned: true,
         mod_identity: None,
         created_utc: Some("2026-07-01T00:00:00Z".to_string()),
+        content_manifest: None,
     };
     let replay = pack(game_id, &entries, &identity, true).map_err(|err| err.to_string())?;
     fs::write(replay_path, replay).map_err(|err| err.to_string())?;

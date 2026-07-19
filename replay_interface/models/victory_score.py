@@ -75,15 +75,6 @@ import os
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional, Tuple
 
-# ---------------------------------------------------------------------------
-# Optional import of a richer per-division strength model (parallel agent may
-# add models/division_stats.py). IMPORT-GUARDED so we never hard-depend on it.
-# ---------------------------------------------------------------------------
-try:  # pragma: no cover - presence depends on a parallel build
-    from models import division_stats as _division_stats  # type: ignore
-except Exception:  # noqa: BLE001 - any failure -> fall back to the proxy below
-    _division_stats = None
-
 try:  # pragma: no cover
     from models import equipment_stats as _equipment_stats  # type: ignore
 except Exception:  # noqa: BLE001
@@ -113,11 +104,9 @@ ROLE_COMBAT_WEIGHT: Dict[Optional[str], float] = {
 }
 DEFAULT_ROLE_WEIGHT = 0.8
 
-# `strength` = men present in a division; caps at the template max. Empirically the
-# observed ceiling in these saves is exactly 625 (no division exceeds it), so 625 is
-# a real full-template reference, not an invented one. We use RAW men as the army
-# size term (so a full division ~> its men count) and modulate by org readiness.
-DIV_STRENGTH_REF = 625.0
+# `strength` = men present in a division; caps at the template max. We use RAW men
+# as the army size term (so a full division ~> its men count) and modulate by org
+# readiness.
 # ORG is NOT a 0..100 percentage in the parsed data: it is the absolute org value,
 # whose template MAX varies (infantry max org ~50-70, tanks ~10-40). Observed range
 # here is 0..~96, mean ~37. We therefore do NOT treat org as a clean 0..1 readiness;
@@ -238,32 +227,12 @@ def _clamp01(x: float) -> float:
 def army_strength(divisions_json: Dict[str, Any]) -> Dict[str, float]:
     """Per-country army strength score from divisions.json.
 
-    If a richer models.division_stats is importable, defer to it; otherwise use
-    the role-weighted, readiness-scaled proxy described in the module docstring.
+    Uses the role-weighted, readiness-scaled proxy described in the module
+    docstring.
     """
     out: Dict[str, float] = {}
     divs = divisions_json.get("divisions", []) or []
 
-    # Optional richer model -----------------------------------------------------
-    if _division_stats is not None:
-        fn = getattr(_division_stats, "division_combat_value", None)
-        if callable(fn):
-            for d in divs:
-                owner = d.get("owner")
-                if not owner:
-                    continue
-                try:
-                    val = float(fn(d))
-                except Exception:  # noqa: BLE001 - never let the optional model break us
-                    val = None  # type: ignore
-                if val is None:
-                    break  # bail to proxy for ALL (consistency)
-                out[owner] = out.get(owner, 0.0) + val
-            else:
-                return out  # completed cleanly with the richer model
-            out.clear()  # fell through -> recompute with proxy
-
-    # Proxy ---------------------------------------------------------------------
     for d in divs:
         owner = d.get("owner")
         if not owner:
@@ -607,10 +576,10 @@ CITATIONS: Dict[str, str] = {
     "industry": (
         "the game industry = factories: military + naval (dockyard) capacity drives war "
         "output and is weighted above civilian capacity, which builds/trades (the game "
-        "wiki: Production). A DELIBERATELY SMALL bonus (OUTPUT_W=0.15) rewards actual "
-        "daily output. Caveat (Codex): output is correlated with factory count "
-        "(produced BY the mil factories already counted), so it is only a light "
-        "used-capacity tiebreaker, not an independent term -- kept tiny on purpose."
+        "wiki: Production). The daily-output term is DISABLED (OUTPUT_W=0.0): "
+        "production.json's `produced` is per-item build progress (not a daily rate) "
+        "and `speed` is correlated with the mil-factory count already counted, so "
+        "any output bonus would be mis-derived or double-counting (Codex caveat)."
     ),
     "territory": (
         "Victory points are the game's own per-state territorial-value metric (used for "

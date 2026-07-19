@@ -13,6 +13,8 @@ use replay_core::{
 use serde_json::{json, Value};
 use snapshot::{pack, PackEntry, PackIdentity};
 use std::fs;
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1048,6 +1050,10 @@ fn dir_store_typed_views_and_trichotomy() {
     assert_eq!(
         session.speed_events.measured().unwrap()[0].speed,
         Leaf::Measured(3)
+    );
+    assert_eq!(
+        session.speed_events.measured().unwrap()[0].displayed_speed(),
+        Leaf::Measured(4)
     );
     assert_eq!(
         session.active_dlcs,
@@ -2287,6 +2293,55 @@ fn canonical_and_genuinely_legacy_directory_stores_both_open() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[cfg(windows)]
+fn windows_dehydrated_payload_metadata_count(root: &Path) -> Result<(usize, usize), String> {
+    const OFFLINE: u32 = 0x0000_1000;
+    const REPARSE_POINT: u32 = 0x0000_0400;
+    const RECALL_ON_OPEN: u32 = 0x0004_0000;
+    const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
+    const DEHYDRATED: u32 = OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS;
+
+    // Metadata-only traversal: no file is opened for data access, so the
+    // preflight itself cannot hydrate a candidate fixture.
+    let mut pending = vec![root.to_path_buf()];
+    let mut scanned_files = 0usize;
+    let mut dehydrated_files = 0usize;
+    while let Some(directory) = pending.pop() {
+        let entries = fs::read_dir(&directory).map_err(|error| {
+            format!("enumerate metadata under {}: {error}", directory.display())
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                format!("read metadata entry under {}: {error}", directory.display())
+            })?;
+            let metadata = fs::symlink_metadata(entry.path()).map_err(|error| {
+                format!(
+                    "query link-safe metadata for {}: {error}",
+                    entry.path().display()
+                )
+            })?;
+            let attributes = metadata.file_attributes();
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                if attributes & REPARSE_POINT == 0 {
+                    pending.push(entry.path());
+                }
+                continue;
+            }
+            if file_type.is_file() {
+                scanned_files += 1;
+                if attributes & DEHYDRATED != 0 {
+                    dehydrated_files += 1;
+                }
+            }
+        }
+    }
+    Ok((scanned_files, dehydrated_files))
+}
+
 /// Must run on the primary OneDrive dev rig before ship. The environment
 /// variable must name a genuinely dehydrated recorder-metadata directory
 /// store; opening its first frame proves hydration returned logical bytes and
@@ -2297,7 +2352,13 @@ fn canonical_and_genuinely_legacy_directory_stores_both_open() {
 fn windows_onedrive_dehydrated_recorder_store_binds_end_to_end_before_ship() {
     let path = std::env::var_os("BATTLE_PLAN_ONEDRIVE_DEHYDRATED_REPLAY_STORE").or_else(|| std::env::var_os("HOI4_ONEDRIVE_DEHYDRATED_REPLAY_STORE"))
         .map(PathBuf::from)
-        .expect("set BATTLE_PLAN_ONEDRIVE_DEHYDRATED_REPLAY_STORE to the dehydrated store");
+        .expect("F3_ENV_GATE=ONEDRIVE_STORE_ENV_NOT_SET: set BATTLE_PLAN_ONEDRIVE_DEHYDRATED_REPLAY_STORE to a genuinely dehydrated directory store");
+    let (scanned_files, dehydrated_files) = windows_dehydrated_payload_metadata_count(&path)
+        .unwrap_or_else(|error| panic!("F3_ENV_GATE=ONEDRIVE_METADATA_PROBE_FAILED: {error}"));
+    assert!(
+        dehydrated_files > 0,
+        "F3_ENV_GATE=ONEDRIVE_STORE_NOT_DEHYDRATED: metadata-only scan found {dehydrated_files} dehydrated payloads among {scanned_files} files; refusing a vacuous hydrated-store pass"
+    );
     let timeline = WorldTimeline::open(open_recording(&path).unwrap()).unwrap();
     let frame = timeline.frame(timeline.first_hour()).unwrap();
     let metadata = frame.session_metadata();

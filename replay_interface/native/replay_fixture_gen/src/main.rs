@@ -1,12 +1,10 @@
 #![recursion_limit = "512"]
 
 use portable_content_manifest::{
-    ContentLayerKind, ContentManifest, LayerStorageKind, PlaybackContentInventory,
-    PlaybackContentLayer, RecordedContentLayer, RequiredContent, RequiredContentKind,
-    ResolvedPlaybackContent, SourceGameIdentity, SourceProfileIdentity, UsedContentKey, SCHEMA,
+    ContentLayerKind, ContentManifest, LayerStorageKind, RecordedContentLayer, RequiredContent,
+    RequiredContentKind, SourceGameIdentity, SourceProfileIdentity, UsedContentKey, SCHEMA,
 };
 use serde_json::{json, Map, Value};
-use sha2::{Digest, Sha256};
 use snapshot::{pack, pack_with, PackEntry, PackIdentity, PackOptions};
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -2439,7 +2437,7 @@ fn fixture_required_content(
 }
 
 fn sha256(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    snapshot::sha256::Sha256::hex(bytes)
 }
 
 fn created_utc(seed: u64) -> String {
@@ -2487,6 +2485,9 @@ fn rel_slash(path: &Path, root: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use portable_content_manifest::{
+        PlaybackContentInventory, PlaybackContentLayer, ResolvedPlaybackContent,
+    };
 
     #[test]
     fn portable_identity_records_exact_base_and_mod_vfs_winners() {

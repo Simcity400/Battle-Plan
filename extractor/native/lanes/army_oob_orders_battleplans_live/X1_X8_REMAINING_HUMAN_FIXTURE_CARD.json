@@ -1,0 +1,53 @@
+{
+  "schema": "hoi4.orders_battleplans.remaining_human_fixture.v1",
+  "binary": {
+    "version": "1.19.2.0.a729",
+    "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "image_base": "0x140000000"
+  },
+  "status": "HUMAN_FIXTURE_REQUIRED_AFTER_RETAINED_EVIDENCE_EXHAUSTION",
+  "requests": [
+    {
+      "id": "empty_inactive_army_manager_root",
+      "why_human_input_is_required": "Retained full-memory reference and table scans found every direct army but rejected every bounded complete pointer-table source; 0 of 13 empty or inactive armies were present in an accepted table run.",
+      "required_fixture": {
+        "single_paused_session": true,
+        "armies": [
+          "one known army with zero assigned divisions",
+          "one known inactive army",
+          "one known active army with at least one assigned division"
+        ],
+        "transitions": [
+          "assign one division to the zero-division army",
+          "remove that division again"
+        ],
+        "capture": [
+          "authenticated harness observations immediately before and after each transition",
+          "army IDs and the corresponding melted save made at the same paused boundary",
+          "producer or consumer trace for the manager or container that enumerates all three armies"
+        ]
+      },
+      "promotion_gate": "A bounded manager or container walk must enumerate every fixture army, including the zero-division and inactive rows, at both boundaries without an arena scan or cached-address-only repair."
+    },
+    {
+      "id": "army_execution_cohesion_proximity_scalars",
+      "why_human_input_is_required": "Save/live mining narrowed CArmy+0x1A4, +0x1A8, and +0x1AC but did not match exactly and did not prove field width. Ghidra string and function-xref mining found registration and UI code but no exact CArmy producer/consumer join.",
+      "required_fixture": {
+        "single_paused_session": true,
+        "army": "one known army kept selected for the complete fixture",
+        "transitions": [
+          "set each execution type value in turn",
+          "set each cohesion type value in turn",
+          "set each leader proximity type value in turn"
+        ],
+        "capture": [
+          "authenticated harness observation immediately before and after every UI transition",
+          "the army ID and a melted save made at each same paused boundary",
+          "raw CArmy bytes covering +0x180 through +0x1C0",
+          "the setter call target and write address for each transition"
+        ]
+      },
+      "promotion_gate": "Each scalar needs an exact per-transition producer write, exact save/live value agreement, proven width, and a stable CArmy-relative offset. Near matches or UI-label inference remain rejected."
+    }
+  ]
+}

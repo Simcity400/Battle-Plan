@@ -232,8 +232,35 @@ pub fn parse_posteffect_volume_table(text: &str) -> Result<PostEffectVolumeTable
         let net_braces = line.matches('{').count() as i32 - line.matches('}').count() as i32;
         let opens_block = net_braces > 0;
         let key_part = line.split('=').next().unwrap_or("").trim();
+        // The known block-introducing keys. A single-line inline form of any of
+        // these (e.g. `posteffect_height_volume = { name = "X" height = 1600 }`,
+        // legal Clausewitz) nets zero braces and would otherwise be silently
+        // discarded by this line scanner — the selection law would then pick a
+        // different volume/grade with no blocker. Fail closed instead. Unknown
+        // keys stay tolerated (the scanner deliberately ignores unrelated mod
+        // content), as do inline vectors like `position = { 3300 275 1700 }`
+        // (their keys are not block keys).
+        let is_block_key = matches!(
+            key_part,
+            "posteffect_values"
+                | "posteffect_volumes"
+                | "posteffect_height_volume"
+                | "posteffect_volume"
+        );
 
         if opens_block {
+            // Trailing tokens after the opening `{` of a known block (e.g.
+            // `posteffect_volume = { name = "X"`) would be silently dropped by
+            // the line scanner; fail closed on those too.
+            if is_block_key {
+                if let Some((_, after)) = line.split_once('{') {
+                    if !after.trim().is_empty() {
+                        parse_errors.push(format!(
+                            "{key_part} opener line has trailing tokens after '{{' (unsupported, would be silently dropped): {line:?}"
+                        ));
+                    }
+                }
+            }
             if key_part == "posteffect_values" && block == Block::None && !in_volumes_container {
                 block = Block::Values;
                 block_depth = depth;
@@ -273,6 +300,10 @@ pub fn parse_posteffect_volume_table(text: &str) -> Result<PostEffectVolumeTable
                     fade_distance: 0.0,
                 };
             }
+        } else if is_block_key && line.contains('{') {
+            parse_errors.push(format!(
+                "inline single-line {key_part} block is unsupported (fail-closed): {line:?}"
+            ));
         } else if let Some((key, value)) = line.split_once('=') {
             let key = key.trim();
             let value = value.trim();
@@ -280,10 +311,27 @@ pub fn parse_posteffect_volume_table(text: &str) -> Result<PostEffectVolumeTable
                 Block::Values => match key {
                     "name" => cur_values.name = parse_scalar_string(value).unwrap_or_default(),
                     "inherit" => cur_values.inherit = parse_scalar_string(value),
-                    "lut" => cur_values.lut = parse_scalar_string(value),
+                    // A present-but-malformed lut/tonemap_middlegrey must fail
+                    // closed like height/fade_distance below — silently leaving
+                    // the field `None` would inherit the parent's value, a
+                    // silent approximation of a malformed mod file. Inheritance
+                    // covers only genuinely absent/commented keys (full-line
+                    // comments are stripped by `strip_comment` before this).
+                    "lut" => match parse_scalar_string(value) {
+                        Some(s) => cur_values.lut = Some(s),
+                        None => parse_errors.push(format!(
+                            "posteffect_values '{}' has empty/unparseable lut {value:?}",
+                            cur_values.name
+                        )),
+                    },
                     "tonemap_middlegrey" => {
-                        cur_values.tonemap_middlegrey =
-                            value.split_whitespace().next().and_then(|t| t.parse().ok())
+                        match value.split_whitespace().next().map(str::parse::<f32>) {
+                            Some(Ok(v)) => cur_values.tonemap_middlegrey = Some(v),
+                            _ => parse_errors.push(format!(
+                                "posteffect_values '{}' has unparseable tonemap_middlegrey {value:?}",
+                                cur_values.name
+                            )),
+                        }
                     }
                     _ => {}
                 },
@@ -404,17 +452,39 @@ pub fn parse_posteffect_volume_table(text: &str) -> Result<PostEffectVolumeTable
     Ok(table)
 }
 
+/// The structural outcome of one selection-law scan: which stack won and (for
+/// the height stack) which volume index, so per-frame fade derivation reuses
+/// the exact winner instead of re-running the scans.
+#[derive(Clone, Debug, PartialEq)]
+enum Selection {
+    /// Camera inside a region box that resolved a day/night value (hard
+    /// containment; region spatial fade is UNTRACED and not implemented).
+    Region { value_name: String, reason: String },
+    /// Height-stack win: `winner_index` indexes `height_volumes`.
+    Height {
+        winner_index: usize,
+        value_name: String,
+        reason: String,
+    },
+}
+
 impl PostEffectVolumeTable {
-    /// Resolve a value's `lut` following the `inherit` chain (guarding cycles).
-    fn resolved_lut(&self, name: &str) -> Result<String, String> {
+    /// Walk a value's `inherit` chain (guarding cycles) until `pick` extracts a
+    /// set field; `what` names the field in the fail-closed terminal error.
+    fn resolved<T>(
+        &self,
+        name: &str,
+        pick: impl Fn(&PostEffectValues) -> Option<T>,
+        what: &str,
+    ) -> Result<T, String> {
         let mut current = name;
         let mut guard = 0;
         loop {
             let value = self.values.get(current).ok_or_else(|| {
                 format!("posteffect_values '{current}' referenced but not defined")
             })?;
-            if let Some(lut) = &value.lut {
-                return Ok(lut.clone());
+            if let Some(found) = pick(value) {
+                return Ok(found);
             }
             match &value.inherit {
                 Some(parent) => {
@@ -424,41 +494,19 @@ impl PostEffectVolumeTable {
                         return Err(format!("posteffect_values inherit cycle at '{name}'"));
                     }
                 }
-                None => {
-                    return Err(format!(
-                        "posteffect_values '{name}' resolves to no lut (empty inherit chain)"
-                    ))
-                }
+                None => return Err(format!("posteffect_values '{name}' resolves to no {what}")),
             }
         }
     }
 
+    /// Resolve a value's `lut` following the `inherit` chain (guarding cycles).
+    fn resolved_lut(&self, name: &str) -> Result<String, String> {
+        self.resolved(name, |value| value.lut.clone(), "lut (empty inherit chain)")
+    }
+
     /// Resolve a value's `tonemap_middlegrey` following `inherit`.
     fn resolved_middle_grey(&self, name: &str) -> Result<f32, String> {
-        let mut current = name;
-        let mut guard = 0;
-        loop {
-            let value = self.values.get(current).ok_or_else(|| {
-                format!("posteffect_values '{current}' referenced but not defined")
-            })?;
-            if let Some(mg) = value.tonemap_middlegrey {
-                return Ok(mg);
-            }
-            match &value.inherit {
-                Some(parent) => {
-                    current = parent;
-                    guard += 1;
-                    if guard > 64 {
-                        return Err(format!("posteffect_values inherit cycle at '{name}'"));
-                    }
-                }
-                None => {
-                    return Err(format!(
-                        "posteffect_values '{name}' resolves to no tonemap_middlegrey"
-                    ))
-                }
-            }
-        }
+        self.resolved(name, |value| value.tonemap_middlegrey, "tonemap_middlegrey")
     }
 
     fn region_contains(volume: &RegionVolume, camera: [f32; 3]) -> bool {
@@ -484,8 +532,14 @@ impl PostEffectVolumeTable {
         }
     }
 
-    /// Select the winning `posteffect_values` name for the given frame state.
-    pub fn select_value(&self, state: GradingSelectionState) -> Result<(String, String), String> {
+    /// The single selection-law scan shared by [`Self::select_value`] and
+    /// [`Self::resolve_grade_per_frame`], so the primary grade and the fade
+    /// blend can never drift apart: `Region` is produced only when containment
+    /// AND a resolvable day/night field both hold (a valueless region box falls
+    /// through to the height stack, so the fade stays active there), and
+    /// `Height` carries the winning height-volume index from the one winner
+    /// scan (strict `>` keeps the first of equal heights).
+    fn select(&self, state: GradingSelectionState) -> Result<Selection, String> {
         // Region volumes take priority when the camera is inside their 3D box.
         for volume in &self.region_volumes {
             if Self::region_contains(volume, state.camera) {
@@ -511,27 +565,33 @@ impl PostEffectVolumeTable {
                         [volume.size.x, volume.size.y, volume.size.z],
                         if state.night { "night" } else { "day" }
                     );
-                    return Ok((name, reason));
+                    return Ok(Selection::Region {
+                        value_name: name,
+                        reason,
+                    });
                 }
             }
         }
 
         // Otherwise the height-volume stack: greatest height whose floor is at
         // or below the camera height.
-        let mut best: Option<&HeightVolume> = None;
-        for volume in &self.height_volumes {
+        let mut best: Option<usize> = None;
+        for (index, volume) in self.height_volumes.iter().enumerate() {
             if state.camera[1] >= volume.height
-                && best.map(|b| volume.height > b.height).unwrap_or(true)
+                && best
+                    .map(|b| volume.height > self.height_volumes[b].height)
+                    .unwrap_or(true)
             {
-                best = Some(volume);
+                best = Some(index);
             }
         }
-        let volume = best.ok_or_else(|| {
+        let winner_index = best.ok_or_else(|| {
             format!(
                 "no posteffect_height_volume floor at or below camera height {}",
                 state.camera[1]
             )
         })?;
+        let volume = &self.height_volumes[winner_index];
         let name = Self::pick_field(&volume.day, &volume.night, state.night).ok_or_else(|| {
             format!(
                 "posteffect_height_volume '{}' has no {} value",
@@ -546,7 +606,21 @@ impl PostEffectVolumeTable {
             volume.height,
             if state.night { "night" } else { "day" }
         );
-        Ok((name, reason))
+        Ok(Selection::Height {
+            winner_index,
+            value_name: name,
+            reason,
+        })
+    }
+
+    /// Select the winning `posteffect_values` name for the given frame state.
+    pub fn select_value(&self, state: GradingSelectionState) -> Result<(String, String), String> {
+        match self.select(state)? {
+            Selection::Region { value_name, reason }
+            | Selection::Height {
+                value_name, reason, ..
+            } => Ok((value_name, reason)),
+        }
     }
 
     /// Resolve the full grade (winning value name, LUT rel path, MiddleGrey).
@@ -585,31 +659,33 @@ impl PostEffectVolumeTable {
         &self,
         state: GradingSelectionState,
     ) -> Result<PerFrameGrade, String> {
-        let primary = self.resolve_grade(state)?;
+        // ONE selection scan feeds both the primary grade and the fade, so the
+        // fade can never blend against a different volume than the primary
+        // selected. A containing region box with no applicable day/night field
+        // does NOT suppress the fade: the primary selection then genuinely
+        // came from the height stack, and the fade follows it.
+        let selection = self.select(state)?;
+        let (value_name, selection_reason) = match &selection {
+            Selection::Region { value_name, reason }
+            | Selection::Height {
+                value_name, reason, ..
+            } => (value_name.clone(), reason.clone()),
+        };
+        let primary = ResolvedGrade {
+            lut_rel_path: self.resolved_lut(&value_name)?,
+            middle_grey: self.resolved_middle_grey(&value_name)?,
+            value_name,
+            selection_reason,
+        };
         // Region-volume wins bypass the height stack (hard containment).
-        for volume in &self.region_volumes {
-            if Self::region_contains(volume, state.camera) {
-                return Ok(PerFrameGrade {
-                    primary,
-                    cross_fade: None,
-                });
-            }
-        }
-        // Winning height volume + the next-lower volume in the stack.
-        let mut winner: Option<&HeightVolume> = None;
-        for volume in &self.height_volumes {
-            if state.camera[1] >= volume.height
-                && winner.map(|b| volume.height > b.height).unwrap_or(true)
-            {
-                winner = Some(volume);
-            }
-        }
-        let Some(winner) = winner else {
+        let Selection::Height { winner_index, .. } = selection else {
             return Ok(PerFrameGrade {
                 primary,
                 cross_fade: None,
             });
         };
+        // The winner from the shared scan + the next-lower volume in the stack.
+        let winner = &self.height_volumes[winner_index];
         let mut lower: Option<&HeightVolume> = None;
         for volume in &self.height_volumes {
             if volume.height < winner.height
@@ -934,7 +1010,28 @@ pub fn file_derived_grade(
 mod tests {
     use super::*;
 
-    const VANILLA_GAME_DIR: &str = r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV";
+    /// Vanilla install root for the capture-anchored gates: `BATTLE_PLAN_GAME_DIR`
+    /// then `BATTLE_PLAN_VANILLA` (matching `replay_qa::discover_game_root`), falling
+    /// back to the machine-local Steam path the law was validated on.
+    fn vanilla_game_dir() -> std::path::PathBuf {
+        std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR"))
+            .or_else(|| std::env::var_os("BATTLE_PLAN_VANILLA").or_else(|| std::env::var_os("HOI4_VANILLA")))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV")
+            })
+    }
+
+    /// Skip a capture-anchored gate whose evidence is absent, with one
+    /// greppable marker line so a harness can count skipped gates. Setting
+    /// `BATTLE_PLAN_REQUIRE_CAPTURE_GATES=1` turns the silent skip into a hard
+    /// failure (for machines that are supposed to hold the evidence).
+    fn skip_gate(gate_name: &str, missing: &str) {
+        if std::env::var_os("BATTLE_PLAN_REQUIRE_CAPTURE_GATES").or_else(|| std::env::var_os("HOI4_REQUIRE_CAPTURE_GATES")).is_some_and(|v| v == "1") {
+            panic!("BATTLE_PLAN_REQUIRE_CAPTURE_GATES=1 but {gate_name} evidence is absent: {missing}");
+        }
+        eprintln!("[SKIPPED-GATE] {gate_name}: {missing}");
+    }
 
     fn sample_table() -> PostEffectVolumeTable {
         let text = r#"
@@ -1187,9 +1284,12 @@ posteffect_volumes = {
         // (2816, 2958, 1400) the per-frame recompose must reproduce the
         // once-at-construction grade BYTE-IDENTICALLY (no fade is active at
         // 2958, so the paths must agree exactly).
-        let game_dir = std::path::PathBuf::from(VANILLA_GAME_DIR);
+        let game_dir = vanilla_game_dir();
         if !game_dir.is_dir() {
-            eprintln!("skipping per-frame grade byte-noop gate: vanilla install absent");
+            skip_gate(
+                "gate_per_frame_recompose_is_byte_identical_at_captured_camera",
+                &game_dir.display().to_string(),
+            );
             return;
         }
         let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
@@ -1286,6 +1386,174 @@ posteffect_volumes = {
     }
 
     #[test]
+    fn parser_rejects_inline_single_line_block() {
+        // A Clausewitz one-liner volume nets zero braces and would previously
+        // be dropped silently — the selection law would then pick a different
+        // volume with no blocker. Must fail closed naming the key.
+        let text = r#"
+posteffect_values = {
+    name = standard
+    lut = "gfx/world/colorcorrection.tga"
+    tonemap_middlegrey = 0.55
+}
+posteffect_volumes = {
+    posteffect_height_volume = { name = "Inline" posteffect_values_day = standard height = 1600 }
+    posteffect_height_volume = {
+        name = "Base"
+        posteffect_values_day = standard
+        height = 0
+    }
+}
+"#;
+        let err = parse_posteffect_volume_table(text).expect_err("inline block must fail closed");
+        assert!(err.contains("posteffect_height_volume"), "{err}");
+        assert!(err.contains("inline single-line"), "{err}");
+    }
+
+    #[test]
+    fn parser_rejects_trailing_tokens_on_block_opener() {
+        // Tokens after the opening `{` of a known block would be silently
+        // dropped (losing e.g. `name = "X"`); must fail closed.
+        let text = r#"
+posteffect_values = { name = standard
+    lut = "gfx/world/colorcorrection.tga"
+    tonemap_middlegrey = 0.55
+}
+"#;
+        let err =
+            parse_posteffect_volume_table(text).expect_err("trailing opener tokens must fail");
+        assert!(err.contains("posteffect_values"), "{err}");
+        assert!(err.contains("trailing tokens"), "{err}");
+    }
+
+    #[test]
+    fn parser_accepts_inline_vectors_in_multiline_blocks() {
+        // Inline `position = { .. }` / `size = { .. }` vectors are NOT blocks
+        // and must keep parsing (the sample table carries them too).
+        let text = r#"
+posteffect_values = {
+    name = standard
+    lut = "gfx/world/colorcorrection.tga"
+    tonemap_middlegrey = 0.55
+}
+posteffect_volumes = {
+    posteffect_volume = {
+        name = Box
+        posteffect_values_day = standard
+        position = { 1 2 3 }
+        size = { 4 5 6 }
+    }
+    posteffect_height_volume = {
+        name = "Base"
+        posteffect_values_day = standard
+        height = 0
+    }
+}
+"#;
+        let table = parse_posteffect_volume_table(text).expect("inline vectors must parse");
+        assert_eq!(table.region_volumes.len(), 1);
+        assert_eq!(
+            table.region_volumes[0].position,
+            Vec3 {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0
+            }
+        );
+        assert_eq!(
+            table.region_volumes[0].size,
+            Vec3 {
+                x: 4.0,
+                y: 5.0,
+                z: 6.0
+            }
+        );
+    }
+
+    #[test]
+    fn parser_rejects_malformed_tonemap_middlegrey() {
+        let text = r#"
+posteffect_values = {
+    name = standard
+    lut = "gfx/world/colorcorrection.tga"
+    tonemap_middlegrey = not_a_number
+}
+"#;
+        let err = parse_posteffect_volume_table(text).expect_err("malformed middlegrey must fail");
+        assert!(err.contains("unparseable tonemap_middlegrey"), "{err}");
+    }
+
+    #[test]
+    fn valueless_region_volume_does_not_suppress_height_fade() {
+        // A containing region box whose day field is absent falls through to
+        // the height stack for the PRIMARY selection — the per-frame fade must
+        // follow that same height selection instead of being suppressed by
+        // mere containment (the fade must blend against the volume the
+        // primary actually selected).
+        let text = r#"
+posteffect_values = {
+    name = standard
+    lut = "gfx/world/colorcorrection.tga"
+    tonemap_middlegrey = 0.55
+}
+posteffect_values = {
+    name = mid_distance
+    inherit = standard
+    lut = "gfx/world/colorcorrection_midrange.tga"
+    tonemap_middlegrey = 0.45
+}
+posteffect_volumes = {
+    posteffect_height_volume = {
+        name = "Base Medium"
+        posteffect_values_day = mid_distance
+        height = 900
+        fade_distance = 200
+    }
+    posteffect_height_volume = {
+        name = "Base"
+        posteffect_values_day = standard
+        height = 0
+        fade_distance = 0
+    }
+    posteffect_volume = {
+        name = NightOnlyBox
+        posteffect_values_night = standard
+        position = { 200.0 1000.0 200.0 }
+        size = { 400.0 400.0 400.0 }
+        fade_distance = 0.0
+    }
+}
+"#;
+        let table = parse_posteffect_volume_table(text).expect("parse");
+        // Daytime camera inside NightOnlyBox (y 800..1200) at y = 1000, i.e.
+        // inside Base Medium's fade window (900 + 200): the region box has no
+        // day value, so the height stack wins AND its fade stays active.
+        let per_frame = table
+            .resolve_grade_per_frame(GradingSelectionState {
+                camera: [200.0, 1000.0, 200.0],
+                night: false,
+                winter: false,
+            })
+            .expect("per-frame grade");
+        assert_eq!(per_frame.primary.value_name, "mid_distance");
+        let (lower, t) = per_frame
+            .cross_fade
+            .expect("height fade must stay active under a valueless region box");
+        assert_eq!(lower.value_name, "standard");
+        assert!((t - 0.5).abs() < 1e-6, "t = {t}");
+        // At night the same box DOES resolve a value: region wins, no fade.
+        let night = table
+            .resolve_grade_per_frame(GradingSelectionState {
+                camera: [200.0, 1000.0, 200.0],
+                night: true,
+                winter: false,
+            })
+            .expect("night per-frame grade");
+        assert_eq!(night.primary.value_name, "standard");
+        assert!(night.cross_fade.is_none(), "region win must have no fade");
+    }
+
+    #[test]
     fn parser_ignores_posteffect_values_inside_volumes_container() {
         // A mod that nests `posteffect_values` inside `posteffect_volumes {}`
         // must NOT register it as a global preset.
@@ -1316,9 +1584,12 @@ posteffect_volumes = {
 
     #[test]
     fn gate_vanilla_law_reproduces_captured_selection() {
-        let game_dir = std::path::PathBuf::from(VANILLA_GAME_DIR);
+        let game_dir = vanilla_game_dir();
         if !game_dir.is_dir() {
-            eprintln!("skipping vanilla grading-law gate: {VANILLA_GAME_DIR} is absent");
+            skip_gate(
+                "gate_vanilla_law_reproduces_captured_selection",
+                &game_dir.display().to_string(),
+            );
             return;
         }
         let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
@@ -1345,23 +1616,42 @@ posteffect_volumes = {
         println!("vanilla grading-law gate: {}", grade.source_note);
     }
 
-    // The live restore capture (has the shipped composed ColorCube SRV payload).
-    const RESTORE_CAPTURE_COLOR_CUBE: &str = concat!(
-        r"C:\Users\Example\AppData\Local\hoi4_captures\restore_gate_1\",
-        r"restore_frame_draw_map_frame_shared_payload_ps_srv_ColorCube_fb9c4f759c5171c9.d3d11"
-    );
+    /// The live restore capture (the shipped composed ColorCube SRV payload):
+    /// `BATTLE_PLAN_CAPTURES_ROOT` (joined with the restore_gate_1 payload path) when
+    /// set, else the machine-local capture store the gate was recorded on.
+    ///
+    /// NOTE: the restore_gate_1 store was recorded as LOST in the 2026-07-19
+    /// evidence consolidation (see GRADING_LAW.md "STORE LOST"), so the LUT
+    /// byte-exact gate currently skips on ALL machines until a fresh
+    /// restore-pass capture is produced; `BATTLE_PLAN_CAPTURES_ROOT` is the intended
+    /// way to point at a re-captured store.
+    fn restore_capture_color_cube() -> std::path::PathBuf {
+        let rel = std::path::Path::new("restore_gate_1").join(
+            "restore_frame_draw_map_frame_shared_payload_ps_srv_ColorCube_fb9c4f759c5171c9.d3d11",
+        );
+        std::env::var_os("BATTLE_PLAN_CAPTURES_ROOT").or_else(|| std::env::var_os("HOI4_CAPTURES_ROOT"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(r"C:\Users\Example\AppData\Local\hoi4_captures")
+            })
+            .join(rel)
+    }
 
     /// END-TO-END LUT FIT GATE: the files-composed LUT must equal the captured
     /// engine ColorCube byte-exactly after BGRX -> RGBA swizzle. This is the
     /// files-first law's regression anchor against real GPU evidence.
     #[test]
     fn gate_files_lut_matches_captured_color_cube_byte_exact() {
-        let game_dir = std::path::PathBuf::from(VANILLA_GAME_DIR);
-        let cube_path = std::path::PathBuf::from(RESTORE_CAPTURE_COLOR_CUBE);
+        let game_dir = vanilla_game_dir();
+        let cube_path = restore_capture_color_cube();
         if !game_dir.is_dir() || !cube_path.is_file() {
-            eprintln!(
-                "skipping LUT fit gate: game dir or captured ColorCube absent ({})",
-                RESTORE_CAPTURE_COLOR_CUBE
+            skip_gate(
+                "gate_files_lut_matches_captured_color_cube_byte_exact",
+                &format!(
+                    "game dir {} and/or captured ColorCube {}",
+                    game_dir.display(),
+                    cube_path.display()
+                ),
             );
             return;
         }

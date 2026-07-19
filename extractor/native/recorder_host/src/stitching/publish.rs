@@ -87,6 +87,7 @@ fn pack_identity(plan: &StitchedPlan) -> PackIdentity {
         build_pinned: false,
         mod_identity,
         created_utc: Some(plan.required_inputs.created_utc.clone()),
+        content_manifest: None,
     }
 }
 
@@ -307,9 +308,11 @@ pub fn publish_stitched_container<S: StitchedPayloadSource>(
         ));
     }
 
-    // fs::rename is an atomic replace on the destination's volume (Windows uses
-    // MoveFileEx REPLACE_EXISTING). A failure here still leaves dest intact.
-    if let Err(error) = fs::rename(&temp, dest) {
+    // Same-volume atomic replacement. Rust's Windows `fs::rename` does NOT
+    // replace an existing destination, so use MoveFileExW with the explicit
+    // REPLACE_EXISTING + WRITE_THROUGH contract there. A failure still leaves
+    // the prior destination intact.
+    if let Err(error) = atomic_replace(&temp, dest) {
         let cleanup = fs::remove_file(&temp);
         return Err(with_cleanup_note(
             format!("atomic publish (rename) failed: {error}"),
@@ -320,6 +323,51 @@ pub fn publish_stitched_container<S: StitchedPayloadSource>(
 
     report.published_path = dest.to_path_buf();
     Ok(report)
+}
+
+#[cfg(not(windows))]
+fn atomic_replace(temp: &Path, dest: &Path) -> std::io::Result<()> {
+    fs::rename(temp, dest)
+}
+
+#[cfg(windows)]
+fn atomic_replace(temp: &Path, dest: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
+    }
+
+    fn wide(path: &Path) -> std::io::Result<Vec<u16>> {
+        let mut out: Vec<u16> = path.as_os_str().encode_wide().collect();
+        if out.contains(&0) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "atomic publish path contains an embedded NUL",
+            ));
+        }
+        out.push(0);
+        Ok(out)
+    }
+
+    let existing = wide(temp)?;
+    let replacement = wide(dest)?;
+    let ok = unsafe {
+        MoveFileExW(
+            existing.as_ptr(),
+            replacement.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if ok == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 /// A sibling temp path in the destination's own directory (so the rename is a
@@ -627,6 +675,21 @@ mod tests {
     }
 
     #[test]
+    fn atomic_publish_replaces_an_existing_verified_destination() {
+        let plan = rollback_plan();
+        let source = MemorySource::for_plan(&plan);
+        let dir = TempDir::new("replace_existing");
+        let dest = dir.0.join("replay.battleplan");
+
+        publish_stitched_container(&plan, &source, &dest).unwrap();
+        let first = fs::read(&dest).unwrap();
+        publish_stitched_container(&plan, &source, &dest).unwrap();
+        let second = fs::read(&dest).unwrap();
+        assert_eq!(second, first);
+        assert!(Container::from_bytes(second, &ExpectedIdentity::default()).is_ok());
+    }
+
+    #[test]
     fn packing_is_byte_deterministic() {
         let plan = rollback_plan();
         let source = MemorySource::for_plan(&plan);
@@ -795,7 +858,10 @@ mod tests {
             &temp,
             Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
         );
-        assert!(denied.starts_with(&primary), "primary error kept as the cause");
+        assert!(
+            denied.starts_with(&primary),
+            "primary error kept as the cause"
+        );
         assert!(
             denied.contains("failed to remove temp artifact")
                 && denied.contains("partial temp file remains"),

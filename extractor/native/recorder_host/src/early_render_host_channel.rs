@@ -20,6 +20,7 @@ use crate::portable_content_manifest::PortableLaunchBinding;
 use crate::runtime_dlc_roster::{
     validate_effective_runtime_dlc_roster, AuthenticatedDlcDescriptor, AuthenticatedDlcVfsRoster,
 };
+use crate::transport_status::{decode_sink_failure, SinkFailureReport};
 use crate::windows_control_pipe::{
     prepare_control_listener, PreparedControlListener, RestrictiveSecurityPolicy, WindowsControlIo,
     WindowsPipeBackend,
@@ -54,6 +55,13 @@ use std::ops::Range;
 use std::time::Duration;
 
 type Prepared = PreparedControlListener<WindowsPipeBackend>;
+
+/// Terminal result of the post-COMMIT early-render H4CT service. A collector
+/// sink failure is a typed authenticated outcome, not an unexpected VFS frame.
+pub enum EarlyRenderServiceOutcome {
+    CaptureTeardown,
+    SinkFailure(SinkFailureReport),
+}
 
 pub fn early_render_content_manifest_metadata_envelope(
     source: &ContentManifest,
@@ -501,7 +509,7 @@ impl PreparedEarlyRenderHostChannel {
     pub fn serve_vfs_payload_requests(
         mut self,
         capture_teardown_timeout_ms: u64,
-    ) -> Result<(), String> {
+    ) -> Result<EarlyRenderServiceOutcome, String> {
         if capture_teardown_timeout_ms == 0 {
             return Err("early H4CT VFS payload service has no capture teardown bound".into());
         }
@@ -516,14 +524,24 @@ impl PreparedEarlyRenderHostChannel {
                 .recv_until(capture_teardown_deadline, &self.cancellation)
             {
                 Ok(frame) => frame,
-                Err(ControlError::Cancelled) => return Ok(()),
+                Err(ControlError::Cancelled) => {
+                    return Ok(EarlyRenderServiceOutcome::CaptureTeardown)
+                }
                 Err(error) => {
                     return Err(format!("receive early H4CT VFS payload request: {error}"));
                 }
             };
+            if matches!(
+                frame.kind,
+                MessageKind::SinkSetupFailure | MessageKind::SinkTerminalFailure
+            ) {
+                let report = decode_sink_failure(frame.kind, &frame.payload)
+                    .map_err(|error| format!("decode authenticated sink failure: {error}"))?;
+                return Ok(EarlyRenderServiceOutcome::SinkFailure(report));
+            }
             if frame.kind != MessageKind::EarlyRenderVfsPayloadRequest {
                 return Err(format!(
-                    "early H4CT expected VFS payload request, received {:?}",
+                    "early H4CT expected VFS payload request or terminal sink status, received {:?}",
                     frame.kind
                 ));
             }
@@ -1579,6 +1597,7 @@ mod tests {
         let cancellation = host.cancellation_handle();
         cancellation.cancel();
         assert!(cancellation.is_cancelled());
+        drop(host);
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -1542,26 +1542,52 @@ pub enum PoliticalTextureFormat {
     B8g8r8a8UnormSrgb,
 }
 
+/// Minimal schema probe so the version gate runs without materializing the
+/// full multi-megabyte frame twice. Unknown fields are deliberately ignored.
+#[derive(Deserialize)]
+struct SchemaProbe {
+    schema: String,
+}
+
+/// Shared schema gate: the explicit v2 incompatibility refusal must fire
+/// before any typed field error.
+fn check_schema(schema: &str) -> Result<(), String> {
+    if schema == INCOMPATIBLE_ENTITY_SELECTOR_SCHEMA {
+        return Err(format!(
+            "production render schema {schema} is incompatible with {SCHEMA}: exact conversion is unavailable because the older carrier does not preserve selector-native entity and particle authority"
+        ));
+    }
+    if schema != SCHEMA {
+        return Err(format!(
+            "unsupported production render schema {schema}; expected {SCHEMA}"
+        ));
+    }
+    Ok(())
+}
+
 impl ProductionRenderFrame {
     pub fn decode_json(bytes: &[u8]) -> Result<Self, String> {
-        let value: serde_json::Value = serde_json::from_slice(bytes)
+        let probe: SchemaProbe = serde_json::from_slice(bytes)
             .map_err(|error| format!("production render JSON: {error}"))?;
+        check_schema(&probe.schema)?;
+        let frame: Self = serde_json::from_slice(bytes)
+            .map_err(|error| format!("production render JSON: {error}"))?;
+        frame.validate()?;
+        Ok(frame)
+    }
+
+    /// Decode from an already-parsed JSON value without re-serializing it to
+    /// bytes. Same schema gate and validation as [`Self::decode_json`]; the
+    /// byte path keeps serde's duplicate-field rejection for raw-stream
+    /// callers, so this must only be used on values from an admitted parse.
+    pub fn decode_value(value: &serde_json::Value) -> Result<Self, String> {
         let schema = value
             .get("schema")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| "production render JSON has no string schema".to_string())?;
-        if schema == INCOMPATIBLE_ENTITY_SELECTOR_SCHEMA {
-            return Err(format!(
-                "production render schema {schema} is incompatible with {SCHEMA}: exact conversion is unavailable because the older carrier does not preserve selector-native entity and particle authority"
-            ));
-        }
-        if schema != SCHEMA {
-            return Err(format!(
-                "unsupported production render schema {schema}; expected {SCHEMA}"
-            ));
-        }
-        let frame: Self = serde_json::from_slice(bytes)
-            .map_err(|error| format!("production render JSON: {error}"))?;
+        check_schema(schema)?;
+        let frame: Self =
+            Self::deserialize(value).map_err(|error| format!("production render JSON: {error}"))?;
         frame.validate()?;
         Ok(frame)
     }
@@ -4046,21 +4072,7 @@ impl GeometryBinding {
             }
             _ => return Err("geometry index binding disagrees with pipeline index format".into()),
         }
-        let mut stream_output_slots = BTreeSet::new();
-        let mut stream_output_buffers = BTreeSet::new();
-        for target in &self.stream_output_targets {
-            if target.buffer_identity.trim().is_empty()
-                || target.buffer_byte_width == 0
-                || !stream_output_slots.insert(target.slot)
-                || !stream_output_buffers.insert(target.buffer_identity.as_str())
-                || (target.byte_offset != u32::MAX && target.byte_offset > target.buffer_byte_width)
-            {
-                return Err(
-                    "stream-output target has invalid/duplicate identity, slot, size, or offset"
-                        .into(),
-                );
-            }
-        }
+        validate_stream_output_targets(&self.stream_output_targets)?;
         let indexed_draw = matches!(
             self.draw,
             DrawCommand::DrawIndexed { .. } | DrawCommand::DrawIndexedInstanced { .. }
@@ -4068,23 +4080,7 @@ impl GeometryBinding {
         if indexed_draw != self.index_buffer.is_some() {
             return Err("draw command/index-buffer binding mismatch".into());
         }
-        let nonzero = match self.draw {
-            DrawCommand::Draw { vertex_count, .. } => vertex_count != 0,
-            DrawCommand::DrawIndexed { index_count, .. } => index_count != 0,
-            DrawCommand::DrawInstanced {
-                vertex_count_per_instance,
-                instance_count,
-                ..
-            } => vertex_count_per_instance != 0 && instance_count != 0,
-            DrawCommand::DrawIndexedInstanced {
-                index_count_per_instance,
-                instance_count,
-                ..
-            } => index_count_per_instance != 0 && instance_count != 0,
-        };
-        if !nonzero {
-            return Err("draw command has a zero vertex/index/instance count".into());
-        }
+        validate_draw_nonzero(&self.draw)?;
         Ok(())
     }
 }
@@ -6083,6 +6079,27 @@ mod tests {
         assert!(error.contains("incompatible"));
         assert!(error.contains("exact conversion is unavailable"));
         assert!(error.contains("selector-native entity and particle authority"));
+    }
+
+    #[test]
+    fn decode_value_equals_decode_json_and_rejects_wrong_schemas() {
+        let frame = production_frame_with_m02();
+        let encoded = frame.encode_json().unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(
+            ProductionRenderFrame::decode_value(&value).unwrap(),
+            ProductionRenderFrame::decode_json(&encoded).unwrap()
+        );
+
+        let v2 = serde_json::json!({"schema": INCOMPATIBLE_ENTITY_SELECTOR_SCHEMA});
+        let error = ProductionRenderFrame::decode_value(&v2).unwrap_err();
+        assert!(error.contains("incompatible"));
+        let unknown = serde_json::json!({"schema": "hoi4.production-render-submit.v99"});
+        let error = ProductionRenderFrame::decode_value(&unknown).unwrap_err();
+        assert!(error.contains("unsupported production render schema"));
+        let missing = serde_json::json!({"not_schema": true});
+        let error = ProductionRenderFrame::decode_value(&missing).unwrap_err();
+        assert!(error.contains("no string schema"));
     }
 
     #[test]

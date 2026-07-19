@@ -7,15 +7,20 @@ Lane-local production-shaped stack for final compact domain 56,
 
 ## Current status
 
-Completion status: `NOT COMPLETE`.
+Completion status: `PRODUCTION-SAFE CORE; EXACT RESIDUAL FIXTURES FROZEN` (2026-07-19).
 
-Backlog reduced: yes. This lane adds the final domain-56 compact schema and
-decoder/gate, proves the current live naval roots for task-force identity,
-fleet identity, owner, current province, derived region where mapped, and
-aggregate sunk-convoy counters, and separates the remaining mission/home-base/
-repair/retreat/convoy-route fields behind exact fixture requirements.
+The shared collector/recorder now emits and folds this domain. Mission,
+home-base, and repair-target are direct validated fields. The exact build
+870ebf mission enum is `0..=9`: HOLD, PATROL, STRIKE_FORCE, CONVOY_RAIDING,
+CONVOY_ESCORT, MINES_PLANTING, MINES_SWEEPING, TRAINING, RESERVE_FLEET, and
+NAVAL_INVASION_SUPPORT. Unknown values fail closed. Mission activity,
+task-force repair progress, retreat classification, and convoy-route loss
+identity remain absent rather than guessed; their exact capture requirements
+are frozen in the naval-combat lane's `A8_A9_B6_HUMAN_INPUT_REQUIREMENTS.json`.
 
-No shared collector, recorder, or master status files were edited.
+The existing shared collector/recorder integration is retained; the recorder
+projection now adds the exact `mission_name` beside the raw enum. No master
+status file is edited by this lane.
 
 ## Files
 
@@ -56,19 +61,20 @@ Validated or reused roots:
 
 ## Field results
 
-Naval missions: `FIXTURE_BLOCKED`.
+Naval mission enum: `PROVEN`.
 
-The bounded CTaskForce scalar scans produce small-u32 candidates, but a single
-snapshot cannot assign mission enum/state semantics. Required fixture:
-controlled before/after task-force mission change with stable `task_force_id`
-and `fleet_id`.
+`CTaskForce+0x364` is the validated raw enum. Ghidra function
+outside that range. `src/lib.rs` carries this exact map and the compact gate
+now shares the same maximum rather than accepting speculative wire headroom.
 
-Home base/repair/retreat: `FIXTURE_BLOCKED`.
+Home base and repair target: `PROVEN`. Activity/progress/retreat: `ABSENT,
+EXACT FIXTURE REQUIRED`.
 
-`CTaskForce+0x18` remains validated as current location, not home base. Home
-base needs a controlled port/base-change fixture. Repair and retreat need a
-damaged/repairing or retreating task-force fixture before any scalar or
-province candidate can be promoted.
+Home base is `CFleet+0xD8 -> CProvince+0xA4`; nullable repair target is
+`CTaskForce+0x4B0 -> CProvince+0xA4`. The engine's task-force activity label is
+mission, location, target, detachment mode, and mission efficiency. The
+task-force serializer has no proved scalar repair-progress or retreat field,
+so those compact columns remain unflagged.
 
 Convoy combat/loss route context: `FIXTURE_BLOCKED`, narrowed.
 
@@ -92,8 +98,8 @@ orchestrator-owned row updates:
 
 | Row | Proposed status | Proposed evidence / domain | Proposed remaining closure condition |
 | --- | --- | --- | --- |
-| Naval missions | `FIXTURE_BLOCKED` | `naval_missions_status_live` / 56 lane proof | Controlled task-force mission before/after fixture to select exact mission enum/state offsets; domain-56 compact schema and validated task-force/location roots are lane-local. |
-| Home base/repair/retreat | `FIXTURE_BLOCKED` | `naval_missions_status_live` / 56 lane proof | Controlled port-change, damaged-repairing, and retreating task-force fixtures; do not promote `CTaskForce+0x18` because it is current location, not home base. |
+| Home base / repair target | `PROVEN` | `CFleet+0xD8` and `CTaskForce+0x4B0`, both joined through `CProvince+0xA4` | Preserve nullable repair-target absence. |
+| Activity / repair progress / retreat | `EXACT FIXTURE REQUIRED` | engine activity formatter and task-force serializer negative evidence | Controlled transition fixtures in `A8_A9_B6_HUMAN_INPUT_REQUIREMENTS.json`; no scalar inference. |
 | Convoy combat/losses | `FIXTURE_BLOCKED` | `naval_missions_status_live` / 56 lane proof plus `ships_live` sunk-convoy counter | Active convoy battle/loss route fixture to link losses to route/mission context; `CShip+0x3C` remains only aggregate sunk-convoy count. |
 
 ## Proof commands

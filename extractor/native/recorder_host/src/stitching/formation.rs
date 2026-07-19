@@ -37,6 +37,48 @@
 
 use super::SegmentReason;
 
+/// Structural rejection at the dormant live-driver boundary. Invalid frame
+/// facts are retained by the caller as failed raw evidence and are never routed
+/// into a fold or allowed to mutate cutter state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FormationInputError {
+    EmptySessionIdentity,
+    InvertedRecordBounds { first: u64, last: u64 },
+    EmptyByteExtent { start: u64, end: u64 },
+    RecordSequenceRegression { previous_last: u64, next_first: u64 },
+    ByteExtentOverlap { previous_end: u64, next_start: u64 },
+}
+
+impl std::fmt::Display for FormationInputError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptySessionIdentity => write!(f, "frame has no process/session identity"),
+            Self::InvertedRecordBounds { first, last } => {
+                write!(f, "frame record bounds are inverted: {first}..={last}")
+            }
+            Self::EmptyByteExtent { start, end } => {
+                write!(f, "frame byte extent is empty/inverted: [{start}, {end})")
+            }
+            Self::RecordSequenceRegression {
+                previous_last,
+                next_first,
+            } => write!(
+                f,
+                "frame record sequence overlaps/regresses: previous last {previous_last}, next first {next_first}"
+            ),
+            Self::ByteExtentOverlap {
+                previous_end,
+                next_start,
+            } => write!(
+                f,
+                "frame byte extent overlaps/regresses: previous end {previous_end}, next start {next_start}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FormationInputError {}
+
 /// The staged logical frame's identity / epoch / coverage facts, computed by the
 /// live driver before the frame is applied to any fold (§5.1). A `hour_index` of
 /// `None` marks a torn / incomplete / epoch-uncertain frame that never produced a
@@ -158,6 +200,10 @@ pub struct SegmentCutter {
     /// was no prior trusted epoch (a reload-uncertain very-first frame), in which case
     /// any verified epoch resumes. `None` means no hold is active.
     held_epoch: Option<String>,
+    /// Last structurally admitted frame extent. Sequence/byte monotonicity is
+    /// enforced within one session identity before routing; a new process/session
+    /// may legitimately start a fresh physical stream at sequence/offset zero.
+    last_admitted_extent: Option<(String, u64, u64)>,
 }
 
 impl SegmentCutter {
@@ -173,6 +219,61 @@ impl SegmentCutter {
     /// The open segment's session-local ordinal, if one is open.
     pub fn open_ordinal(&self) -> Option<u64> {
         self.open.as_ref().map(|open| open.ordinal)
+    }
+
+    /// Validate and route one staged frame at the production boundary.
+    ///
+    /// Unlike [`Self::route`], this rejects impossible source bounds before any
+    /// state mutation. The unchecked method remains for already-validated callers
+    /// and compatibility with the pure historical test surface; live composition
+    /// must use this checked seam.
+    pub fn route_checked(
+        &mut self,
+        frame: &FrameFacts,
+    ) -> Result<FrameRouting, FormationInputError> {
+        self.validate_frame(frame)?;
+        let routing = self.route(frame);
+        self.last_admitted_extent = Some((
+            frame.session_identity.clone(),
+            frame.last_record_sequence,
+            frame.end_byte_offset,
+        ));
+        Ok(routing)
+    }
+
+    fn validate_frame(&self, frame: &FrameFacts) -> Result<(), FormationInputError> {
+        if frame.session_identity.is_empty() {
+            return Err(FormationInputError::EmptySessionIdentity);
+        }
+        if frame.first_record_sequence > frame.last_record_sequence {
+            return Err(FormationInputError::InvertedRecordBounds {
+                first: frame.first_record_sequence,
+                last: frame.last_record_sequence,
+            });
+        }
+        if frame.first_byte_offset >= frame.end_byte_offset {
+            return Err(FormationInputError::EmptyByteExtent {
+                start: frame.first_byte_offset,
+                end: frame.end_byte_offset,
+            });
+        }
+        if let Some((session_identity, previous_last, previous_end)) = &self.last_admitted_extent {
+            if session_identity == &frame.session_identity {
+                if frame.first_record_sequence <= *previous_last {
+                    return Err(FormationInputError::RecordSequenceRegression {
+                        previous_last: *previous_last,
+                        next_first: frame.first_record_sequence,
+                    });
+                }
+                if frame.first_byte_offset < *previous_end {
+                    return Err(FormationInputError::ByteExtentOverlap {
+                        previous_end: *previous_end,
+                        next_start: frame.first_byte_offset,
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Route one staged frame, mutating the open-segment state.
@@ -613,7 +714,9 @@ mod tests {
         let mut both = frame("s1", "e0", 12); // new session identity...
         both.reload_uncertain = true; // ...AND reload-uncertain
         match cutter.route(&both) {
-            FrameRouting::UncertainSeal { sealed: Some(sealed) } => {
+            FrameRouting::UncertainSeal {
+                sealed: Some(sealed),
+            } => {
                 // The prior segment is sealed as ReloadUncertain (the conservative
                 // reason), NOT SessionStart.
                 assert_eq!(sealed.stop_reason, SegmentReason::ReloadUncertain);
@@ -647,5 +750,99 @@ mod tests {
         cutter.route(&frame("s1", "e2", 12)); // ordinal 2 (session change)
         assert_eq!(cutter.open_ordinal(), Some(2));
         assert_eq!(cutter.finish().unwrap().segment_ordinal, 2);
+    }
+
+    #[test]
+    fn checked_route_rejects_impossible_bounds_without_mutating_state() {
+        let mut cutter = SegmentCutter::new();
+        let mut invalid = frame("s0", "e0", 10);
+        invalid.last_record_sequence = invalid.first_record_sequence - 1;
+        assert!(matches!(
+            cutter.route_checked(&invalid),
+            Err(FormationInputError::InvertedRecordBounds { .. })
+        ));
+        assert_eq!(cutter.open_ordinal(), None);
+
+        invalid = frame("s0", "e0", 10);
+        invalid.end_byte_offset = invalid.first_byte_offset;
+        assert!(matches!(
+            cutter.route_checked(&invalid),
+            Err(FormationInputError::EmptyByteExtent { .. })
+        ));
+        assert_eq!(cutter.open_ordinal(), None);
+    }
+
+    #[test]
+    fn checked_route_rejects_same_session_overlap_and_accepts_next_clean_frame() {
+        let mut cutter = SegmentCutter::new();
+        let first = FrameFacts {
+            session_identity: "s0".into(),
+            epoch_token: "e0".into(),
+            hour_index: Some(10),
+            reload_uncertain: false,
+            first_record_sequence: 10,
+            first_byte_offset: 100,
+            last_record_sequence: 11,
+            end_byte_offset: 200,
+        };
+        assert!(cutter.route_checked(&first).is_ok());
+
+        let mut overlap = first.clone();
+        overlap.hour_index = Some(11);
+        overlap.first_record_sequence = 11;
+        overlap.last_record_sequence = 12;
+        overlap.first_byte_offset = 199;
+        overlap.end_byte_offset = 250;
+        assert!(matches!(
+            cutter.route_checked(&overlap),
+            Err(FormationInputError::RecordSequenceRegression { .. })
+        ));
+
+        let clean = FrameFacts {
+            hour_index: Some(11),
+            first_record_sequence: 12,
+            last_record_sequence: 13,
+            first_byte_offset: 200,
+            end_byte_offset: 300,
+            ..first
+        };
+        assert_eq!(
+            cutter.route_checked(&clean).unwrap(),
+            FrameRouting::Extend { ordinal: 0 }
+        );
+    }
+
+    #[test]
+    fn checked_route_allows_new_session_to_reset_physical_stream_bounds() {
+        let mut cutter = SegmentCutter::new();
+        let first = FrameFacts {
+            session_identity: "s0".into(),
+            epoch_token: "e0".into(),
+            hour_index: Some(10),
+            reload_uncertain: false,
+            first_record_sequence: 100,
+            first_byte_offset: 1_000,
+            last_record_sequence: 101,
+            end_byte_offset: 1_100,
+        };
+        cutter.route_checked(&first).unwrap();
+        let reset = FrameFacts {
+            session_identity: "s1".into(),
+            epoch_token: "e1".into(),
+            hour_index: Some(11),
+            reload_uncertain: false,
+            first_record_sequence: 0,
+            first_byte_offset: 0,
+            last_record_sequence: 1,
+            end_byte_offset: 100,
+        };
+        assert!(matches!(
+            cutter.route_checked(&reset).unwrap(),
+            FrameRouting::Cut {
+                trigger: SegmentReason::SessionStart,
+                new_ordinal: 1,
+                ..
+            }
+        ));
     }
 }

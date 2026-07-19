@@ -27,70 +27,33 @@
 //!   BATTLE_PLAN_SOAK_SCRUB       random seeks per synthetic timeline   (default 20000)
 //!   BATTLE_PLAN_SOAK_HOURS_LONG  hours in the multi-year timeline      (default 26280)
 //!
-//! The allocator, PRNG and synthetic-source scaffolding mirror `tests/soak.rs`
-//! (a separate test binary owned by the F3 lane; duplicated here rather than
-//! restructuring that deliverable into a shared module).
+//! The allocator, PRNG and synthetic-source scaffolding are shared with
+//! `tests/soak.rs` via `tests/soak_support/mod.rs`, so the measurement-critical
+//! pieces exist exactly once.
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+mod soak_support;
 
-use replay_core::{
-    open_recording, RawFrame, ReplaySource, SourceError, TimelineConfig, WorldFrame, WorldTimeline,
+use replay_core::{open_recording, ReplaySource, TimelineConfig, WorldTimeline};
+use soak_support::{
+    assert_seek_eq_play, env_usize, fixture_path, live_bytes, Lcg, SyntheticSource, INDEX_COPIES,
 };
-use serde_json::{json, Map, Value};
 
 // ---------------------------------------------------------------------------
-// Counting global allocator (net-live bytes; see soak.rs for the rationale).
-// ---------------------------------------------------------------------------
-
-struct CountingAlloc;
-
-static LIVE: AtomicUsize = AtomicUsize::new(0);
-
-unsafe impl GlobalAlloc for CountingAlloc {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let p = System.alloc(layout);
-        if !p.is_null() {
-            LIVE.fetch_add(layout.size(), Ordering::Relaxed);
-        }
-        p
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        System.dealloc(ptr, layout);
-        LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
-    }
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        let p = System.alloc_zeroed(layout);
-        if !p.is_null() {
-            LIVE.fetch_add(layout.size(), Ordering::Relaxed);
-        }
-        p
-    }
-}
-
-#[global_allocator]
-static GLOBAL: CountingAlloc = CountingAlloc;
-
-fn live_bytes() -> usize {
-    LIVE.load(Ordering::Relaxed)
-}
-
-// ---------------------------------------------------------------------------
-// Ceilings. The correctness gate (b) runs as its own #[test]; both
-// allocator-sampled gates (a) and (c) run SEQUENTIALLY inside one #[test] so
-// they never sample across each other's live synthetic timelines. Gate (b)'s
-// concurrent small-fixture caches are the only cross-test noise; the ceilings
-// carry headroom for it.
+// Ceilings. ALL gates — the correctness gate (b) and the allocator-sampled
+// gates (a), (a') and (c) — run SEQUENTIALLY inside a single #[test] (gate (b)
+// first, its timelines dropped before any sample), so no allocator sample is
+// ever taken across another gate's live timelines. Measured with a concurrent
+// gate (b), the (a) samples drifted by megabytes — headroom cannot absorb
+// that, so serialization is the law here, exactly as in soak.rs.
 // ---------------------------------------------------------------------------
 
 /// Gate (a): extra frame working set a 26,280-hour timeline may retain over a
 /// 24-hour timeline after the same scrub at the same 4-entry budget, once the
 /// O(hours) index spines are subtracted. Both caches hold the same number of
 /// same-sized frames, so the true residual is ~0; 128 KiB absorbs allocator
-/// fragmentation plus gate (b)'s concurrent small caches, while a real
-/// per-hour retention (26k hours x even 16 B) would blow past it.
+/// fragmentation (all gates run sequentially in one #[test], so there is no
+/// cross-test noise to budget for), while a real per-hour retention (26k
+/// hours x even 16 B) would blow past it.
 const F2_LENGTH_CEILING_BYTES: usize = 128 << 10; // 128 KiB
 
 /// Gate (a') floor: how much MORE the 16-entry budget must retain than the
@@ -104,109 +67,9 @@ const F2_KNOB_FLOOR_BYTES: usize = 96 << 10; // 96 KiB
 /// trend across the whole sweep script must stay under 1 MiB.
 const LEAK_CEILING_BYTES: usize = 1 << 20; // 1 MiB
 
-/// O(length) hour-index spines live during a scrub: the source's own `hours`
-/// vector + `WorldTimeline::open`'s defensive copy (see the F2 audit notes in
-/// replay_core::source / world). Subtracted analytically by the caller.
-const INDEX_COPIES: usize = 2;
-
 /// Deterministic per-frame payload (hex, derived from the hour) so cached
 /// frames have a known-sized footprint: 16 chars x 1024 = 16 KiB.
 const PAD_REPEATS: usize = 1024;
-
-fn env_usize(key: &str, default: usize) -> usize {
-    std::env::var(key)
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(default)
-}
-
-// ---------------------------------------------------------------------------
-// Synthetic in-memory source (soak.rs pattern + the 16 KiB payload). Frames
-// are generated on demand; the source itself holds only the hour vector.
-// ---------------------------------------------------------------------------
-
-struct SyntheticSource {
-    game_id: String,
-    hours: Vec<i64>,
-}
-
-impl SyntheticSource {
-    fn new(hour_count: usize) -> SyntheticSource {
-        let base: i64 = 16_959_360; // matches the fixture epoch style
-        let hours: Vec<i64> = (0..hour_count as i64).map(|i| base + i).collect();
-        SyntheticSource {
-            game_id: "soak_f2_synthetic".to_string(),
-            hours,
-        }
-    }
-}
-
-impl ReplaySource for SyntheticSource {
-    fn game_id(&self) -> &str {
-        &self.game_id
-    }
-    fn hours(&self) -> &[i64] {
-        &self.hours
-    }
-    fn warnings(&self) -> &[String] {
-        &[]
-    }
-    fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
-        if self.hours.binary_search(&hour_index).is_err() {
-            return Err(SourceError::Open(format!("no such hour {hour_index}")));
-        }
-        let owner = if (hour_index % 2) == 0 { "GER" } else { "SOV" };
-        let mut states = Map::new();
-        for s in 0..4u32 {
-            states.insert(
-                s.to_string(),
-                json!({ "owner": owner, "controller": owner }),
-            );
-        }
-        let mut rest = Map::new();
-        rest.insert("states".to_string(), Value::Object(states));
-        rest.insert(
-            "countries".to_string(),
-            json!({ "GER": { "politics": { "stability": (hour_index % 100) as f64 / 100.0 } } }),
-        );
-        // Known-sized payload: an unknown top-level domain is preserved
-        // verbatim in WorldFrame::raw(), so each CACHED frame retains exactly
-        // one 16 KiB copy — the measurable unit of the budget gates.
-        rest.insert(
-            "soak_pad".to_string(),
-            Value::String(format!("{hour_index:016x}").repeat(PAD_REPEATS)),
-        );
-        Ok(RawFrame {
-            hour_index,
-            date: Some(format!("1936.1.1.{}", hour_index % 24)),
-            save_version: None,
-            schema_version: Some(json!("1")),
-            rest,
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Shared helpers.
-// ---------------------------------------------------------------------------
-
-fn assert_seek_eq_play(tl: &WorldTimeline, hour: i64) {
-    let s: Arc<WorldFrame> = tl.seek(hour).expect("seek");
-    let p: Arc<WorldFrame> = tl.play_to(hour).expect("play_to");
-    assert_eq!(s.hour_index(), p.hour_index(), "hour mismatch @ {hour}");
-    assert_eq!(s.raw(), p.raw(), "raw-frame mismatch @ {hour}");
-    assert_eq!(
-        s.owner_by_state(),
-        p.owner_by_state(),
-        "owner view mismatch @ {hour}"
-    );
-}
-
-fn fixture_path(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures/positive")
-        .join(name)
-}
 
 fn open_fixture_with_cap(cap: usize) -> WorldTimeline {
     let path = fixture_path("fx_owner_controller_flip.battleplan");
@@ -225,31 +88,15 @@ fn open_fixture_with_cap(cap: usize) -> WorldTimeline {
     .expect("open timeline")
 }
 
-struct Lcg {
-    state: u64,
-}
-impl Lcg {
-    fn new(seed: u64) -> Lcg {
-        Lcg { state: seed | 1 }
-    }
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.state;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.state = x;
-        x
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Gate (b): shrunken (and disabled) budgets stay CORRECT on the real
 // production ingest path — seek == play_to on every recorded hour, and frame
-// content identical to the default-budget timeline.
+// content identical to the default-budget timeline. Runs FIRST inside the
+// single #[test] below; every timeline it opens is dropped on return, so the
+// allocator-sampled gates that follow start from a quiet heap.
 // ---------------------------------------------------------------------------
 
-#[test]
-fn f2_shrunken_cache_seek_equals_play_to() {
+fn gate_b_shrunken_cache_seek_equals_play_to() {
     let reference = open_fixture_with_cap(TimelineConfig::default().frame_cache_entries);
     assert_eq!(reference.frame_cache_entries(), 16, "default budget is 16");
     let hours: Vec<i64> = reference.hours().to_vec();
@@ -286,15 +133,20 @@ fn f2_shrunken_cache_seek_equals_play_to() {
 }
 
 // ---------------------------------------------------------------------------
-// Gates (a)+(a')+(c): allocator-sampled, run sequentially in ONE test so the
-// samples never race each other's live timelines.
+// Gates (a)+(a')+(c): allocator-sampled. Together with gate (b) they run
+// sequentially in the ONE test below so no sample ever races another gate's
+// live timelines.
 // ---------------------------------------------------------------------------
 
 /// Random-scrub a synthetic timeline of `hour_count` hours at `cap`, then
 /// sample net-live bytes with no frame Arcs held. Returns (live, index_bytes)
 /// where index_bytes is the analytic O(hours) spine cost to subtract.
 fn scrub_and_measure(hour_count: usize, seeks: usize, cap: usize) -> (usize, usize) {
-    let source = Box::new(SyntheticSource::new(hour_count)) as Box<dyn ReplaySource>;
+    let source = Box::new(SyntheticSource::new(
+        hour_count,
+        "soak_f2_synthetic",
+        PAD_REPEATS,
+    )) as Box<dyn ReplaySource>;
     let timeline = WorldTimeline::open_with_config(
         source,
         TimelineConfig {
@@ -329,7 +181,11 @@ fn scrub_and_measure(hour_count: usize, seeks: usize, cap: usize) -> (usize, usi
 }
 
 #[test]
-fn f2_budget_and_trend_gates() {
+fn f2_correctness_budget_and_trend_gates() {
+    // ---- Gate (b) first: correctness at shrunken budgets. Its fixture
+    // timelines are dropped before the first allocator sample below. ----
+    gate_b_shrunken_cache_seek_equals_play_to();
+
     let seeks = env_usize("BATTLE_PLAN_SOAK_SCRUB", 20_000);
     let hours_long = env_usize("BATTLE_PLAN_SOAK_HOURS_LONG", 26_280); // 3 years hourly
     let hours_short = 24usize;

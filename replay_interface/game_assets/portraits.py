@@ -170,16 +170,6 @@ def harvest_referenced_names(output_dir: Path) -> dict:
 # --------------------------------------------------------------------------
 # Name -> texture resolution
 # --------------------------------------------------------------------------
-def _ci_sprite_lookup(name: str, sprite_index: dict):
-    """Case-insensitive sprite-name lookup. characters.json mixes casing
-    (`GFX_Portrait_Asia_Generic_3` vs `GFX_portrait_asia_generic_4`); the engine
-    treats sprite names case-insensitively, so we must too. Exact hit first."""
-    sp = sprite_index.get(name)
-    if sp is not None:
-        return sp
-    return sprite_index.get(name.lower())
-
-
 def resolve_reference(name: str, sprite_index: dict, sprite_index_lc: dict,
                       gfx_map: dict):
     """Resolve a referenced portrait name to (texture_abs_path, how, texrel).

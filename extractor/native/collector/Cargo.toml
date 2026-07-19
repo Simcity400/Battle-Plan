@@ -28,6 +28,7 @@ army_battleplans_depth_live_lane = { path = "../lanes/army_battleplans_depth_liv
 naval_missions_status_live_lane = { path = "../lanes/naval_missions_status_live" }
 session_multiplayer_metadata_live = { path = "../lanes/session_multiplayer_metadata_live" }
 dynamic_collection_trace_live_lane = { path = "../lanes/dynamic_collection_trace_live" }
+active_command_abilities_live_lane = { path = "../lanes/active_command_abilities_live" }
 resolved_tooltip_instances_live_lane = { path = "../lanes/resolved_tooltip_instances_live" }
 politics_tooltip_inputs_live_lane = { path = "../lanes/politics_tooltip_inputs_live" }
 power_balance_presentation_live_lane = { path = "../lanes/power_balance_presentation_live" }

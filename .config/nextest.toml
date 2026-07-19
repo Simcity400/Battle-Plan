@@ -1,0 +1,172 @@
+[profile.default]
+default-filter = '''
+not (
+  binary(soak)
+  | binary(soak_f2)
+  | binary(/^(alerts_binding|combat_binding|decision_chrome|event_chrome|flag_precedence|markup_law|topbar_binding|topbar_quads|unitview_binding|waroverview_binding|widget_layout|xui01_definition_admission|xui02_window_manager|xui17_characters)$/)
+  | test(/(?x)(^|::)(
+      admitted_ui_resolver_rejects_an_installed_but_unrecorded_path
+      | captured_pixel_shader_prefilter_covers_full_family_classifiers
+      | corpus_.*_when_session_available
+      | fx_naval_air_activity_region_statuses
+      | gate_a_all_vanilla_mesh_and_anim_files_parse
+      | gate_all_vanilla_.*
+      | gate_b_diverse_mesh_semantic_checks
+      | gate_building_cb1_atlas_uvanim_dead_for_standard
+      | gate_captured_.*
+      | gate_files_lut_matches_captured_color_cube_byte_exact
+      | gate_full_map_river_extraction_vanilla
+      | gate_map_effects_reflection_matches_captured
+      | gate_per_frame_recompose_is_byte_identical_at_captured_camera
+      | gate_river_world_comparison_against_captured_sessions
+      | gate_tree_scatter_chunk_law_vs_live_trees_measure
+      | gate_vanilla_.*
+      | gate_wave1_cap4_.*
+      | gated_vanilla_.*
+      | hoi_18mbs_loads_from_real_install_when_present
+      | installed_.*
+      | lod_selection_gate_env_when_session_available
+      | low_gfx_and_full_pixel_shaders_identify_by_effect
+      | overlay_font_uses_real_hoi18mbs_when_resolver_exists
+      | product_resolver_adapter_uses_effective_namespace_without_frozen_counts
+      | real_bundle_verdict_is_low_gfx_created_but_unused
+      | recorded_topbar_frame_reaches_the_production_compositor_without_raw_snapshot_access
+      | relocated_portable_replay_file_still_drives_the_same_production_pixels
+      | resolver_decode_byte_equals_captured_payload_from_assets
+      | session_20260702b_draw0_ps_cb0_matches_terrain_scene_cb0_evidence
+      | shipped_border_textures_match_documented_profiles
+      | terrain_id_map_.*_when_available
+      | terrain_id_map_orphan_palette_set_is_narrow
+      | terrain_texture_table_matches_vanilla_atlas_order_when_available
+      | topbar_rects_follow_engine_layout_law
+      | unsupported_physical_viewport_rejects_before_any_pixel_resampling
+      | vanilla_admission_matches_all_frozen_o05_semantics
+      | vanilla_resolver_decodes_render_assets_and_builds_known_land_counter
+      | wave9_hidden_counter_gate_reads_draws_and_wvp_cb_writes
+    )$/)
+)
+'''
+fail-fast = true
+failure-output = "immediate-final"
+success-output = "never"
+status-level = "fail"
+final-status-level = "slow"
+slow-timeout = "10s"
+
+[profile.ci]
+default-filter = '''
+not (
+  binary(soak)
+  | binary(soak_f2)
+  | binary(/^(alerts_binding|combat_binding|decision_chrome|event_chrome|flag_precedence|markup_law|topbar_binding|topbar_quads|unitview_binding|waroverview_binding|widget_layout|xui01_definition_admission|xui02_window_manager|xui17_characters)$/)
+  | test(/(?x)(^|::)(
+      admitted_ui_resolver_rejects_an_installed_but_unrecorded_path
+      | captured_pixel_shader_prefilter_covers_full_family_classifiers
+      | corpus_.*_when_session_available
+      | fx_naval_air_activity_region_statuses
+      | gate_a_all_vanilla_mesh_and_anim_files_parse
+      | gate_all_vanilla_.*
+      | gate_b_diverse_mesh_semantic_checks
+      | gate_building_cb1_atlas_uvanim_dead_for_standard
+      | gate_captured_.*
+      | gate_files_lut_matches_captured_color_cube_byte_exact
+      | gate_full_map_river_extraction_vanilla
+      | gate_map_effects_reflection_matches_captured
+      | gate_per_frame_recompose_is_byte_identical_at_captured_camera
+      | gate_river_world_comparison_against_captured_sessions
+      | gate_tree_scatter_chunk_law_vs_live_trees_measure
+      | gate_vanilla_.*
+      | gate_wave1_cap4_.*
+      | gated_vanilla_.*
+      | hoi_18mbs_loads_from_real_install_when_present
+      | installed_.*
+      | lod_selection_gate_env_when_session_available
+      | low_gfx_and_full_pixel_shaders_identify_by_effect
+      | overlay_font_uses_real_hoi18mbs_when_resolver_exists
+      | product_resolver_adapter_uses_effective_namespace_without_frozen_counts
+      | real_bundle_verdict_is_low_gfx_created_but_unused
+      | recorded_topbar_frame_reaches_the_production_compositor_without_raw_snapshot_access
+      | relocated_portable_replay_file_still_drives_the_same_production_pixels
+      | resolver_decode_byte_equals_captured_payload_from_assets
+      | session_20260702b_draw0_ps_cb0_matches_terrain_scene_cb0_evidence
+      | shipped_border_textures_match_documented_profiles
+      | terrain_id_map_.*_when_available
+      | terrain_id_map_orphan_palette_set_is_narrow
+      | terrain_texture_table_matches_vanilla_atlas_order_when_available
+      | topbar_rects_follow_engine_layout_law
+      | unsupported_physical_viewport_rejects_before_any_pixel_resampling
+      | vanilla_admission_matches_all_frozen_o05_semantics
+      | vanilla_resolver_decodes_render_assets_and_builds_known_land_counter
+      | wave9_hidden_counter_gate_reads_draws_and_wvp_cb_writes
+    )$/)
+)
+'''
+fail-fast = false
+failure-output = "immediate-final"
+success-output = "never"
+status-level = "fail"
+final-status-level = "slow"
+retries = 0
+slow-timeout = "10s"
+
+[profile.soak]
+default-filter = 'binary(soak) | binary(soak_f2)'
+fail-fast = false
+failure-output = "immediate-final"
+success-output = "never"
+status-level = "slow"
+final-status-level = "slow"
+retries = 0
+slow-timeout = "5m"
+
+[profile.evidence]
+default-filter = '''
+binary(/^(alerts_binding|combat_binding|decision_chrome|event_chrome|flag_precedence|markup_law|topbar_binding|topbar_quads|unitview_binding|waroverview_binding|widget_layout|xui01_definition_admission|xui02_window_manager|xui17_characters)$/)
+| test(/(?x)(^|::)(
+    admitted_ui_resolver_rejects_an_installed_but_unrecorded_path
+    | captured_pixel_shader_prefilter_covers_full_family_classifiers
+    | corpus_.*_when_session_available
+    | fx_naval_air_activity_region_statuses
+    | gate_a_all_vanilla_mesh_and_anim_files_parse
+    | gate_all_vanilla_.*
+    | gate_b_diverse_mesh_semantic_checks
+    | gate_building_cb1_atlas_uvanim_dead_for_standard
+    | gate_captured_.*
+    | gate_files_lut_matches_captured_color_cube_byte_exact
+    | gate_full_map_river_extraction_vanilla
+    | gate_map_effects_reflection_matches_captured
+    | gate_per_frame_recompose_is_byte_identical_at_captured_camera
+    | gate_river_world_comparison_against_captured_sessions
+    | gate_tree_scatter_chunk_law_vs_live_trees_measure
+    | gate_vanilla_.*
+    | gate_wave1_cap4_.*
+    | gated_vanilla_.*
+    | hoi_18mbs_loads_from_real_install_when_present
+    | installed_.*
+    | lod_selection_gate_env_when_session_available
+    | low_gfx_and_full_pixel_shaders_identify_by_effect
+    | overlay_font_uses_real_hoi18mbs_when_resolver_exists
+    | product_resolver_adapter_uses_effective_namespace_without_frozen_counts
+    | real_bundle_verdict_is_low_gfx_created_but_unused
+    | recorded_topbar_frame_reaches_the_production_compositor_without_raw_snapshot_access
+    | relocated_portable_replay_file_still_drives_the_same_production_pixels
+    | resolver_decode_byte_equals_captured_payload_from_assets
+    | session_20260702b_draw0_ps_cb0_matches_terrain_scene_cb0_evidence
+    | shipped_border_textures_match_documented_profiles
+    | terrain_id_map_.*_when_available
+    | terrain_id_map_orphan_palette_set_is_narrow
+    | terrain_texture_table_matches_vanilla_atlas_order_when_available
+    | topbar_rects_follow_engine_layout_law
+    | unsupported_physical_viewport_rejects_before_any_pixel_resampling
+    | vanilla_admission_matches_all_frozen_o05_semantics
+    | vanilla_resolver_decodes_render_assets_and_builds_known_land_counter
+    | wave9_hidden_counter_gate_reads_draws_and_wvp_cb_writes
+  )$/)
+'''
+fail-fast = false
+failure-output = "immediate-final"
+success-output = "never"
+status-level = "slow"
+final-status-level = "slow"
+retries = 0
+slow-timeout = "2m"

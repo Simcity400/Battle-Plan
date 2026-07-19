@@ -1,0 +1,16 @@
+# Shared local build policy for the extractor and replay workspaces.
+# Keep one Cargo invocation active at a time; use the centralized validation
+# script under extractor/native/scripts for normal checks and final batteries.
+
+[build]
+target-dir = ".cargo-target"
+
+# Full PDB generation dominates local build time and disk usage. Level 1 keeps
+# line information for useful backtraces while avoiding full debug symbols.
+[profile.dev]
+debug = 1
+incremental = true
+
+[profile.test]
+debug = 1
+incremental = true

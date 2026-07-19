@@ -25,19 +25,28 @@ KNOWN LIMITS (documented, not bugs):
   * Impassable-border terrain is not filtered (we have no terrain adjacency
     asset). A border that exists on the map but is impassable still counts.
 
-The adjacency is a static function of the map; it is cached on disk next to the
-assets so repeated derive runs do not re-scan the raster.
+The adjacency is a static function of the map; it is cached on disk inside the
+derive package (``derive/_cache``), keyed by resolution + assets-dir identity
+and fingerprinted against the source raster/mapping bytes so repeated derive
+runs do not re-scan the raster and a swapped or regenerated raster can never
+serve a stale cache.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import numpy as np
 
-ADJ_CACHE_BASENAME = "province_adjacency.json"
+
+class ProvinceRasterMismatch(RuntimeError):
+    """Typed refusal: the province-id raster on disk cannot be validated against
+    the frozen ``province_ids_meta.json`` contract (meta absent, dimensions
+    drifted, or land provinces missing from the raster). Fail closed: adjacency
+    derived from an unvalidated raster could be silently wrong."""
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +66,77 @@ def _decode_id_png(path: str) -> np.ndarray:
 def default_assets_dir() -> str:
     here = os.path.dirname(os.path.abspath(__file__))
     return os.path.normpath(os.path.join(here, os.pardir, "map_pipeline", "assets"))
+
+
+def _resolve_raster_path(assets_dir: str, half_res: bool) -> str:
+    """Path of the REQUESTED-resolution province-id PNG, or a typed refusal.
+
+    Never substitutes the other resolution: an explicit request for one raster
+    must not silently degrade (or upgrade) to the other, because the result
+    would be cached and labeled under the requested resolution (fail-closed
+    doctrine: visible refusal, not silent approximation).
+    """
+    want = "province_ids_half.png" if half_res else "province_ids.png"
+    other = "province_ids.png" if half_res else "province_ids_half.png"
+    png = os.path.join(assets_dir, want)
+    if not os.path.exists(png):
+        other_path = os.path.join(assets_dir, other)
+        raise FileNotFoundError(
+            f"adjacency: required {'half' if half_res else 'full'}-res "
+            f"province-id raster missing: {png} (other-resolution candidate "
+            f"{other_path} "
+            f"{'exists' if os.path.exists(other_path) else 'also missing'}; "
+            "refusing to substitute a different resolution). These PNGs are "
+            "gitignored with no in-repo generator; restore the asset from a "
+            "machine that has it.")
+    return png
+
+
+def _load_meta(assets_dir: str) -> dict:
+    """Load ``province_ids_meta.json`` or refuse (typed) -- the raster must
+    never be consumed unvalidated."""
+    meta_path = os.path.join(assets_dir, "province_ids_meta.json")
+    if not os.path.exists(meta_path):
+        raise ProvinceRasterMismatch(
+            f"adjacency: province_ids_meta.json missing from {assets_dir}; "
+            "cannot validate the province-id raster -- refusing to proceed "
+            "unvalidated")
+    with open(meta_path, "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _validate_raster(png: str, ids: np.ndarray, land_ids: Set[int],
+                     meta: dict) -> None:
+    """Validate the decoded raster against the frozen meta contract.
+
+    Checks (all hard refusals via :class:`ProvinceRasterMismatch`):
+      * dimensions match the meta entry for the basename actually opened;
+      * every land province id from ``province_to_state.json`` appears in the
+        raster (meta asserts ``provinces_lost_at_this_scale: 0``, so this is
+        strict -- a lossy re-encode / wrong-map raster fails here).
+    """
+    base = os.path.basename(png)
+    if base == "province_ids.png":
+        expected = (int(meta["source_height"]), int(meta["source_width"]))
+    elif base == "province_ids_half.png":
+        d = meta["downscaled_display"]
+        expected = (int(d["height"]), int(d["width"]))
+    else:
+        raise ProvinceRasterMismatch(
+            f"adjacency: no meta contract for raster basename {base!r}")
+    if tuple(ids.shape) != expected:
+        raise ProvinceRasterMismatch(
+            f"adjacency: raster {png} has shape (H, W) = {tuple(ids.shape)} "
+            f"but province_ids_meta.json requires {expected}; the raster on "
+            "disk is not the one the meta was frozen against -- refusing")
+    missing = land_ids - {int(x) for x in np.unique(ids)}
+    if missing:
+        sample = sorted(missing)[:10]
+        raise ProvinceRasterMismatch(
+            f"adjacency: raster {png} is missing {len(missing)} land province "
+            f"id(s) present in province_to_state.json (sample: {sample}); "
+            "meta asserts provinces_lost_at_this_scale: 0 -- raster/mapping "
+            "mismatch, refusing")
 
 
 # ---------------------------------------------------------------------------
@@ -108,17 +188,15 @@ def build_adjacency(assets_dir: Optional[str] = None,
     pass ``half_res=False`` for the authoritative 5632x2048 raster.
     """
     a = assets_dir or default_assets_dir()
-    png = os.path.join(a, "province_ids_half.png" if half_res
-                       else "province_ids.png")
-    if not os.path.exists(png):
-        png = os.path.join(a, "province_ids.png" if half_res
-                           else "province_ids_half.png")
+    png = _resolve_raster_path(a, half_res)
     ids = _decode_id_png(png)
 
     p2s_path = os.path.join(a, "province_to_state.json")
     with open(p2s_path, "r", encoding="utf-8") as fh:
         p2s = json.load(fh)
     land_ids = {int(k) for k in p2s}
+
+    _validate_raster(png, ids, land_ids, _load_meta(a))
 
     max_id = int(ids.max())
     for pid in land_ids:
@@ -139,9 +217,13 @@ def build_adjacency(assets_dir: Optional[str] = None,
 
 
 # ---------------------------------------------------------------------------
-# disk cache (keyed by res; kept INSIDE the derive package, never written into
-# the read-only map_pipeline assets dir).
+# disk cache (keyed by res + assets-dir digest, content-fingerprinted against
+# the source raster/mapping bytes; kept INSIDE the derive package, never
+# written into the read-only map_pipeline assets dir).
 # ---------------------------------------------------------------------------
+_CACHE_SCHEMA = 1
+
+
 def _cache_dir() -> str:
     d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cache")
     os.makedirs(d, exist_ok=True)
@@ -150,30 +232,77 @@ def _cache_dir() -> str:
 
 def _cache_path(assets_dir: str, half_res: bool) -> str:
     suffix = "half" if half_res else "full"
-    return os.path.join(_cache_dir(), f"province_adjacency_{suffix}.json")
+    # Key by resolution AND assets-dir identity so two different --assets dirs
+    # never share (or thrash) one cache file. normcase+abspath collapses
+    # spelling differences for the same directory (Windows case-insensitivity,
+    # relative vs absolute) so they don't cause spurious misses.
+    key = hashlib.sha1(
+        os.path.normcase(os.path.abspath(assets_dir)).encode("utf-8")
+    ).hexdigest()[:10]
+    return os.path.join(_cache_dir(),
+                        f"province_adjacency_{suffix}_{key}.json")
+
+
+def _source_fingerprint(assets_dir: str, half_res: bool) -> str:
+    """sha256 over the resolved raster + province_to_state.json +
+    province_ids_meta.json bytes, plus the raster basename.
+
+    Content-keyed (never size+mtime): a regenerated, swapped, or re-encoded
+    source file always invalidates the cache and forces a validated rebuild.
+    Missing inputs are typed refusals -- a cache must never be served for
+    sources that cannot be fingerprinted.
+    """
+    png = _resolve_raster_path(assets_dir, half_res)
+    h = hashlib.sha256()
+    h.update(os.path.basename(png).encode("utf-8"))
+    for path in (png,
+                 os.path.join(assets_dir, "province_to_state.json"),
+                 os.path.join(assets_dir, "province_ids_meta.json")):
+        if not os.path.exists(path):
+            raise ProvinceRasterMismatch(
+                f"adjacency: required source input missing: {path}; cannot "
+                "fingerprint the adjacency sources -- refusing")
+        with open(path, "rb") as fh:
+            h.update(fh.read())
+    return h.hexdigest()
 
 
 def load_or_build_adjacency(assets_dir: Optional[str] = None,
                             half_res: bool = True,
                             use_cache: bool = True) -> Dict[int, List[int]]:
-    """Adjacency with an on-disk cache next to the assets (idempotent)."""
+    """Adjacency with an on-disk cache inside the derive package (idempotent).
+
+    The cache is served only when its stored ``source_fingerprint`` matches
+    the current source bytes; any legacy/foreign/stale cache file falls
+    through to an exact rebuild (rebuild, not warn -- the rebuild is exact,
+    so no blocker is needed).
+    """
     a = assets_dir or default_assets_dir()
     cache = _cache_path(a, half_res)
+    fingerprint = _source_fingerprint(a, half_res) if use_cache else None
     if use_cache and os.path.exists(cache):
         try:
             with open(cache, "r", encoding="utf-8") as fh:
                 raw = json.load(fh)
-            return {int(k): list(v) for k, v in raw.items()}
+            if (isinstance(raw, dict)
+                    and raw.get("schema") == _CACHE_SCHEMA
+                    and raw.get("source_fingerprint") == fingerprint
+                    and isinstance(raw.get("adjacency"), dict)):
+                return {int(k): list(v)
+                        for k, v in raw["adjacency"].items()}
+            # old flat format / wrong schema / stale fingerprint: rebuild
         except Exception:
             pass  # rebuild on any cache corruption
     adj = build_adjacency(a, half_res=half_res)
     if use_cache:
         try:
             with open(cache, "w", encoding="utf-8") as fh:
-                json.dump({str(k): v for k, v in adj.items()}, fh,
-                          separators=(",", ":"))
+                json.dump({"schema": _CACHE_SCHEMA,
+                           "source_fingerprint": fingerprint,
+                           "adjacency": {str(k): v for k, v in adj.items()}},
+                          fh, separators=(",", ":"))
         except Exception:
-            pass  # cache is best-effort; never fatal
+            pass  # cache write is best-effort; never fatal
     return adj
 
 

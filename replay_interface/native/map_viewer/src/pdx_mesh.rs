@@ -287,7 +287,12 @@ fn parse_pdx_asset_binary(bytes: &[u8]) -> Result<PdxAssetTree> {
                     }
                     b's' => {
                         let count = cursor.u32("string count")? as usize;
-                        let mut values = Vec::with_capacity(count);
+                        // Clamp the preallocation by the minimum encoded size per
+                        // string (4-byte length prefix + 1 NUL byte) so a malformed
+                        // count cannot force a huge allocation before the per-item
+                        // take() produces the typed truncation error.
+                        let remaining = cursor.bytes.len() - cursor.pos;
+                        let mut values = Vec::with_capacity(count.min(remaining / 5));
                         for index in 0..count {
                             let len = cursor.u32("string byte length")? as usize;
                             let raw = cursor.take(len, "string payload")?;
@@ -392,7 +397,11 @@ fn parse_pdx_asset_text(bytes: &[u8]) -> Result<PdxAssetTree> {
             .map_err(|err| format!("property '{name}': bad count {count_token:?}: {err}"))?;
         let values = match type_token {
             "i" => {
-                let mut values = Vec::with_capacity(count);
+                // Clamp the preallocation by the remaining token stream (each
+                // value consumes at least one byte) so a malformed count cannot
+                // force a huge allocation before next_token() reports the typed
+                // missing-value error.
+                let mut values = Vec::with_capacity(count.min(tokens.rest.len()));
                 for _ in 0..count {
                     let raw = tokens
                         .next_token()?
@@ -405,7 +414,11 @@ fn parse_pdx_asset_text(bytes: &[u8]) -> Result<PdxAssetTree> {
                 PdxValues::I32(values)
             }
             "f" => {
-                let mut values = Vec::with_capacity(count);
+                // Clamp the preallocation by the remaining token stream (each
+                // value consumes at least one byte) so a malformed count cannot
+                // force a huge allocation before next_token() reports the typed
+                // missing-value error.
+                let mut values = Vec::with_capacity(count.min(tokens.rest.len()));
                 for _ in 0..count {
                     let raw = tokens
                         .next_token()?
@@ -418,7 +431,11 @@ fn parse_pdx_asset_text(bytes: &[u8]) -> Result<PdxAssetTree> {
                 PdxValues::F32(values)
             }
             "s" => {
-                let mut values = Vec::with_capacity(count);
+                // Clamp the preallocation by the remaining token stream (each
+                // value consumes at least one byte) so a malformed count cannot
+                // force a huge allocation before next_token() reports the typed
+                // missing-value error.
+                let mut values = Vec::with_capacity(count.min(tokens.rest.len()));
                 for _ in 0..count {
                     let raw = tokens
                         .next_token()?
@@ -1765,6 +1782,32 @@ mod tests {
         bytes.truncate(bytes.len() - 3);
         let err = parse_pdx_asset(&bytes).expect_err("truncated stream");
         assert!(err.to_string().contains("truncated"), "{err}");
+    }
+
+    #[test]
+    fn binary_oversized_string_count_fails_closed_without_preallocation() {
+        // A malformed 's' property declaring u32::MAX strings with no payload
+        // must hit the typed truncation error, not abort on a huge Vec
+        // preallocation sized from the attacker-controlled count.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(PDX_ASSET_BINARY_MAGIC);
+        push_prop_i(&mut bytes, "pdxasset", &[1, 0]);
+        bytes.push(b'!');
+        bytes.push(4);
+        bytes.extend_from_slice(b"huge");
+        bytes.push(b's');
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+        let err = parse_pdx_asset(&bytes).expect_err("oversized string count");
+        assert!(err.to_string().contains("truncated"), "{err}");
+    }
+
+    #[test]
+    fn text_oversized_count_fails_closed_without_preallocation() {
+        // Same law for the text twin: a count token of 4e9 with no values must
+        // produce the typed missing-value error, not a huge preallocation.
+        let text = b"@@t@pdxasset i 2 1 0\nhuge f 4000000000\n";
+        let err = parse_pdx_asset(text).expect_err("oversized text count");
+        assert!(err.to_string().contains("missing f32 value"), "{err}");
     }
 
     #[test]

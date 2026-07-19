@@ -6,11 +6,15 @@ shader/define/config files; the captured `restore_gate_1` pair is validation
 only (it is never a runtime input). The CPU port is
 `replay_interface/native/map_viewer/src/bloom.rs`; the validator is
 `map_viewer/src/bin/dump_bloom_validation.rs`.
-> **STORE LOST (audited 2026-07-19):** the `restore_gate_1` capture no longer
-> exists on this machine. Recorded validation results stand as the evidence of
-> record; re-running the validator requires a fresh capture. See
-> `GRADING_LAW.md` and the store index in
-> `lane_reports/rendering_laws/PROGRAM_STATUS.md`.
+> **RETAINED SUBSTITUTE RECOVERED (2026-07-19):** the historical
+> `restore_gate_1` directory remains absent, but two intact retained RDCs now
+> export fresh, hash-bound MainScene -> RestoreBloom -> RestoreScene boundaries.
+> The packet at `re_evidence/rendering_laws/RESTORE_GATE_RETAINED/` verifies
+> both source identities, t0..t3 descriptors and payloads, the post-draw output,
+> the file-derived far-range LUT, and the lower exposure clamp without launching
+> HOI4. It does not relabel either substitute as the lost original. The original
+> bloom residual statistics below remain historical results; the new raw pair
+> is available for the final consolidated validator run.
 
 Vanilla game root used for citations:
 `<local-path> of Iron IV`. All game-file reads go

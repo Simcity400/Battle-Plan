@@ -22,11 +22,19 @@ pub const ORDER_OFF_TYPE5_STATES_BEGIN: u64 =
     compact_contract::build_profile::DOMAIN54_ORDER_OFF_TYPE5_STATES_BEGIN as u64;
 pub const ORDER_OFF_TYPE5_STATES_SIZE: u64 =
     compact_contract::build_profile::DOMAIN54_ORDER_OFF_TYPE5_STATES_SIZE as u64;
+pub const ORDER_OFF_ASSIGNED_UNITS_BEGIN: u64 =
+    compact_contract::build_profile::DOMAIN54_ORDER_OFF_ASSIGNED_UNITS_BEGIN as u64;
+pub const ORDER_OFF_ASSIGNED_UNITS_SIZE: u64 =
+    compact_contract::build_profile::DOMAIN54_ORDER_OFF_ASSIGNED_UNITS_SIZE as u64;
+pub const ORDER_OFF_INSTANCE_ID: u64 =
+    compact_contract::build_profile::DOMAIN54_ORDER_OFF_INSTANCE_ID as u64;
+pub const ORDER_OFF_ACTIVE: u64 = compact_contract::build_profile::DOMAIN54_ORDER_OFF_ACTIVE as u64;
 
-pub const HEADER_LEN: usize = 52;
-pub const ROW_LEN: usize = 64;
+pub const HEADER_LEN: usize = 60;
+pub const ROW_LEN: usize = 88;
 pub const TARGET_ROW_LEN: usize = 8;
 pub const PATH_GEOMETRY_ROW_LEN: usize = 8;
+pub const ASSIGNED_DIVISION_ROW_LEN: usize = 8;
 
 pub const FLAG_DELETED: u32 = 1;
 pub const FLAG_TARGET_STATES: u32 = 1 << 1;
@@ -34,6 +42,8 @@ pub const FLAG_TARGET_STATE_COUNT: u32 = 1 << 2;
 pub const FLAG_NON_TYPE5_GEOMETRY_BLOCKED: u32 = 1 << 3;
 pub const FLAG_EXECUTION_BLOCKED: u32 = 1 << 4;
 pub const FLAG_PATH_GEOMETRY: u32 = 1 << 5;
+pub const FLAG_ASSIGNED_DIVISIONS: u32 = 1 << 6;
+pub const FLAG_ACTIVE_VALUE: u32 = 1 << 7;
 
 pub const STATUS_NONE: u32 = 0;
 pub const STATUS_EXACT: u32 = 1;
@@ -55,6 +65,11 @@ const MAX_STATE_ID: u32 = 65_535;
 const MAX_PROVINCE_ID: u32 = 65_535;
 const MAX_ARMY_ID: u32 = i32::MAX as u32;
 const MAX_SLOT_INDEX: u32 = 64;
+const MAX_ORDER_INSTANCE_ID: u32 = 100_000_000;
+const MAX_DIVISION_ID: u32 = i32::MAX as u32;
+const DIVISION_VTABLE_RVA: u64 = 0x2943CB0;
+const DIVISION_TYPE: u32 = 4713;
+const DIVISION_ALT_TYPE: u32 = 51;
 
 #[derive(Default)]
 pub struct BattleplansDepthTracker {
@@ -74,6 +89,7 @@ pub trait BattleplansDepthMemory {
 pub struct RawOrderObservation {
     pub army_id: u32,
     pub generation: u64,
+    pub engine_order_instance_id: u32,
     pub deleted: bool,
     pub slot_index: u32,
     pub order_type: i32,
@@ -82,8 +98,11 @@ pub struct RawOrderObservation {
     pub target_declared_count: Option<u32>,
     pub target_status: u32,
     pub geometry_status: u32,
+    pub assigned_division_ids: Vec<u32>,
     pub assigned_units_status: u32,
     pub order_linkage_status: u32,
+    pub active: bool,
+    pub active_status: u32,
     pub stance_status: u32,
     pub aggressiveness_status: u32,
 }
@@ -92,6 +111,7 @@ pub struct RawOrderObservation {
 pub struct BattleplanDepthRow {
     pub army_id: u32,
     pub generation: u64,
+    pub engine_order_instance_id: u32,
     pub deleted: bool,
     pub slot_index: u32,
     pub order_type: i32,
@@ -101,8 +121,11 @@ pub struct BattleplanDepthRow {
     pub target_status: u32,
     pub geometry_status: u32,
     pub execution_status: u32,
+    pub assigned_division_ids: Vec<u32>,
     pub assigned_units_status: u32,
     pub order_linkage_status: u32,
+    pub active: bool,
+    pub active_status: u32,
     pub stance_status: u32,
     pub aggressiveness_status: u32,
 }
@@ -113,12 +136,16 @@ pub struct DepthExtraction {
     pub type5_exact_rows: u32,
     pub type5_non_exact_omitted_rows: u32,
     pub assignment_or_linkage_omitted_rows: u32,
+    pub identity_or_active_omitted_rows: u32,
     pub path_geometry_omitted_rows: u32,
     pub non_type5_exact_path_rows: u32,
     pub path_geometry_rows: u32,
     pub non_type5_fixture_blocked_rows: u32,
     pub execution_fixture_blocked_rows: u32,
     pub assigned_units_exact_rows: u32,
+    pub assigned_division_rows: u32,
+    pub identity_exact_rows: u32,
+    pub active_exact_rows: u32,
     pub order_linkage_exact_rows: u32,
     pub stance_unknown_rows: u32,
     pub aggressiveness_unknown_rows: u32,
@@ -143,11 +170,15 @@ pub struct DecodeTotals {
     pub unsupported_geometry_rows: u64,
     pub execution_fixture_required_rows: u64,
     pub assigned_units_exact_rows: u64,
+    pub assigned_division_rows: u64,
+    pub identity_exact_rows: u64,
+    pub active_exact_rows: u64,
     pub order_linkage_exact_rows: u64,
     pub stance_unknown_rows: u64,
     pub aggressiveness_unknown_rows: u64,
     pub omitted_non_exact_rows: u64,
     pub path_geometry_omitted_rows: u64,
+    pub identity_or_active_omitted_rows: u64,
     pub status_flags_or: u32,
 }
 
@@ -196,6 +227,17 @@ pub fn validated_order_observation<M: BattleplansDepthMemory>(
         return None;
     }
     let order_type = mem.read_i32(order_ptr.checked_add(ORDER_OFF_TYPE)?)?;
+    let engine_order_instance_id = mem.read_u32(order_ptr.checked_add(ORDER_OFF_INSTANCE_ID)?)?;
+    if engine_order_instance_id == 0 || engine_order_instance_id > MAX_ORDER_INSTANCE_ID {
+        return None;
+    }
+    let active_bytes = mem.read_bytes(order_ptr.checked_add(ORDER_OFF_ACTIVE)?, 1)?;
+    let active = match active_bytes.first().copied()? {
+        0 => false,
+        1 => true,
+        _ => return None,
+    };
+    let assigned_division_ids = read_assigned_division_ids(mem, order_ptr).ok()?;
     let (target_states, target_declared_count, target_status) =
         read_type5_target_states(mem, order_ptr, order_type);
     let (path_provinces, geometry_status) =
@@ -203,6 +245,7 @@ pub fn validated_order_observation<M: BattleplansDepthMemory>(
     Some(RawOrderObservation {
         army_id,
         generation,
+        engine_order_instance_id,
         deleted: false,
         slot_index,
         order_type,
@@ -211,11 +254,74 @@ pub fn validated_order_observation<M: BattleplansDepthMemory>(
         target_declared_count,
         target_status,
         geometry_status,
+        assigned_division_ids,
         assigned_units_status,
         order_linkage_status,
+        active,
+        active_status: STATUS_EXACT,
         stance_status: STATUS_UNKNOWN,
         aggressiveness_status: STATUS_UNKNOWN,
     })
+}
+
+fn read_assigned_division_ids<M: BattleplansDepthMemory>(
+    mem: &M,
+    order_ptr: u64,
+) -> Result<Vec<u32>, u32> {
+    let begin = mem
+        .read_u64(
+            order_ptr
+                .checked_add(ORDER_OFF_ASSIGNED_UNITS_BEGIN)
+                .ok_or(STATUS_VALIDATION_FAILED)?,
+        )
+        .ok_or(STATUS_VALIDATION_FAILED)?;
+    let count = mem
+        .read_u32(
+            order_ptr
+                .checked_add(ORDER_OFF_ASSIGNED_UNITS_SIZE)
+                .ok_or(STATUS_VALIDATION_FAILED)?,
+        )
+        .ok_or(STATUS_VALIDATION_FAILED)?;
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    if count > MAX_CHILD_ROWS || count > MAX_INLINE_CHILD_ROWS || !mem.is_heap_pointer(begin) {
+        return Err(if count > MAX_INLINE_CHILD_ROWS {
+            STATUS_OVERFLOW
+        } else {
+            STATUS_VALIDATION_FAILED
+        });
+    }
+    let raw = mem
+        .read_bytes(begin, count as usize * 8)
+        .ok_or(STATUS_VALIDATION_FAILED)?;
+    if raw.len() != count as usize * 8 {
+        return Err(STATUS_VALIDATION_FAILED);
+    }
+    let division_vtable = mem
+        .module_base()
+        .checked_add(DIVISION_VTABLE_RVA)
+        .ok_or(STATUS_VALIDATION_FAILED)?;
+    let mut ids = Vec::with_capacity(count as usize);
+    for index in 0..count as usize {
+        let start = index * 8;
+        let ptr = u64::from_le_bytes(raw[start..start + 8].try_into().unwrap());
+        if !mem.is_heap_pointer(ptr) || mem.read_u64(ptr) != Some(division_vtable) {
+            return Err(STATUS_VALIDATION_FAILED);
+        }
+        let handle = mem.read_u64(ptr + 8).ok_or(STATUS_VALIDATION_FAILED)?;
+        let kind = handle as u32;
+        let id = (handle >> 32) as u32;
+        if !matches!(kind, DIVISION_TYPE | DIVISION_ALT_TYPE)
+            || id == 0
+            || id > MAX_DIVISION_ID
+            || ids.contains(&id)
+        {
+            return Err(STATUS_VALIDATION_FAILED);
+        }
+        ids.push(id);
+    }
+    Ok(ids)
 }
 
 pub fn read_type5_target_states<M: BattleplansDepthMemory>(
@@ -267,6 +373,7 @@ pub fn extract_validated_depth_subset(source: &[RawOrderObservation]) -> DepthEx
             out.rows.push(BattleplanDepthRow {
                 army_id: row.army_id,
                 generation: row.generation,
+                engine_order_instance_id: row.engine_order_instance_id,
                 deleted: true,
                 slot_index: row.slot_index,
                 order_type: row.order_type,
@@ -276,11 +383,22 @@ pub fn extract_validated_depth_subset(source: &[RawOrderObservation]) -> DepthEx
                 target_status: STATUS_NONE,
                 geometry_status: STATUS_NONE,
                 execution_status: STATUS_NONE,
+                assigned_division_ids: Vec::new(),
                 assigned_units_status: STATUS_NONE,
                 order_linkage_status: STATUS_NONE,
+                active: false,
+                active_status: STATUS_NONE,
                 stance_status: STATUS_NONE,
                 aggressiveness_status: STATUS_NONE,
             });
+            continue;
+        }
+        if row.engine_order_instance_id == 0
+            || row.engine_order_instance_id > MAX_ORDER_INSTANCE_ID
+            || row.active_status != STATUS_EXACT
+        {
+            out.identity_or_active_omitted_rows =
+                out.identity_or_active_omitted_rows.saturating_add(1);
             continue;
         }
         if row.assigned_units_status != STATUS_EXACT || row.order_linkage_status != STATUS_EXACT {
@@ -312,8 +430,12 @@ pub fn extract_validated_depth_subset(source: &[RawOrderObservation]) -> DepthEx
                     out.non_type5_fixture_blocked_rows.saturating_add(1);
                 (STATUS_UNSUPPORTED, STATUS_FIXTURE_REQUIRED, Vec::new())
             };
-        out.execution_fixture_blocked_rows = out.execution_fixture_blocked_rows.saturating_add(1);
         out.assigned_units_exact_rows = out.assigned_units_exact_rows.saturating_add(1);
+        out.assigned_division_rows = out
+            .assigned_division_rows
+            .saturating_add(row.assigned_division_ids.len().min(u32::MAX as usize) as u32);
+        out.identity_exact_rows = out.identity_exact_rows.saturating_add(1);
+        out.active_exact_rows = out.active_exact_rows.saturating_add(1);
         out.order_linkage_exact_rows = out.order_linkage_exact_rows.saturating_add(1);
         if row.stance_status == STATUS_UNKNOWN {
             out.stance_unknown_rows = out.stance_unknown_rows.saturating_add(1);
@@ -324,6 +446,7 @@ pub fn extract_validated_depth_subset(source: &[RawOrderObservation]) -> DepthEx
         out.rows.push(BattleplanDepthRow {
             army_id: row.army_id,
             generation: row.generation,
+            engine_order_instance_id: row.engine_order_instance_id,
             deleted: false,
             slot_index: row.slot_index,
             order_type: row.order_type,
@@ -332,9 +455,12 @@ pub fn extract_validated_depth_subset(source: &[RawOrderObservation]) -> DepthEx
             target_declared_count: row.target_declared_count,
             target_status,
             geometry_status,
-            execution_status: STATUS_FIXTURE_REQUIRED,
+            execution_status: STATUS_EXACT,
+            assigned_division_ids: row.assigned_division_ids.clone(),
             assigned_units_status: row.assigned_units_status,
             order_linkage_status: row.order_linkage_status,
+            active: row.active,
+            active_status: row.active_status,
             stance_status: row.stance_status,
             aggressiveness_status: row.aggressiveness_status,
         });
@@ -353,7 +479,8 @@ pub fn collect_and_encode_depth_record(
     let emitted_rows = extraction.rows.len().min(u32::MAX as usize) as u32;
     let omitted_non_exact_rows = extraction
         .type5_non_exact_omitted_rows
-        .saturating_add(extraction.assignment_or_linkage_omitted_rows);
+        .saturating_add(extraction.assignment_or_linkage_omitted_rows)
+        .saturating_add(extraction.identity_or_active_omitted_rows);
     let payload = encode_depth_payload(
         &extraction.rows,
         elapsed_wall_ms,
@@ -363,6 +490,7 @@ pub fn collect_and_encode_depth_record(
         observed_order_rows,
         omitted_non_exact_rows,
         extraction.path_geometry_omitted_rows,
+        extraction.identity_or_active_omitted_rows,
     );
     EncodedDepthRecord {
         domain_id: DOMAIN_ID,
@@ -400,6 +528,7 @@ pub fn encode_depth_payload(
     observed_order_rows: u32,
     omitted_non_exact_rows: u32,
     path_geometry_omitted_rows: u32,
+    identity_or_active_omitted_rows: u32,
 ) -> Vec<u8> {
     let target_count = rows
         .iter()
@@ -408,6 +537,10 @@ pub fn encode_depth_payload(
     let path_count = rows
         .iter()
         .map(|row| row.path_provinces.len())
+        .sum::<usize>();
+    let assigned_division_count = rows
+        .iter()
+        .map(|row| row.assigned_division_ids.len())
         .sum::<usize>();
     let unsupported_geometry_rows = rows
         .iter()
@@ -424,7 +557,8 @@ pub fn encode_depth_payload(
         HEADER_LEN
             + rows.len() * ROW_LEN
             + target_count * TARGET_ROW_LEN
-            + path_count * PATH_GEOMETRY_ROW_LEN,
+            + path_count * PATH_GEOMETRY_ROW_LEN
+            + assigned_division_count * ASSIGNED_DIVISION_ROW_LEN,
     );
     out.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
     out.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
@@ -438,9 +572,12 @@ pub fn encode_depth_payload(
     out.extend_from_slice(&omitted_non_exact_rows.to_le_bytes());
     out.extend_from_slice(&path_geometry_omitted_rows.to_le_bytes());
     out.extend_from_slice(&(path_count.min(u32::MAX as usize) as u32).to_le_bytes());
+    out.extend_from_slice(&(assigned_division_count.min(u32::MAX as usize) as u32).to_le_bytes());
+    out.extend_from_slice(&identity_or_active_omitted_rows.to_le_bytes());
 
     let mut target_cursor = 0u32;
     let mut path_cursor = 0u32;
+    let mut assigned_cursor = 0u32;
     for row in rows {
         let mut flags = 0u32;
         if row.deleted {
@@ -461,6 +598,12 @@ pub fn encode_depth_payload(
         if !row.path_provinces.is_empty() {
             flags |= FLAG_PATH_GEOMETRY;
         }
+        if !row.assigned_division_ids.is_empty() {
+            flags |= FLAG_ASSIGNED_DIVISIONS;
+        }
+        if !row.deleted && row.active_status == STATUS_EXACT {
+            flags |= FLAG_ACTIVE_VALUE;
+        }
         debug_assert!(row.target_states.is_empty() || row.path_provinces.is_empty());
         let child_first = if !row.target_states.is_empty() {
             target_cursor
@@ -476,6 +619,8 @@ pub fn encode_depth_payload(
         } else {
             0
         };
+        let assigned_first = assigned_cursor;
+        let assigned_count = row.assigned_division_ids.len().min(u32::MAX as usize) as u32;
 
         out.extend_from_slice(&row.army_id.to_le_bytes());
         out.extend_from_slice(&row.generation.to_le_bytes());
@@ -496,10 +641,17 @@ pub fn encode_depth_payload(
         ] {
             out.extend_from_slice(&value.to_le_bytes());
         }
+        out.extend_from_slice(&row.engine_order_instance_id.to_le_bytes());
+        out.extend_from_slice(&assigned_first.to_le_bytes());
+        out.extend_from_slice(&assigned_count.to_le_bytes());
+        out.extend_from_slice(&(row.active as u32).to_le_bytes());
+        out.extend_from_slice(&row.active_status.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
         target_cursor =
             target_cursor.saturating_add(row.target_states.len().min(u32::MAX as usize) as u32);
         path_cursor =
             path_cursor.saturating_add(row.path_provinces.len().min(u32::MAX as usize) as u32);
+        assigned_cursor = assigned_cursor.saturating_add(assigned_count);
     }
     for row in rows {
         for state_id in &row.target_states {
@@ -510,6 +662,12 @@ pub fn encode_depth_payload(
     for row in rows {
         for province_id in &row.path_provinces {
             out.extend_from_slice(&province_id.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+        }
+    }
+    for row in rows {
+        for division_id in &row.assigned_division_ids {
+            out.extend_from_slice(&division_id.to_le_bytes());
             out.extend_from_slice(&0u32.to_le_bytes());
         }
     }
@@ -535,10 +693,13 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
     let omitted_non_exact_rows = read_u32(payload, 40) as usize;
     let path_geometry_omitted_rows = read_u32(payload, 44) as usize;
     let path_count = read_u32(payload, 48) as usize;
+    let assigned_division_count = read_u32(payload, 52) as usize;
+    let identity_or_active_omitted_rows = read_u32(payload, 56) as usize;
     let expected = HEADER_LEN
         .saturating_add(row_count.saturating_mul(ROW_LEN))
         .saturating_add(target_count.saturating_mul(TARGET_ROW_LEN))
-        .saturating_add(path_count.saturating_mul(PATH_GEOMETRY_ROW_LEN));
+        .saturating_add(path_count.saturating_mul(PATH_GEOMETRY_ROW_LEN))
+        .saturating_add(assigned_division_count.saturating_mul(ASSIGNED_DIVISION_ROW_LEN));
     if payload.len() != expected {
         summary.parse_errors.push(format!(
             "offset {offset}: domain 54 payload length {} != {expected}",
@@ -566,15 +727,18 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
     summary.totals.changed_rows = changed_rows as u64;
     summary.totals.target_rows = target_count as u64;
     summary.totals.path_geometry_rows = path_count as u64;
+    summary.totals.assigned_division_rows = assigned_division_count as u64;
     summary.totals.unsupported_geometry_rows = unsupported_geometry_rows as u64;
     summary.totals.execution_fixture_required_rows = execution_unknown_rows as u64;
     summary.totals.omitted_non_exact_rows = omitted_non_exact_rows as u64;
     summary.totals.path_geometry_omitted_rows = path_geometry_omitted_rows as u64;
+    summary.totals.identity_or_active_omitted_rows = identity_or_active_omitted_rows as u64;
     summary.totals.status_flags_or = status_flags;
 
     let mut cursor = HEADER_LEN;
     let mut declared_targets = 0usize;
     let mut declared_paths = 0usize;
+    let mut declared_assigned_divisions = 0usize;
     for row_index in 0..row_count {
         let army_id = read_u32(payload, cursor);
         let _generation = read_u64(payload, cursor + 4);
@@ -591,11 +755,19 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
         let order_linkage_status = read_u32(payload, cursor + 52);
         let stance_status = read_u32(payload, cursor + 56);
         let aggressiveness_status = read_u32(payload, cursor + 60);
+        let engine_order_instance_id = read_u32(payload, cursor + 64);
+        let assigned_first = read_u32(payload, cursor + 68) as usize;
+        let assigned_count = read_u32(payload, cursor + 72) as usize;
+        let active_value = read_u32(payload, cursor + 76);
+        let active_status = read_u32(payload, cursor + 80);
+        let reserved = read_u32(payload, cursor + 84);
         cursor += ROW_LEN;
 
         let deleted = flags & FLAG_DELETED != 0;
         let has_targets = flags & FLAG_TARGET_STATES != 0;
         let has_path = flags & FLAG_PATH_GEOMETRY != 0;
+        let has_assigned = flags & FLAG_ASSIGNED_DIVISIONS != 0;
+        let has_active = flags & FLAG_ACTIVE_VALUE != 0;
         if army_id == 0 || army_id > MAX_ARMY_ID {
             summary
                 .parse_errors
@@ -612,7 +784,9 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
                 | FLAG_TARGET_STATE_COUNT
                 | FLAG_NON_TYPE5_GEOMETRY_BLOCKED
                 | FLAG_EXECUTION_BLOCKED
-                | FLAG_PATH_GEOMETRY)
+                | FLAG_PATH_GEOMETRY
+                | FLAG_ASSIGNED_DIVISIONS
+                | FLAG_ACTIVE_VALUE)
             != 0
         {
             summary.parse_errors.push(format!(
@@ -631,14 +805,38 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
             || order_linkage_status > STATUS_COLD_PREFLIGHT_ONLY
             || stance_status > STATUS_COLD_PREFLIGHT_ONLY
             || aggressiveness_status > STATUS_COLD_PREFLIGHT_ONLY
+            || active_status > STATUS_COLD_PREFLIGHT_ONLY
         {
             summary.parse_errors.push(format!(
                 "offset {offset}: row {row_index} has bad status code"
             ));
         }
-        if deleted && (child_first != 0 || child_count != 0 || target_declared != 0) {
+        if deleted
+            && (child_first != 0
+                || child_count != 0
+                || target_declared != 0
+                || assigned_first != 0
+                || assigned_count != 0
+                || active_value != 0
+                || active_status != STATUS_NONE)
+        {
             summary.parse_errors.push(format!(
                 "offset {offset}: deleted row {row_index} has child fields"
+            ));
+        }
+        if reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: row {row_index} has nonzero reserved field"
+            ));
+        }
+        if engine_order_instance_id == 0 || engine_order_instance_id > MAX_ORDER_INSTANCE_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: row {row_index} has bad engine order instance id"
+            ));
+        }
+        if !deleted && (!has_active || active_status != STATUS_EXACT || active_value > 1) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: row {row_index} lacks exact active state"
             ));
         }
         if !deleted && assigned_units_status != STATUS_EXACT {
@@ -651,6 +849,20 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
                 "offset {offset}: row {row_index} lacks exact order-linkage status"
             ));
         }
+        if has_assigned {
+            if assigned_count == 0
+                || assigned_first.saturating_add(assigned_count) > assigned_division_count
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: assigned-division range for row {row_index} is invalid"
+                ));
+            }
+        } else if assigned_count != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: row {row_index} has assigned count without flag"
+            ));
+        }
+        declared_assigned_divisions = declared_assigned_divisions.saturating_add(assigned_count);
         if !deleted && order_type == ORDER_TYPE5_OFFENSIVE && target_status != STATUS_EXACT {
             summary.parse_errors.push(format!(
                 "offset {offset}: type-5 row {row_index} is not exact"
@@ -704,6 +916,13 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
             summary.totals.assigned_units_exact_rows =
                 summary.totals.assigned_units_exact_rows.saturating_add(1);
         }
+        if engine_order_instance_id != 0 && !deleted {
+            summary.totals.identity_exact_rows =
+                summary.totals.identity_exact_rows.saturating_add(1);
+        }
+        if active_status == STATUS_EXACT && !deleted {
+            summary.totals.active_exact_rows = summary.totals.active_exact_rows.saturating_add(1);
+        }
         if order_linkage_status == STATUS_EXACT && !deleted {
             summary.totals.order_linkage_exact_rows =
                 summary.totals.order_linkage_exact_rows.saturating_add(1);
@@ -727,6 +946,11 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
             .parse_errors
             .push(format!("offset {offset}: path child count mismatch"));
     }
+    if declared_assigned_divisions != assigned_division_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: assigned-division child count mismatch"
+        ));
+    }
     for child_index in 0..target_count {
         let state_id = read_u32(payload, cursor);
         let reserved = read_u32(payload, cursor + 4);
@@ -744,6 +968,16 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
         if province_id == 0 || province_id > MAX_PROVINCE_ID || reserved != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: path child row {child_index} is invalid"
+            ));
+        }
+    }
+    for child_index in 0..assigned_division_count {
+        let division_id = read_u32(payload, cursor);
+        let reserved = read_u32(payload, cursor + 4);
+        cursor += ASSIGNED_DIVISION_ROW_LEN;
+        if division_id == 0 || division_id > MAX_DIVISION_ID || reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: assigned-division child row {child_index} is invalid"
             ));
         }
     }
@@ -881,6 +1115,7 @@ mod tests {
         RawOrderObservation {
             army_id,
             generation: 1,
+            engine_order_instance_id: 10_000 + slot_index,
             deleted: false,
             slot_index,
             order_type,
@@ -894,8 +1129,11 @@ mod tests {
                 STATUS_UNSUPPORTED
             },
             geometry_status: STATUS_EXACT,
+            assigned_division_ids: vec![20_000 + slot_index],
             assigned_units_status: STATUS_EXACT,
             order_linkage_status: STATUS_EXACT,
+            active: true,
+            active_status: STATUS_EXACT,
             stance_status: STATUS_UNKNOWN,
             aggressiveness_status: STATUS_UNKNOWN,
         }
@@ -995,6 +1233,49 @@ mod tests {
     }
 
     #[test]
+    fn preserves_engine_identity_ordered_membership_inactive_state_and_tombstone() {
+        let mut live = exact_order(17, 2, 3, Vec::new(), vec![101, 102]);
+        live.engine_order_instance_id = 2_025;
+        live.assigned_division_ids = vec![301, 205, 777];
+        live.active = false;
+        let full = collect_and_encode_depth_record(&[live.clone()], 5, 0, 1, 1);
+        let decoded = decode_depth_payload(0, &full.payload);
+        assert_eq!(decoded.parse_errors, Vec::<String>::new());
+        assert_eq!(decoded.totals.identity_exact_rows, 1);
+        assert_eq!(decoded.totals.active_exact_rows, 1);
+        assert_eq!(decoded.totals.assigned_division_rows, 3);
+        assert_eq!(read_u32(&full.payload, HEADER_LEN + 64), 2_025);
+        assert_eq!(read_u32(&full.payload, HEADER_LEN + 76), 0);
+        let assigned_start = HEADER_LEN + ROW_LEN + 2 * PATH_GEOMETRY_ROW_LEN;
+        assert_eq!(read_u32(&full.payload, assigned_start), 301);
+        assert_eq!(
+            read_u32(&full.payload, assigned_start + ASSIGNED_DIVISION_ROW_LEN),
+            205
+        );
+        assert_eq!(
+            read_u32(
+                &full.payload,
+                assigned_start + 2 * ASSIGNED_DIVISION_ROW_LEN
+            ),
+            777
+        );
+
+        live.deleted = true;
+        live.target_states.clear();
+        live.path_provinces.clear();
+        live.assigned_division_ids.clear();
+        let tombstone =
+            collect_and_encode_depth_record(&[live], 6, COMPACT_STATUS_DELTA_DATA, 1, 1);
+        let decoded = decode_depth_payload(0, &tombstone.payload);
+        assert_eq!(decoded.parse_errors, Vec::<String>::new());
+        assert_eq!(read_u32(&tombstone.payload, HEADER_LEN + 64), 2_025);
+        assert_eq!(
+            read_u32(&tombstone.payload, HEADER_LEN + 12) & FLAG_DELETED,
+            FLAG_DELETED
+        );
+    }
+
+    #[test]
     fn memory_helper_reads_validated_path_vector() {
         let mut mem = TestMemory {
             module_base: 0x1000_0000,
@@ -1008,6 +1289,12 @@ mod tests {
         mem.u64s
             .insert(order_ptr + ORDER_OFF_ARMY_BACKREF, army_body);
         mem.i32s.insert(order_ptr + ORDER_OFF_TYPE, 3);
+        mem.u32s.insert(order_ptr + ORDER_OFF_INSTANCE_ID, 1_234);
+        mem.bytes.insert(order_ptr + ORDER_OFF_ACTIVE, vec![1]);
+        mem.u64s
+            .insert(order_ptr + ORDER_OFF_ASSIGNED_UNITS_BEGIN, 0);
+        mem.u32s
+            .insert(order_ptr + ORDER_OFF_ASSIGNED_UNITS_SIZE, 0);
         mem.u64s
             .insert(order_ptr + ORDER_OFF_PATH_BEGIN, path_begin);
         mem.u32s.insert(order_ptr + ORDER_OFF_PATH_SIZE, 3);
@@ -1046,6 +1333,12 @@ mod tests {
         mem.u64s
             .insert(order_ptr + ORDER_OFF_ARMY_BACKREF, army_body);
         mem.i32s.insert(order_ptr + ORDER_OFF_TYPE, 3);
+        mem.u32s.insert(order_ptr + ORDER_OFF_INSTANCE_ID, 1_234);
+        mem.bytes.insert(order_ptr + ORDER_OFF_ACTIVE, vec![1]);
+        mem.u64s
+            .insert(order_ptr + ORDER_OFF_ASSIGNED_UNITS_BEGIN, 0);
+        mem.u32s
+            .insert(order_ptr + ORDER_OFF_ASSIGNED_UNITS_SIZE, 0);
         mem.u64s.insert(order_ptr + ORDER_OFF_PATH_BEGIN, begin);
         mem.u32s.insert(order_ptr + ORDER_OFF_PATH_SIZE, size);
         if let Some(bytes) = bytes {

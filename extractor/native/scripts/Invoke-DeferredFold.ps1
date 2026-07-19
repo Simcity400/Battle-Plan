@@ -37,7 +37,9 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $scriptDir "..\..\..")).Path
 $nativeRoot = Join-Path $repoRoot "extractor\native"
 $cargoManifest = Join-Path $nativeRoot "Cargo.toml"
-$collectorRecord = Join-Path $nativeRoot "target\release\collector_record.exe"
+$targetRoot = if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) { Join-Path $repoRoot '.cargo-target' } else { [System.IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) }
+$env:CARGO_TARGET_DIR = $targetRoot
+$collectorRecord = Join-Path $targetRoot "release\collector_record.exe"
 $gameDefsOut = Join-Path $repoRoot "extractor\game_defs\out"
 
 if (-not (Test-Path -LiteralPath $RunDir -PathType Container)) {

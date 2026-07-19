@@ -973,21 +973,61 @@ def _diff_designs(a: Dict[str, Any], b: Dict[str, Any], emit) -> None:
 # World events (events.json): scripted events newly fired + convoys newly sunk
 # (world-scoped, from snap["world_events"]).
 # ---------------------------------------------------------------------------
+def _fired_event_identity(row: Any) -> Optional[Tuple]:
+    """Hashable identity for one world_events.fired_events row.
+
+    The validator (schema._validate_fired_event_history) admits THREE row shapes:
+    legacy str ids, legacy int ids, and rich XUI21 dict rows. Legacy scalars key on
+    the id text (int normalized to str — keys elsewhere are strings). Rich rows key
+    on (event_id, recipient_tag, event_sequence): stable across snapshots because
+    event_sequence is validated strictly increasing, and deliberately EXCLUDING the
+    mutable resolution fields (resolution_reason, chosen_option_ordinal,
+    resolved_tick) so a popup resolving between two snapshots does not re-emit
+    event_fired. Any other row type -> None (the validator already flags it; the
+    diff must not crash on it)."""
+    if isinstance(row, str) or (isinstance(row, int) and not isinstance(row, bool)):
+        return ("legacy", str(row))
+    if isinstance(row, dict):
+        return ("rich", str(row.get("event_id")), row.get("recipient_tag"),
+                row.get("event_sequence"))
+    return None
+
+
 def _diff_world_events(a: Dict[str, Any], b: Dict[str, Any], emit) -> None:
-    """event_fired: a scripted event id newly appears in the persisted fired list.
+    """event_fired: a scripted event newly appears in the persisted fired list.
     convoy_sunk: a per-month sunk-convoy ledger ENTRY newly appears.
 
-    fired_events is an append-mostly persisted list; we set-diff it so only genuinely
-    new ids fire. sunk_convoys entries are keyed by (month, killer, owner) — a new key,
-    or a higher convoy count for an existing key, emits (the per-month tally can grow
-    within the same month between two saves)."""
+    fired_events is an append-mostly persisted list; we set-diff it BY IDENTITY
+    (_fired_event_identity — legacy scalar ids and rich XUI21 dict rows both
+    normalize to a hashable key) so only genuinely new firings emit and a rich
+    row's resolution-state change never re-fires. sunk_convoys entries are keyed
+    by (month, killer, owner) — a new key, or a higher convoy count for an
+    existing key, emits (the per-month tally can grow within the same month
+    between two saves)."""
     wea = a.get("world_events") or {}
     web = b.get("world_events") or {}
 
-    o_fired = set(wea.get("fired_events") or [])
-    n_fired = set(web.get("fired_events") or [])
-    for eid in sorted(n_fired - o_fired):
-        emit("event_fired", key=eid, to=eid)
+    o_fired = set()
+    for row in (wea.get("fired_events") or []):
+        ident = _fired_event_identity(row)
+        if ident is not None:
+            o_fired.add(ident)
+    n_fired: Dict[Tuple, Any] = {}
+    for row in (web.get("fired_events") or []):
+        ident = _fired_event_identity(row)
+        if ident is not None and ident not in n_fired:
+            n_fired[ident] = row
+    for ident in sorted(set(n_fired) - o_fired, key=str):
+        if ident[0] == "legacy":
+            emit("event_fired", key=ident[1], to=ident[1])
+        else:
+            _, event_id, recipient, sequence = ident
+            row = n_fired[ident]
+            emit("event_fired",
+                 key="%s@%s#%s" % (event_id, recipient, sequence),
+                 to=event_id,
+                 detail={"recipient": recipient,
+                         "fire_date": row.get("fire_date")})
 
     def _conv_index(we):
         out = {}
@@ -1776,25 +1816,41 @@ def _deep_null_aware_merge(av: Any, bv: Any) -> Any:
 
 def _merge_two_snapshots(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(a)
-    # Keyed containers: merge per entity (TAG / state id / province id / war id),
-    # recursively + null-aware so neither side clobbers the other's real data.
-    for key in ("countries", "states", "provinces", "map", "diplomacy_world"):
-        av, bv = a.get(key) or {}, b.get(key) or {}
-        if isinstance(av, dict) and isinstance(bv, dict):
-            m = dict(av)
-            for ent, bval in bv.items():
-                m[ent] = _deep_null_aware_merge(av.get(ent), bval)
-            merged[key] = m
-    # Top-level world catalogs (designs / order_of_battle + Tier-1 EXTRACT world
-    # domains): null-aware deep merge so a same-hour partial snapshot (e.g. one
-    # carrying only designs, the other only world) doesn't drop the sibling's data
-    # while provenance still unions both domains (schema integration review finding 1).
-    # Empty lists/dicts don't clobber real data.
-    for key in ("designs", "order_of_battle", "strategic_air",
-                "strategic_operatives", "raids", "world_events", "world"):
-        av, bv = a.get(key), b.get(key)
-        if av is not None or bv is not None:
-            merged[key] = _deep_null_aware_merge(av, bv)
+    # Generic pass: EVERY top-level key present in either input merges null-aware.
+    # Dict-dict recursion in _deep_null_aware_merge gives keyed containers
+    # (countries / states / provinces / map / diplomacy_world) their per-entity
+    # merge, world catalogs their domain merge, and scalars the documented
+    # later-wins-only-when-informative policy. Enumerating merge keys by hand had
+    # silently dropped the later snapshot's live sidecar domains (mio_live /
+    # market_live / diplomacy_live / special_projects / naval_air / supply /
+    # weather / models / intel_ledger / occupation_history) while
+    # _merge_provenance still unioned their domains — captured-without-data, a
+    # no-fabrication violation in reverse. The identity/lifecycle collections and
+    # completeness claims below need per-row or claim semantics, not a deep merge.
+    _special = ("divisions", "combats", "ended_combats", "events", "provenance",
+                "occupation_history_complete")
+    for key in list(a) + [k for k in b if k not in a]:
+        if key in _special:
+            continue
+        if key not in a:
+            merged[key] = b[key]
+        elif key not in b:
+            merged[key] = a[key]
+        else:
+            merged[key] = _deep_null_aware_merge(a[key], b[key])
+    # occupation_history_complete is a completeness CLAIM, not data: None is
+    # no-claim, and a False (incomplete) from EITHER same-hour view must never be
+    # fail-opened into True by the other view (a plain informative-later-wins
+    # merge would do exactly that).
+    if "occupation_history_complete" in a or "occupation_history_complete" in b:
+        oa = a.get("occupation_history_complete")
+        ob = b.get("occupation_history_complete")
+        if oa is False or ob is False:
+            merged["occupation_history_complete"] = False
+        elif oa is True or ob is True:
+            merged["occupation_history_complete"] = True
+        else:
+            merged["occupation_history_complete"] = None
     # divisions: merge by identity (uid) so complementary fields combine and neither
     # side's roster is dropped.
     merged["divisions"] = _merge_div_lists(a.get("divisions") or [],
@@ -1802,6 +1858,24 @@ def _merge_two_snapshots(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]
     # combats: merge by combat_id (b wins on conflict; union the set).
     merged["combats"] = _merge_by_key(a.get("combats") or [], b.get("combats") or [],
                                       "combat_id")
+    # Terminal combat lifecycle is a distinct collection. Combat ids are reused,
+    # so the only safe identity is the complete (combat_id, generation) pair.
+    # Same-key rows merge null-aware to preserve complementary terminal detail.
+    if "ended_combats" in a or "ended_combats" in b:
+        av = a.get("ended_combats")
+        bv = b.get("ended_combats")
+        lists = [value for value in (av, bv) if isinstance(value, list)]
+        if lists:
+            merged["ended_combats"] = _merge_by_composite_key(
+                lists[0], lists[1] if len(lists) > 1 else [],
+                ("combat_id", "generation"),
+            )
+        elif av is None or bv is None:
+            # Preserve the producer's unavailable state when neither input
+            # contributes authenticated rows. Do not manufacture known-empty.
+            merged["ended_combats"] = None
+        else:
+            merged["ended_combats"] = _deep_null_aware_merge(av, bv)
     merged["events"] = (a.get("events") or []) + (b.get("events") or [])
     merged["provenance"] = _merge_provenance(a.get("provenance"), b.get("provenance"))
     return merged
@@ -1837,6 +1911,26 @@ def _merge_by_key(la: List[Dict[str, Any]], lb: List[Dict[str, Any]], key: str
             order.append(kk)
         out[kk] = d  # later (b) wins
     return [out[k] for k in order]
+
+
+def _merge_by_composite_key(
+    la: List[Dict[str, Any]],
+    lb: List[Dict[str, Any]],
+    keys: Tuple[str, ...],
+) -> List[Dict[str, Any]]:
+    out: Dict[Any, Dict[str, Any]] = {}
+    order: List[Any] = []
+    for row in la + lb:
+        if isinstance(row, dict) and all(row.get(key) is not None for key in keys):
+            identity: Any = tuple(row[key] for key in keys)
+        else:
+            identity = id(row)
+        if identity not in out:
+            order.append(identity)
+            out[identity] = row
+        else:
+            out[identity] = _deep_null_aware_merge(out[identity], row)
+    return [out[identity] for identity in order]
 
 
 def _merge_provenance(pa: Any, pb: Any) -> Dict[str, Any]:

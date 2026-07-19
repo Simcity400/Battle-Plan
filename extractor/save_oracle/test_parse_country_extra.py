@@ -45,6 +45,16 @@ countries={
             }
         }
         convoys_destroyed=7
+        dynamic_modifier={
+            modifier={
+                modifier="GER_timed_test"
+                tag="D04"
+                value={ 0.15 0.1 0 }
+                enabled=yes
+                days=716
+            }
+            modifier={ modifier="GER_permanent_test" enabled=yes }
+        }
     }
     ENG={
         flags={ }
@@ -77,6 +87,21 @@ def test_empty_flags_block_is_measured_empty_but_absent_block_is_omitted():
     assert out["countries"]["ENG"]["script_flags"] == {}
     assert "script_flags" not in out["countries"]["SOV"]
     assert out["meta"]["stats"]["countries_with_script_flags_block"] == 2
+
+
+def test_dynamic_modifier_preserves_timed_days_and_optional_tag():
+    out, _ = _build()
+    timed, permanent = out["countries"]["GER"]["dynamic_modifiers"]
+    assert timed == {
+        "modifier": "GER_timed_test",
+        "enabled": True,
+        "value": [0.15, 0.1, 0.0],
+        "days": 716,
+        "tag": "D04",
+    }
+    assert permanent["modifier"] == "GER_permanent_test"
+    assert permanent["days"] is None
+    assert permanent["tag"] is None
 
 
 def test_strategic_navy_preserves_nested_save_shape_and_repeated_blocks():

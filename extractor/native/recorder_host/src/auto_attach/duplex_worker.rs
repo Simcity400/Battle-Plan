@@ -17,6 +17,9 @@ use crate::duplex_session::identity_control::{
     AcknowledgedFirstCompactRecord, AcknowledgedIdentityFailure, IdentityDurableCandidateSink,
     RecorderIdentityControlDispatcher, ValidatedFirstCompactRecord,
 };
+use crate::duplex_session::rollover_control::{
+    RecorderRolloverCoordinator, RecorderRolloverError, RecorderRolloverStore,
+};
 use crate::duplex_session::{HeartbeatError, HeartbeatProof, RecorderHeartbeat};
 use crate::transport_status::{decode_sink_failure, SinkFailureReport, SinkStatusError};
 use crate::windows_control_pipe::{
@@ -94,6 +97,7 @@ pub enum DuplexWorkerError {
     TargetExited,
     RecordingAdmission(String),
     IdentityControl(String),
+    RolloverControl(String),
     ActivationDisabled,
 }
 
@@ -132,6 +136,7 @@ impl fmt::Display for DuplexWorkerError {
                 write!(f, "duplex recording admission failed: {error}")
             }
             Self::IdentityControl(error) => write!(f, "duplex identity control failed: {error}"),
+            Self::RolloverControl(error) => write!(f, "duplex rollover control failed: {error}"),
             Self::ActivationDisabled => write!(f, "auto-attach duplex activation is disabled"),
         }
     }
@@ -790,29 +795,30 @@ where
 #[derive(Clone, Debug)]
 pub struct GracefulStopToken {
     requested: Arc<AtomicBool>,
-    transport_cancellation: ControlCancellation,
 }
 
 impl Default for GracefulStopToken {
     fn default() -> Self {
         Self {
             requested: Arc::new(AtomicBool::new(false)),
-            transport_cancellation: ControlCancellation::new(),
         }
     }
 }
 
 impl GracefulStopToken {
-    fn with_transport_cancellation(transport_cancellation: ControlCancellation) -> Self {
+    fn with_transport_cancellation(_transport_cancellation: ControlCancellation) -> Self {
         Self {
             requested: Arc::new(AtomicBool::new(false)),
-            transport_cancellation,
         }
     }
 
     pub fn request(&self) {
+        // Cooperative stop is deliberately distinct from transport failure.
+        // Cancelling here left the H4CT handle open but unusable, so the
+        // collector could not observe the protocol's clean peer-close receipt.
+        // The owning finalizer transitions state, closes/drops H4CT, drains
+        // H4CR, then uses transport cancellation only for timeout/failure.
         self.requested.store(true, Ordering::Release);
-        self.transport_cancellation.cancel();
     }
 
     pub fn is_requested(&self) -> bool {
@@ -977,6 +983,7 @@ pub struct DuplexWorkerSession<I: DeadlineControlIo> {
     replay_path: Option<String>,
     failure: Option<String>,
     sink_failure: Option<SinkFailureReport>,
+    required_capabilities: ControlCapabilities,
 }
 
 impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
@@ -985,6 +992,38 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
         collector_hello_expectation: ProofExpectation,
         startup_deadline: ControlDeadline,
         transport_cancellation: ControlCancellation,
+    ) -> Self {
+        Self::new_with_capabilities(
+            channel,
+            collector_hello_expectation,
+            startup_deadline,
+            transport_cancellation,
+            required_auto_attach_duplex_capabilities(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_rollover_offline(
+        channel: DeadlineControlChannel<I>,
+        collector_hello_expectation: ProofExpectation,
+        startup_deadline: ControlDeadline,
+        transport_cancellation: ControlCancellation,
+    ) -> Self {
+        Self::new_with_capabilities(
+            channel,
+            collector_hello_expectation,
+            startup_deadline,
+            transport_cancellation,
+            ControlCapabilities::auto_attach_duplex_rollover_v1(),
+        )
+    }
+
+    fn new_with_capabilities(
+        channel: DeadlineControlChannel<I>,
+        collector_hello_expectation: ProofExpectation,
+        startup_deadline: ControlDeadline,
+        transport_cancellation: ControlCancellation,
+        required_capabilities: ControlCapabilities,
     ) -> Self {
         let graceful_stop =
             GracefulStopToken::with_transport_cancellation(transport_cancellation.clone());
@@ -1004,6 +1043,7 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
             replay_path: None,
             failure: None,
             sink_failure: None,
+            required_capabilities,
         }
     }
 
@@ -1062,10 +1102,10 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
                 return Err(DuplexWorkerError::CollectorHello(error));
             }
         };
-        if let Err(error) = self.channel.admit_decoded_hello_capabilities(
-            required_auto_attach_duplex_capabilities(),
-            observed_capabilities,
-        ) {
+        if let Err(error) = self
+            .channel
+            .admit_decoded_hello_capabilities(self.required_capabilities, observed_capabilities)
+        {
             let error = error.to_string();
             self.fail(error.clone());
             return Err(DuplexWorkerError::CollectorHello(error));
@@ -1115,6 +1155,27 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
                 Err(error)
             }
         }
+    }
+
+    /// Rollover-specific second barrier.  It reuses the one durable CFA1
+    /// dispatcher and then binds that exact acknowledgement to the accepted
+    /// CRP1 before returning it to the recording-admission constructor.
+    pub fn acknowledge_rollover_first_compact_record<S: IdentityDurableCandidateSink>(
+        &mut self,
+        rollover: &mut RecorderRolloverCoordinator,
+        identity: &mut RecorderIdentityControlDispatcher<S>,
+        first_record: ValidatedFirstCompactRecord,
+        deadline: ControlDeadline,
+    ) -> Result<AcknowledgedFirstCompactRecord, DuplexWorkerError> {
+        let acknowledged =
+            self.acknowledge_first_compact_record(identity, first_record, deadline)?;
+        if let Err(error) = rollover.admit_new_header(acknowledged.first_record().acknowledgement())
+        {
+            let error = DuplexWorkerError::RolloverControl(error.to_string());
+            self.fail(error.to_string());
+            return Err(error);
+        }
+        Ok(acknowledged)
     }
 
     pub(crate) fn heartbeat_cycle_at(
@@ -1281,6 +1342,41 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
 
     pub fn recording_admission(&self) -> Option<&DuplexRecordingAdmission> {
         self.recording_admission.as_ref()
+    }
+
+    /// Dedicated CRP1 receive/drain/seal/open/CRA1 transaction.  Success resets
+    /// recording admission and enters the existing first-record barrier for the
+    /// new sequence-zero CID1.  The next call must durably acknowledge that CID1
+    /// before [`Self::first_frame_valid`] can restore Recording.
+    pub fn receive_rollover_and_prepare_new_header<S: RecorderRolloverStore>(
+        &mut self,
+        coordinator: &mut RecorderRolloverCoordinator,
+        store: &mut S,
+        deadline: ControlDeadline,
+    ) -> Result<compact_contract::campaign_rollover::RolloverProposeV1, DuplexWorkerError> {
+        self.require_state(DuplexWorkerState::Recording, "receive campaign rollover")?;
+        if self.required_capabilities != ControlCapabilities::auto_attach_duplex_rollover_v1() {
+            return Err(DuplexWorkerError::ActivationDisabled);
+        }
+        let proposal = match coordinator.receive_drain_seal_open_and_ack(
+            &mut self.channel,
+            store,
+            deadline,
+            &self.transport_cancellation,
+        ) {
+            Ok(proposal) => proposal,
+            Err(error) => {
+                let error: RecorderRolloverError = error;
+                let error = DuplexWorkerError::RolloverControl(error.to_string());
+                self.fail(error.to_string());
+                return Err(error);
+            }
+        };
+        self.recording_admission = None;
+        self.last_confirmed_hour = None;
+        self.waiting_for_world_since = Some(Instant::now());
+        self.state = DuplexWorkerState::WaitingForWorld;
+        Ok(proposal)
     }
 
     pub fn record_hour(&mut self, game_hour: i64) -> Result<(), DuplexWorkerError> {
@@ -1494,12 +1590,6 @@ impl<I: DeadlineControlIo + Send> WorkerHandle for DuplexWorkerSession<I> {
 
     fn request_stop(&mut self) {
         self.request_graceful_stop_at(Instant::now());
-    }
-}
-
-impl<I: DeadlineControlIo> Drop for DuplexWorkerSession<I> {
-    fn drop(&mut self) {
-        self.transport_cancellation.cancel();
     }
 }
 
@@ -2452,7 +2542,7 @@ mod tests {
     fn real_collector_client_hello_bytes(client_session: [u8; 16]) -> Vec<u8> {
         let outbound = Rc::new(RefCell::new(Vec::new()));
         let session =
-            crate::control_transport::claim_session_capability(client_session).unwrap();
+            compact_contract::control_transport::claim_session_capability(client_session).unwrap();
         let expected = expectation();
         let mut client = collector::duplex_client::CollectorControlClient::new(
             &collector::duplex_client::test_duplex_client_permit(),
@@ -2474,7 +2564,12 @@ mod tests {
             &ClientZeroClock,
             Duration::from_secs(30),
         );
-        client.perform_handshake(&collector::duplex_client::test_duplex_client_permit(), deadline).unwrap();
+        client
+            .perform_handshake(
+                &collector::duplex_client::test_duplex_client_permit(),
+                deadline,
+            )
+            .unwrap();
         let bytes = outbound.borrow().clone();
         bytes
     }
@@ -2498,14 +2593,19 @@ mod tests {
         let client_sid = SessionId::from_bytes(client_session).unwrap();
         let frame = crate::control_transport::decode_frame(&bytes, client_sid, 0).unwrap();
         assert_eq!(frame.kind, MessageKind::CollectorHello);
-        assert_eq!(bytes.len(), crate::control_transport::CONTROL_HEADER_LEN + 72);
+        assert_eq!(
+            bytes.len(),
+            crate::control_transport::CONTROL_HEADER_LEN + 72
+        );
 
         // The payload decodes through the recorder's REAL admission decoder,
         // binds to the retained attempt facts, and claims exactly the required
         // capability word.
-        let observed =
-            super::super::proof::decode_collector_hello_capabilities(&frame.payload, &expectation())
-                .unwrap();
+        let observed = super::super::proof::decode_collector_hello_capabilities(
+            &frame.payload,
+            &expectation(),
+        )
+        .unwrap();
         assert_eq!(observed, required_auto_attach_duplex_capabilities());
 
         // Full REAL worker-session admission over the identical payload.
@@ -2538,8 +2638,7 @@ mod tests {
 
         let worker_session = [0xD3; 16];
         let worker_sid = SessionId::from_bytes(worker_session).unwrap();
-        let inbound =
-            encode_frame(worker_sid, 0, MessageKind::CollectorHello, &payload).unwrap();
+        let inbound = encode_frame(worker_sid, 0, MessageKind::CollectorHello, &payload).unwrap();
         let mut session = accept(prepared_with_inbound(worker_session, inbound));
         let err = session.receive_collector_hello(Instant::now()).unwrap_err();
         assert!(
@@ -2596,7 +2695,10 @@ mod tests {
     }
 
     fn far_client_deadline() -> collector::duplex_client::MonotonicDeadline {
-        collector::duplex_client::MonotonicDeadline::from_now(&ClientZeroClock, Duration::from_secs(30))
+        collector::duplex_client::MonotonicDeadline::from_now(
+            &ClientZeroClock,
+            Duration::from_secs(30),
+        )
     }
 
     /// TRANSPORT_STATUS loopback: the REAL client's `report_sink_failure`
@@ -2615,12 +2717,17 @@ mod tests {
                 inbound: Rc::new(RefCell::new(std::collections::VecDeque::new())),
             },
             ClientZeroClock,
-            crate::control_transport::claim_session_capability([0xE1; 16]).unwrap(),
+            compact_contract::control_transport::claim_session_capability([0xE1; 16]).unwrap(),
             client_identity(),
             collector::duplex_client::DuplexClientPolicy::DEFAULT,
         );
         let deadline = far_client_deadline();
-        client.perform_handshake(&collector::duplex_client::test_duplex_client_permit(), deadline).unwrap();
+        client
+            .perform_handshake(
+                &collector::duplex_client::test_duplex_client_permit(),
+                deadline,
+            )
+            .unwrap();
         client.report_sink_failure(&report, deadline).unwrap();
 
         // The client's second frame (after the hello) is the sink failure. Decode
@@ -2641,11 +2748,13 @@ mod tests {
         // sink-failure frame to its authoritative consumer and surfaces it.
         let worker_session = [0xE2; 16];
         let worker_sid = SessionId::from_bytes(worker_session).unwrap();
-        let inbound =
-            encode_frame(worker_sid, 0, sink_frame.kind, &sink_frame.payload).unwrap();
+        let inbound = encode_frame(worker_sid, 0, sink_frame.kind, &sink_frame.payload).unwrap();
         let mut session = accept(prepared_with_inbound(worker_session, inbound));
         let err = session.receive_collector_hello(Instant::now()).unwrap_err();
-        assert!(matches!(err, DuplexWorkerError::SinkFailure(_)), "got {err:?}");
+        assert!(
+            matches!(err, DuplexWorkerError::SinkFailure(_)),
+            "got {err:?}"
+        );
         assert_eq!(session.sink_failure(), Some(&report));
     }
 
@@ -2666,7 +2775,7 @@ mod tests {
                 inbound: Rc::new(RefCell::new(std::collections::VecDeque::new())),
             },
             ClientZeroClock,
-            crate::control_transport::claim_session_capability([0xE4; 16]).unwrap(),
+            compact_contract::control_transport::claim_session_capability([0xE4; 16]).unwrap(),
             client_identity(),
             collector::duplex_client::DuplexClientPolicy::DEFAULT,
         );
@@ -2690,7 +2799,10 @@ mod tests {
         let inbound = encode_frame(worker_sid, 0, sink_frame.kind, &sink_frame.payload).unwrap();
         let mut session = accept(prepared_with_inbound(worker_session, inbound));
         let err = session.receive_collector_hello(Instant::now()).unwrap_err();
-        assert!(matches!(err, DuplexWorkerError::SinkFailure(_)), "got {err:?}");
+        assert!(
+            matches!(err, DuplexWorkerError::SinkFailure(_)),
+            "got {err:?}"
+        );
         assert_eq!(session.sink_failure(), Some(&report));
     }
 
@@ -2710,7 +2822,7 @@ mod tests {
                 inbound: Rc::new(RefCell::new(std::collections::VecDeque::new())),
             },
             ClientZeroClock,
-            crate::control_transport::claim_session_capability([0xE6; 16]).unwrap(),
+            compact_contract::control_transport::claim_session_capability([0xE6; 16]).unwrap(),
             client_identity(),
             collector::duplex_client::DuplexClientPolicy::DEFAULT,
         );
@@ -2731,7 +2843,10 @@ mod tests {
         let inbound = encode_frame(worker_sid, 0, sink_frame.kind, &sink_frame.payload).unwrap();
         let mut session = accept(prepared_with_inbound(worker_session, inbound));
         let err = session.receive_collector_hello(Instant::now()).unwrap_err();
-        assert!(matches!(err, DuplexWorkerError::SinkFailure(_)), "got {err:?}");
+        assert!(
+            matches!(err, DuplexWorkerError::SinkFailure(_)),
+            "got {err:?}"
+        );
         assert_eq!(session.sink_failure(), Some(&report));
     }
 
@@ -2787,19 +2902,24 @@ mod tests {
                 inbound: Rc::clone(&inbound),
             },
             ClientZeroClock,
-            crate::control_transport::claim_session_capability([0xE3; 16]).unwrap(),
+            compact_contract::control_transport::claim_session_capability([0xE3; 16]).unwrap(),
             client_identity(),
             collector::duplex_client::DuplexClientPolicy::DEFAULT,
         );
         let deadline = far_client_deadline();
-        client.perform_handshake(&collector::duplex_client::test_duplex_client_permit(), deadline).unwrap();
+        client
+            .perform_handshake(
+                &collector::duplex_client::test_duplex_client_permit(),
+                deadline,
+            )
+            .unwrap();
         client.report_identity_failure(&failure, deadline).unwrap();
 
         // The client's CIF1 decodes through the REAL host codec, unchanged.
         let bytes = outbound.borrow().clone();
         let hello_wire = crate::control_transport::CONTROL_HEADER_LEN + 72;
-        let cif1 = crate::control_transport::decode_frame(&bytes[hello_wire..], client_sid, 1)
-            .unwrap();
+        let cif1 =
+            crate::control_transport::decode_frame(&bytes[hello_wire..], client_sid, 1).unwrap();
         assert_eq!(cif1.kind, MessageKind::IdentityFailure);
         assert_eq!(decode_identity_failure(&cif1.payload).unwrap(), failure);
 
@@ -2818,5 +2938,4 @@ mod tests {
             )
         );
     }
-
 }

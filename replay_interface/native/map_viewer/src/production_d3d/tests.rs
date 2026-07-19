@@ -250,6 +250,201 @@ fn unified_order_rejects_duplicate_unknown_and_omitted_static_operations() {
     );
 }
 
+/// Structurally complete draw packet for boundary fixtures that must never be
+/// executed; the typed refusal under test fires before any field is read.
+fn fixture_static_draw() -> replay_core::StaticMapDraw {
+    use replay_core::{
+        BlendDesc, BlendFactor, BlendOperation, BufferSource, Comparison, CompiledShaderPayload,
+        ContentLayerKind, CullMode, DepthDesc, DrawCommand, FillMode, GeometryBinding, IndexFormat,
+        PipelineDesc, PrimitiveTopology, RasterizerDesc, RenderOutputState, ShaderProgram,
+        StaticGeometrySource, StaticMapDraw, StencilFaceDesc, StencilOperation,
+        VertexBufferBinding, ViewportDesc,
+    };
+
+    let bytecode = vec![0u8; 4];
+    let compiled = |profile: &str| CompiledShaderPayload {
+        compiler_identity: "d3dcompiler_test_fixture".into(),
+        target_profile: profile.into(),
+        compiler_flags_u64: 0,
+        sha256: snapshot::sha256::Sha256::hex(&bytecode),
+        bytecode: bytecode.clone(),
+    };
+    let stencil = StencilFaceDesc {
+        fail_operation: StencilOperation::Keep,
+        depth_fail_operation: StencilOperation::Keep,
+        pass_operation: StencilOperation::Keep,
+        comparison: Comparison::Always,
+    };
+    let vertices = vec![0u8; 24];
+    StaticMapDraw {
+        draw_token: "test.fixture.never_executed".into(),
+        shader_program: ShaderProgram {
+            source: replay_core::UsedContentKey {
+                effective_vfs_manifest_sha256: "22".repeat(32),
+                normalized_game_relative_path: "gfx/fx/fixture.hlsl".into(),
+                winning_layer_ordinal: 0,
+                layer_kind: ContentLayerKind::Base,
+                layer_id: "base".into(),
+                source_sha256: "77".repeat(32),
+                payload_sha256: "77".repeat(32),
+                payload_bytes: 1,
+            },
+            effect_token: "test.fixture".into(),
+            vertex_entry_token: "vs_main".into(),
+            pixel_entry_token: "ps_main".into(),
+            ordered_defines: Vec::new(),
+            compiled_vertex_shader: compiled("vs_5_0"),
+            compiled_pixel_shader: compiled("ps_5_0"),
+            geometry_shader: None,
+            hull_shader: None,
+            domain_shader: None,
+            compute_shader: None,
+        },
+        ordered_shader_resources: Vec::new(),
+        pipeline: PipelineDesc {
+            topology: PrimitiveTopology::TriangleList,
+            blend: BlendDesc {
+                alpha_to_coverage_enabled: false,
+                independent_blend_enabled: false,
+                enabled: false,
+                source_color: BlendFactor::One,
+                destination_color: BlendFactor::Zero,
+                color_operation: BlendOperation::Add,
+                source_alpha: BlendFactor::One,
+                destination_alpha: BlendFactor::Zero,
+                alpha_operation: BlendOperation::Add,
+                write_mask_rgba_u8: 0xf,
+                additional_targets: Vec::new(),
+                blend_factor_rgba_f32_bits: [0; 4],
+                sample_mask_u32: u32::MAX,
+            },
+            depth: DepthDesc {
+                enabled: false,
+                write_enabled: false,
+                comparison: Comparison::Always,
+                stencil_enabled: false,
+                stencil_read_mask_u8: 0xff,
+                stencil_write_mask_u8: 0xff,
+                front_face: stencil.clone(),
+                back_face: stencil,
+                stencil_reference_u32: 0,
+            },
+            rasterizer: RasterizerDesc {
+                fill: FillMode::Solid,
+                cull: CullMode::None,
+                front_counter_clockwise: false,
+                depth_clip_enabled: true,
+                scissor_enabled: false,
+                depth_bias_i32: 0,
+                depth_bias_clamp_f32_bits: 0,
+                slope_scaled_depth_bias_f32_bits: 0,
+                multisample_enabled: false,
+                antialiased_line_enabled: false,
+            },
+            samplers: Vec::new(),
+            input_layout: Vec::new(),
+            index_format: IndexFormat::None,
+            static_indices_u16: Vec::new(),
+        },
+        geometry: StaticGeometrySource::Exact {
+            geometry: GeometryBinding {
+                ordered_vertex_buffers: vec![VertexBufferBinding {
+                    input_slot: 0,
+                    stride_bytes: 8,
+                    byte_offset: 0,
+                    source: BufferSource::Inline {
+                        sha256: snapshot::sha256::Sha256::hex(&vertices),
+                        bytes: vertices,
+                    },
+                }],
+                index_buffer: None,
+                stream_output_targets: Vec::new(),
+                draw: DrawCommand::Draw {
+                    vertex_count: 3,
+                    start_vertex: 0,
+                },
+            },
+        },
+        ordered_constant_buffers: Vec::new(),
+        output_state: RenderOutputState {
+            ordered_color_targets: vec![replay_core::RenderTargetDesc {
+                prepared_target: replay_core::PreparedRenderTarget::OpaqueRenderTarget {
+                    attachment_ordinal: FIXTURE_COLOR_ATTACHMENT_ORDINAL,
+                },
+                width: 8,
+                height: 4,
+                dxgi_format_u32: 28,
+                mip_level: 0,
+                sample_count: 1,
+                sample_quality: 0,
+                persistent_content: None,
+                exact_resource: None,
+            }],
+            depth_target: None,
+            viewport: ViewportDesc {
+                top_left_x_f32_bits: 0,
+                top_left_y_f32_bits: 0,
+                width_f32_bits: 8f32.to_bits(),
+                height_f32_bits: 4f32.to_bits(),
+                min_depth_f32_bits: 0,
+                max_depth_f32_bits: 1f32.to_bits(),
+            },
+            scissor: None,
+        },
+        payload_sha256: "44".repeat(32),
+    }
+}
+
+#[test]
+fn m03_carrier_without_cross_family_order_is_a_typed_refusal() {
+    use replay_core::{M03ArrowDraw, M03ArrowDrawMember, M03ArrowDrawRef, M03StableKey};
+
+    // A populated M03 carrier with no authoritative cross-family execution
+    // order must be refused, never silently executed with the M03 draws
+    // absent from bridge calls and the receipt.
+    let mut frame = prepared_static_frame(Vec::new());
+    frame.m03_arrows = Some(replay_core::M03ArrowFrame {
+        schema: "hoi4.production-m03-order-movement-arrows.v1".into(),
+        executable_sha256: "88".repeat(32),
+        static_semantic_proof_sha256: "99".repeat(32),
+        update_index: 3,
+        first_sequence: 10,
+        last_sequence: 20,
+        used_content: Vec::new(),
+        rows: Vec::new(),
+        draws: vec![M03ArrowDraw {
+            engine_draw_ordinal: 0,
+            draw: fixture_static_draw(),
+            members: vec![M03ArrowDrawMember {
+                stable_key: M03StableKey::Movement {
+                    owner_country_id: 1,
+                    division_id: 2,
+                    movement_generation: 3,
+                },
+                member_ordinal: 0,
+                first_vertex: 0,
+                vertex_count: 3,
+            }],
+        }],
+        ordered_draws: vec![M03ArrowDrawRef {
+            engine_draw_ordinal: 0,
+        }],
+    });
+    frame.ordered_static_programs.clear();
+    frame.ordered_render_operations.clear();
+
+    let mut bridge = TraceBridge::default();
+    let error = execute_production_d3d_frame(&frame, &mut bridge)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("M03 arrow draws have no authoritative cross-family execution order"),
+        "{error}"
+    );
+    // The refusal is total: nothing was drawn behind the missing order.
+    assert_eq!(bridge.calls, vec!["begin:false"]);
+}
+
 #[test]
 fn target_validation_rejects_format_order_and_sample_drift() {
     let base = ProductionMainSceneTargetDesc {

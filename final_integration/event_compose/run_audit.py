@@ -170,6 +170,22 @@ def run_one(spec: dict) -> dict:
     return result
 
 
+def cargo_test_status(returncode: int, stdout: str) -> str:
+    """Fail closed when a filtered cargo test run matched zero tests.
+
+    `cargo test --lib <filter>` exits 0 even when the filter matches nothing
+    ("running 0 tests"), so a renamed or removed pinned test would otherwise
+    become a silent no-op PASS. Require a `test result: ok.` summary with at
+    least one passed test before accepting the exit code as a PASS.
+    """
+    if returncode != 0:
+        return "FAIL"
+    passed_counts = [int(count) for count in re.findall(r"test result: ok\. (\d+) passed", stdout)]
+    if not passed_counts or sum(passed_counts) == 0:
+        return "ZERO_TESTS_MATCHED_FILTER"
+    return "PASS"
+
+
 def run_cargo_gate(name: str, test_filter: str) -> dict:
     env = dict(os.environ)
     env["CARGO_TARGET_DIR"] = str(Path(tempfile.gettempdir()) / "hoi4_event_compose_cargo")
@@ -188,7 +204,8 @@ def run_cargo_gate(name: str, test_filter: str) -> dict:
         "id": name,
         "packet": spec["packet"],
         "class": spec["class"],
-        "status": "PASS" if proc.returncode == 0 else "FAIL",
+        "test_filter": test_filter,
+        "status": cargo_test_status(proc.returncode, proc.stdout),
         "exit_code": proc.returncode,
         "stdout": {"path": stdout_path.relative_to(HERE).as_posix(), "sha256": sha256(stdout_path)},
         "stderr": {"path": stderr_path.relative_to(HERE).as_posix(), "sha256": sha256(stderr_path)},
@@ -217,7 +234,8 @@ def run_terrain_capture_gate(name: str, test_filter: str, capture: Path) -> dict
         "packet": "T01+production_authority",
         "class": "ported_real_corpus_compose",
         "capture": str(capture),
-        "status": "PASS" if proc.returncode == 0 else "FAIL",
+        "test_filter": test_filter,
+        "status": cargo_test_status(proc.returncode, proc.stdout),
         "exit_code": proc.returncode,
         "stdout": {"path": stdout_path.relative_to(HERE).as_posix(), "sha256": sha256(stdout_path)},
         "stderr": {"path": stderr_path.relative_to(HERE).as_posix(), "sha256": sha256(stderr_path)},

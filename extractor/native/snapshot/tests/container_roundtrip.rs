@@ -80,6 +80,7 @@ fn fixture_identity() -> PackIdentity {
         build_pinned: true,
         mod_identity: Some(json!({ "modset_id": MODSET, "load_order": ["test.mod"] })),
         created_utc: Some("2026-06-26T21:30:00Z".into()),
+        content_manifest: None,
     }
 }
 

@@ -210,6 +210,28 @@ class TestEmptySkeletons(unittest.TestCase):
         self.assertIsNone(c["politics"]["stability"])
         self.assertIsNone(c["military"]["num_ships"])
 
+    def test_per_entity_skeletons_match_dataclasses(self):
+        # empty_state/province/division copy precomputed templates for speed;
+        # they must remain exactly the dataclass shape.
+        from dataclasses import asdict
+        self.assertEqual(schema.empty_state(), asdict(schema.State()))
+        self.assertEqual(schema.empty_province(), asdict(schema.Province()))
+        self.assertEqual(schema.empty_division(), asdict(schema.Division()))
+
+    def test_per_entity_skeletons_share_no_mutable_state(self):
+        # the template copy must splice in FRESH lists — mutating one skeleton
+        # can never leak into another (or into the template itself).
+        s1, s2 = schema.empty_state(), schema.empty_state()
+        s1["is_core_of"].append("GER")
+        s1["is_claimed_by"].append("POL")
+        self.assertEqual(s2["is_core_of"], [])
+        self.assertEqual(s2["is_claimed_by"], [])
+        self.assertEqual(schema.empty_state()["is_core_of"], [])
+        d1, d2 = schema.empty_division(), schema.empty_division()
+        d1["equipment"].append({"variant_id": "1", "count": 2})
+        self.assertEqual(d2["equipment"], [])
+        self.assertEqual(schema.empty_division()["equipment"], [])
+
 
 class TestValidator(unittest.TestCase):
     def _fired_event_snapshot(self):
@@ -231,7 +253,12 @@ class TestValidator(unittest.TestCase):
             "timeout_tick": 5000,
             "resolved_tick": 4010,
             "resolution_reason": "selected",
-            "runtime_text_context_id": "event:7",
+            "runtime_title_text_context_id": "event:title:7",
+            "runtime_description_text_context_id": "event:description:7",
+            "runtime_option_text_contexts": [
+                {"definition_ordinal": 0, "context_id": "event:option:7:0"},
+                {"definition_ordinal": 2, "context_id": "event:option:7:2"},
+            ],
         }]
         return snap
 
@@ -253,6 +280,19 @@ class TestValidator(unittest.TestCase):
         ):
             self.assertTrue(any(token in problem for problem in probs), (token, probs))
 
+    def test_xui21_fired_event_contract_rejects_popup_wide_or_misbound_text_contexts(self):
+        snap = self._fired_event_snapshot()
+        row = snap["world_events"]["fired_events"][0]
+        row["runtime_text_context_id"] = "forbidden:popup-wide"
+        row["runtime_option_text_contexts"] = [
+            {"definition_ordinal": 1, "context_id": "event:option:7:1"},
+            {"definition_ordinal": 1, "context_id": "event:option:7:duplicate"},
+        ]
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("singular popup-wide join is forbidden" in p for p in probs), probs)
+        self.assertTrue(any("definition_ordinal not visible" in p for p in probs), probs)
+        self.assertTrue(any("not strictly ordered" in p for p in probs), probs)
+
     def test_xui21_lifecycle_only_and_timeout_default_are_valid(self):
         snap = self._fired_event_snapshot()
         ai = snap["world_events"]["fired_events"][0]
@@ -260,6 +300,9 @@ class TestValidator(unittest.TestCase):
         ai["selected_desc_key"] = None
         ai["shown_picture_gfx"] = None
         ai["popup_subtype"] = None
+        ai["runtime_title_text_context_id"] = None
+        ai["runtime_description_text_context_id"] = None
+        ai["runtime_option_text_contexts"] = []
         self.assertEqual(schema.validate_snapshot(snap), [])
 
         timeout = self._fired_event_snapshot()

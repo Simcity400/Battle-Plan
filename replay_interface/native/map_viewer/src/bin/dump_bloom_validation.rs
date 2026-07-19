@@ -28,8 +28,10 @@ use map_viewer::{
 use serde::Serialize;
 use std::env;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
+
+#[path = "dump_shared/bmp_out.rs"]
+mod bmp_out;
 
 const MAIN_SCENE_NAME: &str = "MainScene";
 const RESTORE_BLOOM_NAME: &str = "RestoreBloom";
@@ -503,44 +505,7 @@ fn half_ulp_distance(a: u16, b: u16) -> u32 {
     (ord(a) - ord(b)).unsigned_abs()
 }
 
-// ---------- BMP writers (24-bit BGR, bottom-up) ----------
-
-fn write_bmp_bgr(path: &Path, width: usize, height: usize, rgb: &[[u8; 3]]) -> Result<()> {
-    let row_padded = (width * 3 + 3) & !3;
-    let image_size = row_padded * height;
-    let file_size = 54 + image_size;
-    let mut buf = Vec::with_capacity(file_size);
-    buf.extend_from_slice(b"BM");
-    buf.extend_from_slice(&(file_size as u32).to_le_bytes());
-    buf.extend_from_slice(&0u32.to_le_bytes());
-    buf.extend_from_slice(&54u32.to_le_bytes());
-    buf.extend_from_slice(&40u32.to_le_bytes());
-    buf.extend_from_slice(&(width as i32).to_le_bytes());
-    buf.extend_from_slice(&(height as i32).to_le_bytes());
-    buf.extend_from_slice(&1u16.to_le_bytes());
-    buf.extend_from_slice(&24u16.to_le_bytes());
-    buf.extend_from_slice(&0u32.to_le_bytes());
-    buf.extend_from_slice(&(image_size as u32).to_le_bytes());
-    buf.extend_from_slice(&2835i32.to_le_bytes());
-    buf.extend_from_slice(&2835i32.to_le_bytes());
-    buf.extend_from_slice(&0u32.to_le_bytes());
-    buf.extend_from_slice(&0u32.to_le_bytes());
-    // Bottom-up rows.
-    for y in (0..height).rev() {
-        for x in 0..width {
-            let [r, g, b] = rgb[y * width + x];
-            buf.push(b);
-            buf.push(g);
-            buf.push(r);
-        }
-        for _ in 0..(row_padded - width * 3) {
-            buf.push(0);
-        }
-    }
-    let mut file = fs::File::create(path)?;
-    file.write_all(&buf)?;
-    Ok(())
-}
+// ---------- BMP writers (24-bit BGR, bottom-up; shared writer) ----------
 
 fn write_bmp_linear(path: &Path, image: &BloomImageRgba) -> Result<()> {
     let rgb: Vec<[u8; 3]> = image
@@ -548,7 +513,7 @@ fn write_bmp_linear(path: &Path, image: &BloomImageRgba) -> Result<()> {
         .iter()
         .map(|t| [to_u8(t[0]), to_u8(t[1]), to_u8(t[2])])
         .collect();
-    write_bmp_bgr(path, image.width, image.height, &rgb)
+    bmp_out::write_bmp24_rgb(path, image.width, image.height, &rgb)
 }
 
 /// A gamma-ish tonemap preview so the HDR MainScene is legible.
@@ -564,7 +529,7 @@ fn write_bmp_tonemap(path: &Path, image: &BloomImageRgba) -> Result<()> {
             ]
         })
         .collect();
-    write_bmp_bgr(path, image.width, image.height, &rgb)
+    bmp_out::write_bmp24_rgb(path, image.width, image.height, &rgb)
 }
 
 fn reinhard(x: f32) -> f32 {
@@ -585,7 +550,7 @@ fn write_diff_heatmap(
             heat(d * 255.0) // scale so a full 8-bit level saturates the ramp
         })
         .collect();
-    write_bmp_bgr(path, expected.width, expected.height, &rgb)
+    bmp_out::write_bmp24_rgb(path, expected.width, expected.height, &rgb)
 }
 
 /// Blue(0) -> green -> red(>=1) heat ramp over `t` (already scaled so 1.0 ~= a

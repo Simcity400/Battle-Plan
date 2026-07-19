@@ -37,6 +37,10 @@ const MAP_COUNTER_SPRITE_NAMES: &[&str] = &[
     "GFX_mapicon_unit_no_orders",
     "GFX_mapicon_unit_area_defense",
     "GFX_mapicon_unit_invalid_orders",
+    "GFX_onmap_digin_icon",
+    "GFX_onmap_training_icon",
+    "GFX_onmap_action_icon",
+    "GFX_unit_attrition",
     "GFX_mapicon_tiny_unit_counter",
 ];
 

@@ -8,8 +8,9 @@
 use portable_content_manifest::effective_vfs::EffectiveVfs;
 use portable_content_manifest::{normalize_game_relative_path, ContentManifest, UsedContentKey};
 use portable_render_stream::{
-    BufferSource, ProductionRenderFrame, RenderTargetDesc, StaticGeometrySource, StaticMapCommand,
-    StaticMapPassProgram, StaticShaderResourceSource, TextureResourceDesc,
+    BufferSource, ProductionRenderFrame, RenderTargetDesc, RenderTargetInitialSource,
+    StaticGeometrySource, StaticMapCommand, StaticMapPassProgram, StaticShaderResourceSource,
+    TextureResourceDesc,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -210,6 +211,13 @@ fn append_target_content(target: &RenderTargetDesc, out: &mut BTreeSet<UsedConte
     if let Some(content) = &target.persistent_content {
         out.insert(content.clone());
     }
+    if let Some(exact) = &target.exact_resource {
+        for initial in &exact.ordered_initial_subresources {
+            if let RenderTargetInitialSource::UsedContentRange { content, .. } = &initial.source {
+                out.insert(content.clone());
+            }
+        }
+    }
 }
 
 fn append_texture_resource_content(
@@ -241,9 +249,11 @@ mod tests {
         ConstantBufferBinding, CullMode, DepthDesc, DrawCommand, FillMode, IndexFormat,
         InputElementDesc, InterpreterVertexBufferDesc, ParticleRuntimeMode, PipelineDesc,
         PreparedRenderTarget, PrimitiveTopology, RasterizerDesc, RenderAuthority, RenderCheckpoint,
-        RenderExecutionRef, RenderOutputState, RenderSubmit, ShaderProgram, ShaderResourceViewDesc,
-        StaticMapDraw, StaticMapOperation, StaticShaderResourceBinding, StencilFaceDesc,
-        StencilOperation, TextureResourceDimension, ViewportDesc,
+        RenderExecutionRef, RenderOutputState, RenderSubmit, RenderTargetAttachmentView,
+        RenderTargetExactResource, RenderTargetInitialSubresource, RenderTargetResourceDesc,
+        RenderTargetViewDesc, ShaderProgram, ShaderResourceViewDesc, StaticMapDraw,
+        StaticMapOperation, StaticShaderResourceBinding, StencilFaceDesc, StencilOperation,
+        TextureResourceDimension, ViewportDesc,
     };
     use snapshot::sha256::{to_hex, Sha256};
     use std::fs;
@@ -424,8 +434,43 @@ mod tests {
         .with_computed_digest()
         .unwrap();
 
-        let target =
-            |persistent_content: Option<UsedContentKey>, prepared_target| RenderTargetDesc {
+        let target = |persistent_content: Option<UsedContentKey>, prepared_target| {
+            let exact_resource =
+                persistent_content
+                    .as_ref()
+                    .map(|content| RenderTargetExactResource {
+                        resource: RenderTargetResourceDesc {
+                            dimension: TextureResourceDimension::Texture2d,
+                            width: 64,
+                            height: 64,
+                            depth: 1,
+                            mip_levels: 1,
+                            array_size: 1,
+                            dxgi_format_u32: 28,
+                            sample_count: 1,
+                            sample_quality: 0,
+                            usage_u32: 0,
+                            bind_flags_u32: 0x20,
+                            cpu_access_flags_u32: 0,
+                            misc_flags_u32: 0,
+                        },
+                        ordered_views: vec![RenderTargetViewDesc::RenderTarget {
+                            dxgi_format_u32: 28,
+                            view: RenderTargetAttachmentView::Texture2d { mip_slice: 0 },
+                        }],
+                        ordered_initial_subresources: vec![RenderTargetInitialSubresource {
+                            subresource_ordinal: 0,
+                            row_pitch: 1,
+                            slice_pitch: 1,
+                            source: RenderTargetInitialSource::UsedContentRange {
+                                content: content.clone(),
+                                source_byte_offset: 0,
+                                byte_count: content.payload_bytes,
+                                range_sha256: content.payload_sha256.clone(),
+                            },
+                        }],
+                    });
+            RenderTargetDesc {
                 prepared_target,
                 width: 64,
                 height: 64,
@@ -434,7 +479,9 @@ mod tests {
                 sample_count: 1,
                 sample_quality: 0,
                 persistent_content,
-            };
+                exact_resource,
+            }
+        };
         let mut programs = Vec::new();
         for index in 0..10 {
             let path = format!("gfx/role/role_{index:02}.asset");
@@ -693,6 +740,7 @@ mod tests {
                 effective_vfs_manifest_sha256: authority,
                 effect_catalog_sha256: "1".repeat(64),
                 entity_animation_catalog_sha256: "2".repeat(64),
+                recorded_input_variant: None,
                 particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
             },
             update_index: 16_959_360,
@@ -712,6 +760,8 @@ mod tests {
             submits: vec![submit],
             m02_combat: None,
             m03_arrows: None,
+            o04_cities: None,
+            authenticated_ui_pass: None,
             checkpoint: RenderCheckpoint {
                 last_sequence: 0,
                 last_update_index: 16_959_360,
@@ -810,6 +860,60 @@ mod tests {
             &incomplete.manifest,
         )
         .is_err());
+    }
+
+    #[test]
+    fn exact_render_target_initial_content_enters_the_program_closure() {
+        let fixture = fixture("exact-target-content");
+        let content = fixture
+            .vfs
+            .resolve_required("gfx/role/role_00.asset", "test target initialization")
+            .unwrap()
+            .content;
+        let target = RenderTargetDesc {
+            prepared_target: PreparedRenderTarget::OpaqueRenderTarget {
+                attachment_ordinal: 0,
+            },
+            width: 1,
+            height: 1,
+            dxgi_format_u32: 28,
+            mip_level: 0,
+            sample_count: 1,
+            sample_quality: 0,
+            persistent_content: None,
+            exact_resource: Some(RenderTargetExactResource {
+                resource: RenderTargetResourceDesc {
+                    dimension: TextureResourceDimension::Texture2d,
+                    width: 1,
+                    height: 1,
+                    depth: 1,
+                    mip_levels: 1,
+                    array_size: 1,
+                    dxgi_format_u32: 28,
+                    sample_count: 1,
+                    sample_quality: 0,
+                    usage_u32: 0,
+                    bind_flags_u32: 0x20,
+                    cpu_access_flags_u32: 0,
+                    misc_flags_u32: 0,
+                },
+                ordered_views: Vec::new(),
+                ordered_initial_subresources: vec![RenderTargetInitialSubresource {
+                    subresource_ordinal: 0,
+                    row_pitch: 4,
+                    slice_pitch: 4,
+                    source: RenderTargetInitialSource::UsedContentRange {
+                        content: content.clone(),
+                        source_byte_offset: 0,
+                        byte_count: 4,
+                        range_sha256: "9".repeat(64),
+                    },
+                }],
+            }),
+        };
+        let mut nested = BTreeSet::new();
+        append_target_content(&target, &mut nested);
+        assert_eq!(nested, BTreeSet::from([content]));
     }
 
     fn early_admission_for(

@@ -178,7 +178,10 @@ def _load_json(output_dir: str, name: str) -> Optional[Any]:
 def _load_province_to_state(output_dir: str) -> Dict[int, int]:
     """province_id -> state_id. Looked up first beside the JSON inputs, then in
     the repo's map_pipeline assets (same source parse_state_detail uses). Missing
-    -> {} (province-level rows then degrade to state=None, all confidence=low)."""
+    everywhere -> {} (province-level rows then degrade to state=None, all
+    confidence=low). A candidate that EXISTS but cannot be read/parsed -> raise:
+    a corrupt asset is an integrity failure and must surface, never silently
+    degrade to the missing-asset path (fail-closed doctrine)."""
     candidates = [
         os.path.join(output_dir, "province_to_state.json"),
         os.path.join(
@@ -192,8 +195,11 @@ def _load_province_to_state(output_dir: str) -> Dict[int, int]:
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 raw = json.load(fh)
-        except (OSError, ValueError):
-            continue
+        except (OSError, ValueError) as e:
+            raise ValueError(
+                f"province_to_state.json present but unreadable at {path}: {e} "
+                "-- refusing to degrade a corrupt asset to the missing-asset path"
+            ) from e
         out: Dict[int, int] = {}
         for k, v in raw.items():
             try:

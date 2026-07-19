@@ -441,7 +441,7 @@ def compute_air_superiority(
             "n_regions": len(regions),
             "n_wings_total": len(air_wings),
             "n_wings_scored": sum(
-                1 for w in air_wings if wing_air_sup_score(w, overrides) is not None
+                b["wings"] for r in regions.values() for b in r.by_owner.values()
             ),
             "model": "air_superiority",
             "formula": "pct(side)=100*own/(own+enemy); EAS=effective_planes*air_sup_stat(plane)",

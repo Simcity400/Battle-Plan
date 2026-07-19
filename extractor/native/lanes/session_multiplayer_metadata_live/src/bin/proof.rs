@@ -316,6 +316,7 @@ fn pack_and_verify(path: &Path, stream: &[u8], manifest: &[u8]) -> Result<(), St
             build_pinned: false,
             mod_identity: None,
             created_utc: Some("session_multiplayer_metadata_live_proof".to_string()),
+            content_manifest: None,
         },
         false,
     )

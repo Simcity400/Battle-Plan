@@ -190,6 +190,17 @@ fn print_world_summary(requested_hour: i64, frame: &WorldFrame) {
             fmt_leaf_ids(&combat.defenders)
         );
     }
+    println!(
+        "  ended combats: {} status={:?}",
+        frame.ended_combats().len(),
+        frame.ended_combats_status()
+    );
+    for ((combat_id, generation), combat) in frame.ended_combats() {
+        println!(
+            "    ({combat_id},{generation}) kind={:?} lifecycle={:?} province={:?}",
+            combat.kind, combat.lifecycle, combat.location_province
+        );
+    }
 
     println!(
         "  country core (first {} of {} tags):",

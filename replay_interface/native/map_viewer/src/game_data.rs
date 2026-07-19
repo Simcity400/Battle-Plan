@@ -350,7 +350,14 @@ pub(crate) fn dlc_conditional_cosmetics_from_text(text: &str) -> Vec<Conditional
                     }
                     k += 1;
                 }
-                let body = &text[body_start..k.saturating_sub(1)];
+                if d != 0 {
+                    // Unterminated block: the closing `}` was never found, so
+                    // `k - 1` may land inside a multi-byte (latin1-decoded)
+                    // char. Nothing after this point is parseable.
+                    break;
+                }
+                // d == 0 guarantees bytes[k - 1] is the ASCII '}'.
+                let body = &text[body_start..k - 1];
                 if let Some(entry) = conditional_cosmetic_from_if_body(body) {
                     out.push(entry);
                 }
@@ -418,7 +425,13 @@ fn extract_braced_block(text: &str, key: &str) -> Option<String> {
                                 }
                                 k += 1;
                             }
-                            return Some(text[start..k.saturating_sub(1)].to_string());
+                            if d != 0 {
+                                // Unterminated block: `k - 1` may land inside
+                                // a multi-byte (latin1-decoded) char.
+                                return None;
+                            }
+                            // d == 0 guarantees bytes[k - 1] is the ASCII '}'.
+                            return Some(text[start..k - 1].to_string());
                         }
                     }
                 }
@@ -1059,7 +1072,11 @@ pub(crate) fn parse_shader_float_constant(text: &str, key: &str) -> Option<f32> 
         if !line.contains(key) {
             continue;
         }
-        let (left, right) = line.split_once('=')?;
+        // A line can mention the key without assigning it (e.g. a `//` doc
+        // comment); skip it rather than aborting the whole scan.
+        let Some((left, right)) = line.split_once('=') else {
+            continue;
+        };
         if !left.split_whitespace().any(|part| part == key) {
             continue;
         }
@@ -1080,7 +1097,11 @@ pub(crate) fn parse_shader_float3_constant(text: &str, key: &str) -> Option<[f32
         if !line.contains(key) {
             continue;
         }
-        let (left, right) = line.split_once('=')?;
+        // A line can mention the key without a parseable assignment (e.g. a
+        // `//` doc comment); skip it so a later real definition still parses.
+        let Some((left, right)) = line.split_once('=') else {
+            continue;
+        };
         if !left.split_whitespace().any(|part| part == key) {
             continue;
         }
@@ -1088,15 +1109,25 @@ pub(crate) fn parse_shader_float3_constant(text: &str, key: &str) -> Option<[f32
             .split_once(';')
             .map(|(value, _)| value)
             .unwrap_or(right);
-        let open = value.find("float3")? + "float3".len();
-        let after = &value[open..];
-        let start = after.find('(')? + 1;
-        let end = after[start..].find(')')? + start;
-        let parts = after[start..end]
+        let Some(f3) = value.find("float3") else {
+            continue;
+        };
+        let after = &value[f3 + "float3".len()..];
+        let Some(open) = after.find('(') else {
+            continue;
+        };
+        let start = open + 1;
+        let Some(close) = after[start..].find(')') else {
+            continue;
+        };
+        let end = close + start;
+        let Ok(parts) = after[start..end]
             .split(',')
             .map(|part| part.trim().trim_end_matches('f').trim().parse::<f32>())
             .collect::<std::result::Result<Vec<_>, _>>()
-            .ok()?;
+        else {
+            continue;
+        };
         if parts.len() == 3 {
             return Some([parts[0], parts[1], parts[2]]);
         }
@@ -1981,7 +2012,9 @@ set_cosmetic_tag = RAJ_UK\n";
     #[test]
     fn shader_float_constants_parse_source_syntax() {
         let text = r#"
+            // TERRAIN_TILE_FREQ tweak note
             static const float TERRAIN_TILE_FREQ = 128.0f;
+            // SNOW_COLOR doc comment without an assignment
             static const float MAP_NUM_TILES = 4.0f;
             static const float WATER_COLOR_LIGHTNESS = 0.5;
             static const float NIGHT_AMBIENT_BOOST = 3.0f;
@@ -2122,5 +2155,124 @@ if = {\n\tlimit = { has_dlc = \"X\" ruling_party = fascism }\n\tset_cosmetic_tag
         );
         assert_eq!(parse_pure_has_dlc("has_dlc = \"X\" date > 1937.1.1"), None);
         assert_eq!(parse_pure_has_dlc("owns_state = 1"), None);
+    }
+
+    #[test]
+    fn unterminated_brace_blocks_do_not_panic_on_non_ascii_tails() {
+        // An unterminated top-level if-block whose text ends in a non-ASCII
+        // char (latin1-decoded history files) must not panic on a byte-slice
+        // boundary; it yields no cosmetics.
+        let unterminated_non_ascii = "if = { limit = { has_dlc = \"X\" } é";
+        assert!(dlc_conditional_cosmetics_from_text(unterminated_non_ascii).is_empty());
+        // Text ending exactly at the opening '{'.
+        let ends_at_open = "if = {";
+        assert!(dlc_conditional_cosmetics_from_text(ends_at_open).is_empty());
+        // Same for extract_braced_block: an unterminated `limit = {` must
+        // return None, not panic.
+        assert_eq!(
+            extract_braced_block("limit = { has_dlc = \"X\" é", "limit"),
+            None
+        );
+        assert_eq!(extract_braced_block("limit = {", "limit"), None);
+        // A well-formed block still parses.
+        assert_eq!(
+            extract_braced_block("limit = { has_dlc = \"X\" }", "limit"),
+            Some(" has_dlc = \"X\" ".to_string())
+        );
+    }
+
+    #[test]
+    fn load_states_parses_edge_cases() {
+        let dir = crate::test_support::temp_test_dir("load_states_edges");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let write = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, body).expect("write state fixture");
+            (name.to_string(), path)
+        };
+        // (1) A state file with no id= is skipped without error.
+        let no_id = write("0-no_id.txt", "state = { name = \"STATE_NO_ID\" }\n");
+        // (2) Two files sharing an id: last file wins (current semantics).
+        let first = write(
+            "1-first.txt",
+            "state = {\n\tid = 5\n\tname = \"STATE_5_FIRST\"\n\towner = GER\n\tprovinces = { 10 11 }\n}\n",
+        );
+        let second = write(
+            "2-second.txt",
+            "state = {\n\tid = 5\n\tname = \"STATE_5_SECOND\"\n\towner = FRA\n\tprovinces = { 11 12 }\n}\n",
+        );
+        // (3) Repeated victory_points blocks accumulate per province; (4)
+        // impassable = yes, owner absent.
+        let vp = write(
+            "3-vp.txt",
+            "state = {\n\tid = 7\n\timpassable = yes\n\tmanpower = 1234\n\tprovinces = { 20 21 }\n\
+             \tvictory_points = { 20 3 }\n\tvictory_points = { 20 2 21 5 }\n}\n",
+        );
+        let files = vec![no_id, first, second, vp];
+        let (states, province_to_state, state_owners) = load_states(&files).expect("load_states");
+
+        // Missing-id file contributed nothing.
+        assert_eq!(states.len(), 2);
+        // Last file wins for duplicate state ids.
+        let s5 = states.get(&5).expect("state 5");
+        assert_eq!(s5.name_key, "STATE_5_SECOND");
+        assert_eq!(s5.provinces, vec![11, 12]);
+        assert_eq!(state_owners.get(&5).map(String::as_str), Some("FRA"));
+        assert_eq!(province_to_state.get(&11), Some(&5));
+        assert_eq!(province_to_state.get(&12), Some(&5));
+        // Province 10 only appeared in the overwritten first file; its mapping
+        // survives (province_to_state is inserted per file, not per final
+        // state) — documented current behavior.
+        assert_eq!(province_to_state.get(&10), Some(&5));
+        assert!(!s5.impassable);
+
+        // Victory points accumulate across repeated blocks; vp_total sums.
+        let s7 = states.get(&7).expect("state 7");
+        assert_eq!(s7.victory_points.get(&20), Some(&5));
+        assert_eq!(s7.victory_points.get(&21), Some(&5));
+        assert_eq!(s7.vp_total, 10);
+        assert!(s7.impassable);
+        assert_eq!(s7.manpower, 1234);
+        assert!(!state_owners.contains_key(&7));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_strategic_regions_first_file_wins_for_duplicate_ids() {
+        let dir = crate::test_support::temp_test_dir("load_regions_edges");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let write = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, body).expect("write region fixture");
+            (name.to_string(), path)
+        };
+        let no_id = write(
+            "0-no_id.txt",
+            "strategic_region = { name = \"NAMELESS\" }\n",
+        );
+        let first = write(
+            "1-first.txt",
+            "strategic_region = {\n\tid = 9\n\tname = \"REGION_FIRST\"\n\tprovinces = { 100 101 }\n}\n",
+        );
+        let second = write(
+            "2-second.txt",
+            "strategic_region = {\n\tid = 9\n\tname = \"REGION_SECOND\"\n\tprovinces = { 102 }\n}\n",
+        );
+        let files = vec![no_id, first, second];
+        let (region_to_provinces, region_meta, province_to_region) =
+            load_strategic_regions(&files).expect("load_strategic_regions");
+
+        // Missing-id file contributed nothing; duplicate id: FIRST file wins
+        // (unlike load_states' last-file-wins — intentionally different,
+        // documented current behavior).
+        assert_eq!(region_to_provinces.len(), 1);
+        assert_eq!(region_to_provinces.get(&9), Some(&vec![100, 101]));
+        let meta = region_meta.get(&9).expect("region 9");
+        assert_eq!(meta.name, "REGION_FIRST");
+        assert_eq!(meta.province_count, 2);
+        assert_eq!(province_to_region.get(&100), Some(&9));
+        assert_eq!(province_to_region.get(&101), Some(&9));
+        assert!(!province_to_region.contains_key(&102));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

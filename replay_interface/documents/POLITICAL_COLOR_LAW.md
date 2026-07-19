@@ -161,13 +161,15 @@ Determinism was checked by writing a second run to
 
 ## Validation v2 (restore_gate_1, ongoing vanilla war save)
 
-> **STORE NOTES (audited 2026-07-19):** `hoi4_captures` paths in this doc are
-> stale — the store was retired. `live_PAN2` survives at
-> `<local-path>`. The
-> `restore_gate_1` capture is **LOST** (not preserved anywhere on this
-> machine); the recorded results below stand as evidence of record, and
-> re-validation needs a recapture. See the store index in
-> `lane_reports/rendering_laws/PROGRAM_STATUS.md`.
+> **STORE NOTES (updated 2026-07-19):** `hoi4_captures` paths in this historical
+> section are stale and the original `restore_gate_1` directory remains absent.
+> However, the retained-RDC recovery packet at
+> `re_evidence/rendering_laws/RESTORE_GATE_RETAINED/` now exports two fresh
+> same-frame observations: a terrain consumer at t6 and a water consumer at t3,
+> both binding an all-zero 2816x1024 `ProvinceSecondaryColorMap` with identical
+> SHA-256 `d4d2639a...`. This re-proves the consumer, descriptor, and transparent
+> case, but remains vacuous for the rare non-transparent producer law. Neither
+> RDC is claimed to be the lost original frame.
 
 ### Intent
 

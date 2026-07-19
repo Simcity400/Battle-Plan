@@ -66,7 +66,49 @@ pub fn decode_bytes(data: &[u8]) -> Result<TgaImage> {
         ));
     }
 
-    let mut pixels = vec![0u8; header.width * header.height * 4];
+    // Validate the header-claimed pixel payload BEFORE allocating the output
+    // buffer: a truncated 18-byte file claiming 65535x65535 must be a typed
+    // refusal, never a ~17 GB allocation. Checked arithmetic is defensive
+    // (u16 dimensions cannot overflow usize on 64-bit) but keeps every
+    // header-derived size expression checked, per the fail-closed doctrine.
+    let overflow = || {
+        GameUiError::new(
+            ErrorKind::InvalidTexture("tga_dimensions".to_string()),
+            format!(
+                "TGA size arithmetic overflows for {}x{}",
+                header.width, header.height
+            ),
+        )
+    };
+    let total = header
+        .width
+        .checked_mul(header.height)
+        .ok_or_else(overflow)?;
+    let out_len = total.checked_mul(4).ok_or_else(overflow)?;
+    match header.image_type {
+        2 | 3 => {
+            let needed = total
+                .checked_mul(pixel_bytes)
+                .and_then(|bytes| bytes.checked_add(offset))
+                .ok_or_else(overflow)?;
+            require_len(data, needed, "TGA pixel data")?;
+        }
+        10 | 11 => {
+            // Best-case RLE: every packet is a run covering 128 pixels, so
+            // the payload is at least ceil(total/128) * (header + one pixel)
+            // bytes. Per-packet bounds checks in decode_rle remain the
+            // authoritative enforcement during decode.
+            let min_encoded = total
+                .div_ceil(128)
+                .checked_mul(1 + pixel_bytes)
+                .and_then(|bytes| bytes.checked_add(offset))
+                .ok_or_else(overflow)?;
+            require_len(data, min_encoded, "TGA RLE pixel data")?;
+        }
+        _ => unreachable!("image type checked above"),
+    }
+
+    let mut pixels = vec![0u8; out_len];
     match header.image_type {
         2 | 3 => decode_uncompressed(data, &header, offset, pixel_bytes, &mut pixels)?,
         10 | 11 => decode_rle(data, &header, offset, pixel_bytes, &mut pixels)?,
@@ -221,15 +263,114 @@ mod tests {
 
     #[test]
     fn decodes_uncompressed_top_left_bgra() {
-        let mut data = vec![0u8; TGA_HEADER_LEN];
-        data[2] = 2;
-        data[12..14].copy_from_slice(&2u16.to_le_bytes());
-        data[14..16].copy_from_slice(&1u16.to_le_bytes());
-        data[16] = 32;
-        data[17] = 0x20 | 8;
+        let mut data = tga_header(2, 2, 1, 32, 0x20 | 8);
         data.extend_from_slice(&[0, 0, 255, 255, 0, 255, 0, 128]);
         let image = decode_bytes(&data).unwrap().image;
         assert_eq!((image.width, image.height), (2, 1));
         assert_eq!(image.pixels, vec![255, 0, 0, 255, 0, 255, 0, 128]);
+    }
+
+    #[test]
+    fn decodes_rle_run_packet() {
+        let mut data = tga_header(10, 2, 1, 32, 0x20);
+        data.push(0x81); // run packet, 2 pixels
+        data.extend_from_slice(&[0, 0, 255, 255]); // BGRA -> red
+        let image = decode_bytes(&data).unwrap().image;
+        assert_eq!(image.pixels, vec![255, 0, 0, 255, 255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn decodes_rle_raw_packet() {
+        let mut data = tga_header(10, 2, 1, 32, 0x20);
+        data.push(0x01); // raw packet, 2 pixels
+        data.extend_from_slice(&[255, 0, 0, 255]); // BGRA -> blue
+        data.extend_from_slice(&[0, 255, 0, 128]); // BGRA -> green
+        let image = decode_bytes(&data).unwrap().image;
+        assert_eq!(image.pixels, vec![0, 0, 255, 255, 0, 255, 0, 128]);
+    }
+
+    #[test]
+    fn rle_run_packet_overrunning_image_is_rejected() {
+        let mut data = tga_header(10, 1, 1, 32, 0x20);
+        data.push(0x81); // run of 2 into a 1-pixel image
+        data.extend_from_slice(&[0, 0, 255, 255]);
+        let err = decode_bytes(&data).expect_err("run overrun must be rejected");
+        assert_eq!(err.kind, ErrorKind::InvalidTexture("tga_rle".to_string()));
+    }
+
+    #[test]
+    fn rle_raw_packet_overrunning_image_is_rejected() {
+        let mut data = tga_header(10, 1, 1, 32, 0x20);
+        data.push(0x01); // raw packet of 2 into a 1-pixel image
+        data.extend_from_slice(&[0, 0, 255, 255]);
+        data.extend_from_slice(&[0, 255, 0, 255]);
+        let err = decode_bytes(&data).expect_err("raw overrun must be rejected");
+        assert_eq!(err.kind, ErrorKind::InvalidTexture("tga_rle".to_string()));
+    }
+
+    #[test]
+    fn decodes_greyscale() {
+        let mut data = tga_header(3, 1, 1, 8, 0x20);
+        data.push(0x7f);
+        let image = decode_bytes(&data).unwrap().image;
+        assert_eq!(image.pixels, vec![127, 127, 127, 255]);
+    }
+
+    #[test]
+    fn decodes_16_bit_arrrrrgg_gggbbbbb() {
+        let mut data = tga_header(2, 1, 1, 16, 0x20);
+        data.extend_from_slice(&0x7c00u16.to_le_bytes()); // r=31 g=0 b=0
+        let image = decode_bytes(&data).unwrap().image;
+        assert_eq!(image.pixels, vec![255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn bottom_left_origin_flips_rows() {
+        let mut data = tga_header(2, 1, 2, 32, 0); // no 0x20: bottom row first
+        data.extend_from_slice(&[1, 2, 3, 4]); // file row 0 -> output row 1
+        data.extend_from_slice(&[5, 6, 7, 8]); // file row 1 -> output row 0
+        let image = decode_bytes(&data).unwrap().image;
+        assert_eq!(image.pixels, vec![7, 6, 5, 8, 3, 2, 1, 4]);
+    }
+
+    #[test]
+    fn right_to_left_origin_flips_columns() {
+        let mut data = tga_header(2, 2, 1, 32, 0x20 | 0x10);
+        data.extend_from_slice(&[1, 2, 3, 4]); // file col 0 -> output col 1
+        data.extend_from_slice(&[5, 6, 7, 8]); // file col 1 -> output col 0
+        let image = decode_bytes(&data).unwrap().image;
+        assert_eq!(image.pixels, vec![7, 6, 5, 8, 3, 2, 1, 4]);
+    }
+
+    #[test]
+    fn huge_uncompressed_claim_refuses_before_allocating() {
+        // 18-byte file claiming 65535x65535x32bpp: must be a typed refusal,
+        // never a ~17 GB zeroed allocation.
+        let data = tga_header(2, u16::MAX, u16::MAX, 32, 0x20);
+        let err = decode_bytes(&data).expect_err("truncated giant claim must be rejected");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidTexture("tga_truncated".to_string())
+        );
+    }
+
+    #[test]
+    fn huge_rle_claim_refuses_before_allocating() {
+        let data = tga_header(10, u16::MAX, u16::MAX, 32, 0x20);
+        let err = decode_bytes(&data).expect_err("truncated giant RLE claim must be rejected");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidTexture("tga_truncated".to_string())
+        );
+    }
+
+    fn tga_header(image_type: u8, width: u16, height: u16, bpp: u8, descriptor: u8) -> Vec<u8> {
+        let mut data = vec![0u8; TGA_HEADER_LEN];
+        data[2] = image_type;
+        data[12..14].copy_from_slice(&width.to_le_bytes());
+        data[14..16].copy_from_slice(&height.to_le_bytes());
+        data[16] = bpp;
+        data[17] = descriptor;
+        data
     }
 }

@@ -5,8 +5,9 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $scriptDir "ProductionCapture.Validation.ps1")
 $nativeRoot = (Resolve-Path -LiteralPath (Join-Path $scriptDir "..")).Path
 $registry = Join-Path $nativeRoot "domain_registry.json"
-$releaseRoot=Join-Path $nativeRoot 'target\release'
 $repoRoot=(Resolve-Path (Join-Path $nativeRoot '..\..')).Path
+$targetRoot = if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) { Join-Path $repoRoot '.cargo-target' } else { [System.IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) }
+$releaseRoot=Join-Path $targetRoot 'release'
 $python=(Get-Command python -ErrorAction Stop).Source
 $cargo=(Get-Command cargo -ErrorAction Stop).Source
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("hoi4_capture_script_test_" + [guid]::NewGuid().ToString("N"))

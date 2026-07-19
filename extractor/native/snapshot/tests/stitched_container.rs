@@ -411,6 +411,7 @@ fn identity() -> PackIdentity {
         build_pinned: false,
         mod_identity: Some(json!({ "modset_id": MODSET })),
         created_utc: Some("2026-07-12T00:00:00Z".into()),
+        content_manifest: None,
     }
 }
 
@@ -518,7 +519,7 @@ fn rewrite_play_order(entries: &mut [PackEntry], segment_id: u32, new_order: u64
     });
 }
 
-fn make_sources_standalone_with_paths(entries: &mut [PackEntry], paths: [&str; 2]) {
+fn make_sources_standalone_with_paths(entries: &mut Vec<PackEntry>, paths: [&str; 2]) {
     replace_json_entry(entries, "segments.json", |graph| {
         for (segment_id, path) in paths.into_iter().enumerate() {
             graph["raw_sources"][segment_id]["session_path"] = json!(path);
@@ -533,6 +534,7 @@ fn make_sources_standalone_with_paths(entries: &mut [PackEntry], paths: [&str; 2
             |index| index["source_ref"]["session_path"] = json!(path),
         );
     }
+    entries.retain(|entry| entry.role != "raw_source");
 }
 
 fn assert_rejects(bytes: Vec<u8>, needle: &str) {
@@ -967,6 +969,16 @@ fn v2_windows_source_aliases_collide_but_distinct_sources_remain_distinct() {
         "session_path aliases distinct raw source identities",
     );
 
+    let mut unicode_aliased = stitched_entries();
+    make_sources_standalone_with_paths(
+        &mut unicode_aliased,
+        ["C:\\Replay\\Cafe\u{301}.h4cr", "c:/replay/caf\u{e9}.h4cr"],
+    );
+    assert_rejects(
+        build_entries(&unicode_aliased, &stitched_opts()),
+        "session_path aliases distinct raw source identities",
+    );
+
     let mut distinct = stitched_entries();
     make_sources_standalone_with_paths(&mut distinct, [r"C:\Replay\S.h4cr", r"c:/replay/T.h4cr"]);
     Container::from_bytes(
@@ -974,6 +986,18 @@ fn v2_windows_source_aliases_collide_but_distinct_sources_remain_distinct() {
         &ExpectedIdentity::default(),
     )
     .expect("genuinely distinct normalized sources must remain distinct");
+}
+
+#[test]
+fn v2_standalone_raw_source_must_not_remain_embedded() {
+    let mut entries = stitched_entries();
+    replace_json_entry(&mut entries, "segments.json", |graph| {
+        graph["raw_sources"][0]["storage"] = json!({"kind":"standalone"});
+    });
+    assert_rejects(
+        build_entries(&entries, &stitched_opts()),
+        "standalone raw source must not be embedded",
+    );
 }
 
 #[test]

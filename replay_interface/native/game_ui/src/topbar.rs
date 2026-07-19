@@ -1,7 +1,7 @@
 use crate::assets::AssetResolver;
 use crate::compose::{
     draw_image, draw_scaled, draw_scaled_crop, resolve_element_rect, ComposeOptions, ComposeOutput,
-    Compositor, DebugRect, Orientation, Rect,
+    Compositor, DebugRect, Orientation, Rect, UiAssetCache,
 };
 use crate::dds::RgbaImage;
 use crate::font::{blank_image, BitmapFont};
@@ -374,11 +374,15 @@ pub fn compose_topbar(
     binding: &TopbarBinding,
 ) -> Result<TopbarComposeResult> {
     let layout = load_topbar_layout(resolver, registry)?;
+    let localisation = Localisation::load_english(resolver)?;
+    let mut cache = UiAssetCache::default();
     compose_topbar_with_layout(
         resolver,
         registry,
         binding,
         &layout,
+        &localisation,
+        &mut cache,
         layout.viewport_width,
         layout.viewport_height,
         layout.viewport_width,
@@ -390,29 +394,42 @@ pub fn compose_topbar_at(
     resolver: &AssetResolver,
     registry: &SpriteRegistry,
     binding: &TopbarBinding,
+    localisation: &Localisation,
+    cache: &mut UiAssetCache,
     width: usize,
     height: usize,
 ) -> Result<TopbarComposeResult> {
     let layout = load_topbar_layout(resolver, registry)?;
     compose_topbar_with_layout(
-        resolver, registry, binding, &layout, width, height, width, height,
+        resolver,
+        registry,
+        binding,
+        &layout,
+        localisation,
+        cache,
+        width,
+        height,
+        width,
+        height,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compose_topbar_with_layout(
     resolver: &AssetResolver,
     registry: &SpriteRegistry,
     binding: &TopbarBinding,
     layout: &TopbarLayout,
+    localisation: &Localisation,
+    cache: &mut UiAssetCache,
     viewport_width: usize,
     viewport_height: usize,
     root_width: usize,
     root_height: usize,
 ) -> Result<TopbarComposeResult> {
-    let localisation = Localisation::load_english(resolver)?;
     let mut options = ComposeOptions::new(viewport_width, viewport_height)
         .with_root_size(root_width, root_height)
-        .with_localisation(&localisation);
+        .with_localisation(localisation);
     apply_binding(&mut options, binding, registry);
     let flag_texture_used = if let Some(flag) = compose_flag_shield(resolver, registry, binding)? {
         options
@@ -422,7 +439,7 @@ fn compose_topbar_with_layout(
     } else {
         None
     };
-    let mut compositor = Compositor::new(resolver, registry);
+    let mut compositor = Compositor::with_cache(resolver, registry, cache);
     let mut output = compositor.compose(&layout.root, &options);
     draw_overview_xp_bars(resolver, registry, binding, &mut output)?;
     Ok(TopbarComposeResult {

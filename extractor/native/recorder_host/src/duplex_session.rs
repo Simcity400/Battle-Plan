@@ -7,6 +7,7 @@
 
 pub mod durable_fs;
 pub mod identity_control;
+pub mod rollover_control;
 
 use std::collections::BTreeSet;
 use std::fmt;

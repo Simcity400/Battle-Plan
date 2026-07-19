@@ -1,5 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+pub mod deployment_queue;
+pub use deployment_queue::{
+    decode_deployment_queue_payload, encode_deployment_queue_payload, DeploymentConveyorRow,
+    DeploymentCountryRow, DeploymentEquipmentRow, DeploymentLineRow, DeploymentQueueSummary,
+};
+
 pub const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
 pub const COMPACT_RECORD_VERSION: u16 = 1;
 pub const COMPACT_RECORD_HEADER_LEN: usize = 32;
@@ -518,10 +524,10 @@ pub fn remaining_gap_badges() -> Vec<RemainingGapBadge> {
             evidence_mask: GAP_EVIDENCE_SAVE_ORACLE
                 | GAP_EVIDENCE_CURRENT_COMPACT_SCHEMA
                 | GAP_EVIDENCE_NO_HOT_LOOP_ROOT,
-            current_support: GAP_CURRENT_SUPPORT_NONE,
-            current_compact_evidence: "domain 11 construction_queue rows are civil construction only and do not encode military_deployment_conveyor rows",
-            source_evidence: "save_oracle/parse_deployment.py reads countries.<TAG>.deployment.military_deployment_conveyor[] and equipment-in-transit",
-            fail_closed_badge: "deployment conveyor omitted until conveyor root/vector/type offsets are validated live",
+            current_support: GAP_CURRENT_SUPPORT_PARTIAL,
+            current_compact_evidence: "strict deployment_queue v1 payload carrier preserves queue-complete/unknown country rows, type-64 conveyor ids, type-63 line ids, ordered type-70 equipment-in-transit, nullable progress leaves, and rejects identity/count/trailing-byte drift; domain 11 construction_queue remains civil construction only",
+            source_evidence: "save_oracle/parse_deployment.py and the retained ten-save X4_DEPLOYMENT_QUEUES corpus authenticate stable queue identities, nested ordering, exact empty vectors, and cross-save continuity",
+            fail_closed_badge: "carrier is schema-ready but live emission remains omitted until the conveyor root/vector/type offsets are authenticated; unknown country rows cannot carry queue rows",
             proposed_domain_id: PROPOSED_DOMAIN_DEPLOYMENT_QUEUES,
             proposed_domain_name: domain_name(PROPOSED_DOMAIN_DEPLOYMENT_QUEUES),
             owner_boundary: "lane-owned deployment queue state; deployed unit/oob state remains unit-lane owned",
@@ -569,12 +575,12 @@ pub fn gap_badge_rows(gaps: &[RemainingGapBadge]) -> Vec<GapBadgeRow> {
             evidence_mask: gap.evidence_mask,
             current_support: gap.current_support,
             current_domain_id: match gap.name {
-                "deployment_queues" => DOMAIN_PRODUCTION as u32,
+                "deployment_queues" => PROPOSED_DOMAIN_DEPLOYMENT_QUEUES as u32,
                 _ => 0,
             },
             proposed_domain_id: gap.proposed_domain_id as u32,
             current_row_len: match gap.name {
-                "deployment_queues" => PRODUCTION_CONSTRUCTION_ROW_LEN as u32,
+                "deployment_queues" => 0,
                 _ => 0,
             },
             source_ref_id: gap.gap_id,

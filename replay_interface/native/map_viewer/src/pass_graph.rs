@@ -122,6 +122,44 @@ pub(crate) fn production_blocked_map_pass(
     }
 }
 
+pub(crate) fn production_pass_plan(
+    terrain_capture_moment: &'static str,
+) -> Vec<ProductionMapPassPlan> {
+    vec![
+        ProductionMapPassPlan {
+            kind: ProductionMapPassKind::Terrain,
+            capture_moment: terrain_capture_moment,
+            status: ProductionMapPassStatus::Ready,
+            depends_on: Vec::new(),
+            blockers: Vec::new(),
+        },
+        production_blocked_map_pass(
+            ProductionMapPassKind::Water,
+            vec![ProductionMapPassKind::Terrain],
+        ),
+        production_blocked_map_pass(
+            ProductionMapPassKind::Rivers,
+            vec![ProductionMapPassKind::Water],
+        ),
+        production_blocked_map_pass(
+            ProductionMapPassKind::Borders,
+            vec![ProductionMapPassKind::Rivers],
+        ),
+        production_blocked_map_pass(
+            ProductionMapPassKind::Trees,
+            vec![ProductionMapPassKind::Rivers],
+        ),
+        production_blocked_map_pass(
+            ProductionMapPassKind::Cities,
+            vec![ProductionMapPassKind::Trees],
+        ),
+        production_blocked_map_pass(
+            ProductionMapPassKind::Overlays,
+            vec![ProductionMapPassKind::Cities],
+        ),
+    ]
+}
+
 pub(crate) fn water_refraction_app_owned_terrain_color_srv_desc(
     frame: &MapFrameRuntimeBundle,
     terrain_color_desc: &MapFrameTexture2DDesc,
@@ -276,39 +314,7 @@ impl ProductionMapPassGraph {
         Ok(Self {
             camera,
             target,
-            passes: vec![
-                ProductionMapPassPlan {
-                    kind: ProductionMapPassKind::Terrain,
-                    capture_moment: ProductionMapPassKind::Terrain.capture_moment(),
-                    status: ProductionMapPassStatus::Ready,
-                    depends_on: Vec::new(),
-                    blockers: Vec::new(),
-                },
-                production_blocked_map_pass(
-                    ProductionMapPassKind::Water,
-                    vec![ProductionMapPassKind::Terrain],
-                ),
-                production_blocked_map_pass(
-                    ProductionMapPassKind::Rivers,
-                    vec![ProductionMapPassKind::Water],
-                ),
-                production_blocked_map_pass(
-                    ProductionMapPassKind::Borders,
-                    vec![ProductionMapPassKind::Rivers],
-                ),
-                production_blocked_map_pass(
-                    ProductionMapPassKind::Trees,
-                    vec![ProductionMapPassKind::Rivers],
-                ),
-                production_blocked_map_pass(
-                    ProductionMapPassKind::Cities,
-                    vec![ProductionMapPassKind::Trees],
-                ),
-                production_blocked_map_pass(
-                    ProductionMapPassKind::Overlays,
-                    vec![ProductionMapPassKind::Cities],
-                ),
-            ],
+            passes: production_pass_plan(ProductionMapPassKind::Terrain.capture_moment()),
         })
     }
 
@@ -355,39 +361,7 @@ impl ProductionMapPassGraph {
         Ok(Self {
             camera,
             target,
-            passes: vec![
-                ProductionMapPassPlan {
-                    kind: ProductionMapPassKind::Terrain,
-                    capture_moment: TERRAIN_CHUNK_LIBRARY_MOMENT,
-                    status: ProductionMapPassStatus::Ready,
-                    depends_on: Vec::new(),
-                    blockers: Vec::new(),
-                },
-                production_blocked_map_pass(
-                    ProductionMapPassKind::Water,
-                    vec![ProductionMapPassKind::Terrain],
-                ),
-                production_blocked_map_pass(
-                    ProductionMapPassKind::Rivers,
-                    vec![ProductionMapPassKind::Water],
-                ),
-                production_blocked_map_pass(
-                    ProductionMapPassKind::Borders,
-                    vec![ProductionMapPassKind::Rivers],
-                ),
-                production_blocked_map_pass(
-                    ProductionMapPassKind::Trees,
-                    vec![ProductionMapPassKind::Rivers],
-                ),
-                production_blocked_map_pass(
-                    ProductionMapPassKind::Cities,
-                    vec![ProductionMapPassKind::Trees],
-                ),
-                production_blocked_map_pass(
-                    ProductionMapPassKind::Overlays,
-                    vec![ProductionMapPassKind::Cities],
-                ),
-            ],
+            passes: production_pass_plan(TERRAIN_CHUNK_LIBRARY_MOMENT),
         })
     }
 

@@ -100,8 +100,7 @@ fn read_zip_member(path: &Path, wanted: &str) -> TestResult<Vec<u8>> {
 }
 
 fn counter_frame_evidence(frame_dir: &Path) -> TestResult<CounterFrameEvidence> {
-    let resources: Value =
-        serde_json::from_slice(&fs::read(frame_dir.join("resources.json"))?)?;
+    let resources: Value = serde_json::from_slice(&fs::read(frame_dir.join("resources.json"))?)?;
     let reader = BufReader::new(GzDecoder::new(fs::File::open(
         frame_dir.join("events.jsonl.gz"),
     )?));
@@ -223,11 +222,17 @@ fn wave9_hidden_counter_gate_reads_draws_and_wvp_cb_writes() {
         "35813_647577.bin",
     )
     .expect("corrected CB-write chunk 35813");
-    assert_eq!(&first[48..56], &[0xab, 0xaa, 0x4a, 0x3e, 0x5b, 0xb0, 0x85, 0x3e]);
+    assert_eq!(
+        &first[48..56],
+        &[0xab, 0xaa, 0x4a, 0x3e, 0x5b, 0xb0, 0x85, 0x3e]
+    );
     let second = read_zip_member(
         &root.join("hoi4_frame71288").join("cb_blobs.zip"),
         "36070_647577.bin",
     )
     .expect("corrected CB-write chunk 36070");
-    assert_eq!(&second[48..56], &[0x78, 0x77, 0xd7, 0xbd, 0xe3, 0x38, 0x0e, 0x3e]);
+    assert_eq!(
+        &second[48..56],
+        &[0x78, 0x77, 0xd7, 0xbd, 0xe3, 0x38, 0x0e, 0x3e]
+    );
 }

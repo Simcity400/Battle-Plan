@@ -252,7 +252,8 @@ pub fn parse_gui_files(resolver: &AssetResolver) -> Result<(LayoutSet, GuiParseS
             }
         }
     }
-    Ok((layouts.clone(), layouts.stats))
+    let stats = layouts.stats.clone();
+    Ok((layouts, stats))
 }
 
 fn inspect_topbar(

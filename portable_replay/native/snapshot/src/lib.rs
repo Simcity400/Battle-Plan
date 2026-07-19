@@ -27,6 +27,7 @@ pub mod container;
 pub mod design_catalog;
 mod dir_store;
 pub mod pack;
+pub mod prefolded;
 pub mod sha256;
 pub mod stream_verify;
 pub mod strict_json;
@@ -38,6 +39,9 @@ pub use pack::{
     pack_mixed_to_writer, pack_streaming_to_writer, pack_streaming_zstd_to_writer,
     pack_streaming_zstd_to_writer_with_profile, pack_with, BorrowedPackEntry, CompressionProfile,
     FileBackedPackEntry, PackEntry, PackError, PackIdentity, PackOptions, StreamingFileEntry,
+};
+pub use prefolded::{
+    PrefoldedHourEntry, PrefoldedHourIndex, PrefoldedReplay, PrefoldedReplayError,
 };
 pub use stream_verify::{
     verify_replay_container_streaming, verify_replay_container_streaming_file,
@@ -518,16 +522,23 @@ impl Store {
     pub fn load(&self, game: &str, hour_index: i64) -> Result<Snapshot, LoadError> {
         match &self.backend {
             Backend::Dir { .. } => {
-                // A negative hour_index would format with a leading '-' and break the
-                // fixed width; refuse it up front (it can never name a real snapshot,
-                // and the synthesized name must stay a safe, game-dir-relative path).
-                if hour_index < 0 {
-                    return Err(LoadError::Container(ContainerError::Reject(format!(
-                        "negative hour_index {hour_index} has no snapshot"
-                    ))));
-                }
-                let fname = format!("{:012}.snapshot.json", hour_index);
-                self.read_dir_snapshot(game, &fname)
+                // Resolve the file through the INDEX, exactly like the container
+                // backend: `index.snapshots[*].file` is the only filename
+                // authority (spec §1/§4.3), and both in-the-wild forms —
+                // `%012d.snapshot.json` and segment-prefixed rollback names —
+                // must load. Never synthesize a name from hour_index.
+                let index = self.index(game)?;
+                let file = index
+                    .snapshots
+                    .iter()
+                    .find(|e| e.hour_index == Some(hour_index))
+                    .map(|e| e.file.clone())
+                    .ok_or_else(|| {
+                        LoadError::Container(ContainerError::Reject(format!(
+                            "no snapshot for hour_index {hour_index}"
+                        )))
+                    })?;
+                self.read_dir_snapshot(game, &file)
             }
             Backend::Replay { container } => Ok(container.load(hour_index)?),
         }
@@ -570,7 +581,9 @@ impl Store {
                     ))));
                 }
                 let path = format!("payload/{game}/{relative}");
-                if !container.entries().iter().any(|entry| entry.path == path) {
+                // O(1) membership via the verified entry map — never re-project
+                // the whole manifest per read.
+                if !container.has_entry(&path) {
                     return Ok(None);
                 }
                 Ok(Some(container.read_entry_bytes(&path)?))
@@ -588,5 +601,63 @@ impl Store {
                 "required game-relative file {game:?}/{relative} is missing"
             ))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_root(tag: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "hoi4_snapshot_lib_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    /// Spec §1/§4.3: `index.snapshots[*].file` is the ONLY filename authority.
+    /// A directory store whose index names a segment-prefixed rollback file must
+    /// load it by hour_index — never synthesize `%012d.snapshot.json`.
+    #[test]
+    fn dir_store_load_resolves_segment_prefixed_files_through_the_index() {
+        let root = temp_root("dir_load_index");
+        let game = root.join("g");
+        fs::create_dir_all(&game).unwrap();
+        fs::write(
+            game.join("index.json"),
+            br#"{"game_id":"g","schema_version":"1","snapshots":[{"hour_index":17000461,"file":"s00000001.000017000461.snapshot.json"}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            game.join("s00000001.000017000461.snapshot.json"),
+            br#"{"game_id":"g","hour_index":17000461}"#,
+        )
+        .unwrap();
+
+        let store = Store::open_directory(&root).expect("anchor dir store");
+        let snapshot = store
+            .load("g", 17000461)
+            .expect("segment-prefixed rollback snapshot loads by hour_index");
+        assert_eq!(snapshot.hour_index, Some(17000461));
+
+        // A missing hour is a typed Reject naming the hour, not a
+        // synthesized-filename missing-file error.
+        let err = store.load("g", 5).expect_err("missing hour is refused");
+        match err {
+            LoadError::Container(ContainerError::Reject(message)) => assert!(
+                message.contains("no snapshot for hour_index 5"),
+                "unexpected message: {message}"
+            ),
+            other => panic!("expected typed Reject, got {other:?}"),
+        }
+        let _ = fs::remove_dir_all(root);
     }
 }

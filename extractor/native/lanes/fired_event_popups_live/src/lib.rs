@@ -18,7 +18,9 @@ pub mod a729_runtime;
 pub const DOMAIN_ID: u16 = 75;
 pub const DOMAIN_NAME: &str = "fired_event_popups_live";
 pub const MAGIC: u32 = u32::from_le_bytes(*b"FEV1");
-pub const SCHEMA_VERSION: u32 = 1;
+/// v2 replaces the ambiguous singular runtime-text join with independently
+/// authenticated title, description, and definition-ordinal option joins.
+pub const SCHEMA_VERSION: u32 = 2;
 pub const AUTHORITY_A729_INLINE_HOOKS: u32 = 1;
 pub const MAX_ROWS: usize = 1_000_000;
 pub const MAX_OPTIONS: usize = 65_536;
@@ -45,6 +47,14 @@ pub enum ResolutionReason {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OptionRuntimeTextContext {
+    /// Definition-array ordinal, never the popup-visible position.
+    pub definition_ordinal: u16,
+    /// Exact join key into A25. Process-local textbox owners never cross wire.
+    pub context_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FiredEventRow {
     pub event_id: String,
     pub recipient_tag: String,
@@ -61,7 +71,11 @@ pub struct FiredEventRow {
     pub timeout_tick: u64,
     pub resolved_tick: Option<u64>,
     pub resolution_reason: ResolutionReason,
-    pub runtime_text_context_id: Option<String>,
+    /// Independent A25 joins are required because title, description, and each
+    /// visible option are distinct textbox owners with distinct source tokens.
+    pub runtime_title_text_context_id: Option<String>,
+    pub runtime_description_text_context_id: Option<String>,
+    pub runtime_option_text_contexts: Vec<OptionRuntimeTextContext>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -120,7 +134,13 @@ pub enum CarrierError {
     Source(String),
 }
 
-pub trait ExactFiredEventSource {
+mod exact_source_seal {
+    pub trait Sealed {}
+}
+
+/// Sealed producer boundary. Downstream crates may consume an installed source
+/// but cannot implement this trait for a save ledger or d64 delayed-event poll.
+pub trait ExactFiredEventSource: exact_source_seal::Sealed {
     fn is_authenticated_a729_hook_source(&self) -> bool;
     fn producer_manifest_sha256(&self) -> [u8; 32];
     fn snapshot(
@@ -133,7 +153,11 @@ pub trait ExactFiredEventSource {
 /// Non-blocking ledger owned by the installed hook runtime. Hook callbacks use
 /// `try_lock`; contention is an explicit drop and therefore clears the
 /// completeness witness instead of stalling the game thread.
-pub struct A729EventLedger {
+/// Process-local callback ledger. This is deliberately crate-private: the only
+/// production [`ExactFiredEventSource`] is the installed hook runtime. A save
+/// ledger, delayed-event poller, or downstream crate cannot construct an
+/// authenticated d75 source by filling this buffer directly.
+pub(crate) struct A729EventLedger {
     state: Mutex<LedgerState>,
     capacity: usize,
     contended_fire_drops: AtomicU64,
@@ -153,6 +177,7 @@ pub struct FireInput {
     pub fire_hour: u64,
     pub fire_tick: u64,
     pub event_sequence: u64,
+    pub popup_subtype: PopupSubtype,
     pub effective_timeout_hours: u32,
     pub timeout_tick: u64,
 }
@@ -164,7 +189,10 @@ pub struct MaterialisationInput {
     pub selected_desc_key: Option<String>,
     pub shown_picture_gfx: Option<String>,
     pub popup_subtype: PopupSubtype,
-    pub runtime_text_context_id: Option<String>,
+    pub timeout_tick: u64,
+    pub runtime_title_text_context_id: Option<String>,
+    pub runtime_description_text_context_id: Option<String>,
+    pub runtime_option_text_contexts: Vec<OptionRuntimeTextContext>,
 }
 
 #[derive(Clone, Debug)]
@@ -176,7 +204,7 @@ pub struct ResolutionInput {
 }
 
 impl A729EventLedger {
-    pub fn new(capacity: usize) -> Self {
+    pub(crate) fn new(capacity: usize) -> Self {
         let capacity = capacity.clamp(1, MAX_ROWS);
         Self {
             state: Mutex::new(LedgerState {
@@ -194,7 +222,7 @@ impl A729EventLedger {
 
     /// Marks only the facts proved by successful installation of the complete
     /// pinned hook set. Coverage and baseline are separate witnesses.
-    pub fn record_installation_validation(&self) {
+    pub(crate) fn record_installation_validation(&self) {
         if let Ok(mut state) = self.state.lock() {
             state.telemetry.fire_hook_validated = true;
             state.telemetry.option_hook_validated = true;
@@ -203,7 +231,7 @@ impl A729EventLedger {
         }
     }
 
-    pub fn record_baseline_complete(&self, complete: bool) {
+    pub(crate) fn record_baseline_complete(&self, complete: bool) {
         if let Ok(mut state) = self.state.lock() {
             state.telemetry.capture_start_baseline_complete = complete;
         }
@@ -211,7 +239,7 @@ impl A729EventLedger {
 
     /// Records an independently generated deterministic-fixture attestation.
     /// Hook installation itself cannot manufacture coverage.
-    pub fn record_fixture_coverage(&self, all_classes: bool, all_resolution_paths: bool) {
+    pub(crate) fn record_fixture_coverage(&self, all_classes: bool, all_resolution_paths: bool) {
         if let Ok(mut state) = self.state.lock() {
             state.telemetry.all_event_classes_covered = all_classes;
             state.telemetry.player_ai_timeout_no_choice_covered = all_resolution_paths;
@@ -230,7 +258,7 @@ impl A729EventLedger {
         self.record_fixture_coverage(all_classes, all_resolution_paths);
     }
 
-    pub fn record_fire(&self, input: FireInput) {
+    pub(crate) fn record_fire(&self, input: FireInput) {
         let Ok(mut state) = self.state.try_lock() else {
             self.note_fire_drop();
             return;
@@ -255,12 +283,14 @@ impl A729EventLedger {
             chosen_option_ordinal: None,
             selected_desc_key: None,
             shown_picture_gfx: None,
-            popup_subtype: PopupSubtype::Country,
+            popup_subtype: input.popup_subtype,
             effective_timeout_hours: input.effective_timeout_hours,
             timeout_tick: input.timeout_tick,
             resolved_tick: None,
             resolution_reason: ResolutionReason::Pending,
-            runtime_text_context_id: None,
+            runtime_title_text_context_id: None,
+            runtime_description_text_context_id: None,
+            runtime_option_text_contexts: Vec::new(),
         };
         let position = state
             .rows
@@ -272,28 +302,44 @@ impl A729EventLedger {
             .max(state.rows.len() as u32);
     }
 
-    pub fn record_materialisation(&self, input: MaterialisationInput) {
+    pub(crate) fn record_materialisation(&self, input: MaterialisationInput) {
         let Ok(mut state) = self.state.try_lock() else {
             self.note_resolution_drop();
             return;
         };
-        let Some(row) = state
+        let Some(row_index) = state
             .rows
-            .iter_mut()
-            .find(|row| row.event_sequence == input.event_sequence)
+            .iter()
+            .position(|row| row.event_sequence == input.event_sequence)
         else {
             state.telemetry.correlation_failures =
                 state.telemetry.correlation_failures.saturating_add(1);
             return;
         };
+        let fire_tick = state.rows[row_index].fire_tick;
+        let Some(effective_timeout_hours) = input
+            .timeout_tick
+            .checked_sub(fire_tick)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value != 0)
+        else {
+            state.telemetry.correlation_failures =
+                state.telemetry.correlation_failures.saturating_add(1);
+            return;
+        };
+        let row = &mut state.rows[row_index];
         row.visible_option_ordinals = input.visible_option_ordinals;
         row.selected_desc_key = input.selected_desc_key;
         row.shown_picture_gfx = input.shown_picture_gfx;
         row.popup_subtype = input.popup_subtype;
-        row.runtime_text_context_id = input.runtime_text_context_id;
+        row.effective_timeout_hours = effective_timeout_hours;
+        row.timeout_tick = input.timeout_tick;
+        row.runtime_title_text_context_id = input.runtime_title_text_context_id;
+        row.runtime_description_text_context_id = input.runtime_description_text_context_id;
+        row.runtime_option_text_contexts = input.runtime_option_text_contexts;
     }
 
-    pub fn record_resolution(&self, input: ResolutionInput) {
+    pub(crate) fn record_resolution(&self, input: ResolutionInput) {
         let Ok(mut state) = self.state.try_lock() else {
             self.note_resolution_drop();
             return;
@@ -312,7 +358,7 @@ impl A729EventLedger {
         row.resolution_reason = input.reason;
     }
 
-    pub fn note_invalid_definition_join(&self) {
+    pub(crate) fn note_invalid_definition_join(&self) {
         if let Ok(mut s) = self.state.try_lock() {
             s.telemetry.invalid_definition_joins =
                 s.telemetry.invalid_definition_joins.saturating_add(1)
@@ -320,7 +366,7 @@ impl A729EventLedger {
             self.note_fire_drop()
         }
     }
-    pub fn note_correlation_failure(&self) {
+    pub(crate) fn note_correlation_failure(&self) {
         if let Ok(mut state) = self.state.try_lock() {
             state.telemetry.correlation_failures =
                 state.telemetry.correlation_failures.saturating_add(1)
@@ -328,7 +374,7 @@ impl A729EventLedger {
             self.note_resolution_drop()
         }
     }
-    pub fn note_shadow_mismatch(&self) {
+    pub(crate) fn note_shadow_mismatch(&self) {
         if let Ok(mut s) = self.state.try_lock() {
             s.telemetry.fired_ledger_shadow_mismatches =
                 s.telemetry.fired_ledger_shadow_mismatches.saturating_add(1)
@@ -343,16 +389,8 @@ impl A729EventLedger {
         self.contended_resolution_drops
             .fetch_add(1, Ordering::Relaxed);
     }
-}
 
-impl ExactFiredEventSource for A729EventLedger {
-    fn is_authenticated_a729_hook_source(&self) -> bool {
-        true
-    }
-    fn producer_manifest_sha256(&self) -> [u8; 32] {
-        PRODUCER_MANIFEST_SHA256
-    }
-    fn snapshot(
+    pub(crate) fn snapshot_rows(
         &self,
         _frame_hour: u64,
         _elapsed_wall_ms: u64,
@@ -369,6 +407,29 @@ impl ExactFiredEventSource for A729EventLedger {
             .dropped_resolution_rows
             .saturating_add(self.contended_resolution_drops.load(Ordering::Relaxed));
         Ok((telemetry, state.rows.clone()))
+    }
+}
+
+// Unit tests exercise the bounded ledger independently. Production builds do
+// not expose this trait implementation; only A729RuntimeSource can cross the
+// authenticated source boundary.
+#[cfg(test)]
+impl exact_source_seal::Sealed for A729EventLedger {}
+
+#[cfg(test)]
+impl ExactFiredEventSource for A729EventLedger {
+    fn is_authenticated_a729_hook_source(&self) -> bool {
+        true
+    }
+    fn producer_manifest_sha256(&self) -> [u8; 32] {
+        PRODUCER_MANIFEST_SHA256
+    }
+    fn snapshot(
+        &self,
+        frame_hour: u64,
+        elapsed_wall_ms: u64,
+    ) -> Result<(HookTelemetry, Vec<FiredEventRow>), String> {
+        self.snapshot_rows(frame_hour, elapsed_wall_ms)
     }
 }
 
@@ -429,18 +490,46 @@ pub fn validate_frame(frame: &FiredEventFrame) -> Result<(), CarrierError> {
         {
             return invalid("visible option ordinals not strictly ordered");
         }
-        if row
-            .chosen_option_ordinal
-            .is_some_and(|v| !row.visible_option_ordinals.contains(&v))
+        // AI and hidden firings have an exact selected definition ordinal but
+        // no popup materialisation list. Once any popup presentation has been
+        // observed, however, the chosen ordinal must belong to that exact list.
+        let presentation_materialised = !row.visible_option_ordinals.is_empty()
+            || row.selected_desc_key.is_some()
+            || row.shown_picture_gfx.is_some();
+        if presentation_materialised
+            && row
+                .chosen_option_ordinal
+                .is_some_and(|v| !row.visible_option_ordinals.contains(&v))
         {
-            return invalid("chosen option is not visible");
+            return invalid("chosen option is not a materialised ordinal");
         }
         opt_nonempty(row.selected_desc_key.as_deref(), "description key")?;
         opt_nonempty(row.shown_picture_gfx.as_deref(), "picture gfx")?;
         opt_nonempty(
-            row.runtime_text_context_id.as_deref(),
-            "runtime text context",
+            row.runtime_title_text_context_id.as_deref(),
+            "runtime title text context",
         )?;
+        opt_nonempty(
+            row.runtime_description_text_context_id.as_deref(),
+            "runtime description text context",
+        )?;
+        if row.runtime_option_text_contexts.len() > MAX_OPTIONS
+            || row
+                .runtime_option_text_contexts
+                .windows(2)
+                .any(|pair| pair[0].definition_ordinal >= pair[1].definition_ordinal)
+        {
+            return invalid("runtime option text contexts not strictly ordered");
+        }
+        for context in &row.runtime_option_text_contexts {
+            nonempty(&context.context_id, "runtime option text context")?;
+            if !row
+                .visible_option_ordinals
+                .contains(&context.definition_ordinal)
+            {
+                return invalid("runtime option text context is not a visible ordinal");
+            }
+        }
         if row.effective_timeout_hours == 0 || row.timeout_tick <= row.fire_tick {
             return invalid("timeout is not after fire");
         }
@@ -491,7 +580,13 @@ pub fn encode_payload(frame: &FiredEventFrame) -> Result<Vec<u8>, CarrierError> 
         u64v(&mut out, row.timeout_tick);
         optional_u64(&mut out, row.resolved_tick);
         u32v(&mut out, reason_code(row.resolution_reason));
-        optional_string(&mut out, row.runtime_text_context_id.as_deref())?;
+        optional_string(&mut out, row.runtime_title_text_context_id.as_deref())?;
+        optional_string(&mut out, row.runtime_description_text_context_id.as_deref())?;
+        u32v(&mut out, row.runtime_option_text_contexts.len() as u32);
+        for context in &row.runtime_option_text_contexts {
+            u32v(&mut out, u32::from(context.definition_ordinal));
+            string(&mut out, &context.context_id)?;
+        }
     }
     Ok(out)
 }
@@ -532,6 +627,29 @@ pub fn decode_payload(payload: &[u8]) -> Result<FiredEventFrame, CarrierError> {
                     .map_err(|_| CarrierError::Invalid("option ordinal exceeds u16".into()))?,
             );
         }
+        let chosen_option_ordinal = r.optional_u16()?;
+        let selected_desc_key = r.optional_string()?;
+        let shown_picture_gfx = r.optional_string()?;
+        let popup_subtype = subtype_from(r.u32()?)?;
+        let effective_timeout_hours = r.u32()?;
+        let timeout_tick = r.u64()?;
+        let resolved_tick = r.optional_u64()?;
+        let resolution_reason = reason_from(r.u32()?)?;
+        let runtime_title_text_context_id = r.optional_string()?;
+        let runtime_description_text_context_id = r.optional_string()?;
+        let context_count = r.u32()? as usize;
+        if context_count > MAX_OPTIONS {
+            return invalid("runtime option text context count exceeds bound");
+        }
+        let mut runtime_option_text_contexts = Vec::with_capacity(context_count);
+        for _ in 0..context_count {
+            runtime_option_text_contexts.push(OptionRuntimeTextContext {
+                definition_ordinal: u16::try_from(r.u32()?).map_err(|_| {
+                    CarrierError::Invalid("runtime option text ordinal exceeds u16".into())
+                })?,
+                context_id: r.string()?,
+            });
+        }
         rows.push(FiredEventRow {
             event_id,
             recipient_tag,
@@ -540,15 +658,17 @@ pub fn decode_payload(payload: &[u8]) -> Result<FiredEventFrame, CarrierError> {
             fire_tick,
             event_sequence,
             visible_option_ordinals,
-            chosen_option_ordinal: r.optional_u16()?,
-            selected_desc_key: r.optional_string()?,
-            shown_picture_gfx: r.optional_string()?,
-            popup_subtype: subtype_from(r.u32()?)?,
-            effective_timeout_hours: r.u32()?,
-            timeout_tick: r.u64()?,
-            resolved_tick: r.optional_u64()?,
-            resolution_reason: reason_from(r.u32()?)?,
-            runtime_text_context_id: r.optional_string()?,
+            chosen_option_ordinal,
+            selected_desc_key,
+            shown_picture_gfx,
+            popup_subtype,
+            effective_timeout_hours,
+            timeout_tick,
+            resolved_tick,
+            resolution_reason,
+            runtime_title_text_context_id,
+            runtime_description_text_context_id,
+            runtime_option_text_contexts,
         });
     }
     if r.at != payload.len() {
@@ -803,7 +923,9 @@ mod tests {
             timeout_tick: 324,
             resolved_tick: Some(13),
             resolution_reason: ResolutionReason::Selected,
-            runtime_text_context_id: None,
+            runtime_title_text_context_id: None,
+            runtime_description_text_context_id: None,
+            runtime_option_text_contexts: Vec::new(),
         }
     }
     #[test]
@@ -861,6 +983,7 @@ mod tests {
                 fire_hour: 0,
                 fire_tick: 12,
                 event_sequence: sequence,
+                popup_subtype: PopupSubtype::News,
                 effective_timeout_hours: 312,
                 timeout_tick: 324,
             });
@@ -871,7 +994,13 @@ mod tests {
             selected_desc_key: Some("germany.1.a".into()),
             shown_picture_gfx: Some("GFX_a".into()),
             popup_subtype: PopupSubtype::Country,
-            runtime_text_context_id: None,
+            timeout_tick: 325,
+            runtime_title_text_context_id: Some("event_window::title::7".into()),
+            runtime_description_text_context_id: Some("event_window::description::7".into()),
+            runtime_option_text_contexts: vec![OptionRuntimeTextContext {
+                definition_ordinal: 0,
+                context_id: "event_window::option::7".into(),
+            }],
         });
         ledger.record_resolution(ResolutionInput {
             event_sequence: 10,
@@ -885,7 +1014,10 @@ mod tests {
             selected_desc_key: Some("germany.1.b".into()),
             shown_picture_gfx: Some("GFX_b".into()),
             popup_subtype: PopupSubtype::News,
-            runtime_text_context_id: None,
+            timeout_tick: 324,
+            runtime_title_text_context_id: None,
+            runtime_description_text_context_id: None,
+            runtime_option_text_contexts: Vec::new(),
         });
         ledger.record_resolution(ResolutionInput {
             event_sequence: 11,
@@ -898,7 +1030,70 @@ mod tests {
         assert!(decoded.fired_events_complete);
         assert_eq!(decoded.rows.len(), 2);
         assert_eq!(decoded.rows[0].event_sequence, 10);
+        assert_eq!(decoded.rows[0].effective_timeout_hours, 313);
+        assert_eq!(decoded.rows[0].timeout_tick, 325);
+        assert_eq!(
+            decoded.rows[0]
+                .runtime_description_text_context_id
+                .as_deref(),
+            Some("event_window::description::7")
+        );
+        assert_eq!(
+            decoded.rows[0].runtime_option_text_contexts,
+            vec![OptionRuntimeTextContext {
+                definition_ordinal: 0,
+                context_id: "event_window::option::7".into(),
+            }]
+        );
         assert_eq!(decoded.rows[1].event_sequence, 11);
         assert!(decoded.rows[1].visible_option_ordinals.is_empty());
+    }
+
+    #[test]
+    fn ai_selected_ordinal_is_valid_without_popup_materialisation() {
+        let mut ai = row();
+        ai.visible_option_ordinals.clear();
+        ai.selected_desc_key = None;
+        ai.shown_picture_gfx = None;
+        ai.popup_subtype = PopupSubtype::News;
+        ai.chosen_option_ordinal = Some(2);
+        let frame = FiredEventFrame {
+            elapsed_wall_ms: 1,
+            frame_hour: 12,
+            producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
+            telemetry: telemetry(),
+            fired_events_complete: true,
+            rows: vec![ai],
+        };
+        assert!(validate_frame(&frame).is_ok());
+    }
+
+    #[test]
+    fn runtime_option_contexts_require_unique_visible_definition_ordinals() {
+        let mut invalid = row();
+        invalid.runtime_option_text_contexts = vec![OptionRuntimeTextContext {
+            definition_ordinal: 1,
+            context_id: "EventWindow::Name::1".into(),
+        }];
+        let mut frame = FiredEventFrame {
+            elapsed_wall_ms: 1,
+            frame_hour: 12,
+            producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
+            telemetry: telemetry(),
+            fired_events_complete: true,
+            rows: vec![invalid],
+        };
+        assert!(validate_frame(&frame).is_err());
+        frame.rows[0].runtime_option_text_contexts = vec![
+            OptionRuntimeTextContext {
+                definition_ordinal: 2,
+                context_id: "EventWindow::Name::2".into(),
+            },
+            OptionRuntimeTextContext {
+                definition_ordinal: 2,
+                context_id: "EventWindow::Name::3".into(),
+            },
+        ];
+        assert!(validate_frame(&frame).is_err());
     }
 }

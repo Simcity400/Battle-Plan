@@ -759,6 +759,41 @@ fn empty_recovery_segment_retained_not_placed() {
 }
 
 #[test]
+fn empty_recovery_segment_cannot_claim_transition_hours_without_a_cutover() {
+    let mut recovery = snap_seg(1, 0, K, 0..=0);
+    recovery.coverage.clear();
+    recovery.observations.clear();
+    recovery.transition_coverage.insert(
+        0,
+        CoverageDisposition::Gap {
+            reason: "unowned transition".into(),
+            evidence_id: "transition-unowned-0".into(),
+        },
+    );
+    match plan_stitch(
+        "g",
+        stitch_inputs(),
+        vec![snap_seg(0, 0, K, 0..=10), recovery],
+    ) {
+        StitchOutcome::Separate { reason } => assert!(reason.contains("without a cutover")),
+        other => panic!("empty recovery transition must fail closed, got {other:?}"),
+    }
+}
+
+#[test]
+fn hostile_wide_hour_span_is_rejected_without_iterating_the_numeric_range() {
+    let mut segment = snap_seg(0, 0, K, 0..=1);
+    let last_disposition = segment.coverage.remove(&1).unwrap();
+    let last_observation = segment.observations.remove(&1).unwrap();
+    segment.coverage.insert(i64::MAX, last_disposition);
+    segment.observations.insert(i64::MAX, last_observation);
+    match plan_stitch("g", stitch_inputs(), vec![segment]) {
+        StitchOutcome::Separate { reason } => assert!(reason.contains("missing coverage between")),
+        other => panic!("wide sparse span must fail closed, got {other:?}"),
+    }
+}
+
+#[test]
 fn colliding_empty_recovery_segment_is_rejected_in_every_input_permutation() {
     let nonempty = snap_seg(0, 0, K, 0..=10);
     let mut empty = snap_seg(0, 0, K, 0..=0);
@@ -1117,4 +1152,80 @@ fn mandatory_source_inputs_are_rejected_and_schema_moves_digest() {
     changed_source.raw_source.as_mut().unwrap().stored_digest = digest;
     let changed = stitched(plan_stitch("g", stitch_inputs(), vec![changed_source]));
     assert_ne!(base.stitch_input_digest, changed.stitch_input_digest);
+}
+
+#[test]
+fn raw_source_participations_must_partition_the_complete_source_extent() {
+    let mut leading_hole = snap_seg(0, 0, K, 0..=1);
+    {
+        let source = leading_hole.raw_source.as_mut().unwrap();
+        source.record_seq_bounds.0 = 0;
+        source.byte_bounds.0 = 0;
+        source.participations[0].record_seq_bounds.0 = 1;
+        source.participations[0].byte_bounds.0 = 1;
+    }
+    assert!(matches!(
+        plan_stitch("g", stitch_inputs(), vec![leading_hole]),
+        StitchOutcome::Separate { .. }
+    ));
+
+    let mut trailing_hole = snap_seg(0, 0, K, 0..=1);
+    {
+        let source = trailing_hole.raw_source.as_mut().unwrap();
+        source.record_seq_bounds.1 += 1;
+        source.byte_bounds.1 += 1;
+    }
+    assert!(matches!(
+        plan_stitch("g", stitch_inputs(), vec![trailing_hole]),
+        StitchOutcome::Separate { .. }
+    ));
+}
+
+#[test]
+fn digests_and_transition_evidence_use_canonical_grammars() {
+    let mut uppercase_source_digest = snap_seg(0, 0, K, 0..=1);
+    uppercase_source_digest
+        .raw_source
+        .as_mut()
+        .unwrap()
+        .stored_digest = "AB".repeat(32);
+    uppercase_source_digest.provenance.source_stored_digest = Some("AB".repeat(32));
+    assert!(matches!(
+        plan_stitch("g", stitch_inputs(), vec![uppercase_source_digest]),
+        StitchOutcome::Separate { .. }
+    ));
+
+    let mut bad_snapshot_digest = snap_seg(0, 0, K, 0..=0);
+    bad_snapshot_digest
+        .coverage
+        .get_mut(&0)
+        .unwrap()
+        .clone_from(&CoverageDisposition::Snapshot {
+            sha256: "not-a-digest".into(),
+        });
+    let bad_disposition = bad_snapshot_digest.coverage.get(&0).unwrap().clone();
+    bad_snapshot_digest.observations.get_mut(&0).unwrap()[0].disposition = bad_disposition;
+    assert!(matches!(
+        plan_stitch("g", stitch_inputs(), vec![bad_snapshot_digest]),
+        StitchOutcome::Separate { .. }
+    ));
+
+    let mut bad_transition = snap_seg(1, 0, K, 20..=20);
+    for hour in 11..20 {
+        bad_transition.transition_coverage.insert(
+            hour,
+            CoverageDisposition::Gap {
+                reason: "forward gap".into(),
+                evidence_id: "bad evidence with spaces".into(),
+            },
+        );
+    }
+    assert!(matches!(
+        plan_stitch(
+            "g",
+            stitch_inputs(),
+            vec![snap_seg(0, 0, K, 0..=10), bad_transition],
+        ),
+        StitchOutcome::Separate { .. }
+    ));
 }

@@ -99,11 +99,7 @@ pub enum AttentionCarrier {
     ProducerResolved,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScrollbarAxis {
-    Horizontal,
-    Vertical,
-}
+pub use crate::scrollbar_law::ScrollbarAxis;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DragSnapshot {

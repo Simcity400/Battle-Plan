@@ -139,6 +139,79 @@ class TestIngestSynthetic(unittest.TestCase):
         self.assertEqual(reloaded["states"]["1"]["controller"], "GER")
         self.assertEqual(reloaded["provinces"]["10"]["controller"], "GER")
 
+    def test_atomic_write_failure_keeps_old_file_and_no_temp(self):
+        # a failed dump must leave the previous content intact and remove the
+        # temp file, never a truncated destination (crash-mid-write safety).
+        path = os.path.join(self.scratch, "atomic.json")
+        store._atomic_write_json(path, {"ok": 1})
+        with self.assertRaises(TypeError):
+            store._atomic_write_json(path, {"bad": object()})
+        with open(path, "r", encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh), {"ok": 1})
+        self.assertEqual(
+            [n for n in os.listdir(self.scratch) if ".tmp." in n], [])
+
+    def test_store_write_leaves_no_temp_files(self):
+        snap = store.build_snapshot_from_oracle(self.oracle, "syn")
+        st = store.SnapshotStore(os.path.join(self.scratch, "store"))
+        st.write_snapshot(snap)
+        st.write_timeline("syn", [])
+        gdir = st.game_dir("syn")
+        self.assertEqual([n for n in os.listdir(gdir) if ".tmp." in n], [])
+
+    def test_war_and_faction_key_collisions_are_preserved(self):
+        # two distinct wars with the same pair+start_date and factions with
+        # duplicate/missing ids must all survive under disambiguated keys.
+        _dump(self.oracle, "diplomacy.json", {
+            "wars": [
+                {"a": "GER", "b": "POL", "start_date": "1939.9.1.4"},
+                {"a": "GER", "b": "POL", "start_date": "1939.9.1.4",
+                 "a_casualties": 5},
+            ],
+            "factions": [
+                {"id": 1, "members": ["GER"], "template": "axis"},
+                {"id": 1, "members": ["ITA"], "template": "axis2"},
+                {"members": ["JAP"], "template": "co_prosperity"},
+                {"members": ["SOV"], "template": "comintern"},
+            ],
+        })
+        snap = store.build_snapshot_from_oracle(self.oracle, "syn")
+        wars = snap["diplomacy_world"]["wars"]
+        self.assertIn("GER-POL@1939.9.1.4", wars)
+        self.assertIn("GER-POL@1939.9.1.4#2", wars)
+        self.assertEqual(wars["GER-POL@1939.9.1.4#2"]["a_casualties"], 5)
+        facs = snap["diplomacy_world"]["factions"]
+        self.assertEqual(set(facs), {"1", "1#2", "noid#1", "noid#2"})
+        self.assertIs(facs["noid#1"].get("id_missing"), True)
+        self.assertIs(facs["noid#2"].get("id_missing"), True)
+        self.assertNotIn("id_missing", facs["1"])
+        self.assertEqual(schema.validate_snapshot(snap), [])
+
+    def test_abilities_rejects_non_tag_keys(self):
+        # only real TAGs (schema.valid_tag) may create country entries.
+        _dump(self.oracle, "abilities.json", {
+            "aces": {"GER": {"aces": [{"id": 1}]}, "abc": {"aces": []},
+                     "?": {"aces": []}},
+            "commander_abilities": {"meta": []},
+            "officer_corps": {},
+        })
+        snap = store.build_snapshot_from_oracle(self.oracle, "syn")
+        self.assertEqual(snap["countries"]["GER"]["abilities"]["aces"],
+                         [{"id": 1}])
+        for junk in ("abc", "meta", "?"):
+            self.assertNotIn(junk, snap["countries"])
+
+    def test_market_extra_contract_id_normalized(self):
+        # price-band records must share the 'id:type' key space with
+        # diplomacy_world.trade_contracts (join-key parity).
+        _dump(self.oracle, "market_extra.json", {
+            "contracts": [{"contract_id": [465, 81], "seller": "GER",
+                           "buyer": "POL", "price_levels": [1, 2]}],
+        })
+        snap = store.build_snapshot_from_oracle(self.oracle, "syn")
+        pl = snap["diplomacy_world"]["market_price_levels"]
+        self.assertEqual(pl[0]["contract_id"], "465:81")
+
 
 @unittest.skipUnless(HAVE_ORACLE, "real save_oracle/output not present")
 class TestIngestRealOracle(unittest.TestCase):

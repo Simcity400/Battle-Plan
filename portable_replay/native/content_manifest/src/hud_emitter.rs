@@ -8,8 +8,8 @@ use crate::effective_vfs::EffectiveVfs;
 use crate::gfx::SpriteRegistry;
 use crate::gui::{parse_gui_document, GuiElement};
 use crate::hud_role::{
-    AuthenticatedHudSurfaceClosure, EffectiveVfsHudRoleIndexDocument, HudSemanticRole, HudSurface,
-    HudSurfaceActivationFrame, ResolvedHudRoleBinding,
+    validate_sha256, AuthenticatedHudSurfaceClosure, EffectiveVfsHudRoleIndexDocument,
+    HudSemanticRole, HudSurface, HudSurfaceActivationFrame, ResolvedHudRoleBinding,
 };
 use crate::paradox_text::{decode_text, parse_bytes, Value};
 use crate::{normalize_game_relative_path, UsedContentKey};
@@ -54,7 +54,7 @@ pub fn emit_effective_vfs_hud_role_index(
     if activation.status_flags != 0 || activation.active_surfaces.is_empty() {
         return Err("HUD index emitter requires a nonempty latest-clean d79 frame".into());
     }
-    validate_sha(source_inventory_sha256)?;
+    validate_sha256(source_inventory_sha256, "HUD source inventory authority")?;
     let gui_files = vfs.list_recursive("interface", "gui")?;
     let gfx_files = vfs.list_recursive("interface", "gfx")?;
     let localisation = localisation_sources(vfs, localisation_language)?;
@@ -159,14 +159,12 @@ pub fn emit_effective_vfs_hud_role_index(
                 &mut missing,
             )?;
         }
-        bindings.sort_by(|left, right| {
-            let left_role = serde_json::to_string(&left.semantic_role).unwrap();
-            let right_role = serde_json::to_string(&right.semantic_role).unwrap();
-            left_role.cmp(&right_role).then_with(|| {
-                left.content
-                    .normalized_game_relative_path
-                    .cmp(&right.content.normalized_game_relative_path)
-            })
+        bindings.sort_by_cached_key(|binding| {
+            (
+                serde_json::to_string(&binding.semantic_role)
+                    .expect("HudSemanticRole serializes infallibly (string-field enum)"),
+                binding.content.normalized_game_relative_path.clone(),
+            )
         });
         let closure_hash =
             hex_sha256(&serde_json::to_vec(&bindings).map_err(|error| error.to_string())?);
@@ -758,18 +756,263 @@ fn neutral(value: &str) -> String {
     }
 }
 
-fn validate_sha(value: &str) -> Result<(), String> {
-    if value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    {
-        Ok(())
-    } else {
-        Err("HUD source inventory authority is not lowercase SHA-256".into())
-    }
-}
-
 fn hex_sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hud_role::HudSurfaceActivation;
+    use crate::ContentLayerKind;
+
+    fn authority() -> String {
+        "a".repeat(64)
+    }
+
+    /// Self-consistent resolved-file fixture: identity fields must satisfy
+    /// [`validate_resolved`] (normalized path, authority binding, byte length,
+    /// payload digest) or the emitter refuses everything.
+    fn resolved_file(path: &str, bytes: &[u8]) -> ResolvedHudFile {
+        let content = UsedContentKey {
+            effective_vfs_manifest_sha256: authority(),
+            normalized_game_relative_path: path.to_string(),
+            winning_layer_ordinal: 0,
+            layer_kind: ContentLayerKind::Base,
+            layer_id: "base".into(),
+            source_sha256: hex_sha256(bytes),
+            payload_sha256: hex_sha256(bytes),
+            payload_bytes: bytes.len() as u64,
+        };
+        content.validate().expect("fixture content key");
+        ResolvedHudFile {
+            content,
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    struct MapVfs {
+        files: BTreeMap<String, Vec<u8>>,
+    }
+
+    impl MapVfs {
+        fn new(entries: &[(&str, &[u8])]) -> Self {
+            Self {
+                files: entries
+                    .iter()
+                    .map(|(path, bytes)| (path.to_string(), bytes.to_vec()))
+                    .collect(),
+            }
+        }
+    }
+
+    impl HudContentVfs for MapVfs {
+        fn list_recursive(&self, directory: &str, extension: &str) -> Result<Vec<String>, String> {
+            let prefix = format!("{directory}/");
+            let suffix = format!(".{extension}");
+            Ok(self
+                .files
+                .keys()
+                .filter(|path| path.starts_with(&prefix) && path.ends_with(&suffix))
+                .cloned()
+                .collect())
+        }
+
+        fn resolve(&self, logical_path: &str) -> Result<Option<ResolvedHudFile>, String> {
+            let normalized = normalize_path(logical_path);
+            Ok(self
+                .files
+                .get(&normalized)
+                .map(|bytes| resolved_file(&normalized, bytes)))
+        }
+    }
+
+    fn topbar_activation(root_name: &str, status_flags: u32) -> HudSurfaceActivationFrame {
+        HudSurfaceActivationFrame {
+            frame_hour: 40,
+            status_flags,
+            observation_sequence: 1,
+            active_surfaces: vec![HudSurfaceActivation {
+                surface: HudSurface::Topbar,
+                runtime_root_name: root_name.to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn emitter_round_trip_binds_the_unique_gui_root() {
+        let vfs = MapVfs::new(&[(
+            "interface/fixture.gui",
+            b"guiTypes = {\n\tcontainerWindowType = {\n\t\tname = fixture_topbar_hud\n\t}\n}\n"
+                .as_slice(),
+        )]);
+        let document = emit_effective_vfs_hud_role_index(
+            &vfs,
+            &topbar_activation("fixture_topbar_hud", 0),
+            &authority(),
+            "english",
+        )
+        .expect("emit");
+        assert_eq!(document.closures.len(), 1);
+        let closure = &document.closures[0];
+        assert_eq!(closure.surface, HudSurface::Topbar);
+        assert_eq!(closure.bindings.len(), 1);
+        assert!(matches!(
+            closure.bindings[0].semantic_role,
+            HudSemanticRole::GuiRoot { .. }
+        ));
+        // Only Topbar of the four core surfaces is active, so the closure is
+        // incomplete with the other three surfaced as missing activations.
+        assert!(!closure.complete_dependency_closure);
+        assert_eq!(closure.missing_roles.len(), 3);
+        assert!(closure
+            .missing_roles
+            .iter()
+            .all(|role| role.starts_with("compose_hud_activation:")));
+        assert_eq!(document.winning_content.len(), 1);
+        assert_eq!(
+            document.winning_content[0].normalized_game_relative_path,
+            "interface/fixture.gui"
+        );
+    }
+
+    #[test]
+    fn emitter_refuses_dirty_frames_and_ambiguous_roots() {
+        let vfs = MapVfs::new(&[(
+            "interface/fixture.gui",
+            b"guiTypes = {\n\tcontainerWindowType = {\n\t\tname = fixture_topbar_hud\n\t}\n}\n"
+                .as_slice(),
+        )]);
+        let error = emit_effective_vfs_hud_role_index(
+            &vfs,
+            &topbar_activation("fixture_topbar_hud", 1),
+            &authority(),
+            "english",
+        )
+        .unwrap_err();
+        assert!(error.contains("latest-clean"));
+
+        // A root with zero effective candidates yields an empty binding set
+        // and a typed missing role, never an invented binding.
+        let activation = HudSurfaceActivationFrame {
+            frame_hour: 40,
+            status_flags: 0,
+            observation_sequence: 1,
+            active_surfaces: vec![
+                HudSurfaceActivation {
+                    surface: HudSurface::Topbar,
+                    runtime_root_name: "fixture_topbar_hud".into(),
+                },
+                HudSurfaceActivation {
+                    surface: HudSurface::Minimap,
+                    runtime_root_name: "unknown_root".into(),
+                },
+            ],
+        };
+        let document =
+            emit_effective_vfs_hud_role_index(&vfs, &activation, &authority(), "english")
+                .expect("emit");
+        let minimap = document
+            .closures
+            .iter()
+            .find(|closure| closure.surface == HudSurface::Minimap)
+            .expect("minimap closure");
+        assert!(minimap.bindings.is_empty());
+        assert!(!minimap.complete_dependency_closure);
+        assert!(minimap
+            .missing_roles
+            .iter()
+            .any(|role| role.contains("effective_candidate_count=0")));
+    }
+
+    #[test]
+    fn binary_bmfont_pages_parse_and_truncations_fail_closed() {
+        // Valid: header + a type-3 pages block with NUL-separated names.
+        let mut valid = b"BMF\x03".to_vec();
+        let pages = b"page_0.dds\0page_1.dds\0";
+        valid.push(3);
+        valid.extend_from_slice(&(pages.len() as u32).to_le_bytes());
+        valid.extend_from_slice(pages);
+        let parsed = bmfont_page_files(&valid).expect("valid binary BMFont");
+        assert_eq!(parsed.get(&0).map(String::as_str), Some("page_0.dds"));
+        assert_eq!(parsed.get(&1).map(String::as_str), Some("page_1.dds"));
+
+        // Exactly b"BMF": recognized as binary but shorter than the header.
+        assert_eq!(
+            bmfont_page_files(b"BMF").unwrap_err(),
+            "binary BMFont header is truncated"
+        );
+        // Block header cut off (type byte without a size field).
+        assert_eq!(
+            bmfont_page_files(b"BMF\x03\x03").unwrap_err(),
+            "binary BMFont block header is truncated"
+        );
+        // Size field pointing past the end of the payload.
+        let mut oversized = b"BMF\x03".to_vec();
+        oversized.push(3);
+        oversized.extend_from_slice(&64u32.to_le_bytes());
+        oversized.extend_from_slice(b"tiny");
+        assert_eq!(
+            bmfont_page_files(&oversized).unwrap_err(),
+            "binary BMFont block is truncated"
+        );
+        // No pages block at all is measured-empty, not an error.
+        let mut no_pages = b"BMF\x03".to_vec();
+        no_pages.push(1);
+        no_pages.extend_from_slice(&1u32.to_le_bytes());
+        no_pages.push(0);
+        assert!(bmfont_page_files(&no_pages).unwrap().is_empty());
+    }
+
+    #[test]
+    fn text_bmfont_pages_and_kv_fields_parse() {
+        let text = b"info face=\"font\" size=16\npage id=0 file=\"font_0.dds\"\npage id=1 file=font_1.dds\n";
+        let parsed = bmfont_page_files(text).expect("text BMFont");
+        assert_eq!(parsed.get(&0).map(String::as_str), Some("font_0.dds"));
+        assert_eq!(parsed.get(&1).map(String::as_str), Some("font_1.dds"));
+
+        let fields = parse_kv_fields("id=3 file=\"a b.dds\" bare orphan= last=x");
+        assert_eq!(fields.get("id").map(String::as_str), Some("3"));
+        assert_eq!(fields.get("file").map(String::as_str), Some("a b.dds"));
+        assert_eq!(fields.get("orphan").map(String::as_str), Some(""));
+        assert_eq!(fields.get("last").map(String::as_str), Some("x"));
+        assert!(!fields.contains_key("bare"));
+    }
+
+    #[test]
+    fn texture_resolution_falls_back_between_dds_and_tga_only() {
+        let vfs = MapVfs::new(&[("gfx/interface/icon.tga", b"tga-bytes".as_slice())]);
+        let key = resolve_texture_key(&vfs, "gfx/interface/icon.dds", &authority())
+            .expect("dds->tga fallback");
+        assert_eq!(key.normalized_game_relative_path, "gfx/interface/icon.tga");
+        let error = resolve_texture_key(&vfs, "gfx/interface/none.dds", &authority()).unwrap_err();
+        assert!(error.contains("missing HUD texture dependency"));
+        let error = resolve_texture_key(&vfs, "gfx/interface/icon.png", &authority()).unwrap_err();
+        assert!(error.contains("missing HUD texture dependency"));
+    }
+
+    #[test]
+    fn localisation_sources_match_only_the_expected_language_header() {
+        let vfs = MapVfs::new(&[
+            (
+                "localisation/english/fixture_l_english.yml",
+                b"l_english:\n KEY_ALPHA:0 \"Alpha\"\n # comment\n KEY_BETA:0 \"Beta\"\n"
+                    .as_slice(),
+            ),
+            (
+                "localisation/french/fixture_l_french.yml",
+                b"l_french:\n KEY_ALPHA:0 \"Alpha\"\n".as_slice(),
+            ),
+        ]);
+        let sources = localisation_sources(&vfs, "english").expect("localisation");
+        assert_eq!(
+            sources.get("key_alpha").map(String::as_str),
+            Some("localisation/english/fixture_l_english.yml")
+        );
+        assert_eq!(
+            sources.get("key_beta").map(String::as_str),
+            Some("localisation/english/fixture_l_english.yml")
+        );
+        assert_eq!(sources.len(), 2);
+    }
 }

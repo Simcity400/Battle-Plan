@@ -889,6 +889,7 @@ FIELD_SOURCES: Dict[str, str] = {
     "divisions.*.has_officer": "S",
     # --- combat (§7) ---
     "combats.*": "M*",
+    "ended_combats.*": "M",
     # --- world-scoped trade contracts (§7b, from market.json) ---
     "diplomacy_world.trade_contracts": "S",
     # world-scoped market-extra + deployment (WAVE-2). All S.
@@ -2064,16 +2065,28 @@ def empty_production() -> Dict[str, Any]:
     return asdict(Production())
 
 
+# Precomputed templates for the per-entity skeletons: dataclass construction +
+# recursive asdict is the slow generic path, and these three builders run once
+# per province (10k+), state, and division per ingest. The templates are pure
+# constant data; the builders copy them instead of rebuilding. State/Division
+# must splice in FRESH lists — dict(template) would alias the single template
+# list (field(default_factory=list)) across every skeleton.
+_STATE_TEMPLATE = asdict(State())
+_PROVINCE_TEMPLATE = asdict(Province())
+_DIVISION_TEMPLATE = asdict(Division())
+
+
 def empty_state() -> Dict[str, Any]:
-    return asdict(State())
+    return {**_STATE_TEMPLATE, "is_core_of": [], "is_claimed_by": []}
 
 
 def empty_province() -> Dict[str, Any]:
-    return asdict(Province())
+    # every Province field is a scalar/None default — shallow copy is exact.
+    return dict(_PROVINCE_TEMPLATE)
 
 
 def empty_division() -> Dict[str, Any]:
-    return asdict(Division())
+    return {**_DIVISION_TEMPLATE, "equipment": []}
 
 
 def empty_map() -> Dict[str, Any]:
@@ -2214,6 +2227,9 @@ def empty_snapshot(game_id: str, date: Optional[str] = None) -> Dict[str, Any]:
         "provinces": {},
         "divisions": [],
         "combats": [],
+        # Terminal combat events are cumulative within an hour and keyed by
+        # (combat_id,generation). Null is unavailable; [] is measured empty.
+        "ended_combats": None,
         # world-scoped diplomacy (war-id-keyed wars + factions + subjects); the
         # per-country view lives under countries.*.diplomacy. Always present.
         "diplomacy_world": {"wars": {}, "factions": {}, "subjects": []},
@@ -2301,36 +2317,6 @@ _TOP_CONTAINERS = {
 }
 
 
-def _validate_advisor_token_map(
-    tag: str,
-    politics: Dict[str, Any],
-    field: str,
-    problems: List[str],
-) -> None:
-    value = politics.get(field)
-    if value is not None and not isinstance(value, dict):
-        problems.append(f"country {tag!r}.politics.{field} {value!r} not dict|null")
-        return
-    if not isinstance(value, dict):
-        return
-    for bucket, tokens in value.items():
-        if not valid_script_token(bucket):
-            problems.append(
-                f"country {tag!r}.politics.{field} key {bucket!r} not token"
-            )
-            continue
-        if not isinstance(tokens, list):
-            problems.append(f"country {tag!r}.politics.{field}.{bucket} not list")
-            continue
-        for token in tokens:
-            if not valid_script_token(token):
-                problems.append(
-                    f"country {tag!r}.politics.{field}.{bucket} "
-                    f"entry {token!r} not token"
-                )
-                break
-
-
 def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
     problems: List[str] = []
 
@@ -2359,6 +2345,33 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             problems.append(f"missing top-level container {key!r}")
         elif not isinstance(snap[key], kind):
             problems.append(f"{key!r} should be {kind.__name__}, got {type(snap[key]).__name__}")
+
+    # Legacy schema-v1 snapshots may lack this late-added terminal carrier;
+    # replay_core exposes that as DomainAbsent. New snapshots always include it.
+    if "ended_combats" in snap:
+        ended = snap["ended_combats"]
+        if ended is not None and not isinstance(ended, list):
+            problems.append(
+                f"'ended_combats' should be list|null, got {type(ended).__name__}"
+            )
+        elif isinstance(ended, list):
+            identities = set()
+            for index, row in enumerate(ended):
+                if not isinstance(row, dict):
+                    problems.append(f"ended_combats[{index}] should be dict")
+                    continue
+                identity = (row.get("combat_id"), row.get("generation"))
+                if (
+                    not all(type(value) is int and value > 0 for value in identity)
+                    or row.get("lifecycle") != "ended"
+                ):
+                    problems.append(
+                        f"ended_combats[{index}] has invalid terminal identity/lifecycle"
+                    )
+                elif identity in identities:
+                    problems.append(f"ended_combats[{index}] duplicates identity {identity!r}")
+                else:
+                    identities.add(identity)
 
     world_events = snap.get("world_events")
     if isinstance(world_events, dict):
@@ -2851,6 +2864,20 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                 if cap is not None and not isinstance(cap, dict):
                     problems.append(
                         f"country {tag!r}.intel.agency.capacity {cap!r} not dict|null")
+            # newly-wired LIVE intel leaves (intel_deep_live + final_residuals_live, M):
+            # operatives_live list|null, cryptology_live dict|null, operative_skill_xp dict|null.
+            ol = intl.get("operatives_live")
+            if ol is not None and not isinstance(ol, list):
+                problems.append(
+                    f"country {tag!r}.intel.operatives_live {ol!r} not list|null")
+            cl2 = intl.get("cryptology_live")
+            if cl2 is not None and not isinstance(cl2, dict):
+                problems.append(
+                    f"country {tag!r}.intel.cryptology_live {cl2!r} not dict|null")
+            osx = intl.get("operative_skill_xp")
+            if osx is not None and not isinstance(osx, dict):
+                problems.append(
+                    f"country {tag!r}.intel.operative_skill_xp {osx!r} not dict|null")
         # newly-wired LIVE focus leaf: current_continuous str|null (focus_live, M).
         fcs = c.get("focus")
         if isinstance(fcs, dict):
@@ -3078,34 +3105,12 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                             problems.append(
                                 f"country {tag!r}.politics."
                                 f"appointed_advisor_details[{idx}].{key} not token|null")
-            _validate_advisor_token_map(
-                tag,
-                pol,
-                "appointed_advisor_slots",
-                problems,
-            )
-            _validate_advisor_token_map(
-                tag,
-                pol,
-                "appointed_advisor_ledgers",
-                problems,
-            )
-        # newly-wired LIVE intel leaves (intel_deep_live + final_residuals_live, M):
-        # operatives_live list|null, cryptology_live dict|null, operative_skill_xp dict|null.
-        intl2 = c.get("intel")
-        if isinstance(intl2, dict):
-            ol = intl2.get("operatives_live")
-            if ol is not None and not isinstance(ol, list):
-                problems.append(
-                    f"country {tag!r}.intel.operatives_live {ol!r} not list|null")
-            cl2 = intl2.get("cryptology_live")
-            if cl2 is not None and not isinstance(cl2, dict):
-                problems.append(
-                    f"country {tag!r}.intel.cryptology_live {cl2!r} not dict|null")
-            osx = intl2.get("operative_skill_xp")
-            if osx is not None and not isinstance(osx, dict):
-                problems.append(
-                    f"country {tag!r}.intel.operative_skill_xp {osx!r} not dict|null")
+            for field_name in ("appointed_advisor_slots",
+                               "appointed_advisor_ledgers"):
+                problems.extend(_validate_token_list_map(
+                    pol.get(field_name),
+                    f"country {tag!r}.politics.{field_name}",
+                ))
         # newly-wired LIVE decisions leaves (decisions_live, C; decisions_market_live, M):
         # status_present dict|null and timed_live list|null.
         dec = c.get("decisions")
@@ -3678,12 +3683,50 @@ def _validate_fired_event_history(world_events: Dict[str, Any]) -> List[str]:
         ):
             problems.append(f"{prefix}.chosen_option_ordinal not ordinal|null")
         presentation_signal = bool(visible_set)
-        for key in ("selected_desc_key", "shown_picture_gfx", "runtime_text_context_id"):
+        if "runtime_text_context_id" in row:
+            problems.append(
+                f"{prefix}.runtime_text_context_id singular popup-wide join is forbidden"
+            )
+        for key in (
+            "selected_desc_key",
+            "shown_picture_gfx",
+            "runtime_title_text_context_id",
+            "runtime_description_text_context_id",
+        ):
             value = row.get(key)
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 problems.append(f"{prefix}.{key} {value!r} not nonempty str|null")
-            if key != "runtime_text_context_id" and isinstance(value, str) and value.strip():
+            if key in {"selected_desc_key", "shown_picture_gfx"} and isinstance(value, str) and value.strip():
                 presentation_signal = True
+        option_contexts = row.get("runtime_option_text_contexts")
+        if option_contexts is not None:
+            if not isinstance(option_contexts, list):
+                problems.append(f"{prefix}.runtime_option_text_contexts not list|null")
+            else:
+                prior_context_ordinal: Optional[int] = None
+                for context_index, context in enumerate(option_contexts):
+                    context_prefix = (
+                        f"{prefix}.runtime_option_text_contexts[{context_index}]"
+                    )
+                    if not isinstance(context, dict):
+                        problems.append(f"{context_prefix} not dict")
+                        continue
+                    ordinal = context.get("definition_ordinal")
+                    context_id = context.get("context_id")
+                    if not _valid_bounded_int(ordinal, minimum=0, maximum=65_535):
+                        problems.append(f"{context_prefix}.definition_ordinal not ordinal")
+                    else:
+                        if prior_context_ordinal is not None and ordinal <= prior_context_ordinal:
+                            problems.append(
+                                f"{prefix}.runtime_option_text_contexts not strictly ordered"
+                            )
+                        prior_context_ordinal = ordinal
+                        if ordinal not in visible_set:
+                            problems.append(
+                                f"{context_prefix}.definition_ordinal not visible"
+                            )
+                    if not isinstance(context_id, str) or not context_id.strip():
+                        problems.append(f"{context_prefix}.context_id not nonempty str")
         if presentation_signal and chosen is not None and chosen not in visible_set:
             problems.append(f"{prefix}.chosen_option_ordinal not a materialised ordinal|null")
         subtype = row.get("popup_subtype")

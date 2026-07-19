@@ -72,9 +72,13 @@ surface. The lane-local `gap_report` proof fail-closes the remainder:
 - `resource_flows_shortages`: source-blocked. Save paths exist for
   `countries.<TAG>.resources.{produced,exported,to_export}`; state deposits are
   covered elsewhere and this lane must not duplicate market/trade ownership.
-- `deployment_queues`: source-blocked. Save path
-  `countries.<TAG>.deployment.military_deployment_conveyor[]` exists, but no live
-  conveyor vector/root is validated.
+- `deployment_queues`: carrier-complete/source-blocked. The strict v1 carrier in
+  `src/deployment_queue.rs` preserves exact type-64 conveyor and type-63 line
+  identities, nested ordering, type-70 equipment in transit, nullable progress,
+  and per-country complete/unknown witnesses. It rejects count, identity,
+  ordering, optional-field, and trailing-byte drift. The retained ten-save
+  `X4_DEPLOYMENT_QUEUES` corpus authenticates this save-neutral shape; live
+  emission remains fail-closed because no conveyor vector/root is validated.
 - `economy_law_derived_state`: owned-elsewhere badge. Law/idea identity belongs
   to characters/politics; this lane only owns numeric economy effects once rooted.
 - `trade_factory_impact`: owned-elsewhere badge. Market/trade owns contract-level

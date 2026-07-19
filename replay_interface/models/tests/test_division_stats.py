@@ -6,12 +6,14 @@ Mixes pure-unit tests on synthetic hand-built fixtures (no installed content nee
 with optional integration tests over the real game install + save_oracle/output
 (skipped gracefully when those are absent, so CI on a clean checkout passes).
 
-Headline invariants under test (mirror the task VALIDATE clause):
-  * battalion equipment scaling = equip_stat * need_amount / 100;
+Headline invariants under test:
+  * the battalion equipment stat is the FULL per-battalion contribution -- the
+    `need` amount is the equipment QUANTITY, there is NO /100 divisor;
   * support-company inline stat = a MULTIPLIER (1 + inline) on the equip stat;
   * division attack/defense = SUM over all battalions;
   * division HP = SUM of max_strength (matches the SAVE's stored strength);
-  * division max-org = mean of org>0 line battalions; width = multiple of 2;
+  * division max-org = arithmetic mean over ALL placed sub-units, INCLUDING
+    support companies and org-0 battalions; width = multiple of 2;
   * a tank division has the right order of magnitude for hard atk / breakthrough.
 """
 import json
@@ -153,6 +155,25 @@ class SyntheticAggregation(unittest.TestCase):
         # defense inline = +0.1 => 34 * 1.1 = 37.4
         self.assertAlmostEqual(c["defense"], 34.0 * 1.1, places=3)
         self.assertTrue(c["is_support"])
+
+    def test_subunit_flat_hardness_not_double_counted(self):
+        # mechanized-style sub_unit with node-level hardness = 0.2 and
+        # equipment hardness 0 must contribute EXACTLY 0.2 -- regression guard
+        # against the dual inline+flat parse that double-counted it (0.4).
+        root = parse(
+            "mech = {\n"
+            "    hardness = 0.2\n"
+            "    need = { infantry_equipment = 100 }\n"
+            "}\n"
+        )
+        ((name, body),) = [(n, b) for n, b in root.entries if n == "mech"]
+        su = ds.SubUnit.from_node(name, body)
+        self.assertAlmostEqual(su.hardness, 0.2, places=6)
+        self.assertNotIn("hardness", su.inline)
+        c = ds.battalion_contribution(
+            su, self.defs.resolve_equip_stats,
+            {"infantry_equipment": "infantry_equipment_3"})
+        self.assertAlmostEqual(c["hardness"], 0.2, places=6)  # not 0.4
 
     def test_division_sum_and_org_and_hp(self):
         # 6 infantry + 1 engineer.

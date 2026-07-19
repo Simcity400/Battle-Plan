@@ -3561,6 +3561,7 @@ mod tests {
                         sample_count: 1,
                         sample_quality: 0,
                         persistent_content: None,
+                        exact_resource: None,
                     }],
                     depth_target: None,
                     viewport: ViewportDesc {
@@ -4249,6 +4250,7 @@ mod tests {
             sample_count: 1,
             sample_quality: 0,
             persistent_content: None,
+            exact_resource: None,
         };
         let static_programs = vec![StaticMapPassProgram {
             program_ordinal: 0,

@@ -339,27 +339,30 @@ def build_file_map_layers(layers: list, subdir: str, exts) -> dict:
     return eff
 
 
-def build_file_map(vanilla: Path, mod: Path, subdir: str, exts) -> dict:
-    """Back-compat single-mod overlay (vanilla + one mod, no replace_path).
-
-    Retained for callers/tests that pass two roots directly. The mod-set path
-    (build_file_map_layers) is the general resolver used by run().
-    """
-    layers = [Layer("vanilla", vanilla)]
-    if mod is not None and Path(mod) != Path(vanilla):
-        layers.append(Layer("mod", Path(mod)))
-    return build_file_map_layers(layers, subdir, exts)
+# Memoized lowercase indexes for _lc_lookup, keyed by id(gfx_map). Each entry
+# also stores the map object itself: the identity check (`cached[0] is
+# gfx_map`) guards against id() reuse after a map is garbage-collected, which
+# a bare id-keyed cache would silently mistake for a hit.
+_lc_index_cache: dict[int, tuple[dict, dict]] = {}
 
 
 def _lc_lookup(rel: str, gfx_map: dict):
-    """Case-insensitive lookup into gfx_map (Windows is case-insensitive)."""
-    if rel in gfx_map:
-        return gfx_map[rel]
-    low = rel.lower()
-    for k, v in gfx_map.items():
-        if k.lower() == low:
-            return v
-    return None
+    """Case-insensitive lookup into gfx_map (Windows is case-insensitive).
+
+    Builds (once per map) a lowercased shadow index instead of scanning the
+    whole map per miss. Correct because build_file_map_layers guarantees
+    casefold-unique keys and callers do not mutate the maps after construction.
+    """
+    hit = gfx_map.get(rel)
+    if hit is not None:
+        return hit
+    cached = _lc_index_cache.get(id(gfx_map))
+    if cached is None or cached[0] is not gfx_map:
+        lowered = {k.lower(): v for k, v in gfx_map.items()}
+        _lc_index_cache[id(gfx_map)] = (gfx_map, lowered)
+    else:
+        lowered = cached[1]
+    return lowered.get(rel.lower())
 
 
 def resolve_texture(texrel: str, gfx_map: dict):

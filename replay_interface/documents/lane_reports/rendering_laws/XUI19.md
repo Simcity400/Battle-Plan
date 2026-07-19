@@ -56,6 +56,21 @@ A12 proves:
   target `+0x24`, lifecycle state `+0x28`, ignore flag `+0x2C`, and signed
   days `+0x30`.
 
+The remaining generic panel controller laws are now statically closed.
+`0x141C4AA30` materializes standard, targeted-timed, targeted, timed, and
+event/other families into one temporary presenter list after applying the exact
+family predicates at `0x141710620`, `0x141710760`, `0x141710860`, and
+`0x141710910`. It sorts the combined list with `0x141C48340`: selected category
+first, descending category/order rank, descending definition `+0x968`, then
+ascending presenter ordinal `+0x520`.
+
+The two topbar laws are also closed. `0x1418834B0` computes exact can-take
+membership/count across standard and targeted families. `0x1418839D0` computes
+exact timeout membership/count across pending-removal, untargeted timed, and
+formats their descriptions. Because those predicates invoke the engine script
+evaluator, production must hook the evaluated materialization/accumulator
+boundaries. Out-of-process script re-evaluation is not an equivalent producer.
+
 UI13 closes the remaining captured card law. `timer_text` received raw signed
 integer 180 through formatter tag 5, then exact text bytes
 `11 48 31 38 30 20 64 61 79 73 11 21` (`\x11H180 days\x11!`). By contrast,
@@ -141,6 +156,9 @@ aggregate.
 | `0x140082CB0`, `0x14188BA30` | serializer tokens `active_targeted_decision`/`active_targeted_timed_decision` xref the shared persistence function; both decision alert counter keys xref one topbar widget-binding constructor (`0x14188BA30`). The searched generic alert names were absent and `DECISION_TIMEOUT` had no recorded code xref. | `20260717T140819Z-xui19-a34-state-alert-order-anchors-v22--9b59d2cf` | `C:\Users\Example\ghidra_agent_exports\20260717T140819Z-xui19-a34-state-alert-order-anchors-v22--9b59d2cf\string-xrefs.txt` | `cd33527ef2f8f5d73ac87272d13b3c6219927272875ffe379ec7f4e1f4f8f8fe` |
 | `0x14188BA30` | exact topbar widget-binding constructor: to-take text/background bind at `+0x98E8/+0x98F0`, timeout text/background at `+0x9938/+0x9940`, and decision glow at `+0x9948`; all five surfaces are initially hidden. This is not the membership/count accumulator. | `20260717T220451Z-xui19-a34-decision-alert-counter-produce-0ab3e85b` | `C:\Users\Example\ghidra_agent_exports\20260717T220451Z-xui19-a34-decision-alert-counter-produce-0ab3e85b\evidence\func_14188ba30.decompile.c` | `e81dd60fdad63039236cf81c6627b3410babbad22f098b7395a47bb946e60623` |
 | `0x14188F940` | nearby topbar refresh helper controls pause-state surfaces and does not reference the five decision-alert members; retained to prevent it being misidentified as the alert accumulator. | `20260717T220729Z-xui19-a34-topbar-refresh-and-alert-membe-f1527e95` | `C:\Users\Example\ghidra_agent_exports\20260717T220729Z-xui19-a34-topbar-refresh-and-alert-membe-f1527e95\evidence\func_14188f940.decompile.c` | `ce5ea740a06635a60416f4093a7b5822574fb7203415858330523895e0813120` |
+| `0x141C4AA30` | materializes all five decision presenter families, applies their family predicates, sorts the combined list, and inserts it into the final grid | `20260716T052406Z-ui03-container-state-scan-afa00-affff-6fce8b7e` | `C:\Users\Example\ghidra_agent_exports\20260716T052406Z-ui03-container-state-scan-afa00-affff-6fce8b7e\evidence\func_141c4aa30.decompile.c` | `783b1d3395c4d90114253a22e70e94c293f08234fb394960d25c7c866a0f1cb2` |
+| `0x141C48340`, `0x141710620`, `0x141710760`, `0x141710860`, `0x141710910` | exact final comparator and standard/targeted-timed/targeted/timed visibility predicates | `20260719T081057Z-a34-decision-final-order-and-family-pred-bed22b5d` | `replay_interface/re_evidence/rendering_laws/XUI19/ghidra_controller_closure.json` | `0c593f1ceff1ebc2f34ba54b21ec9d3f0dacb34d5ce449aa91de542d1ab03456` |
+| `0x1418834B0`, `0x1418839D0`, `0x1418845C0` | exact can-take and timeout membership/count accumulators plus topbar description consumer | `20260719T074510Z-a34-decision-panel-order-alert-controlle-db0d0772` | `replay_interface/re_evidence/rendering_laws/XUI19/ghidra_controller_closure.json` | `fad2054fd6e9512bfb6b011d47af4b0042b287b7c31bb2ce3efb111b92464ca3` |
 | `0x142232AB0` | exact formatter body used by captured timer output | `20260716T022510Z-ui13-historical-formatter-entry-exact-a7-f4139990` | `C:\Users\Example\ghidra_agent_exports\20260716T022510Z-ui13-historical-formatter-entry-exact-a7-f4139990\evidence\func_142232ab0.instructions.txt` | `2f6af2c08184ee78c8797d5b8a3122bb8653c9e450ae46dddd3ad56de519de4d` |
 
 The earlier depth-two export of `0x14188BA30` failed while traversing an
@@ -180,11 +198,13 @@ projection. D45 schema v4 now carries both targeted families through the compact
 stream and replay projection using source kind 2 for `+0x100` and source kind 1
 for `+0xE8`; each target row carries the typed target, exact lifecycle state,
 ignore flag, signed days, and decision token. Legacy v2/v3 payloads remain
-decoder-supported and cannot claim the new fields. The handoff still does not carry the complete ordered visible
-panel, evaluated trigger results, generic arbitrary per-row effective/custom
-costs, post-result retention state, generic resolved text/order, or alert
-membership. This is an
-active extractor deep-RE dependency, not a rendering partial. Its exact separate contract is
+decoder-supported and cannot claim the new fields. The handoff still does not
+carry the complete ordered visible panel, evaluated trigger results, generic
+arbitrary per-row effective/custom costs, post-result retention state, resolved
+text, or alert membership. The semantic enumeration/order/visibility/alert
+laws are closed; the remaining extractor dependency is an authenticated
+in-process producer hook and its validation, not speculative renderer logic.
+Its exact separate contract is
 `extractor/documents/dossiers/A34_XUI19_DECISION_PANEL_INPUTS.json` and the
 concise master row is in `extractor/documents/RE_REMAINING.md`.
 
@@ -233,9 +253,9 @@ concise master row is in `extractor/documents/RE_REMAINING.md`.
   to `TIMED_DECISION_FAILED`, and all other values to the live
   `DECISION_AMOUNT_DAYS` path.
 - `0x14188BA30` binds and initially hides the two decision-counter texts, their
-  two backgrounds, and the decision glow at exact topbar member offsets. The
-  negative result is important: it does not calculate alert membership or
-  counts, so the extractor must still carry those facts explicitly.
+  two backgrounds, and the decision glow at exact topbar member offsets.
+  `0x1418834B0` and `0x1418839D0` are the later exact membership/count
+  accumulators; the extractor must carry their evaluated facts explicitly.
 
 Mechanical evidence is frozen under
 `replay_interface/re_evidence/rendering_laws/XUI19/`.

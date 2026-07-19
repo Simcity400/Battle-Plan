@@ -178,6 +178,16 @@ fn frame_has_app_presentation(frame: &map_viewer::PreparedProductionD3dFrame) ->
         })
 }
 
+fn frame_has_authenticated_map_operations(frame: &map_viewer::PreparedProductionD3dFrame) -> bool {
+    frame.target.is_some()
+        && (!frame.ordered_static_programs.is_empty()
+            || !frame.ordered_runtime_draws.is_empty()
+            || frame
+                .m03_arrows
+                .as_ref()
+                .is_some_and(|m03| !m03.draws.is_empty()))
+}
+
 pub fn run(
     bundle: Option<MapBundle>,
     mode: TimelineMode,
@@ -308,6 +318,7 @@ pub fn run(
     let mut uploaded_hour_index: Option<usize> = None;
     let mut prepared_production_d3d: Option<map_viewer::PreparedProductionD3dFrame> = None;
     let mut prepared_selected_present_ui: Option<map_viewer::PreparedProductionD3dFrame> = None;
+    let mut production_map_refused_for_displayed_hour = false;
     let mut product_production_d3d = ProductProductionD3dRuntime::default();
     let mut product_selected_present_ui: Option<ProductSelectedPresentRuntime> = None;
     // Day/night terminator shading is OFF by default, matching the game's
@@ -508,6 +519,7 @@ pub fn run(
         let hour = transport.current_hour();
         let world_frame = provider.world_frame_at(hour)?;
         if uploaded_hour_index != Some(hour_index) {
+            production_map_refused_for_displayed_hour = false;
             let owners = provider.owners_at(hour)?;
             let controllers = provider.controllers_at(hour)?;
             if let (Some(renderer), Some(bundle)) = (renderer.as_mut(), bundle.as_ref()) {
@@ -600,15 +612,21 @@ pub fn run(
         // F4: surface any mid-playback anomaly holds (marked HELD), so a held
         // last-good value never reads as live. Empty on clean recordings.
         let anomaly_note = provider.anomaly_note(hour);
-        // The readout lives in the in-window overlay now; the title only
-        // repeats it while overlay text is unavailable (fonts not loaded),
-        // so no information is silently lost.
+        let anomaly_suffix = anomaly_note
+            .as_deref()
+            .map(|note| format!(" | {note}"))
+            .unwrap_or_default();
+        // The readout lives in the in-window overlay when the debug overlay is
+        // active; the title carries the full readout while overlay text is
+        // unavailable, and ALWAYS carries the F4 anomaly note — the overlay is
+        // debug-only and its line-2 draw can be skipped, so the title is the
+        // one surface where a held value can never silently read as live.
         if overlay.as_ref().is_some_and(Overlay::has_text) {
-            window.set_title(&format!("replay_app - {mode_label}"));
+            window.set_title(&format!("replay_app - {mode_label}{anomaly_suffix}"));
         } else {
             let zoom = camera.as_ref().map(|camera| camera.zoom);
             window.set_title(&format!(
-                "replay_app - {mode_label} | {hour_label}{playing} {speed:.0}h/s | {observer_note} | {probe}{}",
+                "replay_app - {mode_label} | {hour_label}{playing} {speed:.0}h/s | {observer_note} | {probe}{}{anomaly_suffix}",
                 zoom.map(|value| format!(" | zoom {value:.2}")).unwrap_or_default()
             ));
         }
@@ -617,13 +635,13 @@ pub fn run(
             let day_night_hour =
                 day_night_enabled.then(|| playback_day_night_hour_from_timeline_hour(hour));
             let mut production_presented = false;
-            if let (Some(renderer), Some(camera)) = (renderer.as_mut(), camera.as_ref()) {
-                renderer.render(&gfx, camera, day_night_hour, None)?;
-            } else if let Some(frame) = prepared_production_d3d.as_ref() {
-                if frame.target.is_some()
-                    && (!frame.ordered_static_programs.is_empty()
-                        || !frame.ordered_runtime_draws.is_empty())
-                {
+            let mut legacy_presented = false;
+            let authenticated_production_selected = production_map_refused_for_displayed_hour
+                || prepared_production_d3d
+                    .as_ref()
+                    .is_some_and(frame_has_authenticated_map_operations);
+            if authenticated_production_selected {
+                if let Some(frame) = prepared_production_d3d.as_ref() {
                     match product_production_d3d.execute(
                         &gfx,
                         &game_resolver,
@@ -652,6 +670,13 @@ pub fn run(
                             }
                         }
                         Err(error) => {
+                            // A removed/reset/hung device invalidates every
+                            // renderer cache, including the app target. It is
+                            // never a feature-local omission: preserve the
+                            // typed error and unwind the process fail-closed.
+                            if crate::d3d::is_device_loss_error(error.as_ref()) {
+                                return Err(error);
+                            }
                             let reason = error.to_string();
                             let identity =
                                 format!("PRODUCTION_MAP_D3D\0native execution\0{reason}");
@@ -663,13 +688,21 @@ pub fn run(
                             // Feature-local fail-closed omission: discard any
                             // partially executed map target for this hour, keep
                             // transport/HUD alive, and never substitute pixels.
+                            production_map_refused_for_displayed_hour = true;
                             prepared_production_d3d = None;
                             product_production_d3d.invalidate();
                         }
                     }
                 }
+            } else if let (Some(renderer), Some(camera)) = (renderer.as_mut(), camera.as_ref()) {
+                // The legacy captured renderer remains available only when the
+                // displayed hour has no authenticated D80 map operation set.
+                // Once exact carried operations are selected, an omission or
+                // refusal cannot silently fall back to different pixels.
+                renderer.render(&gfx, camera, day_night_hour, None)?;
+                legacy_presented = true;
             }
-            if renderer.is_none() && !production_presented {
+            if !legacy_presented && !production_presented {
                 gfx.clear_target([0.0, 0.0, 0.0, 1.0])?;
             }
             let mut selected_present_executed = false;
@@ -739,10 +772,6 @@ pub fn run(
             // font plus the scrub bar. Line 1 is the raw Clausewitz date
             // string from the recording (GAP: localisation-formatted dates
             // like the in-game clock are a later slice).
-            let anomaly_suffix = match &anomaly_note {
-                Some(note) => format!(" | {note}"),
-                None => String::new(),
-            };
             let line2 = format!(
                 "{mode_label}{playing} {speed:.0}h/s | {POLITICAL_COLOR_BLOCKER_BADGE} | {observer_note} | {probe}{anomaly_suffix}"
             );
@@ -1141,6 +1170,7 @@ mod product_production_d3d_tests {
         frame.ordered_static_programs.clear();
         frame.ordered_render_operations.clear();
         assert!(frame_has_app_presentation(&frame));
+        assert!(frame_has_authenticated_map_operations(&frame));
     }
 
     #[test]
@@ -1215,6 +1245,34 @@ mod product_production_d3d_tests {
         frame.ordered_static_programs.clear();
         frame.ordered_render_operations.clear();
         assert!(frame_has_app_presentation(&frame));
+        assert!(frame_has_authenticated_map_operations(&frame));
+    }
+
+    #[test]
+    fn authenticated_d80_operations_require_a_prepared_map_target() {
+        let mut frame = presentation_draw_frame(presentation_test_content(), vec![1], vec![2]);
+        assert!(frame_has_authenticated_map_operations(&frame));
+        frame.target = None;
+        assert!(!frame_has_authenticated_map_operations(&frame));
+
+        frame.target = Some(map_viewer::ProductionMainSceneTargetDesc {
+            color_attachment_ordinal: 4,
+            color_width: 4,
+            color_height: 4,
+            color_format: 28,
+            color_samples: 1,
+            color_quality: 0,
+            depth_attachment_ordinal: 9,
+            depth_width: 4,
+            depth_height: 4,
+            depth_format: 45,
+            depth_samples: 1,
+            depth_quality: 0,
+        });
+        frame.ordered_static_programs.clear();
+        frame.ordered_runtime_draws.clear();
+        frame.m03_arrows = None;
+        assert!(!frame_has_authenticated_map_operations(&frame));
     }
 
     #[test]
@@ -1307,17 +1365,24 @@ float4 ps_main() : SV_Target { return float4(1.0, 0.0, 0.0, 1.0); }
 
     #[test]
     fn normal_product_route_executes_before_hud_and_never_uses_a_raw_copy() {
+        // Scope every marker to PRODUCT code: slice off this test module so a
+        // marker can never be satisfied by its own string literal below.
         let source = include_str!("app.rs");
+        let source = &source[..source.find("#[cfg(test)]").expect("test module marker")];
         let execute = source
             .find("match product_production_d3d.execute(")
+            .unwrap();
+        let legacy = source
+            .find("} else if let (Some(renderer), Some(camera))")
             .unwrap();
         let selected_present = source
             .find("if let Some(frame) = prepared_selected_present_ui.as_ref()")
             .unwrap();
-        let hud = source.find("ui.draw(&gfx)?").unwrap();
+        let hud = source.find("overlay.draw(&gfx").unwrap();
+        assert!(execute < legacy);
         assert!(execute < selected_present);
         assert!(selected_present < hud);
-        assert!(source.contains("if !selected_present_executed"));
+        assert!(source.contains("if debug_overlay_enabled && !selected_present_executed"));
         let forbidden_dimension_consumer = ["production_map.province", "_raster"].concat();
         let forbidden_dimension_gate = ["PRODUCTION_MAP", "_DIMENSIONS"].concat();
         assert!(!source.contains(&forbidden_dimension_consumer));

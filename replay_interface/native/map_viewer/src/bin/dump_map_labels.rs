@@ -20,8 +20,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
+
+#[path = "dump_shared/bmp_out.rs"]
+mod bmp_out;
 
 use map_viewer::{
     compute_country_label_placements, localisation_table_from_resolver, CountryLabelPlacement,
@@ -517,7 +519,7 @@ fn render_region(
         let _ = names; // names are in the JSON; boxes stand in for glyphs here
     }
 
-    write_bmp24(path, out_w, out_h, &pixels)
+    bmp_out::write_bmp24_rgb(path, out_w, out_h, &pixels)
 }
 
 /// Draw the rotated text-extent rectangle outline (the baseline chord +/-
@@ -598,39 +600,6 @@ fn put(pixels: &mut [[u8; 3]], w: usize, h: usize, x: i32, y: i32, color: [u8; 3
         return;
     }
     pixels[y as usize * w + x as usize] = color;
-}
-
-fn write_bmp24(path: &Path, width: usize, height: usize, rgb: &[[u8; 3]]) -> Result<()> {
-    let row_stride = (width * 3 + 3) & !3;
-    let pixel_offset = 54usize;
-    let image_bytes = row_stride * height;
-    let file_size = pixel_offset + image_bytes;
-    let mut file = fs::File::create(path)?;
-    file.write_all(b"BM")?;
-    file.write_all(&(file_size as u32).to_le_bytes())?;
-    file.write_all(&[0u8; 4])?;
-    file.write_all(&(pixel_offset as u32).to_le_bytes())?;
-    file.write_all(&40u32.to_le_bytes())?;
-    file.write_all(&(width as i32).to_le_bytes())?;
-    file.write_all(&(height as i32).to_le_bytes())?;
-    file.write_all(&1u16.to_le_bytes())?;
-    file.write_all(&24u16.to_le_bytes())?;
-    file.write_all(&0u32.to_le_bytes())?;
-    file.write_all(&(image_bytes as u32).to_le_bytes())?;
-    file.write_all(&2835u32.to_le_bytes())?;
-    file.write_all(&2835u32.to_le_bytes())?;
-    file.write_all(&0u32.to_le_bytes())?;
-    file.write_all(&0u32.to_le_bytes())?;
-    for y in (0..height).rev() {
-        let mut row = Vec::with_capacity(row_stride);
-        for x in 0..width {
-            let [r, g, b] = rgb[y * width + x];
-            row.extend_from_slice(&[b, g, r]);
-        }
-        row.resize(row_stride, 0);
-        file.write_all(&row)?;
-    }
-    Ok(())
 }
 
 fn sanitize(name: &str) -> String {

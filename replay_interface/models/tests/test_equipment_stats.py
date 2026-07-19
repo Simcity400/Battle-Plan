@@ -336,6 +336,21 @@ class SyntheticAggregation(unittest.TestCase):
         self.assertNotIn("empty", vs.unknown_modules)        # empty is benign
         self.assertIn("no_such_upgrade", vs.unknown_upgrades)
 
+    def test_negative_upgrade_level_rejected_and_recorded(self):
+        """A negative level (corrupt designs.json) must not subtract stats;
+        it is recorded in unknown_upgrades instead of silently applied."""
+        clean = es.compute_variant_stats(
+            _variant("ship_hull_light_1", "ship",
+                     modules={"b1": "ship_heavy_battery_2"}), self.defs)
+        bad = es.compute_variant_stats(
+            _variant("ship_hull_light_1", "ship",
+                     modules={"b1": "ship_heavy_battery_2"},
+                     upgrades={"ship_gun_upgrade": -3}), self.defs)
+        # contributes nothing: stats identical to the upgrade-free variant
+        self.assertEqual(bad.stats, clean.stats)
+        # but stays visible
+        self.assertIn("ship_gun_upgrade(level=-3)", bad.unknown_upgrades)
+
 
 # ---------------------------------------------------------------------------
 # Integration: real install + real save_oracle/output (skipped if absent).

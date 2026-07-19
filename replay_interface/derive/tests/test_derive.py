@@ -140,6 +140,16 @@ class TestSyntheticLayers(unittest.TestCase):
         # tonnage is honestly null (save lacks displacement)
         self.assertIsNone(sbh["AAA"]["destroyer"]["tonnage"])
 
+    def test_ships_by_hull_measured_empty_is_empty_dict_not_null(self):
+        # A tag present in the OOB but with zero ships is MEASURED-empty ({}),
+        # distinct from a tag never seen in any fleet (null). The overlay must
+        # preserve that distinction (honesty rule: 0 means measured zero).
+        s = _mini_snapshot()
+        s["order_of_battle"]["fleets"].append(
+            {"owner": "BBB", "task_forces": [{"owner": "BBB", "ships": []}]})
+        out = overlay.derive_layers(s, adj=_MINI_ADJ)
+        self.assertEqual(out["countries"]["BBB"]["military"]["ships_by_hull"], {})
+
     def test_casualties(self):
         cas = layers.casualties(self.snap)
         self.assertEqual(cas["AAA"]["total"], 1000)
@@ -242,6 +252,20 @@ class TestSyntheticLayers(unittest.TestCase):
 class TestRealSnapshot(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # Province adjacency needs either a province_ids raster (gitignored,
+        # unregenerable since the generator moved to Rust) or the prebuilt
+        # _cache adjacency JSON. Without both, skip the whole class instead of
+        # dying inside PIL with a raw FileNotFoundError.
+        from derive import adjacency as _adjmod
+        assets = _adjmod.default_assets_dir()
+        cache = os.path.join(os.path.dirname(os.path.abspath(_adjmod.__file__)),
+                             "_cache", "province_adjacency_half.json")
+        if not (os.path.exists(os.path.join(assets, "province_ids.png"))
+                or os.path.exists(os.path.join(assets, "province_ids_half.png"))
+                or os.path.exists(cache)):
+            raise unittest.SkipTest(
+                "province adjacency unavailable: province_ids raster absent "
+                "(gitignored) and no _cache/province_adjacency_half.json")
         with open(_REAL, "r", encoding="utf-8") as fh:
             cls.snap = json.load(fh)
         cls.out = overlay.derive_layers(cls.snap)

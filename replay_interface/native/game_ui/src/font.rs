@@ -1,7 +1,7 @@
 use crate::assets::{normalize_rel_path, AssetResolver};
 use crate::dds::RgbaImage;
 use crate::paradox_text::parse_file;
-use crate::{ErrorKind, GameUiError, Result};
+use crate::{GameUiError, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
@@ -146,15 +146,6 @@ impl BitmapFont {
         let mut font = parsed.load_pages(resolver)?;
         font.name = font_identity.to_string();
         Ok(font)
-    }
-
-    pub fn printable_ascii_coverage(&self) -> BTreeSet<char> {
-        (32u8..=126)
-            .filter_map(|byte| {
-                let ch = char::from(byte);
-                self.chars.contains_key(&u32::from(byte)).then_some(ch)
-            })
-            .collect()
     }
 
     pub fn missing_chars(&self, text: &str) -> BTreeSet<char> {
@@ -1071,24 +1062,6 @@ pub fn solid_image(width: usize, height: usize, rgba: [u8; 4]) -> RgbaImage {
     image
 }
 
-pub fn validate_ascii(font: &BitmapFont) -> Result<()> {
-    let missing = (32u8..=126)
-        .filter(|byte| !font.chars.contains_key(&u32::from(*byte)))
-        .map(char::from)
-        .collect::<String>();
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(GameUiError::new(
-            ErrorKind::Missing,
-            format!(
-                "font {} is missing printable ASCII glyphs: {missing}",
-                font.name
-            ),
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1199,6 +1172,125 @@ mod tests {
 
         assert_eq!(layout.width, expected_width);
         assert_eq!(font.measure_text(text), expected_width);
+    }
+
+    #[test]
+    fn parses_synthetic_binary_bmfont() {
+        let mut bytes = b"BMF\x03".to_vec();
+        // Block 1 (info): fontSize, bitField, charSet, stretchH, aa,
+        // padding[4], spacing[2], outline.
+        let mut info = vec![0u8; 14];
+        info[0..2].copy_from_slice(&18i16.to_le_bytes());
+        info[7..11].copy_from_slice(&[2, 3, 4, 5]);
+        info[11..13].copy_from_slice(&[1, 2]);
+        info[13] = 1;
+        bytes.extend_from_slice(&bmf_block(1, &info));
+        // Block 2 (common): lineHeight, base, scaleW, scaleH, pages,
+        // bitField, alphaChnl, redChnl, greenChnl, blueChnl.
+        let mut common = vec![0u8; 15];
+        common[0..2].copy_from_slice(&20u16.to_le_bytes());
+        common[2..4].copy_from_slice(&16u16.to_le_bytes());
+        common[4..6].copy_from_slice(&256u16.to_le_bytes());
+        common[6..8].copy_from_slice(&128u16.to_le_bytes());
+        common[8..10].copy_from_slice(&1u16.to_le_bytes());
+        common[11] = 0; // alphaChnl = 0 -> glyph coverage lives in alpha
+        common[12] = 4;
+        common[13] = 4;
+        common[14] = 4;
+        bytes.extend_from_slice(&bmf_block(2, &common));
+        // Block 3 (pages): NUL-terminated page names.
+        bytes.extend_from_slice(&bmf_block(3, b"page_0.dds\0"));
+        // Block 4 (chars): one 20-byte record.
+        let mut char_rec = Vec::new();
+        char_rec.extend_from_slice(&65u32.to_le_bytes());
+        char_rec.extend_from_slice(&1u16.to_le_bytes());
+        char_rec.extend_from_slice(&2u16.to_le_bytes());
+        char_rec.extend_from_slice(&3u16.to_le_bytes());
+        char_rec.extend_from_slice(&4u16.to_le_bytes());
+        char_rec.extend_from_slice(&(-1i16).to_le_bytes());
+        char_rec.extend_from_slice(&6i16.to_le_bytes());
+        char_rec.extend_from_slice(&7i16.to_le_bytes());
+        char_rec.push(0); // page
+        char_rec.push(15); // chnl
+        bytes.extend_from_slice(&bmf_block(4, &char_rec));
+        // Block 5 (kernings): one 10-byte record.
+        let mut kerning_rec = Vec::new();
+        kerning_rec.extend_from_slice(&65u32.to_le_bytes());
+        kerning_rec.extend_from_slice(&66u32.to_le_bytes());
+        kerning_rec.extend_from_slice(&(-2i16).to_le_bytes());
+        bytes.extend_from_slice(&bmf_block(5, &kerning_rec));
+
+        let parsed = parse_binary_bmfont("synthetic", "synthetic.fnt", &bytes).unwrap();
+        assert_eq!(parsed.info_size, 18);
+        assert_eq!(parsed.info_padding, [2, 3, 4, 5]);
+        assert_eq!(parsed.info_spacing, [1, 2]);
+        assert_eq!(parsed.outline, 1);
+        assert_eq!(parsed.line_height, 20);
+        assert_eq!(parsed.base, 16);
+        assert_eq!(parsed.scale_w, 256);
+        assert_eq!(parsed.scale_h, 128);
+        assert_eq!(parsed.glyph_channel, Some(3));
+        assert_eq!(
+            parsed.page_files,
+            BTreeMap::from([(0, "page_0.dds".to_string())])
+        );
+        let ch = parsed.chars.get(&65).expect("char 65 parsed");
+        assert_eq!((ch.x, ch.y, ch.width, ch.height), (1, 2, 3, 4));
+        assert_eq!((ch.xoffset, ch.yoffset, ch.xadvance), (-1, 6, 7));
+        assert_eq!((ch.page, ch.chnl), (0, 15));
+        assert_eq!(parsed.kernings, BTreeMap::from([((65, 66), -2)]));
+    }
+
+    #[test]
+    fn binary_bmfont_truncated_header_is_rejected() {
+        let err = parse_binary_bmfont("f", "f.fnt", b"BMF").expect_err("must reject");
+        assert!(err.message.contains("header is truncated"), "{err}");
+    }
+
+    #[test]
+    fn binary_bmfont_truncated_block_header_is_rejected() {
+        let bytes = b"BMF\x03\x01\x04\x00".to_vec(); // 3 of 5 block-header bytes
+        let err = parse_binary_bmfont("f", "f.fnt", &bytes).expect_err("must reject");
+        assert!(err.message.contains("block header is truncated"), "{err}");
+    }
+
+    #[test]
+    fn binary_bmfont_truncated_block_body_is_rejected() {
+        let mut bytes = b"BMF\x03".to_vec();
+        bytes.push(1);
+        bytes.extend_from_slice(&10u32.to_le_bytes()); // claims 10 body bytes
+        bytes.extend_from_slice(&[0u8; 5]); // supplies 5
+        let err = parse_binary_bmfont("f", "f.fnt", &bytes).expect_err("must reject");
+        assert!(err.message.contains("block 1 is truncated"), "{err}");
+    }
+
+    #[test]
+    fn binary_bmfont_invalid_chars_block_length_is_rejected() {
+        let mut bytes = b"BMF\x03".to_vec();
+        bytes.extend_from_slice(&bmf_block(4, &[0u8; 19])); // not a multiple of 20
+        let err = parse_binary_bmfont("f", "f.fnt", &bytes).expect_err("must reject");
+        assert!(
+            err.message.contains("chars block has invalid length"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn binary_bmfont_invalid_kernings_block_length_is_rejected() {
+        let mut bytes = b"BMF\x03".to_vec();
+        bytes.extend_from_slice(&bmf_block(5, &[0u8; 9])); // not a multiple of 10
+        let err = parse_binary_bmfont("f", "f.fnt", &bytes).expect_err("must reject");
+        assert!(
+            err.message.contains("kernings block has invalid length"),
+            "{err}"
+        );
+    }
+
+    fn bmf_block(block_type: u8, body: &[u8]) -> Vec<u8> {
+        let mut out = vec![block_type];
+        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        out.extend_from_slice(body);
+        out
     }
 
     fn test_font_for_date() -> BitmapFont {

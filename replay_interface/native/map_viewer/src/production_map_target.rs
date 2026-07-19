@@ -79,7 +79,7 @@ pub fn production_main_scene_desc_from_outputs<'a>(
             .ok_or("production draw with depth has no carried color target")?;
         let mut output_identities = std::collections::BTreeSet::new();
         for color in &output.ordered_color_targets {
-            let color_ordinal = opaque_ordinal(&color.prepared_target)
+            opaque_ordinal(&color.prepared_target)
                 .ok_or("production MRT draw cannot mix the swapchain backbuffer with depth")?;
             validate_materializable_target(color)?;
             if !output_identities.insert(color.prepared_target.clone()) {
@@ -96,7 +96,6 @@ pub fn production_main_scene_desc_from_outputs<'a>(
                         .into(),
                 );
             }
-            let _ = color_ordinal;
         }
         let color_ordinal = opaque_ordinal(&primary.prepared_target)
             .expect("all depth-bearing color identities checked opaque");
@@ -156,50 +155,6 @@ fn merge_identity_desc<'a>(
     Ok(())
 }
 
-fn bind_output_desc<'a>(
-    output: &'a RenderOutputState,
-    color: &mut Option<(u32, &'a RenderTargetDesc)>,
-    depth: &mut Option<(u32, &'a RenderTargetDesc)>,
-) -> Result<()> {
-    let Some(depth_target) = &output.depth_target else {
-        return Ok(());
-    };
-    let depth_ordinal = opaque_ordinal(&depth_target.prepared_target)
-        .ok_or("production depth target cannot be the swapchain backbuffer")?;
-    let color_target = output
-        .ordered_color_targets
-        .first()
-        .ok_or("production draw with depth has no carried color target")?;
-    let color_ordinal = opaque_ordinal(&color_target.prepared_target)
-        .ok_or("production draw cannot bind the swapchain backbuffer with depth")?;
-    validate_materializable_target(color_target)?;
-    validate_materializable_target(depth_target)?;
-    let mut identities = std::collections::BTreeSet::new();
-    for target in &output.ordered_color_targets {
-        if !identities.insert(&target.prepared_target) {
-            return Err("production draw repeats a carried color-target identity".into());
-        }
-        if opaque_ordinal(&target.prepared_target).is_none() {
-            return Err(
-                "production MRT draw cannot mix the swapchain backbuffer with depth".into(),
-            );
-        }
-        validate_materializable_target(target)?;
-        if target.width != depth_target.width
-            || target.height != depth_target.height
-            || target.sample_count != depth_target.sample_count
-            || target.sample_quality != depth_target.sample_quality
-        {
-            return Err(
-                "production MRT color/depth dimensions or multisample descriptors differ".into(),
-            );
-        }
-    }
-    merge_desc(color, color_ordinal, color_target, "color")?;
-    merge_desc(depth, depth_ordinal, depth_target, "depth")?;
-    Ok(())
-}
-
 fn validate_materializable_target(target: &RenderTargetDesc) -> Result<()> {
     if target.exact_resource.is_some() {
         return Ok(());
@@ -220,32 +175,6 @@ fn opaque_ordinal(target: &PreparedRenderTarget) -> Option<u32> {
         }
         PreparedRenderTarget::SwapchainBackBuffer => None,
     }
-}
-
-fn merge_desc<'a>(
-    slot: &mut Option<(u32, &'a RenderTargetDesc)>,
-    attachment_ordinal: u32,
-    candidate: &'a RenderTargetDesc,
-    label: &str,
-) -> Result<()> {
-    if let Some((current_ordinal, current)) = slot {
-        if *current_ordinal != attachment_ordinal
-            || current.width != candidate.width
-            || current.height != candidate.height
-            || current.dxgi_format_u32 != candidate.dxgi_format_u32
-            || current.mip_level != candidate.mip_level
-            || current.sample_count != candidate.sample_count
-            || current.sample_quality != candidate.sample_quality
-        {
-            return Err(format!(
-                "submitted production {label} identities/descriptors disagree across draws"
-            )
-            .into());
-        }
-    } else {
-        *slot = Some((attachment_ordinal, candidate));
-    }
-    Ok(())
 }
 
 #[cfg(windows)]
@@ -569,9 +498,7 @@ mod tests {
             },
             scissor: None,
         };
-        let mut color_slot = None;
-        let mut depth_slot = None;
-        assert!(bind_output_desc(&output, &mut color_slot, &mut depth_slot)
+        assert!(production_main_scene_desc_from_outputs([&output])
             .unwrap_err()
             .to_string()
             .contains("nonzero mip"));

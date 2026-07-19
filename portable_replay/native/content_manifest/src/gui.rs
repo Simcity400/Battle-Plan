@@ -214,7 +214,6 @@ pub fn parse_measure(raw: &str) -> Measure {
     let is_percent = trimmed.contains('%');
     let value = trimmed
         .trim_end_matches('%')
-        .trim_end_matches('%')
         .parse::<f32>()
         .ok()
         .map(|value| value.to_string());

@@ -58,7 +58,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
-use std::io::{self, Cursor, Read};
+use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use compact_contract::{
@@ -462,6 +462,73 @@ pub fn open_reader<R: Read + 'static>(
     game_id: impl Into<String>,
 ) -> HourCursor {
     HourCursor::from_reader(Box::new(reader), total_len, game_id.into())
+}
+
+/// Fully fold and certify one physically raw H4CR file, then hand its closed
+/// hour index and canonical snapshot entries across the neutral portable seam.
+///
+/// This production-shaped convenience is intentionally narrower than [`open`]:
+/// it rejects ZIP containers and zstd wrappers by leading bytes, exposes no
+/// prefix before physical EOF, and constructs the portable object only after
+/// [`HourCursor::take_index`] has certified the complete source. The returned
+/// type lives in `portable_replay`, so the standalone replay tree does not gain
+/// a dependency on this extractor crate.
+pub fn fold_raw_h4cr_prefolded(
+    path: impl AsRef<Path>,
+    opts: &OpenOptions,
+) -> Result<snapshot::PrefoldedReplay, OpenError> {
+    let canonical_path = fs::canonicalize(path.as_ref())?;
+    let mut file = fs::File::open(&canonical_path)?;
+    let total_len = file.metadata()?.len();
+    let mut magic = [0u8; 4];
+    let read = read_up_to(&mut file, &mut magic)?;
+    if read != magic.len() || magic != *compact_contract::COMPACT_RECORD_MAGIC {
+        return Err(OpenError::UnrecognizedInput(format!(
+            "{}: physically raw H4CR input required; leading bytes were {:02x?}",
+            canonical_path.display(),
+            &magic[..read]
+        )));
+    }
+    file.seek(SeekFrom::Start(0))?;
+
+    let game_id = opts
+        .game_id
+        .clone()
+        .unwrap_or_else(|| DEFAULT_GAME_ID.to_string());
+    let mut cursor = HourCursor::from_reader_with_source(
+        Box::new(file),
+        total_len,
+        game_id.clone(),
+        Some(IndexSourceDescriptor {
+            kind: "stream_file".to_string(),
+            canonical_path: canonical_path.to_string_lossy().into_owned(),
+        }),
+    );
+    let schema_version = serde_json::Value::String(cursor.metadata().schema_version.clone());
+    let mut folded = Vec::new();
+    while let Some(hour) = cursor.next_hour() {
+        folded.push(hour.map_err(|error| match error {
+            DecodeError::Io(error) => OpenError::Io(error),
+        })?);
+    }
+    cursor
+        .take_index()
+        .map_err(|error| OpenError::Certification(error.to_string()))?;
+
+    let entries = folded
+        .into_iter()
+        .map(|hour| snapshot::PrefoldedHourEntry::from_json(hour.hour_index, &hour.snapshot))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            OpenError::Certification(format!(
+                "certified fold did not satisfy the neutral prefolded contract: {error}"
+            ))
+        })?;
+    snapshot::PrefoldedReplay::try_new(game_id, schema_version, entries).map_err(|error| {
+        OpenError::Certification(format!(
+            "certified fold did not satisfy the neutral prefolded contract: {error}"
+        ))
+    })
 }
 
 fn read_up_to(r: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {

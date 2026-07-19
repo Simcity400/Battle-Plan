@@ -15,7 +15,9 @@ desktop.ini
 # Rust/Codex scratch output from repo-root commands
 /target/
 /target_*/
+/.cargo-target/
 /.cargo-target-*/
+/.cargo-timings/
 /.xui*-target/
 /.audit_targets/
 /replay_interface/native/target*/

@@ -4768,8 +4768,13 @@ mod tests {
         let terrain = map_frame_terrain_srv(&frame.active_draw).expect("TerrainIDMap SRV");
         assert_eq!(terrain.file.as_deref(), Some(expected_file));
         assert_eq!(terrain.fnv1a64.as_deref(), Some(expected_hash));
-        assert_eq!(terrain.byte_len, TERRAIN_ID_MAP_WIDTH * TERRAIN_ID_MAP_HEIGHT * 4);
-        assert!(!frame.synthetic_payloads.contains_key(SYNTHESIZED_TERRAIN_ID_MAP_FILE));
+        assert_eq!(
+            terrain.byte_len,
+            TERRAIN_ID_MAP_WIDTH * TERRAIN_ID_MAP_HEIGHT * 4
+        );
+        assert!(!frame
+            .synthetic_payloads
+            .contains_key(SYNTHESIZED_TERRAIN_ID_MAP_FILE));
     }
 
     #[test]
@@ -5070,11 +5075,7 @@ mod tests {
 
         let frame = validate_map_frame_runtime_bundle_with_resolver(&path, &resolver)
             .expect("self-consistent captured payload is authoritative");
-        assert_captured_terrain_id_map_bound(
-            &frame,
-            CANONICAL_TERRAIN_ID_MAP_FILE,
-            &captured_hash,
-        );
+        assert_captured_terrain_id_map_bound(&frame, CANONICAL_TERRAIN_ID_MAP_FILE, &captured_hash);
         let _ = fs::remove_dir_all(&root);
     }
 

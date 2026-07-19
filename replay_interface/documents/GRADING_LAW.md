@@ -16,16 +16,23 @@ loads a captured restore bundle, reports file-law deltas, then exits.
 All game-file reads go through the mod-aware `GameFileResolver`
 (`map_viewer/src/mod_resolver.rs`, see `MOD_COMPATIBILITY.md`), never bare paths.
 
-Ground-truth capture: `C:\Users\Example\AppData\Local\hoi4_captures\restore_gate_1\`
-(vanilla, captured 2026-07-06).
-> **STORE LOST (audited 2026-07-19):** the `restore_gate_1` capture no longer
-> exists on this machine (the `hoi4_captures` store was retired; other sessions
-> were preserved in `<local-path>`, but
-> `restore_gate_1` was not among them). The validation RESULTS recorded in this
-> doc remain the evidence of record; RE-validating this law requires a fresh
-> restore-pass capture. See the store index in
-> `lane_reports/rendering_laws/PROGRAM_STATUS.md`. Implementation: `replay_app/src/grading_law.rs`
-(law), `replay_app/src/render.rs` (`restore_full_postfx_from_files`,
+Historical ground-truth capture:
+`C:\Users\Example\AppData\Local\hoi4_captures\restore_gate_1\` (vanilla,
+captured 2026-07-06). That directory remains absent and has not been
+reconstructed or relabelled.
+
+> **RETAINED SUBSTITUTE RECOVERED (2026-07-19):** intact, hash-bound RDCs at
+> `<local-path>`
+> and `postfx_frame8467.rdc` now provide a rerunnable RestoreScene t0..t3 plus
+> output boundary. The high-altitude frame independently matches the shipped
+> far-range LUT byte-exactly, carries MiddleGrey 0.55, and re-clamps its
+> scene-derived luminance to the captured f16 0.5. The close frame carries a
+> distinct volume cube and MiddleGrey. See
+> `re_evidence/rendering_laws/RESTORE_GATE_RETAINED/`. This is new substitute
+> evidence, not proof that either RDC is the lost `restore_gate_1` frame.
+
+Implementation: `replay_app/src/grading_law.rs` (law),
+`replay_app/src/render.rs` (`restore_full_postfx_from_files`,
 `restore_full_postfx_validate_capture`).
 
 ---

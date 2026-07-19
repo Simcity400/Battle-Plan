@@ -697,7 +697,9 @@ fn selected_submit(frame: &ProductionRenderFrame) -> Result<Option<&RenderSubmit
     };
     let index = text
         .parse::<u64>()
-        .map_err(|_| "display_submit_index is not canonical u64 text")?;
+        .ok()
+        .filter(|index| index.to_string() == text)
+        .ok_or("display_submit_index is not canonical u64 text")?;
     frame
         .submits
         .iter()
@@ -724,6 +726,27 @@ fn ordered_draws(
                 .collect::<BTreeMap<_, _>>()
         })
         .unwrap_or_default();
+    let mut particles = BTreeMap::new();
+    for packet in &submit.particles {
+        particles
+            .entry((
+                packet.effect_instance_id,
+                packet.bucket,
+                packet.packet_ordinal,
+                packet.draw_order,
+            ))
+            .or_insert(packet);
+    }
+    let mut entities = BTreeMap::new();
+    for entity in &submit.entities {
+        entities
+            .entry((
+                entity.pass_ordinal,
+                entity.entity_instance_id,
+                entity.draw_order,
+            ))
+            .or_insert(entity);
+    }
     let mut draws = Vec::with_capacity(submit.ordered_draws.len());
     for ordered in &submit.ordered_draws {
         let draw = match ordered {
@@ -733,15 +756,8 @@ fn ordered_draws(
                 packet_ordinal,
                 draw_order,
             } => {
-                let packet = submit
-                    .particles
-                    .iter()
-                    .find(|packet| {
-                        packet.effect_instance_id == *effect_instance_id
-                            && packet.bucket == *bucket
-                            && packet.packet_ordinal == *packet_ordinal
-                            && packet.draw_order == *draw_order
-                    })
+                let packet = *particles
+                    .get(&(*effect_instance_id, *bucket, *packet_ordinal, *draw_order))
                     .ok_or("ordered runtime draw references a missing particle packet")?;
                 PreparedRuntimeDraw::Particle {
                     ordered_draw: ordered.clone(),
@@ -753,14 +769,8 @@ fn ordered_draws(
                 entity_instance_id,
                 draw_order,
             } => {
-                let submission = submit
-                    .entities
-                    .iter()
-                    .find(|entity| {
-                        entity.pass_ordinal == *pass_ordinal
-                            && entity.entity_instance_id == *entity_instance_id
-                            && entity.draw_order == *draw_order
-                    })
+                let submission = *entities
+                    .get(&(*pass_ordinal, *entity_instance_id, *draw_order))
                     .ok_or("ordered runtime draw references a missing entity submission")?;
                 if let Some(generator_ordinal) = o04_outputs.get(ordered) {
                     PreparedRuntimeDraw::O04City {

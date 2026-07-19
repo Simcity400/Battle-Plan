@@ -31,6 +31,8 @@ pub struct StaticBundleRequest {
     pub load_order: PathBuf,
     pub source_inventory: PathBuf,
     pub live_resolution_report: PathBuf,
+    pub expected_process_id: u32,
+    pub expected_process_creation_filetime_utc: u64,
     pub timeout: Duration,
 }
 
@@ -45,6 +47,8 @@ pub struct FinalizedStaticBundleRequest {
     pub load_order: PathBuf,
     pub source_inventory: PathBuf,
     pub live_resolution_report: PathBuf,
+    pub expected_process_id: u32,
+    pub expected_process_creation_filetime_utc: u64,
     pub expected_capture_id: String,
     pub expected_session_id: String,
     pub expected_stream_sha256: String,
@@ -269,6 +273,8 @@ pub fn finalize_with_process(
         load_order,
         source_inventory,
         live_resolution_report,
+        expected_process_id: admitted.expected_process_id,
+        expected_process_creation_filetime_utc: admitted.expected_process_creation_filetime_utc,
         expected_capture_id: capture_id.to_string(),
         expected_session_id: session_id.to_string(),
         expected_stream_sha256: stream_sha256.to_string(),
@@ -324,6 +330,11 @@ pub fn verify_finalized_with_process(
         &request.source_inventory,
         &request.live_resolution_report,
     )?;
+    let process_identity = verify_live_resolution_process_identity(
+        &bindings.5,
+        request.expected_process_id,
+        request.expected_process_creation_filetime_utc,
+    )?;
     let invocation = ProcessInvocation {
         program: request.python.clone(),
         args: vec![
@@ -374,6 +385,11 @@ pub fn verify_finalized_with_process(
                 "stream_sha256": request.expected_stream_sha256,
             }),
         );
+    verified
+        .evidence
+        .as_object_mut()
+        .ok_or_else(|| "finalized static bundle evidence is not an object".to_string())?
+        .insert("process_identity".to_string(), process_identity);
     Ok(verified)
 }
 
@@ -401,6 +417,11 @@ pub fn verify_with_process(
     let live_resolution_report = canonical_file(
         &request.live_resolution_report,
         "static bundle live-resolution-report binding",
+    )?;
+    let process_identity = verify_live_resolution_process_identity(
+        &live_resolution_report,
+        request.expected_process_id,
+        request.expected_process_creation_filetime_utc,
     )?;
 
     let invocation = ProcessInvocation {
@@ -524,6 +545,7 @@ pub fn verify_with_process(
             "source_inventory": file_evidence(&source_inventory)?,
             "live_resolution_report": file_evidence(&live_resolution_report)?,
         },
+        "process_identity": process_identity,
         "verifier": {
             "path": verifier.display().to_string(),
             "sha256": sha256_file(&verifier)?,
@@ -563,6 +585,50 @@ fn canonical_bindings(
             "static bundle live-resolution-report binding",
         )?,
     ))
+}
+
+fn verify_live_resolution_process_identity(
+    report: &Path,
+    expected_process_id: u32,
+    expected_creation_filetime_utc: u64,
+) -> Result<Value, String> {
+    if expected_process_id == 0 || expected_creation_filetime_utc == 0 {
+        return Err("static bundle expected process identity is incomplete".to_string());
+    }
+    let bytes = read_bounded(report, "static bundle live-resolution-report binding")?;
+    let document: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        format!("static bundle live-resolution report is not strict JSON: {error}")
+    })?;
+    let process = document
+        .get("process")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            "static bundle live-resolution report has no process identity".to_string()
+        })?;
+    let observed_process_id = process
+        .get("pid")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value != 0)
+        .ok_or_else(|| "static bundle live-resolution report process id is invalid".to_string())?;
+    let observed_creation = process
+        .get("creation_filetime_utc")
+        .and_then(Value::as_u64)
+        .filter(|value| *value != 0)
+        .ok_or_else(|| {
+            "static bundle live-resolution report process creation identity is invalid".to_string()
+        })?;
+    if observed_process_id != expected_process_id
+        || observed_creation != expected_creation_filetime_utc
+    {
+        return Err(format!(
+            "static bundle live-resolution process identity ({observed_process_id}, {observed_creation}) does not match capture target ({expected_process_id}, {expected_creation_filetime_utc})"
+        ));
+    }
+    Ok(json!({
+        "process_id": observed_process_id,
+        "process_creation_filetime_utc": observed_creation,
+    }))
 }
 
 fn require_finalized_result(output: ProcessResult, action: &str) -> Result<Value, String> {
@@ -883,7 +949,7 @@ mod tests {
         .unwrap();
         fs::write(
             root.join("live_resolution_report.json"),
-            b"{\"passed\":true}",
+            b"{\"passed\":true,\"process\":{\"pid\":4242,\"creation_filetime_utc\":9001}}",
         )
         .unwrap();
         fs::write(
@@ -905,6 +971,8 @@ mod tests {
             load_order: root.join("load_order.json"),
             source_inventory: root.join("source_inventory.json"),
             live_resolution_report: root.join("live_resolution_report.json"),
+            expected_process_id: 4242,
+            expected_process_creation_filetime_utc: 9001,
             timeout: Duration::from_secs(5),
         }
     }
@@ -952,6 +1020,8 @@ mod tests {
             load_order: request.load_order.clone(),
             source_inventory: request.source_inventory.clone(),
             live_resolution_report: request.live_resolution_report.clone(),
+            expected_process_id: request.expected_process_id,
+            expected_process_creation_filetime_utc: request.expected_process_creation_filetime_utc,
             expected_capture_id: "capture-1".to_string(),
             expected_session_id: "00000000-0000-4000-8000-000000000001".to_string(),
             expected_stream_sha256: "b".repeat(64),
@@ -976,6 +1046,11 @@ mod tests {
             "pre_injection_deferred_allowed"
         );
         assert_eq!(verified.evidence["token_join_status"], "deferred");
+        assert_eq!(verified.evidence["process_identity"]["process_id"], 4242);
+        assert_eq!(
+            verified.evidence["process_identity"]["process_creation_filetime_utc"],
+            9001
+        );
         assert_eq!(
             verified.evidence["deferred_token_gate_explicitly_allowed"],
             true
@@ -992,7 +1067,7 @@ mod tests {
         );
         assert_eq!(
             verified.evidence["bindings"]["live_resolution_report"]["bytes"],
-            15
+            67
         );
         let invocation = process.invocation.lock().unwrap().clone().unwrap();
         let args = invocation
@@ -1012,6 +1087,34 @@ mod tests {
     }
 
     #[test]
+    fn pre_injection_gate_rejects_cross_process_resolution_report() {
+        let root = TempDir::new("cross_process");
+        let mut request = fixture_request(&root.0);
+        request.expected_process_id += 1;
+        let process = MockProcess {
+            result: Mutex::new(Some(Ok(passing_result()))),
+        };
+        let error = verify_with_process(&request, &process).unwrap_err();
+        assert!(error.contains("does not match capture target"), "{error}");
+    }
+
+    #[test]
+    fn pre_publication_gate_rejects_process_creation_rollover() {
+        let root = TempDir::new("creation_rollover");
+        let mut request = fixture_request(&root.0);
+        let first = MockProcess {
+            result: Mutex::new(Some(Ok(passing_result()))),
+        };
+        let admitted = verify_with_process(&request, &first).unwrap();
+        request.expected_process_creation_filetime_utc += 1;
+        let second = MockProcess {
+            result: Mutex::new(Some(Ok(passing_result()))),
+        };
+        let error = verify_unchanged_with_process(&request, &admitted, &second).unwrap_err();
+        assert!(error.contains("does not match capture target"), "{error}");
+    }
+
+    #[test]
     fn final_reverification_detects_binding_byte_drift() {
         let root = TempDir::new("drift");
         let request = fixture_request(&root.0);
@@ -1019,7 +1122,11 @@ mod tests {
             result: Mutex::new(Some(Ok(passing_result()))),
         };
         let admitted = verify_with_process(&request, &first).unwrap();
-        fs::write(&request.live_resolution_report, b"{\"passed\":false}").unwrap();
+        fs::write(
+            &request.live_resolution_report,
+            b"{\"passed\":false,\"process\":{\"pid\":4242,\"creation_filetime_utc\":9001}}",
+        )
+        .unwrap();
         let second = MockProcess {
             result: Mutex::new(Some(Ok(passing_result()))),
         };

@@ -45,6 +45,8 @@
 
 #![allow(dead_code)]
 
+pub mod rollover;
+
 use sha2::{Digest, Sha256};
 use std::cell::Cell;
 use std::io;
@@ -54,6 +56,11 @@ use std::sync::{Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use compact_contract::campaign_identity::ValidatedCid1;
+use compact_contract::campaign_rollover::{
+    decode_rollover_ack, encode_rollover_propose, RolloverAckV1, RolloverCodecError,
+    RolloverProposeV1, RolloverReason,
+};
 use compact_contract::control_transport::payloads::{
     decode_first_compact_frame_ack, decode_heartbeat_challenge,
     encode_collector_hello_with_capabilities, encode_heartbeat_proof, CollectorHelloV1,
@@ -89,6 +96,10 @@ use compact_contract::early_render_vfs_payload::{
     decode_early_render_vfs_payload_chunk, decode_early_render_vfs_payload_commit,
     encode_early_render_vfs_payload_request, EarlyRenderVfsPayloadCodecError,
     EarlyRenderVfsPayloadRequestV1,
+};
+use compact_contract::first_compact_ack::{
+    decode_first_compact_frame_ack as decode_canonical_first_compact_frame_ack,
+    FirstCompactAckCodecError,
 };
 use compact_contract::identity_control::{
     decode_identity_failure_ack, encode_identity_failure, IdentityControlCodecError,
@@ -524,6 +535,10 @@ pub enum ClientPhase {
     Attached,
     /// First-compact-frame ack accepted.
     Producing,
+    /// CRP1 sent after the H4CR writer paused and drained.
+    AwaitingRolloverAck,
+    /// CRA1 accepted; next logical stream wrote CID1 and awaits canonical CFA1.
+    AwaitingNewHeaderAck,
     /// Cleanly stopped (graceful stop by request or peer close).
     Stopped,
     /// Terminally failed/poisoned. No reconnect, no reinjection (§4).
@@ -564,6 +579,9 @@ pub enum ClientError {
     SinkStatus(SinkStatusError),
     /// A campaign-identity CIF1/CIA1 payload failed the shared codec.
     IdentityCodec(IdentityControlCodecError),
+    RolloverCodec(RolloverCodecError),
+    RolloverState(rollover::CollectorRolloverError),
+    FirstCompactAckCodec(FirstCompactAckCodecError),
     EarlyRenderCodec(EarlyRenderCodecError),
     EarlyRenderContentManifestCodec(EarlyRenderContentManifestCodecError),
     EarlyRenderVfsCodec(EarlyRenderVfsCodecError),
@@ -577,9 +595,9 @@ pub enum ClientError {
     /// Deliberate terminal diagnostic outcome. It remains an error to every
     /// production transaction caller so it cannot open COMMIT/frame/replay.
     EarlyRenderDiagnosticHoldCompleted(AuthenticatedEarlyRenderDiagnosticHoldProof),
-    /// A recorder->collector kind valid on the wire but not implemented by the
-    /// v1 client (rollover/Stage-B belong to their own lanes), or a kind no
-    /// production endpoint ever sends (e.g. `RecorderHello`): fail closed.
+    /// A recorder->collector kind not legal in the current phase. Rollover kinds
+    /// are accepted only by their dedicated offline next-word transaction;
+    /// Stage-B and kinds no endpoint sends (for example `RecorderHello`) fail closed.
     Unsupported(MessageKind),
     /// A production pipe-I/O entry point was consulted while the duplex client
     /// is frozen dormant ([`DUPLEX_CONTROL_CLIENT_ENABLED`] is `false`).
@@ -609,6 +627,24 @@ impl From<SinkStatusError> for ClientError {
 impl From<IdentityControlCodecError> for ClientError {
     fn from(err: IdentityControlCodecError) -> Self {
         ClientError::IdentityCodec(err)
+    }
+}
+
+impl From<RolloverCodecError> for ClientError {
+    fn from(err: RolloverCodecError) -> Self {
+        ClientError::RolloverCodec(err)
+    }
+}
+
+impl From<rollover::CollectorRolloverError> for ClientError {
+    fn from(err: rollover::CollectorRolloverError) -> Self {
+        ClientError::RolloverState(err)
+    }
+}
+
+impl From<FirstCompactAckCodecError> for ClientError {
+    fn from(err: FirstCompactAckCodecError) -> Self {
+        ClientError::FirstCompactAckCodec(err)
     }
 }
 
@@ -661,6 +697,7 @@ pub struct CollectorControlClient<T: DeadlineControlIo, C: MonotonicClock> {
     early_render_diagnostic_stage_probe: bool,
     early_render_runtime_dlc_sent: bool,
     early_render_capture_committed: bool,
+    ordinary_capabilities: ControlCapabilities,
 }
 
 impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
@@ -680,7 +717,37 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
         identity: CollectorIdentity,
         policy: DuplexClientPolicy,
     ) -> Self {
-        Self::new_inner(io, clock, session, identity, policy, None)
+        Self::new_inner(
+            io,
+            clock,
+            session,
+            identity,
+            policy,
+            None,
+            ControlCapabilities::auto_attach_duplex_v1(),
+        )
+    }
+
+    /// Offline-only construction of the next capability word.  Product code
+    /// cannot call this and the ordinary activation permit remains frozen.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn new_rollover_offline(
+        _permit: &DuplexClientProductPermit,
+        io: T,
+        clock: C,
+        session: SessionCapability,
+        identity: CollectorIdentity,
+        policy: DuplexClientPolicy,
+    ) -> Self {
+        Self::new_inner(
+            io,
+            clock,
+            session,
+            identity,
+            policy,
+            None,
+            ControlCapabilities::auto_attach_duplex_rollover_v1(),
+        )
     }
 
     pub fn new_early_render(
@@ -691,7 +758,15 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
         identity: CollectorIdentity,
         policy: DuplexClientPolicy,
     ) -> Self {
-        Self::new_inner(io, clock, session, identity, policy, None)
+        Self::new_inner(
+            io,
+            clock,
+            session,
+            identity,
+            policy,
+            None,
+            ControlCapabilities::early_render_duplex_v1(),
+        )
     }
 
     fn new_inner(
@@ -701,6 +776,7 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
         identity: CollectorIdentity,
         policy: DuplexClientPolicy,
         early_render_binding: Option<EarlyRenderControlBinding>,
+        ordinary_capabilities: ControlCapabilities,
     ) -> Self {
         // A placeholder deadline; every real operation overwrites the cell
         // immediately before it drives the channel.
@@ -727,6 +803,7 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
             early_render_diagnostic_stage_probe: false,
             early_render_runtime_dlc_sent: false,
             early_render_capture_committed: false,
+            ordinary_capabilities,
         }
     }
 
@@ -814,7 +891,7 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
                 dll_sha256: self.identity.dll_sha256,
                 challenge: self.identity.challenge,
             },
-            ControlCapabilities::auto_attach_duplex_v1().bits(),
+            self.ordinary_capabilities.bits(),
         );
         self.send_frame(MessageKind::CollectorHello, &payload, handshake_deadline)?;
         self.phase = ClientPhase::Attached;
@@ -1661,7 +1738,10 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
             // Pre-hello: BOTH sink-failure kinds are legitimate first frames,
             // matching the host's pre-hello window (Setup or Terminal on seq 0).
             ClientPhase::Handshaking => true,
-            ClientPhase::Attached | ClientPhase::Producing => false,
+            ClientPhase::Attached
+            | ClientPhase::Producing
+            | ClientPhase::AwaitingRolloverAck
+            | ClientPhase::AwaitingNewHeaderAck => false,
             ClientPhase::Stopped | ClientPhase::Failed => return Err(ClientError::NotUsable),
         };
         let payload = match encode_sink_failure(report) {
@@ -1703,6 +1783,111 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
         self.send_frame(MessageKind::IdentityFailure, &payload, deadline)
     }
 
+    /// Pause/drain the current H4CR stream through the caller-owned sink,
+    /// construct canonical CRP1, and send it.  This entry point is usable only
+    /// by a client whose offline hello advertised the dormant rollover word;
+    /// the production permit remains unmintable.
+    pub fn start_rollover<S: rollover::CollectorRolloverSink>(
+        &mut self,
+        coordinator: &mut rollover::CollectorRolloverCoordinator,
+        sink: &mut S,
+        candidate: ValidatedCid1,
+        boundary_game_hour_raw: i32,
+        reason: RolloverReason,
+        proposal_nonce: u64,
+        deadline: MonotonicDeadline,
+    ) -> Result<RolloverProposeV1, ClientError> {
+        if self.phase != ClientPhase::Producing
+            || self.ordinary_capabilities != ControlCapabilities::auto_attach_duplex_rollover_v1()
+        {
+            return Err(ClientError::NotUsable);
+        }
+        let proposal = match coordinator.prepare_proposal(
+            sink,
+            candidate,
+            boundary_game_hour_raw,
+            reason,
+            proposal_nonce,
+        ) {
+            Ok(proposal) => proposal,
+            Err(error) => return self.fail(ClientError::RolloverState(error)),
+        };
+        let payload = match encode_rollover_propose(&proposal) {
+            Ok(payload) => payload,
+            Err(error) => return self.fail(ClientError::RolloverCodec(error)),
+        };
+        self.reported_state = ProductionState::PausedForControl;
+        self.send_frame(MessageKind::RolloverPropose, &payload, deadline)?;
+        self.phase = ClientPhase::AwaitingRolloverAck;
+        Ok(proposal)
+    }
+
+    /// Receive exact CRA1 and create the next sequence-zero CID1 sink only
+    /// after acceptance.  Rejection, EOF, wrong kind, or codec failure is
+    /// terminal and never resumes the old stream.
+    pub fn receive_rollover_ack<S: rollover::CollectorRolloverSink>(
+        &mut self,
+        coordinator: &mut rollover::CollectorRolloverCoordinator,
+        sink: &mut S,
+        deadline: MonotonicDeadline,
+    ) -> Result<RolloverAckV1, ClientError> {
+        if self.phase != ClientPhase::AwaitingRolloverAck {
+            return Err(ClientError::NotUsable);
+        }
+        let frame = match self.recv_frame(deadline)? {
+            Some(frame) => frame,
+            None => return self.fail(ClientError::NotUsable),
+        };
+        if frame.kind != MessageKind::RolloverAck {
+            return self.fail(ClientError::Unsupported(frame.kind));
+        }
+        let acknowledgement = match decode_rollover_ack(&frame.payload) {
+            Ok(value) => value,
+            Err(error) => return self.fail(ClientError::RolloverCodec(error)),
+        };
+        if let Err(error) = coordinator.accept_rollover_ack(sink, acknowledgement) {
+            return self.fail(ClientError::RolloverState(error));
+        }
+        self.first_frame_acked = false;
+        self.last_h4cr_sequence = 0;
+        self.phase = ClientPhase::AwaitingNewHeaderAck;
+        Ok(acknowledgement)
+    }
+
+    /// Receive the canonical 104-byte IdentityV1 CFA1 for the new CID1 and only
+    /// then release ordinary world production.
+    pub fn receive_rollover_header_ack<S: rollover::CollectorRolloverSink>(
+        &mut self,
+        coordinator: &mut rollover::CollectorRolloverCoordinator,
+        sink: &mut S,
+        deadline: MonotonicDeadline,
+    ) -> Result<compact_contract::first_compact_ack::FirstCompactFrameAckV1, ClientError> {
+        if self.phase != ClientPhase::AwaitingNewHeaderAck {
+            return Err(ClientError::NotUsable);
+        }
+        let frame = match self.recv_frame(deadline)? {
+            Some(frame) => frame,
+            None => return self.fail(ClientError::NotUsable),
+        };
+        if frame.kind != MessageKind::FirstCompactFrameAck {
+            return self.fail(ClientError::Unsupported(frame.kind));
+        }
+        let acknowledgement = match decode_canonical_first_compact_frame_ack(
+            &frame.payload,
+            compact_contract::stream_validator::StreamIdentityMode::IdentityV1,
+        ) {
+            Ok(value) => value,
+            Err(error) => return self.fail(ClientError::FirstCompactAckCodec(error)),
+        };
+        if let Err(error) = coordinator.accept_new_header_ack(sink, acknowledgement) {
+            return self.fail(ClientError::RolloverState(error));
+        }
+        self.first_frame_acked = true;
+        self.reported_state = ProductionState::Producing;
+        self.phase = ClientPhase::Producing;
+        Ok(acknowledgement)
+    }
+
     /// (c)/(d) Receive one steady-state frame under `deadline` and act:
     /// `HeartbeatChallenge` -> reply `HeartbeatProof` echoing that challenge and
     /// reporting the last written H4CR sequence; `FirstCompactFrameAck` -> record
@@ -1718,9 +1903,9 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
     /// - CAMPAIGN_IDENTITY: send `IdentityFailure` via
     ///   [`Self::report_identity_failure`], receive `IdentityFailureAck` (here).
     ///
-    /// Kinds OUTSIDE the advertised set are NOT advertised and fail closed:
-    /// rollover (`RolloverPropose/Ack`), Stage-B epoch/declaration/seal, and any
-    /// hello frame are deferred future lanes and return
+    /// Kinds outside the ordinary advertised set fail closed. Rollover is served
+    /// only by the dedicated pause/drain methods above on an offline next-word
+    /// client. Stage-B epoch/declaration/seal and hello frames return
     /// [`ClientError::Unsupported`] — never silently accepted.
     pub fn serve_next(&mut self, deadline: MonotonicDeadline) -> Result<ClientEvent, ClientError> {
         if !matches!(self.phase, ClientPhase::Attached | ClientPhase::Producing) {

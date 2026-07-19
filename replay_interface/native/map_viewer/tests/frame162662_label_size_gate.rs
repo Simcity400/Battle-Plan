@@ -24,8 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use map_viewer::{
-    compute_static_owner_diagnostic_country_label_placements, CountryLabelPlacement,
-    LabelLawInputs, ProvinceKind,
+    compute_country_label_placements, CountryLabelPlacement, LabelLawInputs, ProvinceKind,
 };
 
 const CAP_PX: f32 = 55.0;
@@ -206,7 +205,7 @@ fn frame162662_cross_session_label_sizes_reproduce() {
         province_importance: &bundle.province_importance,
         province_type: &bundle.province_type,
     };
-    let placements = compute_static_owner_diagnostic_country_label_placements(&inputs).placements;
+    let placements = compute_country_label_placements(&inputs);
     assert!(!placements.is_empty(), "1936 bundle must place labels");
 
     let mut ratios: Vec<f32> = Vec::new();

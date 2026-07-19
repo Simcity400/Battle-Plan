@@ -5,6 +5,13 @@ import struct
 from pathlib import Path
 
 
+if not __debug__:
+    raise SystemExit(
+        "verify_oracle.py: refusing to run with assertions disabled"
+        " (python -O / PYTHONOPTIMIZE); rerun without optimization"
+    )
+
+
 HERE = Path(__file__).resolve().parent
 DESCRIPTOR_FIELDS = (
     "stage", "slot", "declared_name", "is_null", "view_desc", "dxgi_format",
@@ -198,4 +205,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -51,6 +51,27 @@ def _read_json_opt(path: str) -> Optional[Any]:
         return None
 
 
+def _atomic_write_json(path: str, obj: Any, **dump_kwargs: Any) -> None:
+    """Write JSON atomically: dump to a same-directory temp file, flush+fsync,
+    then os.replace onto the destination. A crash mid-write can never leave a
+    truncated file at ``path`` — the old content survives intact or the complete
+    new content lands. On failure the temp file is removed (best-effort) and the
+    error re-raised so a failed write is loud, never a stray partial file."""
+    tmp = f"{path}.tmp.{os.getpid()}"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(obj, fh, **dump_kwargs)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _basename(meta: Optional[Dict[str, Any]]) -> Optional[str]:
     """Extract a *basename only* from oracle meta — never a path (SCHEMA §2)."""
     if not isinstance(meta, dict):
@@ -352,6 +373,17 @@ def _ingest_countries(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
             snap["countries"][tag]["politics"]["is_human"] = True
 
 
+def _unique_key(base: str, existing: Dict[str, Any]) -> str:
+    """Deterministic collision-proof dict key: `base`, else 'base#2', '#3', ...
+    in encounter order, so a key clash never silently overwrites a record."""
+    if base not in existing:
+        return base
+    n = 2
+    while f"{base}#{n}" in existing:
+        n += 1
+    return f"{base}#{n}"
+
+
 def _ingest_diplomacy(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
     """Normalize diplomacy.json into per-country diplomacy + a world-level
     wars{}/factions{} block on the snapshot (Codex P1 #1, P2 #11)."""
@@ -367,17 +399,35 @@ def _ingest_diplomacy(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
         a, b = w.get("a"), w.get("b")
         if not (a and b):
             continue
-        war_id = f"{a}-{b}@{w.get('start_date')}"
+        # Keys are opaque to every consumer; two distinct wars between the same
+        # pair with the same start_date (or both missing) get a deterministic
+        # ordinal suffix in encounter order instead of silently overwriting.
+        war_id = _unique_key(f"{a}-{b}@{w.get('start_date')}", wars_by_id)
         wars_by_id[war_id] = {
             "a": a, "b": b, "start_date": w.get("start_date"),
             "a_casualties": w.get("a_casualties"), "b_casualties": w.get("b_casualties"),
             "war_score_a_vs_b": w.get("war_score_a_vs_b"),
             "war_score_b_vs_a": w.get("war_score_b_vs_a"),
         }
+    # Factions keyed by engine id. An id-less record is preserved (never
+    # silently dropped) under a synthetic 'noid#N' key and soft-annotated
+    # id_missing so the anomaly stays visible; duplicate real ids get the same
+    # ordinal disambiguation as wars.
+    factions_by_id: Dict[str, Any] = {}
+    noid_count = 0
+    for f in (dip.get("factions") or []):
+        if not isinstance(f, dict):
+            continue
+        if f.get("id") is None:
+            noid_count += 1
+            base = f"noid#{noid_count}"
+            f = dict(f, id_missing=True)
+        else:
+            base = str(f["id"])
+        factions_by_id[_unique_key(base, factions_by_id)] = f
     snap["diplomacy_world"] = {
         "wars": wars_by_id,
-        "factions": {str(f.get("id")): f for f in (dip.get("factions") or [])
-                     if isinstance(f, dict)},
+        "factions": factions_by_id,
         "subjects": dip.get("subjects") or [],
     }
 
@@ -1118,8 +1168,11 @@ def _ingest_market_extra(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
     contracts = mx.get("contracts")
     if isinstance(contracts, list):
         pl_contracts = [
-            {"contract_id": c.get("contract_id"), "seller": c.get("seller"),
-             "buyer": c.get("buyer"), "price_levels": c.get("price_levels")}
+            # contract_id normalized via _id_pair_str so these price bands share
+            # the 'id:type' key space with diplomacy_world.trade_contracts.
+            {"contract_id": _id_pair_str(c.get("contract_id")),
+             "seller": c.get("seller"), "buyer": c.get("buyer"),
+             "price_levels": c.get("price_levels")}
             for c in contracts
             if isinstance(c, dict) and c.get("price_levels")
         ]
@@ -1143,8 +1196,9 @@ def _ingest_abilities(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
     oc = ab.get("officer_corps") if isinstance(ab.get("officer_corps"), dict) else {}
     tags = set(aces) | set(cmdr) | set(oc)
     for tag in tags:
-        # skip unresolvable placeholder keys (e.g. "?") so no junk tag is created.
-        if not (isinstance(tag, str) and 2 <= len(tag) <= 4 and tag[0].isalpha()):
+        # skip unresolvable placeholder keys (e.g. "?") so no junk tag is
+        # created: schema.valid_tag is the single source of truth for TAGs.
+        if not schema.valid_tag(tag):
             continue
         dst = _ensure_country(snap, tag)
         dst["abilities"] = {
@@ -1397,8 +1451,7 @@ class SnapshotStore:
         key = _hour_key(snap.get("hour_index"))
         fname = f"{key}.snapshot.json"
         path = os.path.join(gdir, fname)
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(snap, fh, separators=(",", ":"))
+        _atomic_write_json(path, snap, separators=(",", ":"))
         self._update_index(game_id, snap, fname)
         return path
 
@@ -1428,8 +1481,7 @@ class SnapshotStore:
         idx["snapshots"].append(entry)
         idx["snapshots"].sort(key=lambda e: (e.get("hour_index") is None,
                                              e.get("hour_index") or 0))
-        with open(idx_path, "w", encoding="utf-8") as fh:
-            json.dump(idx, fh, indent=2)
+        _atomic_write_json(idx_path, idx, indent=2)
 
     def list_snapshots(self, game_id: str) -> List[Dict[str, Any]]:
         idx = _read_json_opt(self.index_path(game_id))
@@ -1455,9 +1507,10 @@ class SnapshotStore:
         gdir = self.game_dir(game_id)
         os.makedirs(gdir, exist_ok=True)
         path = os.path.join(gdir, "timeline.json")
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"game_id": game_id, "schema_version": schema.SCHEMA_VERSION,
-                       "event_count": len(events), "events": events}, fh, indent=2)
+        _atomic_write_json(
+            path,
+            {"game_id": game_id, "schema_version": schema.SCHEMA_VERSION,
+             "event_count": len(events), "events": events}, indent=2)
         return path
 
 

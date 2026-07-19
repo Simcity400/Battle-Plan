@@ -694,6 +694,7 @@ impl RiverWorldComparisonReport {
 }
 
 /// Decoded captured world river VB (pair midpoints + per-pair width).
+#[derive(Debug)]
 pub struct CapturedRiverWorld {
     pub midpoints: Vec<[f32; 3]>,
     pub widths: Vec<f32>,
@@ -727,6 +728,14 @@ pub fn load_captured_river_world(capture_dir: &Path) -> Result<CapturedRiverWorl
         .ok_or("captured river VB has no payload file")?;
     let bytes =
         fs::read(capture_dir.join(file)).map_err(|err| format!("read river VB {}: {err}", file))?;
+    parse_captured_river_vertex_bytes(&bytes)
+}
+
+/// Decodes the captured slot-0 river VB payload. Fails closed on any byte
+/// pattern that cannot be real geometry (bad length, odd vertex count,
+/// non-finite floats): corrupt evidence must become a typed refusal, never a
+/// NaN that poisons the downstream stats or the nearest-distance search.
+fn parse_captured_river_vertex_bytes(bytes: &[u8]) -> Result<CapturedRiverWorld> {
     if bytes.len() % RIVER_VERTEX_STRIDE_BYTES as usize != 0 {
         return Err(format!(
             "captured river VB byte length {} not divisible by stride",
@@ -761,6 +770,27 @@ pub fn load_captured_river_world(capture_dir: &Path) -> Result<CapturedRiverWorl
             zero_padded_pairs += 1;
             continue;
         }
+        let station = read_f32(a + 20)?;
+        // Fail closed on non-finite floats in real (non-padding) pairs: a NaN
+        // or infinity can only come from a corrupt capture, and letting it
+        // through would silently corrupt medians, height-error means, and the
+        // grid nearest-distance termination bound.
+        let fields = [
+            ("left.x", left[0]),
+            ("left.y", left[1]),
+            ("left.z", left[2]),
+            ("right.x", right[0]),
+            ("right.y", right[1]),
+            ("right.z", right[2]),
+            ("station", station),
+        ];
+        for (field, value) in fields {
+            if !value.is_finite() {
+                return Err(
+                    format!("captured river VB pair {pair}: non-finite float in {field}").into(),
+                );
+            }
+        }
         let mid = [
             (left[0] + right[0]) * 0.5,
             (left[1] + right[1]) * 0.5,
@@ -780,7 +810,7 @@ pub fn load_captured_river_world(capture_dir: &Path) -> Result<CapturedRiverWorl
             None => strip_count += 1,
         }
         previous = Some(left);
-        stations.push(read_f32(a + 20)?);
+        stations.push(station);
         midpoints.push(mid);
         widths.push(width);
     }
@@ -844,7 +874,10 @@ fn distance_stats(distances: &mut [f32]) -> RiverDistanceStats {
     if distances.is_empty() {
         return RiverDistanceStats::default();
     }
-    distances.sort_by(|a, b| a.partial_cmp(b).expect("finite distances"));
+    // Inputs are guaranteed finite (captured floats are validated at decode
+    // time; generated midpoints derive from u8 bitmaps); total_cmp is
+    // defense-in-depth so a sort can never panic the comparison.
+    distances.sort_by(f32::total_cmp);
     let count = distances.len();
     let pick = |q: f64| distances[((count - 1) as f64 * q) as usize];
     RiverDistanceStats {
@@ -917,7 +950,8 @@ pub fn compare_river_world_mesh_to_capture(
     let width_rows = widths_by_class
         .into_iter()
         .map(|(class, mut widths)| {
-            widths.sort_by(|a, b| a.partial_cmp(b).expect("finite widths"));
+            // Widths are finite by the decode-time validation above.
+            widths.sort_by(f32::total_cmp);
             let median = widths[widths.len() / 2];
             let generated =
                 river_world_width_for_class(class).expect("class filtered to width classes");
@@ -1229,12 +1263,9 @@ mod tests {
         }
 
         let heightmap = heightmap_bmp_from_resolver(&resolver).expect("heightmap.bmp");
-        let error = synthesize_river_world_mesh(
-            &rivers,
-            &heightmap,
-            &RiverWorldSynthesisParams::default(),
-        )
-        .expect_err("offline river classification must not authorize geometry synthesis");
+        let error =
+            synthesize_river_world_mesh(&rivers, &heightmap, &RiverWorldSynthesisParams::default())
+                .expect_err("offline river classification must not authorize geometry synthesis");
         assert!(error.to_string().contains("typed omissions"), "{error}");
 
         /* Legacy comparison-only synthesis assertions retained as evidence,
@@ -1379,6 +1410,60 @@ mod tests {
         let side1 = f32::from_le_bytes(bytes[32 + 16..32 + 20].try_into().unwrap());
         assert_eq!(x, mesh.vertices[0].position[0]);
         assert_eq!(side1, 1.0);
+    }
+
+    /// Builds one captured-layout (stride 32) vertex: position, fade, side,
+    /// station, tangent — matching the offsets the loader reads (pos 0/4/8,
+    /// side 16, station 20).
+    fn captured_vertex_bytes(position: [f32; 3], side: f32, station: f32) -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        for (i, v) in position.iter().enumerate() {
+            bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        bytes[12..16].copy_from_slice(&1.0f32.to_le_bytes()); // fade
+        bytes[16..20].copy_from_slice(&side.to_le_bytes());
+        bytes[20..24].copy_from_slice(&station.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn captured_vb_parse_accepts_finite_pairs_and_zero_padding() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&captured_vertex_bytes([1.0, 2.0, 3.0], 0.0, 5.0));
+        bytes.extend_from_slice(&captured_vertex_bytes([1.5, 2.0, 3.5], 1.0, 5.0));
+        // Trailing all-zero pool padding pair (the known +16B pad law).
+        bytes.extend_from_slice(&[0u8; 64]);
+        let world = parse_captured_river_vertex_bytes(&bytes).expect("finite pairs parse");
+        assert_eq!(world.midpoints.len(), 1);
+        assert_eq!(world.zero_padded_pairs, 1);
+        assert_eq!(world.stations, vec![5.0]);
+    }
+
+    #[test]
+    fn captured_vb_parse_fails_closed_on_non_finite_coordinate() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&captured_vertex_bytes([1.0, 2.0, 3.0], 0.0, 5.0));
+        bytes.extend_from_slice(&captured_vertex_bytes([1.5, f32::NAN, 3.5], 1.0, 5.0));
+        let error = parse_captured_river_vertex_bytes(&bytes)
+            .expect_err("NaN coordinate must be a typed refusal, not a panic");
+        let text = error.to_string();
+        assert!(text.contains("pair 0"), "{text}");
+        assert!(text.contains("right.y"), "{text}");
+    }
+
+    #[test]
+    fn captured_vb_parse_fails_closed_on_non_finite_station() {
+        let mut bytes = Vec::new();
+        // A leading valid pair so the offending pair index is non-zero.
+        bytes.extend_from_slice(&captured_vertex_bytes([1.0, 2.0, 3.0], 0.0, 0.0));
+        bytes.extend_from_slice(&captured_vertex_bytes([1.5, 2.0, 3.5], 1.0, 0.0));
+        bytes.extend_from_slice(&captured_vertex_bytes([2.0, 2.0, 3.0], 0.0, f32::INFINITY));
+        bytes.extend_from_slice(&captured_vertex_bytes([2.5, 2.0, 3.5], 1.0, 1.0));
+        let error = parse_captured_river_vertex_bytes(&bytes)
+            .expect_err("non-finite station must be a typed refusal");
+        let text = error.to_string();
+        assert!(text.contains("pair 1"), "{text}");
+        assert!(text.contains("station"), "{text}");
     }
 
     /// Full comparison gate against real captured sessions. Skipped unless

@@ -3,11 +3,15 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub(crate) fn parse_shader_sampler_contract(
+/// Single-pass extraction of one sampler block: strip comments and walk the
+/// PixelShader -> Samplers -> sampler nesting exactly once. Every sampler
+/// parse (contract, Index, Type) reads from the block this returns instead of
+/// re-parsing the full shader source.
+fn locate_sampler_block(
     shader_source: &str,
     shader_label: &str,
     sampler_name: &str,
-) -> Result<TerrainRuntimeSampler> {
+) -> Result<String> {
     let text = strip_comments(shader_source);
     let (pixel_shader, _) = extract_block_after(&text, "PixelShader", 0).ok_or_else(|| {
         format!("production terrain renderer blocked: {shader_label} missing PixelShader block")
@@ -22,60 +26,39 @@ pub(crate) fn parse_shader_sampler_contract(
             "production terrain renderer blocked: {shader_label} missing sampler {sampler_name}"
         )
     })?;
+    Ok(sampler)
+}
+
+fn sampler_contract_from_block(
+    sampler_block: &str,
+    sampler_name: &str,
+) -> Result<TerrainRuntimeSampler> {
     Ok(TerrainRuntimeSampler {
-        mag_filter: required_sampler_value(&sampler, sampler_name, "MagFilter")?,
-        min_filter: required_sampler_value(&sampler, sampler_name, "MinFilter")?,
-        mip_filter: required_sampler_value(&sampler, sampler_name, "MipFilter")?,
-        address_u: required_sampler_value(&sampler, sampler_name, "AddressU")?,
-        address_v: required_sampler_value(&sampler, sampler_name, "AddressV")?,
+        mag_filter: required_sampler_value(sampler_block, sampler_name, "MagFilter")?,
+        min_filter: required_sampler_value(sampler_block, sampler_name, "MinFilter")?,
+        mip_filter: required_sampler_value(sampler_block, sampler_name, "MipFilter")?,
+        address_u: required_sampler_value(sampler_block, sampler_name, "AddressU")?,
+        address_v: required_sampler_value(sampler_block, sampler_name, "AddressV")?,
     })
 }
 
-pub(crate) fn parse_shader_sampler_index(
-    shader_source: &str,
+fn sampler_index_from_block(
+    sampler_block: &str,
     shader_label: &str,
     sampler_name: &str,
 ) -> Result<u32> {
-    let text = strip_comments(shader_source);
-    let (pixel_shader, _) = extract_block_after(&text, "PixelShader", 0).ok_or_else(|| {
-        format!("production terrain renderer blocked: {shader_label} missing PixelShader block")
-    })?;
-    let (samplers, _) = extract_block_after(&pixel_shader, "Samplers", 0).ok_or_else(|| {
-        format!(
-            "production terrain renderer blocked: {shader_label} missing PixelShader Samplers block"
-        )
-    })?;
-    let (sampler, _) = extract_block_after(&samplers, sampler_name, 0).ok_or_else(|| {
-        format!(
-            "production terrain renderer blocked: {shader_label} missing sampler {sampler_name}"
-        )
-    })?;
-    parse_u32_value(&sampler, "Index").ok_or_else(|| {
+    parse_u32_value(sampler_block, "Index").ok_or_else(|| {
         format!("production terrain renderer blocked: {shader_label} sampler {sampler_name} missing Index")
             .into()
     })
 }
 
-pub(crate) fn parse_shader_sampler_resource_type(
-    shader_source: &str,
+fn sampler_resource_type_from_block(
+    sampler_block: &str,
     shader_label: &str,
     sampler_name: &str,
 ) -> Result<ShaderSamplerResourceType> {
-    let text = strip_comments(shader_source);
-    let (pixel_shader, _) = extract_block_after(&text, "PixelShader", 0).ok_or_else(|| {
-        format!("production terrain renderer blocked: {shader_label} missing PixelShader block")
-    })?;
-    let (samplers, _) = extract_block_after(&pixel_shader, "Samplers", 0).ok_or_else(|| {
-        format!(
-            "production terrain renderer blocked: {shader_label} missing PixelShader Samplers block"
-        )
-    })?;
-    let (sampler, _) = extract_block_after(&samplers, sampler_name, 0).ok_or_else(|| {
-        format!(
-            "production terrain renderer blocked: {shader_label} missing sampler {sampler_name}"
-        )
-    })?;
-    match parse_quoted_value(&sampler, "Type").as_deref() {
+    match parse_quoted_value(sampler_block, "Type").as_deref() {
         None => Ok(ShaderSamplerResourceType::Texture2D),
         Some("Cube") => Ok(ShaderSamplerResourceType::Cube),
         Some("Shadow") => Ok(ShaderSamplerResourceType::Shadow),
@@ -84,6 +67,33 @@ pub(crate) fn parse_shader_sampler_resource_type(
         )
         .into()),
     }
+}
+
+pub(crate) fn parse_shader_sampler_contract(
+    shader_source: &str,
+    shader_label: &str,
+    sampler_name: &str,
+) -> Result<TerrainRuntimeSampler> {
+    let sampler = locate_sampler_block(shader_source, shader_label, sampler_name)?;
+    sampler_contract_from_block(&sampler, sampler_name)
+}
+
+pub(crate) fn parse_shader_sampler_index(
+    shader_source: &str,
+    shader_label: &str,
+    sampler_name: &str,
+) -> Result<u32> {
+    let sampler = locate_sampler_block(shader_source, shader_label, sampler_name)?;
+    sampler_index_from_block(&sampler, shader_label, sampler_name)
+}
+
+pub(crate) fn parse_shader_sampler_resource_type(
+    shader_source: &str,
+    shader_label: &str,
+    sampler_name: &str,
+) -> Result<ShaderSamplerResourceType> {
+    let sampler = locate_sampler_block(shader_source, shader_label, sampler_name)?;
+    sampler_resource_type_from_block(&sampler, shader_label, sampler_name)
 }
 
 pub(crate) fn parse_pdxmap_sampler_contract(
@@ -120,9 +130,14 @@ pub(crate) fn validate_shader_sampler_expectation_against_source(
     shader_label: &str,
     expectation: ShaderSamplerExpectation,
 ) -> Result<()> {
-    let sampler = parse_shader_sampler_contract(shader_source, shader_label, expectation.name)?;
+    // One locate per sampler: the contract, Index, and Type reads below all
+    // parse the same block, in the same order (contract fields, then the mode
+    // check derived from them, then Index, then Type) as the previous
+    // triple-parse implementation, so blocker messages are unchanged.
+    let sampler_block = locate_sampler_block(shader_source, shader_label, expectation.name)?;
+    let sampler = sampler_contract_from_block(&sampler_block, expectation.name)?;
     let mode = shader_sampler_mode_from_contract(shader_label, expectation.name, &sampler)?;
-    let index = parse_shader_sampler_index(shader_source, shader_label, expectation.name)?;
+    let index = sampler_index_from_block(&sampler_block, shader_label, expectation.name)?;
     if index != expectation.index {
         return Err(format!(
             "production terrain renderer blocked: {shader_label} sampler {} declares Index {}, but renderer contract expects {}",
@@ -131,7 +146,7 @@ pub(crate) fn validate_shader_sampler_expectation_against_source(
         .into());
     }
     let resource_type =
-        parse_shader_sampler_resource_type(shader_source, shader_label, expectation.name)?;
+        sampler_resource_type_from_block(&sampler_block, shader_label, expectation.name)?;
     if resource_type != expectation.resource_type {
         return Err(format!(
             "production terrain renderer blocked: {shader_label} sampler {} declares Type {}, but renderer contract expects {}",
@@ -153,36 +168,42 @@ pub(crate) fn validate_shader_sampler_expectation_against_source(
     Ok(())
 }
 
+/// The golden (field name, byte offset) contract for TerrainSceneCB0 — the
+/// single fail-closed source of truth shared by `terrain_scene_cb0_layout`
+/// (which asserts every offset against the parsed shader source) and
+/// `terrain_scene_cb0_required_offsets` (which re-reads them from a validated
+/// layout).
+const TERRAIN_SCENE_CB0_FIELDS: &[(&str, usize)] = &[
+    ("vGBCamDistOverride_GBOutlineCutoff", 128),
+    ("vVirtualSunPos", 144),
+    ("vVirtualMoonPos", 160),
+    ("vSecondVirtualSunPos", 176),
+    ("vSecondVirtualMoonPos", 192),
+    ("vCamPos", 208),
+    ("HdrRange", 220),
+    ("vGlobalTime", 236),
+    ("vFoWOpacity_FoWTime_SnowMudFade_MaxGameSpeed", 240),
+    ("DayNight_Hour_SunDir", 256),
+    ("AmbientPosX", 272),
+    ("ShadowFadeFactor", 284),
+    ("AmbientNegX", 288),
+    ("FOWFadeFactor", 300),
+    ("AmbientPosY", 304),
+    ("AmbientNegY", 320),
+    ("NegFogMultiplier", 332),
+    ("AmbientPosZ", 336),
+    ("AmbientNegZ", 352),
+    ("SunDiffuseIntensity", 368),
+    ("MoonDiffuseIntensity", 384),
+    ("GB_TextureHeight", 400),
+    ("SunSpecularIntensity", 404),
+];
+
 pub(crate) fn terrain_scene_cb0_layout(
     standard_functions_source: &str,
 ) -> Result<ShaderConstantBufferLayout> {
     let layout = parse_constant_buffer_layout(standard_functions_source, 0, 0)?;
-    let required_offsets = BTreeMap::from([
-        ("vGBCamDistOverride_GBOutlineCutoff", 128usize),
-        ("vVirtualSunPos", 144usize),
-        ("vVirtualMoonPos", 160usize),
-        ("vSecondVirtualSunPos", 176usize),
-        ("vSecondVirtualMoonPos", 192usize),
-        ("vCamPos", 208usize),
-        ("HdrRange", 220usize),
-        ("vGlobalTime", 236usize),
-        ("vFoWOpacity_FoWTime_SnowMudFade_MaxGameSpeed", 240usize),
-        ("DayNight_Hour_SunDir", 256usize),
-        ("AmbientPosX", 272usize),
-        ("ShadowFadeFactor", 284usize),
-        ("AmbientNegX", 288usize),
-        ("FOWFadeFactor", 300usize),
-        ("AmbientPosY", 304usize),
-        ("AmbientNegY", 320usize),
-        ("NegFogMultiplier", 332usize),
-        ("AmbientPosZ", 336usize),
-        ("AmbientNegZ", 352usize),
-        ("SunDiffuseIntensity", 368usize),
-        ("MoonDiffuseIntensity", 384usize),
-        ("GB_TextureHeight", 400usize),
-        ("SunSpecularIntensity", 404usize),
-    ]);
-    for (field, expected_offset) in required_offsets {
+    for (field, expected_offset) in TERRAIN_SCENE_CB0_FIELDS.iter().copied() {
         let actual = constant_buffer_field(&layout, field)?;
         if actual.offset != expected_offset {
             return Err(format!(
@@ -205,100 +226,15 @@ pub(crate) fn terrain_scene_cb0_layout(
 pub(crate) fn terrain_scene_cb0_required_offsets(
     layout: &ShaderConstantBufferLayout,
 ) -> Result<BTreeMap<String, usize>> {
-    Ok(BTreeMap::from([
-        (
-            "vGBCamDistOverride_GBOutlineCutoff".to_string(),
-            constant_buffer_field(layout, "vGBCamDistOverride_GBOutlineCutoff")?.offset,
-        ),
-        (
-            "vVirtualSunPos".to_string(),
-            constant_buffer_field(layout, "vVirtualSunPos")?.offset,
-        ),
-        (
-            "vVirtualMoonPos".to_string(),
-            constant_buffer_field(layout, "vVirtualMoonPos")?.offset,
-        ),
-        (
-            "vSecondVirtualSunPos".to_string(),
-            constant_buffer_field(layout, "vSecondVirtualSunPos")?.offset,
-        ),
-        (
-            "vSecondVirtualMoonPos".to_string(),
-            constant_buffer_field(layout, "vSecondVirtualMoonPos")?.offset,
-        ),
-        (
-            "vCamPos".to_string(),
-            constant_buffer_field(layout, "vCamPos")?.offset,
-        ),
-        (
-            "HdrRange".to_string(),
-            constant_buffer_field(layout, "HdrRange")?.offset,
-        ),
-        (
-            "vGlobalTime".to_string(),
-            constant_buffer_field(layout, "vGlobalTime")?.offset,
-        ),
-        (
-            "vFoWOpacity_FoWTime_SnowMudFade_MaxGameSpeed".to_string(),
-            constant_buffer_field(layout, "vFoWOpacity_FoWTime_SnowMudFade_MaxGameSpeed")?.offset,
-        ),
-        (
-            "DayNight_Hour_SunDir".to_string(),
-            constant_buffer_field(layout, "DayNight_Hour_SunDir")?.offset,
-        ),
-        (
-            "AmbientPosX".to_string(),
-            constant_buffer_field(layout, "AmbientPosX")?.offset,
-        ),
-        (
-            "ShadowFadeFactor".to_string(),
-            constant_buffer_field(layout, "ShadowFadeFactor")?.offset,
-        ),
-        (
-            "AmbientNegX".to_string(),
-            constant_buffer_field(layout, "AmbientNegX")?.offset,
-        ),
-        (
-            "FOWFadeFactor".to_string(),
-            constant_buffer_field(layout, "FOWFadeFactor")?.offset,
-        ),
-        (
-            "AmbientPosY".to_string(),
-            constant_buffer_field(layout, "AmbientPosY")?.offset,
-        ),
-        (
-            "AmbientNegY".to_string(),
-            constant_buffer_field(layout, "AmbientNegY")?.offset,
-        ),
-        (
-            "NegFogMultiplier".to_string(),
-            constant_buffer_field(layout, "NegFogMultiplier")?.offset,
-        ),
-        (
-            "AmbientPosZ".to_string(),
-            constant_buffer_field(layout, "AmbientPosZ")?.offset,
-        ),
-        (
-            "AmbientNegZ".to_string(),
-            constant_buffer_field(layout, "AmbientNegZ")?.offset,
-        ),
-        (
-            "SunDiffuseIntensity".to_string(),
-            constant_buffer_field(layout, "SunDiffuseIntensity")?.offset,
-        ),
-        (
-            "MoonDiffuseIntensity".to_string(),
-            constant_buffer_field(layout, "MoonDiffuseIntensity")?.offset,
-        ),
-        (
-            "GB_TextureHeight".to_string(),
-            constant_buffer_field(layout, "GB_TextureHeight")?.offset,
-        ),
-        (
-            "SunSpecularIntensity".to_string(),
-            constant_buffer_field(layout, "SunSpecularIntensity")?.offset,
-        ),
-    ]))
+    TERRAIN_SCENE_CB0_FIELDS
+        .iter()
+        .map(|(name, _)| {
+            Ok((
+                name.to_string(),
+                constant_buffer_field(layout, name)?.offset,
+            ))
+        })
+        .collect()
 }
 
 pub(crate) fn parse_constant_buffer_layout(
@@ -1826,6 +1762,22 @@ mod tests {
                 .expect("snow mud fade field");
         assert_eq!(snow_mud.type_name, "float4");
         assert_eq!(snow_mud.offset, 240);
+    }
+
+    #[test]
+    fn terrain_scene_cb0_required_offsets_match_golden_field_table() {
+        let layout = terrain_scene_cb0_layout(&minimal_standard_functions_source())
+            .expect("parse TerrainSceneCB0 layout");
+        let offsets =
+            terrain_scene_cb0_required_offsets(&layout).expect("required TerrainSceneCB0 offsets");
+        assert_eq!(offsets.len(), TERRAIN_SCENE_CB0_FIELDS.len());
+        for (name, golden_offset) in TERRAIN_SCENE_CB0_FIELDS.iter().copied() {
+            assert_eq!(
+                offsets.get(name).copied(),
+                Some(golden_offset),
+                "TerrainSceneCB0 field {name} offset drifted from golden table"
+            );
+        }
     }
 
     #[test]

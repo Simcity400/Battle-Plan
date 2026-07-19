@@ -1,11 +1,14 @@
 use crate::assets::AssetResolver;
-use crate::compose::{draw_scaled, ComposeOptions, ComposeOutput, Compositor};
+use crate::compose::{draw_scaled, ComposeOptions, ComposeOutput, Compositor, UiAssetCache};
 use crate::dds::RgbaImage;
 use crate::font::blank_image;
 use crate::gfx::SpriteRegistry;
-use crate::gui::{parse_measure, parse_measure_pair, GuiElement, LayoutSet, MeasurePair};
+use crate::gui::{GuiElement, LayoutSet};
+use crate::gui_scene_util::{
+    load_named_element, pair, prefix_element_names, promote_show_position, set_position,
+};
 use crate::loc::Localisation;
-use crate::paradox_text::{parse_file, Value};
+use crate::paradox_text::Value;
 use crate::png::write_png;
 use crate::{GameUiError, Result};
 use std::collections::{BTreeMap, BTreeSet};
@@ -713,15 +716,32 @@ fn compose_major_views(
     resolver: &AssetResolver,
     registry: &SpriteRegistry,
 ) -> Result<Vec<MajorViewComposeResult>> {
+    // Load the localisation corpus once and cache parsed layouts / decoded
+    // assets across all view specs instead of re-reading them per view.
+    let localisation = Localisation::load_english(resolver)?;
+    let mut layout_cache: BTreeMap<String, LayoutSet> = BTreeMap::new();
+    let mut asset_cache = UiAssetCache::default();
     VIEW_SPECS
         .iter()
-        .map(|spec| compose_view(resolver, registry, spec))
+        .map(|spec| {
+            compose_view(
+                resolver,
+                registry,
+                &localisation,
+                &mut layout_cache,
+                &mut asset_cache,
+                spec,
+            )
+        })
         .collect()
 }
 
 fn compose_view(
     resolver: &AssetResolver,
     registry: &SpriteRegistry,
+    localisation: &Localisation,
+    layout_cache: &mut BTreeMap<String, LayoutSet>,
+    asset_cache: &mut UiAssetCache,
     spec: &ViewSpec,
 ) -> Result<MajorViewComposeResult> {
     let mut source_files = BTreeSet::new();
@@ -729,7 +749,7 @@ fn compose_view(
     let mut children = Vec::new();
 
     for root in spec.roots {
-        let mut element = load_named_element(resolver, root.file, root.name)?;
+        let mut element = load_named_element(layout_cache, resolver, root.file, root.name)?;
         if root.use_show_position {
             promote_show_position(&mut element);
         }
@@ -742,7 +762,7 @@ fn compose_view(
         children.push(element);
     }
 
-    let mut options = localized_options(resolver)?;
+    let mut options = localized_options(localisation);
     for &(name, value) in spec.text {
         options
             .text_overrides
@@ -756,7 +776,7 @@ fn compose_view(
     }
 
     for template in spec.templates {
-        let mut element = load_named_element(resolver, template.file, template.name)?;
+        let mut element = load_named_element(layout_cache, resolver, template.file, template.name)?;
         set_position(&mut element, template.x, template.y);
         element.orientation = Some("UPPER_LEFT".to_string());
         prefix_element_names(&mut element, template.prefix);
@@ -789,7 +809,7 @@ fn compose_view(
     }
     collect_documented_skips(&wrapper, &hidden, "", &mut documented_skips);
 
-    let mut compositor = Compositor::new(resolver, registry);
+    let mut compositor = Compositor::with_cache(resolver, registry, asset_cache);
     let output = compositor.compose(&wrapper, &options);
     let report = report_from_output(
         spec,
@@ -827,22 +847,8 @@ fn report_from_output(
     }
 }
 
-fn localized_options(resolver: &AssetResolver) -> Result<ComposeOptions> {
-    let localisation = Localisation::load_english(resolver)?;
-    Ok(ComposeOptions::new(MAJOR_VIEW_WIDTH, MAJOR_VIEW_HEIGHT).with_localisation(&localisation))
-}
-
-fn load_named_element(resolver: &AssetResolver, file: &str, name: &str) -> Result<GuiElement> {
-    let resolved = resolver.resolve_file(file)?;
-    let doc = parse_file(&resolved.path)?;
-    let mut layouts = LayoutSet::default();
-    layouts.add_document(&resolved.rel_path, &doc);
-    layouts
-        .find_by_name(name)
-        .into_iter()
-        .next()
-        .cloned()
-        .ok_or_else(|| GameUiError::missing(format!("{file}: element {name} not found")))
+fn localized_options(localisation: &Localisation) -> ComposeOptions {
+    ComposeOptions::new(MAJOR_VIEW_WIDTH, MAJOR_VIEW_HEIGHT).with_localisation(localisation)
 }
 
 fn wrapper_root(key: &str, children: Vec<GuiElement>) -> GuiElement {
@@ -858,34 +864,6 @@ fn wrapper_root(key: &str, children: Vec<GuiElement>) -> GuiElement {
         format: None,
         children,
         raw: Value::Object(Vec::new()),
-    }
-}
-
-fn promote_show_position(element: &mut GuiElement) {
-    if let Some(position) = element
-        .raw
-        .first_value_ci("show_position")
-        .and_then(parse_measure_pair)
-    {
-        element.position = Some(position);
-    }
-}
-
-fn set_position(element: &mut GuiElement, x: i32, y: i32) {
-    element.position = Some(pair(x, y));
-}
-
-fn pair(x: i32, y: i32) -> MeasurePair {
-    MeasurePair {
-        x: parse_measure(&x.to_string()),
-        y: parse_measure(&y.to_string()),
-    }
-}
-
-fn prefix_element_names(element: &mut GuiElement, prefix: &str) {
-    element.name = format!("{prefix}{}", element.name);
-    for child in &mut element.children {
-        prefix_element_names(child, prefix);
     }
 }
 
@@ -939,7 +917,10 @@ fn collect_documented_skips(
     }
 }
 
-fn is_runtime_populated(element_type: &str) -> bool {
+/// The runtime-populated-surface law: element types whose contents are filled
+/// per-frame by the binding, never laid out statically. Shared with
+/// `unitview` (`walk_subtree`) so the two consumers cannot drift.
+pub(crate) fn is_runtime_populated(element_type: &str) -> bool {
     matches!(
         element_type.to_ascii_lowercase().as_str(),
         "gridboxtype" | "listboxtype" | "smoothlistboxtype" | "overlappingelementsboxtype"

@@ -17,9 +17,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const ACE_TRAILER_MAGIC: &[u8; 4] = b"ACE1";
-pub const ACE_TRAILER_VERSION: u16 = 1;
+pub const ACE_TRAILER_VERSION: u16 = 2;
+pub const ACE_TRAILER_VERSION_V1: u16 = 1;
 pub const ACE_TRAILER_HEADER_LEN: usize = 40;
-pub const ACE_TRAILER_ROW_LEN: usize = 32;
+pub const ACE_TRAILER_ROW_LEN: usize = 40;
+pub const ACE_TRAILER_ROW_LEN_V1: usize = 32;
 
 // Trailer-local status flags. These are NEVER fed into the global compact
 // status interpretation (the record-level status stays the base archetype
@@ -46,6 +48,14 @@ pub const ROW_FLAG_DEAD: u32 = 1 << 6;
 pub const ROW_FLAG_KILLER_ACE: u32 = 1 << 7;
 /// Requires ROW_FLAG_DEAD. Killer country tag-db-id (+0x168) present.
 pub const ROW_FLAG_KILLER_COUNTRY: u32 = 1 << 8;
+/// The serializer-owned handled byte (`CAceEntry+0x16C`) was read as a
+/// validated boolean. A trailer-v1 row leaves this field unknown.
+pub const ROW_FLAG_HANDLED_KNOWN: u32 = 1 << 9;
+/// Requires `ROW_FLAG_HANDLED_KNOWN`. Set = the death record was handled.
+pub const ROW_FLAG_HANDLED: u32 = 1 << 10;
+/// The serializer-owned raw kill type (`CAceEntry+0x15C`) was read. No enum
+/// label is assigned because the retained corpus only proves raw value 1.
+pub const ROW_FLAG_KILL_TYPE_KNOWN: u32 = 1 << 11;
 
 pub const SOURCE_LIVE_COUNTRY_ACE_VECTOR: u32 = 1;
 pub const SOURCE_LIVE_ACE_OBJECT_LAYOUT: u32 = 1 << 1;
@@ -53,6 +63,7 @@ pub const SOURCE_DEV_SAVE_LAYOUT_VALIDATION: u32 = 1 << 2;
 pub const SOURCE_WING_ASSIGNMENT_SCAN_BLOCKED: u32 = 1 << 3;
 pub const SOURCE_LIVE_WING_ACE_ID_ASSIGNMENT: u32 = 1 << 4;
 pub const SOURCE_LIVE_ACE_DEATH_RECORD: u32 = 1 << 5;
+pub const SOURCE_LIVE_ACE_LIFECYCLE_RECORD: u32 = 1 << 6;
 
 pub const MAX_TAG_DB_ID: u32 = 4096;
 pub const MAX_ACE_ID: u32 = i32::MAX as u32;
@@ -70,8 +81,26 @@ const KNOWN_ROW_FLAGS: u32 = ROW_FLAG_NAME
     | ROW_FLAG_ALIVE_KNOWN
     | ROW_FLAG_DEAD
     | ROW_FLAG_KILLER_ACE
+    | ROW_FLAG_KILLER_COUNTRY
+    | ROW_FLAG_HANDLED_KNOWN
+    | ROW_FLAG_HANDLED
+    | ROW_FLAG_KILL_TYPE_KNOWN;
+const KNOWN_ROW_FLAGS_V1: u32 = ROW_FLAG_NAME
+    | ROW_FLAG_SURNAME
+    | ROW_FLAG_CALLSIGN
+    | ROW_FLAG_WING_ID
+    | ROW_FLAG_ALIVE_KNOWN
+    | ROW_FLAG_DEAD
+    | ROW_FLAG_KILLER_ACE
     | ROW_FLAG_KILLER_COUNTRY;
 const KNOWN_SOURCE_MASK: u32 = SOURCE_LIVE_COUNTRY_ACE_VECTOR
+    | SOURCE_LIVE_ACE_OBJECT_LAYOUT
+    | SOURCE_DEV_SAVE_LAYOUT_VALIDATION
+    | SOURCE_WING_ASSIGNMENT_SCAN_BLOCKED
+    | SOURCE_LIVE_WING_ACE_ID_ASSIGNMENT
+    | SOURCE_LIVE_ACE_DEATH_RECORD
+    | SOURCE_LIVE_ACE_LIFECYCLE_RECORD;
+const KNOWN_SOURCE_MASK_V1: u32 = SOURCE_LIVE_COUNTRY_ACE_VECTOR
     | SOURCE_LIVE_ACE_OBJECT_LAYOUT
     | SOURCE_DEV_SAVE_LAYOUT_VALIDATION
     | SOURCE_WING_ASSIGNMENT_SCAN_BLOCKED
@@ -95,12 +124,26 @@ pub struct AirAceRosterRow {
     pub country_ace_index: u32,
     pub wing_id: Option<u32>,
     pub alive: Option<bool>,
+    pub handled: Option<bool>,
+    pub kill_type_raw: Option<u32>,
     pub killer_ace_id: Option<u32>,
     pub killer_country_tag_db_id: Option<u32>,
     pub source_mask: u32,
     pub name: Option<String>,
     pub surname: Option<String>,
     pub callsign: Option<String>,
+}
+
+/// Mechanically derive the only lifecycle states proven by the raw
+/// serializer-owned booleans. Contradictory or incomplete tuples remain
+/// absent instead of being normalized.
+pub fn ace_lifecycle_state(row: &AirAceRosterRow) -> Option<&'static str> {
+    match (row.alive, row.handled) {
+        (Some(true), Some(false)) => Some("alive"),
+        (Some(false), Some(false)) => Some("dead_unhandled"),
+        (Some(false), Some(true)) => Some("dead_handled"),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -136,6 +179,15 @@ fn row_flags(row: &AirAceRosterRow) -> u32 {
                 flags |= ROW_FLAG_KILLER_COUNTRY;
             }
         }
+    }
+    if let Some(handled) = row.handled {
+        flags |= ROW_FLAG_HANDLED_KNOWN;
+        if handled {
+            flags |= ROW_FLAG_HANDLED;
+        }
+    }
+    if row.kill_type_raw.is_some() {
+        flags |= ROW_FLAG_KILL_TYPE_KNOWN;
     }
     flags
 }
@@ -185,6 +237,8 @@ pub fn encode_trailer(header: &AirAceRosterHeader, rows: &[AirAceRosterRow]) -> 
         };
         out.extend_from_slice(&killer_ace.to_le_bytes());
         out.extend_from_slice(&killer_country.to_le_bytes());
+        out.extend_from_slice(&row.kill_type_raw.unwrap_or(0).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
     }
 
     for row in rows {
@@ -228,11 +282,9 @@ pub fn decode_trailer_rows(
     let header_len = read_u16_le(trailer, 6) as usize;
     let row_len = read_u16_le(trailer, 8) as usize;
     let reserved = read_u16_le(trailer, 10);
-    if version != ACE_TRAILER_VERSION
-        || header_len != ACE_TRAILER_HEADER_LEN
-        || row_len != ACE_TRAILER_ROW_LEN
-        || reserved != 0
-    {
+    let v1 = version == ACE_TRAILER_VERSION_V1 && row_len == ACE_TRAILER_ROW_LEN_V1;
+    let v2 = version == ACE_TRAILER_VERSION && row_len == ACE_TRAILER_ROW_LEN;
+    if (!v1 && !v2) || header_len != ACE_TRAILER_HEADER_LEN || reserved != 0 {
         return Err(format!(
             "ace trailer header shape is invalid (version {version}, header_len {header_len}, row_len {row_len}, reserved {reserved})"
         ));
@@ -303,15 +355,40 @@ pub fn decode_trailer_rows(
         let wing_id = read_u32_le(trailer, row_cursor + 20);
         let killer_ace_id = read_u32_le(trailer, row_cursor + 24);
         let killer_country = read_u32_le(trailer, row_cursor + 28);
+        let kill_type_raw = if v1 {
+            0
+        } else {
+            read_u32_le(trailer, row_cursor + 32)
+        };
+        let row_reserved = if v1 {
+            0
+        } else {
+            read_u32_le(trailer, row_cursor + 36)
+        };
         row_cursor += row_len;
 
-        if flags & !KNOWN_ROW_FLAGS != 0 {
+        if row_reserved != 0 {
+            return Err(format!(
+                "ace row {row_index} has nonzero reserved value {row_reserved:#x}"
+            ));
+        }
+        let known_row_flags = if v1 {
+            KNOWN_ROW_FLAGS_V1
+        } else {
+            KNOWN_ROW_FLAGS
+        };
+        if flags & !known_row_flags != 0 {
             return Err(format!("ace row {row_index} has unknown flags {flags:#x}"));
         }
         if source_mask == 0 {
             return Err(format!("ace row {row_index} has empty source_mask"));
         }
-        if source_mask & !KNOWN_SOURCE_MASK != 0 {
+        let known_source_mask = if v1 {
+            KNOWN_SOURCE_MASK_V1
+        } else {
+            KNOWN_SOURCE_MASK
+        };
+        if source_mask & !known_source_mask != 0 {
             return Err(format!(
                 "ace row {row_index} has unknown source_mask {source_mask:#x}"
             ));
@@ -400,6 +477,40 @@ pub fn decode_trailer_rows(
                 "ace row {row_index} claims death-record source without ALIVE_KNOWN"
             ));
         }
+        let handled_known = flags & ROW_FLAG_HANDLED_KNOWN != 0;
+        let handled = flags & ROW_FLAG_HANDLED != 0;
+        if handled && !handled_known {
+            return Err(format!(
+                "ace row {row_index} has HANDLED without HANDLED_KNOWN"
+            ));
+        }
+        if alive_known && !dead && handled {
+            return Err(format!(
+                "ace row {row_index} has contradictory alive=true handled=true tuple"
+            ));
+        }
+        let kill_type_known = flags & ROW_FLAG_KILL_TYPE_KNOWN != 0;
+        if !kill_type_known && kill_type_raw != 0 {
+            return Err(format!(
+                "ace row {row_index} has kill_type_raw without flag"
+            ));
+        }
+        // V2's lifecycle bytes are captured as one stable tuple.  Partial
+        // presence would turn a torn read into apparently authoritative raw
+        // state.  V1 is the only supported alive-only wire shape: it predates
+        // handled/kill-type capture and is decoded with both new fields absent.
+        if !v1 && (alive_known != handled_known || alive_known != kill_type_known) {
+            return Err(format!(
+                "ace row {row_index} has partial v2 lifecycle tuple presence"
+            ));
+        }
+        if source_mask & SOURCE_LIVE_ACE_LIFECYCLE_RECORD != 0
+            && (!alive_known || !handled_known || !kill_type_known)
+        {
+            return Err(format!(
+                "ace row {row_index} claims lifecycle-record source without alive, handled, and kill_type presence"
+            ));
+        }
 
         rows.push(AirAceRosterRow {
             tag_db_id,
@@ -407,6 +518,8 @@ pub fn decode_trailer_rows(
             country_ace_index,
             wing_id: wing,
             alive: alive_known.then_some(!dead),
+            handled: handled_known.then_some(handled),
+            kill_type_raw: kill_type_known.then_some(kill_type_raw),
             killer_ace_id: killer_ace,
             killer_country_tag_db_id: killer_country_id,
             source_mask,
@@ -535,6 +648,33 @@ pub fn decode_trailer(
     );
     add_unit(
         &mut summary,
+        "air_ace_roster_handled_known_rows",
+        frame
+            .rows
+            .iter()
+            .filter(|row| row.handled.is_some())
+            .count(),
+    );
+    add_unit(
+        &mut summary,
+        "air_ace_roster_handled_rows",
+        frame
+            .rows
+            .iter()
+            .filter(|row| row.handled == Some(true))
+            .count(),
+    );
+    add_unit(
+        &mut summary,
+        "air_ace_roster_kill_type_known_rows",
+        frame
+            .rows
+            .iter()
+            .filter(|row| row.kill_type_raw.is_some())
+            .count(),
+    );
+    add_unit(
+        &mut summary,
         "air_ace_roster_killer_ace_rows",
         frame
             .rows
@@ -642,12 +782,15 @@ mod tests {
             country_ace_index: ace_id - 5000,
             wing_id: None,
             alive: Some(true),
+            handled: Some(false),
+            kill_type_raw: Some(0),
             killer_ace_id: None,
             killer_country_tag_db_id: None,
             source_mask: SOURCE_LIVE_COUNTRY_ACE_VECTOR
                 | SOURCE_LIVE_ACE_OBJECT_LAYOUT
                 | SOURCE_DEV_SAVE_LAYOUT_VALIDATION
-                | SOURCE_LIVE_ACE_DEATH_RECORD,
+                | SOURCE_LIVE_ACE_DEATH_RECORD
+                | SOURCE_LIVE_ACE_LIFECYCLE_RECORD,
             name: Some("Tobias".to_string()),
             surname: Some("Ochsenhirt".to_string()),
             callsign: Some("Fighter of Libau".to_string()),
@@ -657,6 +800,8 @@ mod tests {
     fn dead_row(ace_id: u32) -> AirAceRosterRow {
         AirAceRosterRow {
             alive: Some(false),
+            handled: Some(true),
+            kill_type_raw: Some(1),
             killer_ace_id: Some(6265),
             killer_country_tag_db_id: Some(92),
             ..alive_row(ace_id)
@@ -697,6 +842,15 @@ mod tests {
         assert_eq!(units.get("air_ace_roster_dead_rows").copied(), Some(1));
         assert_eq!(units.get("air_ace_roster_alive_rows").copied(), Some(2));
         assert_eq!(
+            units.get("air_ace_roster_handled_known_rows").copied(),
+            Some(3)
+        );
+        assert_eq!(units.get("air_ace_roster_handled_rows").copied(), Some(1));
+        assert_eq!(
+            units.get("air_ace_roster_kill_type_known_rows").copied(),
+            Some(3)
+        );
+        assert_eq!(
             units.get("air_ace_roster_killer_ace_rows").copied(),
             Some(1)
         );
@@ -736,6 +890,29 @@ mod tests {
     }
 
     #[test]
+    fn decodes_v1_rows_without_fabricating_lifecycle_fields() {
+        let rows = vec![alive_row(5440)];
+        let v2 = encode_trailer(&header_for(&rows), &rows);
+        let mut v1 = v2[..ACE_TRAILER_HEADER_LEN].to_vec();
+        v1[4..6].copy_from_slice(&ACE_TRAILER_VERSION_V1.to_le_bytes());
+        v1[8..10].copy_from_slice(&(ACE_TRAILER_ROW_LEN_V1 as u16).to_le_bytes());
+        let mut fixed =
+            v2[ACE_TRAILER_HEADER_LEN..ACE_TRAILER_HEADER_LEN + ACE_TRAILER_ROW_LEN_V1].to_vec();
+        let flags = read_u32_le(&fixed, 8)
+            & !(ROW_FLAG_HANDLED_KNOWN | ROW_FLAG_HANDLED | ROW_FLAG_KILL_TYPE_KNOWN);
+        fixed[8..12].copy_from_slice(&flags.to_le_bytes());
+        let source = read_u32_le(&fixed, 12) & !SOURCE_LIVE_ACE_LIFECYCLE_RECORD;
+        fixed[12..16].copy_from_slice(&source.to_le_bytes());
+        v1.extend_from_slice(&fixed);
+        v1.extend_from_slice(&v2[ACE_TRAILER_HEADER_LEN + ACE_TRAILER_ROW_LEN..]);
+
+        let frame = decode_trailer_rows(&v1, 0).expect("v1 trailer remains decodable");
+        assert_eq!(frame.rows[0].alive, Some(true));
+        assert_eq!(frame.rows[0].handled, None);
+        assert_eq!(frame.rows[0].kill_type_raw, None);
+    }
+
+    #[test]
     fn encoder_drops_killer_fields_on_living_rows() {
         let mut bad = alive_row(5440);
         // A buggy upstream reader claims killer fields on a LIVING ace: the
@@ -757,6 +934,30 @@ mod tests {
                 .copied(),
             Some(0)
         );
+    }
+
+    #[test]
+    fn decoder_rejects_contradictory_alive_and_handled_tuple() {
+        let mut row = alive_row(5440);
+        row.handled = Some(true);
+        let bytes = encode_trailer(&header_for(std::slice::from_ref(&row)), &[row]);
+        let error = decode_trailer_rows(&bytes, 0).expect_err("contradiction must fail closed");
+        assert!(error.contains("alive=true handled=true"), "{error}");
+    }
+
+    #[test]
+    fn decoder_rejects_partial_v2_lifecycle_tuple_presence() {
+        let row = alive_row(5440);
+        let mut bytes = encode_trailer(&header_for(std::slice::from_ref(&row)), &[row]);
+        let flags_offset = ACE_TRAILER_HEADER_LEN + 8;
+        let flags = read_u32_le(&bytes, flags_offset) & !ROW_FLAG_KILL_TYPE_KNOWN;
+        bytes[flags_offset..flags_offset + 4].copy_from_slice(&flags.to_le_bytes());
+        let source_offset = ACE_TRAILER_HEADER_LEN + 12;
+        let source = read_u32_le(&bytes, source_offset) & !SOURCE_LIVE_ACE_LIFECYCLE_RECORD;
+        bytes[source_offset..source_offset + 4].copy_from_slice(&source.to_le_bytes());
+
+        let error = decode_trailer_rows(&bytes, 0).expect_err("partial tuple must fail closed");
+        assert!(error.contains("partial v2 lifecycle tuple"), "{error}");
     }
 
     #[test]

@@ -10,6 +10,8 @@ use compact_contract::{
 };
 use recorder_host::domain_data_authority::{summarize_domain_data_payload, DomainDataContext};
 
+pub mod national_focus_presentation;
+
 pub const DOMAIN_ID: u16 = 45;
 pub const DOMAIN_NAME: &str = "focus_research_decisions_depth_live";
 

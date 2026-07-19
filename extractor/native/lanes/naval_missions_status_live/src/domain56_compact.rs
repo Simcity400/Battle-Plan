@@ -31,7 +31,8 @@ pub const MAX_OOB_ID: u32 = 4_000_000;
 pub const MAX_OWNER_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MAX_PROVINCE_ID: u32 = 1_000_000;
 pub const MAX_REGION_ID: u32 = 100_000;
-pub const MAX_MISSION_ENUM: u32 = 64;
+/// Exact build-870ebf ENavalMission maximum. Unknown values fail closed.
+pub const MAX_MISSION_ENUM: u32 = 9;
 pub const MAX_MISSION_STATE: u32 = 256;
 pub const MAX_RETREAT_STATE: u32 = 256;
 pub const MAX_REPAIR_PROGRESS_MILLI: u32 = 1_000;

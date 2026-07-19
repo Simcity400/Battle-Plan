@@ -119,7 +119,12 @@ def _parse_dynamic_modifier(tz):
         if key != "modifier":
             _skip_block_body(tz)
             continue
-        rec = {"modifier": None, "enabled": None, "value": []}
+        # `days` is the save-persisted remaining-duration leaf for timed
+        # instances. `tag` is the optional source/target tag emitted beside it.
+        # Keep both literal values; absence is distinct from a permanent
+        # modifier whose value vector happens to be empty.
+        rec = {"modifier": None, "enabled": None, "value": [],
+               "days": None, "tag": None}
         for k, op in iter_block_entries(tz):
             if op is LBRACE:
                 if k == "value":
@@ -134,6 +139,10 @@ def _parse_dynamic_modifier(tz):
                 rec["modifier"] = v
             elif k == "enabled":
                 rec["enabled"] = (v == "yes")
+            elif k == "days":
+                rec["days"] = to_int(v)
+            elif k == "tag":
+                rec["tag"] = v
         out.append(rec)
     return out
 

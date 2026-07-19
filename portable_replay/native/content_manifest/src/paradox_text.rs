@@ -135,16 +135,6 @@ pub fn scalar_f32(value: &Value) -> Option<f32> {
     value.as_scalar()?.trim_end_matches('%').parse().ok()
 }
 
-pub fn object_number_pair(
-    value: &Value,
-    x_keys: &[&str],
-    y_keys: &[&str],
-) -> Option<(String, String)> {
-    let x = first_scalar_any(value, x_keys)?;
-    let y = first_scalar_any(value, y_keys)?;
-    Some((x.to_string(), y.to_string()))
-}
-
 pub fn first_scalar_any<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
     keys.iter().find_map(|key| value.first_scalar_ci(key))
 }
@@ -157,6 +147,12 @@ pub fn block_items(value: &Value) -> impl Iterator<Item = &Value> {
         .filter(|entry| entry.key.is_none())
         .map(|entry| &entry.value)
 }
+
+/// Maximum brace-nesting depth accepted before the parser records a recovery
+/// and skips the subtree. Content files (including mods) are untrusted input;
+/// without this cap a file of pathological open braces would overflow the
+/// stack and abort the process instead of surfacing a typed parse failure.
+const MAX_DEPTH: usize = 512;
 
 #[derive(Clone, Debug, PartialEq)]
 enum TokenKind {
@@ -197,14 +193,14 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_document(mut self) -> Document {
-        let root = Value::Object(self.parse_entries(false));
+        let root = Value::Object(self.parse_entries(false, 0));
         Document {
             root,
             recoveries: self.recoveries,
         }
     }
 
-    fn parse_entries(&mut self, stop_on_close: bool) -> Vec<Entry> {
+    fn parse_entries(&mut self, stop_on_close: bool, depth: usize) -> Vec<Entry> {
         let mut entries = Vec::new();
         loop {
             let token = self.next_token();
@@ -225,7 +221,7 @@ impl<'a> Parser<'a> {
                     self.recover_at(&token, "stray equals sign ignored");
                 }
                 TokenKind::Open => {
-                    let value = Value::Object(self.parse_entries(true));
+                    let value = self.parse_object_body(&token, depth);
                     entries.push(Entry {
                         key: None,
                         value,
@@ -236,7 +232,7 @@ impl<'a> Parser<'a> {
                 TokenKind::Atom(text) | TokenKind::Quoted(text) => {
                     let next = self.next_token();
                     if next.kind == TokenKind::Equals {
-                        let value = self.parse_value();
+                        let value = self.parse_value(depth);
                         entries.push(Entry {
                             key: Some(text),
                             value,
@@ -258,10 +254,46 @@ impl<'a> Parser<'a> {
         entries
     }
 
-    fn parse_value(&mut self) -> Value {
+    /// Parse the body of an object whose opening brace `open` was just
+    /// consumed. At `MAX_DEPTH` the subtree is skipped iteratively (never by
+    /// re-entering `parse_entries`, which would preserve the stack overflow)
+    /// and replaced with an empty object plus a recovery.
+    fn parse_object_body(&mut self, open: &Token, depth: usize) -> Value {
+        if depth >= MAX_DEPTH {
+            self.recover_at(open, "nesting depth limit exceeded; subtree skipped");
+            self.skip_balanced_subtree();
+            return Value::Object(Vec::new());
+        }
+        Value::Object(self.parse_entries(true, depth + 1))
+    }
+
+    /// Consume tokens for a subtree whose opening brace was already consumed,
+    /// tracking brace balance iteratively until the matching close (or EOF).
+    fn skip_balanced_subtree(&mut self) {
+        let mut balance = 1usize;
+        loop {
+            let token = self.next_token();
+            match token.kind {
+                TokenKind::Open => balance += 1,
+                TokenKind::Close => {
+                    balance -= 1;
+                    if balance == 0 {
+                        break;
+                    }
+                }
+                TokenKind::Eof => {
+                    self.recover_at(&token, "missing closing brace; accepted end of file");
+                    break;
+                }
+                TokenKind::Atom(_) | TokenKind::Quoted(_) | TokenKind::Equals => {}
+            }
+        }
+    }
+
+    fn parse_value(&mut self, depth: usize) -> Value {
         let token = self.next_token();
         match token.kind {
-            TokenKind::Open => Value::Object(self.parse_entries(true)),
+            TokenKind::Open => self.parse_object_body(&token, depth),
             TokenKind::Atom(value) => Value::Scalar(Scalar::Bare(value)),
             TokenKind::Quoted(value) => Value::Scalar(Scalar::Quoted(value)),
             TokenKind::Close => {
@@ -431,5 +463,72 @@ mod tests {
     fn comments_do_not_break_quoted_hashes() {
         let doc = parse_str(r#"name = "not # comment" # comment"#);
         assert_eq!(doc.root.first_scalar_ci("name"), Some("not # comment"));
+    }
+
+    #[test]
+    fn deeply_nested_braces_recover_instead_of_overflowing() {
+        let text = "{".repeat(200_000);
+        let doc = parse_str(&text);
+        assert!(
+            doc.recoveries
+                .iter()
+                .any(|recovery| recovery.message.contains("nesting depth limit exceeded")),
+            "expected a depth-limit recovery, got: {:?}",
+            doc.recoveries.first()
+        );
+    }
+
+    #[test]
+    fn deeply_nested_value_braces_recover_instead_of_overflowing() {
+        let text = format!("key = {}", "{".repeat(200_000));
+        let doc = parse_str(&text);
+        assert!(
+            doc.recoveries
+                .iter()
+                .any(|recovery| recovery.message.contains("nesting depth limit exceeded")),
+            "expected a depth-limit recovery, got: {:?}",
+            doc.recoveries.first()
+        );
+        assert_eq!(doc.root.fields().len(), 1);
+        assert_eq!(doc.root.fields()[0].key.as_deref(), Some("key"));
+    }
+
+    #[test]
+    fn depth_limited_subtree_is_skipped_and_siblings_survive() {
+        let mut text = String::new();
+        for _ in 0..(MAX_DEPTH + 8) {
+            text.push_str("a = { ");
+        }
+        text.push_str("inner = 1 ");
+        for _ in 0..(MAX_DEPTH + 8) {
+            text.push('}');
+        }
+        text.push_str(" after = 2");
+        let doc = parse_str(&text);
+        assert!(doc
+            .recoveries
+            .iter()
+            .any(|recovery| recovery.message.contains("nesting depth limit exceeded")));
+        // The balanced skip must resynchronize so trailing siblings still parse.
+        assert_eq!(doc.root.first_scalar_ci("after"), Some("2"));
+    }
+
+    #[test]
+    fn nesting_below_the_depth_limit_is_untouched() {
+        let mut text = String::new();
+        for _ in 0..64 {
+            text.push_str("a = { ");
+        }
+        text.push_str("inner = 1 ");
+        for _ in 0..64 {
+            text.push('}');
+        }
+        let doc = parse_str(&text);
+        assert!(doc.recoveries.is_empty());
+        let mut value = &doc.root;
+        for _ in 0..64 {
+            value = value.first_value_ci("a").unwrap();
+        }
+        assert_eq!(value.first_scalar_ci("inner"), Some("1"));
     }
 }

@@ -17,7 +17,10 @@ use winapi::shared::dxgitype::{
 };
 use winapi::shared::minwindef::UINT;
 use winapi::shared::windef::HWND;
-use winapi::shared::winerror::{DXGI_ERROR_WAS_STILL_DRAWING, DXGI_STATUS_OCCLUDED};
+use winapi::shared::winerror::{
+    DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
+    DXGI_ERROR_WAS_STILL_DRAWING, DXGI_STATUS_OCCLUDED,
+};
 use winapi::um::d3d11::{
     D3D11CreateDevice, D3D11CreateDeviceAndSwapChain, ID3D11Device, ID3D11DeviceContext,
     ID3D11RenderTargetView, ID3D11Texture2D, D3D11_BIND_RENDER_TARGET, D3D11_CPU_ACCESS_READ,
@@ -64,6 +67,9 @@ impl<T> Drop for ComPtr<T> {
 /// HRESULT check with an explicit action string.
 pub fn hr_ok(hr: i32, action: &str) -> Result<()> {
     if hr < 0 {
+        if let Some(loss) = DeviceLoss::from_hresult(hr) {
+            return Err(Box::new(DeviceLossError::new(action, loss, hr, None)));
+        }
         Err(format!(
             "replay_app D3D11: {action} failed with HRESULT 0x{:08X}",
             hr as u32
@@ -72,6 +78,93 @@ pub fn hr_ok(hr: i32, action: &str) -> Result<()> {
     } else {
         Ok(())
     }
+}
+
+/// A device-loss HRESULT is not an ordinary feature-local draw omission. All
+/// cached shaders, buffers, views and swapchain objects belong to the lost
+/// device, so replay must stop before another frame can reuse any of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeviceLoss {
+    Removed,
+    Reset,
+    Hung,
+}
+
+impl DeviceLoss {
+    fn from_hresult(hr: i32) -> Option<Self> {
+        match hr {
+            DXGI_ERROR_DEVICE_REMOVED => Some(Self::Removed),
+            DXGI_ERROR_DEVICE_RESET => Some(Self::Reset),
+            DXGI_ERROR_DEVICE_HUNG => Some(Self::Hung),
+            _ => None,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Removed => "removed",
+            Self::Reset => "reset",
+            Self::Hung => "hung",
+        }
+    }
+}
+
+/// Typed terminal device-loss error. Some renderer paths intentionally catch
+/// ordinary feature-local failures and omit only that feature; the type lets
+/// those boundaries distinguish a dead D3D device without matching text and
+/// unwind the whole app instead.
+#[derive(Debug)]
+pub struct DeviceLossError {
+    action: String,
+    loss: DeviceLoss,
+    operation_hr: i32,
+    removed_reason: Option<i32>,
+}
+
+impl DeviceLossError {
+    fn new(action: &str, loss: DeviceLoss, operation_hr: i32, removed_reason: Option<i32>) -> Self {
+        Self {
+            action: action.to_string(),
+            loss,
+            operation_hr,
+            removed_reason,
+        }
+    }
+}
+
+impl std::fmt::Display for DeviceLossError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "replay_app D3D11: {} reported device {} (HRESULT 0x{:08X}",
+            self.action,
+            self.loss.label(),
+            self.operation_hr as u32,
+        )?;
+        if let Some(reason) = self.removed_reason {
+            write!(f, "; GetDeviceRemovedReason 0x{:08X}", reason as u32)?;
+        }
+        write!(
+            f,
+            "); rendering stopped fail-closed because device-bound replay resources cannot be reused; restart replay_app"
+        )
+    }
+}
+
+impl std::error::Error for DeviceLossError {}
+
+/// True only for a typed device-loss failure, including one retained in an
+/// error source chain. This is the escape hatch from feature-local omission
+/// boundaries; it deliberately does not inspect diagnostic strings.
+pub fn is_device_loss_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(candidate) = current {
+        if candidate.downcast_ref::<DeviceLossError>().is_some() {
+            return true;
+        }
+        current = candidate.source();
+    }
+    false
 }
 
 /// What `Gfx::present` did. The render loop must keep pumping input on
@@ -174,6 +267,36 @@ unsafe fn preferred_adapter() -> Option<ComPtr<winapi::shared::dxgi::IDXGIAdapte
 }
 
 impl Gfx {
+    /// App-owned presentation/offscreen target format. Both constructors and
+    /// resize use this exact format; CAP6 uses it to reject the retained
+    /// R8G8B8A8 counter receipt on the current B8G8R8A8 product target rather
+    /// than treating the channel-layout difference as implicit parity.
+    pub(crate) const fn target_format(&self) -> u32 {
+        DXGI_FORMAT_B8G8R8A8_UNORM
+    }
+
+    /// Check an HRESULT from an operation on this live device. Device removal,
+    /// reset, or hang is returned as an explicit terminal/fail-closed error;
+    /// callers must unwind and drop every device-bound cache rather than
+    /// attempting to continue with stale COM resources.
+    fn runtime_hr(&self, hr: i32, action: &str) -> Result<()> {
+        if hr >= 0 {
+            return Ok(());
+        }
+        let removed_reason = unsafe { (*self.device.as_raw()).GetDeviceRemovedReason() };
+        if let Some(loss) =
+            DeviceLoss::from_hresult(hr).or_else(|| DeviceLoss::from_hresult(removed_reason))
+        {
+            return Err(Box::new(DeviceLossError::new(
+                action,
+                loss,
+                hr,
+                Some(removed_reason),
+            )));
+        }
+        hr_ok(hr, action)
+    }
+
     /// Clear and bind the product target when no admitted non-UI pass is
     /// available. This is a neutral compositor surface, not a fabricated map.
     pub fn clear_target(&self, color: [f32; 4]) -> Result<()> {
@@ -341,7 +464,7 @@ impl Gfx {
             &ID3D11Texture2D::uuidof(),
             &mut backbuffer as *mut *mut ID3D11Texture2D as *mut *mut _,
         );
-        hr_ok(hr, "IDXGISwapChain::GetBuffer(0)")?;
+        self.runtime_hr(hr, "IDXGISwapChain::GetBuffer(0)")?;
         let backbuffer = ComPtr::from_raw(backbuffer, "swapchain backbuffer")?;
         let mut rtv: *mut ID3D11RenderTargetView = ptr::null_mut();
         let hr = (*self.device.as_raw()).CreateRenderTargetView(
@@ -349,7 +472,7 @@ impl Gfx {
             ptr::null(),
             &mut rtv,
         );
-        hr_ok(hr, "CreateRenderTargetView for swapchain backbuffer")?;
+        self.runtime_hr(hr, "CreateRenderTargetView for swapchain backbuffer")?;
         self.rtv = Some(ComPtr::from_raw(rtv, "backbuffer render-target view")?);
         Ok(())
     }
@@ -378,7 +501,7 @@ impl Gfx {
                 .as_ref()
                 .ok_or("resize called on an offscreen target")?;
             let hr = (*swapchain.as_raw()).ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
-            hr_ok(hr, "IDXGISwapChain::ResizeBuffers")?;
+            self.runtime_hr(hr, "IDXGISwapChain::ResizeBuffers")?;
             self.width = width;
             self.height = height;
             self.create_backbuffer_rtv()
@@ -403,7 +526,7 @@ impl Gfx {
             if hr == DXGI_STATUS_OCCLUDED {
                 return Ok(PresentOutcome::Occluded);
             }
-            hr_ok(hr, "IDXGISwapChain::Present")?;
+            self.runtime_hr(hr, "IDXGISwapChain::Present")?;
             Ok(PresentOutcome::Presented)
         }
     }
@@ -433,7 +556,7 @@ impl Gfx {
             };
             let mut staging: *mut ID3D11Texture2D = ptr::null_mut();
             let hr = (*self.device.as_raw()).CreateTexture2D(&desc, ptr::null(), &mut staging);
-            hr_ok(hr, "CreateTexture2D (staging readback)")?;
+            self.runtime_hr(hr, "CreateTexture2D (staging readback)")?;
             let staging = ComPtr::from_raw(staging, "staging readback texture")?;
             (*self.context.as_raw())
                 .CopyResource(staging.as_raw() as *mut _, source.as_raw() as *mut _);
@@ -446,7 +569,7 @@ impl Gfx {
                 0,
                 &mut mapped,
             );
-            hr_ok(hr, "Map (staging readback)")?;
+            self.runtime_hr(hr, "Map (staging readback)")?;
             let row_bytes = self.width as usize * 4;
             let mut out = vec![0u8; row_bytes * self.height as usize];
             for y in 0..self.height as usize {
@@ -456,6 +579,54 @@ impl Gfx {
             }
             (*self.context.as_raw()).Unmap(staging.as_raw() as *mut _, 0);
             Ok(out)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_loss_hresult_classification_is_explicit_and_fail_closed() {
+        assert_eq!(
+            DeviceLoss::from_hresult(DXGI_ERROR_DEVICE_REMOVED),
+            Some(DeviceLoss::Removed)
+        );
+        assert_eq!(
+            DeviceLoss::from_hresult(DXGI_ERROR_DEVICE_RESET),
+            Some(DeviceLoss::Reset)
+        );
+        assert_eq!(
+            DeviceLoss::from_hresult(DXGI_ERROR_DEVICE_HUNG),
+            Some(DeviceLoss::Hung)
+        );
+        assert_eq!(DeviceLoss::from_hresult(DXGI_ERROR_WAS_STILL_DRAWING), None);
+        assert_eq!(DeviceLoss::from_hresult(DXGI_STATUS_OCCLUDED), None);
+        assert_eq!(DeviceLoss::from_hresult(0), None);
+    }
+
+    #[test]
+    fn device_loss_labels_are_operator_stable() {
+        assert_eq!(DeviceLoss::Removed.label(), "removed");
+        assert_eq!(DeviceLoss::Reset.label(), "reset");
+        assert_eq!(DeviceLoss::Hung.label(), "hung");
+    }
+
+    #[test]
+    fn generic_hresult_gate_also_rejects_device_loss_terminally() {
+        for (hr, label) in [
+            (DXGI_ERROR_DEVICE_REMOVED, "removed"),
+            (DXGI_ERROR_DEVICE_RESET, "reset"),
+            (DXGI_ERROR_DEVICE_HUNG, "hung"),
+        ] {
+            let error = hr_ok(hr, "synthetic runtime operation")
+                .expect_err("device loss cannot be a feature-local omission");
+            assert!(is_device_loss_error(error.as_ref()));
+            let message = error.to_string();
+            assert!(message.contains(&format!("device {label}")), "{message}");
+            assert!(message.contains("stopped fail-closed"), "{message}");
+            assert!(message.contains("restart replay_app"), "{message}");
         }
     }
 }

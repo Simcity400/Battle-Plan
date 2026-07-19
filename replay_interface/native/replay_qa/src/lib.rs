@@ -1,10 +1,9 @@
 use std::collections::{BTreeMap, HashSet};
-use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Instant;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 const DXGI_FORMAT_R16G16B16A16_FLOAT: u32 = 10;
 const DXGI_FORMAT_R8G8B8A8_UNORM: u32 = 28;
@@ -33,6 +32,11 @@ pub struct ReplayQaConfig {
     pub frame_parity_gates: Vec<FrameParityConfig>,
     pub matrix: MatrixConfig,
     pub thresholds: ThresholdConfig,
+    /// Per-child-process deadline. A hung child (deadlocked map_viewer,
+    /// wedged replay_app) is killed at this deadline so the harness can still
+    /// record a typed gate failure instead of hanging forever. Generous by
+    /// default because the first cargo build of a cold target dir is slow.
+    pub process_timeout: Duration,
 }
 
 impl Default for ReplayQaConfig {
@@ -114,6 +118,7 @@ impl Default for ReplayQaConfig {
             frame_parity_gates,
             matrix: MatrixConfig::default(),
             thresholds: ThresholdConfig::default(),
+            process_timeout: Duration::from_secs(30 * 60),
         }
     }
 }
@@ -121,19 +126,16 @@ impl Default for ReplayQaConfig {
 impl ReplayQaConfig {
     pub fn apply_config_text(&mut self, text: &str) -> Result<(), String> {
         for (line_number, raw_line) in text.lines().enumerate() {
-            let line = raw_line
-                .split_once('#')
-                .map(|(before, _)| before)
-                .unwrap_or(raw_line)
-                .trim();
-            if line.is_empty() {
+            let line_number = line_number + 1;
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
                 continue;
             }
             let (key, value) = line
                 .split_once('=')
-                .ok_or_else(|| format!("config line {} is missing '='", line_number + 1))?;
+                .ok_or_else(|| format!("config line {line_number} is missing '='"))?;
             let key = key.trim();
-            let value = strip_quotes(value.trim());
+            let value = config_value(value, line_number)?;
             match key {
                 "terrain_map_frame_bundle" => {
                     self.set_terrain_map_frame_bundle(PathBuf::from(value));
@@ -149,6 +151,15 @@ impl ReplayQaConfig {
                 "game_root" => self.game_root = Some(PathBuf::from(value)),
                 "mod_root" => self.mod_root = Some(PathBuf::from(value)),
                 "water.expected_fail" => self.water_expected_fail = parse_bool(value)?,
+                "process.timeout_secs" => {
+                    let secs = value
+                        .parse::<u64>()
+                        .map_err(|err| format!("{key}: {err}"))?;
+                    if secs == 0 {
+                        return Err(format!("{key}: value must be positive"));
+                    }
+                    self.process_timeout = Duration::from_secs(secs);
+                }
                 "matrix.hours" => self.matrix.hours = parse_f64_list(value)?,
                 "threshold.full_map.max_pure_black_percent" => {
                     self.thresholds.full_map.max_pure_black_percent = parse_f64(key, value)?
@@ -482,8 +493,20 @@ pub fn compute_bmp_stats(bytes: &[u8]) -> Result<PixelStats, String> {
     if bits_per_pixel != 24 && bits_per_pixel != 32 {
         return Err(format!("unsupported BMP bit depth {bits_per_pixel}"));
     }
-    let row_stride = ((width as usize * bits_per_pixel as usize + 31) / 32) * 4;
-    let required = pixel_offset + row_stride * height as usize;
+    // Header-supplied dimensions are untrusted: a malformed BMP must surface
+    // as a typed error, never wrap the size math and index out of bounds.
+    let row_bits = (width as usize)
+        .checked_mul(bits_per_pixel as usize)
+        .and_then(|bits| bits.checked_add(31))
+        .ok_or_else(|| "BMP dimensions overflow".to_string())?;
+    let row_stride = (row_bits / 32) * 4;
+    let required = row_stride
+        .checked_mul(height as usize)
+        .and_then(|pixel_bytes| pixel_offset.checked_add(pixel_bytes))
+        .ok_or_else(|| "BMP dimensions overflow".to_string())?;
+    if required > isize::MAX as usize {
+        return Err("BMP dimensions overflow the maximum addressable slice length".to_string());
+    }
     if bytes.len() < required {
         return Err(format!(
             "BMP pixel payload is {} bytes, expected at least {required}",
@@ -496,7 +519,9 @@ pub fn compute_bmp_stats(bytes: &[u8]) -> Result<PixelStats, String> {
     let mut pure_black = 0usize;
     let mut luma_sum = 0.0;
     let mut luma_square_sum = 0.0;
-    let pixel_count = width as usize * height as usize;
+    let pixel_count = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| "BMP dimensions overflow".to_string())?;
     for row in 0..height as usize {
         let source_row = if signed_height > 0 {
             height as usize - 1 - row
@@ -957,7 +982,12 @@ fn run_frame_parity_gate(
         args.push(path_string(camera_json));
     }
 
-    let output = run_process(map_viewer, &args, &config.native_root);
+    let output = run_process(
+        map_viewer,
+        &args,
+        &config.native_root,
+        config.process_timeout,
+    );
     let mut artifacts = write_command_logs(
         config,
         &format!("frame_parity_{}", parity.name),
@@ -995,13 +1025,18 @@ fn run_frame_parity_gate(
             .map(|path| path_string(path))
             .unwrap_or_else(|| "captured_scene_cb0".to_string()),
     );
-    gate.key_numbers.insert(
-        "ground_truth".to_string(),
-        path_string(&resolve_map_frame_bundle_path(
-            &parity.compare_map_frame_bundle,
-            &parity.pass,
-        )),
-    );
+    // Do not `?` here: an unknown pass must fail THIS gate (typed, via the
+    // compute_frame_parity_diff Err arm below), not abort the whole run.
+    match resolve_map_frame_bundle_path(&parity.compare_map_frame_bundle, &parity.pass) {
+        Ok(ground_truth) => {
+            gate.key_numbers
+                .insert("ground_truth".to_string(), path_string(&ground_truth));
+        }
+        Err(err) => {
+            gate.key_numbers
+                .insert("ground_truth_error".to_string(), err);
+        }
+    }
 
     match compute_frame_parity_diff(&parity.compare_map_frame_bundle, &parity.pass, &replay_raw) {
         Ok(diff) => {
@@ -1052,7 +1087,7 @@ fn run_frame_parity_gate(
     if !output.success() {
         gate.status = GateStatus::Fail;
         if let Some(line) =
-            first_nonempty_line(&output.stderr).or_else(|| first_nonempty_line(&output.stdout))
+            last_nonempty_line(&output.stderr).or_else(|| last_nonempty_line(&output.stdout))
         {
             gate.details.push(line.to_string());
         }
@@ -1142,25 +1177,44 @@ fn run_render_matrix(
         let first = hour_label(config.matrix.hours[0]);
         let last = hour_label(*config.matrix.hours.last().unwrap());
         for camera in &config.matrix.cameras {
-            let a = matrix_dir.join(format!("{}_h{}_synth.bmp", camera.name, first));
-            let b = matrix_dir.join(format!("{}_h{}_synth.bmp", camera.name, last));
             let gate_name = format!("day/night divergence {}", camera.name);
-            let mut gate = match (fs::read(&a), fs::read(&b)) {
-                (Ok(da), Ok(db)) if da != db => GateRecord::hard_pass(gate_name),
-                (Ok(_), Ok(_)) => GateRecord::hard_fail(
+            let mut gate = if first == last {
+                // Identical endpoints make the divergence check unsatisfiable:
+                // both paths would resolve to the same file and the comparison
+                // would misreport a config defect as a renderer no-op. Do not
+                // silently skip either — fail typed on the config.
+                GateRecord::hard_fail(
                     gate_name,
                     format!(
-                        "hour {} and hour {} dumps are byte-identical — day/night is a visual no-op",
-                        trim_float(config.matrix.hours[0]),
-                        trim_float(*config.matrix.hours.last().unwrap())
+                        "matrix.hours first/last endpoints resolve to the same hour label \
+                         {first:?}; day/night divergence is not checkable — fix matrix.hours \
+                         in the config"
                     ),
-                ),
-                _ => GateRecord::hard_fail(gate_name, "matrix dump missing for comparison".to_string()),
+                )
+            } else {
+                let a = matrix_dir.join(format!("{}_h{}_synth.bmp", camera.name, first));
+                let b = matrix_dir.join(format!("{}_h{}_synth.bmp", camera.name, last));
+                let mut gate = match (fs::read(&a), fs::read(&b)) {
+                    (Ok(da), Ok(db)) if da != db => GateRecord::hard_pass(gate_name),
+                    (Ok(_), Ok(_)) => GateRecord::hard_fail(
+                        gate_name,
+                        format!(
+                            "hour {} and hour {} dumps are byte-identical — day/night is a visual no-op",
+                            trim_float(config.matrix.hours[0]),
+                            trim_float(*config.matrix.hours.last().unwrap())
+                        ),
+                    ),
+                    _ => GateRecord::hard_fail(
+                        gate_name,
+                        "matrix dump missing for comparison".to_string(),
+                    ),
+                };
+                gate.artifacts.push(a);
+                gate.artifacts.push(b);
+                gate
             };
             gate.key_numbers
                 .insert("camera".to_string(), camera.name.clone());
-            gate.artifacts.push(a);
-            gate.artifacts.push(b);
             report.gates.push(gate);
         }
     }
@@ -1262,6 +1316,14 @@ fn run_recording_ingest_scrub_gate(
         gate.key_numbers
             .insert("dump_h500_controlled_states".to_string(), count.to_string());
     }
+    gate.key_numbers.insert(
+        "dump_h0_omission_count".to_string(),
+        evaluation.first_omission_count.to_string(),
+    );
+    gate.key_numbers.insert(
+        "dump_h500_omission_count".to_string(),
+        evaluation.second_omission_count.to_string(),
+    );
     if let Some(bytes) = first_bytes.as_ref() {
         gate.key_numbers
             .insert("dump_h0_bytes".to_string(), bytes.len().to_string());
@@ -1307,7 +1369,12 @@ fn prepare_recording_fixture(
             "--start-hour".to_string(),
             RECORDING_SCRUB_FIRST_HOUR.to_string(),
         ];
-        let output = run_process(make_demo_recording, &args, &config.native_root);
+        let output = run_process(
+            make_demo_recording,
+            &args,
+            &config.native_root,
+            config.process_timeout,
+        );
         let mut artifacts = write_command_logs(
             config,
             "recording_ingest_make_demo_recording",
@@ -1404,7 +1471,12 @@ fn run_recording_dump(
     if config.matrix.synthesize_terrain_chunks {
         args.push("--synthesize-terrain-chunks".to_string());
     }
-    let output = run_process(replay_app, &args, &config.native_root);
+    let output = run_process(
+        replay_app,
+        &args,
+        &config.native_root,
+        config.process_timeout,
+    );
     let mut artifacts = write_command_logs(
         config,
         &format!("recording_ingest_dump_h{hour}"),
@@ -1440,6 +1512,8 @@ struct RecordingScrubEvaluation {
     second_hash: Option<String>,
     first_controlled_states: Option<usize>,
     second_controlled_states: Option<usize>,
+    first_omission_count: usize,
+    second_omission_count: usize,
     proof_lines: Vec<String>,
     failures: Vec<String>,
 }
@@ -1452,9 +1526,11 @@ fn evaluate_recording_scrub_assertions(
     let first_dump = evaluate_recording_dump(first, &mut evaluation);
     evaluation.first_hash = first_dump.hash;
     evaluation.first_controlled_states = first_dump.controlled_states;
+    evaluation.first_omission_count = first_dump.omission_count;
     let second_dump = evaluate_recording_dump(second, &mut evaluation);
     evaluation.second_hash = second_dump.hash;
     evaluation.second_controlled_states = second_dump.controlled_states;
+    evaluation.second_omission_count = second_dump.omission_count;
     if let (Some(first_bytes), Some(second_bytes)) = (first.dump_bytes, second.dump_bytes) {
         if first_bytes == second_bytes {
             evaluation.failures.push(format!(
@@ -1470,6 +1546,7 @@ fn evaluate_recording_scrub_assertions(
 struct RecordingDumpEvaluation {
     hash: Option<String>,
     controlled_states: Option<usize>,
+    omission_count: usize,
 }
 
 fn evaluate_recording_dump(
@@ -1528,9 +1605,25 @@ fn evaluate_recording_dump(
             None
         }
     };
+    // Surface production-dump omission lines ("... omitted [SLUG] reason")
+    // verbatim: exit code plus pixel hash alone cannot reveal a dump that
+    // silently lost its authenticated HUD or a submitted stream. The current
+    // recording gate drives the --bundle debug path, which emits none of
+    // these lines; this collection becomes load-bearing once a gate drives
+    // the production-recording dump path.
+    let omission_lines: Vec<String> = observation
+        .stdout
+        .lines()
+        .chain(observation.stderr.lines())
+        .filter(|line| line.contains("omitted ["))
+        .map(|line| line.trim().to_string())
+        .collect();
+    let omission_count = omission_lines.len();
+    evaluation.proof_lines.extend(omission_lines);
     RecordingDumpEvaluation {
         hash,
         controlled_states,
+        omission_count,
     }
 }
 
@@ -1564,7 +1657,7 @@ fn run_ui_probe_gate(
         args.push("--mod-root".to_string());
         args.push(path_string(mod_root));
     }
-    let output = run_process(ui_probe, &args, &config.native_root);
+    let output = run_process(ui_probe, &args, &config.native_root, config.process_timeout);
     let mut artifacts = write_command_logs(config, "ui_probe", ui_probe, &args, &output)?;
     artifacts.push(ui_dir);
     let mut gate = GateRecord::hard_pass("ui composition gates");
@@ -1582,7 +1675,7 @@ fn run_ui_probe_gate(
     }
     if !output.success() {
         gate.status = GateStatus::Fail;
-        if let Some(line) = first_nonempty_line(&output.stderr) {
+        if let Some(line) = last_nonempty_line(&output.stderr) {
             gate.details.push(line.to_string());
         }
     }
@@ -1815,26 +1908,36 @@ fn ensure_binary(
         args.push("--bin".to_string());
         args.push(bin.to_string());
     }
-    let output = run_process(Path::new("cargo"), &args, &config.native_root);
-    if let Ok(mut artifacts) = write_command_logs(
+    let output = run_process(
+        Path::new("cargo"),
+        &args,
+        &config.native_root,
+        config.process_timeout,
+    );
+    let log_artifacts = write_command_logs(
         config,
         &format!("build_{binary_name}"),
         Path::new("cargo"),
         &args,
         &output,
-    ) {
-        if !output.success() {
-            let mut gate = GateRecord::hard_fail(
-                format!("build tool {binary_name}"),
-                first_nonempty_line(&output.stderr)
-                    .unwrap_or("cargo build failed")
-                    .to_string(),
-            );
-            gate.key_numbers
-                .insert("exit_code".to_string(), exit_code_string(output.exit_code));
-            gate.artifacts.append(&mut artifacts);
-            report.gates.push(gate);
+    );
+    if !output.success() {
+        let mut gate = GateRecord::hard_fail(
+            format!("build tool {binary_name}"),
+            last_nonempty_line(&output.stderr)
+                .unwrap_or("cargo build failed")
+                .to_string(),
+        );
+        gate.key_numbers
+            .insert("exit_code".to_string(), exit_code_string(output.exit_code));
+        // Record the build-failure gate even when the log files could not be
+        // written (full/readonly disk): dropping it would hide the compiler
+        // diagnosis behind the generic "binary is unavailable" failure.
+        match log_artifacts {
+            Ok(mut artifacts) => gate.artifacts.append(&mut artifacts),
+            Err(err) => gate.details.push(err),
         }
+        report.gates.push(gate);
     }
     if output.success() && path.is_file() {
         report.tools.push(ToolInfo {
@@ -1905,7 +2008,7 @@ fn run_command_gate(
     hard: bool,
     log_stem: &str,
 ) -> Result<GateRecord, String> {
-    let output = run_process(program, args, &config.native_root);
+    let output = run_process(program, args, &config.native_root, config.process_timeout);
     let artifacts = write_command_logs(config, log_stem, program, args, &output)?;
     let mut gate = GateRecord {
         gate: gate_name.to_string(),
@@ -1923,8 +2026,15 @@ fn run_command_gate(
         .insert("exit_code".to_string(), exit_code_string(output.exit_code));
     gate.key_numbers
         .insert("duration_ms".to_string(), output.duration_ms.to_string());
-    if let Some(line) =
-        first_nonempty_line(&output.stderr).or_else(|| first_nonempty_line(&output.stdout))
+    if output.success() {
+        // On success the first line serves as a summary of what the tool did.
+        if let Some(line) =
+            first_nonempty_line(&output.stderr).or_else(|| first_nonempty_line(&output.stdout))
+        {
+            gate.details.push(line.to_string());
+        }
+    } else if let Some(line) =
+        last_nonempty_line(&output.stderr).or_else(|| last_nonempty_line(&output.stdout))
     {
         gate.details.push(line.to_string());
     }
@@ -1945,26 +2055,101 @@ impl ProcessResult {
     }
 }
 
-fn run_process(program: &Path, args: &[String], current_dir: &Path) -> ProcessResult {
+fn run_process(
+    program: &Path,
+    args: &[String],
+    current_dir: &Path,
+    timeout: Duration,
+) -> ProcessResult {
     let started = Instant::now();
-    let output = Command::new(program)
+    let mut child = match Command::new(program)
         .args(args)
         .current_dir(current_dir)
-        .output();
-    match output {
-        Ok(output) => ProcessResult {
-            exit_code: output.status.code(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            duration_ms: started.elapsed().as_millis(),
-        },
-        Err(err) => ProcessResult {
-            exit_code: None,
-            stdout: String::new(),
-            stderr: format!("failed to spawn {}: {err}", program.display()),
-            duration_ms: started.elapsed().as_millis(),
-        },
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(err) => {
+            return ProcessResult {
+                exit_code: None,
+                stdout: String::new(),
+                stderr: format!("failed to spawn {}: {err}", program.display()),
+                duration_ms: started.elapsed().as_millis(),
+            }
+        }
+    };
+    // Drain both pipes on dedicated threads from the start. Without concurrent
+    // draining, a child that writes more than the OS pipe buffer (e.g. cargo
+    // build stderr) blocks on the full pipe and the deadline below would kill
+    // healthy builds.
+    let stdout_drain = spawn_pipe_drain(child.stdout.take());
+    let stderr_drain = spawn_pipe_drain(child.stderr.take());
+    let mut failure_note = None;
+    let exit_code = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.code(),
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    // std's kill() terminates only the direct child on
+                    // Windows; grandchildren (e.g. rustc under a killed
+                    // cargo) may linger. Acceptable: the harness still
+                    // records the failure and proceeds.
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    failure_note = Some(format!(
+                        "[replay_qa] timed out after {}s and was killed",
+                        timeout.as_secs()
+                    ));
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(err) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                failure_note = Some(format!(
+                    "[replay_qa] wait on {} failed: {err}",
+                    program.display()
+                ));
+                break None;
+            }
+        }
+    };
+    let stdout = join_pipe_drain(stdout_drain);
+    let mut stderr = join_pipe_drain(stderr_drain);
+    if let Some(note) = failure_note {
+        if !stderr.is_empty() && !stderr.ends_with('\n') {
+            stderr.push('\n');
+        }
+        stderr.push_str(&note);
     }
+    ProcessResult {
+        exit_code,
+        stdout,
+        stderr,
+        duration_ms: started.elapsed().as_millis(),
+    }
+}
+
+fn spawn_pipe_drain<R: std::io::Read + Send + 'static>(
+    pipe: Option<R>,
+) -> Option<std::thread::JoinHandle<Vec<u8>>> {
+    pipe.map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut buffer = Vec::new();
+            let _ = pipe.read_to_end(&mut buffer);
+            buffer
+        })
+    })
+}
+
+fn join_pipe_drain(handle: Option<std::thread::JoinHandle<Vec<u8>>>) -> String {
+    let bytes = handle
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn write_command_logs(
@@ -2299,7 +2484,7 @@ fn load_captured_rt_frame(
 }
 
 fn load_captured_rt_meta(bundle: &Path, pass: &str) -> Result<CapturedRtMeta, String> {
-    let bundle_json = resolve_map_frame_bundle_path(bundle, pass);
+    let bundle_json = resolve_map_frame_bundle_path(bundle, pass)?;
     let text = fs::read_to_string(&bundle_json)
         .map_err(|err| format!("read {}: {err}", bundle_json.display()))?;
     let post_pass = json_object_after(&text, "\"post_pass_output_merger\"")?;
@@ -2340,18 +2525,29 @@ fn load_captured_rt_meta(bundle: &Path, pass: &str) -> Result<CapturedRtMeta, St
     })
 }
 
-fn resolve_map_frame_bundle_path(path: &Path, pass: &str) -> PathBuf {
+fn resolve_map_frame_bundle_path(path: &Path, pass: &str) -> Result<PathBuf, String> {
     if !path.is_dir() {
-        return path.to_path_buf();
+        // A direct bundle file is authoritative regardless of the pass name:
+        // config-created gates default `pass` to the gate name, and the file
+        // choice is already explicit.
+        return Ok(path.to_path_buf());
     }
     let file = match pass {
         "terrain" | "terrain_active_pass" => "map_frame_bundle.json",
         "water" | "water_pass" => "map_frame_water_pass_bundle.json",
         "rivers" | "rivers_pass" => "map_frame_rivers_pass_bundle.json",
         "trees" | "trees_pass" => "map_frame_trees_pass_bundle.json",
-        _ => "map_frame_bundle.json",
+        // Fail closed: a typo'd or not-yet-mapped pass must never silently
+        // compare against the terrain bundle.
+        _ => {
+            return Err(format!(
+                "unknown frame parity pass {pass:?} for bundle directory {}; known: \
+                 terrain|terrain_active_pass|water|water_pass|rivers|rivers_pass|trees|trees_pass",
+                path.display()
+            ))
+        }
     };
-    path.join(file)
+    Ok(path.join(file))
 }
 
 fn frame_from_pitched_payload(meta: &CapturedRtMeta, raw: &[u8]) -> Result<FrameData, String> {
@@ -2503,7 +2699,6 @@ fn compare_frame_data(expected: &FrameData, actual: &FrameData) -> Result<FrameC
     }
     let pixel_count = expected.width as usize * expected.height as usize;
     let bpp = expected.bytes_per_pixel;
-    let mut deltas = Vec::with_capacity(pixel_count);
     let mut differing_pixels = 0usize;
     let mut max_channel_delta = 0.0f64;
     for index in 0..pixel_count {
@@ -2518,9 +2713,32 @@ fn compare_frame_data(expected: &FrameData, actual: &FrameData) -> Result<FrameC
         if delta.is_infinite() || delta > max_channel_delta {
             max_channel_delta = delta;
         }
-        deltas.push(delta);
     }
-    let heatmap_rgba = heatmap_rgba_from_deltas(&deltas, max_channel_delta);
+    // Second pass renders the heatmap directly against the now-known maximum
+    // so no per-pixel f64 buffer is retained (~64 MB transient for a 4K RT
+    // otherwise). pixel_channel_delta cannot newly fail here: the format was
+    // already accepted in the first pass.
+    let mut heatmap_rgba = Vec::with_capacity(pixel_count * 4);
+    for index in 0..pixel_count {
+        let start = index * bpp;
+        let end = start + bpp;
+        let delta = pixel_channel_delta(
+            expected.dxgi_format,
+            &expected.canonical_bytes[start..end],
+            &actual.canonical_bytes[start..end],
+        )?;
+        let intensity = if delta == 0.0 {
+            0
+        } else if delta.is_infinite() || max_channel_delta == 0.0 || max_channel_delta.is_infinite()
+        {
+            255
+        } else {
+            ((delta / max_channel_delta) * 255.0)
+                .ceil()
+                .clamp(1.0, 255.0) as u8
+        };
+        heatmap_rgba.extend_from_slice(&[intensity, intensity / 4, 0, 255]);
+    }
     let differing_percent = if pixel_count == 0 {
         0.0
     } else {
@@ -2572,21 +2790,6 @@ fn pixel_channel_delta(format: u32, expected: &[u8], actual: &[u8]) -> Result<f6
             .fold(0.0, f64::max)),
         other => Err(format!("format {other} has no delta calculator")),
     }
-}
-
-fn heatmap_rgba_from_deltas(deltas: &[f64], max_delta: f64) -> Vec<u8> {
-    let mut out = Vec::with_capacity(deltas.len() * 4);
-    for delta in deltas {
-        let intensity = if *delta == 0.0 {
-            0
-        } else if delta.is_infinite() || max_delta == 0.0 || max_delta.is_infinite() {
-            255
-        } else {
-            ((*delta / max_delta) * 255.0).ceil().clamp(1.0, 255.0) as u8
-        };
-        out.extend_from_slice(&[intensity, intensity / 4, 0, 255]);
-    }
-    out
 }
 
 fn half_to_f32(bits: u16) -> f32 {
@@ -2793,26 +2996,33 @@ fn json_string_value(text: &str, key: &str) -> Result<String, String> {
         return Err(format!("JSON key {key:?} is not a string"));
     }
     index += 1;
-    let mut out = String::new();
+    // Accumulate raw bytes, not chars: pushing each byte as a char would
+    // mojibake-decode multi-byte UTF-8 sequences (e.g. a payload filename
+    // under a non-ASCII directory) byte-per-byte as Latin-1. b'"' and b'\\'
+    // never occur inside a multi-byte sequence, so the scan stays correct.
+    let mut out = Vec::new();
     let bytes = text.as_bytes();
     while index < bytes.len() {
         match bytes[index] {
-            b'"' => return Ok(out),
+            b'"' => {
+                return String::from_utf8(out)
+                    .map_err(|_| format!("JSON key {key:?} string is not valid UTF-8"))
+            }
             b'\\' => {
                 index += 1;
                 let escaped = bytes
                     .get(index)
                     .copied()
                     .ok_or_else(|| format!("JSON key {key:?} has trailing escape"))?;
-                let ch = match escaped {
-                    b'"' => '"',
-                    b'\\' => '\\',
-                    b'/' => '/',
-                    b'b' => '\u{0008}',
-                    b'f' => '\u{000c}',
-                    b'n' => '\n',
-                    b'r' => '\r',
-                    b't' => '\t',
+                let byte = match escaped {
+                    b'"' => b'"',
+                    b'\\' => b'\\',
+                    b'/' => b'/',
+                    b'b' => 0x08,
+                    b'f' => 0x0c,
+                    b'n' => b'\n',
+                    b'r' => b'\r',
+                    b't' => b'\t',
                     other => {
                         return Err(format!(
                             "JSON key {key:?} has unsupported escape \\{}",
@@ -2820,9 +3030,9 @@ fn json_string_value(text: &str, key: &str) -> Result<String, String> {
                         ))
                     }
                 };
-                out.push(ch);
+                out.push(byte);
             }
-            byte => out.push(byte as char),
+            byte => out.push(byte),
         }
         index += 1;
     }
@@ -2974,16 +3184,39 @@ fn parse_pair(key: &str, value: &str) -> Result<(f64, f64), String> {
     Ok((parse_f64(key, x.trim())?, parse_f64(key, y.trim())?))
 }
 
-fn strip_quotes(value: &str) -> &str {
-    if value.len() >= 2 {
-        let bytes = value.as_bytes();
-        if (bytes[0] == b'"' && bytes[value.len() - 1] == b'"')
-            || (bytes[0] == b'\'' && bytes[value.len() - 1] == b'\'')
-        {
-            return &value[1..value.len() - 1];
+/// Extract the value part of a `key = value` config line. A quoted value
+/// keeps every character between the quotes (including '#', a legal Windows
+/// filename character) and tolerates a trailing `# comment`; anything else
+/// after the closing quote is a typed parse error, as is a missing closing
+/// quote. An unquoted value is truncated only at the first '#' that is
+/// preceded by whitespace, so paths like `C:\caps\run#2` survive intact.
+fn config_value(raw_value: &str, line_number: usize) -> Result<&str, String> {
+    let trimmed = raw_value.trim();
+    if let Some(quote @ ('"' | '\'')) = trimmed.chars().next() {
+        let closing = trimmed[1..].find(quote).ok_or_else(|| {
+            format!("config line {line_number} has an unterminated {quote} quote")
+        })?;
+        let value = &trimmed[1..1 + closing];
+        let remainder = trimmed[1 + closing + 1..].trim_start();
+        if !remainder.is_empty() && !remainder.starts_with('#') {
+            return Err(format!(
+                "config line {line_number} has trailing text {remainder:?} after the closing quote"
+            ));
         }
+        return Ok(value);
     }
-    value
+    let uncommented = match inline_comment_start(raw_value) {
+        Some(index) => &raw_value[..index],
+        None => raw_value,
+    };
+    Ok(uncommented.trim())
+}
+
+/// First '#' preceded by whitespace — the only place an unquoted config value
+/// may carry an inline comment.
+fn inline_comment_start(value: &str) -> Option<usize> {
+    let bytes = value.as_bytes();
+    (1..bytes.len()).find(|&index| bytes[index] == b'#' && matches!(bytes[index - 1], b' ' | b'\t'))
 }
 
 fn json_string(value: &str) -> String {
@@ -3029,6 +3262,18 @@ fn first_nonempty_line(text: &str) -> Option<&str> {
     text.lines().find(|line| !line.trim().is_empty())
 }
 
+/// Failure attribution reads the LAST non-empty line: replay_app (and cargo)
+/// print informational/warning lines first and the fatal error last, so the
+/// first line is typically an unrelated info line. Rust's
+/// "note: run with RUST_BACKTRACE=1" panic trailer is skipped so a child
+/// panic still attributes to the panic message.
+fn last_nonempty_line(text: &str) -> Option<&str> {
+    text.lines().rev().find(|line| {
+        let trimmed = line.trim();
+        !trimmed.is_empty() && !trimmed.starts_with("note:")
+    })
+}
+
 fn exit_code_string(exit_code: Option<i32>) -> String {
     exit_code
         .map(|code| code.to_string())
@@ -3048,11 +3293,6 @@ fn trim_float(value: f64) -> String {
         text.push('0');
     }
     text
-}
-
-#[allow(dead_code)]
-fn _os_string_for_tests(value: &str) -> OsString {
-    OsString::from(value)
 }
 
 #[cfg(test)]
@@ -3318,6 +3558,305 @@ parser design notes:
         assert_eq!(&bytes[12..16], b"IHDR");
         assert_eq!(u32::from_be_bytes(bytes[16..20].try_into().unwrap()), 2);
         assert_eq!(u32::from_be_bytes(bytes[20..24].try_into().unwrap()), 1);
+    }
+
+    #[test]
+    fn bmp_stats_rejects_overflowing_dimensions_with_typed_error() {
+        let mut bmp = bmp32(1, 1, &[(1, 2, 3)]);
+        bmp[18..22].copy_from_slice(&i32::MAX.to_le_bytes());
+        bmp[22..26].copy_from_slice(&i32::MAX.to_le_bytes());
+        let err = compute_bmp_stats(&bmp).expect_err("overflowing dimensions must not panic");
+        assert!(err.contains("overflow"), "{err}");
+    }
+
+    #[test]
+    fn config_values_keep_hash_in_unquoted_paths() {
+        let mut config = ReplayQaConfig::default();
+        config
+            .apply_config_text("capture_dir = C:\\caps\\run#2\n")
+            .expect("hash path");
+        assert_eq!(config.capture_dir, PathBuf::from(r"C:\caps\run#2"));
+        config
+            .apply_config_text("bundle_dir = C:\\bundles\\main # nightly bundle\n")
+            .expect("inline comment");
+        assert_eq!(config.bundle_dir, PathBuf::from(r"C:\bundles\main"));
+    }
+
+    #[test]
+    fn config_quoted_values_keep_hash_and_reject_malformed_quoting() {
+        let mut config = ReplayQaConfig::default();
+        config
+            .apply_config_text("capture_dir = \"C:\\caps\\run #2\" # commentary\n")
+            .expect("quoted value with trailing comment");
+        assert_eq!(config.capture_dir, PathBuf::from(r"C:\caps\run #2"));
+        let err = config
+            .apply_config_text("capture_dir = \"C:\\caps\\open\n")
+            .expect_err("unterminated quote");
+        assert!(err.contains("unterminated"), "{err}");
+        let err = config
+            .apply_config_text("capture_dir = \"C:\\caps\" trailing\n")
+            .expect_err("trailing text after quote");
+        assert!(err.contains("trailing text"), "{err}");
+    }
+
+    #[test]
+    fn config_full_line_comments_and_blank_lines_are_ignored() {
+        let mut config = ReplayQaConfig::default();
+        config
+            .apply_config_text("# includes an = sign\n\n  # another = comment\nout_dir = out\n")
+            .expect("comment lines");
+        assert_eq!(config.out_dir, PathBuf::from("out"));
+    }
+
+    #[test]
+    fn config_errors_are_typed_for_missing_assignment_unknown_key_and_bad_bool() {
+        let mut config = ReplayQaConfig::default();
+        let err = config
+            .apply_config_text("no assignment here\n")
+            .expect_err("missing '='");
+        assert!(err.contains("missing '='"), "{err}");
+        let err = config
+            .apply_config_text("unknown_key = 1\n")
+            .expect_err("unknown key");
+        assert!(err.contains("unsupported config key"), "{err}");
+        let err = config
+            .apply_config_text("water.expected_fail = perhaps\n")
+            .expect_err("bad bool");
+        assert!(err.contains("invalid boolean"), "{err}");
+    }
+
+    #[test]
+    fn config_round_trips_scalar_families() {
+        let mut config = ReplayQaConfig::default();
+        config
+            .apply_config_text(
+                "water.expected_fail = true\n\
+                 matrix.hours = 0.25, 0.75, 1\n\
+                 threshold.full_map.max_pure_black_percent = 12.5\n\
+                 threshold.close_up.min_distinct_colors = 4\n\
+                 process.timeout_secs = 60\n",
+            )
+            .expect("scalar families");
+        assert!(config.water_expected_fail);
+        assert_eq!(config.matrix.hours, vec![0.25, 0.75, 1.0]);
+        assert_eq!(config.thresholds.full_map.max_pure_black_percent, 12.5);
+        assert_eq!(config.thresholds.close_up.min_distinct_colors, 4);
+        assert_eq!(config.process_timeout, Duration::from_secs(60));
+        let err = config
+            .apply_config_text("threshold.full_map.min_luma_stddev = inf\n")
+            .expect_err("non-finite threshold");
+        assert!(err.contains("finite"), "{err}");
+        let err = config
+            .apply_config_text("process.timeout_secs = 0\n")
+            .expect_err("zero timeout");
+        assert!(err.contains("positive"), "{err}");
+    }
+
+    #[test]
+    fn config_camera_overrides_and_errors() {
+        let mut config = ReplayQaConfig::default();
+        config
+            .apply_config_text(
+                "camera.europe_close.zoom = 0.5\ncamera.europe_close.center = 100, 200\n",
+            )
+            .expect("camera overrides");
+        let camera = config
+            .matrix
+            .cameras
+            .iter()
+            .find(|camera| camera.config_name == "europe_close")
+            .expect("europe_close camera");
+        assert_eq!(camera.zoom, Some(0.5));
+        assert_eq!(camera.center, Some((100.0, 200.0)));
+        let err = config
+            .apply_config_text("camera.mars.zoom = 1\n")
+            .expect_err("unknown camera");
+        assert!(err.contains("unknown camera"), "{err}");
+        let err = config
+            .apply_config_text("camera.europe_close.tilt = 1\n")
+            .expect_err("unsupported field");
+        assert!(err.contains("unsupported camera field"), "{err}");
+    }
+
+    #[test]
+    fn config_frame_parity_auto_creates_gates_and_clear_is_order_sensitive() {
+        let mut config = ReplayQaConfig::default();
+        config
+            .apply_config_text(
+                "frame_parity.clear = true\n\
+                 frame_parity.rivers.compare_map_frame_bundle = C:\\caps\\dir\n\
+                 frame_parity.rivers.hard = false\n",
+            )
+            .expect("frame parity config");
+        assert_eq!(config.frame_parity_gates.len(), 1);
+        let gate = &config.frame_parity_gates[0];
+        assert_eq!(gate.name, "rivers");
+        assert_eq!(gate.pass, "rivers");
+        assert_eq!(gate.gate, "frame parity rivers captured RT");
+        assert_eq!(gate.compare_map_frame_bundle, PathBuf::from(r"C:\caps\dir"));
+        assert!(!gate.hard);
+        assert!(gate.enabled);
+        // clear AFTER the re-adds wipes them again: application is line-ordered.
+        config
+            .apply_config_text("frame_parity.clear = true\n")
+            .expect("clear");
+        assert!(config.frame_parity_gates.is_empty());
+    }
+
+    #[test]
+    fn frame_bundle_path_resolution_maps_known_passes_and_refuses_unknown() {
+        let dir = std::env::temp_dir();
+        for (pass, file) in [
+            ("terrain", "map_frame_bundle.json"),
+            ("terrain_active_pass", "map_frame_bundle.json"),
+            ("water", "map_frame_water_pass_bundle.json"),
+            ("water_pass", "map_frame_water_pass_bundle.json"),
+            ("rivers", "map_frame_rivers_pass_bundle.json"),
+            ("rivers_pass", "map_frame_rivers_pass_bundle.json"),
+            ("trees", "map_frame_trees_pass_bundle.json"),
+            ("trees_pass", "map_frame_trees_pass_bundle.json"),
+        ] {
+            let resolved = resolve_map_frame_bundle_path(&dir, pass).expect("known pass");
+            assert_eq!(resolved, dir.join(file));
+        }
+        let err = resolve_map_frame_bundle_path(&dir, "watter").expect_err("unknown pass");
+        assert!(err.contains("watter"), "{err}");
+        // A direct (non-directory) bundle path is authoritative; the pass name
+        // is not validated because the file choice is already explicit.
+        let file = dir.join("direct_bundle_that_does_not_exist.json");
+        assert_eq!(
+            resolve_map_frame_bundle_path(&file, "watter").expect("direct file"),
+            file
+        );
+    }
+
+    #[test]
+    fn json_mini_parser_extracts_nested_values_and_reports_typed_errors() {
+        let text = r#"{"outer": {"desc": {"width": 4, "height": 2}, "items": [{"name": "a\"b\\c", "count": 7}], "path": "unïcode.bin"}}"#;
+        let outer = json_object_after(text, "\"outer\"").expect("outer object");
+        let desc = json_object_after(outer, "\"desc\"").expect("desc object");
+        assert_eq!(json_u64_value(desc, "width").expect("width"), 4);
+        assert_eq!(json_u64_value(desc, "height").expect("height"), 2);
+        let items = json_array_after(outer, "\"items\"").expect("items array");
+        let item = json_first_object(items).expect("first item");
+        assert_eq!(json_string_value(item, "name").expect("name"), "a\"b\\c");
+        assert_eq!(json_u64_value(item, "count").expect("count"), 7);
+        // Multi-byte UTF-8 must round-trip exactly, not be decoded byte-per-byte.
+        assert_eq!(
+            json_string_value(outer, "path").expect("path"),
+            "unïcode.bin"
+        );
+        assert!(json_object_after(text, "\"absent\"").is_err());
+        assert!(json_u64_value(outer, "path").is_err());
+        assert!(json_string_value(desc, "width").is_err());
+        assert!(json_first_object("[]").is_err());
+        assert!(balanced_json_end(b"{\"open\": [1, 2}", 0).is_err());
+        assert!(balanced_json_end(b"{\"never\": 1", 0).is_err());
+    }
+
+    #[test]
+    fn captured_rt_meta_parses_synthetic_bundle_and_refuses_wrong_payload_format() {
+        let dir = std::env::temp_dir().join(format!(
+            "replay_qa_bundle_meta_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).expect("create temp bundle dir");
+        let bundle_json = dir.join("map_frame_bundle.json");
+        let text = r#"{
+  "capture_moment": "active_pass",
+  "post_pass_output_merger": {
+    "render_targets": [
+      {
+        "desc": {"width": 2, "height": 2, "format": 87},
+        "post_pass_payload": {
+          "file": "frame.d3d11",
+          "byte_len": 24,
+          "fnv1a64": "00112233aabbccdd",
+          "payload_format": "d3d11_mapped_subresources",
+          "subresources": [
+            {"file_offset": 0, "byte_len": 24, "row_pitch": 12, "depth_pitch": 24, "width": 2, "height": 2}
+          ]
+        }
+      }
+    ]
+  }
+}"#;
+        fs::write(&bundle_json, text).expect("write bundle json");
+        let meta = load_captured_rt_meta(&dir, "terrain").expect("parse synthetic bundle");
+        assert_eq!(meta.bundle_json, bundle_json);
+        assert_eq!(meta.width, 2);
+        assert_eq!(meta.height, 2);
+        assert_eq!(meta.dxgi_format, 87);
+        assert_eq!(meta.payload_file, "frame.d3d11");
+        assert_eq!(meta.payload_byte_len, 24);
+        assert_eq!(meta.payload_fnv1a64, "00112233aabbccdd");
+        assert_eq!(meta.file_offset, 0);
+        assert_eq!(meta.subresource_byte_len, 24);
+        assert_eq!(meta.row_pitch, 12);
+        assert_eq!(meta.depth_pitch, 24);
+        assert_eq!(meta.subresource_width, 2);
+        assert_eq!(meta.subresource_height, 2);
+
+        let wrong = text.replace("d3d11_mapped_subresources", "raw_rows");
+        fs::write(&bundle_json, wrong).expect("rewrite bundle json");
+        let err = load_captured_rt_meta(&dir, "terrain").expect_err("payload format refusal");
+        assert!(err.contains("payload_format"), "{err}");
+
+        let err = load_captured_rt_meta(&dir, "watter").expect_err("unknown pass refusal");
+        assert!(err.contains("watter"), "{err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failure_detail_uses_last_error_line_and_skips_backtrace_note() {
+        let text = "replay_app: POV picker available\n\
+                    replay_app: fatal: recording rejected\n\
+                    note: run with RUST_BACKTRACE=1\n\n";
+        assert_eq!(
+            last_nonempty_line(text),
+            Some("replay_app: fatal: recording rejected")
+        );
+        assert_eq!(
+            first_nonempty_line(text),
+            Some("replay_app: POV picker available")
+        );
+        assert_eq!(last_nonempty_line("\n \n"), None);
+    }
+
+    #[test]
+    fn recording_dump_omission_lines_are_surfaced_with_counts() {
+        let first = RecordingDumpObservation {
+            hour: 0,
+            dump_path: Path::new("h0.bmp"),
+            dump_bytes: Some(b"first bmp bytes"),
+            stdout: "wrote frame dump: h0.bmp (recording synthetic_demo, hour 0, 1408x512, 42 controlled states, overlay text on)\n",
+            stderr: "replay_app: production dump feature omitted [SELECTED_PRESENT_UI] authenticated selected-Present UI/M02 carrier is absent\n",
+            exit_code: Some(0),
+        };
+        let second = RecordingDumpObservation {
+            hour: 500,
+            dump_path: Path::new("h500.bmp"),
+            dump_bytes: Some(b"second bmp bytes"),
+            stdout: "wrote frame dump: h500.bmp (recording synthetic_demo, hour 500, 1408x512, 42 controlled states, overlay text on)\n",
+            stderr: "",
+            exit_code: Some(0),
+        };
+        let evaluation = evaluate_recording_scrub_assertions(&first, &second);
+        assert!(evaluation.failures.is_empty(), "{:?}", evaluation.failures);
+        assert_eq!(evaluation.first_omission_count, 1);
+        assert_eq!(evaluation.second_omission_count, 0);
+        assert!(
+            evaluation
+                .proof_lines
+                .iter()
+                .any(|line| line.contains("omitted [SELECTED_PRESENT_UI]")),
+            "{:?}",
+            evaluation.proof_lines
+        );
     }
 
     fn bmp32(width: u32, height: u32, pixels_top_down: &[(u8, u8, u8)]) -> Vec<u8> {

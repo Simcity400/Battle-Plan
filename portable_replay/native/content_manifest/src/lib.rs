@@ -9,9 +9,11 @@ pub mod hud_emitter;
 pub mod hud_role;
 pub mod paradox_text;
 
+use crate::hud_role::validate_sha256;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use unicode_normalization::UnicodeNormalization;
 
 pub const SCHEMA: &str = "hoi4.portable-content-manifest.v1";
 
@@ -307,9 +309,18 @@ impl ContentManifest {
     }
 
     pub fn computed_digest(&self) -> Result<String, String> {
+        self.validate_without_digest()?;
+        self.digest_of_validated()
+    }
+
+    /// Digest body shared by [`Self::computed_digest`] and [`Self::validate`].
+    /// Callers must have run [`Self::validate_without_digest`] already; the
+    /// bytes must remain exactly the derived `Serialize` output with the
+    /// digest field nulled, or every existing signed recording would fail its
+    /// digest gate.
+    fn digest_of_validated(&self) -> Result<String, String> {
         let mut unsigned = self.clone();
         unsigned.manifest_digest_sha256 = None;
-        unsigned.validate_without_digest()?;
         let bytes = serde_json::to_vec(&unsigned).map_err(|err| err.to_string())?;
         Ok(format!("{:x}", Sha256::digest(bytes)))
     }
@@ -324,7 +335,7 @@ impl ContentManifest {
         self.validate_without_digest()?;
         if let Some(declared) = &self.manifest_digest_sha256 {
             validate_sha256(declared, "content manifest digest")?;
-            let computed = self.computed_digest()?;
+            let computed = self.digest_of_validated()?;
             if declared != &computed {
                 return Err(format!(
                     "content manifest digest mismatch: declared {declared}, computed {computed}"
@@ -576,12 +587,26 @@ impl ContentManifest {
             }
         }
 
-        let local_layers: BTreeMap<_, _> = playback
-            .layers
-            .iter()
-            .map(|layer| ((layer.recorded_ordinal, layer.layer_id.as_str()), layer))
-            .collect();
-        let mut prior_local_required = None;
+        // Duplicate inventory rows are typed refusals, never silently
+        // canonicalized: a last-wins collapse would let a mismatching row hide
+        // behind a matching one. The first row is kept so the remaining
+        // comparisons still run deterministically.
+        let mut local_layers = BTreeMap::new();
+        for layer in &playback.layers {
+            let key = (layer.recorded_ordinal, layer.layer_id.as_str());
+            if local_layers.contains_key(&key) {
+                issues.push(issue(
+                    ContentIssueCode::InvalidManifest,
+                    "playback inventory",
+                    format!(
+                        "duplicate layer row: ordinal {} id {}",
+                        layer.recorded_ordinal, layer.layer_id
+                    ),
+                ));
+                continue;
+            }
+            local_layers.insert(key, layer);
+        }
         for expected in self
             .ordered_layers
             .iter()
@@ -612,14 +637,12 @@ impl ContentManifest {
                 }
                 continue;
             };
-            if prior_local_required.is_some_and(|ordinal| actual.recorded_ordinal <= ordinal) {
-                issues.push(issue(
-                    ContentIssueCode::LayerOrderMismatch,
-                    subject.clone(),
-                    "required layer order is not strictly increasing".into(),
-                ));
-            }
-            prior_local_required = Some(actual.recorded_ordinal);
+            // Ordering needs no separate check here: validate() (run at the
+            // top of validate_playback) enforces strictly increasing manifest
+            // ordinals, and the (ordinal, layer_id) lookup key pins
+            // actual.recorded_ordinal to the manifest ordinal. A playback
+            // layer that does not preserve its exact recorded ordinal is
+            // already refused via the LayerOrderMismatch branch above.
             if actual.layer_kind != expected.layer_kind
                 || actual.storage_kind != expected.storage_kind
                 || actual.descriptor_sha256 != expected.descriptor_sha256
@@ -631,13 +654,25 @@ impl ContentManifest {
                     "layer kind/storage/descriptor/archive identity differs".into(),
                 ));
             }
-            if normalized_paths(&actual.replace_paths) != normalized_paths(&expected.replace_paths)
-            {
-                issues.push(issue(
+            // Both sides normalize with error propagation: an un-normalizable
+            // playback replace_path is a typed refusal, never silently dropped
+            // from the comparison. (The manifest side is guaranteed valid by
+            // self.validate() above, but is propagated rather than unwrapped.)
+            match (
+                normalized_path_set(&actual.replace_paths),
+                normalized_path_set(&expected.replace_paths),
+            ) {
+                (Ok(actual_paths), Ok(expected_paths)) if actual_paths == expected_paths => {}
+                (Ok(_), Ok(_)) => issues.push(issue(
                     ContentIssueCode::ReplacePathMismatch,
                     subject,
                     "replace_path declarations differ".into(),
-                ));
+                )),
+                (Err(message), _) | (_, Err(message)) => issues.push(issue(
+                    ContentIssueCode::ReplacePathMismatch,
+                    subject,
+                    message,
+                )),
             }
         }
 
@@ -711,11 +746,18 @@ impl ContentManifest {
             )),
         }
 
-        let local_dlcs: BTreeMap<_, _> = playback
-            .dlc_selection
-            .iter()
-            .map(|dlc| (dlc.dlc_id.as_str(), dlc.enabled))
-            .collect();
+        let mut local_dlcs = BTreeMap::new();
+        for dlc in &playback.dlc_selection {
+            if local_dlcs.contains_key(dlc.dlc_id.as_str()) {
+                issues.push(issue(
+                    ContentIssueCode::InvalidManifest,
+                    "playback inventory",
+                    format!("duplicate DLC row: {}", dlc.dlc_id),
+                ));
+                continue;
+            }
+            local_dlcs.insert(dlc.dlc_id.as_str(), dlc.enabled);
+        }
         for expected in self
             .dlc_selection
             .iter()
@@ -730,11 +772,19 @@ impl ContentManifest {
             }
         }
 
-        let resolved: BTreeMap<_, _> = playback
-            .resolved_content
-            .iter()
-            .map(|content| (content.normalized_game_relative_path.as_str(), content))
-            .collect();
+        let mut resolved = BTreeMap::new();
+        for content in &playback.resolved_content {
+            let key = content.normalized_game_relative_path.as_str();
+            if resolved.contains_key(key) {
+                issues.push(issue(
+                    ContentIssueCode::InvalidManifest,
+                    "playback inventory",
+                    format!("duplicate resolved path row: {key}"),
+                ));
+                continue;
+            }
+            resolved.insert(key, content);
+        }
         let mut verified = 0usize;
         for required in &self.required_content {
             let expected = &required.content;
@@ -863,9 +913,8 @@ pub fn compute_selection_sha256(
     layers.sort_by_key(|layer| layer.ordinal);
     let mut layer_keys = BTreeSet::new();
     for layer in &mut layers {
-        if layer.layer_id.trim().is_empty()
-            || !layer_keys.insert((layer.ordinal, layer.layer_id.clone()))
-        {
+        validate_portable_layer_id(&layer.layer_id)?;
+        if !layer_keys.insert((layer.ordinal, layer.layer_id.clone())) {
             return Err("selection layers have a blank/duplicate identity".into());
         }
         if let Some(hash) = &layer.descriptor_sha256 {
@@ -908,7 +957,12 @@ pub fn compute_selection_sha256(
 }
 
 pub fn normalize_game_relative_path(path: &str) -> Result<String, String> {
-    let normalized = path.trim().replace('\\', "/").to_ascii_lowercase();
+    let normalized = path
+        .trim()
+        .replace('\\', "/")
+        .nfc()
+        .collect::<String>()
+        .to_lowercase();
     if normalized.is_empty()
         || normalized.starts_with('/')
         || normalized.contains(':')
@@ -979,7 +1033,8 @@ fn validate_source_profile(profile: &SourceProfileIdentity) -> Result<(), String
 }
 
 fn validate_layer(layer: &RecordedContentLayer) -> Result<(), String> {
-    if layer.layer_id.trim().is_empty() || layer.display_name.trim().is_empty() {
+    validate_portable_layer_id(&layer.layer_id)?;
+    if layer.display_name.trim().is_empty() {
         return Err("content layer id/display name is blank".into());
     }
     if let Some(hash) = &layer.descriptor_sha256 {
@@ -995,15 +1050,15 @@ fn validate_layer(layer: &RecordedContentLayer) -> Result<(), String> {
             layer.layer_id
         ));
     }
-    let normalized = normalized_paths(&layer.replace_paths);
+    // Normalize (with per-path error propagation) BEFORE the set-length
+    // check, so an invalid path reports its accurate error and a length
+    // shrink genuinely means duplicate-after-normalization.
+    let normalized = normalized_path_set(&layer.replace_paths)?;
     if normalized.len() != layer.replace_paths.len() {
         return Err(format!(
             "layer {} has duplicate replace_path",
             layer.layer_id
         ));
-    }
-    for path in &layer.replace_paths {
-        normalize_game_relative_path(path)?;
     }
     Ok(())
 }
@@ -1022,28 +1077,46 @@ fn validate_used_content_key(content: &UsedContentKey) -> Result<(), String> {
             content.normalized_game_relative_path
         ));
     }
-    if content.layer_id.trim().is_empty() {
-        return Err("content layer id is blank".into());
+    validate_portable_layer_id(&content.layer_id)?;
+    Ok(())
+}
+
+/// Layer identities are portable semantic labels, never physical mount paths.
+/// A colon may be part of a legacy semantic identity (for example
+/// `base:fixture-runtime`), so reject actual absolute/traversal path grammars
+/// without narrowing that existing namespace.
+fn validate_portable_layer_id(layer_id: &str) -> Result<(), String> {
+    let value = layer_id.trim();
+    let slash = value.replace('\\', "/");
+    let drive_prefix = slash.as_bytes().get(1) == Some(&b':')
+        && slash
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic);
+    if value.is_empty()
+        || value != layer_id
+        || value.chars().any(char::is_control)
+        || slash.starts_with('/')
+        || slash.starts_with("//")
+        || drive_prefix
+        || slash
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(format!(
+            "content layer id is unsafe/non-portable: {layer_id:?}"
+        ));
     }
     Ok(())
 }
 
-fn normalized_paths(paths: &[String]) -> BTreeSet<String> {
+/// Normalize a replace_path list into a set, propagating the first
+/// normalization error instead of silently dropping un-normalizable entries.
+fn normalized_path_set(paths: &[String]) -> Result<BTreeSet<String>, String> {
     paths
         .iter()
-        .filter_map(|path| normalize_game_relative_path(path).ok())
+        .map(|path| normalize_game_relative_path(path))
         .collect()
-}
-
-fn validate_sha256(hash: &str, field: &str) -> Result<(), String> {
-    if hash.len() != 64
-        || !hash
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    {
-        return Err(format!("{field} SHA-256 is not lowercase hexadecimal"));
-    }
-    Ok(())
 }
 
 fn compare_scalar(
@@ -1307,6 +1380,60 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_playback_inventory_rows_fail_closed() {
+        let manifest = manifest();
+
+        let mut dup_resolved = inventory(&manifest);
+        let mut shadowing = dup_resolved.resolved_content[0].clone();
+        shadowing.payload_sha256 = h('e');
+        dup_resolved.resolved_content.insert(0, shadowing);
+        let report = manifest.validate_playback(&dup_resolved);
+        assert!(!report.compatible);
+        assert!(report.issues.iter().any(|issue| {
+            issue.code == ContentIssueCode::InvalidManifest
+                && issue.message.contains("duplicate resolved path row")
+        }));
+
+        let mut dup_layer = inventory(&manifest);
+        let repeated = dup_layer.layers[0].clone();
+        dup_layer.layers.push(repeated);
+        let report = manifest.validate_playback(&dup_layer);
+        assert!(!report.compatible);
+        assert!(report.issues.iter().any(|issue| {
+            issue.code == ContentIssueCode::InvalidManifest
+                && issue.message.contains("duplicate layer row")
+        }));
+
+        let mut dup_dlc = inventory(&manifest);
+        let repeated = dup_dlc.dlc_selection[0].clone();
+        dup_dlc.dlc_selection.push(repeated);
+        let report = manifest.validate_playback(&dup_dlc);
+        assert!(!report.compatible);
+        assert!(report.issues.iter().any(|issue| {
+            issue.code == ContentIssueCode::InvalidManifest
+                && issue.message.contains("duplicate DLC row")
+        }));
+    }
+
+    #[test]
+    fn unnormalizable_playback_replace_path_fails_closed() {
+        let manifest = manifest();
+        let mut inventory = inventory(&manifest);
+        inventory
+            .layers
+            .iter_mut()
+            .find(|layer| layer.layer_id == "mod-override")
+            .unwrap()
+            .replace_paths = vec!["../escape".into(), "gfx/entities".into()];
+        let report = manifest.validate_playback(&inventory);
+        assert!(!report.compatible);
+        assert!(report.issues.iter().any(|issue| {
+            issue.code == ContentIssueCode::ReplacePathMismatch
+                && issue.message.contains("unsafe/non-canonical")
+        }));
+    }
+
+    #[test]
     fn only_used_dlc_and_mod_layers_are_required() {
         let manifest = manifest();
         let mut inventory = inventory(&manifest);
@@ -1352,14 +1479,38 @@ mod tests {
 
     #[test]
     fn digest_and_normalized_paths_are_fail_closed() {
-        let mut manifest = manifest();
-        manifest.manifest_digest_sha256 = Some(h('0'));
-        assert!(manifest.validate().unwrap_err().contains("digest mismatch"));
+        let mut bad_digest = manifest();
+        bad_digest.manifest_digest_sha256 = Some(h('0'));
+        assert!(bad_digest
+            .validate()
+            .unwrap_err()
+            .contains("digest mismatch"));
         assert_eq!(
             normalize_game_relative_path(r"GFX\FX\Particle.SHADER").unwrap(),
             "gfx/fx/particle.shader"
         );
+        assert_eq!(
+            normalize_game_relative_path("gfx/Cafe\u{301}.asset").unwrap(),
+            "gfx/caf\u{e9}.asset"
+        );
         assert!(normalize_game_relative_path("../escape").is_err());
         assert!(normalize_game_relative_path("C:/absolute").is_err());
+
+        let mut leaked_layer = manifest();
+        leaked_layer.manifest_digest_sha256 = None;
+        leaked_layer.ordered_layers[0].layer_id = r"C:\\Games\\HOI4".into();
+        assert!(leaked_layer
+            .validate()
+            .unwrap_err()
+            .contains("unsafe/non-portable"));
+
+        let mut leaked_content_layer = manifest();
+        leaked_content_layer.manifest_digest_sha256 = None;
+        leaked_content_layer.required_content[0].content.layer_id =
+            r"\\server\\profile\\mod".into();
+        assert!(leaked_content_layer
+            .validate()
+            .unwrap_err()
+            .contains("unsafe/non-portable"));
     }
 }

@@ -258,13 +258,28 @@ const D3D11_TEXTURE2D_DESC_FIELD_NAMES: [&str; 11] = [
     "MiscFlags",
 ];
 
-fn fnv1a64_bytes(bytes: &[u8]) -> String {
+pub(crate) fn fnv1a64_bytes(bytes: &[u8]) -> String {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in bytes {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
     format!("{hash:016x}")
+}
+
+#[cfg(windows)]
+pub(crate) fn wide_null(value: &str) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    std::ffi::OsStr::new(value)
+        .encode_wide()
+        .chain([0])
+        .collect()
+}
+
+#[cfg(windows)]
+pub(crate) fn wide_null_path(value: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    value.as_os_str().encode_wide().chain([0]).collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2473,10 +2488,10 @@ mod injected {
     use super::*;
     use core::ffi::c_void;
     use core::ptr;
-    use std::ffi::{OsStr, OsString};
+    use std::ffi::OsString;
     use std::fs::OpenOptions;
     use std::io::Write;
-    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use std::os::windows::ffi::OsStringExt;
     use std::path::PathBuf;
 
     const DLL_PROCESS_DETACH: u32 = 0;
@@ -2628,10 +2643,6 @@ mod injected {
         }
         buf.truncate(len);
         Some(PathBuf::from(OsString::from_wide(&buf)))
-    }
-
-    fn wide_null(value: &str) -> Vec<u16> {
-        OsStr::new(value).encode_wide().chain([0]).collect()
     }
 }
 

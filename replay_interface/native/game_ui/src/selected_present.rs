@@ -36,6 +36,13 @@ pub enum PreparedUiPassOperation {
     },
     InterpretedPaint {
         command: HudCommand,
+        /// The preflight-rendered full-frame layer for this command. Kept so
+        /// execution uploads the already-proven pixels instead of repeating
+        /// the decode + rasterization. Memory note: every interpreted layer
+        /// (width*height*4 bytes) in the pass is held simultaneously for the
+        /// lifetime of the prepared pass — acceptable at HUD-scale command
+        /// counts.
+        image: RgbaImage,
     },
 }
 
@@ -45,7 +52,9 @@ impl PreparedUiPassOperation {
             Self::M02 {
                 ui_pass_ordinal, ..
             } => *ui_pass_ordinal,
-            Self::ExactPipeline { command } | Self::InterpretedPaint { command } => command.ordinal,
+            Self::ExactPipeline { command } | Self::InterpretedPaint { command, .. } => {
+                command.ordinal
+            }
         }
     }
 }
@@ -132,8 +141,10 @@ pub fn prepare_selected_present_ui_pass(
                 }
                 HudCommandExecution::InterpretedPaint { paint } => {
                     // Preflight the complete interpreter and every referenced
-                    // VFS payload before the caller writes the first UI pixel.
-                    let _ = render_interpreted_paint(
+                    // VFS payload before the caller writes the first UI pixel,
+                    // keeping the rendered layer so execution does not repeat
+                    // the decode + rasterization.
+                    let image = render_interpreted_paint(
                         resolver,
                         registry,
                         runtime_text,
@@ -145,6 +156,7 @@ pub fn prepare_selected_present_ui_pass(
                     )?;
                     PreparedUiPassOperation::InterpretedPaint {
                         command: command.clone(),
+                        image,
                     }
                 }
             },
@@ -165,34 +177,6 @@ pub fn prepare_selected_present_ui_pass(
         height,
         operations,
     })
-}
-
-/// Materialize one already-preflighted interpreted command at its exact
-/// selected-Present ordinal. Callers must not cache/reorder it across passes.
-pub fn execute_interpreted_paint(
-    resolver: &AssetResolver,
-    registry: &SpriteRegistry,
-    runtime_text: Option<&RuntimeTextCatalog>,
-    playback_context: SelectedPresentPlaybackContext<'_>,
-    command: &HudCommand,
-    width: u32,
-    height: u32,
-) -> Result<RgbaImage> {
-    let HudCommandExecution::InterpretedPaint { paint } = &command.execution else {
-        return Err(GameUiError::parse(
-            "selected-Present command is not an interpreted paint",
-        ));
-    };
-    render_interpreted_paint(
-        resolver,
-        registry,
-        runtime_text,
-        playback_context,
-        command,
-        paint,
-        width,
-        height,
-    )
 }
 
 fn validate_m02_interleave(pass: &AuthenticatedUiPass, m02: Option<&M02CombatFrame>) -> Result<()> {
@@ -374,9 +358,11 @@ fn render_text(
                 .map(|value| value as i32)
                 .unwrap_or(rect.right_i32 - rect.left_i32);
             let text = if *wrap {
-                wrap_text_exact(&record.final_text_utf8, layout_width, |candidate| {
-                    font.measure_text(candidate)
-                })
+                crate::gui_scene_util::wrap_text_greedy(
+                    &record.final_text_utf8,
+                    layout_width,
+                    |candidate| font.measure_text(candidate),
+                )
             } else {
                 record.final_text_utf8.clone()
             };
@@ -669,34 +655,6 @@ fn offset_rect(
 
 fn apply_rect_clip(image: &mut RgbaImage, rect: replay_core::UiPassRect) {
     apply_clip(image, UiPassClip::Enabled { rect });
-}
-
-fn wrap_text_exact<F>(text: &str, max_width: i32, measure: F) -> String
-where
-    F: Fn(&str) -> i32,
-{
-    if max_width <= 0 {
-        return text.to_string();
-    }
-    let mut out = Vec::new();
-    for source_line in text.lines() {
-        let mut current = String::new();
-        for word in source_line.split_whitespace() {
-            let candidate = if current.is_empty() {
-                word.to_string()
-            } else {
-                format!("{current} {word}")
-            };
-            if !current.is_empty() && measure(&candidate) > max_width {
-                out.push(current);
-                current = word.to_string();
-            } else {
-                current = candidate;
-            }
-        }
-        out.push(current);
-    }
-    out.join("\n")
 }
 
 fn require_runtime_text_record<'a>(
@@ -1464,7 +1422,8 @@ mod tests {
 
     #[test]
     fn authored_wrap_preserves_explicit_lines_and_uses_measured_width() {
-        let wrapped = wrap_text_exact("aa bb\ncc", 4, |value| value.len() as i32);
+        let wrapped =
+            crate::gui_scene_util::wrap_text_greedy("aa bb\ncc", 4, |value| value.len() as i32);
         assert_eq!(wrapped, "aa\nbb\ncc");
     }
 }

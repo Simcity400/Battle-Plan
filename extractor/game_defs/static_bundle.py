@@ -131,11 +131,23 @@ class BundleError(ValueError):
 
 
 def canonical_json(value: Any) -> bytes:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
 
 
 def pretty_json(value: Any) -> bytes:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        indent=2,
+        allow_nan=False,
+    ).encode("utf-8") + b"\n"
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -150,13 +162,49 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _reject_duplicate_json_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject ambiguous JSON at every object nesting level.
+
+    Python's default decoder silently keeps the last value for duplicate object
+    members.  Static-bundle inputs are later consumed by independent Rust and
+    container readers, so accepting that grammar would create two possible
+    authorities for the same bytes.
+    """
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise BundleError(f"duplicate JSON object member {key!r}")
+        value[key] = item
+    return value
+
+
+def _reject_nonfinite_json_constant(value: str) -> Any:
+    # NaN/Infinity are Python decoder extensions, not JSON numbers.  They also
+    # cannot be represented by the downstream serde_json readers.
+    raise BundleError(f"non-finite JSON constant {value!r}")
+
+
+def _decode_json(raw: bytes, role: str, path: Path) -> Any:
+    try:
+        return json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_json_members,
+            parse_constant=_reject_nonfinite_json_constant,
+        )
+    except BundleError as exc:
+        raise BundleError(f"corrupt {role}: {path}: {exc}") from exc
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise BundleError(f"corrupt {role}: {path}: {exc}") from exc
+
+
 def load_object(path: Path, role: str) -> dict[str, Any]:
     if not path.is_file():
         raise BundleError(f"missing {role}: {path}")
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raw = path.read_bytes()
+    except OSError as exc:
         raise BundleError(f"corrupt {role}: {path}: {exc}") from exc
+    value = _decode_json(raw, role, path)
     if not isinstance(value, dict):
         raise BundleError(f"invalid {role}: expected JSON object: {path}")
     return value
@@ -967,9 +1015,9 @@ def _load_token_inventory(
         raise BundleError(f"missing {role}: {path}")
     try:
         raw = path.read_bytes()
-        value = json.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except OSError as exc:
         raise BundleError(f"corrupt {role}: {path}: {exc}") from exc
+    value = _decode_json(raw, role, path)
     if not isinstance(value, dict):
         raise BundleError(f"invalid {role}: expected JSON object")
     if value.get("schema") != expected_schema:
@@ -1632,7 +1680,11 @@ def finalize_deferred_bundle(
     )
     manifest_path = source_bundle / "static_bundle_manifest.json"
     deferred_manifest_bytes = manifest_path.read_bytes()
-    deferred_manifest = json.loads(deferred_manifest_bytes.decode("utf-8"))
+    deferred_manifest = _decode_json(
+        deferred_manifest_bytes, "deferred bundle manifest", manifest_path
+    )
+    if not isinstance(deferred_manifest, dict):
+        raise BundleError("deferred bundle manifest must be a JSON object")
     if deferred_manifest.get("token_join", {}).get("status") != "deferred":
         raise BundleError("token finalization requires an explicitly deferred source bundle")
 

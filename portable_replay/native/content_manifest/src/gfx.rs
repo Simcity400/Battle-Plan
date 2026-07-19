@@ -1,6 +1,6 @@
 use crate::content_parse::Result;
 use crate::paradox_text::{first_scalar_any, parse_file, scalar_u32, Document, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,18 +125,6 @@ impl SpriteDefinition {
     pub fn texture_paths(&self) -> impl Iterator<Item = &str> {
         self.texture_files.iter().map(|slot| slot.path.as_str())
     }
-
-    pub fn is_known_minimum_kind(&self) -> bool {
-        matches!(
-            self.kind.as_str(),
-            "spriteType"
-                | "corneredTileSpriteType"
-                | "frameAnimatedSpriteType"
-                | "textSpriteType"
-                | "maskedShieldType"
-                | "progressbartype"
-        )
-    }
 }
 
 pub fn parse_sprite(kind: &str, source_file: &str, value: &Value) -> Option<SpriteDefinition> {
@@ -194,14 +182,6 @@ pub fn parse_size(value: &Value) -> Option<Size> {
         x: x.to_string(),
         y: y.to_string(),
     })
-}
-
-pub fn sprite_refs_from_values<'a>(values: impl IntoIterator<Item = &'a str>) -> BTreeSet<String> {
-    values
-        .into_iter()
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_string)
-        .collect()
 }
 
 #[cfg(test)]

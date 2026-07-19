@@ -177,6 +177,33 @@ pub struct InitialStateControl {
 }
 
 pub fn synthesize_political_colors(resolver: &GameFileResolver) -> Result<PoliticalColorSynthesis> {
+    synthesize_political_colors_impl(resolver, None)
+}
+
+/// A5 timeline-keyed political fill: identical to [`synthesize_political_colors`]
+/// but the owner-by-state, state controller, and per-tag cosmetic color come
+/// from a scrubbed [`KeyingTables`] (built from a `WorldTimeline` frame) instead
+/// of the static 1936 history parse. The province raster, definitions, state
+/// topology (province->state, impassable), and BASE country colors are still
+/// file-derived (they are not recording state); only the political keying is
+/// swapped. On the 1936 baseline moment this yields byte-identical output to the
+/// static path when the timeline carries the same owner/controller/cosmetic
+/// (the A5 t0 gate).
+pub fn synthesize_political_colors_with_keying(
+    resolver: &GameFileResolver,
+    keying: &KeyingTables,
+) -> Result<PoliticalColorSynthesis> {
+    synthesize_political_colors_impl(resolver, Some(keying))
+}
+
+/// Shared body of the static and A5 timeline-keyed synthesis entry points.
+/// Everything file-derived (province raster, definitions, state topology,
+/// dimension law) is identical between the two paths; only the political
+/// keying source (owner/controller/cosmetic) is selected by `keying`.
+fn synthesize_political_colors_impl(
+    resolver: &GameFileResolver,
+    keying: Option<&KeyingTables>,
+) -> Result<PoliticalColorSynthesis> {
     let definition_csv = resolver.resolve_required("map/definition.csv", "definition.csv")?;
     let provinces_bmp = resolver.resolve_required("map/provinces.bmp", "provinces.bmp")?;
     let state_paths = resolver.resolve_dir_files("history/states", Some("txt"))?;
@@ -197,18 +224,43 @@ pub fn synthesize_political_colors(resolver: &GameFileResolver) -> Result<Politi
         .into());
     }
 
-    let (states, province_to_state, state_owners) = load_states(&state_paths)?;
-    let state_controls = load_initial_state_controls(&state_paths)?;
-    let country_colors = load_country_colors_from_game_resolver(resolver)?;
+    let (states, province_to_state, static_owners) = load_states(&state_paths)?;
+    let static_controls;
+    let static_country_colors;
+    let keyed_country_colors;
+    let (state_owners, state_controls, country_colors): (
+        &BTreeMap<u32, String>,
+        &BTreeMap<u32, InitialStateControl>,
+        &BTreeMap<String, [u8; 3]>,
+    ) = match keying {
+        None => {
+            static_controls = load_initial_state_controls(&state_paths)?;
+            static_country_colors = load_country_colors_from_game_resolver(resolver)?;
+            (&static_owners, &static_controls, &static_country_colors)
+        }
+        Some(keying) => {
+            // Topology (province->state, impassable) is not recording state; keep it
+            // file-derived. Keying (owner/controller/cosmetic) comes from the timeline.
+            keyed_country_colors = country_colors_from_game_resolver_with_cosmetics(
+                resolver,
+                &keying.cosmetic_by_tag,
+            )?;
+            (
+                &keying.state_owners,
+                &keying.state_controls,
+                &keyed_country_colors,
+            )
+        }
+    };
 
     let (owner_color_bytes, secondary_color_bytes, class_by_texel) = render_political_texels(
         &definitions,
         &provinces,
         &province_to_state,
         &states,
-        &state_owners,
-        &state_controls,
-        &country_colors,
+        state_owners,
+        state_controls,
+        country_colors,
     )?;
 
     let descriptor = PoliticalColorTextureDescriptor {
@@ -252,93 +304,6 @@ pub fn synthesize_political_colors(resolver: &GameFileResolver) -> Result<Politi
     })
 }
 
-/// A5 timeline-keyed political fill: identical to [`synthesize_political_colors`]
-/// but the owner-by-state, state controller, and per-tag cosmetic color come
-/// from a scrubbed [`KeyingTables`] (built from a `WorldTimeline` frame) instead
-/// of the static 1936 history parse. The province raster, definitions, state
-/// topology (province->state, impassable), and BASE country colors are still
-/// file-derived (they are not recording state); only the political keying is
-/// swapped. On the 1936 baseline moment this yields byte-identical output to the
-/// static path when the timeline carries the same owner/controller/cosmetic
-/// (the A5 t0 gate).
-pub fn synthesize_political_colors_with_keying(
-    resolver: &GameFileResolver,
-    keying: &KeyingTables,
-) -> Result<PoliticalColorSynthesis> {
-    let definition_csv = resolver.resolve_required("map/definition.csv", "definition.csv")?;
-    let provinces_bmp = resolver.resolve_required("map/provinces.bmp", "provinces.bmp")?;
-    let state_paths = resolver.resolve_dir_files("history/states", Some("txt"))?;
-    let colors_txt = resolver.resolve("common/countries/colors.txt")?;
-
-    let (definitions, color_to_id) = load_definition_csv(&definition_csv)?;
-    let provinces = load_provinces_bmp(&provinces_bmp, &color_to_id)?;
-    if provinces.width != PROVINCE_COLOR_MAP_WIDTH * 2
-        || provinces.height != PROVINCE_COLOR_MAP_HEIGHT * 2
-    {
-        return Err(format!(
-            "map/provinces.bmp dimensions {}x{} do not match captured political color texture {}x{} at 2:1 map-space scale",
-            provinces.width, provinces.height, PROVINCE_COLOR_MAP_WIDTH, PROVINCE_COLOR_MAP_HEIGHT
-        )
-        .into());
-    }
-
-    // Topology (province->state, impassable) is not recording state; keep it
-    // file-derived. Keying (owner/controller/cosmetic) comes from the timeline.
-    let (states, province_to_state, _static_owners) = load_states(&state_paths)?;
-    let country_colors =
-        country_colors_from_game_resolver_with_cosmetics(resolver, &keying.cosmetic_by_tag)?;
-
-    let (owner_color_bytes, secondary_color_bytes, class_by_texel) = render_political_texels(
-        &definitions,
-        &provinces,
-        &province_to_state,
-        &states,
-        &keying.state_owners,
-        &keying.state_controls,
-        &country_colors,
-    )?;
-
-    let descriptor = PoliticalColorTextureDescriptor {
-        symbol: PROVINCE_SECONDARY_COLOR_MAP_SYMBOL.to_string(),
-        format: RUNTIME_RGBA8_FORMAT.to_string(),
-        dxgi_format: PROVINCE_COLOR_MAP_DXGI_FORMAT,
-        width: PROVINCE_COLOR_MAP_WIDTH,
-        height: PROVINCE_COLOR_MAP_HEIGHT,
-        byte_len: secondary_color_bytes.len(),
-        row_pitch: PROVINCE_COLOR_MAP_WIDTH * 4,
-        mip_count: 1,
-        shader_slot: PROVINCE_SECONDARY_COLOR_MAP_SHADER_SLOT,
-        fnv1a64: fnv1a64_bytes(&secondary_color_bytes),
-        sampler: province_secondary_color_sampler(),
-    };
-
-    Ok(PoliticalColorSynthesis {
-        width: PROVINCE_COLOR_MAP_WIDTH,
-        height: PROVINCE_COLOR_MAP_HEIGHT,
-        owner_color_bytes,
-        secondary_color_bytes,
-        descriptor,
-        source: PoliticalColorSynthesisSource {
-            definition_csv: definition_csv.clone(),
-            provinces_bmp: provinces_bmp.clone(),
-            colors_txt: colors_txt.clone(),
-            state_files: state_paths.len(),
-            definition_csv_fnv1a64: fnv1a64_file(&definition_csv)?,
-            provinces_bmp_fnv1a64: fnv1a64_file(&provinces_bmp)?,
-            colors_txt_fnv1a64: colors_txt
-                .as_ref()
-                .map(|path| fnv1a64_file(path))
-                .transpose()?,
-            country_color_count: country_colors.len(),
-            state_count: states.len(),
-            province_to_state_count: province_to_state.len(),
-            state_owner_count: keying.state_owners.len(),
-        },
-        law: political_color_composition_law(),
-        class_by_texel,
-    })
-}
-
 /// The shared per-texel political-fill loop used by both the static and the
 /// A5 timeline-keyed entry points, so the two paths are byte-identical by
 /// construction when fed the same keying. Returns
@@ -359,6 +324,14 @@ fn render_political_texels(
         PoliticalColorTexelClass::UnknownProvince;
         PROVINCE_COLOR_MAP_WIDTH * PROVINCE_COLOR_MAP_HEIGHT
     ];
+    // The per-texel result depends only on the province id (~13-17k distinct
+    // values across ~2.9M texels), so memoize per province id. The cache is
+    // filled LAZILY in raster order: only province ids an actual texel samples
+    // are ever evaluated, which keeps output bytes, class_by_texel, and error
+    // behavior (including which fail-closed error fires first) exactly
+    // identical to the unmemoized loop.
+    let mut colors_by_province =
+        BTreeMap::<u32, (PoliticalColorTexelClass, Option<[u8; 4]>, Option<[u8; 4]>)>::new();
 
     for y in 0..PROVINCE_COLOR_MAP_HEIGHT {
         for x in 0..PROVINCE_COLOR_MAP_WIDTH {
@@ -373,15 +346,22 @@ fn render_political_texels(
                 PROVINCE_COLOR_MAP_HEIGHT,
             );
             let province_id = provinces.ids[source_y * provinces.width + source_x];
-            let (class, owner_color, secondary_color) = political_texel_colors(
-                province_id,
-                definitions,
-                province_to_state,
-                states,
-                state_owners,
-                state_controls,
-                country_colors,
-            )?;
+            let (class, owner_color, secondary_color) = match colors_by_province.get(&province_id) {
+                Some(cached) => *cached,
+                None => {
+                    let computed = political_texel_colors(
+                        province_id,
+                        definitions,
+                        province_to_state,
+                        states,
+                        state_owners,
+                        state_controls,
+                        country_colors,
+                    )?;
+                    colors_by_province.insert(province_id, computed);
+                    computed
+                }
+            };
             class_by_texel[texel_index] = class;
             if let Some(color) = owner_color {
                 owner_color_bytes[byte_offset..byte_offset + 4].copy_from_slice(&color);
@@ -399,6 +379,22 @@ pub fn compare_political_colors_to_capture(
     capture_dir: &Path,
 ) -> Result<PoliticalColorComparisonReport> {
     let synthesized = synthesize_political_colors(resolver)?;
+    let (report, _captured_bytes) = compare_synthesized_to_capture(&synthesized, capture_dir)?;
+    Ok(report)
+}
+
+/// Core of the capture comparison: takes an already-built synthesis so callers
+/// that need both the synthesis output and the comparison (the dump path) run
+/// the 2816x1024 political fill exactly once. Owns ALL capture-side
+/// validations (byte length vs synthesized, byte length vs capture JSON,
+/// FNV-1a64 integrity, captured descriptor law) and runs them fail-closed
+/// before the texel comparison. Returns the validated captured bytes alongside
+/// the report so downstream consumers (diff heatmap) never re-read the capture
+/// through an unvalidated path.
+fn compare_synthesized_to_capture(
+    synthesized: &PoliticalColorSynthesis,
+    capture_dir: &Path,
+) -> Result<(PoliticalColorComparisonReport, Vec<u8>)> {
     let (capture_meta, captured_file, captured_bytes) =
         load_captured_province_secondary_color_map(capture_dir)?;
     if captured_bytes.len() != synthesized.secondary_color_bytes.len() {
@@ -430,6 +426,20 @@ pub fn compare_political_colors_to_capture(
         )
         .into());
     }
+    let captured_descriptor = PoliticalColorTextureDescriptor {
+        symbol: capture_meta.symbol,
+        format: capture_meta.format,
+        dxgi_format: capture_meta.source_dxgi_format,
+        width: capture_meta.width,
+        height: capture_meta.height,
+        byte_len: capture_meta.byte_len,
+        row_pitch: capture_meta.width * 4,
+        mip_count: 1,
+        shader_slot: capture_meta.shader_resource_slot,
+        fnv1a64: capture_meta.fnv1a64,
+        sampler: province_secondary_color_sampler(),
+    };
+    validate_captured_province_secondary_descriptor(&captured_descriptor)?;
 
     let mut byte_mismatches = 0usize;
     let mut texel_mismatches = 0usize;
@@ -477,20 +487,6 @@ pub fn compare_political_colors_to_capture(
         }
     }
 
-    let captured_descriptor = PoliticalColorTextureDescriptor {
-        symbol: capture_meta.symbol,
-        format: capture_meta.format,
-        dxgi_format: capture_meta.source_dxgi_format,
-        width: capture_meta.width,
-        height: capture_meta.height,
-        byte_len: capture_meta.byte_len,
-        row_pitch: capture_meta.width * 4,
-        mip_count: 1,
-        shader_slot: capture_meta.shader_resource_slot,
-        fnv1a64: capture_meta.fnv1a64,
-        sampler: province_secondary_color_sampler(),
-    };
-    validate_captured_province_secondary_descriptor(&captured_descriptor)?;
     let total_texels = synthesized.width * synthesized.height;
     let texel_match_percent =
         ((total_texels - texel_mismatches) as f64 * 100.0) / total_texels as f64;
@@ -524,10 +520,10 @@ pub fn compare_political_colors_to_capture(
         );
     }
 
-    Ok(PoliticalColorComparisonReport {
+    let report = PoliticalColorComparisonReport {
         capture_dir: capture_dir.to_path_buf(),
         captured_file,
-        generated_descriptor: synthesized.descriptor,
+        generated_descriptor: synthesized.descriptor.clone(),
         captured_descriptor,
         byte_exact: byte_mismatches == 0,
         byte_mismatches,
@@ -542,7 +538,8 @@ pub fn compare_political_colors_to_capture(
         validation_is_vacuous,
         static_occupied_texels,
         notes,
-    })
+    };
+    Ok((report, captured_bytes))
 }
 
 pub fn dump_political_color_comparison(
@@ -551,8 +548,7 @@ pub fn dump_political_color_comparison(
     out_dir: &Path,
 ) -> Result<(PoliticalColorComparisonReport, PoliticalColorDumpPaths)> {
     let synthesized = synthesize_political_colors(resolver)?;
-    let report = compare_political_colors_to_capture(resolver, capture_dir)?;
-    let (_, _, captured_bytes) = load_captured_province_secondary_color_map(capture_dir)?;
+    let (report, captured_bytes) = compare_synthesized_to_capture(&synthesized, capture_dir)?;
     fs::create_dir_all(out_dir)?;
     let secondary_path = out_dir.join(PROVINCE_SECONDARY_SYNTHETIC_FILE);
     let owner_path = out_dir.join(PROVINCE_OWNER_SYNTHETIC_FILE);
@@ -999,6 +995,179 @@ mod tests {
         captured_nz[7] = 128;
         assert!(!secondary_map_all_transparent(&captured_nz));
         assert!(!(secondary_map_all_transparent(&captured_nz) && syn0));
+    }
+
+    fn land_definition() -> ProvinceDefinition {
+        ProvinceDefinition {
+            rgb: [0, 0, 0],
+            province_type: "land".to_string(),
+            coastal: false,
+            terrain: "plains".to_string(),
+            continent: 1,
+        }
+    }
+
+    fn memoized_render_fixture() -> (
+        BTreeMap<u32, ProvinceDefinition>,
+        BmpIds,
+        BTreeMap<u32, u32>,
+        BTreeMap<u32, StateMeta>,
+        BTreeMap<u32, String>,
+        BTreeMap<u32, InitialStateControl>,
+        BTreeMap<String, [u8; 3]>,
+    ) {
+        let mut definitions = BTreeMap::new();
+        definitions.insert(1, land_definition());
+        let mut sea = land_definition();
+        sea.province_type = "sea".to_string();
+        definitions.insert(2, sea);
+        definitions.insert(3, land_definition());
+        // Province id 0 is deliberately absent: unknown-province texels.
+        let provinces = BmpIds {
+            width: 4,
+            height: 2,
+            ids: vec![1, 2, 3, 0, 1, 2, 3, 0],
+            unknown_pixels: 0,
+        };
+        let mut province_to_state = BTreeMap::new();
+        province_to_state.insert(1, 10);
+        province_to_state.insert(3, 30);
+        let mut states = BTreeMap::new();
+        states.insert(10, StateMeta::default());
+        states.insert(30, StateMeta::default());
+        let mut state_owners = BTreeMap::new();
+        state_owners.insert(10, "GER".to_string());
+        let mut state_controls = BTreeMap::new();
+        state_controls.insert(
+            10,
+            InitialStateControl {
+                owner: None,
+                controller: None,
+            },
+        );
+        state_controls.insert(
+            30,
+            InitialStateControl {
+                owner: Some("POL".to_string()),
+                controller: Some("GER".to_string()),
+            },
+        );
+        let mut country_colors = BTreeMap::new();
+        country_colors.insert("GER".to_string(), [1, 2, 3]);
+        country_colors.insert("POL".to_string(), [4, 5, 6]);
+        (
+            definitions,
+            provinces,
+            province_to_state,
+            states,
+            state_owners,
+            state_controls,
+            country_colors,
+        )
+    }
+
+    #[test]
+    fn memoized_render_matches_per_texel_law() {
+        let (
+            definitions,
+            provinces,
+            province_to_state,
+            states,
+            state_owners,
+            state_controls,
+            country_colors,
+        ) = memoized_render_fixture();
+        let (owner_bytes, secondary_bytes, class_by_texel) = render_political_texels(
+            &definitions,
+            &provinces,
+            &province_to_state,
+            &states,
+            &state_owners,
+            &state_controls,
+            &country_colors,
+        )
+        .expect("render succeeds");
+        // Sampled texels must match the unmemoized per-texel law exactly. The
+        // prime stride keeps the test fast while covering every province band
+        // (each band is 704 texels wide) and both vertical halves.
+        for y in (0..PROVINCE_COLOR_MAP_HEIGHT).step_by(53) {
+            for x in (0..PROVINCE_COLOR_MAP_WIDTH).step_by(53) {
+                let texel_index = y * PROVINCE_COLOR_MAP_WIDTH + x;
+                let offset = texel_index * 4;
+                let (source_x, source_y) = political_source_pixel_for_texel(
+                    x,
+                    y,
+                    provinces.width,
+                    provinces.height,
+                    PROVINCE_COLOR_MAP_WIDTH,
+                    PROVINCE_COLOR_MAP_HEIGHT,
+                );
+                let province_id = provinces.ids[source_y * provinces.width + source_x];
+                let (class, owner_color, secondary_color) = political_texel_colors(
+                    province_id,
+                    &definitions,
+                    &province_to_state,
+                    &states,
+                    &state_owners,
+                    &state_controls,
+                    &country_colors,
+                )
+                .expect("per-texel law succeeds");
+                assert_eq!(class_by_texel[texel_index], class, "class at {x},{y}");
+                let expected_owner = owner_color.unwrap_or([0, 0, 0, 0]);
+                let expected_secondary = secondary_color.unwrap_or([0, 0, 0, 0]);
+                assert_eq!(
+                    owner_bytes[offset..offset + 4],
+                    expected_owner,
+                    "owner bytes at {x},{y}"
+                );
+                assert_eq!(
+                    secondary_bytes[offset..offset + 4],
+                    expected_secondary,
+                    "secondary bytes at {x},{y}"
+                );
+            }
+        }
+        // Spot-check that each fixture class actually appeared (the fixture
+        // exercises equal-owner, sea, occupied, and unknown provinces).
+        let counts = class_counts(&class_by_texel);
+        assert_eq!(
+            counts.values().sum::<usize>(),
+            PROVINCE_COLOR_MAP_WIDTH * PROVINCE_COLOR_MAP_HEIGHT
+        );
+        assert!(counts.contains_key(PoliticalColorTexelClass::OwnerControllerEqual.as_str()));
+        assert!(counts.contains_key(PoliticalColorTexelClass::SeaOrLake.as_str()));
+        assert!(counts.contains_key(PoliticalColorTexelClass::StaticControllerDiffers.as_str()));
+        assert!(counts.contains_key(PoliticalColorTexelClass::UnknownProvince.as_str()));
+    }
+
+    #[test]
+    fn memoized_render_propagates_fail_closed_country_color_error() {
+        let (
+            definitions,
+            provinces,
+            province_to_state,
+            states,
+            state_owners,
+            state_controls,
+            mut country_colors,
+        ) = memoized_render_fixture();
+        // Province 3's state owner is POL; removing its color must refuse the
+        // whole render, exactly as the unmemoized loop did.
+        country_colors.remove("POL");
+        let err = render_political_texels(
+            &definitions,
+            &provinces,
+            &province_to_state,
+            &states,
+            &state_owners,
+            &state_controls,
+            &country_colors,
+        )
+        .expect_err("missing country color must fail closed");
+        assert!(err
+            .to_string()
+            .contains("missing country color for tag POL"));
     }
 
     #[test]

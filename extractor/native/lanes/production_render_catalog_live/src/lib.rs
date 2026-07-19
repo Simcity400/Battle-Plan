@@ -256,6 +256,10 @@ pub fn portable_render_authority(
         effective_vfs_manifest_sha256,
         effect_catalog_sha256,
         entity_animation_catalog_sha256,
+        // Input-family selection is a UI authority and is not observed by the
+        // non-UI d77/d80 producer. Keep it absent so UI fails closed instead of
+        // inventing a session default.
+        recorded_input_variant: None,
         particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
     })
 }
@@ -1620,6 +1624,12 @@ impl<'a, V: AdmittedVfsPayloads> Builder<'a, V> {
                 .as_ref()
                 .map(|value| self.content.resolve(value))
                 .transpose()?,
+            // The current a729 target receipt authenticates the selected view
+            // descriptor and resource extent/sample identity. It does not yet
+            // carry the complete resource/view/init closure required by the
+            // optional exact-resource extension, so omission is the only
+            // evidence-backed value for the legacy mip-zero transient subset.
+            exact_resource: None,
         })
     }
 
@@ -2613,6 +2623,7 @@ mod static_identity_tests {
                         sample_count: 1,
                         sample_quality: 0,
                         persistent_content: None,
+                        exact_resource: None,
                     },
                     rgba_f32_bits: [0; 4],
                 },

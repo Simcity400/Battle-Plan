@@ -82,15 +82,9 @@ pub const NAVAL_FIELD_SLOTS: &[&str] = &[
 /// targets.
 pub const AIR_FIELD_SLOTS: &[&str] = &["name", "count"];
 
-/// Element types that are runtime-populated list/grid surfaces (documented
-/// skips, same class as `major_views::is_runtime_populated`): their contents are
-/// filled per-frame by the binding, not laid out statically.
-fn is_runtime_grid(element_type: &str) -> bool {
-    matches!(
-        element_type.to_ascii_lowercase().as_str(),
-        "gridboxtype" | "listboxtype" | "smoothlistboxtype" | "overlappingelementsboxtype"
-    )
-}
+// Runtime-populated list/grid surfaces (documented skips) share the single
+// runtime-populated-surface law in [`crate::major_views::is_runtime_populated`];
+// their contents are filled per-frame by the binding, not laid out statically.
 
 // ===========================================================================
 // Layout gate — parse unitview.gui and verify each detail panel's slots
@@ -133,7 +127,7 @@ fn walk_subtree(
 ) {
     *count += 1;
     names.insert(element.name.clone());
-    if is_runtime_grid(&element.element_type) {
+    if crate::major_views::is_runtime_populated(&element.element_type) {
         runtime_grids.insert(element.name.clone());
     }
     for child in &element.children {

@@ -11,7 +11,7 @@ use portable_render_stream::{
 };
 use serde::Deserialize;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
+use snapshot::sha256::Sha256;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -33,7 +33,7 @@ pub struct RuntimeTextRecord {
     pub view_id: String,
     pub element_id: String,
     pub source: RuntimeTextSource,
-    /// Exact bytes passed to the engine text setter.
+    /// Exact post-setter bytes selected by the engine text-layout object.
     pub final_text_bytes: Vec<u8>,
     /// UTF-8 interpretation mechanically verified against `final_text_bytes`.
     pub final_text_utf8: String,
@@ -153,7 +153,7 @@ pub fn admit_runtime_text(
     let Some(value) = value else {
         return Ok(Leaf::Absent);
     };
-    let envelope: WireEnvelope = serde_json::from_value(value.clone()).map_err(|error| {
+    let envelope: WireEnvelope = WireEnvelope::deserialize(value).map_err(|error| {
         RuntimeTextAdmissionError::new("runtime_text", format!("invalid envelope: {error}"))
     })?;
     if envelope.schema != RUNTIME_TEXT_SCHEMA {
@@ -376,7 +376,7 @@ fn admit_record(
             "does not exactly match bytes_hex",
         ));
     }
-    let digest = format!("{:x}", Sha256::digest(&bytes));
+    let digest = Sha256::hex(&bytes);
     if !eq_lower_hex_64(&row.final_text.sha256, &digest) {
         return Err(RuntimeTextAdmissionError::new(
             format!("{path}.final_text.sha256"),
@@ -398,7 +398,15 @@ fn admit_record(
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     let layout = match row.layout {
-        WireLayout::AuthoredReproducible {} => RuntimeTextLayout::AuthoredReproducible,
+        WireLayout::AuthoredReproducible {} => {
+            if requires_captured_runtime_layout(decoded) {
+                return Err(RuntimeTextAdmissionError::new(
+                    format!("{path}.layout"),
+                    "engine post-layout text contains inline/control data requiring captured runtime layout",
+                ));
+            }
+            RuntimeTextLayout::AuthoredReproducible
+        }
         WireLayout::CapturedRuntime {
             clip,
             glyphs,
@@ -555,6 +563,14 @@ fn admit_record(
     })
 }
 
+/// U+0011 is the authenticated engine colour lead and newlines are already
+/// selected by the engine layout object. Other C0 controls and pound-sign icon
+/// syntax require captured glyph/icon runs; replay must not silently strip them.
+fn requires_captured_runtime_layout(text: &str) -> bool {
+    text.chars()
+        .any(|ch| ch == '\u{00a3}' || (ch.is_control() && !matches!(ch, '\n' | '\r' | '\u{0011}')))
+}
+
 fn require_nonempty(value: &str, path: &str, field: &str) -> Result<(), RuntimeTextAdmissionError> {
     if value.trim().is_empty() {
         Err(RuntimeTextAdmissionError::new(
@@ -707,7 +723,7 @@ mod tests {
         json!({
             "bytes_hex": bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
             "utf8": text,
-            "sha256": format!("{:x}", Sha256::digest(bytes)),
+            "sha256": Sha256::hex(bytes),
         })
     }
 
@@ -792,6 +808,27 @@ mod tests {
         let admitted = &catalog.contexts["rt:1"];
         assert_eq!(admitted.final_text_bytes[0], 0x11);
         assert_eq!(admitted.producer.setter_entry_rva, A729_TEXT_SETTER_RVA);
+    }
+
+    #[test]
+    fn authored_layout_rejects_inline_controls_and_pound_icon_tokens() {
+        for text in ["cost \u{13}abc", "cost £political_power"] {
+            let value = json!({
+                "schema": RUNTIME_TEXT_SCHEMA,
+                "state": "measured",
+                "contexts_complete": true,
+                "contexts": [row(text)]
+            });
+            assert!(admit_runtime_text(Some(&value)).is_err());
+        }
+
+        let value = json!({
+            "schema": RUNTIME_TEXT_SCHEMA,
+            "state": "measured",
+            "contexts_complete": true,
+            "contexts": [captured_row("cost £political_power")]
+        });
+        assert!(admit_runtime_text(Some(&value)).is_ok());
     }
 
     #[test]

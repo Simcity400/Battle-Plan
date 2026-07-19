@@ -45,7 +45,6 @@ MAX_PROVINCE_ID = live_probe.MAX_PROVINCE_ID
 
 CCSS_COUNTRY_BACKPTR = 0x78
 PRIMARY_FIELD = 0x1E0
-REGION_SCAN_BYTES = 0x10000
 FIXED_SCALE_RAW = 100_000
 RAW_ROUNDED_TOLERANCE = 500
 MAX_REPORTED = 48
@@ -102,6 +101,29 @@ def safe_u64(p: Any, addr: int) -> Optional[int]:
         return p.u64(addr)
     except OSError:
         return None
+
+
+def safe_u32(p: Any, addr: int) -> Optional[int]:
+    try:
+        blob = p.try_read(addr, 4)
+        return struct.unpack_from("<I", blob, 0)[0] if len(blob) == 4 else None
+    except OSError:
+        return None
+
+
+def bounded_vector_blob(p: Any, obj: int, layout: Layout) -> bytes:
+    """Read only the occupied vector records proved by the serializer.
+
+    ``CCountrySupplySystem+0x1E0`` is a vector header whose pointer is at
+    ``+0x00`` and occupied count at ``+0x0C``.  The former 64-KiB read crossed
+    the allocation and could rank chance records from adjacent heap objects.
+    """
+    ptr = safe_u64(p, obj + layout.field_off)
+    count = safe_u32(p, obj + layout.field_off + 0x0C)
+    if not is_heap(ptr) or count is None or count > MAX_COMPACT_CANDIDATE_ROWS:
+        return b""
+    size = int(count) * layout.stride
+    return p.try_read(ptr, size) if size else b""
 
 
 def _raw(value: Any) -> Optional[int]:
@@ -457,7 +479,7 @@ def scan_layouts(
                 ptr = safe_u64(p, obj + layout.field_off)
                 if not is_heap(ptr):
                     continue
-                blob = p.try_read(ptr, REGION_SCAN_BYTES)
+                blob = bounded_vector_blob(p, obj, layout)
                 if len(blob) < layout.stride:
                     continue
                 decoded = decode_layout(blob, layout)
@@ -513,7 +535,7 @@ def scan_layouts(
                         int(best["ccountry_supply_system"], 16) + layout.field_off,
                     )
                     if is_heap(ptr):
-                        decoded = decode_layout(p.try_read(ptr, REGION_SCAN_BYTES), layout)
+                        decoded = decode_layout(bounded_vector_blob(p, int(best["ccountry_supply_system"], 16), layout), layout)
                         for decoded_row in decoded:
                             if decoded_row.get("duplicate_matches") is not True:
                                 continue

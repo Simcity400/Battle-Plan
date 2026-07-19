@@ -125,7 +125,7 @@ fn materialize_geometry(
         ));
     }
 
-    let mut inputs = Vec::with_capacity(expected_inputs);
+    let mut inputs: Vec<(&ProductionMapResource, String)> = Vec::with_capacity(expected_inputs);
     let mut effective_vfs = None::<&str>;
     for key in ordered_input_content_keys {
         let resource = resources.get(key).ok_or_else(|| {
@@ -168,11 +168,11 @@ fn materialize_geometry(
             None => effective_vfs = Some(&resource.content.effective_vfs_manifest_sha256),
             _ => {}
         }
-        inputs.push(resource);
+        inputs.push((resource, actual));
     }
 
     let mut vertex_outputs = Vec::with_capacity(ordered_vertex_buffers.len());
-    for (descriptor, input) in ordered_vertex_buffers.iter().zip(&inputs) {
+    for (descriptor, (input, input_digest)) in ordered_vertex_buffers.iter().zip(&inputs) {
         let required = usize::try_from(descriptor.stride_bytes)
             .ok()
             .and_then(|stride| {
@@ -193,7 +193,7 @@ fn materialize_geometry(
                 input.bytes.len()
             )));
         }
-        if Sha256::hex(&input.bytes) != descriptor.payload_sha256 {
+        if *input_digest != descriptor.payload_sha256 {
             return Err(invalid(format!(
                 "interpreter vertex slot {} output SHA-256 mismatch",
                 descriptor.input_slot
@@ -212,7 +212,7 @@ fn materialize_geometry(
 
     let index_output = match index_buffer {
         Some(descriptor) => {
-            let input = inputs
+            let (input, input_digest) = inputs
                 .last()
                 .ok_or_else(|| invalid("index interpreter input is absent"))?;
             let width = match descriptor.format {
@@ -237,7 +237,7 @@ fn materialize_geometry(
                     input.bytes.len()
                 )));
             }
-            if Sha256::hex(&input.bytes) != descriptor.payload_sha256 {
+            if *input_digest != descriptor.payload_sha256 {
                 return Err(invalid("interpreter index output SHA-256 mismatch"));
             }
             Some(IndexBufferBinding {

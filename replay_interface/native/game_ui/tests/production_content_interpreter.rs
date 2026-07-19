@@ -346,6 +346,66 @@ fn replace_path_missing_content_and_changed_dlc_fail_closed() {
 }
 
 #[test]
+fn decode_texture_decodes_admitted_bytes_and_fails_closed_on_mutation() {
+    let root = temp_root("texture");
+    let game = root.join("game");
+    let userdata = root.join("profile");
+    let mod_content = root.join("mod-content");
+    write_content_fixture(&game, &userdata, &mod_content);
+    // Minimal uncompressed top-left 2x1 BGRA TGA (mirrors the tga unit test).
+    let mut tga = vec![0u8; 18];
+    tga[2] = 2;
+    tga[12..14].copy_from_slice(&2u16.to_le_bytes());
+    tga[14..16].copy_from_slice(&1u16.to_le_bytes());
+    tga[16] = 32;
+    tga[17] = 0x20 | 8;
+    tga.extend_from_slice(&[0, 0, 255, 255, 0, 255, 0, 128]);
+    let tga_path = game.join("gfx").join("interface").join("icon.tga");
+    fs::create_dir_all(tga_path.parent().unwrap()).unwrap();
+    fs::write(&tga_path, &tga).unwrap();
+    write(
+        &game,
+        "gfx/interface/photo.png",
+        "png payloads stay refused",
+    );
+    let resolver = GameFileResolver::from_recorded_content_layers(
+        &game,
+        userdata,
+        &[RecordedContentSource {
+            ordinal: 2,
+            source_id: "mod/portable.mod".into(),
+        }],
+    )
+    .unwrap();
+    let paths = ["gfx/interface/icon.tga", "gfx/interface/photo.png"]
+        .into_iter()
+        .map(str::to_string);
+    let (manifest, environment) = manifest_for(&resolver, paths, "l_french", Vec::new());
+    let inventory = resolver.playback_inventory(&manifest, environment).unwrap();
+    let admission = manifest.admit_playback(&inventory).unwrap();
+    let resolver = resolver.with_content_admission(&admission).unwrap();
+    let interpreter = ProductionContentInterpreter::new(&resolver, &admission, "l_french").unwrap();
+
+    let tga_key = interpreter.content_key("gfx/interface/icon.tga").unwrap();
+    let decoded = interpreter.decode_texture(&tga_key).unwrap();
+    assert_eq!(decoded.provenance, vec![tga_key.clone()]);
+    assert_eq!(
+        decoded.value.image.pixels,
+        vec![255, 0, 0, 255, 0, 255, 0, 128]
+    );
+
+    // An admitted extension without a proven decoder stays refused.
+    let png_key = interpreter.content_key("gfx/interface/photo.png").unwrap();
+    assert!(interpreter.decode_texture(&png_key).is_err());
+
+    // The decoded payload comes from the single verified read: an on-disk
+    // mutation after admission must refuse, never decode the mutated bytes.
+    fs::write(&tga_path, b"mutated after admission").unwrap();
+    assert!(interpreter.decode_texture(&tga_key).is_err());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn portable_manifest_rebinds_after_game_profile_and_replay_relocation() {
     let root = temp_root("relocated");
     let mut resolvers = Vec::new();

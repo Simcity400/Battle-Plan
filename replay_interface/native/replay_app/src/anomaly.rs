@@ -124,6 +124,27 @@ pub struct Gap {
     pub missing: Vec<i64>,
 }
 
+/// A recorded index entry whose payload cannot be loaded and authenticated.
+/// This is terminal, not a hold-last-good anomaly: holding across an integrity
+/// failure would make an unverified recording appear playable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimelineScanError {
+    pub hour: i64,
+    pub detail: String,
+}
+
+impl std::fmt::Display for TimelineScanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "recorded frame at canonical hour {} failed payload integrity/decode validation: {}; refusing hold-last-good across an unauthenticated frame",
+            self.hour, self.detail
+        )
+    }
+}
+
+impl std::error::Error for TimelineScanError {}
+
 /// Domains whose `ViewStatus` is watched for the Absent-after-Present
 /// (MissingDomain) transition. Ordered for deterministic diagnostics.
 const MONITORED_DOMAINS: &[&str] = &[
@@ -396,9 +417,24 @@ impl AnomalyPolicy {
                     Leaf::Unobtained => {
                         // A wrong-typed value (not a plain null) is the flip: it
                         // both goes Unobtained AND appends a coverage warning.
+                        // Coverage warnings are country-qualified JSON paths
+                        // (world.rs emits `countries.{tag}.<walked path>: present
+                        // but wrong-typed ...`), so match this country's exact
+                        // path — matching the bare field name would attribute
+                        // one country's flip to every other country whose leaf
+                        // is plain-null Unobtained in the same frame.
+                        let warn_path = match field {
+                            "political_power" => {
+                                format!("countries.{tag}.politics.political_power")
+                            }
+                            "fuel_current" => {
+                                format!("countries.{tag}.economy.fuel.current")
+                            }
+                            _ => continue,
+                        };
                         let wrong_typed = warnings
                             .iter()
-                            .any(|w| w.contains(field) && w.contains("wrong-typed"));
+                            .any(|w| w.starts_with(&warn_path) && w.contains("wrong-typed"));
                         // Only after we had a good value here.
                         if wrong_typed && self.last_good_scalar.contains_key(&monitor) {
                             let (since, held) = self.last_good_scalar[&monitor];
@@ -592,39 +628,125 @@ fn status_label(status: ViewStatus) -> &'static str {
 
 /// Convenience: run the policy over every recorded frame of a timeline in order
 /// (the "scan at open" the app uses to log mid-playback anomalies). Returns the
-/// populated policy; frame-load errors are surfaced as a coverage note and
-/// never panic.
+/// populated policy. A frame-load integrity/decode error is terminal: it is
+/// returned to the caller and is never downgraded to a hold-last-good anomaly.
 pub fn scan_timeline(
     timeline: &WorldTimeline,
     known_province_ids: Option<BTreeSet<u32>>,
-) -> AnomalyPolicy {
+) -> Result<AnomalyPolicy, TimelineScanError> {
     let mut policy = AnomalyPolicy::with_known_provinces(timeline.hours(), known_province_ids);
     for &hour in timeline.hours() {
         match timeline.frame(hour) {
             Ok(frame) => {
                 policy.observe(&frame);
             }
-            Err(_) => {
-                // A load error at a recorded hour is itself an anomaly; hold
-                // (skip) rather than invent a frame.
-                policy.fire(
-                    AnomalyClass::MissingDomain,
+            Err(error) => {
+                // SHA/CRC/decode failure is an authentication boundary, not a
+                // semantic mid-stream anomaly. Never continue with a held
+                // value after bytes failed verification.
+                return Err(TimelineScanError {
                     hour,
-                    "frame".to_string(),
-                    "recorded frame failed to load; skipped (no fabrication)".to_string(),
-                );
+                    detail: error.to_string(),
+                });
             }
         }
     }
-    policy
+    Ok(policy)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay_core::open_recording;
+    use replay_core::{open_recording, RawFrame, ReplaySource, SourceError};
     use serde_json::Value as JsonValue;
     use std::path::PathBuf;
+
+    /// Minimal in-memory source for tests that need a precise frame shape
+    /// (e.g. two countries diverging within one frame) that no on-disk
+    /// anomaly fixture exercises.
+    struct MemorySource {
+        hours: Vec<i64>,
+        frames: BTreeMap<i64, JsonValue>,
+    }
+
+    impl ReplaySource for MemorySource {
+        fn game_id(&self) -> &str {
+            "mem_test"
+        }
+        fn hours(&self) -> &[i64] {
+            &self.hours
+        }
+        fn warnings(&self) -> &[String] {
+            &[]
+        }
+        fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
+            let obj = self
+                .frames
+                .get(&hour_index)
+                .and_then(JsonValue::as_object)
+                .ok_or_else(|| SourceError::Open(format!("no frame at hour {hour_index}")))?;
+            Ok(RawFrame {
+                hour_index,
+                date: None,
+                save_version: None,
+                schema_version: None,
+                rest: obj.clone(),
+            })
+        }
+    }
+
+    struct IntegrityFailureSource {
+        hours: Vec<i64>,
+    }
+
+    impl ReplaySource for IntegrityFailureSource {
+        fn game_id(&self) -> &str {
+            "integrity_failure"
+        }
+
+        fn hours(&self) -> &[i64] {
+            &self.hours
+        }
+
+        fn warnings(&self) -> &[String] {
+            &[]
+        }
+
+        fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
+            if hour_index == 2 {
+                return Err(SourceError::Open(
+                    "snapshot sha256 mismatch: expected aa, observed bb".into(),
+                ));
+            }
+            Ok(RawFrame {
+                hour_index,
+                date: None,
+                save_version: None,
+                schema_version: None,
+                rest: Default::default(),
+            })
+        }
+    }
+
+    #[test]
+    fn frame_integrity_failure_is_terminal_not_a_hold() {
+        let timeline = WorldTimeline::open(Box::new(IntegrityFailureSource {
+            hours: vec![0, 1, 2, 3],
+        }))
+        .expect("open synthetic timeline");
+        let error = match scan_timeline(&timeline, None) {
+            Err(error) => error,
+            Ok(_) => panic!("SHA mismatch must reject scan"),
+        };
+        assert_eq!(error.hour, 2);
+        assert!(error.detail.contains("sha256 mismatch"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("refusing hold-last-good across an unauthenticated frame"),
+            "{error}"
+        );
+    }
 
     fn fixture_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -683,7 +805,7 @@ mod tests {
         ];
         for name in names {
             let timeline = open_anomaly(name);
-            let policy = scan_timeline(&timeline, Some(known_provinces()));
+            let policy = scan_timeline(&timeline, Some(known_provinces())).expect("scan fixture");
             // Crossed every recorded hour; holds queryable at each.
             for &hour in timeline.hours() {
                 let _ = policy.active_holds_at(hour);
@@ -697,7 +819,7 @@ mod tests {
         let entry = anomaly_entry("fx_anomaly_missing_domain");
         let crossing = entry["anomaly"]["crossing_hour"].as_i64().unwrap();
         let last_good = entry["anomaly"]["last_good_hour"].as_i64().unwrap();
-        let policy = scan_timeline(&timeline, None);
+        let policy = scan_timeline(&timeline, None).expect("scan fixture");
 
         let hits = diagnostics_of(&policy, AnomalyClass::MissingDomain);
         assert_eq!(hits.len(), 1, "exactly one MissingDomain diagnostic");
@@ -726,7 +848,7 @@ mod tests {
         let entry = anomaly_entry("fx_anomaly_type_flip");
         let crossing = entry["anomaly"]["crossing_hour"].as_i64().unwrap();
         let last_good = entry["anomaly"]["last_good_hour"].as_i64().unwrap();
-        let policy = scan_timeline(&timeline, None);
+        let policy = scan_timeline(&timeline, None).expect("scan fixture");
 
         let hits = diagnostics_of(&policy, AnomalyClass::TypeFlip);
         assert_eq!(hits.len(), 1, "exactly one TypeFlip diagnostic");
@@ -744,13 +866,61 @@ mod tests {
         assert!(flip.marker.contains("HELD"));
     }
 
+    /// The wrong-typed coverage warning is country-qualified
+    /// (`countries.{tag}.politics.political_power: present but wrong-typed
+    /// ...`). A genuinely wrong-typed political_power in one country must NOT
+    /// be attributed to another country whose political_power is plain-null
+    /// Unobtained in the same frame (both with prior measured values):
+    /// exactly one TypeFlip diagnostic and one held marker, for the
+    /// wrong-typed country only.
+    #[test]
+    fn type_flip_is_not_cross_attributed_between_countries() {
+        let frame0 = serde_json::json!({
+            "countries": {
+                "GER": { "politics": { "political_power": 12.5 } },
+                "ITA": { "politics": { "political_power": 34.0 } }
+            }
+        });
+        let frame1 = serde_json::json!({
+            "countries": {
+                // Genuinely wrong-typed: view goes Unobtained AND a
+                // wrong-typed coverage warning is appended.
+                "GER": { "politics": { "political_power": "banana" } },
+                // Plain null: captured-but-unobtained, no warning, no flip.
+                "ITA": { "politics": { "political_power": null } }
+            }
+        });
+        let source = MemorySource {
+            hours: vec![0, 1],
+            frames: [(0, frame0), (1, frame1)].into_iter().collect(),
+        };
+        let timeline = WorldTimeline::open(Box::new(source)).expect("timeline");
+        let policy = scan_timeline(&timeline, None).expect("scan fixture");
+
+        let hits = diagnostics_of(&policy, AnomalyClass::TypeFlip);
+        assert_eq!(hits.len(), 1, "exactly one TypeFlip diagnostic: {hits:?}");
+        assert_eq!(hits[0].monitor, "countries.GER.political_power");
+        assert_eq!(hits[0].hour, 1);
+
+        assert!(policy.active_holds_at(0).is_empty());
+        let held: Vec<Hold> = policy
+            .active_holds_at(1)
+            .into_iter()
+            .filter(|h| h.class == AnomalyClass::TypeFlip)
+            .collect();
+        assert_eq!(held.len(), 1, "exactly one TypeFlip hold: {held:?}");
+        assert_eq!(held[0].monitor, "countries.GER.political_power");
+        assert_eq!(held[0].since_hour, 0);
+        assert!(held[0].marker.contains("HELD"));
+    }
+
     #[test]
     fn out_of_range_flags_negative_manpower_and_stray_province() {
         let timeline = open_anomaly("fx_anomaly_out_of_range");
         let entry = anomaly_entry("fx_anomaly_out_of_range");
         let crossing = entry["anomaly"]["crossing_hour"].as_i64().unwrap();
         let last_good = entry["anomaly"]["last_good_hour"].as_i64().unwrap();
-        let policy = scan_timeline(&timeline, Some(known_provinces()));
+        let policy = scan_timeline(&timeline, Some(known_provinces())).expect("scan fixture");
 
         let hits = diagnostics_of(&policy, AnomalyClass::OutOfRange);
         // Two distinct out-of-range monitors: negative manpower + stray province.
@@ -797,7 +967,7 @@ mod tests {
         let before = anomaly["before_gap_hour"].as_i64().unwrap();
         let after = anomaly["after_gap_hour"].as_i64().unwrap();
 
-        let policy = scan_timeline(&timeline, None);
+        let policy = scan_timeline(&timeline, None).expect("scan fixture");
         let hits = diagnostics_of(&policy, AnomalyClass::HourGap);
         assert_eq!(hits.len(), 1, "exactly one HourGap diagnostic");
         assert_eq!(hits[0].hour, after);
@@ -830,7 +1000,7 @@ mod tests {
         let entry = anomaly_entry("fx_anomaly_identity_mutation");
         let crossing = entry["anomaly"]["crossing_hour"].as_i64().unwrap();
         let baseline_hour = timeline.first_hour();
-        let policy = scan_timeline(&timeline, None);
+        let policy = scan_timeline(&timeline, None).expect("scan fixture");
 
         let hits = diagnostics_of(&policy, AnomalyClass::IdentityMutation);
         assert_eq!(hits.len(), 1, "exactly one IdentityMutation diagnostic");
@@ -865,7 +1035,7 @@ mod tests {
             .to_string();
         let source = open_recording(&root.join(rel)).unwrap();
         let timeline = WorldTimeline::open(source).unwrap();
-        let policy = scan_timeline(&timeline, Some(known_provinces()));
+        let policy = scan_timeline(&timeline, Some(known_provinces())).expect("scan fixture");
         assert!(
             policy.diagnostics().is_empty(),
             "clean recording must raise no anomalies, got {:?}",

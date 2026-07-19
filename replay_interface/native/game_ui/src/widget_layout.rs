@@ -38,12 +38,19 @@ impl ListBoxLayout {
             ListFlow::Vertical => (0, row_size.1 + self.spacing),
             ListFlow::Horizontal => (row_size.0 + self.spacing, 0),
         };
-        Ok(Rect::new(
-            self.rect.x() + step.0 * index as i32,
-            self.rect.y() + step.1 * index as i32,
-            row_size.0,
-            row_size.1,
-        ))
+        let index = i32::try_from(index)
+            .map_err(|_| untraced("listbox row index overflows pixel space"))?;
+        let x = step
+            .0
+            .checked_mul(index)
+            .and_then(|v| self.rect.x().checked_add(v))
+            .ok_or_else(|| untraced("listbox row index overflows pixel space"))?;
+        let y = step
+            .1
+            .checked_mul(index)
+            .and_then(|v| self.rect.y().checked_add(v))
+            .ok_or_else(|| untraced("listbox row index overflows pixel space"))?;
+        Ok(Rect::new(x, y, row_size.0, row_size.1))
     }
 }
 
@@ -74,14 +81,23 @@ impl GridBoxLayout {
                 return Err(untraced("gridbox slot index exceeds declared max_slots"));
             }
         }
-        let col = index % columns;
-        let row = index / columns;
-        Ok(Rect::new(
-            self.rect.x() + self.slot_size.0 * col as i32,
-            self.rect.y() + self.slot_size.1 * row as i32,
-            self.slot_size.0,
-            self.slot_size.1,
-        ))
+        let col = i32::try_from(index % columns)
+            .map_err(|_| untraced("gridbox slot index overflows pixel space"))?;
+        let row = i32::try_from(index / columns)
+            .map_err(|_| untraced("gridbox slot index overflows pixel space"))?;
+        let x = self
+            .slot_size
+            .0
+            .checked_mul(col)
+            .and_then(|v| self.rect.x().checked_add(v))
+            .ok_or_else(|| untraced("gridbox slot index overflows pixel space"))?;
+        let y = self
+            .slot_size
+            .1
+            .checked_mul(row)
+            .and_then(|v| self.rect.y().checked_add(v))
+            .ok_or_else(|| untraced("gridbox slot index overflows pixel space"))?;
+        Ok(Rect::new(x, y, self.slot_size.0, self.slot_size.1))
     }
 }
 

@@ -54,6 +54,8 @@ mod validate;
 #[cfg(windows)]
 mod app;
 #[cfg(windows)]
+mod counter_gpu;
+#[cfg(windows)]
 mod d3d;
 #[cfg(windows)]
 mod headless;
@@ -784,12 +786,7 @@ fn run(args: &[String]) -> Result<()> {
                 .into(),
         );
     }
-    reject_gb_cpu_env(std::env::var_os("REPLAY_APP_GB_CPU"))?;
-    reject_product_debug_env("REPLAY_DEBUG_DUMP_UNDERWATER")?;
-    reject_product_debug_env("REPLAY_DEBUG_CLEAR_BEFORE_WATER")?;
-    reject_product_debug_env("REPLAY_DEBUG_UNDERWATER_INPUTS")?;
-    reject_product_debug_env("REPLAY_DEBUG_CONSTANT_REFRACTION")?;
-    reject_product_debug_env("REPLAY_DUMP_LABELS")?;
+    reject_env_overrides(|name| std::env::var_os(name))?;
     // Map labels and furniture are product-blocked. Their constructors stay
     // fail-closed for validation-only callers.
     if options.postfx_validate_capture {
@@ -953,8 +950,11 @@ fn run_validate_recording(path: &std::path::Path) -> Result<()> {
     println!("{}", outcome.summary());
     match outcome {
         validate::OpenOutcome::Opened(report) => {
+            // Warnings are diagnostics of a successful open (exit 0), and they
+            // belong on stdout with the summary: `--validate-recording X >
+            // report.txt` must capture the N warning texts, not just the count.
             for warning in &report.warnings {
-                eprintln!("replay_app: recording warning: {warning}");
+                println!("warning: {warning}");
             }
             Ok(())
         }
@@ -1056,25 +1056,20 @@ fn dump_frame(
     Err("replay_app frame dumps require Windows (D3D11)".into())
 }
 
-fn reject_gb_cpu_env(value: Option<std::ffi::OsString>) -> Result<()> {
-    if value.is_some() {
-        return Err(blockers::reason(BlockerId::GbCpuEnv).into());
-    }
-    Ok(())
-}
-
-fn reject_product_debug_env(name: &str) -> Result<()> {
-    reject_product_debug_env_value(name, std::env::var_os(name))
-}
-
-fn reject_product_debug_env_value(name: &str, value: Option<std::ffi::OsString>) -> Result<()> {
-    if value.is_some() {
-        // The message is sourced from the canonical registry row for this env
-        // var, keeping `blockers` the single source of the fail-closed text.
-        let reason = blockers::env_reason_by_name(name).map(str::to_owned).unwrap_or_else(|| format!(
-            "{name} is blocked in replay_app: debug and validation environment knobs must not mutate or side-effect the final product render path"
-        ));
-        return Err(reason.into());
+/// Reject every `blockers::REGISTRY` env-override row that is present in the
+/// environment. Registry declaration order is the rejection order (first
+/// present row wins), matching the historical per-variable call sequence.
+/// Registry-driven so a new env row cannot be added — or an existing one
+/// dropped — without this single gate enforcing it; the message is the
+/// registry row's reason verbatim (blockers stays the single source of text).
+/// The environment is injected so tests never touch real process env vars.
+fn reject_env_overrides(get: impl Fn(&str) -> Option<std::ffi::OsString>) -> Result<()> {
+    for b in blockers::REGISTRY {
+        if let blockers::Surface::EnvOverride(name) = b.surface {
+            if get(name).is_some() {
+                return Err(b.reason.into());
+            }
+        }
     }
     Ok(())
 }
@@ -1747,29 +1742,27 @@ mod tests {
     }
 
     #[test]
-    fn gb_cpu_env_is_blocked_when_present() {
-        let err = reject_gb_cpu_env(Some(std::ffi::OsString::from("0"))).expect_err("must fail");
-        assert!(
-            err.to_string().contains("REPLAY_APP_GB_CPU is blocked"),
-            "{err}"
-        );
-        reject_gb_cpu_env(None).expect("absent env is fine");
-    }
-
-    #[test]
-    fn product_debug_env_is_blocked_when_present() {
-        reject_product_debug_env_value("REPLAY_DEBUG_CLEAR_BEFORE_WATER", None)
-            .expect("absent env is fine");
-        let err = reject_product_debug_env_value(
-            "REPLAY_DEBUG_CLEAR_BEFORE_WATER",
-            Some(std::ffi::OsString::from("1")),
-        )
-        .expect_err("debug env must fail");
-        assert!(
-            err.to_string()
-                .contains("REPLAY_DEBUG_CLEAR_BEFORE_WATER is blocked"),
-            "{err}"
-        );
+    fn every_env_override_row_is_rejected_through_the_registry() {
+        // Mirror of `every_blocked_cli_switch_arm_routes_through_registry` for
+        // the env surface: each EnvOverride registry row must be rejected by
+        // the single `reject_env_overrides` gate with the registry's own
+        // message, so deleting a row's enforcement cannot pass silently. The
+        // environment is closure-injected — never real process env vars
+        // (parallel tests share the process environment).
+        for b in blockers::REGISTRY {
+            if let blockers::Surface::EnvOverride(name) = b.surface {
+                let err = reject_env_overrides(|candidate| {
+                    (candidate == name).then(|| OsString::from("1"))
+                })
+                .expect_err(&format!("{name} must be rejected when present"));
+                assert_eq!(
+                    err.to_string(),
+                    b.reason,
+                    "{name}: gate must return the registry reason verbatim"
+                );
+            }
+        }
+        reject_env_overrides(|_| None).expect("absent env overrides are fine");
     }
 
     #[test]
@@ -1848,37 +1841,63 @@ mod tests {
     #[test]
     fn registry_covers_every_product_path_gate() {
         use std::collections::BTreeSet;
+        use std::path::Path;
+
         const NEEDLE: &str = "_product_path_blocked";
-        let src = include_str!("main.rs");
-        let bytes = src.as_bytes();
-        // Collect every `fn <name>_product_path_blocked` definition in the crate.
-        let mut gate_symbols: BTreeSet<&str> = BTreeSet::new();
-        for (idx, _) in src.match_indices(NEEDLE) {
-            let end = idx + NEEDLE.len();
-            let mut start = idx;
-            while start > 0 {
-                let c = bytes[start - 1];
-                if c.is_ascii_alphanumeric() || c == b'_' {
-                    start -= 1;
-                } else {
-                    break;
+
+        fn scan_file(path: &Path, gate_symbols: &mut BTreeSet<String>) {
+            let src = std::fs::read_to_string(path).unwrap_or_else(|error| {
+                panic!("read blocker coverage source {}: {error}", path.display())
+            });
+            let bytes = src.as_bytes();
+            for (idx, _) in src.match_indices(NEEDLE) {
+                let end = idx + NEEDLE.len();
+                let mut start = idx;
+                while start > 0 {
+                    let c = bytes[start - 1];
+                    if c.is_ascii_alphanumeric() || c == b'_' {
+                        start -= 1;
+                    } else {
+                        break;
+                    }
+                }
+                if src[..start].trim_end().ends_with("fn") {
+                    gate_symbols.insert(src[start..end].to_string());
                 }
             }
-            // Keep only true `fn NAME` definitions (skip string-literal mentions
-            // like this test's own NEEDLE and any comment prose).
-            if src[..start].trim_end().ends_with("fn") {
-                gate_symbols.insert(&src[start..end]);
+        }
+
+        fn scan_tree(path: &Path, gate_symbols: &mut BTreeSet<String>) {
+            for entry in std::fs::read_dir(path).unwrap_or_else(|error| {
+                panic!("read blocker coverage tree {}: {error}", path.display())
+            }) {
+                let entry = entry.expect("read blocker coverage directory entry");
+                let path = entry.path();
+                if path.is_dir() {
+                    scan_tree(&path, gate_symbols);
+                } else if path.extension().and_then(|value| value.to_str()) == Some("rs") {
+                    scan_file(&path, gate_symbols);
+                }
             }
         }
+
+        // Product blockers also live at renderer/runtime seams. Scan the
+        // complete crate tree instead of treating main.rs as the whole product.
+        let mut gate_symbols = BTreeSet::new();
+        scan_tree(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut gate_symbols,
+        );
         assert_eq!(
             gate_symbols.len(),
-            10,
-            "expected 10 *_product_path_blocked gates, found {gate_symbols:?}"
+            11,
+            "expected 11 *_product_path_blocked gates across src/, found {gate_symbols:?}"
         );
         // The set the registry claims to cover.
-        let covered: BTreeSet<&str> = blockers::REGISTRY
+        let covered: BTreeSet<String> = blockers::REGISTRY
             .iter()
             .filter_map(|b| b.product_path_test)
+            .map(str::to_string)
             .collect();
         for sym in &gate_symbols {
             assert!(

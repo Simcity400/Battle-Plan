@@ -115,8 +115,12 @@ fn detect_grid_side_cells(vertex_count: u32, index_count: u32) -> Option<u32> {
     if vertex_count == 0 {
         return None;
     }
-    let side = (vertex_count as f64).sqrt().round() as u32;
-    if side < 2 || side * side != vertex_count {
+    // The counts come from captured bundle JSON — external data — so do the
+    // squaring in u64: for adversarial counts near u32::MAX, `side * side` and
+    // `cells * cells * 6` overflow u32 (panic in debug builds, wraparound — and
+    // thus misclassification of garbage as a valid grid — in release).
+    let side = (vertex_count as f64).sqrt().round() as u64;
+    if side < 2 || side * side != u64::from(vertex_count) {
         return None;
     }
     let cells = side - 1;
@@ -124,8 +128,9 @@ fn detect_grid_side_cells(vertex_count: u32, index_count: u32) -> Option<u32> {
     // lone border segment has. A terrain tessellation patch is many cells, so
     // require at least a 2×2 grid before calling it a grid; this keeps a single
     // border quad from being mis-classified as a terrain patch.
-    if cells >= 2 && cells * cells * 6 == index_count {
-        Some(cells)
+    if cells >= 2 && cells * cells * 6 == u64::from(index_count) {
+        // side² == vertex_count fits u32, so side <= 65536 and cells <= 65535.
+        Some(cells as u32)
     } else {
         None
     }
@@ -212,6 +217,23 @@ mod tests {
         assert_eq!(detect_grid_side_cells(4224, 24576), None);
         // A border quad count (4 verts, 6 indices) is not a grid.
         assert_eq!(detect_grid_side_cells(4, 6), None);
+    }
+
+    #[test]
+    fn grid_detector_does_not_overflow_on_adversarial_counts() {
+        // 715_937_049 == 26757², so cells == 26756 and the true grid index
+        // count 26756²·6 exceeds u32::MAX. Before the u64 widening, u32
+        // arithmetic wrapped that product to 333_920 (release) — matching an
+        // index_count crafted to the wrapped value and misclassifying garbage
+        // as a valid grid — and panicked in debug builds. Both must be None.
+        let wrapped_index_count = ((26756u64 * 26756 * 6) % (1u64 << 32)) as u32;
+        assert_eq!(
+            detect_grid_side_cells(715_937_049, wrapped_index_count),
+            None
+        );
+        // vertex_count == u32::MAX rounds side to 65536, whose square
+        // overflowed u32 outright; it is not a perfect square, so None.
+        assert_eq!(detect_grid_side_cells(u32::MAX, 0), None);
     }
 
     #[test]

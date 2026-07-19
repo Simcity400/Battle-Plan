@@ -359,6 +359,19 @@ class HelperTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             sn.compute_supply_number(tmp)
 
+    def test_corrupt_province_to_state_raises_not_degrades(self):
+        # Fail-closed: a PRESENT-but-corrupt province_to_state.json must raise,
+        # never be silently treated like the missing-asset {} degrade path.
+        tmp = tempfile.mkdtemp()
+        _write_fixture(tmp)
+        with open(os.path.join(tmp, "province_to_state.json"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("{not valid json")
+        with self.assertRaises(ValueError):
+            sn.compute_supply_number(tmp)
+        with self.assertRaises(ValueError):
+            sn.load_inputs(tmp)
+
 
 @unittest.skipUnless(
     os.path.isdir(_OUT) and os.path.exists(os.path.join(_OUT, "state_detail.json")),

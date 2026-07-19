@@ -58,8 +58,13 @@ pub const STRIPE_CONTRAST: f32 = 1.7;
 pub const STRIPE_INTENSITY_NEAR: f32 = 1.0;
 pub const STRIPE_INTENSITY_FAR: f32 = 0.3;
 
+// The three HLSL mirrors below are the crate-wide canonical copies (the CPU
+// terrain shader mirror in `cpu_terrain.rs` imports them from here) so the
+// "law" math has exactly one definition per anchor.
+
+/// HLSL `saturate(x)` = `clamp(x, 0, 1)`.
 #[inline]
-fn saturate(v: f32) -> f32 {
+pub(crate) fn saturate(v: f32) -> f32 {
     v.clamp(0.0, 1.0)
 }
 

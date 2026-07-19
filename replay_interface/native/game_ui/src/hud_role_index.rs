@@ -546,11 +546,7 @@ fn neutral(value: &str) -> String {
 }
 
 fn validate_sha(value: &str) -> Result<(), String> {
-    if value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    {
+    if crate::is_lowercase_sha256(value) {
         Ok(())
     } else {
         Err("HUD source inventory authority is not lowercase SHA-256".into())

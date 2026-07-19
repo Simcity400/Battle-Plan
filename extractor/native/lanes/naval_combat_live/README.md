@@ -11,6 +11,24 @@ This lane owns compact domains from `extractor/documents/DOMAIN_REGISTRY.md`:
 - `49 = naval_combat_lifecycle_live`
 - `50 = naval_combat_members_live`
 
+## 2026-07-19 lifecycle and anti-air closeout
+
+The retained production speed-five stream contains 402 paired d49/d50 hours:
+291 pass the compact failure mask and 111 `PARTIAL_DATA` hours are masked.
+The admitted frames mechanically prove 32 combat starts, 10 updates, 28 ends,
+720 member joins (113 after combat start), and 597 member removals. Every
+admitted removal is complete same-frame teardown under its d49 parent
+tombstone. No standalone member leave occurred, and no member tombstone
+coincided with a d29 ship tombstone. Consequently a d50 tombstone means only
+"left this combat generation"; calling it a sinking is a rejected inference.
+Reproduce the proof with `retained_lifecycle_proof.py`; the checked result is
+`evidence/production_speed5_retained_lifecycle.json`.
+
+Static RE proves saved side anti-air is signed fixed-point x100000 at
+oracle examples, so this field is not yet wired. `B6_HUMAN_CAPTURE_CARD.json`
+and `anti_air_fixture_verify.py` define the exact eight-side equality gate.
+No aggregate or partial-match substitute is accepted.
+
 The shared collector and recorder integration slot is intentionally separate.
 This lane may prove constants and compact behavior, but the orchestrator must
 serially port validated constants into shared hot files after live validation.

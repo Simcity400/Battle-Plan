@@ -5,10 +5,14 @@
 //! ([`crate::Index`], [`crate::Snapshot`]), so the app opens a `.battleplan` with
 //! zero changes elsewhere ([`crate::Store`] dispatches to this transparently).
 //!
-//! Verification is STAGED (spec §4): the manifest, its digest/signature, the path
-//! rules, the zip-bomb caps, and `index.json`/`timeline.json` are verified up
-//! front; each snapshot is hashed LAZILY on first read, so a multi-GB recording
-//! opens fast (Codex d). No snapshot bytes are ever exposed before their entry
+//! Verification is STAGED (spec §4). At open: zip structural validation, the
+//! zip-bomb caps, and an unconditional per-entry CRC-32 re-derivation over every
+//! payload (streamed through a declared-size-bounded decoder; never selectable
+//! or skippable by manifest content), plus the manifest digest/signature, the
+//! path rules, and `index.json`/`timeline.json` verification. Per-entry sha256
+//! verification remains LAZY on first read (Codex d) — open cost is O(total
+//! payload bytes) for the CRC pass but avoids sha256 hashing and entry
+//! materialization — and no snapshot bytes are ever exposed before their entry
 //! hash matches.
 
 use crate::canon::manifest_canonical_bytes;
@@ -19,6 +23,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::Mutex;
+use unicode_normalization::UnicodeNormalization;
 
 /// Highest container version this reader understands. Bumped 1 -> 2 for stitched
 /// (reload/relaunch) archives, which carry the segment/timeline graph
@@ -70,7 +75,11 @@ pub fn normalize_stitch_source_path(path: &str) -> Result<String, String> {
     if path.is_empty() || path.contains('\0') {
         return Err("source path is empty or contains NUL".into());
     }
-    let mut normalized = path.replace('\\', "/").to_ascii_lowercase();
+    let mut normalized = path
+        .replace('\\', "/")
+        .nfc()
+        .collect::<String>()
+        .to_lowercase();
     if normalized.starts_with("//?/unc/") {
         normalized = format!("//{}", &normalized[8..]);
     } else if normalized.starts_with("//?/") {
@@ -137,6 +146,15 @@ pub enum ContainerError {
     NoManifest,
     /// A semantic/integrity/identity rejection, with a human-readable reason.
     Reject(String),
+    /// The manifest's mod identity disagrees with snapshot provenance. Typed
+    /// (rather than a [`ContainerError::Reject`] string) so downstream layers
+    /// can classify a modset mismatch without matching on error text.
+    ModsetMismatch {
+        /// `manifest.mod_identity.modset_id`
+        manifest: String,
+        /// the first snapshot's `provenance.mod.modset_id`
+        snapshot: String,
+    },
 }
 
 impl std::fmt::Display for ContainerError {
@@ -150,6 +168,12 @@ impl std::fmt::Display for ContainerError {
                 "no manifest.json: unfinalized/recovery-only .battleplan (refused by the normal reader)"
             ),
             ContainerError::Reject(s) => write!(f, "container rejected: {s}"),
+            // Renders the EXACT text the pre-typed Reject produced, so every
+            // existing message contract (fixtures, product surfaces) holds.
+            ContainerError::ModsetMismatch { manifest, snapshot } => write!(
+                f,
+                "container rejected: manifest modset_id {manifest:?} disagrees with snapshot provenance.mod {snapshot:?}"
+            ),
         }
     }
 }
@@ -229,6 +253,17 @@ pub struct Container {
     by_path: Mutex<HashMap<String, EntryRec>>,
     /// the verified, parsed index (its `file` names are the only filename authority)
     index: Index,
+    /// hour_index -> index `file` name, built once at open (first entry wins,
+    /// matching the historical first-match scan) so per-hour lookup is O(log n)
+    /// instead of a linear index scan per scrub step.
+    hour_to_file: BTreeMap<i64, String>,
+    /// Every snapshot file name an INDEX authorizes (spec §4.3: the index is the
+    /// filename authority): the main index's `file` names plus, for a stitched
+    /// container, every per-segment-index retained snapshot — superseded
+    /// rollback files stay loadable by explicit name, while manifest-listed
+    /// non-index entries (segments.json, stray payloads) never decode as a
+    /// Snapshot.
+    indexed_snapshot_files: BTreeSet<String>,
     /// signed | unsigned | sig-invalid(rejected before construction)
     pub signed: bool,
     pub unsigned: bool,
@@ -540,6 +575,8 @@ impl Container {
                 .get("sha256")
                 .and_then(Value::as_str)
                 .ok_or_else(|| ContainerError::Reject(format!("entry {p}: sha256 missing")))?;
+            portable_content_manifest::hud_role::validate_sha256(sha, "manifest entry sha256")
+                .map_err(|error| ContainerError::Reject(format!("entry {p}: {error}")))?;
             let declared_bytes = ent
                 .get("bytes")
                 .and_then(Value::as_u64)
@@ -601,14 +638,26 @@ impl Container {
             )));
         }
 
+        let mut indexed_snapshot_files: BTreeSet<String> = index
+            .snapshots
+            .iter()
+            .map(|entry| entry.file.clone())
+            .collect();
         if cv == STITCHED_CONTAINER_VERSION {
-            validate_stitched_v2(&archive, &mut by_path, &manifest, &game_id, &index_value)?;
+            let retained =
+                validate_stitched_v2(&archive, &mut by_path, &manifest, &game_id, &index_value)?;
+            indexed_snapshot_files.extend(retained);
         }
 
-        // (11) verify timeline.json now if it is declared
+        // (11) verify + parse timeline.json now if it is declared (spec §4.1
+        // step 11): a malformed or duplicate-key timeline must be an open-time
+        // refusal, never a later consumption-time surprise.
         let timeline_path = format!("payload/{game_id}/timeline.json");
         if by_path.contains_key(&timeline_path) {
-            let _ = verify_and_read(&archive, &mut by_path, &timeline_path)?;
+            let timeline_bytes = verify_and_read(&archive, &mut by_path, &timeline_path)?;
+            crate::parse_json_strict(&timeline_bytes).map_err(|e| {
+                ContainerError::Reject(format!("timeline.json failed strict JSON parse: {e}"))
+            })?;
         }
 
         // (12) identity consistency: manifest.mod_identity.modset_id must match a
@@ -627,10 +676,50 @@ impl Container {
             // claims a modset id, a snapshot that names a DIFFERENT one is a lie.
             if let (Some(m), Some(s)) = (modset_id, snap_modset) {
                 if m != s {
-                    return Err(ContainerError::Reject(format!(
-                        "manifest modset_id {m:?} disagrees with snapshot provenance.mod {s:?}"
-                    )));
+                    return Err(ContainerError::ModsetMismatch {
+                        manifest: m.to_string(),
+                        snapshot: s.to_string(),
+                    });
                 }
+            }
+            // Same principle for the build identity (spec §2): the manifest's
+            // build.exe_sha256 must not contradict what the snapshots recorded.
+            // Absence on either side is a measured absence and passes.
+            for (label, snap_sha) in [
+                (
+                    "collector",
+                    snap.get("provenance")
+                        .and_then(|p| p.get("collector"))
+                        .and_then(|c| c.get("exe_sha256"))
+                        .and_then(Value::as_str),
+                ),
+                (
+                    "memory",
+                    snap.get("provenance")
+                        .and_then(|p| p.get("memory"))
+                        .and_then(|m| m.get("exe_sha256"))
+                        .and_then(Value::as_str),
+                ),
+            ] {
+                if let (Some(m), Some(s)) = (build_sha, snap_sha) {
+                    if m != s {
+                        return Err(ContainerError::Reject(format!(
+                            "manifest build.exe_sha256 {m:?} disagrees with snapshot provenance.{label}.exe_sha256 {s:?}"
+                        )));
+                    }
+                }
+            }
+        }
+
+        // hour_index -> file resolution map. FIRST entry wins, preserving the
+        // previous `.find()` first-match semantics (hour_index uniqueness is not
+        // validated at open for a plain v1 index).
+        let mut hour_to_file: BTreeMap<i64, String> = BTreeMap::new();
+        for entry in &index.snapshots {
+            if let Some(hour) = entry.hour_index {
+                hour_to_file
+                    .entry(hour)
+                    .or_insert_with(|| entry.file.clone());
             }
         }
 
@@ -641,6 +730,8 @@ impl Container {
             game_id,
             by_path: Mutex::new(by_path),
             index,
+            hour_to_file,
+            indexed_snapshot_files,
             signed,
             unsigned,
         })
@@ -649,6 +740,16 @@ impl Container {
     /// Load a snapshot by its index `file` name (the only filename authority).
     /// Verifies the entry's hash lazily; never exposes unverified bytes (Codex d).
     pub fn load_file(&self, file: &str) -> Result<Snapshot, ContainerError> {
+        // Spec §4.3 step 1: the index (main index, plus per-segment indexes for
+        // a stitched container's retained rollback snapshots) is the filename
+        // authority for snapshot reads. Refuse to decode a manifest-listed
+        // non-index entry (e.g. segments.json or a stray JSON payload) as a
+        // Snapshot.
+        if !self.indexed_snapshot_files.contains(file) {
+            return Err(ContainerError::Reject(format!(
+                "snapshot file {file:?} is not listed in the index (index is the filename authority)"
+            )));
+        }
         let path = format!("payload/{}/{}", self.game_id, file);
         let bytes = self.read_entry_bytes(&path)?;
         Ok(crate::decode_json_strict(&bytes)?)
@@ -658,7 +759,9 @@ impl Container {
     /// generic path used for optional non-snapshot streams such as
     /// `collector_raw_stream`.
     pub fn read_entry_bytes(&self, path: &str) -> Result<Vec<u8>, ContainerError> {
-        let mut guard = self.by_path.lock().expect("container lock");
+        let mut guard = self.by_path.lock().map_err(|_| {
+            ContainerError::Reject("container entry-verification lock poisoned".into())
+        })?;
         verify_and_read(&self.archive, &mut guard, path)
     }
 
@@ -668,35 +771,39 @@ impl Container {
     /// `index()` remains the default-playback view.
     pub fn segments(&self) -> Result<Option<SegmentGraph>, ContainerError> {
         let path = format!("payload/{}/segments.json", self.game_id);
-        {
-            let guard = self.by_path.lock().expect("container lock");
-            if !guard.contains_key(&path) {
-                return Ok(None);
-            }
+        if !self.has_entry(&path) {
+            return Ok(None);
         }
         let bytes = self.read_entry_bytes(&path)?;
-        Ok(Some(serde_json::from_slice(&bytes)?))
+        // Strict (duplicate-member-rejecting) decode: the graph is trusted
+        // rollback authority, so last-wins collapse is an ambiguity to refuse.
+        Ok(Some(crate::decode_json_strict(&bytes)?))
+    }
+
+    /// Whether a manifest-listed payload entry exists at `path` (O(1); no
+    /// per-call manifest re-projection).
+    pub fn has_entry(&self, path: &str) -> bool {
+        self.by_path
+            .lock()
+            .map(|entries| entries.contains_key(path))
+            .unwrap_or(false)
     }
 
     /// Load a snapshot by hour_index — resolved through the INDEX (`file` field),
     /// not by synthesizing a filename, so segment-prefixed rollback files load too.
     pub fn load(&self, hour_index: i64) -> Result<Snapshot, ContainerError> {
-        let file = self
-            .index
-            .snapshots
-            .iter()
-            .find(|e| e.hour_index == Some(hour_index))
-            .map(|e| e.file.clone())
-            .ok_or_else(|| {
-                ContainerError::Reject(format!("no snapshot for hour_index {hour_index}"))
-            })?;
+        let file = self.hour_to_file.get(&hour_index).cloned().ok_or_else(|| {
+            ContainerError::Reject(format!("no snapshot for hour_index {hour_index}"))
+        })?;
         self.load_file(&file)
     }
 
     /// Full background verification: hash EVERY declared entry. Returns Ok(()) when
     /// all match; the first mismatch is an error. (Optional; never gates open.)
     pub fn verify_all(&self) -> Result<(), ContainerError> {
-        let mut guard = self.by_path.lock().expect("container lock");
+        let mut guard = self.by_path.lock().map_err(|_| {
+            ContainerError::Reject("container entry-verification lock poisoned".into())
+        })?;
         let paths: Vec<String> = guard.keys().cloned().collect();
         for p in paths {
             verify_and_read(&self.archive, &mut guard, &p)?;
@@ -1417,13 +1524,17 @@ fn validate_raw_sources(
     Ok(sources)
 }
 
+/// Validates the whole stitched (v2) graph. On success returns every retained
+/// snapshot file name the per-segment indexes authorize (visible AND
+/// superseded rollback snapshots), for [`Container::load_file`]'s
+/// index-authority check.
 fn validate_stitched_v2(
     archive: &ZipArchive,
     by_path: &mut HashMap<String, EntryRec>,
     manifest: &Value,
     game_id: &str,
     index: &Value,
-) -> Result<(), ContainerError> {
+) -> Result<BTreeSet<String>, ContainerError> {
     required_object(index, "index")?;
     if index.get("index_schema").and_then(Value::as_str) != Some("stitched-main-v1") {
         return Err(reject("v2 index.index_schema must be \"stitched-main-v1\""));
@@ -1437,7 +1548,9 @@ fn validate_stitched_v2(
         return Err(reject("v2 container is missing segments.json"));
     }
     let graph_bytes = verify_and_read(archive, by_path, &graph_path)?;
-    let graph: Value = serde_json::from_slice(&graph_bytes)?;
+    // Strict (duplicate-member-rejecting) parse: a segments.json carrying a
+    // duplicated member must be a typed refusal, never last-wins collapse.
+    let graph: Value = crate::parse_json_strict(&graph_bytes)?;
     required_object(&graph, "segments.json")?;
     let declared_stitch_digest = required_sha256(&graph, "stitch_input_digest", "segments.json")?;
     let declared_ledger_digest =
@@ -1769,7 +1882,7 @@ fn validate_stitched_v2(
             )));
         }
         let bytes = verify_and_read(archive, by_path, &index_path)?;
-        let segment_index: Value = serde_json::from_slice(&bytes)?;
+        let segment_index: Value = crate::parse_json_strict(&bytes)?;
         required_object(&segment_index, &expected_index)?;
         serialized_segment_indexes.push(segment_index.clone());
         if required_u32(&segment_index, "segment_id", &expected_index)? != segment_id {
@@ -1840,8 +1953,16 @@ fn validate_stitched_v2(
         match (cutover, head) {
             (None, None) if local.is_empty() => {}
             (Some(start), Some(end)) if start <= end => {
-                let keys: Vec<i64> = local.keys().copied().collect();
-                if keys != (start..=end).collect::<Vec<_>>() {
+                // Density check WITHOUT materializing (start..=end): a hostile
+                // cutover/head pair (e.g. 0..=i64::MAX) must be a fast typed
+                // refusal, not an unbounded allocation. Keys are unique sorted
+                // i64s, so len == width && min == start && max == end proves
+                // the key set is exactly start..=end.
+                let expected_len = (end as i128) - (start as i128) + 1;
+                if expected_len != local.len() as i128
+                    || local.keys().next() != Some(&start)
+                    || local.keys().next_back() != Some(&end)
+                {
                     return Err(reject(format!(
                         "truncated segment index {expected_index:?}"
                     )));
@@ -2036,6 +2157,15 @@ fn validate_stitched_v2(
             parse_disposition(row, segment_id, game_id, by_path, &context, false)?;
         disposition.ownership = selected_ownership_value(row, &context)?;
         for hour in start..=end {
+            // Any hour outside `visible` is guaranteed to fail the final
+            // `index_main != visible` equality; rejecting it eagerly keeps a
+            // hostile coverage span (e.g. 0..=9e18) from materializing
+            // billions of map entries before that comparison can run.
+            if !visible.contains_key(&hour) {
+                return Err(reject(format!(
+                    "{context} covers hour {hour} absent from graph visible spans"
+                )));
+            }
             insert_unique(&mut index_main, hour, disposition.clone(), "index")?;
         }
     }
@@ -2094,7 +2224,15 @@ fn validate_stitched_v2(
             "segments.json.stitch_input_digest mismatch (recomputed {recomputed_stitch_digest}, declared {declared_stitch_digest})"
         )));
     }
-    Ok(())
+    let mut retained_snapshot_files = BTreeSet::new();
+    for hours in &segment_hours {
+        for disposition in hours.values() {
+            if let Some(file) = &disposition.file {
+                retained_snapshot_files.insert(file.clone());
+            }
+        }
+    }
+    Ok(retained_snapshot_files)
 }
 
 /// Read an entry's bytes and verify them against the manifest hash, marking it
@@ -2104,21 +2242,273 @@ fn verify_and_read(
     by_path: &mut HashMap<String, EntryRec>,
     path: &str,
 ) -> Result<Vec<u8>, ContainerError> {
-    let rec = by_path
-        .get(path)
-        .ok_or_else(|| ContainerError::Reject(format!("entry {path} not in manifest")))?;
-    let bytes = archive.read_entry(&rec.zip)?;
+    let (entry, expected_sha256, verified) = {
+        let rec = by_path
+            .get(path)
+            .ok_or_else(|| ContainerError::Reject(format!("entry {path} not in manifest")))?;
+        (rec.zip.clone(), rec.expected_sha256.clone(), rec.verified)
+    };
+    let bytes = archive.read_entry(&entry)?;
+    if verified {
+        return Ok(bytes);
+    }
     let got = to_hex(&Sha256::digest(&bytes));
-    if got != rec.expected_sha256 {
+    if got != expected_sha256 {
         return Err(ContainerError::Reject(format!(
             "entry {path}: sha256 {got} != manifest {}",
-            rec.expected_sha256
+            expected_sha256
         )));
     }
-    // mark verified (cheap; lets a re-read skip nothing today but documents intent
-    // and supports a future "skip if already verified" fast path)
+    // The archive bytes are immutable after parse, so a successful first hash
+    // permanently verifies this EntryRec and repeat reads need not re-hash it.
     if let Some(rec) = by_path.get_mut(path) {
         rec.verified = true;
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pack::{pack, pack_with, PackEntry, PackIdentity, PackOptions};
+
+    fn entry(path: &str, bytes: &[u8], role: &'static str, hour_index: Option<i64>) -> PackEntry {
+        PackEntry {
+            path: path.into(),
+            bytes: bytes.to_vec(),
+            role,
+            hour_index,
+        }
+    }
+
+    fn empty_index_entry() -> PackEntry {
+        entry(
+            "payload/g/index.json",
+            br#"{"game_id":"g","schema_version":"1","snapshots":[]}"#,
+            "index",
+            None,
+        )
+    }
+
+    #[test]
+    fn segments_accessor_strict_parses_duplicate_members() {
+        // A v1 container carrying a stray segments.json with a duplicated
+        // member: the accessor must be a typed refusal, never last-wins.
+        let bytes = pack(
+            "g",
+            &[
+                empty_index_entry(),
+                entry(
+                    "payload/g/segments.json",
+                    br#"{"segments":[],"segments":[]}"#,
+                    "segments",
+                    None,
+                ),
+            ],
+            &PackIdentity::default(),
+            false,
+        )
+        .unwrap();
+        let container =
+            Container::from_bytes(bytes, &ExpectedIdentity::default()).expect("v1 container opens");
+        let err = container
+            .segments()
+            .expect_err("duplicate-member segments.json must refuse");
+        assert!(
+            err.to_string().contains("duplicate JSON member"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn v2_duplicate_member_segments_json_is_an_open_refusal() {
+        let bytes = pack_with(
+            "g",
+            &[
+                entry(
+                    "payload/g/index.json",
+                    br#"{"game_id":"g","schema_version":"1","index_schema":"stitched-main-v1","segments_file":"segments.json","snapshots":[]}"#,
+                    "index",
+                    None,
+                ),
+                entry(
+                    "payload/g/segments.json",
+                    br#"{"segments":[],"segments":[]}"#,
+                    "segments",
+                    None,
+                ),
+            ],
+            &PackIdentity::default(),
+            false,
+            &PackOptions {
+                container_version: Some(2),
+                required_features: Some(vec![FEATURE_TIMELINE_SEGMENTS_V1.into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let err = match Container::from_bytes(bytes, &ExpectedIdentity::default()) {
+            Ok(_) => panic!("v2 duplicate-member graph must be refused at open"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("duplicate JSON member"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_file_requires_index_listing() {
+        let bytes = pack(
+            "g",
+            &[
+                entry(
+                    "payload/g/index.json",
+                    br#"{"game_id":"g","schema_version":"1","snapshots":[{"hour_index":0,"file":"000000000000.snapshot.json"}]}"#,
+                    "index",
+                    None,
+                ),
+                entry(
+                    "payload/g/000000000000.snapshot.json",
+                    br#"{"game_id":"g","hour_index":0}"#,
+                    "snapshot",
+                    Some(0),
+                ),
+                entry(
+                    "payload/g/stray.json",
+                    br#"{"not":"a snapshot"}"#,
+                    "aux",
+                    None,
+                ),
+            ],
+            &PackIdentity::default(),
+            false,
+        )
+        .unwrap();
+        let container =
+            Container::from_bytes(bytes, &ExpectedIdentity::default()).expect("container opens");
+        container
+            .load_file("000000000000.snapshot.json")
+            .expect("index-listed snapshot loads");
+        container
+            .load(0)
+            .expect("hour-indexed load resolves through the index");
+        let err = container
+            .load_file("stray.json")
+            .expect_err("a manifest-listed non-index entry must not decode as a Snapshot");
+        assert!(
+            err.to_string().contains("not listed in the index"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn manifest_build_hash_must_match_snapshot_provenance() {
+        let entries = [
+            entry(
+                "payload/g/index.json",
+                br#"{"game_id":"g","schema_version":"1","snapshots":[{"hour_index":0,"file":"000000000000.snapshot.json"}]}"#,
+                "index",
+                None,
+            ),
+            entry(
+                "payload/g/000000000000.snapshot.json",
+                br#"{"game_id":"g","hour_index":0,"provenance":{"collector":{"exe_sha256":"aaaa"},"memory":{"exe_sha256":"aaaa"}}}"#,
+                "snapshot",
+                Some(0),
+            ),
+        ];
+        let agreeing = PackIdentity {
+            build_exe_sha256: Some("aaaa".into()),
+            ..Default::default()
+        };
+        Container::from_bytes(
+            pack("g", &entries, &agreeing, false).unwrap(),
+            &ExpectedIdentity::default(),
+        )
+        .expect("agreeing build hash opens");
+
+        let lying = PackIdentity {
+            build_exe_sha256: Some("bbbb".into()),
+            ..Default::default()
+        };
+        let err = match Container::from_bytes(
+            pack("g", &entries, &lying, false).unwrap(),
+            &ExpectedIdentity::default(),
+        ) {
+            Ok(_) => panic!("a manifest lying about the build must be refused"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("disagrees with snapshot provenance.collector.exe_sha256"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn modset_mismatch_is_typed_with_stable_text() {
+        let entries = [
+            entry(
+                "payload/g/index.json",
+                br#"{"game_id":"g","schema_version":"1","snapshots":[{"hour_index":0,"file":"000000000000.snapshot.json"}]}"#,
+                "index",
+                None,
+            ),
+            entry(
+                "payload/g/000000000000.snapshot.json",
+                br#"{"game_id":"g","hour_index":0,"provenance":{"mod":{"modset_id":"real"}}}"#,
+                "snapshot",
+                Some(0),
+            ),
+        ];
+        let identity = PackIdentity {
+            mod_identity: Some(json!({"modset_id":"claimed"})),
+            ..Default::default()
+        };
+        let err = match Container::from_bytes(
+            pack("g", &entries, &identity, false).unwrap(),
+            &ExpectedIdentity::default(),
+        ) {
+            Ok(_) => panic!("modset lie must be refused"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(err, ContainerError::ModsetMismatch { .. }),
+            "expected typed ModsetMismatch, got {err:?}"
+        );
+        // Display renders the EXACT pre-typed message (fixture/UX contract).
+        assert_eq!(
+            err.to_string(),
+            "container rejected: manifest modset_id \"claimed\" disagrees with snapshot provenance.mod \"real\""
+        );
+    }
+
+    #[test]
+    fn malformed_timeline_is_an_open_refusal() {
+        let bytes = pack(
+            "g",
+            &[
+                empty_index_entry(),
+                entry(
+                    "payload/g/timeline.json",
+                    br#"{"a":1,"a":2}"#,
+                    "timeline",
+                    None,
+                ),
+            ],
+            &PackIdentity::default(),
+            false,
+        )
+        .unwrap();
+        let err = match Container::from_bytes(bytes, &ExpectedIdentity::default()) {
+            Ok(_) => panic!("duplicate-member timeline.json must be refused at open"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("timeline.json failed strict JSON parse"),
+            "unexpected error: {err}"
+        );
+    }
 }

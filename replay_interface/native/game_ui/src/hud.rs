@@ -2,14 +2,15 @@ use crate::assets::{normalize_rel_path, AssetResolver};
 use crate::compose::{
     draw_image, draw_nine_slice, draw_rect_outline, draw_scaled, fill_rect,
     measure_to_pixels_for_parent, resolve_element_rect, ComposeOptions, ComposeOutput,
-    ComposeReport, Compositor, DebugRect, Rect,
+    ComposeReport, Compositor, DebugRect, Rect, UiAssetCache,
 };
 use crate::dds::RgbaImage;
 use crate::font::{blank_image, BitmapFont, TextAlign};
 use crate::gfx::{Size, SpriteRegistry};
-use crate::gui::{parse_measure, GuiElement, LayoutSet, MeasurePair};
+use crate::gui::{parse_measure, GuiElement, MeasurePair};
+use crate::gui_scene_util::{load_named_element_from_file, parse_layout_set, wrap_text_greedy};
 use crate::loc::Localisation;
-use crate::paradox_text::{parse_file, scalar_i32, Value};
+use crate::paradox_text::{scalar_i32, Value};
 use crate::png::write_png;
 use crate::topbar::{compose_topbar_at, topbar_debug_overlay, TopbarBinding};
 use crate::{GameUiError, Result};
@@ -321,6 +322,8 @@ pub fn compose_authenticated_hud(
     resolver: &AssetResolver,
     registry: &SpriteRegistry,
     binding: &HudBinding,
+    localisation: &Localisation,
+    cache: &mut UiAssetCache,
     width: usize,
     height: usize,
 ) -> Result<HudComposeResult> {
@@ -328,7 +331,15 @@ pub fn compose_authenticated_hud(
     let mut output = empty_output(width, height);
     let mut stats = HudSpriteStats::default();
 
-    let topbar = compose_topbar_at(resolver, registry, &binding.topbar, width, height)?;
+    let topbar = compose_topbar_at(
+        resolver,
+        registry,
+        &binding.topbar,
+        localisation,
+        cache,
+        width,
+        height,
+    )?;
     draw_image(&mut output.image, &topbar.output.image, 0, 0);
     merge_output(&mut output, topbar.output);
 
@@ -338,6 +349,8 @@ pub fn compose_authenticated_hud(
         &layouts,
         &binding.mapmode,
         &binding.minimap,
+        localisation,
+        cache,
         &mut output,
         &mut stats,
     )?;
@@ -345,6 +358,8 @@ pub fn compose_authenticated_hud(
         resolver,
         registry,
         &layouts,
+        localisation,
+        cache,
         &mut output,
         &mut stats,
     )?;
@@ -364,10 +379,20 @@ pub fn compose_hud(
     height: usize,
 ) -> Result<HudComposeResult> {
     let layouts = load_hud_layouts(resolver)?;
+    let localisation = Localisation::load_english(resolver)?;
+    let mut cache = UiAssetCache::default();
     let mut output = empty_output(width, height);
     let mut stats = HudSpriteStats::default();
 
-    let topbar = compose_topbar_at(resolver, registry, &binding.topbar, width, height)?;
+    let topbar = compose_topbar_at(
+        resolver,
+        registry,
+        &binding.topbar,
+        &localisation,
+        &mut cache,
+        width,
+        height,
+    )?;
     draw_image(&mut output.image, &topbar.output.image, 0, 0);
     merge_output(&mut output, topbar.output);
 
@@ -377,6 +402,8 @@ pub fn compose_hud(
         &layouts,
         &binding.mapmode,
         &binding.minimap,
+        &localisation,
+        &mut cache,
         &mut output,
         &mut stats,
     )?;
@@ -385,6 +412,8 @@ pub fn compose_hud(
         registry,
         &layouts,
         &binding.outliner,
+        &localisation,
+        &mut cache,
         &mut output,
         &mut stats,
     )?;
@@ -414,6 +443,8 @@ pub fn compose_minimap_panel(
     height: usize,
 ) -> Result<HudComposeResult> {
     let layouts = load_hud_layouts(resolver)?;
+    let localisation = Localisation::load_english(resolver)?;
+    let mut cache = UiAssetCache::default();
     let mut output = empty_output(width, height);
     let mut stats = HudSpriteStats::default();
     let mapmode = MapmodeBinding::default();
@@ -423,6 +454,8 @@ pub fn compose_minimap_panel(
         &layouts,
         &mapmode,
         binding,
+        &localisation,
+        &mut cache,
         &mut output,
         &mut stats,
     )?;
@@ -441,13 +474,17 @@ pub fn compose_mapmode_panel(
     height: usize,
 ) -> Result<HudComposeResult> {
     let layouts = load_hud_layouts(resolver)?;
+    let localisation = Localisation::load_english(resolver)?;
+    let mut cache = UiAssetCache::default();
     let mut output = empty_output(width, height);
     let mut stats = HudSpriteStats::default();
-    compose_mapmodes_into(
+    compose_mapmodes_root_into(
         resolver,
         registry,
-        &layouts,
+        &layouts.mapmodes,
         binding,
+        &localisation,
+        &mut cache,
         &mut output,
         &mut stats,
     )?;
@@ -466,6 +503,8 @@ pub fn compose_outliner_panel(
     height: usize,
 ) -> Result<HudComposeResult> {
     let layouts = load_hud_layouts(resolver)?;
+    let localisation = Localisation::load_english(resolver)?;
+    let mut cache = UiAssetCache::default();
     let mut output = empty_output(width, height);
     let mut stats = HudSpriteStats::default();
     compose_outliner_into(
@@ -473,6 +512,8 @@ pub fn compose_outliner_panel(
         registry,
         &layouts,
         binding,
+        &localisation,
+        &mut cache,
         &mut output,
         &mut stats,
     )?;
@@ -597,20 +638,25 @@ pub fn inspect_hud_sprites(
     ] {
         root.collect_sprite_refs(&mut names);
     }
-    for name in [
-        "GFX_tiled_window_transparent",
-        "GFX_theatre_selection_background",
-        "GFX_theatre_selection_frame",
-        "GFX_theatre_army_shield",
-        "GFX_theatre_task_force_shield",
-        "GFX_theatre_air_force_shield",
-        "GFX_topbar_fuel_bar",
-        "GFX_production_output_icon",
-    ] {
-        names.insert(name.to_string());
+    for name in MANUAL_HUD_SPRITES {
+        names.insert((*name).to_string());
     }
     Ok(sprite_stats(resolver, registry, names))
 }
+
+/// Sprites the manual outliner/tooltip drawing code references directly (no
+/// `.gui` sprite ref). Shared between the probe's whole-HUD inventory and the
+/// outliner's per-compose stat set.
+const MANUAL_HUD_SPRITES: &[&str] = &[
+    "GFX_tiled_window_transparent",
+    "GFX_theatre_selection_background",
+    "GFX_theatre_selection_frame",
+    "GFX_theatre_army_shield",
+    "GFX_theatre_task_force_shield",
+    "GFX_theatre_air_force_shield",
+    "GFX_topbar_fuel_bar",
+    "GFX_production_output_icon",
+];
 
 fn compose_minimap_into(
     resolver: &AssetResolver,
@@ -618,17 +664,79 @@ fn compose_minimap_into(
     layouts: &HudLayouts,
     mapmode: &MapmodeBinding,
     binding: &MinimapBinding,
+    localisation: &Localisation,
+    cache: &mut UiAssetCache,
     output: &mut ComposeOutput,
     stats: &mut HudSpriteStats,
 ) -> Result<()> {
-    let mut options = localized_options(resolver, output.image.width, output.image.height)?;
+    compose_minimap_common(
+        resolver,
+        registry,
+        &layouts.minimap,
+        &layouts.mapmodes,
+        &[&layouts.zoom_in, &layouts.zoom_out],
+        mapmode,
+        binding,
+        localisation,
+        cache,
+        output,
+        stats,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compose_authenticated_minimap_into(
+    resolver: &AssetResolver,
+    registry: &SpriteRegistry,
+    layouts: &AuthenticatedHudLayouts,
+    mapmode: &MapmodeBinding,
+    binding: &MinimapBinding,
+    localisation: &Localisation,
+    cache: &mut UiAssetCache,
+    output: &mut ComposeOutput,
+    stats: &mut HudSpriteStats,
+) -> Result<()> {
+    compose_minimap_common(
+        resolver,
+        registry,
+        &layouts.minimap,
+        &layouts.mapmodes,
+        &[],
+        mapmode,
+        binding,
+        localisation,
+        cache,
+        output,
+        stats,
+    )
+}
+
+/// The single minimap/mapmodes composition law shared by the probe HUD and the
+/// authenticated product HUD. The two paths differ only in the zoom-button
+/// roots they admit; the minimap override/viewport/view-rect-outline logic and
+/// the stats aggregation are identical by construction.
+#[allow(clippy::too_many_arguments)]
+fn compose_minimap_common(
+    resolver: &AssetResolver,
+    registry: &SpriteRegistry,
+    minimap_root: &GuiElement,
+    mapmodes_root: &GuiElement,
+    zoom_roots: &[&GuiElement],
+    mapmode: &MapmodeBinding,
+    binding: &MinimapBinding,
+    localisation: &Localisation,
+    cache: &mut UiAssetCache,
+    output: &mut ComposeOutput,
+    stats: &mut HudSpriteStats,
+) -> Result<()> {
+    let mut options = localized_options(localisation, output.image.width, output.image.height);
     if let Some(minimap) = &binding.image {
         let (w, h) = sprite_first_frame_size(resolver, registry, "GFX_minimap_world")?;
         options
             .sprite_overrides
             .insert("worldmap_bg".to_string(), scaled_image(minimap, w, h));
     }
-    let minimap = compose_root(resolver, registry, &layouts.minimap, &options);
+    let minimap = compose_root(resolver, registry, cache, minimap_root, &options);
     let viewport = minimap
         .debug_rects
         .iter()
@@ -637,17 +745,24 @@ fn compose_minimap_into(
     draw_image(&mut output.image, &minimap.image, 0, 0);
     merge_output(output, minimap);
 
-    compose_mapmodes_into(resolver, registry, layouts, mapmode, output, stats)?;
+    compose_mapmodes_root_into(
+        resolver,
+        registry,
+        mapmodes_root,
+        mapmode,
+        localisation,
+        cache,
+        output,
+        stats,
+    )?;
 
-    for zoom in [&layouts.zoom_in, &layouts.zoom_out] {
-        let zoom_output = compose_root(
-            resolver,
-            registry,
-            zoom,
-            &localized_options(resolver, output.image.width, output.image.height)?,
-        );
-        draw_image(&mut output.image, &zoom_output.image, 0, 0);
-        merge_output(output, zoom_output);
+    if !zoom_roots.is_empty() {
+        let zoom_options = localized_options(localisation, output.image.width, output.image.height);
+        for zoom in zoom_roots {
+            let zoom_output = compose_root(resolver, registry, cache, zoom, &zoom_options);
+            draw_image(&mut output.image, &zoom_output.image, 0, 0);
+            merge_output(output, zoom_output);
+        }
     }
 
     if let (Some(viewport), Some(view_rect)) = (viewport, binding.view_rect) {
@@ -674,97 +789,28 @@ fn compose_minimap_into(
         &sprite_stats_for_roots(
             resolver,
             registry,
-            [&layouts.minimap, &layouts.zoom_in, &layouts.zoom_out],
+            std::iter::once(minimap_root).chain(zoom_roots.iter().copied()),
         ),
     );
     Ok(())
 }
 
-fn compose_authenticated_minimap_into(
-    resolver: &AssetResolver,
-    registry: &SpriteRegistry,
-    layouts: &AuthenticatedHudLayouts,
-    mapmode: &MapmodeBinding,
-    binding: &MinimapBinding,
-    output: &mut ComposeOutput,
-    stats: &mut HudSpriteStats,
-) -> Result<()> {
-    let mut options = localized_options(resolver, output.image.width, output.image.height)?;
-    if let Some(minimap) = &binding.image {
-        let (w, h) = sprite_first_frame_size(resolver, registry, "GFX_minimap_world")?;
-        options
-            .sprite_overrides
-            .insert("worldmap_bg".to_string(), scaled_image(minimap, w, h));
-    }
-    let minimap = compose_root(resolver, registry, &layouts.minimap, &options);
-    let viewport = minimap
-        .debug_rects
-        .iter()
-        .find(|rect| rect.name == "worldmap_bg")
-        .cloned();
-    draw_image(&mut output.image, &minimap.image, 0, 0);
-    merge_output(output, minimap);
-
-    compose_authenticated_mapmodes_into(resolver, registry, layouts, mapmode, output, stats)?;
-
-    if let (Some(viewport), Some(view_rect)) = (viewport, binding.view_rect) {
-        let rect = minimap_view_rect_to_pixels(&viewport, view_rect);
-        draw_rect_outline(&mut output.image, rect, [245, 213, 101, 230]);
-        draw_rect_outline(
-            &mut output.image,
-            Rect::new(rect.x() + 1, rect.y() + 1, rect.w() - 2, rect.h() - 2),
-            [20, 20, 18, 190],
-        );
-        output.debug_rects.push(DebugRect {
-            name: "minimap_view_rect".to_string(),
-            element_type: "binding".to_string(),
-            x: rect.x(),
-            y: rect.y(),
-            w: rect.w(),
-            h: rect.h(),
-            depth: 2,
-        });
-    }
-
-    *stats = merge_sprite_stats(
-        stats,
-        &sprite_stats_for_roots(resolver, registry, [&layouts.minimap]),
-    );
-    Ok(())
-}
-
-fn compose_authenticated_mapmodes_into(
-    resolver: &AssetResolver,
-    registry: &SpriteRegistry,
-    layouts: &AuthenticatedHudLayouts,
-    binding: &MapmodeBinding,
-    output: &mut ComposeOutput,
-    stats: &mut HudSpriteStats,
-) -> Result<()> {
-    let mut options = localized_options(resolver, output.image.width, output.image.height)?;
-    apply_mapmode_binding(&layouts.mapmodes, registry, binding, &mut options);
-    let mapmodes = compose_root(resolver, registry, &layouts.mapmodes, &options);
-    draw_image(&mut output.image, &mapmodes.image, 0, 0);
-    merge_output(output, mapmodes);
-    *stats = merge_sprite_stats(
-        stats,
-        &sprite_stats_for_roots(resolver, registry, [&layouts.mapmodes]),
-    );
-    Ok(())
-}
-
+#[allow(clippy::too_many_arguments)]
 fn compose_authenticated_theatre_selector_into(
     resolver: &AssetResolver,
     registry: &SpriteRegistry,
     layouts: &AuthenticatedHudLayouts,
+    localisation: &Localisation,
+    cache: &mut UiAssetCache,
     output: &mut ComposeOutput,
     stats: &mut HudSpriteStats,
 ) -> Result<()> {
     let shell = compose_root(
         resolver,
         registry,
+        cache,
         &layouts.outliner_shell,
-        &localized_options(resolver, output.image.width, output.image.height)?,
+        &localized_options(localisation, output.image.width, output.image.height),
     );
     draw_image(&mut output.image, &shell.image, 0, 0);
     merge_output(output, shell);
@@ -775,22 +821,25 @@ fn compose_authenticated_theatre_selector_into(
     Ok(())
 }
 
-fn compose_mapmodes_into(
+#[allow(clippy::too_many_arguments)]
+fn compose_mapmodes_root_into(
     resolver: &AssetResolver,
     registry: &SpriteRegistry,
-    layouts: &HudLayouts,
+    mapmodes_root: &GuiElement,
     binding: &MapmodeBinding,
+    localisation: &Localisation,
+    cache: &mut UiAssetCache,
     output: &mut ComposeOutput,
     stats: &mut HudSpriteStats,
 ) -> Result<()> {
-    let mut options = localized_options(resolver, output.image.width, output.image.height)?;
-    apply_mapmode_binding(&layouts.mapmodes, registry, binding, &mut options);
-    let mapmodes = compose_root(resolver, registry, &layouts.mapmodes, &options);
+    let mut options = localized_options(localisation, output.image.width, output.image.height);
+    apply_mapmode_binding(mapmodes_root, registry, binding, &mut options);
+    let mapmodes = compose_root(resolver, registry, cache, mapmodes_root, &options);
     draw_image(&mut output.image, &mapmodes.image, 0, 0);
     merge_output(output, mapmodes);
     *stats = merge_sprite_stats(
         stats,
-        &sprite_stats_for_roots(resolver, registry, [&layouts.mapmodes]),
+        &sprite_stats_for_roots(resolver, registry, [mapmodes_root]),
     );
     Ok(())
 }
@@ -878,19 +927,23 @@ fn mapmode_button_number(name: &str) -> Option<u8> {
     tail.parse::<u8>().ok()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compose_outliner_into(
     resolver: &AssetResolver,
     registry: &SpriteRegistry,
     layouts: &HudLayouts,
     binding: &OutlinerBinding,
+    localisation: &Localisation,
+    cache: &mut UiAssetCache,
     output: &mut ComposeOutput,
     stats: &mut HudSpriteStats,
 ) -> Result<()> {
     let shell = compose_root(
         resolver,
         registry,
+        cache,
         &layouts.outliner_shell,
-        &localized_options(resolver, output.image.width, output.image.height)?,
+        &localized_options(localisation, output.image.width, output.image.height),
     );
     draw_image(&mut output.image, &shell.image, 0, 0);
     merge_output(output, shell);
@@ -955,8 +1008,24 @@ fn compose_outliner_into(
         )?;
     }
 
-    let manual = inspect_hud_sprites(resolver, registry)?;
-    *stats = merge_sprite_stats(stats, &manual);
+    // Outliner stats reuse the already-loaded layouts instead of re-parsing
+    // every HUD source through `inspect_hud_sprites` (which stays the probe's
+    // intended whole-HUD inventory, see `probe::inspect_hud_window`); the old
+    // whole-HUD merge also double-counted the minimap/zoom/mapmodes sprites
+    // already added by `compose_minimap_into`. `tooltip_shell` refs
+    // intentionally stay out of compose_hud's stat set: they remain covered by
+    // the probe's `inspect_hud_sprites` path and by `compose_tooltip_into`'s
+    // hard decode errors.
+    let mut names = BTreeSet::new();
+    layouts.outliner_shell.collect_sprite_refs(&mut names);
+    layouts.outliner_row.collect_sprite_refs(&mut names);
+    for name in MANUAL_HUD_SPRITES {
+        names.insert((*name).to_string());
+    }
+    for row in &binding.rows {
+        names.insert(row.icon_sprite.clone());
+    }
+    *stats = merge_sprite_stats(stats, &sprite_stats(resolver, registry, names));
     Ok(())
 }
 
@@ -999,7 +1068,7 @@ fn compose_tooltip_into(
         font.glyph_channel = None;
     }
     let text_rect = Rect::new(rect.x() + 12, rect.y() + 10, rect.w() - 24, rect.h() - 16);
-    let wrapped = wrap_tooltip_text_with(&binding.text, text_rect.w().max(8), |text| {
+    let wrapped = wrap_text_greedy(&binding.text, text_rect.w().max(8), |text| {
         font.measure_text(text)
     });
     let line_step = font.line_height.max(18);
@@ -1202,10 +1271,11 @@ fn draw_progress_bar(
 fn compose_root(
     resolver: &AssetResolver,
     registry: &SpriteRegistry,
+    cache: &mut UiAssetCache,
     root: &GuiElement,
     options: &ComposeOptions,
 ) -> ComposeOutput {
-    let mut compositor = Compositor::new(resolver, registry);
+    let mut compositor = Compositor::with_cache(resolver, registry, cache);
     compositor.compose(root, options)
 }
 
@@ -1217,13 +1287,8 @@ fn empty_output(width: usize, height: usize) -> ComposeOutput {
     }
 }
 
-fn localized_options(
-    resolver: &AssetResolver,
-    width: usize,
-    height: usize,
-) -> Result<ComposeOptions> {
-    let localisation = Localisation::load_english(resolver)?;
-    Ok(ComposeOptions::new(width, height).with_localisation(&localisation))
+fn localized_options(localisation: &Localisation, width: usize, height: usize) -> ComposeOptions {
+    ComposeOptions::new(width, height).with_localisation(localisation)
 }
 
 fn merge_output(dst: &mut ComposeOutput, src: ComposeOutput) {
@@ -1246,10 +1311,7 @@ fn merge_report(dst: &mut ComposeReport, src: ComposeReport) {
 }
 
 fn load_window_from_file(path: &Path, rel: &str, name: &str) -> Result<GuiElement> {
-    let doc = parse_file(path)?;
-    let mut layouts = LayoutSet::default();
-    layouts.add_document(rel, &doc);
-    layouts
+    parse_layout_set(path, rel)?
         .find_by_name(name)
         .into_iter()
         .find(|element| {
@@ -1260,18 +1322,6 @@ fn load_window_from_file(path: &Path, rel: &str, name: &str) -> Result<GuiElemen
         })
         .cloned()
         .ok_or_else(|| GameUiError::missing(format!("{rel}: window {name} not found")))
-}
-
-fn load_named_element_from_file(path: &Path, rel: &str, name: &str) -> Result<GuiElement> {
-    let doc = parse_file(path)?;
-    let mut layouts = LayoutSet::default();
-    layouts.add_document(rel, &doc);
-    layouts
-        .find_by_name(name)
-        .into_iter()
-        .next()
-        .cloned()
-        .ok_or_else(|| GameUiError::missing(format!("{rel}: element {name} not found")))
 }
 
 fn sprite_first_frame_size(
@@ -1467,34 +1517,6 @@ fn border_size(value: &Value) -> Option<(usize, usize)> {
     Some((x, y))
 }
 
-fn wrap_tooltip_text_with<F>(text: &str, max_width: i32, measure: F) -> String
-where
-    F: Fn(&str) -> i32,
-{
-    if max_width <= 0 {
-        return text.to_string();
-    }
-    let mut out = Vec::new();
-    for source_line in text.lines() {
-        let mut current = String::new();
-        for word in source_line.split_whitespace() {
-            let candidate = if current.is_empty() {
-                word.to_string()
-            } else {
-                format!("{current} {word}")
-            };
-            if !current.is_empty() && measure(&candidate) > max_width {
-                out.push(current);
-                current = word.to_string();
-            } else {
-                current = candidate;
-            }
-        }
-        out.push(current);
-    }
-    out.join("\n")
-}
-
 fn tooltip_line_color(line_idx: usize, line: &str) -> [u8; 4] {
     if line_idx == 0 && !line.trim().is_empty() {
         [245, 213, 101, 255]
@@ -1628,7 +1650,7 @@ mod tests {
 
     #[test]
     fn tooltip_wrap_preserves_existing_lines_and_color_escapes() {
-        let wrapped = wrap_tooltip_text_with(
+        let wrapped = wrap_text_greedy(
             "Alpha \u{00a7}YBravo\u{00a7}! Charlie\nDelta Echo",
             100,
             |text| crate::font::strip_color_codes(text).chars().count() as i32 * 10,

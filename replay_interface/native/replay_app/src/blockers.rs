@@ -51,6 +51,8 @@ pub enum BlockerId {
     DebugUnderwaterInputs,
     DebugConstantRefraction,
     DumpLabels,
+    SnowMudTextureOverride,
+    SnowMudFadeOverride,
 }
 
 impl BlockerId {
@@ -86,6 +88,8 @@ impl BlockerId {
             BlockerId::DebugUnderwaterInputs => "env_debug_underwater_inputs",
             BlockerId::DebugConstantRefraction => "env_debug_constant_refraction",
             BlockerId::DumpLabels => "env_dump_labels",
+            BlockerId::SnowMudTextureOverride => "env_snow_mud_texture_override",
+            BlockerId::SnowMudFadeOverride => "env_snow_mud_fade_override",
         }
     }
 }
@@ -443,6 +447,24 @@ pub const REGISTRY: &[Blocker] = &[
         status: Blocked,
         product_path_test: None,
     },
+    Blocker {
+        id: B::SnowMudTextureOverride,
+        surface: EnvOverride("REPLAY_SNOW_MUD_OVERRIDE"),
+        kind: DebugKnob,
+        reason: "REPLAY_SNOW_MUD_OVERRIDE is blocked in replay_app: SnowMudTexture must come from the measured replay carrier; an environment-selected texture is not engine-derived product input",
+        waits_for: "Design block (SnowMudTexture is capture/replay data, never an environment override)",
+        status: Blocked,
+        product_path_test: Some("snow_mud_env_overrides_are_product_path_blocked"),
+    },
+    Blocker {
+        id: B::SnowMudFadeOverride,
+        surface: EnvOverride("REPLAY_SNOW_MUD_FADE"),
+        kind: DebugKnob,
+        reason: "REPLAY_SNOW_MUD_FADE is blocked in replay_app: SnowMudFade must come from the measured replay carrier; an environment-selected fade is not engine-derived product input",
+        waits_for: "Design block (SnowMudFade is capture/replay data, never an environment override)",
+        status: Blocked,
+        product_path_test: Some("snow_mud_env_overrides_are_product_path_blocked"),
+    },
 ];
 
 /// Look up a blocker row by id. Panics if the id has no row — every
@@ -462,6 +484,9 @@ pub fn reason(id: BlockerId) -> &'static str {
 }
 
 /// The fail-closed message for a rejected environment variable, by name.
+/// Test-only since the `main.rs` env gate became registry-iteration-driven
+/// (`reject_env_overrides`); kept as the by-name lookup seam with its own test.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn env_reason_by_name(name: &str) -> Option<&'static str> {
     REGISTRY
         .iter()
@@ -540,7 +565,7 @@ mod tests {
     fn counts_are_exact() {
         // Guardrail: the canonical count is pinned. Bumping it is intentional and
         // forces the LANE_REPORT + plan G3 row to be updated alongside.
-        assert_eq!(REGISTRY.len(), 29, "total blocker surfaces");
+        assert_eq!(REGISTRY.len(), 31, "total blocker surfaces");
         let cli = REGISTRY
             .iter()
             .filter(|b| matches!(b.surface, Surface::CliSwitch(_)))
@@ -550,7 +575,7 @@ mod tests {
             .filter(|b| matches!(b.surface, Surface::EnvOverride(_)))
             .count();
         assert_eq!(cli, 23, "blocked CLI switches");
-        assert_eq!(env, 6, "rejected env overrides");
+        assert_eq!(env, 8, "rejected env overrides");
     }
 
     #[test]
@@ -571,7 +596,7 @@ mod tests {
         // Snapshot: header + one line per row, no more.
         let lines: Vec<&str> = list.lines().collect();
         assert_eq!(lines.len(), REGISTRY.len() + 1);
-        assert_eq!(lines[0], "replay_app product blockers: 29");
+        assert_eq!(lines[0], "replay_app product blockers: 31");
         // Spot-check exact rows (surface tokens + status) as a golden snapshot.
         assert_eq!(
             lines[1],
@@ -583,7 +608,7 @@ mod tests {
         );
         assert_eq!(
             *lines.last().unwrap(),
-            "env_dump_labels\tdebug-knob\tenv-override\tREPLAY_DUMP_LABELS\tBLOCKED\tDesign block (debug/validation knob barred from the product render path)"
+            "env_snow_mud_fade_override\tdebug-knob\tenv-override\tREPLAY_SNOW_MUD_FADE\tBLOCKED\tDesign block (SnowMudFade is capture/replay data, never an environment override)"
         );
         // Every CLI surface line carries a `--` token; every env line does not.
         for b in REGISTRY {

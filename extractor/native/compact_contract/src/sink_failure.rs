@@ -278,7 +278,11 @@ fn validate_report(report: &SinkFailureReport) -> Result<(), SinkStatusError> {
                 .ok_or(SinkStatusError::TerminalMissingFailedSequence)?;
             match report.last_complete_sequence {
                 Some(last) if last.checked_add(1) == Some(failed) => {}
-                None if failed == 0 => {}
+                // IdentityV1 begins at sequence 0; the still-supported legacy
+                // compact stream begins at sequence 1. A failure before the
+                // first complete record therefore has exactly these two valid
+                // origins and no prior-completion witness.
+                None if failed <= 1 => {}
                 _ => return Err(SinkStatusError::InvalidSequenceProgress),
             }
         }
@@ -408,6 +412,21 @@ mod tests {
             encode_sink_failure(&terminal),
             Err(SinkStatusError::TerminalFailureWasNotOpened)
         ));
+    }
+
+    #[test]
+    fn terminal_first_write_accepts_both_declared_stream_origins_only() {
+        let mut report = terminal_failure();
+        report.last_complete_sequence = None;
+        report.failed_sequence = Some(0);
+        assert!(encode_sink_failure(&report).is_ok());
+        report.failed_sequence = Some(1);
+        assert!(encode_sink_failure(&report).is_ok());
+        report.failed_sequence = Some(2);
+        assert_eq!(
+            encode_sink_failure(&report),
+            Err(SinkStatusError::InvalidSequenceProgress)
+        );
     }
 
     #[test]

@@ -12,10 +12,12 @@ use design_catalog_context_live_lane as design78;
 use diplomacy_intel_operatives_live as diplomacy53;
 use fired_event_popups_live_lane as fired75;
 use hub_motorization_live_lane as hub62;
+use hud_role_observer_live_lane as hud79;
 use land_combat_detail_events_live_lane as land_detail55;
 use naval_combat_live_lane as naval4950;
 use naval_missions_status_live_lane as naval56;
 use occupation_resistance_compliance_live_lane as occupation52;
+use resolved_tooltip_instances_live_lane as tooltip72;
 use session_multiplayer_metadata_live as session57;
 
 use crate::campaign_identity::SessionHeaderIdentityObservation;
@@ -24,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const SUPPORTED_DOMAIN_DATA_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
     36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 60, 61,
-    62, 63, 64, 65, 66, 67, 68, 69, 75, 78,
+    62, 63, 64, 65, 66, 67, 68, 69, 70, 72, 75, 78, 79,
 ];
 
 pub const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 =
@@ -7071,6 +7073,24 @@ fn decode_compact_army_battleplans_depth_live_data_payload(
     add_compact_domain_data_unit(
         summary,
         COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE,
+        "army_battleplans_assigned_division_rows",
+        lane_summary.totals.assigned_division_rows as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE,
+        "army_battleplans_identity_exact_rows",
+        lane_summary.totals.identity_exact_rows as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE,
+        "army_battleplans_active_exact_rows",
+        lane_summary.totals.active_exact_rows as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE,
         "army_battleplans_order_linkage_exact_rows",
         lane_summary.totals.order_linkage_exact_rows as usize,
     );
@@ -7085,6 +7105,85 @@ fn decode_compact_army_battleplans_depth_live_data_payload(
         COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE,
         "army_battleplans_path_geometry_omitted_rows",
         lane_summary.totals.path_geometry_omitted_rows as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE,
+        "army_battleplans_identity_or_active_omitted_rows",
+        lane_summary.totals.identity_or_active_omitted_rows as usize,
+    );
+}
+
+fn decode_compact_resolved_tooltip_instances_live_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    let frame = match tooltip72::decode_payload(payload) {
+        Ok(frame) => frame,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: domain72 decode failed: {error:?}"
+            ));
+            return;
+        }
+    };
+    add_decoder_status(summary, frame.status_flags);
+    let instance_count = frame.instances.len();
+    let row_count = frame
+        .instances
+        .iter()
+        .map(|instance| instance.rows.len())
+        .sum::<usize>();
+    if let Some(domain) = summary.per_domain.get_mut(&tooltip72::DOMAIN_ID) {
+        domain.status_flags_or |= frame.status_flags;
+        domain.data_rows_total = domain.data_rows_total.saturating_add(instance_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(instance_count as u64);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        tooltip72::DOMAIN_ID,
+        "resolved_tooltip_instances",
+        instance_count,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        tooltip72::DOMAIN_ID,
+        "resolved_tooltip_rows",
+        row_count,
+    );
+}
+
+fn decode_compact_hud_surface_activation_live_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    let frame = match hud79::decode_activation_payload(payload) {
+        Ok(frame) => frame,
+        Err(error) => {
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: domain79 decode failed: {error}"));
+            return;
+        }
+    };
+    add_decoder_status(summary, frame.status_flags);
+    let row_count = frame.active_surfaces.len();
+    if let Some(domain) = summary.per_domain.get_mut(&hud79::DOMAIN_ID) {
+        domain.status_flags_or |= frame.status_flags;
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(row_count as u64);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        hud79::DOMAIN_ID,
+        "hud_surface_activation_rows",
+        row_count,
     );
 }
 
@@ -7381,7 +7480,8 @@ fn decode_compact_land_combat_detail_events_live_data_payload(
         .rows
         .len()
         .saturating_add(decoded.side_detail_rows.len())
-        .saturating_add(decoded.attribution_rows.len());
+        .saturating_add(decoded.attribution_rows.len())
+        .saturating_add(decoded.reserve_member_rows.len());
     if let Some(domain) = summary
         .per_domain
         .get_mut(&COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE)
@@ -7440,6 +7540,12 @@ fn decode_compact_land_combat_detail_events_live_data_payload(
         COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
         "land_combat_attribution_rows",
         decoded.attribution_rows.len(),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
+        "land_combat_reserve_member_rows",
+        decoded.reserve_member_rows.len(),
     );
 }
 
@@ -10831,16 +10937,25 @@ fn decode_compact_fired_event_popups_data_payload(
             return;
         }
     };
+    let admitted_rows = if decoded.fired_events_complete {
+        decoded.rows.len()
+    } else {
+        0
+    };
     if let Some(domain) = summary.per_domain.get_mut(&fired75::DOMAIN_ID) {
-        domain.data_rows_total = domain
-            .data_rows_total
-            .saturating_add(decoded.rows.len() as u64);
+        domain.data_rows_total = domain.data_rows_total.saturating_add(admitted_rows as u64);
     }
     add_compact_domain_data_unit(
         summary,
         fired75::DOMAIN_ID,
         "fired_event_popups_rows",
-        decoded.rows.len(),
+        admitted_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        fired75::DOMAIN_ID,
+        "fired_event_popups_unadmitted_rows",
+        decoded.rows.len().saturating_sub(admitted_rows),
     );
     add_compact_domain_data_unit(
         summary,
@@ -13466,8 +13581,16 @@ pub fn summarize_domain_data_payload(
         COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE => {
             decode_compact_sunk_convoy_history_data_payload(offset, payload, &mut summary)
         }
+        tooltip72::DOMAIN_ID => decode_compact_resolved_tooltip_instances_live_data_payload(
+            offset,
+            payload,
+            &mut summary,
+        ),
         75 => decode_compact_fired_event_popups_data_payload(offset, payload, &mut summary),
         78 => decode_compact_design_catalog_context_data_payload(offset, payload, &mut summary),
+        hud79::DOMAIN_ID => {
+            decode_compact_hud_surface_activation_live_data_payload(offset, payload, &mut summary)
+        }
         other => summary.parse_errors.push(format!(
             "offset {offset}: unsupported domain data payload for domain {other}"
         )),

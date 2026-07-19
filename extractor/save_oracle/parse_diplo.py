@@ -55,6 +55,8 @@ stdlib only. Reuses the shared tokenizer via ``deep_common``.
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
+
 import deep_common as dc
 from deep_common import (
     LBRACE, atom_value, iter_block_entries, _skip_block_body,
@@ -107,7 +109,15 @@ def _parse_faction(tz, factions):
 def _parse_war_relation(tz):
     rec = {"start_date": None, "first": None, "second": None,
            "first_casualties": None, "second_casualties": None,
-           "score_first_vs_second": None, "score_second_vs_first": None}
+           "score_first_vs_second": None, "score_second_vs_first": None,
+           # B5 residuals.  Keep the source spelling as well as the exact
+           # fixed-5 integer so a live-memory probe never has to compare an
+           # IEEE-754 approximation with the save oracle.
+           "threat": None, "threat_text": None,
+           "threat_fixed5_raw": None,
+           "first_was_instigator": None,
+           "hostility_reason_instigator": None,
+           "hostility_reason_defender": None}
     for k, op in iter_block_entries(tz):
         if op is LBRACE:
             if k in ("war_score_first_vs_second", "war_score_second_vs_first"):
@@ -140,6 +150,24 @@ def _parse_war_relation(tz):
             rec["first_casualties"] = to_int(v)
         elif k == "second_casualties":
             rec["second_casualties"] = to_int(v)
+        elif k == "threat":
+            rec["threat_text"] = v
+            rec["threat"] = to_float(v)
+            try:
+                scaled = Decimal(v) * 100_000
+                if scaled == scaled.to_integral_value():
+                    rec["threat_fixed5_raw"] = int(scaled)
+            except InvalidOperation:
+                pass
+        elif k == "first_was_instigator":
+            if v == "yes":
+                rec["first_was_instigator"] = True
+            elif v == "no":
+                rec["first_was_instigator"] = False
+        elif k == "hostility_reason_instigator":
+            rec["hostility_reason_instigator"] = v
+        elif k == "hostility_reason_defender":
+            rec["hostility_reason_defender"] = v
     return rec
 
 
@@ -201,7 +229,11 @@ def _parse_relation(tz, wars, subjects, owner_tag, other_tag):
             elif key == "war_relation":
                 rel["at_war"] = True
                 w = _parse_war_relation(tz)
-                # Only the owner==first direction records the war (dedup).
+                # Preserve the traversal identity.  `wars` is later collapsed
+                # for the legacy product view, while `war_relation_rows` keeps
+                # every ordered save row for B5 all-row acceptance.
+                w["owner"] = owner_tag
+                w["relation_other"] = other_tag
                 wars.append(w)
             elif key == "puppet":
                 p = _parse_puppet(tz)
@@ -400,6 +432,15 @@ def build(text, source, was_melted):
         }
 
     deduped_wars = _dedup_wars(wars)
+    ordered_war_rows = sorted(
+        wars,
+        key=lambda row: (
+            row.get("owner") or "",
+            row.get("relation_other") or "",
+            row.get("first") or "",
+            row.get("second") or "",
+        ),
+    )
     # dedup subjects by (overlord, subject)
     subj_seen = {}
     for p in subjects:
@@ -432,6 +473,7 @@ def build(text, source, was_melted):
             "stats": {
                 "factions": len(factions),
                 "wars": len(deduped_wars),
+                "war_relation_rows": len(ordered_war_rows),
                 "subject_relationships": len(subjects_out),
                 "countries": len(countries),
                 "total_operatives": total_ops,
@@ -439,6 +481,7 @@ def build(text, source, was_melted):
         },
         "factions": factions,
         "wars": deduped_wars,
+        "war_relation_rows": ordered_war_rows,
         "subjects": subjects_out,
         "countries": dict(sorted(countries.items())),
     }

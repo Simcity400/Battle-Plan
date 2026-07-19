@@ -7,11 +7,11 @@
 //! concatenation) means a `/` or newline inside a path can never create a
 //! delimiter ambiguity (Codex b).
 //!
-//! Duplicate object keys: `serde_json` keeps the last on parse, so a manifest with
-//! duplicate keys is already collapsed before we see it; the container reader
-//! additionally rejects a raw manifest body whose key set looks duplicated by
-//! re-checking length, but the canonical hash itself is taken over the parsed,
-//! de-duplicated object — which is the value the reader actually trusts.
+//! Duplicate object keys: the container reader STRICT-parses every trusted JSON
+//! body (rejecting duplicate object members at every depth via
+//! `crate::strict_json`) before any canonical hashing runs, so the parsed value
+//! hashed by [`manifest_canonical_bytes`] cannot differ from the raw body's key
+//! set — a duplicated member is a typed refusal, never a last-wins collapse.
 
 use serde_json::{Map, Value};
 

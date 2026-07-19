@@ -21,6 +21,13 @@ _OUT = os.path.join(os.path.dirname(_REPO), "extractor", "save_oracle", "output"
 _OUT_1940 = os.path.join(os.path.dirname(_REPO), "extractor", "save_oracle", "output_1940")
 
 
+def _has_victory_score_inputs(output_dir):
+    return all(
+        os.path.isfile(os.path.join(output_dir, name + ".json"))
+        for name in vs._REQUIRED
+    )
+
+
 # ---------------------------------------------------------------------------
 # Synthetic fixtures (no installed content needed)
 # ---------------------------------------------------------------------------
@@ -233,7 +240,10 @@ class TestComposite(unittest.TestCase):
         self.assertAlmostEqual(s, 1.0, places=6)
 
 
-@unittest.skipUnless(os.path.isdir(_OUT), "save_oracle/output not present")
+@unittest.skipUnless(
+    _has_victory_score_inputs(_OUT),
+    "complete save_oracle/output victory-score inputs not present",
+)
 class TestIntegrationOutput(unittest.TestCase):
     def setUp(self):
         self.ladder = vs.compute_victory_score(_OUT)
@@ -253,7 +263,10 @@ class TestIntegrationOutput(unittest.TestCase):
             self.assertIsNotNone(cs.rank)
 
 
-@unittest.skipUnless(os.path.isdir(_OUT_1940), "save_oracle/output_1940 not present")
+@unittest.skipUnless(
+    _has_victory_score_inputs(_OUT_1940),
+    "complete save_oracle/output_1940 victory-score inputs not present",
+)
 class TestIntegration1940(unittest.TestCase):
     def test_classic_majors_in_top6(self):
         ladder = vs.compute_victory_score(_OUT_1940)

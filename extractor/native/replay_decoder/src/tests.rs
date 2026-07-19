@@ -1125,3 +1125,65 @@ fn metadata_exposes_schema_and_domain_registry() {
         assert!(!d.wire_name.is_empty());
     }
 }
+
+#[test]
+fn certified_raw_h4cr_produces_the_neutral_prefolded_contract() {
+    let dir = TmpDir::new("neutral_prefolded");
+    let path = dir.0.join("collector_stream.bin");
+    std::fs::write(&path, three_hour_stream()).unwrap();
+    let replay = fold_raw_h4cr_prefolded(
+        &path,
+        &OpenOptions {
+            game_id: Some("fold_check".to_string()),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(replay.index().game_id(), "fold_check");
+    assert_eq!(replay.index().schema_version(), &serde_json::json!("1"));
+    assert_eq!(replay.index().hours(), &[HOUR_A, HOUR_B, HOUR_C]);
+    assert_eq!(replay.entries().len(), 3);
+    assert_eq!(
+        replay.entry(HOUR_B).unwrap().snapshot().hour_index,
+        Some(HOUR_B)
+    );
+}
+
+#[test]
+fn neutral_prefolded_producer_accepts_only_physically_raw_h4cr() {
+    let dir = TmpDir::new("neutral_raw_only");
+    for (name, bytes) in [
+        ("container.battleplan", b"PK\x03\x04not-a-stream".as_slice()),
+        (
+            "collector_stream.zst",
+            b"\x28\xb5\x2f\xfdnot-raw".as_slice(),
+        ),
+    ] {
+        let path = dir.0.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        assert!(matches!(
+            fold_raw_h4cr_prefolded(&path, &OpenOptions::default()),
+            Err(OpenError::UnrecognizedInput(_))
+        ));
+    }
+}
+
+#[test]
+fn malformed_raw_suffix_never_exposes_a_prefolded_prefix() {
+    let dir = TmpDir::new("neutral_no_prefix");
+    let path = dir.0.join("collector_stream.bin");
+    let mut stream = three_hour_stream();
+    stream.extend_from_slice(b"H4C");
+    std::fs::write(&path, stream).unwrap();
+
+    assert!(matches!(
+        fold_raw_h4cr_prefolded(&path, &OpenOptions::default()),
+        Err(OpenError::Certification(_))
+    ));
+}
+
+#[test]
+fn extractor_decoder_manifest_has_no_replay_interface_dependency() {
+    let manifest = include_str!("../Cargo.toml").replace('\\', "/");
+    assert!(!manifest.contains("replay_interface/"), "{manifest}");
+}

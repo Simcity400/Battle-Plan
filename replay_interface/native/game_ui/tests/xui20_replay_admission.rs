@@ -2,7 +2,7 @@ use game_ui::combat_detail_losses::{
     admit_xui20_replay, LandCombatPanel, Xui20CombatDetailLosses, Xui20SurfaceState,
 };
 use replay_core::{
-    AirCombatLossRow, AirRegionCombatRow, AirRegionDamageRow, LandCombatSideDetail,
+    AirCombatLossRow, AirRegionCombatRow, AirRegionDamageRow, EndedCombatRow, LandCombatSideDetail,
     LandCombatTacticIdentity, Leaf, NavalCombatMemberRow, NavalCombatRow, WarObjectRow,
     WarParticipantOverviewRow, WarParticipationBreakdown,
 };
@@ -30,8 +30,10 @@ fn side() -> LandCombatSideDetail {
             name: Leaf::Measured("TACTIC_BASIC_ATTACK".into()),
         })),
         tactic_status: Leaf::Measured("exact".into()),
-        losses_status: Leaf::Measured("omitted_all_zero_oracle".into()),
+        losses_status: Leaf::Measured("unavailable_no_authenticated_live_carrier".into()),
         counts_incomplete: Leaf::Measured(false),
+        reserve_division_ids: Leaf::Measured(vec![30]),
+        reserve_members_status: Leaf::Measured("exact".into()),
         damage_attribution: Leaf::Measured(Vec::new()),
     }
 }
@@ -198,6 +200,8 @@ fn air_region() -> AirRegionCombatRow {
 fn exact_binding() -> Xui20CombatDetailLosses {
     Xui20CombatDetailLosses {
         land: vec![land()],
+        ended_land: std::collections::BTreeMap::new(),
+        ended_land_status: replay_core::ViewStatus::Present,
         naval: vec![naval()],
         air_losses: Leaf::Measured(vec![air_loss()]),
         air_region_combat: Leaf::Measured(vec![air_region()]),
@@ -205,6 +209,17 @@ fn exact_binding() -> Xui20CombatDetailLosses {
         wars: Leaf::Measured(vec![war()]),
         war_relations: Leaf::Measured(Vec::new()),
     }
+}
+
+#[test]
+fn unavailable_ended_collection_is_not_collapsed_to_measured_empty() {
+    let mut binding = exact_binding();
+    binding.ended_land_status = replay_core::ViewStatus::DomainUnavailable;
+    let admission = admit_xui20_replay(&binding);
+    assert!(matches!(
+        admission.land_ended_lifecycle,
+        Xui20SurfaceState::ExternalInputRequired { .. }
+    ));
 }
 
 #[test]
@@ -249,6 +264,41 @@ fn exact_replay_owned_surfaces_admit_and_external_joins_stay_explicit() {
     assert!(matches!(
         admission.global_cross_family_order,
         Xui20SurfaceState::NotApplicable { .. }
+    ));
+}
+
+#[test]
+fn ended_lifecycle_is_admitted_separately_from_active_land() {
+    let mut binding = exact_binding();
+    binding.ended_land.insert(
+        (22, 4),
+        EndedCombatRow {
+            combat_id: 22,
+            generation: 4,
+            kind: Leaf::Measured("land".into()),
+            lifecycle: Leaf::Measured("ended".into()),
+            location_province: Leaf::Measured(13),
+            attackers: Leaf::Unobtained,
+            defenders: Leaf::Unobtained,
+            combat_width: Leaf::Unobtained,
+            terrain: Leaf::Unobtained,
+            progress: Leaf::Unobtained,
+            side_detail_availability: Leaf::Measured("unavailable".into()),
+            detail: Leaf::Unobtained,
+        },
+    );
+    let admission = admit_xui20_replay(&binding);
+    assert_eq!(
+        admission.land_ended_lifecycle,
+        Xui20SurfaceState::Admitted { row_count: 1 }
+    );
+    assert_eq!(
+        admission.land_active,
+        Xui20SurfaceState::Admitted { row_count: 1 }
+    );
+    assert!(matches!(
+        admission.land_terminal,
+        Xui20SurfaceState::ExternalInputRequired { .. }
     ));
 }
 

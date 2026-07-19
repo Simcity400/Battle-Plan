@@ -28,9 +28,13 @@ use crate::windows_control_pipe::RestrictiveSecurityPolicy;
 
 use super::duplex_worker::{
     AutoAttachDuplexProductPermit, DuplexAttemptAuthority, DuplexWorkerError, DuplexWorkerSession,
+    RoutedHeartbeatCycle,
 };
 use super::identity::ProcessKey;
 use super::sources::WorkerSpec;
+use crate::duplex_session::identity_control::{
+    IdentityDurableCandidateSink, RecorderIdentityControlDispatcher,
+};
 
 type Bool = i32;
 type Dword = u32;
@@ -714,9 +718,10 @@ impl ConnectedWindowsPipePair {
         WindowsCombinedRunner {
             authority: self.authority,
             data: self.data,
-            control,
+            control: Some(control),
             target: self.target,
             cancellation: self.cancellation,
+            next_heartbeat_due: std::time::Instant::now(),
         }
     }
 }
@@ -727,9 +732,10 @@ impl ConnectedWindowsPipePair {
 pub struct WindowsCombinedRunner {
     authority: DuplexAttemptAuthority,
     data: WindowsDataIo,
-    control: DuplexWorkerSession<WindowsControlIo>,
+    control: Option<DuplexWorkerSession<WindowsControlIo>>,
     target: BoundTargetProcess,
     cancellation: ControlCancellation,
+    next_heartbeat_due: std::time::Instant,
 }
 
 impl WindowsCombinedRunner {
@@ -737,8 +743,8 @@ impl WindowsCombinedRunner {
         &self.authority
     }
 
-    pub fn control_session_mut(&mut self) -> &mut DuplexWorkerSession<WindowsControlIo> {
-        &mut self.control
+    pub fn control_session_mut(&mut self) -> Option<&mut DuplexWorkerSession<WindowsControlIo>> {
+        self.control.as_mut()
     }
 
     pub fn cancellation(&self) -> &ControlCancellation {
@@ -760,8 +766,90 @@ impl WindowsCombinedRunner {
     pub fn check_recurring_liveness(&mut self) -> Result<(), WindowsCombinedBackendError> {
         self.ensure_target_live()?;
         self.control
+            .as_mut()
+            .ok_or_else(|| {
+                WindowsCombinedBackendError::Authority(DuplexWorkerError::IllegalTransition {
+                    from: super::duplex_worker::DuplexWorkerState::Finalizing,
+                    action: "check liveness after control close",
+                })
+            })?
             .check_liveness()
             .map_err(WindowsCombinedBackendError::Authority)
+    }
+
+    /// Recurring-heartbeat cadence for the dormant paired product runner. The
+    /// owner calls this from its dedicated control worker; a due operation is
+    /// synchronous but bounded by one unchanged five-second deadline. It uses a
+    /// fresh CSPRNG challenge and routes asynchronous CIF1 through the same H4CT
+    /// receive loop before accepting the matching proof.
+    pub fn drive_due_heartbeat<S: IdentityDurableCandidateSink>(
+        &mut self,
+        identity: &mut RecorderIdentityControlDispatcher<S>,
+    ) -> Result<Option<RoutedHeartbeatCycle>, WindowsCombinedBackendError> {
+        self.ensure_target_live()?;
+        let now = std::time::Instant::now();
+        if now < self.next_heartbeat_due {
+            return Ok(None);
+        }
+        let challenge = super::staging::generate_secret_128().map_err(|error| {
+            WindowsCombinedBackendError::Authority(DuplexWorkerError::Transport(error))
+        })?;
+        let deadline =
+            ControlDeadline::after(Duration::from_millis(super::policy::HEARTBEAT_INTERVAL_MS))
+                .map_err(|error| {
+                    WindowsCombinedBackendError::Authority(DuplexWorkerError::Transport(
+                        error.to_string(),
+                    ))
+                })?;
+        let outcome = self
+            .control
+            .as_mut()
+            .ok_or_else(|| {
+                WindowsCombinedBackendError::Authority(DuplexWorkerError::IllegalTransition {
+                    from: super::duplex_worker::DuplexWorkerState::Finalizing,
+                    action: "heartbeat after control close",
+                })
+            })?
+            .heartbeat_cycle_with_identity(identity, challenge, deadline)
+            .map_err(WindowsCombinedBackendError::Authority)?;
+        self.ensure_target_live()?;
+        self.next_heartbeat_due = now
+            .checked_add(Duration::from_millis(super::policy::HEARTBEAT_INTERVAL_MS))
+            .ok_or_else(|| {
+                WindowsCombinedBackendError::Authority(DuplexWorkerError::Transport(
+                    "heartbeat schedule overflow".to_string(),
+                ))
+            })?;
+        Ok(Some(outcome))
+    }
+
+    /// Transfer explicit-stop ownership from H4CT to the H4CR drain/finalizer.
+    /// Dropping the control session closes the server handle, which is the v1
+    /// collector's authenticated graceful-stop receipt.  It intentionally does
+    /// not cancel the shared data transport: the caller must continue reading
+    /// H4CR to a clean record boundary/EOF, fsync, fold, pack, and verify under
+    /// the outer 30-second graceful-stop deadline.
+    pub fn close_control_for_graceful_data_drain(
+        &mut self,
+    ) -> Result<ControlDeadline, WindowsCombinedBackendError> {
+        let stop_deadline = ControlDeadline::after(Duration::from_millis(
+            super::policy::GRACEFUL_STOP_DEADLINE_MS,
+        ))
+        .map_err(|error| {
+            WindowsCombinedBackendError::Authority(DuplexWorkerError::Transport(error.to_string()))
+        })?;
+        let mut control = self.control.take().ok_or_else(|| {
+            WindowsCombinedBackendError::Authority(DuplexWorkerError::IllegalTransition {
+                from: super::duplex_worker::DuplexWorkerState::Finalizing,
+                action: "close control twice",
+            })
+        })?;
+        control.request_graceful_stop_at(std::time::Instant::now());
+        control
+            .begin_finalizing()
+            .map_err(WindowsCombinedBackendError::Authority)?;
+        drop(control);
+        Ok(stop_deadline)
     }
 
     fn ensure_target_live(&self) -> Result<(), WindowsCombinedBackendError> {

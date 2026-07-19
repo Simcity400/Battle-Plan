@@ -30,8 +30,10 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
+
+#[path = "dump_shared/bmp_out.rs"]
+mod bmp_out;
 
 #[derive(Clone, Debug, Serialize)]
 struct HeightRegime {
@@ -289,7 +291,7 @@ fn render_height_bmp(
         mesh.indices.len()
     );
     let flat: Vec<u8> = pixels.iter().flat_map(|p| p.iter().copied()).collect();
-    write_bmp24(path, region.width, region.height, &flat)?;
+    bmp_out::write_bmp24_rgb_flat(path, region.width, region.height, &flat)?;
     Ok(classes)
 }
 
@@ -438,47 +440,4 @@ fn clamp_region(mut region: Region, map_width: usize, map_height: usize) -> Resu
     region.width = region.width.min(map_width - region.x);
     region.height = region.height.min(map_height - region.y);
     Ok(region)
-}
-
-fn write_bmp24(path: &Path, width: usize, height: usize, rgb: &[u8]) -> Result<()> {
-    if rgb.len() != width * height * 3 {
-        return Err(format!(
-            "BMP payload has {} bytes but {}x{} RGB needs {}",
-            rgb.len(),
-            width,
-            height,
-            width * height * 3
-        )
-        .into());
-    }
-    let row_stride = (width * 3 + 3) & !3;
-    let pixel_offset = 14usize + 40usize;
-    let image_bytes = row_stride * height;
-    let file_size = pixel_offset + image_bytes;
-    let mut file = fs::File::create(path)?;
-    file.write_all(b"BM")?;
-    file.write_all(&(file_size as u32).to_le_bytes())?;
-    file.write_all(&[0u8; 4])?;
-    file.write_all(&(pixel_offset as u32).to_le_bytes())?;
-    file.write_all(&40u32.to_le_bytes())?;
-    file.write_all(&(width as i32).to_le_bytes())?;
-    file.write_all(&(height as i32).to_le_bytes())?;
-    file.write_all(&1u16.to_le_bytes())?;
-    file.write_all(&24u16.to_le_bytes())?;
-    file.write_all(&0u32.to_le_bytes())?;
-    file.write_all(&(image_bytes as u32).to_le_bytes())?;
-    file.write_all(&2835u32.to_le_bytes())?;
-    file.write_all(&2835u32.to_le_bytes())?;
-    file.write_all(&0u32.to_le_bytes())?;
-    file.write_all(&0u32.to_le_bytes())?;
-    for y in (0..height).rev() {
-        let mut row = Vec::with_capacity(row_stride);
-        for x in 0..width {
-            let offset = (y * width + x) * 3;
-            row.extend_from_slice(&[rgb[offset + 2], rgb[offset + 1], rgb[offset]]);
-        }
-        row.resize(row_stride, 0);
-        file.write_all(&row)?;
-    }
-    Ok(())
 }

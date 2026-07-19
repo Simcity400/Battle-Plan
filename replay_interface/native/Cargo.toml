@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "package_runtime",
     "map_viewer",
     "terrain_capture",
     "replay_core",
@@ -14,3 +15,11 @@ members = [
 # replay_core owns .battleplan ingest and the scrubbable world timeline,
 # replay_app is the product D3D11 replay surface, map_viewer owns map bundle
 # tooling and captured-pass validation/replay, terrain_capture owns capture.
+
+# Fail-closed doctrine: the untrusted-input parsers (bespoke ZIP reader,
+# stream verifier, compact-stream framing) must panic on integer overflow in
+# release builds rather than silently wrap. QA gates build debug binaries
+# (where overflow checks are on by default); this keeps the shipped
+# configuration matching the tested one.
+[profile.release]
+overflow-checks = true

@@ -37,8 +37,10 @@ use map_viewer::{
 use serde::Serialize;
 use std::env;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
+
+#[path = "dump_shared/bmp_out.rs"]
+mod bmp_out;
 
 const TERRAIN_BUNDLE_FILE: &str = "map_frame_bundle.json";
 const WATER_BUNDLE_FILE: &str = "map_frame_water_pass_bundle.json";
@@ -602,48 +604,12 @@ fn compare(expected: &Bgra8Image, actual: &Bgra8Image) -> Stats {
     }
 }
 
-// ---------- BMP writers (24-bit BGR, bottom-up) ----------
-
-fn write_bmp_raw(path: &Path, width: usize, height: usize, rgb: &[[u8; 3]]) -> Result<()> {
-    let row_padded = (width * 3 + 3) & !3;
-    let image_size = row_padded * height;
-    let file_size = 54 + image_size;
-    let mut buf = Vec::with_capacity(file_size);
-    buf.extend_from_slice(b"BM");
-    buf.extend_from_slice(&(file_size as u32).to_le_bytes());
-    buf.extend_from_slice(&0u32.to_le_bytes());
-    buf.extend_from_slice(&54u32.to_le_bytes());
-    buf.extend_from_slice(&40u32.to_le_bytes());
-    buf.extend_from_slice(&(width as i32).to_le_bytes());
-    buf.extend_from_slice(&(height as i32).to_le_bytes());
-    buf.extend_from_slice(&1u16.to_le_bytes());
-    buf.extend_from_slice(&24u16.to_le_bytes());
-    buf.extend_from_slice(&0u32.to_le_bytes());
-    buf.extend_from_slice(&(image_size as u32).to_le_bytes());
-    buf.extend_from_slice(&2835i32.to_le_bytes());
-    buf.extend_from_slice(&2835i32.to_le_bytes());
-    buf.extend_from_slice(&0u32.to_le_bytes());
-    buf.extend_from_slice(&0u32.to_le_bytes());
-    for y in (0..height).rev() {
-        for x in 0..width {
-            let [r, g, b] = rgb[y * width + x];
-            buf.push(b);
-            buf.push(g);
-            buf.push(r);
-        }
-        for _ in 0..(row_padded - width * 3) {
-            buf.push(0);
-        }
-    }
-    let mut file = fs::File::create(path)?;
-    file.write_all(&buf)?;
-    Ok(())
-}
+// ---------- BMP writers (24-bit BGR, bottom-up; shared writer) ----------
 
 fn write_bmp_bgra(path: &Path, image: &Bgra8Image) -> Result<()> {
     // BGRA -> RGB (drop alpha for the preview).
     let rgb: Vec<[u8; 3]> = image.texels.iter().map(|t| [t[2], t[1], t[0]]).collect();
-    write_bmp_raw(path, image.width, image.height, &rgb)
+    bmp_out::write_bmp24_rgb(path, image.width, image.height, &rgb)
 }
 
 fn write_diff_heatmap(path: &Path, expected: &Bgra8Image, actual: &Bgra8Image) -> Result<()> {
@@ -658,7 +624,7 @@ fn write_diff_heatmap(path: &Path, expected: &Bgra8Image, actual: &Bgra8Image) -
             heat(d as f32) // 1 8-bit level -> mid ramp; scaled below
         })
         .collect();
-    write_bmp_raw(path, expected.width, expected.height, &rgb)
+    bmp_out::write_bmp24_rgb(path, expected.width, expected.height, &rgb)
 }
 
 fn write_region_map(path: &Path, expected: &Bgra8Image, actual: &Bgra8Image) -> Result<()> {
@@ -678,7 +644,7 @@ fn write_region_map(path: &Path, expected: &Bgra8Image, actual: &Bgra8Image) -> 
             c
         })
         .collect();
-    write_bmp_raw(path, expected.width, expected.height, &rgb)
+    bmp_out::write_bmp24_rgb(path, expected.width, expected.height, &rgb)
 }
 
 /// Blue(0) -> green -> red heat ramp. Input is an 8-bit-level abs error;

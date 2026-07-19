@@ -5,7 +5,6 @@ edition = "2021"
 description = "Rust-native the game map bundle tooling and D3D11 terrain replay backend"
 
 [dependencies]
-minifb = "0.27"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # A5 keying swap: the renderer reads owner/controller/cosmetic from the
@@ -26,6 +25,7 @@ winapi = { version = "0.3.9", features = [
 ] }
 
 [dev-dependencies]
+flate2 = "1"
 # Fixture-driven placement gate (C2): open the A2 fixtures through the real
 # ReplaySource / WorldTimeline and prove placement == generator ground truth.
 # Test-only on purpose — map_viewer stays decoupled from replay_core in

@@ -387,6 +387,104 @@ class TestSameHourMergeNoDataLoss(unittest.TestCase):
         m = diff_engine._merge_two_snapshots(a, b)
         self.assertEqual(m["divisions"][0]["equipment"], [{"archetype": "x", "amount": 5}])
 
+    def test_ended_combats_union_by_combat_id_and_generation(self):
+        a = _snap("1940.1.2.0")
+        a["ended_combats"] = [
+            {"combat_id": 7, "generation": 2, "lifecycle": "ended",
+             "location_province": 10, "land_combat_detail_events_live": None},
+            {"combat_id": 7, "generation": 1, "lifecycle": "ended",
+             "location_province": 9},
+        ]
+        b = _snap("1940.1.2.0")
+        b["ended_combats"] = [
+            {"combat_id": 7, "generation": 2, "lifecycle": "ended",
+             "location_province": None,
+             "land_combat_detail_events_live": {"phase_event": "ended"}},
+            {"combat_id": 8, "generation": 1, "lifecycle": "ended",
+             "location_province": 11},
+        ]
+        merged = diff_engine._merge_two_snapshots(a, b)
+        self.assertEqual(
+            [(row["combat_id"], row["generation"]) for row in merged["ended_combats"]],
+            [(7, 2), (7, 1), (8, 1)],
+        )
+        self.assertEqual(merged["ended_combats"][0]["location_province"], 10)
+        self.assertEqual(
+            merged["ended_combats"][0]["land_combat_detail_events_live"]["phase_event"],
+            "ended",
+        )
+
+    def test_live_sidecar_domains_survive_same_hour_merge(self):
+        # Same-hour coalescing exists for "memory snapshot + save snapshot at the
+        # same tick"; the live sidecars (weather / mio_live / ...) are exactly
+        # what the memory snapshot carries and must survive the merge in BOTH
+        # orders — dropping them while provenance still claims the domain would
+        # be captured-without-data.
+        mem = _snap("1940.1.2.0", memory_domains=["weather", "mio"])
+        mem["weather"]["provinces"] = {"10": {"temp_c": -3.5}}
+        mem["mio_live"]["by_tag"] = {"GER": [{"id": 1, "level": 2}]}
+        sav = _snap("1940.1.2.0", save_domains=["focus"])
+        c = _country(sav, "GER")
+        c["focus"]["completed"] = ["fA"]
+        for m in (diff_engine._merge_two_snapshots(mem, sav),
+                  diff_engine._merge_two_snapshots(sav, mem)):
+            self.assertEqual(m["weather"]["provinces"]["10"]["temp_c"], -3.5)
+            self.assertEqual(m["mio_live"]["by_tag"]["GER"][0]["level"], 2)
+            self.assertEqual(m["countries"]["GER"]["focus"]["completed"], ["fA"])
+
+    def test_occupation_history_merges_informative_not_concatenated(self):
+        # Two same-hour views of the same save-sourced log must not duplicate
+        # entries (informative-later-wins, NOT concatenation), and an empty
+        # later view must not wipe the earlier real log.
+        rows = [{"state_id": 1, "event": "uprising"}]
+        a = _snap("1940.1.2.0")
+        b = _snap("1940.1.2.0")
+        a["occupation_history"] = list(rows)
+        b["occupation_history"] = list(rows)
+        self.assertEqual(
+            diff_engine._merge_two_snapshots(a, b)["occupation_history"], rows)
+        empty_later = _snap("1940.1.2.0")  # skeleton [] must not wipe real rows
+        self.assertEqual(
+            diff_engine._merge_two_snapshots(a, empty_later)["occupation_history"],
+            rows)
+
+    def test_occupation_history_complete_false_wins(self):
+        # Completeness is a claim: None is no-claim, and False (incomplete) from
+        # EITHER input must never fail-open into True.
+        a = _snap("1940.1.2.0")
+        b = _snap("1940.1.2.0")
+        a["occupation_history_complete"] = False
+        b["occupation_history_complete"] = True
+        for m in (diff_engine._merge_two_snapshots(a, b),
+                  diff_engine._merge_two_snapshots(b, a)):
+            self.assertIs(m["occupation_history_complete"], False)
+        none_claim = _snap("1940.1.2.0")  # skeleton None
+        true_claim = _snap("1940.1.2.0")
+        true_claim["occupation_history_complete"] = True
+        for m in (diff_engine._merge_two_snapshots(none_claim, true_claim),
+                  diff_engine._merge_two_snapshots(true_claim, none_claim)):
+            self.assertIs(m["occupation_history_complete"], True)
+        m = diff_engine._merge_two_snapshots(none_claim,
+                                             _snap("1940.1.2.0"))
+        self.assertIsNone(m["occupation_history_complete"])
+
+    def test_ended_combats_merge_preserves_absent_unavailable_and_known_empty(self):
+        absent_a = _snap("1940.1.2.0")
+        absent_b = _snap("1940.1.2.0")
+        absent_a.pop("ended_combats")
+        absent_b.pop("ended_combats")
+        self.assertNotIn("ended_combats", diff_engine._merge_two_snapshots(absent_a, absent_b))
+
+        unavailable = _snap("1940.1.2.0")
+        unavailable["ended_combats"] = None
+        merged = diff_engine._merge_two_snapshots(absent_a, unavailable)
+        self.assertIsNone(merged["ended_combats"])
+
+        known_empty = _snap("1940.1.2.0")
+        known_empty["ended_combats"] = []
+        merged = diff_engine._merge_two_snapshots(unavailable, known_empty)
+        self.assertEqual(merged["ended_combats"], [])
+
 
 class TestSplitPoliticsGating(unittest.TestCase):
     def test_no_false_law_idea_events_when_economy_uncaptured(self):

@@ -167,6 +167,17 @@ impl ControlCapabilities {
         Self::from_bits(Self::AUTO_ATTACH_DUPLEX_V1).expect("closed auto-attach capability set")
     }
 
+    /// Dormant next-step capability word used only by rollover-focused offline
+    /// composition. The active auto-attach client/host continue to advertise
+    /// [`Self::AUTO_ATTACH_DUPLEX_V1`] until the live drain/durable-close/new-CID1
+    /// lifecycle is proven.
+    pub const AUTO_ATTACH_DUPLEX_ROLLOVER_V1: u32 = Self::AUTO_ATTACH_DUPLEX_V1 | Self::ROLLOVER;
+
+    pub fn auto_attach_duplex_rollover_v1() -> Self {
+        Self::from_bits(Self::AUTO_ATTACH_DUPLEX_ROLLOVER_V1)
+            .expect("closed dormant rollover capability set")
+    }
+
     pub const EARLY_RENDER_DUPLEX_V1: u32 = Self::AUTO_ATTACH_DUPLEX_V1 | Self::EARLY_RENDER;
 
     pub fn early_render_duplex_v1() -> Self {
@@ -2137,5 +2148,17 @@ mod tests {
                 &cancellation,
             )
             .unwrap();
+    }
+
+    #[test]
+    fn rollover_foundation_does_not_expand_the_active_auto_attach_word() {
+        let active = ControlCapabilities::auto_attach_duplex_v1();
+        assert!(!active.permits(MessageKind::RolloverPropose));
+        assert!(!active.permits(MessageKind::RolloverAck));
+
+        let dormant = ControlCapabilities::auto_attach_duplex_rollover_v1();
+        assert!(dormant.contains(active));
+        assert!(dormant.permits(MessageKind::RolloverPropose));
+        assert!(dormant.permits(MessageKind::RolloverAck));
     }
 }

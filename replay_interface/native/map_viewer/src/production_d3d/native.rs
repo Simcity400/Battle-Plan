@@ -986,6 +986,9 @@ impl NativeProductionD3dBackend {
 
     /// Bind the exact opaque production target plus carried viewport/scissor for one draw.
     pub fn bind_output_state(&mut self, output: &RenderOutputState) -> Result<()> {
+        // Reject malformed carried state before any context mutation so a
+        // refused draw leaves no partially bound output behind.
+        super::native_draw::validate_output_viewport_scissor(output)?;
         validate_output_for_target(output, &self.desc)?;
         let viewport = D3D11_VIEWPORT {
             TopLeftX: f32::from_bits(output.viewport.top_left_x_f32_bits),
@@ -995,20 +998,6 @@ impl NativeProductionD3dBackend {
             MinDepth: f32::from_bits(output.viewport.min_depth_f32_bits),
             MaxDepth: f32::from_bits(output.viewport.max_depth_f32_bits),
         };
-        let values = [
-            viewport.TopLeftX,
-            viewport.TopLeftY,
-            viewport.Width,
-            viewport.Height,
-            viewport.MinDepth,
-            viewport.MaxDepth,
-        ];
-        if !values.into_iter().all(f32::is_finite)
-            || viewport.Width <= 0.0
-            || viewport.Height <= 0.0
-        {
-            return Err("portable viewport is non-finite or empty".into());
-        }
         unsafe {
             let rtvs = [self.color_rtv.as_raw()];
             (*self.device.context.as_raw()).OMSetRenderTargets(
@@ -1018,9 +1007,6 @@ impl NativeProductionD3dBackend {
             );
             (*self.device.context.as_raw()).RSSetViewports(1, &viewport);
             if let Some(value) = &output.scissor {
-                if value.right_i32 <= value.left_i32 || value.bottom_i32 <= value.top_i32 {
-                    return Err("portable scissor is empty or inverted".into());
-                }
                 let rect = winapi::shared::windef::RECT {
                     left: value.left_i32,
                     top: value.top_i32,
@@ -1337,6 +1323,26 @@ unsafe fn create_exact_graph_texture(
             )
         })
         .collect::<Result<Vec<_>>>()?;
+    if !exact.ordered_initial_subresources.is_empty() && resource.mip_levels == 0 {
+        // A captured GetDesc never reports zero mips; without an explicit mip
+        // count the per-subresource geometry below cannot be derived.
+        return Err("exact render-target initialization requires an explicit mip count".into());
+    }
+    for (initial, bytes) in exact.ordered_initial_subresources.iter().zip(&storage) {
+        // D3D11 subresource ordering is mip-major within each array slice.
+        let mip_level = initial.subresource_ordinal % resource.mip_levels;
+        super::native_draw::validate_texture_subresource_payload(
+            resource.dimension,
+            resource.dxgi_format_u32,
+            resource.width,
+            resource.height,
+            resource.depth,
+            mip_level,
+            initial.row_pitch,
+            initial.slice_pitch,
+            bytes.len(),
+        )?;
+    }
     let subresource_count = resource
         .mip_levels
         .checked_mul(resource.array_size)

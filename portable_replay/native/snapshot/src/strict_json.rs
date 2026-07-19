@@ -3,7 +3,6 @@
 use serde::de::{DeserializeSeed, Error as _, MapAccess, SeqAccess, Visitor};
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use std::collections::HashSet;
 use std::fmt;
 
 /// Decode one complete JSON value while rejecting repeated members at every depth.
@@ -89,9 +88,8 @@ impl<'de> Visitor<'de> for StrictValueVisitor {
     }
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
         let mut values = Map::new();
-        let mut seen = HashSet::with_capacity(map.size_hint().unwrap_or(0));
         while let Some(key) = map.next_key::<String>()? {
-            if !seen.insert(key.clone()) {
+            if values.contains_key(&key) {
                 return Err(A::Error::custom(format!("duplicate JSON member {key:?}")));
             }
             values.insert(key, map.next_value_seed(StrictValueSeed)?.0);

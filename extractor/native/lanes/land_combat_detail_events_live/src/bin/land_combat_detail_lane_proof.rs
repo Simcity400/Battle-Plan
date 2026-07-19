@@ -174,6 +174,8 @@ fn snapshot(
         defender_detail,
         attacker_attribution: Vec::new(),
         defender_attribution: Vec::new(),
+        attacker_reserve_divisions: None,
+        defender_reserve_divisions: None,
     }
 }
 
@@ -213,7 +215,8 @@ fn frame_row_count(frame: &land_combat_detail_events_live_lane::CaptureFrame) ->
         .rows
         .len()
         .saturating_add(frame.side_detail_rows.len())
-        .saturating_add(frame.attribution_rows.len()) as u32
+        .saturating_add(frame.attribution_rows.len())
+        .saturating_add(frame.reserve_member_rows.len()) as u32
 }
 
 fn append_perf_and_frame_end(
@@ -311,6 +314,7 @@ fn write_and_verify_replay(
         build_pinned: true,
         mod_identity: None,
         created_utc: Some("2026-07-01T00:00:00Z".to_string()),
+        content_manifest: None,
     };
     let replay = pack(game_id, &entries, &identity, true).map_err(|err| err.to_string())?;
     fs::write(replay_path, replay).map_err(|err| err.to_string())?;

@@ -617,7 +617,12 @@ pub fn event_window_content(
     let Some(fired) = fired else {
         return EventWindowContent::default();
     };
-    debug_assert_eq!(fired.event_id, def.id, "fired-event id must match def id");
+    if fired.event_id != def.id {
+        // Loud in debug/test builds; fail-closed (absent form) in release —
+        // never bind another definition's content under the fired id.
+        debug_assert_eq!(fired.event_id, def.id, "fired-event id must match def id");
+        return EventWindowContent::default();
+    }
     let title = def
         .title_key
         .as_deref()
@@ -735,7 +740,9 @@ pub struct AdmittedFiredEvent {
     pub timeout_tick: i64,
     pub resolved_tick: Option<i64>,
     pub resolution_reason: String,
-    pub runtime_text_context_id: Option<String>,
+    pub runtime_title_text_context_id: Option<String>,
+    pub runtime_description_text_context_id: Option<String>,
+    pub runtime_option_text_context_ids: BTreeMap<usize, String>,
     /// Present only when the producer supplied enough exact materialisation
     /// evidence to render a popup. Hidden, AI-only and otherwise
     /// non-materialised lifecycle rows remain admitted with `None`.
@@ -817,7 +824,7 @@ pub struct EventHistoryRequest<'a> {
     pub definitions: &'a BTreeMap<String, EventDef>,
     pub localisation: &'a Localisation,
     pub sprites: &'a SpriteRegistry,
-    /// Exact XUI06/A25 runtime values keyed by `runtime_text_context_id`.
+    /// Exact XUI06/A25 runtime values keyed by the independent popup slot ids.
     pub runtime_text: &'a BTreeMap<String, RuntimeTextContext>,
 }
 
@@ -965,16 +972,28 @@ fn admit_fired_event(
         _ => return Err(EventHistoryRejection::InvalidResolution),
     }
 
-    let runtime_text_context_id =
-        measured_nonempty(&row.runtime_text_context_id).map(str::to_string);
-    let popup = admit_popup_materialisation(
-        row,
-        def,
-        visible_ordinals.as_deref(),
-        chosen_option_ordinal,
-        runtime_text_context_id.as_deref(),
-        request,
-    );
+    let runtime_title_text_context_id =
+        optional_text_context_id(&row.runtime_title_text_context_id);
+    let runtime_description_text_context_id =
+        optional_text_context_id(&row.runtime_description_text_context_id);
+    let runtime_option_text_context_ids = measured_option_text_context_ids(row);
+    let popup = match (
+        runtime_title_text_context_id.as_ref(),
+        runtime_description_text_context_id.as_ref(),
+        runtime_option_text_context_ids.as_ref(),
+    ) {
+        (Some(title), Some(description), Some(options)) => admit_popup_materialisation(
+            row,
+            def,
+            visible_ordinals.as_deref(),
+            chosen_option_ordinal,
+            title.as_deref(),
+            description.as_deref(),
+            Some(options),
+            request,
+        ),
+        _ => None,
+    };
 
     Ok(AdmittedFiredEvent {
         event_id: event_id.to_string(),
@@ -989,7 +1008,9 @@ fn admit_fired_event(
         timeout_tick,
         resolved_tick,
         resolution_reason: resolution_reason.to_string(),
-        runtime_text_context_id,
+        runtime_title_text_context_id: runtime_title_text_context_id.flatten(),
+        runtime_description_text_context_id: runtime_description_text_context_id.flatten(),
+        runtime_option_text_context_ids: runtime_option_text_context_ids.unwrap_or_default(),
         popup,
     })
 }
@@ -1003,7 +1024,9 @@ fn admit_popup_materialisation(
     def: &EventDef,
     visible_ordinals: Option<&[usize]>,
     chosen_option_ordinal: Option<usize>,
-    runtime_text_context_id: Option<&str>,
+    runtime_title_text_context_id: Option<&str>,
+    runtime_description_text_context_id: Option<&str>,
+    runtime_option_text_context_ids: Option<&BTreeMap<usize, String>>,
     request: &EventHistoryRequest<'_>,
 ) -> Option<AdmittedEventPopup> {
     if def.hidden {
@@ -1037,19 +1060,46 @@ fn admit_popup_materialisation(
         return None;
     }
     let empty_runtime = RuntimeTextContext::default();
-    let runtime = match runtime_text_context_id {
-        Some(id) => request.runtime_text.get(id)?,
-        None => &empty_runtime,
-    };
-    let title =
-        resolve_exact_text(request.localisation, def.title_key.as_deref()?, runtime).ok()?;
-    let description = resolve_exact_text(request.localisation, &selected_desc_key, runtime).ok()?;
+    let title_runtime = runtime_context(
+        runtime_title_text_context_id,
+        request.runtime_text,
+        &empty_runtime,
+    )?;
+    let description_runtime = runtime_context(
+        runtime_description_text_context_id,
+        request.runtime_text,
+        &empty_runtime,
+    )?;
+    let option_context_ids = runtime_option_text_context_ids?;
+    if option_context_ids
+        .keys()
+        .any(|ordinal| !visible_set.contains(ordinal))
+    {
+        return None;
+    }
+    let title = resolve_exact_text(
+        request.localisation,
+        def.title_key.as_deref()?,
+        title_runtime,
+    )
+    .ok()?;
+    let description = resolve_exact_text(
+        request.localisation,
+        &selected_desc_key,
+        description_runtime,
+    )
+    .ok()?;
     let mut options = Vec::with_capacity(visible_ordinals.len());
     for &ordinal in visible_ordinals {
         let key = def.options[ordinal].name_key.as_deref()?;
+        let option_runtime = runtime_context(
+            option_context_ids.get(&ordinal).map(String::as_str),
+            request.runtime_text,
+            &empty_runtime,
+        )?;
         options.push(AdmittedEventOption {
             definition_ordinal: ordinal,
-            text: resolve_exact_text(request.localisation, key, runtime).ok()?,
+            text: resolve_exact_text(request.localisation, key, option_runtime).ok()?,
             selected: chosen_option_ordinal == Some(ordinal),
         });
     }
@@ -1082,6 +1132,45 @@ fn resolve_exact_text(
         Ok(resolved.text)
     } else {
         Err(EventHistoryRejection::TextUnresolved(resolved.issues))
+    }
+}
+
+fn measured_option_text_context_ids(
+    row: &RecordedFiredEventRow,
+) -> Option<BTreeMap<usize, String>> {
+    let rows = match &row.runtime_option_text_contexts {
+        Leaf::Absent => return Some(BTreeMap::new()),
+        Leaf::Unobtained => return None,
+        Leaf::Measured(rows) => rows,
+    };
+    let mut contexts = BTreeMap::new();
+    for row in rows {
+        let ordinal = usize::try_from(measured_nonnegative(&row.definition_ordinal)?).ok()?;
+        let context_id = measured_nonempty(&row.context_id)?.to_string();
+        if contexts.insert(ordinal, context_id).is_some() {
+            return None;
+        }
+    }
+    Some(contexts)
+}
+
+fn optional_text_context_id(value: &Leaf<String>) -> Option<Option<String>> {
+    match value {
+        Leaf::Absent => Some(None),
+        Leaf::Unobtained => None,
+        Leaf::Measured(value) if !value.trim().is_empty() => Some(Some(value.clone())),
+        Leaf::Measured(_) => None,
+    }
+}
+
+fn runtime_context<'a>(
+    context_id: Option<&str>,
+    contexts: &'a BTreeMap<String, RuntimeTextContext>,
+    empty: &'a RuntimeTextContext,
+) -> Option<&'a RuntimeTextContext> {
+    match context_id {
+        Some(context_id) => contexts.get(context_id),
+        None => Some(empty),
     }
 }
 
@@ -1272,6 +1361,32 @@ mod tests {
         assert_eq!(bound.chosen_option_index, Some(1));
     }
 
+    /// A fired-event joined against the wrong definition must never bind that
+    /// definition's content. Debug builds panic loudly (`debug_assert`);
+    /// release builds return the fail-closed absent form.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "fired-event id must match def id")
+    )]
+    fn fired_event_id_mismatch_is_fail_closed() {
+        let defs = parse_events_document("events/test.txt", &sample_events_doc());
+        let generic = &defs[0];
+        let mut loc = Localisation::default();
+        loc.entries
+            .insert("generic.1.t".to_string(), "A Title".to_string());
+        let fired = FiredEvent {
+            event_id: "other.99".to_string(),
+            target_tag: None,
+            chosen_option_index: Some(0),
+            fire_date: None,
+        };
+        let content = event_window_content(generic, &loc, Some(&fired));
+        // Release-only path (debug builds panic above): absent form, nothing bound.
+        assert_eq!(content, EventWindowContent::default());
+        assert!(!content.available);
+    }
+
     fn rich_row() -> RecordedFiredEventRow {
         RecordedFiredEventRow {
             event_id: Leaf::Measured("generic.1".into()),
@@ -1289,7 +1404,9 @@ mod tests {
             timeout_tick: Leaf::Measured(2000),
             resolved_tick: Leaf::Measured(1210),
             resolution_reason: Leaf::Measured("selected".into()),
-            runtime_text_context_id: Leaf::Absent,
+            runtime_title_text_context_id: Leaf::Absent,
+            runtime_description_text_context_id: Leaf::Absent,
+            runtime_option_text_contexts: Leaf::Absent,
         }
     }
 
@@ -1378,6 +1495,101 @@ mod tests {
             event_popup_presentation(event, &layout, "GER", 1210),
             Err(EventPresentationRejection::NotVisible)
         );
+    }
+
+    #[test]
+    fn xui21_runtime_text_uses_independent_title_description_and_option_contexts() {
+        use crate::text_law::ExactRuntimeText;
+        use replay_core::{FiredEventOptionTextContextRow, RuntimeTextLayout, RuntimeTextSource};
+
+        fn exact(key: &str, element_id: &str, text: &str) -> RuntimeTextContext {
+            RuntimeTextContext {
+                exact: Some(ExactRuntimeText {
+                    view_id: "EventWindow".into(),
+                    element_id: element_id.into(),
+                    source: RuntimeTextSource::AuthoredToken(key.into()),
+                    engine_utf8: text.into(),
+                    layout: RuntimeTextLayout::AuthoredReproducible,
+                }),
+                ..Default::default()
+            }
+        }
+
+        let definitions = event_definitions_by_id(&EventCorpus {
+            defs: parse_events_document("events/test.txt", &sample_events_doc()),
+            files_parsed: 1,
+            parse_failures: Vec::new(),
+        })
+        .unwrap();
+        let mut row = rich_row();
+        row.runtime_title_text_context_id = Leaf::Measured("ctx:title".into());
+        row.runtime_description_text_context_id = Leaf::Measured("ctx:description".into());
+        row.runtime_option_text_contexts = Leaf::Measured(vec![
+            FiredEventOptionTextContextRow {
+                definition_ordinal: Leaf::Measured(0),
+                context_id: Leaf::Measured("ctx:option:0".into()),
+            },
+            FiredEventOptionTextContextRow {
+                definition_ordinal: Leaf::Measured(1),
+                context_id: Leaf::Measured("ctx:option:1".into()),
+            },
+        ]);
+        let history = FiredEventsView {
+            events: Leaf::Measured(vec![row.clone()]),
+            history_complete: Leaf::Measured(true),
+        };
+        let runtime_text = BTreeMap::from([
+            (
+                "ctx:title".into(),
+                exact("generic.1.t", "Title", "Runtime title 17"),
+            ),
+            (
+                "ctx:description".into(),
+                exact("generic.1.d_good", "Description", "Scoped GER description"),
+            ),
+            (
+                "ctx:option:0".into(),
+                exact("generic.1.a", "Name", "Formatted option A 42%"),
+            ),
+            (
+                "ctx:option:1".into(),
+                exact("generic.1.b", "Name", "Formatted option B 73%"),
+            ),
+        ]);
+        let mut sprites = SpriteRegistry::new();
+        sprites.insert(sprite_stub("GFX_report_event_generic_read_write"));
+        let admitted = admit_event_history(EventHistoryRequest {
+            source_record_id: "record:dynamic-popup",
+            history: &history,
+            definitions: &definitions,
+            localisation: &Localisation::default(),
+            sprites: &sprites,
+            runtime_text: &runtime_text,
+        })
+        .expect("admit lifecycle");
+        let popup = admitted[0].popup.as_ref().expect("exact dynamic popup");
+        assert_eq!(popup.title, "Runtime title 17");
+        assert_eq!(popup.description, "Scoped GER description");
+        assert_eq!(popup.options[0].text, "Formatted option A 42%");
+        assert_eq!(popup.options[1].text, "Formatted option B 73%");
+
+        // A context is bound to one exact source identity. Swapping two ids
+        // cannot silently reuse description output as a title.
+        row.runtime_title_text_context_id = Leaf::Measured("ctx:description".into());
+        let mismatched = FiredEventsView {
+            events: Leaf::Measured(vec![row]),
+            history_complete: Leaf::Measured(true),
+        };
+        let admitted = admit_event_history(EventHistoryRequest {
+            source_record_id: "record:dynamic-popup-mismatch",
+            history: &mismatched,
+            definitions: &definitions,
+            localisation: &Localisation::default(),
+            sprites: &sprites,
+            runtime_text: &runtime_text,
+        })
+        .expect("retain lifecycle on popup text mismatch");
+        assert!(admitted[0].popup.is_none());
     }
 
     #[test]

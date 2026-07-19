@@ -487,6 +487,52 @@ class TestWorldEventsDiff(unittest.TestCase):
         self.assertEqual(ev["source"], "S")
         self.assertEqual(ev["confidence"], "interval")
 
+    @staticmethod
+    def _rich_row(eid, tag, seq, **extra):
+        """A schema-valid XUI21 rich fired_events row (dict shape)."""
+        row = {"event_id": eid, "recipient_tag": tag,
+               "fire_date": "1940.1.1.6",
+               "fire_hour": schema.date_to_hour_index("1940.1.1.6"),
+               "fire_tick": seq, "event_sequence": seq,
+               "visible_option_ordinals": [0, 1],
+               "chosen_option_ordinal": None}
+        row.update(extra)
+        return row
+
+    def test_rich_fired_event_rows_diff_without_crash(self):
+        # Rich XUI21 dict rows are schema-valid fired_events entries; the diff
+        # must key them on (event_id, recipient_tag, event_sequence) — never
+        # crash (set() of dicts), never re-fire on a resolution-state change.
+        a = _snap("1940.1.1.0", save_domains=["world_events"])
+        b = _snap("1940.1.2.0", save_domains=["world_events"])
+        r1 = self._rich_row("evt.a", "GER", 1)
+        r1_resolved = dict(r1, chosen_option_ordinal=0,
+                           resolution_reason="option_clicked")
+        r2 = self._rich_row("evt.b", "ENG", 2)
+        a["world_events"]["fired_events"] = [r1]
+        b["world_events"]["fired_events"] = [r1_resolved, r2]
+        evs = [e for e in diff_engine.diff_snapshots(a, b)
+               if e["type"] == "event_fired"]
+        self.assertEqual(len(evs), 1)  # only the appended row; no resolution re-fire
+        self.assertEqual(evs[0]["key"], "evt.b@ENG#2")
+        self.assertEqual(evs[0]["to"], "evt.b")
+        self.assertEqual(evs[0]["detail"]["recipient"], "ENG")
+        self.assertEqual(evs[0]["detail"]["fire_date"], "1940.1.1.6")
+
+    def test_mixed_legacy_int_and_str_ids_no_crash(self):
+        # schema admits str AND int legacy ids in the same list; sorted() over a
+        # mixed set used to raise TypeError. Also: rows of any other type are
+        # validator problems, not diff crashes — they are skipped.
+        a = _snap("1940.1.1.0", save_domains=["world_events"])
+        b = _snap("1940.1.2.0", save_domains=["world_events"])
+        a["world_events"]["fired_events"] = ["e1", 2]
+        b["world_events"]["fired_events"] = ["e1", 2, 3, "e4", ["not", "a", "row"]]
+        evs = [e for e in diff_engine.diff_snapshots(a, b)
+               if e["type"] == "event_fired"]
+        self.assertEqual(sorted(e["key"] for e in evs), ["3", "e4"])
+        for e in evs:
+            self.assertIsInstance(e["key"], str)  # int ids normalize to str keys
+
 
 # ---------------------------------------------------------------------------
 # Diff events: country_extra (nuke_count_changed / ace_gained / project_completed)
