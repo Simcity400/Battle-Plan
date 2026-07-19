@@ -1,6 +1,10 @@
 # Dual-order automatic attach design
 
-**Status:** implementation-ready design; no product code exists yet.
+**Status (corrected 2026-07-19):** the auto-attach product code is merged — the `--auto-attach`
+supervisor entry (`run_auto_attach`) in `extractor/native/recorder_host/src/main.rs` wires the real
+Windows adapters over `recorder_host::auto_attach`, including `auto_attach/duplex_worker.rs` (duplex
+activation still hard-disabled). The prior "no product code exists yet" line was stale. The design
+content below is retained unchanged as the governing design.
 
 **Owner decision:** 2026-07-12. This implements pillar 1 of
 `PRODUCT_SESSION_SEMANTICS.md`: app-first and game-first must both attach without a

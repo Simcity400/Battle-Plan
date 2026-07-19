@@ -93,14 +93,14 @@ producer lands, the gate slots into the sequence named in the last column.
 | F6 rung 2 (paused-short-proof) | Pause prover recording attempt-linked `pause_proof` | same | Seq 1, launch 1.3 |
 | F6 graded rungs 3–6 | Ladder↔`Start-Hoi4ProductionCaptureSafe.ps1` wiring with the evidence-pin set (Hoi4Pid, sealed D57 transcript sha/nonce/ledger/probe/static-disasm hashes, static bundle + mod/dlc/load-order + live-resolution report) | same; `Start-Hoi4ProductionCaptureSafe.ps1` param block | Seq 1 launches 1.4–1.6, Seq 2 |
 | F6 rung 5 constraint | **Affinity application is unwired**: `Get-CpuAffinityMask` computes mask 63 and is self-tested, but the mask is never applied to any live process (game or recorder) — the machinery is unreachable until a producer is wired | `Invoke-AcceptanceLadder.ps1:328-351,452-490` (self-test only) | Seq 1, launch 1.6 |
-| A1 hub motorization LEVEL (d62) | Per-level **value** reader: d62 deliberately emits node membership + `map_size` only ("inner multi-entry country-to-level hashmap attribution is intentionally not emitted") | `hub_motorization_live/src/lib.rs:19-21,66-80`; `hub_motorization_live/INTEGRATION_PACKET.md:24-25` | future soak |
-| A2 focus-paused bit (d45) | d45 **fail-closes** focus pause behind a badge row ("intentionally omitted until a production-safe root exists") | `focus_research_decisions_depth_live/README.md:27-30` | future soak |
-| A12 decision targets/cooldowns (d45) | d45 slice excludes "numeric state/province target ids, cooldowns, days/state body fields" (out of scope, fail closed) | `focus_research_decisions_depth_live/SLICE_PACKET.md:13-16` | future soak |
-| A4 air-combat lifecycle (d42) | Accepted slice is strength/equipment deltas only; sortie lifecycle and kill/cause attribution are `ROOT_DISCOVERY_OPEN` | `air_combat_losses_live/AIR_RESIDUALS_STATE.md:13-22` | future soak |
-| A21 per-entity killer label | Same d42 attribution roots as A4 (plus convoy/sunk-event variants) | same | future soak |
-| A14 construction repair (d48) | d48 has numeric building-**health** rows; "wider/broader repair semantics remain open" | `construction_buildings_state_damage_live/INTEGRATION_PACKET.md:860-866` | future soak |
-| A22 air-loss 24-channel (d61) | Only the **six value-pinned channels** are emitted with labels; the other ~18 are an unlabeled multi-writer trace deliberately not promoted | `air_loss_stats_live/src/lib.rs:30-33,66-75` | future soak |
-| A15 MP chat/hotjoin/tag-switch (d57) | Production decode **rejects/ignores `Chat`, `SystemMessage`, `Hotjoin`, `TagSwitch`** rows; acceptance needs the unique chat oracle (`--expect-text D57_CHAT_PROBE_<ts>`) + a stable pollable message/root probe, neither built | `session_multiplayer_metadata_live/INTEGRATION_PACKET.md:219-225,302`; `INTEGRATION_PACKET_HOOKS.md:16-23`; `SESSION_EVENT_DISPOSITION.md:107-117,133-140` | Seq 5 |
+| A1 hub motorization LEVEL (d62) | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** d62 schema v2 carries exact inner actor/level attribution; the narrower node-membership-only citation is stale | `RE_REMAINING.md` A1; `production_promotion/contract.json` A1 packet | future soak (live grading only) |
+| A2 focus-paused bit (d45) | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** exact `CNationalFocusProgress+0xB0` pause state is wired and verified; the fail-closed-badge citation is stale | `RE_REMAINING.md` A2; `production_promotion/contract.json` A2/A12 packet | future soak (live grading only) |
+| A12 decision targets/cooldowns (d45) | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** exact target union and both cooldown vectors are wired and verified; the excluded-slice citation is stale | `RE_REMAINING.md` A12; `production_promotion/contract.json` A2/A12 packet | future soak (live grading only) |
+| A4 air-combat lifecycle (d42) | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** exact stored country/region/date/mission history is wired; persistent wing pairing and reinforcement-source enum are proven absent and fail closed; the `ROOT_DISCOVERY_OPEN` citation is stale | `RE_REMAINING.md` A4; `production_promotion/contract.json` A4/A21 packet | future soak (live grading only) |
+| A21 per-entity killer label | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** typed damage causes plus dedicated sunk-convoy history (d70) are wired | `RE_REMAINING.md` A21; `production_promotion/contract.json` A4/A21 packet | future soak (live grading only) |
+| A14 construction repair (d48) | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** exact line `+0x78` repair counter, building `+0x48` partial health, reason enum 0..5, and typed location pass the joint matrix; the health-rows-only citation is stale | `RE_REMAINING.md` A14; `production_promotion/contract.json` A14 packet | future soak (live grading only) |
+| A22 air-loss 24-channel (d61) | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** schema v2 carries all 24 field/label/divisor mappings; the six-channel citation is stale | `RE_REMAINING.md` A22; `production_promotion/contract.json` A22 packet | future soak (live grading only) |
+| A15 MP chat/hotjoin/tag-switch (d57) | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** the recorder fold now projects the four promoted A15 kinds (`Hotjoin`/`TagSwitch`/`Chat`/`SystemMessage`) under `_r2_session_multiplayer_metadata_live` (replay-boundary patch COMPLETED / PRODUCTION ADMITTED), and the `--expect-text` chat-oracle probe exists (`probe_870ebf_session_event_roots.py`, `PROBE_RUNSHEET.md`); the reject/ignore and "neither built" citations are stale. The live MP oracle run itself remains Seq 5's job | `RE_REMAINING.md` A15; `production_promotion/contract.json` A15 packet; `archive/PRODUCTION_REPLAY_HANDOFF_PATCH_PLAN.md` | Seq 5 (live grading only) |
 | CID1 all arms (L0, S1–S4, D1–D2, M1–M3) | (a) ~~identity probe~~ **DONE** — the owner-runnable read-only identity probe (`collect_campaign_identity_evidence.py` + `verify_campaign_identity_evidence.py`, seed@`+0x720`/id@`+0x728`, melt-pin equality) is merged; (b) STILL OWED: the collector **CID1 sequence-0/CFA1 producer barrier is unapplied** — the active path is Legacy, so no capture can emit the hash-bound first CID1 record the pair standard requires (this is the remaining blocker for S/D/M arms; L0 needs only the probe + the melt values). Note: applying the CID1 producer is an activation-gated collector change, deferred | `CAMPAIGN_IDENTITY_DESIGN.md` §Validation plan + Open items; `MASTER_EXTRACTION_CONTRACT.md` P3; probe at `extractor/native/scripts/*campaign_identity*` | Seq 1 (L0), 3 (S/D), 5 (M) |
 | D57 criterion 4 (emission comparison) | A harness comparing the collector's **explicit opt-in** d57 emission against the raw words on the same transitions ("no coercion and no accepted out-of-range value") — no such comparison tool is named in-tree | `I1_D57_SPEED_EVIDENCE.md:322-334` (criterion 4) | Seq 1, launch 1.1 |
 | P4 stitching live driver | Production recorder has **no call site** for pre-fold segmentation / per-segment folds / durable append tickets / atomic stitched publication | `PRODUCT_SESSION_SEMANTICS.md` §4 | Seq 3 |
@@ -118,7 +118,7 @@ producer lands, the gate slots into the sequence named in the last column.
 | 2 | Six-hour soak + in-capture fixture harvest | **1** (+ post-run script, no launch) | F6 rung 6; combined speed-5 proof; FullGame size projection (separate script); **A16** (in-capture transition); passive A8, A9, A20 (+A5/A6/A7 opportunistic) | Main PC | ~30 min active (incl. this launch's D57 transcript) + ~6 h unattended |
 | 3 | Campaign-identity save/reload/relaunch matrix | **2** (3.1 in-process arms; 3.2 relaunch arm) | CID1 **S1, S2, S4, D1, D2** (launch 3.1), **S3** (launch 3.2); P4 stitching seam evidence | Main PC | ~60 min attended |
 | 4 | Auto-attach live matrix + idle-cost | **~12 short launches** + **3 no-game idle windows** (30 min each) | **P1** §10 live-Windows matrix, main-PC arms (incl. non-default Steam drive, Known-Folder/OneDrive Documents, access-denied/different-session) + main-PC idle-cost (3 windows); **P2** duplex liveness (blocked on activation) | Main PC | ~2.5–3 h spread + 3×30 min unattended |
-| 5 | **BLOCKED on 2nd machine + 2nd player** | **15 launches across 2 machines** (MP 3: M1 host+client, M2 reuses that session, M3 one rehost launch; + the 12-launch weaker-PC matrix) + **3 no-game idle windows (weaker PC)** | **A15** (OWED — chat oracle/message probe); CID1 **M1, M2, M3** (recorder on BOTH machines); auto-attach **complete weaker-PC matrix** (~12 launches — `AUTO_ATTACH_DESIGN.md` §10 requires the full matrix on both machines) + weaker-PC idle-cost (3 windows, no game running, **not** during MP) | Main + 2nd PC | ~half a day, two operators |
+| 5 | **BLOCKED on 2nd machine + 2nd player** | **15 launches across 2 machines** (MP 3: M1 host+client, M2 reuses that session, M3 one rehost launch; + the 12-launch weaker-PC matrix) + **3 no-game idle windows (weaker PC)** | **A15** (producer landed 2026-07-19 — see register; live oracle run here); CID1 **M1, M2, M3** (recorder on BOTH machines); auto-attach **complete weaker-PC matrix** (~12 launches — `AUTO_ATTACH_DESIGN.md` §10 requires the full matrix on both machines) + weaker-PC idle-cost (3 windows, no game running, **not** during MP) | Main + 2nd PC | ~half a day, two operators |
 
 Total: **~36 the game launches** plus **6 no-game idle windows (3 per machine)**. That is the honest
 count under the one-injection-per-launch law and the both-machines matrix requirement; there is no
@@ -296,7 +296,11 @@ passive A8/A9/A20 (+A5/A6/A7 opportunistic).
 unattended.
 
 **What this soak does NOT close (moved to the OWED-PRODUCER register — do not expect them in the
-stream):** A1, A2, A12, A4, A21, A14, A22. Their domains today emit narrower slices than the gates
+stream):** A1, A2, A12, A4, A21, A14, A22. *(CORRECTION 2026-07-19: this narrower-slice claim is
+stale — all seven producers have since landed promotion-ready (`RE_REMAINING.md` PROMOTION READY
+rows; `production_promotion/contract.json`), so a soak on the promoted build CAN witness them; see
+the updated register rows. The original text is retained below for the record.)* Their domains today
+emit narrower slices than the gates
 require (d62 node membership only, d45 fail-closed pause/targets, d42 deltas only, d48 health rows
 only, d61 six pinned channels only). Performing those in-game actions during this soak would
 produce **nothing gradable**; they re-enter a future soak after their readers land.
@@ -519,7 +523,7 @@ place this runbook still contains clock-bound operator work — flagged, not hid
 
 ## Sequence 5 — BLOCKED: multiplayer + cross-machine (2nd machine + 2nd player; 15 launches across 2 machines: 3 MP + 12 weaker-PC matrix)
 
-**Serves:** A15 (OWED) · CID1 M1/M2/M3 · auto-attach **complete** weaker-PC matrix + weaker-PC
+**Serves:** A15 (producer landed 2026-07-19 — see register) · CID1 M1/M2/M3 · auto-attach **complete** weaker-PC matrix + weaker-PC
 idle-cost (3 windows).
 **Est. owner time:** ~half a day with two operators (MP arms ~90 min; the weaker-PC matrix is
 another ~12 short launches; plus 3×30 min no-game windows on the weaker machine).
@@ -540,6 +544,9 @@ another ~12 short launches; plus 3×30 min no-game windows on the weaker machine
 1. **A15 — 2-player same-build MP fixture.** Host on the main PC; join from the second machine.
    Send a unique chat line (`D57_CHAT_PROBE_<timestamp>`), generate a join/leave system message,
    perform a hotjoin and a tag-switch.
+   *(CORRECTION 2026-07-19: the A15 producer has landed promotion-ready — the fold projects all
+   four promoted kinds and the `--expect-text` probe exists; see the updated register row. The
+   decode-rejection claim below is stale; the oracle-run procedure itself still applies.)*
    **A15 is OWED (register): recording the current d57 slice does NOT pass it.** Production decode
    rejects/ignores `Chat`, `SystemMessage`, `Hotjoin`, `TagSwitch`
    (`session_multiplayer_metadata_live/INTEGRATION_PACKET.md:219-225`); acceptance requires the
@@ -570,7 +577,7 @@ another ~12 short launches; plus 3×30 min no-game windows on the weaker machine
 
 | Gate | Acceptance criterion | PASS |
 |---|---|---|
-| **A15** (d57) | `MASTER_EXTRACTION_CONTRACT.md` A15 + the lane's oracle/probe procedure (register) | Chat oracle observes the unique line via `--expect-text` AND a pollable root shows count/text + join/tag-switch deltas — **only after the register tools land** |
+| **A15** (d57) | `MASTER_EXTRACTION_CONTRACT.md` A15 + the lane's oracle/probe procedure (register) | Chat oracle observes the unique line via `--expect-text` AND a pollable root shows count/text + join/tag-switch deltas — register producers landed 2026-07-19, so this MP sitting can grade it |
 | **M1/M2/M3** | `MASTER_EXTRACTION_CONTRACT.md` P3 M1–M3 + the full pair standard, **both machines' streams/manifests retained** | Complete identity pairs equal across host/hotjoin/observer/rehost, each arm meeting the Sequence-3 pair standard on both sides |
 | Weaker-PC complete matrix + idle-cost | `AUTO_ATTACH_DESIGN.md` §10 (full matrix + all three windows on the weaker machine) | Every arm attaches; all three idle-cost windows within bound; owner approves the deltas |
 
@@ -619,8 +626,10 @@ speculatively):**
 - **S9** — Sequence 1, launch 1.4.
 - **A3, D10** — Sequence 1 (all four criteria).
 - **A16 (+B9), A8, A9, A20** — Sequence 2, for the fields an asserting gate actually graded.
-- **A1, A2, A12, A4, A21, A14, A22, A15** — **not** closeable by these sessions; they close in a
-  future soak/MP sitting *after* their register producers land.
+- **A1, A2, A12, A4, A21, A14, A22, A15** — *(updated 2026-07-19)* all eight register producers
+  have landed promotion-ready (`RE_REMAINING.md`; `production_promotion/contract.json`; A15
+  replay-boundary patch COMPLETED / PRODUCTION ADMITTED), so these now close in the soak/MP
+  sittings themselves; the earlier "not closeable by these sessions" reading is stale.
 - **P1–P5** — progressively as the register items land and Sequences 3–5 pass.
 - The Production Gate's combined **speed-5 proof** clause and `Done means` — after Sequence 2.
 

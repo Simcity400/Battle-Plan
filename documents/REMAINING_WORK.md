@@ -16,11 +16,11 @@ and `extractor/documents/RE_REMAINING.md`.
   A13 authoritative scripted-GUI state, A16 subject autonomy, A17 nukes,
   A18 dynamic modifiers, A19 delayed events, A20 weather drift, A23 CProgram
   owner-tag gate.
-- **Deep cracks (§B):** B1 market stockpile iterator, B2 (contradiction —
-  master says promotion-ready, RE_REMAINING says DEEP RE REQUIRED; reconcile,
-  see §5), B3 garrison equipment (partly superseded by A35), B4 sunk-convoys
-  paused acceptance, B5 war threat/instigator, B6 naval anti-air equality,
-  B7 raids paused acceptance.
+- **Deep cracks (§B):** B1 market stockpile iterator, B3 garrison equipment
+  (partly superseded by A35), B4 sunk-convoys paused acceptance, B5 war
+  threat/instigator, B6 naval anti-air equality, B7 raids paused acceptance.
+  (B2 RESOLVED 2026-07-19: promotion-ready — PASS 8/8 in
+  `extractor/re_evidence/B2_COUNTRY_CONVOYS/`; RE_REMAINING was stale, fixed.)
 - **Committed-code fixes (§D):** D11 sink-intent observability; D12 d55
   zero-silent-gap/fold correctness — extractor half OPEN (preserve ended
   combats after d21 removal, unreadable/torn-vs-genuinely-empty side detail,
@@ -78,13 +78,17 @@ Detail: `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.m
   scan); container-spec §4.3 NFC path-collision rejection;
   `EntryRec.verified` wiring. Status will be updated here when the wave
   lands.
-- **Capture-gated residuals:** M02/M03 human-capture cards (the two
-  HUMAN_CAPTURE_REQUIRED rows on the board); recapture of the LOST
-  `restore_gate_1` to re-validate grading/bloom/political-v2 laws. (The
-  event-compose external gates and O04 city draw are CLOSED — XN16/O04
-  PROVEN on the board. The archived plan's CAP1–CAP11 asks must be verified
-  against the board before scheduling any; several closed via the XN/XUI
-  program — see §5.)
+- **Capture-gated residuals** (CAP1–CAP11 verified against the board
+  2026-07-19 — 9 of 11 closed/superseded by the XN/XUI program):
+  - **M03 human-capture card** (A48 labelled fixture) — the ONLY remaining
+    human-capture contract (M02 closed 2026-07-18; board corrected).
+  - **CAP6 counter-quad geometry/atlas ground truth** — still open;
+    `UNIT_COUNTER_LAW.md` remains capture-gated ("no product renderer should
+    draw unit counters from this draft yet"); nearest owner XUI27.
+  - **Recapture of the LOST `restore_gate_1`** to re-validate
+    grading/bloom/political-v2 laws.
+  - Non-blocking: N02 retrospective glyph-VB byte-parity check
+    (QUOTA_PENDING; explicitly does not block promotion).
 - **G3 fidelity recount** — the archived FIDELITY_LEDGER totals were
   self-flagged "PENDING FRESH RECOUNT" and were never recounted; fold a fresh
   recount into PROGRAM_STATUS (or record the recount here) before release.
@@ -128,23 +132,16 @@ the legacy-row dedup pass that nobody has run.
 
 ## 5. Documentation debt (doc says X, reality is Y)
 
-- MASTER_EXTRACTION_CONTRACT: reconcile the domain table with the registry
-  (doc claims 31 rows = "all"; `domain_registry.json` has 71 entries incl.
-  d70–d80); fix stale header date.
-- B2 contradiction: master §B says promotion-ready, `RE_REMAINING.md` says
-  DEEP RE REQUIRED — one of them is stale; reconcile with evidence.
-- A27 vs board: extractor marks A27 delivered; the board still lists XUI13
-  DATA_BLOCKED on A27 — either replay-side consumption or a board refresh is
-  owed.
-- CAP1–CAP11 (archived REPLAY_PRODUCTION_PLAN §4): verify which capture asks
-  remain open against the board; record survivors in §2, drop the rest.
-- LIVE_ACCEPTANCE_RUNBOOK: OWED register still lists the 8 promoted producers
-  (A1/A2/A4/A12/A14/A15/A21/A22) as missing; refresh against the 07-19
-  promotions.
-- RE_REMAINING A26 says d72 unschedulable; registry has d72
-  `validated_slice, schedulable=true` — reconcile.
-- AUTO_ATTACH_DESIGN header claims "no product code exists yet" — false;
-  update status line.
+Resolved 2026-07-19 (evidence-backed ledger surgery): master domain table
+reconciled to the 71-entry registry + header date; runbook OWED register
+refreshed against the 07-19 promotions; B2 contradiction resolved
+(promotion-ready); A26/d72 fixed (PROMOTION READY); AUTO_ATTACH status line
+corrected; CAP1–CAP11 verified (survivors recorded in §2); board corrected
+(M02 closed, XN16 preamble, XUI13/A27). Still open:
+
 - HOI4REPLAY_CONTAINER_SPEC: add a spec-vs-code delta note (or close the
   deltas via the fix wave and note conformance).
+- `extractor/native/lanes/session_multiplayer_metadata_live/INTEGRATION_PACKET.md:221`
+  still carries the old A15 decode-rejection text the runbook cites — refresh
+  the lane file.
 - Legacy seam dedup pass (SEAM_CONTRACTS §3).

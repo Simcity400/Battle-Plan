@@ -40,15 +40,19 @@ is not authoritative multiplayer world state, and cannot represent remote player
 The replay interface owns its own view state and reconstructs HOI4-like UI from captured facts.
 These exclusions are not blockers, fixture needs, or RE targets and must not enter `.battleplan`.
 
-## Current state (2026-07-15)
+## Current state (2026-07-19)
+
+*Changelog (2026-07-19): header date advanced from 07-15 to cover edits through 07-19; domain-status
+table reconciled with registry rows d70–d80; §B preamble reconciled with the B2 promotion evidence.*
 
 The registry and code contain a broad working extractor, but the extractor is **not** at production
 closure. Wave 0 restored the completion authority and workspace baseline; Wave 1 implemented the
 identified correctness repairs with synthetic/targeted gates. Neither wave supplies a live speed-5
 acceptance proof.
 
-- **Authority/build:** the master table mechanically matches all 31 non-legacy/non-infrastructure
-  registry rows. The three F1a Cargo surfaces and seven dependency-free H4CR parsers are directly
+- **Authority/build:** the master table mechanically matches all 42 non-`existing`,
+  non-infrastructure registry rows (31 at the 07-15 pass; d70–d80 reconciled 2026-07-19 — the 27
+  `existing` domains are covered by the table's prose note). The three F1a Cargo surfaces and seven dependency-free H4CR parsers are directly
   certified (F1a/F1c), and the maintained production-script suite executes all three package gates
   (F4). `scientists_live_lane` has also joined the main native workspace.
   The final integrated matrix is not wholly green: `replay_decoder` still has one fixture failure and
@@ -173,8 +177,10 @@ they do not block extractor completion and must not be implemented or edited fro
 
 The current bounded query order and exact same-tick acceptance oracles are in
 [`W14_MARKET_NAVAL_ROOT_RE.md`](dossiers/W14_MARKET_NAVAL_ROOT_RE.md). The 2026-07-15 bounded static
-pass completed in the required order B4 → B7 → B1 → B6 → B2. None of the five items is complete:
-B1/B2 still need inner-container RE, while B4/B6/B7 still need orchestrator-only paused-D04
+pass completed in the required order B4 → B7 → B1 → B6 → B2. At that pass none of the five items was
+complete; since then (2026-07-19 reconciliation) B2's inner-container RE has closed promotion-ready
+(see the B2 row and `extractor/re_evidence/B2_COUNTRY_CONVOYS/`, 2026-07-17 jobs). B1 still needs
+inner-container RE, while B4/B6/B7 still need orchestrator-only paused-D04
 acceptance and production integration. Do not interact with or inject into the paused game until the
 static bundle and every other pre-live gate pass.
 
@@ -551,7 +557,8 @@ control-invalid, or worker/bridge bits. The recorder manifest surfaces each appl
 
 ## Domain status — registry reconciliation
 
-This table includes every non-legacy/non-infrastructure registry row. Status text is copied exactly
+This table includes every non-legacy/non-infrastructure registry row (d70–d80 reconciled
+2026-07-19). Status text is copied exactly
 from `domain_registry.json`; field and acceptance gaps are tracked by the item references above.
 Domains 10-17, 20-23, and 26-40 remain `existing`; `clock` and `frame` are `infrastructure`.
 
@@ -588,6 +595,17 @@ Domains 10-17, 20-23, and 26-40 remain `existing`; `clock` and `frame` are `infr
 | `country_dynamic_modifiers_live` / 67 | `validated_slice_open_gaps` | Timed modifier value/expiry A18 |
 | `session_header_live` / 68 | `validated_slice_open_gaps` | Campaign identity P3 and session-header completeness |
 | `tech_sharing_groups_live` / 69 | `validated_slice_open_gaps` | Offline TSG2/static contract is closed; current-session live acceptance remains S9/F6 |
+| `sunk_convoy_history_live` / 70 | `validated_slice` | A21 sunk-history attribution is closed; orchestrator-only paused acceptance/integration B4 and final live acceptance F6 remain |
+| `dynamic_collection_trace_live` / 71 | `reserved` | Non-schedulable; equipment-variant grid producer proven, remaining collection families A28 |
+| `resolved_tooltip_instances_live` / 72 | `validated_slice` | A26 exact producer/carrier wired and schedulable; final integrated live acceptance F6 remains |
+| `politics_tooltip_inputs_live` / 73 | `reserved` | Non-schedulable; extractor contract frozen in A24 |
+| `power_balance_presentation_live` / 74 | `reserved` | Non-schedulable; extractor contract frozen in A37 |
+| `fired_event_popups_live` / 75 | `reserved` | Non-schedulable; exact callback/completeness contract XUI21-E1 |
+| `runtime_text_inputs_live` / 76 | `reserved` | Non-schedulable; extractor contract frozen in A25 |
+| `production_render_submits_live` / 77 | `reserved` | Non-schedulable; omitted from production until a session-built catalog producer exists (`compact_contract` descriptor note) |
+| `design_catalog_context_live` / 78 | `validated_slice` | A27 promotion gate passes (12/12 twice); final integrated live acceptance F6 remains |
+| `hud_surface_activation_live` / 79 | `validated_slice` | Pointer-free activation rows consumed for post-capture effective-VFS dependency closures; final integrated live acceptance F6 remains |
+| `production_map_content_snapshot_live` / 80 | `reserved` | Non-schedulable; omitted until normal `--production` builds semantic-role closures from admitted inputs (`compact_contract` descriptor note) |
 
 ## Gameplay coverage map (14 areas)
 

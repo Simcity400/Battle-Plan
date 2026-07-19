@@ -38,10 +38,10 @@ replay-side packet states in
 | X15 | Resource trade P1–P5 integration | Open | trade surfaces |
 | XUI03-rows | Controller-boundary collection rows | Open (tracked in extractor evidence) | XUI03 |
 
-**Delivered extractor-side:** A27 (design catalog), A32 (display variant),
-A35 (occupation/garrisons). Caveat: the board still lists XUI13 as
-DATA_BLOCKED on A27 — replay-side consumption or a board refresh is owed
-(tracked in REMAINING_WORK §5).
+**Delivered AND consumed:** A27 (design catalog — consumed by
+`game_ui::design_catalog::admit_design_catalog`, gate 1/1; XUI13's remaining
+gate is designer-surface activation authentication, not catalog data), A32
+(display variant), A35 (occupation/garrisons).
 
 ## 2. Extractor ← waiting on replay layer
 
