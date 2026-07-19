@@ -373,12 +373,12 @@ mod tests {
             &self.hours
         }
 
-        fn owners_at(&self, _hour: i64) -> Arc<BTreeMap<u32, String>> {
-            Arc::new(BTreeMap::new())
+        fn owners_at(&self, _hour: i64) -> crate::Result<Arc<BTreeMap<u32, String>>> {
+            Ok(Arc::new(BTreeMap::new()))
         }
 
-        fn controllers_at(&self, _hour: i64) -> Arc<BTreeMap<u32, String>> {
-            Arc::new(BTreeMap::new())
+        fn controllers_at(&self, _hour: i64) -> crate::Result<Arc<BTreeMap<u32, String>>> {
+            Ok(Arc::new(BTreeMap::new()))
         }
 
         fn content_manifest(&self) -> Option<&ContentManifest> {

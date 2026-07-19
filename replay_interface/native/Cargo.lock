@@ -69,6 +69,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
+name = "compact_stream"
+version = "0.1.0"
+dependencies = [
+ "portable_compact_stream",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -623,6 +630,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "snapshot",
  "winapi",
 ]
 
@@ -777,6 +785,21 @@ name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+
+[[package]]
+name = "snapshot"
+version = "0.1.0"
+dependencies = [
+ "compact_stream",
+ "crc32fast",
+ "flate2",
+ "libc",
+ "portable_replay_format",
+ "serde",
+ "serde_json",
+ "windows-sys",
+ "zstd",
+]
 
 [[package]]
 name = "syn"

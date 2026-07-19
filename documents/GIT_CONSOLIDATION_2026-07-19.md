@@ -21,7 +21,9 @@ It is not a project-status or rendering-law master list.
 - Furniture miner, fixtures, test, report, and retained renderer module.
 - Localisation-join coverage tool/dossier and recording/map evidence tests.
 - Historical RenderDoc and Ghidra regression gates from the maximal unmerged
-  tips. These remain reproducibility tools, not production runtime defaults.
+  tips. Ten modules tied to branch-local evidence/configuration are preserved
+  under `replay_interface/re_evidence/historical_branch_regressions/` with
+  non-collected names; the compatible gates remain active.
 - Selective W20 fail-closed laws: no TerrainID substitution, no unproven
   terrain-category proxy, no fabricated river/tree geometry producers,
   dimension-gated terrain LOD, and capture-proven faction carrier bytes.
@@ -44,4 +46,12 @@ unproven/fitted river, tree, resource-fill, or mapmode implementations.
   with Git LFS.
 - Historical branch ancestry is not merged wholesale because it contains a
   removed 769.38 MiB Ghidra database blob. The verified bundle is the authority
-  for that history; `main` receives reviewed final content only.
+  for that history; `master` receives reviewed final content only.
+
+## Consolidated lineage
+
+- Newer local baseline: `8ec852cfab822904609b344b5bf99302cafd97db`.
+- Audited dirty-tree snapshot: `b0d26bd55412296fa564bcdebba659cee289d441`.
+- First consolidated commit on the baseline: `b0dbf0fe`.
+- The canonical branch is `master`; the temporary local `main` integration
+  name is removed during final branch cleanup and is never pushed.

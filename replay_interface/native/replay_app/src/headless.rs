@@ -17,7 +17,7 @@ use crate::camera::Camera;
 use crate::d3d::Gfx;
 use crate::overlay::Overlay;
 use crate::render::{validate_day_night_hour, MapRenderer, POLITICAL_COLOR_BLOCKER_BADGE};
-use crate::timeline::build_provider;
+use crate::timeline::{build_provider, resolve_dump_hour, DumpHourRequest, OwnerProvider};
 use crate::{Result, TimelineMode};
 
 /// Exact quarter of the 5632x2048 map: full-map fit with zero letterbox,
@@ -29,6 +29,33 @@ const DUMP_HEIGHT: u32 = 512;
 /// A supplied bundle selects the debug/capture renderer and overlay. A
 /// bundle-less recording selects only the strict product D3D carrier and reads
 /// the app-owned offscreen RTV; it never substitutes the debug renderer.
+
+struct FrameKeying {
+    owners: std::sync::Arc<std::collections::BTreeMap<u32, String>>,
+    controllers: std::sync::Arc<std::collections::BTreeMap<u32, String>>,
+    world_frame: Option<std::sync::Arc<replay_core::WorldFrame>>,
+}
+
+/// The data-only half of the real headless keying seam. It deliberately runs
+/// before D3D initialization so selection and recording-load failures cannot
+/// be replaced by a rendered all-underlay frame.
+fn load_frame_keying(provider: &dyn OwnerProvider, hour: i64) -> Result<FrameKeying> {
+    Ok(FrameKeying {
+        owners: provider.owners_at(hour)?,
+        controllers: provider.controllers_at(hour)?,
+        world_frame: provider.world_frame_at(hour)?,
+    })
+}
+
+/// DERIVED diagnostic formatting for geometry counts only. This is not a
+/// rendered-pixel or parity assertion.
+fn format_counter_geometry_counts(counts: [usize; 3]) -> String {
+    format!(
+        "counters {}/{}/{} inputs/instances/quads",
+        counts[0], counts[1], counts[2]
+    )
+}
+
 pub fn dump_frame(
     bundle: Option<&MapBundle>,
     mode: &TimelineMode,
@@ -109,7 +136,14 @@ fn dump_debug_frame(
     if hours.is_empty() {
         return Err("timeline provider has no hours".into());
     }
-    let hour = hour.unwrap_or(hours[0]);
+    let hour = match hour {
+        Some(hour) if matches!(mode, TimelineMode::Recording { .. }) => {
+            resolve_dump_hour(hours, DumpHourRequest::Canonical(hour))?
+        }
+        Some(hour) => hour,
+        None => hours[0],
+    };
+    let keying = load_frame_keying(provider.as_ref(), hour)?;
 
     let gfx = Gfx::create_offscreen(DUMP_WIDTH, DUMP_HEIGHT)?;
     if let Some(day_night_hour) = day_night_hour_override {
@@ -126,9 +160,9 @@ fn dump_debug_frame(
         water_full,
     )?;
     let mut overlay = Overlay::create(&gfx, Some(&game_resolver));
-    let owners = provider.owners_at(hour);
-    let controllers = provider.controllers_at(hour);
-    let frame = provider.world_frame_at(hour);
+    let owners = keying.owners;
+    let controllers = keying.controllers;
+    let frame = keying.world_frame;
     renderer.update_state_politics(
         &gfx,
         bundle,
@@ -165,7 +199,7 @@ fn dump_debug_frame(
     // line 1 the raw Clausewitz date + hour (GAP: localisation-formatted
     // dates are a later slice), line 2 mode + play state + probe. Headless
     // has no cursor, so the probe shows the empty readout.
-    let hour_label = provider.hour_label(hour);
+    let hour_label = provider.hour_label(hour)?;
     let hour_index = match hours.binary_search(&hour) {
         Ok(index) => index,
         Err(0) => 0,
@@ -291,7 +325,7 @@ fn dump_production_recording_frame(
         );
     }
     let initial_frame = provider
-        .world_frame_at(hours[0])
+        .world_frame_at(hours[0])?
         .ok_or("initial replay frame is unavailable")?;
     let initial_display = initial_frame
         .session_metadata()
@@ -305,7 +339,7 @@ fn dump_production_recording_frame(
     }
 
     let frame = provider
-        .world_frame_at(selected_hour)
+        .world_frame_at(selected_hour)?
         .ok_or("selected exact replay frame is unavailable")?;
     let production_render = frame
         .production_render()
@@ -495,6 +529,127 @@ fn write_bmp(path: &Path, width: u32, height: u32, pixels: &[u8]) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use snapshot::{pack, PackEntry, PackIdentity};
+
+    fn packed_political_keying_recording() -> std::path::PathBuf {
+        let mut states = serde_json::Map::new();
+        for state_id in 1..=1_081u32 {
+            let owner = if state_id <= 216 { "FRA" } else { "GER" };
+            let controller = if state_id <= 8 { "GER" } else { owner };
+            states.insert(
+                state_id.to_string(),
+                serde_json::json!({ "owner": owner, "controller": controller }),
+            );
+        }
+        let mod_identity = serde_json::json!({
+            "modset_id": "vanilla",
+            "source": "headless_keying_test",
+            "load_order": [],
+            "mods": [],
+        });
+        let snapshot = serde_json::json!({
+            "schema_version": "1",
+            "game_id": "headless_1081_keying",
+            "date": "1936.1.1.13",
+            "hour_index": 16_959_373,
+            "save_version": null,
+            "provenance": {
+                "collector": null,
+                "memory": null,
+                "mod": mod_identity,
+                "save": null,
+                "notes": [],
+            },
+            "countries": {},
+            "states": states,
+            "provinces": {},
+            "divisions": [],
+            "combats": [],
+            "diplomacy_world": {},
+            "map": {},
+            "designs": { "division_templates": [], "equipment_variants": {} },
+            "order_of_battle": {
+                "army_groups": [], "armies": [], "fleets": [], "navy_theaters": [],
+                "air_wings": [], "theatres": [], "ships": [], "by_country": {},
+            },
+            "mio_live": {}, "market_live": {}, "special_projects": {},
+            "diplomacy_live": {}, "naval_air": {}, "supply": {},
+            "strategic_air": {}, "strategic_operatives": {}, "raids": {},
+            "world_events": {}, "world": {}, "weather": {}, "visibility": {},
+            "naval_combats": [], "models": {}, "intel_ledger": {}, "events": [],
+        });
+        let index = serde_json::json!({
+            "game_id": "headless_1081_keying",
+            "schema_version": "1",
+            "snapshots": [{
+                "hour_index": 16_959_373,
+                "date": "1936.1.1.13",
+                "file": "000016959373.snapshot.json",
+            }],
+        });
+        let entries = vec![
+            PackEntry {
+                path: "payload/headless_1081_keying/index.json".to_string(),
+                bytes: serde_json::to_vec(&index).expect("serialize index"),
+                role: "index",
+                hour_index: None,
+            },
+            PackEntry {
+                path: "payload/headless_1081_keying/000016959373.snapshot.json".to_string(),
+                bytes: serde_json::to_vec(&snapshot).expect("serialize snapshot"),
+                role: "snapshot",
+                hour_index: Some(16_959_373),
+            },
+        ];
+        let bytes = pack(
+            "headless_1081_keying",
+            &entries,
+            &PackIdentity {
+                schema_version: Some("1".to_string()),
+                mod_identity: Some(mod_identity),
+                ..Default::default()
+            },
+            true,
+        )
+        .expect("pack keying recording");
+        let path = crate::bundle::tests::unique_temp_dir("recording_keying")
+            .join("headless_1081_keying.battleplan");
+        std::fs::create_dir_all(path.parent().expect("recording parent"))
+            .expect("create recording parent");
+        std::fs::write(&path, bytes).expect("write keying recording");
+        path
+    }
+
+    #[test]
+    fn recording_keying_seam_receives_all_owners_and_controller_overrides_without_d3d() {
+        let path = packed_political_keying_recording();
+        let source = replay_core::open_recording(&path).expect("open packed keying recording");
+        let timeline = replay_core::WorldTimeline::open(source).expect("keying timeline");
+        let provider = crate::timeline::RecordingTimeline::new_with_policy(timeline, None);
+        let keying = load_frame_keying(&provider, 16_959_373).expect("headless keying frame");
+
+        assert_eq!(keying.owners.len(), 1_081);
+        assert_eq!(keying.controllers.len(), 1_081);
+        assert_eq!(
+            keying
+                .controllers
+                .iter()
+                .filter(|(state_id, controller)| keying.owners.get(state_id) != Some(controller))
+                .count(),
+            8,
+            "controller overrides must survive the real pre-render seam"
+        );
+        assert_eq!(
+            keying
+                .world_frame
+                .as_ref()
+                .expect("typed world frame")
+                .hour_index(),
+            16_959_373
+        );
+        std::fs::remove_dir_all(path.parent().expect("recording parent"))
+            .expect("remove keying recording");
+    }
 
     #[test]
     fn production_recording_dump_rejects_every_debug_substitute() {

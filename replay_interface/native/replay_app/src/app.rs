@@ -209,7 +209,10 @@ pub fn run(
     // E1 transport: play/pause, speed steps, seek, jump-to-date over the
     // recording's (hour, date) spine. E6 POV: the country picker source +
     // the fail-closed POV state object.
-    let dates: Vec<Option<String>> = hours.iter().map(|hour| provider.date_at(*hour)).collect();
+    let dates: Vec<Option<String>> = hours
+        .iter()
+        .map(|hour| provider.date_at(*hour))
+        .collect::<Result<Vec<_>>>()?;
     let mut transport = match Transport::new(hours.clone(), dates) {
         Ok(transport) => transport,
         Err(err) => return Err(err.into()),
@@ -238,7 +241,7 @@ pub fn run(
     // The first recorded frame owns the product client extent. Never turn the
     // frozen XUI25 test envelope into a runtime default.
     let initial_frame = provider
-        .world_frame_at(hours[0])
+        .world_frame_at(hours[0])?
         .ok_or("initial replay frame is unavailable")?;
     let initial_display = initial_frame
         .session_metadata()
@@ -503,10 +506,10 @@ pub fn run(
         // signatures change. Visible political recoloring stays blocked until
         // the engine's primary fill and GradientBorder generation law is ported.
         let hour = transport.current_hour();
-        let world_frame = provider.world_frame_at(hour);
+        let world_frame = provider.world_frame_at(hour)?;
         if uploaded_hour_index != Some(hour_index) {
-            let owners = provider.owners_at(hour);
-            let controllers = provider.controllers_at(hour);
+            let owners = provider.owners_at(hour)?;
+            let controllers = provider.controllers_at(hour)?;
             if let (Some(renderer), Some(bundle)) = (renderer.as_mut(), bundle.as_ref()) {
                 renderer.update_state_politics(
                     &gfx,
@@ -576,7 +579,7 @@ pub fn run(
                     f64::from(gfx.width),
                     f64::from(gfx.height),
                 )?;
-                probe_at(bundle, provider.as_ref(), hour, camera, map_pos)
+                probe_at(bundle, provider.as_ref(), hour, camera, map_pos)?
             }
             _ => String::from("map omitted"),
         };
@@ -593,7 +596,7 @@ pub fn run(
             }
         };
         let speed = transport.speed_hours_per_sec();
-        let hour_label = provider.hour_label(hour);
+        let hour_label = provider.hour_label(hour)?;
         // F4: surface any mid-playback anomaly holds (marked HELD), so a held
         // last-good value never reads as live. Empty on clean recordings.
         let anomaly_note = provider.anomaly_note(hour);
@@ -774,34 +777,34 @@ fn probe_at(
     hour: i64,
     camera: &Camera,
     map_pos: Option<(f64, f64)>,
-) -> String {
+) -> Result<String> {
     // Captured-pass picking intersects the same camera ray with y=0. the game
     // terrain-height refinement is still a named gap; province lookup remains
     // from the CPU province-id mirror rather than pixels.
     let Some((map_x, map_y)) = map_pos else {
-        return String::from("prov - state - owner - controller -");
+        return Ok(String::from("prov - state - owner - controller -"));
     };
     if map_y < 0.0 || map_y >= bundle.height as f64 {
-        return String::from("prov - state - owner - controller -");
+        return Ok(String::from("prov - state - owner - controller -"));
     }
     let x = camera.wrap_x(map_x) as usize;
     let y = map_y as usize;
     if x >= bundle.width || y >= bundle.height {
-        return String::from("prov - state - owner - controller -");
+        return Ok(String::from("prov - state - owner - controller -"));
     }
     let province = bundle.province_ids[y * bundle.width + x];
     let state = bundle.province_to_state.get(&province);
-    let owners = provider.owners_at(hour);
-    let controllers = provider.controllers_at(hour);
+    let owners = provider.owners_at(hour)?;
+    let controllers = provider.controllers_at(hour)?;
     let owner = state.and_then(|state_id| owners.get(state_id));
     let controller = state.and_then(|state_id| controllers.get(state_id));
-    format!(
+    Ok(format!(
         "prov {} state {} owner {} controller {}",
         province,
         state.map_or_else(|| String::from("-"), u32::to_string),
         owner.map_or("-", String::as_str),
         controller.map_or("-", String::as_str)
-    )
+    ))
 }
 
 #[cfg(test)]

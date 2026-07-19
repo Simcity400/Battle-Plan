@@ -86,9 +86,10 @@ use map_viewer::{sensitive_file_overrides, GameFileResolver, GameFileResolverOpt
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 const USAGE: &str = "usage: replay_app [--configure] [--config <profile.json>] [--non-interactive] [--list-blockers] [--validate-recording <path>] [--validate-playback <path>] [--bundle <dir>] [--game <the game install dir>] \
-[--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--recording <path> [--frame-cache <entries>]] [--capture <session dir>] [--dump-frame <out.bmp> [--dump-hour <N>] \
+[--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--recording <path> [--frame-cache <entries>]] [--capture <session dir>] [--dump-frame <out.bmp> [--dump-hour <canonical-hour-index> | --dump-nth-hour <ordinal>] \
 [--hour <0..1>] [--dump-zoom <screen-px-per-map-px>] [--dump-center <x,y>] [--dump-hdr <out.rgba16f>]] \
     [--postfx] [--postfx-restore-full] [--postfx-validate-capture] [--water-full]\n\
+--dump-hour selects the exact canonical REPLAY_SCHEMA hour_index; --dump-nth-hour selects a zero-based ordinal in the recording snapshot index and resolves it to that canonical hour; \
 --frame-cache <entries> shrinks the recording's decoded-frame LRU budget for weak-PC profiles (default 16 hot frames; requires --recording); \
 --configure selects/replaces the two machine-local content roots without opening a replay; --config provides a portable/headless configuration location; \
 normal product playback reconstructs the launcher's effective selection from the configured user-data dlc_load.json; --mod remains an explicit development/test override; \
@@ -144,6 +145,7 @@ struct CliOptions {
     /// Headless: render one hour to this BMP and exit (no window).
     dump_frame: Option<PathBuf>,
     dump_hour: Option<i64>,
+    dump_nth_hour: Option<usize>,
     day_night_hour: Option<f32>,
     dump_zoom: Option<f64>,
     dump_center: Option<(f64, f64)>,
@@ -178,6 +180,7 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
     let mut non_interactive = false;
     let mut dump_frame = None;
     let mut dump_hour = None;
+    let mut dump_nth_hour = None;
     let mut day_night_hour = None;
     let mut dump_zoom = None;
     let mut dump_center = None;
@@ -284,6 +287,17 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
                     value
                         .parse::<i64>()
                         .map_err(|err| format!("--dump-hour: {err}\n{USAGE}"))?,
+                );
+            }
+            "--dump-nth-hour" => {
+                index += 1;
+                let value = args.get(index).ok_or_else(|| {
+                    format!("--dump-nth-hour requires a snapshot ordinal\n{USAGE}")
+                })?;
+                dump_nth_hour = Some(
+                    value
+                        .parse::<usize>()
+                        .map_err(|err| format!("--dump-nth-hour: {err}\n{USAGE}"))?,
                 );
             }
             "--hour" => {
@@ -420,6 +434,14 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
     if dump_hour.is_some() && dump_frame.is_none() {
         return Err(format!("--dump-hour requires --dump-frame\n{USAGE}").into());
     }
+    if dump_nth_hour.is_some() && dump_frame.is_none() {
+        return Err(format!("--dump-nth-hour requires --dump-frame\n{USAGE}").into());
+    }
+    if dump_hour.is_some() && dump_nth_hour.is_some() {
+        return Err(
+            format!("pass either --dump-hour or --dump-nth-hour, not both\n{USAGE}").into(),
+        );
+    }
     if day_night_hour.is_some() && dump_frame.is_none() {
         return Err(format!("--hour requires --dump-frame\n{USAGE}").into());
     }
@@ -465,6 +487,12 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
                 )
                 .into());
             }
+            if dump_nth_hour.is_some() {
+                return Err(format!(
+                    "--dump-nth-hour requires --recording (the static 1936 baseline has no recording snapshot index)\n{USAGE}"
+                )
+                .into());
+            }
             TimelineMode::Static1936
         }
     };
@@ -481,6 +509,7 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
         non_interactive,
         dump_frame,
         dump_hour,
+        dump_nth_hour,
         day_night_hour,
         dump_zoom,
         dump_center,
@@ -514,6 +543,29 @@ fn parse_dump_center(value: &str) -> Result<(f64, f64)> {
 /// set means "no install" (overlay text fails closed with a warning).
 fn resolve_game_dir(flag: Option<PathBuf>, env: Option<OsString>) -> Option<PathBuf> {
     flag.or_else(|| env.map(PathBuf::from))
+}
+
+/// Validate explicit recording dump selection before resource discovery or
+/// D3D setup. Besides making CLI failures cheap and testable headlessly, this
+/// guarantees an invalid canonical hour cannot reach a renderer with empty
+/// keying tables.
+fn resolve_headless_recording_hour(options: &mut CliOptions) -> Result<()> {
+    if options.dump_frame.is_none() {
+        return Ok(());
+    }
+    let request = match (options.dump_hour, options.dump_nth_hour) {
+        (Some(hour), None) => Some(timeline::DumpHourRequest::Canonical(hour)),
+        (None, Some(ordinal)) => Some(timeline::DumpHourRequest::Ordinal(ordinal)),
+        (None, None) => None,
+        (Some(_), Some(_)) => unreachable!("parse_cli rejects competing dump selectors"),
+    };
+    let (Some(request), TimelineMode::Recording { path, .. }) = (request, &options.mode) else {
+        return Ok(());
+    };
+    let source = replay_core::open_recording(path)
+        .map_err(|err| format!("open recording {}: {err}", path.display()))?;
+    options.dump_hour = Some(timeline::resolve_dump_hour(source.hours(), request)?);
+    Ok(())
 }
 
 fn build_game_file_resolver(
@@ -671,7 +723,8 @@ fn run(args: &[String]) -> Result<()> {
         print!("{}", blockers::render_list());
         return Ok(());
     }
-    let options = parse_cli(args)?;
+    let mut options = parse_cli(args)?;
+    resolve_headless_recording_hour(&mut options)?;
     let bundle = options
         .bundle_dir
         .as_deref()
@@ -1196,6 +1249,54 @@ mod tests {
         assert_eq!(options.day_night_hour, Some(0.75));
         assert_eq!(options.dump_zoom, Some(2.5));
         assert_eq!(options.dump_center, Some((3000.0, 600.0)));
+    }
+
+    #[test]
+    fn cli_dump_hour_is_canonical_and_nth_hour_resolves_the_recording_index() {
+        let recording = fixture_root().join("positive/fx_owner_controller_flip.battleplan");
+        let recording_arg = recording.to_string_lossy().into_owned();
+        let source = replay_core::open_recording(&recording).expect("fixture source");
+        let hours = source.hours().to_vec();
+
+        let mut canonical = parse_cli(&args(&[
+            "--recording",
+            &recording_arg,
+            "--dump-frame",
+            "out.bmp",
+            "--dump-hour",
+            &hours[1].to_string(),
+        ]))
+        .expect("canonical dump args");
+        resolve_headless_recording_hour(&mut canonical).expect("canonical selection");
+        assert_eq!(canonical.dump_hour, Some(hours[1]));
+
+        let mut ordinal = parse_cli(&args(&[
+            "--recording",
+            &recording_arg,
+            "--dump-frame",
+            "out.bmp",
+            "--dump-nth-hour",
+            "1",
+        ]))
+        .expect("ordinal dump args");
+        resolve_headless_recording_hour(&mut ordinal).expect("ordinal selection");
+        assert_eq!(ordinal.dump_hour, Some(hours[1]));
+        assert_eq!(ordinal.dump_nth_hour, Some(1));
+
+        let both = parse_cli(&args(&[
+            "--recording",
+            &recording_arg,
+            "--dump-frame",
+            "out.bmp",
+            "--dump-hour",
+            &hours[0].to_string(),
+            "--dump-nth-hour",
+            "0",
+        ]))
+        .expect_err("competing selectors must fail");
+        assert!(both
+            .to_string()
+            .contains("either --dump-hour or --dump-nth-hour"));
     }
 
     #[test]

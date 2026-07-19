@@ -296,7 +296,7 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
             assert_eq!(provider.seek_hour(hour), provider.play_to_hour(hour));
             assert_eq!(provider.seek_hour(hour), Some(hour));
             // Owners flow through the same primitive the scrub reads.
-            let _ = provider.owners_at(hour);
+            let _ = provider.owners_at(hour).expect("provider owners");
 
             let frame = timeline.state_at(hour).expect("frame at checkpoint");
 
