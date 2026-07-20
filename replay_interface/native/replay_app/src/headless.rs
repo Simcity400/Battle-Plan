@@ -6,7 +6,7 @@
 //! renders that can be diffed across hours, builds, and eventually against
 //! real the game screenshots.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use map_viewer::GameFileResolver;
@@ -33,6 +33,20 @@ const DUMP_HEIGHT: u32 = 512;
 #[derive(Debug, Serialize)]
 struct ProductionPixelGateReceipt {
     schema: &'static str,
+    render_boundary: &'static str,
+    authority_exe_sha256: String,
+    recording_sha256: String,
+    production_render_sha256: String,
+    selected_present_sha256: String,
+    launch_epoch_sha256: String,
+    capture_receipt_sha256: String,
+    product_modset_sha256: String,
+    effective_vfs_manifest_sha256: String,
+    content_manifest_digest_sha256: String,
+    settings_file_sha256: String,
+    localisation_language: String,
+    camera_payload_sha256: Option<String>,
+    pov_country_or_global: &'static str,
     selected_hour: i64,
     viewport_width: u32,
     viewport_height: u32,
@@ -44,6 +58,20 @@ struct ProductionPixelGateReceipt {
     receipt_sha256: Option<String>,
     bgra_sha256: String,
     pixel_byte_len: usize,
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn production_pixel_gate_receipt_path(out: &Path) -> PathBuf {
@@ -381,12 +409,15 @@ fn dump_production_recording_frame(
     capture_dir: Option<&Path>,
     day_night_hour_override: Option<f32>,
 ) -> Result<()> {
-    if !matches!(mode, TimelineMode::Recording { .. }) {
-        return Err(
-            "bundle-less --dump-frame is a production recording command and requires --recording"
-                .into(),
-        );
-    }
+    let recording_path = match mode {
+        TimelineMode::Recording { path, .. } => path,
+        TimelineMode::Static1936 => {
+            return Err(
+                "bundle-less --dump-frame is a production recording command and requires --recording"
+                    .into(),
+            )
+        }
+    };
     reject_production_dump_debug_inputs(
         dump_zoom,
         dump_center,
@@ -431,6 +462,21 @@ fn dump_production_recording_frame(
     let production_render = frame
         .production_render()
         .ok_or("selected replay hour has no authenticated production_render carrier")?;
+    let production_render_sha256 =
+        format!("{:x}", Sha256::digest(production_render.encode_json()?));
+    let selected_present_sha256 = production_render.selected_present.computed_sha256()?;
+    let selected_submit = production_render
+        .submits
+        .first()
+        .ok_or("authenticated production_render has no selected submit")?;
+    let camera_payload_sha256 = selected_submit
+        .camera_carrier
+        .as_ref()
+        .map(|camera| camera.payload_sha256.clone());
+    let content_manifest_digest_sha256 = content_manifest
+        .manifest_digest_sha256
+        .clone()
+        .ok_or("portable playback content manifest has no finalized digest")?;
     let mut production_map = map_viewer::ProductionMapRenderer::new(
         &game_resolver,
         &content_admission,
@@ -508,7 +554,26 @@ fn dump_production_recording_frame(
     let pixel_sha256 = format!("{:x}", Sha256::digest(&pixels));
     write_bmp(out, output_width, output_height, &pixels)?;
     let pixel_gate_receipt = ProductionPixelGateReceipt {
-        schema: "battle-plan-production-pixel-gate-receipt-v1",
+        schema: "battle-plan-production-pixel-gate-receipt-v3",
+        render_boundary: "post_authenticated_map_bgra8_no_selected_present_writers",
+        authority_exe_sha256: content_manifest.source_game.executable_sha256.clone(),
+        recording_sha256: sha256_file(recording_path)?,
+        production_render_sha256,
+        selected_present_sha256,
+        launch_epoch_sha256: production_render.authority.launch_epoch_sha256.clone(),
+        capture_receipt_sha256: production_render.authority.capture_receipt_sha256.clone(),
+        product_modset_sha256: content_manifest.product_modset_sha256.clone(),
+        effective_vfs_manifest_sha256: content_manifest
+            .effective_vfs_manifest_sha256
+            .clone(),
+        content_manifest_digest_sha256,
+        settings_file_sha256: initial_display.settings_file_sha256.clone(),
+        localisation_language: content_manifest.localisation_language.clone(),
+        camera_payload_sha256,
+        // The headless production command has no POV selector and invokes the
+        // selected-Present runtime with `None`; its only admissible POV is the
+        // explicit omniscient/global route.
+        pov_country_or_global: "global",
         selected_hour,
         viewport_width: output_width,
         viewport_height: output_height,
@@ -796,6 +861,7 @@ mod tests {
     fn optional_packet_and_d3d_omissions_are_reported_without_rejecting_the_frame() {
         let plan = map_viewer::PreparedProductionMapFrame {
             content_manifest_sha256: "11".repeat(32),
+            product_modset_sha256: "99".repeat(32),
             effective_vfs_manifest_sha256: "22".repeat(32),
             selected_submit_index: None,
             selected_submit_global_order: None,
@@ -820,6 +886,7 @@ mod tests {
         };
         let mut prepared = map_viewer::PreparedProductionD3dFrame {
             content_manifest_sha256: "11".repeat(32),
+            product_modset_sha256: "99".repeat(32),
             effective_vfs_manifest_sha256: "22".repeat(32),
             c03_camera_replay: None,
             target: None,

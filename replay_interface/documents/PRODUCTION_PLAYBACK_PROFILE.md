@@ -31,6 +31,14 @@ layer identity/order, `replace_path`, VFS winner, source/payload hash or length,
 language, or material settings. Missing content is never silently substituted.
 Selected but unused DLC is provenance only and does not block playback.
 
+Production containers require `hoi4.portable-content-manifest.v2` and the
+`portable_content_manifest_v2` feature. The signed manifest carries the
+extractor static-bundle-v3 `product_modset_sha256`; container open, playback
+admission, production map/UI preparation, D3D execution receipts, and headless
+pixel receipts retain that key. It is full capture-product provenance, not a
+requirement to install every unused source-layer byte: local compatibility
+continues to validate the exact `required_content` capability set.
+
 Profile/playset labels are provenance only. Compatibility uses a reproducible,
 path-redacted selection digest; machine paths and launch timestamps are not
 compatibility identities.

@@ -73,6 +73,7 @@ struct PendingRollover {
 pub struct CollectorRolloverCoordinator {
     phase: CollectorRolloverPhase,
     current_logical_stream_id: u64,
+    current_campaign_id: [u8; 32],
     current_cid1_payload_sha256: [u8; 32],
     last_proposal_nonce: u64,
     pending: Option<PendingRollover>,
@@ -83,6 +84,7 @@ impl CollectorRolloverCoordinator {
         Self {
             phase: CollectorRolloverPhase::Streaming,
             current_logical_stream_id: 0,
+            current_campaign_id: initial_identity.campaign_id(),
             current_cid1_payload_sha256: initial_identity.payload_sha256(),
             last_proposal_nonce: 0,
             pending: None,
@@ -121,6 +123,8 @@ impl CollectorRolloverCoordinator {
             last_admitted_h4cr_sequence,
             boundary_game_hour_raw,
             reason,
+            current_campaign_id: self.current_campaign_id,
+            proposed_campaign_id: candidate.campaign_id(),
             current_cid1_payload_sha256: self.current_cid1_payload_sha256,
             proposed_cid1_payload_sha256: candidate.payload_sha256(),
             proposal_nonce,
@@ -184,14 +188,16 @@ impl CollectorRolloverCoordinator {
         if self.phase != CollectorRolloverPhase::AwaitingNewHeaderAck {
             return Err(CollectorRolloverError::IllegalPhase(self.phase));
         }
-        let (logical_stream_id, cid1_payload_sha256, proposal_nonce) = match self.pending.as_ref() {
-            Some(pending) => (
-                pending.proposal.proposed_logical_stream_id,
-                pending.proposal.proposed_cid1_payload_sha256,
-                pending.proposal.proposal_nonce,
-            ),
-            None => return Err(self.fail(CollectorRolloverError::NewHeaderMismatch)),
-        };
+        let (logical_stream_id, campaign_id, cid1_payload_sha256, proposal_nonce) =
+            match self.pending.as_ref() {
+                Some(pending) => (
+                    pending.proposal.proposed_logical_stream_id,
+                    pending.proposal.proposed_campaign_id,
+                    pending.proposal.proposed_cid1_payload_sha256,
+                    pending.proposal.proposal_nonce,
+                ),
+                None => return Err(self.fail(CollectorRolloverError::NewHeaderMismatch)),
+            };
         if acknowledgement.mode != StreamIdentityMode::IdentityV1
             || acknowledgement.logical_stream_id != logical_stream_id
             || acknowledgement.h4cr_sequence != 0
@@ -202,6 +208,7 @@ impl CollectorRolloverCoordinator {
         sink.resume_after_header_ack(logical_stream_id)
             .map_err(|error| self.fail(CollectorRolloverError::Sink(error)))?;
         self.current_logical_stream_id = logical_stream_id;
+        self.current_campaign_id = campaign_id;
         self.current_cid1_payload_sha256 = cid1_payload_sha256;
         self.last_proposal_nonce = proposal_nonce;
         self.pending = None;
@@ -231,10 +238,14 @@ mod tests {
     }
 
     fn identity(seed: i32) -> ValidatedCid1 {
+        identity_at(seed, game_hour())
+    }
+
+    fn identity_at(seed: i32, observation_hour: i32) -> ValidatedCid1 {
         let observation = Cid1Observation {
             game_unique_id: "a4b17fed-ed12-4361-9064-fb6576638110".to_string(),
             game_unique_seed: seed,
-            game_hour_raw: game_hour(),
+            game_hour_raw: observation_hour,
         };
         let fields = Cid1Fields::from_stable_observations(
             observation.clone(),
@@ -246,7 +257,7 @@ mod tests {
         let payload = encode_cid1(&fields).unwrap();
         let header = CompactRecordHeader {
             sequence: 0,
-            game_hour_raw: game_hour(),
+            game_hour_raw: observation_hour,
             domain_id: COMPACT_DOMAIN_STREAM_HEADER,
             record_type: COMPACT_RECORD_TYPE_STREAM_HEADER,
             payload_len: payload.len(),
@@ -369,6 +380,37 @@ mod tests {
             )
             .is_err());
         assert_eq!(coordinator.phase(), CollectorRolloverPhase::Failed);
+        assert_eq!(sink.actions, vec!["pause:0".to_string()]);
+    }
+
+    #[test]
+    fn same_pair_time_rollback_uses_pair_digest_not_full_cid1_hash() {
+        let initial = identity_at(1, game_hour());
+        let candidate = identity_at(1, game_hour() - 1);
+        assert_eq!(initial.campaign_id(), candidate.campaign_id());
+        assert_ne!(initial.payload_sha256(), candidate.payload_sha256());
+
+        let mut coordinator = CollectorRolloverCoordinator::new(&initial);
+        let mut sink = Sink::default();
+        let proposal = coordinator
+            .prepare_proposal(
+                &mut sink,
+                candidate,
+                game_hour() - 1,
+                RolloverReason::SamePairTimeRollback,
+                1,
+            )
+            .unwrap();
+
+        assert_eq!(proposal.current_campaign_id, proposal.proposed_campaign_id);
+        assert_ne!(
+            proposal.current_cid1_payload_sha256,
+            proposal.proposed_cid1_payload_sha256
+        );
+        assert_eq!(
+            coordinator.phase(),
+            CollectorRolloverPhase::AwaitingRolloverAck
+        );
         assert_eq!(sink.actions, vec!["pause:0".to_string()]);
     }
 }

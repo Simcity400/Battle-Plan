@@ -24,8 +24,9 @@ and `extractor/documents/RE_REMAINING.md`.
   `CSupplySystem+0x108` owner vector, strict kind-5 extraction/decode, and replay
   province/country join are implemented; exact tooltip supply and motorization
   remain separate gaps.)
-  (A8 is authority-first, not fixture-blocked: repeat the conflicting task-force
-  receiver routes under the clean 10-shard gate before any D56 activity field.
+  (A8 receiver authority is resolved: clean exact-ten evidence joins the activity
+  subobject to the CTaskForce body and D56 now emits exact detached-activity
+  `mission_state`; scalar repair-progress/retreat interpretations are rejected.
   A9 standalone member-leave and terminal-loss cards are retired: D50 tombstone
   semantics and exact `FEX_STATE_SUNK` state `0x20` close those laws; controlled
   transitions are optional regression validation.)
@@ -64,8 +65,9 @@ and `extractor/documents/RE_REMAINING.md`.
 - **Rail replay state d81:** exact a729 province anchors and ordered reciprocal
   `RailwayInfo` adjacency/levels are wired collector-to-replay. The hub-manager
   global, type-`0x1a` active vector, icon authentication, province/subtype
-  identity, and frame projection are discovery-complete. Repeat the exact seeds
-  under the required clean 10-shard authority gate, then wire the fail-closed
+  identity, and frame projection are discovery-complete. Repeat any still-needed
+  exact seeds through the current healthy 20-shard broker under the exact
+  identity/mode/job-provenance gate, then wire the fail-closed
   schema extension; no human capture or centroid/static-building fallback is allowed.
 - **Coverage sweeps (§X):** X1a–c, X2b–d, X3, X4 deployment queues, X8 order
   membership, X9 projects, X10 direct hooks, X11 expected-partial narrowing,

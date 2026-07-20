@@ -1329,6 +1329,90 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         true,
         &[],
     ),
+    // A39/XUI17 (2026-07-20): exact pointer-free observations from the
+    // CUnitLeaderTraitTree row vectors/state producer and the owner-qualified
+    // CAcesView refresh/bind portrait route. The d82 carrier, collector source
+    // seam, recorder fold, and replay view are implemented. Keep reserved and
+    // unscheduled until the live hook supplies a complete authenticated mixed-
+    // state fixture; trait progress remains explicitly absent meanwhile.
+    domain(
+        82,
+        "character_presentation_live",
+        "character_presentation_live",
+        CompactDomainStatus::Reserved,
+        false,
+        true,
+        &[],
+    ),
+    // A17 (2026-07-20): exact pointer-free per-country CNuke rows carrying
+    // amount_raw and nukes_ready. The carrier, recorder fold, and replay view
+    // are wired, but the exact-ten consumer binding is not yet receipted. Keep
+    // d83 reserved and unscheduled; d63's established 48-byte row is unchanged.
+    domain(
+        83,
+        "nuke_stockpile_live",
+        "nuke_stockpile_live",
+        CompactDomainStatus::Reserved,
+        false,
+        true,
+        &[],
+    ),
+    // A38/XUI22 (2026-07-20): exact engine-materialised scripted-GUI runtime
+    // results in CScriptedWindowManager updater order, bound to the exact
+    // effective-VFS winner and authenticated static producer receipt. The d84
+    // carrier, recorder fold, replay typed view, and generic UI consumer are
+    // implemented. Keep reserved and unscheduled until the fresh exact20 A38
+    // receipt and authenticated live producer frame are admitted together.
+    domain(
+        84,
+        "scripted_gui_runtime_live",
+        "scripted_gui_runtime_live",
+        CompactDomainStatus::Reserved,
+        false,
+        true,
+        &[],
+    ),
+    // A40/XUI08 (2026-07-20): pointer-free selected designer identity and
+    // exact controller-published row order across division, equipment, tank,
+    // plane, ship, and variant-upgrade families. The d85 codec, isolated
+    // collector seam, recorder fold, and replay typed view are implemented.
+    // Producer plus split classifier/thunk receipts are bound. Keep reserved
+    // and unscheduled until the six-family live transition fixture is accepted.
+    domain(
+        85,
+        "selected_designer_identity_live",
+        "selected_designer_identity_live",
+        CompactDomainStatus::Reserved,
+        false,
+        true,
+        &[],
+    ),
+    // A33/XUI20 (2026-07-20): exact sunk-ship writer observations joined to
+    // the validated d49/d50 CFEXMember combat epoch. The pointer-free d86
+    // carrier is receipt-bound and fail-closed. Keep reserved and unscheduled
+    // until the inert a729 hook is promoted with an authenticated live fixture.
+    domain(
+        86,
+        "sunk_ship_history_live",
+        "sunk_ship_history_live",
+        CompactDomainStatus::Reserved,
+        false,
+        true,
+        &[],
+    ),
+    // A34/XUI19 (2026-07-20): complete ordered decision-panel materialization
+    // including exact evaluated text and alert membership. The d87 carrier is
+    // receipt-bound and fail-closed. Keep reserved and unscheduled until the
+    // inert materializer/text/alert hooks pass the production fixture gate.
+    domain(
+        87,
+        "decision_panel_live",
+        "decision_panel_live",
+        CompactDomainStatus::Reserved,
+        false,
+        true,
+        &[],
+    ),
     domain(
         1000,
         "frame",
@@ -1501,7 +1585,7 @@ mod tests {
             1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32,
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
             55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76,
-            77, 78, 79, 80, 81, 1000,
+            77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 1000,
         ];
         for id in expected {
             assert!(

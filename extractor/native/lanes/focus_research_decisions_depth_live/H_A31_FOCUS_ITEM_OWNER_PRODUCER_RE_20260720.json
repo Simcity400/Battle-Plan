@@ -1,0 +1,161 @@
+{
+  "schema": "hoi4.h_a31.focus_item_owner_producer_re.v1",
+  "date": "2026-07-20",
+  "lane": "H-A31",
+  "disposition": "STATIC_OWNER_AND_PRODUCER_ROUTE_EXACT20_BOUND_AND_OBSERVER_ENGINEERING_PENDING",
+  "binary_identity": {
+    "binary_id": "hoi4.exe 1.19.2.0.a729",
+    "image_base": "0x140000000",
+    "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "ghidra_status_ready": true,
+    "observed_shards": 10,
+    "ready_shards": 10,
+    "read_only": true,
+    "analysis_disabled": true
+  },
+  "fresh_discovery_export": {
+    "job_id": "20260720T011842Z-wave3-h-a31-live-focus-vector-owner-prod-5e55b0d8",
+    "shard_id": "shard-07",
+    "job_json": "C:/hoi4_evidence/ghidra_agent_exports/20260720T011842Z-wave3-h-a31-live-focus-vector-owner-prod-5e55b0d8/job.json",
+    "job_json_sha256": "a8ed4a7113176018401b8bb0a7403e3d143760e45d3f06063212eeef9fccf50e",
+    "function_manifest": "C:/hoi4_evidence/ghidra_agent_exports/20260720T011842Z-wave3-h-a31-live-focus-vector-owner-prod-5e55b0d8/evidence/_FUNCTION_EVIDENCE_MANIFEST.json",
+    "function_manifest_sha256": "bd47df5b3578db6164f643c376fc70339f38b7339044e468c3d56c0fe3b82b69",
+    "request": {
+      "addresses": [
+        "0x141371b70",
+        "0x14136f750",
+        "0x14136a5c0",
+        "0x14137a780",
+        "0x141379a50",
+        "0x141bb5df0",
+        "0x141377430",
+        "0x141bb6720",
+        "0x141bb5a70",
+        "0x1402d5c00"
+      ],
+      "depth": 1,
+      "pcode": true,
+      "all_seeds_resolved_to_exact_requested_entry": true
+    },
+    "use": "Discovery evidence only. It is not a consolidated exact-ten promotion receipt."
+  },
+  "exact20_authority": {
+    "job_id": "20260720T020812Z-w3-a31-focus-owner-93fbbf62",
+    "shard_id": "shard-17",
+    "function_manifest_sha256": "303351ed65468aa7655b904998819c96ca1c325f906b5a3bf32c4f18decc7969",
+    "seed_resolution": "10/10 exact requested entries",
+    "static_authority": true,
+    "source_activation": false,
+    "activation_requirement": "authenticated complete pointer-free fixture"
+  },
+  "proven_owner": {
+    "class": "CNationalFocusView",
+    "constructor": "0x14136aec0",
+    "primary_vtable": "0x14299d680",
+    "owner_authentication": "Validate the primary vtable at view+0x00 against image_base+0x299d680 before reading any vector field.",
+    "final_item_vector": {
+      "data": "+0x2058 qword",
+      "capacity": "+0x2060 u32",
+      "count": "+0x2064 u32",
+      "allocator": "+0x2068 qword",
+      "entry_stride": 8,
+      "entry_type": "CNationalFocusTreeItem*",
+      "order": "0..count-1 is the final engine-filtered and engine-sorted render order"
+    },
+    "cache_fields": {
+      "tree_or_context": "+0x20e8",
+      "root": "+0x20f0",
+      "rebuild_key_a": "+0x2100",
+      "rebuild_key_b": "+0x2108"
+    }
+  },
+  "proven_item_layout": {
+    "allocation_size": "0x550",
+    "primary_vtable": "0x14299dd40 at +0x00",
+    "secondary_vtable": "0x14299dde0 at +0x18",
+    "focus_definition_pointer": "+0x20 qword",
+    "stable_focus_id_join": "Decode the same CNationalFocus definition id at definition+0x18 already used by the authenticated D12 live focus reader; never use the item pointer as replay identity.",
+    "presentation_state": "+0x540 u32, final domain 0..3",
+    "national_visibility_capability": "+0x54c u8",
+    "joint_visibility_capability": "+0x54d u8",
+    "historical_marker": "focus_definition+0x5b8 u8 != 0"
+  },
+  "producer_route": {
+    "rebuild_and_publish": [
+      {
+        "function": "0x141371b70",
+        "law": "Receives CNationalFocusView in RCX, loads the active focus-tree root, builds row inputs, calls 0x14136f750 at 0x141371d17, then continues at 0x141371d1c."
+      },
+      {
+        "function": "0x14136f750",
+        "law": "Applies the engine predicate/sort, clears count, allocates 0x550-byte items through 0x14136a5c0, appends each pointer to view+0x2058, and increments view+0x2064."
+      },
+      {
+        "function": "0x14136a5c0",
+        "law": "Installs both exact item vtables, stores its R9 focus-definition argument at item+0x20, initializes state storage, and writes the final capability bytes."
+      }
+    ],
+    "dynamic_state": [
+      {
+        "function": "0x14137a780",
+        "law": "Reads view+0x2064 and iterates view+0x2058 in engine order; call site 0x14137a89a passes each exact item pointer to 0x141379a50."
+      },
+      {
+        "function": "0x141379a50",
+        "law": "Uses item+0x20, +0x54c, and +0x54d in the current country context, derives joint-view visibility, and passes the final 0..3 presentation code to 0x1413778f0."
+      },
+      {
+        "function": "0x1413778f0",
+        "law": "Commits the final presentation state at item+0x540 and updates the associated semantic widgets."
+      }
+    ],
+    "search_highlight": {
+      "function": "0x141377430",
+      "join": "RCX is the CNationalFocusTreeItem pointer and EDX is the final highlight state",
+      "law": "State 3 shows highlight_glow; state 0 resets and state 2 is an ordinary match. This is a transient event, not a persistent byte in the final item vector."
+    },
+    "display_progress": {
+      "function": "0x141bb5df0",
+      "definition_join": "detail_object+0xf50 is the CNationalFocus definition pointer",
+      "final_value_boundary": "At 0x141bb636e EDX receives ESI; the virtual widget consumer is called at 0x141bb6373.",
+      "law": "Capture that exact unsigned integer at the call boundary, including explicit 0 and 100 terminal branches. Do not derive it from progress_days or base cost."
+    },
+    "historical": {
+      "source": "focus_definition+0x5b8",
+      "law": "Read the final byte from the same definition pointer joined to the item; strategy-plan filenames or lists are not runtime authority."
+    }
+  },
+  "observer_contract": {
+    "base_vector_boundary": "Capture RCX at 0x14136f750 entry and sample after return, or capture RSI at 0x141371d1c. Validate the view vtable and use a fail-closed opening/header/items/closing double-read.",
+    "dynamic_boundary": "Use 0x14137a780 completion for a full state refresh and retain per-item 0x141379a50/0x1413778f0 observations for the same view, country, thread, and frame hour.",
+    "transient_joins": [
+      "Join highlight events by authenticated item pointer, then replace the pointer with focus_definition+0x18 id before serialization.",
+      "Join display-percent events by authenticated detail_object+0xf50 definition pointer.",
+      "Join joint-view country identity inside 0x141379a50 to the same item pointer; zero is measured hidden, not missing."
+    ],
+    "atomicity": "Commit only after the vector header, pointer array, item vtables, definition pointers, state leaves, frame hour, country, and all required transient leaves remain stable and refer to one observation epoch.",
+    "failure": "Any missing hook leaf, pointer reuse, count/capacity mismatch, duplicate definition id, cross-country join, cross-hour join, or unsupported state rejects the whole A31 frame."
+  },
+  "repository_audit": {
+    "carrier": "extractor/native/lanes/focus_research_decisions_depth_live/src/national_focus_presentation.rs",
+    "current_state": "The strict pointer-free carrier boundary exists, but no live CNationalFocusView observer, compact serialization, recorder fold, or replay admission is scheduled.",
+    "code_change_in_this_pass": false,
+    "reason": "No new H-A31 seed has a consolidated exact-ten receipt. Wiring discovery hashes would violate repository authority policy."
+  },
+  "promotion_gate": {
+    "current_wave2_receipt": "extractor/documents/WAVE2_EXACT10_REEXPORT_RECEIPT_20260720.json",
+    "current_wave2_exact_request_membership": false,
+    "next_request": "H_A31_EXACT10_REEXPORT_REQUEST_20260720.json",
+    "promotion_authorized": false
+  },
+  "human_input_boundary": {
+    "current_state": "NOT_YET_REQUESTABLE",
+    "agent_prerequisites": [
+      "receive and bind the consolidated exact-ten receipt",
+      "implement the authenticated fail-closed live observer",
+      "implement compact serialization, recorder fold, and replay admission",
+      "complete root-owned central validation"
+    ],
+    "later_irreducible_fixture": "After those prerequisites close, one exact-a729 stable frame and one discriminating transition frame remain required to prove real invocation, zero-loss transient joins, and transition behavior."
+  }
+}

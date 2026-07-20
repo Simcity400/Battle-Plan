@@ -5,6 +5,10 @@ version = 4
 [[package]]
 name = "active_command_abilities_live_lane"
 version = "0.1.0"
+dependencies = [
+ "minhook",
+ "windows-sys",
+]
 
 [[package]]
 name = "adler2"
@@ -83,6 +87,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
+name = "character_presentation_live_lane"
+version = "0.1.0"
+dependencies = [
+ "minhook",
+ "windows-sys",
+]
+
+[[package]]
 name = "characters_leaders_cabinet_live"
 version = "0.1.0"
 dependencies = [
@@ -100,11 +112,14 @@ dependencies = [
  "army_battleplans_depth_live_lane",
  "capitulation_war_state_live",
  "cc",
+ "character_presentation_live_lane",
  "characters_leaders_cabinet_live",
  "compact_contract",
  "construction_buildings_state_damage_live",
+ "decision_panel_live_lane",
  "design_catalog_context_live_lane",
  "diplomacy_intel_operatives_live",
+ "direct_frd_transitions_live",
  "dynamic_collection_trace_live_lane",
  "fired_event_popups_live_lane",
  "hub_motorization_live_lane",
@@ -112,6 +127,7 @@ dependencies = [
  "land_combat_detail_events_live_lane",
  "naval_combat_live_lane",
  "naval_missions_status_live_lane",
+ "nuke_stockpile_live_lane",
  "occupation_resistance_compliance_live_lane",
  "politics_tooltip_inputs_live_lane",
  "portable_content_manifest",
@@ -126,6 +142,7 @@ dependencies = [
  "serde_json",
  "session_multiplayer_metadata_live",
  "sha2",
+ "sunk_ship_history_live_lane",
 ]
 
 [[package]]
@@ -144,6 +161,7 @@ dependencies = [
  "compact_contract",
  "compact_stream",
  "diplomacy_intel_operatives_live",
+ "portable_content_manifest",
  "recorder_host",
  "serde_json",
  "snapshot",
@@ -216,6 +234,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "decision_panel_live_lane"
+version = "0.1.0"
+
+[[package]]
 name = "derive_arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -254,6 +276,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "direct_frd_transitions_live"
+version = "0.1.0"
+dependencies = [
+ "minhook",
+ "windows-sys",
+]
+
+[[package]]
 name = "displaydoc"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -267,6 +297,9 @@ dependencies = [
 [[package]]
 name = "dynamic_collection_trace_live_lane"
 version = "0.1.0"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "equivalent"
@@ -318,6 +351,7 @@ name = "focus_research_decisions_depth_live"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
+ "direct_frd_transitions_live",
  "recorder_host",
 ]
 
@@ -494,6 +528,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nuke_stockpile_live_lane"
+version = "0.1.0"
+
+[[package]]
 name = "occupation_resistance_compliance_live_lane"
 version = "0.1.0"
 dependencies = [
@@ -657,13 +695,16 @@ dependencies = [
  "air_wings_variants_lifecycle_live_lane",
  "army_battleplans_depth_live_lane",
  "capitulation_war_state_live",
+ "character_presentation_live_lane",
  "characters_leaders_cabinet_live",
  "collector",
  "compact_contract",
  "compact_stream",
  "construction_buildings_state_damage_live",
+ "decision_panel_live_lane",
  "design_catalog_context_live_lane",
  "diplomacy_intel_operatives_live",
+ "direct_frd_transitions_live",
  "dynamic_collection_trace_live_lane",
  "fired_event_popups_live_lane",
  "hub_motorization_live_lane",
@@ -672,6 +713,7 @@ dependencies = [
  "mimalloc",
  "naval_combat_live_lane",
  "naval_missions_status_live_lane",
+ "nuke_stockpile_live_lane",
  "occupation_resistance_compliance_live_lane",
  "politics_tooltip_inputs_live_lane",
  "portable_content_manifest",
@@ -687,6 +729,7 @@ dependencies = [
  "session_multiplayer_metadata_live",
  "sha2",
  "snapshot",
+ "sunk_ship_history_live_lane",
  "zip",
 ]
 
@@ -785,8 +828,10 @@ name = "session_multiplayer_metadata_live"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
+ "minhook",
  "serde_json",
  "snapshot",
+ "windows-sys",
 ]
 
 [[package]]
@@ -825,6 +870,15 @@ dependencies = [
  "serde_json",
  "windows-sys",
  "zstd",
+]
+
+[[package]]
+name = "sunk_ship_history_live_lane"
+version = "0.1.0"
+dependencies = [
+ "minhook",
+ "naval_combat_live_lane",
+ "windows-sys",
 ]
 
 [[package]]
@@ -940,6 +994,16 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "weather_live_lane"
+version = "0.1.0"
+dependencies = [
+ "compact_contract",
+ "compact_stream",
+ "serde_json",
+ "sha2",
+]
 
 [[package]]
 name = "winapi"

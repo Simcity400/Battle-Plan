@@ -20,6 +20,7 @@ use crate::control_transport::{
     ControlCancellation, ControlDeadline, ControlFrame, DeadlineControlChannel, DeadlineControlIo,
     MessageKind,
 };
+use crate::duplex_session::rollover_control::AuthenticatedRolloverRebind;
 
 // The CIF1/CIA1 byte codec now lives in the shared `compact_contract` crate so
 // the recorder host and the injected collector DLL use one implementation. This
@@ -472,6 +473,8 @@ pub enum IdentityDispatchError {
     Cfa1(FirstCompactAckCodecError),
     UnexpectedKind(MessageKind),
     FirstRecordAlreadyAcknowledged,
+    RolloverRebindMismatch,
+    RolloverNonceNotIncreasing,
     FailureTupleCrosswire,
     FailureAttemptNotIncreasing,
     Journal(String),
@@ -490,6 +493,12 @@ impl fmt::Display for IdentityDispatchError {
             Self::FirstRecordAlreadyAcknowledged => {
                 write!(f, "first compact record was already acknowledged")
             }
+            Self::RolloverRebindMismatch => {
+                write!(f, "rollover CFA1 did not match its authenticated rebind authority")
+            }
+            Self::RolloverNonceNotIncreasing => {
+                write!(f, "rollover rebind proposal nonce did not strictly increase")
+            }
             Self::FailureTupleCrosswire => {
                 write!(f, "identity failure did not match the bound logical stream")
             }
@@ -507,6 +516,7 @@ impl std::error::Error for IdentityDispatchError {}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BoundLogicalStream {
     logical_stream_id: u64,
+    campaign_id: Option<[u8; 32]>,
     cid1_payload_sha256: Option<[u8; 32]>,
 }
 
@@ -517,6 +527,7 @@ pub struct RecorderIdentityControlDispatcher<S> {
     journal: IdentityControlJournal<S>,
     bound: Option<BoundLogicalStream>,
     last_failure_attempt: Option<u64>,
+    last_rollover_nonce: Option<u64>,
     poisoned: bool,
 }
 
@@ -526,6 +537,7 @@ impl<S: IdentityDurableCandidateSink> RecorderIdentityControlDispatcher<S> {
             journal: IdentityControlJournal::new(sink),
             bound: None,
             last_failure_attempt: None,
+            last_rollover_nonce: None,
             poisoned: false,
         }
     }
@@ -536,6 +548,10 @@ impl<S: IdentityDurableCandidateSink> RecorderIdentityControlDispatcher<S> {
 
     pub fn bound_logical_stream_id(&self) -> Option<u64> {
         self.bound.map(|bound| bound.logical_stream_id)
+    }
+
+    pub(crate) fn bound_campaign_id(&self) -> Option<[u8; 32]> {
+        self.bound.and_then(|bound| bound.campaign_id)
     }
 
     /// Journal the exact first-record tuple before emitting its canonical CFA1.
@@ -584,9 +600,92 @@ impl<S: IdentityDurableCandidateSink> RecorderIdentityControlDispatcher<S> {
         }
         self.bound = Some(BoundLogicalStream {
             logical_stream_id: acknowledgement.logical_stream_id,
+            campaign_id: first_record.validated_cid1().map(|cid1| cid1.campaign_id()),
             cid1_payload_sha256: (acknowledgement.mode == StreamIdentityMode::IdentityV1)
                 .then_some(acknowledgement.payload_sha256),
         });
+        Ok(AcknowledgedFirstCompactRecord {
+            first_record,
+            durable_receipt,
+        })
+    }
+
+    /// Journal and send a second CFA1 only when a completed rollover
+    /// transaction supplies the exact move-only old/new binding authority.
+    /// This is intentionally separate from `acknowledge_first_record`, which
+    /// remains permanently first-only once a logical stream is bound.
+    pub(crate) fn acknowledge_rollover_rebind<I: DeadlineControlIo>(
+        &mut self,
+        channel: &mut DeadlineControlChannel<I>,
+        first_record: ValidatedFirstCompactRecord,
+        authority: AuthenticatedRolloverRebind,
+        deadline: ControlDeadline,
+        cancellation: &ControlCancellation,
+    ) -> Result<AcknowledgedFirstCompactRecord, IdentityDispatchError> {
+        self.preflight(channel)?;
+        self.preflight_operation(channel, deadline, cancellation)?;
+        if let Err(error) = channel.assert_capability(MessageKind::FirstCompactFrameAck) {
+            self.poison(channel);
+            return Err(IdentityDispatchError::Transport(error.to_string()));
+        }
+        if self
+            .last_rollover_nonce
+            .is_some_and(|last| authority.proposal_nonce() <= last)
+        {
+            self.poison(channel);
+            return Err(IdentityDispatchError::RolloverNonceNotIncreasing);
+        }
+        let expected_current = BoundLogicalStream {
+            logical_stream_id: authority.current_logical_stream_id(),
+            campaign_id: Some(authority.current_campaign_id()),
+            cid1_payload_sha256: Some(authority.current_cid1_payload_sha256()),
+        };
+        let acknowledgement = first_record.acknowledgement();
+        let expected_new = BoundLogicalStream {
+            logical_stream_id: authority.proposed_logical_stream_id(),
+            campaign_id: Some(authority.proposed_campaign_id()),
+            cid1_payload_sha256: Some(authority.proposed_cid1_payload_sha256()),
+        };
+        let actual_new = BoundLogicalStream {
+            logical_stream_id: acknowledgement.logical_stream_id,
+            campaign_id: first_record.validated_cid1().map(|cid1| cid1.campaign_id()),
+            cid1_payload_sha256: (acknowledgement.mode == StreamIdentityMode::IdentityV1)
+                .then_some(acknowledgement.payload_sha256),
+        };
+        if self.bound != Some(expected_current)
+            || acknowledgement.mode != StreamIdentityMode::IdentityV1
+            || acknowledgement.h4cr_sequence != 0
+            || actual_new != expected_new
+        {
+            self.poison(channel);
+            return Err(IdentityDispatchError::RolloverRebindMismatch);
+        }
+        let durable_receipt = match self.journal.durable_first_record_admission(
+            &first_record,
+            deadline,
+            cancellation,
+        ) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                self.poison(channel);
+                return Err(IdentityDispatchError::Journal(error));
+            }
+        };
+        let payload = encode_first_compact_frame_ack(acknowledgement).map_err(|error| {
+            self.poison(channel);
+            IdentityDispatchError::Cfa1(error)
+        })?;
+        if let Err(error) = channel.send_until(
+            MessageKind::FirstCompactFrameAck,
+            &payload,
+            deadline,
+            cancellation,
+        ) {
+            self.poison(channel);
+            return Err(IdentityDispatchError::Transport(error.to_string()));
+        }
+        self.bound = Some(expected_new);
+        self.last_rollover_nonce = Some(authority.proposal_nonce());
         Ok(AcknowledgedFirstCompactRecord {
             first_record,
             durable_receipt,

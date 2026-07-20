@@ -1,5 +1,22 @@
 # Repository agent guidance
 
+## Current Ghidra broker authority
+
+- Always call `ghidra_status` before Ghidra work. The active exact-a729 broker
+  is expected to report `ready=true`, `execution.shard_count=20`, shards
+  `shard-01` through `shard-20` ready, read-only/no-analysis mode, image base
+  `0x140000000`, and SHA-256
+  `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
+- Do not reconfigure or reset the broker to ten shards. Historical
+  `exact-10`, `ten-shard`, and `invalid-20-shard` receipts describe a closed
+  one-time evidence replay; they are not the current broker topology contract.
+- The configured shard count is operational capacity, not semantic evidence
+  provenance. Do not reject, quarantine, or downgrade a job solely because it
+  ran while 20 shards were configured. Validate the executing shard's binary
+  identity, mode, job ID, request/manifest hashes, and artifact hashes.
+- Agent/subagent concurrency limits are unrelated to Ghidra shard count.
+- Current details: `replay_interface/tools/ghidra/CURRENT_AUTHORITY.md`.
+
 ## Rust builds and tests
 
 - This policy covers `extractor/native`, `replay_interface/native`, and their `portable_replay` dependencies.

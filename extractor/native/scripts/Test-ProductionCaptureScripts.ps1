@@ -57,6 +57,7 @@ try {
         "Invoke-AcceptanceLadder.ps1",
         "Test-ProductionCaptureScripts.ps1",
         # The ladder reuses the launcher; a syntax break there breaks the ladder.
+        "Start-Hoi4ProductionCaptureSafe.ps1",
         "Start-Hoi4ProductionSpeed5Capture.ps1"
     )
     foreach ($name in $syntaxTargets) {
@@ -139,6 +140,22 @@ try {
     Assert-Case 'durable marker precedes launch' ($driverText.IndexOf('Write-DurableJson -Path $attemptMarkerPath') -lt $driverText.IndexOf('if (-not $process.Start())'))
     Assert-Case 'bounded child cleanup present' ($driverText.Contains('CloseMainWindow()') -and $driverText.Contains('$process.Kill()') -and $driverText.Contains('WaitForExit'))
     Assert-Case 'unresolved attempt refusal present' $driverText.Contains('unresolved prior injection attempt exists')
+    Assert-Case 'resolved attempt retains hash-bound validation receipt' (
+        $driverText.Contains('battle-plan.production_capture_validation_receipt.v1') -and
+        $driverText.Contains('validation_report_sha256') -and
+        $driverText.Contains('manifest_sha256') -and
+        $driverText.Contains('capture_plan_sha256') -and
+        $driverText.Contains('session_id = $SessionId') -and
+        $driverText.Contains('capture_id = $CaptureId') -and
+        $driverText.Contains('validation_receipt=$validationReceipt')
+    )
+    Assert-Case 'acceptance receipt binds extraction replay nonce and observations' (
+        $driverText.Contains('snapshot_extraction_report_sha256') -and
+        $driverText.Contains('replay_sha256') -and
+        $driverText.Contains('acceptance_test_nonce') -and
+        $driverText.Contains('acceptance_proof') -and
+        $driverText.Contains('acceptance_test_observation')
+    )
     Assert-Case 'speed root v2 gate passed exclusively to recorder' ($driverText.Contains('"--domain57-game-speed-gate-v2", $SpeedRootGatePath') -and -not $driverText.Contains('"--speed-root-gate"'))
     Assert-Case 'raw transcript file hash passed separately to recorder' ($driverText.Contains('"--domain57-game-speed-transcript-file-sha256", $SpeedEvidenceTranscriptFileSha256'))
     Assert-Case 'raw evidence transcript retained and identity pinned' ($driverText.Contains('retained_speed_evidence_transcript') -and $driverText.Contains('speed_evidence_transcript_file_id'))

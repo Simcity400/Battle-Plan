@@ -224,6 +224,7 @@ mod tests {
     fn manifest() -> ContentManifest {
         ContentManifest {
             schema: SCHEMA.into(),
+            product_modset_sha256: "9".repeat(64),
             source_game: SourceGameIdentity {
                 version: "1.19.2".into(),
                 build: "a729".into(),
@@ -545,6 +546,7 @@ graphics={
         let vfs_sha = "4a".repeat(32);
         let mut manifest = ContentManifest {
             schema: SCHEMA.into(),
+            product_modset_sha256: "9".repeat(64),
             source_game: SourceGameIdentity {
                 version: "1.19.2.0".into(),
                 build: "a729".into(),

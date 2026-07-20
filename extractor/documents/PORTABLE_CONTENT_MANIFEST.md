@@ -64,7 +64,9 @@ The neutral schema is owned by
    Selected-but-unused DLC remains recorded but is not silently required.
 11. The shared selection digest and manifest digest are computed, and the
    content manifest enters `PackIdentity`. The container declares
-   `portable_content_manifest_v1` and validates the digest when reopened.
+   `portable_content_manifest_v2` and validates the digest when reopened. The
+   v2 body requires the static-bundle-v3 `product_modset_sha256`; v1 containers
+   are migration-only inputs and are not production-admissible.
 
 Production capture cannot finish with an empty, mutating, malformed, or
 launch-mismatched finalized catalog/source join. Debug/recovery captures may
@@ -119,13 +121,13 @@ language, and rendering-relevant settings.
 Run from the repository root:
 
 ```powershell
-cargo test --manifest-path extractor/native/recorder_host/Cargo.toml --lib portable_content_manifest::tests -- --nocapture
-cargo test --manifest-path extractor/native/recorder_host/Cargo.toml --bin collector_record portable_recorder_manifest_redacts_every_local_root_but_keeps_stable_ids -- --nocapture
-cargo test --manifest-path extractor/native/recorder_host/Cargo.toml --bin collector_record production_rejects_debug_content_trace_sidecar_and_uses_in_process_join -- --nocapture
-cargo test --manifest-path extractor/native/recorder_host/Cargo.toml --bin collector_record parse_args -- --nocapture
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File extractor\native\scripts\Invoke-CentralRustValidation.ps1 -Mode Final -Workspace All
 ```
 
-Verified 2026-07-18:
+The v2/product-modset boundary added on 2026-07-20 is pending the parent
+wave's single centralized validation run. No subagent build result is claimed.
+
+Historical pre-v2 verification on 2026-07-18:
 
 - portable content-manifest adapter: 22 passed, 0 failed;
 - d79 fold/runtime-stream subset: 3 passed, 0 failed;

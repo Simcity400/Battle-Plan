@@ -115,6 +115,7 @@ fn unsupported_static_producer_transitively_omits_dependent_pass_chain() {
     };
     let frame = PreparedProductionMapFrame {
         content_manifest_sha256: "1".repeat(64),
+        product_modset_sha256: "9".repeat(64),
         effective_vfs_manifest_sha256: "2".repeat(64),
         selected_submit_index: Some(1),
         selected_submit_global_order: Some(1),
@@ -294,6 +295,7 @@ fn admitted_renderer_with_bindings(
     };
     let mut manifest = ContentManifest {
         schema: replay_core::PORTABLE_CONTENT_MANIFEST_SCHEMA.into(),
+        product_modset_sha256: "99".repeat(32),
         source_game: source_game.clone(),
         source_profile: SourceProfileIdentity {
             profile_id: "portable-test".into(),

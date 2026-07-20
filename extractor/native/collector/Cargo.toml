@@ -13,6 +13,7 @@ cc = "1"
 
 [dependencies]
 compact_contract = { path = "../compact_contract" }
+direct_frd_transitions_live = { path = "../lanes/direct_frd_transitions_live" }
 air_loss_stats_live_lane = { path = "../lanes/air_loss_stats_live" }
 hub_motorization_live_lane = { path = "../lanes/hub_motorization_live" }
 air_wings_variants_lifecycle_live_lane = { path = "../lanes/air_wings_variants_lifecycle_live" }
@@ -26,7 +27,7 @@ land_combat_detail_events_live_lane = { path = "../lanes/land_combat_detail_even
 naval_combat_live_lane = { path = "../lanes/naval_combat_live" }
 army_battleplans_depth_live_lane = { path = "../lanes/army_battleplans_depth_live" }
 naval_missions_status_live_lane = { path = "../lanes/naval_missions_status_live" }
-session_multiplayer_metadata_live = { path = "../lanes/session_multiplayer_metadata_live" }
+session_multiplayer_metadata_live_lane = { package = "session_multiplayer_metadata_live", path = "../lanes/session_multiplayer_metadata_live" }
 dynamic_collection_trace_live_lane = { path = "../lanes/dynamic_collection_trace_live" }
 active_command_abilities_live_lane = { path = "../lanes/active_command_abilities_live" }
 resolved_tooltip_instances_live_lane = { path = "../lanes/resolved_tooltip_instances_live" }
@@ -39,6 +40,10 @@ production_render_catalog_live = { package = "production_render_catalog_live_lan
 portable_content_manifest = { path = "../../../portable_replay/native/content_manifest" }
 design_catalog_context_live_lane = { path = "../lanes/design_catalog_context_live" }
 hud_role_observer_live_lane = { path = "../lanes/hud_role_observer_live" }
+character_presentation_live_lane = { path = "../lanes/character_presentation_live" }
+nuke_stockpile_live_lane = { path = "../lanes/nuke_stockpile_live" }
+sunk_ship_history_live_lane = { path = "../lanes/sunk_ship_history_live" }
+decision_panel_live_lane = { path = "../lanes/decision_panel_live" }
 portable_render_stream = { path = "../../../portable_replay/native/render_stream" }
 serde = "1"
 serde_json = "1"

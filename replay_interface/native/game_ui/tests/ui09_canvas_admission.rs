@@ -23,7 +23,7 @@ fn focus() -> FocusCanvasRequest {
         previous_viewport: [2752, 1152],
         requested_transform_state_id: "frame38304".to_string(),
         recorded_transform: Some(RecordedFocusTransform {
-            source_record_id: "hoi4_frame38304.rdc:event9134".to_string(),
+            source_record_id: "producer:GER:frame38304".to_string(),
             state_id: "frame38304".to_string(),
             viewport: [2752, 1152],
             scale: 0.7698728191475303,
@@ -190,6 +190,20 @@ fn rejects_unrecorded_focus_zoom_state() {
 fn rejects_unresolved_shared_focus_offsets() {
     let mut request = focus();
     request.resolved_positions = None;
+    assert_eq!(
+        rejection(ResearchCanvasRequest::Focus(request)),
+        AdmissionRejectionCode::FocusSharedOffsetPrecedence
+    );
+}
+
+#[test]
+fn rejects_focus_values_from_different_producer_records() {
+    let mut request = focus();
+    request
+        .resolved_positions
+        .as_mut()
+        .unwrap()
+        .source_record_id = "producer:GER:another-transition".to_string();
     assert_eq!(
         rejection(ResearchCanvasRequest::Focus(request)),
         AdmissionRejectionCode::FocusSharedOffsetPrecedence

@@ -120,6 +120,7 @@ fn production_renderer(root: PathBuf) -> ProductionUiRenderer {
     };
     let mut manifest = ContentManifest {
         schema: replay_core::PORTABLE_CONTENT_MANIFEST_SCHEMA.into(),
+        product_modset_sha256: "9".repeat(64),
         source_game: source_game.clone(),
         source_profile,
         effective_vfs_manifest_sha256,
@@ -234,6 +235,7 @@ fn minimal_hud_route_admission(
     };
     let mut manifest = ContentManifest {
         schema: replay_core::PORTABLE_CONTENT_MANIFEST_SCHEMA.into(),
+        product_modset_sha256: "9".repeat(64),
         source_game: source_game.clone(),
         source_profile: SourceProfileIdentity {
             profile_id: "route-profile".into(),

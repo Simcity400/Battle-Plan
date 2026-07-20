@@ -26,6 +26,10 @@ use compact_contract::{
     COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
     COMPACT_RECORD_TYPE_FRAME_END, COMPACT_STATUS_FAILURE_MASK,
 };
+use compact_contract::stream_validator::{
+    AcceptedRecordKind, StatefulStreamValidator, StreamIdentityMode,
+};
+use compact_contract::campaign_identity::ValidatedCid1;
 use snapshot::sha256::{to_hex, Sha256};
 
 use crate::world_fold::{FoldedSnapshotFile, WorldFold};
@@ -93,6 +97,8 @@ pub struct FoldStreamStats {
     pub bytes_folded: u64,
     /// Trailing bytes that did not form a complete record (mid-record EOF).
     pub truncated_tail_bytes: u64,
+    /// Accepted ordinary records. The sequence-zero CID1 protocol header is
+    /// deliberately excluded to match fold-check/replay-decoder accounting.
     pub records_total: u64,
     pub data_records: u64,
     /// DOMAIN_DATA records whose payload failed stream-boundary exact-consumption
@@ -101,6 +107,7 @@ pub struct FoldStreamStats {
     pub malformed_payload_records: u64,
     pub frame_end_records: u64,
     pub perf_records: u64,
+    /// Ordinary non-DATA/non-PERF/non-FRAME_END records; excludes CID1.
     pub other_records: u64,
     pub hours_emitted: u64,
     /// Set when framing stopped early on a malformed record (bad magic/version).
@@ -116,6 +123,60 @@ pub struct FoldStreamStats {
     /// deliberately-collided cheap-hash source versions cannot merge into a
     /// mixed fold. Hex, empty when never computed.
     pub decoded_sha256: String,
+}
+
+/// Pointer-free identity telemetry retained by fold/seal walkers. This is
+/// derived only from `ValidatedCid1`; syntax parsing alone cannot construct it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FoldedCampaignIdentity {
+    pub campaign_id: String,
+    pub game_unique_id: String,
+    pub game_unique_seed: i32,
+    pub source_build_profile: String,
+    pub observed_game_hour_raw: i32,
+    pub cid1_payload_sha256: String,
+}
+
+/// Result of an identity-mode-explicit fold. The legacy APIs continue to return
+/// `FoldStreamStats` unchanged; explicit callers additionally receive the CID1
+/// authority retained by the validator.
+#[derive(Debug, Clone)]
+pub struct IdentityAwareFoldStats {
+    pub stats: FoldStreamStats,
+    pub campaign_identity: Option<FoldedCampaignIdentity>,
+    validated_cid1: Option<ValidatedCid1>,
+}
+
+impl IdentityAwareFoldStats {
+    /// Exact recorder-manifest object derived from the placement-authoritative
+    /// CID1 token retained by this complete fold. No parallel fields can mint it.
+    pub fn validated_campaign_identity_manifest(&self) -> Option<serde_json::Value> {
+        self.validated_cid1.as_ref().map(|identity| {
+            crate::campaign_identity::to_manifest_json(
+                &crate::campaign_identity::resolve_validated_cid1(identity),
+            )
+        })
+    }
+}
+
+impl From<&compact_contract::campaign_identity::ValidatedCid1> for FoldedCampaignIdentity {
+    fn from(identity: &compact_contract::campaign_identity::ValidatedCid1) -> Self {
+        Self {
+            campaign_id: identity.campaign_id_hex(),
+            game_unique_id: identity.game_unique_id().to_owned(),
+            game_unique_seed: identity.game_unique_seed(),
+            source_build_profile: identity.source_build_profile().to_owned(),
+            observed_game_hour_raw: identity.game_hour_raw(),
+            cid1_payload_sha256: identity.payload_sha256_hex(),
+        }
+    }
+}
+
+fn stream_validator(mode: StreamIdentityMode) -> StatefulStreamValidator {
+    match mode {
+        StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
+        StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,15 +195,38 @@ pub fn fold_compact_stream_file(
     game_id: &str,
     snapshot_dir: &Path,
 ) -> io::Result<(Vec<FoldedSnapshotFile>, FoldStreamStats)> {
+    fold_compact_stream_file_with_identity_mode(
+        stream_path,
+        game_id,
+        snapshot_dir,
+        StreamIdentityMode::Legacy,
+    )
+    .map(|(files, outcome)| (files, outcome.stats))
+}
+
+/// Identity-mode-explicit form of [`fold_compact_stream_file`]. Protocol mode
+/// is selected before opening the stream and is never sniffed or downgraded.
+pub fn fold_compact_stream_file_with_identity_mode(
+    stream_path: &Path,
+    game_id: &str,
+    snapshot_dir: &Path,
+    identity_mode: StreamIdentityMode,
+) -> io::Result<(Vec<FoldedSnapshotFile>, IdentityAwareFoldStats)> {
     let reader = compact_stream::open(stream_path)?;
     let compressed = reader.compression() == compact_stream::StreamCompression::Zstd;
     let total_len = if compressed { 0 } else { reader.encoded_len() };
     let mut fold = WorldFold::new_file_backed(game_id, snapshot_dir)?;
-    let stats = drive_fold_compressed(reader, total_len, &mut fold, compressed)?;
+    let outcome = drive_fold_compressed_with_identity_mode(
+        reader,
+        total_len,
+        &mut fold,
+        compressed,
+        identity_mode,
+    )?;
     let files = fold
         .finish_file_backed()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    Ok((files, stats))
+    Ok((files, outcome))
 }
 
 /// ONE shared logical-boundary state machine (container gate round 3: two
@@ -438,11 +522,22 @@ pub fn strict_stream_certification_verdict(
 /// framing error, malformed domain payload, residual tail bytes, an hour left
 /// open at EOF, or a stream that closes no hour.
 pub fn verify_stream_logical_boundary(stream_path: &Path) -> io::Result<()> {
+    verify_stream_logical_boundary_with_identity_mode(stream_path, StreamIdentityMode::Legacy)
+}
+
+/// Identity-mode-explicit seal walker. CID1 is consumed by the shared validator
+/// and retained as protocol state; it is never treated as an ordinary boundary
+/// record. No first-record sniffing or protocol fallback is permitted.
+pub fn verify_stream_logical_boundary_with_identity_mode(
+    stream_path: &Path,
+    identity_mode: StreamIdentityMode,
+) -> io::Result<()> {
     let mut reader = compact_stream::open(stream_path)?;
     let mut carry: Vec<u8> = Vec::with_capacity(CHUNK * 2);
     let mut chunk = vec![0u8; CHUNK];
     let mut processed: u64 = 0;
     let mut tracker = BoundaryTracker::default();
+    let mut validator = stream_validator(identity_mode);
     loop {
         let n = reader.read(&mut chunk)?;
         if n == 0 {
@@ -469,6 +564,19 @@ pub fn verify_stream_logical_boundary(stream_path: &Path) -> io::Result<()> {
                 break;
             }
             let payload = &carry[off + COMPACT_RECORD_HEADER_LEN..off + record_len];
+            let accepted = validator.validate_record(&header, payload).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "seal-time stream validation failed at byte {}: {error}",
+                        processed + off as u64
+                    ),
+                )
+            })?;
+            if accepted == AcceptedRecordKind::CampaignIdentity {
+                off += record_len;
+                continue;
+            }
             if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
                 validate_domain_data_payload(header.domain_id, payload, header.record_flags)
                     .map_err(|reason| {
@@ -533,17 +641,42 @@ pub fn fold_compact_stream_file_parallel(
     snapshot_dir: &Path,
     workers: usize,
 ) -> io::Result<(Vec<FoldedSnapshotFile>, FoldStreamStats)> {
+    fold_compact_stream_file_parallel_with_identity_mode(
+        stream_path,
+        game_id,
+        snapshot_dir,
+        workers,
+        StreamIdentityMode::Legacy,
+    )
+    .map(|(files, outcome)| (files, outcome.stats))
+}
+
+/// Identity-mode-explicit form of [`fold_compact_stream_file_parallel`]. Each
+/// worker independently validates the same declared protocol and must agree on
+/// the retained CID1 authority as well as stream accounting.
+pub fn fold_compact_stream_file_parallel_with_identity_mode(
+    stream_path: &Path,
+    game_id: &str,
+    snapshot_dir: &Path,
+    workers: usize,
+    identity_mode: StreamIdentityMode,
+) -> io::Result<(Vec<FoldedSnapshotFile>, IdentityAwareFoldStats)> {
     if workers <= 1 {
-        return fold_compact_stream_file(stream_path, game_id, snapshot_dir);
+        return fold_compact_stream_file_with_identity_mode(
+            stream_path,
+            game_id,
+            snapshot_dir,
+            identity_mode,
+        );
     }
     // A worker that ends up owning zero hours is only wasted CPU, never a
     // correctness problem, so no up-front knowledge of the hour count is needed.
-    let results: Vec<io::Result<(Vec<FoldedSnapshotFile>, FoldStreamStats)>> =
+    let results: Vec<io::Result<(Vec<FoldedSnapshotFile>, IdentityAwareFoldStats)>> =
         std::thread::scope(|scope| {
             let handles: Vec<_> = (0..workers)
                 .map(|k| {
                     scope.spawn(
-                        move || -> io::Result<(Vec<FoldedSnapshotFile>, FoldStreamStats)> {
+                        move || -> io::Result<(Vec<FoldedSnapshotFile>, IdentityAwareFoldStats)> {
                             let reader = compact_stream::open(stream_path)?;
                             let compressed =
                                 reader.compression() == compact_stream::StreamCompression::Zstd;
@@ -554,12 +687,17 @@ pub fn fold_compact_stream_file_parallel(
                                 workers as u64,
                                 k as u64,
                             )?;
-                            let stats =
-                                drive_fold_compressed(reader, total_len, &mut fold, compressed)?;
+                            let outcome = drive_fold_compressed_with_identity_mode(
+                                reader,
+                                total_len,
+                                &mut fold,
+                                compressed,
+                                identity_mode,
+                            )?;
                             let files = fold
                                 .finish_file_backed()
                                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-                            Ok((files, stats))
+                            Ok((files, outcome))
                         },
                     )
                 })
@@ -578,12 +716,14 @@ pub fn fold_compact_stream_file_parallel(
         });
 
     let mut merged: Vec<FoldedSnapshotFile> = Vec::new();
-    let mut stats: Option<FoldStreamStats> = None;
+    let mut outcome: Option<IdentityAwareFoldStats> = None;
     for result in results {
-        let (files, worker_stats) = result?;
+        let (files, worker_outcome) = result?;
         // Every worker framed identical bytes; any accounting divergence means a
         // non-deterministic walk and MUST fail loudly rather than merge.
-        if let Some(reference) = &stats {
+        if let Some(reference_outcome) = &outcome {
+            let reference = &reference_outcome.stats;
+            let worker_stats = &worker_outcome.stats;
             let agree = reference.stream_bytes == worker_stats.stream_bytes
                 && reference.bytes_folded == worker_stats.bytes_folded
                 && reference.records_total == worker_stats.records_total
@@ -597,7 +737,9 @@ pub fn fold_compact_stream_file_parallel(
                 // Content digest: same-shape-different-payload source views
                 // (e.g. file replaced between worker opens) must fail the
                 // merge, not silently mix snapshots from two stream versions.
-                && reference.decoded_sha256 == worker_stats.decoded_sha256;
+                && reference.decoded_sha256 == worker_stats.decoded_sha256
+                && reference_outcome.campaign_identity == worker_outcome.campaign_identity
+                && reference_outcome.validated_cid1 == worker_outcome.validated_cid1;
             if !agree {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
@@ -608,12 +750,13 @@ pub fn fold_compact_stream_file_parallel(
                 ));
             }
         } else {
-            stats = Some(worker_stats);
+            outcome = Some(worker_outcome);
         }
         merged.extend(files);
     }
     merged.sort_by_key(|f| f.hour_index);
-    let stats = stats.expect("workers >= 2 always yields stats");
+    let outcome = outcome.expect("workers >= 2 always yields stats");
+    let stats = &outcome.stats;
     if merged.len() as u64 != stats.hours_emitted {
         return Err(io::Error::new(
             io::ErrorKind::Other,
@@ -624,7 +767,7 @@ pub fn fold_compact_stream_file_parallel(
             ),
         ));
     }
-    Ok((merged, stats))
+    Ok((merged, outcome))
 }
 
 /// Hash spilled snapshot files for the offline report. When `discard_snapshots`
@@ -705,7 +848,29 @@ pub fn drive_fold<R: Read>(
     total_len: u64,
     fold: &mut WorldFold,
 ) -> io::Result<FoldStreamStats> {
-    drive_fold_compressed(reader.by_ref(), total_len, fold, false)
+    drive_fold_with_identity_mode(
+        reader.by_ref(),
+        total_len,
+        fold,
+        StreamIdentityMode::Legacy,
+    )
+    .map(|outcome| outcome.stats)
+}
+
+/// Identity-mode-explicit uncompressed fold driver.
+pub fn drive_fold_with_identity_mode<R: Read>(
+    mut reader: R,
+    total_len: u64,
+    fold: &mut WorldFold,
+    identity_mode: StreamIdentityMode,
+) -> io::Result<IdentityAwareFoldStats> {
+    drive_fold_compressed_with_identity_mode(
+        reader.by_ref(),
+        total_len,
+        fold,
+        false,
+        identity_mode,
+    )
 }
 
 /// `compressed` = the reader is a checksummed zstd stream. On such a source an
@@ -720,10 +885,34 @@ pub fn drive_fold_compressed<R: Read>(
     fold: &mut WorldFold,
     compressed: bool,
 ) -> io::Result<FoldStreamStats> {
+    drive_fold_compressed_with_identity_mode(
+        reader.by_ref(),
+        total_len,
+        fold,
+        compressed,
+        StreamIdentityMode::Legacy,
+    )
+    .map(|outcome| outcome.stats)
+}
+
+/// Identity-mode-explicit fold driver. The shared stateful validator owns CID1
+/// placement before records reach boundary/fold dispatch. Ordinary-record
+/// sequence and envelope authority remains with [`BoundaryTracker`], whose
+/// diagnostic fold deliberately permits a malformed domain payload to degrade
+/// only that domain while the recording continues.
+pub fn drive_fold_compressed_with_identity_mode<R: Read>(
+    mut reader: R,
+    total_len: u64,
+    fold: &mut WorldFold,
+    compressed: bool,
+    identity_mode: StreamIdentityMode,
+) -> io::Result<IdentityAwareFoldStats> {
     let mut stats = FoldStreamStats {
         stream_bytes: total_len,
         ..FoldStreamStats::default()
     };
+    let mut campaign_identity = None;
+    let mut validated_cid1 = None;
     let mut carry: Vec<u8> = Vec::with_capacity(CHUNK * 2);
     let mut chunk = vec![0u8; CHUNK];
     let mut processed: u64 = 0;
@@ -732,6 +921,7 @@ pub fn drive_fold_compressed<R: Read>(
     // interleaving, mismatched FRAME_END, and sequence discontinuities are
     // sticky violations; only a clean tracker at EOF is a closed boundary).
     let mut tracker = BoundaryTracker::default();
+    let mut validator = stream_validator(identity_mode);
     let mut decoded_hasher = Sha256::new();
 
     'read: loop {
@@ -782,6 +972,44 @@ pub fn drive_fold_compressed<R: Read>(
                 break; // payload not fully buffered yet
             }
             let payload = &carry[off + COMPACT_RECORD_HEADER_LEN..off + record_len];
+
+            let is_cid1_envelope = header.sequence == 0
+                && header.domain_id
+                    == compact_contract::campaign_identity::COMPACT_DOMAIN_STREAM_HEADER
+                && header.record_type
+                    == compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER;
+            if identity_mode == StreamIdentityMode::Legacy && is_cid1_envelope {
+                let error = validator
+                    .validate_record(&header, payload)
+                    .expect_err("Legacy validator must reject an IdentityV1 CID1 envelope");
+                stats.stop_reason = Some(format!(
+                    "stream validation failed at byte {}: {error}",
+                    processed + off as u64
+                ));
+                hard_stop = true;
+                break;
+            }
+            if identity_mode == StreamIdentityMode::IdentityV1 && validated_cid1.is_none() {
+                match validator.validate_record(&header, payload) {
+                    Ok(AcceptedRecordKind::CampaignIdentity) => {
+                        validated_cid1 = validator.identity().cloned();
+                        campaign_identity = validator.identity().map(FoldedCampaignIdentity::from);
+                        off += record_len;
+                        continue;
+                    }
+                    Ok(AcceptedRecordKind::Ordinary) => unreachable!(
+                        "IdentityV1 validator cannot accept an ordinary record before CID1"
+                    ),
+                    Err(error) => {
+                        stats.stop_reason = Some(format!(
+                            "stream validation failed at byte {}: {error}",
+                            processed + off as u64
+                        ));
+                        hard_stop = true;
+                        break;
+                    }
+                }
+            }
 
             if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
                 if let Err(reason) =
@@ -842,9 +1070,13 @@ pub fn drive_fold_compressed<R: Read>(
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "H4CR framing stopped before physical EOF on a compressed \
-                         stream at byte {processed} (storage checksum valid, so the \
-                         decoded content itself is corrupt)"
+                        "H4CR framing or stream validation stopped before physical EOF on a compressed \
+                         stream at byte {processed}: {} (storage checksum valid, so the \
+                         declared decoded-stream protocol is invalid)",
+                        stats
+                            .stop_reason
+                            .as_deref()
+                            .unwrap_or("unknown framing stop")
                     ),
                 ));
             }
@@ -875,13 +1107,21 @@ pub fn drive_fold_compressed<R: Read>(
             ));
         }
     }
-    Ok(stats)
+    Ok(IdentityAwareFoldStats {
+        stats,
+        campaign_identity,
+        validated_cid1,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use compact_contract::calendar::DATE_EPOCH_CONST;
+    use compact_contract::campaign_identity::{
+        encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses,
+        COMPACT_DOMAIN_STREAM_HEADER, COMPACT_RECORD_TYPE_STREAM_HEADER,
+    };
     use compact_contract::{
         CompactRecordHeader, COMPACT_DOMAIN_FRAME, COMPACT_DOMAIN_PERF_BASE_LEN,
         COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC, COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION,
@@ -945,6 +1185,30 @@ mod tests {
         out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes());
         out.extend_from_slice(payload);
+    }
+
+    fn push_identity_v1(out: &mut Vec<u8>, game_hour_raw: i32) {
+        let observation = Cid1Observation {
+            game_unique_id: "a4b17fed-ed12-4361-9064-fb6576638110".to_owned(),
+            game_unique_seed: -947_102,
+            game_hour_raw,
+        };
+        let fields = Cid1Fields::from_stable_observations(
+            observation.clone(),
+            observation,
+            "vanilla_latest_2026_07_15".to_owned(),
+            Cid1Witnesses::default(),
+        )
+        .unwrap();
+        let payload = encode_cid1(&fields).unwrap();
+        push_record(
+            out,
+            0,
+            game_hour_raw,
+            COMPACT_DOMAIN_STREAM_HEADER,
+            COMPACT_RECORD_TYPE_STREAM_HEADER,
+            &payload,
+        );
     }
 
     fn frame_end_payload(
@@ -1095,6 +1359,138 @@ mod tests {
     ) {
         let payload = vec![0u8; header.payload_len];
         tracker.observe(&header, &payload, at_byte);
+    }
+
+    #[test]
+    fn identity_v1_fold_consumes_cid1_before_ordinary_boundary_and_fold_dispatch() {
+        let hour = raw_for(HOUR_A);
+        let mut stream = Vec::new();
+        push_identity_v1(&mut stream, hour);
+        push_record(
+            &mut stream,
+            1,
+            hour,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(48, "FRA")]),
+        );
+        push_record(
+            &mut stream,
+            2,
+            hour,
+            0,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(0, 0, 0, 0),
+        );
+
+        let mut fold = WorldFold::new("identity_v1");
+        let outcome = drive_fold_with_identity_mode(
+            Cursor::new(stream.clone()),
+            stream.len() as u64,
+            &mut fold,
+            StreamIdentityMode::IdentityV1,
+        )
+        .unwrap();
+        let stats = &outcome.stats;
+
+        assert_eq!(stats.records_total, 2);
+        assert_eq!(stats.data_records, 1);
+        assert_eq!(stats.frame_end_records, 1);
+        assert_eq!(stats.other_records, 0);
+        assert_eq!(stats.hours_emitted, 1);
+        assert!(stats.ends_at_frame_end);
+        let identity = outcome.campaign_identity.as_ref().unwrap();
+        assert_eq!(
+            identity.game_unique_id,
+            "a4b17fed-ed12-4361-9064-fb6576638110"
+        );
+        assert_eq!(identity.game_unique_seed, -947_102);
+        assert_eq!(identity.observed_game_hour_raw, hour);
+        let manifest = outcome
+            .validated_campaign_identity_manifest()
+            .expect("validated CID1 must derive the exact Known manifest object");
+        assert_eq!(manifest["state"], "known");
+        assert_eq!(
+            manifest["game_unique_id"],
+            "a4b17fed-ed12-4361-9064-fb6576638110"
+        );
+        assert_eq!(manifest["game_unique_seed"], "-947102");
+    }
+
+    #[test]
+    fn identity_protocol_selection_is_explicit_and_never_falls_back() {
+        let hour = raw_for(HOUR_A);
+        let mut identity_stream = Vec::new();
+        push_identity_v1(&mut identity_stream, hour);
+        let mut legacy_fold = WorldFold::new("legacy_rejects_cid1");
+        let legacy = drive_fold(
+            Cursor::new(identity_stream.clone()),
+            identity_stream.len() as u64,
+            &mut legacy_fold,
+        )
+        .unwrap();
+        assert_eq!(legacy.bytes_folded, 0);
+        assert!(legacy
+            .stop_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("next required sequence 1")));
+
+        let mut ordinary_stream = Vec::new();
+        push_record(
+            &mut ordinary_stream,
+            1,
+            hour,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(48, "FRA")]),
+        );
+        let mut identity_fold = WorldFold::new("identity_rejects_legacy");
+        let identity = drive_fold_with_identity_mode(
+            Cursor::new(ordinary_stream.clone()),
+            ordinary_stream.len() as u64,
+            &mut identity_fold,
+            StreamIdentityMode::IdentityV1,
+        )
+        .unwrap();
+        assert_eq!(identity.stats.bytes_folded, 0);
+        assert!(identity.stats
+            .stop_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("invalid CID1 stream header")));
+    }
+
+    #[test]
+    fn identity_v1_seal_walker_consumes_cid1_before_boundary_dispatch() {
+        let hour = raw_for(HOUR_A);
+        let mut stream = Vec::new();
+        push_identity_v1(&mut stream, hour);
+        push_record(
+            &mut stream,
+            1,
+            hour,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(48, "FRA")]),
+        );
+        push_record(
+            &mut stream,
+            2,
+            hour,
+            0,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(0, 0, 0, 0),
+        );
+
+        let dir = TmpDir::new("identity_v1_seal");
+        let path = dir.0.join("stream.bin");
+        std::fs::write(&path, stream).unwrap();
+        verify_stream_logical_boundary_with_identity_mode(
+            &path,
+            StreamIdentityMode::IdentityV1,
+        )
+        .unwrap();
+        let legacy = verify_stream_logical_boundary(&path).unwrap_err();
+        assert!(legacy.to_string().contains("next required sequence 1"));
     }
 
     #[test]
@@ -2315,6 +2711,29 @@ mod tests {
         );
     }
 
+    fn assert_compressed_protocol_hard_error(err: &io::Error, expected_reason: &str) {
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        let message = err.to_string();
+        assert!(
+            message.contains(
+                "H4CR framing or stream validation stopped before physical EOF on a compressed stream"
+            ),
+            "missing compressed-stream hard-error classification: {message}"
+        );
+        assert!(
+            message.contains(expected_reason),
+            "missing framing/validation reason {expected_reason:?}: {message}"
+        );
+        assert!(
+            message.contains("storage checksum valid"),
+            "missing storage-integrity classification: {message}"
+        );
+        assert!(
+            message.contains("declared decoded-stream protocol is invalid"),
+            "missing decoded-protocol classification: {message}"
+        );
+    }
+
     /// Net-gate finding 3: a forged/corrupt payload_len beyond the record
     /// bound is a framing error — hard on compressed, loud stop_reason on raw
     /// — instead of a multi-hundred-MB carry that can swallow later records.
@@ -2334,7 +2753,7 @@ mod tests {
         let mut fold = WorldFold::new("gid");
         let err =
             drive_fold_compressed(std::io::Cursor::new(&stream), 0, &mut fold, true).unwrap_err();
-        assert!(err.to_string().contains("framing stopped"), "{err}");
+        assert_compressed_protocol_hard_error(&err, "exceeds the record bound");
 
         let mut fold = WorldFold::new("gid");
         let stats =
@@ -2454,12 +2873,7 @@ mod tests {
             Ok(_) => panic!("compressed header corruption must fail the fold"),
             Err(err) => err,
         };
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-        assert!(
-            err.to_string()
-                .contains("framing stopped before physical EOF"),
-            "unexpected error: {err}"
-        );
+        assert_compressed_protocol_hard_error(&err, "invalid record magic");
 
         // Raw: byte-identical tolerant behavior (stop reason preserved; the
         // corruption sits before hour A's FRAME_END, so no hour completes).
@@ -2534,11 +2948,7 @@ mod tests {
         let mut fold = WorldFold::new("gid");
         let err = drive_fold_compressed(reader, 0, &mut fold, true)
             .expect_err("compressed framing stop must not end cleanly");
-        assert!(
-            err.to_string()
-                .contains("framing stopped before physical EOF"),
-            "unexpected error: {err}"
-        );
+        assert_compressed_protocol_hard_error(&err, "invalid record magic");
     }
 
     // The PARALLEL fold call site must also thread compressed=true (a review
@@ -2561,11 +2971,7 @@ mod tests {
                 Ok(_) => panic!("parallel fold must reject compressed header corruption"),
                 Err(err) => err,
             };
-        assert!(
-            err.to_string()
-                .contains("framing stopped before physical EOF"),
-            "unexpected error: {err}"
-        );
+        assert_compressed_protocol_hard_error(&err, "invalid record magic");
     }
 
     #[test]

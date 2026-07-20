@@ -5,6 +5,10 @@
 
 use super::*;
 use compact_contract::calendar::DATE_EPOCH_CONST;
+use compact_contract::campaign_identity::{
+    encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses,
+    COMPACT_DOMAIN_STREAM_HEADER, COMPACT_RECORD_TYPE_STREAM_HEADER,
+};
 use compact_contract::{
     COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC,
     COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -231,6 +235,33 @@ fn synthetic_stream() -> (Vec<u8>, usize) {
     (s, mutation_offset)
 }
 
+fn identity_v1_stream(ordinary: &[u8]) -> Vec<u8> {
+    let observation = Cid1Observation {
+        game_unique_id: "a4b17fed-ed12-4361-9064-fb6576638110".to_string(),
+        game_unique_seed: -947_102,
+        game_hour_raw: raw_for(HOUR_A),
+    };
+    let fields = Cid1Fields::from_stable_observations(
+        observation.clone(),
+        observation,
+        "vanilla_latest_2026_07_15".to_string(),
+        Cid1Witnesses::default(),
+    )
+    .unwrap();
+    let payload = encode_cid1(&fields).unwrap();
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        0,
+        raw_for(HOUR_A),
+        COMPACT_DOMAIN_STREAM_HEADER,
+        COMPACT_RECORD_TYPE_STREAM_HEADER,
+        &payload,
+    );
+    stream.extend_from_slice(ordinary);
+    stream
+}
+
 fn fold_bytes(stream: &[u8]) -> FoldRun {
     collect_run(Cursor::new(stream.to_vec()), stream.len() as u64).expect("fold synthetic stream")
 }
@@ -250,6 +281,61 @@ fn folds_all_hours() {
         "clean stream has no tail"
     );
     assert!(run.totals.stop_reason.is_none());
+}
+
+#[test]
+fn identity_v1_header_is_consumed_before_completeness_and_fold() {
+    let (ordinary, _) = synthetic_stream();
+    let identity_stream = identity_v1_stream(&ordinary);
+    let identity_run = collect_identity_v1_run(
+        Cursor::new(identity_stream.clone()),
+        identity_stream.len() as u64,
+    )
+    .expect("fold identity-v1 stream");
+    let legacy_run = fold_bytes(&ordinary);
+
+    assert_eq!(identity_run.hours.len(), legacy_run.hours.len());
+    assert_eq!(chain_hash(&identity_run.hours), chain_hash(&legacy_run.hours));
+    assert_eq!(identity_run.totals.data_records, legacy_run.totals.data_records);
+    assert_eq!(identity_run.totals.perf_records, legacy_run.totals.perf_records);
+    assert_eq!(
+        identity_run.totals.frame_end_records,
+        legacy_run.totals.frame_end_records
+    );
+    assert_eq!(identity_run.totals.other_records, 0);
+}
+
+#[test]
+fn identity_v1_mode_refuses_an_ordinary_record_before_cid1() {
+    let (ordinary, _) = synthetic_stream();
+    let error = match collect_identity_v1_run(Cursor::new(ordinary.clone()), ordinary.len() as u64)
+    {
+        Ok(_) => panic!("identity-v1 must not fall back to a legacy stream"),
+        Err(error) => error,
+    };
+    assert!(error.contains("identity-v1 stream validation at byte 0"), "{error}");
+    assert!(error.contains("invalid CID1 stream header"), "{error}");
+}
+
+#[test]
+fn identity_mode_cli_is_explicit_and_defaults_to_legacy() {
+    assert_eq!(
+        parse_stream_identity_mode(&[]).unwrap(),
+        StreamIdentityMode::Legacy
+    );
+    assert_eq!(
+        parse_stream_identity_mode(&[
+            "--identity-mode".to_string(),
+            "identity-v1".to_string(),
+        ])
+        .unwrap(),
+        StreamIdentityMode::IdentityV1
+    );
+    assert!(parse_stream_identity_mode(&[
+        "--identity-mode".to_string(),
+        "auto".to_string(),
+    ])
+    .is_err());
 }
 
 #[test]
@@ -725,7 +811,10 @@ fn fold_check_rejects_noncanonical_sequence_and_final_boundary() {
         Ok(_) => panic!("fold_check must reject a sequence that does not start at one"),
         Err(err) => err,
     };
-    assert!(err.contains("starts at 2, expected 1"), "{err}");
+    assert!(
+        err.contains("compact record sequence 2 is not the next required sequence 1"),
+        "{err}"
+    );
 
     let mut trailing_perf = Vec::new();
     push_record(
@@ -801,5 +890,9 @@ fn legacy_pre222_container_decodes_for_diagnostics_but_does_not_certify() {
         Ok(_) => panic!("legacy zero-payload FRAME_END must not pass current certification"),
         Err(err) => err,
     };
-    assert!(err.contains("FRAME_END"), "{err}");
+    assert!(err.contains("compact domain zero is reserved"), "{err}");
+    assert!(
+        err.contains("FRAME_END domain 0 is not 1000"),
+        "historical envelope should remain diagnosable without becoming certifiable: {err}"
+    );
 }

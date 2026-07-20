@@ -13,6 +13,7 @@ pub struct AssetResolver {
     replace_paths: Vec<BTreeSet<String>>,
     restricted_files: Option<BTreeMap<String, ResolvedFile>>,
     content_manifest_digest: Option<String>,
+    product_modset_sha256: Option<String>,
     admitted_content: Option<BTreeMap<String, replay_core::UsedContentKey>>,
 }
 
@@ -45,6 +46,7 @@ impl AssetResolver {
             replace_paths,
             restricted_files: None,
             content_manifest_digest: None,
+            product_modset_sha256: None,
             admitted_content: None,
         }
     }
@@ -85,6 +87,7 @@ impl AssetResolver {
             replace_paths: Vec::new(),
             restricted_files: Some(restricted_files),
             content_manifest_digest: None,
+            product_modset_sha256: None,
             admitted_content: None,
         })
     }
@@ -116,6 +119,7 @@ impl AssetResolver {
             .map_err(|error| GameUiError::missing(error.to_string()))?;
         let mut assets = Self::from_restricted_game_files(&restricted)?;
         assets.content_manifest_digest = Some(admission.manifest_digest_sha256().to_string());
+        assets.product_modset_sha256 = Some(admission.product_modset_sha256().to_string());
         assets.admitted_content = Some(
             admission
                 .required_paths()
@@ -183,6 +187,7 @@ impl AssetResolver {
             .map_err(|error| GameUiError::missing(error.to_string()))?;
         let mut assets = Self::from_restricted_game_files(&restricted)?;
         assets.content_manifest_digest = Some(admission.manifest_digest_sha256().to_string());
+        assets.product_modset_sha256 = Some(admission.product_modset_sha256().to_string());
         assets.admitted_content = Some(
             selected
                 .into_iter()
@@ -257,6 +262,7 @@ impl AssetResolver {
             .map_err(|error| GameUiError::missing(error.to_string()))?;
         let mut assets = Self::from_restricted_game_files(&restricted)?;
         assets.content_manifest_digest = Some(admission.manifest_digest_sha256().to_string());
+        assets.product_modset_sha256 = Some(admission.product_modset_sha256().to_string());
         assets.admitted_content = Some(
             selected
                 .into_iter()
@@ -268,6 +274,7 @@ impl AssetResolver {
 
     pub fn is_admitted_for(&self, admission: &replay_core::ValidatedContentAdmission) -> bool {
         self.content_manifest_digest.as_deref() == Some(admission.manifest_digest_sha256())
+            && self.product_modset_sha256.as_deref() == Some(admission.product_modset_sha256())
     }
 
     pub fn admitted_content_key(&self, rel_path: &str) -> Option<&replay_core::UsedContentKey> {
@@ -378,6 +385,7 @@ impl AssetResolver {
             replace_paths,
             restricted_files: None,
             content_manifest_digest: None,
+            product_modset_sha256: None,
             admitted_content: None,
         })
     }

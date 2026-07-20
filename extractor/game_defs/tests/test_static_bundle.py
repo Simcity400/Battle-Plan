@@ -744,10 +744,65 @@ def test_deferred_join_requires_provenance_and_is_structurally_verified(tmp_path
     assert admitted == {
         "passed": True,
         "bundle_id": admitted["bundle_id"],
+        "product_modset_sha256": admitted["product_modset_sha256"],
         "artifact_count": 7,
         "token_join_status": "deferred",
         "verification_phase": "pre_injection_deferred_allowed",
     }
+
+
+def test_product_modset_key_is_pointer_free_and_rejects_component_drift(tmp_path):
+    specs, exe, (mod, dlc, load) = _fixture(tmp_path)
+    deferred = tmp_path / "deferred.json"
+    _write_json(
+        deferred,
+        {
+            "schema": SB.DEFER_PROVENANCE_SCHEMA,
+            "requested_by": "test",
+            "reason": "capture has not started",
+            "session_plan_id": "profile-1",
+        },
+    )
+    bundle = tmp_path / "bundle"
+    SB.create_bundle(
+        bundle,
+        exe=exe,
+        mod_state=mod,
+        dlc_state=dlc,
+        load_order=load,
+        source_inventory=tmp_path / "source_inventory.json",
+        live_resolution_report=tmp_path / "resolution_report.json",
+        specs=specs,
+        defer_token_gate=True,
+        defer_provenance=deferred,
+    )
+    manifest = json.loads((bundle / "static_bundle_manifest.json").read_text())
+    product = manifest["bindings"]["product_modset"]
+    assert product["schema"] == SB.PRODUCT_MODSET_SCHEMA
+    assert product["product_modset_sha256"] == SB.sha256_bytes(
+        SB.canonical_json({k: v for k, v in product.items() if k != "product_modset_sha256"})
+    )
+    assert "profile" not in json.dumps(product).lower()
+    assert "playset" not in json.dumps(product).lower()
+    assert str(tmp_path) not in json.dumps(product)
+
+    _rewrite_manifest(
+        bundle,
+        lambda value: value["bindings"]["product_modset"].update(
+            effective_vfs_rows_sha256="0" * 64
+        ),
+    )
+    with pytest.raises(SB.BundleError, match="product_modset binding digest mismatch"):
+        SB.verify_bundle(
+            bundle,
+            exe=exe,
+            mod_state=mod,
+            dlc_state=dlc,
+            load_order=load,
+            source_inventory=tmp_path / "source_inventory.json",
+            live_resolution_report=tmp_path / "resolution_report.json",
+            require_token_gate=False,
+        )
 
 
 def test_deferred_join_session_plan_must_match_binding_profile(tmp_path):

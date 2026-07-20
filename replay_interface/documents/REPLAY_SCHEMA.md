@@ -207,6 +207,27 @@ and trait-read status; portraits, names, naval leaders, global commander
 rosters, and save-shaped nested OOB records remain outside the canonical
 snapshot schema until separately proven.
 
+Campaign identity is session metadata, not a repeated snapshot field. A native
+recorder manifest may carry the exact `hoi4.campaign_identity.v1` object derived
+from its placement-validated sequence-zero CID1 record. Replay ingest validates
+the closed manifest shape, canonical UUID and signed seed, calendar hour,
+header-hash syntax, and recomputed campaign digest before exposing it through
+`ReplaySource::campaign_identity` / `WorldTimeline::campaign_identity`. A
+manifest without that object is a legacy identity-unavailable recording. The
+exposed value preserves source, resolution reason, and compatibility witnesses,
+but replay does not prove the named header hash against CID1 bytes. It is
+descriptive playback metadata and cannot independently grant cross-recording
+stitch authority.
+
+For compact-only playback, authenticated recorder metadata selects an explicit
+`Legacy` or `IdentityV1` portable pre-fold request before any H4CR byte is read.
+The extractor worker returns a mode-bound `hoi4_prefold_worker_receipt_v2`; its
+shared stateful validator requires and consumes CID1 before ordinary boundary
+tracking and world folding. The compact package verification gate separately
+exact-joins a Known manifest object to the retained placement-authoritative
+CID1 token. `ReplaySource::campaign_identity` remains descriptive because that
+public metadata accessor itself does not expose or recompute the token join.
+
 ### 2.1 `provenance.mod` — the per-replay MOD IDENTITY (additive, §K MOD AWARENESS)
 
 Records the **active mod-set** the snapshot was captured under, read at **capture
@@ -436,8 +457,8 @@ when present it carries only the keys the parser emitted (no fabrication; a genu
 stays `0`, e.g. a nuke RECORD with `amount=0` yields `nukes_total=0`).
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `nukes_total` / `nukes_ready_total` | int\|null | S | summed across the country's nuke records |
-| `nukes[]` | list | S | each: `{amount, nukes_ready}` (a real all-zero list ⇒ `nukes_total=0`) |
+| `nukes_total` / `nukes_ready_total` | int\|null | M / S | summed across the country's nuke records; live M values come from reserved d83 only after receipted authority, with built amount using the exact a729 fixed-point consumer |
+| `nukes[]` | list | M / S | each canonical row is `{amount, nukes_ready}` (a real all-zero list ⇒ `nukes_total=0`); the save parser preserves `amount_raw` beside the converted amount, while d83 retains it in `_r2_nuke_stockpile_live` for mechanical parity/audit |
 | `dynamic_modifiers[]` | list | S | each: `{modifier, enabled, value[]}` (the value array is the modifier's stored coefficients) |
 | `ace_count` | int\|null | S | number of `aces[]` |
 | `aces[]` | list | S | each: `{name, surname, callsign, modifier, alive, kill_type, killer_country}` (post-death fields null while the ace is alive) |
@@ -447,7 +468,7 @@ stays `0`, e.g. a nuke RECORD with `amount=0` yields `nukes_total=0`).
 | `experience_status` | obj\|null | S | `{army_experience, navy_experience, air_experience}` |
 | `script_flags` | obj | S | per-country script flags from `countries.<TAG>.flags`, keyed by flag name with `{value, date}`; omitted when the save has no flags block for that country |
 | `_r2_script_variables` | obj\|null | M | d51 country-scope `{name:number}` variable map. This is the recorder fold's lossless production carrier; `ScriptedGuiView` prefers it and accepts legacy root `script_variables` only when this carrier is absent. A measured empty object is authoritative empty state; `null` is unavailable. |
-| `scripted_gui_runtime` | obj\|null | M | Exact engine-resolved residuals keyed by effective scripted-GUI id: `{visible:bool\|null, enabled:bool\|null, triggers:{name:bool}, properties:{element:{property:string}}, effect_enabled:{name:bool}}`. Only engine-only constructs use this carrier; variable/flag predicates and variable effects are evaluated generically replay-side. Missing values remain unavailable, never false/zero/default. See extractor dossier `A38_SCRIPTED_GUI_EVALUATION_INPUTS.json`. |
+| `scripted_gui_runtime` | obj\|null | C | Reserved d84 exact engine-resolved residuals keyed by effective scripted-GUI id. Each row carries `manager_order_index`, authenticated effective-VFS `definition` identity, and `{visible,enabled,triggers,properties,effect_enabled}` results encoded as `{value:T\|null,unavailable_reason:string\|null}`. The typed replay preserves unavailable reasons; the generic UI evaluator consults captured values only when variable/flag evaluation is unavailable. `_r2_scripted_gui_runtime_live` carries exact20 receipt/frame provenance and manager order. Scheduling remains disabled until an authenticated live producer frame is available. |
 | `strategic_navy` | obj | S | save-persisted `countries.<TAG>.strategic_navy` block, preserved under `extra` with nested maps/repeated blocks intact; save-backed only, no live memory offset claim |
 | `convoys_destroyed` | int\|null | S | |
 | `accidents_score` | float\|null | S | |
@@ -611,14 +632,36 @@ a combat's `combat_id` across the appear→persist→disappear sequence (§9, `c
 
 The per-country view of diplomacy lives under `countries.*.diplomacy`. This top-level
 block holds the **shared, world-scoped** objects so a consumer (and a future war-id
-event lifecycle) has a single source of truth. Always present (`{}`-filled).
+event lifecycle) has a single source of truth. The block is always present;
+individual live-backed members may be explicit `null` when unobtained.
 
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `wars` | obj | S | `{war_id: {a, b, start_date, a_casualties, b_casualties, war_score_a_vs_b, war_score_b_vs_a}}`; `war_id` = `"A-B@start_date"` |
+| `wars` | obj\|null | S / C | Canonical save wars use `{war_id: {a, b, start_date, a_casualties, b_casualties, war_score_a_vs_b, war_score_b_vs_a}}`. Pair-scoped D60 rows use `"FIRST|SECOND"` and retain `first`, `second`, both tag-db ids, `start_date`, both running casualties, and H-B5 residual leaves: `threat_fixed5_raw`, `threat_fixed_scale=100000`, `first_was_instigator`, and both `hostility_reason_*_raw` plus spellings. Valid raw reasons are `0 war`, `1 puppet`, `2 ally`, `3 asked_to_join`, `4 guarantee`, `5 not_applicable`. A missing current-hour D60 frame is `null`, not `{}`. H-B5 leaves are null while its same-tick live activation gate is closed. |
 | `factions` | obj | S | `{faction_id: {id, ideology, members[], leader, ...}}` |
 | `subjects` | list | S | `[{overlord, subject, autonomy_state, value, start_date}]` |
 | `trade_contracts` | list | S | canonical equipment-market (lend-lease) contracts, world-scoped (single source of truth; the per-country view is `countries.*.diplomacy.lend_lease`). Each: `contract_id`, `seller`, `buyer`, `speed`, `equipments[]`, `prices[]`, `delivery_country`, `convoys`, `delivery_efficiency`, `days`, `delivery_state`, `completed`. Absent (key omitted) when no contracts exist. From `market.json`. |
+
+The d53-owned `diplomacy_world.domain53_extra` retains legacy
+`subject_autonomy_rows` from the serialized `CSubjectRelation` freedom-level
+field and exposes mutable progress separately. `subject_autonomy_current_status`
+is `unavailable`, `measured_empty`, or `measured_nonempty`;
+`subject_autonomy_current_rows` is `null` for unavailable and otherwise a complete
+array of `{overlord,subject,overlord_tag_db_id,subject_tag_db_id,current_state_hash,
+previous_state_hash,next_state_hash,ratio_raw,current_score_raw,lower_score_raw,
+upper_score_raw,last_modified_date,last_modified_date_raw,direction}`. Direction is
+`toward_previous`, `stable`, `toward_next`, or null when no prior authenticated
+observation can establish it. The typed replay view is
+`DiplomacyView.subject_autonomy_current`; older recordings surface `Absent`, an
+explicit unavailable witness surfaces `Unobtained`, and witnessed arrays surface
+`Measured`, including measured-empty.
+
+`diplomacy_live.war_relations[]` carries the same nullable H-B5 fields beside
+`first`, `second`, `first_casualties`, and `second_casualties`. The compact D60
+wire carrier is schema v2; schema-v1 recordings remain readable and surface the
+new leaves as absent/unobtained. Residual coverage is all-or-none for every
+nonempty D60 frame. The production source gate remains false until the retained
+958-row same-tick D04 memory/save equality fixture succeeds.
 
 ## 8. `map` layers (derived aggregates; raster-renderer convenience)
 
@@ -630,7 +673,7 @@ event lifecycle) has a single source of truth. Always present (`{}`-filled).
 | `controlled_industry_share` | obj\|null | D | `{TAG: fraction}`; null until computed |
 | `front_lines[]` | list | D | derived from control adjacency; null→`[]` until computed |
 | `strategic_regions` | obj\|null | S(static) | static; usually carried once, not per-snapshot |
-| `rail_replay_state_live` | obj\|null | C | Exact d81 a729 `CRailwayGfx` carrier. Common fields are `{schema_version, authority, source_binary_sha256, producer, consumer, edge_join_law:"reciprocal_min", provinces:{province_id:{active_terminal,anchor:{variant,x_bits,y_bits,z_bits,x,y,z},neighbors:[{ordinal,province_id,edge_level}]}}}`. Active schema v1 requires `hub_frames:null`, `hub_frames_complete:false`, and a non-empty `hub_frame_unavailable_reason`. Admitted schema v2 requires a strictly `(province_id,subtype)`-sorted complete list `hub_frames:[{province_id,subtype,background_button_frame,common_icon_frame,naval_overlay_visible}]`, `hub_frames_complete:true`, and `hub_frame_unavailable_reason:null`. `background_button_frame` is one-based 1..5 for `GFX_supply_hub_button_bg_strip`; `common_icon_frame` is the separate exact one-based 1..4 value for `GFX_supply_hub_icon_strip`; `naval_overlay_visible` is the exact visibility applied to `GFX_naval_supply_anchor_icon`. No field is inferred from opaque subtype. Exact-ten evidence, v2 encoding, fold, authority accounting, and replay ingest are promoted. The active collector remains schema v1 and reports hubs unavailable until its authenticated double-read route is implemented and centrally validated. Null on an absent/failed current-hour d81 frame; no centroid/static-building/heap-scan fallback. |
+| `rail_replay_state_live` | obj\|null | C | Exact d81 a729 `CRailwayGfx` carrier. Common fields are `{schema_version, authority, source_binary_sha256, producer, consumer, edge_join_law:"reciprocal_min", provinces:{province_id:{active_terminal,anchor:{variant,x_bits,y_bits,z_bits,x,y,z},neighbors:[{ordinal,province_id,edge_level}]}}}`. Schema v1 requires `hub_frames:null`, `hub_frames_complete:false`, and a non-empty `hub_frame_unavailable_reason`. Schema v2 requires a strictly `(province_id,subtype)`-sorted complete list `hub_frames:[{province_id,subtype,background_button_frame,common_icon_frame,naval_overlay_visible}]`, `hub_frames_complete:true`, and `hub_frame_unavailable_reason:null`. `background_button_frame` is one-based 1..5 for `GFX_supply_hub_button_bg_strip`; `common_icon_frame` is the separate exact one-based 1..4 value for `GFX_supply_hub_icon_strip`; `naval_overlay_visible` is the exact visibility applied to `GFX_naval_supply_anchor_icon`. No field is inferred from opaque subtype. Exact-ten evidence, authenticated live owner-vector double-read, v2 encoding, fold, authority accounting, and replay ingest are implemented. The collector emits v2 only for a complete authenticated hub sub-snapshot, including measured empty; any unreadable/torn/invalid hub route retains v1 with explicit unavailability. Central validation of the implementation is pending. Null on an absent/failed current-hour d81 frame; no centroid/static-building/heap-scan fallback. |
 
 > `map` is **redundant with** `states`/`provinces` — it exists so the raster renderer
 > can recolor without walking every state object. The writer fills `owner_by_state` and
@@ -976,6 +1019,84 @@ A↔B war therefore surfaces from **both** A's and B's perspective. This is inte
 for now; a future war-id-scoped lifecycle (`war_started`/`war_ended`/
 `war_participant_joined`) keyed off `diplomacy_world.wars` will replace it. Consumers
 that want one event per war should group by the unordered TAG pair.
+
+### 9.5 Exact character presentation observations (reserved d82)
+
+`_r2_character_presentation_live` is a frame-local, pointer-free XUI17 sidecar.
+When present it has authority `exact_a729_character_presentation`, binds to the
+same `frame_hour`, and carries `source_sequence`, `completeness_record_identity`,
+`trait_trees[]`, and `ace_portraits[]`. A trait tree is keyed by
+`(owner_tag_db_id, unit_leader_id, tree_root_offset)` where the only admitted
+roots are the exact controller offsets `0x120` and `0x130`. Its `nodes[]` retain
+the engine vector order with contiguous `source_ordinal`, stable `trait_token`,
+and the redundant pair `state_raw/state`: `0/blocked`, `1/pickable`, or
+`2/picked`. `progress_raw:null` means the independent producer is unavailable;
+it must not be interpreted as zero.
+
+Each ace row is keyed by `(owner_tag_db_id, ace_id)`, retains the post-sort
+`visible_ordinal`, and stores the final `portrait_gfx` selected by the exact
+owner-country/culture-aware literal-or-fallback engine route. Ordinals are a
+contiguous permutation per owner. A clean empty array is measured-empty; a null
+sidecar is unavailable. Domain 82 remains reserved and unscheduled until a live
+mixed-state land/navy plus fallback-ace fixture validates the hook boundary.
+
+### 9.6 Exact selected-designer identity (reserved d85)
+
+`_r2_selected_designer_identity_live` is a frame-local, pointer-free XUI08
+sidecar. It binds an exact controller transition to one of `division`,
+`equipment`, `tank`, `plane`, `ship`, or `variant_upgrade`, records the exact
+owner route, and retains the controller-published `ordered_designs[]` with
+contiguous `source_ordinal`. Each identity is `(object_type, stable_id)`:
+division requires type 52; the other five families require type 70. The
+`selected_design` must be a member of that exact order.
+
+The sidecar also carries the pinned executable, exact20 producer manifest,
+classifier function manifest, both non-function division thunk artifact hashes,
+source-record identity, transition sequence, and explicit completeness/count
+fields. Any wrong hour, owner/family mismatch, duplicate or
+zero identity, count mismatch, missing selection, malformed hash, or null value
+fails the typed view closed as unavailable. Domain 85 is reserved and
+unscheduled until the six-family live invocation/selection fixture is bound;
+the producer and split classifier/thunk receipts alone do not authorize live
+collection.
+
+### 9.7 Exact sunk-ship writer history (reserved d86)
+
+`_r2_sunk_ship_history_live` is a frame-bound, pointer-free XUI20 sidecar. Its
+header pins the a729 executable, A33 exact-20 function manifest, and A33 vtable
+data artifact. Each event retains a unique writer `event_sequence`, the exact
+D49/D50 `(combat_id, combat_generation)` join, victim ship and country IDs,
+killer country ID, raw sink date, the outer victim CFEXMember battle-slot index,
+and the mutually exclusive `killed`/`assisted_kill` membership. `ship_name` and
+the consumer-resolved `ship_class_name` are copied from the proven writer
+projection. Raw pointers, an invented ship-instance id, and a guessed country
+TAG mapping are forbidden; the victim country remains its exact two-word raw
+identity block until a mechanical registry join is proven.
+
+Missing and null remain distinct. Any wrong frame hour, receipt hash mismatch,
+duplicate sequence, zero combat epoch/identity, ambiguous killed/assisted flags,
+or malformed text makes the complete typed view unavailable. Domain 86 remains
+reserved and unscheduled: exact static receipts do not promote the dormant
+same-thread writer hook. Activation additionally requires the route-independent
+CFEXMember-to-epoch publication seam and an authenticated complete-history live
+fixture.
+
+### 9.8 Exact decision-panel materialization (reserved d87)
+
+`_r2_decision_panel_live` is the complete ordered XUI19 runtime panel for one
+country and frame hour. Its header pins the a729 executable, A34 exact-20
+function manifest, and presenter-vtable data artifact. `rows[]` preserve
+contiguous `presentation_index`, decision/category identity, evaluated
+availability and lifecycle, optional country/state target, exact cost state,
+remaining/cooldown values, resolved name/timer text, and per-row can-take and
+timeout alert membership. Header alert counts must equal those memberships.
+
+The replay typed view rejects incomplete producers, wrong hours or hashes,
+duplicate decision/target identities, non-contiguous order, inconsistent
+timer text/value pairs, and alert-count disagreement. Game UI consumes this
+typed view directly and never re-evaluates Clausewitz scripts. Domain 87 remains
+reserved and unscheduled until the dormant materializer/insertion/text/alert
+hooks and a complete live fixture are authenticated together.
 
 ---
 

@@ -2,14 +2,18 @@ use game_ui::compose::{progress_minmax_uses_front, ComposeOptions};
 use game_ui::decision_chrome::{DecisionAvailability, DecisionDef, DecisionSet};
 use game_ui::power_balance::{
     admit_power_balance_screen, apply_power_balance_launcher_to_compose_options,
-    apply_power_balance_to_compose_options, sample_panel_transition, ActiveModifierInput,
+    apply_power_balance_to_compose_options, sample_panel_transition,
     AdmittedPowerBalanceScreen, BarState, ChangeCadence, PanelTransition,
     PowerBalanceAdmissionRequest, PowerBalanceDecisionInput, PowerBalanceDefinitionCatalog,
-    PowerBalanceRejection, PowerBalanceRuntimeSupplement, PowerBalanceTrendInput,
-    ResolvedPowerBalanceText, PANEL_HIDDEN_POSITION, PANEL_SHOWN_POSITION,
+    PowerBalanceDecisionTextRole, PowerBalanceRejection, PowerBalanceRuntimeProvenance,
+    PowerBalanceRuntimeSupplement, PowerBalanceRuntimeTextBinding,
+    PowerBalanceRuntimeTextProvenance, PowerBalanceRuntimeTextSlot, PowerBalanceTrendInput,
+    ResolvedPowerBalanceText,
+    PANEL_HIDDEN_POSITION, PANEL_SHOWN_POSITION,
 };
-use replay_core::{Leaf, PowerBalanceRow, PowerBalanceView, ViewStatus};
+use replay_core::{Leaf, PowerBalanceRow, PowerBalanceView, RuntimeTextIdentitySource, ViewStatus};
 use std::path::PathBuf;
+use snapshot::sha256::Sha256;
 
 fn committed_ita_catalog() -> PowerBalanceDefinitionCatalog {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -20,12 +24,20 @@ fn committed_ita_catalog() -> PowerBalanceDefinitionCatalog {
 }
 
 fn live_row(countries: &[&str], value: f64) -> PowerBalanceRow {
+    live_row_trending(countries, value, "ITA_grand_council_side")
+}
+
+fn live_row_trending(
+    countries: &[&str],
+    value: f64,
+    trending_side: &str,
+) -> PowerBalanceRow {
     PowerBalanceRow {
         template: Leaf::Measured("ITA_power_balance".into()),
         value: Leaf::Measured(value),
         left_side: Leaf::Measured("ITA_grand_council_side".into()),
         right_side: Leaf::Measured("ITA_mussolini_side".into()),
-        trending_side: Leaf::Measured("ITA_grand_council_side".into()),
+        trending_side: Leaf::Measured(trending_side.into()),
         countries: Leaf::Measured(countries.iter().map(|tag| (*tag).into()).collect()),
     }
 }
@@ -62,12 +74,22 @@ fn decisions() -> DecisionSet {
 }
 
 fn runtime() -> PowerBalanceRuntimeSupplement {
-    PowerBalanceRuntimeSupplement {
+    let mut runtime = PowerBalanceRuntimeSupplement {
+        provenance: PowerBalanceRuntimeProvenance {
+            producer_manifest_sha256:
+                "a540af1c030d9ef2fbb1cd290627087627771a196e7a60e4241cb5287b66e4e2"
+                    .into(),
+            completeness_record_identity: "d74-complete:42".into(),
+            frame_hour: 42,
+            runtime_text_contexts: Vec::new(),
+            runtime_text_bindings: Vec::new(),
+        },
         source_record_id: "d-bop:hour=42:country=ITA:id=ITA_power_balance".into(),
         country_tag: "ITA".into(),
         balance_id: "ITA_power_balance".into(),
         display_ordinal: 0,
         active_side_id: "ITA_grand_council_side".into(),
+        trending_side_id: "ITA_grand_council_side".into(),
         active_range_id: "ITA_grand_council_medium_control_range".into(),
         effective_left_icon: "GFX_bop_ITA_grand_council_side".into(),
         effective_right_icon: "GFX_bop_ITA_mussolini_side".into(),
@@ -84,12 +106,7 @@ fn runtime() -> PowerBalanceRuntimeSupplement {
             magnitude: 0.01,
             resolved_text: "1.00% per day".into(),
         }),
-        active_modifiers_complete: true,
-        active_modifiers: vec![ActiveModifierInput {
-            modifier_id: "ITA_bop_lost_core".into(),
-            source_record_id: "d-bop-mod:42:0".into(),
-            resolved_text: "Grand Council drift: +1.00%".into(),
-        }],
+        power_balance_modifier_desc: "Grand Council drift: +1.00%".into(),
         decisions_complete: true,
         decisions: vec![
             PowerBalanceDecisionInput {
@@ -119,6 +136,52 @@ fn runtime() -> PowerBalanceRuntimeSupplement {
             balance_tooltip: "The balance trends toward the Grand Council.".into(),
             active_range_tooltip: "Active modifiers".into(),
         },
+    };
+    attach_runtime_text_provenance(&mut runtime);
+    runtime
+}
+
+fn attach_runtime_text_provenance(runtime: &mut PowerBalanceRuntimeSupplement) {
+    let mut fields = vec![
+        (PowerBalanceRuntimeTextSlot::LauncherPercentage, runtime.launcher_percentage_text.as_deref()),
+        (PowerBalanceRuntimeTextSlot::LauncherLevels, runtime.launcher_levels_text.as_deref()),
+        (PowerBalanceRuntimeTextSlot::Trend, runtime.trend.as_ref().map(|v| v.resolved_text.as_str())),
+        (PowerBalanceRuntimeTextSlot::ModifierDescription, Some(runtime.power_balance_modifier_desc.as_str())),
+        (PowerBalanceRuntimeTextSlot::BalanceName, Some(runtime.resolved_text.balance_name.as_str())),
+        (PowerBalanceRuntimeTextSlot::LeftSideName, Some(runtime.resolved_text.left_side_name.as_str())),
+        (PowerBalanceRuntimeTextSlot::RightSideName, Some(runtime.resolved_text.right_side_name.as_str())),
+        (PowerBalanceRuntimeTextSlot::ActiveRangeName, Some(runtime.resolved_text.active_range_name.as_str())),
+        (PowerBalanceRuntimeTextSlot::BalanceTooltip, Some(runtime.resolved_text.balance_tooltip.as_str())),
+        (PowerBalanceRuntimeTextSlot::ActiveRangeTooltip, Some(runtime.resolved_text.active_range_tooltip.as_str())),
+    ];
+    for decision in &runtime.decisions {
+        for (role, text) in [
+            (PowerBalanceDecisionTextRole::Name, Some(decision.resolved_name.as_str())),
+            (PowerBalanceDecisionTextRole::Cost, decision.cost_text.as_deref()),
+            (PowerBalanceDecisionTextRole::Timer, decision.timer_text.as_deref()),
+        ] {
+            fields.push((PowerBalanceRuntimeTextSlot::Decision {
+                decision_id: decision.decision_id.clone(),
+                source_record_id: decision.source_record_id.clone(),
+                role,
+            }, text));
+        }
+    }
+    for (ordinal, (slot, text)) in fields.into_iter().filter_map(|(slot, text)| text.map(|text| (slot, text))).enumerate() {
+        let context_id = format!("a25:42:ITA:power-balance:{ordinal}");
+        runtime.provenance.runtime_text_contexts.push(PowerBalanceRuntimeTextProvenance {
+            context_id: context_id.clone(),
+            frame_hour: 42,
+            pov_country_or_global: "ITA".into(),
+            view_id: "power_balance_view".into(),
+            element_id: format!("power_balance_field_{ordinal}"),
+            setter_entry_rva: replay_core::A729_TEXT_SETTER_RVA,
+            setter_caller_rva: Some(0x01c4_baa0),
+            formatter_entry_rva: Some(replay_core::A729_FORMATTER_RVA),
+            identity_source: RuntimeTextIdentitySource::ProvenSetterCaller,
+            final_text_sha256: Sha256::hex(text.as_bytes()),
+        });
+        runtime.provenance.runtime_text_bindings.push(PowerBalanceRuntimeTextBinding { slot, context_id });
     }
 }
 
@@ -240,21 +303,64 @@ fn all_irreducible_runtime_inputs_fail_closed() {
         Err(PowerBalanceRejection::RuntimeSetMismatch)
     );
 
-    let mut incomplete = runtime();
-    incomplete.active_modifiers_complete = false;
+    let mut invalid_provenance = runtime();
+    invalid_provenance
+        .provenance
+        .completeness_record_identity
+        .clear();
     assert_eq!(
         admit_power_balance_screen(PowerBalanceAdmissionRequest {
             country_tag: "ITA",
             view: &view,
             catalog: &catalog,
             decisions: &decision_defs,
-            runtime: &[incomplete],
+            runtime: &[invalid_provenance],
         }),
-        Err(PowerBalanceRejection::IncompleteModifiers)
+        Err(PowerBalanceRejection::MissingRuntimeProvenance)
+    );
+
+    let mut mismatched_trending_side = runtime();
+    mismatched_trending_side.trending_side_id = "ITA_mussolini_side".into();
+    assert_eq!(
+        admit_power_balance_screen(PowerBalanceAdmissionRequest {
+            country_tag: "ITA",
+            view: &view,
+            catalog: &catalog,
+            decisions: &decision_defs,
+            runtime: &[mismatched_trending_side],
+        }),
+        Err(PowerBalanceRejection::InvalidTrend)
+    );
+
+    let mut invalid_active_side = runtime();
+    invalid_active_side.active_side_id = "ITA_mussolini_side".into();
+    assert_eq!(
+        admit_power_balance_screen(PowerBalanceAdmissionRequest {
+            country_tag: "ITA",
+            view: &view,
+            catalog: &catalog,
+            decisions: &decision_defs,
+            runtime: &[invalid_active_side],
+        }),
+        Err(PowerBalanceRejection::InvalidActiveSide)
+    );
+
+    let mut invalid_stable_bar = runtime();
+    invalid_stable_bar.trend = None;
+    invalid_stable_bar.bar_state = BarState::StableRight;
+    assert_eq!(
+        admit_power_balance_screen(PowerBalanceAdmissionRequest {
+            country_tag: "ITA",
+            view: &view,
+            catalog: &catalog,
+            decisions: &decision_defs,
+            runtime: &[invalid_stable_bar],
+        }),
+        Err(PowerBalanceRejection::InvalidBarState)
     );
 
     let mut invalid_range = runtime();
-    invalid_range.active_range_id = "ITA_mussolini_low_control_range".into();
+    invalid_range.active_range_id = "ITA_missing_range".into();
     assert_eq!(
         admit_power_balance_screen(PowerBalanceAdmissionRequest {
             country_tag: "ITA",
@@ -345,6 +451,155 @@ fn all_irreducible_runtime_inputs_fail_closed() {
         }),
         Err(PowerBalanceRejection::DomainUnavailable)
     );
+}
+
+#[test]
+fn runtime_text_field_bindings_are_exact_and_hash_committed() {
+    let catalog = committed_ita_catalog();
+    let view = view(&["ITA"], -0.35);
+    let decision_defs = decisions();
+    let reject = |runtime| {
+        admit_power_balance_screen(PowerBalanceAdmissionRequest {
+            country_tag: "ITA",
+            view: &view,
+            catalog: &catalog,
+            decisions: &decision_defs,
+            runtime: &[runtime],
+        })
+    };
+
+    let mut missing = runtime();
+    missing.provenance.runtime_text_bindings.pop();
+    assert_eq!(
+        reject(missing),
+        Err(PowerBalanceRejection::InvalidRuntimeTextBinding)
+    );
+
+    let mut duplicate = runtime();
+    let duplicate_binding = duplicate.provenance.runtime_text_bindings[0].clone();
+    duplicate
+        .provenance
+        .runtime_text_bindings
+        .push(duplicate_binding);
+    assert_eq!(
+        reject(duplicate),
+        Err(PowerBalanceRejection::InvalidRuntimeTextBinding)
+    );
+
+    let mut changed_text = runtime();
+    changed_text.resolved_text.balance_name.push('!');
+    assert_eq!(
+        reject(changed_text),
+        Err(PowerBalanceRejection::InvalidRuntimeTextBinding)
+    );
+
+    let mut orphan = runtime();
+    let mut extra = orphan.provenance.runtime_text_contexts[0].clone();
+    extra.context_id.push_str(":orphan");
+    orphan.provenance.runtime_text_contexts.push(extra);
+    assert_eq!(
+        reject(orphan),
+        Err(PowerBalanceRejection::InvalidRuntimeTextBinding)
+    );
+}
+
+#[test]
+fn active_side_moving_direction_and_trending_identity_remain_independent() {
+    let catalog = committed_ita_catalog();
+    let decision_defs = decisions();
+
+    let right_active = PowerBalanceView {
+        status: ViewStatus::Present,
+        balances: vec![live_row_trending(
+            &["ITA"],
+            0.35,
+            "ITA_mussolini_side",
+        )],
+    };
+    let mut moving_left_with_right_trend_identity = runtime();
+    moving_left_with_right_trend_identity.active_side_id = "ITA_mussolini_side".into();
+    moving_left_with_right_trend_identity.active_range_id =
+        "ITA_mussolini_medium_control_range".into();
+    moving_left_with_right_trend_identity.trending_side_id = "ITA_mussolini_side".into();
+    moving_left_with_right_trend_identity.bar_state = BarState::MovingLeft;
+    let admitted = admit_power_balance_screen(PowerBalanceAdmissionRequest {
+        country_tag: "ITA",
+        view: &right_active,
+        catalog: &catalog,
+        decisions: &decision_defs,
+        runtime: &[moving_left_with_right_trend_identity],
+    })
+    .expect("right-active balance may move left with an independent right trend identity");
+    let AdmittedPowerBalanceScreen::Visible(rows) = admitted else {
+        panic!("selected balance must remain visible")
+    };
+    assert_eq!(rows[0].active_side_id, "ITA_mussolini_side");
+    assert_eq!(rows[0].trending_side_id, "ITA_mussolini_side");
+    assert_eq!(rows[0].bar_sprite, "GFX_power_balance_left_moving");
+
+    let left_active = PowerBalanceView {
+        status: ViewStatus::Present,
+        balances: vec![live_row_trending(&["ITA"], -0.35, "ITA_grand_council_side")],
+    };
+    let mut moving_right_with_left_trend_identity = runtime();
+    moving_right_with_left_trend_identity.trending_side_id = "ITA_grand_council_side".into();
+    moving_right_with_left_trend_identity.bar_state = BarState::MovingRight;
+    let admitted = admit_power_balance_screen(PowerBalanceAdmissionRequest {
+        country_tag: "ITA",
+        view: &left_active,
+        catalog: &catalog,
+        decisions: &decision_defs,
+        runtime: &[moving_right_with_left_trend_identity],
+    })
+    .expect("left-active balance may move right with an independent left trend identity");
+    let AdmittedPowerBalanceScreen::Visible(rows) = admitted else {
+        panic!("selected balance must remain visible")
+    };
+    assert_eq!(rows[0].active_side_id, "ITA_grand_council_side");
+    assert_eq!(rows[0].trending_side_id, "ITA_grand_council_side");
+    assert_eq!(rows[0].bar_sprite, "GFX_power_balance_right_moving");
+}
+
+#[test]
+fn controller_selected_identity_excludes_other_applicable_balances() {
+    let catalog = committed_ita_catalog();
+    let decision_defs = decisions();
+    let mut later = live_row(&["ITA"], -0.1);
+    later.template = Leaf::Measured("ITA_unrendered_second_balance".into());
+    let view = PowerBalanceView {
+        status: ViewStatus::Present,
+        // Save/world order is not controller-selection authority. The exact
+        // runtime balance id identifies the engine's first matching record.
+        balances: vec![later, live_row(&["ITA"], -0.35)],
+    };
+    let mut measured = runtime();
+    measured.power_balance_modifier_desc.clear();
+    measured.provenance.runtime_text_contexts.clear();
+    measured.provenance.runtime_text_bindings.clear();
+    attach_runtime_text_provenance(&mut measured);
+    let admitted = admit_power_balance_screen(PowerBalanceAdmissionRequest {
+        country_tag: "ITA",
+        view: &view,
+        catalog: &catalog,
+        decisions: &decision_defs,
+        runtime: &[measured],
+    })
+    .expect("only the exact controller-selected engine row is presented");
+    let AdmittedPowerBalanceScreen::Visible(rows) = admitted else {
+        panic!("first matching row must be visible")
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].balance_id, "ITA_power_balance");
+    assert_eq!(
+        rows[0].provenance.completeness_record_identity,
+        "d74-complete:42"
+    );
+    assert!(rows[0]
+        .provenance
+        .runtime_text_bindings
+        .iter()
+        .any(|binding| binding.slot == PowerBalanceRuntimeTextSlot::ModifierDescription));
+    assert!(rows[0].power_balance_modifier_desc.is_empty());
 }
 
 #[test]

@@ -212,6 +212,31 @@ mod tests {
     }
 
     #[test]
+    fn a17_nuke_stockpile_transport_is_assigned_but_not_scheduled() {
+        let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
+        assert_eq!(
+            assigned_descriptor_by_name("nuke_stockpile_live").map(|d| d.id),
+            Some(83)
+        );
+        assert!(registry.by_id(83).is_none());
+    }
+
+    #[test]
+    fn a33_a34_receipted_transports_are_assigned_but_not_scheduled() {
+        let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
+        assert_eq!(
+            assigned_descriptor_by_name("sunk_ship_history_live").map(|d| d.id),
+            Some(86)
+        );
+        assert_eq!(
+            assigned_descriptor_by_name("decision_panel_live").map(|d| d.id),
+            Some(87)
+        );
+        assert!(registry.by_id(86).is_none());
+        assert!(registry.by_id(87).is_none());
+    }
+
+    #[test]
     fn w3_delayed_events_and_program_lanes_schedule() {
         // W3: rooted per-country delayed events (domain 64) and owner-joined
         // program facilities (domain 65). Both validated_slice_open_gaps.

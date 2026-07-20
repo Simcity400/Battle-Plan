@@ -13,7 +13,10 @@ use crate::gfx::SpriteRegistry;
 use crate::gui::{GuiElement, LayoutSet};
 use crate::paradox_text::{parse_file, Document};
 use crate::{GameUiError, Result};
-use replay_core::{AceRosterExactView, CharacterRosterExactView, UnitLeaderExactRow, ViewStatus};
+use replay_core::{
+    AceRosterExactView, CharacterPresentationExactView, CharacterRosterExactView,
+    CharacterTraitNodeState, UnitLeaderExactRow, ViewStatus,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const ARMY_LEADER_GUI: &str = "interface/unitleaderwindow.gui";
@@ -416,7 +419,8 @@ pub enum TraitNodeState {
 pub struct TraitNodePresentation {
     pub trait_token: String,
     pub state: TraitNodeState,
-    pub progress_raw: i64,
+    /// `None` is explicit producer unavailability and must not render as zero.
+    pub progress_raw: Option<i64>,
     pub reason: String,
 }
 
@@ -452,6 +456,103 @@ pub struct CharacterPresentationInput {
 pub struct AdmittedCharacterUi {
     pub leaders: Vec<LeaderPresentationInput>,
     pub aces: Vec<AcePresentationInput>,
+}
+
+/// Overlay the authenticated A39 leaves onto the remaining presentation
+/// inputs. This function never manufactures nodes or text: a d82 observation
+/// must join an already named trait node by `(owner, leader, trait_token)`.
+/// D82 progress availability replaces the caller value as well, so a missing
+/// producer remains `None` instead of inheriting an unproved zero.
+pub fn apply_exact_a39_observations(
+    owner_tag_db_id: u32,
+    exact: &CharacterPresentationExactView,
+    input: &CharacterPresentationInput,
+) -> Result<CharacterPresentationInput> {
+    if owner_tag_db_id == 0 {
+        return Err(invalid("A39 owner_tag_db_id is zero"));
+    }
+    if exact.status != ViewStatus::Present {
+        return Err(invalid("d82 character presentation is not Present"));
+    }
+    let presentation = exact
+        .presentation
+        .as_ref()
+        .ok_or_else(|| invalid("d82 Present view omitted presentation"))?;
+    let mut output = input.clone();
+    let leader_index: BTreeMap<u64, usize> = output
+        .leaders
+        .iter()
+        .enumerate()
+        .map(|(index, row)| (row.unit_leader_id, index))
+        .collect();
+    if leader_index.len() != output.leaders.len() {
+        return Err(invalid("presentation input contains duplicate leader identity"));
+    }
+    let mut observed_nodes = BTreeSet::new();
+    for tree in presentation
+        .trait_trees
+        .iter()
+        .filter(|tree| tree.owner_tag_db_id == owner_tag_db_id)
+    {
+        let Some(&leader_index) = leader_index.get(&tree.unit_leader_id) else {
+            return Err(invalid(format!(
+                "d82 observed unknown unit_leader_id {}",
+                tree.unit_leader_id
+            )));
+        };
+        let leader = &mut output.leaders[leader_index];
+        for node in &tree.nodes {
+            if !observed_nodes.insert((tree.unit_leader_id, node.trait_token.as_str())) {
+                return Err(invalid(format!(
+                    "d82 repeated trait node {} for leader {} across tree roots",
+                    node.trait_token, tree.unit_leader_id
+                )));
+            }
+            let target = leader
+                .trait_nodes
+                .iter_mut()
+                .find(|candidate| candidate.trait_token == node.trait_token)
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "d82 trait node {} has no named presentation input for leader {}",
+                        node.trait_token, tree.unit_leader_id
+                    ))
+                })?;
+            target.state = match node.state {
+                CharacterTraitNodeState::Blocked => TraitNodeState::Blocked,
+                CharacterTraitNodeState::Pickable => TraitNodeState::Pickable,
+                CharacterTraitNodeState::Picked => TraitNodeState::Picked,
+            };
+            target.progress_raw = node.progress_raw;
+        }
+    }
+
+    let owner_aces = presentation
+        .ace_portraits
+        .iter()
+        .filter(|ace| ace.owner_tag_db_id == owner_tag_db_id)
+        .collect::<Vec<_>>();
+    if owner_aces.len() != output.aces.len() {
+        return Err(invalid("d82 owner ace portrait membership is not bijective"));
+    }
+    let ace_index: BTreeMap<u64, usize> = output
+        .aces
+        .iter()
+        .enumerate()
+        .map(|(index, row)| (row.ace_id, index))
+        .collect();
+    if ace_index.len() != output.aces.len() {
+        return Err(invalid("presentation input contains duplicate ace identity"));
+    }
+    for ace in owner_aces {
+        let Some(&index) = ace_index.get(&ace.ace_id) else {
+            return Err(invalid(format!("d82 observed unknown ace_id {}", ace.ace_id)));
+        };
+        output.aces[index].visible_ordinal = usize::try_from(ace.visible_ordinal)
+            .map_err(|_| invalid("d82 ace visible ordinal does not fit this platform"))?;
+        output.aces[index].portrait_gfx = ace.portrait_gfx.clone();
+    }
+    Ok(output)
 }
 
 fn invalid(message: impl Into<String>) -> GameUiError {
@@ -697,7 +798,7 @@ mod tests {
                 trait_nodes: vec![TraitNodePresentation {
                     trait_token: "panzer_leader".into(),
                     state: TraitNodeState::Picked,
-                    progress_raw: 0,
+                    progress_raw: Some(0),
                     reason: String::new(),
                 }],
             }],
@@ -728,6 +829,43 @@ mod tests {
         let mut input = complete_input();
         input.leaders[0].assignment_name = None;
         assert!(admit_character_ui(&roster(), Some(&aces()), &input).is_err());
+    }
+
+    #[test]
+    fn a39_exact_overlay_replaces_trait_state_and_owner_qualified_ace_portrait() {
+        let exact = replay_core::CharacterPresentationExactView {
+            status: ViewStatus::Present,
+            presentation: Some(replay_core::CharacterPresentationExact {
+                schema_version: 1,
+                authority: "exact_a729_character_presentation".into(),
+                elapsed_wall_ms: 1,
+                frame_hour: 2,
+                completeness_record_identity: "xui17:a729:refresh:3".into(),
+                source_sequence: 3,
+                trait_trees: vec![replay_core::CharacterTraitTreeObservation {
+                    owner_tag_db_id: 17,
+                    unit_leader_id: 7,
+                    tree_root_offset: 0x120,
+                    nodes: vec![replay_core::CharacterTraitNodeObservation {
+                        source_ordinal: 0,
+                        trait_token: "panzer_leader".into(),
+                        state_raw: 0,
+                        state: replay_core::CharacterTraitNodeState::Blocked,
+                        progress_raw: None,
+                    }],
+                }],
+                ace_portraits: vec![replay_core::CharacterAcePortraitObservation {
+                    owner_tag_db_id: 17,
+                    ace_id: 9,
+                    visible_ordinal: 0,
+                    portrait_gfx: "GFX_GER_ace_m_7".into(),
+                }],
+            }),
+        };
+        let overlaid = apply_exact_a39_observations(17, &exact, &complete_input()).unwrap();
+        assert_eq!(overlaid.leaders[0].trait_nodes[0].state, TraitNodeState::Blocked);
+        assert_eq!(overlaid.leaders[0].trait_nodes[0].progress_raw, None);
+        assert_eq!(overlaid.aces[0].portrait_gfx, "GFX_GER_ace_m_7");
     }
 
     #[test]

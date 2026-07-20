@@ -8,7 +8,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-const RECEIPT_SCHEMA: &str = "hoi4_prefold_worker_receipt_v1";
+const RECEIPT_SCHEMA: &str = "hoi4_prefold_worker_receipt_v2";
 const DECODER_ID: &str = "extractor.replay_decoder.production_world_fold.worker.v1";
 
 #[derive(Default)]
@@ -18,6 +18,7 @@ struct Args {
     snapshot_dir: Option<PathBuf>,
     source_len: Option<u64>,
     source_sha256: Option<String>,
+    identity_mode: Option<snapshot::PrefoldStreamIdentityMode>,
 }
 
 fn main() {
@@ -34,12 +35,18 @@ fn run() -> Result<(), String> {
     let snapshot_dir = args.snapshot_dir.ok_or("missing --snapshot-dir")?;
     let source_len = args.source_len.ok_or("missing --source-len")?;
     let source_sha256 = args.source_sha256.ok_or("missing --source-sha256")?;
-    let request = snapshot::CertifiedPrefoldSpoolRequest::try_new(
+    let identity_mode = args.identity_mode.ok_or("missing --identity-mode")?;
+    let identity_mode_label = match identity_mode {
+        snapshot::PrefoldStreamIdentityMode::Legacy => "legacy",
+        snapshot::PrefoldStreamIdentityMode::IdentityV1 => "identity-v1",
+    };
+    let request = snapshot::CertifiedPrefoldSpoolRequest::try_new_with_identity_mode(
         game_id,
         source,
         snapshot_dir,
         source_len,
         source_sha256,
+        identity_mode,
     )
     .map_err(|error| error.to_string())?;
     let spool = replay_decoder::fold_raw_h4cr_file_spooled(request)
@@ -60,6 +67,7 @@ fn run() -> Result<(), String> {
     let receipt = serde_json::json!({
         "schema": RECEIPT_SCHEMA,
         "decoder_id": DECODER_ID,
+        "identity_mode": identity_mode_label,
         "game_id": spool.game_id(),
         "schema_version": spool.schema_version(),
         "entries": entries,
@@ -122,6 +130,23 @@ fn parse_args(iter: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
                         .map_err(|_| "--source-sha256 is not Unicode".to_string())?,
                 );
             }
+            "--identity-mode" => {
+                if parsed.identity_mode.is_some() {
+                    return Err("duplicate --identity-mode".into());
+                }
+                let text = value
+                    .into_string()
+                    .map_err(|_| "--identity-mode is not Unicode".to_string())?;
+                parsed.identity_mode = Some(match text.as_str() {
+                    "legacy" => snapshot::PrefoldStreamIdentityMode::Legacy,
+                    "identity-v1" => snapshot::PrefoldStreamIdentityMode::IdentityV1,
+                    _ => {
+                        return Err(format!(
+                            "invalid --identity-mode {text:?}; expected legacy or identity-v1"
+                        ))
+                    }
+                });
+            }
             other => return Err(format!("unknown option {other}")),
         }
     }
@@ -142,5 +167,35 @@ mod tests {
             OsString::from("g2"),
         ])
         .is_err());
+        assert!(parse_args([
+            OsString::from("--identity-mode"),
+            OsString::from("legacy"),
+            OsString::from("--identity-mode"),
+            OsString::from("identity-v1"),
+        ])
+        .is_err());
+        assert!(parse_args([
+            OsString::from("--identity-mode"),
+            OsString::from("sniff"),
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn parser_accepts_both_explicit_identity_modes() {
+        for (wire, expected) in [
+            ("legacy", snapshot::PrefoldStreamIdentityMode::Legacy),
+            (
+                "identity-v1",
+                snapshot::PrefoldStreamIdentityMode::IdentityV1,
+            ),
+        ] {
+            let parsed = parse_args([
+                OsString::from("--identity-mode"),
+                OsString::from(wire),
+            ])
+            .unwrap();
+            assert_eq!(parsed.identity_mode, Some(expected));
+        }
     }
 }

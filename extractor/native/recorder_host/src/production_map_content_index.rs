@@ -389,6 +389,7 @@ mod tests {
         .unwrap();
         let manifest = ContentManifest {
             schema: portable_content_manifest::SCHEMA.into(),
+            product_modset_sha256: "9".repeat(64),
             source_game: SourceGameIdentity {
                 version: "1.19.2".into(),
                 build: "a729".into(),

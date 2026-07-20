@@ -1,0 +1,424 @@
+{
+  "schema": "hoi4-wave3-exact20-pool-status-receipt-v1",
+  "date": "2026-07-20",
+  "scope": "20260720T02*-w3-*",
+  "receipt_kind": "canonical_reconstructed_postflight_snapshot",
+  "status_fact_source": "root-observed ready=true/20 before dispatch, same-process Broker readiness enforcement before every lease, per-worker project verification receipts, and terminal Wave-3 job assignments",
+  "identity_contract": {
+    "binary_id": "hoi4.exe 1.19.2.0.a729",
+    "image_base": "0x140000000",
+    "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+  },
+  "configured_identity_probe_manifest_sha256_reference": "cd33527ef2f8f5d73ac87272d13b3c6219927272875ffe379ec7f4e1f4f8f8fe",
+  "persisted_preflight": {
+    "available": false,
+    "path": null,
+    "sha256": null,
+    "reason": "No standalone preflight JSON was persisted before Wave-3 dispatch; this postflight receipt must not be represented as one.",
+    "consumer_rule": "Any consumer that requires a persisted preflight remains false until a later run persists one."
+  },
+  "same_process_readiness_enforcement": {
+    "server_path": "replay_interface/tools/ghidra/server.py",
+    "server_sha256": "dfe662491bb2ed824b191cdac5a4abc7ffe51c42348ea6a925d924b74e436fe9",
+    "require_ready_definition_line": 542,
+    "export_functions_call_line": 841,
+    "dump_data_call_line": 867,
+    "search_strings_call_line": 901,
+    "contract": "Each operation calls Broker._require_ready() against all configured shards immediately before leasing a shard."
+  },
+  "pool": {
+    "worker_range": "worker-01..worker-20",
+    "shard_range": "shard-01..shard-20",
+    "required_workers": 20,
+    "observed_workers": 20,
+    "root_observed_ready_workers_before_dispatch": 20,
+    "same_process_readiness_gate_workers": 20,
+    "postflight_identity_verified_workers": 20,
+    "all_workers_identity_match": true,
+    "identity_probe_manifest_workers": 7,
+    "scoped_success_function_evidence_manifest_workers": 13,
+    "all_verification_manifests_bound": true,
+    "all_workers_used_by_scoped_jobs": true,
+    "read_only": true,
+    "analysis_disabled": true
+  },
+  "workers": [
+    {
+      "worker_id": "worker-01",
+      "shard_id": "shard-01",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-01",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-01.json",
+      "verification_sha256": "d441b3f40c6235b9f493dabdab66df308ca6ca3487d72c86914113704b243d42",
+      "verified_at": "2026-07-20T02:40:19.132257Z",
+      "verification_manifest_sha256": "f15141f08fdb990c597d2cf6dd6af3a1a0cd2df5f98bae8e3ee7a0835bf2cc7d",
+      "verification_manifest_kind": "scoped_success_function_evidence",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020812Z-w3-a38-controller-owner-41ee5208",
+        "20260720T021840Z-w3-a16-autonomy-data-8b05dcec",
+        "20260720T022347Z-w3-a40-thunk-bytes-81f810fe",
+        "20260720T022731Z-w3-a40-wrapper-bytes-f1cf3253",
+        "20260720T023151Z-w3-a40-peace-omitted-terms-c70ebf5a",
+        "20260720T024001Z-w3-a40-peace-breakdown-1d57fded"
+      ]
+    },
+    {
+      "worker_id": "worker-02",
+      "shard_id": "shard-02",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-02",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-02.json",
+      "verification_sha256": "cb04f49b9db20a1c8ef8dee25c77cebc4caad4ed2998bec7f6e84b5e61f21149",
+      "verified_at": "2026-07-20T02:19:12.127365Z",
+      "verification_manifest_sha256": "41f0ac897d332ab6868c10445d620bf35b19bc7bdc2828f017ebf53cfed14cc6",
+      "verification_manifest_kind": "scoped_success_function_evidence",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020812Z-w3-weather-setters-a042b9e8",
+        "20260720T021840Z-w3-x12-speed-pause-e662af9e"
+      ]
+    },
+    {
+      "worker_id": "worker-03",
+      "shard_id": "shard-03",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-03",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-03.json",
+      "verification_sha256": "07479a875cd042c584ad0103e902a77e78ee4d4e9a66c1dd5a29fc39f0d24da6",
+      "verified_at": "2026-07-20T02:19:30.528638Z",
+      "verification_manifest_sha256": "976ff8736206d02f6450086a2020d0fe3f5de54409bd147f9caf372ad0ffeea7",
+      "verification_manifest_kind": "scoped_success_function_evidence",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020812Z-w3-x9-specialization-8ca04933",
+        "20260720T021840Z-w3-a16-autonomy-82187f8f"
+      ]
+    },
+    {
+      "worker_id": "worker-04",
+      "shard_id": "shard-04",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-04",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-04.json",
+      "verification_sha256": "e88a625d100f80b5d7d79d5ca9563b0402aa28684552bf19d36f51c481d0fd17",
+      "verified_at": "2026-07-20T02:20:05.186169Z",
+      "verification_manifest_sha256": "3befb21facb2fdd5724602b2a72655ade23995b8270521aeecbe5eddeed34301",
+      "verification_manifest_kind": "scoped_success_function_evidence",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020813Z-w3-a40-designers-fc2ae305",
+        "20260720T021841Z-w3-a17-nuke-743578ed"
+      ]
+    },
+    {
+      "worker_id": "worker-05",
+      "shard_id": "shard-05",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-05",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-05.json",
+      "verification_sha256": "f773945ec656261de0e6c847b90514dc735cff93d1c50d5ac52980554709d321",
+      "verified_at": "2026-07-20T02:46:02.200145Z",
+      "verification_manifest_sha256": "cd33527ef2f8f5d73ac87272d13b3c6219927272875ffe379ec7f4e1f4f8f8fe",
+      "verification_manifest_kind": "configured_identity_probe",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020812Z-w3-w15-cid1-helpers-0935bd0c",
+        "20260720T021840Z-w3-a17-nuke-data-3a526906",
+        "20260720T023531Z-w3-a28-mio-5-depth1-e995a502",
+        "20260720T024434Z-w3-a29-callback-supplement-37432e72",
+        "20260720T024555Z-w3-a29-callback-bytes-c223e1a2"
+      ]
+    },
+    {
+      "worker_id": "worker-06",
+      "shard_id": "shard-06",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-06",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-06.json",
+      "verification_sha256": "26b957c2d9368aa3689571adaccebea89423393f80a44a57d917ba68a2360922",
+      "verified_at": "2026-07-20T02:18:58.764013Z",
+      "verification_manifest_sha256": "cd33527ef2f8f5d73ac87272d13b3c6219927272875ffe379ec7f4e1f4f8f8fe",
+      "verification_manifest_kind": "configured_identity_probe",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020812Z-w3-a18-dynmod-5b64758d",
+        "20260720T021840Z-w3-x9-specialization-strings-7106cf6c"
+      ]
+    },
+    {
+      "worker_id": "worker-07",
+      "shard_id": "shard-07",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-07",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-07.json",
+      "verification_sha256": "c70ede003fea8aceabc1e51be719b95c0ae17e9d2642f7f5d4c27e188bf0cb0a",
+      "verified_at": "2026-07-20T02:19:06.088410Z",
+      "verification_manifest_sha256": "cd33527ef2f8f5d73ac87272d13b3c6219927272875ffe379ec7f4e1f4f8f8fe",
+      "verification_manifest_kind": "configured_identity_probe",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020812Z-w3-supply-roots-2f6d1ec1",
+        "20260720T021840Z-w3-weather-data-3422e445"
+      ]
+    },
+    {
+      "worker_id": "worker-08",
+      "shard_id": "shard-08",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-08",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-08.json",
+      "verification_sha256": "b51a24f3df587899dfa8600b1b0fcd81e81e50ec82833cc792c57e733319b15e",
+      "verified_at": "2026-07-20T02:19:13.434363Z",
+      "verification_manifest_sha256": "cd33527ef2f8f5d73ac87272d13b3c6219927272875ffe379ec7f4e1f4f8f8fe",
+      "verification_manifest_kind": "configured_identity_probe",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020812Z-w3-x2-loss-owner-5246af02",
+        "20260720T021840Z-w3-a34-vtables-fe465659"
+      ]
+    },
+    {
+      "worker_id": "worker-09",
+      "shard_id": "shard-09",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-09",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-09.json",
+      "verification_sha256": "a8fe797999e7c4c255376ca60f999b6743510036f93a65826d1a671a0f1bc80c",
+      "verified_at": "2026-07-20T02:35:52.311905Z",
+      "verification_manifest_sha256": "6e59f9026a87df480cb90fd3363b83942053efc92952deaa2ee485c4a90d0900",
+      "verification_manifest_kind": "scoped_success_function_evidence",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020812Z-w3-a40-peace-anchors-06e5895a",
+        "20260720T021840Z-w3-a28-direct-retry-5065e703",
+        "20260720T022347Z-w3-a40-classifier-retry-ad6a474d",
+        "20260720T022731Z-w3-a40-classifier-final-65c68d38",
+        "20260720T023151Z-w3-a40-peace-xref-followup-afb44169",
+        "20260720T023402Z-w3-a28-air-depth1-c99e90dc"
+      ]
+    },
+    {
+      "worker_id": "worker-10",
+      "shard_id": "shard-10",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-10",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-10.json",
+      "verification_sha256": "d304ba9d0de4d835f18c1fc287cbfa601e9984217774e08e0f404a5a8b07edd4",
+      "verified_at": "2026-07-20T02:18:57.587015Z",
+      "verification_manifest_sha256": "cd33527ef2f8f5d73ac87272d13b3c6219927272875ffe379ec7f4e1f4f8f8fe",
+      "verification_manifest_kind": "configured_identity_probe",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020812Z-w3-x8-multi-order-91af7599",
+        "20260720T021840Z-w3-a33-vtables-1328220f"
+      ]
+    },
+    {
+      "worker_id": "worker-11",
+      "shard_id": "shard-11",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-11",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-11.json",
+      "verification_sha256": "aed692419a267c9e270bb949636615472910cbaeaeff4032b097666658078010",
+      "verified_at": "2026-07-20T02:19:09.570465Z",
+      "verification_manifest_sha256": "cd33527ef2f8f5d73ac87272d13b3c6219927272875ffe379ec7f4e1f4f8f8fe",
+      "verification_manifest_kind": "configured_identity_probe",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020812Z-w3-a37-power-balance-5c5d63f5",
+        "20260720T021840Z-w3-x9-program-vtables-c64eb8bf"
+      ]
+    },
+    {
+      "worker_id": "worker-12",
+      "shard_id": "shard-12",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-12",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-12.json",
+      "verification_sha256": "84a086ff3e77904645f69e5de514afce47f22baa46e21b27a16bb24d33fbe812",
+      "verified_at": "2026-07-20T02:19:54.161551Z",
+      "verification_manifest_sha256": "eab85630d79f7592bd1ae38f9ae5fb6102ddb5e2201cb3a1d6482a83cf5c74cb",
+      "verification_manifest_kind": "scoped_success_function_evidence",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020812Z-w3-b5-war-residual-b9f9ff7a",
+        "20260720T021841Z-w3-a29-tech-roots-b3f08ee5"
+      ]
+    },
+    {
+      "worker_id": "worker-13",
+      "shard_id": "shard-13",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-13",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-13.json",
+      "verification_sha256": "1057f369b58f2408d24898ba5c55c2b1fb9172e1130bedd192676b9ede4ee731",
+      "verified_at": "2026-07-20T02:35:48.404550Z",
+      "verification_manifest_sha256": "477ed373c5224e7814f16ba155930fb1f772299e1327fdcd10b366b63bcae0d3",
+      "verification_manifest_kind": "scoped_success_function_evidence",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020812Z-w3-a33-sunk-ship-4aecc451",
+        "20260720T021841Z-w3-a29-tech-helpers-7487927f",
+        "20260720T023401Z-w3-a28-history-depth1-b1f16258",
+        "20260720T023531Z-w3-a28-mio-3-depth1-0635f2f2"
+      ]
+    },
+    {
+      "worker_id": "worker-14",
+      "shard_id": "shard-14",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-14",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-14.json",
+      "verification_sha256": "bd79f91ff93d5898dcb9a2de97195660d8beb21720aa7198a0f97c699eca5ef8",
+      "verified_at": "2026-07-20T02:34:22.962702Z",
+      "verification_manifest_sha256": "9b916ba2650226ed2924e7004e752f98df6aa19a8a16dcf0644a4c24e82f9e92",
+      "verification_manifest_kind": "scoped_success_function_evidence",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020812Z-w3-a40-peace-strings-89672ebe",
+        "20260720T023401Z-w3-a28-bonus-depth1-9bfbdc73"
+      ]
+    },
+    {
+      "worker_id": "worker-15",
+      "shard_id": "shard-15",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-15",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-15.json",
+      "verification_sha256": "5c29f374b4c8480568afd0f1fff5ba60dadd3757b57f0901d6fa2354ea86178a",
+      "verified_at": "2026-07-20T02:09:39.441439Z",
+      "verification_manifest_sha256": "a9855541571204160bc4ac78dcf6f1dbdfa112496234e84540406a71c37d2fb3",
+      "verification_manifest_kind": "scoped_success_function_evidence",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020813Z-w3-focus-direct-hooks-d987b89a"
+      ]
+    },
+    {
+      "worker_id": "worker-16",
+      "shard_id": "shard-16",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-16",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-16.json",
+      "verification_sha256": "1c342e0cb52b7a14ea2ab40296c385378893021e782047e36ac026266b2b3708",
+      "verified_at": "2026-07-20T02:18:56.593014Z",
+      "verification_manifest_sha256": "5e4b593671d9b9bd1c48d662ba592f1e9fb59a70eac2ca87a8bf677484b156e4",
+      "verification_manifest_kind": "scoped_success_function_evidence",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020813Z-w3-a40-peace-graph-ef209889"
+      ]
+    },
+    {
+      "worker_id": "worker-17",
+      "shard_id": "shard-17",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-17",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-17.json",
+      "verification_sha256": "82e7faf8df8033e939eb5d274399e21b3d701cd89bebaec54193b2c0780d3c84",
+      "verified_at": "2026-07-20T02:35:46.443265Z",
+      "verification_manifest_sha256": "fde4bfdda86c7125aa1bd1121a3f60e40ff90e748aa3028cf7a82a1e4141c827",
+      "verification_manifest_kind": "scoped_success_function_evidence",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020812Z-w3-a31-focus-owner-93fbbf62",
+        "20260720T021840Z-w3-a28-controller-vtables-2f8bc20b",
+        "20260720T022347Z-w3-a16-autonomy-final15-d370faae",
+        "20260720T023401Z-w3-a28-mio-root-depth1-13de3fff",
+        "20260720T023531Z-w3-a28-mio-4-depth1-aab3061f"
+      ]
+    },
+    {
+      "worker_id": "worker-18",
+      "shard_id": "shard-18",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-18",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-18.json",
+      "verification_sha256": "fddeae91769d28ac9469fac96b2abdfdd81e455881d101bccbeb2146d6e16623",
+      "verified_at": "2026-07-20T02:35:53.457561Z",
+      "verification_manifest_sha256": "38813763635e4fda16fb1e529f2429083361fddc94fd81c2fe44bea3ffb4b943",
+      "verification_manifest_kind": "scoped_success_function_evidence",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020812Z-w3-a28-air-mio-fba35b10",
+        "20260720T021840Z-w3-a40-classifiers-065d374b",
+        "20260720T023531Z-w3-a28-mio-2-depth1-30e5260f"
+      ]
+    },
+    {
+      "worker_id": "worker-19",
+      "shard_id": "shard-19",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-19",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-19.json",
+      "verification_sha256": "2903918e2119a69f06a5af52f0f7412aec32c5800145281c28e82af8afcc5561",
+      "verified_at": "2026-07-20T02:19:13.406363Z",
+      "verification_manifest_sha256": "cd33527ef2f8f5d73ac87272d13b3c6219927272875ffe379ec7f4e1f4f8f8fe",
+      "verification_manifest_kind": "configured_identity_probe",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020812Z-w3-a36-ability-list-feb98226",
+        "20260720T021840Z-w3-b5-war-data-84a4ed4a",
+        "20260720T023531Z-w3-a28-mio-1-depth1-a808b2a9"
+      ]
+    },
+    {
+      "worker_id": "worker-20",
+      "shard_id": "shard-20",
+      "same_process_readiness_enforced_before_each_scoped_dispatch": true,
+      "identity_match": true,
+      "project_directory": "C:\\hoi4_evidence\\ghidra_workers_v2\\worker-20",
+      "project_name": "hoi4_current",
+      "verification_path": "C:\\hoi4_evidence\\ghidra_agent_exports\\project-verification-shard-20.json",
+      "verification_sha256": "83f4c71586dee6a3febf256ec7c099b15d849f5559f96164c0852003118e81e0",
+      "verified_at": "2026-07-20T02:19:50.202038Z",
+      "verification_manifest_sha256": "75bce4aae8857b18188689fdc8d3ac1f2af30c8d4581f049b2e4d7a794e218b0",
+      "verification_manifest_kind": "scoped_success_function_evidence",
+      "verification_manifest_bound": true,
+      "wave3_job_ids": [
+        "20260720T020812Z-w3-a34-decision-panel-7be8b60f",
+        "20260720T021842Z-w3-x2-loss-supplement-b7d24965"
+      ]
+    }
+  ],
+  "promotion_scope": "static_exact20_evidence_only_live_source_promotion_unchanged_persisted_preflight_gates_remain_false"
+}

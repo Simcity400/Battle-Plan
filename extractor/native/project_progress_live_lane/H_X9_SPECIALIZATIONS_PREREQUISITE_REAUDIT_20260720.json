@@ -1,0 +1,147 @@
+{
+  "schema": "h-x9-specializations-prerequisite-reaudit-v1",
+  "generated_date": "2026-07-20",
+  "supported_binary": {
+    "binary_id": "hoi4.exe 1.19.2.0.a729",
+    "image_base": "0x140000000",
+    "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+  },
+  "ghidra_gate": {
+    "fresh_status_checked": true,
+    "identity_pinned": true,
+    "reported_shards": 10,
+    "ready_shards": 10,
+    "required_ready_shards": 20,
+    "admitted": false,
+    "jobs_submitted": 0,
+    "later_freeze": "root temporarily froze broker submissions while restarting cached brokers",
+    "pending_seed_package": "extractor/native/project_progress_live_lane/H_X9_SPECIALIZATIONS_GHIDRA_SEEDS_PENDING_20_SHARDS_20260720.json"
+  },
+  "authored_universe": [
+    "specialization_nuclear",
+    "specialization_naval",
+    "specialization_air",
+    "specialization_land"
+  ],
+  "retained_a729_census": {
+    "source": "extractor/native/project_progress_live_lane/A23_X9_RETAINED_SOURCE_EXHAUSTION_20260720.json",
+    "collector_streams_scanned": 113,
+    "streams_with_d41": 101,
+    "streams_with_four_handles": 0,
+    "only_observed_handle_set": [22214, 22215],
+    "closest_live_hour": 60830439,
+    "d04_save_hour": 60830441,
+    "distance_hours": -2,
+    "anchor_values_compared": 56,
+    "exact_anchor_matches": 0,
+    "semantic_mapping_admitted": false
+  },
+  "new_save_only_discriminators": [
+    {
+      "path": "extractor/re_evidence/A18_DYNMOD_REAUDIT_20260720/save_oracles/SOV_1946_05_19_09/country_extra.json",
+      "sha256": "300d00442f9cad5f357c5b312903372a3865bd84150187657463c17a80cc2080",
+      "bytes": 798811,
+      "save_date": "1946.5.19.9",
+      "save_version": "Operation Postern v1.19.1.0.b49d (1722)",
+      "countries": 143,
+      "countries_with_any_nonzero": 46,
+      "all_zero_countries": 97,
+      "distinct_four_column_vectors": 47,
+      "admission": "rejected for a729 handle mapping: save-only, different executable build, and no exact-boundary live d41 frame"
+    },
+    {
+      "path": "extractor/re_evidence/A18_DYNMOD_REAUDIT_20260720/save_oracles/GER_1940_09_10_13/country_extra.json",
+      "sha256": "88f098f5b80de0c9fb8e4a9af05a631c458ad7f8461072ec6d70f6cd2508b97a",
+      "bytes": 7022,
+      "save_date": "1940.9.10.13",
+      "save_version": "Operation Postern v1.19.1.0.b49d (d4f6)",
+      "countries": 1,
+      "countries_with_any_nonzero": 1,
+      "values": {
+        "specialization_nuclear": 6204,
+        "specialization_naval": 11895,
+        "specialization_air": 7932,
+        "specialization_land": 19390
+      },
+      "admission": "rejected for a729 handle mapping: save-only, different executable build, and no exact-boundary live d41 frame"
+    }
+  ],
+  "production_prerequisite_engineering": {
+    "collector": "extractor/native/collector/src/lib.rs",
+    "lane_library": "extractor/native/project_progress_live_lane/src/lib.rs",
+    "implemented": [
+      "walk up to three contiguous primary-vtable-valid CProgramStatus records at stride 0x160",
+      "read every record's inline CBreakthroughProgress at +0x50",
+      "merge rows by country tag_db_id and specialization_handle",
+      "reject duplicate handles within one tree",
+      "deduplicate identical cross-record handle/points aliases",
+      "reject the whole country on cross-record point conflict",
+      "reject the whole country on any malformed or partial breakthrough tree instead of emitting a prefix",
+      "revalidate country object vtable and live tag_db_id equality at the d41 read boundary",
+      "propagate rejected-country count to existing d41 PARTIAL_DATA handling"
+    ],
+    "static_regression_cases_added": [
+      "all three status records are read",
+      "four raw breakthrough values survive the lane helper",
+      "same-tree duplicate rejects",
+      "identical alias dedupes",
+      "conflicting alias rejects",
+      "torn tree rejects without prefix",
+      "stale country tag equality marks d41 partial and emits no breakthrough rows"
+    ],
+    "validation_run_by_subagent": false,
+    "validation_owner": "primary agent via Invoke-CentralRustValidation.ps1"
+  },
+  "owner_semantics": {
+    "d41_breakthrough_owner": "direct validated CCountry root; revalidated vtable and tag_db_id equality at each d41 read boundary",
+    "d65_facility_owner": "separate CProgram pointer reachability join; multiply-reachable facilities remain dropped",
+    "d65_candidate": "CProgram+0x170 remains inadmissible at retained 1/26 coverage without adjacent negative controls",
+    "conflation_prohibited": true
+  },
+  "runtime_dictionary_alternative": {
+    "existing_mechanism": "collector air-variant archetype tracker scans authenticated token records and maps wanted u32 ids to exact text while rejecting ambiguity",
+    "why_not_promoted_for_x9": [
+      "no retained producer/consumer proof establishes that CBreakthroughProgress tree keys use that token-record id namespace",
+      "equal u32 values across unjoined namespaces would be correlation, not identity proof",
+      "the current d41 row has no authenticated semantic carrier; fold intentionally writes specialization as null"
+    ],
+    "next_static_route": "pending Ghidra seeds join the CBreakthroughProgress vtable producers and four authored literal consumers to the exact tree key",
+    "next_live_route": "the exact-boundary four-column permutation independently proves the mapping without relying on token-namespace assumptions"
+  },
+  "compact_fold_replay": {
+    "wire_row": [
+      "tag_db_id:u32",
+      "specialization_handle:u32",
+      "points_raw:u32",
+      "flags:u32"
+    ],
+    "row_length": 16,
+    "key": ["tag_db_id", "specialization_handle"],
+    "four_value_capacity": "no schema or row-size change required",
+    "fold": "validates nonzero unique keys and flags, applies full/delta rows, and keeps d41 unknown on PARTIAL_DATA",
+    "fold_projection": "special_projects._r2_breakthroughs preserves country, tag_db_id, points_raw, and _r2_specialization_handle; specialization remains null",
+    "replay": "WorldFrame retains the full raw top-level map and exposes raw()/domain(), so all four raw rows remain reachable",
+    "typed_semantic_view": false,
+    "data_loss": false,
+    "semantic_name_status": "blocked until exact four-handle mapping is proved"
+  },
+  "remaining_exact_observation": {
+    "id": "X9-BREAKTHROUGH-ALL-RECORD-JOIN",
+    "minimum": "one coherent paused a729 boundary plus projects.json from the exact same raw hour, captured after the all-record collector/probe is deployed",
+    "acceptance": [
+      "exactly four distinct live handles",
+      "zero record parse failures",
+      "zero cross-record conflicts",
+      "at least one compared country row",
+      "one unique zero-mismatch permutation to the four authored save keys",
+      "zero live tags missing from the save"
+    ],
+    "on_failure": "retain raw numeric handles and null specialization names"
+  },
+  "disposition": {
+    "raw_four_value_transport": "production prerequisite engineered; awaiting central validation and a new capture",
+    "semantic_specialization_names": "not promoted",
+    "human_input_required_now": true,
+    "human_input_count": 1
+  }
+}

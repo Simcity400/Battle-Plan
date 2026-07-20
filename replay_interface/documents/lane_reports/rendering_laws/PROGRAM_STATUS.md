@@ -38,9 +38,9 @@ passed its evidence, verifier, composition, and final-review gates.
 
 ## Current post-automation census (2026-07-17)
 
-- Canonical RE register: 51 rows = 49 `PROVEN` + two
-  `HUMAN_CAPTURE_REQUIRED`; the 50 active reports comprise 48 exact/fail-closed
-  production-ready packets plus two exact external packet gates. Runtime-input
+- Canonical RE register: 51 rows = 50 `PROVEN` + one
+  `HUMAN_CAPTURE_REQUIRED`; the 50 active reports comprise 49 exact/fail-closed
+  production-ready packets plus one exact external packet gate. Runtime-input
   gates: zero. Implementation gates: zero.
 - Event/compose external capture closure is `PROVEN`: the synchronized clean
   terrain -> water -> rivers -> trees round includes pass-close payloads and
@@ -109,6 +109,14 @@ passed its evidence, verifier, composition, and final-review gates.
 | Retained-corpus inventory | `corpus_inventory` | PROVEN | 35/35 packets; 160 RDCs, 87,449 artifacts, 211 issue-bearing components routed |
 | Existing-evidence registry | `evidence_registry` | PROVEN | 35/35 packets and 45 durable-job snapshot records reconciled |
 | Serialized broker queue | orchestrator | ACTIVE | Exact-a729 20-shard identity is user-authorized and repeatedly verified; active extractor producer jobs remain deduplicated through `ghidra_list_jobs` and every frozen report must retain address/job/artifact/manifest provenance |
+
+Current topology clarification (2026-07-20): the live broker has 20 configured
+and ready shards. Historical exact-ten receipts remain frozen evidence records,
+but they do not require a ten-shard reset for current work and do not make a
+20-shard job non-authoritative. Pool size is operational capacity; job authority
+comes from exact identity, mode, job/request/manifest hashes, artifact hashes,
+and the retained instruction/dataflow evidence. See
+`replay_interface/tools/ghidra/CURRENT_AUTHORITY.md`.
 
 ## UI packet register
 
@@ -220,7 +228,7 @@ descope.
 | XUI24 mod-added UI discovery | PROVEN | Effective loose/archive/DLC/mod registration, immediate-parent replacement, namespace/DLC ordinals, dynamic discovery and installed scripted-localisation grammar pass 37/37 twice with zero residuals |
 | XUI25 display/language/input variants | PROVEN | Exact layout, pixel-oracle, ordered glyph-set, resize/clipping and keyboard/controller variant admission pass 42/42 twice with a 15-artifact zero-mismatch manifest |
 | XUI26 frontend/meta/dev and DLC music | PROVEN | All 28 families and 232 GUI definitions are admitted; 17 replay-owned routes and 9 explicit external-service inputs pass the 338-check gate twice with byte-identical manifest `1391c95e2623c3847242c74216d2c9b9cf391cce1335515ca635a1635a2be38e` |
-| XUI27 final UI composition | QUEUED | Run representative and boundary-state pixel parity for every panel family, modal/tooltip combination, map-under-UI state, localization/display variant, and controlled unavailable-data case before promotion |
+| XUI27 final UI composition | PROVEN | Replay-owned terminal freeze is independently green with 372 current sources, 26 recursive packet authorities, two byte-identical canonical pass receipts, and zero current replay failures. Its 182 historical drifts and six extractor-boundary rows are explicit non-certifying inventory; this row does not claim those external inputs complete or certify the final extractor-created end-to-end replay |
 
 ## Review policy
 

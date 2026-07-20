@@ -1,5 +1,11 @@
 # Wave 2 exact-10 Ghidra re-export receipt
 
+> **Historical receipt:** the ten-shard count below is an immutable observation
+> of this completed replay, not a current topology requirement. New work uses
+> the authorized 20-shard broker, and pool size alone does not validate or
+> invalidate a job. See
+> `replay_interface/tools/ghidra/CURRENT_AUTHORITY.md`.
+
 The exact-10 authority replay is terminal: **43 root calls completed successfully** and **2 isolated roots reproduced the expected `0x140082cb0` decompiler failure**. There were no unexpected failures and the failed seed must not be retried.
 
 - Binary: `hoi4.exe 1.19.2.0.a729`

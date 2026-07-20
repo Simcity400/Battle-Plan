@@ -15,8 +15,8 @@
 
 use crate::compact::{
     date_raw_valid_nullable, war_start_date_raw_valid, CapitulationWarSnapshot,
-    CountryCapitulationRow, WarRow, MAX_CASUALTIES, MAX_EXILE_ARMY_LEADERS, MAX_LEGITIMACY_RAW,
-    MAX_TAG_DB_ID,
+    CountryCapitulationRow, HostilityReason, WarResiduals, WarRow, MAX_CASUALTIES,
+    MAX_EXILE_ARMY_LEADERS, MAX_LEGITIMACY_RAW, MAX_TAG_DB_ID,
 };
 use compact_contract::build_profile as profile;
 use std::collections::BTreeSet;
@@ -34,7 +34,7 @@ pub const CAPWAR_DISCOVERY_DEGRADED: &str = "capwar_discovery_degraded";
 const RTTI_CCOUNTRY: &str = "CCountry";
 const CAPWAR_RTTI_MAX_NAME_LEN: usize = 200;
 const CAPWAR_MODULE_SPAN_MAX: u64 = 0x5000_0000;
-/// Bytes read per war row (covers +0x00..+0x6C echo fields).
+/// Legacy bytes read while the H-B5 live source gate remains disabled.
 const WAR_ROW_READ_LEN: usize = 0x70;
 /// Capitulation block span: `D+CAP_BLOCK_BASE .. D+CAP_BLOCK_BASE+CAP_BLOCK_LEN`
 /// covers legitimacy (+0x1B0) through capitulated_date (+0x2F0..+0x2F4).
@@ -615,7 +615,36 @@ fn read_war_row<M: CapWarMemory>(
     date_vtables: &[u64; 2],
     valid_tags: &BTreeSet<u32>,
 ) -> Result<WarRow, ExtractError> {
-    let bytes = mem.read_bytes(row_addr, WAR_ROW_READ_LEN)?;
+    let bytes = if profile::DOMAIN60_WAR_RESIDUALS_LIVE_ENABLED {
+        // The authenticated D60 row is CWarRelation+0x10. Read the object
+        // vtable and complete row twice as one coherent span; a torn object or
+        // an alias with the right date/tag prefix must never emit H-B5 values.
+        let object_addr = row_addr
+            .checked_sub(0x10)
+            .ok_or(ExtractError::InvalidRoot("capwar_war_object_underflow"))?;
+        let object_len = profile::DOMAIN60_WAR_RESIDUAL_ROW_LEN + 0x10;
+        let before = mem.read_bytes(object_addr, object_len)?;
+        let after = mem.read_bytes(object_addr, object_len)?;
+        if before != after {
+            return Err(ExtractError::InvalidRoot("capwar_war_object_torn"));
+        }
+        let module_base = date_vtables[0]
+            .checked_sub(profile::DOMAIN53_WAR_GREGORIAN_DATE_VTABLE_RVA as u64)
+            .ok_or(ExtractError::InvalidRoot("capwar_module_base_underflow"))?;
+        let expected = add_addr(
+            module_base,
+            profile::DOMAIN60_WAR_CWARRELATION_VTABLE_RVA,
+        )?;
+        let object_vtable = u64::from_le_bytes(before[0..8].try_into().expect("u64 bytes"));
+        if object_vtable != expected {
+            return Err(ExtractError::InvalidRoot(
+                "capwar_cwarrelation_vtable_mismatch",
+            ));
+        }
+        before[0x10..].to_vec()
+    } else {
+        mem.read_bytes(row_addr, WAR_ROW_READ_LEN)?
+    };
     let read_u32_at = |offset: usize| -> u32 {
         u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("u32 bytes"))
     };
@@ -656,12 +685,63 @@ fn read_war_row<M: CapWarMemory>(
     if !war_start_date_raw_valid(start_date_raw) {
         return Err(ExtractError::InvalidRoot("capwar_war_start_date_invalid"));
     }
+    let residuals = if profile::DOMAIN60_WAR_RESIDUALS_LIVE_ENABLED {
+        Some(war_residuals_from_row_bytes(&bytes)?)
+    } else {
+        None
+    };
     Ok(WarRow {
         first_tag_db_id: first,
         second_tag_db_id: second,
         start_date_raw,
         first_casualties,
         second_casualties,
+        residuals,
+    })
+}
+
+/// Decode the exact H-B5 fields from an authenticated D60 row window. This is
+/// public so the d53 sidecar can reuse the same typed discriminator law once
+/// the single build-profile activation flag is promoted.
+pub fn war_residuals_from_row_bytes(bytes: &[u8]) -> Result<WarResiduals, ExtractError> {
+    if bytes.len() < profile::DOMAIN60_WAR_RESIDUAL_ROW_LEN {
+        return Err(ExtractError::InvalidRoot("capwar_war_residual_row_short"));
+    }
+    let read_u32_at = |offset: usize| -> u32 {
+        u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("u32 bytes"))
+    };
+    let threat_fixed5_raw = i64::from_le_bytes(
+        bytes[profile::DOMAIN60_WAR_THREAT_FIXED5_RAW
+            ..profile::DOMAIN60_WAR_THREAT_FIXED5_RAW + 8]
+            .try_into()
+            .expect("i64 bytes"),
+    );
+    let first_was_instigator = match bytes[profile::DOMAIN60_WAR_FIRST_WAS_INSTIGATOR] {
+        0 => false,
+        1 => true,
+        value => {
+            return Err(ExtractError::Validation(format!(
+                "capwar_first_was_instigator_{value}"
+            )))
+        }
+    };
+    let instigator_raw = read_u32_at(profile::DOMAIN60_WAR_HOSTILITY_REASON_INSTIGATOR);
+    let defender_raw = read_u32_at(profile::DOMAIN60_WAR_HOSTILITY_REASON_DEFENDER);
+    let hostility_reason_instigator = HostilityReason::from_raw(instigator_raw).ok_or_else(|| {
+        ExtractError::Validation(format!(
+            "capwar_hostility_reason_instigator_{instigator_raw}"
+        ))
+    })?;
+    let hostility_reason_defender = HostilityReason::from_raw(defender_raw).ok_or_else(|| {
+        ExtractError::Validation(format!(
+            "capwar_hostility_reason_defender_{defender_raw}"
+        ))
+    })?;
+    Ok(WarResiduals {
+        threat_fixed5_raw,
+        first_was_instigator,
+        hostility_reason_instigator,
+        hostility_reason_defender,
     })
 }
 
@@ -674,6 +754,9 @@ pub fn snapshot_from_frame(
     let mut status_flags = base_status_flags;
     if !frame.wars.is_empty() {
         status_flags |= crate::compact::STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR;
+    }
+    if !frame.wars.is_empty() && frame.wars.iter().all(|row| row.residuals.is_some()) {
+        status_flags |= crate::compact::STATUS_WAR_RESIDUALS_EXACT;
     }
     CapitulationWarSnapshot {
         elapsed_wall_ms,
@@ -1251,6 +1334,7 @@ mod tests {
                 start_date_raw: real_date_raw(1939, 244, 4),
                 first_casualties: 1,
                 second_casualties: 2,
+                residuals: None,
             }],
             ..ExtractedCapWarFrame::default()
         };
@@ -1267,6 +1351,35 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn h_b5_row_decoder_preserves_exact_values_and_rejects_bad_discriminators() {
+        let mut bytes = vec![0u8; profile::DOMAIN60_WAR_RESIDUAL_ROW_LEN];
+        bytes[profile::DOMAIN60_WAR_THREAT_FIXED5_RAW
+            ..profile::DOMAIN60_WAR_THREAT_FIXED5_RAW + 8]
+            .copy_from_slice(&(-987_654i64).to_le_bytes());
+        bytes[profile::DOMAIN60_WAR_FIRST_WAS_INSTIGATOR] = 1;
+        bytes[profile::DOMAIN60_WAR_HOSTILITY_REASON_INSTIGATOR
+            ..profile::DOMAIN60_WAR_HOSTILITY_REASON_INSTIGATOR + 4]
+            .copy_from_slice(&HostilityReason::Puppet.raw().to_le_bytes());
+        bytes[profile::DOMAIN60_WAR_HOSTILITY_REASON_DEFENDER
+            ..profile::DOMAIN60_WAR_HOSTILITY_REASON_DEFENDER + 4]
+            .copy_from_slice(&HostilityReason::Guarantee.raw().to_le_bytes());
+
+        let residuals = war_residuals_from_row_bytes(&bytes).expect("valid H-B5 row");
+        assert_eq!(residuals.threat_fixed5_raw, -987_654);
+        assert!(residuals.first_was_instigator);
+        assert_eq!(residuals.hostility_reason_instigator, HostilityReason::Puppet);
+        assert_eq!(residuals.hostility_reason_defender, HostilityReason::Guarantee);
+
+        bytes[profile::DOMAIN60_WAR_FIRST_WAS_INSTIGATOR] = 2;
+        assert!(war_residuals_from_row_bytes(&bytes).is_err());
+        bytes[profile::DOMAIN60_WAR_FIRST_WAS_INSTIGATOR] = 0;
+        bytes[profile::DOMAIN60_WAR_HOSTILITY_REASON_DEFENDER
+            ..profile::DOMAIN60_WAR_HOSTILITY_REASON_DEFENDER + 4]
+            .copy_from_slice(&6u32.to_le_bytes());
+        assert!(war_residuals_from_row_bytes(&bytes).is_err());
     }
 
     fn decode_or_panic(payload: &[u8]) -> CapitulationWarSnapshot {

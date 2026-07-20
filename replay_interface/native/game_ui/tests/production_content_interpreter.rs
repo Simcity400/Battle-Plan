@@ -102,6 +102,7 @@ fn manifest_for(
     };
     let mut manifest = ContentManifest {
         schema: replay_core::PORTABLE_CONTENT_MANIFEST_SCHEMA.into(),
+        product_modset_sha256: "99".repeat(32),
         source_game: source_game.clone(),
         source_profile: source_profile.clone(),
         effective_vfs_manifest_sha256,

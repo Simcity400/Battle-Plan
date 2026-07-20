@@ -33,3 +33,12 @@ companion. The retained compact corpus has only two raw breakthrough handles bec
 the old probe/reader inspected only status record 0. `tools/breakthrough_state_probe.py`
 schema v2 now reads all validated status records for the one remaining same-boundary
 admission capture; it still refuses to infer a mapping.
+
+The production-prerequisite follow-up is
+`H_X9_SPECIALIZATIONS_PREREQUISITE_REAUDIT_20260720.md` with a machine-readable JSON
+companion. The collector and lane library now walk all three contiguous a729 status
+records, merge identical aliases, reject conflicts/torn trees country-atomically, and
+revalidate the d41 country owner at the read boundary. Four raw values already survive
+the compact/fold/replay path; semantic names remain blocked on the exact-boundary join.
+Unexecuted exact-20 Ghidra follow-up seeds are kept separately in
+`H_X9_SPECIALIZATIONS_GHIDRA_SEEDS_PENDING_20_SHARDS_20260720.json`.

@@ -63,6 +63,7 @@ fn empty_frame() -> PreparedProductionMapFrame {
         political_textures: Vec::new(),
         tiled_lights: Vec::new(),
         content_manifest_sha256: "11".repeat(32),
+        product_modset_sha256: "99".repeat(32),
         effective_vfs_manifest_sha256: "22".repeat(32),
         selected_submit_index: None,
         selected_submit_global_order: None,
@@ -110,6 +111,7 @@ fn prepared_static_frame(operations: Vec<StaticMapOperation>) -> PreparedProduct
         .collect();
     PreparedProductionD3dFrame {
         content_manifest_sha256: "11".repeat(32),
+        product_modset_sha256: "99".repeat(32),
         effective_vfs_manifest_sha256: "22".repeat(32),
         c03_camera_replay: None,
         target: None,
@@ -170,10 +172,11 @@ fn c03_binding() -> C03CameraReplayBinding {
 }
 
 #[test]
-fn v6_receipt_layout_seals_every_concurrent_authority_field_in_order() {
+fn v7_receipt_layout_seals_product_modset_and_concurrent_authority_fields_in_order() {
     let receipt = ProductionD3dExecutionReceipt {
         schema: PRODUCTION_D3D_EXECUTION_RECEIPT_SCHEMA.into(),
         content_manifest_sha256: "11".repeat(32),
+        product_modset_sha256: "99".repeat(32),
         effective_vfs_manifest_sha256: "22".repeat(32),
         c03_camera_replay: Some(c03_binding()),
         tree_runtime_payload_sha256: Some("33".repeat(32)),
@@ -191,6 +194,7 @@ fn v6_receipt_layout_seals_every_concurrent_authority_field_in_order() {
     let ordered_fields = [
         "schema",
         "content_manifest_sha256",
+        "product_modset_sha256",
         "effective_vfs_manifest_sha256",
         "c03_camera_replay",
         "tree_runtime_payload_sha256",
@@ -222,6 +226,14 @@ fn v6_receipt_layout_seals_every_concurrent_authority_field_in_order() {
     let missing_seal =
         snapshot::sha256::Sha256::hex(&serde_json::to_vec(&missing_materialized_s1).unwrap());
     assert_ne!(sealed, missing_seal);
+}
+
+#[test]
+fn d3d_preparation_refuses_missing_product_modset_provenance() {
+    let mut frame = empty_frame();
+    frame.product_modset_sha256.clear();
+    let error = prepare_production_d3d_frame(&frame, &BTreeMap::new()).unwrap_err();
+    assert!(error.to_string().contains("product modset digest"), "{error}");
 }
 
 #[test]
@@ -970,6 +982,7 @@ float4 ps_main() : SV_Target { return float4(1.0, 0.0, 0.0, 1.0); }
     };
     let frame = PreparedProductionD3dFrame {
         content_manifest_sha256: "11".repeat(32),
+        product_modset_sha256: "99".repeat(32),
         effective_vfs_manifest_sha256: vfs_hash,
         c03_camera_replay: None,
         target: Some(desc),

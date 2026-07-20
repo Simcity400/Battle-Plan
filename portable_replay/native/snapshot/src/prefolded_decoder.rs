@@ -15,6 +15,14 @@ use std::path::{Component, Path, PathBuf};
 /// Manifest role of the canonical compact record stream in a replay container.
 pub const COMPACT_STREAM_ROLE: &str = "collector_compact_stream";
 
+/// Framing mode selected from authenticated recorder metadata before a
+/// complete compact stream is handed to a production decoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrefoldStreamIdentityMode {
+    Legacy,
+    IdentityV1,
+}
+
 /// Owned input to one complete certified pre-fold operation.
 ///
 /// Ownership is intentional: a container reader can transfer its verified
@@ -25,6 +33,7 @@ pub struct CertifiedPrefoldRequest {
     game_id: String,
     raw_h4cr: Vec<u8>,
     source_sha256: String,
+    identity_mode: PrefoldStreamIdentityMode,
 }
 
 impl CertifiedPrefoldRequest {
@@ -35,6 +44,14 @@ impl CertifiedPrefoldRequest {
     pub fn try_new(
         game_id: impl Into<String>,
         raw_h4cr: Vec<u8>,
+    ) -> Result<Self, PrefoldDecodeError> {
+        Self::try_new_with_identity_mode(game_id, raw_h4cr, PrefoldStreamIdentityMode::Legacy)
+    }
+
+    pub fn try_new_with_identity_mode(
+        game_id: impl Into<String>,
+        raw_h4cr: Vec<u8>,
+        identity_mode: PrefoldStreamIdentityMode,
     ) -> Result<Self, PrefoldDecodeError> {
         let game_id = game_id.into();
         if game_id.trim().is_empty() {
@@ -50,6 +67,7 @@ impl CertifiedPrefoldRequest {
             game_id,
             raw_h4cr,
             source_sha256,
+            identity_mode,
         })
     }
 
@@ -67,6 +85,10 @@ impl CertifiedPrefoldRequest {
 
     pub fn source_sha256(&self) -> &str {
         &self.source_sha256
+    }
+
+    pub fn identity_mode(&self) -> PrefoldStreamIdentityMode {
+        self.identity_mode
     }
 
     pub fn into_parts(self) -> (String, Vec<u8>) {
@@ -102,6 +124,7 @@ pub fn decode_certified_prefolded(
     let expected_game_id = request.game_id().to_string();
     let source_len = request.source_len();
     let source_sha256 = request.source_sha256().to_string();
+    let identity_mode = request.identity_mode();
     let replay = decoder.decode_certified(request)?;
     if replay.index().game_id() != expected_game_id {
         return Err(PrefoldDecodeError::new(format!(
@@ -117,6 +140,7 @@ pub fn decode_certified_prefolded(
             decoder_id: decoder.decoder_id().to_string(),
             source_len,
             source_sha256,
+            identity_mode,
         },
     })
 }
@@ -127,6 +151,7 @@ pub struct PrefoldSourceReceipt {
     decoder_id: String,
     source_len: u64,
     source_sha256: String,
+    identity_mode: PrefoldStreamIdentityMode,
 }
 
 impl PrefoldSourceReceipt {
@@ -140,6 +165,10 @@ impl PrefoldSourceReceipt {
 
     pub fn source_sha256(&self) -> &str {
         &self.source_sha256
+    }
+
+    pub fn identity_mode(&self) -> PrefoldStreamIdentityMode {
+        self.identity_mode
     }
 }
 
@@ -183,6 +212,7 @@ pub struct CertifiedPrefoldSpoolRequest {
     snapshot_dir: PathBuf,
     source_len: u64,
     source_sha256: String,
+    identity_mode: PrefoldStreamIdentityMode,
 }
 
 impl CertifiedPrefoldSpoolRequest {
@@ -192,6 +222,24 @@ impl CertifiedPrefoldSpoolRequest {
         snapshot_dir: impl Into<PathBuf>,
         source_len: u64,
         source_sha256: impl Into<String>,
+    ) -> Result<Self, PrefoldDecodeError> {
+        Self::try_new_with_identity_mode(
+            game_id,
+            raw_h4cr_path,
+            snapshot_dir,
+            source_len,
+            source_sha256,
+            PrefoldStreamIdentityMode::Legacy,
+        )
+    }
+
+    pub fn try_new_with_identity_mode(
+        game_id: impl Into<String>,
+        raw_h4cr_path: impl Into<PathBuf>,
+        snapshot_dir: impl Into<PathBuf>,
+        source_len: u64,
+        source_sha256: impl Into<String>,
+        identity_mode: PrefoldStreamIdentityMode,
     ) -> Result<Self, PrefoldDecodeError> {
         let game_id = game_id.into();
         let raw_h4cr_path = raw_h4cr_path.into();
@@ -226,6 +274,7 @@ impl CertifiedPrefoldSpoolRequest {
             snapshot_dir,
             source_len,
             source_sha256,
+            identity_mode,
         })
     }
 
@@ -243,6 +292,9 @@ impl CertifiedPrefoldSpoolRequest {
     }
     pub fn source_sha256(&self) -> &str {
         &self.source_sha256
+    }
+    pub fn identity_mode(&self) -> PrefoldStreamIdentityMode {
+        self.identity_mode
     }
     pub fn into_parts(self) -> (String, PathBuf, PathBuf, u64, String) {
         (
@@ -398,6 +450,7 @@ pub fn decode_certified_prefolded_spool(
     let snapshot_dir = request.snapshot_dir().to_path_buf();
     let source_len = request.source_len();
     let source_sha256 = request.source_sha256().to_string();
+    let identity_mode = request.identity_mode();
     let spool = decoder.decode_certified_spool(request)?;
     if spool.game_id() != expected_game_id {
         return Err(PrefoldDecodeError::new(format!(
@@ -412,6 +465,7 @@ pub fn decode_certified_prefolded_spool(
             decoder_id: decoder.decoder_id().to_string(),
             source_len,
             source_sha256,
+            identity_mode,
         },
     })
 }
@@ -451,6 +505,8 @@ mod tests {
 
     struct WrongGameDecoder;
 
+    struct IdentityV1Decoder;
+
     impl CertifiedPrefoldDecoder for WrongGameDecoder {
         fn decoder_id(&self) -> &'static str {
             "test.wrong-game"
@@ -477,6 +533,34 @@ mod tests {
         }
     }
 
+    impl CertifiedPrefoldDecoder for IdentityV1Decoder {
+        fn decoder_id(&self) -> &'static str {
+            "test.identity-v1"
+        }
+
+        fn decode_certified(
+            &self,
+            request: CertifiedPrefoldRequest,
+        ) -> Result<PrefoldedReplay, PrefoldDecodeError> {
+            assert_eq!(request.identity_mode(), PrefoldStreamIdentityMode::IdentityV1);
+            let (game_id, _) = request.into_parts();
+            let bytes = serde_json::to_vec(&serde_json::json!({
+                "game_id": game_id.clone(),
+                "schema_version": "1",
+                "hour_index": 1
+            }))
+            .unwrap();
+            let entry = crate::PrefoldedHourEntry::from_json(1, &bytes)
+                .map_err(|error| PrefoldDecodeError::new(error.to_string()))?;
+            PrefoldedReplay::try_new(
+                game_id,
+                serde_json::Value::String("1".into()),
+                vec![entry],
+            )
+            .map_err(|error| PrefoldDecodeError::new(error.to_string()))
+        }
+    }
+
     #[test]
     fn request_requires_game_identity_and_raw_h4cr() {
         assert!(CertifiedPrefoldRequest::try_new("", b"H4CR".to_vec()).is_err());
@@ -486,6 +570,22 @@ mod tests {
         assert_eq!(request.raw_h4cr(), b"H4CRbytes");
         assert_eq!(request.source_len(), 9);
         assert_eq!(request.source_sha256().len(), 64);
+        assert_eq!(request.identity_mode(), PrefoldStreamIdentityMode::Legacy);
+    }
+
+    #[test]
+    fn explicit_identity_mode_survives_decoder_and_receipt_boundary() {
+        let request = CertifiedPrefoldRequest::try_new_with_identity_mode(
+            "identity-game",
+            b"H4CRbytes".to_vec(),
+            PrefoldStreamIdentityMode::IdentityV1,
+        )
+        .unwrap();
+        let certified = decode_certified_prefolded(&IdentityV1Decoder, request).unwrap();
+        assert_eq!(
+            certified.receipt().identity_mode(),
+            PrefoldStreamIdentityMode::IdentityV1
+        );
     }
 
     #[test]

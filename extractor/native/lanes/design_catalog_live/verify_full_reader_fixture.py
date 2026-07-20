@@ -960,6 +960,17 @@ def verify(
         and exact_template_lifecycle_source
         and template_filter_semantics_exact
     )
+    promotion_check_names = fixture_core_names | {
+        "definition_payload_present",
+        "independent_live_memory_source",
+        "exact_template_lifecycle_source",
+        "division_template_filter_field_semantics",
+    }
+    promotion_blockers = [
+        f"promotion check failed: {row['name']}"
+        for row in results
+        if row["name"] in promotion_check_names and not row["passed"]
+    ]
     expectation_met = fixture_consistent if expectation == "offline-fixture" else promotion_ready
 
     return {
@@ -997,14 +1008,7 @@ def verify(
             ),
         },
         "checks": results,
-        "promotion_blockers": [
-            "The checked-in CLI constructs SparseMemory from the save oracle; it is not a process-memory capture.",
-            "The snapshot asserts definition_complete but omits equipment names/archetypes/modules/upgrades and template names/composition fields.",
-            "Template obsolete state is supplied by FixturePredicates from oracle data; exact outer +0x236/inner +0x21E semantics are frozen but not yet read from live memory by the production reader.",
-            "No independently authenticated same-tick live-memory snapshot has been accepted by this gate.",
-        ]
-        if not promotion_ready
-        else [],
+        "promotion_blockers": promotion_blockers,
         "frozen_findings": {
             "serializer_order_refutation": "The oracle is numeric insertion order while the reconstructed producer order begins with creator-country/list traversal; the orders differ. Save order is not an A/B display-order proof.",
             "definitions_badge_refutation": "A boolean completeness badge does not replace the missing production definition payload.",

@@ -235,6 +235,31 @@ pub struct RawGuiPaintObservation {
     pub draws: Vec<GuiPaintDrawFingerprint>,
 }
 
+/// Hook-time observation buffered under the concrete Present candidate before
+/// the hour-level selector can know which candidate is authoritative. The
+/// selected-Present digest is deliberately absent and is injected only by the
+/// deferred materializer after the a729 selection receipt recomputes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawGuiPaintCandidateObservation {
+    pub hooks: RawGuiPaintHookReceipt,
+    pub process_start_nonce: u64,
+    pub hook_epoch_nonce: u64,
+    pub candidate_submit_index: u64,
+    pub candidate_frame_sequence: u64,
+    pub candidate_present_global_order: u32,
+    pub scope_entry_global_sequence: u64,
+    pub scope_exit_global_sequence: u64,
+    pub scope_depth_at_entry: u32,
+    pub nested_scope_count: u32,
+    pub intervening_non_draw_event_count: u32,
+    pub expected_draw_count: u32,
+    pub expected_first_ui_ordinal: u32,
+    pub expected_last_ui_ordinal: u32,
+    pub complete_ui_operation_count: u32,
+    pub owner: RawGuiPaintOwnerObservation,
+    pub draws: Vec<GuiPaintDrawFingerprint>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GuiPaintCommandIdentity {
@@ -559,6 +584,192 @@ pub struct GuiPaintActivationAuthority {
     pub hook_set_receipt_sha256: String,
 }
 
+/// Authority for the one-time control probe used to obtain the missing live
+/// owner/path-to-draw observation.  This mode can produce a diagnostic receipt
+/// but can never feed D80/UI or satisfy production activation by itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuiPaintControlProbeAuthority {
+    pub executable_sha256: String,
+    pub process_start_nonce: u64,
+    pub hook_epoch_nonce: u64,
+    pub exact10_reexport_receipt_sha256: String,
+    pub exact10_job_bindings_sha256: String,
+    pub exact10_pool_status_sha256: String,
+    pub exact10_identity_manifest_sha256: String,
+    pub hook_set_receipt_sha256: String,
+    /// Hash of the immutable harness request which names the selected GUI
+    /// definition/root and capture boundary. It is evidence metadata only.
+    pub probe_request_sha256: String,
+    pub probe_nonce: u64,
+    /// Private constructor seal binding this authority to the recomputed
+    /// selected-Present receipt. External callers cannot mint this field.
+    selected_runtime_binding_sha256: String,
+}
+
+impl GuiPaintControlProbeAuthority {
+    /// Bind the control probe to the same selected Present and early-launch
+    /// hook set already authenticated by the production render runtime.
+    #[cfg(windows)]
+    pub fn from_selected_render_frame(
+        selected: &crate::a729_hook::RawSelectedRenderFrameCapture,
+        probe_request_sha256: String,
+        probe_nonce: u64,
+    ) -> Result<Self, String> {
+        crate::a729_hook::validate_selected_render_frame_receipt(selected)?;
+        selected.selected.runtime.catalog.validate_launch_binding()?;
+        let frame = &selected.selected.frame;
+        let catalog = &selected.selected.runtime.catalog;
+        if catalog.process.executable_sha256 != GUI_PAINT_A729_EXECUTABLE_SHA256
+            || catalog.process.process_start_nonce != frame.process_start_nonce
+            || catalog.launch_epoch.process_start_nonce != frame.process_start_nonce
+            || catalog.launch_epoch.hook_epoch_nonce != frame.hook_epoch_nonce
+            || catalog.submit_index != frame.submit_index
+            || catalog.frame_sequence != frame.frame_sequence
+        {
+            return Err("GUI paint control probe crosses its selected render epoch".into());
+        }
+        check_sha256(&probe_request_sha256, "control-probe request")?;
+        if probe_nonce == 0 {
+            return Err("GUI paint control-probe nonce is zero".into());
+        }
+        let present = GuiPaintPresentKey {
+            process_start_nonce: frame.process_start_nonce,
+            hook_epoch_nonce: frame.hook_epoch_nonce,
+            selected_submit_index: selected.receipt.selected_submit_index,
+            selected_frame_sequence: selected.receipt.selected_frame_sequence,
+            selected_present_global_order: selected.receipt.selected_global_order,
+            selected_present_receipt_sha256: selected.receipt.selection_receipt_sha256.clone(),
+        };
+        let mut authority = Self {
+            executable_sha256: catalog.process.executable_sha256.clone(),
+            process_start_nonce: frame.process_start_nonce,
+            hook_epoch_nonce: frame.hook_epoch_nonce,
+            exact10_reexport_receipt_sha256: GUI_PAINT_EXACT10_REEXPORT_RECEIPT_SHA256.into(),
+            exact10_job_bindings_sha256: GUI_PAINT_EXACT10_JOB_BINDINGS_SHA256.into(),
+            exact10_pool_status_sha256: GUI_PAINT_EXACT10_POOL_STATUS_SHA256.into(),
+            exact10_identity_manifest_sha256: GUI_PAINT_EXACT10_IDENTITY_MANIFEST_SHA256.into(),
+            hook_set_receipt_sha256: catalog.launch_epoch.hook_set_receipt_sha256.clone(),
+            probe_request_sha256,
+            probe_nonce,
+            selected_runtime_binding_sha256: String::new(),
+        };
+        authority.selected_runtime_binding_sha256 = control_probe_runtime_binding_sha256(
+            &authority.executable_sha256,
+            authority.process_start_nonce,
+            authority.hook_epoch_nonce,
+            &authority.hook_set_receipt_sha256,
+            &authority.probe_request_sha256,
+            authority.probe_nonce,
+            &present,
+        )?;
+        Ok(authority)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GuiPaintInstrumentationMode {
+    #[default]
+    Inactive,
+    ControlProbe,
+    Production,
+}
+
+/// Pointer-free output of control-probe mode. `promotion_allowed` is a frozen
+/// false field, not a caller option. A later reviewed source change must bind
+/// the accepted receipt hash into the production constants separately.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuiPaintControlObservationReceipt {
+    pub schema: String,
+    pub promotion_allowed: bool,
+    pub executable_sha256: String,
+    pub exact10_reexport_receipt_sha256: String,
+    pub exact10_job_bindings_sha256: String,
+    pub exact10_pool_status_sha256: String,
+    pub exact10_identity_manifest_sha256: String,
+    pub hook_set_receipt_sha256: String,
+    pub probe_request_sha256: String,
+    pub probe_nonce: u64,
+    pub selected_runtime_binding_sha256: String,
+    pub buffered_candidate_observation_count: u32,
+    pub discarded_non_selected_candidate_observation_count: u32,
+    pub frontier: GuiPaintReceiptFrontier,
+    pub receipt_sha256: String,
+}
+
+impl GuiPaintControlObservationReceipt {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema != "hoi4.a729.gui-paint-control-observation.v1"
+            || self.promotion_allowed
+            || self.executable_sha256 != GUI_PAINT_A729_EXECUTABLE_SHA256
+            || self.exact10_reexport_receipt_sha256
+                != GUI_PAINT_EXACT10_REEXPORT_RECEIPT_SHA256
+            || self.exact10_job_bindings_sha256 != GUI_PAINT_EXACT10_JOB_BINDINGS_SHA256
+            || self.exact10_pool_status_sha256 != GUI_PAINT_EXACT10_POOL_STATUS_SHA256
+            || self.exact10_identity_manifest_sha256
+                != GUI_PAINT_EXACT10_IDENTITY_MANIFEST_SHA256
+            || self.probe_nonce == 0
+            || self.buffered_candidate_observation_count == 0
+        {
+            return Err("GUI paint control observation lacks frozen diagnostic authority".into());
+        }
+        check_sha256(&self.hook_set_receipt_sha256, "hook-set receipt")?;
+        check_sha256(&self.probe_request_sha256, "control-probe request")?;
+        check_sha256(
+            &self.selected_runtime_binding_sha256,
+            "selected runtime binding",
+        )?;
+        self.frontier.validate_for_ui_emission()?;
+        let selected_count = u32::try_from(self.frontier.ordered_receipts.len())
+            .map_err(|_| "GUI paint selected observation count exceeds u32".to_string())?;
+        if selected_count == 0
+            || self
+                .discarded_non_selected_candidate_observation_count
+                .checked_add(selected_count)
+                != Some(self.buffered_candidate_observation_count)
+        {
+            return Err("GUI paint control observation candidate accounting is incomplete".into());
+        }
+        if self.frontier.ordered_receipts.iter().any(|receipt| {
+            receipt.executable_sha256 != self.executable_sha256
+                || receipt.hook_set_receipt_sha256 != self.hook_set_receipt_sha256
+                || receipt.process_start_nonce != self.frontier.process_start_nonce
+                || receipt.hook_epoch_nonce != self.frontier.hook_epoch_nonce
+        }) {
+            return Err("GUI paint control observation crosses its hook/runtime authority".into());
+        }
+        let present = GuiPaintPresentKey {
+            process_start_nonce: self.frontier.process_start_nonce,
+            hook_epoch_nonce: self.frontier.hook_epoch_nonce,
+            selected_submit_index: self.frontier.selected_submit_index,
+            selected_frame_sequence: self.frontier.selected_frame_sequence,
+            selected_present_global_order: self.frontier.selected_present_global_order,
+            selected_present_receipt_sha256: self
+                .frontier
+                .selected_present_receipt_sha256
+                .clone(),
+        };
+        if control_probe_runtime_binding_sha256(
+            &self.executable_sha256,
+            present.process_start_nonce,
+            present.hook_epoch_nonce,
+            &self.hook_set_receipt_sha256,
+            &self.probe_request_sha256,
+            self.probe_nonce,
+            &present,
+        )? != self.selected_runtime_binding_sha256
+        {
+            return Err("GUI paint control observation selected-runtime binding mismatch".into());
+        }
+        check_sha256(&self.receipt_sha256, "control observation receipt")?;
+        if control_observation_body_sha256(self)? != self.receipt_sha256 {
+            return Err("GUI paint control observation digest mismatch".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GuiPaintPresentKey {
@@ -568,6 +779,109 @@ pub struct GuiPaintPresentKey {
     pub selected_frame_sequence: u64,
     pub selected_present_global_order: u32,
     pub selected_present_receipt_sha256: String,
+}
+
+impl GuiPaintPresentKey {
+    /// Construct the key only after recomputing the current a729 runtime's
+    /// selected-Present receipt. This is the supported hook path; copying
+    /// retained ordinals or pointers into the public wire shape is rejected by
+    /// the recomputation step.
+    #[cfg(windows)]
+    pub fn from_selected_render_frame(
+        selected: &crate::a729_hook::RawSelectedRenderFrameCapture,
+    ) -> Result<Self, String> {
+        crate::a729_hook::validate_selected_render_frame_receipt(selected)?;
+        let frame = &selected.selected.frame;
+        Ok(Self {
+            process_start_nonce: frame.process_start_nonce,
+            hook_epoch_nonce: frame.hook_epoch_nonce,
+            selected_submit_index: selected.receipt.selected_submit_index,
+            selected_frame_sequence: selected.receipt.selected_frame_sequence,
+            selected_present_global_order: selected.receipt.selected_global_order,
+            selected_present_receipt_sha256: selected.receipt.selection_receipt_sha256.clone(),
+        })
+    }
+}
+
+/// Materialize hook-time candidates only after the current runtime selects and
+/// authenticates one Present. This is the chronological capture path: hooks
+/// buffer candidate observations without guessing a future selection digest;
+/// the non-selected candidates never receive a portable receipt.
+#[cfg(windows)]
+pub fn materialize_gui_paint_control_observation_from_selected(
+    selected: &crate::a729_hook::RawSelectedRenderFrameCapture,
+    probe_request_sha256: String,
+    probe_nonce: u64,
+    candidates: Vec<RawGuiPaintCandidateObservation>,
+) -> Result<GuiPaintControlObservationReceipt, String> {
+    let authority = GuiPaintControlProbeAuthority::from_selected_render_frame(
+        selected,
+        probe_request_sha256,
+        probe_nonce,
+    )?;
+    let present = GuiPaintPresentKey::from_selected_render_frame(selected)?;
+    if candidates.is_empty() {
+        return Err("selected Present has no buffered GUI paint candidates".into());
+    }
+    let buffered_candidate_observation_count = u32::try_from(candidates.len())
+        .map_err(|_| "GUI paint buffered candidate count exceeds u32".to_string())?;
+    let mut receipts = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        if candidate.process_start_nonce != present.process_start_nonce
+            || candidate.hook_epoch_nonce != present.hook_epoch_nonce
+        {
+            return Err("GUI paint candidate crosses the selected process/hook epoch".into());
+        }
+        if candidate.candidate_submit_index != present.selected_submit_index
+            || candidate.candidate_frame_sequence != present.selected_frame_sequence
+            || candidate.candidate_present_global_order != present.selected_present_global_order
+        {
+            continue;
+        }
+        if candidate.hooks.executable_sha256 != authority.executable_sha256
+            || candidate.hooks.hook_set_receipt_sha256 != authority.hook_set_receipt_sha256
+        {
+            return Err("GUI paint candidate crosses the selected hook-set authority".into());
+        }
+        receipts.push(materialize_gui_paint_receipt(RawGuiPaintObservation {
+            hooks: candidate.hooks,
+            process_start_nonce: candidate.process_start_nonce,
+            hook_epoch_nonce: candidate.hook_epoch_nonce,
+            selected_submit_index: candidate.candidate_submit_index,
+            selected_frame_sequence: candidate.candidate_frame_sequence,
+            selected_present_global_order: candidate.candidate_present_global_order,
+            selected_present_receipt_sha256: present
+                .selected_present_receipt_sha256
+                .clone(),
+            scope_entry_global_sequence: candidate.scope_entry_global_sequence,
+            scope_exit_global_sequence: candidate.scope_exit_global_sequence,
+            scope_depth_at_entry: candidate.scope_depth_at_entry,
+            nested_scope_count: candidate.nested_scope_count,
+            intervening_non_draw_event_count: candidate.intervening_non_draw_event_count,
+            expected_draw_count: candidate.expected_draw_count,
+            expected_first_ui_ordinal: candidate.expected_first_ui_ordinal,
+            expected_last_ui_ordinal: candidate.expected_last_ui_ordinal,
+            complete_ui_operation_count: candidate.complete_ui_operation_count,
+            owner: candidate.owner,
+            draws: candidate.draws,
+        })?);
+    }
+    if receipts.is_empty() {
+        return Err("selected Present has no matching buffered GUI paint observations".into());
+    }
+    let selected_observation_count = u32::try_from(receipts.len())
+        .map_err(|_| "GUI paint selected observation count exceeds u32".to_string())?;
+    let discarded_non_selected_candidate_observation_count =
+        buffered_candidate_observation_count
+            .checked_sub(selected_observation_count)
+            .ok_or_else(|| "GUI paint candidate accounting underflowed".to_string())?;
+    let frontier = materialize_gui_paint_frontier(receipts)?;
+    seal_gui_paint_control_observation(
+        &authority,
+        frontier,
+        buffered_candidate_observation_count,
+        discarded_non_selected_candidate_observation_count,
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -615,6 +929,8 @@ pub struct GuiPaintInstrumentationTelemetry {
 #[serde(deny_unknown_fields)]
 pub struct GuiPaintInstrumentationSnapshot {
     pub active: bool,
+    pub mode: GuiPaintInstrumentationMode,
+    pub product_emission_allowed: bool,
     pub active_scope_count: usize,
     pub pending_present_count: usize,
     pub pending_receipt_count: usize,
@@ -632,6 +948,7 @@ struct ActiveGuiPaintScope {
 #[derive(Default)]
 struct GuiPaintInstrumentationState {
     activation_authority: Option<GuiPaintActivationAuthority>,
+    control_probe_authority: Option<GuiPaintControlProbeAuthority>,
     active_scopes: BTreeMap<u64, ActiveGuiPaintScope>,
     pending_receipts: BTreeMap<GuiPaintPresentKey, Vec<GuiPaintReceipt>>,
     completed_frontiers: VecDeque<GuiPaintReceiptFrontier>,
@@ -690,6 +1007,7 @@ pub fn activate_gui_paint_instrumentation(
             &mut state.telemetry.telemetry_counter_overflow_count,
         );
         state.activation_authority = None;
+        state.control_probe_authority = None;
         GUI_PAINT_INSTRUMENTATION_ACTIVE.store(false, Ordering::Release);
         return Err(
             "GUI paint live authority/control observations are not frozen; activation stays false"
@@ -698,6 +1016,7 @@ pub fn activate_gui_paint_instrumentation(
     }
     if GUI_PAINT_INSTRUMENTATION_ACTIVE.load(Ordering::Acquire)
         || state.activation_authority.is_some()
+        || state.control_probe_authority.is_some()
         || !state.active_scopes.is_empty()
         || !state.pending_receipts.is_empty()
         || !state.completed_frontiers.is_empty()
@@ -713,16 +1032,98 @@ pub fn activate_gui_paint_instrumentation(
             &mut state.telemetry.telemetry_counter_overflow_count,
         );
         state.activation_authority = None;
+        state.control_probe_authority = None;
         GUI_PAINT_INSTRUMENTATION_ACTIVE.store(false, Ordering::Release);
         return Err("GUI paint activation encountered non-pristine instrumentation state".into());
     }
     state.activation_authority = Some(authority.clone());
+    state.control_probe_authority = None;
+    GUI_PAINT_INSTRUMENTATION_ACTIVE.store(true, Ordering::Release);
+    Ok(())
+}
+
+/// Arm the exact hook pair for a diagnostic control observation without
+/// changing any production gate. This is the only mode intended before the
+/// CAP6 human discriminator sweeps.
+pub fn activate_gui_paint_control_probe(
+    authority: &GuiPaintControlProbeAuthority,
+) -> Result<(), String> {
+    let mut state = gui_paint_instrumentation_state()
+        .lock()
+        .map_err(|_| "GUI paint instrumentation state is poisoned".to_string())?;
+    let state = &mut *state;
+    bump(
+        &mut state.telemetry.activation_attempt_count,
+        &mut state.telemetry.telemetry_counter_overflow_count,
+    );
+    let admitted = authority.executable_sha256 == GUI_PAINT_A729_EXECUTABLE_SHA256
+        && authority.process_start_nonce != 0
+        && authority.hook_epoch_nonce != 0
+        && authority.probe_nonce != 0
+        && authority.exact10_reexport_receipt_sha256
+            == GUI_PAINT_EXACT10_REEXPORT_RECEIPT_SHA256
+        && authority.exact10_job_bindings_sha256 == GUI_PAINT_EXACT10_JOB_BINDINGS_SHA256
+        && authority.exact10_pool_status_sha256 == GUI_PAINT_EXACT10_POOL_STATUS_SHA256
+        && authority.exact10_identity_manifest_sha256
+            == GUI_PAINT_EXACT10_IDENTITY_MANIFEST_SHA256
+        && check_sha256(&authority.hook_set_receipt_sha256, "hook-set receipt").is_ok()
+        && check_sha256(&authority.probe_request_sha256, "control-probe request").is_ok()
+        && check_sha256(
+            &authority.selected_runtime_binding_sha256,
+            "selected runtime binding",
+        )
+        .is_ok();
+    if !admitted
+        || GUI_PAINT_INSTRUMENTATION_ACTIVE.load(Ordering::Acquire)
+        || state.activation_authority.is_some()
+        || state.control_probe_authority.is_some()
+        || !state.active_scopes.is_empty()
+        || !state.pending_receipts.is_empty()
+        || !state.completed_frontiers.is_empty()
+    {
+        bump(
+            &mut state.telemetry.activation_rejection_count,
+            &mut state.telemetry.telemetry_counter_overflow_count,
+        );
+        let dropped = clear_gui_paint_rows(state);
+        add_count(
+            &mut state.telemetry.activation_state_drop_count,
+            dropped,
+            &mut state.telemetry.telemetry_counter_overflow_count,
+        );
+        state.activation_authority = None;
+        state.control_probe_authority = None;
+        GUI_PAINT_INSTRUMENTATION_ACTIVE.store(false, Ordering::Release);
+        return Err(
+            "GUI paint control-probe authority is incomplete or state is not pristine".into(),
+        );
+    }
+    state.activation_authority = None;
+    state.control_probe_authority = Some(authority.clone());
     GUI_PAINT_INSTRUMENTATION_ACTIVE.store(true, Ordering::Release);
     Ok(())
 }
 
 pub fn gui_paint_instrumentation_is_active() -> bool {
     GUI_PAINT_INSTRUMENTATION_ACTIVE.load(Ordering::Acquire)
+}
+
+pub fn gui_paint_instrumentation_mode() -> Result<GuiPaintInstrumentationMode, String> {
+    let state = gui_paint_instrumentation_state()
+        .lock()
+        .map_err(|_| "GUI paint instrumentation state is poisoned".to_string())?;
+    Ok(instrumentation_mode_locked(&state))
+}
+
+pub fn gui_paint_product_emission_is_active() -> bool {
+    if !gui_paint_instrumentation_is_active() {
+        return false;
+    }
+    gui_paint_instrumentation_state()
+        .lock()
+        .is_ok_and(|state| {
+            state.activation_authority.is_some() && state.control_probe_authority.is_none()
+        })
 }
 
 /// Start one generic paint scope after owner resolution. `thread_token` is the
@@ -750,12 +1151,28 @@ pub fn begin_gui_paint_scope(
         .lock()
         .map_err(|_| "GUI paint instrumentation state is poisoned".to_string())?;
     let state = &mut *state;
-    if !state.activation_authority.as_ref().is_some_and(|authority| {
+    let authority_matches = state.activation_authority.as_ref().is_some_and(|authority| {
         authority.executable_sha256 == start.hooks.executable_sha256
             && authority.hook_set_receipt_sha256 == start.hooks.hook_set_receipt_sha256
             && authority.process_start_nonce == start.present.process_start_nonce
             && authority.hook_epoch_nonce == start.present.hook_epoch_nonce
-    }) {
+    }) || state.control_probe_authority.as_ref().is_some_and(|authority| {
+        authority.executable_sha256 == start.hooks.executable_sha256
+            && authority.hook_set_receipt_sha256 == start.hooks.hook_set_receipt_sha256
+            && authority.process_start_nonce == start.present.process_start_nonce
+            && authority.hook_epoch_nonce == start.present.hook_epoch_nonce
+            && control_probe_runtime_binding_sha256(
+                &authority.executable_sha256,
+                authority.process_start_nonce,
+                authority.hook_epoch_nonce,
+                &authority.hook_set_receipt_sha256,
+                &authority.probe_request_sha256,
+                authority.probe_nonce,
+                &start.present,
+            )
+            .is_ok_and(|binding| binding == authority.selected_runtime_binding_sha256)
+    });
+    if !authority_matches {
         bump(
             &mut state.telemetry.invalid_owner_or_hook_drop_count,
             &mut state.telemetry.telemetry_counter_overflow_count,
@@ -1037,9 +1454,9 @@ pub fn publish_gui_paint_present_frontier(
 }
 
 pub fn drain_gui_paint_frontiers() -> Result<Vec<GuiPaintReceiptFrontier>, String> {
-    if !gui_paint_instrumentation_is_active() {
+    if !gui_paint_product_emission_is_active() {
         record_inactive(|telemetry| &mut telemetry.inactive_drain_count);
-        return Err("GUI paint instrumentation activation latch is false".into());
+        return Err("GUI paint production emission latch is false".into());
     }
     let mut state = gui_paint_instrumentation_state()
         .lock()
@@ -1055,6 +1472,69 @@ pub fn drain_gui_paint_frontiers() -> Result<Vec<GuiPaintReceiptFrontier>, Strin
     Ok(state.completed_frontiers.drain(..).collect())
 }
 
+/// Drain diagnostic observations from control-probe mode. The returned rows
+/// carry an immutable `promotion_allowed=false` and cannot be consumed by the
+/// production frontier drain above.
+pub fn drain_gui_paint_control_observations(
+) -> Result<Vec<GuiPaintControlObservationReceipt>, String> {
+    if !gui_paint_instrumentation_is_active() {
+        record_inactive(|telemetry| &mut telemetry.inactive_drain_count);
+        return Err("GUI paint instrumentation activation latch is false".into());
+    }
+    let mut state = gui_paint_instrumentation_state()
+        .lock()
+        .map_err(|_| "GUI paint instrumentation state is poisoned".to_string())?;
+    let authority = state
+        .control_probe_authority
+        .clone()
+        .ok_or_else(|| {
+            "GUI paint control-probe drain is unavailable in production mode".to_string()
+        })?;
+    if state.activation_authority.is_some() {
+        return Err("GUI paint control-probe and production authorities overlap".into());
+    }
+    let mut observations = Vec::with_capacity(state.completed_frontiers.len());
+    for frontier in state.completed_frontiers.drain(..) {
+        let buffered_candidate_observation_count = u32::try_from(frontier.ordered_receipts.len())
+            .map_err(|_| "GUI paint buffered candidate count exceeds u32".to_string())?;
+        observations.push(seal_gui_paint_control_observation(
+            &authority,
+            frontier,
+            buffered_candidate_observation_count,
+            0,
+        )?);
+    }
+    Ok(observations)
+}
+
+fn seal_gui_paint_control_observation(
+    authority: &GuiPaintControlProbeAuthority,
+    frontier: GuiPaintReceiptFrontier,
+    buffered_candidate_observation_count: u32,
+    discarded_non_selected_candidate_observation_count: u32,
+) -> Result<GuiPaintControlObservationReceipt, String> {
+    let mut observation = GuiPaintControlObservationReceipt {
+        schema: "hoi4.a729.gui-paint-control-observation.v1".into(),
+        promotion_allowed: false,
+        executable_sha256: authority.executable_sha256.clone(),
+        exact10_reexport_receipt_sha256: authority.exact10_reexport_receipt_sha256.clone(),
+        exact10_job_bindings_sha256: authority.exact10_job_bindings_sha256.clone(),
+        exact10_pool_status_sha256: authority.exact10_pool_status_sha256.clone(),
+        exact10_identity_manifest_sha256: authority.exact10_identity_manifest_sha256.clone(),
+        hook_set_receipt_sha256: authority.hook_set_receipt_sha256.clone(),
+        probe_request_sha256: authority.probe_request_sha256.clone(),
+        probe_nonce: authority.probe_nonce,
+        selected_runtime_binding_sha256: authority.selected_runtime_binding_sha256.clone(),
+        buffered_candidate_observation_count,
+        discarded_non_selected_candidate_observation_count,
+        frontier,
+        receipt_sha256: String::new(),
+    };
+    observation.receipt_sha256 = control_observation_body_sha256(&observation)?;
+    observation.validate()?;
+    Ok(observation)
+}
+
 /// Disable instrumentation and account for every row that cannot survive
 /// module/process teardown. Returned telemetry is pointer-free.
 pub fn teardown_gui_paint_instrumentation() -> Result<GuiPaintInstrumentationSnapshot, String> {
@@ -1067,6 +1547,7 @@ pub fn teardown_gui_paint_instrumentation() -> Result<GuiPaintInstrumentationSna
     let pending = state.pending_receipts.values().map(Vec::len).sum::<usize>() as u64;
     let completed = state.completed_frontiers.len() as u64;
     state.activation_authority = None;
+    state.control_probe_authority = None;
     state.active_scopes.clear();
     state.pending_receipts.clear();
     state.completed_frontiers.clear();
@@ -1098,11 +1579,29 @@ pub fn gui_paint_instrumentation_snapshot() -> Result<GuiPaintInstrumentationSna
 fn snapshot_locked(state: &GuiPaintInstrumentationState) -> GuiPaintInstrumentationSnapshot {
     GuiPaintInstrumentationSnapshot {
         active: gui_paint_instrumentation_is_active(),
+        mode: instrumentation_mode_locked(state),
+        product_emission_allowed: state.activation_authority.is_some()
+            && state.control_probe_authority.is_none()
+            && gui_paint_instrumentation_is_active(),
         active_scope_count: state.active_scopes.len(),
         pending_present_count: state.pending_receipts.len(),
         pending_receipt_count: state.pending_receipts.values().map(Vec::len).sum(),
         completed_frontier_count: state.completed_frontiers.len(),
         telemetry: state.telemetry,
+    }
+}
+
+fn instrumentation_mode_locked(
+    state: &GuiPaintInstrumentationState,
+) -> GuiPaintInstrumentationMode {
+    if !gui_paint_instrumentation_is_active() {
+        GuiPaintInstrumentationMode::Inactive
+    } else if state.control_probe_authority.is_some() && state.activation_authority.is_none() {
+        GuiPaintInstrumentationMode::ControlProbe
+    } else if state.activation_authority.is_some() && state.control_probe_authority.is_none() {
+        GuiPaintInstrumentationMode::Production
+    } else {
+        GuiPaintInstrumentationMode::Inactive
     }
 }
 
@@ -1448,6 +1947,82 @@ fn frontier_body_sha256(frontier: &GuiPaintReceiptFrontier) -> Result<String, St
     )
 }
 
+fn control_probe_runtime_binding_sha256(
+    executable_sha256: &str,
+    process_start_nonce: u64,
+    hook_epoch_nonce: u64,
+    hook_set_receipt_sha256: &str,
+    probe_request_sha256: &str,
+    probe_nonce: u64,
+    present: &GuiPaintPresentKey,
+) -> Result<String, String> {
+    #[derive(Serialize)]
+    struct Body<'a> {
+        executable_sha256: &'a str,
+        process_start_nonce: u64,
+        hook_epoch_nonce: u64,
+        hook_set_receipt_sha256: &'a str,
+        probe_request_sha256: &'a str,
+        probe_nonce: u64,
+        present: &'a GuiPaintPresentKey,
+    }
+    sha256_json(
+        &Body {
+            executable_sha256,
+            process_start_nonce,
+            hook_epoch_nonce,
+            hook_set_receipt_sha256,
+            probe_request_sha256,
+            probe_nonce,
+            present,
+        },
+        "GUI paint control-probe selected runtime binding",
+    )
+}
+
+fn control_observation_body_sha256(
+    observation: &GuiPaintControlObservationReceipt,
+) -> Result<String, String> {
+    #[derive(Serialize)]
+    struct Body<'a> {
+        schema: &'a str,
+        promotion_allowed: bool,
+        executable_sha256: &'a str,
+        exact10_reexport_receipt_sha256: &'a str,
+        exact10_job_bindings_sha256: &'a str,
+        exact10_pool_status_sha256: &'a str,
+        exact10_identity_manifest_sha256: &'a str,
+        hook_set_receipt_sha256: &'a str,
+        probe_request_sha256: &'a str,
+        probe_nonce: u64,
+        selected_runtime_binding_sha256: &'a str,
+        buffered_candidate_observation_count: u32,
+        discarded_non_selected_candidate_observation_count: u32,
+        frontier_sha256: &'a str,
+    }
+    sha256_json(
+        &Body {
+            schema: &observation.schema,
+            promotion_allowed: observation.promotion_allowed,
+            executable_sha256: &observation.executable_sha256,
+            exact10_reexport_receipt_sha256: &observation.exact10_reexport_receipt_sha256,
+            exact10_job_bindings_sha256: &observation.exact10_job_bindings_sha256,
+            exact10_pool_status_sha256: &observation.exact10_pool_status_sha256,
+            exact10_identity_manifest_sha256: &observation.exact10_identity_manifest_sha256,
+            hook_set_receipt_sha256: &observation.hook_set_receipt_sha256,
+            probe_request_sha256: &observation.probe_request_sha256,
+            probe_nonce: observation.probe_nonce,
+            selected_runtime_binding_sha256: &observation.selected_runtime_binding_sha256,
+            buffered_candidate_observation_count: observation
+                .buffered_candidate_observation_count,
+            discarded_non_selected_candidate_observation_count: observation
+                .discarded_non_selected_candidate_observation_count,
+            frontier_sha256: &observation.frontier.frontier_sha256,
+        },
+        "GUI paint control observation",
+    )
+}
+
 fn sha256_json<T: Serialize + ?Sized>(value: &T, label: &str) -> Result<String, String> {
     let bytes = serde_json::to_vec(value)
         .map_err(|error| format!("could not serialize {label}: {error}"))?;
@@ -1579,6 +2154,7 @@ mod instrumentation_tests {
 
     fn force_test_activation() {
         let mut state = gui_paint_instrumentation_state().lock().unwrap();
+        state.control_probe_authority = None;
         state.activation_authority = Some(GuiPaintActivationAuthority {
             executable_sha256: GUI_PAINT_A729_EXECUTABLE_SHA256.into(),
             process_start_nonce: 1,
@@ -1592,6 +2168,57 @@ mod instrumentation_tests {
             hook_set_receipt_sha256: hash('b'),
         });
         GUI_PAINT_INSTRUMENTATION_ACTIVE.store(true, Ordering::Release);
+    }
+
+    fn probe_authority() -> GuiPaintControlProbeAuthority {
+        let mut authority = GuiPaintControlProbeAuthority {
+            executable_sha256: GUI_PAINT_A729_EXECUTABLE_SHA256.into(),
+            process_start_nonce: 1,
+            hook_epoch_nonce: 2,
+            exact10_reexport_receipt_sha256: GUI_PAINT_EXACT10_REEXPORT_RECEIPT_SHA256.into(),
+            exact10_job_bindings_sha256: GUI_PAINT_EXACT10_JOB_BINDINGS_SHA256.into(),
+            exact10_pool_status_sha256: GUI_PAINT_EXACT10_POOL_STATUS_SHA256.into(),
+            exact10_identity_manifest_sha256: GUI_PAINT_EXACT10_IDENTITY_MANIFEST_SHA256.into(),
+            hook_set_receipt_sha256: hash('b'),
+            probe_request_sha256: hash('f'),
+            probe_nonce: 3,
+            selected_runtime_binding_sha256: String::new(),
+        };
+        authority.selected_runtime_binding_sha256 = control_probe_runtime_binding_sha256(
+            &authority.executable_sha256,
+            authority.process_start_nonce,
+            authority.hook_epoch_nonce,
+            &authority.hook_set_receipt_sha256,
+            &authority.probe_request_sha256,
+            authority.probe_nonce,
+            &present(1),
+        )
+        .unwrap();
+        authority
+    }
+
+    #[test]
+    fn control_probe_is_diagnostic_only_and_seals_observation() {
+        let _guard = lock_and_reset();
+        activate_gui_paint_control_probe(&probe_authority()).unwrap();
+        assert_eq!(
+            gui_paint_instrumentation_mode().unwrap(),
+            GuiPaintInstrumentationMode::ControlProbe
+        );
+        assert!(!gui_paint_product_emission_is_active());
+
+        let key = present(1);
+        begin_gui_paint_scope(44, start(key.clone())).unwrap();
+        record_gui_paint_draw(44, draw()).unwrap();
+        end_gui_paint_scope(44, 13, 1).unwrap();
+        publish_gui_paint_present_frontier(&key).unwrap();
+
+        assert!(drain_gui_paint_frontiers().is_err());
+        let rows = drain_gui_paint_control_observations().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].promotion_allowed);
+        rows[0].validate().unwrap();
+        teardown_gui_paint_instrumentation().unwrap();
     }
 
     #[test]

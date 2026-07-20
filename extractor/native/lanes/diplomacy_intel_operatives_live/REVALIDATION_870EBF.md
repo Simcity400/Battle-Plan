@@ -114,7 +114,7 @@ Those gates are listed below the table.
   serialized values are fixture-closed.
 - Subjects: enabled as validated relation rows. Per frame requires exact
   `CSubjectRelation` vtable discovery through the relation scan, valid overlord
-  and subject tags, non-self pair, a full-width i64 autonomy-ratio read bounded
+  and subject tags, non-self pair, a full-width i64 serialized freedom-level read bounded
   to `0..=100000`, and hashed autonomy state name only when readable. The compact
   carrier remains i32 only after lossless range-checked narrowing.
 - Agencies and capacity: enabled. Per frame requires exact

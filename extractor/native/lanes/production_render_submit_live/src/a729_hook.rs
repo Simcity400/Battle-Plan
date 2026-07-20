@@ -4242,6 +4242,49 @@ fn selected_render_frame_receipt_sha256(
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+/// Recompute the selected-Present receipt from the joined frame which actually
+/// left the a729 hook.  Downstream diagnostic instrumentation must call this
+/// before it treats the public scalar fields as a Present authority; a
+/// well-shaped 64-character string is not sufficient authentication.
+pub fn validate_selected_render_frame_receipt(
+    selected: &RawSelectedRenderFrameCapture,
+) -> Result<(), String> {
+    let receipt = &selected.receipt;
+    let frame = &selected.selected.frame;
+    if receipt.candidate_count == 0
+        || receipt.discarded_candidate_count.checked_add(1) != Some(receipt.candidate_count)
+        || usize::try_from(receipt.discarded_candidate_count).ok()
+            != Some(selected.consumed_unselected.len())
+        || receipt.selected_submit_index != frame.submit_index
+        || receipt.selected_frame_sequence != frame.frame_sequence
+        || receipt.selected_global_order != frame.global_order
+        || receipt.selected_presentation_qpc_ticks != frame.presentation_qpc_ticks
+        || receipt.target_game_hour_raw != frame.game_hour_raw
+        || receipt.cutoff_qpc_ticks == 0
+        || receipt.cutoff_qpc_frequency_hz == 0
+        || receipt.cutoff_qpc_frequency_hz != frame.presentation_qpc_frequency_hz
+        || frame.presentation_qpc_ticks > receipt.cutoff_qpc_ticks
+        || frame.process_start_nonce == 0
+        || frame.hook_epoch_nonce == 0
+    {
+        return Err("selected render-frame receipt disagrees with its joined Present".into());
+    }
+    let recomputed = selected_render_frame_receipt_sha256(
+        receipt.target_game_hour_raw,
+        receipt.cutoff_qpc_ticks,
+        receipt.cutoff_qpc_frequency_hz,
+        receipt.candidate_count,
+        &receipt.candidate_set_sha256,
+        frame,
+        receipt.discarded_candidate_count,
+        &receipt.consumed_unselected_sha256,
+    )?;
+    if recomputed != receipt.selection_receipt_sha256 {
+        return Err("selected render-frame receipt SHA-256 does not recompute".into());
+    }
+    Ok(())
+}
+
 fn hash_render_candidate_metadata(
     hasher: &mut Sha256,
     frame: &RawRenderFrameCapture,

@@ -5,9 +5,9 @@
 //! not derive visibility, model, or LOD choices from camera distance. The only
 //! currently admitted contract is the maximal standard retained frame36669
 //! scope: 13 immutable instance buffers reused by the shadow, unlit, and main
-//! tree passes. The separate retained-corpus content library admits 25 buckets
-//! and 10,995 cells without merging their frame observations. Full-map callers
-//! still fail closed while 88,061 shipped cells remain unavailable; the
+//! tree passes. The separate retained-corpus content library admits 36 buckets
+//! and 11,365 cells without merging their frame observations. Full-map callers
+//! still fail closed while 87,691 shipped cells remain unavailable; the
 //! selected frame carrier itself continues to omit 95,275 global cells.
 
 use crate::{
@@ -41,24 +41,21 @@ pub const C07_TREE_CONTENT_SELECTION_SCHEMA: &str = "hoi4.c07-tree-content-selec
 pub const C07_TREE_CONTENT_LIBRARY_GAME_FILE_SET_SHA256: &str =
     "42ae577a6a5765bec34de951e1f6dd8cabaf3ab60f8d7cb8cfb6068f82ef62b3";
 pub const C07_TREE_CONTENT_LIBRARY_CENSUS_SHA256: &str =
-    "aea7f7bf76887841399221fe9243fd8a56f387a256b6a283a189a13c200aa0d6";
+    "d9cd200c9414bedf46af5a43fddf5c885324b47560feb15487d21fedd66bc5b2";
 pub const C07_TREE_CONTENT_LIBRARY_COVERED_CELL_SET_SHA256: &str =
-    "e3fb5e7e3a6ac932b8c1c58f904da81ea53893798f3d6ab70f5c95ac6a8d5137";
+    "5f2efadd0f5e2ff58424564c42b1b09f42c7b1f8ce198b2bf1374740b2c12e34";
 pub const C07_TREE_CONTENT_LIBRARY_MISSING_CELL_SET_SHA256: &str =
-    "7aae8ef351861def3a8ab6813f460eee301ee6fe8d562f023ca890e6c806f405";
-pub const C07_TREE_CONTENT_LIBRARY_PACKED_BYTES_SHA256: &str =
-    "afaf16417bdc9a58849f0590c96ceb9e14006e3bd7af42f76d69252274237dc5";
+    "55e75c1318e93d8e5657beea9ea0a5863ad376e78ef1a0b64350a759d87db0ab";
 /// Canonical JSON SHA-256 of `C07TreeContentLibrary` with its payload seal empty.
 /// This literal is filled from the exact retained-corpus census and checked on
-/// every admission; callers cannot reseal a different 25-bucket union.
-pub const C07_TREE_CONTENT_LIBRARY_PAYLOAD_SHA256: &str =
-    "c2dee4967e5e538e6a451047f7654b1387f909eefbd97f54afdacfe2bbe7849a";
-pub const C07_TREE_CONTENT_LIBRARY_BUCKETS: usize = 25;
-pub const C07_TREE_CONTENT_LIBRARY_CELLS: u32 = 10_995;
+/// every admission; callers cannot reseal a different 36-bucket union.
+include!("c07_tree_content_hashes.rs");
+pub const C07_TREE_CONTENT_LIBRARY_BUCKETS: usize = 36;
+pub const C07_TREE_CONTENT_LIBRARY_CELLS: u32 = 11_365;
 pub const C07_TREE_CONTENT_LIBRARY_INSTANCE_BYTES: u32 =
     C07_TREE_CONTENT_LIBRARY_CELLS * C07_TREE_INSTANCE_STRIDE_BYTES;
-pub const C07_TREE_CONTENT_LIBRARY_UNAVAILABLE_BUCKETS: u32 = 271;
-pub const C07_TREE_CONTENT_LIBRARY_UNAVAILABLE_CELLS: u32 = 88_061;
+pub const C07_TREE_CONTENT_LIBRARY_UNAVAILABLE_BUCKETS: u32 = 260;
+pub const C07_TREE_CONTENT_LIBRARY_UNAVAILABLE_CELLS: u32 = 87_691;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -244,6 +241,36 @@ struct ExpectedDraw {
 
 const EXPECTED_LIBRARY_BUCKETS: [ExpectedLibraryBucket; C07_TREE_CONTENT_LIBRARY_BUCKETS] = [
     ExpectedLibraryBucket {
+        bucket_id: 354,
+        palette: 2,
+        chunk_x: 10,
+        chunk_z: 4,
+        global_ordinal: 28,
+        records: 74,
+        bytes: 1_776,
+        instance_sha256: "85016a70948bef065f531865cc31861c3fbad3b2d2432bff21078ca17c15920c",
+    },
+    ExpectedLibraryBucket {
+        bucket_id: 355,
+        palette: 2,
+        chunk_x: 11,
+        chunk_z: 4,
+        global_ordinal: 29,
+        records: 8,
+        bytes: 192,
+        instance_sha256: "9bd7ed3ccfac320d6e5cd578d3a2c3adfb00e33bd30b49ce8d023b93e9082b70",
+    },
+    ExpectedLibraryBucket {
+        bucket_id: 356,
+        palette: 2,
+        chunk_x: 12,
+        chunk_z: 4,
+        global_ordinal: 30,
+        records: 53,
+        bytes: 1_272,
+        instance_sha256: "b6787ed08caafc1687561832b5f95ebbe4498d8ddf55f3a8996e557554c101f0",
+    },
+    ExpectedLibraryBucket {
         bucket_id: 379,
         palette: 2,
         chunk_x: 13,
@@ -262,6 +289,36 @@ const EXPECTED_LIBRARY_BUCKETS: [ExpectedLibraryBucket; C07_TREE_CONTENT_LIBRARY
         records: 26,
         bytes: 624,
         instance_sha256: "ba1c32c7de0be0c7960418849bd3de0c9c6b37fd774b8a07f59bec541eafe6ab",
+    },
+    ExpectedLibraryBucket {
+        bucket_id: 610,
+        palette: 3,
+        chunk_x: 10,
+        chunk_z: 4,
+        global_ordinal: 67,
+        records: 1,
+        bytes: 24,
+        instance_sha256: "12d729eeb5f0189fffd75b1da6db3a070bb11bb19c85211ba8901b7395bec21a",
+    },
+    ExpectedLibraryBucket {
+        bucket_id: 611,
+        palette: 3,
+        chunk_x: 11,
+        chunk_z: 4,
+        global_ordinal: 68,
+        records: 70,
+        bytes: 1_680,
+        instance_sha256: "dfa92f3a28d41aee78dc9350d4c59e84853b1d6712d2cb19e93458391f9ed6ae",
+    },
+    ExpectedLibraryBucket {
+        bucket_id: 612,
+        palette: 3,
+        chunk_x: 12,
+        chunk_z: 4,
+        global_ordinal: 69,
+        records: 13,
+        bytes: 312,
+        instance_sha256: "695b11975a51c7c53872bed7b5c053f4dab62a36604a3ec8efcfd56d08a21f3c",
     },
     ExpectedLibraryBucket {
         bucket_id: 634,
@@ -394,6 +451,36 @@ const EXPECTED_LIBRARY_BUCKETS: [ExpectedLibraryBucket; C07_TREE_CONTENT_LIBRARY
         instance_sha256: "0a1f42e7ef72f0fe5a8e2e2b9c5e0c9ca1215943559457add96e6034a8840e90",
     },
     ExpectedLibraryBucket {
+        bucket_id: 1184,
+        palette: 5,
+        chunk_x: 6,
+        chunk_z: 7,
+        global_ordinal: 136,
+        records: 35,
+        bytes: 840,
+        instance_sha256: "ae42646f532f21fe0c972020ef92522416d0b09d4db199458a98adb92c97a0a2",
+    },
+    ExpectedLibraryBucket {
+        bucket_id: 1185,
+        palette: 5,
+        chunk_x: 7,
+        chunk_z: 7,
+        global_ordinal: 137,
+        records: 19,
+        bytes: 456,
+        instance_sha256: "1655026c46fc211e5a6f1eed42974dae1f68705101959555c3f06138e6c5c5b4",
+    },
+    ExpectedLibraryBucket {
+        bucket_id: 1378,
+        palette: 6,
+        chunk_x: 10,
+        chunk_z: 4,
+        global_ordinal: 164,
+        records: 5,
+        bytes: 120,
+        instance_sha256: "3b0d3e26e0a92c24c416fcc8c5bc16ad6a483eff6a3b2c240b455cd5a7330ef4",
+    },
+    ExpectedLibraryBucket {
         bucket_id: 1400,
         palette: 6,
         chunk_x: 10,
@@ -493,9 +580,36 @@ const EXPECTED_LIBRARY_BUCKETS: [ExpectedLibraryBucket; C07_TREE_CONTENT_LIBRARY
         bytes: 35_952,
         instance_sha256: "eaceb3aa6c98d66e040c27a4b7477b703c92916606a2ec4de26add825c4779e9",
     },
+    ExpectedLibraryBucket {
+        bucket_id: 1440,
+        palette: 6,
+        chunk_x: 6,
+        chunk_z: 7,
+        global_ordinal: 205,
+        records: 21,
+        bytes: 504,
+        instance_sha256: "881dbb86c1eda0c31f417cf7befb36a765e9730f48a234330631a715f79ead10",
+    },
+    ExpectedLibraryBucket {
+        bucket_id: 1441,
+        palette: 6,
+        chunk_x: 7,
+        chunk_z: 7,
+        global_ordinal: 206,
+        records: 71,
+        bytes: 1_704,
+        instance_sha256: "fe4139f5236fbf57f5b21ff8cb8957381c9cf783f558b4e7ed23988ca2f3eac2",
+    },
 ];
 
-const EXPECTED_LIBRARY_CELL_RANGES: [(u32, u32); 145] = [
+const EXPECTED_LIBRARY_CELL_RANGES: [(u32, u32); 212] = [
+    (22333, 22333),
+    (22829, 22843),
+    (23333, 23351),
+    (23835, 23860),
+    (24348, 24374),
+    (24882, 24908),
+    (25420, 25450),
     (25995, 26153),
     (26531, 26693),
     (27078, 27236),
@@ -640,7 +754,67 @@ const EXPECTED_LIBRARY_CELL_RANGES: [(u32, u32); 145] = [
     (61892, 61903),
     (61909, 61922),
     (61926, 61940),
-    (61944, 61972),
+    (61944, 61974),
+    (61979, 61980),
+    (61987, 61988),
+    (62004, 62007),
+    (62021, 62021),
+    (62036, 62036),
+    (62051, 62052),
+    (62088, 62088),
+    (62097, 62102),
+    (62112, 62114),
+    (62126, 62128),
+    (62141, 62144),
+    (62155, 62159),
+    (62171, 62177),
+    (62191, 62197),
+    (62210, 62216),
+    (62229, 62233),
+    (62256, 62259),
+    (62285, 62287),
+    (62319, 62320),
+    (62409, 62410),
+    (62441, 62442),
+    (62474, 62479),
+    (62518, 62523),
+    (62561, 62567),
+    (62599, 62604),
+    (62643, 62650),
+    (62688, 62691),
+    (62731, 62734),
+    (62800, 62800),
+    (62955, 62956),
+    (62991, 62992),
+    (63024, 63024),
+    (63077, 63077),
+    (63097, 63099),
+    (63119, 63121),
+    (63137, 63139),
+    (63165, 63167),
+    (63186, 63189),
+    (63206, 63210),
+    (63223, 63225),
+    (63258, 63263),
+    (63285, 63290),
+    (63314, 63319),
+    (63336, 63338),
+    (63349, 63351),
+    (63361, 63362),
+    (63370, 63370),
+    (63381, 63381),
+    (63458, 63458),
+    (63483, 63483),
+    (63505, 63505),
+    (63533, 63539),
+    (63576, 63585),
+    (63625, 63631),
+    (63690, 63695),
+    (63766, 63767),
+    (63837, 63838),
+    (63899, 63900),
+    (63958, 63962),
+    (64018, 64022),
 ];
 
 const EXPECTED_BUCKETS: [ExpectedBucket; C07_TREE_RETAINED_BUCKETS] = [
@@ -909,7 +1083,7 @@ impl C07TreeContentLibrary {
     }
 
     /// Process-wide validated immutable library used by production admission.
-    /// The 263,880 packed bytes and 906 KB canonical JSON identity are hashed
+    /// The packed bytes and canonical JSON identity are hashed
     /// once, not again for every displayed frame.
     pub fn authenticated_retained_v1_ref() -> Result<&'static Self, String> {
         static LIBRARY: OnceLock<Result<C07TreeContentLibrary, String>> = OnceLock::new();
@@ -1098,7 +1272,7 @@ impl C07TreeContentLibrary {
         self.validate()?;
         self.bucket_by_id(bucket_id).ok_or_else(|| {
             format!(
-                "C07 bucket {bucket_id} is outside the authenticated 25-bucket content library; 271 buckets and 88,061 cells remain unavailable"
+                "C07 bucket {bucket_id} is outside the authenticated 36-bucket content library; 260 buckets and 87,691 cells remain unavailable"
             )
         })
     }
@@ -1186,7 +1360,7 @@ impl C07TreeContentLibrary {
             return Ok(());
         }
         Err(format!(
-            "C07 nonzero cell ordinal {nonzero_cell_ordinal} is not authenticated; 88,061 cells remain unavailable and synthesis is forbidden"
+            "C07 nonzero cell ordinal {nonzero_cell_ordinal} is not authenticated; 87,691 cells remain unavailable and synthesis is forbidden"
         ))
     }
 
@@ -1223,7 +1397,7 @@ impl C07TreeContentLibrary {
             }
             let content = self.bucket_by_id(bucket.bucket_id).ok_or_else(|| {
                 format!(
-                    "C07 selected-submit bucket {} is outside the authenticated 25-bucket content library; 88,061 cells remain unavailable",
+                    "C07 selected-submit bucket {} is outside the authenticated 36-bucket content library; 87,691 cells remain unavailable",
                     bucket.bucket_id
                 )
             })?;

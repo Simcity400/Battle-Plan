@@ -87,7 +87,7 @@ def main() -> None:
     require(domains.get(46, {}).get("status") in DOMAIN46_OCCUPIED_STATUSES,
             "registry id 46 is not occupied by air_variant_archetypes_live")
     require(
-        "| 47 | `characters_leaders_cabinet_live` | shared integration pending:" in registry_doc
+        "| 47 | `characters_leaders_cabinet_live` | shared integration active:" in registry_doc
         and "_r2_characters_leaders_cabinet_live" in registry_doc
         and "advisor roster, appointed advisor, character portrait, and unit-leader trait-token rows are blocked" in registry_doc,
         "registry markdown id 47 integrated row missing or excluded scope not named",

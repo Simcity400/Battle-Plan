@@ -8,6 +8,10 @@
 
 use super::*;
 use compact_contract::calendar::DATE_EPOCH_CONST;
+use compact_contract::campaign_identity::{
+    encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses,
+    COMPACT_DOMAIN_STREAM_HEADER, COMPACT_RECORD_TYPE_STREAM_HEADER,
+};
 use compact_contract::{
     COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC,
     COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -137,6 +141,35 @@ fn three_hour_stream() -> Vec<u8> {
         seq += 1;
     }
     s
+}
+
+const CAMPAIGN_UUID: &str = "a4b17fed-ed12-4361-9064-fb6576638110";
+
+fn identity_v1_stream() -> Vec<u8> {
+    let observation = Cid1Observation {
+        game_unique_id: CAMPAIGN_UUID.to_string(),
+        game_unique_seed: 1_026_046_527,
+        game_hour_raw: raw_for(HOUR_A),
+    };
+    let fields = Cid1Fields::from_stable_observations(
+        observation.clone(),
+        observation,
+        "vanilla_latest_2026_07_20".to_string(),
+        Cid1Witnesses::default(),
+    )
+    .unwrap();
+    let payload = encode_cid1(&fields).unwrap();
+    let mut stream = Vec::new();
+    push_record(
+        &mut stream,
+        0,
+        raw_for(HOUR_A),
+        COMPACT_DOMAIN_STREAM_HEADER,
+        COMPACT_RECORD_TYPE_STREAM_HEADER,
+        &payload,
+    );
+    stream.extend_from_slice(&three_hour_stream());
+    stream
 }
 
 /// The reference: the batch in-memory production fold (what `fold_check` hashes).
@@ -888,8 +921,13 @@ fn drain_after_framing_stop_propagates_the_storage_root_error() {
             "simulated zstd checksum mismatch",
         )),
     };
-    let mut cursor =
-        HourCursor::from_reader_compressed(Box::new(reader), 0, "gid".to_string(), true);
+    let mut cursor = HourCursor::from_reader_compressed(
+        Box::new(reader),
+        0,
+        "gid".to_string(),
+        true,
+        StreamIdentityMode::Legacy,
+    );
     let err = cursor
         .by_ref()
         .collect::<Result<Vec<WorldHour>, DecodeError>>()
@@ -909,8 +947,13 @@ fn framing_stop_with_intact_storage_is_itself_the_hard_error() {
         served: false,
         tail_error: None,
     };
-    let mut cursor =
-        HourCursor::from_reader_compressed(Box::new(reader), 0, "gid".to_string(), true);
+    let mut cursor = HourCursor::from_reader_compressed(
+        Box::new(reader),
+        0,
+        "gid".to_string(),
+        true,
+        StreamIdentityMode::Legacy,
+    );
     let err = cursor
         .by_ref()
         .collect::<Result<Vec<WorldHour>, DecodeError>>()
@@ -951,8 +994,26 @@ fn seek_matches_linear_iteration() {
     assert_eq!(index, index2);
 
     // Index survives a JSON round-trip.
-    let round = StreamIndex::from_json(&index.to_json()).expect("index json round-trip");
+    let json = index.to_json();
+    assert_eq!(json["index_schema"], "h4cr-certified-index-v2");
+    assert_eq!(json["identity_mode"], "legacy");
+    let round = StreamIndex::from_json(&json).expect("index json round-trip");
     assert_eq!(round, index);
+
+    // The old v1 grammar had no mode and is explicitly interpreted as Legacy;
+    // v2 never permits a missing or unknown mode.
+    let mut legacy_json = json.clone();
+    legacy_json["index_schema"] = serde_json::json!("h4cr-certified-index-v1");
+    legacy_json.as_object_mut().unwrap().remove("identity_mode");
+    assert_eq!(
+        StreamIndex::from_json(&legacy_json)
+            .expect("v1 migration")
+            .identity_mode,
+        StreamIdentityMode::Legacy
+    );
+    let mut missing_mode = json.clone();
+    missing_mode.as_object_mut().unwrap().remove("identity_mode");
+    assert!(StreamIndex::from_json(&missing_mode).is_none());
 
     for want in [HOUR_A, HOUR_B, HOUR_C] {
         let seeked = seek_to_hour(&source, &index, want, &opts).expect("seek");
@@ -1127,6 +1188,103 @@ fn metadata_exposes_schema_and_domain_registry() {
 }
 
 #[test]
+fn identity_v1_cursor_retains_cid1_and_excludes_it_from_ordinary_dispatch() {
+    let stream = identity_v1_stream();
+    let mut cursor = open_reader_with_identity_mode(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        "fold_check",
+        StreamIdentityMode::IdentityV1,
+    );
+    assert_eq!(cursor.identity_mode(), StreamIdentityMode::IdentityV1);
+    assert!(cursor.campaign_identity().is_none());
+
+    let hours = cursor.by_ref().collect::<Result<Vec<_>, _>>().unwrap();
+    assert_eq!(hours.len(), 3);
+    let identity = cursor.campaign_identity().expect("CID1 retained");
+    assert_eq!(identity.game_unique_id(), CAMPAIGN_UUID);
+    assert_eq!(identity.game_unique_seed(), 1_026_046_527);
+    assert_eq!(identity.game_hour_raw(), raw_for(HOUR_A));
+    assert_eq!(cursor.stats().records_total, 6);
+    assert_eq!(cursor.stats().data_records, 3);
+    assert_eq!(cursor.stats().frame_end_records, 3);
+    assert_eq!(cursor.stats().other_records, 0);
+    assert!(cursor.stats().certification_verdict().is_ok());
+    cursor.certify_complete().unwrap();
+}
+
+#[test]
+fn identity_v1_index_binds_mode_and_seek_reopens_under_it() {
+    let dir = TmpDir::new("identity_index");
+    let path = dir.0.join("collector_stream.bin");
+    std::fs::write(&path, identity_v1_stream()).unwrap();
+    let source = Source::StreamFile(path);
+    let opts = OpenOptions {
+        game_id: Some("fold_check".to_string()),
+    };
+    let index = build_index_with_identity_mode(
+        &source,
+        &opts,
+        StreamIdentityMode::IdentityV1,
+    )
+    .unwrap();
+    assert_eq!(index.identity_mode, StreamIdentityMode::IdentityV1);
+    assert_eq!(index.to_json()["identity_mode"], "identity_v1");
+    assert_eq!(
+        seek_to_hour(&source, &index, HOUR_B, &opts)
+            .unwrap()
+            .hour_index,
+        HOUR_B
+    );
+}
+
+#[test]
+fn identity_protocol_selection_never_sniffs_or_falls_back() {
+    let identity = identity_v1_stream();
+    let mut legacy = open_reader(
+        Cursor::new(identity.clone()),
+        identity.len() as u64,
+        "fold_check",
+    );
+    assert_eq!(legacy.by_ref().count(), 0);
+    assert!(legacy.campaign_identity().is_none());
+    assert!(legacy.stats().certification_verdict().is_err());
+
+    let plain = three_hour_stream();
+    let mut identity_v1 = open_reader_with_identity_mode(
+        Cursor::new(plain.clone()),
+        plain.len() as u64,
+        "fold_check",
+        StreamIdentityMode::IdentityV1,
+    );
+    assert_eq!(identity_v1.by_ref().count(), 0);
+    assert!(identity_v1.campaign_identity().is_none());
+    let error = identity_v1
+        .stats()
+        .boundary_error
+        .as_deref()
+        .expect("mode mismatch is terminal");
+    assert!(error.contains("invalid CID1 stream header"), "{error}");
+}
+
+#[test]
+fn invalid_cid1_never_reaches_boundary_counts_or_world_fold() {
+    let mut stream = identity_v1_stream();
+    stream[COMPACT_RECORD_HEADER_LEN] = b'X';
+    let mut cursor = open_reader_with_identity_mode(
+        Cursor::new(stream.clone()),
+        stream.len() as u64,
+        "fold_check",
+        StreamIdentityMode::IdentityV1,
+    );
+    assert_eq!(cursor.by_ref().count(), 0);
+    assert!(cursor.campaign_identity().is_none());
+    assert_eq!(cursor.stats().records_total, 0);
+    assert_eq!(cursor.stats().hours_emitted, 0);
+    assert!(cursor.stats().certification_verdict().is_err());
+}
+
+#[test]
 fn certified_raw_h4cr_produces_the_neutral_prefolded_contract() {
     let dir = TmpDir::new("neutral_prefolded");
     let path = dir.0.join("collector_stream.bin");
@@ -1162,6 +1320,53 @@ fn portable_decoder_contract_drives_the_same_certified_world_fold() {
     assert_eq!(replay.index().game_id(), "fold_check");
     assert_eq!(replay.index().hours(), &[HOUR_A, HOUR_B, HOUR_C]);
     assert_eq!(replay.entries().len(), 3);
+}
+
+#[test]
+fn portable_identity_request_drives_identity_aware_certified_fold() {
+    let stream = identity_v1_stream();
+    let request = snapshot::CertifiedPrefoldRequest::try_new_with_identity_mode(
+        "fold_check",
+        stream,
+        snapshot::PrefoldStreamIdentityMode::IdentityV1,
+    )
+    .unwrap();
+    let replay = snapshot::decode_certified_prefolded(
+        &ProductionCertifiedPrefoldDecoder,
+        request,
+    )
+    .unwrap();
+    assert_eq!(replay.index().hours(), &[HOUR_A, HOUR_B, HOUR_C]);
+    assert_eq!(
+        replay.receipt().identity_mode(),
+        snapshot::PrefoldStreamIdentityMode::IdentityV1
+    );
+}
+
+#[test]
+fn identity_aware_spooled_fold_consumes_cid1_before_file_backed_world_fold() {
+    let dir = TmpDir::new("identity_spooled");
+    let source = dir.0.join("collector_stream.bin");
+    let snapshot_dir = dir.0.join("snapshots");
+    std::fs::create_dir(&snapshot_dir).unwrap();
+    let stream = identity_v1_stream();
+    std::fs::write(&source, &stream).unwrap();
+    let sha256 = to_hex(&Sha256::digest(&stream));
+    let request = snapshot::CertifiedPrefoldSpoolRequest::try_new_with_identity_mode(
+        "fold_check",
+        &source,
+        &snapshot_dir,
+        stream.len() as u64,
+        sha256,
+        snapshot::PrefoldStreamIdentityMode::IdentityV1,
+    )
+    .unwrap();
+    let spool = fold_raw_h4cr_file_spooled(request).unwrap();
+    assert_eq!(spool.entries().len(), 3);
+    assert_eq!(
+        spool.entries().iter().map(|entry| entry.hour_index()).collect::<Vec<_>>(),
+        vec![HOUR_A, HOUR_B, HOUR_C]
+    );
 }
 
 #[test]

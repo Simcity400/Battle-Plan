@@ -728,14 +728,14 @@ Draft `extractor/documents/DOMAIN_REGISTRY.md` row after shared registration,
 not after production proof:
 
 ```md
-| 47 | `characters_leaders_cabinet_live` | shared integration pending: registered as a validated slice/open-gap compact domain; active-ruler, unit-leader skill/stat, and role-edge rows fold fail-closed; unit-leader-trait, advisor roster/appointee, and portrait rows remain blocked pending current-build root revalidation; full speed-five proof and broader leader/cabinet closure remain open | characters/leaders/cabinet |
+| 47 | `characters_leaders_cabinet_live` | shared integration active: registered and scheduled as a validated slice/open-gap compact domain; active-ruler, unit-leader skill/stat, and role-edge rows fold fail-closed; unit-leader-trait, advisor roster/appointee, and portrait rows remain blocked pending current-build root revalidation; full speed-five proof and broader leader/cabinet closure remain open | characters/leaders/cabinet |
 ```
 
 Draft `extractor/documents/MASTER_EXTRACTION_CONTRACT.md` row after shared
 registration, not after production proof:
 
 ```md
-| `characters_leaders_cabinet_live` / 47 | `SHARED_INTEGRATION_PENDING` | Shared descriptor/collector/recorder/fold registration is applied for validated character, unit-leader, country-leader-role, and active-ruler rows. Unit-leader-trait, advisor roster/appointee, and portrait rows remain blocked pending current-build root revalidation. Production acceptance still requires full speed-five/current-equivalent proof, zero skipped hours, and no source/partial/worker/bridge failures. Broader leader/advisor/cabinet fields remain open or fixture-blocked. |
+| `characters_leaders_cabinet_live` / 47 | `VALIDATED_SLICE_OPEN_GAPS` | Shared descriptor/collector/recorder/fold registration and scheduling are active for validated character, unit-leader, country-leader-role, and active-ruler rows. Unit-leader-trait, advisor roster/appointee, and portrait rows remain blocked pending current-build root revalidation. Production acceptance still requires full speed-five/current-equivalent proof, zero skipped hours, and no source/partial/worker/bridge failures. Broader leader/advisor/cabinet fields remain open or fixture-blocked. |
 ```
 
 Only after combined proof passes should this row advance to a production-slice

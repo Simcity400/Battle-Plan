@@ -8,7 +8,7 @@
 use replay_core::{
     AirCombatLossRow, AirRegionCombatRow, CombatParticipantEvent, CombatRow, ConvoyLossRow,
     DiplomacyView, EndedCombatRow, LandCombatSideDetail, Leaf, NavalCombatRow, ViewStatus,
-    WarObjectRow, WarRelationRow, WorldFrame,
+    SunkShipEventExact, WarObjectRow, WarRelationRow, WorldFrame,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -48,6 +48,7 @@ pub struct Xui20CombatDetailLosses {
     pub air_losses: Leaf<Vec<AirCombatLossRow>>,
     pub air_region_combat: Leaf<Vec<AirRegionCombatRow>>,
     pub sunk_convoys: Leaf<Vec<ConvoyLossRow>>,
+    pub sunk_ships: Leaf<Vec<SunkShipEventExact>>,
     pub wars: Leaf<Vec<WarObjectRow>>,
     pub war_relations: Leaf<Vec<WarRelationRow>>,
 }
@@ -63,6 +64,7 @@ impl Xui20CombatDetailLosses {
             || self.air_losses.measured().is_some()
             || self.air_region_combat.measured().is_some()
             || self.sunk_convoys.measured().is_some()
+            || self.sunk_ships.measured().is_some()
             || self.wars.measured().is_some()
             || self.war_relations.measured().is_some()
     }
@@ -739,6 +741,28 @@ fn validate_war_participants(
     Ok(())
 }
 
+fn validate_sunk_ships(rows: &Leaf<Vec<SunkShipEventExact>>) -> Result<usize, GateFailure> {
+    let rows = required(rows, "sunk_ships")?;
+    let mut sequences = BTreeSet::new();
+    for (index, row) in rows.iter().enumerate() {
+        if row.event_sequence == 0
+            || row.combat_id == 0
+            || row.combat_generation == 0
+            || row.victim_country_identity_raw == [0, 0]
+            || row.killer_country_id_raw == 0
+            || row.killed == row.assisted_kill
+            || row.ship_name.is_empty()
+            || row.ship_class_name.is_empty()
+            || !sequences.insert(row.event_sequence)
+        {
+            return Err(invalid(format!(
+                "sunk_ships[{index}] exact writer identity/content is invalid"
+            )));
+        }
+    }
+    Ok(rows.len())
+}
+
 fn validate_war_overview(rows: &Leaf<Vec<WarObjectRow>>) -> Result<usize, GateFailure> {
     let rows = required(rows, "wars")?;
     for (index, row) in rows.iter().enumerate() {
@@ -794,6 +818,7 @@ pub fn admit_xui20_replay(binding: &Xui20CombatDetailLosses) -> Xui20ReplayAdmis
     let air = validate_air(&binding.air_losses);
     let air_region = validate_air_region(&binding.air_region_combat);
     let convoys = validate_convoys(&binding.sunk_convoys);
+    let sunk_ships = validate_sunk_ships(&binding.sunk_ships);
     let war_pairs = validate_war_pairs(&binding.wars);
     let war_overview = validate_war_overview(&binding.wars);
     let family_rows = binding.land.len()
@@ -802,6 +827,7 @@ pub fn admit_xui20_replay(binding: &Xui20CombatDetailLosses) -> Xui20ReplayAdmis
         + binding.air_losses.measured().map_or(0, Vec::len)
         + binding.air_region_combat.measured().map_or(0, Vec::len)
         + binding.sunk_convoys.measured().map_or(0, Vec::len)
+        + binding.sunk_ships.measured().map_or(0, Vec::len)
         + binding.wars.measured().map_or(0, Vec::len)
         + binding.war_relations.measured().map_or(0, Vec::len);
     let land_active = state(binding.land.len(), validate_land_active(&binding.land));
@@ -820,6 +846,10 @@ pub fn admit_xui20_replay(binding: &Xui20CombatDetailLosses) -> Xui20ReplayAdmis
         convoys.as_ref().map_or(0, |count| *count),
         convoys.map(|_| ()),
     );
+    let naval_terminal = state(
+        sunk_ships.as_ref().map_or(0, |count| *count),
+        sunk_ships.map(|_| ()),
+    );
     let war_pair_history = state(
         war_pairs.as_ref().map_or(0, |count| *count),
         war_pairs.map(|_| ()),
@@ -834,6 +864,7 @@ pub fn admit_xui20_replay(binding: &Xui20CombatDetailLosses) -> Xui20ReplayAdmis
             &air_history,
             &air_region_history,
             &convoy_history,
+            &naval_terminal,
             &war_pair_history,
         ],
     );
@@ -845,9 +876,7 @@ pub fn admit_xui20_replay(binding: &Xui20CombatDetailLosses) -> Xui20ReplayAdmis
             reason: "terminal land record owning-vector join is not carried".into(),
         },
         naval_active,
-        naval_terminal: Xui20SurfaceState::ExternalInputRequired {
-            reason: "sunk-object identity and terminal naval epoch join are not carried".into(),
-        },
+        naval_terminal,
         air_history,
         air_region_history,
         convoy_history,
@@ -937,6 +966,16 @@ fn land_panel(row: &CombatRow) -> LandCombatPanel {
 pub fn combat_detail_losses_from_frame(frame: &WorldFrame) -> Xui20CombatDetailLosses {
     let naval_air = frame.naval_air_combat();
     let diplomacy: &DiplomacyView = frame.diplomacy();
+    let sunk_ships = match frame.sunk_ship_history_exact().status {
+        ViewStatus::Present => frame
+            .sunk_ship_history_exact()
+            .history
+            .as_ref()
+            .map(|history| Leaf::Measured(history.events.clone()))
+            .unwrap_or(Leaf::Unobtained),
+        ViewStatus::DomainAbsent => Leaf::Absent,
+        ViewStatus::DomainUnavailable => Leaf::Unobtained,
+    };
     Xui20CombatDetailLosses {
         land: frame.combats().iter().map(land_panel).collect(),
         ended_land: frame.ended_combats().clone(),
@@ -945,6 +984,7 @@ pub fn combat_detail_losses_from_frame(frame: &WorldFrame) -> Xui20CombatDetailL
         air_losses: naval_air.air_losses.clone(),
         air_region_combat: naval_air.air_region_combat.clone(),
         sunk_convoys: naval_air.sunk_convoys.clone(),
+        sunk_ships,
         wars: diplomacy.wars.clone(),
         war_relations: diplomacy.war_relations.clone(),
     }

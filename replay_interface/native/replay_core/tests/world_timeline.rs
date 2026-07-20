@@ -848,6 +848,16 @@ fn production_encode_decode_fold_typed_unavailable_beats_present_legacy_json() {
     .unwrap();
 
     let timeline = open_timeline(&store_root);
+    let measured = timeline.frame(max_hour - 1).unwrap();
+    let autonomy = measured
+        .diplomacy()
+        .subject_autonomy_current
+        .measured()
+        .expect("proof frame must expose authenticated current autonomy");
+    assert_eq!(autonomy.len(), 1);
+    assert_eq!(autonomy[0].ratio_raw, 40_000);
+    assert_eq!(autonomy[0].current_score_raw, 40_000);
+    assert_eq!(autonomy[0].direction, Leaf::Unobtained);
     let frame = timeline.frame(max_hour).unwrap();
     assert_eq!(
         frame.diplomacy().faction_roster_status(),
@@ -858,6 +868,10 @@ fn production_encode_decode_fold_typed_unavailable_beats_present_legacy_json() {
         FactionRosterStatus::MeasuredEmpty
     );
     assert_eq!(frame.diplomacy().faction_members, Leaf::Unobtained);
+    assert_eq!(
+        frame.diplomacy().subject_autonomy_current,
+        Leaf::Unobtained
+    );
     drop(frame);
     drop(timeline);
     fs::remove_dir_all(root).unwrap();

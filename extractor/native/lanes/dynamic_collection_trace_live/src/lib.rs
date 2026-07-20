@@ -4,12 +4,23 @@
 //! has no screen/layout fallback: a future a729 controller hook must implement
 //! [`ExactControllerTraceSource`] before d71 can become schedulable.
 
+pub mod a729_technology_canvas;
+
 use std::collections::BTreeSet;
 
 pub const DOMAIN_ID: u16 = 71;
 pub const DOMAIN_NAME: &str = "dynamic_collection_trace_live";
 pub const SCHEMA_VERSION: u32 = 1;
 pub const AUTHORITY_EXACT_A729_CONTROLLER: u32 = 1;
+/// Static root/owner/accepted-order authority only. This receipt does not
+/// implement `ExactControllerTraceSource` and does not schedule d71.
+pub const A28_STATIC_ROOT_ORDER_AUTHORITY_BOUND: bool = true;
+pub const A28_DIRECT_ROOT_JOB_ID: &str =
+    "20260720T021840Z-w3-a28-direct-retry-5065e703";
+pub const A28_DIRECT_ROOT_MANIFEST_SHA256: &str =
+    "8ce0d88387228dc8a67553e6772c253f40792971760e2f2b695a87af2199b841";
+pub const A28_D71_SCHEDULED: bool = false;
+pub const A28_LIVE_PROMOTION_BOUND: bool = false;
 pub const MAGIC: u32 = u32::from_le_bytes(*b"DCT1");
 pub const HEADER_LEN: usize = 40;
 pub const MAX_COLLECTIONS: usize = 4_096;

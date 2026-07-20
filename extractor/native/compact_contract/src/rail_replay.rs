@@ -14,10 +14,10 @@ pub const DOMAIN_NAME: &str = "rail_replay_state_live";
 pub const PAYLOAD_MAGIC: u32 = u32::from_le_bytes(*b"RRL1");
 pub const PAYLOAD_VERSION_V1: u16 = 1;
 pub const PAYLOAD_VERSION_V2: u16 = 2;
-/// The active collector remains on v1 until its authenticated double-read hub
-/// vector reader exists. The exact-ten evidence and all downstream v2 carrier
-/// admissions are promoted independently below. New readers accept both.
-pub const PAYLOAD_VERSION: u16 = PAYLOAD_VERSION_V1;
+/// The preferred active collector payload is v2 when the complete authenticated
+/// hub owner-vector snapshot succeeds. A failed/unavailable hub sub-snapshot
+/// still emits explicit v1-unavailable rather than fabricating rows.
+pub const PAYLOAD_VERSION: u16 = PAYLOAD_VERSION_V2;
 pub const HEADER_LEN: usize = 40;
 pub const ROW_LEN: usize = 32;
 pub const ROW_KIND_ANCHOR: u8 = 1;
@@ -28,9 +28,9 @@ pub const ROW_FLAG_HUB_SUBTYPE: u8 = 1;
 pub const ROW_FLAG_HUB_NAVAL_OVERLAY_VISIBLE: u8 = 1 << 1;
 pub const ROW_FLAG_HUB_KNOWN: u8 =
     ROW_FLAG_HUB_SUBTYPE | ROW_FLAG_HUB_NAVAL_OVERLAY_VISIBLE;
-/// The `CSupplyNodeMapIcon` route and visual laws are exact, but the active
-/// schema-v1 collector has no authenticated complete double-read. This flag
-/// distinguishes unavailable from a measured empty hub set.
+/// A v1 fallback explicitly distinguishes unavailable from a measured-empty
+/// hub set. The promoted collector emits this only when its complete
+/// authenticated owner-vector double-read cannot be obtained.
 pub const PAYLOAD_FLAG_HUB_FRAMES_UNAVAILABLE: u32 = 1;
 /// Schema v2 is admitted only when the producer authenticated the entire
 /// active `CSupplyNodeMapIcon` vector, including the measured-empty case.
@@ -57,13 +57,13 @@ pub const D81_OWNER_SUPPLEMENT_PCODE_MANIFEST_SHA256: &str =
 pub const D81_OWNER_SUPPLEMENT_NO_PCODE_MANIFEST_SHA256: &str =
     "bc0a7c92bb400a5505b92ea4c0d490b14f97bb82593bda8ca6c246d7347d8840";
 
-/// Evidence and implemented carrier predicates are now satisfied. The live
-/// collector predicate is deliberately separate and remains false.
+/// Evidence, carrier predicates, and the fail-closed live owner-vector reader
+/// are implemented. Its output is v2 only after the whole double-read succeeds.
 pub const HUB_FRAME_OWNER_ROUTE_PROMOTED: bool = true;
 pub const HUB_FRAME_V2_ENCODER_PROMOTED: bool = true;
 pub const HUB_FRAME_V2_FOLD_PROMOTED: bool = true;
 pub const HUB_FRAME_V2_AUTHORITY_PROMOTED: bool = true;
-pub const HUB_FRAME_LIVE_COLLECTOR_PROMOTED: bool = false;
+pub const HUB_FRAME_LIVE_COLLECTOR_PROMOTED: bool = true;
 pub const MAX_PROVINCES: usize = 20_000;
 pub const MAX_NEIGHBORS_PER_PROVINCE: usize = 64;
 pub const MAX_RAIL_ROWS: usize = MAX_PROVINCES * (MAX_NEIGHBORS_PER_PROVINCE + 1);
@@ -158,8 +158,8 @@ pub fn encode_payload(
 }
 
 /// Encode an authenticated, complete D81 snapshot. This function is only the
-/// pointer-free carrier seam. The current collector does not call it because
-/// the authenticated live double-read route is not implemented.
+/// pointer-free carrier seam. The collector calls it only when its complete
+/// authenticated double-read returns `Some`, including measured empty.
 pub fn encode_payload_with_hub_frames(
     provinces: &[RailProvinceState],
     hub_frames: &[RailHubFrameState],

@@ -17,12 +17,13 @@ param(
     [Parameter(Mandatory = $true)][string]$SpeedEvidenceNonce,
     [Parameter(Mandatory = $true)][string]$SpeedEvidenceNonceLedgerRoot,
     [Parameter(Mandatory = $true)][string]$SpeedStaticDisasmSha256,
-    [Parameter(Mandatory = $true)][string]$StaticBundleDir,
-    [Parameter(Mandatory = $true)][string]$ModStatePath,
-    [Parameter(Mandatory = $true)][string]$DlcStatePath,
-    [Parameter(Mandatory = $true)][string]$LoadOrderPath,
-    [Parameter(Mandatory = $true)][string]$SourceInventoryPath,
-    [Parameter(Mandatory = $true)][string]$LiveResolutionReportPath,
+    [string]$PreparedProductModsetDir = "",
+    [string]$StaticBundleDir = "",
+    [string]$ModStatePath = "",
+    [string]$DlcStatePath = "",
+    [string]$LoadOrderPath = "",
+    [string]$SourceInventoryPath = "",
+    [string]$LiveResolutionReportPath = "",
     [string]$EmittedTokensPath = "",
     [string]$TokenOmissionsPath = "",
     [string]$PythonExe = "python.exe",
@@ -54,6 +55,7 @@ $packReplay = Join-Path $releaseRoot "pack_replay.exe"
 $registryPath = Join-Path $nativeRoot "domain_registry.json"
 $profilePath = Join-Path $repoRoot "extractor\live_capture\collector_profiles\vanilla_latest_2026_06_30.json"
 $staticBundleScript = Join-Path $repoRoot "extractor\game_defs\static_bundle.py"
+$productModsetPrepareScript = Join-Path $repoRoot "extractor\game_defs\prepare_product_modset_capture.py"
 $speedStreamVerifier = Join-Path $scriptDir "verify_speed5_stream.py"
 $speedEvidenceVerifier = Join-Path $scriptDir "verify_speed_root_evidence_v2.py"
 $speedEvidenceProbe = Join-Path $scriptDir "collect_speed_root_evidence_v2.py"
@@ -65,6 +67,28 @@ $expectedHoi4ExeSha = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c
 . (Join-Path $scriptDir "ProductionCapture.Validation.ps1")
 $pythonCommand=Get-Command $PythonExe -CommandType Application -ErrorAction Stop
 $PythonExe=$pythonCommand.Source
+$preparedModsetReceipt=$null
+if (-not [string]::IsNullOrWhiteSpace($PreparedProductModsetDir)) {
+    if (@(@($StaticBundleDir,$ModStatePath,$DlcStatePath,$LoadOrderPath,$SourceInventoryPath,$LiveResolutionReportPath) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) {
+        throw "-PreparedProductModsetDir is mutually exclusive with individual static bundle paths"
+    }
+    if (-not (Test-Path -LiteralPath $PreparedProductModsetDir -PathType Container)) { throw "prepared product-modset directory not found: $PreparedProductModsetDir" }
+    $PreparedProductModsetDir=(Resolve-Path -LiteralPath $PreparedProductModsetDir).Path
+    $preparedReceiptPath=Join-Path $PreparedProductModsetDir "product_modset_capture_ready.json"
+    if (-not (Test-Path -LiteralPath $preparedReceiptPath -PathType Leaf)) { throw "prepared product-modset receipt is missing" }
+    $preparedModsetReceipt=Get-Content -LiteralPath $preparedReceiptPath -Raw | ConvertFrom-Json
+    if ([string]$preparedModsetReceipt.schema -cne 'extractor.product_modset_capture_ready.v1' -or [string]$preparedModsetReceipt.status -cne 'ready_for_selected_modset_capture' -or [string]$preparedModsetReceipt.product_modset_sha256 -cnotmatch '^[0-9a-f]{64}$' -or [string]$preparedModsetReceipt.preparation_tool_sha256 -cnotmatch '^[0-9a-f]{64}$' -or -not (Test-Path -LiteralPath $productModsetPrepareScript -PathType Leaf) -or (Get-FileHash -LiteralPath $productModsetPrepareScript -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$preparedModsetReceipt.preparation_tool_sha256) {
+        throw "prepared product-modset receipt is malformed"
+    }
+    $StaticBundleDir=Join-Path $PreparedProductModsetDir "static_bundle\bundle"
+    $ModStatePath=Join-Path $PreparedProductModsetDir "bindings\mod_state.json"
+    $DlcStatePath=Join-Path $PreparedProductModsetDir "bindings\dlc_state.json"
+    $LoadOrderPath=Join-Path $PreparedProductModsetDir "bindings\load_order.json"
+    $SourceInventoryPath=Join-Path $PreparedProductModsetDir "bindings\source_inventory.json"
+    $LiveResolutionReportPath=Join-Path $PreparedProductModsetDir "bindings\resolution_report.json"
+} elseif (@(@($StaticBundleDir,$ModStatePath,$DlcStatePath,$LoadOrderPath,$SourceInventoryPath,$LiveResolutionReportPath) | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) {
+    throw "pass -PreparedProductModsetDir or all six individual static bundle paths"
+}
 
 function Write-DurableJson {
     param([Parameter(Mandatory=$true)][string]$Path,[Parameter(Mandatory=$true)]$Value)
@@ -208,6 +232,33 @@ $LiveResolutionReportPath=(Resolve-Path -LiteralPath $LiveResolutionReportPath).
 $bundleManifestPath = Join-Path $StaticBundleDir "static_bundle_manifest.json"
 if (-not (Test-Path -LiteralPath $bundleManifestPath -PathType Leaf)) { throw "static bundle manifest missing" }
 $bundleManifest = Get-Content -LiteralPath $bundleManifestPath -Raw | ConvertFrom-Json
+if (
+    [string]$bundleManifest.schema -cne 'extractor.static_bundle.v3' -or
+    [string]$bundleManifest.bindings.product_modset.schema -cne 'extractor.product_modset_key.v1' -or
+    [string]$bundleManifest.bindings.product_modset.product_modset_sha256 -cnotmatch '^[0-9a-f]{64}$'
+) { throw "production capture requires a static-bundle-v3 manifest with a canonical product-modset key" }
+$productModsetSha256 = [string]$bundleManifest.bindings.product_modset.product_modset_sha256
+if ($null -ne $preparedModsetReceipt) {
+    if ($productModsetSha256 -cne [string]$preparedModsetReceipt.product_modset_sha256) {
+        throw "prepared product-modset key differs from the static bundle"
+    }
+    $preparedFiles=@{
+        static_bundle=@($bundleManifestPath,$preparedModsetReceipt.static_bundle)
+        mod_state=@($ModStatePath,$preparedModsetReceipt.bindings.mod_state)
+        dlc_state=@($DlcStatePath,$preparedModsetReceipt.bindings.dlc_state)
+        load_order=@($LoadOrderPath,$preparedModsetReceipt.bindings.load_order)
+        source_inventory=@($SourceInventoryPath,$preparedModsetReceipt.bindings.source_inventory)
+        resolution_report=@($LiveResolutionReportPath,$preparedModsetReceipt.bindings.resolution_report)
+    }
+    foreach($entry in $preparedFiles.GetEnumerator()) {
+        $actualPath=[System.IO.Path]::GetFullPath([string]$entry.Value[0])
+        $receiptFile=$entry.Value[1]
+        $receiptPath=[System.IO.Path]::GetFullPath((Join-Path $PreparedProductModsetDir ([string]$receiptFile.file)))
+        if ($actualPath -ine $receiptPath -or [int64]$receiptFile.bytes -ne (Get-Item -LiteralPath $actualPath).Length -or [string]$receiptFile.sha256 -cnotmatch '^[0-9a-f]{64}$' -or (Get-FileHash -LiteralPath $actualPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$receiptFile.sha256) {
+            throw "prepared product-modset $($entry.Key) receipt differs from retained bytes"
+        }
+    }
+}
 $static = @{}
 foreach ($entry in @($bundleManifest.artifacts)) {
     $role=[string]$entry.role; $path=Join-Path $StaticBundleDir ([string]$entry.file)
@@ -257,6 +308,7 @@ $plan = [ordered]@{
     static_bundle_live_resolution_report = $LiveResolutionReportPath
     static_bundle_live_resolution_report_sha256 = (Get-FileHash -LiteralPath $LiveResolutionReportPath -Algorithm SHA256).Hash.ToLowerInvariant()
     static_bundle_manifest_sha256 = (Get-FileHash -LiteralPath $bundleManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    product_modset_sha256 = $productModsetSha256
     static_bundle_phase = "pre_injection_deferred"
     finalized_static_bundle = $finalizedStaticBundleDir
     emitted_token_inventory = $EmittedTokensPath
@@ -327,6 +379,11 @@ if (
     [int]$liveResolution.process.pid -ne $Hoi4Pid -or
     [int64]$liveResolution.process.creation_filetime_utc -ne $processCreationFiletimeUtc
 ) { throw "static live-resolution report is for a different the game process identity" }
+if ($null -ne $preparedModsetReceipt -and (
+    [int]$preparedModsetReceipt.process.pid -ne $Hoi4Pid -or
+    [int64]$preparedModsetReceipt.process.creation_filetime_utc -ne $processCreationFiletimeUtc -or
+    [string]$preparedModsetReceipt.process.executable_sha256 -cne $exeSha.ToLowerInvariant()
+)) { throw "prepared product-modset receipt is for a different the game process identity" }
 $plan["exe_sha256"]=$exeSha.ToLowerInvariant()
 $plan["domain57_game_speed_gate_v2_sha256"]=$speedRootGateSha
 $plan["process_start_utc"]=$game.StartTime.ToUniversalTime().ToString('o')
@@ -341,7 +398,7 @@ New-Item -ItemType Directory -Path $AttemptStateRoot -Force | Out-Null
 $attemptMarkerPath=Join-Path $AttemptStateRoot ("hoi4_pid_{0}.unresolved.json" -f $Hoi4Pid)
 if (Test-Path -LiteralPath $attemptMarkerPath -PathType Leaf) { throw "unresolved prior injection attempt exists: $attemptMarkerPath; use Resolve-Hoi4ProductionCaptureAttempt.ps1 after proving the child/module is gone" }
 $attemptMarker=@{
-    schema="battle-plan.production_capture_attempt.v1"; state="committed_pre_launch"; session_id=$SessionId; pid=$Hoi4Pid
+    schema="battle-plan.production_capture_attempt.v1"; state="committed_pre_launch"; session_id=$SessionId; capture_id=$CaptureId; pid=$Hoi4Pid
     process_start_utc=$game.StartTime.ToUniversalTime().ToString('o'); exe_sha256=$exeSha.ToLowerInvariant()
     staged_dll=$stagedDll; staged_dll_sha256=$stagedSha; capture_plan_sha256=$planSha
     domain57_game_speed_gate_v2=$SpeedRootGatePath; domain57_game_speed_gate_v2_sha256=$speedRootGateSha
@@ -423,6 +480,11 @@ try {
     Write-DurableJson -Path $speedProofPath -Value $proof
 
     if ([string]$captureManifest.session_id -cne $SessionId) { throw "capture manifest session id differs from the capture plan" }
+    if (
+        [string]$captureManifest.static_bundle.product_modset_sha256 -cne $productModsetSha256 -or
+        [string]$captureManifest.portable_content_manifest.schema -cne 'hoi4.portable-content-manifest.v2' -or
+        [string]$captureManifest.portable_content_manifest.product_modset_sha256 -cne $productModsetSha256
+    ) { throw "capture publication lost or changed the admitted product-modset key" }
     $captureStreamSha256 = [string]$captureManifest.host_finalize.stream_sha256
     if ($captureStreamSha256 -cnotmatch '^[0-9a-f]{64}$') { throw "capture manifest has no canonical finalized stream SHA-256" }
     if (-not (Test-Path -LiteralPath $EmittedTokensPath -PathType Leaf)) {
@@ -453,6 +515,10 @@ try {
     $StaticBundleDir = (Resolve-Path -LiteralPath $finalizedStaticBundleDir).Path
     $bundleManifestPath = Join-Path $StaticBundleDir "static_bundle_manifest.json"
     $bundleManifest = Get-Content -LiteralPath $bundleManifestPath -Raw | ConvertFrom-Json
+    if (
+        [string]$bundleManifest.schema -cne 'extractor.static_bundle.v3' -or
+        [string]$bundleManifest.bindings.product_modset.product_modset_sha256 -cne $productModsetSha256
+    ) { throw "finalized static bundle changed the admitted product-modset key" }
     $static = @{}
     foreach ($entry in @($bundleManifest.artifacts)) {
         $role=[string]$entry.role; $path=Join-Path $StaticBundleDir ([string]$entry.file)
@@ -504,6 +570,31 @@ if ($AcceptanceMode -eq "production") {
 }
 $resolvedMarker=Join-Path $AttemptStateRoot ("$SessionId.resolved.json")
 $validationState = if ($AcceptanceMode -eq "production") { "validation_passed" } else { "acceptance_validation_passed" }
-Update-AttemptMarker $attemptMarkerPath $attemptMarker $validationState @{validation_report=$validationReportPath; admissible_for_production=($AcceptanceMode -eq "production")}
+$manifestPath = Join-Path $OutDir "native_session_manifest.json"
+$validationReceipt = [ordered]@{
+    schema = "battle-plan.production_capture_validation_receipt.v1"
+    session_id = $SessionId
+    capture_id = $CaptureId
+    acceptance_mode = $AcceptanceMode
+    rung = if ([string]::IsNullOrWhiteSpace($Rung)) { $null } else { $Rung }
+    capture_plan_path = $planPath
+    capture_plan_sha256 = (Get-FileHash -LiteralPath $planPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    manifest_path = $manifestPath
+    manifest_sha256 = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    validation_report_path = $validationReportPath
+    validation_report_sha256 = (Get-FileHash -LiteralPath $validationReportPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    validation_report_schema = [string]$validation.schema
+    admissible_for_production = ($AcceptanceMode -eq "production")
+}
+if ($AcceptanceMode -ne "production") {
+    $validationReceipt["acceptance_test_nonce"] = $AcceptanceTestNonce
+    $validationReceipt["snapshot_extraction_report_path"] = $extractionReport
+    $validationReceipt["snapshot_extraction_report_sha256"] = (Get-FileHash -LiteralPath $extractionReport -Algorithm SHA256).Hash.ToLowerInvariant()
+    $validationReceipt["replay_path"] = $replayPath
+    $validationReceipt["replay_sha256"] = (Get-FileHash -LiteralPath $replayPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $validationReceipt["acceptance_proof"] = $validation
+    $validationReceipt["acceptance_test_observation"] = $manifest.acceptance_test_observation
+}
+Update-AttemptMarker $attemptMarkerPath $attemptMarker $validationState @{validation_report=$validationReportPath; validation_receipt=$validationReceipt; admissible_for_production=($AcceptanceMode -eq "production")}
 Move-Item -LiteralPath $attemptMarkerPath -Destination $resolvedMarker
 Write-Host "$AcceptanceMode capture validated: $OutDir"

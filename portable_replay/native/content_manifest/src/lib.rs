@@ -15,12 +15,17 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use unicode_normalization::UnicodeNormalization;
 
-pub const SCHEMA: &str = "hoi4.portable-content-manifest.v1";
+pub const SCHEMA: &str = "hoi4.portable-content-manifest.v2";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContentManifest {
     pub schema: String,
+    /// Pointer-free identity of the exact executable/mod/DLC/load-order and
+    /// effective-VFS product admitted by the extractor's static-bundle v3
+    /// gate. This is provenance, while `required_content` remains the minimal
+    /// independently distributable playback capability set.
+    pub product_modset_sha256: String,
     pub source_game: SourceGameIdentity,
     pub source_profile: SourceProfileIdentity,
     pub effective_vfs_manifest_sha256: String,
@@ -242,6 +247,7 @@ pub struct ContentValidationReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedContentAdmission {
     manifest_digest_sha256: String,
+    product_modset_sha256: String,
     required_by_path: BTreeMap<String, UsedContentKey>,
     required_by_consumer: BTreeMap<String, Vec<UsedContentKey>>,
 }
@@ -249,6 +255,10 @@ pub struct ValidatedContentAdmission {
 impl ValidatedContentAdmission {
     pub fn manifest_digest_sha256(&self) -> &str {
         &self.manifest_digest_sha256
+    }
+
+    pub fn product_modset_sha256(&self) -> &str {
+        &self.product_modset_sha256
     }
 
     pub fn used_content(&self, game_relative_path: &str) -> Option<&UsedContentKey> {
@@ -352,6 +362,7 @@ impl ContentManifest {
                 self.schema
             ));
         }
+        validate_sha256(&self.product_modset_sha256, "product modset")?;
         validate_source_game(&self.source_game)?;
         validate_source_profile(&self.source_profile)?;
         validate_sha256(
@@ -1019,6 +1030,7 @@ impl ContentManifest {
         }
         Ok(ValidatedContentAdmission {
             manifest_digest_sha256,
+            product_modset_sha256: self.product_modset_sha256.clone(),
             required_by_path: self
                 .required_content
                 .iter()
@@ -1353,6 +1365,7 @@ mod tests {
     fn manifest() -> ContentManifest {
         let mut manifest = ContentManifest {
             schema: SCHEMA.into(),
+            product_modset_sha256: h('9'),
             source_game: SourceGameIdentity {
                 version: "1.19.2".into(),
                 build: "a729".into(),
@@ -1786,5 +1799,35 @@ mod tests {
             .validate()
             .unwrap_err()
             .contains("unsafe/non-portable"));
+    }
+
+    #[test]
+    fn v1_or_missing_product_modset_identity_is_not_admissible() {
+        let current = manifest();
+        let mut legacy = serde_json::to_value(&current).unwrap();
+        legacy["schema"] = serde_json::json!("hoi4.portable-content-manifest.v1");
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("product_modset_sha256");
+        assert!(ContentManifest::decode_json(&serde_json::to_vec(&legacy).unwrap()).is_err());
+
+        let mut malformed = current;
+        malformed.manifest_digest_sha256 = None;
+        malformed.product_modset_sha256 = "not-a-sha".into();
+        assert!(malformed
+            .validate()
+            .unwrap_err()
+            .contains("product modset"));
+    }
+
+    #[test]
+    fn playback_admission_retains_product_modset_provenance() {
+        let manifest = manifest();
+        let admission = manifest.admit_playback(&inventory(&manifest)).unwrap();
+        assert_eq!(
+            admission.product_modset_sha256(),
+            manifest.product_modset_sha256
+        );
     }
 }

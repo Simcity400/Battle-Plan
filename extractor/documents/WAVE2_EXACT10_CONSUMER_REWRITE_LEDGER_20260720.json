@@ -124,7 +124,7 @@
     },
     {
       "consumer_path": "extractor/documents/dossiers/A28/REMAINING_CONTROLLER_AUDIT.json",
-      "consumer_sha256_at_audit": "1384e695e2b804e46c676c827fd876ed81f8a3bb99d64274189701cf140da8f4",
+      "consumer_sha256_at_audit": "483f7d1cb11335fcf958a9e16241654254aa15e27360083120552f104b3f7c49",
       "disposition": "deliberately_still_false",
       "reason": "The retained/controller sweep is exhausted, but no zero-gap new controller family is admitted without the named live observations.",
       "canonical_discovery_claims": [
@@ -286,7 +286,7 @@
     },
     {
       "consumer_path": "extractor/documents/dossiers/A28_DYNAMIC_COLLECTION_TRACE.json",
-      "consumer_sha256_at_audit": "7a58bca2cb6ba90c578b5ce5609be210a5ffd3d38c5fc752355c5fc74b8ba00f",
+      "consumer_sha256_at_audit": "210a9dd5bb0bf43703f4e84fa18e60fc2542703108ead6e960efed21b0a55eea",
       "disposition": "deliberately_still_false",
       "reason": "Existing admitted families remain usable, while newly anchored controller families remain fail-closed pending full identity/geometry/scroll receipts.",
       "canonical_discovery_claims": [
@@ -413,7 +413,7 @@
     },
     {
       "consumer_path": "extractor/documents/dossiers/D81_EXACT_RAIL_REPLAY_STATE.json",
-      "consumer_sha256_at_audit": "05ae4cbeca5f450793851a32a6fb8dab69941989f1389b3ccc3ad972867657c9",
+      "consumer_sha256_at_audit": "8a46934fe8d96a9704e88fdb0a20805cce6f36941036f7eb23bfbf749c6b781a",
       "disposition": "pinned",
       "reason": "All required exact-ten roots and v2 admission latches are pinned; the active collector still emits v1 until the authenticated double-read reader is implemented and centrally validated.",
       "canonical_discovery_claims": [
@@ -637,7 +637,7 @@
     },
     {
       "consumer_path": "extractor/documents/dossiers/D81_EXACT_RAIL_REPLAY_STATE.md",
-      "consumer_sha256_at_audit": "c1f96c1e7694874ffdd8a00b6bdcd0248d9f47cb4925dd6645eb5adea4a4a3d5",
+      "consumer_sha256_at_audit": "197be73f9c53e9063630561d3ef8a9aba5d65f614cc4ce345135814ac76d0cef",
       "disposition": "pinned",
       "reason": "Schema-v2 encoder/fold/replay admission is enabled and receipt-pinned, while live capture remains v1 because the authenticated double-read reader is still absent.",
       "canonical_discovery_claims": [
@@ -1280,7 +1280,7 @@
     },
     {
       "consumer_path": "extractor/native/lanes/focus_research_decisions_depth_live/A2_A12_RE_REPORT.md",
-      "consumer_sha256_at_audit": "5a399b5f2e01de1396d9d273a9f24ebe8c0c811d964cdd974de489f3451dbf5c",
+      "consumer_sha256_at_audit": "e949bd7753dd4719091f333351d743d5a2803d2f5919dcd9ee850e48dda07296",
       "disposition": "enabled",
       "reason": "The A2 pause, A12 cooldown, and targeted-decision payload union are documented production-ready; exact-ten receipts replace only their discovery provenance.",
       "canonical_discovery_claims": [
@@ -1466,7 +1466,7 @@
     },
     {
       "consumer_path": "extractor/native/lanes/naval_combat_live/A8_A9_B6_CLOSEOUT.md",
-      "consumer_sha256_at_audit": "807dd035f1b5cb98b9c16772597546fbd21d4444637b8fbb1ae018c7496980c1",
+      "consumer_sha256_at_audit": "6eb8b82603ddaac9c01469f05100ac6d578fda9e7a50a13c4f6f18aa89937490",
       "disposition": "deliberately_still_false",
       "reason": "Exact-ten evidence is pinned, but D56 receiver/base semantics and route-linked terminal convoy attribution remain unavailable rather than guessed.",
       "canonical_discovery_claims": [
@@ -1752,7 +1752,7 @@
     },
     {
       "consumer_path": "extractor/native/lanes/naval_combat_live/A8_A9_B6_HUMAN_INPUT_REQUIREMENTS.json",
-      "consumer_sha256_at_audit": "672123bddce60fd3f47653a93b4966b85ad21facb3646d45a8340857a1bb77bb",
+      "consumer_sha256_at_audit": "103ed09a1498efa3f03bf9d084a5a8743db3886f1172c419b063e4a2e70e74a8",
       "disposition": "deliberately_still_false",
       "reason": "The non-human exact-ten prerequisite is closed; the separate pre-collapse convoy route acquisition remains required.",
       "canonical_discovery_claims": [
@@ -1933,7 +1933,7 @@
     },
     {
       "consumer_path": "extractor/native/lanes/naval_combat_live/evidence/A8_A9_B6_ARTIFACT_MANIFEST.json",
-      "consumer_sha256_at_audit": "8fc047cd4223b3ea9484c0c2cf0948b0627f96745cec8d7bd656004f2cca1457",
+      "consumer_sha256_at_audit": "c2635d502e902b3c13a8812d8156ecf692d76a5b4c783f5e292fa9526e16f0b7",
       "disposition": "deliberately_still_false",
       "reason": "Discovery artifacts are superseded by exact-ten receipts, but the manifest's D56 and pre-collapse acquisition gates still prohibit promotion.",
       "canonical_discovery_claims": [
@@ -3122,7 +3122,7 @@
     },
     {
       "consumer_path": "extractor/re_evidence/SNOW_MUD_PREUPLOAD_SEAM/README.md",
-      "consumer_sha256_at_audit": "9978d850168459d27a2a935229481f36da89b276388ddd2e519f61abc6045ea6",
+      "consumer_sha256_at_audit": "400266f052532a5607cfeb3154852ceec885cd6262ff3bee4840105e0aa62ebe",
       "disposition": "deliberately_still_false",
       "reason": "The static H/H2 workflow is complete, but promotion_state remains false until the two required live capture/replay receipt pairs exist.",
       "canonical_discovery_claims": [
@@ -3165,7 +3165,7 @@
     },
     {
       "consumer_path": "extractor/re_evidence/X2_LAND_COMBAT_RESIDUALS/HUMAN_INPUT_REQUIREMENTS.json",
-      "consumer_sha256_at_audit": "db0ae1edde63bfc688e069f5abe899ae817806908e528095f9981fb9b0e29282",
+      "consumer_sha256_at_audit": "547bda23f6f873d64a42221ccd0a0472b524f36327f104f4f44f73ce57d82394",
       "disposition": "deliberately_still_false",
       "reason": "Terminal/static roots are pinned; current-loss and synchronous width activation remain explicitly controlled-fixture gated.",
       "canonical_discovery_claims": [],
@@ -3248,7 +3248,7 @@
     },
     {
       "consumer_path": "extractor/re_evidence/X2_LAND_COMBAT_RESIDUALS/REPORT.md",
-      "consumer_sha256_at_audit": "7789d9f4c61d68765e5c5501195c076b79d6a33447764f04132675cb5cd21513",
+      "consumer_sha256_at_audit": "a536c2417894e333b4223b942e6a9b865f418581761827e051b7aeff90b0ee8a",
       "disposition": "deliberately_still_false",
       "reason": "Implemented terminal/result fields retain authority, while current losses and width stay unavailable with both activation constants false.",
       "canonical_discovery_claims": [
@@ -3472,7 +3472,7 @@
     },
     {
       "consumer_path": "replay_interface/documents/lane_reports/rendering_laws/XN14Q_RUNTIME_WIRING_AUDIT.md",
-      "consumer_sha256_at_audit": "d4fafdc963194792185a863fe1d221373e6f660f40a1d16b6a41fbb6187db7a3",
+      "consumer_sha256_at_audit": "109f8688804920574df4d49efd43292f794556771b4dfcb0e14ce8281bb3a8f0",
       "disposition": "deliberately_still_false",
       "reason": "The named-registry chain is exact-ten pinned, but active weather still lacks authenticated initial-state/per-update visibility and selected-submit sequence ownership.",
       "canonical_discovery_claims": [],
@@ -3567,7 +3567,7 @@
     },
     {
       "consumer_path": "replay_interface/re_evidence/rendering_laws/CAP6/outer_gui_source_exhaustion.json",
-      "consumer_sha256_at_audit": "5806914b963cead873db855d8968816d43f26babc3ed50dfb811053456ef808d",
+      "consumer_sha256_at_audit": "e5ae1b9dff1918bd29cdda101dc34c52010790c56c7d8d91c1be08e238a40c3d",
       "disposition": "deliberately_still_false",
       "reason": "The false authority latch is intentional until one complete event-scoped GUI-paint-to-D3D receipt exists.",
       "canonical_discovery_claims": [
@@ -3940,7 +3940,7 @@
     },
     {
       "consumer_path": "replay_interface/re_evidence/rendering_laws/CAP6/verify_cap6_retained.py",
-      "consumer_sha256_at_audit": "8a6209adc36be84e8125b34127b7e28c6a0dc7b86b9819fab318b1e1997314f7",
+      "consumer_sha256_at_audit": "0ab459509e1a2d5a5c2d61bd64a909c105be3bb30297f71f205d9578aa40bbfc",
       "disposition": "deliberately_still_false",
       "reason": "The retained gate intentionally requires partial/fail-closed and zero-draw disposition until live authority is supplied.",
       "canonical_discovery_claims": [

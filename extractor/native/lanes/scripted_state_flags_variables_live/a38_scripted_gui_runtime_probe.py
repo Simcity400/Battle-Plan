@@ -56,7 +56,13 @@ MAX_VECTOR_ROWS = 8192
 MAX_WIDGET_STRING_SCAN = 0x340
 MAX_STRING = 1024
 
-GHIDRA_PROVENANCE = {
+GHIDRA_DISCOVERY_PROVENANCE = {
+    "delayed_prior_pool_reexport": {
+        "job_id": "20260720T012530Z-a38-exact10-static-controller-owner-orde-1af9a146",
+        "manifest_sha256": "43c284d90d5510fe31d06b63dea8ffb4bb7d0560f36fa743a5ad2370c7bacc8d",
+        "requested_seed_resolution": "15/15",
+        "disposition": "discovery_only_prior_exact10_pool",
+    },
     "manager_constructor": {
         "function_address": "0x140b76400",
         "job_id": "20260717T103021Z-a38-registry-loader-v1-d393bd4a",
@@ -81,6 +87,16 @@ GHIDRA_PROVENANCE = {
         "artifact_path": "evidence/func_1405354a0.decompile.c",
         "manifest_sha256": "ec800e13fcd8a8679cf23eade0d590561729090d4dc889515becb58bfdc81935",
     },
+}
+
+GHIDRA_AUTHORITY = {
+    "status": "exact20_reexport_receipt_required",
+    "promotion_allowed": False,
+    "reason": (
+        "legacy jobs are discovery aliases only; the pinned twenty-shard export "
+        "must return a successful receipt before this probe is production authority"
+    ),
+    "seed_package": "extractor/documents/dossiers/A38_EXACT20_REEXPORT_SEEDS_20260720.json",
 }
 
 
@@ -116,12 +132,131 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
+def valid_sha256(value):
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(ch in "0123456789abcdef" for ch in value)
+    )
+
+
+def canonical_game_path(value):
+    if not isinstance(value, str):
+        raise ValueError("effective winner logical path is not text")
+    path = value.replace("\\", "/")
+    parts = path.split("/")
+    if (
+        not path
+        or path.startswith("/")
+        or ":" in path
+        or any(part in ("", ".", "..") for part in parts)
+    ):
+        raise ValueError("effective winner logical path is not canonical game-relative identity")
+    return path
+
+
+def load_effective_winners(path):
+    if not path:
+        return {}, None
+    with open(path, "r", encoding="utf-8") as handle:
+        document = json.load(handle)
+    rows = document.get("ordered_rows")
+    if not isinstance(rows, list):
+        raise ValueError("effective winner input lacks ordered_rows")
+    winners = {}
+    prior = None
+    for position, row in enumerate(rows):
+        if not isinstance(row, dict) or not isinstance(row.get("content"), dict):
+            raise ValueError("effective winner row %d lacks content identity" % position)
+        content = row["content"]
+        logical_path = canonical_game_path(content.get("logical_path"))
+        if prior is not None and logical_path <= prior:
+            raise ValueError("effective winner rows are not uniquely ordered by logical path")
+        prior = logical_path
+        identity = {
+            "logical_path": logical_path,
+            "winning_layer_ordinal": content.get("winning_layer_ordinal"),
+            "layer_kind": content.get("layer_kind"),
+            "layer_id": content.get("layer_id"),
+            "source_sha256": content.get("source_sha256"),
+            "payload_sha256": content.get("payload_sha256"),
+            "payload_bytes": content.get("payload_bytes"),
+        }
+        if (
+            not isinstance(identity["winning_layer_ordinal"], int)
+            or identity["winning_layer_ordinal"] < 0
+            or identity["layer_kind"] not in ("base", "integrated_dlc", "dlc", "mod")
+            or not isinstance(identity["layer_id"], str)
+            or not identity["layer_id"].strip()
+            or not valid_sha256(identity["source_sha256"])
+            or not valid_sha256(identity["payload_sha256"])
+            or not isinstance(identity["payload_bytes"], int)
+            or identity["payload_bytes"] <= 0
+        ):
+            raise ValueError("effective winner row %d has incomplete content identity" % position)
+        winners[logical_path] = identity
+    declared = document.get("declared_row_count")
+    if declared != len(rows) or not valid_sha256(document.get("ordered_rows_sha256")):
+        raise ValueError("effective winner index header is incomplete")
+    receipt = {
+        "path": os.path.relpath(os.path.abspath(path), REPO_ROOT).replace("\\", "/"),
+        "sha256": sha256_file(path),
+        "authority_manifest_sha256": document.get("authority_manifest_sha256"),
+        "ordered_rows_sha256": document["ordered_rows_sha256"],
+        "declared_row_count": declared,
+        "diagnostic_projection_only": True,
+        "production_authorizer": "collector::authenticate_a38_definition_winner",
+    }
+    if not valid_sha256(receipt["authority_manifest_sha256"]):
+        raise ValueError("effective winner index lacks authority manifest digest")
+    return winners, receipt
+
+
 def load_registry():
     path = os.path.join(REPO_ROOT, "extractor", "game_defs", "out", "scripted_guis.json")
     with open(path, "r", encoding="utf-8") as handle:
         data = json.load(handle)
     guis = data.get("scripted_guis", {})
     return path, data.get("meta", {}), set(guis), guis
+
+
+def registry_identity(gui_id, definition, winners):
+    source_file = canonical_game_path(definition.get("source_file"))
+    winner = winners.get(source_file)
+    elements = definition.get("elements") or {}
+    if not isinstance(elements, dict):
+        raise ValueError("registry GUI %s has malformed elements" % gui_id)
+    property_keys = []
+    for element, properties in elements.items():
+        if not isinstance(element, str) or not isinstance(properties, dict):
+            raise ValueError("registry GUI %s has malformed property rows" % gui_id)
+        property_keys.extend(
+            {"element": element, "property": prop}
+            for prop in sorted(properties)
+            if isinstance(prop, str)
+        )
+    triggers = definition.get("triggers") or {}
+    effects = definition.get("effects") or {}
+    if not isinstance(triggers, dict) or not isinstance(effects, dict):
+        raise ValueError("registry GUI %s has malformed trigger/effect maps" % gui_id)
+    identity = {
+        "gui_id": gui_id,
+        "context_type": definition.get("context_type"),
+        "window_name": definition.get("window_name"),
+        "source_file": source_file,
+        "expected_trigger_names": sorted(triggers),
+        "expected_effect_names": sorted(effects),
+        "expected_property_keys": property_keys,
+        "effective_vfs_winner": winner,
+    }
+    identity["portable_identity_complete"] = bool(
+        isinstance(identity["context_type"], str)
+        and identity["context_type"]
+        and isinstance(identity["window_name"], str)
+        and identity["window_name"]
+        and winner is not None
+    )
+    return identity
 
 
 def stable_blob(proc, addr, size):
@@ -317,24 +452,39 @@ def tag_database(proc):
     return database, table, count, tags
 
 
-def updater_snapshot(proc, updater, registry_ids, tags):
+def updater_snapshot(proc, updater, manager_order_index, registry, registry_ids, winners, tags):
     if not heap_ok(updater):
-        return {"updater": hx(updater), "status": "invalid_pointer"}
+        return {
+            "manager_order_index": manager_order_index,
+            "updater": hx(updater),
+            "status": "invalid_pointer",
+        }
     definition = try_u64(proc, updater + UPDATER_DEFINITION)
     window = try_u64(proc, updater + UPDATER_WINDOW)
+    definition_id = (
+        read_ascii_msvc_string(proc, definition + 0x08, 512) if heap_ok(definition) else None
+    )
     candidates = definition_candidates(proc, definition)
     registry_matches = [row for row in candidates if row["value"] in registry_ids]
+    matched_id = definition_id if definition_id in registry_ids else None
     owner_id = try_u32(proc, updater + UPDATER_CONTEXT + CONTEXT_COUNTRY_TAG_DB_ID)
     vectors = {
         name: vector_header(proc, updater, ptr_off, count_off, stride)
         for name, (ptr_off, count_off, stride) in VECTOR_SPECS.items()
     }
     return {
+        "manager_order_index": manager_order_index,
         "updater": hx(updater),
-        "status": "validated" if registry_matches else "definition_id_not_joined",
+        "status": "validated" if matched_id else "definition_id_not_uniquely_joined",
         "definition": hx(definition),
+        "definition_id_exact_offset_0x08": definition_id,
+        "definition_id_source": "definition_plus_0x08_msvc_string",
         "definition_strings": candidates,
         "registry_matches": registry_matches,
+        "matched_registry_gui_id": matched_id,
+        "portable_definition_identity": (
+            registry_identity(matched_id, registry[matched_id], winners) if matched_id else None
+        ),
         "window": hx(window),
         "owner_country_tag_db_id": owner_id,
         "owner_country_tag": tags.get(owner_id),
@@ -343,7 +493,7 @@ def updater_snapshot(proc, updater, registry_ids, tags):
     }
 
 
-def manager_snapshot(proc, manager, registry_ids, tags, max_updaters):
+def manager_snapshot(proc, manager, registry, registry_ids, winners, tags, max_updaters):
     if try_u64(proc, manager) != proc.module_base + MANAGER_VTABLE_RVA:
         return {"manager": hx(manager), "status": "vtable_mismatch"}
     updaters, error = stable_pointer_array(
@@ -364,12 +514,71 @@ def manager_snapshot(proc, manager, registry_ids, tags, max_updaters):
         "updaters": [],
     }
     if updaters is not None:
-        result["updaters"] = [updater_snapshot(proc, item, registry_ids, tags) for item in updaters]
+        result["updaters"] = [
+            updater_snapshot(proc, item, index, registry, registry_ids, winners, tags)
+            for index, item in enumerate(updaters)
+        ]
         joined = sum(row["status"] == "validated" for row in result["updaters"])
         result["joined_registry_updaters"] = joined
         if updaters and joined == 0:
             result["status"] = "no_updater_joined_registry"
     return result
+
+
+def portable_prerequisites(manager):
+    rows = []
+    blockers = []
+    for expected_index, updater in enumerate(manager.get("updaters") or []):
+        if updater.get("manager_order_index") != expected_index:
+            blockers.append("manager_order_not_contiguous:%d" % expected_index)
+        if updater.get("status") != "validated":
+            blockers.append("updater_not_joined:%d" % expected_index)
+        owner = updater.get("owner_country_tag")
+        if (
+            not isinstance(owner, str)
+            or len(owner) != 3
+            or not owner.isascii()
+            or not owner.isalnum()
+            or owner != owner.upper()
+        ):
+            blockers.append("owner_tag_not_canonical:%d" % expected_index)
+        definition = updater.get("portable_definition_identity")
+        if not isinstance(definition, dict) or not definition.get("portable_identity_complete"):
+            blockers.append("definition_winner_not_joined:%d" % expected_index)
+        vector_measurements = {}
+        for name, vector in (updater.get("vectors") or {}).items():
+            status = vector.get("status")
+            if status not in ("measured", "measured_empty"):
+                blockers.append("vector_not_stable:%d:%s" % (expected_index, name))
+            vector_measurements[name] = {
+                "status": status,
+                "count": vector.get("count"),
+            }
+        rows.append({
+            "manager_order_index": expected_index,
+            "owner_country_tag": owner,
+            "gui_id": updater.get("matched_registry_gui_id"),
+            "definition": definition,
+            "root_visible_byte": updater.get("root_visible_byte"),
+            "vector_measurements": vector_measurements,
+        })
+    unique_keys = {
+        (row.get("owner_country_tag"), row.get("gui_id")) for row in rows
+    }
+    if len(unique_keys) != len(rows):
+        blockers.append("duplicate_owner_gui_identity")
+    if not GHIDRA_AUTHORITY["promotion_allowed"]:
+        blockers.append("exact20_authority_receipt_not_bound")
+    blockers.append("production_h4ct_winner_authorization_required")
+    return {
+        "schema": "extractor.a38_scripted_gui_portable_prerequisites.v1",
+        "pointer_free": True,
+        "ready_for_runtime_result_compilation": not blockers,
+        "promotion_allowed": False,
+        "promotion_blocker": "exact20 Ghidra receipt and discriminating runtime matrix remain required",
+        "blockers": sorted(set(blockers)),
+        "rows": rows,
+    }
 
 
 def scan_manager(proc, workers):
@@ -400,8 +609,11 @@ def scan_manager(proc, workers):
     }
 
 
-def run_probe(workers, max_updaters):
-    registry_path, registry_meta, registry_ids, _ = load_registry()
+def run_probe(workers, max_updaters, effective_winner_index, ui14_engine_vfs_sha256):
+    registry_path, registry_meta, registry_ids, registry = load_registry()
+    winners, winner_receipt = load_effective_winners(effective_winner_index)
+    if ui14_engine_vfs_sha256 is not None and not valid_sha256(ui14_engine_vfs_sha256):
+        raise ValueError("UI14 engine-VFS digest is not a lowercase SHA-256")
     proc = winmem.open_process("hoi4.exe")
     if proc is None:
         raise SystemExit("hoi4.exe not running")
@@ -413,25 +625,39 @@ def run_probe(workers, max_updaters):
         scan = scan_manager(proc, workers)
         database, tag_table, tag_count, tags = tag_database(proc)
         managers = [
-            manager_snapshot(proc, hit, registry_ids, tags, max_updaters)
+            manager_snapshot(proc, hit, registry, registry_ids, winners, tags, max_updaters)
             for hit in scan["hits"]
         ]
         validated = [row for row in managers if row["status"] == "validated"]
         if len(validated) != 1:
             raise RuntimeError("expected exactly one validated CScriptedWindowManager, got %d" % len(validated))
+        portable = portable_prerequisites(validated[0])
+        if winner_receipt is None:
+            portable["ready_for_runtime_result_compilation"] = False
+            portable["blockers"] = sorted(
+                set(portable["blockers"] + ["authenticated_effective_winner_index_not_supplied"])
+            )
+        elif ui14_engine_vfs_sha256 is None:
+            portable["ready_for_runtime_result_compilation"] = False
+            portable["blockers"] = sorted(
+                set(portable["blockers"] + ["ui14_engine_vfs_sha256_not_supplied"])
+            )
         return {
             "schema": "extractor.a38_scripted_gui_runtime_live_probe.v1",
             "created_utc": datetime.now(timezone.utc).isoformat(),
             "read_only": True,
             "identity": fingerprint,
             "expected_sha256": EXPECTED_SHA256,
-            "ghidra_provenance": GHIDRA_PROVENANCE,
+            "ghidra_authority": GHIDRA_AUTHORITY,
+            "ghidra_discovery_provenance": GHIDRA_DISCOVERY_PROVENANCE,
             "registry": {
                 "path": os.path.relpath(registry_path, REPO_ROOT).replace("\\", "/"),
                 "sha256": sha256_file(registry_path),
                 "meta": registry_meta,
                 "gui_id_count": len(registry_ids),
             },
+            "effective_winner_index": winner_receipt,
+            "ui14_engine_vfs_sha256": ui14_engine_vfs_sha256,
             "country_tag_database": {
                 "database": hx(database),
                 "table": hx(tag_table),
@@ -441,6 +667,7 @@ def run_probe(workers, max_updaters):
             "manager_scan": scan,
             "manager_candidates": managers,
             "validated_manager": validated[0],
+            "portable_prerequisites": portable,
         }
 
 
@@ -449,8 +676,25 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--workers", type=int, default=max(1, min(8, (os.cpu_count() or 2) - 2)))
     parser.add_argument("--max-updaters", type=int, default=MAX_UPDATERS)
+    parser.add_argument(
+        "--effective-winner-index",
+        help=(
+            "diagnostic JSON projection of RawEffectiveVfsWinnerIndexBinding; production "
+            "still requires collector::authenticate_a38_definition_winner over the "
+            "H4CT-admitted index"
+        ),
+    )
+    parser.add_argument(
+        "--ui14-engine-vfs-sha256",
+        help="lowercase digest of the authenticated UI14 engine-VFS receipt",
+    )
     args = parser.parse_args()
-    report = run_probe(args.workers, args.max_updaters)
+    report = run_probe(
+        args.workers,
+        args.max_updaters,
+        args.effective_winner_index,
+        args.ui14_engine_vfs_sha256,
+    )
     out = os.path.abspath(args.out)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as handle:
@@ -461,6 +705,9 @@ def main():
         "validated_manager": report["validated_manager"]["manager"],
         "updater_count": report["validated_manager"]["updater_count"],
         "joined_registry_updaters": report["validated_manager"]["joined_registry_updaters"],
+        "portable_prerequisites_ready": report["portable_prerequisites"][
+            "ready_for_runtime_result_compilation"
+        ],
         "scan_elapsed_s": report["manager_scan"]["elapsed_s"],
         "out": out,
         "sha256": sha256_file(out),

@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 
 #[cfg(windows)]
 pub mod a729_hook;
+pub mod selected_designer_identity;
 
 pub const DOMAIN_ID: u16 = 78;
 pub const DOMAIN_NAME: &str = "design_catalog_context_live";

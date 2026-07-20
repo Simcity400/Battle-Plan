@@ -272,6 +272,7 @@ mod tests {
             operation_instances: Leaf::Absent,
             intel_levels: Leaf::Absent,
             intel_network_graphs: Leaf::Absent,
+            subject_autonomy_current: Leaf::Absent,
             relation_flags: BTreeMap::new(),
         }
     }
@@ -289,6 +290,13 @@ mod tests {
                 second: Leaf::Measured("ENG".to_string()),
                 first_casualties: Leaf::Measured(1200),
                 second_casualties: Leaf::Measured(900),
+                threat_fixed5_raw: Leaf::Absent,
+                threat_fixed_scale: Leaf::Absent,
+                first_was_instigator: Leaf::Absent,
+                hostility_reason_instigator_raw: Leaf::Absent,
+                hostility_reason_instigator: Leaf::Absent,
+                hostility_reason_defender_raw: Leaf::Absent,
+                hostility_reason_defender: Leaf::Absent,
             }]),
         );
         let summaries = war_relation_summaries(&view);
@@ -325,6 +333,13 @@ mod tests {
                 second: Leaf::Measured("ENG".to_string()),
                 first_casualties: Leaf::Unobtained,
                 second_casualties: Leaf::Absent,
+                threat_fixed5_raw: Leaf::Absent,
+                threat_fixed_scale: Leaf::Absent,
+                first_was_instigator: Leaf::Absent,
+                hostility_reason_instigator_raw: Leaf::Absent,
+                hostility_reason_instigator: Leaf::Absent,
+                hostility_reason_defender_raw: Leaf::Absent,
+                hostility_reason_defender: Leaf::Absent,
             }]),
         );
         let s = war_relation_summaries(&view);

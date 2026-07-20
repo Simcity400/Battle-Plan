@@ -6,6 +6,9 @@
 
 use std::collections::BTreeSet;
 
+#[cfg(windows)]
+pub mod a729_hook;
+
 pub const MAGIC: u32 = u32::from_le_bytes(*b"ABL1");
 pub const SCHEMA_VERSION: u32 = 1;
 pub const AUTHORITY_EXACT_A729_ABILITY_CONTROLLER: u32 = 0xA729_0036;

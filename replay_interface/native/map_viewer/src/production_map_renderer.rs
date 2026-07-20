@@ -189,6 +189,7 @@ pub fn validate_c03_camera_replay_binding(binding: &C03CameraReplayBinding) -> R
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedProductionMapFrame {
     pub content_manifest_sha256: String,
+    pub product_modset_sha256: String,
     pub effective_vfs_manifest_sha256: String,
     pub selected_submit_index: Option<u64>,
     pub selected_submit_global_order: Option<u32>,
@@ -233,6 +234,7 @@ pub struct PreparedProductionMapFrame {
 pub struct ProductionMapRenderer {
     resolver: GameFileResolver,
     manifest_sha256: String,
+    product_modset_sha256: String,
     effective_vfs_manifest_sha256: String,
     resource_catalog: BTreeMap<String, ProductionMapResource>,
     resources: BTreeMap<String, ProductionMapResource>,
@@ -257,6 +259,11 @@ impl ProductionMapRenderer {
         if manifest_sha256 != admission.manifest_digest_sha256() {
             return Err(
                 "production map renderer admission belongs to a different content manifest".into(),
+            );
+        }
+        if manifest.product_modset_sha256 != admission.product_modset_sha256() {
+            return Err(
+                "production map renderer admission belongs to a different product modset".into(),
             );
         }
 
@@ -295,6 +302,7 @@ impl ProductionMapRenderer {
         Ok(Self {
             resolver: resolver.clone(),
             manifest_sha256: manifest_sha256.to_string(),
+            product_modset_sha256: manifest.product_modset_sha256.clone(),
             effective_vfs_manifest_sha256: manifest.effective_vfs_manifest_sha256.clone(),
             resource_catalog,
             resources: BTreeMap::new(),
@@ -474,6 +482,7 @@ impl ProductionMapRenderer {
 
         Ok(PreparedProductionMapFrame {
             content_manifest_sha256: self.manifest_sha256.clone(),
+            product_modset_sha256: self.product_modset_sha256.clone(),
             effective_vfs_manifest_sha256: self.effective_vfs_manifest_sha256.clone(),
             selected_submit_index,
             selected_submit_global_order,

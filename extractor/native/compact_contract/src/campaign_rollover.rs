@@ -10,7 +10,7 @@ use crate::calendar::hour_index_from_raw;
 pub const ROLLOVER_PROPOSE_MAGIC: &[u8; 4] = b"CRP1";
 pub const ROLLOVER_ACK_MAGIC: &[u8; 4] = b"CRA1";
 pub const ROLLOVER_VERSION: u16 = 1;
-pub const ROLLOVER_PROPOSE_LEN: usize = 104;
+pub const ROLLOVER_PROPOSE_LEN: usize = 168;
 pub const ROLLOVER_ACK_LEN: usize = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,7 +53,16 @@ pub struct RolloverProposeV1 {
     pub last_admitted_h4cr_sequence: u64,
     pub boundary_game_hour_raw: i32,
     pub reason: RolloverReason,
+    /// Digest of the current engine-persisted `(game_unique_id,
+    /// game_unique_seed)` pair. This is CID1's campaign id, not a payload hash.
+    pub current_campaign_id: [u8; 32],
+    /// Digest of the proposed engine-persisted identity pair.
+    pub proposed_campaign_id: [u8; 32],
+    /// SHA-256 of the complete current CID1 payload, including its observation
+    /// hour and witnesses. It authenticates exact bytes but does not define
+    /// campaign equality.
     pub current_cid1_payload_sha256: [u8; 32],
+    /// SHA-256 of the exact sequence-zero CID1 payload expected after CRA1.
     pub proposed_cid1_payload_sha256: [u8; 32],
     pub proposal_nonce: u64,
 }
@@ -76,13 +85,32 @@ impl RolloverProposeV1 {
         if self.proposal_nonce == 0 || self.proposal_nonce == u64::MAX {
             return Err(RolloverCodecError::InvalidField("proposal_nonce"));
         }
-        let hashes_equal = self.current_cid1_payload_sha256 == self.proposed_cid1_payload_sha256;
-        match self.reason {
-            RolloverReason::WholePairChanged if hashes_equal => Err(
-                RolloverCodecError::InvalidField("whole_pair_changed_hashes"),
+        for (field, digest) in [
+            ("current_campaign_id", self.current_campaign_id),
+            ("proposed_campaign_id", self.proposed_campaign_id),
+            (
+                "current_cid1_payload_sha256",
+                self.current_cid1_payload_sha256,
             ),
-            RolloverReason::SamePairTimeRollback if !hashes_equal => Err(
-                RolloverCodecError::InvalidField("same_pair_rollback_hashes"),
+            (
+                "proposed_cid1_payload_sha256",
+                self.proposed_cid1_payload_sha256,
+            ),
+        ] {
+            if digest == [0; 32] {
+                return Err(RolloverCodecError::InvalidField(field));
+            }
+        }
+        let campaign_ids_equal = self.current_campaign_id == self.proposed_campaign_id;
+        match self.reason {
+            RolloverReason::WholePairChanged if campaign_ids_equal => Err(
+                RolloverCodecError::InvalidField("whole_pair_changed_campaign_ids"),
+            ),
+            RolloverReason::SamePairTimeRollback if !campaign_ids_equal => Err(
+                RolloverCodecError::InvalidField("same_pair_rollback_campaign_ids"),
+            ),
+            _ if self.current_cid1_payload_sha256 == self.proposed_cid1_payload_sha256 => Err(
+                RolloverCodecError::InvalidField("cid1_payload_hash_did_not_change"),
             ),
             _ => Ok(()),
         }
@@ -168,9 +196,11 @@ pub fn encode_rollover_propose(
     out[24..28].copy_from_slice(&value.boundary_game_hour_raw.to_le_bytes());
     out[28..30].copy_from_slice(&(value.reason as u16).to_le_bytes());
     // flags at 30..32 remain zero.
-    out[32..64].copy_from_slice(&value.current_cid1_payload_sha256);
-    out[64..96].copy_from_slice(&value.proposed_cid1_payload_sha256);
-    out[96..104].copy_from_slice(&value.proposal_nonce.to_le_bytes());
+    out[32..64].copy_from_slice(&value.current_campaign_id);
+    out[64..96].copy_from_slice(&value.proposed_campaign_id);
+    out[96..128].copy_from_slice(&value.current_cid1_payload_sha256);
+    out[128..160].copy_from_slice(&value.proposed_cid1_payload_sha256);
+    out[160..168].copy_from_slice(&value.proposal_nonce.to_le_bytes());
     Ok(out)
 }
 
@@ -184,9 +214,11 @@ pub fn decode_rollover_propose(payload: &[u8]) -> Result<RolloverProposeV1, Roll
         last_admitted_h4cr_sequence: read_u64(payload, 16),
         boundary_game_hour_raw: read_i32(payload, 24),
         reason: RolloverReason::decode(read_u16(payload, 28))?,
-        current_cid1_payload_sha256: read_bytes32(payload, 32),
-        proposed_cid1_payload_sha256: read_bytes32(payload, 64),
-        proposal_nonce: read_u64(payload, 96),
+        current_campaign_id: read_bytes32(payload, 32),
+        proposed_campaign_id: read_bytes32(payload, 64),
+        current_cid1_payload_sha256: read_bytes32(payload, 96),
+        proposed_cid1_payload_sha256: read_bytes32(payload, 128),
+        proposal_nonce: read_u64(payload, 160),
     };
     value.validate()?;
     Ok(value)
@@ -304,8 +336,10 @@ mod tests {
             last_admitted_h4cr_sequence: 99,
             boundary_game_hour_raw: hour(),
             reason: RolloverReason::WholePairChanged,
-            current_cid1_payload_sha256: [1; 32],
-            proposed_cid1_payload_sha256: [2; 32],
+            current_campaign_id: [1; 32],
+            proposed_campaign_id: [2; 32],
+            current_cid1_payload_sha256: [3; 32],
+            proposed_cid1_payload_sha256: [4; 32],
             proposal_nonce: 7,
         }
     }
@@ -315,7 +349,11 @@ mod tests {
         let value = changed();
         let wire = encode_rollover_propose(&value).unwrap();
         assert_eq!(&wire[0..4], b"CRP1");
-        assert_eq!(wire.len(), 104);
+        assert_eq!(wire.len(), 168);
+        assert_eq!(&wire[32..64], &value.current_campaign_id);
+        assert_eq!(&wire[64..96], &value.proposed_campaign_id);
+        assert_eq!(&wire[96..128], &value.current_cid1_payload_sha256);
+        assert_eq!(&wire[128..160], &value.proposed_cid1_payload_sha256);
         assert_eq!(decode_rollover_propose(&wire).unwrap(), value);
     }
 
@@ -324,12 +362,49 @@ mod tests {
         let mut same = changed();
         same.reason = RolloverReason::SamePairTimeRollback;
         assert!(encode_rollover_propose(&same).is_err());
-        same.proposed_cid1_payload_sha256 = same.current_cid1_payload_sha256;
+        same.proposed_campaign_id = same.current_campaign_id;
         let mut wire = encode_rollover_propose(&same).unwrap();
         wire[30] = 1;
         assert_eq!(
             decode_rollover_propose(&wire),
             Err(RolloverCodecError::NonZeroReserved)
+        );
+    }
+
+    #[test]
+    fn same_pair_rollback_requires_equal_pair_but_distinct_full_cid1_hashes() {
+        let mut same = changed();
+        same.reason = RolloverReason::SamePairTimeRollback;
+        same.proposed_campaign_id = same.current_campaign_id;
+        assert!(encode_rollover_propose(&same).is_ok());
+
+        same.proposed_cid1_payload_sha256 = same.current_cid1_payload_sha256;
+        assert_eq!(
+            same.validate(),
+            Err(RolloverCodecError::InvalidField(
+                "cid1_payload_hash_did_not_change"
+            ))
+        );
+    }
+
+    #[test]
+    fn whole_pair_reason_is_independent_of_full_cid1_hash_equality() {
+        let mut changed = changed();
+        changed.proposed_campaign_id = changed.current_campaign_id;
+        assert_eq!(
+            changed.validate(),
+            Err(RolloverCodecError::InvalidField(
+                "whole_pair_changed_campaign_ids"
+            ))
+        );
+
+        changed.proposed_campaign_id = [9; 32];
+        changed.proposed_cid1_payload_sha256 = changed.current_cid1_payload_sha256;
+        assert_eq!(
+            changed.validate(),
+            Err(RolloverCodecError::InvalidField(
+                "cid1_payload_hash_did_not_change"
+            ))
         );
     }
 

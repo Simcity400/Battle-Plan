@@ -1,9 +1,9 @@
 //! Generic, mod-extensible scripted-GUI evaluator.
 //!
 //! Definitions are discovered from the effective UI14/UI15 VFS. The evaluator
-//! consumes only replay_core's typed d51 view. Predicates and effects outside
-//! the recorded variable/flag subset fail closed and may be satisfied only by
-//! exact engine-resolved inputs carried in the recording.
+//! consumes replay_core's typed d51 variable/flag view first. Predicates and
+//! effects outside that subset fail closed and may be satisfied only by exact
+//! d84 engine-resolved inputs carried in the recording.
 
 use crate::assets::AssetResolver;
 use crate::paradox_text::{parse_file, Entry, Value};
@@ -936,11 +936,11 @@ pub fn evaluate_definition(
 ) -> ScriptedGuiEvaluation {
     let visible = captured_truth(
         definition.visible.evaluate(state),
-        captured.map(|v| &v.visible),
+        captured.map(|v| &v.visible.value),
     );
     let enabled = captured_truth(
         definition.enabled.evaluate(state),
-        captured.map(|v| &v.enabled),
+        captured.map(|v| &v.enabled.value),
     );
     let triggers: BTreeMap<String, Truth> = definition
         .triggers
@@ -948,16 +948,11 @@ pub fn evaluate_definition(
         .map(|(name, predicate)| {
             let truth = predicate.evaluate(state);
             let truth = if truth == Truth::Unavailable {
-                captured.and_then(|value| value.triggers.get(name)).map_or(
-                    Truth::Unavailable,
-                    |value| {
-                        if *value {
-                            Truth::True
-                        } else {
-                            Truth::False
-                        }
-                    },
-                )
+                captured
+                    .and_then(|value| value.triggers.get(name))
+                    .map_or(Truth::Unavailable, |value| {
+                        captured_truth(Truth::Unavailable, Some(&value.value))
+                    })
             } else {
                 truth
             };
@@ -1007,7 +1002,7 @@ fn effect_enabled_truth(
 ) -> Truth {
     let definition_enabled = captured_truth(
         definition.enabled.evaluate(state),
-        captured.map(|value| &value.enabled),
+        captured.map(|value| &value.enabled.value),
     );
     let trigger_name = format!("{effect_name}_enabled");
     let Some(predicate) = definition.triggers.get(&trigger_name) else {
@@ -1020,11 +1015,7 @@ fn effect_enabled_truth(
         captured
             .and_then(|value| value.effect_enabled.get(effect_name))
             .map_or(Truth::Unavailable, |value| {
-                if *value {
-                    Truth::True
-                } else {
-                    Truth::False
-                }
+                captured_truth(Truth::Unavailable, Some(&value.value))
             })
     };
     truth_and(definition_enabled, effect_gate)
@@ -1033,11 +1024,13 @@ fn effect_enabled_truth(
 fn captured_property(captured: Option<&ScriptedGuiRuntimeInputs>, name: &str) -> EvaluatedProperty {
     captured
         .and_then(|value| value.properties.get(name))
-        .map_or(EvaluatedProperty::Unavailable, |value| {
-            EvaluatedProperty::String {
-                value: value.clone(),
-                captured: true,
-            }
+        .and_then(|value| match &value.value {
+            Leaf::Measured(value) => Some(value),
+            _ => None,
+        })
+        .map_or(EvaluatedProperty::Unavailable, |value| EvaluatedProperty::String {
+            value: value.clone(),
+            captured: true,
         })
 }
 

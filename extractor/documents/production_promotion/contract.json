@@ -23,7 +23,7 @@
       "ids": ["A2", "A12"],
       "law": "Exact focus paused bit plus decision taken/re-enable/remove, cooldown, targeted-timed numeric target, and lifecycle layouts.",
       "report": "extractor/native/lanes/focus_research_decisions_depth_live/A2_A12_RE_REPORT.md",
-      "report_sha256": "5a399b5f2e01de1396d9d273a9f24ebe8c0c811d964cdd974de489f3451dbf5c",
+      "report_sha256": "e949bd7753dd4719091f333351d743d5a2803d2f5919dcd9ee850e48dda07296",
       "evidence": "extractor/native/lanes/focus_research_decisions_depth_live/A2_A12_RE_EVIDENCE.json",
       "evidence_sha256": "de3cd86ec3b206f6cc9b665530966620b9970c4abb24b1b8e77745df07e76ebd"
     },
@@ -67,22 +67,22 @@
     }
   ],
   "production_surfaces": [
-    {"path": "extractor/native/domain_registry.json", "role": "schedulable domain roster and status", "sha256": "0b1d0fbcc65d6da1d170c94cf4a09533390b5682d3fb421f12ec578ffc258a25"},
-    {"path": "extractor/native/compact_contract/src/build_profile.rs", "role": "pinned RVAs, layouts, and build gates", "sha256": "1f7109a146f2b6bf3245dc0ea20f959393bad7181ca0afd3d03f0157547f5c35"},
+    {"path": "extractor/native/domain_registry.json", "role": "schedulable domain roster and status", "sha256": "67af50cf8efdb55718b943ed7f8f3655b56560557db3603cf3de54a91d652e70"},
+    {"path": "extractor/native/compact_contract/src/build_profile.rs", "role": "pinned RVAs, layouts, and build gates", "sha256": "399df7035bc495683ca29a42bd39a00aeaed5563d43ef12e5c2ba56f51f0fb8c"},
     {"path": "extractor/native/compact_contract/src/building_registry.rs", "role": "verified building-id/token registry", "sha256": "47ebc0c3a029a068825d614a3046c24d99372abbb8cf57f255a56505f2a3cad0"},
-    {"path": "extractor/native/compact_contract/src/lib.rs", "role": "compact schema and fail-closed interpretation", "sha256": "e26892d43741df0b1427ef7d308fee9608940f3ec66b91b25aab62805ca45db8"},
-    {"path": "extractor/native/collector/src/lib.rs", "role": "live read and compact emission", "sha256": "a1f9343bbe973dc0ebca85887f11a5711b32d16f358fdc97e8e303b42b7fb68a"},
-    {"path": "extractor/native/recorder_host/src/domain_data_authority.rs", "role": "domain admission and authority accounting", "sha256": "ca8aeedd1caaf8713f41dbd5218c5af5073dbf2632ac88075f521408707af5d9"},
-    {"path": "extractor/native/recorder_host/src/world_fold.rs", "role": "authoritative replay world folds", "sha256": "f72205bbcb3de8b02148eb207b8cf2ca95315ae41c882e8a6532e90a56c05e3e"},
-    {"path": "extractor/native/recorder_host/src/main.rs", "role": "recorder gate and production composition", "sha256": "40a735777b56bbe6b5fb3cb58075116b9a97ddfab67200d4cf66e3aad29cff13"}
+    {"path": "extractor/native/compact_contract/src/lib.rs", "role": "compact schema and fail-closed interpretation", "sha256": "177da2f4265a7955476dccaa6a274a1d85eeb5e3ce056ed1e3832da6b702ed83"},
+    {"path": "extractor/native/collector/src/lib.rs", "role": "live read and compact emission", "sha256": "998f163ec319efe076a85d9dcb84b9138fcfac9c7e05f6c4f3fe96138c7231cb"},
+    {"path": "extractor/native/recorder_host/src/domain_data_authority.rs", "role": "domain admission and authority accounting", "sha256": "f144a8d5563b83b295c5f35ea5f59f63de69bf9125e51b5eb97c60c558a2fea4"},
+    {"path": "extractor/native/recorder_host/src/world_fold.rs", "role": "authoritative replay world folds", "sha256": "c4857fdbcf0b44ad237d8cd7bad350cf7513e71aa23280a0667078ab28a6321a"},
+    {"path": "extractor/native/recorder_host/src/main.rs", "role": "recorder gate and production composition", "sha256": "450d80574731358a7e9278aecea46faa98d79c2e53737cedd097f621e9863c3f"}
   ],
   "xn07_crosscheck": {
     "report": "replay_interface/documents/lane_reports/rendering_laws/XN07.md",
     "report_sha256": "0dc2291f9096a73246ac12dca459318ae3fc73ce00b0c685281130589ac9e36e",
     "verification": "replay_interface/re_evidence/rendering_laws/XN07/verification_result.json",
-    "verification_sha256": "7cd906ad1da7f95d2a1d489f167b08fce6133de8e786c40efdfdc20bbe08e711",
+    "verification_sha256": "66990a92bd9b66e778f387070a7f467e3d926a4030d36cd80bd1aac975b9efc9",
     "verifier": "replay_interface/re_evidence/rendering_laws/XN07/verify_xn07.py",
-    "verifier_sha256": "2681c27773f36a08c280c71f866f7b9e17e1c248b081137d4c6dbc59be866aba"
+    "verifier_sha256": "b831ef8758461f217d304d3c81b5493e00d947b35e4fe89c225e912ef23c944f"
   },
   "mechanical_gate": {
     "cargo_check_packages": [
@@ -91,7 +91,7 @@
       "session_multiplayer_metadata_live", "air_loss_stats_live_lane"
     ],
     "frozen_test_counts": {
-      "focus_research_decisions_depth_live": "30/30",
+      "focus_research_decisions_depth_live": "33/33",
       "session_multiplayer_metadata_live": "27/27",
       "collector_compact_frd": "3/3",
       "recorder_frd": "8/8",

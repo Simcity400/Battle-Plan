@@ -6,9 +6,12 @@
 use air_loss_stats_live_lane as airloss61;
 use army_battleplans_depth_live_lane as battleplans54;
 use capitulation_war_state_live as capwar60;
+use character_presentation_live_lane as character82;
 use characters_leaders_cabinet_live_lane as domain47;
 use construction_buildings_state_damage_live_lane as domain48;
 use design_catalog_context_live_lane as design78;
+use design_catalog_context_live_lane::selected_designer_identity as selected85;
+use decision_panel_live_lane as decision87;
 use diplomacy_intel_operatives_live as diplomacy53;
 use fired_event_popups_live_lane as fired75;
 use hub_motorization_live_lane as hub62;
@@ -16,9 +19,12 @@ use hud_role_observer_live_lane as hud79;
 use land_combat_detail_events_live_lane as land_detail55;
 use naval_combat_live_lane as naval4950;
 use naval_missions_status_live_lane as naval56;
+use nuke_stockpile_live_lane as nuke83;
 use occupation_resistance_compliance_live_lane as occupation52;
 use resolved_tooltip_instances_live_lane as tooltip72;
 use session_multiplayer_metadata_live as session57;
+use scripted_state_flags_variables_live_lane::scripted_gui_runtime_compact as scripted84;
+use sunk_ship_history_live_lane as sunk86;
 
 use crate::campaign_identity::SessionHeaderIdentityObservation;
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,7 +32,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const SUPPORTED_DOMAIN_DATA_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
     36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 60, 61,
-    62, 63, 64, 65, 66, 67, 68, 69, 70, 72, 75, 78, 79,
+    62, 63, 64, 65, 66, 67, 68, 69, 70, 72, 75, 78, 79, 81, 82, 83, 84, 85, 86, 87,
 ];
 
 pub const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 =
@@ -77,10 +83,12 @@ pub const COMPACT_AIR_VARIANT_ARCHETYPE_SOURCE_STATIC_SOURCE_ENUM: u32 = 1 << 6;
 pub const COMPACT_FRD_DEPTH_HEADER_LEN_V1: usize = 48;
 pub const COMPACT_FRD_DEPTH_HEADER_LEN_V2: usize = 56;
 pub const COMPACT_FRD_DEPTH_HEADER_LEN: usize = 60;
+pub const COMPACT_FRD_DEPTH_HEADER_LEN_V5: usize = 64;
 pub const COMPACT_FRD_DEPTH_SCHEMA_MAGIC: &[u8; 4] = b"FRD2";
 pub const COMPACT_FRD_DEPTH_SCHEMA_VERSION_V2: u16 = 2;
 pub const COMPACT_FRD_DEPTH_SCHEMA_VERSION_V3: u16 = 3;
 pub const COMPACT_FRD_DEPTH_SCHEMA_VERSION: u16 = 4;
+pub const COMPACT_FRD_DEPTH_SCHEMA_VERSION_V5: u16 = 5;
 pub const COMPACT_FRD_RESEARCH_ETA_ROW_LEN: usize = 80;
 pub const COMPACT_FRD_DECISION_STATUS_ROW_LEN: usize = 28;
 pub const COMPACT_FRD_DECISION_TARGET_ROW_FIXED_LEN_V3: usize = 16;
@@ -92,12 +100,17 @@ pub const COMPACT_FRD_STATUS_DIRECT_EVENTS_DERIVED: u32 = 1 << 2;
 pub const COMPACT_FRD_STATUS_FOCUS_PAUSE_EXACT: u32 = 1 << 3;
 pub const COMPACT_FRD_STATUS_DECISION_TARGETS_EXACT: u32 = 1 << 4;
 pub const COMPACT_FRD_STATUS_DECISION_COOLDOWNS_EXACT: u32 = 1 << 5;
+pub const COMPACT_FRD_STATUS_DIRECT_HOOK_SOURCE_VALIDATED: u32 = 1 << 6;
+// This remains the v1-v4 depth-authority mask.  The v5 direct-hook bit is a
+// distinct trailer/source assertion and is admitted only for a v5 header.
 pub const COMPACT_FRD_STATUS_KNOWN_MASK: u32 = COMPACT_FRD_STATUS_FOCUS_PAUSE_BADGED
     | COMPACT_FRD_STATUS_DECISION_TARGETS_BADGED
     | COMPACT_FRD_STATUS_DIRECT_EVENTS_DERIVED
     | COMPACT_FRD_STATUS_FOCUS_PAUSE_EXACT
     | COMPACT_FRD_STATUS_DECISION_TARGETS_EXACT
     | COMPACT_FRD_STATUS_DECISION_COOLDOWNS_EXACT;
+pub const COMPACT_FRD_STATUS_V5_KNOWN_MASK: u32 =
+    COMPACT_FRD_STATUS_KNOWN_MASK | COMPACT_FRD_STATUS_DIRECT_HOOK_SOURCE_VALIDATED;
 pub const COMPACT_FRD_BADGE_KIND_FOCUS_PAUSE_FAIL_CLOSED: u32 = 1;
 pub const COMPACT_FRD_BADGE_KIND_DECISION_TARGET_FIELDS_FAIL_CLOSED: u32 = 2;
 pub const COMPACT_FRD_BADGE_KIND_DIRECT_EVENT_HOOKS_UNAVAILABLE: u32 = 3;
@@ -2573,6 +2586,8 @@ fn decode_compact_frd_depth_data_payload(
     let decision_target_count = header.decision_target_count;
     let decision_target_row_fixed_len = header.decision_target_row_fixed_len;
     let decision_target_omitted_rows = header.decision_target_omitted_rows;
+    let schema_version = header.schema_version;
+    let direct_transition_count = header.direct_transition_count;
     let depth_status_flags = header.depth_status_flags;
     let focus_count = header.focus_count;
     let research_count = header.research_count;
@@ -2588,11 +2603,29 @@ fn decode_compact_frd_depth_data_payload(
         .saturating_add(decision_status_count)
         .saturating_add(decision_event_count)
         .saturating_add(decision_target_count)
-        .saturating_add(badge_count);
+        .saturating_add(badge_count)
+        .saturating_add(direct_transition_count);
 
-    if depth_status_flags & !COMPACT_FRD_STATUS_KNOWN_MASK != 0 {
+    let admitted_depth_status_mask = if schema_version == COMPACT_FRD_DEPTH_SCHEMA_VERSION_V5 {
+        COMPACT_FRD_STATUS_V5_KNOWN_MASK
+    } else {
+        COMPACT_FRD_STATUS_KNOWN_MASK
+    };
+    if depth_status_flags & !admitted_depth_status_mask != 0 {
         summary.parse_errors.push(format!(
             "offset {offset}: focus/research/decisions depth status_flags has unknown bits: {depth_status_flags}"
+        ));
+    }
+    let direct_source_validated =
+        depth_status_flags & COMPACT_FRD_STATUS_DIRECT_HOOK_SOURCE_VALIDATED != 0;
+    if schema_version == COMPACT_FRD_DEPTH_SCHEMA_VERSION_V5 && !direct_source_validated {
+        summary.parse_errors.push(format!(
+            "offset {offset}: focus/research/decisions depth schema-v5 payload lacks validated direct-hook source"
+        ));
+    }
+    if schema_version != COMPACT_FRD_DEPTH_SCHEMA_VERSION_V5 && direct_source_validated {
+        summary.parse_errors.push(format!(
+            "offset {offset}: focus/research/decisions depth legacy payload claims validated direct-hook source"
         ));
     }
     let exact_status = COMPACT_FRD_STATUS_FOCUS_PAUSE_EXACT
@@ -2659,6 +2692,12 @@ fn decode_compact_frd_depth_data_payload(
         COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
         "depth_badge_rows",
         badge_count,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+        "direct_transition_rows",
+        direct_transition_count,
     );
     add_compact_domain_data_unit(
         summary,
@@ -3291,7 +3330,7 @@ fn decode_compact_frd_depth_data_payload(
         ),
         (
             COMPACT_FRD_STATUS_DIRECT_EVENTS_DERIVED,
-            0,
+            COMPACT_FRD_STATUS_DIRECT_HOOK_SOURCE_VALIDATED,
             COMPACT_FRD_BADGE_KIND_DIRECT_EVENT_HOOKS_UNAVAILABLE,
             "direct event hooks",
         ),
@@ -3310,6 +3349,51 @@ fn decode_compact_frd_depth_data_payload(
             ));
         }
     }
+    if direct_source_validated
+        && badge_kinds.contains(&COMPACT_FRD_BADGE_KIND_DIRECT_EVENT_HOOKS_UNAVAILABLE)
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: focus/research/decisions depth validated direct-hook source carries unavailable badge"
+        ));
+    }
+    if schema_version == COMPACT_FRD_DEPTH_SCHEMA_VERSION_V5 {
+        let trailer = &payload[cursor..];
+        let expected_first_sequence = if direct_transition_count == 0 {
+            1
+        } else {
+            let sequence_start = direct_frd_transitions_live::D45_V5_DIRECT_EVENT_TRAILER_HEADER_LEN;
+            let Some(sequence_bytes) = trailer.get(sequence_start..sequence_start + 8) else {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: focus/research/decisions depth v5 direct trailer is too short for its first sequence"
+                ));
+                return;
+            };
+            u64::from_le_bytes(
+                sequence_bytes
+                    .try_into()
+                    .expect("fixed direct-event sequence slice"),
+            )
+        };
+        let rows = match direct_frd_transitions_live::decode_trailer(
+            trailer,
+            expected_first_sequence,
+        ) {
+            Ok(rows) => rows,
+            Err(error) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: focus/research/decisions depth v5 direct trailer rejected: {error}"
+                ));
+                return;
+            }
+        };
+        if rows.len() != direct_transition_count {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus/research/decisions depth v5 direct trailer row count {} != header {direct_transition_count}",
+                rows.len()
+            ));
+        }
+        cursor = payload.len();
+    }
     if cursor != payload.len() {
         summary.parse_errors.push(format!(
             "offset {offset}: focus/research/decisions depth payload has {} trailing byte(s)",
@@ -3320,6 +3404,7 @@ fn decode_compact_frd_depth_data_payload(
 
 #[derive(Clone, Copy)]
 struct CompactFrdDepthHeader {
+    schema_version: u16,
     header_len: usize,
     decision_target_row_fixed_len: usize,
     raw_status_flags: Option<u32>,
@@ -3335,6 +3420,7 @@ struct CompactFrdDepthHeader {
     observed_decision_rows: u32,
     observed_timed_decision_rows: usize,
     badge_count: usize,
+    direct_transition_count: usize,
 }
 
 fn decode_compact_frd_depth_header(
@@ -3381,6 +3467,16 @@ fn decode_compact_frd_depth_header(
                 }
                 Some(read_u32_le(payload, 56))
             }
+            (COMPACT_FRD_DEPTH_SCHEMA_VERSION_V5, COMPACT_FRD_DEPTH_HEADER_LEN_V5) => {
+                if payload.len() < COMPACT_FRD_DEPTH_HEADER_LEN_V5 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: focus/research/decisions depth v5 payload is {} byte(s), expected at least {COMPACT_FRD_DEPTH_HEADER_LEN_V5}",
+                        payload.len()
+                    ));
+                    return None;
+                }
+                Some(read_u32_le(payload, 56))
+            }
             _ => {
                 summary.parse_errors.push(format!(
                     "offset {offset}: focus/research/decisions depth versioned header has schema_version {schema_version} and header_len {header_len}"
@@ -3389,8 +3485,12 @@ fn decode_compact_frd_depth_header(
             }
         };
         return Some(CompactFrdDepthHeader {
+            schema_version,
             header_len,
-            decision_target_row_fixed_len: if schema_version == COMPACT_FRD_DEPTH_SCHEMA_VERSION {
+            decision_target_row_fixed_len: if matches!(
+                schema_version,
+                COMPACT_FRD_DEPTH_SCHEMA_VERSION | COMPACT_FRD_DEPTH_SCHEMA_VERSION_V5
+            ) {
                 COMPACT_FRD_DECISION_TARGET_ROW_FIXED_LEN
             } else {
                 COMPACT_FRD_DECISION_TARGET_ROW_FIXED_LEN_V3
@@ -3408,9 +3508,15 @@ fn decode_compact_frd_depth_header(
             observed_timed_decision_rows: read_u32_le(payload, 44) as usize,
             badge_count: read_u32_le(payload, 48) as usize,
             decision_target_omitted_rows: read_u32_le(payload, 52) as usize,
+            direct_transition_count: if schema_version == COMPACT_FRD_DEPTH_SCHEMA_VERSION_V5 {
+                read_u32_le(payload, 60) as usize
+            } else {
+                0
+            },
         });
     }
     Some(CompactFrdDepthHeader {
+        schema_version: 1,
         header_len: COMPACT_FRD_DEPTH_HEADER_LEN_V1,
         decision_target_row_fixed_len: COMPACT_FRD_DECISION_TARGET_ROW_FIXED_LEN_V3,
         raw_status_flags: None,
@@ -3426,6 +3532,7 @@ fn decode_compact_frd_depth_header(
         observed_decision_rows: read_u32_le(payload, 36),
         observed_timed_decision_rows: read_u32_le(payload, 40) as usize,
         badge_count: read_u32_le(payload, 44) as usize,
+        direct_transition_count: 0,
     })
 }
 
@@ -11358,6 +11465,9 @@ fn decode_compact_design_catalog_context_data_payload(
     payload: &[u8],
     summary: &mut DomainDataDecodeSummary,
 ) {
+    if payload.len() >= 16 {
+        add_decoder_status(summary, read_u32_le(payload, 12));
+    }
     let decoded = match design78::decode_payload(payload) {
         Ok(decoded) => decoded,
         Err(error) => {
@@ -11385,6 +11495,289 @@ fn decode_compact_design_catalog_context_data_payload(
             context.ordered_design_ids.len(),
         );
     }
+}
+
+fn decode_compact_character_presentation_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    if payload.len() >= 16 {
+        add_decoder_status(summary, read_u32_le(payload, 12));
+    }
+    let decoded = match character82::decode_payload(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: character_presentation CPR1 payload invalid: {error:?}"
+            ));
+            return;
+        }
+    };
+    let (tree_rows, node_rows, ace_rows) = decoded
+        .snapshot
+        .map(|snapshot| {
+            let node_rows = snapshot
+                .trait_trees
+                .iter()
+                .map(|tree| tree.nodes.len())
+                .sum();
+            (snapshot.trait_trees.len(), node_rows, snapshot.ace_portraits.len())
+        })
+        .unwrap_or((0, 0, 0));
+    if let Some(domain) = summary.per_domain.get_mut(&character82::DOMAIN_ID) {
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(tree_rows.saturating_add(ace_rows) as u64);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        character82::DOMAIN_ID,
+        "character_presentation_trait_trees",
+        tree_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        character82::DOMAIN_ID,
+        "character_presentation_trait_nodes",
+        node_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        character82::DOMAIN_ID,
+        "character_presentation_ace_portraits",
+        ace_rows,
+    );
+}
+
+fn decode_compact_scripted_gui_runtime_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    if payload.len() >= 16 {
+        add_decoder_status(summary, read_u32_le(payload, 12));
+    }
+    let decoded = match scripted84::decode_payload(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: scripted_gui_runtime SGR1 payload invalid: {error:?}"
+            ));
+            return;
+        }
+    };
+    let (row_count, result_count, unavailable_count, tombstone_count) = decoded
+        .frame
+        .as_ref()
+        .map(|frame| {
+            let mut result_count = 0usize;
+            let mut unavailable_count = 0usize;
+            for row in &frame.rows {
+                result_count = result_count.saturating_add(
+                    2 + row.triggers.len() + row.properties.len() + row.effect_enabled.len(),
+                );
+                unavailable_count = unavailable_count
+                    .saturating_add(usize::from(matches!(
+                        &row.visible,
+                        scripted_state_flags_variables_live_lane::EngineResult::Unavailable(_)
+                    )))
+                    .saturating_add(usize::from(matches!(
+                        &row.enabled,
+                        scripted_state_flags_variables_live_lane::EngineResult::Unavailable(_)
+                    )))
+                    .saturating_add(
+                        row.triggers
+                            .values()
+                            .filter(|value| matches!(value, scripted_state_flags_variables_live_lane::EngineResult::Unavailable(_)))
+                            .count(),
+                    )
+                    .saturating_add(
+                        row.properties
+                            .values()
+                            .filter(|value| matches!(value, scripted_state_flags_variables_live_lane::EngineResult::Unavailable(_)))
+                            .count(),
+                    )
+                    .saturating_add(
+                        row.effect_enabled
+                            .values()
+                            .filter(|value| matches!(value, scripted_state_flags_variables_live_lane::EngineResult::Unavailable(_)))
+                            .count(),
+                    );
+            }
+            (
+                frame.rows.len(),
+                result_count,
+                unavailable_count,
+                frame.tombstones.len(),
+            )
+        })
+        .unwrap_or((0, 0, 0, 0));
+    if let Some(domain) = summary.per_domain.get_mut(&scripted84::DOMAIN_ID) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+    }
+    for (name, count) in [
+        ("scripted_gui_runtime_rows", row_count),
+        ("scripted_gui_runtime_results", result_count),
+        ("scripted_gui_runtime_unavailable_results", unavailable_count),
+        ("scripted_gui_runtime_tombstones", tombstone_count),
+    ] {
+        add_compact_domain_data_unit(summary, scripted84::DOMAIN_ID, name, count);
+    }
+}
+
+fn decode_compact_nuke_stockpile_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    if payload.len() >= 16 {
+        add_decoder_status(summary, read_u32_le(payload, 12));
+    }
+    let decoded = match nuke83::decode_payload(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: nuke_stockpile NUK1 payload invalid: {error:?}"
+            ));
+            return;
+        }
+    };
+    let (country_rows, entry_rows) = decoded
+        .snapshot
+        .map(|snapshot| {
+            let entries = snapshot
+                .countries
+                .iter()
+                .map(|country| country.entries.len())
+                .sum();
+            (snapshot.countries.len(), entries)
+        })
+        .unwrap_or((0, 0));
+    if let Some(domain) = summary.per_domain.get_mut(&nuke83::DOMAIN_ID) {
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(country_rows as u64);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        nuke83::DOMAIN_ID,
+        "nuke_stockpile_countries",
+        country_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        nuke83::DOMAIN_ID,
+        "nuke_stockpile_entries",
+        entry_rows,
+    );
+}
+
+fn decode_compact_selected_designer_identity_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    if payload.len() >= 16 {
+        add_decoder_status(summary, read_u32_le(payload, 12));
+    }
+    let decoded = match selected85::decode_payload(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: selected_designer_identity SDI1 payload invalid: {error:?}"
+            ));
+            return;
+        }
+    };
+    let ordered_rows = decoded
+        .snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.ordered_designs.len())
+        .unwrap_or(0);
+    if let Some(domain) = summary.per_domain.get_mut(&selected85::DOMAIN_ID) {
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(usize::from(decoded.snapshot.is_some()) as u64);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        selected85::DOMAIN_ID,
+        "selected_designer_frames",
+        usize::from(decoded.snapshot.is_some()),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        selected85::DOMAIN_ID,
+        "selected_designer_ordered_designs",
+        ordered_rows,
+    );
+}
+
+fn decode_compact_sunk_ship_history_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    if payload.len() >= 16 {
+        add_decoder_status(summary, read_u32_le(payload, 12));
+    }
+    let decoded = match sunk86::decode_payload(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: sunk_ship_history SHP1 payload invalid: {error:?}"
+            ));
+            return;
+        }
+    };
+    let event_rows = decoded
+        .snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.events.len())
+        .unwrap_or(0);
+    if let Some(domain) = summary.per_domain.get_mut(&sunk86::DOMAIN_ID) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(event_rows as u64);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        sunk86::DOMAIN_ID,
+        "sunk_ship_writer_events",
+        event_rows,
+    );
+}
+
+fn decode_compact_decision_panel_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    if payload.len() >= 16 {
+        add_decoder_status(summary, read_u32_le(payload, 12));
+    }
+    let decoded = match decision87::decode_payload(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision_panel DPN1 payload invalid: {error:?}"
+            ));
+            return;
+        }
+    };
+    let row_count = decoded
+        .snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.rows.len())
+        .unwrap_or(0);
+    if let Some(domain) = summary.per_domain.get_mut(&decision87::DOMAIN_ID) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        decision87::DOMAIN_ID,
+        "decision_panel_rows",
+        row_count,
+    );
 }
 
 // Shared helper: an optional u32 field packed with a presence flag. When present
@@ -14081,6 +14474,24 @@ pub fn summarize_domain_data_payload(
         hud79::DOMAIN_ID => {
             decode_compact_hud_surface_activation_live_data_payload(offset, payload, &mut summary)
         }
+        character82::DOMAIN_ID => {
+            decode_compact_character_presentation_data_payload(offset, payload, &mut summary)
+        }
+        scripted84::DOMAIN_ID => {
+            decode_compact_scripted_gui_runtime_data_payload(offset, payload, &mut summary)
+        }
+        nuke83::DOMAIN_ID => {
+            decode_compact_nuke_stockpile_data_payload(offset, payload, &mut summary)
+        }
+        selected85::DOMAIN_ID => {
+            decode_compact_selected_designer_identity_data_payload(offset, payload, &mut summary)
+        }
+        sunk86::DOMAIN_ID => {
+            decode_compact_sunk_ship_history_data_payload(offset, payload, &mut summary)
+        }
+        decision87::DOMAIN_ID => {
+            decode_compact_decision_panel_data_payload(offset, payload, &mut summary)
+        }
         other => summary.parse_errors.push(format!(
             "offset {offset}: unsupported domain data payload for domain {other}"
         )),
@@ -14670,20 +15081,36 @@ mod tests {
         let header_len = match schema_version {
             COMPACT_FRD_DEPTH_SCHEMA_VERSION_V2 => COMPACT_FRD_DEPTH_HEADER_LEN_V2,
             COMPACT_FRD_DEPTH_SCHEMA_VERSION => COMPACT_FRD_DEPTH_HEADER_LEN,
+            COMPACT_FRD_DEPTH_SCHEMA_VERSION_V5 => COMPACT_FRD_DEPTH_HEADER_LEN_V5,
             _ => panic!("unsupported test schema version"),
         };
+        let direct_source_validated = schema_version == COMPACT_FRD_DEPTH_SCHEMA_VERSION_V5;
         let mut out = Vec::new();
         out.extend_from_slice(COMPACT_FRD_DEPTH_SCHEMA_MAGIC);
         out.extend_from_slice(&schema_version.to_le_bytes());
         out.extend_from_slice(&(header_len as u16).to_le_bytes());
-        push_u32(&mut out, COMPACT_FRD_STATUS_KNOWN_MASK);
+        push_u32(
+            &mut out,
+            COMPACT_FRD_STATUS_KNOWN_MASK
+                | if direct_source_validated {
+                    COMPACT_FRD_STATUS_DIRECT_HOOK_SOURCE_VALIDATED
+                } else {
+                    0
+                },
+        );
         for _ in 0..9 {
             push_u32(&mut out, 0);
         }
-        push_u32(&mut out, 3); // badge_count
+        push_u32(&mut out, if direct_source_validated { 2 } else { 3 }); // badge_count
         push_u32(&mut out, 0); // decision_target_omitted_rows
-        if schema_version == COMPACT_FRD_DEPTH_SCHEMA_VERSION {
+        if matches!(
+            schema_version,
+            COMPACT_FRD_DEPTH_SCHEMA_VERSION | COMPACT_FRD_DEPTH_SCHEMA_VERSION_V5
+        ) {
             push_u32(&mut out, raw_status.expect("v3 raw status"));
+        }
+        if direct_source_validated {
+            push_u32(&mut out, 0); // direct_transition_count
         }
         assert_eq!(out.len(), header_len);
 
@@ -14710,12 +15137,23 @@ mod tests {
                 COMPACT_FRD_BADGE_DETAIL_DIRECT_EVENT_HOOKS_UNAVAILABLE,
             ),
         ] {
+            if direct_source_validated
+                && kind == COMPACT_FRD_BADGE_KIND_DIRECT_EVENT_HOOKS_UNAVAILABLE
+            {
+                continue;
+            }
             push_u32(&mut out, kind);
             push_u32(&mut out, flags);
             push_u32(&mut out, source_domain);
             push_u32(&mut out, 0);
             push_u32(&mut out, evidence);
             push_string(&mut out, detail);
+        }
+        if direct_source_validated {
+            out.extend_from_slice(
+                &direct_frd_transitions_live::encode_trailer(&[])
+                    .expect("empty direct-event trailer"),
+            );
         }
         out
     }
@@ -14743,6 +15181,45 @@ mod tests {
         )
         .expect("valid FRD2 v3");
         assert_eq!(v3.status_flags, Some(0));
+    }
+
+    #[test]
+    fn frd_v5_direct_source_bit_is_schema_scoped_and_trailer_bound() {
+        let v5 = summarize_domain_data_payload(
+            COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+            &valid_frd_depth_payload(COMPACT_FRD_DEPTH_SCHEMA_VERSION_V5, Some(0)),
+            DomainDataContext {
+                record_flags: COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+                ..DomainDataContext::default()
+            },
+        )
+        .expect("valid FRD2 v5 with authenticated empty direct-event drain");
+        assert_eq!(v5.status_flags, Some(0));
+        assert_eq!(
+            v5.data_units
+                .get("direct_transition_rows")
+                .copied()
+                .unwrap_or(0),
+            0
+        );
+
+        let mut legacy = valid_frd_depth_payload(COMPACT_FRD_DEPTH_SCHEMA_VERSION, Some(0));
+        let legacy_status = read_u32_le(&legacy, 8)
+            | COMPACT_FRD_STATUS_DIRECT_HOOK_SOURCE_VALIDATED;
+        legacy[8..12].copy_from_slice(&legacy_status.to_le_bytes());
+        let error = summarize_domain_data_payload(
+            COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+            &legacy,
+            DomainDataContext {
+                record_flags: COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+                ..DomainDataContext::default()
+            },
+        )
+        .expect_err("legacy FRD2 must not claim schema-v5 direct-hook authority");
+        assert!(error
+            .errors
+            .iter()
+            .any(|item| item.contains("legacy payload claims validated direct-hook source")));
     }
 
     #[test]

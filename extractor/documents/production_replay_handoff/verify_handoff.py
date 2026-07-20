@@ -81,10 +81,10 @@ def main() -> None:
 
     upstream = contract["upstream_promotion_tuple"]
     expected_upstream = {
-        "contract": "adaf8094097d398d2df8ece9a1ab92a4d1767a6742a2b4b0acc8ebc10ff10af5",
+        "contract": "00e6f7183dc7bc79007306e44e518c6d05ad9799861c80a5a17ca29076a48861",
         "verifier": "8fe28d9d6dd3c49ea5750c22d1d26e8bfd66273cae37a4c61f479371f070902b",
-        "verification": "8739b1ce3bc601d17f628acb1bd346cc73d621356303ead4eb4bfe99c67fc6b5",
-        "manifest": "0d4b9502976600c458867cf9207a2702b56745d0e5a42d280e7b5429298e9643"
+        "verification": "4183666abfee6a51971f9b88c843329be1fb0f1174aae685122a82f5aec56ff1",
+        "manifest": "3c66130c3dbf8ab71ad6d27a635b3ebe23a61f4b5383052f69de63f8b4f5df11"
     }
     frozen: dict[str, str] = {}
     for key, expected in expected_upstream.items():
@@ -210,10 +210,10 @@ def main() -> None:
     world_tests_hash = sha256(ROOT / world_tests_rel)
     recorder_main_hash = sha256(ROOT / recorder_main_rel)
     authority_hash = sha256(ROOT / authority_rel)
-    require(world_fold_hash == contract["bounded_integration"]["source_sha256"] == "f72205bbcb3de8b02148eb207b8cf2ca95315ae41c882e8a6532e90a56c05e3e", "frozen admitted world fold source", checks)
-    require(world_tests_hash == contract["bounded_integration"]["test_sha256"] == "db999a13b17c89984f3fa00446eed5690b888470c0af0a19765a4bcb1de5ea5d", "frozen admitted world fold tests", checks)
-    require(recorder_main_hash == contract["bounded_integration"]["recorder_main_sha256"] == "40a735777b56bbe6b5fb3cb58075116b9a97ddfab67200d4cf66e3aad29cff13", "frozen recorder main assertion", checks)
-    require(authority_hash == "ca8aeedd1caaf8713f41dbd5218c5af5073dbf2632ac88075f521408707af5d9", "frozen A4/A21 authority source", checks)
+    require(world_fold_hash == contract["bounded_integration"]["source_sha256"] == "c4857fdbcf0b44ad237d8cd7bad350cf7513e71aa23280a0667078ab28a6321a", "frozen admitted world fold source", checks)
+    require(world_tests_hash == contract["bounded_integration"]["test_sha256"] == "8914c3b937f69a3941183e094197c400582ce90803efb5bb2f1022749b7b03b7", "frozen admitted world fold tests", checks)
+    require(recorder_main_hash == contract["bounded_integration"]["recorder_main_sha256"] == "450d80574731358a7e9278aecea46faa98d79c2e53737cedd097f621e9863c3f", "frozen recorder main assertion", checks)
+    require(authority_hash == "f144a8d5563b83b295c5f35ea5f59f63de69bf9125e51b5eb97c60c558a2fea4", "frozen A4/A21 authority source", checks)
     frozen[world_fold_rel] = world_fold_hash
     frozen[world_tests_rel] = world_tests_hash
     frozen[recorder_main_rel] = recorder_main_hash

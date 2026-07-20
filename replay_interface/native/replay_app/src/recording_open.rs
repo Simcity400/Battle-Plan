@@ -13,14 +13,22 @@ use std::sync::Arc;
 
 use replay_core::{
     CertifiedPrefoldSpoolDecoder, CertifiedPrefoldSpoolRequest, ContentManifest,
-    PortableDesignCatalog, PrefoldDecodeError, PrefoldSourceReceipt, PrefoldedSpool,
-    PrefoldedSpoolEntry, RawFrame, ReplaySource, SourceError,
+    PortableDesignCatalog, PrefoldDecodeError, PrefoldSourceReceipt, PrefoldStreamIdentityMode,
+    PrefoldedSpool, PrefoldedSpoolEntry, RawFrame, RecordedCampaignIdentity, ReplaySource,
+    SourceError,
 };
 
 static PRODUCTION_DECODER: ProductionPrefoldWorker = ProductionPrefoldWorker;
 
 const PREFOLD_WORKER_DECODER_ID: &str =
     "extractor.replay_decoder.production_world_fold.worker.v1";
+
+fn prefold_identity_mode_label(mode: PrefoldStreamIdentityMode) -> &'static str {
+    match mode {
+        PrefoldStreamIdentityMode::Legacy => "legacy",
+        PrefoldStreamIdentityMode::IdentityV1 => "identity-v1",
+    }
+}
 
 /// Process boundary for the extractor-owned production WorldFold. Keeping the
 /// worker as a sibling executable preserves replay_app's zero-extractor Cargo
@@ -36,6 +44,7 @@ impl CertifiedPrefoldSpoolDecoder for ProductionPrefoldWorker {
         &self,
         request: CertifiedPrefoldSpoolRequest,
     ) -> Result<PrefoldedSpool, PrefoldDecodeError> {
+        let identity_mode = request.identity_mode();
         let (game_id, raw_path, snapshot_dir, source_len, source_sha256) =
             request.into_parts();
         let worker = prefold_worker_path()?;
@@ -50,6 +59,8 @@ impl CertifiedPrefoldSpoolDecoder for ProductionPrefoldWorker {
             .arg(source_len.to_string())
             .arg("--source-sha256")
             .arg(&source_sha256)
+            .arg("--identity-mode")
+            .arg(prefold_identity_mode_label(identity_mode))
             .output()
             .map_err(|error| {
                 PrefoldDecodeError::new(format!(
@@ -73,11 +84,15 @@ impl CertifiedPrefoldSpoolDecoder for ProductionPrefoldWorker {
             PrefoldDecodeError::new("production prefold worker receipt is not an object")
         })?;
         if object.get("schema").and_then(serde_json::Value::as_str)
-            != Some("hoi4_prefold_worker_receipt_v1")
+            != Some("hoi4_prefold_worker_receipt_v2")
             || object.get("decoder_id").and_then(serde_json::Value::as_str)
                 != Some(PREFOLD_WORKER_DECODER_ID)
             || object.get("game_id").and_then(serde_json::Value::as_str)
                 != Some(game_id.as_str())
+            || object
+                .get("identity_mode")
+                .and_then(serde_json::Value::as_str)
+                != Some(prefold_identity_mode_label(identity_mode))
         {
             return Err(PrefoldDecodeError::new(
                 "production prefold worker receipt identity mismatch",
@@ -286,6 +301,9 @@ impl ReplaySource for ProductReplaySource {
     fn hours(&self) -> &[i64] { self.inner.hours() }
     fn warnings(&self) -> &[String] { self.inner.warnings() }
     fn content_manifest(&self) -> Option<&ContentManifest> { self.inner.content_manifest() }
+    fn campaign_identity(&self) -> Option<&RecordedCampaignIdentity> {
+        self.inner.campaign_identity()
+    }
     fn design_catalog(&self) -> Option<&Arc<PortableDesignCatalog>> {
         self.inner.design_catalog()
     }
@@ -320,6 +338,18 @@ mod tests {
     }
 
     #[test]
+    fn worker_identity_mode_wire_labels_are_closed_and_stable() {
+        assert_eq!(
+            prefold_identity_mode_label(PrefoldStreamIdentityMode::Legacy),
+            "legacy"
+        );
+        assert_eq!(
+            prefold_identity_mode_label(PrefoldStreamIdentityMode::IdentityV1),
+            "identity-v1"
+        );
+    }
+
+    #[test]
     fn product_parent_is_stable_and_never_recursively_cleaned() {
         let parent = temp_root("parent_cleanup");
         let root_path = parent.join("spool");
@@ -333,6 +363,69 @@ mod tests {
     }
 
     struct FixtureSpoolDecoder;
+
+    struct CampaignIdentitySource {
+        identity: RecordedCampaignIdentity,
+    }
+
+    impl ReplaySource for CampaignIdentitySource {
+        fn game_id(&self) -> &str {
+            "campaign-identity"
+        }
+
+        fn hours(&self) -> &[i64] {
+            &[]
+        }
+
+        fn warnings(&self) -> &[String] {
+            &[]
+        }
+
+        fn campaign_identity(&self) -> Option<&RecordedCampaignIdentity> {
+            Some(&self.identity)
+        }
+
+        fn frame(&self, _hour_index: i64) -> Result<RawFrame, SourceError> {
+            Err(SourceError::Open("fixture has no frames".into()))
+        }
+    }
+
+    #[test]
+    fn product_source_preserves_validated_campaign_metadata() {
+        let parent = temp_root("campaign_identity_forwarding");
+        let spool_path = parent.join("spool");
+        let source = ProductReplaySource {
+            inner: Box::new(CampaignIdentitySource {
+                identity: RecordedCampaignIdentity {
+                    state: "unavailable".into(),
+                    campaign_id: None,
+                    game_unique_id: None,
+                    game_unique_seed: None,
+                    source: None,
+                    source_build_profile: Some("hoi4-a729".into()),
+                    observed_game_hour_raw: None,
+                    stream_header_sha256: None,
+                    resolution_note: Some("fixture unavailable".into()),
+                    witnesses: replay_core::RecordedCampaignIdentityWitnesses {
+                        start_date_raw: Some(1),
+                        session: Some(2),
+                        scenario: None,
+                        initial_human_country_tags: None,
+                        modset_identity: None,
+                    },
+                },
+            }),
+            _spool_root: ProductSpoolRoot::ensure(spool_path.clone()).unwrap(),
+        };
+        let identity = source
+            .campaign_identity()
+            .expect("product wrapper must delegate campaign metadata");
+        assert_eq!(identity.resolution_note.as_deref(), Some("fixture unavailable"));
+        assert_eq!(identity.witnesses.session, Some(2));
+        drop(source);
+        fs::remove_dir(&spool_path).unwrap();
+        fs::remove_dir(&parent).unwrap();
+    }
 
     impl CertifiedPrefoldSpoolDecoder for FixtureSpoolDecoder {
         fn decoder_id(&self) -> &'static str {

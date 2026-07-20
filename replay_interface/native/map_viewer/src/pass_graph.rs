@@ -152,7 +152,7 @@ fn production_close_zoom_law_plan() -> Vec<ProductionCloseZoomLawPlan> {
             module: "snow_mud_feed",
             status: PixelEvidenceBlocked,
             blockers: vec![
-                "the recorded SnowMudData raster/upload seam is exact, but no authenticated raw portable producer/consumer observation plus receipt-bound engine/replay pixel golden is admitted",
+                "the exact CPU pre-upload packet and replay texture readback/replacement route is pointer-free, but selected-Present SnowMudFade authority, a distinct-session raw H/H2 join, and a receipt-bound engine/replay pixel golden are not admitted",
             ],
         },
     ]

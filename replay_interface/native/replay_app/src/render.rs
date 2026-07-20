@@ -23,8 +23,8 @@ use map_viewer::{
 };
 use replay_core::{
     PoliticalTextureFormat, PoliticalTextureKind, ProductionRenderFrame, RenderSubmit,
-    SnowMudReplayReadbackReceipt, SnowMudTexturePacket, TiledLightSubmission, ViewStatus,
-    WorldFrame,
+    SnowMudReplayReadbackReceipt, SnowMudTexturePacket, StaticMapCommand,
+    StaticShaderResourceSource, TiledLightSubmission, ViewStatus, WorldFrame,
 };
 use sha2::{Digest, Sha256};
 use winapi::shared::dxgiformat::{
@@ -633,9 +633,10 @@ struct CapturedPassLayer {
     last_render: Option<Duration>,
 }
 
-/// Join the measured gameplay fade with the exact B13 CPU pre-upload packet.
+/// Reject the legacy semantic fade at the exact B13 CPU pre-upload boundary.
 /// Per-province snow/mud values are semantic state and are never rasterized as
-/// a substitute for the producer bytes.
+/// a substitute for the producer bytes, and `WorldFrame::snow_mud()` carries no
+/// selected-Present identity with which to authenticate its fade against H.
 fn recorded_snow_mud_texture<'a>(
     frame: &WorldFrame,
     render_frame: Option<&'a ProductionRenderFrame>,
@@ -662,14 +663,19 @@ fn recorded_snow_mud_texture<'a>(
         "recorded SnowMudData blocked: production render frame has no exact CPU pre-upload packet"
             .to_string()
     })?;
-    Ok(Some((packet, fade_phase as f32)))
+    let _ = packet;
+    Err(format!(
+        "recorded SnowMudData blocked: semantic fade_phase {fade_phase} is not bound to the packet selected Present; an exact same-boundary SnowMudFade observation is required"
+    )
+    .into())
 }
 
 /// Production admission for the dynamic snow/mud carrier. The captured PAN2
 /// bundle contains one historical `SnowMudTexture`, so treating a missing
 /// replay view as "no update" would silently display that unrelated capture.
-/// Exact replay therefore requires a present measured fade and an authenticated
-/// producer packet on every displayed hour.
+/// Exact replay therefore requires an authenticated producer packet and a
+/// selected-Present-bound fade on every displayed hour. The current semantic
+/// view is deliberately rejected until that fade carrier exists.
 fn required_recorded_snow_mud_texture<'a>(
     frame: &WorldFrame,
     render_frame: Option<&'a ProductionRenderFrame>,
@@ -706,13 +712,48 @@ fn require_secondary_political_texture(submit: Option<&RenderSubmit>) -> Result<
         "occupation stripes DATA_BLOCKED: displayed hour has no production submit carrying ProvinceSecondaryColorMap; refusing the captured bundle texture"
             .to_string()
     })?;
-    let has_secondary = submit.political_textures.iter().any(|packet| {
+    let mut secondary_packets = submit.political_textures.iter().filter(|packet| {
         packet.kind == PoliticalTextureKind::Secondary
             && packet.target_binding_identity == "ProvinceSecondaryColorMap"
     });
-    if !has_secondary {
+    let packet = secondary_packets.next().ok_or_else(|| {
+        "occupation stripes DATA_BLOCKED: displayed submit has no exact ProvinceSecondaryColorMap packet; refusing the captured bundle texture"
+            .to_string()
+    })?;
+    if secondary_packets.next().is_some() {
         return Err(
-            "occupation stripes DATA_BLOCKED: displayed submit has no exact ProvinceSecondaryColorMap packet; refusing the captured bundle texture"
+            "occupation stripes DATA_BLOCKED: displayed submit has multiple ProvinceSecondaryColorMap packets; captured-pass replay cannot choose one"
+                .into(),
+        );
+    }
+    let has_same_submit_consumer = submit
+        .ordered_static_map_programs
+        .iter()
+        .flat_map(|program| program.ordered_operations.iter())
+        .filter_map(|operation| match &operation.command {
+            StaticMapCommand::Draw { draw } => Some(draw),
+            StaticMapCommand::ClearColor { .. } | StaticMapCommand::ClearDepthStencil { .. } => {
+                None
+            }
+        })
+        .flat_map(|draw| draw.ordered_shader_resources.iter())
+        .any(|binding| {
+            matches!(
+                &binding.source,
+                StaticShaderResourceSource::PoliticalTexture {
+                    texture_kind: PoliticalTextureKind::Secondary,
+                    target_binding_identity,
+                    upload_order,
+                    payload_sha256,
+                    ..
+                } if target_binding_identity == "ProvinceSecondaryColorMap"
+                    && *upload_order == packet.upload_order
+                    && payload_sha256 == &packet.sha256
+            )
+        });
+    if !has_same_submit_consumer {
+        return Err(
+            "occupation stripes DATA_BLOCKED: ProvinceSecondaryColorMap packet has no exact D80 selected-submit shader-resource binding with the same upload ordinal and payload SHA-256"
                 .into(),
         );
     }
@@ -992,11 +1033,10 @@ impl CapturedPassLayer {
             &packet.bytes,
             "recorded SnowMudData",
         )?;
-        let h2_receipt = verify_immutable_texture_readback(
+        let readback = verify_immutable_texture_readback(
             gfx,
             &texture,
             packet,
-            &render_frame.selected_present,
         )?;
         let replacements = self.prepared.replace_snow_mud_srv(srv.as_raw())?;
         if replacements == 0 {
@@ -1004,6 +1044,12 @@ impl CapturedPassLayer {
                 "recorded SnowMudData blocked: no production pass sampled SnowMudTexture".into(),
             );
         }
+        let h2_receipt = seal_snow_mud_h2_receipt(
+            packet,
+            &render_frame.selected_present,
+            readback,
+            replacements,
+        )?;
         let h2_receipt_path = persist_snow_mud_h2_receipt(&h2_receipt)?;
         self.political_cb0.snow_mud_fade = Some(fade);
         self.last_snow_mud_h2_receipt = Some(h2_receipt.clone());
@@ -2159,12 +2205,18 @@ unsafe fn create_immutable_texture_with_pitch(
 /// Mechanical replay-side H2 receipt: copy the immutable upload into a CPU
 /// staging resource and compare every tight source row byte-for-byte. D3D11
 /// may pad the mapped row pitch; padding is deliberately excluded.
+struct SnowMudTextureReadbackProof {
+    readback_sha256: String,
+    mapped_row_pitch: u32,
+    verified_row_count: u32,
+    verified_tight_byte_count: u64,
+}
+
 unsafe fn verify_immutable_texture_readback(
     gfx: &Gfx,
     texture: &ComPtr<ID3D11Texture2D>,
     packet: &SnowMudTexturePacket,
-    selected_present: &replay_core::SelectedPresentReceipt,
-) -> Result<SnowMudReplayReadbackReceipt> {
+) -> Result<SnowMudTextureReadbackProof> {
     let desc = D3D11_TEXTURE2D_DESC {
         Width: packet.width,
         Height: packet.height,
@@ -2196,7 +2248,7 @@ unsafe fn verify_immutable_texture_readback(
         &mut mapped,
     );
     hr_ok(hr, "Map staging SnowMudData readback")?;
-    let verification = (|| -> Result<SnowMudReplayReadbackReceipt> {
+    let verification = (|| -> Result<SnowMudTextureReadbackProof> {
         let source_pitch = packet.row_pitch as usize;
         let mapped_pitch = mapped.RowPitch as usize;
         if mapped.pData.is_null() || mapped_pitch < source_pitch {
@@ -2223,33 +2275,50 @@ unsafe fn verify_immutable_texture_readback(
             readback_hasher.update(&mapped_bytes[mapped_start..mapped_start + source_pitch]);
         }
         let readback_sha256 = format!("{:x}", readback_hasher.finalize());
-        let mut receipt = SnowMudReplayReadbackReceipt {
-            schema: replay_core::SNOW_MUD_H2_READBACK_SCHEMA.into(),
-            process_start_nonce: packet.process_start_nonce,
-            hook_epoch_nonce: packet.hook_epoch_nonce,
-            producer_ordinal: packet.producer_ordinal,
-            producer_game_hour_raw: packet.producer_game_hour_raw,
-            display_game_hour_raw: packet.display_game_hour_raw,
-            selected_candidate_id: selected_present.selected_candidate_id,
-            selected_qpc_ticks: selected_present.selected_qpc_ticks,
-            selected_present_sha256: packet.selected_present_sha256.clone(),
-            observation_sha256: packet.observation_sha256.clone(),
-            payload_sha256: packet.payload_sha256.clone(),
+        Ok(SnowMudTextureReadbackProof {
             readback_sha256,
-            width: packet.width,
-            height: packet.height,
-            source_row_pitch: packet.row_pitch,
             mapped_row_pitch: mapped.RowPitch,
             verified_row_count: packet.height,
             verified_tight_byte_count: u64::from(packet.row_pitch) * u64::from(packet.height),
-            receipt_sha256: String::new(),
-        };
-        receipt.receipt_sha256 = receipt.computed_receipt_sha256()?;
-        receipt.validate_against(packet, selected_present)?;
-        Ok(receipt)
+        })
     })();
     (*context).Unmap(staging.as_raw() as *mut _, 0);
     verification
+}
+
+fn seal_snow_mud_h2_receipt(
+    packet: &SnowMudTexturePacket,
+    selected_present: &replay_core::SelectedPresentReceipt,
+    readback: SnowMudTextureReadbackProof,
+    replaced_binding_count: usize,
+) -> Result<SnowMudReplayReadbackReceipt> {
+    let replaced_binding_count = u32::try_from(replaced_binding_count)
+        .map_err(|_| "SnowMudData replacement count exceeds the portable receipt")?;
+    let mut receipt = SnowMudReplayReadbackReceipt {
+        schema: replay_core::SNOW_MUD_H2_READBACK_SCHEMA.into(),
+        process_start_nonce: packet.process_start_nonce,
+        hook_epoch_nonce: packet.hook_epoch_nonce,
+        producer_ordinal: packet.producer_ordinal,
+        producer_game_hour_raw: packet.producer_game_hour_raw,
+        display_game_hour_raw: packet.display_game_hour_raw,
+        selected_candidate_id: selected_present.selected_candidate_id,
+        selected_qpc_ticks: selected_present.selected_qpc_ticks,
+        selected_present_sha256: packet.selected_present_sha256.clone(),
+        observation_sha256: packet.observation_sha256.clone(),
+        payload_sha256: packet.payload_sha256.clone(),
+        readback_sha256: readback.readback_sha256,
+        width: packet.width,
+        height: packet.height,
+        source_row_pitch: packet.row_pitch,
+        mapped_row_pitch: readback.mapped_row_pitch,
+        verified_row_count: readback.verified_row_count,
+        verified_tight_byte_count: readback.verified_tight_byte_count,
+        replaced_binding_count,
+        receipt_sha256: String::new(),
+    };
+    receipt.receipt_sha256 = receipt.computed_receipt_sha256()?;
+    receipt.validate_against(packet, selected_present)?;
+    Ok(receipt)
 }
 
 /// Optional evidence sink. It is output-only and never changes rendering.
@@ -3518,6 +3587,27 @@ MAX_HDR_ADJUSTMENT = 1.0,
         assert!(
             err.to_string()
                 .contains("no exact ProvinceSecondaryColorMap packet"),
+            "{err}"
+        );
+
+        let mut submit = empty_submit(1, 1, 1);
+        submit.political_textures.push(replay_core::PoliticalTexturePacket {
+            kind: PoliticalTextureKind::Secondary,
+            target_binding_identity: "ProvinceSecondaryColorMap".into(),
+            upload_order: 7,
+            width: 1,
+            height: 1,
+            row_pitch: 4,
+            format: PoliticalTextureFormat::B8g8r8a8UnormSrgb,
+            bytes: vec![1, 2, 3, 4],
+            sha256: "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a"
+                .into(),
+        });
+        let err = require_secondary_political_texture(Some(&submit))
+            .expect_err("an unconsumed packet must not authenticate occupation stripes");
+        assert!(
+            err.to_string()
+                .contains("no exact D80 selected-submit shader-resource binding"),
             "{err}"
         );
     }

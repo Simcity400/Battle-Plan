@@ -28,6 +28,11 @@ reported separately.
 Production admission also requires all-domain canonical DATA decoding, exact DATA/PERF and
 FRAME_END authority, and the exact seven-role static bundle across the bundle report, production
 profile, packaging manifest, index, container entries, canonical paths, bytes, and hashes.
+The bundle must also carry the pointer-free product-modset key; the gate
+recomputes it and joins its executable, mod, DLC, load-order, VFS namespace,
+and VFS row components to retained bytes before publication. The embedded
+recorder manifest and the container's typed top-level portable-content v2
+manifest must be byte-semantically identical and carry that same key.
 
 ## What It Rejects
 

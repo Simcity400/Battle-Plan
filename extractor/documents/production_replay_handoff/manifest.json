@@ -1,17 +1,17 @@
 {
   "files": {
-    "extractor/documents/production_promotion/contract.json": "adaf8094097d398d2df8ece9a1ab92a4d1767a6742a2b4b0acc8ebc10ff10af5",
-    "extractor/documents/production_promotion/manifest.json": "0d4b9502976600c458867cf9207a2702b56745d0e5a42d280e7b5429298e9643",
-    "extractor/documents/production_promotion/verification.json": "8739b1ce3bc601d17f628acb1bd346cc73d621356303ead4eb4bfe99c67fc6b5",
+    "extractor/documents/production_promotion/contract.json": "00e6f7183dc7bc79007306e44e518c6d05ad9799861c80a5a17ca29076a48861",
+    "extractor/documents/production_promotion/manifest.json": "3c66130c3dbf8ab71ad6d27a635b3ebe23a61f4b5383052f69de63f8b4f5df11",
+    "extractor/documents/production_promotion/verification.json": "4183666abfee6a51971f9b88c843329be1fb0f1174aae685122a82f5aec56ff1",
     "extractor/documents/production_promotion/verify_promotion.py": "8fe28d9d6dd3c49ea5750c22d1d26e8bfd66273cae37a4c61f479371f070902b",
-    "extractor/documents/production_replay_handoff/handoff_contract.json": "4a10c5ec002f6236404f6aa76228db93a142145bab1beaf9307eecb6b2b52542",
+    "extractor/documents/production_replay_handoff/handoff_contract.json": "657267bdb7def6b25db5fe245b3938d996f7e2eb180b75879148ccefd2267fe3",
     "extractor/documents/production_replay_handoff/replay_payload.schema.json": "9a602cc1524c5f85fb07aeb62f9dced813d904299bfa00108a52ce72db1212fe",
-    "extractor/documents/production_replay_handoff/verification.json": "a7b8f2fb226828c8e301d83fcae5f65ba2a6c8b1f8dd3e6e73697f6b4fdd7b28",
-    "extractor/documents/production_replay_handoff/verify_handoff.py": "a8cd6ac09f2ae789863b7d5b3a91000bb93dd89a2e094051da5fd4b5474d75bc",
-    "extractor/native/recorder_host/src/domain_data_authority.rs": "ca8aeedd1caaf8713f41dbd5218c5af5073dbf2632ac88075f521408707af5d9",
-    "extractor/native/recorder_host/src/main.rs": "40a735777b56bbe6b5fb3cb58075116b9a97ddfab67200d4cf66e3aad29cff13",
-    "extractor/native/recorder_host/src/world_fold.rs": "f72205bbcb3de8b02148eb207b8cf2ca95315ae41c882e8a6532e90a56c05e3e",
-    "extractor/native/recorder_host/src/world_fold/tests.rs": "db999a13b17c89984f3fa00446eed5690b888470c0af0a19765a4bcb1de5ea5d"
+    "extractor/documents/production_replay_handoff/verification.json": "c4e2a2708b615d230708c8e862575e8e530a5f083096f2344d56a09dda7c11a6",
+    "extractor/documents/production_replay_handoff/verify_handoff.py": "9090eee2c770866389541b59736624e7ccebc9d715c20f467e86667079353dae",
+    "extractor/native/recorder_host/src/domain_data_authority.rs": "f144a8d5563b83b295c5f35ea5f59f63de69bf9125e51b5eb97c60c558a2fea4",
+    "extractor/native/recorder_host/src/main.rs": "450d80574731358a7e9278aecea46faa98d79c2e53737cedd097f621e9863c3f",
+    "extractor/native/recorder_host/src/world_fold.rs": "c4857fdbcf0b44ad237d8cd7bad350cf7513e71aa23280a0667078ab28a6321a",
+    "extractor/native/recorder_host/src/world_fold/tests.rs": "8914c3b937f69a3941183e094197c400582ce90803efb5bb2f1022749b7b03b7"
   },
   "production_admission": true,
   "schema": "hoi4.extractor.production_replay_handoff.manifest.v1",

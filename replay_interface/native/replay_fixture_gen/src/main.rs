@@ -2327,9 +2327,13 @@ fn fixture_content_manifest(seed: u64, modset_id: &str) -> Result<ContentManifes
             {"path": mod_path, "winner": 1, "source_sha256": mod_sha},
         ]
     }))?);
+    let product_modset_sha256 = sha256(
+        format!("{BUILD_SHA}:{modset_id}:{effective_vfs_manifest_sha256}").as_bytes(),
+    );
 
     let mut manifest = ContentManifest {
         schema: SCHEMA.into(),
+        product_modset_sha256,
         source_game: SourceGameIdentity {
             version: "fixture-1.19.2".into(),
             build: "fixture-build-1".into(),

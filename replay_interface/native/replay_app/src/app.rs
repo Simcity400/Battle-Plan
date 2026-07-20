@@ -831,6 +831,7 @@ mod product_production_d3d_tests {
         fs::create_dir_all(root).unwrap();
         let mut manifest = ContentManifest {
             schema: SCHEMA.into(),
+            product_modset_sha256: "09".repeat(32),
             source_game: SourceGameIdentity {
                 version: "1.19.2".into(),
                 build: "a729".into(),
@@ -1054,6 +1055,7 @@ mod product_production_d3d_tests {
         };
         map_viewer::PreparedProductionD3dFrame {
             content_manifest_sha256: "33".repeat(32),
+            product_modset_sha256: "99".repeat(32),
             effective_vfs_manifest_sha256: "11".repeat(32),
             c03_camera_replay: None,
             target: Some(map_viewer::ProductionMainSceneTargetDesc {

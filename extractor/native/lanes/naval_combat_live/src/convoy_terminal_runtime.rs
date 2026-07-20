@@ -18,8 +18,8 @@ use crate::convoy_terminal_attribution::{
     H_CONVOY_CONTROL_PAIR_SHA256, TEN_SHARD_AUTHORITY_MANIFEST_SHA256,
 };
 use crate::extractor::ValidatedCombatSnapshot;
+use crate::member_epoch_runtime::{build_member_epoch_map, MemberEpochBinding};
 
-const MAX_ACTIVE_MEMBER_BINDINGS: usize = 65_536;
 const MAX_ACTIVE_ROUTE_BINDINGS: usize = 65_536;
 
 static NEXT_PUBLICATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -169,7 +169,7 @@ pub fn publish_convoy_terminal_resolver_snapshot(
     game_hour_raw: i32,
 ) -> Result<ResolverPublicationReceipt, String> {
     let (authority, pair) = accepted_hashes()?;
-    let mut member_epochs = BTreeMap::new();
+    let mut member_bindings = Vec::new();
     for snapshot in snapshots {
         if snapshot.lifecycle.combat_id == 0 || snapshot.lifecycle.generation == 0 {
             return Err("d49/d50 snapshot has an invalid combat epoch".into());
@@ -181,20 +181,23 @@ pub fn publish_convoy_terminal_resolver_snapshot(
         for member in &snapshot.members {
             let member_ptr = usize::try_from(member.member_ptr)
                 .map_err(|_| "CFEXMember pointer does not fit this process".to_string())?;
-            if member_ptr == 0
-                || member.combat_id != epoch.combat_id
+            if member.combat_id != epoch.combat_id
                 || member.generation != epoch.generation
             {
                 return Err("d49/d50 member pointer or epoch is inconsistent".into());
             }
-            if member_epochs.insert(member_ptr, epoch).is_some() {
-                return Err("CFEXMember pointer appears in more than one active epoch".into());
-            }
-            if member_epochs.len() > MAX_ACTIVE_MEMBER_BINDINGS {
-                return Err("d49/d50 member binding cap exceeded".into());
-            }
+            member_bindings.push(MemberEpochBinding {
+                member_address: member_ptr,
+                combat_id: epoch.combat_id,
+                combat_generation: epoch.generation,
+                battle_slot_index_raw: member.battle_slot_index_raw,
+            });
         }
     }
+    let member_epochs: BTreeMap<usize, CombatEpoch> = build_member_epoch_map(&member_bindings)?
+        .into_iter()
+        .map(|(member_address, resolution)| (member_address, resolution.epoch))
+        .collect();
 
     let mut route_map = BTreeMap::new();
     for binding in routes {

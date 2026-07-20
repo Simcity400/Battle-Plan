@@ -40,7 +40,7 @@ pub const MAX_CONTAINER_VERSION: u64 = 2;
 const STITCHED_CONTAINER_VERSION: u64 = 2;
 /// The required feature a stitched (v2) container must declare (§9).
 const FEATURE_TIMELINE_SEGMENTS_V1: &str = "timeline_segments_v1";
-const FEATURE_PORTABLE_CONTENT_MANIFEST_V1: &str = "portable_content_manifest_v1";
+const FEATURE_PORTABLE_CONTENT_MANIFEST_V2: &str = "portable_content_manifest_v2";
 const STITCH_INDEX_SCHEMA: &str = "stitched-main-v1";
 const STITCH_ENTRY_ORDER: &str = "lexicographic-path-manifest-last-v1";
 /// Zip-bomb structural caps (spec §4.1). Generous for a real campaign yet bounded.
@@ -666,7 +666,7 @@ impl Container {
 
         let content_feature = declared_features
             .iter()
-            .any(|feature| feature == FEATURE_PORTABLE_CONTENT_MANIFEST_V1);
+            .any(|feature| feature == FEATURE_PORTABLE_CONTENT_MANIFEST_V2);
         let content_manifest = match manifest.get("content_manifest") {
             None | Some(Value::Null) => None,
             Some(value) => {
@@ -691,7 +691,7 @@ impl Container {
         };
         if content_feature != content_manifest.is_some() {
             return Err(ContainerError::Reject(
-                "portable_content_manifest_v1 feature/content_manifest coupling mismatch".into(),
+                "portable_content_manifest_v2 feature/content_manifest coupling mismatch".into(),
             ));
         }
 
@@ -1130,7 +1130,7 @@ fn validate_strict_manifest(manifest: &Value) -> Result<(), ContainerError> {
 /// a hard reject (forward-compat fail-closed; Codex b).
 const KNOWN_FEATURES: &[&str] = &[
     FEATURE_TIMELINE_SEGMENTS_V1,
-    FEATURE_PORTABLE_CONTENT_MANIFEST_V1,
+    FEATURE_PORTABLE_CONTENT_MANIFEST_V2,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

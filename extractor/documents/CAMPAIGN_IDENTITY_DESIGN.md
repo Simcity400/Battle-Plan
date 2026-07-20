@@ -279,6 +279,13 @@ establishes local `Recording`; the obsolete 48-byte CID-only form is invalid.
 | 64 | `[u8;32]` | proposed next CID1 payload SHA-256 |
 | 96 | `u64` | strictly increasing, never-reused proposal nonce |
 
+Implementation warning: CID1's payload hash covers `game_hour_raw`. Therefore
+`SamePairTimeRollback` cannot require equality of current and proposed CID1
+payload hashes when the rollback changes hour. The rollover implementation must
+authenticate same-pair semantics from the parsed UUID/seed (or a separately
+carried canonical pair digest) while still binding each distinct complete CID1
+payload hash at its own first-record barrier.
+
 `RolloverAck` payload (`CRA1`, exactly 32 bytes, recorder to collector): magic/version/length at
 0/4/6, proposed logical id `u64` at 8, echoed nonce `u64` at 16, decision `u16` at 24 (1 accept,
 2 reject), error `u16` at 26 (zero iff accepted), reserved-zero `u32` at 28. Acceptance commits
@@ -333,17 +340,27 @@ first-record/header state, domain-0 reservation, logical sequence, duplicate CID
 and retained opaque `ValidatedCid1`. Recorder main validates before dispatch in its dormant
 IdentityV1 path, excludes CID1 from ordinary counts, and gates manifest `Known` on that token.
 
-Activation still requires every remaining H4CR walker—including `compact_stream`, recorder-host
-stream/world folds, `fold_check`, `replay_decoder`, and every lane-local gate walker—to validate
-before payload dispatch. CI must census `H4CR` magic and `parse_compact_record_header` call sites;
-any unenumerated or unmigrated walker blocks CID1-aware/known output. Legacy mode remains explicit
-and always identity-unavailable.
+The production complete-stream walkers are now migrated: recorder-host fold/seal/repack and CLI,
+the replay decoder's cursor and bounded spool routes, `fold_check`, and compact replay verification
+all select mode before reading, drive the shared validator, and consume CID1 before ordinary
+counts, boundary state, or `WorldFold::ingest_record`. Portable replay requests and worker receipts
+carry that explicit mode. The compact package gate retains the opaque token and exact-joins Known
+manifest JSON to `to_manifest_json(resolve_validated_cid1(token))`; it never substitutes d68.
+Recorder full-fold and deferred-repack publication perform the same token-derived exact join before
+sealing, so a shape-valid but unrelated Known object cannot be republished.
+
+CI must continue to census `H4CR` magic and `parse_compact_record_header` call sites so a new
+unmigrated walker cannot silently enter the product. The whole-buffer `WorldFold::ingest_stream`
+compatibility helper remains Legacy-only and is not used by the production complete-stream route.
+Legacy mode remains explicit and always identity-unavailable.
 
 ### Recorder/replay manifest
 
 Recorder main now permits a native-session `known` identity only when explicit IdentityV1
 pre-dispatch validation retained `ValidatedCid1`; it cannot derive authority from d68 or a parallel
-struct. The active capture path remains Legacy, so production output is still identity-unavailable.
+struct. An ordinary IdentityV1 collector/recorder route exists behind false product latches; the
+default active capture path therefore remains Legacy and production output remains
+identity-unavailable.
 The eventual native-session and embedded replay representation is:
 
 ```json
@@ -438,10 +455,10 @@ extractor/native/compact_contract/src/build_profile.rs
 
 extractor/native/collector/src/lib.rs
   beside read_compact_session_header and H4CR framing:
-+ guarded stable readers for game_unique_id + game_unique_seed;
-+ CID1 emission before any frame/domain record;
-+ boundary re-read, reason-tagged failure/conflict telemetry, and rollover signal.
-  These collector seams remain unapplied; the active path starts in Legacy mode.
+  guarded stable readers, sequence-zero CID1 emission, exact CFA1 blocking, and
+  fail-closed boundary re-read exist behind inactive product latches.
++ route uncertainty/conflict through durable CIF1/CIA1;
++ wire acknowledged CRP1/CRA1/new-CID1/CFA1 rollover into the ordinary product loop.
 
 extractor/native/recorder_host/src/stream_fold.rs
 extractor/native/replay_decoder/src/*
@@ -456,6 +473,14 @@ extractor/native/recorder_host/src/main.rs
 extractor/native/recorder_host/src/world_fold.rs
 + carry campaign/segment provenance without using d68 session/start_date as fallback;
 + keep divergent overlaps and identity-failure spans explicit.
+
+extractor/native/recorder_host/src/stream_fold.rs
+extractor/native/replay_decoder/src/*
+extractor/native/fold_check/src/*
+extractor/native/lanes/compact_replay_verification_gates/src/*
++ replace hard-coded sequence-one/ordinary walkers with explicit-mode
+  `StatefulStreamValidator` admission; retain CID1 authority and never dispatch
+  the header into `WorldFold` as ordinary data.
 ```
 
 ## Open items
@@ -464,10 +489,10 @@ extractor/native/recorder_host/src/world_fold.rs
   guarded same-hour D-0-4 read and exact oracle comparison have not run; there is no authorized
   production reader or build-profile fallback.
 - CID1 payload/parser/stateful validation, explicit-mode CFA1, durable receipt ordering, and
-  recorder-main manifest gating are offline-green. Collector sequence-0 emission/CFA1 blocking,
-  live durable-sink/control-channel composition, remaining-walker migration, durable
-  identity-failure accounting, and acknowledged rollover ledger/state machine remain open. Until
-  all pass, production `campaign_identity.state="known"` is impossible.
+  recorder-main manifest gating are offline-green. Dormant collector sequence-0 emission/CFA1
+  blocking and boundary re-read now exist, but activation, production fold/replay walker migration, durable
+  identity-failure accounting, and product acknowledged rollover remain open. Until all pass,
+  production `campaign_identity.state="known"` is impossible.
 - No capture pair proves reload/relaunch/hotjoin/observer/rehost stability or distinctness
   across two new campaigns.
 - Independent campaigns cloned from one save cannot be distinguished by passive persisted

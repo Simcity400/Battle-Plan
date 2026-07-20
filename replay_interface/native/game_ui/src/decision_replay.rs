@@ -289,6 +289,77 @@ pub struct DecisionPanelSnapshot {
     pub rows: Vec<DecisionPanelRow>,
 }
 
+/// Convert replay-core's fail-closed d87 view into the only runtime carrier
+/// accepted by the decision binder. A missing or unavailable typed view never
+/// falls back to authored definitions or local script evaluation.
+pub fn decision_panel_snapshot_from_world(
+    view: &replay_core::DecisionPanelExactView,
+) -> Result<DecisionPanelSnapshot> {
+    if view.status != replay_core::ViewStatus::Present {
+        return Err(GameUiError::missing(
+            "exact decision-panel runtime view is absent or unavailable",
+        ));
+    }
+    let panel = view.panel.as_ref().ok_or_else(|| {
+        GameUiError::missing("present decision-panel view omitted its exact payload")
+    })?;
+    let frame_hour = i64::try_from(panel.frame_hour)
+        .map_err(|_| GameUiError::parse("decision-panel frame hour exceeds i64"))?;
+    let rows = panel
+        .rows
+        .iter()
+        .map(|row| DecisionPanelRow {
+            decision_id: row.decision_id.clone(),
+            category_id: row.category_id.clone(),
+            presentation_index: row.presentation_index,
+            availability: match row.availability {
+                replay_core::DecisionAvailabilityExact::Available => DecisionAvailability::Available,
+                replay_core::DecisionAvailabilityExact::Unavailable => {
+                    DecisionAvailability::Unavailable
+                }
+                replay_core::DecisionAvailabilityExact::Active => DecisionAvailability::Active,
+                replay_core::DecisionAvailabilityExact::OnCooldown => {
+                    DecisionAvailability::OnCooldown
+                }
+            },
+            lifecycle: match row.lifecycle {
+                replay_core::DecisionLifecycleExact::Pending => DecisionLifecycle::Pending,
+                replay_core::DecisionLifecycleExact::Running => DecisionLifecycle::Running,
+                replay_core::DecisionLifecycleExact::Completed => DecisionLifecycle::Completed,
+                replay_core::DecisionLifecycleExact::Failed => DecisionLifecycle::Failed,
+                replay_core::DecisionLifecycleExact::Removed => DecisionLifecycle::Removed,
+            },
+            target: row.target.as_ref().map(|target| match target {
+                replay_core::DecisionTargetExact::Country { tag } => {
+                    DecisionTarget::Country { tag: tag.clone() }
+                }
+                replay_core::DecisionTargetExact::State { state_id } => {
+                    DecisionTarget::State { state_id: *state_id }
+                }
+            }),
+            cost: row.cost.as_ref().map(|cost| DecisionCostState {
+                political_power: cost.political_power,
+                custom_cost_available: cost.custom_cost_available,
+                formatted_text: cost.formatted_text.clone(),
+            }),
+            remaining_timer_days: row.remaining_timer_days,
+            cooldown_remaining_days: row.cooldown_remaining_days,
+            name_text: row.name_text.clone(),
+            timer_text: row.timer_text.clone(),
+            alert_to_take: row.alert_to_take,
+            alert_timeout: row.alert_timeout,
+        })
+        .collect();
+    Ok(DecisionPanelSnapshot {
+        producer_complete: panel.producer_complete,
+        frame_hour,
+        country_tag: panel.country_tag.clone(),
+        available_alert_count: panel.available_alert_count,
+        timeout_alert_count: panel.timeout_alert_count,
+        rows,
+    })
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecisionCard {
     pub decision_id: String,

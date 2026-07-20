@@ -4,6 +4,7 @@ pub mod convoy_terminal_runtime;
 pub mod convoy_terminal_hook_windows;
 pub mod domain49_50_naval_combat_live;
 pub mod extractor;
+pub mod member_epoch_runtime;
 
 pub use convoy_terminal_attribution::{
     activation_blockers as convoy_terminal_activation_blockers,
@@ -60,4 +61,11 @@ pub use extractor::{
     CshipRoute, CshipSnapshotRow, ExtractorOffsets, MemberBridgeRow, NavalCombatBodyBridgeRow,
     ValidatedCombatSnapshot, CURRENT_870EBF_BUILD_SHA256, CURRENT_870EBF_CSHIP_ROUTE,
     CURRENT_870EBF_OFFSETS,
+};
+
+pub use member_epoch_runtime::{
+    clear_member_epoch_snapshot, current_member_epoch_publication_receipt,
+    current_member_epoch_snapshot, publish_member_epoch_snapshot,
+    try_current_member_epoch_snapshot, MemberEpochBinding, MemberEpochPublicationReceipt,
+    MemberEpochResolution, MemberEpochSnapshot, MAX_ACTIVE_MEMBER_BINDINGS,
 };

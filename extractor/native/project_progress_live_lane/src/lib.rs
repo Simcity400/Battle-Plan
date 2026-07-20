@@ -23,6 +23,8 @@ pub const PROJECT_PROJECT_OFF_TYPE: usize = 0x08;
 pub const PROJECT_PROJECT_OFF_LOCAL_ID: usize = 0x0C;
 pub const PROJECT_PROJECT_TYPE: u32 = 86;
 pub const PROJECT_PROGRAM_STATUS_OFF_BREAKTHROUGH: usize = 0x50;
+pub const PROJECT_PROGRAM_STATUS_RECORD_STRIDE: usize = 0x160;
+pub const MAX_PROJECT_PROGRAM_STATUS_RECORDS: usize = 3;
 pub const PROJECT_PROJECT_OFF_HISTORY_DATA: usize = 0x68;
 pub const PROJECT_PROJECT_OFF_HISTORY_CAPACITY: usize = 0x70;
 pub const PROJECT_PROJECT_OFF_HISTORY_COUNT: usize = 0x74;
@@ -499,6 +501,81 @@ pub fn read_breakthrough_rows<M: ProjectMemory>(
     }
     rows.sort_by_key(|row| (row.tag_db_id, row.specialization_handle));
     Ok(rows)
+}
+
+/// Read and country-atomically merge breakthrough rows from all contiguous
+/// a729 CProgramStatus category records. Identical handles are deduplicated;
+/// conflicting values or any malformed record tree reject the snapshot.
+pub fn read_breakthrough_rows_from_status_records<M: ProjectMemory>(
+    mem: &M,
+    status_ptr: usize,
+    status_vtable: usize,
+    breakthrough_vtable: usize,
+    tag_db_id: u32,
+) -> Result<Vec<ProjectBreakthroughRow>, String> {
+    if tag_db_id == 0 || !is_live_heap_ptr(status_ptr) {
+        return Err("program status key/address is invalid".to_string());
+    }
+    let mut by_handle = BTreeMap::<u32, u32>::new();
+    let mut observed_record = false;
+    for record_index in 0..MAX_PROJECT_PROGRAM_STATUS_RECORDS {
+        let record = record_index
+            .checked_mul(PROJECT_PROGRAM_STATUS_RECORD_STRIDE)
+            .and_then(|offset| status_ptr.checked_add(offset))
+            .ok_or_else(|| "program status record address overflow".to_string())?;
+        if mem.read_u64(record).map(|value| value as usize) != Some(status_vtable) {
+            if record_index == 0 {
+                return Err("program status record zero vtable mismatch".to_string());
+            }
+            break;
+        }
+        observed_record = true;
+        let breakthrough_addr = record
+            .checked_add(PROJECT_PROGRAM_STATUS_OFF_BREAKTHROUGH)
+            .ok_or_else(|| "breakthrough address overflow".to_string())?;
+        // Fail closed: read_breakthrough_rows validates the complete tree and
+        // returns no prefix when size/count, nodes, or values are torn.
+        let mut record_handles = BTreeSet::new();
+        for row in read_breakthrough_rows(
+            mem,
+            breakthrough_addr,
+            breakthrough_vtable,
+            tag_db_id,
+        )? {
+            if !record_handles.insert(row.specialization_handle) {
+                return Err(format!(
+                    "specialization handle {} is duplicated within one program status record",
+                    row.specialization_handle
+                ));
+            }
+            match by_handle.get(&row.specialization_handle) {
+                Some(points_raw) if *points_raw != row.points_raw => {
+                    return Err(format!(
+                        "specialization handle {} conflicts across program status records",
+                        row.specialization_handle
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    by_handle.insert(row.specialization_handle, row.points_raw);
+                    if by_handle.len() > MAX_PROJECT_BREAKTHROUGH_ROWS {
+                        return Err("merged breakthrough row count overflow".to_string());
+                    }
+                }
+            }
+        }
+    }
+    if !observed_record {
+        return Err("no program status records observed".to_string());
+    }
+    Ok(by_handle
+        .into_iter()
+        .map(|(specialization_handle, points_raw)| ProjectBreakthroughRow {
+            tag_db_id,
+            specialization_handle,
+            points_raw,
+        })
+        .collect())
 }
 
 pub fn encode_lane_frame(frame: &LaneFrame) -> Vec<u8> {
@@ -1072,6 +1149,34 @@ mod tests {
         }
     }
 
+    fn write_breakthrough_tree(
+        mem: &mut FakeMemory,
+        breakthrough: usize,
+        breakthrough_vtable: usize,
+        header: usize,
+        nodes: &[(usize, u32, u32)],
+    ) {
+        mem.write_u64(breakthrough, breakthrough_vtable as u64);
+        mem.write_u64(breakthrough + 0x08, header as u64);
+        mem.write_u64(breakthrough + 0x10, nodes.len() as u64);
+        if let Some((root, _, _)) = nodes.first().copied() {
+            mem.write_u64(header + 0x08, root as u64);
+        }
+        for (index, (node, handle, points_raw)) in nodes.iter().copied().enumerate() {
+            mem.write_u64(node, 0);
+            mem.write_u64(
+                node + 0x10,
+                nodes
+                    .get(index + 1)
+                    .map(|(next, _, _)| *next as u64)
+                    .unwrap_or(0),
+            );
+            mem.write_u8(node + 0x19, 0);
+            mem.write_u32(node + 0x1C, handle);
+            mem.write_u32(node + 0x20, points_raw);
+        }
+    }
+
     #[test]
     fn extractor_reads_project_state_from_validated_state_machine() {
         let base = 0x1400_0000usize;
@@ -1182,6 +1287,165 @@ mod tests {
                 points_raw: 12_345,
             }]
         );
+    }
+
+    #[test]
+    fn extractor_merges_four_breakthroughs_from_all_program_status_records() {
+        let base = 0x1400_0000usize;
+        let layout = ProjectLayout::from_module_base(base, 0x2A1_9300);
+        let status_vtable = base + 0x295_AC88;
+        let status = 0x2500_0000usize;
+        let mut mem = FakeMemory::default();
+        for record_index in 0..MAX_PROJECT_PROGRAM_STATUS_RECORDS {
+            mem.write_u64(
+                status + record_index * PROJECT_PROGRAM_STATUS_RECORD_STRIDE,
+                status_vtable as u64,
+            );
+        }
+        write_breakthrough_tree(
+            &mut mem,
+            status + PROJECT_PROGRAM_STATUS_OFF_BREAKTHROUGH,
+            layout.breakthrough_vtable,
+            0x2600_0000,
+            &[(0x2700_0000, 22_214, 10)],
+        );
+        write_breakthrough_tree(
+            &mut mem,
+            status
+                + PROJECT_PROGRAM_STATUS_RECORD_STRIDE
+                + PROJECT_PROGRAM_STATUS_OFF_BREAKTHROUGH,
+            layout.breakthrough_vtable,
+            0x2600_1000,
+            &[(0x2700_1000, 22_215, 20), (0x2700_1100, 22_216, 30)],
+        );
+        write_breakthrough_tree(
+            &mut mem,
+            status
+                + 2 * PROJECT_PROGRAM_STATUS_RECORD_STRIDE
+                + PROJECT_PROGRAM_STATUS_OFF_BREAKTHROUGH,
+            layout.breakthrough_vtable,
+            0x2600_2000,
+            &[(0x2700_2000, 22_217, 40)],
+        );
+
+        let rows = read_breakthrough_rows_from_status_records(
+            &mem,
+            status,
+            status_vtable,
+            layout.breakthrough_vtable,
+            47,
+        )
+        .unwrap();
+
+        assert_eq!(rows.len(), 4);
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.specialization_handle, row.points_raw))
+                .collect::<Vec<_>>(),
+            vec![(22_214, 10), (22_215, 20), (22_216, 30), (22_217, 40)]
+        );
+    }
+
+    #[test]
+    fn extractor_rejects_conflicting_breakthrough_alias_across_status_records() {
+        let base = 0x1400_0000usize;
+        let layout = ProjectLayout::from_module_base(base, 0x2A1_9300);
+        let status_vtable = base + 0x295_AC88;
+        let status = 0x2800_0000usize;
+        let mut mem = FakeMemory::default();
+        for record_index in 0..2 {
+            mem.write_u64(
+                status + record_index * PROJECT_PROGRAM_STATUS_RECORD_STRIDE,
+                status_vtable as u64,
+            );
+        }
+        write_breakthrough_tree(
+            &mut mem,
+            status + PROJECT_PROGRAM_STATUS_OFF_BREAKTHROUGH,
+            layout.breakthrough_vtable,
+            0x2900_0000,
+            &[(0x2A00_0000, 22_214, 10)],
+        );
+        write_breakthrough_tree(
+            &mut mem,
+            status
+                + PROJECT_PROGRAM_STATUS_RECORD_STRIDE
+                + PROJECT_PROGRAM_STATUS_OFF_BREAKTHROUGH,
+            layout.breakthrough_vtable,
+            0x2900_1000,
+            &[(0x2A00_1000, 22_214, 11)],
+        );
+
+        let error = read_breakthrough_rows_from_status_records(
+            &mem,
+            status,
+            status_vtable,
+            layout.breakthrough_vtable,
+            47,
+        )
+        .unwrap_err();
+        assert!(error.contains("conflicts across program status records"));
+    }
+
+    #[test]
+    fn extractor_rejects_duplicate_handle_within_one_breakthrough_tree() {
+        let base = 0x1400_0000usize;
+        let layout = ProjectLayout::from_module_base(base, 0x2A1_9300);
+        let status_vtable = base + 0x295_AC88;
+        let status = 0x2E00_0000usize;
+        let mut mem = FakeMemory::default();
+        mem.write_u64(status, status_vtable as u64);
+        write_breakthrough_tree(
+            &mut mem,
+            status + PROJECT_PROGRAM_STATUS_OFF_BREAKTHROUGH,
+            layout.breakthrough_vtable,
+            0x2F00_0000,
+            &[(0x3000_0000, 22_214, 10), (0x3000_1000, 22_214, 10)],
+        );
+
+        let error = read_breakthrough_rows_from_status_records(
+            &mem,
+            status,
+            status_vtable,
+            layout.breakthrough_vtable,
+            47,
+        )
+        .unwrap_err();
+        assert!(error.contains("duplicated within one program status record"));
+    }
+
+    #[test]
+    fn extractor_rejects_torn_breakthrough_tree_without_returning_prefix() {
+        let base = 0x1400_0000usize;
+        let layout = ProjectLayout::from_module_base(base, 0x2A1_9300);
+        let status_vtable = base + 0x295_AC88;
+        let status = 0x2B00_0000usize;
+        let header = 0x2C00_0000usize;
+        let node = 0x2D00_0000usize;
+        let mut mem = FakeMemory::default();
+        mem.write_u64(status, status_vtable as u64);
+        write_breakthrough_tree(
+            &mut mem,
+            status + PROJECT_PROGRAM_STATUS_OFF_BREAKTHROUGH,
+            layout.breakthrough_vtable,
+            header,
+            &[(node, 22_214, 10)],
+        );
+        // Advertise two nodes while retaining only the one-node prefix.
+        mem.write_u64(
+            status + PROJECT_PROGRAM_STATUS_OFF_BREAKTHROUGH + 0x10,
+            2,
+        );
+
+        let error = read_breakthrough_rows_from_status_records(
+            &mem,
+            status,
+            status_vtable,
+            layout.breakthrough_vtable,
+            47,
+        )
+        .unwrap_err();
+        assert!(error.contains("yielded 1 rows, expected 2"));
     }
 
     #[test]

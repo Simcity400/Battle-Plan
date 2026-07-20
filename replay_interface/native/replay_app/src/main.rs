@@ -46,6 +46,7 @@ mod gui_definition_admission;
 mod install_paths;
 mod observer;
 mod palette;
+mod power_balance_runtime;
 #[cfg(test)]
 mod post_effect;
 mod recording_open;

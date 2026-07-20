@@ -154,22 +154,22 @@ pub struct SessionHeaderIdentityObservation {
 /// A resolved, first-class campaign identity binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CampaignIdentity {
-    pub state: CampaignIdentityState,
+    state: CampaignIdentityState,
     /// 64 lowercase hex chars; `Some` only when `state == Known`.
-    pub campaign_id: Option<String>,
-    pub game_unique_id: Option<String>,
-    pub game_unique_seed: Option<String>,
+    campaign_id: Option<String>,
+    game_unique_id: Option<String>,
+    game_unique_seed: Option<String>,
     /// `live_memory` only when `Known`; `None` otherwise (nothing was bound).
-    pub source: Option<String>,
-    pub source_build_profile: Option<String>,
-    pub observed_game_hour_raw: Option<i32>,
+    source: Option<String>,
+    source_build_profile: Option<String>,
+    observed_game_hour_raw: Option<i32>,
     /// SHA-256 of the complete CID1 stream-header payload. `None` until the
     /// production stream walker supplies an opaque validated CID1 token.
-    pub stream_header_sha256: Option<String>,
-    pub witnesses: CampaignIdentityWitnesses,
+    stream_header_sha256: Option<String>,
+    witnesses: CampaignIdentityWitnesses,
     /// Human-readable reason for any non-`Known` state. Always `Some` when the
     /// identity is not bound; `None` only when `Known`.
-    pub resolution_note: Option<String>,
+    resolution_note: Option<String>,
     /// In-memory authorization bound to the exact current identity fields and
     /// immutable CID1 bytes. It is private and never serialized: neither
     /// manifest metadata nor a mutated clone can mint a stitchable identity.
@@ -177,6 +177,46 @@ pub struct CampaignIdentity {
 }
 
 impl CampaignIdentity {
+    pub fn state(&self) -> CampaignIdentityState {
+        self.state
+    }
+
+    pub fn campaign_id(&self) -> Option<&str> {
+        self.campaign_id.as_deref()
+    }
+
+    pub fn game_unique_id(&self) -> Option<&str> {
+        self.game_unique_id.as_deref()
+    }
+
+    pub fn game_unique_seed(&self) -> Option<&str> {
+        self.game_unique_seed.as_deref()
+    }
+
+    pub fn source(&self) -> Option<&str> {
+        self.source.as_deref()
+    }
+
+    pub fn source_build_profile(&self) -> Option<&str> {
+        self.source_build_profile.as_deref()
+    }
+
+    pub fn observed_game_hour_raw(&self) -> Option<i32> {
+        self.observed_game_hour_raw
+    }
+
+    pub fn stream_header_sha256(&self) -> Option<&str> {
+        self.stream_header_sha256.as_deref()
+    }
+
+    pub fn witnesses(&self) -> &CampaignIdentityWitnesses {
+        &self.witnesses
+    }
+
+    pub fn resolution_note(&self) -> Option<&str> {
+        self.resolution_note.as_deref()
+    }
+
     /// True only when the identity is fully bound (`state == Known`).
     pub fn is_bound(&self) -> bool {
         self.state == CampaignIdentityState::Known
@@ -594,7 +634,24 @@ fn witnesses_json(w: &CampaignIdentityWitnesses) -> Value {
 }
 
 /// Serialize a resolved identity into the exact design manifest object.
+/// External callers cannot construct or mutate the positive fields: a `Known`
+/// value originates only in this module's evidence-bound resolvers.
 pub fn to_manifest_json(id: &CampaignIdentity) -> Value {
+    if id.state == CampaignIdentityState::Known && !id.is_bound() {
+        return json!({
+            "schema": CAMPAIGN_IDENTITY_SCHEMA,
+            "state": CampaignIdentityState::Unavailable.as_str(),
+            "campaign_id": Value::Null,
+            "game_unique_id": Value::Null,
+            "game_unique_seed": Value::Null,
+            "source": Value::Null,
+            "source_build_profile": id.source_build_profile.clone().map(Value::String).unwrap_or(Value::Null),
+            "observed_game_hour_raw": Value::Null,
+            "stream_header_sha256": Value::Null,
+            "resolution_note": "identity marked known but its private CID1 evidence proof does not recompute; manifest authority withheld",
+            "witnesses": witnesses_json(&id.witnesses),
+        });
+    }
     json!({
         "schema": CAMPAIGN_IDENTITY_SCHEMA,
         "state": id.state.as_str(),
@@ -1582,6 +1639,13 @@ mod tests {
             mutated.to_stitch_resolution(),
             CampaignIdentityResolution::Missing { .. }
         ));
+        let manifest = to_manifest_json(&mutated);
+        assert_eq!(
+            manifest["state"].as_str(),
+            Some(CampaignIdentityState::Unavailable.as_str())
+        );
+        assert!(manifest["campaign_id"].is_null());
+        validate_manifest_object(&manifest).unwrap();
     }
 
     #[test]

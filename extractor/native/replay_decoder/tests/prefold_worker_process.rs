@@ -79,6 +79,8 @@ fn worker_process_folds_authenticated_source_and_emits_portable_receipt() {
         .arg(bytes.len().to_string())
         .arg("--source-sha256")
         .arg(&sha256)
+        .arg("--identity-mode")
+        .arg("legacy")
         .output()
         .unwrap();
     assert!(
@@ -88,8 +90,9 @@ fn worker_process_folds_authenticated_source_and_emits_portable_receipt() {
     );
     assert!(output.stderr.is_empty());
     let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(receipt["schema"], "hoi4_prefold_worker_receipt_v1");
+    assert_eq!(receipt["schema"], "hoi4_prefold_worker_receipt_v2");
     assert_eq!(receipt["decoder_id"], "extractor.replay_decoder.production_world_fold.worker.v1");
+    assert_eq!(receipt["identity_mode"], "legacy");
     assert_eq!(receipt["game_id"], GAME);
     assert_eq!(receipt["schema_version"], "1");
     let entries = receipt["entries"].as_array().unwrap();

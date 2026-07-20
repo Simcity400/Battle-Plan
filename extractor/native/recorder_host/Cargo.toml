@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 compact_stream = { path = "../compact_stream" }
 compact_contract = { path = "../compact_contract" }
+direct_frd_transitions_live = { path = "../lanes/direct_frd_transitions_live" }
 air_loss_stats_live_lane = { path = "../lanes/air_loss_stats_live" }
 hub_motorization_live_lane = { path = "../lanes/hub_motorization_live" }
 air_wings_variants_lifecycle_live_lane = { path = "../lanes/air_wings_variants_lifecycle_live" }
@@ -28,6 +29,10 @@ fired_event_popups_live_lane = { path = "../lanes/fired_event_popups_live" }
 runtime_text_inputs_live_lane = { path = "../lanes/runtime_text_inputs_live" }
 design_catalog_context_live_lane = { path = "../lanes/design_catalog_context_live" }
 hud_role_observer_live_lane = { path = "../lanes/hud_role_observer_live" }
+character_presentation_live_lane = { path = "../lanes/character_presentation_live" }
+nuke_stockpile_live_lane = { path = "../lanes/nuke_stockpile_live" }
+sunk_ship_history_live_lane = { path = "../lanes/sunk_ship_history_live" }
+decision_panel_live_lane = { path = "../lanes/decision_panel_live" }
 production_render_submit_live_lane = { path = "../lanes/production_render_submit_live" }
 scientists_live_lane = { path = "../scientists_live_lane" }
 serde = { version = "1", features = ["derive"] }

@@ -17,8 +17,8 @@
 //! Plan, gate G1).
 //!
 //! Usage:
-//!   fold_check hash    <input> --expected-profile production [--out report.json]
-//!   fold_check compare <a> <b> --expected-profile production [--out report.json] [--sample N]
+//!   fold_check hash    <input> --expected-profile production [--identity-mode legacy|identity-v1] [--out report.json]
+//!   fold_check compare <a> <b> --expected-profile production [--identity-mode legacy|identity-v1] [--out report.json] [--sample N]
 //!
 //! `<input>` is auto-detected: a stream begins with the `H4CR` magic; a container
 //! begins with the ZIP local-file magic and its `collector_compact_stream` entry
@@ -42,6 +42,9 @@ use compact_contract::{
     parse_compact_record_header, validate_compact_record_semantics, COMPACT_RECORD_HEADER_LEN,
     COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
     COMPACT_RECORD_TYPE_FRAME_END,
+};
+use compact_contract::stream_validator::{
+    AcceptedRecordKind, StatefulStreamValidator, StreamIdentityMode, StreamValidationError,
 };
 use replay_decoder::{DecodeStats, OpenOptions, Source};
 use serde_json::{json, Map, Value};
@@ -91,15 +94,24 @@ fn print_usage() {
         "fold_check — fold-equivalence gate (G1)\n\
          \n\
          USAGE:\n\
-         \x20 fold_check hash    <input> --expected-profile production [--out report.json]\n\
-         \x20 fold_check compare <a> <b> --expected-profile production [--out report.json] [--sample N]\n\
+         \x20 fold_check hash    <input> --expected-profile production [--identity-mode legacy|identity-v1] [--out report.json]\n\
+         \x20 fold_check compare <a> <b> --expected-profile production [--identity-mode legacy|identity-v1] [--out report.json] [--sample N]\n\
          \n\
          <input> is a collector_stream.bin OR a .battleplan container.\n\
          hash    prints a deterministic per-hour hash report.\n\
          compare exits 0 iff the two inputs fold identically.\n\
          --expected-profile is mandatory: certification never trusts the\n\
-         stream's own FRAME_END counts as its coverage authority."
+         stream's own FRAME_END counts as its coverage authority.\n\
+         --identity-mode defaults to legacy. identity-v1 explicitly requires\n\
+         one placement-valid CID1 sequence-zero header before ordinary records."
     );
+}
+
+fn stream_identity_mode_name(mode: StreamIdentityMode) -> &'static str {
+    match mode {
+        StreamIdentityMode::Legacy => "legacy",
+        StreamIdentityMode::IdentityV1 => "identity-v1",
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -331,10 +343,19 @@ fn read_u32_at(payload: &[u8], offset: usize, label: &str) -> Result<u32, String
 
 /// Audit normalized status and completeness directly from decoded H4CR bytes.
 /// This is deliberately separate from the world fold: PERF and FRAME_END carry
-/// certification evidence but are not folded state.
-fn audit_compact_reader(mut reader: impl Read) -> Result<BTreeMap<i64, HourCompleteness>, String> {
+/// certification evidence but are not folded state. The shared stateful stream
+/// validator owns first-record identity placement and ordinary sequence
+/// continuity before any record reaches completeness accounting.
+fn audit_compact_reader_with_identity_mode(
+    mut reader: impl Read,
+    identity_mode: StreamIdentityMode,
+) -> Result<BTreeMap<i64, HourCompleteness>, String> {
     const CHUNK: usize = 1024 * 1024;
     let mut audit = CompletenessAudit::default();
+    let mut stream_validator = match identity_mode {
+        StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
+        StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
+    };
     let mut carry = Vec::with_capacity(CHUNK * 2);
     let mut chunk = vec![0u8; CHUNK];
     let mut offset = 0u64;
@@ -359,6 +380,41 @@ fn audit_compact_reader(mut reader: impl Read) -> Result<BTreeMap<i64, HourCompl
             }
             let payload_start = cursor + COMPACT_RECORD_HEADER_LEN;
             let payload = &carry[payload_start..cursor + record_len];
+            let accepted = stream_validator
+                .validate_record(&header, payload)
+                .map_err(|error| {
+                    // Pre-2.22 diagnostic containers can contain the old
+                    // domain-zero FRAME_END envelope. Domain zero remains a
+                    // hard protocol failure (and is never accepted as an
+                    // ordinary Legacy record), but retain the current record
+                    // semantics error as context so compatibility diagnostics
+                    // still identify the historical FRAME_END shape that
+                    // prevented certification.
+                    let semantics_context = if identity_mode == StreamIdentityMode::Legacy
+                        && matches!(&error, StreamValidationError::ReservedDomainZero)
+                    {
+                        validate_compact_record_semantics(
+                            header.domain_id,
+                            header.record_type,
+                            header.record_flags,
+                            payload,
+                        )
+                        .err()
+                        .map(|error| format!("; current record semantics also reject it: {error}"))
+                        .unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "{} stream validation at byte {}: {error}{semantics_context}",
+                        stream_identity_mode_name(identity_mode),
+                        offset + cursor as u64
+                    )
+                })?;
+            if accepted == AcceptedRecordKind::CampaignIdentity {
+                cursor += record_len;
+                continue;
+            }
             audit
                 .observe(
                     header.game_hour_raw,
@@ -394,15 +450,21 @@ fn audit_compact_reader(mut reader: impl Read) -> Result<BTreeMap<i64, HourCompl
             "stream hour left open at EOF; final record must be canonical FRAME_END".to_string(),
         );
     }
+    if identity_mode == StreamIdentityMode::IdentityV1 && stream_validator.identity().is_none() {
+        return Err("identity-v1 stream ended before its mandatory CID1 header".to_string());
+    }
     Ok(audit.hours)
 }
 
-fn audit_source(source: &Source) -> Result<BTreeMap<i64, HourCompleteness>, String> {
+fn audit_source(
+    source: &Source,
+    identity_mode: StreamIdentityMode,
+) -> Result<BTreeMap<i64, HourCompleteness>, String> {
     match source {
         Source::StreamFile(path) => {
             let reader = compact_stream::open(path)
                 .map_err(|e| format!("open {} for completeness audit: {e}", path.display()))?;
-            audit_compact_reader(reader)
+            audit_compact_reader_with_identity_mode(reader, identity_mode)
         }
         Source::Container(path) => {
             let container = Container::open(path, &ExpectedIdentity::default())
@@ -429,7 +491,7 @@ fn audit_source(source: &Source) -> Result<BTreeMap<i64, HourCompleteness>, Stri
             let bytes = container
                 .read_entry_bytes(&entry.path)
                 .map_err(|e| format!("read {} for completeness audit: {e}", entry.path))?;
-            audit_compact_reader(std::io::Cursor::new(bytes))
+            audit_compact_reader_with_identity_mode(std::io::Cursor::new(bytes), identity_mode)
         }
     }
 }
@@ -519,6 +581,7 @@ fn totals_from_stats(s: &DecodeStats) -> Totals {
 fn fold_input(
     path: &Path,
     expected_roster: &ExpectedRoster,
+    identity_mode: StreamIdentityMode,
     mut on_hour: impl FnMut(i64, &str, &[u8], &BTreeMap<u16, u64>, &HourCompleteness),
 ) -> Result<(Totals, &'static str), String> {
     let source = Source::detect(path).map_err(|e| e.to_string())?;
@@ -526,9 +589,9 @@ fn fold_input(
         Source::StreamFile(_) => "raw_stream",
         Source::Container(_) => "container",
     };
-    let mut completeness = audit_source(&source)?;
+    let mut completeness = audit_source(&source, identity_mode)?;
     let mut cursor = source
-        .open_cursor(&fold_check_opts())
+        .open_cursor_with_identity_mode(&fold_check_opts(), identity_mode)
         .map_err(|e| format!("open {}: {e}", path.display()))?;
     while let Some(hour) = cursor.next_hour() {
         let hour = hour.map_err(|e| format!("fold {}: {e}", path.display()))?;
@@ -584,14 +647,24 @@ fn push_hour(
 }
 
 /// Fold an input file into an in-memory [`FoldRun`] (per-hour hashes + totals).
+#[cfg(test)]
 fn run_input(
     path: &Path,
     expected_roster: &ExpectedRoster,
+) -> Result<(FoldRun, &'static str), String> {
+    run_input_with_identity_mode(path, expected_roster, StreamIdentityMode::Legacy)
+}
+
+fn run_input_with_identity_mode(
+    path: &Path,
+    expected_roster: &ExpectedRoster,
+    identity_mode: StreamIdentityMode,
 ) -> Result<(FoldRun, &'static str), String> {
     let mut hours: Vec<HourReport> = Vec::new();
     let (totals, kind) = fold_input(
         path,
         expected_roster,
+        identity_mode,
         |hour_index, date, bytes, counts, completeness| {
             push_hour(&mut hours, hour_index, date, bytes, counts, completeness)
         },
@@ -605,6 +678,19 @@ fn run_input(
 #[cfg(test)]
 fn collect_run(reader: std::io::Cursor<Vec<u8>>, total_len: u64) -> Result<FoldRun, String> {
     collect_run_with_expected_roster(reader, total_len, None)
+}
+
+#[cfg(test)]
+fn collect_identity_v1_run(
+    reader: std::io::Cursor<Vec<u8>>,
+    total_len: u64,
+) -> Result<FoldRun, String> {
+    collect_run_with_identity_mode_and_expected_roster(
+        reader,
+        total_len,
+        StreamIdentityMode::IdentityV1,
+        None,
+    )
 }
 
 #[cfg(test)]
@@ -622,9 +708,32 @@ fn collect_run_with_expected_roster(
     total_len: u64,
     expected_roster: Option<&ExpectedRoster>,
 ) -> Result<FoldRun, String> {
+    collect_run_with_identity_mode_and_expected_roster(
+        reader,
+        total_len,
+        StreamIdentityMode::Legacy,
+        expected_roster,
+    )
+}
+
+#[cfg(test)]
+fn collect_run_with_identity_mode_and_expected_roster(
+    reader: std::io::Cursor<Vec<u8>>,
+    total_len: u64,
+    identity_mode: StreamIdentityMode,
+    expected_roster: Option<&ExpectedRoster>,
+) -> Result<FoldRun, String> {
     let mut hours: Vec<HourReport> = Vec::new();
-    let mut completeness = audit_compact_reader(std::io::Cursor::new(reader.get_ref().clone()))?;
-    let mut cursor = replay_decoder::open_reader(reader, total_len, FOLD_CHECK_GAME_ID);
+    let mut completeness = audit_compact_reader_with_identity_mode(
+        std::io::Cursor::new(reader.get_ref().clone()),
+        identity_mode,
+    )?;
+    let mut cursor = replay_decoder::open_reader_with_identity_mode(
+        reader,
+        total_len,
+        FOLD_CHECK_GAME_ID,
+        identity_mode,
+    );
     while let Some(hour) = cursor.next_hour() {
         let hour = hour.map_err(|e| e.to_string())?;
         let audited = completeness.get(&hour.hour_index).ok_or_else(|| {
@@ -716,18 +825,25 @@ fn chain_hash(hours: &[HourReport]) -> String {
 
 fn cmd_hash(args: &[String]) -> Result<u8, String> {
     let expected_roster = parse_expected_profile(args)?;
+    let identity_mode = parse_stream_identity_mode(args)?;
     let (positional, out) = parse_common(args)?;
     if positional.len() != 1 {
         return Err("hash takes exactly one <input>".into());
     }
     let path = Path::new(&positional[0]);
-    let (run, kind) = run_input(path, &expected_roster)?;
-    let report = hash_report(path, kind, &run, &expected_roster);
+    let (run, kind) = run_input_with_identity_mode(path, &expected_roster, identity_mode)?;
+    let report = hash_report(path, kind, &run, &expected_roster, identity_mode);
     emit(&report, out.as_deref())?;
     Ok(0)
 }
 
-fn hash_report(path: &Path, kind: &str, run: &FoldRun, expected_roster: &ExpectedRoster) -> Value {
+fn hash_report(
+    path: &Path,
+    kind: &str,
+    run: &FoldRun,
+    expected_roster: &ExpectedRoster,
+    identity_mode: StreamIdentityMode,
+) -> Value {
     let mut per_domain = Map::new();
     for (dom, n) in &run.totals.per_domain_data_records {
         per_domain.insert(dom.to_string(), json!({ "data_records": n }));
@@ -754,9 +870,10 @@ fn hash_report(path: &Path, kind: &str, run: &FoldRun, expected_roster: &Expecte
     json!({
         "tool": "fold_check",
         "mode": "hash",
-        "report_version": 2,
+        "report_version": 3,
         "input": path.display().to_string(),
         "input_kind": kind,
+        "identity_mode": stream_identity_mode_name(identity_mode),
         "game_id": FOLD_CHECK_GAME_ID,
         "expected_roster": expected_roster_json(expected_roster),
         "totals": totals_json(&run.totals),
@@ -849,6 +966,7 @@ fn hour_range(hours: &[HourReport]) -> Value {
 
 fn cmd_compare(args: &[String]) -> Result<u8, String> {
     let expected_roster = parse_expected_profile(args)?;
+    let identity_mode = parse_stream_identity_mode(args)?;
     let (positional, out) = parse_common(args)?;
     let sample = parse_sample(args)?.unwrap_or(24);
     if positional.len() != 2 {
@@ -856,8 +974,10 @@ fn cmd_compare(args: &[String]) -> Result<u8, String> {
     }
     let path_a = Path::new(&positional[0]);
     let path_b = Path::new(&positional[1]);
-    let (run_a, kind_a) = run_input(path_a, &expected_roster)?;
-    let (run_b, kind_b) = run_input(path_b, &expected_roster)?;
+    let (run_a, kind_a) =
+        run_input_with_identity_mode(path_a, &expected_roster, identity_mode)?;
+    let (run_b, kind_b) =
+        run_input_with_identity_mode(path_b, &expected_roster, identity_mode)?;
 
     let map_a: BTreeMap<i64, &HourReport> = run_a.hours.iter().map(|h| (h.hour_index, h)).collect();
     let map_b: BTreeMap<i64, &HourReport> = run_b.hours.iter().map(|h| (h.hour_index, h)).collect();
@@ -880,6 +1000,7 @@ fn cmd_compare(args: &[String]) -> Result<u8, String> {
                         path_b,
                         sample,
                         &expected_roster,
+                        identity_mode,
                     )?);
                     break;
                 } else if a.completeness != b.completeness {
@@ -920,8 +1041,9 @@ fn cmd_compare(args: &[String]) -> Result<u8, String> {
     let report = json!({
         "tool": "fold_check",
         "mode": "compare",
-        "report_version": 2,
+        "report_version": 3,
         "identical": identical,
+        "identity_mode": stream_identity_mode_name(identity_mode),
         "expected_roster": expected_roster_json(&expected_roster),
         "a": side_summary(path_a, kind_a, &run_a),
         "b": side_summary(path_b, kind_b, &run_b),
@@ -953,9 +1075,10 @@ fn divergence_hash_mismatch(
     path_b: &Path,
     sample: usize,
     expected_roster: &ExpectedRoster,
+    identity_mode: StreamIdentityMode,
 ) -> Result<Value, String> {
-    let bytes_a = capture_hour(path_a, hour, expected_roster)?;
-    let bytes_b = capture_hour(path_b, hour, expected_roster)?;
+    let bytes_a = capture_hour(path_a, hour, expected_roster, identity_mode)?;
+    let bytes_b = capture_hour(path_b, hour, expected_roster, identity_mode)?;
     let (section_diffs, sections) = match (bytes_a, bytes_b) {
         (Some(ba), Some(bb)) => {
             let va: Value = serde_json::from_slice(&ba)
@@ -1006,11 +1129,13 @@ fn capture_hour(
     path: &Path,
     target: i64,
     expected_roster: &ExpectedRoster,
+    identity_mode: StreamIdentityMode,
 ) -> Result<Option<Vec<u8>>, String> {
     let mut captured: Option<Vec<u8>> = None;
     fold_input(
         path,
         expected_roster,
+        identity_mode,
         |hour_index, _date, bytes, _counts, _completeness| {
             if hour_index == target && captured.is_none() {
                 captured = Some(bytes.to_vec());
@@ -1143,6 +1268,9 @@ fn parse_common(args: &[String]) -> Result<(Vec<String>, Option<String>), String
             "--expected-profile" => {
                 i += 1; // value validated in parse_expected_profile; skip here
             }
+            "--identity-mode" => {
+                i += 1; // value validated in parse_stream_identity_mode; skip here
+            }
             other if other.starts_with("--") => {
                 return Err(format!("unknown flag {other}"));
             }
@@ -1151,6 +1279,30 @@ fn parse_common(args: &[String]) -> Result<(Vec<String>, Option<String>), String
         i += 1;
     }
     Ok((positional, out))
+}
+
+fn parse_stream_identity_mode(args: &[String]) -> Result<StreamIdentityMode, String> {
+    let mut selected: Option<&str> = None;
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--identity-mode" {
+            let value = args
+                .get(i + 1)
+                .ok_or("--identity-mode requires legacy or identity-v1")?;
+            if selected.replace(value.as_str()).is_some() {
+                return Err("--identity-mode may be specified only once".to_string());
+            }
+            i += 1;
+        }
+        i += 1;
+    }
+    match selected {
+        None | Some("legacy") => Ok(StreamIdentityMode::Legacy),
+        Some("identity-v1") => Ok(StreamIdentityMode::IdentityV1),
+        Some(other) => Err(format!(
+            "unsupported stream identity mode {other:?}; expected legacy or identity-v1"
+        )),
+    }
 }
 
 fn parse_expected_profile(args: &[String]) -> Result<ExpectedRoster, String> {

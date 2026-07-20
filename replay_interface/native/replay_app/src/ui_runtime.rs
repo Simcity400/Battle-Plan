@@ -2,6 +2,7 @@
 
 use game_ui::assets::AssetResolver;
 use game_ui::gfx::SpriteRegistry;
+use game_ui::power_balance::PowerBalanceRuntimeSupplement;
 use game_ui::variant_admission::{DisplayVariantKey, InputVariant, PixelExtent};
 use replay_core::{RecordedInputVariant, WorldFrame};
 
@@ -28,6 +29,8 @@ pub struct ProductSelectedPresentRuntime {
     registry: SpriteRegistry,
     image: ImageRenderer,
     m02: map_viewer::NativeM02OverlayExecutor,
+    power_balance_runtime: Vec<PowerBalanceRuntimeSupplement>,
+    power_balance_runtime_error: Option<String>,
 }
 
 impl ProductSelectedPresentRuntime {
@@ -53,11 +56,25 @@ impl ProductSelectedPresentRuntime {
             registry,
             image: ImageRenderer::new(gfx)?,
             m02,
+            power_balance_runtime: Vec::new(),
+            power_balance_runtime_error: None,
         })
     }
 
     pub fn is_for_pass(&self, pass: &replay_core::AuthenticatedUiPass) -> bool {
         self.pass_identity_sha256 == pass.pass_identity_sha256
+    }
+
+    /// Last typed A37/A25 join prepared by the production UI runtime for the
+    /// selected POV. Failure remains feature-local and cannot suppress the
+    /// independently authenticated selected-Present pass.
+    pub fn power_balance_runtime(
+        &self,
+    ) -> std::result::Result<&[PowerBalanceRuntimeSupplement], &str> {
+        match self.power_balance_runtime_error.as_deref() {
+            Some(error) => Err(error),
+            None => Ok(&self.power_balance_runtime),
+        }
     }
 
     pub fn execute(
@@ -69,6 +86,17 @@ impl ProductSelectedPresentRuntime {
         pov_tag: Option<&str>,
         runtime_text: Option<&replay_core::RuntimeTextCatalog>,
     ) -> Result<SelectedPresentUiOutcome> {
+        self.power_balance_runtime.clear();
+        self.power_balance_runtime_error = None;
+        if let Some(country_tag) = pov_tag {
+            match crate::power_balance_runtime::power_balance_runtime_supplements(
+                world_frame,
+                country_tag,
+            ) {
+                Ok(runtime) => self.power_balance_runtime = runtime,
+                Err(error) => self.power_balance_runtime_error = Some(error),
+            }
+        }
         let Some(pass) = prepared_frame.authenticated_ui_pass.as_ref() else {
             return Ok(SelectedPresentUiOutcome::Omitted(
                 "complete authenticated selected-Present UI-pass carrier is absent".into(),

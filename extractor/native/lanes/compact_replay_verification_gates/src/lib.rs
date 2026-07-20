@@ -2,6 +2,10 @@ use compact_contract::{
     compact_status_for_global_interpretation, parse_compact_record_header,
     COMPACT_STATUS_FAILURE_MASK,
 };
+use compact_contract::campaign_identity::ValidatedCid1;
+use compact_contract::stream_validator::{
+    AcceptedRecordKind, StatefulStreamValidator, StreamIdentityMode, StreamValidationError,
+};
 use serde_json::{json, Value};
 use snapshot::sha256::Sha256;
 use snapshot::{Container, ExpectedIdentity};
@@ -1277,7 +1281,12 @@ fn validate_stream_file_against_manifest(
             compact.get("total_bytes")
         ));
     }
-    let summary = scan_compact_stream(raw);
+    // The byte-identical embedded recorder manifest is replay authority at this
+    // point.  Select the protocol before accepting any stream bytes: a Known
+    // identity requires sequence-zero CID1, while every non-Known/legacy
+    // manifest remains the sequence-one Legacy protocol.  Never sniff CID1.
+    let identity_mode = stream_identity_mode_from_manifest(manifest);
+    let summary = scan_compact_stream_with_identity_mode(raw, identity_mode);
     validate_scanned_hours(&summary, manifest, min_game_hours, errors);
     if !summary.parse_errors.is_empty() {
         errors.push(format!(
@@ -1356,7 +1365,7 @@ fn validate_stream_file_against_manifest(
     compare_u64("max_record_len", summary.max_record_len, compact, errors);
     validate_scanned_domain_authority(&summary, compact, expected_contracts, errors);
     validate_domain57_stream_authority(&summary, compact, errors);
-    validate_campaign_identity_stream_authority(&summary, manifest, errors);
+    validate_campaign_identity_stream_authority(&summary, manifest, identity_mode, errors);
 
     if summary.framed_max_record_len > options.max_record_bytes {
         errors.push(format!(
@@ -1800,6 +1809,7 @@ fn domain57_frame_evidence_json(summary: &HeaderScanSummary) -> Value {
 fn validate_campaign_identity_stream_authority(
     summary: &HeaderScanSummary,
     manifest: &Value,
+    identity_mode: StreamIdentityMode,
     errors: &mut Vec<String>,
 ) {
     if let Err(error) = recorder_host::campaign_identity::validate_in_session_manifest(manifest) {
@@ -1807,16 +1817,56 @@ fn validate_campaign_identity_stream_authority(
             "manifest campaign_identity grammar is invalid: {error}"
         ));
     }
-    let scanned = recorder_host::campaign_identity::to_manifest_json(
-        &recorder_host::campaign_identity::resolve(&summary.session_header_identity),
-    );
-    match manifest.get("campaign_identity") {
-        Some(declared) if declared == &scanned => {}
-        Some(_) => errors.push(
-            "manifest campaign_identity does not exactly match independently decoded d68 stream authority"
-                .to_string(),
-        ),
-        None => errors.push("manifest campaign_identity is missing".to_string()),
+    let declared = manifest.get("campaign_identity");
+    match identity_mode {
+        StreamIdentityMode::IdentityV1 => {
+            let Some(cid1) = summary.validated_cid1.as_ref() else {
+                errors.push(
+                    "Known campaign_identity selected IdentityV1 but the complete stream scan retained no placement-authoritative CID1"
+                        .to_string(),
+                );
+                return;
+            };
+            let scanned = recorder_host::campaign_identity::to_manifest_json(
+                &recorder_host::campaign_identity::resolve_validated_cid1(cid1),
+            );
+            match declared {
+                Some(value) if value == &scanned => {}
+                Some(_) => errors.push(
+                    "Known manifest campaign_identity does not exactly match independently admitted sequence-zero CID1 authority"
+                        .to_string(),
+                ),
+                None => errors.push("manifest campaign_identity is missing".to_string()),
+            }
+        }
+        StreamIdentityMode::Legacy => {
+            // d68 is compatibility/witness authority only.  It may bind a
+            // non-Known Legacy manifest, but can never mint Known identity.
+            let scanned = recorder_host::campaign_identity::to_manifest_json(
+                &recorder_host::campaign_identity::resolve(&summary.session_header_identity),
+            );
+            match declared {
+                Some(value) if value == &scanned => {}
+                Some(_) => errors.push(
+                    "non-Known manifest campaign_identity does not exactly match independently decoded d68 stream authority"
+                        .to_string(),
+                ),
+                None => errors.push("manifest campaign_identity is missing".to_string()),
+            }
+        }
+    }
+}
+
+fn stream_identity_mode_from_manifest(manifest: &Value) -> StreamIdentityMode {
+    if manifest
+        .get("campaign_identity")
+        .and_then(|identity| identity.get("state"))
+        .and_then(Value::as_str)
+        == Some("known")
+    {
+        StreamIdentityMode::IdentityV1
+    } else {
+        StreamIdentityMode::Legacy
     }
 }
 
@@ -1889,6 +1939,7 @@ struct VerifiedStaticManifestAuthority {
     artifact_hashes: BTreeMap<String, String>,
     bundle_artifacts: BTreeMap<String, StaticBundleArtifactBinding>,
     bundle_id: String,
+    product_modset_sha256: String,
     retained_manifest_sha256: String,
     retained_binding_count: usize,
     verifier_sha256: String,
@@ -2220,6 +2271,35 @@ fn required_static_manifest_hashes(manifest: &Value) -> Result<BTreeMap<String, 
         static_bundle.get("bundle_id"),
         "manifest static_bundle.bundle_id",
     )?;
+    let session_product_modset_sha256 = canonical_sha256(
+        static_bundle.get("product_modset_sha256"),
+        "manifest static_bundle.product_modset_sha256",
+    )?;
+    let portable_content = manifest
+        .get("portable_content_manifest")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            "production manifest portable_content_manifest is missing or not an object"
+                .to_string()
+        })?;
+    if portable_content.get("schema").and_then(Value::as_str)
+        != Some("hoi4.portable-content-manifest.v2")
+    {
+        return Err(
+            "production manifest portable_content_manifest is not v2 product-modset-bound"
+                .into(),
+        );
+    }
+    let portable_product_modset_sha256 = canonical_sha256(
+        portable_content.get("product_modset_sha256"),
+        "manifest portable_content_manifest.product_modset_sha256",
+    )?;
+    if portable_product_modset_sha256 != session_product_modset_sha256 {
+        return Err(
+            "portable content manifest product-modset key differs from static-bundle admission"
+                .into(),
+        );
+    }
     if static_bundle.get("artifact_count").and_then(Value::as_u64)
         != u64::try_from(required.len()).ok()
     {
@@ -2359,6 +2439,10 @@ fn verify_static_manifest_authority(
         static_bundle.get("bundle_id"),
         "manifest static_bundle.bundle_id",
     )?;
+    let claimed_product_modset_sha256 = canonical_sha256(
+        static_bundle.get("product_modset_sha256"),
+        "manifest static_bundle.product_modset_sha256",
+    )?;
 
     let mut claimed_artifacts = BTreeMap::new();
     for row in static_bundle
@@ -2391,9 +2475,9 @@ fn verify_static_manifest_authority(
         .ok_or_else(|| "retained static bundle manifest has no parent directory".to_string())?;
     let retained_json = snapshot::parse_json_strict(&retained_manifest.bytes)
         .map_err(|error| format!("retained static bundle manifest is not strict JSON: {error}"))?;
-    if retained_json.get("schema").and_then(Value::as_str) != Some("extractor.static_bundle.v2") {
+    if retained_json.get("schema").and_then(Value::as_str) != Some("extractor.static_bundle.v3") {
         return Err(
-            "retained static bundle manifest schema is not extractor.static_bundle.v2".into(),
+            "retained static bundle manifest schema is not extractor.static_bundle.v3".into(),
         );
     }
     let retained_object = retained_json
@@ -2647,6 +2731,45 @@ fn verify_static_manifest_authority(
         .get("bindings")
         .and_then(Value::as_object)
         .ok_or_else(|| "retained static bundle bindings are missing".to_string())?;
+    let product_modset = retained_bindings
+        .get("product_modset")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "retained static bundle product_modset binding is missing".to_string())?;
+    let product_fields = [
+        "schema",
+        "executable_sha256",
+        "mod_state_effective_content_sha256",
+        "dlc_state_effective_content_sha256",
+        "load_order_effective_content_sha256",
+        "effective_vfs_namespace_sha256",
+        "effective_vfs_rows_sha256",
+        "product_modset_sha256",
+    ]
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    if product_modset.keys().map(String::as_str).collect::<BTreeSet<_>>() != product_fields
+        || product_modset.get("schema").and_then(Value::as_str)
+            != Some("extractor.product_modset_key.v1")
+    {
+        return Err("retained static bundle product_modset binding is malformed".into());
+    }
+    let retained_product_modset_sha256 = canonical_sha256(
+        product_modset.get("product_modset_sha256"),
+        "retained static bundle product_modset_sha256",
+    )?;
+    let mut product_core = Value::Object(product_modset.clone());
+    product_core
+        .as_object_mut()
+        .expect("product_modset object cloned above")
+        .remove("product_modset_sha256");
+    let recomputed_product_modset_sha256 = canonical_json_sha256(&product_core)?;
+    if retained_product_modset_sha256 != recomputed_product_modset_sha256
+        || claimed_product_modset_sha256 != retained_product_modset_sha256
+    {
+        return Err(format!(
+            "product modset identity mismatch: session={claimed_product_modset_sha256}, retained={retained_product_modset_sha256}, recomputed={recomputed_product_modset_sha256}"
+        ));
+    }
     let session_bindings = static_bundle
         .get("bindings")
         .expect("session binding roster checked above")
@@ -2673,6 +2796,11 @@ fn verify_static_manifest_authority(
                 .into(),
         );
     }
+    if product_modset.get("executable_sha256").and_then(Value::as_str)
+        != Some(executable.sha256.as_str())
+    {
+        return Err("product modset executable identity differs from retained executable".into());
+    }
     for name in ["mod_state", "dlc_state", "load_order"] {
         let retained_file = verify_retained_file_evidence(
             session_bindings.get(name),
@@ -2695,6 +2823,22 @@ fn verify_static_manifest_authority(
         {
             return Err(format!(
                 "retained static bundle binding {name:?} does not match retained binding document bytes"
+            ));
+        }
+        let product_field = match name {
+            "mod_state" => "mod_state_effective_content_sha256",
+            "dlc_state" => "dlc_state_effective_content_sha256",
+            _ => "load_order_effective_content_sha256",
+        };
+        if canonical_sha256(
+            binding.get("effective_content_sha256"),
+            &format!("retained static bundle binding {name:?} effective_content_sha256"),
+        )? != canonical_sha256(
+            product_modset.get(product_field),
+            &format!("product_modset.{product_field}"),
+        )? {
+            return Err(format!(
+                "product modset {product_field} differs from retained {name} binding"
             ));
         }
     }
@@ -2737,6 +2881,22 @@ fn verify_static_manifest_authority(
                 .into(),
         );
     }
+    for (binding_field, product_field) in [
+        ("namespace_sha256", "effective_vfs_namespace_sha256"),
+        ("rows_sha256", "effective_vfs_rows_sha256"),
+    ] {
+        if canonical_sha256(
+            live_source.get(binding_field),
+            &format!("retained live source {binding_field}"),
+        )? != canonical_sha256(
+            product_modset.get(product_field),
+            &format!("product_modset.{product_field}"),
+        )? {
+            return Err(format!(
+                "product modset {product_field} differs from retained live source binding"
+            ));
+        }
+    }
     verify_retained_file_evidence(
         session_bindings.get("live_resolution_report"),
         "bindings.live_resolution_report",
@@ -2748,6 +2908,7 @@ fn verify_static_manifest_authority(
         artifact_hashes,
         bundle_artifacts,
         bundle_id: recomputed_bundle_id,
+        product_modset_sha256: recomputed_product_modset_sha256,
         retained_manifest_sha256: retained_manifest.sha256,
         retained_binding_count: session_bindings.len(),
         verifier_sha256: verifier.sha256,
@@ -2975,6 +3136,7 @@ fn validate_required_static_artifacts(
         "required_count": expected_count,
         "exact_required_roles": true,
         "bundle_id": manifest_authority.bundle_id,
+        "product_modset_sha256": manifest_authority.product_modset_sha256,
         "retained_manifest_sha256": manifest_authority.retained_manifest_sha256,
         "retained_binding_count": manifest_authority.retained_binding_count,
         "verifier_sha256": manifest_authority.verifier_sha256,
@@ -3083,7 +3245,17 @@ fn load_verified_replay_authority(
     }
     let static_artifacts =
         validate_required_static_artifacts(&container, &embedded_manifest, container.game_id())?;
-
+    let container_content = container.content_manifest().ok_or_else(|| {
+        "production replay container has no top-level portable content manifest".to_string()
+    })?;
+    let container_content_value = serde_json::to_value(container_content)
+        .map_err(|error| format!("serialize admitted container content manifest failed: {error}"))?;
+    if embedded_manifest.get("portable_content_manifest") != Some(&container_content_value) {
+        return Err(
+            "container top-level portable content manifest differs from embedded recorder authority"
+                .into(),
+        );
+    }
     Ok(VerifiedReplayAuthority {
         manifest: embedded_manifest,
         container_stream,
@@ -3373,6 +3545,9 @@ struct HeaderScanSummary {
     per_hour_data_authority: BTreeMap<(i32, u16), DataAuthority>,
     domain57_frames: Vec<recorder_host::domain_data_authority::Domain57FrameEvidence>,
     session_header_identity: recorder_host::campaign_identity::SessionHeaderIdentityObservation,
+    /// Opaque placement authority retained only when the shared stateful
+    /// validator admits the exact sequence-zero CID1 record.
+    validated_cid1: Option<ValidatedCid1>,
     /// FRAME_END carries frame-scoped global status, not per-domain raw status.
     frame_status_flags_or_raw: u32,
     per_hour_frame_authority: BTreeMap<i32, FrameEndAuthority>,
@@ -3410,8 +3585,20 @@ struct FrameEndAuthority {
     status_flags: u32,
 }
 
+#[cfg(test)]
 fn scan_compact_stream(raw: &[u8]) -> HeaderScanSummary {
+    scan_compact_stream_with_identity_mode(raw, StreamIdentityMode::Legacy)
+}
+
+fn scan_compact_stream_with_identity_mode(
+    raw: &[u8],
+    identity_mode: StreamIdentityMode,
+) -> HeaderScanSummary {
     let mut summary = HeaderScanSummary::default();
+    let mut stream_validator = match identity_mode {
+        StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
+        StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
+    };
     let mut offset = 0usize;
     let mut previous_sequence: Option<u64> = None;
     let mut open_frame_hour: Option<i32> = None;
@@ -3444,27 +3631,59 @@ fn scan_compact_stream(raw: &[u8]) -> HeaderScanSummary {
             framing_complete = false;
             break;
         }
-        if let Some(previous) = previous_sequence {
-            match previous.checked_add(1) {
-                Some(expected) if sequence == expected => {}
-                Some(expected) => summary.ordering_errors.push(format!(
-                    "offset {offset}: sequence discontinuity {previous} -> {sequence} \
-                     (expected {expected}; a record was swallowed, duplicated, or reordered)"
-                )),
-                None => summary.ordering_errors.push(format!(
-                    "offset {offset}: sequence {previous} exhausted; wrapping to {sequence} is forbidden"
-                )),
+        let awaiting_identity = identity_mode == StreamIdentityMode::IdentityV1
+            && summary.validated_cid1.is_none();
+        if !awaiting_identity {
+            if let Some(previous) = previous_sequence {
+                match previous.checked_add(1) {
+                    Some(expected) if sequence == expected => {}
+                    Some(expected) => summary.ordering_errors.push(format!(
+                        "offset {offset}: sequence discontinuity {previous} -> {sequence} \
+                         (expected {expected}; a record was swallowed, duplicated, or reordered)"
+                    )),
+                    None => summary.ordering_errors.push(format!(
+                        "offset {offset}: sequence {previous} exhausted; wrapping to {sequence} is forbidden"
+                    )),
+                }
+            } else if sequence != 1 {
+                summary.ordering_errors.push(format!(
+                    "offset {offset}: first sequence is {sequence}, expected 1; stream prefix is missing"
+                ));
             }
-        } else if sequence != 1 {
-            summary.ordering_errors.push(format!(
-                "offset {offset}: first sequence is {sequence}, expected 1; stream prefix is missing"
-            ));
+            previous_sequence = Some(sequence);
         }
-        previous_sequence = Some(sequence);
         final_record_is_clean_frame_end = false;
         let payload = &raw[offset + RECORD_HEADER_LEN..offset + record_len];
         summary.framed_max_payload_len = summary.framed_max_payload_len.max(payload_len as u64);
         summary.framed_max_record_len = summary.framed_max_record_len.max(record_len as u64);
+        let stateful_result = if stream_validator.is_terminal() {
+            None
+        } else {
+            Some(stream_validator.validate_record(&header, payload))
+        };
+        match stateful_result {
+            Some(Ok(AcceptedRecordKind::CampaignIdentity)) => {
+                summary.validated_cid1 = stream_validator.identity().cloned();
+                // CID1 participates in byte/framing caps but is not an ordinary
+                // compact record and must never enter domain/hour accounting.
+                offset = offset.saturating_add(record_len);
+                continue;
+            }
+            Some(Ok(AcceptedRecordKind::Ordinary)) | None => {}
+            Some(Err(error @ StreamValidationError::InvalidCampaignIdentity(_)))
+            | Some(Err(error @ StreamValidationError::Terminal)) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: stateful stream validation failed before dispatch: {error}"
+                ));
+                framing_complete = false;
+                break;
+            }
+            // Once CID1 placement has been established, ordinary record
+            // defects remain localizable.  Preserve the independent scanner's
+            // complete-stream diagnostics/accounting behavior; the shared
+            // validator is terminal and is deliberately not consulted again.
+            Some(Err(_)) => {}
+        }
         let envelope_ok = match compact_contract::validate_compact_record_semantics(
             domain_id,
             record_type,
@@ -3802,6 +4021,11 @@ fn scan_compact_stream(raw: &[u8]) -> HeaderScanSummary {
         summary
             .parse_errors
             .push("stream is not closed by a final canonical FRAME_END record".to_string());
+    }
+    if identity_mode == StreamIdentityMode::IdentityV1 && summary.validated_cid1.is_none() {
+        summary
+            .parse_errors
+            .push("IdentityV1 stream ended without an accepted CID1 header".to_string());
     }
     summary.unique_hours = summary.frame_end_hour_counts.keys().copied().collect();
     summary.skipped_hours = skipped_hours(&summary.unique_hours);
@@ -4921,16 +5145,129 @@ mod tests {
         );
         let manifest = json!({ "campaign_identity": expected });
         let mut errors = Vec::new();
-        validate_campaign_identity_stream_authority(&summary, &manifest, &mut errors);
+        validate_campaign_identity_stream_authority(
+            &summary,
+            &manifest,
+            StreamIdentityMode::Legacy,
+            &mut errors,
+        );
         assert!(errors.is_empty(), "{errors:?}");
 
         let mut forged = manifest;
         forged["campaign_identity"]["witnesses"]["session"] = json!(8);
         let mut forged_errors = Vec::new();
-        validate_campaign_identity_stream_authority(&summary, &forged, &mut forged_errors);
+        validate_campaign_identity_stream_authority(
+            &summary,
+            &forged,
+            StreamIdentityMode::Legacy,
+            &mut forged_errors,
+        );
         assert!(forged_errors.iter().any(|error| {
             error.contains("does not exactly match independently decoded d68 stream authority")
         }));
+    }
+
+    #[test]
+    fn identity_v1_scan_skips_cid1_accounting_and_exactly_joins_known_manifest() {
+        use compact_contract::campaign_identity::{
+            encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses,
+            COMPACT_DOMAIN_STREAM_HEADER, COMPACT_RECORD_TYPE_STREAM_HEADER,
+        };
+
+        let hour = compact_contract::calendar::DATE_EPOCH_CONST + (1936 * 365 * 24);
+        let observation = Cid1Observation {
+            game_unique_id: "a4b17fed-ed12-4361-9064-fb6576638110".to_string(),
+            game_unique_seed: 1_026_046_527,
+            game_hour_raw: hour,
+        };
+        let fields = Cid1Fields::from_stable_observations(
+            observation.clone(),
+            observation,
+            "a729-production".to_string(),
+            Cid1Witnesses::default(),
+        )
+        .unwrap();
+        let cid1_payload = encode_cid1(&fields).unwrap();
+        let mut raw = Vec::new();
+        append_record(
+            &mut raw,
+            0,
+            hour,
+            COMPACT_DOMAIN_STREAM_HEADER,
+            COMPACT_RECORD_TYPE_STREAM_HEADER,
+            &cid1_payload,
+        );
+        append_record(
+            &mut raw,
+            1,
+            hour,
+            10,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(0),
+        );
+        append_record(
+            &mut raw,
+            2,
+            hour,
+            10,
+            RECORD_TYPE_DOMAIN_DATA,
+            &fuel_empty_payload(),
+        );
+        append_record(
+            &mut raw,
+            3,
+            hour,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(0),
+        );
+
+        let summary =
+            scan_compact_stream_with_identity_mode(&raw, StreamIdentityMode::IdentityV1);
+        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert!(summary.ordering_errors.is_empty(), "{:?}", summary.ordering_errors);
+        assert_eq!(summary.record_count, 3, "CID1 is not an ordinary record");
+        assert!(!summary.domains_seen.contains(&COMPACT_DOMAIN_STREAM_HEADER));
+        let cid1 = summary.validated_cid1.as_ref().expect("retained CID1");
+        let expected = recorder_host::campaign_identity::to_manifest_json(
+            &recorder_host::campaign_identity::resolve_validated_cid1(cid1),
+        );
+        let manifest = json!({ "campaign_identity": expected });
+        assert_eq!(
+            stream_identity_mode_from_manifest(&manifest),
+            StreamIdentityMode::IdentityV1
+        );
+        let mut errors = Vec::new();
+        validate_campaign_identity_stream_authority(
+            &summary,
+            &manifest,
+            StreamIdentityMode::IdentityV1,
+            &mut errors,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let mut forged = manifest;
+        forged["campaign_identity"]["game_unique_seed"] = json!("7");
+        let mut forged_errors = Vec::new();
+        validate_campaign_identity_stream_authority(
+            &summary,
+            &forged,
+            StreamIdentityMode::IdentityV1,
+            &mut forged_errors,
+        );
+        assert!(!forged_errors.is_empty());
+    }
+
+    #[test]
+    fn known_manifest_never_falls_back_to_legacy_without_cid1() {
+        let raw = one_domain_stream_with_frame_payload(&frame_payload(0));
+        let summary =
+            scan_compact_stream_with_identity_mode(&raw, StreamIdentityMode::IdentityV1);
+        assert!(summary.validated_cid1.is_none());
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("invalid CID1 stream header")));
     }
 
     #[test]
@@ -5715,6 +6052,16 @@ mod tests {
         );
 
         let error = static_authority_error(
+            "static_bundle_arbitrary_product_modset",
+            |manifest| {
+                manifest["static_bundle"]["product_modset_sha256"] =
+                    json!("9".repeat(64));
+            },
+            |_, _| {},
+        );
+        assert!(error.contains("differs from static-bundle"), "{error}");
+
+        let error = static_authority_error(
             "static_bundle_bad_file",
             |manifest| {
                 manifest["static_bundle"]["artifacts"][0]["file"] = json!("artifacts/wrong.json");
@@ -5828,6 +6175,29 @@ mod tests {
             |_, _| {},
         );
         assert!(error.contains("token_gate_required"), "{error}");
+    }
+
+    #[test]
+    fn production_manifest_refuses_v1_or_mismatched_product_modset_content() {
+        let error = static_authority_error(
+            "portable_content_v1",
+            |manifest| {
+                manifest["portable_content_manifest"]["schema"] =
+                    json!("hoi4.portable-content-manifest.v1");
+            },
+            |_, _| {},
+        );
+        assert!(error.contains("not v2 product-modset-bound"), "{error}");
+
+        let error = static_authority_error(
+            "portable_content_foreign_product",
+            |manifest| {
+                manifest["portable_content_manifest"]["product_modset_sha256"] =
+                    json!("f".repeat(64));
+            },
+            |_, _| {},
+        );
+        assert!(error.contains("differs from static-bundle"), "{error}");
     }
 
     #[test]
@@ -6621,6 +6991,36 @@ mod tests {
         );
     }
 
+    fn replay_test_content_manifest(
+        product_modset_sha256: &str,
+    ) -> portable_content_manifest::ContentManifest {
+        let mut manifest = portable_content_manifest::ContentManifest {
+            schema: portable_content_manifest::SCHEMA.into(),
+            product_modset_sha256: product_modset_sha256.into(),
+            source_game: portable_content_manifest::SourceGameIdentity {
+                version: "fixture-1.19.2".into(),
+                build: "fixture-a729".into(),
+                executable_sha256: "a".repeat(64),
+                build_profile: "compact-gate-fixture".into(),
+            },
+            source_profile: portable_content_manifest::SourceProfileIdentity {
+                profile_id: "fixture-profile".into(),
+                playset_id: "fixture-playset".into(),
+                selection_sha256: "0".repeat(64),
+            },
+            effective_vfs_manifest_sha256: "b".repeat(64),
+            ordered_layers: Vec::new(),
+            dlc_selection: Vec::new(),
+            localisation_language: "l_english".into(),
+            required_settings: BTreeMap::new(),
+            required_content: Vec::new(),
+            manifest_digest_sha256: None,
+        };
+        manifest.source_profile.selection_sha256 =
+            manifest.computed_selection_sha256().unwrap();
+        manifest.with_computed_digest().unwrap()
+    }
+
     fn replay_test_manifest(game_id: &str, evidence_root: &Path) -> Value {
         let static_artifacts = compact_contract::REQUIRED_STATIC_ARTIFACTS
             .iter()
@@ -6633,6 +7033,12 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let static_bundle = replay_test_static_bundle(evidence_root);
+        let product_modset_sha256 = static_bundle["product_modset_sha256"].clone();
+        let portable_content_manifest = replay_test_content_manifest(
+            product_modset_sha256
+                .as_str()
+                .expect("fixture product-modset key"),
+        );
         json!({
             "schema": "native_collector_session_v1",
             "replay_game_id": game_id,
@@ -6647,6 +7053,7 @@ mod tests {
                 "missing_required_static_artifacts": [],
             },
             "static_bundle": static_bundle,
+            "portable_content_manifest": portable_content_manifest,
             "replay_entries": {
                 "stream": "collector_raw/collector_stream.bin",
                 "stream_role": "collector_compact_stream",
@@ -6746,6 +7153,11 @@ mod tests {
                     "role": name,
                     "sha256": canonical_json_sha256(&document).unwrap(),
                     "bytes_sha256": bytes_sha256,
+                    "effective_content_sha256": match name {
+                        "mod_state" => "1111111111111111111111111111111111111111111111111111111111111111",
+                        "dlc_state" => "2222222222222222222222222222222222222222222222222222222222222222",
+                        _ => "3333333333333333333333333333333333333333333333333333333333333333",
+                    },
                 }),
             );
             session_binding_evidence.insert(
@@ -6823,6 +7235,18 @@ mod tests {
             }),
         );
         retained_bindings.extend(retained_state_bindings);
+        let mut product_modset = json!({
+            "schema": "extractor.product_modset_key.v1",
+            "executable_sha256": Sha256::hex(&executable_bytes),
+            "mod_state_effective_content_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "dlc_state_effective_content_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "load_order_effective_content_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "effective_vfs_namespace_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+            "effective_vfs_rows_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+        });
+        let product_modset_sha256 = canonical_json_sha256(&product_modset).unwrap();
+        product_modset["product_modset_sha256"] = json!(product_modset_sha256);
+        retained_bindings.insert("product_modset".to_string(), product_modset);
         retained_bindings.insert(
             "catalog_source_occurrences".to_string(),
             json!({
@@ -6836,10 +7260,12 @@ mod tests {
                 "file": "bindings/source_inventory.json",
                 "bytes": source_inventory_bytes.len(),
                 "file_sha256": source_inventory_sha256,
+                "namespace_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+                "rows_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
             }),
         );
         let mut retained_manifest = json!({
-            "schema": "extractor.static_bundle.v2",
+            "schema": "extractor.static_bundle.v3",
             "artifacts": retained_artifacts,
             "bindings": retained_bindings,
             "catalog_source_join": {
@@ -6880,6 +7306,7 @@ mod tests {
         json!({
             "admission": "passed",
             "bundle_id": bundle_id,
+            "product_modset_sha256": product_modset_sha256,
             "artifact_count": compact_contract::REQUIRED_STATIC_ARTIFACTS.len(),
             "artifacts": session_artifacts,
             "manifest": {
@@ -6978,11 +7405,17 @@ mod tests {
             hour_index: None,
         });
         entries.append(&mut static_entries);
+        let session_manifest: Value = serde_json::from_slice(manifest_bytes).unwrap();
+        let product_modset_sha256 = session_manifest
+            .pointer("/portable_content_manifest/product_modset_sha256")
+            .and_then(Value::as_str)
+            .expect("fixture recorder manifest product-modset key");
         let packed = snapshot::pack(
             game_id,
             &entries,
             &snapshot::PackIdentity {
                 schema_version: Some("native_collector_session_v1".to_string()),
+                content_manifest: Some(replay_test_content_manifest(product_modset_sha256)),
                 ..snapshot::PackIdentity::default()
             },
             false,

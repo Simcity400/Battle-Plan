@@ -40,12 +40,19 @@ const DEPTH_STATUS_DIRECT_EVENTS_DERIVED: u32 = 1 << 2;
 const DEPTH_STATUS_FOCUS_PAUSE_EXACT: u32 = 1 << 3;
 const DEPTH_STATUS_DECISION_TARGETS_EXACT: u32 = 1 << 4;
 const DEPTH_STATUS_DECISION_COOLDOWNS_EXACT: u32 = 1 << 5;
-const DEPTH_STATUS_KNOWN_MASK: u32 = DEPTH_STATUS_FOCUS_PAUSE_BADGED
+const DEPTH_STATUS_DIRECT_HOOK_SOURCE_VALIDATED: u32 = 1 << 6;
+// Bits 0..=5 are the legacy depth-authority word carried by every schema.
+// Bit 6 is a schema-v5-only statement about the independent direct-event
+// trailer.  Keep the masks separate: recognizing the v5 bit must never cause
+// a v1-v4 encoder to claim that a live direct-hook source was validated.
+const DEPTH_STATUS_LEGACY_KNOWN_MASK: u32 = DEPTH_STATUS_FOCUS_PAUSE_BADGED
     | DEPTH_STATUS_DECISION_TARGETS_BADGED
     | DEPTH_STATUS_DIRECT_EVENTS_DERIVED
     | DEPTH_STATUS_FOCUS_PAUSE_EXACT
     | DEPTH_STATUS_DECISION_TARGETS_EXACT
     | DEPTH_STATUS_DECISION_COOLDOWNS_EXACT;
+const DEPTH_STATUS_KNOWN_MASK: u32 =
+    DEPTH_STATUS_LEGACY_KNOWN_MASK | DEPTH_STATUS_DIRECT_HOOK_SOURCE_VALIDATED;
 
 const BADGE_KIND_FOCUS_PAUSE_FAIL_CLOSED: u32 = 1;
 const BADGE_KIND_DECISION_TARGET_FIELDS_FAIL_CLOSED: u32 = 2;
@@ -830,7 +837,11 @@ impl Deriver {
 }
 
 fn apply_required_badges(rows: &mut DepthFrameRows) {
-    rows.status_flags |= DEPTH_STATUS_KNOWN_MASK;
+    // This helper builds the legacy derived/snapshot proof and its explicit
+    // unavailable badges.  Only the collector's authenticated schema-v5 path
+    // may set DIRECT_HOOK_SOURCE_VALIDATED and remove the direct-hook badge.
+    rows.status_flags |= DEPTH_STATUS_LEGACY_KNOWN_MASK;
+    rows.status_flags &= !DEPTH_STATUS_DIRECT_HOOK_SOURCE_VALIDATED;
     push_badge_if_missing(
         rows,
         BadgeRow {
@@ -2327,7 +2338,7 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
         ),
         (
             DEPTH_STATUS_DIRECT_EVENTS_DERIVED,
-            0,
+            DEPTH_STATUS_DIRECT_HOOK_SOURCE_VALIDATED,
             BADGE_KIND_DIRECT_EVENT_HOOKS_UNAVAILABLE,
             "direct event hooks",
         ),
@@ -2383,6 +2394,7 @@ fn decode_depth_record_payload(
 fn normalize_depth_versioned_payload(payload: &[u8]) -> Result<Vec<u8>, String> {
     const V2_HEADER_LEN: usize = 56;
     const V3_HEADER_LEN: usize = 60;
+    const V5_HEADER_LEN: usize = 64;
     if payload.len() < V2_HEADER_LEN {
         return Err(format!(
             "{DOMAIN_NAME} versioned payload is {} byte(s), expected at least {V2_HEADER_LEN}",
@@ -2398,7 +2410,10 @@ fn normalize_depth_versioned_payload(payload: &[u8]) -> Result<Vec<u8>, String> 
     let header_len = read_u16_le(payload, 6) as usize;
     if !matches!(
         (schema_version, header_len),
-        (2, V2_HEADER_LEN) | (3, V3_HEADER_LEN)
+        (2, V2_HEADER_LEN)
+            | (3, V3_HEADER_LEN)
+            | (4, V3_HEADER_LEN)
+            | (5, V5_HEADER_LEN)
     ) {
         return Err(format!(
             "{DOMAIN_NAME} versioned header has version {schema_version} and length {header_len}"
@@ -2411,11 +2426,10 @@ fn normalize_depth_versioned_payload(payload: &[u8]) -> Result<Vec<u8>, String> 
         ));
     }
 
-    // The row wire layouts are shared by v1/v2/v3. Normalize only the header so
-    // the lane-local detailed counters remain one implementation, while the
-    // shared recorder authority remains the canonical structural/status decoder.
-    // FRD2 v3's raw compact status at +56 is intentionally omitted here: the
-    // shared authority owns it, while byte +8 remains lane-local depth status.
+    // V2/V3 share the legacy 16-byte decision-target prefix. V4/V5 extend that
+    // row by 12 bytes and V5 appends the pointer-free direct-transition
+    // trailer. Rebuild only the legacy D45 view consumed by this lane-local
+    // proof; the recorder remains the canonical detailed/v5 fold authority.
     let mut normalized = Vec::with_capacity(
         payload
             .len()
@@ -2425,8 +2439,121 @@ fn normalize_depth_versioned_payload(payload: &[u8]) -> Result<Vec<u8>, String> 
     normalized.extend_from_slice(&0u32.to_le_bytes()); // v1 reserved schema word
     normalized.extend_from_slice(&payload[8..28]); // status + four row counts
     normalized.extend_from_slice(&payload[32..52]); // observed counts + badge count
-    normalized.extend_from_slice(&payload[header_len..]);
+    if schema_version <= 3 {
+        normalized.extend_from_slice(&payload[header_len..]);
+    } else {
+        normalize_v4_v5_depth_rows(payload, header_len, schema_version, &mut normalized)?;
+    }
+    let depth_status = read_u32_le(payload, 8);
+    if schema_version == 5
+        && depth_status & DEPTH_STATUS_DIRECT_HOOK_SOURCE_VALIDATED == 0
+    {
+        return Err(format!(
+            "{DOMAIN_NAME} schema-v5 payload lacks validated direct-hook source"
+        ));
+    }
+    if schema_version < 5 && depth_status & DEPTH_STATUS_DIRECT_HOOK_SOURCE_VALIDATED != 0 {
+        return Err(format!(
+            "{DOMAIN_NAME} legacy payload claims validated direct-hook source"
+        ));
+    }
     Ok(normalized)
+}
+
+fn normalize_v4_v5_depth_rows(
+    payload: &[u8],
+    header_len: usize,
+    schema_version: u16,
+    normalized: &mut Vec<u8>,
+) -> Result<(), String> {
+    let focus_count = read_u32_le(payload, 12) as usize;
+    let research_count = read_u32_le(payload, 16) as usize;
+    let decision_status_count = read_u32_le(payload, 20) as usize;
+    let decision_event_count = read_u32_le(payload, 24) as usize;
+    let decision_target_count = read_u32_le(payload, 28) as usize;
+    let badge_count = read_u32_le(payload, 48) as usize;
+    let direct_count = if schema_version == 5 {
+        read_u32_le(payload, 60) as usize
+    } else {
+        0
+    };
+    let mut cursor = header_len;
+
+    for _ in 0..focus_count {
+        let start = cursor;
+        require_remaining(payload, cursor, 36, "v4/v5 focus row")?;
+        cursor += 36;
+        for label in ["focus from", "focus to", "focus completed"] {
+            read_compact_string_len(payload, &mut cursor, label)?;
+        }
+        normalized.extend_from_slice(&payload[start..cursor]);
+    }
+    let fixed_len = research_count
+        .checked_mul(RESEARCH_ETA_ROW_LEN)
+        .and_then(|len| len.checked_add(decision_status_count.checked_mul(DECISION_STATUS_ROW_LEN)?))
+        .ok_or_else(|| "v4/v5 fixed row length overflow".to_string())?;
+    require_remaining(payload, cursor, fixed_len, "v4/v5 fixed rows")?;
+    normalized.extend_from_slice(&payload[cursor..cursor + fixed_len]);
+    cursor += fixed_len;
+    for _ in 0..decision_event_count {
+        let start = cursor;
+        require_remaining(payload, cursor, 28, "v4/v5 decision event row")?;
+        cursor += 28;
+        read_compact_string_len(payload, &mut cursor, "v4/v5 decision event token")?;
+        normalized.extend_from_slice(&payload[start..cursor]);
+    }
+    for _ in 0..decision_target_count {
+        require_remaining(payload, cursor, 28, "v4/v5 decision target row")?;
+        normalized.extend_from_slice(&payload[cursor..cursor + DECISION_TARGET_ROW_FIXED_LEN]);
+        cursor += 28;
+        let string_start = cursor;
+        read_compact_string_len(payload, &mut cursor, "v4/v5 decision target token")?;
+        normalized.extend_from_slice(&payload[string_start..cursor]);
+    }
+    for _ in 0..badge_count {
+        let start = cursor;
+        require_remaining(payload, cursor, BADGE_ROW_FIXED_LEN, "v4/v5 badge row")?;
+        cursor += BADGE_ROW_FIXED_LEN;
+        read_compact_string_len(payload, &mut cursor, "v4/v5 badge detail")?;
+        normalized.extend_from_slice(&payload[start..cursor]);
+    }
+    if schema_version == 5 {
+        let trailer = payload
+            .get(cursor..)
+            .ok_or_else(|| "v5 direct trailer offset overflow".to_string())?;
+        let expected_first = if direct_count == 0 {
+            1
+        } else {
+            require_remaining(
+                trailer,
+                direct_frd_transitions_live::D45_V5_DIRECT_EVENT_TRAILER_HEADER_LEN,
+                direct_frd_transitions_live::D45_V5_DIRECT_EVENT_ROW_LEN,
+                "v5 direct trailer first row",
+            )?;
+            u64::from_le_bytes(
+                trailer[direct_frd_transitions_live::D45_V5_DIRECT_EVENT_TRAILER_HEADER_LEN
+                    ..direct_frd_transitions_live::D45_V5_DIRECT_EVENT_TRAILER_HEADER_LEN + 8]
+                    .try_into()
+                    .expect("fixed v5 direct sequence"),
+            )
+        };
+        let rows = direct_frd_transitions_live::decode_trailer(trailer, expected_first)
+            .map_err(|error| format!("v5 direct trailer rejected: {error}"))?;
+        if rows.len() != direct_count {
+            return Err(format!(
+                "v5 direct trailer row count {} != header {direct_count}",
+                rows.len()
+            ));
+        }
+        cursor = payload.len();
+    }
+    if cursor != payload.len() {
+        return Err(format!(
+            "v4/v5 payload has {} trailing byte(s)",
+            payload.len().saturating_sub(cursor)
+        ));
+    }
+    Ok(())
 }
 
 /// Gate a production D45 stream for an explicit commanded number of game-hour
@@ -4033,7 +4160,12 @@ mod tests {
         assert_eq!(&payload[0..4], b"FRD2");
         assert_eq!(read_u16_le(&payload, 4), 3);
         assert_eq!(read_u16_le(&payload, 6), 60);
-        assert_eq!(read_u32_le(&payload, 8), DEPTH_STATUS_KNOWN_MASK);
+        assert_eq!(read_u32_le(&payload, 8), DEPTH_STATUS_LEGACY_KNOWN_MASK);
+        assert_eq!(
+            read_u32_le(&payload, 8) & DEPTH_STATUS_DIRECT_HOOK_SOURCE_VALIDATED,
+            0,
+            "FRD2 v3 must not inherit the schema-v5 direct-hook authority bit"
+        );
         assert_eq!(read_u32_le(&payload, 56), raw_status);
 
         for expected in [0, raw_status] {

@@ -10,6 +10,12 @@ pub const EXACT_A729_EXECUTABLE_SHA256: [u8; 32] = [
     0x87, 0x0e, 0xbf, 0x1f, 0x61, 0x52, 0x62, 0xfa, 0xcc, 0xa4, 0x8a, 0x3b, 0x94, 0x77, 0x75, 0xc4,
     0x1f, 0x0a, 0x53, 0x38, 0xf3, 0x06, 0x8c, 0x40, 0x95, 0x82, 0x09, 0xf5, 0xc4, 0x1c, 0x65, 0xad,
 ];
+pub const EXACT20_A38_JOB_ID: &str =
+    "20260720T020812Z-w3-a38-controller-owner-41ee5208";
+pub const EXACT20_A38_STATIC_AUTHORITY_RECEIPT_SHA256: [u8; 32] = [
+    0x7d, 0x0a, 0x36, 0xb1, 0x82, 0x2f, 0xaf, 0x85, 0xa9, 0x49, 0xd6, 0x28, 0xa7, 0x9b, 0xc4, 0xa0,
+    0x9f, 0x95, 0xdc, 0x9c, 0x9a, 0xa3, 0xed, 0x4a, 0xec, 0xb7, 0x15, 0xb7, 0x2b, 0x0a, 0x90, 0x82,
+];
 pub const MAX_GUI_ROWS: usize = 65_536;
 pub const MAX_RESULTS_PER_MAP: usize = 131_072;
 
@@ -21,11 +27,32 @@ pub enum EngineResult<T> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScriptedGuiDefinitionIdentity {
+    /// Canonical game-relative path from the authenticated effective-VFS
+    /// winner index. Absolute install/mod paths are never portable identity.
+    pub logical_path: String,
+    pub winning_layer_ordinal: u32,
+    /// `base`, `integrated_dlc`, `dlc`, or `mod`.
+    pub layer_kind: String,
+    pub layer_id: String,
+    /// Container hash for archive-backed content, payload hash otherwise.
+    pub source_sha256: [u8; 32],
+    pub payload_sha256: [u8; 32],
+    pub payload_bytes: u64,
+    /// Static registry identity joined from the winning scripted-GUI
+    /// definition. These are not inferred from live widget strings.
+    pub context_type: String,
+    pub window_name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScriptedGuiRuntimeRow {
+    /// Position in `CScriptedWindowManager::updaters`. The row vector must
+    /// retain this exact engine order; sorting by country or GUI id is invalid.
+    pub manager_order_index: u32,
     pub country_tag: String,
     pub gui_id: String,
-    pub definition_source_relpath: String,
-    pub definition_source_sha256: [u8; 32],
+    pub definition: ScriptedGuiDefinitionIdentity,
     pub visible: EngineResult<bool>,
     pub enabled: EngineResult<bool>,
     /// Authenticated unsupported-name inventory from the effective definition.
@@ -45,6 +72,9 @@ pub struct ScriptedGuiRuntimeFrame {
     pub producer_record_identity: String,
     pub executable_sha256: [u8; 32],
     pub ui14_engine_vfs_sha256: [u8; 32],
+    /// Fresh pinned-shard A38 Ghidra receipt. Legacy discovery manifests are
+    /// not admitted here.
+    pub static_authority_receipt_sha256: [u8; 32],
     pub producer_manifest_sha256: [u8; 32],
     /// Complete effective `(country_tag, gui_id)` set for this sampled context.
     pub expected_gui_keys: BTreeSet<(String, String)>,
@@ -62,8 +92,15 @@ pub enum CarrierError {
 
 pub trait ExactScriptedGuiRuntimeSource {
     fn is_exact_a729_scripted_gui_source(&self) -> bool;
+    fn executable_sha256(&self) -> [u8; 32];
+    fn ui14_engine_vfs_sha256(&self) -> [u8; 32];
+    fn static_authority_receipt_sha256(&self) -> [u8; 32];
     fn producer_manifest_sha256(&self) -> [u8; 32];
     fn collect_runtime_frame(&self, hour_index: u64) -> Result<ScriptedGuiRuntimeFrame, String>;
+    /// Authenticates every definition against the ephemeral effective-winner
+    /// index and the exact registry used by this producer. This is where the
+    /// source rejects self-declared paths, hashes, keys, or coverage.
+    fn authenticate_runtime_frame(&self, frame: &ScriptedGuiRuntimeFrame) -> Result<(), String>;
 }
 
 pub fn collect_and_validate_scripted_gui_runtime<S: ExactScriptedGuiRuntimeSource>(
@@ -82,6 +119,15 @@ pub fn collect_and_validate_scripted_gui_runtime<S: ExactScriptedGuiRuntimeSourc
     if frame.producer_manifest_sha256 != source.producer_manifest_sha256() {
         return invalid("frame/source manifest mismatch");
     }
+    if frame.executable_sha256 != source.executable_sha256()
+        || frame.ui14_engine_vfs_sha256 != source.ui14_engine_vfs_sha256()
+        || frame.static_authority_receipt_sha256 != source.static_authority_receipt_sha256()
+    {
+        return invalid("frame/source executable, VFS, or static-authority identity mismatch");
+    }
+    source
+        .authenticate_runtime_frame(&frame)
+        .map_err(CarrierError::Source)?;
     validate_scripted_gui_runtime_frame(&frame)?;
     Ok(frame)
 }
@@ -100,19 +146,22 @@ pub fn validate_scripted_gui_runtime_frame(
             return invalid(&format!("{label} is zero"));
         }
     }
+    if frame.static_authority_receipt_sha256 != EXACT20_A38_STATIC_AUTHORITY_RECEIPT_SHA256 {
+        return invalid("scripted-GUI frame is not bound to the admitted exact20 A38 receipt");
+    }
     validate_text(&frame.producer_record_identity, "producer record identity")?;
     if frame.rows.len() > MAX_GUI_ROWS {
         return invalid("scripted-GUI row count exceeds bound");
     }
 
     let mut actual = BTreeSet::new();
-    for row in &frame.rows {
+    for (position, row) in frame.rows.iter().enumerate() {
+        if usize::try_from(row.manager_order_index).ok() != Some(position) {
+            return invalid("scripted-GUI rows do not retain contiguous manager updater order");
+        }
         validate_country_tag(&row.country_tag)?;
         validate_text(&row.gui_id, "gui id")?;
-        validate_text(&row.definition_source_relpath, "definition source path")?;
-        if row.definition_source_sha256 == [0; 32] {
-            return invalid("definition source hash is zero");
-        }
+        validate_definition_identity(&row.definition)?;
         let key = (row.country_tag.clone(), row.gui_id.clone());
         if !actual.insert(key) {
             return invalid("duplicate country/gui runtime row");
@@ -161,6 +210,40 @@ pub fn validate_scripted_gui_runtime_frame(
     {
         validate_country_tag(tag)?;
         validate_text(gui_id, "expected/tombstoned gui id")?;
+    }
+    Ok(())
+}
+
+fn validate_definition_identity(
+    definition: &ScriptedGuiDefinitionIdentity,
+) -> Result<(), CarrierError> {
+    validate_game_relative_path(&definition.logical_path)?;
+    if !definition.logical_path.starts_with("common/scripted_guis/")
+        || !definition.logical_path.ends_with(".txt")
+        || !matches!(
+            definition.layer_kind.as_str(),
+            "base" | "integrated_dlc" | "dlc" | "mod"
+        )
+        || definition.layer_id.trim().is_empty()
+        || definition.source_sha256 == [0; 32]
+        || definition.payload_sha256 == [0; 32]
+        || definition.payload_bytes == 0
+    {
+        return invalid("scripted-GUI definition winner identity is incomplete");
+    }
+    validate_text(&definition.context_type, "definition context type")?;
+    validate_text(&definition.window_name, "definition window name")?;
+    Ok(())
+}
+
+fn validate_game_relative_path(value: &str) -> Result<(), CarrierError> {
+    validate_text(value, "definition logical path")?;
+    if value.contains('\\')
+        || value.starts_with('/')
+        || value.contains(':')
+        || value.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return invalid("definition path is not canonical game-relative identity");
     }
     Ok(())
 }
@@ -221,10 +304,20 @@ mod tests {
 
     fn row() -> ScriptedGuiRuntimeRow {
         ScriptedGuiRuntimeRow {
+            manager_order_index: 0,
             country_tag: "USA".into(),
             gui_id: "usa_congress".into(),
-            definition_source_relpath: "common/scripted_guis/USA_congress.txt".into(),
-            definition_source_sha256: [3; 32],
+            definition: ScriptedGuiDefinitionIdentity {
+                logical_path: "common/scripted_guis/USA_congress.txt".into(),
+                winning_layer_ordinal: 0,
+                layer_kind: "base".into(),
+                layer_id: "base".into(),
+                source_sha256: [3; 32],
+                payload_sha256: [3; 32],
+                payload_bytes: 64,
+                context_type: "country".into(),
+                window_name: "usa_congress_window".into(),
+            },
             visible: EngineResult::Value(true),
             enabled: EngineResult::Unavailable("unsupported country scope".into()),
             expected_trigger_names: BTreeSet::from(["senate_visible".into()]),
@@ -248,6 +341,7 @@ mod tests {
             producer_record_identity: "a38:9:registry-7".into(),
             executable_sha256: EXACT_A729_EXECUTABLE_SHA256,
             ui14_engine_vfs_sha256: [1; 32],
+            static_authority_receipt_sha256: EXACT20_A38_STATIC_AUTHORITY_RECEIPT_SHA256,
             producer_manifest_sha256: [2; 32],
             expected_gui_keys: BTreeSet::from([("USA".into(), "usa_congress".into())]),
             rows: vec![row()],
@@ -288,6 +382,29 @@ mod tests {
         }
         fn producer_manifest_sha256(&self) -> [u8; 32] {
             [2; 32]
+        }
+        fn executable_sha256(&self) -> [u8; 32] {
+            EXACT_A729_EXECUTABLE_SHA256
+        }
+        fn ui14_engine_vfs_sha256(&self) -> [u8; 32] {
+            [1; 32]
+        }
+        fn static_authority_receipt_sha256(&self) -> [u8; 32] {
+            EXACT20_A38_STATIC_AUTHORITY_RECEIPT_SHA256
+        }
+        fn authenticate_runtime_frame(
+            &self,
+            frame: &ScriptedGuiRuntimeFrame,
+        ) -> Result<(), String> {
+            if frame
+                .rows
+                .iter()
+                .all(|row| row.definition.logical_path.starts_with("common/scripted_guis/"))
+            {
+                Ok(())
+            } else {
+                Err("definition absent from authenticated winner index".into())
+            }
         }
         fn collect_runtime_frame(
             &self,

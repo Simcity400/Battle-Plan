@@ -74,11 +74,16 @@ use compact_contract::{
     COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
     COMPACT_RECORD_TYPE_FRAME_END,
 };
-use recorder_host::stream_fold::{
-    fold_compact_stream_file, strict_stream_certification_verdict,
-    validate_domain_data_payload, BoundaryTracker,
+use compact_contract::campaign_identity::{
+    ValidatedCid1, COMPACT_DOMAIN_STREAM_HEADER, COMPACT_RECORD_TYPE_STREAM_HEADER,
 };
-use recorder_host::world_fold::{schema_version, WorldFold};
+use compact_contract::stream_validator::{AcceptedRecordKind, StatefulStreamValidator};
+pub use compact_contract::stream_validator::StreamIdentityMode;
+use recorder_host::stream_fold::{
+    strict_stream_certification_verdict, validate_domain_data_payload, BoundaryTracker,
+    FoldStreamStats,
+};
+use recorder_host::world_fold::{schema_version, FoldedSnapshotFile, WorldFold};
 use snapshot::container::{Container, ExpectedIdentity};
 use snapshot::sha256::{to_hex, Sha256};
 
@@ -90,7 +95,8 @@ const CHUNK: usize = 8 * 1024 * 1024;
 const ZIP_MAGIC: &[u8; 4] = b"PK\x03\x04";
 
 /// Persisted format marker for a source-bound, fully certified stream index.
-const CERTIFIED_INDEX_SCHEMA: &str = "h4cr-certified-index-v1";
+const LEGACY_CERTIFIED_INDEX_SCHEMA: &str = "h4cr-certified-index-v1";
+const CERTIFIED_INDEX_SCHEMA: &str = "h4cr-certified-index-v2";
 
 /// Manifest role of the compact stream inside a `.battleplan` container.
 pub const STREAM_ROLE: &str = "collector_compact_stream";
@@ -101,6 +107,20 @@ pub const STREAM_ROLE: &str = "collector_compact_stream";
 /// therefore in the per-hour hash, so identical stream bytes folded under the
 /// same id hash identically.
 pub const DEFAULT_GAME_ID: &str = "replay";
+
+fn stream_validator(mode: StreamIdentityMode) -> StatefulStreamValidator {
+    match mode {
+        StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
+        StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
+    }
+}
+
+fn compact_identity_mode(mode: snapshot::PrefoldStreamIdentityMode) -> StreamIdentityMode {
+    match mode {
+        snapshot::PrefoldStreamIdentityMode::Legacy => StreamIdentityMode::Legacy,
+        snapshot::PrefoldStreamIdentityMode::IdentityV1 => StreamIdentityMode::IdentityV1,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Metadata
@@ -205,6 +225,8 @@ pub struct DecodeStats {
     pub bytes_folded: u64,
     /// Trailing bytes that did not form a complete record (mid-record EOF).
     pub truncated_tail_bytes: u64,
+    /// Accepted ordinary H4CR records. The mandatory IdentityV1 CID1 header is
+    /// a stream header and is deliberately excluded from this count.
     pub records_total: u64,
     pub data_records: u64,
     /// Framed DOMAIN_DATA records rejected by the production fold's exact
@@ -395,6 +417,16 @@ impl Source {
 
     /// Open a fresh [`HourCursor`] over this source with the given options.
     pub fn open_cursor(&self, opts: &OpenOptions) -> Result<HourCursor, OpenError> {
+        self.open_cursor_with_identity_mode(opts, StreamIdentityMode::Legacy)
+    }
+
+    /// Open a fresh cursor under an explicitly selected stream protocol.
+    /// IdentityV1 is never inferred from bytes and never falls back to Legacy.
+    pub fn open_cursor_with_identity_mode(
+        &self,
+        opts: &OpenOptions,
+        identity_mode: StreamIdentityMode,
+    ) -> Result<HourCursor, OpenError> {
         match self {
             Source::StreamFile(path) => {
                 let canonical_path = fs::canonicalize(path)?;
@@ -410,6 +442,7 @@ impl Source {
                     total_len,
                     game_id,
                     compressed,
+                    identity_mode,
                     Some(IndexSourceDescriptor {
                         kind: "stream_file".to_string(),
                         canonical_path: canonical_path.to_string_lossy().into_owned(),
@@ -425,6 +458,7 @@ impl Source {
                     Box::new(Cursor::new(bytes)),
                     total_len,
                     game_id,
+                    identity_mode,
                     Some(IndexSourceDescriptor {
                         kind: "container".to_string(),
                         canonical_path: canonical_path.to_string_lossy().into_owned(),
@@ -446,6 +480,15 @@ pub fn open_with(path: impl AsRef<Path>, opts: &OpenOptions) -> Result<HourCurso
     Source::detect(path)?.open_cursor(opts)
 }
 
+/// [`open_with`] under an explicit, non-sniffed compact-stream identity mode.
+pub fn open_with_identity_mode(
+    path: impl AsRef<Path>,
+    opts: &OpenOptions,
+    identity_mode: StreamIdentityMode,
+) -> Result<HourCursor, OpenError> {
+    Source::detect(path)?.open_cursor_with_identity_mode(opts, identity_mode)
+}
+
 /// Open a raw `collector_stream.bin` explicitly (skips kind auto-detection).
 pub fn open_stream_file(
     path: impl AsRef<Path>,
@@ -454,10 +497,30 @@ pub fn open_stream_file(
     Source::StreamFile(path.as_ref().to_path_buf()).open_cursor(opts)
 }
 
+/// [`open_stream_file`] under an explicit, non-sniffed identity mode.
+pub fn open_stream_file_with_identity_mode(
+    path: impl AsRef<Path>,
+    opts: &OpenOptions,
+    identity_mode: StreamIdentityMode,
+) -> Result<HourCursor, OpenError> {
+    Source::StreamFile(path.as_ref().to_path_buf())
+        .open_cursor_with_identity_mode(opts, identity_mode)
+}
+
 /// Open a `.battleplan` container explicitly (its `collector_compact_stream`
 /// entry).
 pub fn open_container(path: impl AsRef<Path>, opts: &OpenOptions) -> Result<HourCursor, OpenError> {
     Source::Container(path.as_ref().to_path_buf()).open_cursor(opts)
+}
+
+/// [`open_container`] under an explicit, non-sniffed identity mode.
+pub fn open_container_with_identity_mode(
+    path: impl AsRef<Path>,
+    opts: &OpenOptions,
+    identity_mode: StreamIdentityMode,
+) -> Result<HourCursor, OpenError> {
+    Source::Container(path.as_ref().to_path_buf())
+        .open_cursor_with_identity_mode(opts, identity_mode)
 }
 
 /// Open a cursor over an already-obtained reader (in-memory bytes, a socket,
@@ -469,7 +532,17 @@ pub fn open_reader<R: Read + 'static>(
     total_len: u64,
     game_id: impl Into<String>,
 ) -> HourCursor {
-    HourCursor::from_reader(Box::new(reader), total_len, game_id.into())
+    open_reader_with_identity_mode(reader, total_len, game_id, StreamIdentityMode::Legacy)
+}
+
+/// [`open_reader`] under an explicit, non-sniffed identity mode.
+pub fn open_reader_with_identity_mode<R: Read + 'static>(
+    reader: R,
+    total_len: u64,
+    game_id: impl Into<String>,
+    identity_mode: StreamIdentityMode,
+) -> HourCursor {
+    HourCursor::from_reader(Box::new(reader), total_len, game_id.into(), identity_mode)
 }
 
 /// Fully fold and certify one physically raw H4CR file, then hand its closed
@@ -484,6 +557,15 @@ pub fn open_reader<R: Read + 'static>(
 pub fn fold_raw_h4cr_prefolded(
     path: impl AsRef<Path>,
     opts: &OpenOptions,
+) -> Result<snapshot::PrefoldedReplay, OpenError> {
+    fold_raw_h4cr_prefolded_with_identity_mode(path, opts, StreamIdentityMode::Legacy)
+}
+
+/// [`fold_raw_h4cr_prefolded`] under an explicit, non-sniffed identity mode.
+pub fn fold_raw_h4cr_prefolded_with_identity_mode(
+    path: impl AsRef<Path>,
+    opts: &OpenOptions,
+    identity_mode: StreamIdentityMode,
 ) -> Result<snapshot::PrefoldedReplay, OpenError> {
     let canonical_path = fs::canonicalize(path.as_ref())?;
     let mut file = fs::File::open(&canonical_path)?;
@@ -507,6 +589,7 @@ pub fn fold_raw_h4cr_prefolded(
         Box::new(file),
         total_len,
         game_id.clone(),
+        identity_mode,
         Some(IndexSourceDescriptor {
             kind: "stream_file".to_string(),
             canonical_path: canonical_path.to_string_lossy().into_owned(),
@@ -558,8 +641,10 @@ impl snapshot::CertifiedPrefoldDecoder for ProductionCertifiedPrefoldDecoder {
         &self,
         request: snapshot::CertifiedPrefoldRequest,
     ) -> Result<snapshot::PrefoldedReplay, snapshot::PrefoldDecodeError> {
+        let identity_mode = compact_identity_mode(request.identity_mode());
         let (game_id, raw_h4cr) = request.into_parts();
-        fold_raw_h4cr_bytes_prefolded(raw_h4cr, game_id).map_err(|error| {
+        fold_raw_h4cr_bytes_prefolded_with_identity_mode(raw_h4cr, game_id, identity_mode)
+            .map_err(|error| {
             snapshot::PrefoldDecodeError::new(format!(
                 "{}: {error}",
                 snapshot::CertifiedPrefoldDecoder::decoder_id(self)
@@ -577,13 +662,201 @@ impl snapshot::CertifiedPrefoldSpoolDecoder for ProductionCertifiedPrefoldDecode
         &self,
         request: snapshot::CertifiedPrefoldSpoolRequest,
     ) -> Result<snapshot::PrefoldedSpool, snapshot::PrefoldDecodeError> {
-        fold_raw_h4cr_file_spooled(request).map_err(|error| {
+        let identity_mode = compact_identity_mode(request.identity_mode());
+        fold_raw_h4cr_file_spooled_with_identity_mode(request, identity_mode).map_err(|error| {
             snapshot::PrefoldDecodeError::new(format!(
                 "{}: {error}",
                 snapshot::CertifiedPrefoldSpoolDecoder::decoder_id(self)
             ))
         })
     }
+}
+
+struct SpooledFoldPass {
+    files: Vec<FoldedSnapshotFile>,
+    stats: FoldStreamStats,
+    boundary_error: Option<String>,
+    /// Retained for the entire authoritative pass. It is deliberately not
+    /// serialized into the portable snapshot spool; the recorder manifest is
+    /// the owner of public campaign metadata.
+    campaign_identity: Option<ValidatedCid1>,
+}
+
+/// Bounded file-backed fold driver whose protocol is selected before reading.
+/// CID1 is accepted and retained by the shared stateful validator, then removed
+/// from ordinary boundary/count/fold dispatch. All subsequent records pass the
+/// same validator before the existing exact payload and WorldFold machinery.
+fn fold_compact_stream_file_identity_aware(
+    stream_path: &Path,
+    game_id: &str,
+    snapshot_dir: &Path,
+    identity_mode: StreamIdentityMode,
+) -> io::Result<SpooledFoldPass> {
+    let mut reader = fs::File::open(stream_path)?;
+    let total_len = reader.metadata()?.len();
+    let mut fold = WorldFold::new_file_backed(game_id, snapshot_dir)?;
+    let mut stats = FoldStreamStats {
+        stream_bytes: total_len,
+        ..FoldStreamStats::default()
+    };
+    let mut validator = stream_validator(identity_mode);
+    let mut campaign_identity = None;
+    let mut carry = Vec::with_capacity(CHUNK * 2);
+    let mut chunk = vec![0u8; CHUNK];
+    let mut processed = 0u64;
+    let mut decoded_hasher = Sha256::new();
+    let mut tracker = BoundaryTracker::default();
+    let mut validation_error = None;
+    let mut previous_ordinary_sequence = None;
+
+    'read: loop {
+        let n = reader.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        decoded_hasher.update(&chunk[..n]);
+        carry.extend_from_slice(&chunk[..n]);
+
+        let mut off = 0usize;
+        let mut hard_stop = false;
+        loop {
+            let remaining = carry.len() - off;
+            if remaining < COMPACT_RECORD_HEADER_LEN {
+                break;
+            }
+            let record_at = processed + off as u64;
+            let header = match parse_compact_record_header(&carry[off..]) {
+                Ok(header) => header,
+                Err(error) => {
+                    stats.stop_reason = Some(framing_stop_message(error, record_at));
+                    hard_stop = true;
+                    break;
+                }
+            };
+            let record_len = header.record_len();
+            if record_len > remaining {
+                break;
+            }
+            let payload = &carry[off + COMPACT_RECORD_HEADER_LEN..off + record_len];
+            if identity_mode == StreamIdentityMode::Legacy
+                && (validator.is_terminal()
+                    || (header.sequence == 0
+                        && header.domain_id == COMPACT_DOMAIN_STREAM_HEADER
+                        && header.record_type == COMPACT_RECORD_TYPE_STREAM_HEADER))
+            {
+                if validation_error.is_none() {
+                    validation_error = Some(format!(
+                        "Legacy stream contains an IdentityV1 sequence-zero CID1 header at byte {record_at}"
+                    ));
+                    let _ = validator.validate_record(&header, payload);
+                }
+                off += record_len;
+                continue;
+            }
+            if identity_mode == StreamIdentityMode::IdentityV1 && campaign_identity.is_none() {
+                match validator.validate_record(&header, payload) {
+                    Ok(AcceptedRecordKind::CampaignIdentity) => {
+                        campaign_identity = validator.identity().cloned();
+                    }
+                    Ok(AcceptedRecordKind::Ordinary) => unreachable!(
+                        "IdentityV1 validator cannot accept an ordinary record before CID1"
+                    ),
+                    Err(error) => {
+                        if validation_error.is_none() {
+                            validation_error = Some(format!(
+                                "stream identity validation failed at byte {record_at}: {error}"
+                            ));
+                        }
+                    }
+                }
+                off += record_len;
+                continue;
+            }
+
+            // Ordinary records remain diagnostic-readable after a contract
+            // failure. Certification is still fail-closed, but retaining the
+            // record lets the fold expose the valid prefix/hour and preserves
+            // compatibility with pre-canonical Legacy containers. Do not use
+            // StatefulStreamValidator here: its intentionally terminal
+            // all-in-one semantics would discard this record and every record
+            // after it, conflating certification with diagnostic decoding.
+            let sequence_error = strict_sequence_error(
+                previous_ordinary_sequence,
+                header.sequence,
+                record_at,
+            );
+            previous_ordinary_sequence = Some(header.sequence);
+            if validation_error.is_none() {
+                validation_error = sequence_error.or_else(|| {
+                    validate_compact_record_envelope(&header, payload)
+                        .err()
+                        .map(|reason| {
+                            format!("record contract violation at byte {record_at}: {reason}")
+                        })
+                });
+            }
+            stats.records_total += 1;
+
+            match header.record_type {
+                COMPACT_RECORD_TYPE_DOMAIN_DATA => stats.data_records += 1,
+                COMPACT_RECORD_TYPE_FRAME_END => stats.frame_end_records += 1,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF => stats.perf_records += 1,
+                _ => stats.other_records += 1,
+            }
+            tracker.observe(&header, payload, record_at);
+
+            if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
+                if let Err(reason) =
+                    validate_domain_data_payload(header.domain_id, payload, header.record_flags)
+                {
+                    stats.malformed_payload_records += 1;
+                    fold.record_malformed_domain_payload(
+                        header.game_hour_raw,
+                        header.domain_id,
+                        &reason,
+                    );
+                    off += record_len;
+                    continue;
+                }
+            }
+            fold.ingest_record(
+                header.game_hour_raw,
+                header.domain_id,
+                header.record_type,
+                payload,
+                header.record_flags,
+            );
+            off += record_len;
+        }
+        processed += off as u64;
+        carry.drain(0..off);
+        if hard_stop {
+            break 'read;
+        }
+    }
+
+    stats.bytes_folded = processed;
+    stats.truncated_tail_bytes = total_len.saturating_sub(processed);
+    stats.hours_emitted = fold.emitted_hours_count() as u64;
+    stats.decoded_sha256 = to_hex(&decoded_hasher.finalize());
+
+    if identity_mode == StreamIdentityMode::IdentityV1 && campaign_identity.is_none() {
+        validation_error.get_or_insert_with(|| {
+            "IdentityV1 stream ended without an accepted sequence-zero CID1 header".to_string()
+        });
+    }
+    let tracker_error = tracker.eof_check(carry.len()).err();
+    let boundary_error = validation_error.or(tracker_error);
+    stats.ends_at_frame_end = boundary_error.is_none();
+    let files = fold
+        .finish_file_backed()
+        .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?;
+    Ok(SpooledFoldPass {
+        files,
+        stats,
+        boundary_error,
+        campaign_identity,
+    })
 }
 
 /// Bounded production adapter: authenticate the exact raw spool while driving
@@ -593,6 +866,21 @@ impl snapshot::CertifiedPrefoldSpoolDecoder for ProductionCertifiedPrefoldDecode
 pub fn fold_raw_h4cr_file_spooled(
     request: snapshot::CertifiedPrefoldSpoolRequest,
 ) -> Result<snapshot::PrefoldedSpool, OpenError> {
+    let identity_mode = compact_identity_mode(request.identity_mode());
+    fold_raw_h4cr_file_spooled_with_identity_mode(request, identity_mode)
+}
+
+/// [`fold_raw_h4cr_file_spooled`] under an explicit stream identity mode.
+/// The mode must agree with the request's authenticated protocol declaration.
+pub fn fold_raw_h4cr_file_spooled_with_identity_mode(
+    request: snapshot::CertifiedPrefoldSpoolRequest,
+    identity_mode: StreamIdentityMode,
+) -> Result<snapshot::PrefoldedSpool, OpenError> {
+    if compact_identity_mode(request.identity_mode()) != identity_mode {
+        return Err(OpenError::Certification(
+            "spool prefold request identity mode disagrees with decoder mode".to_string(),
+        ));
+    }
     let (game_id, raw_path, snapshot_dir, expected_len, expected_sha256) =
         request.into_parts();
     let source_meta = fs::symlink_metadata(&raw_path)?;
@@ -634,13 +922,23 @@ pub fn fold_raw_h4cr_file_spooled(
     }
 
     let canonical_snapshot_dir = fs::canonicalize(&snapshot_dir)?;
-    let (files, stats) = fold_compact_stream_file(&raw_path, &game_id, &snapshot_dir)?;
+    let SpooledFoldPass {
+        files,
+        stats,
+        boundary_error,
+        campaign_identity: _,
+    } = fold_compact_stream_file_identity_aware(
+        &raw_path,
+        &game_id,
+        &snapshot_dir,
+        identity_mode,
+    )?;
     strict_stream_certification_verdict(
         stats.stop_reason.as_deref(),
         stats.truncated_tail_bytes,
         stats.malformed_payload_records,
         stats.ends_at_frame_end,
-        None,
+        boundary_error.as_deref(),
     )
     .map_err(OpenError::Certification)?;
     if stats.stream_bytes != expected_len || stats.decoded_sha256 != expected_sha256 {
@@ -775,6 +1073,19 @@ pub fn fold_raw_h4cr_bytes_prefolded(
     raw_h4cr: Vec<u8>,
     game_id: impl Into<String>,
 ) -> Result<snapshot::PrefoldedReplay, OpenError> {
+    fold_raw_h4cr_bytes_prefolded_with_identity_mode(
+        raw_h4cr,
+        game_id,
+        StreamIdentityMode::Legacy,
+    )
+}
+
+/// [`fold_raw_h4cr_bytes_prefolded`] under an explicit, non-sniffed identity mode.
+pub fn fold_raw_h4cr_bytes_prefolded_with_identity_mode(
+    raw_h4cr: Vec<u8>,
+    game_id: impl Into<String>,
+    identity_mode: StreamIdentityMode,
+) -> Result<snapshot::PrefoldedReplay, OpenError> {
     if !raw_h4cr.starts_with(compact_contract::COMPACT_RECORD_MAGIC) {
         return Err(OpenError::UnrecognizedInput(
             "physically raw H4CR input required at the portable prefold boundary".to_string(),
@@ -786,6 +1097,7 @@ pub fn fold_raw_h4cr_bytes_prefolded(
         Box::new(Cursor::new(raw_h4cr)),
         total_len,
         game_id.clone(),
+        identity_mode,
     );
     let schema_version = serde_json::Value::String(cursor.metadata().schema_version.clone());
     let mut folded = Vec::new();
@@ -892,6 +1204,9 @@ fn extract_container_stream(path: &Path) -> Result<(Vec<u8>, String), OpenError>
 pub struct HourCursor {
     reader: Box<dyn Read>,
     fold: WorldFold,
+    identity_mode: StreamIdentityMode,
+    stream_validator: StatefulStreamValidator,
+    campaign_identity: Option<ValidatedCid1>,
     /// Buffered, not-yet-consumed bytes. `carry[pos..]` is unframed; `carry[..pos]`
     /// is framed-but-not-yet-drained (drained lazily before each read). Bounded by
     /// ~`2 * CHUNK + largest record`, independent of stream length.
@@ -945,17 +1260,30 @@ struct IndexSourceDescriptor {
 }
 
 impl HourCursor {
-    fn from_reader(reader: Box<dyn Read>, total_len: u64, game_id: String) -> HourCursor {
-        Self::from_reader_compressed(reader, total_len, game_id, false)
+    fn from_reader(
+        reader: Box<dyn Read>,
+        total_len: u64,
+        game_id: String,
+        identity_mode: StreamIdentityMode,
+    ) -> HourCursor {
+        Self::from_reader_compressed(reader, total_len, game_id, false, identity_mode)
     }
 
     fn from_reader_with_source(
         reader: Box<dyn Read>,
         total_len: u64,
         game_id: String,
+        identity_mode: StreamIdentityMode,
         index_source: Option<IndexSourceDescriptor>,
     ) -> HourCursor {
-        Self::from_reader_compressed_with_source(reader, total_len, game_id, false, index_source)
+        Self::from_reader_compressed_with_source(
+            reader,
+            total_len,
+            game_id,
+            false,
+            identity_mode,
+            index_source,
+        )
     }
 
     /// `compressed` = the underlying reader is a checksummed zstd stream. On such
@@ -968,8 +1296,16 @@ impl HourCursor {
         total_len: u64,
         game_id: String,
         compressed: bool,
+        identity_mode: StreamIdentityMode,
     ) -> HourCursor {
-        Self::from_reader_compressed_with_source(reader, total_len, game_id, compressed, None)
+        Self::from_reader_compressed_with_source(
+            reader,
+            total_len,
+            game_id,
+            compressed,
+            identity_mode,
+            None,
+        )
     }
 
     fn from_reader_compressed_with_source(
@@ -977,11 +1313,15 @@ impl HourCursor {
         total_len: u64,
         game_id: String,
         compressed: bool,
+        identity_mode: StreamIdentityMode,
         index_source: Option<IndexSourceDescriptor>,
     ) -> HourCursor {
         HourCursor {
             reader,
             fold: WorldFold::new(game_id.clone()),
+            identity_mode,
+            stream_validator: stream_validator(identity_mode),
+            campaign_identity: None,
             carry: Vec::with_capacity(CHUNK * 2),
             pos: 0,
             chunk: vec![0u8; CHUNK],
@@ -1031,6 +1371,17 @@ impl HourCursor {
     /// Session/stream metadata (schema version, game id, domain registry).
     pub fn metadata(&self) -> &StreamMeta {
         &self.meta
+    }
+
+    /// Explicit protocol selected before this cursor accepted any bytes.
+    pub fn identity_mode(&self) -> StreamIdentityMode {
+        self.identity_mode
+    }
+
+    /// Placement-authoritative CID1 retained after the sequence-zero header is
+    /// accepted. Legacy cursors and pre-header IdentityV1 cursors return `None`.
+    pub fn campaign_identity(&self) -> Option<&ValidatedCid1> {
+        self.campaign_identity.as_ref()
     }
 
     /// Pass totals. Meaningful during iteration; final once it returns `None`.
@@ -1089,6 +1440,7 @@ impl HourCursor {
                 decoded_sha256: to_hex(&self.source_hasher.finalize()),
             },
             game_id: self.meta.game_id,
+            identity_mode: self.identity_mode,
             hours: self.index_hours,
         };
         index
@@ -1164,6 +1516,50 @@ impl HourCursor {
                 if record_len > remaining {
                     break; // payload not fully buffered yet — read more
                 }
+                if self.identity_mode == StreamIdentityMode::Legacy
+                    && (self.stream_validator.is_terminal()
+                        || (header.sequence == 0
+                            && header.domain_id == COMPACT_DOMAIN_STREAM_HEADER
+                            && header.record_type == COMPACT_RECORD_TYPE_STREAM_HEADER))
+                {
+                    if self.strict_validation_error.is_none() {
+                        self.strict_validation_error = Some(format!(
+                            "Legacy stream contains an IdentityV1 sequence-zero CID1 header at byte {record_start_abs}"
+                        ));
+                        let payload = &self.carry
+                            [self.pos + COMPACT_RECORD_HEADER_LEN..self.pos + record_len];
+                        let _ = self.stream_validator.validate_record(&header, payload);
+                    }
+                    self.pos += record_len;
+                    continue;
+                }
+                if self.identity_mode == StreamIdentityMode::IdentityV1
+                    && self.campaign_identity.is_none()
+                {
+                    let accepted = {
+                        let payload = &self.carry
+                            [self.pos + COMPACT_RECORD_HEADER_LEN..self.pos + record_len];
+                        self.stream_validator.validate_record(&header, payload)
+                    };
+                    match accepted {
+                        Ok(AcceptedRecordKind::CampaignIdentity) => {
+                            self.campaign_identity = self.stream_validator.identity().cloned();
+                        }
+                        Ok(AcceptedRecordKind::Ordinary) => unreachable!(
+                            "IdentityV1 validator cannot accept an ordinary record before CID1"
+                        ),
+                        Err(error) => {
+                            if self.strict_validation_error.is_none() {
+                                self.strict_validation_error = Some(format!(
+                                    "stream identity validation failed at byte {record_start_abs}: {error}"
+                                ));
+                            }
+                        }
+                    }
+                    self.pos += record_len;
+                    continue;
+                }
+                self.stats.records_total += 1;
                 self.observe_strict_header(&header, record_start_abs);
                 let payload =
                     &self.carry[self.pos + COMPACT_RECORD_HEADER_LEN..self.pos + record_len];
@@ -1191,7 +1587,6 @@ impl HourCursor {
                     })
                     .flatten();
 
-                self.stats.records_total += 1;
                 match header.record_type {
                     COMPACT_RECORD_TYPE_DOMAIN_DATA => {
                         self.stats.data_records += 1;
@@ -1274,6 +1669,15 @@ impl HourCursor {
         self.stats.truncated_tail_bytes = self.stats.stream_bytes.saturating_sub(self.processed);
         self.stats.hours_emitted = self.fold.emitted_hours_count() as u64;
         let shared_boundary_error = self.boundary_tracker.eof_check(self.carry.len()).err();
+        if self.strict_validation_error.is_none()
+            && self.identity_mode == StreamIdentityMode::IdentityV1
+            && self.campaign_identity.is_none()
+        {
+            self.strict_validation_error = Some(
+                "IdentityV1 stream ended without an accepted sequence-zero CID1 header"
+                    .to_string(),
+            );
+        }
         if self.strict_validation_error.is_none() {
             self.strict_validation_error = shared_boundary_error.or_else(|| {
                 (self.strict_last_record_type != Some(COMPACT_RECORD_TYPE_FRAME_END)).then(|| {
@@ -1471,6 +1875,9 @@ pub struct StreamIndex {
     /// independent of the id, but the id is recorded so a seek re-folds
     /// identically).
     pub game_id: String,
+    /// Explicit protocol used to certify the stream. This is source identity,
+    /// not a decoding hint: seek must reopen under this exact mode.
+    pub identity_mode: StreamIdentityMode,
     /// Emitted hours in stream order.
     pub hours: Vec<HourOffset>,
 }
@@ -1570,6 +1977,10 @@ impl StreamIndex {
                 "decoded_sha256": self.source.decoded_sha256,
             },
             "game_id": self.game_id,
+            "identity_mode": match self.identity_mode {
+                StreamIdentityMode::Legacy => "legacy",
+                StreamIdentityMode::IdentityV1 => "identity_v1",
+            },
             "hours": self.hours.iter().map(|h| serde_json::json!({
                 "hour_index": h.hour_index,
                 "start_offset": h.start_offset,
@@ -1580,7 +1991,10 @@ impl StreamIndex {
 
     /// Parse an index previously produced by [`StreamIndex::to_json`].
     pub fn from_json(v: &serde_json::Value) -> Option<StreamIndex> {
-        if v.get("index_schema")?.as_str()? != CERTIFIED_INDEX_SCHEMA {
+        let index_schema = v.get("index_schema")?.as_str()?;
+        if index_schema != CERTIFIED_INDEX_SCHEMA
+            && index_schema != LEGACY_CERTIFIED_INDEX_SCHEMA
+        {
             return None;
         }
         let source_json = v.get("source")?;
@@ -1591,6 +2005,16 @@ impl StreamIndex {
             decoded_sha256: source_json.get("decoded_sha256")?.as_str()?.to_string(),
         };
         let game_id = v.get("game_id")?.as_str()?.to_string();
+        let identity_mode = match (
+            index_schema,
+            v.get("identity_mode").and_then(|mode| mode.as_str()),
+        ) {
+            // The v1 grammar had no mode and every v1 decoder was Legacy.
+            (LEGACY_CERTIFIED_INDEX_SCHEMA, None) => StreamIdentityMode::Legacy,
+            (CERTIFIED_INDEX_SCHEMA, Some("legacy")) => StreamIdentityMode::Legacy,
+            (CERTIFIED_INDEX_SCHEMA, Some("identity_v1")) => StreamIdentityMode::IdentityV1,
+            _ => return None,
+        };
         let mut hours = Vec::new();
         for h in v.get("hours")?.as_array()? {
             hours.push(HourOffset {
@@ -1602,6 +2026,7 @@ impl StreamIndex {
         let index = StreamIndex {
             source,
             game_id,
+            identity_mode,
             hours,
         };
         index.validate_structure().ok()?;
@@ -1613,7 +2038,16 @@ impl StreamIndex {
 /// hour's snapshot bytes (bounded memory). Use [`HourCursor::take_index`]
 /// instead when you are already iterating hours — the index is built for free.
 pub fn build_index(source: &Source, opts: &OpenOptions) -> Result<StreamIndex, OpenError> {
-    let mut cursor = source.open_cursor(opts)?;
+    build_index_with_identity_mode(source, opts, StreamIdentityMode::Legacy)
+}
+
+/// [`build_index`] under an explicit stream identity mode.
+pub fn build_index_with_identity_mode(
+    source: &Source,
+    opts: &OpenOptions,
+    identity_mode: StreamIdentityMode,
+) -> Result<StreamIndex, OpenError> {
+    let mut cursor = source.open_cursor_with_identity_mode(opts, identity_mode)?;
     // Drain to completion; drop each hour immediately (bounded memory).
     while let Some(h) = cursor.next_hour() {
         h.map_err(|e| match e {
@@ -1642,7 +2076,9 @@ pub fn seek_to_hour(
         .map_err(SeekError::InvalidIndex)?;
     // Retain the target while continuing through physical EOF. Certification
     // and index comparison happen before the retained hour can be returned.
-    let mut cursor = source.open_cursor(opts).map_err(SeekError::Open)?;
+    let mut cursor = source
+        .open_cursor_with_identity_mode(opts, index.identity_mode)
+        .map_err(SeekError::Open)?;
     let mut found = None;
     while let Some(hour) = cursor.next_hour() {
         let hour = hour.map_err(SeekError::Decode)?;

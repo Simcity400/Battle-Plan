@@ -1178,15 +1178,24 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
         first_record: ValidatedFirstCompactRecord,
         deadline: ControlDeadline,
     ) -> Result<AcknowledgedFirstCompactRecord, DuplexWorkerError> {
-        let acknowledged =
-            self.acknowledge_first_compact_record(identity, first_record, deadline)?;
-        if let Err(error) = rollover.admit_new_header(acknowledged.first_record().acknowledgement())
-        {
-            let error = DuplexWorkerError::RolloverControl(error.to_string());
-            self.fail(error.to_string());
-            return Err(error);
+        self.require_state(
+            DuplexWorkerState::WaitingForWorld,
+            "acknowledge rollover compact header",
+        )?;
+        match rollover.acknowledge_new_header(
+            &mut self.channel,
+            identity,
+            first_record,
+            deadline,
+            &self.transport_cancellation,
+        ) {
+            Ok(acknowledged) => Ok(acknowledged),
+            Err(error) => {
+                let error = DuplexWorkerError::RolloverControl(error.to_string());
+                self.fail(error.to_string());
+                Err(error)
+            }
         }
-        Ok(acknowledged)
     }
 
     pub(crate) fn heartbeat_cycle_at(

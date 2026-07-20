@@ -753,6 +753,7 @@ struct AggregatedUse {
 pub fn load_and_build(
     path: &Path,
     launch: &PortableLaunchBinding,
+    product_modset_sha256: &str,
 ) -> Result<(ContentManifest, Vec<u8>), String> {
     let metadata = fs::metadata(path)
         .map_err(|error| format!("portable content trace metadata failed: {error}"))?;
@@ -770,7 +771,7 @@ pub fn load_and_build(
     }
     let trace: RecorderContentTrace = serde_json::from_slice(&bytes)
         .map_err(|error| format!("parse portable content trace failed: {error}"))?;
-    let manifest = build(trace, launch)?;
+    let manifest = build(trace, launch, product_modset_sha256)?;
     let encoded = manifest.encode_json()?;
     Ok((manifest, encoded))
 }
@@ -779,8 +780,9 @@ pub fn load_and_build_bound(
     trace_path: &Path,
     live_resolution_report_path: &Path,
     launch: &PortableLaunchBinding,
+    product_modset_sha256: &str,
 ) -> Result<(ContentManifest, Vec<u8>), String> {
-    let (manifest, bytes) = load_and_build(trace_path, launch)?;
+    let (manifest, bytes) = load_and_build(trace_path, launch, product_modset_sha256)?;
     verify_live_resolution_report(live_resolution_report_path, &manifest, launch)?;
     Ok((manifest, bytes))
 }
@@ -795,12 +797,14 @@ pub fn build_from_finalized_static_bundle(
     catalog_source_join_path: &Path,
     live_resolution_report_path: &Path,
     launch: &PortableLaunchBinding,
+    product_modset_sha256: &str,
 ) -> Result<ContentManifest, String> {
     build_from_finalized_static_bundle_inner(
         source_inventory_path,
         catalog_source_join_path,
         live_resolution_report_path,
         launch,
+        product_modset_sha256,
         None,
         &[],
         &[],
@@ -870,6 +874,7 @@ pub fn build_from_finalized_static_bundle_with_hud_snapshot(
     catalog_source_join_path: &Path,
     live_resolution_report_path: &Path,
     launch: &PortableLaunchBinding,
+    product_modset_sha256: &str,
     hud_snapshot: &HudRoleSnapshot,
 ) -> Result<ContentManifest, String> {
     build_from_finalized_static_bundle_inner(
@@ -877,6 +882,7 @@ pub fn build_from_finalized_static_bundle_with_hud_snapshot(
         catalog_source_join_path,
         live_resolution_report_path,
         launch,
+        product_modset_sha256,
         Some(hud_snapshot),
         &[],
         &[],
@@ -896,6 +902,7 @@ pub fn build_from_finalized_static_bundle_with_runtime_stream(
     catalog_source_join_path: &Path,
     live_resolution_report_path: &Path,
     launch: &PortableLaunchBinding,
+    product_modset_sha256: &str,
     runtime_roots: &RuntimeContentRoots,
     compact_stream_path: &Path,
     identity_mode: compact_contract::stream_validator::StreamIdentityMode,
@@ -905,6 +912,7 @@ pub fn build_from_finalized_static_bundle_with_runtime_stream(
         catalog_source_join_path,
         live_resolution_report_path,
         launch,
+        product_modset_sha256,
         runtime_roots,
         compact_stream_path,
         identity_mode,
@@ -920,6 +928,7 @@ pub fn build_from_finalized_static_bundle_with_early_render_receipt(
     catalog_source_join_path: &Path,
     live_resolution_report_path: &Path,
     launch: &PortableLaunchBinding,
+    product_modset_sha256: &str,
     runtime_roots: &RuntimeContentRoots,
     compact_stream_path: &Path,
     identity_mode: compact_contract::stream_validator::StreamIdentityMode,
@@ -931,6 +940,7 @@ pub fn build_from_finalized_static_bundle_with_early_render_receipt(
         catalog_source_join_path,
         live_resolution_report_path,
         launch,
+        product_modset_sha256,
         runtime_roots,
         compact_stream_path,
         identity_mode,
@@ -943,6 +953,7 @@ fn build_from_finalized_static_bundle_with_runtime_stream_admission(
     catalog_source_join_path: &Path,
     live_resolution_report_path: &Path,
     launch: &PortableLaunchBinding,
+    product_modset_sha256: &str,
     runtime_roots: &RuntimeContentRoots,
     compact_stream_path: &Path,
     identity_mode: compact_contract::stream_validator::StreamIdentityMode,
@@ -953,6 +964,7 @@ fn build_from_finalized_static_bundle_with_runtime_stream_admission(
         catalog_source_join_path,
         live_resolution_report_path,
         launch,
+        product_modset_sha256,
         None,
         &[],
         &[],
@@ -1027,6 +1039,7 @@ fn build_from_finalized_static_bundle_with_runtime_stream_admission(
         catalog_source_join_path,
         live_resolution_report_path,
         launch,
+        product_modset_sha256,
         hud_snapshot.as_ref(),
         &static_program_content,
         &runtime.m02_used_content,
@@ -1222,6 +1235,7 @@ fn build_from_finalized_static_bundle_inner(
     catalog_source_join_path: &Path,
     live_resolution_report_path: &Path,
     launch: &PortableLaunchBinding,
+    product_modset_sha256: &str,
     hud_snapshot: Option<&HudRoleSnapshot>,
     static_program_content: &[StaticProgramContentObservation],
     m02_used_content: &[UsedContentKey],
@@ -1566,7 +1580,7 @@ fn build_from_finalized_static_bundle_inner(
         required_settings: launch.required_settings.clone(),
         observations,
     };
-    let manifest = build(trace, launch)?;
+    let manifest = build(trace, launch, product_modset_sha256)?;
     verify_live_resolution_report(live_resolution_report_path, &manifest, launch)?;
     Ok(manifest)
 }
@@ -1974,7 +1988,12 @@ fn verify_live_resolution_report(
 pub fn build(
     trace: RecorderContentTrace,
     launch: &PortableLaunchBinding,
+    product_modset_sha256: &str,
 ) -> Result<ContentManifest, String> {
+    portable_content_manifest::hud_role::validate_sha256(
+        product_modset_sha256,
+        "product modset",
+    )?;
     if trace.schema != TRACE_SCHEMA {
         return Err(format!(
             "unsupported portable content trace schema {}",
@@ -2095,6 +2114,7 @@ pub fn build(
         .collect();
     let mut manifest = ContentManifest {
         schema: CONTENT_MANIFEST_SCHEMA.to_string(),
+        product_modset_sha256: product_modset_sha256.to_string(),
         source_game: trace.source_game,
         source_profile: trace.source_profile,
         effective_vfs_manifest_sha256: trace.effective_vfs_manifest_sha256,
@@ -2447,8 +2467,8 @@ mod tests {
         let mut repeated = trace.observations[0].clone();
         repeated.consumer = "ui_renderer".into();
         trace.observations.push(repeated);
-        let first = build(trace.clone(), &launch).unwrap();
-        let second = build(trace, &launch).unwrap();
+        let first = build(trace.clone(), &launch, &sha('9')).unwrap();
+        let second = build(trace, &launch, &sha('9')).unwrap();
         assert_eq!(first.encode_json().unwrap(), second.encode_json().unwrap());
         let row = first
             .required_content
@@ -2493,7 +2513,7 @@ mod tests {
             .write_atomic(&path)
             .unwrap_err()
             .contains("already exists"));
-        let (manifest, _) = load_and_build(&path, &launch).unwrap();
+        let (manifest, _) = load_and_build(&path, &launch, &sha('9')).unwrap();
         assert_eq!(
             manifest
                 .required_content
@@ -2557,7 +2577,7 @@ mod tests {
             &BTreeMap::from([(content.normalized_game_relative_path.clone(), content)]),
         )
         .unwrap();
-        let manifest = build(trace, &launch).unwrap();
+        let manifest = build(trace, &launch, &sha('9')).unwrap();
         let row = manifest
             .required_content
             .iter()
@@ -2612,7 +2632,7 @@ mod tests {
             &winners,
         )
         .unwrap();
-        let manifest = build(trace, &launch).unwrap();
+        let manifest = build(trace, &launch, &sha('9')).unwrap();
         let row = manifest
             .required_content
             .iter()
@@ -2913,6 +2933,7 @@ mod tests {
                 &join_path,
                 &report_path,
                 &launch,
+                &sha('9'),
                 &RuntimeContentRoots {
                     install_root: game,
                     user_dir: user,
@@ -3071,8 +3092,14 @@ mod tests {
         fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
         assert!(!dir.join(DEFAULT_TRACE_FILE).exists());
         let manifest =
-            build_from_finalized_static_bundle(&inventory_path, &join_path, &report_path, &launch)
-                .unwrap();
+            build_from_finalized_static_bundle(
+                &inventory_path,
+                &join_path,
+                &report_path,
+                &launch,
+                &sha('9'),
+            )
+            .unwrap();
         assert_eq!(manifest.required_content.len(), 2);
         assert!(
             manifest
@@ -3114,7 +3141,7 @@ mod tests {
         let mut repeated = trace.observations[0].clone();
         repeated.content.payload_sha256 = sha('3');
         trace.observations.push(repeated);
-        assert!(build(trace, &launch)
+        assert!(build(trace, &launch, &sha('9'))
             .unwrap_err()
             .contains("changed key/kind/winner/hash"));
     }
@@ -3123,17 +3150,19 @@ mod tests {
     fn launch_mod_dlc_language_and_settings_are_cross_checked() {
         let (trace, mut launch) = base_trace();
         launch.enabled_dlc_ids.remove("dlc_unused");
-        assert!(build(trace.clone(), &launch)
+        assert!(build(trace.clone(), &launch, &sha('9'))
             .unwrap_err()
             .contains("enabled DLC set"));
         let (_, mut launch) = base_trace();
         launch.ordered_mods[0].content_sha256 = sha('0');
-        assert!(build(trace.clone(), &launch)
+        assert!(build(trace.clone(), &launch, &sha('9'))
             .unwrap_err()
             .contains("archive hash"));
         let (_, mut launch) = base_trace();
         launch.localisation_language = "german".into();
-        assert!(build(trace, &launch).unwrap_err().contains("language"));
+        assert!(build(trace, &launch, &sha('9'))
+            .unwrap_err()
+            .contains("language"));
     }
 
     #[test]
@@ -3147,7 +3176,7 @@ mod tests {
     #[test]
     fn manifest_has_no_local_paths_and_survives_relocation() {
         let (trace, launch) = base_trace();
-        let manifest = build(trace, &launch).unwrap();
+        let manifest = build(trace, &launch, &sha('9')).unwrap();
         let bytes = manifest.encode_json().unwrap();
         let text = String::from_utf8(bytes.clone()).unwrap();
         assert!(!text.contains("C:\\"));
@@ -3160,7 +3189,7 @@ mod tests {
     #[test]
     fn extractor_manifest_round_trips_through_portable_container() {
         let (trace, launch) = base_trace();
-        let manifest = build(trace, &launch).unwrap();
+        let manifest = build(trace, &launch, &sha('9')).unwrap();
         let index = br#"{"game_id":"portable-fixture","schema_version":"1","snapshots":[]}"#;
         let entries = [snapshot::BorrowedPackEntry {
             path: "payload/portable-fixture/index.json".into(),
@@ -3180,7 +3209,7 @@ mod tests {
         assert_eq!(opened.content_manifest(), Some(&manifest));
         assert_eq!(
             opened.manifest()["required_features"],
-            serde_json::json!(["portable_content_manifest_v1"])
+            serde_json::json!(["portable_content_manifest_v2"])
         );
     }
 
@@ -3435,7 +3464,7 @@ mod tests {
         mod_layer.source_container_sha256 = None;
         launch.ordered_mods[0].content_sha256 = sha('6');
         launch.ordered_mods[0].storage_kind = LayerStorageKind::Directory;
-        let first = build(trace.clone(), &launch).unwrap();
+        let first = build(trace.clone(), &launch, &sha('9')).unwrap();
         let first_digest = first.manifest_digest_sha256.clone().unwrap();
 
         let definition = trace
@@ -3446,7 +3475,7 @@ mod tests {
         definition.content.source_sha256 = sha('4');
         definition.content.payload_sha256 = sha('5');
         definition.content.payload_bytes += 1;
-        let changed = build(trace, &launch).unwrap();
+        let changed = build(trace, &launch, &sha('9')).unwrap();
         assert_ne!(
             changed.manifest_digest_sha256.as_deref(),
             Some(first_digest.as_str())
@@ -3456,7 +3485,7 @@ mod tests {
     #[test]
     fn runtime_version_build_and_profile_are_bound_without_local_paths() {
         let (trace, launch) = base_trace();
-        let manifest = build(trace, &launch).unwrap();
+        let manifest = build(trace, &launch, &sha('9')).unwrap();
         let path = std::env::temp_dir().join(format!(
             "hoi4_portable_binding_{}_{}.json",
             std::process::id(),

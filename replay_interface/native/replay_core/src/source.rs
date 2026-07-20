@@ -30,6 +30,33 @@ struct RecorderSessionBinding {
     active_dlcs: Vec<String>,
     localisation_language: String,
     display_variant: RecorderDisplayVariant,
+    campaign_identity: Option<RecordedCampaignIdentity>,
+}
+
+/// Shape-validated recorder-manifest campaign metadata retained by replay
+/// ingest. This is not proof that `stream_header_sha256` matches CID1 bytes;
+/// only the recorder's placement-authoritative stream path can prove that.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedCampaignIdentity {
+    pub state: String,
+    pub campaign_id: Option<String>,
+    pub game_unique_id: Option<String>,
+    pub game_unique_seed: Option<String>,
+    pub source: Option<String>,
+    pub source_build_profile: Option<String>,
+    pub observed_game_hour_raw: Option<i32>,
+    pub stream_header_sha256: Option<String>,
+    pub resolution_note: Option<String>,
+    pub witnesses: RecordedCampaignIdentityWitnesses,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedCampaignIdentityWitnesses {
+    pub start_date_raw: Option<u32>,
+    pub session: Option<u32>,
+    pub scenario: Option<String>,
+    pub initial_human_country_tags: Option<Vec<String>>,
+    pub modset_identity: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -118,6 +145,12 @@ pub trait ReplaySource: Send + Sync {
     /// Non-fatal ingest findings (index entries skipped, duplicate hours, ...).
     fn warnings(&self) -> &[String];
     fn content_manifest(&self) -> Option<&portable_content_manifest::ContentManifest> {
+        None
+    }
+    /// Internally consistent campaign metadata from the recorder manifest.
+    /// This never authorizes stitching without the recorder's
+    /// placement-authenticated CID1 path and exact retained payload bytes.
+    fn campaign_identity(&self) -> Option<&RecordedCampaignIdentity> {
         None
     }
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
@@ -381,6 +414,7 @@ fn open_compact_stream_with_decoder(
     metadata: MetadataRoute,
     decoder: &dyn snapshot::CertifiedPrefoldDecoder,
 ) -> Result<Box<dyn ReplaySource>, SourceError> {
+    let identity_mode = prefold_stream_identity_mode(&metadata);
     let container = store.container().ok_or_else(|| {
         SourceError::Unsupported(format!(
             "recording {game_id:?} is a compact-stream-only directory store; the portable decoder seam accepts authenticated .battleplan container role entries only"
@@ -411,8 +445,12 @@ fn open_compact_stream_with_decoder(
             entry.path
         ))
     })?;
-    let request =
-        snapshot::CertifiedPrefoldRequest::try_new(game_id.clone(), raw_h4cr).map_err(|error| {
+    let request = snapshot::CertifiedPrefoldRequest::try_new_with_identity_mode(
+        game_id.clone(),
+        raw_h4cr,
+        identity_mode,
+    )
+    .map_err(|error| {
             SourceError::Open(format!(
                 "compact stream role entry {:?} violates the portable pre-fold request: {error}",
                 entry.path
@@ -457,6 +495,7 @@ fn open_compact_stream_with_spooled_decoder(
     spool_base: &Path,
     decoder: &dyn snapshot::CertifiedPrefoldSpoolDecoder,
 ) -> Result<Box<dyn ReplaySource>, SourceError> {
+    let identity_mode = prefold_stream_identity_mode(&metadata);
     let owner = PrefoldSpoolOwner::create(spool_base)?;
     let raw_path = owner.root().join("source.h4cr");
     let snapshot_dir = owner.snapshot_dir().to_path_buf();
@@ -526,12 +565,13 @@ fn open_compact_stream_with_spooled_decoder(
         receipt
     };
 
-    let request = snapshot::CertifiedPrefoldSpoolRequest::try_new(
+    let request = snapshot::CertifiedPrefoldSpoolRequest::try_new_with_identity_mode(
         game_id.clone(),
         raw_path,
         snapshot_dir.clone(),
         source_receipt.uncompressed_len(),
         source_receipt.sha256(),
+        identity_mode,
     )
     .map_err(|error| {
         SourceError::Open(format!(
@@ -590,6 +630,24 @@ fn open_compact_stream_with_spooled_decoder(
         design_catalog,
         prefold_receipt,
     }))
+}
+
+fn prefold_stream_identity_mode(metadata: &MetadataRoute) -> snapshot::PrefoldStreamIdentityMode {
+    prefold_stream_identity_mode_from_campaign(
+        metadata
+            .binding
+            .as_ref()
+            .and_then(|binding| binding.campaign_identity.as_ref()),
+    )
+}
+
+fn prefold_stream_identity_mode_from_campaign(
+    identity: Option<&RecordedCampaignIdentity>,
+) -> snapshot::PrefoldStreamIdentityMode {
+    match identity.map(|identity| identity.state.as_str()) {
+        Some("known") => snapshot::PrefoldStreamIdentityMode::IdentityV1,
+        _ => snapshot::PrefoldStreamIdentityMode::Legacy,
+    }
 }
 
 fn validate_compact_stream_entry_identity(
@@ -952,6 +1010,7 @@ fn recorder_manifest_binding_value(
     root: Map<String, Value>,
     reference: &str,
 ) -> Result<RecorderSessionBinding, SourceError> {
+    let campaign_identity = recorder_campaign_identity(&root, reference)?;
     let modset = root
         .get("modset")
         .and_then(Value::as_object)
@@ -1080,7 +1139,220 @@ fn recorder_manifest_binding_value(
         active_dlcs,
         localisation_language,
         display_variant,
+        campaign_identity,
     })
+}
+
+fn recorder_campaign_identity(
+    root: &Map<String, Value>,
+    reference: &str,
+) -> Result<Option<RecordedCampaignIdentity>, SourceError> {
+    const OBJECT_KEYS: &[&str] = &[
+        "schema",
+        "state",
+        "campaign_id",
+        "game_unique_id",
+        "game_unique_seed",
+        "source",
+        "source_build_profile",
+        "observed_game_hour_raw",
+        "stream_header_sha256",
+        "resolution_note",
+        "witnesses",
+    ];
+    const WITNESS_KEYS: &[&str] = &[
+        "start_date_raw",
+        "session",
+        "scenario",
+        "initial_human_country_tags",
+        "modset_identity",
+    ];
+    let Some(value) = root.get("campaign_identity") else {
+        return Ok(None);
+    };
+    let fail = |message: String| {
+        SourceError::Open(format!(
+            "recorder manifest {reference:?} campaign_identity {message}"
+        ))
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| fail("is not an object".into()))?;
+    if object.len() != OBJECT_KEYS.len() || OBJECT_KEYS.iter().any(|key| !object.contains_key(*key))
+    {
+        return Err(fail("does not have the exact recorder-written key set".into()));
+    }
+    if object.get("schema").and_then(Value::as_str) != Some("hoi4.campaign_identity.v1") {
+        return Err(fail("has an unsupported schema".into()));
+    }
+    let witnesses = object
+        .get("witnesses")
+        .and_then(Value::as_object)
+        .ok_or_else(|| fail("witnesses is not an object".into()))?;
+    if witnesses.len() != WITNESS_KEYS.len()
+        || WITNESS_KEYS.iter().any(|key| !witnesses.contains_key(*key))
+    {
+        return Err(fail("witnesses does not have the exact recorder-written key set".into()));
+    }
+    for key in ["start_date_raw", "session"] {
+        let field = &witnesses[key];
+        if !field.is_null()
+            && field
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok())
+                .is_none()
+        {
+            return Err(fail(format!("witness {key} is not null or u32")));
+        }
+    }
+    for key in ["scenario", "modset_identity"] {
+        let field = &witnesses[key];
+        if !field.is_null() && field.as_str().is_none() {
+            return Err(fail(format!("witness {key} is not null or string")));
+        }
+    }
+    let roster = &witnesses["initial_human_country_tags"];
+    if !roster.is_null()
+        && roster
+            .as_array()
+            .map_or(true, |rows| rows.iter().any(|row| row.as_str().is_none()))
+    {
+        return Err(fail(
+            "witness initial_human_country_tags is not null or a string array".into(),
+        ));
+    }
+    let recorded_witnesses = RecordedCampaignIdentityWitnesses {
+        start_date_raw: witnesses["start_date_raw"]
+            .as_u64()
+            .map(|value| value as u32),
+        session: witnesses["session"].as_u64().map(|value| value as u32),
+        scenario: witnesses["scenario"].as_str().map(str::to_string),
+        initial_human_country_tags: roster.as_array().map(|rows| {
+            rows.iter()
+                .map(|row| row.as_str().expect("witness roster validated").to_string())
+                .collect()
+        }),
+        modset_identity: witnesses["modset_identity"].as_str().map(str::to_string),
+    };
+
+    let state = object
+        .get("state")
+        .and_then(Value::as_str)
+        .ok_or_else(|| fail("state is not a string".into()))?;
+    let nullable_string = |key: &str| -> Result<Option<String>, SourceError> {
+        let value = &object[key];
+        if value.is_null() {
+            Ok(None)
+        } else {
+            value
+                .as_str()
+                .map(|value| Some(value.to_string()))
+                .ok_or_else(|| fail(format!("{key} is not null or string")))
+        }
+    };
+    let campaign_id = nullable_string("campaign_id")?;
+    let game_unique_id = nullable_string("game_unique_id")?;
+    let game_unique_seed = nullable_string("game_unique_seed")?;
+    let source = nullable_string("source")?;
+    let source_build_profile = nullable_string("source_build_profile")?;
+    let stream_header_sha256 = nullable_string("stream_header_sha256")?;
+    let resolution_note = nullable_string("resolution_note")?;
+    if source_build_profile
+        .as_deref()
+        .is_some_and(|value| value.is_empty() || value.chars().any(char::is_control))
+    {
+        return Err(fail("source_build_profile violates its closed grammar".into()));
+    }
+    let observed_game_hour_raw = if object["observed_game_hour_raw"].is_null() {
+        None
+    } else {
+        let raw = object["observed_game_hour_raw"]
+            .as_i64()
+            .and_then(|value| i32::try_from(value).ok())
+            .ok_or_else(|| fail("observed_game_hour_raw is not null or i32".into()))?;
+        let min = (1850 * 365 * 24) + 43_799_999;
+        let max = (2200 * 365 * 24) + 43_799_999;
+        if !(min..=max).contains(&raw) {
+            return Err(fail("observed_game_hour_raw is outside the compact calendar".into()));
+        }
+        Some(raw)
+    };
+    let lower_hex64 = |value: &str| {
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    };
+
+    match state {
+        "known" => {
+            let campaign_id = campaign_id
+                .as_deref()
+                .filter(|value| lower_hex64(value))
+                .ok_or_else(|| fail("known campaign_id is not lowercase SHA-256".into()))?;
+            let uuid = game_unique_id
+                .as_deref()
+                .filter(|value| canonical_campaign_uuid(value))
+                .ok_or_else(|| fail("known game_unique_id is not a canonical lowercase UUID".into()))?;
+            let seed = game_unique_seed
+                .as_deref()
+                .and_then(|value| value.parse::<i32>().ok().map(|parsed| (value, parsed)))
+                .filter(|(value, parsed)| *value == parsed.to_string())
+                .map(|(value, _)| value)
+                .ok_or_else(|| fail("known game_unique_seed is not canonical signed i32".into()))?;
+            let mut preimage = b"hoi4-campaign-id-v1\0".to_vec();
+            preimage.extend_from_slice(uuid.as_bytes());
+            preimage.push(0);
+            preimage.extend_from_slice(seed.as_bytes());
+            let recomputed = snapshot::sha256::to_hex(&snapshot::sha256::Sha256::digest(&preimage));
+            if recomputed != campaign_id {
+                return Err(fail("known campaign digest does not recompute".into()));
+            }
+            if source.as_deref() != Some("live_memory")
+                || source_build_profile.is_none()
+                || observed_game_hour_raw.is_none()
+                || stream_header_sha256
+                    .as_deref()
+                    .map_or(true, |value| !lower_hex64(value))
+                || resolution_note.is_some()
+            {
+                return Err(fail("known state fields are incoherent".into()));
+            }
+        }
+        "unavailable" | "unbound" | "identity_component_conflict" => {
+            if campaign_id.is_some()
+                || game_unique_id.is_some()
+                || game_unique_seed.is_some()
+                || source.is_some()
+                || observed_game_hour_raw.is_some()
+                || stream_header_sha256.is_some()
+                || resolution_note.as_deref().map_or(true, str::is_empty)
+            {
+                return Err(fail("non-known state contains positive identity authority".into()));
+            }
+        }
+        _ => return Err(fail(format!("has unknown state {state:?}"))),
+    }
+    Ok(Some(RecordedCampaignIdentity {
+        state: state.to_string(),
+        campaign_id,
+        game_unique_id,
+        game_unique_seed,
+        source,
+        source_build_profile,
+        observed_game_hour_raw,
+        stream_header_sha256,
+        resolution_note,
+        witnesses: recorded_witnesses,
+    }))
+}
+
+fn canonical_campaign_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte),
+        })
 }
 
 fn validate_display_variant(
@@ -1606,6 +1878,12 @@ impl ReplaySource for SpooledPrefoldedSource {
             .and_then(|container| container.content_manifest())
     }
 
+    fn campaign_identity(&self) -> Option<&RecordedCampaignIdentity> {
+        self.recorder_binding
+            .as_ref()
+            .and_then(|binding| binding.campaign_identity.as_ref())
+    }
+
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
         self.design_catalog.as_ref()
     }
@@ -1676,6 +1954,12 @@ impl ReplaySource for PrefoldedSource {
             .and_then(|container| container.content_manifest())
     }
 
+    fn campaign_identity(&self) -> Option<&RecordedCampaignIdentity> {
+        self.recorder_binding
+            .as_ref()
+            .and_then(|binding| binding.campaign_identity.as_ref())
+    }
+
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
         self.design_catalog.as_ref()
     }
@@ -1740,6 +2024,11 @@ impl ReplaySource for StoreSource {
         self.store
             .container()
             .and_then(|container| container.content_manifest())
+    }
+    fn campaign_identity(&self) -> Option<&RecordedCampaignIdentity> {
+        self.recorder_binding
+            .as_ref()
+            .and_then(|binding| binding.campaign_identity.as_ref())
     }
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
         self.design_catalog.as_ref()
@@ -2034,6 +2323,136 @@ mod tests {
         } else {
             fs::write(game_dir.join("timeline.json"), br#"{"legacy":true}"#).unwrap();
         }
+    }
+
+    fn known_campaign_identity_value() -> Value {
+        json!({
+            "schema": "hoi4.campaign_identity.v1",
+            "state": "known",
+            "campaign_id": "b28ea1bc4bcea2790b9257208abdc9c27f9985a6e57ef8ce8934d456fcd3be6f",
+            "game_unique_id": "a4b17fed-ed12-4361-9064-fb6576638110",
+            "game_unique_seed": "1026046527",
+            "source": "live_memory",
+            "source_build_profile": "hoi4-a729",
+            "observed_game_hour_raw": 60759359,
+            "stream_header_sha256": "cc".repeat(32),
+            "resolution_note": null,
+            "witnesses": {
+                "start_date_raw": null,
+                "session": null,
+                "scenario": null,
+                "initial_human_country_tags": null,
+                "modset_identity": null
+            }
+        })
+    }
+
+    #[test]
+    fn recorder_campaign_identity_is_recomputed_before_replay_exposure() {
+        let mut root = Map::new();
+        root.insert(
+            "campaign_identity".to_string(),
+            known_campaign_identity_value(),
+        );
+        let identity = recorder_campaign_identity(&root, "test manifest")
+            .unwrap()
+            .expect("known identity must be exposed");
+        assert_eq!(identity.state, "known");
+        assert_eq!(
+            identity.game_unique_id.as_deref(),
+            Some("a4b17fed-ed12-4361-9064-fb6576638110")
+        );
+        assert_eq!(identity.game_unique_seed.as_deref(), Some("1026046527"));
+        assert_eq!(
+            identity.campaign_id.as_deref(),
+            Some("b28ea1bc4bcea2790b9257208abdc9c27f9985a6e57ef8ce8934d456fcd3be6f")
+        );
+        assert_eq!(identity.source.as_deref(), Some("live_memory"));
+        assert_eq!(identity.resolution_note, None);
+        assert_eq!(identity.witnesses.session, None);
+
+        root.get_mut("campaign_identity")
+            .unwrap()["game_unique_seed"] = json!("1026046528");
+        assert!(recorder_campaign_identity(&root, "tampered manifest").is_err());
+    }
+
+    #[test]
+    fn validated_known_manifest_selects_identity_v1_without_stream_sniffing() {
+        let mut root = Map::new();
+        root.insert(
+            "campaign_identity".to_string(),
+            known_campaign_identity_value(),
+        );
+        let known = recorder_campaign_identity(&root, "known mode")
+            .unwrap()
+            .expect("known identity");
+        assert_eq!(
+            prefold_stream_identity_mode_from_campaign(Some(&known)),
+            snapshot::PrefoldStreamIdentityMode::IdentityV1
+        );
+        assert_eq!(
+            prefold_stream_identity_mode_from_campaign(None),
+            snapshot::PrefoldStreamIdentityMode::Legacy
+        );
+    }
+
+    #[test]
+    fn recorder_campaign_identity_rejects_extra_or_positive_non_known_authority() {
+        let mut value = known_campaign_identity_value();
+        value["unexpected"] = json!(true);
+        let mut root = Map::new();
+        root.insert("campaign_identity".to_string(), value);
+        assert!(recorder_campaign_identity(&root, "extra key").is_err());
+
+        let mut unavailable = known_campaign_identity_value();
+        unavailable["state"] = json!("unavailable");
+        unavailable["resolution_note"] = json!("live reader unavailable");
+        unavailable["campaign_id"] = Value::Null;
+        unavailable["game_unique_id"] = Value::Null;
+        unavailable["game_unique_seed"] = Value::Null;
+        unavailable["source"] = Value::Null;
+        unavailable["observed_game_hour_raw"] = Value::Null;
+        unavailable["stream_header_sha256"] = Value::Null;
+        let mut root = Map::new();
+        root.insert("campaign_identity".to_string(), unavailable.clone());
+        let unavailable_identity = recorder_campaign_identity(&root, "unavailable")
+            .unwrap()
+            .expect("non-known metadata must remain inspectable");
+        assert_eq!(
+            unavailable_identity.resolution_note.as_deref(),
+            Some("live reader unavailable")
+        );
+
+        unavailable["game_unique_seed"] = json!("1");
+        root.insert("campaign_identity".to_string(), unavailable);
+        assert!(recorder_campaign_identity(&root, "fabricated unavailable").is_err());
+    }
+
+    #[test]
+    fn opened_recording_exposes_only_the_validated_recorder_campaign_identity() {
+        let root = temp_root("campaign_identity_exposure");
+        write_playable_store(&root, "g", true, "CAMPAIGN");
+        let manifest_path = root
+            .join("g")
+            .join("recorder")
+            .join("native_session_manifest.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["campaign_identity"] = known_campaign_identity_value();
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        let source = open_recording(&root).unwrap();
+        let identity = source
+            .campaign_identity()
+            .expect("valid recorder identity must survive source admission");
+        assert_eq!(identity.state, "known");
+        assert_eq!(identity.observed_game_hour_raw, Some(60759359));
+        assert_eq!(
+            identity.stream_header_sha256.as_deref(),
+            Some("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+        );
+        drop(source);
+        let _ = fs::remove_dir_all(root);
     }
 
     fn prefolded_entry(hour: i64, schema: &str) -> snapshot::PrefoldedHourEntry {

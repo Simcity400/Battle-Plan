@@ -21,6 +21,7 @@ members = [
     "lanes/country_economy_production_stockpile_live",
     "lanes/diplomacy_intel_operatives_live",
     "lanes/event_timeline_change_log_live",
+    "lanes/direct_frd_transitions_live",
     "lanes/focus_research_decisions_depth_live",
     "lanes/land_combat_detail_events_live",
     "lanes/market_trade_live",
@@ -42,6 +43,11 @@ members = [
     "lanes/production_render_catalog_live",
     "lanes/design_catalog_context_live",
     "lanes/hud_role_observer_live",
+    "lanes/weather_live",
+    "lanes/character_presentation_live",
+    "lanes/nuke_stockpile_live",
+    "lanes/sunk_ship_history_live",
+    "lanes/decision_panel_live",
 ]
 
 # Fail-closed doctrine for all untrusted compact-stream, replay-container, and

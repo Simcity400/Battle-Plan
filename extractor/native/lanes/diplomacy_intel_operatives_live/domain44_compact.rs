@@ -203,6 +203,17 @@ const FACTION_ROW_HEADER_LEN: usize = 20;
 pub const MAX_FACTION_ROWS: usize = 4_096;
 pub const MAX_FACTION_MEMBERS: usize = 256;
 
+// A16 exact live autonomy-currentness overlay. The additive trailer preserves
+// the established 24-byte CSubjectRelation base row and lets current readers
+// accept old recordings. Legacy strict readers do not understand AUST.
+const SUBJECT_AUTONOMY_STATUS_TRAILER_MAGIC: &[u8; 4] = b"AUST";
+const SUBJECT_AUTONOMY_STATUS_TRAILER_VERSION: u16 = 1;
+const SUBJECT_AUTONOMY_STATUS_TRAILER_HEADER_LEN: usize = 12;
+const SUBJECT_AUTONOMY_STATUS_TRAILER_ROW_LEN: usize = 56;
+const SUBJECT_AUTONOMY_STATUS_FLAG_PREVIOUS: u32 = 1;
+const SUBJECT_AUTONOMY_STATUS_FLAG_NEXT: u32 = 1 << 1;
+pub const MAX_SUBJECT_AUTONOMY_STATUS_ROWS: usize = 4_096;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiplomacyIntelSnapshot {
     pub elapsed_wall_ms: u64,
@@ -213,6 +224,10 @@ pub struct DiplomacyIntelSnapshot {
     pub opinions: Vec<OpinionRow>,
     pub relation_flags: Vec<RelationFlagRow>,
     pub subjects: Vec<SubjectRow>,
+    /// Exact `CCurrentAutonomyStatus` rows. On wire these are an AUST v1
+    /// additive trailer and are admitted only with a complete atomic witness.
+    pub subject_autonomy_statuses: Vec<SubjectAutonomyStatusRow>,
+    pub subject_autonomy_status_complete: bool,
     pub agencies: Vec<AgencyRow>,
     pub agency_capacity_clusters: Vec<AgencyCapacityClusterRow>,
     pub operatives: Vec<OperativeRow>,
@@ -307,6 +322,10 @@ fn encoded_payload_capacity(snapshot: &DiplomacyIntelSnapshot) -> usize {
     .saturating_add(faction_trailer_capacity(
         &snapshot.factions,
         snapshot.faction_roster_complete,
+    ))
+    .saturating_add(subject_autonomy_status_trailer_capacity(
+        &snapshot.subject_autonomy_statuses,
+        snapshot.subject_autonomy_status_complete,
     ))
 }
 
@@ -426,14 +445,29 @@ pub struct SubjectRow {
     pub overlord_tag_db_id: u32,
     pub subject_tag_db_id: u32,
     pub autonomy_state_hash: u32,
-    /// `CSubjectRelation+0x60` is an i64 Clausewitz fixed-point scalar at
-    /// memory-read time. The extractor validates it in the exact 0..=100000
-    /// autonomy-ratio range before narrowing it into this lossless i32 wire
-    /// carrier (`raw / 100000.0`).
+    /// `CSubjectRelation+0x60` is the serialized i64
+    /// `set_autonomy.freedom_level` scalar. The extractor validates it in
+    /// `0..=100000` before lossless i32 narrowing. This legacy field is not
+    /// sufficient mutable progress; A16 owns the separate
+    /// `CCurrentAutonomyStatus` current-score/bounds migration.
     pub autonomy_ratio_raw: i32,
     /// `CSubjectRelation+0x20` i32 engine-hour subject start_date (RAW). The
     /// replay layer derives the display date. Live-validated 38/38 on 870ebf.
     pub start_date_raw: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubjectAutonomyStatusRow {
+    pub overlord_tag_db_id: u32,
+    pub subject_tag_db_id: u32,
+    pub current_state_hash: u32,
+    pub previous_state_hash: Option<u32>,
+    pub next_state_hash: Option<u32>,
+    pub ratio_raw: i32,
+    pub current_score_raw: i64,
+    pub lower_score_raw: i64,
+    pub upper_score_raw: i64,
+    pub last_modified_date_raw: u32,
 }
 
 /// A faction from the CFactionSystem (`CGameState+0x3F8`). Members are carried
@@ -591,6 +625,18 @@ pub struct IntelNetworkGraphRow {
     /// with `state_ids` under the fixed 100000 scale.
     pub state_strengths: Option<Vec<IntelNetworkStateStrength>>,
     pub coverage: Option<IntelNetworkCoverage>,
+}
+
+fn subject_autonomy_status_trailer_capacity(
+    rows: &[SubjectAutonomyStatusRow],
+    complete: bool,
+) -> usize {
+    if !complete {
+        0
+    } else {
+        SUBJECT_AUTONOMY_STATUS_TRAILER_HEADER_LEN
+            .saturating_add(rows.len().saturating_mul(SUBJECT_AUTONOMY_STATUS_TRAILER_ROW_LEN))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -908,6 +954,11 @@ pub fn encode_payload(snapshot: &DiplomacyIntelSnapshot) -> Vec<u8> {
         &snapshot.factions,
         snapshot.faction_roster_complete,
     );
+    append_subject_autonomy_status_trailer(
+        &mut payload,
+        &snapshot.subject_autonomy_statuses,
+        snapshot.subject_autonomy_status_complete,
+    );
     payload
 }
 
@@ -1192,6 +1243,11 @@ pub fn summarize_snapshot_instrumented(
         &snapshot.factions,
         snapshot.faction_roster_complete,
     );
+    append_subject_autonomy_status_trailer(
+        &mut trailer_bytes,
+        &snapshot.subject_autonomy_statuses,
+        snapshot.subject_autonomy_status_complete,
+    );
 
     let mut operation_instance_rows = 0usize;
     let mut operation_instance_country_rows = 0usize;
@@ -1414,6 +1470,63 @@ fn append_faction_trailer(payload: &mut Vec<u8>, rows: &[FactionRow], roster_com
             payload.extend_from_slice(&member.to_le_bytes());
         }
     }
+}
+
+fn append_subject_autonomy_status_trailer(
+    payload: &mut Vec<u8>,
+    rows: &[SubjectAutonomyStatusRow],
+    complete: bool,
+) {
+    if !complete {
+        return;
+    }
+    payload.extend_from_slice(SUBJECT_AUTONOMY_STATUS_TRAILER_MAGIC);
+    payload.extend_from_slice(&SUBJECT_AUTONOMY_STATUS_TRAILER_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(SUBJECT_AUTONOMY_STATUS_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    for row in rows {
+        let mut flags = 0u32;
+        if row.previous_state_hash.is_some() {
+            flags |= SUBJECT_AUTONOMY_STATUS_FLAG_PREVIOUS;
+        }
+        if row.next_state_hash.is_some() {
+            flags |= SUBJECT_AUTONOMY_STATUS_FLAG_NEXT;
+        }
+        payload.extend_from_slice(&row.overlord_tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.subject_tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.current_state_hash.to_le_bytes());
+        payload.extend_from_slice(&row.previous_state_hash.unwrap_or_default().to_le_bytes());
+        payload.extend_from_slice(&row.next_state_hash.unwrap_or_default().to_le_bytes());
+        payload.extend_from_slice(&row.ratio_raw.to_le_bytes());
+        payload.extend_from_slice(&row.current_score_raw.to_le_bytes());
+        payload.extend_from_slice(&row.lower_score_raw.to_le_bytes());
+        payload.extend_from_slice(&row.upper_score_raw.to_le_bytes());
+        payload.extend_from_slice(&row.last_modified_date_raw.to_le_bytes());
+        payload.extend_from_slice(&flags.to_le_bytes());
+    }
+}
+
+fn subject_autonomy_ratio_raw(
+    current_score_raw: i64,
+    lower_score_raw: i64,
+    upper_score_raw: i64,
+) -> Option<i32> {
+    if lower_score_raw >= upper_score_raw {
+        return None;
+    }
+    let forward = current_score_raw.checked_sub(lower_score_raw)?.max(0);
+    let remaining = upper_score_raw.checked_sub(current_score_raw)?.max(0);
+    let denominator = forward.checked_add(remaining)?;
+    if denominator <= 0 {
+        return None;
+    }
+    let ratio = forward
+        .checked_mul(i64::from(FIXED_SCALE_RAW))?
+        .checked_div(denominator)?;
+    let ratio = i32::try_from(ratio).ok()?;
+    (0..=FIXED_SCALE_RAW as i32)
+        .contains(&ratio)
+        .then_some(ratio)
 }
 
 /// Wave-5: append the `OPIN` running-operation-instance trailer after the
@@ -1844,6 +1957,108 @@ fn decode_operation_instance_trailer(
     (rows, cursor)
 }
 
+fn decode_subject_autonomy_status_trailer(
+    offset: usize,
+    payload: &[u8],
+    start: usize,
+    errors: &mut Vec<String>,
+) -> (Vec<SubjectAutonomyStatusRow>, usize) {
+    let Some(header_end) = start.checked_add(SUBJECT_AUTONOMY_STATUS_TRAILER_HEADER_LEN) else {
+        errors.push(format!("offset {offset}: subject-autonomy status trailer header overflow"));
+        return (Vec::new(), 0);
+    };
+    if header_end > payload.len() {
+        errors.push(format!("offset {offset}: truncated subject-autonomy status trailer header"));
+        return (Vec::new(), 0);
+    }
+    let version = read_u16_le(payload, start + 4);
+    let header_len = read_u16_le(payload, start + 6) as usize;
+    let count = read_u32_le(payload, start + 8) as usize;
+    if version != SUBJECT_AUTONOMY_STATUS_TRAILER_VERSION
+        || header_len != SUBJECT_AUTONOMY_STATUS_TRAILER_HEADER_LEN
+    {
+        errors.push(format!(
+            "offset {offset}: unsupported subject-autonomy status trailer version/header {version}/{header_len}"
+        ));
+        return (Vec::new(), 0);
+    }
+    if count > MAX_SUBJECT_AUTONOMY_STATUS_ROWS {
+        errors.push(format!(
+            "offset {offset}: subject-autonomy status trailer row_count {count} exceeds {MAX_SUBJECT_AUTONOMY_STATUS_ROWS}"
+        ));
+        return (Vec::new(), 0);
+    }
+    let Some(total_len) = count
+        .checked_mul(SUBJECT_AUTONOMY_STATUS_TRAILER_ROW_LEN)
+        .and_then(|rows| rows.checked_add(SUBJECT_AUTONOMY_STATUS_TRAILER_HEADER_LEN))
+    else {
+        errors.push(format!("offset {offset}: subject-autonomy status trailer length overflow"));
+        return (Vec::new(), 0);
+    };
+    if payload.len().saturating_sub(start) < total_len {
+        errors.push(format!("offset {offset}: truncated subject-autonomy status trailer rows"));
+        return (Vec::new(), 0);
+    }
+    let mut rows = Vec::with_capacity(count);
+    let mut seen = BTreeSet::new();
+    let mut cursor = header_end;
+    for index in 0..count {
+        let overlord = read_u32_le(payload, cursor);
+        let subject = read_u32_le(payload, cursor + 4);
+        let current_state_hash = read_u32_le(payload, cursor + 8);
+        let previous_raw = read_u32_le(payload, cursor + 12);
+        let next_raw = read_u32_le(payload, cursor + 16);
+        let ratio_raw = read_i32_le(payload, cursor + 20);
+        let current_score_raw = read_i64_le(payload, cursor + 24);
+        let lower_score_raw = read_i64_le(payload, cursor + 32);
+        let upper_score_raw = read_i64_le(payload, cursor + 40);
+        let last_modified_date_raw = read_u32_le(payload, cursor + 48);
+        let flags = read_u32_le(payload, cursor + 52);
+        let known_flags = SUBJECT_AUTONOMY_STATUS_FLAG_PREVIOUS | SUBJECT_AUTONOMY_STATUS_FLAG_NEXT;
+        let previous_state_hash = (flags & SUBJECT_AUTONOMY_STATUS_FLAG_PREVIOUS != 0)
+            .then_some(previous_raw);
+        let next_state_hash =
+            (flags & SUBJECT_AUTONOMY_STATUS_FLAG_NEXT != 0).then_some(next_raw);
+        let computed_ratio = subject_autonomy_ratio_raw(
+            current_score_raw,
+            lower_score_raw,
+            upper_score_raw,
+        );
+        if !valid_tag(overlord)
+            || !valid_tag(subject)
+            || overlord == subject
+            || current_state_hash == 0
+            || flags & !known_flags != 0
+            || previous_state_hash.is_some_and(|hash| hash == 0)
+            || next_state_hash.is_some_and(|hash| hash == 0)
+            || (previous_state_hash.is_none() && previous_raw != 0)
+            || (next_state_hash.is_none() && next_raw != 0)
+            || !(0..=FIXED_SCALE_RAW as i32).contains(&ratio_raw)
+            || computed_ratio != Some(ratio_raw)
+            || !seen.insert((overlord, subject))
+        {
+            errors.push(format!(
+                "offset {offset}: invalid subject-autonomy status trailer row {index}"
+            ));
+            return (Vec::new(), 0);
+        }
+        rows.push(SubjectAutonomyStatusRow {
+            overlord_tag_db_id: overlord,
+            subject_tag_db_id: subject,
+            current_state_hash,
+            previous_state_hash,
+            next_state_hash,
+            ratio_raw,
+            current_score_raw,
+            lower_score_raw,
+            upper_score_raw,
+            last_modified_date_raw,
+        });
+        cursor += SUBJECT_AUTONOMY_STATUS_TRAILER_ROW_LEN;
+    }
+    (rows, total_len)
+}
+
 #[derive(Default)]
 struct DecodedTrailers {
     operation_instances: Vec<OperationInstanceRow>,
@@ -1851,6 +2066,8 @@ struct DecodedTrailers {
     intel_network_graphs: Vec<IntelNetworkGraphRow>,
     factions: Vec<FactionRow>,
     faction_roster_complete: bool,
+    subject_autonomy_statuses: Vec<SubjectAutonomyStatusRow>,
+    subject_autonomy_status_complete: bool,
 }
 
 fn decode_domain53_trailers(
@@ -1864,6 +2081,7 @@ fn decode_domain53_trailers(
     let mut seen_diaq = false;
     let mut seen_ingr = false;
     let mut seen_facs = false;
+    let mut seen_aust = false;
     while cursor < payload.len() {
         if payload.get(cursor..cursor + 4) == Some(OPERATION_INSTANCE_TRAILER_MAGIC) {
             if seen_opin {
@@ -1923,6 +2141,24 @@ fn decode_domain53_trailers(
             decoded.factions = rows;
             decoded.faction_roster_complete = roster_complete;
             seen_facs = true;
+            cursor += consumed;
+        } else if payload.get(cursor..cursor + 4)
+            == Some(SUBJECT_AUTONOMY_STATUS_TRAILER_MAGIC)
+        {
+            if seen_aust {
+                errors.push(format!(
+                    "offset {offset}: duplicate subject-autonomy status trailer"
+                ));
+                return decoded;
+            }
+            let (rows, consumed) =
+                decode_subject_autonomy_status_trailer(offset, payload, cursor, errors);
+            if consumed == 0 {
+                return decoded;
+            }
+            decoded.subject_autonomy_statuses = rows;
+            decoded.subject_autonomy_status_complete = true;
+            seen_aust = true;
             cursor += consumed;
         } else {
             errors.push(format!(
@@ -2997,8 +3233,30 @@ pub fn decode_snapshot_payload(
         snapshot.intel_network_graphs = trailers.intel_network_graphs;
         snapshot.factions = trailers.factions;
         snapshot.faction_roster_complete = trailers.faction_roster_complete;
+        snapshot.subject_autonomy_statuses = trailers.subject_autonomy_statuses;
+        snapshot.subject_autonomy_status_complete =
+            trailers.subject_autonomy_status_complete;
         if !trailer_errors.is_empty() {
             return Err(trailer_errors);
+        }
+    }
+    if snapshot.subject_autonomy_status_complete
+        && snapshot.status_flags & STATUS_DELTA_DATA == 0
+    {
+        let subject_keys = snapshot
+            .subjects
+            .iter()
+            .map(|row| (row.overlord_tag_db_id, row.subject_tag_db_id))
+            .collect::<BTreeSet<_>>();
+        let status_keys = snapshot
+            .subject_autonomy_statuses
+            .iter()
+            .map(|row| (row.overlord_tag_db_id, row.subject_tag_db_id))
+            .collect::<BTreeSet<_>>();
+        if subject_keys != status_keys {
+            return Err(vec![format!(
+                "offset {offset}: complete subject-autonomy status keys do not match subject base rows"
+            )]);
         }
     }
     Ok(snapshot)
@@ -5696,6 +5954,64 @@ mod tests {
         );
     }
 
+    fn fixture_subject_autonomy_status() -> SubjectAutonomyStatusRow {
+        SubjectAutonomyStatusRow {
+            overlord_tag_db_id: 1,
+            subject_tag_db_id: 22,
+            current_state_hash: stable_hash32("autonomy_puppet"),
+            previous_state_hash: Some(stable_hash32("autonomy_colony")),
+            next_state_hash: Some(stable_hash32("autonomy_integrated_puppet")),
+            ratio_raw: 50_000,
+            current_score_raw: 150,
+            lower_score_raw: 100,
+            upper_score_raw: 200,
+            last_modified_date_raw: 60_795_475,
+        }
+    }
+
+    #[test]
+    fn subject_autonomy_status_trailer_round_trips_complete_set() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.subject_autonomy_statuses = vec![fixture_subject_autonomy_status()];
+        snapshot.subject_autonomy_status_complete = true;
+
+        let decoded = decode_snapshot_payload(0, &encode_payload(&snapshot)).unwrap();
+        assert!(decoded.subject_autonomy_status_complete);
+        assert_eq!(
+            decoded.subject_autonomy_statuses,
+            snapshot.subject_autonomy_statuses
+        );
+    }
+
+    #[test]
+    fn subject_autonomy_status_rejects_invalid_score_bounds() {
+        let mut snapshot = fixture_snapshot();
+        let mut status = fixture_subject_autonomy_status();
+        status.upper_score_raw = status.lower_score_raw;
+        status.ratio_raw = 0;
+        snapshot.subject_autonomy_statuses = vec![status];
+        snapshot.subject_autonomy_status_complete = true;
+
+        let errors = decode_snapshot_payload(0, &encode_payload(&snapshot)).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("invalid subject-autonomy status trailer row")));
+    }
+
+    #[test]
+    fn subject_autonomy_status_delta_defers_key_join_to_fold() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.status_flags |= STATUS_DELTA_DATA;
+        snapshot.subjects.clear();
+        snapshot.subject_autonomy_statuses = vec![fixture_subject_autonomy_status()];
+        snapshot.subject_autonomy_status_complete = true;
+
+        let decoded = decode_snapshot_payload(0, &encode_payload(&snapshot)).unwrap();
+        assert!(decoded.subject_autonomy_status_complete);
+        assert!(decoded.subjects.is_empty());
+        assert_eq!(decoded.subject_autonomy_statuses.len(), 1);
+    }
+
     #[test]
     fn subject_rejects_non_positive_start_date() {
         let mut snapshot = fixture_snapshot();
@@ -5846,6 +6162,8 @@ mod tests {
                 autonomy_ratio_raw: 40_000,
                 start_date_raw: 60_795_475,
             }],
+            subject_autonomy_statuses: Vec::new(),
+            subject_autonomy_status_complete: false,
             agencies: vec![AgencyRow {
                 owner_tag_db_id: 1,
                 max_operatives: 3,

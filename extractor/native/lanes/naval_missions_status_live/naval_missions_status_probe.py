@@ -153,11 +153,11 @@ def summarize_convoy_route_context(
 
 def domain56_registration_patch_plan() -> List[str]:
     return [
-        "In extractor/native/collector/src/domain_registry.rs, insert domain(56, \"naval_missions_status_live\", \"naval_missions_status_live\", CompactDomainStatus::Reserved or ActiveIntegration while wiring, false until collector hook is registered, true, &[]) between ids 54 and 1000.",
-        "In extractor/native/recorder_host/src/compact_domain_registry.rs, insert the matching descriptor for id 56 with canonical and wire name \"naval_missions_status_live\" and requires_data_record=true.",
-        "In the shared collector, register one lane-owned domain module that emits domain 56 rows from the existing DLL coordinator after the current naval OOB roots are available; do not create a second collector or DLL.",
-        "Use domain56_compact.rs as the wire contract: 44-byte header plus 64-byte task-force rows keyed by task_force_id with badged fixture-required fields until mission/home-base/repair/retreat offsets are selected by before/after fixture proof.",
-        "In recorder_host/src/main.rs, add a domain 56 data decoder that records data_units_total keys emitted by domain56_compact.rs and preserves the raw compact stream inside .battleplan exactly like existing compact domains.",
+        "Closed: compact_contract and both shared registries assign schedulable, data-required domain 56 to naval_missions_status_live.",
+        "Closed: the shared collector schedules its lane-owned domain-56 reader and appends accepted payloads through the existing sequence-owned compact writer; no second collector or DLL is used.",
+        "Closed: domain56_compact.rs remains the wire authority (44-byte header plus 64-byte task-force rows keyed by task_force_id); exact detached_activity is emitted as mission_state while rejected repair-progress/retreat semantics stay absent rather than guessed.",
+        "Closed: recorder_host gates and accounts domain 56, preserves the raw compact stream in .battleplan, and folds accepted rows fail-closed.",
+        "Open validation only: retain an authenticated integrated speed-five/current-equivalent run before claiming live production acceptance.",
     ]
 
 
@@ -166,7 +166,7 @@ def make_fixture_contracts() -> List[Dict[str, Any]]:
     return [
         {
             "id": "domain56_task_force_mission_diff_v1",
-            "purpose": "Select mission enum/state offsets from validated CTaskForce roots.",
+            "purpose": "Optional regression validation of the exact mission and detached-activity fields; not a promotion blocker.",
             "commands": [
                 probe + " --out extractor/native/runs/naval_missions_status_live_870ebf_20260701_fixture_before/naval_missions_status_probe.json --snapshot-label before_mission_change",
                 probe + " --out extractor/native/runs/naval_missions_status_live_870ebf_20260701_fixture_after/naval_missions_status_probe.json --snapshot-label after_mission_change",
@@ -178,26 +178,25 @@ def make_fixture_contracts() -> List[Dict[str, Any]]:
             ],
             "acceptance": [
                 "The same task_force_id and fleet_id appear in both snapshots.",
-                "A candidate scalar offset changes only for the edited task force or the edited fleet group.",
-                "The new value maps to the expected UI mission while unedited task forces remain stable.",
+                "CTaskForce+0x364 changes to the expected exact mission enum while unedited task forces remain stable.",
+                "CTaskForce body+0x4A8 remains in the exact detached_activity range 0..4 and tracks the expected transition when applicable.",
             ],
         },
         {
             "id": "domain56_home_base_repair_retreat_diff_v1",
-            "purpose": "Resolve home-base, repair-base/progress, and retreat-state semantics.",
+            "purpose": "Historical optional validation of the already-proven home/repair-base pointers; not evidence for scalar repair-progress or retreat-state fields.",
             "commands": [
                 probe + " --out extractor/native/runs/naval_missions_status_live_870ebf_20260701_base_repair_before/naval_missions_status_probe.json --snapshot-label before_base_repair_change",
                 probe + " --out extractor/native/runs/naval_missions_status_live_870ebf_20260701_base_repair_after/naval_missions_status_probe.json --snapshot-label after_base_repair_change",
             ],
             "operator_steps_between_commands": [
                 "Change one selected task force or fleet home base to a known different naval-base province.",
-                "If repair state is the target, damage or select a damaged ship and send it to repair without changing task-force identity.",
-                "If retreat is the target, trigger a retreat state with a known selected task force and keep the task_force_id stable.",
+                "Optionally damage a ship and send it to repair without changing task-force identity to validate the nullable repair-target pointer.",
             ],
             "acceptance": [
                 "The selected task_force_id persists across both snapshots.",
                 "A home-base candidate becomes the expected port/naval-base province or CProvince pointer, distinct from CTaskForce+0x18 current location.",
-                "Repair/retreat candidates change only for the selected damaged/retreating task force and remain stable elsewhere.",
+                "No observation from this card is promoted as repair_progress_milli or retreat_state; those scalar interpretations are mechanically rejected.",
             ],
         },
         {

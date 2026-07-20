@@ -58,9 +58,10 @@ PROC_NAME = "hoi4.exe"
 # - C_GAME_STATE_DAILY_UPDATE_OFFSET
 # - GET_LONG_STRING_OFFSET
 #
-# Not yet in build_profile.rs as domain-57 constants: clock slots
-# 0x33172E0/0x33172E8, clock vtable RVA 0x2952510, and CGameState static slot
-# 0x3316E90. Add them to build_profile.rs when domain 57 integrates.
+# Domain-57 is integrated. build_profile.rs now owns the clock slots
+# 0x33172E0/0x33172E8, clock vtable RVA 0x2952510, paused byte +0x6C1, and
+# CGameState static slot 0x3316E90. These lane-local values remain copies only
+# because this Python probe does not import the Rust profile.
 DAILY_UPDATE_SENTINEL = bytes(
     [0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41,
      0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D, 0xAC]

@@ -3,7 +3,7 @@ use game_ui::scripted_gui_runtime::{
     apply_effect_preview, captured_inputs_for, evaluate_registered_gui, load_scripted_gui_registry,
     EffectApplyError, EvaluatedProperty, ScriptedGuiRuntimeState, Truth,
 };
-use replay_core::{Leaf, ScriptedGuiRuntimeInputs, ScriptedGuiView, ViewStatus};
+use replay_core::{EngineMaterialized, Leaf, ScriptedGuiRuntimeInputs, ScriptedGuiView, ViewStatus};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
@@ -23,19 +23,48 @@ fn temp_root(label: &str) -> PathBuf {
 
 fn view() -> ScriptedGuiView {
     let captured = ScriptedGuiRuntimeInputs {
+        manager_order_index: Leaf::Absent,
+        definition: Leaf::Absent,
         // Conflicts with the locally decidable visible block below. The local
         // result must win; captured values are fallback-only.
-        visible: Leaf::Measured(false),
-        enabled: Leaf::Measured(true),
-        triggers: BTreeMap::from([("engine_visible".to_string(), true)]),
+        visible: EngineMaterialized {
+            value: Leaf::Measured(false),
+            unavailable_reason: None,
+        },
+        enabled: EngineMaterialized {
+            value: Leaf::Measured(true),
+            unavailable_reason: None,
+        },
+        triggers: BTreeMap::from([(
+            "engine_visible".to_string(),
+            EngineMaterialized {
+                value: Leaf::Measured(true),
+                unavailable_reason: None,
+            },
+        )]),
         properties: BTreeMap::from([
             (
                 "portrait.image".to_string(),
-                "GFX_exact_engine_portrait".to_string(),
+                EngineMaterialized {
+                    value: Leaf::Measured("GFX_exact_engine_portrait".to_string()),
+                    unavailable_reason: None,
+                },
             ),
-            ("meter.frame".to_string(), "99".to_string()),
+            (
+                "meter.frame".to_string(),
+                EngineMaterialized {
+                    value: Leaf::Measured("99".to_string()),
+                    unavailable_reason: None,
+                },
+            ),
         ]),
-        effect_enabled: BTreeMap::from([("engine_gate_click".to_string(), true)]),
+        effect_enabled: BTreeMap::from([(
+            "engine_gate_click".to_string(),
+            EngineMaterialized {
+                value: Leaf::Measured(true),
+                unavailable_reason: None,
+            },
+        )]),
     };
     ScriptedGuiView {
         status: ViewStatus::Present,
@@ -194,7 +223,7 @@ scripted_gui = {
     let Some(Leaf::Measured(guis)) = disabled_view.runtime_by_country.get_mut("TST") else {
         panic!("captured GUI map missing")
     };
-    guis.get_mut("mod_panel").unwrap().enabled = Leaf::Measured(false);
+    guis.get_mut("mod_panel").unwrap().enabled.value = Leaf::Measured(false);
     let disabled_state = ScriptedGuiRuntimeState::from_view(&disabled_view, "TST");
     let disabled_capture = captured_inputs_for(&disabled_view, "TST", "mod_panel");
     let disabled = evaluate_registered_gui(&registry, &disabled_view, "TST", "mod_panel").unwrap();

@@ -1,4 +1,7 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_op_in_unsafe_fn)]
+
+#[cfg(windows)]
+pub mod x12_a729_hook;
 
 use compact_contract::{
     compact_status_failure_flags_after_expected_partial_tolerance, parse_compact_record_header,
@@ -49,12 +52,15 @@ pub const SOURCE_FLAG_SESSION_ROOT_VALIDATED: u32 = 1 << 1;
 pub const SOURCE_FLAG_COMMAND_HOOK_VALIDATED: u32 = 1 << 2;
 pub const SOURCE_FLAG_MESSAGE_HOOK_VALIDATED: u32 = 1 << 3;
 pub const SOURCE_FLAG_NOTIFICATION_HOOK_VALIDATED: u32 = 1 << 4;
+/// X12 unified speed/pause transition queue is installed and signature-gated.
+pub const SOURCE_FLAG_SPEED_PAUSE_HOOK_VALIDATED: u32 = 1 << 5;
 pub const SOURCE_FLAG_PROOF_FIXTURE: u32 = 1 << 31;
 pub const SOURCE_FLAG_KNOWN_MASK: u32 = SOURCE_FLAG_DLL_NATIVE
     | SOURCE_FLAG_SESSION_ROOT_VALIDATED
     | SOURCE_FLAG_COMMAND_HOOK_VALIDATED
     | SOURCE_FLAG_MESSAGE_HOOK_VALIDATED
     | SOURCE_FLAG_NOTIFICATION_HOOK_VALIDATED
+    | SOURCE_FLAG_SPEED_PAUSE_HOOK_VALIDATED
     | SOURCE_FLAG_PROOF_FIXTURE;
 
 pub const PLAYER_FLAG_HOST: u32 = 1;
@@ -68,10 +74,17 @@ pub const EVENT_FLAG_DIRECT_CAPTURE: u32 = 1;
 pub const EVENT_FLAG_UI_VISIBLE: u32 = 1 << 1;
 pub const EVENT_FLAG_HOST_COMMAND: u32 = 1 << 2;
 pub const EVENT_FLAG_TEXT_PRESENT: u32 = 1 << 3;
+/// Row came from the ordered X12 post-mutation hook queue, not hourly polling.
+pub const EVENT_FLAG_TRANSITION_HOOK: u32 = 1 << 4;
 pub const EVENT_FLAG_KNOWN_MASK: u32 = EVENT_FLAG_DIRECT_CAPTURE
     | EVENT_FLAG_UI_VISIBLE
     | EVENT_FLAG_HOST_COMMAND
-    | EVENT_FLAG_TEXT_PRESENT;
+    | EVENT_FLAG_TEXT_PRESENT
+    | EVENT_FLAG_TRANSITION_HOOK;
+
+pub const EVENT_SOURCE_X12_SPEED_SETTER: u32 = 0x1201;
+pub const EVENT_SOURCE_X12_PAUSE_TOGGLE: u32 = 0x1202;
+pub const EVENT_SOURCE_X12_PAUSE_FORCED: u32 = 0x1203;
 
 pub const MAX_TAG_DB_ID: u32 = 4096;
 pub const MAX_STRING_BLOB_BYTES: usize = 256 * 1024;
@@ -488,6 +501,7 @@ pub fn gate_payload(payload: &[u8]) -> PayloadGate {
     }
     let mut observed_min_event_hour_raw = None;
     let mut observed_max_event_hour_raw = None;
+    let mut previous_x12_sequence = None;
     for row_index in 0..summary.event_rows {
         let Some(row_end) = off.checked_add(event_row_len) else {
             errors.push(format!("event row {row_index}: row offset overflow"));
@@ -500,6 +514,7 @@ pub fn gate_payload(payload: &[u8]) -> PayloadGate {
         let raw_kind = read_u16(row, 0);
         let kind = SessionEventKind::from_raw(raw_kind);
         let flags = read_u32(row, 4);
+        let actor_key_hash = read_u64(row, 8);
         let actor_name = StringRef {
             off: read_u32(row, 16),
             len: read_u16(row, 20),
@@ -510,7 +525,11 @@ pub fn gate_payload(payload: &[u8]) -> PayloadGate {
         };
         let tag_db_id = read_u32(row, 28);
         let value_i32 = read_i32(row, 32);
+        let related_value_i32 = read_i32(row, 36);
+        let command_sequence = read_u64(row, 40);
         let event_hour_raw = read_i32(row, 48);
+        let event_source_id = read_u32(row, 52);
+        let event_state = read_u32(row, 56);
         observed_min_event_hour_raw = Some(
             observed_min_event_hour_raw
                 .map_or(event_hour_raw, |current: i32| current.min(event_hour_raw)),
@@ -519,7 +538,8 @@ pub fn gate_payload(payload: &[u8]) -> PayloadGate {
             observed_max_event_hour_raw
                 .map_or(event_hour_raw, |current: i32| current.max(event_hour_raw)),
         );
-        validate_string_ref(strings, actor_name, "actor_name", row_index, &mut errors);
+        let actor_name_value =
+            validate_string_ref(strings, actor_name, "actor_name", row_index, &mut errors);
         let text_value = validate_string_ref(strings, text, "event_text", row_index, &mut errors);
         if kind.is_none() {
             errors.push(format!("event row {row_index}: unknown kind {raw_kind}"));
@@ -537,6 +557,51 @@ pub fn gate_payload(payload: &[u8]) -> PayloadGate {
         }
         if let Some(kind) = kind {
             *summary.event_kind_counts.entry(kind as u16).or_insert(0) += 1;
+            if flags & EVENT_FLAG_TRANSITION_HOOK != 0 {
+                let expected_source = match kind {
+                    SessionEventKind::GameSpeed => Some(EVENT_SOURCE_X12_SPEED_SETTER),
+                    SessionEventKind::Pause => match event_source_id {
+                        EVENT_SOURCE_X12_PAUSE_TOGGLE | EVENT_SOURCE_X12_PAUSE_FORCED => {
+                            Some(event_source_id)
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let tick = f32::from_bits(event_state);
+                let exact_shape = flags
+                    == (EVENT_FLAG_DIRECT_CAPTURE | EVENT_FLAG_TRANSITION_HOOK)
+                    && summary.source_flags & SOURCE_FLAG_SPEED_PAUSE_HOOK_VALIDATED != 0
+                    && actor_key_hash > 0
+                    && actor_key_hash <= u32::MAX as u64
+                    && actor_name_value.as_deref().unwrap_or("").is_empty()
+                    && text_value.as_deref().unwrap_or("").is_empty()
+                    && tag_db_id == 0
+                    && command_sequence > 0
+                    && event_hour_raw <= summary.game_hour_raw
+                    && expected_source == Some(event_source_id)
+                    && tick.is_finite()
+                    && (0.0..=1.0).contains(&tick)
+                    && event_state != 0x8000_0000
+                    && match kind {
+                        SessionEventKind::GameSpeed => (0..=1).contains(&related_value_i32),
+                        SessionEventKind::Pause => (0..=4).contains(&related_value_i32),
+                        _ => false,
+                    };
+                if !exact_shape {
+                    errors.push(format!(
+                        "event row {row_index}: malformed X12 transition-hook row"
+                    ));
+                }
+                if let Some(previous) = previous_x12_sequence {
+                    if command_sequence != previous + 1 {
+                        errors.push(format!(
+                            "event row {row_index}: X12 sequence {command_sequence} does not follow {previous}"
+                        ));
+                    }
+                }
+                previous_x12_sequence = Some(command_sequence);
+            }
             match kind {
                 SessionEventKind::GameSpeed if !(0..=4).contains(&value_i32) => {
                     errors.push(format!(
@@ -938,9 +1003,16 @@ pub mod collector_module {
                     | SessionEventKind::TagSwitch
                     | SessionEventKind::GameSpeed
                     | SessionEventKind::Pause
-            )
+            ) && row.flags & EVENT_FLAG_TRANSITION_HOOK == 0
         });
         if source_flags & SOURCE_FLAG_COMMAND_HOOK_VALIDATED == 0 && has_command_rows {
+            status_flags |= STATUS_PARTIAL_DATA;
+        }
+        let has_x12_rows = inputs
+            .event_rows
+            .iter()
+            .any(|row| row.flags & EVENT_FLAG_TRANSITION_HOOK != 0);
+        if source_flags & SOURCE_FLAG_SPEED_PAUSE_HOOK_VALIDATED == 0 && has_x12_rows {
             status_flags |= STATUS_PARTIAL_DATA;
         }
         let has_message_rows = inputs.event_rows.iter().any(|row| {
@@ -1051,6 +1123,10 @@ fn read_u16(bytes: &[u8], offset: usize) -> u16 {
 
 fn read_u32(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("u32 range"))
+}
+
+fn read_u64(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("u64 range"))
 }
 
 fn read_i32(bytes: &[u8], offset: usize) -> i32 {
@@ -1770,6 +1846,50 @@ mod tests {
         assert!(!gate.ok);
         assert!(gate.errors.iter().any(|err| err.contains("game speed")));
         assert!(gate.errors.iter().any(|err| err.contains("pause value")));
+    }
+
+    #[test]
+    fn gate_x12_transition_rows_require_authenticated_consecutive_order() {
+        let mut frame = sample_frame();
+        frame.source_flags |= SOURCE_FLAG_SPEED_PAUSE_HOOK_VALIDATED;
+        let frame_hour = frame.game_hour_raw;
+        frame.event_rows.extend([
+            SessionEventRow {
+                kind: SessionEventKind::GameSpeed,
+                flags: EVENT_FLAG_DIRECT_CAPTURE | EVENT_FLAG_TRANSITION_HOOK,
+                actor_key_hash: 7,
+                actor_name: String::new(),
+                text: String::new(),
+                tag_db_id: 0,
+                value_i32: 3,
+                related_value_i32: 0,
+                command_sequence: 1,
+                event_hour_raw: frame_hour,
+                event_source_id: EVENT_SOURCE_X12_SPEED_SETTER,
+                event_state: 0x3E80_0000,
+            },
+            SessionEventRow {
+                kind: SessionEventKind::Pause,
+                flags: EVENT_FLAG_DIRECT_CAPTURE | EVENT_FLAG_TRANSITION_HOOK,
+                actor_key_hash: 7,
+                actor_name: String::new(),
+                text: String::new(),
+                tag_db_id: 0,
+                value_i32: 1,
+                related_value_i32: 3,
+                command_sequence: 2,
+                event_hour_raw: frame_hour,
+                event_source_id: EVENT_SOURCE_X12_PAUSE_TOGGLE,
+                event_state: 0x3E80_0000,
+            },
+        ]);
+        let gate = gate_payload(&encode_payload(&frame));
+        assert!(gate.ok, "{:?}", gate.errors);
+
+        frame.event_rows.last_mut().unwrap().command_sequence = 3;
+        let gate = gate_payload(&encode_payload(&frame));
+        assert!(!gate.ok);
+        assert!(gate.errors.iter().any(|error| error.contains("does not follow")));
     }
 
     #[test]

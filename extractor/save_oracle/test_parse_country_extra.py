@@ -123,6 +123,27 @@ def test_strategic_navy_preserves_nested_save_shape_and_repeated_blocks():
     assert "GER strat-navy: present=True dockyards=22" in report
 
 
+def test_nuke_amount_uses_exact_a729_fixed_point_consumer_and_keeps_raw_oracle():
+    text = """
+countries={
+    GER={
+        nukes={
+            { amount=8000 nukes_ready=0 }
+            { amount=250000000 nukes_ready=1 }
+        }
+    }
+}
+"""
+    outputs, _ = pce.build(text, Path("SYN_nukes_melted.txt"), False)
+    ger = outputs["country_extra.json"]["countries"]["GER"]
+    assert ger["nukes"] == [
+        {"amount": 0, "amount_raw": 8000, "nukes_ready": 0},
+        {"amount": 2, "amount_raw": 250000000, "nukes_ready": 1},
+    ]
+    assert ger["nukes_total"] == 2
+    assert ger["nukes_ready_total"] == 1
+
+
 def test_no_path_leak():
     out, report = _build()
     blob = str(out) + report

@@ -4,16 +4,32 @@
 //! save/game-file inference path: an authenticated a729 controller hook must
 //! implement [`ExactPowerBalancePresentationSource`] before d74 is scheduled.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
+
+pub mod a729_hook;
 
 pub const DOMAIN_ID: u16 = 74;
 pub const DOMAIN_NAME: &str = "power_balance_presentation_live";
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const AUTHORITY_EXACT_A729_POWER_BALANCE_CONTROLLER: u32 = 1;
-pub const MAGIC: u32 = u32::from_le_bytes(*b"PBP1");
+/// Static exact-20 authority receipt for the observer ABI. This does not
+/// activate live collection by itself.
+pub const A729_CONTROLLER_EXACT20_AUTHORITY_BOUND: bool = true;
+pub const A729_CONTROLLER_EXACT20_JOB_ID: &str =
+    "20260720T020812Z-w3-a37-power-balance-5c5d63f5";
+pub const A729_CONTROLLER_EXACT20_SHARD: &str = "shard-11";
+pub const A729_CONTROLLER_EXACT20_MANIFEST_SHA256: [u8; 32] = [
+    0xa5, 0x40, 0xaf, 0x1c, 0x03, 0x0d, 0x9e, 0xf2, 0xfb, 0xb1, 0xcd, 0x29, 0x06, 0x27, 0x08, 0x76,
+    0x27, 0x77, 0x1a, 0x19, 0x6e, 0x7a, 0x60, 0xe4, 0x24, 0x1c, 0xb5, 0x28, 0x7b, 0x66, 0xe4, 0xe2,
+];
+/// Remains false until an authenticated same-transition live fixture proves
+/// current-value sign, change sign, independent trending-side identity,
+/// one-based frame normalization, and replay parity together. The portable
+/// codec may be exercised directly while live collection remains disabled.
+pub const A729_CONTROLLER_OBSERVER_ACTIVATED: bool = false;
+pub const MAGIC: u32 = u32::from_le_bytes(*b"PBP2");
 pub const HEADER_LEN: usize = 76;
 pub const MAX_BALANCES: usize = 4_096;
-pub const MAX_MODIFIERS_PER_BALANCE: usize = 4_096;
 pub const MAX_DECISIONS_PER_BALANCE: usize = 131_072;
 pub const MAX_STRING_BYTES: usize = 65_536;
 
@@ -120,13 +136,6 @@ pub struct ResolvedTextRefs {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ActiveModifierInput {
-    pub modifier_id: String,
-    pub source_record_id: String,
-    pub resolved_text_ref: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecisionInput {
     pub decision_id: String,
     pub source_record_id: String,
@@ -142,8 +151,13 @@ pub struct PowerBalanceInput {
     pub source_record_id: String,
     pub country_tag: String,
     pub balance_id: String,
+    /// Always zero. The a729 controller exposes only the first matching
+    /// engine-ordered record for a country.
     pub display_ordinal: u32,
     pub active_side_id: String,
+    /// Independent engine identity from selected_record+0x28. It may differ
+    /// from `active_side_id` while the balance crosses toward the other side.
+    pub trending_side_id: String,
     pub active_range_id: String,
     pub effective_left_icon: String,
     pub effective_right_icon: String,
@@ -159,8 +173,10 @@ pub struct PowerBalanceInput {
     pub range_indicator_frame: u32,
     pub range_indicator_top_left: [i32; 2],
     pub trend: Option<TrendInput>,
-    pub active_modifiers_complete: bool,
-    pub active_modifiers: Vec<ActiveModifierInput>,
+    /// A25 reference for the complete resolved `GetPowerBalanceModDesc`
+    /// aggregate. Empty rendered text is represented by an existing reference,
+    /// never by omitting this field or fabricating modifier rows.
+    pub power_balance_modifier_desc_text_ref: String,
     pub decisions_complete: bool,
     pub decisions: Vec<DecisionInput>,
     pub resolved_text_refs: ResolvedTextRefs,
@@ -194,20 +210,92 @@ pub trait ExactPowerBalancePresentationSource {
     fn collect_frame(&self, frame_hour: u64) -> Result<Vec<PowerBalanceInput>, String>;
 }
 
+/// Normalize the one-based engine `GFX_bop_indicator` frame to the portable
+/// zero-based frame consumed by the replay renderer.
+pub fn normalize_engine_range_indicator_frame(engine_frame: u32) -> Result<u32, CarrierError> {
+    match engine_frame {
+        1 => Ok(0),
+        2 => Ok(1),
+        _ => invalid("engine range indicator frame is not 1 or 2"),
+    }
+}
+
+/// Raw leaves sampled by the future receipted controller observer. Keeping the
+/// three signs/identities separate prevents the hook from reproducing the old
+/// replay-side conflation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct A729ControllerStateObservation {
+    pub current_value_raw: i64,
+    pub change_raw: i64,
+    pub left_side_id: String,
+    pub right_side_id: String,
+    pub trending_side_id: String,
+    pub engine_range_indicator_frame: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NormalizedControllerState {
+    pub active_side_id: String,
+    pub trending_side_id: String,
+    pub bar_state: BarState,
+    pub range_indicator_frame: u32,
+}
+
+pub fn normalize_a729_controller_state(
+    observation: &A729ControllerStateObservation,
+) -> Result<NormalizedControllerState, CarrierError> {
+    validate_nonempty(&observation.left_side_id, "left side id")?;
+    validate_nonempty(&observation.right_side_id, "right side id")?;
+    validate_nonempty(&observation.trending_side_id, "trending side id")?;
+    if observation.left_side_id == observation.right_side_id
+        || (observation.trending_side_id != observation.left_side_id
+            && observation.trending_side_id != observation.right_side_id)
+    {
+        return invalid("controller side identities are inconsistent");
+    }
+    let active_side_id = if observation.current_value_raw < 0 {
+        observation.left_side_id.clone()
+    } else {
+        observation.right_side_id.clone()
+    };
+    let bar_state = if observation.change_raw < 0 {
+        BarState::MovingLeft
+    } else if observation.change_raw > 0 {
+        BarState::MovingRight
+    } else if observation.current_value_raw < 0 {
+        BarState::StableLeft
+    } else {
+        BarState::StableRight
+    };
+    Ok(NormalizedControllerState {
+        active_side_id,
+        trending_side_id: observation.trending_side_id.clone(),
+        bar_state,
+        range_indicator_frame: normalize_engine_range_indicator_frame(
+            observation.engine_range_indicator_frame,
+        )?,
+    })
+}
+
 pub fn collect_and_encode<S: ExactPowerBalancePresentationSource>(
     source: &S,
     frame_hour: u64,
     elapsed_wall_ms: u64,
     status_flags: u32,
 ) -> Result<Vec<u8>, CarrierError> {
-    if !source.is_exact_a729_power_balance_source() {
+    let producer_manifest_sha256 = source.producer_manifest_sha256();
+    if !A729_CONTROLLER_EXACT20_AUTHORITY_BOUND
+        || !A729_CONTROLLER_OBSERVER_ACTIVATED
+        || !source.is_exact_a729_power_balance_source()
+        || producer_manifest_sha256 != A729_CONTROLLER_EXACT20_MANIFEST_SHA256
+    {
         return Err(CarrierError::UnauthenticatedSource);
     }
     encode_payload(&PowerBalancePresentationFrame {
         elapsed_wall_ms,
         status_flags,
         frame_hour,
-        producer_manifest_sha256: source.producer_manifest_sha256(),
+        producer_manifest_sha256,
         completeness_record_identity: source
             .completeness_record_identity(frame_hour)
             .map_err(CarrierError::Source)?,
@@ -221,8 +309,8 @@ pub fn collect_and_encode<S: ExactPowerBalancePresentationSource>(
 }
 
 pub fn validate_frame(frame: &PowerBalancePresentationFrame) -> Result<(), CarrierError> {
-    if frame.producer_manifest_sha256 == [0; 32] {
-        return invalid("producer manifest hash is zero");
+    if frame.producer_manifest_sha256 != A729_CONTROLLER_EXACT20_MANIFEST_SHA256 {
+        return invalid("producer manifest hash does not match bound exact20 receipt");
     }
     validate_nonempty(
         &frame.completeness_record_identity,
@@ -236,55 +324,48 @@ pub fn validate_frame(frame: &PowerBalancePresentationFrame) -> Result<(), Carri
 
     let mut keys = BTreeSet::new();
     let mut source_records = BTreeSet::new();
-    let mut ordinals: BTreeMap<&str, BTreeSet<u32>> = BTreeMap::new();
+    let mut countries = BTreeSet::new();
     for balance in &frame.balances {
         validate_nonempty(&balance.source_record_id, "balance source record")?;
         if !source_records.insert(balance.source_record_id.as_str()) {
             return invalid("duplicate balance source record");
         }
         validate_country_tag(&balance.country_tag)?;
+        if !countries.insert(balance.country_tag.as_str()) {
+            return invalid("more than one controller-selected balance for country");
+        }
         for (value, label) in [
             (&balance.balance_id, "balance id"),
             (&balance.active_side_id, "active side id"),
+            (&balance.trending_side_id, "trending side id"),
             (&balance.active_range_id, "active range id"),
             (&balance.effective_left_icon, "effective left icon"),
             (&balance.effective_right_icon, "effective right icon"),
+            (
+                &balance.power_balance_modifier_desc_text_ref,
+                "power balance modifier description text ref",
+            ),
         ] {
             validate_nonempty(value, label)?;
         }
         if !keys.insert((balance.country_tag.as_str(), balance.balance_id.as_str())) {
             return invalid("duplicate country/balance identity");
         }
-        if !ordinals
-            .entry(balance.country_tag.as_str())
-            .or_default()
-            .insert(balance.display_ordinal)
-        {
-            return invalid("duplicate display ordinal for country");
+        if balance.display_ordinal != 0 || !balance.launcher_visible {
+            return invalid("row is not the visible first matching balance");
         }
-        if balance.launcher_visible != (balance.display_ordinal == 0) {
-            return invalid("launcher visibility disagrees with first engine-ordered balance");
-        }
-        if balance.launcher_visible {
-            validate_optional_required(
-                balance.launcher_percentage_text_ref.as_deref(),
-                "launcher percentage text ref",
-            )?;
-            validate_optional_required(
-                balance.launcher_levels_text_ref.as_deref(),
-                "launcher levels text ref",
-            )?;
-            validate_optional_required(
-                balance.launcher_icon_sprite.as_deref(),
-                "launcher icon sprite",
-            )?;
-        } else if balance.launcher_percentage_text_ref.is_some()
-            || balance.launcher_levels_text_ref.is_some()
-            || balance.launcher_icon_sprite.is_some()
-            || balance.launcher_glow_visible
-        {
-            return invalid("hidden launcher carries visible-only presentation leaves");
-        }
+        validate_optional_required(
+            balance.launcher_percentage_text_ref.as_deref(),
+            "launcher percentage text ref",
+        )?;
+        validate_optional_required(
+            balance.launcher_levels_text_ref.as_deref(),
+            "launcher levels text ref",
+        )?;
+        validate_optional_required(
+            balance.launcher_icon_sprite.as_deref(),
+            "launcher icon sprite",
+        )?;
         if balance.range_indicator_frame > 1 {
             return invalid("range indicator frame exceeds two-frame sprite");
         }
@@ -295,24 +376,6 @@ pub fn validate_frame(frame: &PowerBalancePresentationFrame) -> Result<(), Carri
                     && trend.magnitude > 0.0
                     && !trend.resolved_text_ref.trim().is_empty() => {}
             _ => return invalid("trend and stable/moving bar state disagree"),
-        }
-        if !balance.active_modifiers_complete {
-            return invalid("active modifier list is not complete");
-        }
-        if balance.active_modifiers.len() > MAX_MODIFIERS_PER_BALANCE {
-            return invalid("active modifier count exceeds bound");
-        }
-        let mut modifier_ids = BTreeSet::new();
-        let mut modifier_records = BTreeSet::new();
-        for modifier in &balance.active_modifiers {
-            validate_nonempty(&modifier.modifier_id, "modifier id")?;
-            validate_nonempty(&modifier.source_record_id, "modifier source record")?;
-            validate_nonempty(&modifier.resolved_text_ref, "modifier text ref")?;
-            if !modifier_ids.insert(modifier.modifier_id.as_str())
-                || !modifier_records.insert(modifier.source_record_id.as_str())
-            {
-                return invalid("duplicate modifier identity or source record");
-            }
         }
         if !balance.decisions_complete {
             return invalid("decision list is not complete");
@@ -340,15 +403,6 @@ pub fn validate_frame(frame: &PowerBalancePresentationFrame) -> Result<(), Carri
         }
         validate_text_refs(&balance.resolved_text_refs)?;
     }
-    for country_ordinals in ordinals.values() {
-        if country_ordinals
-            .iter()
-            .copied()
-            .ne(0..country_ordinals.len() as u32)
-        {
-            return invalid("display ordinals are not contiguous from zero per country");
-        }
-    }
     Ok(())
 }
 
@@ -372,6 +426,7 @@ pub fn encode_payload(frame: &PowerBalancePresentationFrame) -> Result<Vec<u8>, 
         put_string(&mut out, &balance.balance_id)?;
         put_u32(&mut out, balance.display_ordinal);
         put_string(&mut out, &balance.active_side_id)?;
+        put_string(&mut out, &balance.trending_side_id)?;
         put_string(&mut out, &balance.active_range_id)?;
         put_string(&mut out, &balance.effective_left_icon)?;
         put_string(&mut out, &balance.effective_right_icon)?;
@@ -393,16 +448,13 @@ pub fn encode_payload(frame: &PowerBalancePresentationFrame) -> Result<Vec<u8>, 
             }
             None => put_u32(&mut out, 0),
         }
-        put_u32(&mut out, u32::from(balance.active_modifiers_complete));
-        put_u32(&mut out, balance.active_modifiers.len() as u32);
+        put_string(
+            &mut out,
+            &balance.power_balance_modifier_desc_text_ref,
+        )?;
         put_u32(&mut out, u32::from(balance.decisions_complete));
         put_u32(&mut out, balance.decisions.len() as u32);
         put_text_refs(&mut out, &balance.resolved_text_refs)?;
-        for modifier in &balance.active_modifiers {
-            put_string(&mut out, &modifier.modifier_id)?;
-            put_string(&mut out, &modifier.source_record_id)?;
-            put_string(&mut out, &modifier.resolved_text_ref)?;
-        }
         for decision in &balance.decisions {
             put_string(&mut out, &decision.decision_id)?;
             put_string(&mut out, &decision.source_record_id)?;
@@ -441,6 +493,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<PowerBalancePresentationFrame, C
         let balance_id = reader.string()?;
         let display_ordinal = reader.u32()?;
         let active_side_id = reader.string()?;
+        let trending_side_id = reader.string()?;
         let active_range_id = reader.string()?;
         let effective_left_icon = reader.string()?;
         let effective_right_icon = reader.string()?;
@@ -461,23 +514,13 @@ pub fn decode_payload(payload: &[u8]) -> Result<PowerBalancePresentationFrame, C
             }),
             _ => return invalid("trend presence code invalid"),
         };
-        let active_modifiers_complete = reader.bool()?;
-        let modifier_count = reader.u32()? as usize;
+        let power_balance_modifier_desc_text_ref = reader.string()?;
         let decisions_complete = reader.bool()?;
         let decision_count = reader.u32()? as usize;
-        if modifier_count > MAX_MODIFIERS_PER_BALANCE || decision_count > MAX_DECISIONS_PER_BALANCE
-        {
-            return invalid("modifier/decision count exceeds bound");
+        if decision_count > MAX_DECISIONS_PER_BALANCE {
+            return invalid("decision count exceeds bound");
         }
         let resolved_text_refs = reader.text_refs()?;
-        let mut active_modifiers = Vec::with_capacity(modifier_count);
-        for _ in 0..modifier_count {
-            active_modifiers.push(ActiveModifierInput {
-                modifier_id: reader.string()?,
-                source_record_id: reader.string()?,
-                resolved_text_ref: reader.string()?,
-            });
-        }
         let mut decisions = Vec::with_capacity(decision_count);
         for _ in 0..decision_count {
             decisions.push(DecisionInput {
@@ -496,6 +539,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<PowerBalancePresentationFrame, C
             balance_id,
             display_ordinal,
             active_side_id,
+            trending_side_id,
             active_range_id,
             effective_left_icon,
             effective_right_icon,
@@ -508,8 +552,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<PowerBalancePresentationFrame, C
             range_indicator_frame,
             range_indicator_top_left,
             trend,
-            active_modifiers_complete,
-            active_modifiers,
+            power_balance_modifier_desc_text_ref,
             decisions_complete,
             decisions,
             resolved_text_refs,
@@ -554,8 +597,13 @@ fn validate_text_refs(refs: &ResolvedTextRefs) -> Result<(), CarrierError> {
 }
 
 fn validate_nonempty(value: &str, label: &str) -> Result<(), CarrierError> {
-    if value.trim().is_empty() || value.len() > MAX_STRING_BYTES {
-        invalid(format!("{label} is empty or exceeds bound"))
+    if value.trim().is_empty()
+        || value.len() > MAX_STRING_BYTES
+        || value.chars().any(char::is_control)
+    {
+        invalid(format!(
+            "{label} is empty, exceeds bound, or contains a control character"
+        ))
     } else {
         Ok(())
     }
@@ -728,6 +776,7 @@ mod tests {
             balance_id: "ITA_power_balance".into(),
             display_ordinal: 0,
             active_side_id: "ITA_grand_council_side".into(),
+            trending_side_id: "ITA_grand_council_side".into(),
             active_range_id: "ITA_grand_council_medium_control_range".into(),
             effective_left_icon: "GFX_bop_ITA_grand_council_side".into(),
             effective_right_icon: "GFX_bop_ITA_mussolini_side".into(),
@@ -744,12 +793,7 @@ mod tests {
                 magnitude: 0.01,
                 resolved_text_ref: "a25:42:trend".into(),
             }),
-            active_modifiers_complete: true,
-            active_modifiers: vec![ActiveModifierInput {
-                modifier_id: "ITA_bop_lost_core".into(),
-                source_record_id: "d74:42:ITA:modifier:0".into(),
-                resolved_text_ref: "a25:42:modifier:0".into(),
-            }],
+            power_balance_modifier_desc_text_ref: "a25:42:bop:modifier_desc".into(),
             decisions_complete: true,
             decisions: vec![DecisionInput {
                 decision_id: "ITA_bop_decision".into(),
@@ -776,7 +820,7 @@ mod tests {
             elapsed_wall_ms: 7,
             status_flags: 0,
             frame_hour: 42,
-            producer_manifest_sha256: [7; 32],
+            producer_manifest_sha256: A729_CONTROLLER_EXACT20_MANIFEST_SHA256,
             completeness_record_identity: "d74-complete:42".into(),
             expected_balance_count: 1,
             balances: vec![balance()],
@@ -797,7 +841,7 @@ mod tests {
             elapsed_wall_ms: 8,
             status_flags: 0,
             frame_hour: 43,
-            producer_manifest_sha256: [8; 32],
+            producer_manifest_sha256: A729_CONTROLLER_EXACT20_MANIFEST_SHA256,
             completeness_record_identity: "d74-complete:43:empty".into(),
             expected_balance_count: 0,
             balances: Vec::new(),
@@ -817,7 +861,9 @@ mod tests {
         assert!(validate_frame(&bad).is_err());
 
         let mut bad = frame();
-        bad.balances[0].active_modifiers_complete = false;
+        bad.balances[0]
+            .power_balance_modifier_desc_text_ref
+            .clear();
         assert!(validate_frame(&bad).is_err());
 
         let mut bad = frame();
@@ -835,6 +881,71 @@ mod tests {
         let mut bad = frame();
         bad.balances[0].launcher_visible = false;
         assert!(validate_frame(&bad).is_err());
+
+        let mut bad = frame();
+        let mut second = balance();
+        second.balance_id = "ITA_second_balance".into();
+        second.source_record_id = "d73:42:ITA:second".into();
+        bad.expected_balance_count = 2;
+        bad.balances.push(second);
+        assert!(validate_frame(&bad).is_err());
+
+        let mut bad = frame();
+        bad.balances[0].source_record_id = "controller\u{1f}record".into();
+        assert!(validate_frame(&bad).is_err());
+    }
+
+    #[test]
+    fn engine_indicator_frames_normalize_to_portable_zero_based_frames() {
+        assert_eq!(normalize_engine_range_indicator_frame(1), Ok(0));
+        assert_eq!(normalize_engine_range_indicator_frame(2), Ok(1));
+        assert!(normalize_engine_range_indicator_frame(0).is_err());
+        assert!(normalize_engine_range_indicator_frame(3).is_err());
+    }
+
+    #[test]
+    fn controller_state_keeps_active_side_movement_and_trending_identity_independent() {
+        let right_active_trending_left = normalize_a729_controller_state(
+            &A729ControllerStateObservation {
+                current_value_raw: 35_000,
+                change_raw: -1_000,
+                left_side_id: "left".into(),
+                right_side_id: "right".into(),
+                trending_side_id: "right".into(),
+                engine_range_indicator_frame: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(right_active_trending_left.active_side_id, "right");
+        assert_eq!(right_active_trending_left.trending_side_id, "right");
+        assert_eq!(right_active_trending_left.bar_state, BarState::MovingLeft);
+        assert_eq!(right_active_trending_left.range_indicator_frame, 1);
+
+        let left_active_trending_right = normalize_a729_controller_state(
+            &A729ControllerStateObservation {
+                current_value_raw: -35_000,
+                change_raw: 1_000,
+                left_side_id: "left".into(),
+                right_side_id: "right".into(),
+                trending_side_id: "left".into(),
+                engine_range_indicator_frame: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(left_active_trending_right.active_side_id, "left");
+        assert_eq!(left_active_trending_right.trending_side_id, "left");
+        assert_eq!(left_active_trending_right.bar_state, BarState::MovingRight);
+        assert_eq!(left_active_trending_right.range_indicator_frame, 0);
+    }
+
+    #[test]
+    fn exact20_authority_is_bound_but_live_observer_stays_inactive() {
+        assert!(A729_CONTROLLER_EXACT20_AUTHORITY_BOUND);
+        assert!(!A729_CONTROLLER_OBSERVER_ACTIVATED);
+        assert_eq!(
+            collect_and_encode(&Source(true), 42, 7, 0),
+            Err(CarrierError::UnauthenticatedSource)
+        );
     }
 
     struct Source(bool);
@@ -844,7 +955,7 @@ mod tests {
             self.0
         }
         fn producer_manifest_sha256(&self) -> [u8; 32] {
-            [9; 32]
+            A729_CONTROLLER_EXACT20_MANIFEST_SHA256
         }
         fn completeness_record_identity(&self, frame_hour: u64) -> Result<String, String> {
             Ok(format!("complete:{frame_hour}"))
@@ -863,7 +974,11 @@ mod tests {
             collect_and_encode(&Source(false), 42, 7, 0),
             Err(CarrierError::UnauthenticatedSource)
         );
-        let mut encoded = collect_and_encode(&Source(true), 42, 7, 0).unwrap();
+        assert_eq!(
+            collect_and_encode(&Source(true), 42, 7, 0),
+            Err(CarrierError::UnauthenticatedSource)
+        );
+        let mut encoded = encode_payload(&frame()).unwrap();
         encoded.push(0);
         assert_eq!(decode_payload(&encoded), Err(CarrierError::TrailingBytes));
     }

@@ -30,7 +30,7 @@ fn canvases() -> (
         TechnologyCanvasRequest {
             drawable_ids: vec!["tech_draw".into()],
             producer_layout: Some(ProducerTechnologyLayout {
-                source_record_id: "ui09-tech".into(),
+                source_record_id: "record-42".into(),
                 drawable_rectangles: Some(BTreeMap::from([(
                     "tech_draw".into(),
                     PixelRect {
@@ -56,7 +56,7 @@ fn canvases() -> (
     let doctrine = admit_research_canvas(&ResearchCanvasRequest::Doctrine(DoctrineCanvasRequest {
         track_ids: vec!["land".into()],
         producer_layout: Some(ProducerDoctrineLayout {
-            source_record_id: "ui09-doctrine".into(),
+            source_record_id: "record-42".into(),
             tracks: Some(BTreeMap::from([(
                 "land".into(),
                 ProducerDoctrineTrack {
@@ -529,5 +529,26 @@ fn wrong_canvas_kinds_and_empty_provenance_fail_closed() {
             technology_definitions: &definitions,
         }),
         Err(ResearchStateRejection::MissingProvenance)
+    );
+}
+
+#[test]
+fn canvas_and_state_source_records_must_match() {
+    let (technology, doctrine_canvas) = canvases();
+    let research = research();
+    let definitions = definitions();
+    let technology_order = vec!["tech_done".into(), "tech_a".into(), "tech_b".into()];
+    let doctrine_order = vec!["doctrine_a".into(), "doctrine_b".into()];
+    assert_eq!(
+        admit_research_state(ResearchStateRequest {
+            source_record_id: "record-43",
+            research: &research,
+            technology_canvas: &technology,
+            doctrine_canvas: &doctrine_canvas,
+            technology_node_order: &technology_order,
+            doctrine_node_order: &doctrine_order,
+            technology_definitions: &definitions,
+        }),
+        Err(ResearchStateRejection::SourceRecordMismatch)
     );
 }

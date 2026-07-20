@@ -90,7 +90,7 @@ producer lands, the gate slots into the sequence named in the last column.
 | Gate | Missing producer / tool (why live play cannot close it today) | Source citation | Re-enters at |
 |---|---|---|---|
 | F6 rung 1 (synthetic-fault) | Injected-fault harness that provokes a real fault and records attempt-linked `synthetic_fault_proof` | `Invoke-AcceptanceLadder.ps1` `Get-RungBoundProducerOwed`; `MASTER_EXTRACTION_CONTRACT.md` F6 | Seq 1, launch 1.2 |
-| F6 rung 2 (paused-short-proof) | Pause prover recording attempt-linked `pause_proof` | same | Seq 1, launch 1.3 |
+| F6 rung 2 (paused-short-proof) | **SUPERSEDED 2026-07-20 — producer, fold, extractor, and independent prover are wired.** `Start-Hoi4ProductionCaptureSafe.ps1` launches the nonce-bound paused mode, extracts only index-authorized replay snapshots, and requires `verify_f6_pause_proof.py` to join a known D57 pause with a same-snapshot non-D57 `compact_status_failure`. The resolved attempt marker retains the hash-bound proof receipt. Only the live launch remains. | `Start-Hoi4ProductionCaptureSafe.ps1`; `extract_f6_replay_snapshots.py`; `verify_f6_pause_proof.py` | Seq 1, launch 1.3 (live acceptance only) |
 | F6 graded rungs 3–6 | Ladder↔`Start-Hoi4ProductionCaptureSafe.ps1` wiring with the evidence-pin set (Hoi4Pid, sealed D57 transcript sha/nonce/ledger/probe/static-disasm hashes, static bundle + mod/dlc/load-order + live-resolution report) | same; `Start-Hoi4ProductionCaptureSafe.ps1` param block | Seq 1 launches 1.4–1.6, Seq 2 |
 | F6 rung 5 constraint | **Affinity application is unwired**: `Get-CpuAffinityMask` computes mask 63 and is self-tested, but the mask is never applied to any live process (game or recorder) — the machinery is unreachable until a producer is wired | `Invoke-AcceptanceLadder.ps1:328-351,452-490` (self-test only) | Seq 1, launch 1.6 |
 | A1 hub motorization LEVEL (d62) | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** d62 schema v2 carries exact inner actor/level attribution; the narrower node-membership-only citation is stale | `RE_REMAINING.md` A1; `production_promotion/contract.json` A1 packet | future soak (live grading only) |
@@ -253,23 +253,23 @@ python transcript alone does **not** satisfy the dossier; criteria 1–3 without
 ### Launches 1.2–1.6 — F6 rungs 1–5, one launch each
 
 For each: launch the game, load the D04 save, put the game in the rung's required state, run the one
-rung, quit. Every rung is currently **fail-closed on an owed producer** (see register); these are
-the owner steps for when the wiring lands.
+rung, quit. The paused-short-proof producer is wired and fail-closed; its remaining dependency is
+the real launch and retained live artifacts, not hook engineering or a hand-authored sidecar.
 
-**Per-launch D57 transcript (graded launches 1.4–1.6 — and the Sequence-2 soak).** The Safe
+**Per-launch D57 transcript (all Safe-launcher rungs 1.2–1.6 — and the Sequence-2 soak).** The Safe
 launcher's admission gate rejects a speed gate whose recorded `pid` differs from the current
-`$Hoi4Pid` (`Start-Hoi4ProductionCaptureSafe.ps1:141` — "speed-root v2 gate does not match
+`$Hoi4Pid` (`Start-Hoi4ProductionCaptureSafe.ps1` speed-root admission — "speed-root v2 gate does not match
 out-of-band pins"), and under the one-injection law every graded rung is a **fresh the game process**.
-So launch 1.1's sealed transcript can only admit launch 1.1's capture. **Each graded launch must
+So launch 1.1's sealed transcript can only admit launch 1.1's capture. **Each Safe-launcher rung must
 first repeat the launch-1.1 transcript procedure against its own PID** (fresh nonce → `init` →
 speeds 1..5 → `pause-cycle` → `seal` → verify) before starting its rung capture, then set the
 rung's game state. Launch 1.1's transcript serves A3 acceptance; the per-launch transcripts serve
-each capture's admission pins. Budget ~10–15 min per graded launch.
+each capture's admission pins. Budget ~10–15 min per Safe-launcher rung.
 
 | Launch | Rung | Game state during capture | Rung-specific proof / notes |
 |---|---|---|---|
-| 1.2 | `synthetic-fault` | any | Manifest `synthetic_fault_proof.{fault_injected,fault_observed,per_domain_degrade_applied,framing_intact}` all boolean `true`. **OWED: injected-fault harness.** (No per-launch transcript needed: not a graded-pin rung.) |
-| 1.3 | `paused-short-proof` | **paused** | Manifest `pause_proof.{observed_paused,source_unavailable_degrade}` boolean `true` (pause = 1 cold frame is the expected degrade). **OWED: pause prover.** (No per-launch transcript needed: not a graded-pin rung.) |
+| 1.2 | `synthetic-fault` | any | Manifest `synthetic_fault_proof.{fault_injected,fault_observed,per_domain_degrade_applied,framing_intact}` all boolean `true`. **OWED: injected-fault harness.** As a Safe-launcher rung, this launch still requires its own PID-bound sealed D57 transcript and current pins. |
+| 1.3 | `paused-short-proof` | **paused** | **First: this launch's own sealed D57 transcript.** The launcher generates a fresh nonce, records `acceptance_test_observation` as non-production, extracts index-authorized folded snapshots from the retained replay, and requires `verify_f6_pause_proof.py` to prove D57 `pause.state=known/is_paused=true` plus a same-snapshot non-D57 `compact_status_failure` joined to the manifest's SOURCE_UNAVAILABLE domains. The proof rejects a hand-authored manifest `pause_proof`. **Remaining action: run this live rung and retain the resolved attempt receipt.** |
 | 1.4 | `speed5-short-proof` | advancing, **speed 5** | **First: this launch's own sealed D57 transcript** (see note above). Validator `ok:true`; **frame criterion = `frame_time_us.max < 100000` µs** (see §Fixed facts); zero skipped + zero coalesced hours. S9 rides this capture: the Safe path resolves live mod/DLC/load order, rebuilds all seven artifacts, finalizes token inventory **`unknown=0`**, and the exact bundle must survive pre-injection AND pre-publication revalidation (`MASTER_EXTRACTION_CONTRACT.md` S9, S6). **OWED: ladder↔Safe-launcher pin wiring.** |
 | 1.5 | `five-minute-full-roster` | advancing, speed 5 | **First: this launch's own sealed D57 transcript.** Same validator gates over 5 min full roster. **OWED: same pin wiring.** |
 | 1.6 | `weak-pc-six-core` | advancing, speed 5 | **First: this launch's own sealed D57 transcript.** Same gates under a 6-core constraint — but **the constraint mechanism itself is OWED**: mask 63 is computed and self-tested only, never applied to any process (`Invoke-AcceptanceLadder.ps1:328-351,452-490`). Do not claim the tool constrains cores today; which process (game vs recorder) gets the mask is also undefined (OPEN QUESTION). |

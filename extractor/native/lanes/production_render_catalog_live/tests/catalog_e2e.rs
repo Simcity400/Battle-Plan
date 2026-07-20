@@ -85,6 +85,7 @@ fn manifest() -> ContentManifest {
     let bytes = payloads();
     let mut value = ContentManifest {
         schema: SCHEMA.into(),
+        product_modset_sha256: "9".repeat(64),
         source_game: SourceGameIdentity {
             version: "1.19.2.0".into(),
             build: "a729".into(),

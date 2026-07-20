@@ -388,13 +388,13 @@ def _matrix(args: argparse.Namespace) -> dict[str, Any]:
         },
         {
             "item": "CollectorState to LaneFrame shared adapter",
-            "status": "lane_local_adapter_validated_shared_hook_pending",
+            "status": "shared_production_hook_integrated",
             "evidence": [
                 "lane-local adapter::build_lane_frame_from_adapter_input is implemented and fixture-proven with one row from every domain-47 row family.",
-                "shared CollectorState currently exposes base/date/country_database/country_identity/special_projects/weather, but no domain-47 character root cache or scheduled adapter invocation.",
-                "domain 47 remains unscheduled in shared collector/recorder entrypoints per validate_merge_ready_blocker.py.",
+                "shared collector owns the domain-47 prewarm/root cache, schedules read_compact_characters_leaders_cabinet_live, and appends the payload through the sequence-owned compact writer.",
+                "compact_contract, recorder_host authority accounting, and world_fold register and consume schedulable domain 47 fail-closed.",
             ],
-            "remaining": "Shared integration must add the domain-47 root cache, resolve current-build RTTI type roots outside hook callbacks, reuse country_identity and politics active ideas, build AdapterInput, call the lane-local adapter, and append the lane-owned payload through the shared sequence-owned compact writer. Exact lane-local hook plan: extractor/native/lanes/characters_leaders_cabinet_live/DOMAIN47_SHARED_ADAPTER_HOOK_PLAN.md.",
+            "remaining": "No shared registration or scheduling work remains. Current-build advisor/trait/portrait root revalidation and the integrated speed-five acceptance proof remain tracked by their own rows.",
         },
         {
             "item": "national-spirit/law idea classification",

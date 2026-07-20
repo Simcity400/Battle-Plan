@@ -1,6 +1,7 @@
 //! Compact domain 60 `capitulation_war_state_live`: per-country capitulation /
 //! surrender state (CCountry diplomacy sub-object) + the global war pool
-//! (tag pair, start date, casualty accumulators).
+//! (tag pair, start date, casualty accumulators, and the dormant exact H-B5
+//! threat/instigator/hostility residual carrier).
 //!
 //! E1 of ENGINEERING_QUEUE_2026-07-04. Offsets: FINAL_SWEEP_RESULTS_2026-07-04
 //! §T1 (capitulation orchestrator-verified 15/15 vs the melt across all 437

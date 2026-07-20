@@ -1,5 +1,12 @@
 # Wave 2 invalid-pool Ghidra re-export report
 
+> **Historical topology notice (2026-07-20):** this report records a closed,
+> one-time exact-ten replay performed under the authority rule in force for that
+> wave. It is not the current broker contract. The live authorized broker has 20
+> ready shards, must not be reset to ten, and current jobs must not be rejected
+> solely because 20 shards were configured. See
+> `replay_interface/tools/ghidra/CURRENT_AUTHORITY.md`.
+
 Date: 2026-07-20
 
 Machine-readable authority: `WAVE2_INVALID_20_SHARD_REEXPORT_MANIFEST_20260720.json`

@@ -1,0 +1,62 @@
+{
+  "schema": "hoi4.exact20_authority_receipt.h_a18_dynamic_modifier_instances.v1",
+  "date": "2026-07-20",
+  "lane": "H-A18-DYNMOD",
+  "status": "STATIC_AUTHORITY_RECEIPTED_RUNTIME_GATE_OPEN",
+  "identity_contract": {
+    "binary_id": "hoi4.exe 1.19.2.0.a729",
+    "image_base": "0x140000000",
+    "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "pool_ready_shards": 20,
+    "pool_total_shards": 20,
+    "read_only": true,
+    "analysis_disabled": true
+  },
+  "job": {
+    "job_id": "20260720T020812Z-w3-a18-dynmod-5b64758d",
+    "actual_shard_id": "shard-06",
+    "operation": "export_functions",
+    "job_json_sha256": "01600f5da36ce5fd90db96d8f3e6f7b565fa56346582d4fa45db318916de32f7",
+    "function_manifest_sha256": "7a58d944c59e95a6a7edac5ec3af8b6b8deda13db38eaf3c5589e6f287ffc489",
+    "exported_function_count": 106,
+    "requested_root_count": 10,
+    "exact_requested_root_count": 10
+  },
+  "requested_roots": [
+    {"address":"0x140545ca0","decompile_sha256":"02181afba7111325cca1e21d23e140c143b1cde7923e5ed9e960b679f3c0560a","authority":"entry construction and layout"},
+    {"address":"0x14054ab70","decompile_sha256":"b82a86d57474c9196962a3d8716081f9d1fbc08d176f6256b9f07a681179114d","authority":"definition/value/duration add path"},
+    {"address":"0x14054beb0","decompile_sha256":"03b0d03f6ac0d07c4563b709a790c20bdb36e7e2e7337e7d5b12a42d91d54cc9","authority":"daily decrement and zero-removal predicate"},
+    {"address":"0x140604d30","decompile_sha256":"9188180665d32eb6fec58b73560c5b72305db7a2f3761bd1323b39ab57e52049","authority":"0x40-stride erase and move"},
+    {"address":"0x140605c80","decompile_sha256":"607cc12705a4c1b2a18473b61cad64f6afdd4bb5a78d30994b8945aa3ffceca3","authority":"entry serializer"},
+    {"address":"0x140603db0","decompile_sha256":"d2b94350bc7fb7194c7eaac18c5d22789b8fd63572c6e1728b191028828812af","authority":"entry deserializer field dispatcher"},
+    {"address":"0x1405ffd00","decompile_sha256":"1835962f49d62037942605385ca73fa332dd4650f1ae8c4f41294c9b7ab4f6b6","authority":"definition-sized value-vector materialization"},
+    {"address":"0x140604600","decompile_sha256":"63c543a098061fd0c5cff57ee9df3b77f01432d3de7470eac5e7572987cb236d","authority":"i64 value-vector deserialization"},
+    {"address":"0x1424ae9a0","decompile_sha256":"1fe70035fb3e7de51c2f8aa15ab17f30422f56ce7894c08e1e28eee35c5de3a8","authority":"serialized numeric writer"},
+    {"address":"0x1424b0480","decompile_sha256":"a590ea01adcaf2e34afed2fc3594b27331049ce1d3defb612046e74ee56473b9","authority":"signed five-decimal reader and exact 100000 scale"}
+  ],
+  "static_authority": {
+    "entry_stride": 64,
+    "days_remaining_offset": 16,
+    "permanent_sentinel": -1,
+    "definition_pointer_offset": 24,
+    "enabled_offset": 32,
+    "value_begin_offset": 40,
+    "value_capacity_offset": 48,
+    "value_count_offset": 52,
+    "value_stride": 8,
+    "value_scale": 100000,
+    "positive_days_decrement_on_daily_country_tick": true,
+    "zero_entries_removed": true
+  },
+  "runtime_gate": {
+    "state": "open",
+    "gate": "same-tick live/save permanent and timed instance equality, daily N-to-N-minus-one, and per-instance zero/removal",
+    "retained_id_set_lifecycle_is_not_a_substitute": true,
+    "absolute_expiry_hour_forbidden": true
+  },
+  "activation": {
+    "production_payload_version": 1,
+    "instance_fields_enabled": false,
+    "reason": "static authority is receipted but the runtime instance/removal gate remains open"
+  }
+}

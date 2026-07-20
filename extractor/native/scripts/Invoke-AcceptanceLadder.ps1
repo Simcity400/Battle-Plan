@@ -569,41 +569,21 @@ function Get-SafeLauncherArgs {
 function Get-RungBoundProducerOwed {
     <#
         Every rung verdict must rest on evidence PROVABLY produced by THIS capture
-        attempt. This maps a rung to the attempt-bound evidence producer it needs
-        and that is NOT YET WIRED into the ladder, returning an "owed" diagnosis
-        (or $null when a bound producer exists). The live path must FAIL-CLOSED for
-        any rung whose bound producer is owed, never launch a capture that cannot
-        emit the bound evidence the gate requires and never certify a forgeable
-        boolean.
+        attempt. This compatibility seam returns an "owed" diagnosis only if a
+        future rung is introduced without an attempt-bound producer. All six current
+        rungs are wired through the Safe launcher and independently re-graded from
+        their retained artifacts; the ladder never trusts a launcher's summary
+        boolean as its verdict.
 
-        OWED LIVE PRODUCERS (F6 acceptance ladder; tracked in
-        MASTER_EXTRACTION_CONTRACT.md under F6):
-
-          * GRADED rungs (speed5-short-proof, five-minute-full-roster,
-            weak-pc-six-core, six-hour-soak) are wired through the Safe launcher.
-            The ladder reconstructs the validator inputs from the bound run and
-            performs its own in-process production grade; it never trusts the
-            launcher's production_validation_report.json as the verdict.
-
-          * synthetic-fault needs an INJECTED-FAULT HARNESS that provokes a real
-            fault and records attempt-linked synthetic_fault_proof evidence in the
-            manifest. STILL OWED: no fault-injection mechanism exists in the recorder/
-            collector (no env/control fault hook; the manifest emits no
-            synthetic_fault_proof block — the field lives only in this ladder + the
-            docs). Fabricating the proof without a genuine provoked fault would
-            violate never-fabricate, so this remains fail-closed.
-
-          * paused-short-proof needs a PAUSE PROVER that records attempt-linked
-            pause_proof evidence in the manifest. STILL OWED: the recorder emits no
-            attempt-bound pause_proof block. A pause is observable only as per-frame
-            compact-stream status (COMPACT_STATUS_SOURCE_UNAVAILABLE / the
-            DOMAIN57_ROOT_PAUSE_CLOCK bit), not surfaced as the manifest pause_proof
-            the gate consumes, so there is no genuine observed-paused evidence bound to
-            the attempt to record. Fail-closed rather than fabricate.
+        The synthetic-fault and paused rungs use explicit acceptance modes plus a
+        fresh nonce. Their dedicated proof tools bind the observed fault/pause
+        evidence to the capture plan and retained stream before the in-process
+        ladder grade accepts it. The four production-performance rungs use the same
+        Safe-launcher binding without an acceptance-test mode.
 
         The Get-CaptureLauncherArgs / ConvertTo-QuotedArgumentLine machinery is
-        retained (and unit-tested) as the historical launch seam; the wired graded
-        producer uses Get-SafeLauncherArgs.
+        retained (and unit-tested) as the historical launch seam. Current live rungs
+        use Get-SafeLauncherArgs.
     #>
     param([Parameter(Mandatory = $true)]$RungDef)
     # Every rung now has a real Safe-launcher producer and an independent
@@ -620,9 +600,9 @@ function Invoke-LiveCapture {
     # requires an attempt-bound evidence producer to exist. No forgeable shortcut:
     # if the bound producer for this rung is not fully wired, refuse HERE rather than
     # launch a capture whose evidence could not be bound-and-regraded for this attempt.
-    # Graded rungs have pin plumbing, rung binding, a Safe-launcher producer and an
-    # independent in-process re-grade. Fault/pause rungs remain refused until their
-    # real evidence producers exist.
+    # Every current rung has pin plumbing, rung binding, a Safe-launcher producer,
+    # and an independent in-process re-grade. Keep this check for fail-closed future
+    # extension: a newly added rung must not launch until it has the same producer.
     $owed = Get-RungBoundProducerOwed -RungDef $RungDef
     if ($null -ne $owed) {
         throw "cannot run live rung '$($RungDef.name)' (evidence producer not available): $owed"

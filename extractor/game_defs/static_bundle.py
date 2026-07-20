@@ -28,7 +28,7 @@ from typing import Any, Iterable
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[1]
-BUNDLE_SCHEMA = "extractor.static_bundle.v2"
+BUNDLE_SCHEMA = "extractor.static_bundle.v3"
 SOURCE_INVENTORY_SCHEMA = "extractor.live_binding_source_inventory.v3"
 SOURCE_JOIN_SCHEMA = "extractor.static_catalog_source_join.v1"
 JOIN_SCHEMA = "extractor.static_token_join.v1"
@@ -39,6 +39,7 @@ DEFER_PROVENANCE_SCHEMA = "extractor.static_token_join_deferred.v1"
 MOD_STATE_SCHEMA = "extractor.mod_state.v1"
 DLC_STATE_SCHEMA = "extractor.dlc_state.v1"
 LOAD_ORDER_SCHEMA = "extractor.load_order.v1"
+PRODUCT_MODSET_SCHEMA = "extractor.product_modset_key.v1"
 HEX256 = set("0123456789abcdef")
 TECH_SHARING_UNJOINED_STATUS = (
     "definition_id_candidate_only_runtime_token_is_intern_ordinal_mapping_unproven"
@@ -425,6 +426,80 @@ def _validate_binding_identity(bindings: dict[str, dict[str, Any]]) -> None:
     }
     if actual != expected:
         raise BundleError("load_order enabled mod/DLC identities or content hashes do not match state manifests")
+
+
+def product_modset_binding(
+    executable_sha256: str,
+    bindings: dict[str, dict[str, Any]],
+    source_inventory: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the portable identity of one effective product modset.
+
+    Run-local profile/playset labels and filesystem paths are deliberately not
+    identity inputs.  The key is the executable plus normalized mod, DLC and
+    load-order content and the complete effective-VFS namespace/row digests.
+    Therefore the same selected product content has one key across machines and
+    process launches, while any executable, layer, order, replacement, file or
+    archive-range change produces a different key.
+    """
+    _validate_binding_identity(bindings)
+    core = {
+        "schema": PRODUCT_MODSET_SCHEMA,
+        "executable_sha256": _required_sha(
+            executable_sha256, "product modset executable_sha256"
+        ),
+        "mod_state_effective_content_sha256": _required_sha(
+            bindings["mod_state"].get("effective_content_sha256"),
+            "product modset mod_state_effective_content_sha256",
+        ),
+        "dlc_state_effective_content_sha256": _required_sha(
+            bindings["dlc_state"].get("effective_content_sha256"),
+            "product modset dlc_state_effective_content_sha256",
+        ),
+        "load_order_effective_content_sha256": _required_sha(
+            bindings["load_order"].get("effective_content_sha256"),
+            "product modset load_order_effective_content_sha256",
+        ),
+        "effective_vfs_namespace_sha256": _required_sha(
+            source_inventory.get("namespace_sha256"),
+            "product modset effective_vfs_namespace_sha256",
+        ),
+        "effective_vfs_rows_sha256": _required_sha(
+            source_inventory.get("rows_sha256"),
+            "product modset effective_vfs_rows_sha256",
+        ),
+    }
+    return {
+        **core,
+        "product_modset_sha256": sha256_bytes(canonical_json(core)),
+    }
+
+
+def validate_product_modset_binding(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise BundleError("product_modset binding must be an object")
+    expected_fields = {
+        "schema",
+        "executable_sha256",
+        "mod_state_effective_content_sha256",
+        "dlc_state_effective_content_sha256",
+        "load_order_effective_content_sha256",
+        "effective_vfs_namespace_sha256",
+        "effective_vfs_rows_sha256",
+        "product_modset_sha256",
+    }
+    if set(value) != expected_fields or value.get("schema") != PRODUCT_MODSET_SCHEMA:
+        raise BundleError("product_modset binding has unsupported schema or fields")
+    core = {
+        field: value[field]
+        for field in expected_fields
+        if field != "product_modset_sha256"
+    }
+    for field in expected_fields - {"schema"}:
+        _required_sha(value.get(field), f"product_modset.{field}")
+    if value["product_modset_sha256"] != sha256_bytes(canonical_json(core)):
+        raise BundleError("product_modset binding digest mismatch")
+    return value
 
 
 def _iter_source_rows(value: Any) -> Iterable[dict[str, Any]]:
@@ -1252,13 +1327,17 @@ def create_bundle(
             raise BundleError("embedded live source inventory changed during copy")
         source_join_path = proofs_dir / "catalog_source_join.json"
         source_join_path.write_bytes(pretty_json(source_join))
+        executable_binding = {
+            "name": exe.name,
+            "bytes": exe.stat().st_size,
+            "sha256": sha256_file(exe),
+        }
         bindings = {
-            "executable": {
-                "name": exe.name,
-                "bytes": exe.stat().st_size,
-                "sha256": sha256_file(exe),
-            },
+            "executable": executable_binding,
             **state_bindings,
+            "product_modset": product_modset_binding(
+                executable_binding["sha256"], state_bindings, live_source_inventory
+            ),
             "catalog_source_occurrences": {
                 "rows": source_count,
                 "sha256": source_digest,
@@ -1388,6 +1467,9 @@ def verify_bundle(
     recorded_bindings = manifest.get("bindings")
     if not isinstance(recorded_bindings, dict):
         raise BundleError("bundle bindings must be an object")
+    recorded_product_modset = validate_product_modset_binding(
+        recorded_bindings.get("product_modset")
+    )
     recorded_source = recorded_bindings.get("catalog_source_occurrences")
     expected_source = {"rows": source_count, "sha256": source_digest}
     if recorded_source != expected_source:
@@ -1456,9 +1538,17 @@ def verify_bundle(
     if external_source["identity"] != state_bindings["mod_state"]["identity"]:
         raise BundleError("live source inventory identity does not match current state bindings")
     validate_source_inventory_bindings(external_source, state_bindings)
+    executable_binding = {
+        "name": exe.name,
+        "bytes": exe.stat().st_size,
+        "sha256": sha256_file(exe),
+    }
     current_bindings = {
-        "executable": {"name": exe.name, "bytes": exe.stat().st_size, "sha256": sha256_file(exe)},
+        "executable": executable_binding,
         **state_bindings,
+        "product_modset": product_modset_binding(
+            executable_binding["sha256"], state_bindings, external_source
+        ),
     }
     for role, value in current_bindings.items():
         if recorded_bindings.get(role) != value:
@@ -1623,6 +1713,7 @@ def verify_bundle(
     return {
         "passed": True,
         "bundle_id": claimed_id,
+        "product_modset_sha256": recorded_product_modset["product_modset_sha256"],
         "artifact_count": len(roles),
         "token_join_status": status,
         "verification_phase": (

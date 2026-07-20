@@ -226,6 +226,14 @@ consumption. No callback RVA is guessed or promoted. A future direct-hook
 promotion still requires an engine mutator/callback argument contract and
 authenticated same-frame invocation observations.
 
+The follow-up source-file/state-writer pass is recorded in
+`DIRECT_EVENT_HOOK_RE_20260720.md` and `DIRECT_EVENT_HOOK_RE_20260720.json`.
+It identifies static current-build seeds for focus completion, research
+threshold crossing, ordinary/targeted decision taking, and timed-decision
+lifecycle updates. They remain inactive because the retained corpus has no
+authenticated entry/argument/same-hour-transition join; compact-frame
+derivation and the direct-hook-unavailable badge remain production truth.
+
 The following residual narrative is retained as historical evidence of the
 search path; it is no longer the current A2/A12 RE status.
 

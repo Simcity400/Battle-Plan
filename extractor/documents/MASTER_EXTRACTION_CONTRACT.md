@@ -142,11 +142,12 @@ they do not block extractor completion and must not be implemented or edited fro
   `0x141962378`, owner/killer/count aggregation, `CFEXMember+0xD0/+0xD8` client carrier, and
   retained route oracles are closed; instrument the hook and authoritative live route-manager
   resolver before the controlled loss/no-loss fixture (d44)
-- [ ] A8. Naval mission enum / home base / repair / retreat / route semantics (d56) — no human
-  fixture is pending. Discovery-only exports conflict on the receiver layout at
-  `+0x4A8/+0x4B8/+0x4C0`; repeat the formatter/serializer/caller/vtable/constructor routes under
-  the clean 10-shard authority gate before promoting any D56 activity field
-  (`extractor/native/lanes/naval_combat_live/A8_A9_B6_HUMAN_INPUT_REQUIREMENTS.json`)
+- [ ] A8. Naval mission enum / home base / repair / retreat / route semantics (d56) — clean
+  exact-ten evidence closes the receiver/base join and D56 now emits exact persisted
+  detached-activity `mission_state` 0..4 from body `+0x4A8`. Serializer body `+0x4B8/+0x4C0`
+  are object pointers, mechanically rejecting scalar repair-progress/retreat; convoy route/client
+  attribution remains A7 hook engineering
+  (`extractor/native/lanes/naval_combat_live/evidence/D56_ACTIVITY_AUTHORITY_20260720.json`)
 - [ ] A9. Naval combat lifecycle-end + member join/leave/sinking (d49-50) — the standalone
   member-leave and terminal-loss human cards are retired. D50 mechanically tombstones every
   vanished member independently of D49 parent survival; member state `0x20` is exactly
@@ -170,13 +171,22 @@ they do not block extractor completion and must not be implemented or edited fro
 - [x] A14. Construction repair/location — exact repair counter, partial health, typed target location, and closed reason enum are implemented; the XN07 joint gate passes
 - [x] A15. MP chat/messages, hotjoin, and tag-switch — exact d57 CChat/player-event roots,
   typed source flags, collector gate, and 27-test lane contract are promotion-ready
-- [ ] A16. Subject autonomy CHANGE dynamics and `CSubjectRelation+0x60` ratio semantics — static
-  levels are done; exercise a real autonomy change and compare the relation value before/after (d53)
+- [ ] A16. Subject autonomy CHANGE dynamics — `CSubjectRelation+0x60` is the serialized
+  `set_autonomy.freedom_level` input, not sufficient mutable current progress. Offline static
+  mining identifies `CCurrentAutonomyStatus+0x08/+0x28/+0x30/+0x38/+0x40/+0x48/+0x50/+0x60`,
+  exact ratio function `0x14066A970`, score writer `0x140667980`, central state/initializer/list
+  routes, exact bounds/adjacency writer `0x14066CB20`, and forward/reverse threshold writers
+  `0x14066D8B0/0x14066B860`. Consolidated exact-20 15/15 function and RTTI/vtable receipts are
+  bound. The build-pinned reader, dedicated proof, additive complete AUST wire set, delta-key
+  reconstruction gate, and separate stale-safe fold projection are implemented. Central validation
+  remains required before the optional frozen transition matrix (d53)
 - [ ] A17. Nukes leaf offset — a country with ≥1 built nuke; container
   `CCountry+0x1310→CNuke` is ready, but no production domain assignment exists yet (must not be
   misreported as divisions domain d20)
-- [ ] A18. Dynamic-modifier per-instance value/expiry — a country carrying a timed modifier; id-set
-  is done and the authoritative live lane is d67 `country_dynamic_modifiers_live`
+- [ ] A18. Dynamic-modifier per-instance value/remaining-days — id-set, fresh exact20 static
+  authority, and one retained authored 180-day identity-set lifecycle are done in d67
+  `country_dynamic_modifiers_live`; a same-tick live/save daily decrement through per-instance
+  zero/removal remains. Absolute expiry is forbidden because retained timing proves tick phase matters
 - [ ] A19. Delayed-event `+0xC4` decrement-over-time + originator-vs-scope-country separation;
   static structure is done and the authoritative rooted lane is d64 `delayed_events_live`
 - [ ] A20. Weather region-phenomenon temporal gate — run the retained 423-hour zero-skip d24
@@ -515,7 +525,8 @@ gap.
 - **Static-bundle admission** (S9) — resolve the current live mod/DLC/load order, rebuild all seven
   artifacts, require `unknown=0`, and prove the same bundle at pre-injection and pre-publication.
 - The remaining **A1–A23 per-row gates** in the OPEN ITEMS REGISTRY above. Do not flatten their
-  dispositions into a fixture queue: A8 is authority-re-export-first, A9's standalone leave/loss
+  dispositions into a fixture queue: A8 receiver authority is closed and its route residue belongs
+  to A7 hook engineering, A9's standalone leave/loss
   cards are retired, A20 is retained-evidence validation first, and A23 is narrowed to the 26/26
   d65 owner-equality fixture. d41 lifecycle/reward history is exact-10 pinned and active.
 
@@ -618,10 +629,10 @@ Domains 10-17, 20-23, and 26-40 remain `existing`; `clock` and `frame` are `infr
 | `naval_combat_members_live` / 50 | `validated_slice_open_gaps` | Exact per-member removal semantics and `FEX_STATE_SUNK` state `0x20`; generic tombstones remain untyped. A9 leave/loss human cards are retired; final speed-5 proof remains |
 | `scripted_state_flags_variables_live` / 51 | `validated_slice_open_gaps` | Host-local scripted-GUI widget state is out of scope (A13); authoritative direct hooks/mod state remain X10; delayed events are d64 |
 | `occupation_resistance_compliance_live` / 52 | `validated_slice_open_gaps` | Garrison equipment B3 and occupation tail reconciliation |
-| `diplomacy_intel_operatives_live` / 53 | `validated_slice_open_gaps` | War B5; A10 operation runtime and A11 per-state network strength law are exact; A11 still needs an authenticated same-frame strength fixture, while A30 reciprocal-assignment/controller projection and autonomy A16 remain |
+| `diplomacy_intel_operatives_live` / 53 | `validated_slice_open_gaps` | War B5; A10 operation runtime and A11 per-state network strength law are exact; A11 still needs an authenticated same-frame strength fixture, while A30 reciprocal-assignment/controller projection remains. A16 exact-20 authority and static CCurrentAutonomyStatus reader/wire/fold wiring are complete; centralized validation remains before its optional human transition matrix |
 | `army_battleplans_depth_live` / 54 | `validated_slice_open_gaps` | Exact identity, active/execution, per-order member children, type-2/type-3 paths, and type-5 area-defense states; partial semantics X1a, roots X1b, fixtures X1c/X8 |
 | `land_combat_detail_events_live` / 55 | `validated_slice_open_gaps` | Captured reserve count/committed/units + damage accumulators; exact integration/root/fixture/disposition gaps X2a-X2d |
-| `naval_missions_status_live` / 56 | `validated_slice_open_gaps` | Mission/home-base/repair/retreat receiver routes require the clean 10-shard A8 authority re-export before any remaining field promotion; no human fixture is pending. B6 anti-air is closed in d49-d50 |
+| `naval_missions_status_live` / 56 | `validated_slice_open_gaps` | Exact mission enum/name, detached-activity state 0..4, home-base, and repair target are wired. Scalar repair-progress/task-force-retreat are mechanically absent; route/client attribution remains A7 hook engineering. B6 anti-air is closed in d49-d50 |
 | `session_multiplayer_metadata_live` / 57 | `validated_partial_slice` | A15 exact multiplayer/session metadata is closed; speed mapping fixture A3 remains |
 | `country_economy_counters_live` / 58 | `reserved` | Non-schedulable; C5 replay handoff, not a live-domain root task |
 | `templates_equipment_catalog_live` / 59 | `reserved` | Static/non-schedulable; division-template live join is already in d20; S1-S6 own artifact acceptance |
@@ -632,7 +643,7 @@ Domains 10-17, 20-23, and 26-40 remain `existing`; `clock` and `frame` are `infr
 | `delayed_events_live` / 64 | `validated_slice_open_gaps` | Decrement/originator fixture A19 |
 | `special_project_programs_live` / 65 | `validated_slice_open_gaps` | Strong owner-tag candidate still needs the 26/26 live gate A23. Reward history/options are owned by d41's per-`CProject` `PRHF` path and must not be duplicated here |
 | `occupation_state_extras_live` / 66 | `validated_slice_open_gaps` | Remaining occupation extras and field census |
-| `country_dynamic_modifiers_live` / 67 | `validated_slice_open_gaps` | Timed modifier value/expiry A18 |
+| `country_dynamic_modifiers_live` / 67 | `validated_slice_open_gaps` | A18 per-instance live/save value/enabled/remaining-days and daily decrement through zero/removal; exact20 static authority and retained authored identity-set lifecycle are closed |
 | `session_header_live` / 68 | `validated_slice_open_gaps` | Campaign identity P3 and session-header completeness |
 | `tech_sharing_groups_live` / 69 | `validated_slice_open_gaps` | Offline TSG2/static contract is closed; current-session live acceptance remains S9/F6 |
 | `sunk_convoy_history_live` / 70 | `validated_slice` | A21 sunk-history attribution is closed; orchestrator-only paused acceptance/integration B4 and final live acceptance F6 remain |
@@ -662,11 +673,11 @@ open items in the registry above.
 | 5 | Focus / research / decisions | DONE base | A2/A12 exact pause, targets, lifecycle, and cooldowns are closed; direct hooks X10 and focus-tail dispositions E23-E24 remain |
 | 6 | Special projects / scientists | DONE base (+ D6 owner-join/reward cracked→ledger) | A23 26/26 d65 owner equality and X9 breakthrough-handle semantic join. d41 lifecycle/reward history is exact-10 pinned and active |
 | 7 | Divisions / army / OOB / land combat | DONE base (+E5 attribution committed; D20 manpower/losses) | battleplan lifecycle (d54); land-combat detail fields (d55) |
-| 8 | Navy | DONE base | A8 clean 10-shard receiver-route authority re-export; A9 exact member-removal/sunk slice with no human card; convoy losses A7; exact positioning/anti-air B6 closed |
+| 8 | Navy | DONE base | A8 exact-ten receiver join and detached-activity state are closed; A9 exact member-removal/sunk slice has no human card; convoy route/client attribution remains A7; exact positioning/anti-air B6 closed |
 | 9 | Air | DONE base | A4/A21 exact regional causes and sunk-history attribution are closed; ace death A5 remains; persistent pair/reinforcement-reason fields are proven absent |
 | 10 | Map / weather / construction / occupation | DONE base (+D5 created_date/occupation-law/garrison cracked→ledger) | A14 exact repair/location semantics are closed; garrison equipment B3 and weather internals A20/C2 remain; terrain is UI-owned |
 | 11 | Supply / logistics / attrition | DONE base | A1 exact hub actor/level attribution and A6 stored country/node disrupted pressure are closed; exact province tooltip supply, terminal convoy route A7, motorization, and attrition reason remain |
-| 12 | Diplomacy / wars / factions / intel | DONE base + d53 slices (+D4 queues/factions/subjects cracked→ledger) | war lifecycle B5; A10 operation runtime closed; A11 per-state strength runtime fixture/controller projection; A16 autonomy; fix D1 |
+| 12 | Diplomacy / wars / factions / intel | DONE base + d53 slices (+D4 queues/factions/subjects cracked→ledger) | war lifecycle B5; A10 operation runtime closed; A11 per-state strength runtime fixture/controller projection; A16 CCurrentAutonomyStatus static production wiring complete, centralized validation before optional human transition matrix; fix D1 |
 | 13 | Scripted state / events / variables | DONE base d51 (+D6 delayed-events cracked→ledger) | authoritative on-action hooks and mod-added state X10; host-local scripted-GUI widget state is out of scope |
 | 14 | Player / multiplayer / session | DONE base (pause + player rows; D3 session header and A15 multiplayer/session metadata closed→ledger) | game-speed A3 and derived alerts C6 remain |
 

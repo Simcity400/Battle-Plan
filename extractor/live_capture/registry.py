@@ -4410,7 +4410,10 @@ def _r_designs_variants(ctx: CaptureContext, dmd) -> Dict[str, Any]:
     Raises if ctx.proc is unavailable OR no variant resolved (a broken read -> honestly
     omitted rather than captured-empty)."""
     if ctx.proc is None:
-        raise RuntimeError("designs_variants needs ctx.proc (unavailable)")
+        raise RuntimeError(
+            "legacy Python designs_variants reader requires ctx.proc; "
+            "the registered native production reader is a separate path"
+        )
     catalog = _pin_designs_variants(ctx, dmd) or {}   # warmed walk: no scan, no re-decode
     if not catalog:
         raise RuntimeError("designs_variants: no equipment variant resolved "

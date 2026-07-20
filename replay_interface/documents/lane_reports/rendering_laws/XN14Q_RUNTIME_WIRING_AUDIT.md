@@ -78,9 +78,41 @@ The runtime discriminator is exact and intentionally small:
 
 Any nonzero active or queued count makes selected-Present finalization fail. Code values outside `0,2,3,4,5,7` reject the observation. This closes the prior silent-omission path but is not a substitute for the required carrier.
 
+## Wave 3 setter-chain admission boundary
+
+The exact non-human hook seed is now exhausted and packaged in
+`XN14Q/weather_update_setter_chain_promotion_request.json`. One consolidated
+depth-1/p-code export must contain `0x14166ec50`, `0x14166cec0`,
+`0x14227b200`, `0x142271b40`, and `0x14227b4a0`; its canonical semantic
+request SHA-256 is
+`d96e1b37a4087b19507cefe96823b8f3438afee91bfe9573870322b2dd22daf8`.
+The three setter prologues require the companion dump request whose canonical
+SHA-256 is
+`792a4380f12fa38f6914750f8973085a8932e9c95e3fbd158edaf6c9084579e7`.
+Fresh jobs listed in that request are discovery only. They do not activate a
+detour until the central exact-ten replacement ledger binds the actual broker
+job/shard, identity manifest, artifacts, and ten-ready-shard receipt.
+
+The discovery bodies also expose one concrete dormant validator defect. The
+producer does not use one common write mask for active and alpha. Fading
+active is written in every branch, but fading alpha only when computed alpha
+is positive. Primary active is written only in far-fade/far-hidden, and primary
+alpha only in far-fade. Playback is written for both roles on every active
+update. The current extractor and portable validators collapse active and
+alpha occurrence into one boolean and therefore reject the exact hidden-branch
+law. This is recorded for the post-receipt implementation; changing the law
+before the exact-ten receipt would promote discovery-only evidence.
+
+The same request pins the remaining transaction work: first-call code-zero
+rows, normal-update ownership distinct from editor refresh, setter-scoped
+occurrence plus double-read post-state, PresentEnd ownership, and complete CPU
+effect-output cover. An empty effect-output subset is admissible only when the
+complete authenticated selected-submit packet list proves that exact empty
+set. Texture absence and RenderDoc absence remain non-authoritative.
+
 ## Human-input boundary
 
-No human interpretation of weather assets or native behavior is required. Static mining is exhausted. The definition-pointer receipt is implemented from exact-10 XN15L authority and still refuses inference from pointer value, factory order, texture, or position. The retained-observation census searched the retained RDC, XN14B anchors/corpus, XN14V fixtures, native custom-harness runs, and current hook surface; none contains the required unchanged-region initial observation, per-update visibility/write-mask observation, weather-update-to-selected-submit join, or complete effect-output cover. The census is pinned at `replay_interface/re_evidence/rendering_laws/XN14Q/retained_observation_census.json` (SHA-256 `96243fdbc74ceb910118855e58d44399f70b48f55c35bfb30cf1012c70acdb60`) and summarized by `XN14Q_RETAINED_OBSERVATION_CENSUS.md` (SHA-256 `47914c3316fa29a224b5db4896e391dcd367d5050f23e6e93ff51309218fc7ec`).
+No human interpretation of weather assets or native behavior is required. Static mining and the exact consolidated request body are exhausted; the central exact-ten receipt and mechanical consumers above remain non-human work. The definition-pointer receipt is implemented from exact-10 XN15L authority and still refuses inference from pointer value, factory order, texture, or position. The retained-observation census searched the retained RDC, XN14B anchors/corpus, XN14V fixtures, native custom-harness runs, and current hook surface; none contains the required unchanged-region initial observation, per-update visibility/write-mask observation, weather-update-to-selected-submit join, or complete effect-output cover. The census is pinned at `replay_interface/re_evidence/rendering_laws/XN14Q/retained_observation_census.json` (SHA-256 `96243fdbc74ceb910118855e58d44399f70b48f55c35bfb30cf1012c70acdb60`) and summarized by `XN14Q_RETAINED_OBSERVATION_CENSUS.md` (SHA-256 `47914c3316fa29a224b5db4896e391dcd367d5050f23e6e93ff51309218fc7ec`).
 
 Promotion therefore still requires an authorized central validation/capture run that proves early installation sees every needed named-registry lookup, emits the first successful call per region even when unchanged, records exact per-update visibility and setter write masks, and owns the latest completed update plus complete effect-output cover in the same selected-Present transaction. The earlier 2026-07-18 registry/factory jobs are retained as discovery history only; promotion provenance is the exact-10 replacement receipt above. No static receipt enables active-weather promotion.
 
@@ -98,4 +130,6 @@ Promotion therefore still requires an authorized central validation/capture run 
 - `extractor/documents/WAVE2_10_SHARD_REEXPORT_RECONCILIATION_20260720.json`
 - `replay_interface/re_evidence/rendering_laws/XN14Q/exact10_weather_supplement_audit.json`
 - `replay_interface/re_evidence/rendering_laws/XN14Q/retained_observation_census.json`
+- `replay_interface/re_evidence/rendering_laws/XN14Q/weather_update_setter_chain_promotion_request.json`
 - `replay_interface/documents/lane_reports/rendering_laws/XN14Q_RETAINED_OBSERVATION_CENSUS.md`
+- `replay_interface/documents/lane_reports/rendering_laws/XN14Q_WEATHER_UPDATE_SETTER_CHAIN_PROMOTION_REQUEST.md`

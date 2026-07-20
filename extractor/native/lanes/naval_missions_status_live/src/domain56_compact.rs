@@ -33,7 +33,9 @@ pub const MAX_PROVINCE_ID: u32 = 1_000_000;
 pub const MAX_REGION_ID: u32 = 100_000;
 /// Exact build-870ebf ENavalMission maximum. Unknown values fail closed.
 pub const MAX_MISSION_ENUM: u32 = 9;
-pub const MAX_MISSION_STATE: u32 = 256;
+/// Exact persisted `detached_activity` enum: 0 none, 1 repairing,
+/// 2 moving_to_refit, 3 refitting, 4 reinforcing.
+pub const MAX_MISSION_STATE: u32 = 4;
 pub const MAX_RETREAT_STATE: u32 = 256;
 pub const MAX_REPAIR_PROGRESS_MILLI: u32 = 1_000;
 pub const MAX_SUNK_CONVOYS: u32 = 1_000_000;
@@ -892,9 +894,9 @@ fn validate_row(row: &NavalMissionStatusRow, index: usize) -> Result<(), String>
         "mission_enum",
         index,
     )?;
-    // mission_state is not emitted or proven in this packet; keep the strict
-    // validator (present-zero rejected) until a zero value is oracle-proven.
-    validate_optional_max(
+    // mission_state zero is the exact present "no detached activity" value;
+    // presence is carried solely by FLAG_HAS_MISSION_STATE.
+    validate_optional_enum(
         row.flags & FLAG_HAS_MISSION_STATE != 0,
         row.mission_state,
         MAX_MISSION_STATE,

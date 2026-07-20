@@ -126,7 +126,7 @@ fn validate_distinct_paths<'a>(paths: impl IntoIterator<Item = &'a str>) -> Resu
     Ok(())
 }
 
-const PORTABLE_CONTENT_FEATURE: &str = "portable_content_manifest_v1";
+const PORTABLE_CONTENT_FEATURE: &str = "portable_content_manifest_v2";
 
 fn portable_content_manifest_value(identity: &PackIdentity) -> Result<Value, PackError> {
     let Some(manifest) = &identity.content_manifest else {
@@ -1614,6 +1614,7 @@ mod tests {
         let hash = |ch: char| ch.to_string().repeat(64);
         let mut content = ContentManifest {
             schema: portable_content_manifest::SCHEMA.into(),
+            product_modset_sha256: hash('9'),
             source_game: SourceGameIdentity {
                 version: "1.19.2".into(),
                 build: "a729".into(),

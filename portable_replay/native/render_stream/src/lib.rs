@@ -36,7 +36,7 @@ pub const A729_CAMERA_RENDER_VIEW_BYTES: usize = 0x1b4;
 pub const A729_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 pub const SNOW_MUD_TEXTURE_SCHEMA: &str = "hoi4.a729.snow-mud-texture.v2";
-pub const SNOW_MUD_H2_READBACK_SCHEMA: &str = "hoi4.replay.snow-mud-h2-readback.v1";
+pub const SNOW_MUD_H2_READBACK_SCHEMA: &str = "hoi4.replay.snow-mud-h2-readback.v2";
 pub const SNOW_MUD_PRODUCER_FUNCTION_RVA: u32 = 0x0124_B710;
 pub const SNOW_MUD_UPLOAD_CALLSITE_RVA: u32 = 0x0124_BAA4;
 pub const SNOW_MUD_UPLOAD_TARGET_RVA: u32 = 0x0240_0E40;
@@ -348,6 +348,10 @@ pub struct SnowMudReplayReadbackReceipt {
     pub verified_row_count: u32,
     #[serde(with = "decimal_u64")]
     pub verified_tight_byte_count: u64,
+    /// Exact number of captured production-pass SnowMud SRV bindings replaced
+    /// with the immutable packet texture after readback succeeded. Zero is
+    /// never a consumer receipt: it would prove an unused allocation only.
+    pub replaced_binding_count: u32,
     pub receipt_sha256: String,
 }
 
@@ -386,8 +390,9 @@ impl SnowMudReplayReadbackReceipt {
             || self.verified_row_count != packet.height
             || self.verified_tight_byte_count
                 != u64::from(packet.row_pitch) * u64::from(packet.height)
+            || self.replaced_binding_count == 0
         {
-            return Err("SnowMudData H2 descriptor/coverage mismatch".into());
+            return Err("SnowMudData H2 descriptor/coverage/consumer mismatch".into());
         }
         for sha256 in [
             &self.selected_present_sha256,
@@ -3329,6 +3334,37 @@ impl RenderSubmit {
                 return Err("political texture descriptor/byte count mismatch".into());
             }
             check_sha256(&texture.sha256, Some(&texture.bytes))?;
+            let consumed_by_selected_submit = self
+                .ordered_static_map_programs
+                .iter()
+                .flat_map(|program| program.ordered_operations.iter())
+                .filter_map(|operation| match &operation.command {
+                    StaticMapCommand::Draw { draw } => Some(draw),
+                    StaticMapCommand::ClearColor { .. }
+                    | StaticMapCommand::ClearDepthStencil { .. } => None,
+                })
+                .flat_map(|draw| draw.ordered_shader_resources.iter())
+                .any(|binding| {
+                    matches!(
+                        &binding.source,
+                        StaticShaderResourceSource::PoliticalTexture {
+                            texture_kind,
+                            target_binding_identity,
+                            upload_order,
+                            payload_sha256,
+                            ..
+                        } if *texture_kind == texture.kind
+                            && target_binding_identity == &texture.target_binding_identity
+                            && *upload_order == texture.upload_order
+                            && payload_sha256 == &texture.sha256
+                    )
+                });
+            if !consumed_by_selected_submit {
+                return Err(
+                    "political texture packet has no exact selected-submit static shader-resource consumer"
+                        .into(),
+                );
+            }
         }
         Ok(())
     }
@@ -5911,6 +5947,31 @@ mod tests {
             });
         let error = non_suffix.validate().unwrap_err();
         assert!(error.contains("not a render-order suffix"), "{error}");
+    }
+
+    #[test]
+    fn political_texture_packet_requires_same_submit_static_consumer() {
+        let mut frame = production_frame_with_m02();
+        frame.submits[0]
+            .political_textures
+            .push(PoliticalTexturePacket {
+                kind: PoliticalTextureKind::Secondary,
+                target_binding_identity: "ProvinceSecondaryColorMap".into(),
+                upload_order: 7,
+                width: 1,
+                height: 1,
+                row_pitch: 4,
+                format: PoliticalTextureFormat::B8g8r8a8UnormSrgb,
+                bytes: vec![1, 2, 3, 4],
+                sha256:
+                    "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a"
+                        .into(),
+            });
+        let error = frame.validate().unwrap_err();
+        assert!(
+            error.contains("no exact selected-submit static shader-resource consumer"),
+            "{error}"
+        );
     }
 
     #[test]

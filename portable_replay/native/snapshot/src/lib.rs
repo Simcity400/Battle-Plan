@@ -48,7 +48,8 @@ pub use prefolded_decoder::{
     decode_certified_prefolded, decode_certified_prefolded_spool, CertifiedPrefoldDecoder,
     CertifiedPrefoldRequest, CertifiedPrefoldSpoolDecoder, CertifiedPrefoldSpoolRequest,
     CertifiedPrefoldedReplay, CertifiedPrefoldedSpool, PrefoldDecodeError,
-    PrefoldSourceReceipt, PrefoldedSpool, PrefoldedSpoolEntry, COMPACT_STREAM_ROLE,
+    PrefoldSourceReceipt, PrefoldStreamIdentityMode, PrefoldedSpool, PrefoldedSpoolEntry,
+    COMPACT_STREAM_ROLE,
 };
 pub use stream_verify::{
     verify_replay_container_streaming, verify_replay_container_streaming_file,

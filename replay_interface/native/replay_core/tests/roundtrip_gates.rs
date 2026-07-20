@@ -652,6 +652,21 @@ fn rt_diplomacy_live_surfaces() {
                         second: exp_string(it.get("second")),
                         first_casualties: exp_i64(it.get("first_casualties")),
                         second_casualties: exp_i64(it.get("second_casualties")),
+                        threat_fixed5_raw: exp_i64(it.get("threat_fixed5_raw")),
+                        threat_fixed_scale: exp_i64(it.get("threat_fixed_scale")),
+                        first_was_instigator: exp_bool(it.get("first_was_instigator")),
+                        hostility_reason_instigator_raw: exp_i64(
+                            it.get("hostility_reason_instigator_raw"),
+                        ),
+                        hostility_reason_instigator: exp_string(
+                            it.get("hostility_reason_instigator"),
+                        ),
+                        hostility_reason_defender_raw: exp_i64(
+                            it.get("hostility_reason_defender_raw"),
+                        ),
+                        hostility_reason_defender: exp_string(
+                            it.get("hostility_reason_defender"),
+                        ),
                     })
                     .collect();
                 assert_eq!(
@@ -1568,10 +1583,19 @@ fn rt_scripted_gui_vars() {
             Some(Leaf::Measured(rows)) => rows.get("GER_inner_circle_ui").unwrap(),
             other => panic!("GER scripted-GUI runtime carrier missing: {other:?}"),
         };
-        assert_eq!(runtime.visible, Leaf::Measured(true));
+        assert_eq!(runtime.visible.value, Leaf::Measured(true));
+        assert_eq!(runtime.visible.unavailable_reason, None);
+        let member_image = runtime
+            .properties
+            .get("member_1.image")
+            .expect("member_1.image materialized value");
         assert_eq!(
-            runtime.properties.get("member_1.image").map(String::as_str),
-            Some("GFX_inner_circle_member_1")
+            member_image.value,
+            Leaf::Measured("GFX_inner_circle_member_1".to_string())
+        );
+        assert_eq!(
+            member_image.unavailable_reason.as_deref(),
+            None
         );
         let wf = raw(&f, &["world", "flags"])
             .and_then(Value::as_object)

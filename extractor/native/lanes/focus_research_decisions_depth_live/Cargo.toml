@@ -13,4 +13,5 @@ path = "src/bin/proof_from_stream.rs"
 
 [dependencies]
 compact_contract = { path = "../../compact_contract" }
+direct_frd_transitions_live = { path = "../direct_frd_transitions_live" }
 recorder_host = { path = "../../recorder_host" }

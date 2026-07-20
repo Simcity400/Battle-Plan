@@ -68,6 +68,7 @@ pub struct VerifiedArtifact {
 #[derive(Clone, Debug, PartialEq)]
 pub struct VerifiedStaticBundle {
     pub bundle_id: String,
+    pub product_modset_sha256: String,
     pub artifact_count: u64,
     pub artifacts: Vec<VerifiedArtifact>,
     pub evidence: Value,
@@ -461,6 +462,10 @@ pub fn verify_with_process(
         return Err("static bundle verifier did not return passed=true".to_string());
     }
     let bundle_id = required_sha(result.get("bundle_id"), "verifier bundle_id")?;
+    let product_modset_sha256 = required_sha(
+        result.get("product_modset_sha256"),
+        "verifier product_modset_sha256",
+    )?;
     let artifact_count = result
         .get("artifact_count")
         .and_then(Value::as_u64)
@@ -531,6 +536,7 @@ pub fn verify_with_process(
     let evidence = json!({
         "admission": "passed",
         "bundle_id": bundle_id,
+        "product_modset_sha256": product_modset_sha256,
         "artifact_count": artifact_count,
         "manifest": {
             "path": manifest.display().to_string(),
@@ -558,6 +564,7 @@ pub fn verify_with_process(
     });
     Ok(VerifiedStaticBundle {
         bundle_id,
+        product_modset_sha256,
         artifact_count,
         artifacts,
         evidence,
@@ -663,6 +670,10 @@ fn verified_bundle_from_manifest(
     token_join_status: &str,
 ) -> Result<VerifiedStaticBundle, String> {
     let bundle_id = required_sha(result.get("bundle_id"), "verifier bundle_id")?;
+    let product_modset_sha256 = required_sha(
+        result.get("product_modset_sha256"),
+        "verifier product_modset_sha256",
+    )?;
     let artifact_count = result
         .get("artifact_count")
         .and_then(Value::as_u64)
@@ -718,6 +729,7 @@ fn verified_bundle_from_manifest(
     let evidence = json!({
         "admission": "passed",
         "bundle_id": bundle_id,
+        "product_modset_sha256": product_modset_sha256,
         "artifact_count": artifact_count,
         "manifest": {
             "path": manifest.display().to_string(),
@@ -743,6 +755,7 @@ fn verified_bundle_from_manifest(
     });
     Ok(VerifiedStaticBundle {
         bundle_id,
+        product_modset_sha256,
         artifact_count,
         artifacts,
         evidence,
@@ -984,6 +997,7 @@ mod tests {
             stdout: serde_json::to_vec(&json!({
                 "passed": true,
                 "bundle_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "product_modset_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
                 "artifact_count": 7,
                 "token_join_status": "deferred",
                 "verification_phase": "pre_injection_deferred_allowed",
@@ -1000,6 +1014,7 @@ mod tests {
             stdout: serde_json::to_vec(&json!({
                 "passed": true,
                 "bundle_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "product_modset_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
                 "artifact_count": 7,
                 "token_join_status": "passed",
                 "verification_phase": "post_capture_finalized",
@@ -1142,6 +1157,7 @@ mod tests {
             stdout: serde_json::to_vec(&json!({
                 "passed": true,
                 "bundle_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "product_modset_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
                 "artifact_count": 6,
                 "token_join_status": "deferred",
                 "verification_phase": "pre_injection_deferred_allowed",
@@ -1164,6 +1180,7 @@ mod tests {
         wrong_status.stdout = serde_json::to_vec(&json!({
             "passed": true,
             "bundle_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "product_modset_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
             "artifact_count": 7,
             "token_join_status": "passed",
             "verification_phase": "post_capture_finalized",

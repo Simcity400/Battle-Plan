@@ -12,8 +12,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import tempfile
+import zipfile
 from pathlib import Path
 
+from extract_f6_replay_snapshots import ExtractError, extract as extract_replay_snapshots
 from verify_acceptance_fixture_variance import (
     VerifyError,
     evidence_ref,
@@ -25,6 +28,36 @@ from verify_acceptance_fixture_variance import (
 SCHEMA = "battle-plan.f6_pause_proof.v1"
 RUNG = "paused-short-proof"
 SIDECAR = "_r2_session_multiplayer_metadata_live"
+
+
+def extraction_inventory(report: dict) -> list[tuple[int, int, str, int, str]]:
+    rows = report.get("snapshots")
+    if not isinstance(rows, list):
+        raise VerifyError("snapshot extraction report has no snapshot inventory")
+    inventory = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise VerifyError(f"snapshot extraction row {index} is not an object")
+        ordinal = row.get("ordinal")
+        hour = row.get("hour_index")
+        container_path = row.get("container_path")
+        byte_count = row.get("bytes")
+        digest = row.get("sha256")
+        if (
+            isinstance(ordinal, bool)
+            or not isinstance(ordinal, int)
+            or ordinal != index
+            or isinstance(hour, bool)
+            or not isinstance(hour, int)
+            or not isinstance(container_path, str)
+            or isinstance(byte_count, bool)
+            or not isinstance(byte_count, int)
+            or byte_count < 0
+            or not isinstance(digest, str)
+        ):
+            raise VerifyError(f"snapshot extraction row {index} is malformed")
+        inventory.append((ordinal, hour, container_path, byte_count, digest))
+    return inventory
 
 
 def verify(run_dir: Path, snapshot_dir: Path, extraction_report_path: Path) -> dict:
@@ -83,11 +116,51 @@ def verify(run_dir: Path, snapshot_dir: Path, extraction_report_path: Path) -> d
     extracted_rows = extraction.get("snapshots")
     if not isinstance(extracted_rows, list) or len(extracted_rows) < 2:
         raise VerifyError("snapshot extraction report contains fewer than two snapshots")
-    extracted_hashes = {str(Path(row["extracted_path"]).resolve()): row.get("sha256") for row in extracted_rows if isinstance(row, dict) and isinstance(row.get("extracted_path"), str)}
+    # The retained extraction directory and report are mutable sidecars. Re-read
+    # the replay container into a private temporary directory and require the
+    # recorded index/inventory to match that independent extraction exactly. This
+    # prevents a regrade from accepting hand-edited snapshots plus a correspondingly
+    # edited report while the retained replay bytes remain unchanged.
+    try:
+        with tempfile.TemporaryDirectory(prefix="hoi4_f6_pause_reextract_") as temp_root:
+            fresh = extract_replay_snapshots(replay_path, Path(temp_root) / "snapshots")
+    except (OSError, UnicodeError, json.JSONDecodeError, zipfile.BadZipFile, ExtractError) as exc:
+        raise VerifyError(f"independent replay snapshot extraction failed: {exc}") from exc
+    for key in (
+        "replay_sha256",
+        "index_path",
+        "index_sha256",
+        "game_id",
+        "snapshot_count",
+        "snapshot_inventory_sha256",
+    ):
+        if extraction.get(key) != fresh.get(key):
+            raise VerifyError(f"snapshot extraction report {key} differs from independent replay extraction")
+    if extraction_inventory(extraction) != extraction_inventory(fresh):
+        raise VerifyError("snapshot extraction inventory differs from independent replay extraction")
+    snapshot_root = snapshot_dir.resolve()
+    extracted_hashes = {}
+    extracted_hours = {}
+    for index, row in enumerate(extracted_rows):
+        extracted_path = row.get("extracted_path")
+        hour = row.get("hour_index")
+        if not isinstance(extracted_path, str) or isinstance(hour, bool) or not isinstance(hour, int):
+            raise VerifyError(f"snapshot extraction row {index} lacks its retained path/hour binding")
+        resolved_path = Path(extracted_path).resolve()
+        expected_path = snapshot_root / f"{hour:012}.snapshot.json"
+        if resolved_path != expected_path or str(resolved_path) in extracted_hashes:
+            raise VerifyError(f"snapshot extraction row {index} has a noncanonical or duplicate retained path")
+        extracted_hashes[str(resolved_path)] = row.get("sha256")
+        extracted_hours[str(resolved_path)] = hour
 
-    for snap in load_snapshots(snapshot_dir):
+    snapshots = load_snapshots(snapshot_dir)
+    if len(snapshots) != len(extracted_rows) or set(extracted_hashes) != {snap["path"] for snap in snapshots}:
+        raise VerifyError("retained snapshot directory does not exactly match the extraction report")
+    for snap in snapshots:
         if extracted_hashes.get(snap["path"]) != snap["sha256"]:
             raise VerifyError("snapshot bytes are not bound by the extraction report")
+        if snap["hour_index"] != extracted_hours[snap["path"]] or snap["value"].get("hour_index") != snap["hour_index"]:
+            raise VerifyError("retained snapshot filename, extraction row, and body hour differ")
         value = snap["value"]
         sidecar = value.get(SIDECAR)
         if not isinstance(sidecar, dict):

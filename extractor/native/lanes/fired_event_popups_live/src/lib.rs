@@ -538,8 +538,11 @@ pub fn validate_frame(frame: &FiredEventFrame) -> Result<(), CarrierError> {
                 if row.resolved_tick.is_none() && row.chosen_option_ordinal.is_none() => {}
             ResolutionReason::Selected
                 if row.resolved_tick.is_some() && row.chosen_option_ordinal.is_some() => {}
-            ResolutionReason::Timeout
-                if row.resolved_tick.is_some() && row.chosen_option_ordinal.is_none() => {}
+            // The authenticated timeout producer has two distinct outcomes:
+            // it applies the first admitted definition option when one exists,
+            // or closes with no choice when none is admitted.  Preserve the
+            // former ordinal instead of collapsing both paths to `None`.
+            ResolutionReason::Timeout if row.resolved_tick.is_some() => {}
             _ => return invalid("resolution fields disagree"),
         }
         if row.resolved_tick.is_some_and(|v| v < row.fire_tick) {
@@ -1066,6 +1069,36 @@ mod tests {
             rows: vec![ai],
         };
         assert!(validate_frame(&frame).is_ok());
+    }
+
+    #[test]
+    fn timeout_default_ordinal_and_timeout_no_choice_remain_distinct() {
+        let mut timeout_default = row();
+        timeout_default.resolution_reason = ResolutionReason::Timeout;
+        timeout_default.resolved_tick = Some(timeout_default.timeout_tick);
+        timeout_default.chosen_option_ordinal = Some(0);
+
+        let mut timeout_no_choice = timeout_default.clone();
+        timeout_no_choice.event_sequence = 2;
+        timeout_no_choice.fire_tick = 13;
+        timeout_no_choice.timeout_tick = 325;
+        timeout_no_choice.resolved_tick = Some(325);
+        timeout_no_choice.visible_option_ordinals.clear();
+        timeout_no_choice.chosen_option_ordinal = None;
+        timeout_no_choice.selected_desc_key = None;
+        timeout_no_choice.shown_picture_gfx = None;
+
+        let frame = FiredEventFrame {
+            elapsed_wall_ms: 1,
+            frame_hour: 12,
+            producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
+            telemetry: telemetry(),
+            fired_events_complete: true,
+            rows: vec![timeout_default, timeout_no_choice],
+        };
+        let decoded = decode_payload(&encode_payload(&frame).unwrap()).unwrap();
+        assert_eq!(decoded.rows[0].chosen_option_ordinal, Some(0));
+        assert_eq!(decoded.rows[1].chosen_option_ordinal, None);
     }
 
     #[test]

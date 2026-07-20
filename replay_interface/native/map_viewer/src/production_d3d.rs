@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 
 pub type ProductionD3dStaticPassProgram = StaticMapPassProgram;
 pub const PRODUCTION_D3D_EXECUTION_RECEIPT_SCHEMA: &str =
-    "hoi4.production_d3d_execution.v6";
+    "hoi4.production_d3d_execution.v7";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProductionD3dOmission {
@@ -36,6 +36,7 @@ pub struct ProductionD3dOmission {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedProductionD3dFrame {
     pub content_manifest_sha256: String,
+    pub product_modset_sha256: String,
     pub effective_vfs_manifest_sha256: String,
     /// C03 receipt binding only. Exact D3D draw state already contains the
     /// recorded camera effects, so execution must not reapply raw events.
@@ -117,6 +118,7 @@ pub struct ProductionD3dExecutedDraw {
 pub struct ProductionD3dExecutionReceipt {
     pub schema: String,
     pub content_manifest_sha256: String,
+    pub product_modset_sha256: String,
     pub effective_vfs_manifest_sha256: String,
     pub c03_camera_replay: Option<C03CameraReplayBinding>,
     /// Sealed pointer-free C07 coverage/pass/bucket identity actually admitted
@@ -168,6 +170,17 @@ pub trait ProductionD3dExecutionBridge {
     fn finish_frame(&mut self) -> Result<()>;
 }
 
+fn validate_provenance_sha256(value: &str, label: &str) -> Result<()> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(format!("{label} is not canonical lowercase SHA-256").into());
+    }
+    Ok(())
+}
+
 /// Join the production-map plan with independently generated static-pass
 /// programs. Missing programs remain feature-local omissions. Present programs
 /// fail closed on any order, descriptor, byte-range, or content-identity error.
@@ -175,6 +188,12 @@ pub fn prepare_production_d3d_frame(
     frame: &PreparedProductionMapFrame,
     resources: &BTreeMap<String, ProductionMapResource>,
 ) -> Result<PreparedProductionD3dFrame> {
+    validate_provenance_sha256(&frame.content_manifest_sha256, "content manifest digest")?;
+    validate_provenance_sha256(&frame.product_modset_sha256, "product modset digest")?;
+    validate_provenance_sha256(
+        &frame.effective_vfs_manifest_sha256,
+        "effective VFS manifest digest",
+    )?;
     if let Some(binding) = &frame.c03_camera_replay {
         validate_c03_camera_replay_binding(binding)?;
         if frame.selected_submit_index != Some(binding.submit_index)
@@ -363,6 +382,7 @@ pub fn prepare_production_d3d_frame(
 
     let mut prepared = PreparedProductionD3dFrame {
         content_manifest_sha256: frame.content_manifest_sha256.clone(),
+        product_modset_sha256: frame.product_modset_sha256.clone(),
         effective_vfs_manifest_sha256: frame.effective_vfs_manifest_sha256.clone(),
         c03_camera_replay: frame.c03_camera_replay.clone(),
         target,
@@ -418,6 +438,12 @@ pub fn execute_production_d3d_frame(
     frame: &PreparedProductionD3dFrame,
     bridge: &mut impl ProductionD3dExecutionBridge,
 ) -> Result<ProductionD3dExecutionReceipt> {
+    validate_provenance_sha256(&frame.content_manifest_sha256, "content manifest digest")?;
+    validate_provenance_sha256(&frame.product_modset_sha256, "product modset digest")?;
+    validate_provenance_sha256(
+        &frame.effective_vfs_manifest_sha256,
+        "effective VFS manifest digest",
+    )?;
     let retained_mapname_state = frame.ordered_static_programs.iter().try_fold(
         MapnameD80State::Missing,
         |state, program| state.merge(program.mapname_d80_state()?),
@@ -629,6 +655,7 @@ pub fn execute_production_d3d_frame(
     let mut receipt = ProductionD3dExecutionReceipt {
         schema: PRODUCTION_D3D_EXECUTION_RECEIPT_SCHEMA.into(),
         content_manifest_sha256: frame.content_manifest_sha256.clone(),
+        product_modset_sha256: frame.product_modset_sha256.clone(),
         effective_vfs_manifest_sha256: frame.effective_vfs_manifest_sha256.clone(),
         c03_camera_replay: frame.c03_camera_replay.clone(),
         tree_runtime_payload_sha256: frame

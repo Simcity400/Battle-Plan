@@ -1,0 +1,18 @@
+[package]
+name = "sunk_ship_history_live_lane"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+naval_combat_live_lane = { path = "../naval_combat_live" }
+
+[target.'cfg(windows)'.dependencies]
+minhook = "0.9.0"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+] }

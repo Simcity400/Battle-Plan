@@ -15,9 +15,13 @@ use crate::gui_runtime_law::{
     advance_position_animation, PositionAnimationError, PositionAnimationSample,
     PositionAnimationState, PositionAxis,
 };
-use replay_core::{Leaf, PowerBalanceRow, PowerBalanceView, ViewStatus};
+use replay_core::{
+    Leaf, PowerBalanceRow, PowerBalanceView, RuntimeTextIdentitySource, ViewStatus,
+    A729_POWER_BALANCE_CONTROLLER_MANIFEST_SHA256,
+};
 use serde::Deserialize;
 use serde_json::Value;
+use snapshot::sha256::Sha256;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const PANEL_SHOWN_POSITION: [i32; 2] = [45, 0];
@@ -356,10 +360,6 @@ impl BarState {
         }
     }
 
-    fn is_left(self) -> bool {
-        matches!(self, Self::StableLeft | Self::MovingLeft)
-    }
-
     fn is_moving(self) -> bool {
         matches!(self, Self::MovingLeft | Self::MovingRight)
     }
@@ -383,13 +383,6 @@ pub struct ResolvedPowerBalanceText {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ActiveModifierInput {
-    pub modifier_id: String,
-    pub source_record_id: String,
-    pub resolved_text: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PowerBalanceDecisionInput {
     pub decision_id: String,
     pub source_record_id: String,
@@ -400,13 +393,74 @@ pub struct PowerBalanceDecisionInput {
     pub target_tag: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PowerBalanceRuntimeTextProvenance {
+    pub context_id: String,
+    pub frame_hour: i64,
+    pub pov_country_or_global: String,
+    pub view_id: String,
+    pub element_id: String,
+    pub setter_entry_rva: u32,
+    pub setter_caller_rva: Option<u32>,
+    pub formatter_entry_rva: Option<u32>,
+    pub identity_source: RuntimeTextIdentitySource,
+    /// Exact commitment carried by A25 for `final_text_utf8`.
+    pub final_text_sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PowerBalanceDecisionTextRole {
+    Name,
+    Cost,
+    Timer,
+}
+
+/// Typed edge from one presentation field to the A25 context that produced
+/// that field. Context records remain deduplicated; equal fields may lawfully
+/// share one context while retaining two distinct edges.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PowerBalanceRuntimeTextSlot {
+    LauncherPercentage,
+    LauncherLevels,
+    Trend,
+    ModifierDescription,
+    BalanceName,
+    LeftSideName,
+    RightSideName,
+    ActiveRangeName,
+    BalanceTooltip,
+    ActiveRangeTooltip,
+    Decision {
+        decision_id: String,
+        source_record_id: String,
+        role: PowerBalanceDecisionTextRole,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PowerBalanceRuntimeTextBinding {
+    pub slot: PowerBalanceRuntimeTextSlot,
+    pub context_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PowerBalanceRuntimeProvenance {
+    pub producer_manifest_sha256: String,
+    pub completeness_record_identity: String,
+    pub frame_hour: i64,
+    pub runtime_text_contexts: Vec<PowerBalanceRuntimeTextProvenance>,
+    pub runtime_text_bindings: Vec<PowerBalanceRuntimeTextBinding>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PowerBalanceRuntimeSupplement {
+    pub provenance: PowerBalanceRuntimeProvenance,
     pub source_record_id: String,
     pub country_tag: String,
     pub balance_id: String,
     pub display_ordinal: usize,
     pub active_side_id: String,
+    pub trending_side_id: String,
     pub active_range_id: String,
     pub effective_left_icon: String,
     pub effective_right_icon: String,
@@ -422,8 +476,9 @@ pub struct PowerBalanceRuntimeSupplement {
     /// to recover the engine-selected anchor.
     pub range_indicator_top_left: [i32; 2],
     pub trend: Option<PowerBalanceTrendInput>,
-    pub active_modifiers_complete: bool,
-    pub active_modifiers: Vec<ActiveModifierInput>,
+    /// Complete resolved output of `GetPowerBalanceModDesc`. An empty string is
+    /// a measured empty aggregate, not missing data.
+    pub power_balance_modifier_desc: String,
     pub decisions_complete: bool,
     pub decisions: Vec<PowerBalanceDecisionInput>,
     pub resolved_text: ResolvedPowerBalanceText,
@@ -454,6 +509,7 @@ pub struct DecisionPresentation {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PowerBalancePresentation {
+    pub provenance: PowerBalanceRuntimeProvenance,
     pub source_record_id: String,
     pub country_tag: String,
     pub balance_id: String,
@@ -463,6 +519,7 @@ pub struct PowerBalancePresentation {
     pub marker_center_x: f64,
     pub marker_top_left: [f64; 2],
     pub active_side_id: String,
+    pub trending_side_id: String,
     pub active_range_id: String,
     pub active_range_modifier: BTreeMap<String, Value>,
     pub left_icon: String,
@@ -477,7 +534,7 @@ pub struct PowerBalancePresentation {
     pub range_indicator_top_left: [i32; 2],
     pub range_boundaries: Vec<RangeBoundaryPresentation>,
     pub trend: Option<PowerBalanceTrendInput>,
-    pub active_modifiers: Vec<ActiveModifierInput>,
+    pub power_balance_modifier_desc: String,
     pub decisions: Vec<DecisionPresentation>,
     pub resolved_text: ResolvedPowerBalanceText,
 }
@@ -508,11 +565,10 @@ pub enum PowerBalanceRejection {
     InvalidBarState,
     InvalidIndicatorFrame,
     InvalidTrend,
-    IncompleteModifiers,
-    InvalidModifier,
     IncompleteDecisions,
     InvalidDecision,
     InvalidResolvedText,
+    InvalidRuntimeTextBinding,
 }
 
 pub fn admit_power_balance_screen(
@@ -524,8 +580,8 @@ pub fn admit_power_balance_screen(
     if request.view.status != ViewStatus::Present {
         return Err(PowerBalanceRejection::DomainUnavailable);
     }
-    let mut live = Vec::new();
     let mut ids = BTreeSet::new();
+    let mut applicable = BTreeMap::new();
     for row in &request.view.balances {
         let parsed = measured_live_row(row)?;
         if !ids.insert(parsed.template) {
@@ -536,56 +592,33 @@ pub fn admit_power_balance_screen(
             .iter()
             .any(|tag| tag == request.country_tag)
         {
-            live.push(parsed);
+            applicable.insert(parsed.template, parsed);
         }
     }
-    if live.is_empty() {
+    if applicable.is_empty() && request.runtime.is_empty() {
         return Ok(AdmittedPowerBalanceScreen::HiddenNoActiveBalance);
     }
-    if request.runtime.len() != live.len() {
+    if request.runtime.len() != 1 {
         return Err(PowerBalanceRejection::RuntimeSetMismatch);
     }
-    let live_by_id = live
-        .into_iter()
-        .map(|row| (row.template.to_string(), row))
-        .collect::<BTreeMap<_, _>>();
-    let mut runtime_ids = BTreeSet::new();
-    let mut ordinals = BTreeSet::new();
-    let mut presentations = Vec::with_capacity(request.runtime.len());
-    for runtime in request.runtime {
-        if !runtime_ids.insert(runtime.balance_id.as_str())
-            || !ordinals.insert(runtime.display_ordinal)
-        {
-            return Err(PowerBalanceRejection::InvalidDisplayOrder);
-        }
-        let Some(row) = live_by_id.get(&runtime.balance_id) else {
-            return Err(PowerBalanceRejection::RuntimeSetMismatch);
-        };
-        presentations.push(admit_one(
-            request.country_tag,
-            row,
-            request
-                .catalog
-                .get(&runtime.balance_id)
-                .ok_or(PowerBalanceRejection::MissingDefinition)?,
-            request.decisions,
-            runtime,
-        )?);
-    }
-    if runtime_ids.len() != live_by_id.len() || ordinals.iter().copied().ne(0..runtime_ids.len()) {
+    let runtime = &request.runtime[0];
+    if runtime.display_ordinal != 0 {
         return Err(PowerBalanceRejection::InvalidDisplayOrder);
     }
-    presentations.sort_by_key(|row| row.display_ordinal);
-    if presentations
-        .iter()
-        .filter(|row| row.launcher_visible)
-        .map(|row| row.display_ordinal)
-        .collect::<Vec<_>>()
-        != [0]
-    {
-        return Err(PowerBalanceRejection::InvalidLauncher);
-    }
-    Ok(AdmittedPowerBalanceScreen::Visible(presentations))
+    let row = applicable
+        .get(runtime.balance_id.as_str())
+        .ok_or(PowerBalanceRejection::RuntimeSetMismatch)?;
+    let presentation = admit_one(
+        request.country_tag,
+        row,
+        request
+            .catalog
+            .get(&runtime.balance_id)
+            .ok_or(PowerBalanceRejection::MissingDefinition)?,
+        request.decisions,
+        runtime,
+    )?;
+    Ok(AdmittedPowerBalanceScreen::Visible(vec![presentation]))
 }
 
 struct MeasuredLiveRow<'a> {
@@ -620,6 +653,7 @@ fn measured_live_row(row: &PowerBalanceRow) -> Result<MeasuredLiveRow<'_>, Power
         || left_side.trim().is_empty()
         || right_side.trim().is_empty()
         || left_side == right_side
+        || (trending_side != left_side && trending_side != right_side)
         || !value.is_finite()
         || !(-1.0..=1.0).contains(&value)
         || countries.iter().any(|tag| tag.trim().is_empty())
@@ -643,7 +677,37 @@ fn admit_one(
     decisions: &DecisionSet,
     runtime: &PowerBalanceRuntimeSupplement,
 ) -> Result<PowerBalancePresentation, PowerBalanceRejection> {
-    if runtime.source_record_id.trim().is_empty()
+    let mut context_ids = BTreeSet::new();
+    let mut context_hour = None;
+    let provenance_valid = runtime.provenance.producer_manifest_sha256
+        == A729_POWER_BALANCE_CONTROLLER_MANIFEST_SHA256
+        && !runtime
+            .provenance
+            .completeness_record_identity
+            .trim()
+            .is_empty()
+        && !runtime.provenance.runtime_text_contexts.is_empty()
+        && runtime.provenance.runtime_text_contexts.iter().all(|context| {
+            let same_hour = match context_hour {
+                Some(hour) => hour == context.frame_hour,
+                None => {
+                    context_hour = Some(context.frame_hour);
+                    true
+                }
+            };
+            !context.context_id.trim().is_empty()
+                && context_ids.insert(context.context_id.as_str())
+                && same_hour
+                && (context.pov_country_or_global == country_tag
+                    || context.pov_country_or_global == "global")
+                && !context.view_id.trim().is_empty()
+                && !context.element_id.trim().is_empty()
+                && context.setter_entry_rva == replay_core::A729_TEXT_SETTER_RVA
+                && crate::is_lowercase_sha256(&context.final_text_sha256)
+        })
+        && context_hour == Some(runtime.provenance.frame_hour);
+    if !provenance_valid
+        || runtime.source_record_id.trim().is_empty()
         || runtime.country_tag != country_tag
         || runtime.balance_id != row.template
     {
@@ -652,7 +716,7 @@ fn admit_one(
     if definition.side(row.left_side).is_none() || definition.side(row.right_side).is_none() {
         return Err(PowerBalanceRejection::InvalidDynamicSides);
     }
-    let expected_active = if runtime.bar_state.is_left() {
+    let expected_active = if row.value < 0.0 {
         row.left_side
     } else {
         row.right_side
@@ -660,15 +724,16 @@ fn admit_one(
     if runtime.active_side_id != expected_active {
         return Err(PowerBalanceRejection::InvalidActiveSide);
     }
+    if runtime.trending_side_id != row.trending_side {
+        return Err(PowerBalanceRejection::InvalidTrend);
+    }
     let active_range = definition
         .range(&runtime.active_range_id)
         .filter(|range| {
-            range.min.value <= row.value
-                && row.value <= range.max.value
-                && range
-                    .side_id
-                    .as_deref()
-                    .is_none_or(|side| side == row.left_side || side == row.right_side)
+            range
+                .side_id
+                .as_deref()
+                .is_none_or(|side| side == row.left_side || side == row.right_side)
         })
         .ok_or(PowerBalanceRejection::InvalidActiveRange)?;
     if runtime.effective_left_icon.trim().is_empty()
@@ -676,20 +741,14 @@ fn admit_one(
     {
         return Err(PowerBalanceRejection::InvalidRuntimeIcon);
     }
-    let launcher_values_valid = if runtime.launcher_visible {
-        [
+    let launcher_values_valid = runtime.launcher_visible
+        && [
             runtime.launcher_percentage_text.as_deref(),
             runtime.launcher_levels_text.as_deref(),
             runtime.launcher_icon_sprite.as_deref(),
         ]
         .into_iter()
-        .all(|value| value.is_some_and(|value| !value.trim().is_empty()))
-    } else {
-        runtime.launcher_percentage_text.is_none()
-            && runtime.launcher_levels_text.is_none()
-            && runtime.launcher_icon_sprite.is_none()
-            && !runtime.launcher_glow_visible
-    };
+        .all(|value| value.is_some_and(|value| !value.trim().is_empty()));
     if !launcher_values_valid {
         return Err(PowerBalanceRejection::InvalidLauncher);
     }
@@ -701,27 +760,26 @@ fn admit_one(
         (Some(trend), true)
             if trend.magnitude.is_finite()
                 && trend.magnitude > 0.0
-                && !trend.resolved_text.trim().is_empty()
-                && row.trending_side == runtime.active_side_id => {}
+                && !trend.resolved_text.trim().is_empty() => {}
         _ => return Err(PowerBalanceRejection::InvalidTrend),
     }
-    if !runtime.active_modifiers_complete {
-        return Err(PowerBalanceRejection::IncompleteModifiers);
-    }
-    let mut modifier_ids = BTreeSet::new();
-    if runtime.active_modifiers.iter().any(|modifier| {
-        modifier.modifier_id.trim().is_empty()
-            || modifier.source_record_id.trim().is_empty()
-            || modifier.resolved_text.trim().is_empty()
-            || !modifier_ids.insert(modifier.modifier_id.as_str())
-    }) {
-        return Err(PowerBalanceRejection::InvalidModifier);
+    let bar_matches_engine_state = match runtime.bar_state {
+        BarState::StableLeft => row.value < 0.0,
+        BarState::StableRight => row.value >= 0.0,
+        // Moving direction is the independently observed change sign. The
+        // trending-side definition is retained separately and must not be
+        // reinterpreted as that sign by the replay layer.
+        BarState::MovingLeft | BarState::MovingRight => true,
+    };
+    if !bar_matches_engine_state {
+        return Err(PowerBalanceRejection::InvalidBarState);
     }
     if !runtime.decisions_complete {
         return Err(PowerBalanceRejection::IncompleteDecisions);
     }
     let category = definition.decision_category.as_deref();
     let mut decision_ids = BTreeSet::new();
+    let mut decision_source_ids = BTreeSet::new();
     let mut decision_presentations = Vec::with_capacity(runtime.decisions.len());
     for decision in &runtime.decisions {
         if decision.decision_id.trim().is_empty()
@@ -729,6 +787,7 @@ fn admit_one(
             || decision.resolved_name.trim().is_empty()
             || decision.availability == DecisionAvailability::Unknown
             || !decision_ids.insert(decision.decision_id.as_str())
+            || !decision_source_ids.insert(decision.source_record_id.as_str())
         {
             return Err(PowerBalanceRejection::InvalidDecision);
         }
@@ -766,10 +825,14 @@ fn admit_one(
     {
         return Err(PowerBalanceRejection::InvalidResolvedText);
     }
+    if !runtime_text_bindings_are_exact(runtime) {
+        return Err(PowerBalanceRejection::InvalidRuntimeTextBinding);
+    }
     let normalized = normalize_value(row.value);
     let marker_center_x = f64::from(BAR_POSITION[0]) + row.value.mul_add(180.0, 180.0);
     let range_boundaries = current_boundaries(definition, row.left_side, row.right_side);
     Ok(PowerBalancePresentation {
+        provenance: runtime.provenance.clone(),
         source_record_id: runtime.source_record_id.clone(),
         country_tag: country_tag.to_string(),
         balance_id: row.template.to_string(),
@@ -782,6 +845,7 @@ fn admit_one(
             f64::from(BAR_POSITION[1] + MARKER_OFFSET[1]),
         ],
         active_side_id: runtime.active_side_id.clone(),
+        trending_side_id: runtime.trending_side_id.clone(),
         active_range_id: runtime.active_range_id.clone(),
         active_range_modifier: active_range.modifier.clone(),
         left_icon: runtime.effective_left_icon.clone(),
@@ -796,10 +860,117 @@ fn admit_one(
         range_indicator_top_left: runtime.range_indicator_top_left,
         range_boundaries,
         trend: runtime.trend.clone(),
-        active_modifiers: runtime.active_modifiers.clone(),
+        power_balance_modifier_desc: runtime.power_balance_modifier_desc.clone(),
         decisions: decision_presentations,
         resolved_text: runtime.resolved_text.clone(),
     })
+}
+
+fn runtime_text_bindings_are_exact(runtime: &PowerBalanceRuntimeSupplement) -> bool {
+    let mut expected = BTreeMap::<PowerBalanceRuntimeTextSlot, &str>::new();
+    let mut insert = |slot, text| expected.insert(slot, text).is_none();
+    if let Some(text) = runtime.launcher_percentage_text.as_deref() {
+        if !insert(PowerBalanceRuntimeTextSlot::LauncherPercentage, text) {
+            return false;
+        }
+    }
+    if let Some(text) = runtime.launcher_levels_text.as_deref() {
+        if !insert(PowerBalanceRuntimeTextSlot::LauncherLevels, text) {
+            return false;
+        }
+    }
+    if let Some(trend) = runtime.trend.as_ref() {
+        if !insert(PowerBalanceRuntimeTextSlot::Trend, &trend.resolved_text) {
+            return false;
+        }
+    }
+    if !insert(
+        PowerBalanceRuntimeTextSlot::ModifierDescription,
+        &runtime.power_balance_modifier_desc,
+    ) {
+        return false;
+    }
+    for (slot, text) in [
+        (
+            PowerBalanceRuntimeTextSlot::BalanceName,
+            runtime.resolved_text.balance_name.as_str(),
+        ),
+        (
+            PowerBalanceRuntimeTextSlot::LeftSideName,
+            runtime.resolved_text.left_side_name.as_str(),
+        ),
+        (
+            PowerBalanceRuntimeTextSlot::RightSideName,
+            runtime.resolved_text.right_side_name.as_str(),
+        ),
+        (
+            PowerBalanceRuntimeTextSlot::ActiveRangeName,
+            runtime.resolved_text.active_range_name.as_str(),
+        ),
+        (
+            PowerBalanceRuntimeTextSlot::BalanceTooltip,
+            runtime.resolved_text.balance_tooltip.as_str(),
+        ),
+        (
+            PowerBalanceRuntimeTextSlot::ActiveRangeTooltip,
+            runtime.resolved_text.active_range_tooltip.as_str(),
+        ),
+    ] {
+        if !insert(slot, text) {
+            return false;
+        }
+    }
+    for decision in &runtime.decisions {
+        let slot = |role| PowerBalanceRuntimeTextSlot::Decision {
+            decision_id: decision.decision_id.clone(),
+            source_record_id: decision.source_record_id.clone(),
+            role,
+        };
+        if !insert(
+            slot(PowerBalanceDecisionTextRole::Name),
+            &decision.resolved_name,
+        ) {
+            return false;
+        }
+        if let Some(text) = decision.cost_text.as_deref() {
+            if !insert(slot(PowerBalanceDecisionTextRole::Cost), text) {
+                return false;
+            }
+        }
+        if let Some(text) = decision.timer_text.as_deref() {
+            if !insert(slot(PowerBalanceDecisionTextRole::Timer), text) {
+                return false;
+            }
+        }
+    }
+
+    let contexts = runtime
+        .provenance
+        .runtime_text_contexts
+        .iter()
+        .map(|context| (context.context_id.as_str(), context))
+        .collect::<BTreeMap<_, _>>();
+    let mut bindings = BTreeMap::new();
+    let mut referenced = BTreeSet::new();
+    for binding in &runtime.provenance.runtime_text_bindings {
+        let Some(context) = contexts.get(binding.context_id.as_str()) else {
+            return false;
+        };
+        let Some(text) = expected.get(&binding.slot) else {
+            return false;
+        };
+        if bindings
+            .insert(binding.slot.clone(), binding.context_id.as_str())
+            .is_some()
+            || Sha256::hex(text.as_bytes()) != context.final_text_sha256
+        {
+            return false;
+        }
+        referenced.insert(binding.context_id.as_str());
+    }
+    bindings.len() == expected.len()
+        && bindings.keys().eq(expected.keys())
+        && referenced.len() == contexts.len()
 }
 
 fn current_boundaries(

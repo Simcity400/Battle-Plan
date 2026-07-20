@@ -154,13 +154,15 @@ def build_manifest(out_dir: Path):
             "process": "hoi4.exe",
         },
         "domain_registry": registry,
-        "completion_status": "NOT COMPLETE",
+        "completion_status": "VALIDATED SLICE; OPEN GAPS",
         "lane_full_production_status": "NOT COMPLETE",
         "backlog_reduced": True,
         "exact_backlog_item_removed_or_narrowed": (
             "Built a lane-owned domain-51 mini stack for validated "
-            "country/global/state variables and flags; delayed-event and "
-            "scripted-GUI roots remain fail-closed fixture blockers only."
+            "country/global/state variables and flags and integrated it through "
+            "the shared scheduler, compact stream, recorder gate, and world fold. "
+            "Delayed events are owned by domain 64; authoritative direct "
+            "scripted-state hooks/mod state remain separate X10 work."
         ),
         "lane_owned_modules": [
             {
@@ -236,34 +238,30 @@ def build_manifest(out_dir: Path):
         },
         "fail_closed_blockers": [
             {
-                "root": "delayed_events",
-                "status_bit": "STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED",
-                "proof": "extractor/native/runs/scripted_state_flags_variables_live_870ebf_20260701_delayed_event_blocker_v1/delayed_event_fixture_audit.json",
-                "blocker": "missing_positive_save_fixture",
-            },
-            {
-                "root": "scripted_gui_open_state",
-                "status_bit": "STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED",
-                "proof": "extractor/native/runs/scripted_state_flags_variables_live_870ebf_20260701_scripted_gui_blocker_v1/scripted_gui_fixture_audit.json",
-                "blocker": "missing_positive_scripted_gui_open_fixture",
+                "root": "authoritative_scripted_state_mutation_hooks",
+                "status_bit": None,
+                "proof": "extractor/documents/MASTER_EXTRACTION_CONTRACT.md",
+                "blocker": "unresolved_direct_hook_or_mod_state_root",
+                "owner": "X10",
             },
         ],
         "registration_hook_plan": {
-            "file": "extractor/native/lanes/scripted_state_flags_variables_live/REGISTRATION_HOOK_PLAN.md",
+            "file": "extractor/native/compact_contract/src/lib.rs",
             "collector": (
-                "register domain 51 through the new CollectorDomainModule-style "
-                "module hook; keep shared collector changes registration-only"
+                "closed: domain 51 is schedulable and its lane-owned reader emits "
+                "through the shared sequence-owned compact writer"
             ),
             "recorder": (
-                "map domain 51 to the lane-owned compact gate; treat unresolved "
-                "opaque bits as badges rather than partial failures"
+                "closed: recorder_host gates domain 51, accounts its authority, "
+                "retains the compact stream, and folds accepted rows fail-closed"
             ),
         },
         "live_refresh": live_refresh,
         "production_flags": {
             "dll_only": False,
-            "compact_stream": False,
+            "compact_stream": True,
             "rust_decoded": True,
+            "shared_hoi4replay_path_wired": True,
             "hoi4replay_verified": False,
             "speed_five_current_equivalent_hourly_or_lower": False,
             "zero_skipped_hours": False,

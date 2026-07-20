@@ -54,6 +54,34 @@ Key residual evidence:
 - Map recolor driver rows validated live: `13414`.
 - Dynamic LUT driver rows validated live: `13414`.
 
+## A20 retained temporal gate
+
+The retained A20 candidate is Zstandard storage, not raw H4CR. The production
+gate is therefore the `weather_temporal_drift_gate` binary target in the
+`weather_live_lane` package; it uses the same strict
+raw/Zstandard file-boundary codec as the recorder and replay decoder. It hashes
+the encoded and decoded streams, rejects torn H4CR headers, enforces exact
+sequence and weather-hour continuity, validates every region and province row,
+and emits the pointer-free JSON receipt on stdout.
+
+Only the primary agent runs the retained evidence test, through the centralized
+runner:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File extractor\native\scripts\Invoke-CentralRustValidation.ps1 -Mode Evidence -Workspace Extractor -Package weather_live_lane -Bin weather_temporal_drift_gate -FilterExpression 'test(retained_a20_423_hour_stream_passes_exact_gate)' -CacheMode Reusable
+```
+
+The exact retained contract is 423 weather records / 423 unique hours,
+`60794379..60794801`, 422 consecutive pairs, zero duplicate or nonconsecutive
+hours, one full baseline plus 422 deltas, 305 reconstructed region ids, and
+13,414 reconstructed province ids. The evidence test also pins the 17,484,345
+encoded bytes and SHA-256
+`25c020ba7f423759c945311f56fd78ecf27f7581835fbada13ffb1f542e986ee`
+to the 1,488,548,730 decoded bytes and SHA-256
+`3857e2d0afa1c30350eb0f3cfcef0d3ee6643d282674ce75bd064a50c20db3a1`.
+Do not request another A20 capture unless this exact retained evidence test
+fails after the corpus and gate have both passed their integrity checks.
+
 ## Production proof
 
 Historical shared-stream proof recorded in this lane directory. Do not use this

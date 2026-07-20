@@ -3,7 +3,7 @@ use game_ui::combat_detail_losses::{
 };
 use replay_core::{
     AirCombatLossRow, AirRegionCombatRow, AirRegionDamageRow, EndedCombatRow, LandCombatSideDetail,
-    LandCombatTacticIdentity, Leaf, NavalCombatMemberRow, NavalCombatRow, WarObjectRow,
+    LandCombatTacticIdentity, Leaf, NavalCombatMemberRow, NavalCombatRow, SunkShipEventExact, WarObjectRow,
     WarParticipantOverviewRow, WarParticipationBreakdown,
 };
 
@@ -107,6 +107,13 @@ fn war() -> WarObjectRow {
         start_date: Leaf::Absent,
         first_casualties: Leaf::Absent,
         second_casualties: Leaf::Absent,
+        threat_fixed5_raw: Leaf::Absent,
+        threat_fixed_scale: Leaf::Absent,
+        first_was_instigator: Leaf::Absent,
+        hostility_reason_instigator_raw: Leaf::Absent,
+        hostility_reason_instigator: Leaf::Absent,
+        hostility_reason_defender_raw: Leaf::Absent,
+        hostility_reason_defender: Leaf::Absent,
         casualties_semantics: Leaf::Absent,
         casualties_is_save_snapshot: Leaf::Absent,
     }
@@ -215,6 +222,19 @@ fn exact_binding() -> Xui20CombatDetailLosses {
         air_losses: Leaf::Measured(vec![air_loss()]),
         air_region_combat: Leaf::Measured(vec![air_region()]),
         sunk_convoys: Leaf::Measured(Vec::new()),
+        sunk_ships: Leaf::Measured(vec![SunkShipEventExact {
+            event_sequence: 1,
+            combat_id: 9,
+            combat_generation: 2,
+            victim_country_identity_raw: [2, 101],
+            killer_country_id_raw: 1,
+            sink_date_raw: 44,
+            victim_member_battle_slot_index: 1,
+            killed: true,
+            assisted_kill: false,
+            ship_name: "HMS Exact".into(),
+            ship_class_name: "Destroyer".into(),
+        }]),
         wars: Leaf::Measured(vec![war()]),
         war_relations: Leaf::Measured(Vec::new()),
     }
@@ -260,16 +280,16 @@ fn exact_replay_owned_surfaces_admit_and_external_joins_stay_explicit() {
     );
     assert_eq!(
         admission.combat_log_families,
-        Xui20SurfaceState::Admitted { row_count: 5 }
+        Xui20SurfaceState::Admitted { row_count: 6 }
     );
     assert!(matches!(
         admission.land_terminal,
         Xui20SurfaceState::ExternalInputRequired { .. }
     ));
-    assert!(matches!(
+    assert_eq!(
         admission.naval_terminal,
-        Xui20SurfaceState::ExternalInputRequired { .. }
-    ));
+        Xui20SurfaceState::Admitted { row_count: 1 }
+    );
     assert!(matches!(
         admission.global_cross_family_order,
         Xui20SurfaceState::NotApplicable { .. }

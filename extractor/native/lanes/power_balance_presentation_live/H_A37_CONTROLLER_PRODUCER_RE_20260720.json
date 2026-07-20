@@ -1,0 +1,163 @@
+{
+  "schema": "hoi4.h_a37.power_balance_controller_producer_re.v1",
+  "date": "2026-07-20",
+  "lane": "H-A37",
+  "disposition": "EXACT20_AUTHORITY_BOUND_SCHEMA_CORRECTED_LIVE_OBSERVER_FIXTURE_GATED",
+  "binary_identity": {
+    "binary_id": "hoi4.exe 1.19.2.0.a729",
+    "image_base": "0x140000000",
+    "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "ghidra_status_ready": true,
+    "observed_shards": 20,
+    "ready_shards": 20,
+    "read_only": true,
+    "analysis_disabled": true
+  },
+  "fresh_discovery_exports": [
+    {
+      "job_id": "20260720T013706Z-wave3-h-a37-controller-leaves-stable-tra-f86887b3",
+      "shard_id": "shard-07",
+      "function_manifest_sha256": "da22c2cf2e8be089907e025d6720485fa96b2e1f50c9485113c0c2f6d8b06906",
+      "use": "controller ownership, selection, main update, range, trend and icon discovery only"
+    },
+    {
+      "job_id": "20260720T013825Z-wave3-h-a37-modifier-decision-range-tran-d43a4901",
+      "shard_id": "shard-07",
+      "function_manifest_sha256": "2992dda21dbf78d76288a255cfbcd066ea226bd741192fb8978f1771d6fd3c25",
+      "use": "transition refresh, decision aggregation/order and range materialization discovery only"
+    },
+    {
+      "job_id": "20260720T014436Z-wave3-h-a37-power-balance-moddesc-produc-21eb3c1a",
+      "shard_id": "shard-07",
+      "function_manifest_sha256": "253cd925a507d18ee85d94826ca3540d1c44f51d484c1b1454e2e374a685e4c5",
+      "use": "GetPowerBalanceModDesc aggregate-text producer discovery only"
+    }
+  ],
+  "exact20_authority_receipt": {
+    "job_id": "20260720T020812Z-w3-a37-power-balance-5c5d63f5",
+    "shard_id": "shard-11",
+    "function_manifest_sha256": "a540af1c030d9ef2fbb1cd290627087627771a196e7a60e4241cb5287b66e4e2",
+    "exact_roots": "10/10",
+    "pool_preflight": "20/20",
+    "binding": "A729_CONTROLLER_EXACT20_AUTHORITY_BOUND and A729_CONTROLLER_EXACT20_MANIFEST_SHA256 in the PBP2 carrier",
+    "hook_abi": "0x141c4baa0 at RVA 0x01c4baa0, Windows x64 RCX=this/DL=full_refresh/R8B=range_refresh, sentinel 488bc44889581888501055565741544155, owner vtable RVA 0x02a421c0",
+    "hook_scaffold": "src/a729_hook.rs; inert while A729_CONTROLLER_OBSERVER_ACTIVATED=false"
+  },
+  "controller_owner": {
+    "class": "CPowerBalanceView",
+    "constructor": "0x141c47e90",
+    "primary_vtable": "0x142a421c0",
+    "secondary_vtable": "0x142a421e8 at view+0x28",
+    "selected_record": "view+0x598 qword",
+    "selected_active_range": "view+0x5a0 qword",
+    "controller_widgets": {
+      "power_balance_name": "view+0x568",
+      "active_range_name": "view+0x570",
+      "power_balance_value": "view+0x578",
+      "position_marker": "view+0x580",
+      "left_power_icon": "view+0x588",
+      "right_power_icon": "view+0x590"
+    }
+  },
+  "selection_and_identity": {
+    "selector": "0x140e424f0 scans 0x190-byte records in stored engine order and returns the first record whose country predicate passes",
+    "cardinality": "The base-game panel has zero or one selected row for a country. It does not expose every applicable balance or later display ordinals.",
+    "selected_record_fields": {
+      "balance_definition": "+0x10 qword",
+      "left_side_definition": "+0x18 qword",
+      "right_side_definition": "+0x20 qword",
+      "trending_side_definition": "+0x28 qword",
+      "value_fixed_1e5": "+0x30 i64",
+      "active_range_definition": "+0xb0 qword",
+      "modifier_description_root": "+0xc8 inline modifier container"
+    },
+    "stable_id_rule": "Replace live definition pointers with the effective common/bop catalog ids in the observer epoch. Balance and side display-name lookup reads each definition token at +0x10 through 0x140a7e7b0; pointer values are never serialized.",
+    "active_side_rule": "value < 0 selects record+0x18; value >= 0 selects record+0x20. The launcher and GetActiveSideName use this exact sign split.",
+    "trending_side_rule": "record+0x28 is the engine trending-side definition. It is distinct from the active side and must be joined independently.",
+    "active_range_rule": "record+0xb0 is the already engine-selected active-range definition. Capturing that identity closes shared-threshold equality without replay-side range selection."
+  },
+  "transition_producer_route": [
+    {
+      "function": "0x141c4a6b0",
+      "law": "Open/show refresh re-runs the first-match selector, hides the panel if the selected record is invalid, stores record/range at view+0x598/+0x5a0 and calls 0x141c4baa0 with a full refresh."
+    },
+    {
+      "function": "0x141c4a860",
+      "law": "State-change refresh re-runs the selector, compares previous and current record/range pointers, then calls 0x141c4baa0 with exact full-versus-partial flags."
+    },
+    {
+      "function": "0x141c4baa0",
+      "law": "The terminal controller update writes the percentage, sprite, marker, effective icons and resolved names, refreshes range materialization when required, rebuilds decisions, and finally commits the active-range indicator frame."
+    }
+  ],
+  "presentation_laws": {
+    "bar_state": {
+      "change_lt_zero": "GFX_power_balance_left_moving",
+      "change_gt_zero": "GFX_power_balance_right_moving",
+      "change_eq_zero_value_lt_zero": "GFX_power_balance_left",
+      "change_eq_zero_value_ge_zero": "GFX_power_balance_right",
+      "consequence": "A moving sprite encodes trend direction, not current active side."
+    },
+    "change_rate": {
+      "numeric": "0x140e41430 resolves each country handle in record+0x38/count+0x44 and returns sum(modifier type 0x98)*7 + sum(type 0x99).",
+      "resolved_text": "0x140e420b0 selects BOP_CHANGE_RATE_WEEKLY only when the normalized daily and weekly sums cancel to zero; otherwise it selects BOP_CHANGE_RATE_DAILY and formats the exact fixed-point magnitude.",
+      "direction": "negative is left, positive is right, zero is stable"
+    },
+    "effective_icons": "0x140e42780 first checks the selected record's +0x178/count+0x184 override rows by authored side id; otherwise it uses side_definition+0x38, then evaluates the resulting scripted-localisation string in current country scope.",
+    "range_indicator": "0x141c498d0 walks record+0x68/count+0x74 in stored order, computes final widget positions from exact fixed-point bounds and live GUI geometry, maps range-definition pointer to indicator, and writes frame 2 for record+0xb0 and frame 1 for all others. The carrier's zero-based frame field therefore requires normalization from engine frame 1/2, not direct copying.",
+    "range_splitters": "0x141c495a0 clears the prior splitter vector and materializes subsequent stored-order range boundaries into view+0x628/count+0x634."
+  },
+  "modifier_binding": {
+    "getter_dispatch": "GetPowerBalanceModDesc dispatches through 0x141a7b350 case 0x2f to 0x140e422e0.",
+    "producer": "0x140e422e0 calls the generic modifier-description formatter on record+0xc8 first for type 0x98, appends one newline when needed, then appends type 0x99.",
+    "exact_surface": "The UI consumes one resolved aggregate modifier-description string. It does not expose an authenticated ordered array of modifier ids/source rows.",
+    "schema_consequence": "Replace active_modifiers_complete plus active_modifiers[] with one required A25-resolved power_balance_modifier_desc_text_ref. Do not attempt to reconstruct row identities from D67 or parse the final localized text."
+  },
+  "decision_binding": {
+    "producer": "0x141c4aa30",
+    "category_join": "selected_record+0x10 balance definition supplies its decision category at definition+0x38",
+    "families_in_collection_order": [
+      "standard definitions",
+      "targeted-timed",
+      "targeted",
+      "timed",
+      "event/other controller rows"
+    ],
+    "visibility": "Each family applies selected balance/category membership, runtime gate 0x140724770 and its family visibility function before materialization.",
+    "final_order": "All materialized presenter pointers are combined, exact-sorted by 0x141c474b0/0x141c475a0 using comparator 0x141c48340, then inserted into decision_grid by 0x141c48550.",
+    "comparator": "selected category first; descending category/order rank from 0x140721690; descending definition integer at +0x968; ascending presenter ordinal at +0x520",
+    "capture_boundary": "Capture the sorted pointer list immediately before 0x141c48550 insertion or enumerate the finalized decision_grid and join each presenter to its stable definition id and exact runtime text/state leaves."
+  },
+  "repository_audit": {
+    "carrier": "extractor/native/lanes/power_balance_presentation_live/src/lib.rs",
+    "replay_consumer": "replay_interface/native/game_ui/src/power_balance.rs",
+    "current_state": "The reserved d74 carrier is not yet schedulable; an exact20-bound observer/source scaffold exists but live activation remains false.",
+    "implemented_pre_observer_corrections": [
+      "change cardinality from every active balance plus display ordinals to the controller-selected zero-or-one row per country",
+      "replace ordered active modifier rows with the exact aggregate modifier-description text reference",
+      "validate active_side_id from value sign, independently of moving bar direction",
+      "carry change-sign moving direction independently from both active_side_id and trending_side_id",
+      "normalize engine indicator frames 1/2 to carrier frames 0/1 or change the schema explicitly"
+    ],
+    "corrected_replay_defects": [
+      "power_balance.rs previously derived expected active side from BarState::is_left(), which rejected a right-active balance moving left and a left-active balance moving right",
+      "power_balance.rs previously conflated moving direction with side identity instead of carrying current-value active side, change-sign direction and record+0x28 trending side independently"
+    ],
+    "code_change_in_this_pass": true,
+    "result": "PBP2, its signature/thread/owner/manifest-gated inert post-refresh observer scaffold, d74 fold and XUI18 admission now enforce first-match cardinality, value-sign active side, independent change-sign bar direction and trending-side identity, engine-frame 1/2 normalization, and one aggregate modifier-description text reference."
+  },
+  "promotion_gate": {
+    "authority_receipt": "H_A37_EXACT20_AUTHORITY_RECEIPT_20260720.json",
+    "promotion_authorized": false,
+    "remaining_agent_work": [
+      "retain an authenticated same-transition observer fixture containing current value sign, change sign, independent trending-side identity and engine indicator frame",
+      "prove PBP2 fold and XUI18 replay parity for that same transition",
+      "only then set A729_CONTROLLER_OBSERVER_ACTIVATED true and schedule d74",
+      "run root-owned central Rust validation"
+    ]
+  },
+  "human_input_boundary": {
+    "current_state": "LIVE_FIXTURE_REQUIRED_BEFORE_ACTIVATION",
+    "later_irreducible_fixture": "Retain one authenticated same-transition sample proving current value sign, change sign, independent trending-side identity, engine frame 1/2 and replay output together; the broader matrix still needs stable and both cross-direction moving states, a shared-threshold range identity, a runtime icon override, nonempty aggregate modifier text, and a visible BOP decision transition."
+  }
+}

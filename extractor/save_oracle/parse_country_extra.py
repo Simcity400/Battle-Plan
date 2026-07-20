@@ -82,6 +82,25 @@ def _parse_player_countries(tz, players):
 # per-country sub-blocks (country_extra.json)
 # ---------------------------------------------------------------------------
 
+def _wrap_i64(value):
+    value &= (1 << 64) - 1
+    return value - (1 << 64) if value >= (1 << 63) else value
+
+
+def _trunc_div(value, divisor):
+    quotient = abs(value) // abs(divisor)
+    return -quotient if (value < 0) != (divisor < 0) else quotient
+
+
+def _a729_nuke_built_count(amount_raw):
+    """Byte-equivalent ordinary/sentinel interpretation from FUN_1410828a0."""
+    value_u64 = amount_raw & ((1 << 64) - 1)
+    condition = ((value_u64 + 0x7ffffffffffffffe) & ((1 << 64) - 1)) < 0xfffffffffffffffd
+    if not condition:
+        return 0xa7c5
+    return _trunc_div(_wrap_i64(amount_raw * 100_000), 10_000_000_000_000)
+
+
 def _parse_nukes(tz):
     """nukes={ { amount nukes_ready } { amount nukes_ready } ... } anon blocks."""
     rows = []
@@ -106,7 +125,11 @@ def _parse_nukes(tz):
                     amount = to_int(v)
                 elif k == "nukes_ready":
                     ready = to_int(v)
-            rows.append({"amount": amount, "nukes_ready": ready})
+            rows.append({
+                "amount": None if amount is None else _a729_nuke_built_count(amount),
+                "amount_raw": amount,
+                "nukes_ready": ready,
+            })
     return rows
 
 

@@ -7,16 +7,19 @@ Lane-local production-shaped stack for final compact domain 56,
 
 ## Current status
 
-Completion status: `PRODUCTION-SAFE CORE; EXACT RESIDUAL FIXTURES FROZEN` (2026-07-19).
+Completion status: `PRODUCTION-SAFE CORE; EXACT RESIDUALS NARROWED` (2026-07-20).
 
 The shared collector/recorder now emits and folds this domain. Mission,
 home-base, and repair-target are direct validated fields. The exact build
 870ebf mission enum is `0..=9`: HOLD, PATROL, STRIKE_FORCE, CONVOY_RAIDING,
 CONVOY_ESCORT, MINES_PLANTING, MINES_SWEEPING, TRAINING, RESERVE_FLEET, and
-NAVAL_INVASION_SUPPORT. Unknown values fail closed. Mission activity,
-task-force repair progress, retreat classification, and convoy-route loss
-identity remain absent rather than guessed; their exact capture requirements
-are frozen in the naval-combat lane's `A8_A9_B6_HUMAN_INPUT_REQUIREMENTS.json`.
+NAVAL_INVASION_SUPPORT. Unknown values fail closed. The exact persisted
+`detached_activity` enum is emitted as `mission_state` (`0..=4`: none,
+repairing, moving-to-refit, refitting, reinforcing). Task-force repair progress,
+retreat classification, and convoy-route loss identity remain absent rather
+than guessed. The first two are mechanically rejected as scalar D56 carriers;
+only pre-collapse route/client acquisition remains in the naval-combat lane's
+`A8_A9_B6_HUMAN_INPUT_REQUIREMENTS.json`.
 
 The existing shared collector/recorder integration is retained; the recorder
 projection now adds the exact `mission_name` beside the raw enum. No master
@@ -67,14 +70,17 @@ Naval mission enum: `PROVEN`.
 outside that range. `src/lib.rs` carries this exact map and the compact gate
 now shares the same maximum rather than accepting speculative wire headroom.
 
-Home base and repair target: `PROVEN`. Activity/progress/retreat: `ABSENT,
-EXACT FIXTURE REQUIRED`.
+Home base, repair target, and detached activity: `PROVEN`. Progress/retreat:
+`MECHANICALLY REJECTED/ABSENT`.
 
 Home base is `CFleet+0xD8 -> CProvince+0xA4`; nullable repair target is
-`CTaskForce+0x4B0 -> CProvince+0xA4`. The engine's task-force activity label is
-mission, location, target, detachment mode, and mission efficiency. The
-task-force serializer has no proved scalar repair-progress or retreat field,
-so those compact columns remain unflagged.
+`CTaskForce+0x4B0 -> CProvince+0xA4`. The localized task-force activity label is
+derived from combat state, mission, location, target, detachment mode, and
+mission efficiency, but its exact detached-activity input is stored at task-force
+body `+0x4A8`. The formatter receives the authenticated subobject at body
+`-0x10`, making formatter `+0x4B8` the same field. Serializer body
+`+0x4B8/+0x4C0` are nullable object pointers, not scalar repair-progress or
+retreat fields, so those compact columns remain unflagged.
 
 Convoy combat/loss route context: `FIXTURE_BLOCKED`, narrowed.
 
@@ -99,7 +105,8 @@ orchestrator-owned row updates:
 | Row | Proposed status | Proposed evidence / domain | Proposed remaining closure condition |
 | --- | --- | --- | --- |
 | Home base / repair target | `PROVEN` | `CFleet+0xD8` and `CTaskForce+0x4B0`, both joined through `CProvince+0xA4` | Preserve nullable repair-target absence. |
-| Activity / repair progress / retreat | `EXACT FIXTURE REQUIRED` | engine activity formatter and task-force serializer negative evidence | Controlled transition fixtures in `A8_A9_B6_HUMAN_INPUT_REQUIREMENTS.json`; no scalar inference. |
+| Detached activity | `PROVEN` | exact-ten formatter/subobject/body join plus persisted `detached_activity` serializer | Emit `mission_state` 0..4; fail closed above 4. |
+| Repair progress / retreat | `MECHANICALLY REJECTED/ABSENT` | serializer body `+0x4B8/+0x4C0` are nullable object pointers; save `retreat=yes` and D50 member states are separate carriers | No scalar inference or cross-carrier alias. |
 | Convoy combat/losses | `FIXTURE_BLOCKED` | `naval_missions_status_live` / 56 lane proof plus `ships_live` sunk-convoy counter | Active convoy battle/loss route fixture to link losses to route/mission context; `CShip+0x3C` remains only aggregate sunk-convoy count. |
 
 ## Proof commands
@@ -137,14 +144,15 @@ Results:
   task-force rows, badged fixture-required fields.
 - Rust decoder/gate changes: `src/domain56_compact.rs`.
 - Proof commands/results: listed above.
-- DLL-only: no shared DLL integration yet; lane-local proof uses bounded live
-  validation, not hot extraction.
-- Compact stream: schema/gate implemented; no shared domain-56 compact stream
-  emitted yet.
-- Rust decoded: yes for synthetic domain-56 compact stream tests.
-- `.battleplan` verified: no.
-- Speed-five/current-equivalent hourly-or-lower: no, not integrated into shared
-  hourly scheduler.
-- Zero skipped hours: no shared run for domain 56 yet.
-- Any partial/source/worker/bridge failures: no lane-local probe failures; shared
-  production extraction remains unregistered.
+- DLL integration: active in the shared collector; domain 56 uses the existing
+  coordinator, root cache, scheduler, and sequence-owned compact writer.
+- Compact stream: schema/gate plus shared domain-56 emission are wired.
+- Rust decoded: yes; recorder authority accounting and the world fold consume the
+  lane-owned payload fail-closed.
+- `.battleplan`: the shared raw-stream/container and fold path are wired; this lane
+  does not retain an authenticated live replay receipt of its own.
+- Speed-five/current-equivalent hourly-or-lower: no authenticated integrated lane
+  run is retained yet.
+- Zero skipped hours: no authenticated shared run for domain 56 yet.
+- Any partial/source/worker/bridge failures: no lane-local probe failures; live
+  production acceptance still depends on the integrated run above, not registration.

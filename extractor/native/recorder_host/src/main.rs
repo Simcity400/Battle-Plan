@@ -1158,6 +1158,11 @@ fn run() -> Result<(), String> {
                 .join("proofs/catalog_source_join.json"),
             &bundle.live_resolution_report,
             &launch,
+            &static_bundle_admission
+                .as_ref()
+                .ok_or("early production launch has no verified product-modset binding")?
+                .verified
+                .product_modset_sha256,
         )?;
         let directory_digests =
             recorder_host::portable_content_manifest::finalized_directory_layer_content_sha256(
@@ -1842,6 +1847,10 @@ fn run() -> Result<(), String> {
                     "projects_root_source": projects_root_source,
                     "projects_root_discovery_debt": projects_root_discovery_debt,
                     "stream_format": cfg.stream_format.as_str(),
+                    "compact_stream_identity_mode": match capture_identity_mode {
+                        compact_contract::stream_validator::StreamIdentityMode::IdentityV1 => "identity_v1",
+                        compact_contract::stream_validator::StreamIdentityMode::Legacy => "legacy",
+                    },
                     "extraction_perf_gate": cfg.extraction_perf_gate,
                     "d53_emit_mode": cfg.d53_emit_mode.as_str(),
                     "d51_emit_mode": cfg.d51_emit_mode.as_str(),
@@ -2035,6 +2044,11 @@ fn run() -> Result<(), String> {
                 &bundle_root.join("proofs/catalog_source_join.json"),
                 &finalized.live_resolution_report,
                 &launch,
+                &admission
+                    .finalized_verified
+                    .as_ref()
+                    .ok_or("production content manifest has no finalized product-modset binding")?
+                    .product_modset_sha256,
                 &runtime_roots,
                 &raw_path,
                 capture_identity_mode,
@@ -2081,6 +2095,11 @@ fn run() -> Result<(), String> {
                         path,
                         live_report,
                         &launch,
+                        &static_bundle_admission
+                            .as_ref()
+                            .and_then(|admission| admission.finalized_verified.as_ref())
+                            .ok_or("portable trace publication has no finalized product-modset binding")?
+                            .product_modset_sha256,
                     )?;
                 Some(content_manifest)
             }
@@ -2231,6 +2250,11 @@ fn run() -> Result<(), String> {
                 .unwrap_or(Value::Null),
         );
     }
+    verify_product_modset_publication_join(
+        &manifest,
+        static_bundle_admission.as_ref(),
+        cfg.production,
+    )?;
     let pretty = serde_json::to_vec_pretty(&manifest)
         .map_err(|e| format!("serialize manifest failed: {e}"))?;
     fs::write(&manifest_path, pretty).map_err(|e| format!("write manifest failed: {e}"))?;
@@ -2321,7 +2345,10 @@ fn run() -> Result<(), String> {
             // tail before sealing, and the sealed-source read strictness would
             // then make the published container unreadable. A crash tail must
             // stay a raw recovery artifact.
-            if let Err(e) = recorder_host::stream_fold::verify_stream_logical_boundary(&raw_path) {
+            if let Err(e) = recorder_host::stream_fold::verify_stream_logical_boundary_with_identity_mode(
+                &raw_path,
+                capture_identity_mode,
+            ) {
                 let error = format!(
                     "refusing to seal (skip-fold): {e}; the raw stream stays the \
                      recovery artifact"
@@ -2339,6 +2366,7 @@ fn run() -> Result<(), String> {
                 &capture,
                 &[],
                 None,
+                capture_identity_mode,
                 &manifest,
                 &manifest_path,
                 &replay_path,
@@ -2366,14 +2394,21 @@ fn run() -> Result<(), String> {
                 // per worker. This is POST-capture offline batch work, so the
                 // parallel fold is used (the weaker-PC "don't lean on cores" law
                 // binds capture-time per-frame work, not finalization).
-                let (world_snapshot_files, fold_stats) =
-                    recorder_host::stream_fold::fold_compact_stream_file_parallel(
+                let (world_snapshot_files, fold_outcome) =
+                    recorder_host::stream_fold::fold_compact_stream_file_parallel_with_identity_mode(
                         &raw_path,
                         &replay_game_id,
                         &snapshot_spill_dir,
                         recorder_host::stream_fold::default_fold_workers(),
+                        capture_identity_mode,
                     )
                     .map_err(|e| format!("streaming fold failed: {e}"))?;
+                validate_fold_campaign_identity_join(
+                    &fold_outcome,
+                    &manifest,
+                    capture_identity_mode,
+                )?;
+                let fold_stats = fold_outcome.stats;
                 // Same seal-time boundary law as the repack path: never seal
                 // a source that does not end at a closed game hour.
                 if fold_stats.truncated_tail_bytes > 0
@@ -2398,6 +2433,7 @@ fn run() -> Result<(), String> {
                     &capture,
                     &world_snapshot_files,
                     Some(&fold_stats),
+                    capture_identity_mode,
                     &manifest,
                     &manifest_path,
                     &replay_path,
@@ -3779,6 +3815,20 @@ fn fold_and_repack_existing_run_dir(mut repack: RepackConfig) -> Result<(), Stri
     if manifest.get("stream_format").and_then(Value::as_str) != Some("compact") {
         return Err("fold-and-repack requires manifest stream_format=compact".to_string());
     }
+    let repack_identity_mode = match manifest
+        .get("compact_stream_identity_mode")
+        .and_then(Value::as_str)
+    {
+        Some("identity_v1") => {
+            compact_contract::stream_validator::StreamIdentityMode::IdentityV1
+        }
+        Some("legacy") | None => compact_contract::stream_validator::StreamIdentityMode::Legacy,
+        Some(value) => {
+            return Err(format!(
+                "fold-and-repack manifest has unsupported compact_stream_identity_mode {value:?}"
+            ))
+        }
+    };
     if manifest
         .get("host_finalize")
         .and_then(|value| value.get("fold"))
@@ -3927,6 +3977,7 @@ fn fold_and_repack_existing_run_dir(mut repack: RepackConfig) -> Result<(), Stri
         }
         None => None,
     };
+    verify_product_modset_publication_join(&manifest, static_bundle_admission.as_ref(), production)?;
 
     let game_id = manifest
         .get("replay_game_id")
@@ -4048,14 +4099,21 @@ fn fold_and_repack_existing_run_dir(mut repack: RepackConfig) -> Result<(), Stri
         ),
         String,
     > {
-        let (snapshot_files, fold_stats) =
-            recorder_host::stream_fold::fold_compact_stream_file_parallel(
+        let (snapshot_files, fold_outcome) =
+            recorder_host::stream_fold::fold_compact_stream_file_parallel_with_identity_mode(
                 &raw_path,
                 &game_id,
                 &snapshot_spill_dir,
                 repack.workers,
+                repack_identity_mode,
             )
             .map_err(|e| format!("streaming deferred fold failed: {e}"))?;
+        validate_fold_campaign_identity_join(
+            &fold_outcome,
+            &manifest,
+            repack_identity_mode,
+        )?;
+        let fold_stats = fold_outcome.stats;
         // Stream-container net gate 2026-07-11 finding 2: NEVER seal a source
         // that does not end at a closed game hour. A raw crash tail is
         // tolerated on READ (recovery), but compressing + checksumming it
@@ -4083,6 +4141,7 @@ fn fold_and_repack_existing_run_dir(mut repack: RepackConfig) -> Result<(), Stri
             &capture,
             &snapshot_files,
             Some(&fold_stats),
+            repack_identity_mode,
             &manifest,
             &manifest_path,
             &replay_path,
@@ -5140,6 +5199,40 @@ fn verify_static_bundle_before_publication(
             Err("production publication has no admitted static bundle".to_string())
         }
         None => Ok(()),
+    }
+}
+
+fn verify_product_modset_publication_join(
+    manifest: &Value,
+    admission: Option<&StaticBundleAdmission>,
+    production: bool,
+) -> Result<(), String> {
+    let content = recorded_portable_content_manifest(manifest)?;
+    let verified = admission.and_then(StaticBundleAdmission::publication_verified);
+    match (content.as_ref(), verified) {
+        (Some(content), Some(verified))
+            if content.product_modset_sha256 == verified.product_modset_sha256 =>
+        {
+            Ok(())
+        }
+        (Some(_), Some(_)) => Err(
+            "portable content manifest product-modset key differs from finalized static-bundle admission"
+                .to_string(),
+        ),
+        (None, None) if !production => Ok(()),
+        (Some(_), None) => Err(
+            "portable content manifest has no finalized static-bundle product-modset admission"
+                .to_string(),
+        ),
+        (None, Some(_)) if !production => Ok(()),
+        (None, Some(_)) => Err(
+            "finalized static bundle has no portable content manifest product-modset join"
+                .to_string(),
+        ),
+        (None, None) => Err(
+            "production publication has neither portable content nor static-bundle product-modset admission"
+                .to_string(),
+        ),
     }
 }
 
@@ -6626,6 +6719,46 @@ where
     result
 }
 
+fn validate_fold_campaign_identity_join(
+    outcome: &recorder_host::stream_fold::IdentityAwareFoldStats,
+    manifest: &Value,
+    identity_mode: compact_contract::stream_validator::StreamIdentityMode,
+) -> Result<(), String> {
+    let retained = outcome.validated_campaign_identity_manifest();
+    let declared = manifest.get("campaign_identity");
+    match identity_mode {
+        compact_contract::stream_validator::StreamIdentityMode::IdentityV1 => {
+            let retained = retained.ok_or_else(|| {
+                "IdentityV1 fold retained no placement-authoritative CID1 manifest".to_string()
+            })?;
+            if declared != Some(&retained) {
+                return Err(
+                    "refusing to publish: Known campaign_identity does not exactly match the complete fold's placement-authoritative CID1"
+                        .to_string(),
+                );
+            }
+        }
+        compact_contract::stream_validator::StreamIdentityMode::Legacy => {
+            if retained.is_some() {
+                return Err(
+                    "Legacy fold unexpectedly retained placement-authoritative CID1".to_string(),
+                );
+            }
+            if declared
+                .and_then(|identity| identity.get("state"))
+                .and_then(Value::as_str)
+                == Some("known")
+            {
+                return Err(
+                    "refusing to publish: Legacy stream declares Known campaign_identity"
+                        .to_string(),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Streaming production container writer. The raw compact stream is appended
 /// straight from disk in bounded-memory chunks (never buffered whole)
 /// and the finished container is re-verified FROM DISK, one entry at a time. The
@@ -6639,20 +6772,26 @@ fn write_native_replay_container_streaming(
     capture: &PipeCapture,
     snapshot_files: &[FoldedSnapshotFile],
     fold_stats: Option<&recorder_host::stream_fold::FoldStreamStats>,
+    identity_mode: compact_contract::stream_validator::StreamIdentityMode,
     manifest: &Value,
     manifest_path: &Path,
     replay_path: &Path,
 ) -> Result<snapshot::StreamVerifyReport, String> {
     match fold_stats {
-        Some(stats) => recorder_host::stream_fold::strict_stream_certification_verdict(
-            stats.stop_reason.as_deref(),
-            stats.truncated_tail_bytes,
-            stats.malformed_payload_records,
-            stats.ends_at_frame_end,
-            None,
+        Some(stats) => {
+            recorder_host::stream_fold::strict_stream_certification_verdict(
+                stats.stop_reason.as_deref(),
+                stats.truncated_tail_bytes,
+                stats.malformed_payload_records,
+                stats.ends_at_frame_end,
+                None,
+            )
+            .map_err(|error| format!("refusing to seal uncertified compact stream: {error}"))?;
+        }
+        None => recorder_host::stream_fold::verify_stream_logical_boundary_with_identity_mode(
+            raw_path,
+            identity_mode,
         )
-        .map_err(|error| format!("refusing to seal uncertified compact stream: {error}"))?,
-        None => recorder_host::stream_fold::verify_stream_logical_boundary(raw_path)
             .map_err(|error| format!("refusing to seal skip-fold compact stream: {error}"))?,
     }
     let session_manifest = read_session_manifest_bytes_validated(manifest_path, manifest)?;
@@ -11593,18 +11732,35 @@ fn compact_payload_status_flags(domain_id: u16, payload: &[u8]) -> Option<u32> {
     // d45 (focus_research_decisions_depth) is a versioned special case. FRD2
     // v1/v2 carry no global status word; byte 8 is lane-local
     // `depth_status_flags` and must never be inferred as global status. FRD2 v3
-    // adds the authoritative raw DATA status at byte 56.
+    // adds the authoritative raw DATA status at byte 56; v4 and v5 retain it.
     if domain_id == COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE {
-        return (payload.get(0..4) == Some(COMPACT_FRD_DEPTH_SCHEMA_MAGIC.as_slice())
-            && payload.len() >= COMPACT_FRD_DEPTH_HEADER_LEN
-            && read_u16_le(payload, 4) == COMPACT_FRD_DEPTH_SCHEMA_VERSION
-            && read_u16_le(payload, 6) as usize == COMPACT_FRD_DEPTH_HEADER_LEN)
+        if payload.len() < 8
+            || payload.get(0..4) != Some(COMPACT_FRD_DEPTH_SCHEMA_MAGIC.as_slice())
+        {
+            return None;
+        }
+        let version = read_u16_le(payload, 4);
+        let header_len = read_u16_le(payload, 6) as usize;
+        let status_bearing_header = matches!(
+            (version, header_len),
+            (
+                COMPACT_FRD_DEPTH_SCHEMA_VERSION_V3 | COMPACT_FRD_DEPTH_SCHEMA_VERSION,
+                COMPACT_FRD_DEPTH_HEADER_LEN
+            ) | (
+                COMPACT_FRD_DEPTH_SCHEMA_VERSION_V5,
+                COMPACT_FRD_DEPTH_HEADER_LEN_V5
+            )
+        );
+        return (status_bearing_header && payload.len() >= header_len)
             .then(|| read_u32_le(payload, 56));
     }
     let offset = match domain_id {
         COMPACT_DOMAIN_NAVAL_COMBAT_LIFECYCLE_LIVE
         | COMPACT_DOMAIN_NAVAL_COMBAT_MEMBERS_LIVE
-        | COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE => 12,
+        | COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE
+        | 74
+        | 78
+        | 82 => 12,
         COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE => 20,
         _ => 16,
     };
@@ -13770,7 +13926,7 @@ mod tests {
         assert_eq!(retained.payload(), cid1_payload);
         let identity = compact_summary_campaign_identity(&summary);
         assert_eq!(
-            identity.state,
+            identity.state(),
             recorder_host::campaign_identity::CampaignIdentityState::Known
         );
         assert!(identity.is_bound());
@@ -14013,7 +14169,7 @@ mod tests {
 
         let identity = compact_summary_campaign_identity(&summary);
         assert_ne!(
-            identity.state,
+            identity.state(),
             recorder_host::campaign_identity::CampaignIdentityState::Known
         );
         assert!(!identity.is_bound());
@@ -16964,6 +17120,7 @@ mod tests {
                     + 4,
                 first_casualties: 1_110,
                 second_casualties: 948,
+                residuals: None,
             }],
         };
         let payload = capwar60::compact::encode_payload(&snapshot);
@@ -17475,7 +17632,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_payload_status_flags_reads_only_frd_depth_v3_raw_status() {
+    fn compact_payload_status_flags_reads_only_frd_depth_global_status_word() {
         // FRD2 v2 has no global DATA status. Its lane-local byte-8 flags must
         // remain None, while v3 status zero is authoritative Some(0), not
         // indistinguishable from a missing field.
@@ -17500,6 +17657,17 @@ mod tests {
             compact_payload_status_flags(COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE, &v3,),
             Some(0),
             "d45 v3 status zero is authoritative, not missing"
+        );
+
+        let mut v5 = v3;
+        v5[4..6].copy_from_slice(&COMPACT_FRD_DEPTH_SCHEMA_VERSION_V5.to_le_bytes());
+        v5[6..8].copy_from_slice(&(COMPACT_FRD_DEPTH_HEADER_LEN_V5 as u16).to_le_bytes());
+        v5.resize(COMPACT_FRD_DEPTH_HEADER_LEN_V5, 0);
+        v5[56..60].copy_from_slice(&COMPACT_STATUS_DELTA_DATA.to_le_bytes());
+        assert_eq!(
+            compact_payload_status_flags(COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE, &v5,),
+            Some(COMPACT_STATUS_DELTA_DATA),
+            "d45 v5 retains the global DATA status at byte 56"
         );
     }
 
@@ -24584,6 +24752,7 @@ mod tests {
             &capture,
             &[],
             Some(&malformed_stats),
+            compact_contract::stream_validator::StreamIdentityMode::Legacy,
             &manifest,
             &manifest_path,
             &malformed_fold_path,
@@ -24602,6 +24771,7 @@ mod tests {
             &capture,
             &[],
             None,
+            compact_contract::stream_validator::StreamIdentityMode::Legacy,
             &manifest,
             &manifest_path,
             &skip_fold_path,
@@ -24700,6 +24870,7 @@ mod tests {
             &capture,
             &snapshots,
             Some(&fold_stats),
+            compact_contract::stream_validator::StreamIdentityMode::Legacy,
             &manifest,
             &manifest_path,
             &replay_path,
@@ -25038,6 +25209,7 @@ mod tests {
             &capture,
             &[],
             None,
+            compact_contract::stream_validator::StreamIdentityMode::Legacy,
             &manifest_a,
             &manifest_path,
             &streaming_path,
@@ -25122,6 +25294,7 @@ mod tests {
             &capture,
             &[],
             None,
+            compact_contract::stream_validator::StreamIdentityMode::Legacy,
             &manifest,
             &manifest_path,
             &replay_path,
@@ -25273,6 +25446,7 @@ mod tests {
             &capture,
             &inline_snapshots,
             Some(&inline_fold_stats),
+            compact_contract::stream_validator::StreamIdentityMode::Legacy,
             &manifest,
             &inline_manifest,
             &inline_replay,
@@ -25294,6 +25468,7 @@ mod tests {
             &capture,
             &[],
             None,
+            compact_contract::stream_validator::StreamIdentityMode::Legacy,
             &manifest,
             &deferred_manifest,
             &deferred_replay,
@@ -32299,10 +32474,10 @@ mod tests {
         assert!(obs.game_unique_seed.is_none());
 
         let identity = cid::resolve(obs);
-        assert_eq!(identity.state, cid::CampaignIdentityState::Unavailable);
+        assert_eq!(identity.state(), cid::CampaignIdentityState::Unavailable);
         assert!(!identity.is_bound());
-        assert!(identity.campaign_id.is_none());
-        assert!(identity.resolution_note.is_some());
+        assert!(identity.campaign_id().is_none());
+        assert!(identity.resolution_note().is_some());
 
         // The bound object must satisfy the exact manifest grammar, and the
         // wired-in pack/repack validator must accept it as a manifest sibling.
@@ -32330,8 +32505,8 @@ mod tests {
         });
         let summary = summarize_compact_stream(&raw);
         let identity = cid::resolve(&summary.session_header_identity);
-        assert_eq!(identity.state, cid::CampaignIdentityState::Unbound);
-        assert!(identity.campaign_id.is_none());
+        assert_eq!(identity.state(), cid::CampaignIdentityState::Unbound);
+        assert!(identity.campaign_id().is_none());
         cid::validate_in_session_manifest(&json!({
             "campaign_identity": cid::to_manifest_json(&identity)
         }))
