@@ -51,7 +51,7 @@ pub const CURRENT_870EBF_OFFSETS: ExtractorOffsets = ExtractorOffsets {
     body_front_off: 0x38,
     side_parent_body_off: 0x18,
     side_forward_child_off: 0x20,
-    side_positioning_off: 0x288,
+    side_positioning_off: 0x138,
     front_location_off: 0xA4,
     group_members_data_off: 0x08,
     group_members_cap_off: 0x10,
@@ -241,6 +241,8 @@ pub fn build_capture_frame(
             defender_member_count: Some(snapshot.lifecycle.defender_member_count),
             attacker_positioning_milli: snapshot.lifecycle.attacker_positioning_milli,
             defender_positioning_milli: snapshot.lifecycle.defender_positioning_milli,
+            attacker_anti_air_raw: None,
+            defender_anti_air_raw: None,
         });
         raw_member_rows.extend(snapshot.members.iter().cloned().map(|row| {
             PendingMemberBridgeRow {
@@ -332,6 +334,8 @@ pub fn build_transition_capture_frame(
             defender_member_count: Some(snapshot.lifecycle.defender_member_count),
             attacker_positioning_milli: snapshot.lifecycle.attacker_positioning_milli,
             defender_positioning_milli: snapshot.lifecycle.defender_positioning_milli,
+            attacker_anti_air_raw: None,
+            defender_anti_air_raw: None,
         });
         raw_member_rows.extend(snapshot.members.iter().cloned().map(|row| {
             PendingMemberBridgeRow {
@@ -374,6 +378,8 @@ pub fn build_transition_capture_frame(
             defender_member_count: Some(snapshot.lifecycle.defender_member_count),
             attacker_positioning_milli: snapshot.lifecycle.attacker_positioning_milli,
             defender_positioning_milli: snapshot.lifecycle.defender_positioning_milli,
+            attacker_anti_air_raw: None,
+            defender_anti_air_raw: None,
         });
         raw_member_rows.extend(
             snapshot

@@ -376,6 +376,7 @@ are `null`.
 | `missions[]` | list | S | ongoing missions |
 | `status_present` | obj\|null | C / M | non-empty `CDecisionStatus` vector counts from scheduled `decisions_live` |
 | `timed_live[]` | list\|null | C / M | active timed decisions from scheduled `decisions_live` or legacy `decisions_market`; each row has `decision`, `days`, `state`, `state_name`; measured-empty `[]` means no active timed decision for that measured tag |
+| `delayed_events[]` | list\|null | C | exact currently-pending d64 rows rooted at `CCountry+0x1290`: `{event_id, due_remaining_hours:null\|u32, originator_tag_db_id:null\|u32}`. The countdown is relative to the frame hour. Full-replace measured-empty `[]` is authoritative; a d64 domain problem makes the typed replay family unavailable. No legacy-memory fallback is admitted. These rows are pending state only and never substitute for XUI21 fired lifecycle history. |
 
 > One-shot decision **clicks** are not stored here (DESIGN §4 — only recoverable when
 > they persist state or fire a log marker; surfaced as derived events §9, not country
@@ -399,7 +400,6 @@ are `null`.
 | `intel_networks[]` | list | S | reserved; null→`[]` (graph summarized in diplomacy) |
 | `operations` | obj\|null | S | `{priority, running[], finished[]}`. A running op: `op_id`, `type`, `date`, `duration` (days), `target`, `phases[]`, `operatives[]` (`{operative_id, mission}`). Progress derives from `save_date` vs `date`+`duration`. |
 | `decryption` | obj\|null | S | cryptology: `{targets[{target, decryption(bool), amount}], intel_source}`. `amount` = accumulated decryption points; `decryption=true` = actively decrypting that target. |
-| `domain53_extra` | obj\|null | C / M | Exact raw a729 sidecar already emitted by domain 53: `agency_scalars`, `raw_capacity_cluster`, `operative_lifecycle_rows[]`, and `cryptology_targets[]`. Names ending `_unresolved` or `_unvalidated` are intentionally non-semantic and must not populate final A30 agency, capture, assignment, portrait, trait, nationality, operation, network-strength, visibility, or ordering fields. The legacy wire keys `defense_raw` and `upgrade_progress_raw` are also non-semantic: the typed view exposes them only as `value_0x128_unvalidated` and `value_0xc8_unvalidated` pending serializer reconciliation. `replay_core::IntelView` otherwise exposes the raw leaves without relabeling them. |
 | `peace_conference` | obj\|null | S | active peace-conference state (`{active}`; empty/inactive in most saves) |
 
 > `gfx` on an operative is a portrait sprite **name**, not image data (rendering is a
@@ -630,6 +630,7 @@ event lifecycle) has a single source of truth. Always present (`{}`-filled).
 | `controlled_industry_share` | obj\|null | D | `{TAG: fraction}`; null until computed |
 | `front_lines[]` | list | D | derived from control adjacency; null→`[]` until computed |
 | `strategic_regions` | obj\|null | S(static) | static; usually carried once, not per-snapshot |
+| `rail_replay_state_live` | obj\|null | C | Exact d81 a729 `CRailwayGfx` carrier. Common fields are `{schema_version, authority, source_binary_sha256, producer, consumer, edge_join_law:"reciprocal_min", provinces:{province_id:{active_terminal,anchor:{variant,x_bits,y_bits,z_bits,x,y,z},neighbors:[{ordinal,province_id,edge_level}]}}}`. Active schema v1 requires `hub_frames:null`, `hub_frames_complete:false`, and a non-empty `hub_frame_unavailable_reason`. Admitted schema v2 requires a strictly `(province_id,subtype)`-sorted complete list `hub_frames:[{province_id,subtype,background_button_frame,common_icon_frame,naval_overlay_visible}]`, `hub_frames_complete:true`, and `hub_frame_unavailable_reason:null`. `background_button_frame` is one-based 1..5 for `GFX_supply_hub_button_bg_strip`; `common_icon_frame` is the separate exact one-based 1..4 value for `GFX_supply_hub_icon_strip`; `naval_overlay_visible` is the exact visibility applied to `GFX_naval_supply_anchor_icon`. No field is inferred from opaque subtype. Exact-ten evidence, v2 encoding, fold, authority accounting, and replay ingest are promoted. The active collector remains schema v1 and reports hubs unavailable until its authenticated double-read route is implemented and centrally validated. Null on an absent/failed current-hour d81 frame; no centroid/static-building/heap-scan fallback. |
 
 > `map` is **redundant with** `states`/`provinces` — it exists so the raster renderer
 > can recolor without walking every state object. The writer fills `owner_by_state` and
@@ -679,8 +680,10 @@ Always present (`[]`/`{}`-filled).
 ## 13. `naval_air` + `supply` (live PROXY/region sidecars, first-class)
 
 Promoted from untyped assembler sidecars into first-class top-level fields so a
-consumer has a stable home for them — but they are **PROXY / region-level** LIVE reads,
-**not** per-province / per-ship ground truth. Each carries its own `source`/`confidence`
+consumer has a stable home for them — but most leaves are **PROXY / region-level** LIVE reads,
+**not** per-province / per-ship ground truth. The explicit
+`supply.by_province.*.disrupted_supply[]` exception is an exact stored engine field.
+Each sidecar carries its own `source`/`confidence`
 badge that travels WITH the data; a UI must render them as estimates, never authoritative.
 Always present; `null`-but-present until a live read folds them.
 
@@ -695,7 +698,7 @@ Always present; `null`-but-present until a live read folds them.
 ### 13.2 `supply`
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `by_province` | obj\|null | M | `{province_id: {current, capacity, gain, divisions}}` — the validated division-province supply PROXY (where troops are). The exact tooltip supply NUMBER is a documented wall; see `extractor/memory_reader/supply_solver_offsets.draft.json` and `extractor/documents/archive/research/RESEARCH_logistics_intel.md`. |
+| `by_province` | obj\|null | M | `{province_id: {current, capacity, gain, divisions, disrupted_supply[]}}`. `divisions` and province supply-number leaves remain validated PROXY data. `disrupted_supply[]` is exact stored country/node disruption: `{owner:TAG, node_type, value, value_raw, exact:true, source:"CCountrySupplySystem.disrupted_supply"}`, joined through the bounded `CSupplySystem+0x108` owner vector. `r2_logistics_attrition.country_disrupted_supply_available` witnesses a successfully validated exact source (including a proven-empty table); the companion row count is `null` for legacy/unwitnessed streams. The exact tooltip supply NUMBER remains a documented wall; see `extractor/memory_reader/supply_solver_offsets.draft.json` and `extractor/documents/archive/research/RESEARCH_logistics_intel.md`. |
 | `source` | str\|null | — | `"M"` when a live read filled it, else `null` |
 | `confidence` | str\|null | — | e.g. `"division_province_proxy"` |
 
@@ -708,24 +711,26 @@ Always present; `null`-but-present until a live read folds them.
 
 ## 13b. `special_projects` (top-level live project catalog)
 
-World-scoped live catalog for special-project facilities, active project rows,
-and scientists. This is distinct from save-sourced country
-`extra.special_projects`; it carries engine identities that are not yet safely
-attributed back to country ownership. Always present; `null`-but-present until
-a live read folds it.
+Live catalog for special-project facilities, active project rows, and
+scientists, with owner-joined lifecycle and fired reward-history extensions.
+This is distinct from save-sourced country `extra.special_projects`. Always
+present; an extension is `null` until its exact live segment is measured.
 
 | field | type | source | notes |
 |-------|------|--------|-------|
 | `facilities` | list\|null | C/M | each: `{id, province, building, active_project_handle, active, scientist_char_id, unread_prototype_rewards}` |
 | `projects` | list\|null | C/M | currently worked project rows only in the first DLL slice: `{id, static_def_handle, iterations, worked_at_facility}` |
 | `scientists` | list\|null | C/M | each: `{char_id, name_token, display_name, skills{specialization_*:int}, trait_count}` |
+| `project_lifecycle` | obj\|null | M | `{countries:{TAG:[{local_id, started, completed}]}, row_count, started_count, completed_count, walked_countries, aborted_countries}`. `start` is the current accepted/started byte and can return to false on stop/abort; `completed` is monotonic in the observed writer. |
+| `reward_history` | obj\|null | M | Gated exact `CProject` fired-reward rows: `{countries:{TAG:[{local_id, history_index, prototype_reward_handle, option_handle, province, progress_raw, character_ref_type, character_ref_id, country_ref_raw, scientist_ref_raw, state_ref_raw, date_raw}]}, row_count, walked_countries, aborted_countries}`. Handles/scoped refs remain raw; no token or TAG is fabricated. `null` means unmeasured, including while the ten-shard promotion identity is unpinned. |
 | `count` | obj\|null | C/M/D | `{facilities, projects, scientists}` matching measured list lengths |
 | `source` | str\|null | - | `"C"` for scheduled DLL `projects_live`, `"M"` for legacy memory-reader folds, else `null` |
 
-The collector slice does **not** yet carry project progress/completion, owner
-attribution, or resolved project definition tokens. Scientist trait token names
-remain memory/definition-derived until the DLL emits them; `trait_count` is the
-only DLL scientist-trait field in this slice.
+Project definition/reward-option token resolution remains open, so raw handles
+are preserved. Scientist trait token names remain memory/definition-derived;
+`trait_count` is the only DLL scientist-trait field in this slice. Reward-history
+emission is fail-closed until the required exact ten-shard RE manifest identity
+is pinned; decoders preserve absence as unmeasured rather than empty.
 
 ---
 
@@ -764,8 +769,8 @@ truthful `fired_events_complete=true` claim.
 
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `fired_events[]` | list[str\|obj] | C/M/S | legacy entries are persisted ids; rich lifecycle rows are `{event_id, recipient_tag, fire_date, fire_hour, fire_tick, event_sequence, visible_option_ordinals[], chosen_option_ordinal\|null, selected_desc_key\|null, shown_picture_gfx\|null, popup_subtype\|null, effective_timeout_hours, timeout_tick, resolved_tick\|null, resolution_reason, runtime_title_text_context_id\|null, runtime_description_text_context_id\|null, runtime_option_text_contexts:[{definition_ordinal,context_id}]}`. Runtime-text joins are independent per textbox and option joins use definition ordinals, never visible positions. Empty/absent presentation fields mean no replay-admissible popup, not that the lifecycle row is absent. `timeout` may retain the exact default option ordinal; only the no-choice timeout has null. |
-| `fired_events_complete` | bool\|null | C/M | only `true` admits an empty or populated rich lifecycle stream at the production replay boundary; legacy ids, absent/null or false remain incomplete and cannot authenticate popup history |
+| `fired_events[]` | list[str\|obj] | C/S | `S` carries legacy persisted ids only; `C` rich lifecycle rows are `{event_id, recipient_tag, fire_date, fire_hour, fire_tick, event_sequence, visible_option_ordinals[], chosen_option_ordinal\|null, selected_desc_key\|null, shown_picture_gfx\|null, popup_subtype, effective_timeout_hours, timeout_tick, resolved_tick\|null, resolution_reason, runtime_title_text_context_id\|null, runtime_description_text_context_id\|null, runtime_option_text_contexts:[{definition_ordinal,context_id}]}`. No legacy-memory rich producer is admitted. Runtime-text joins are independent per textbox and option joins use definition ordinals, never visible positions. Empty/absent presentation fields mean no replay-admissible popup, not that the lifecycle row is absent. `timeout` may retain the exact default option ordinal; only the no-choice timeout has null. |
+| `fired_events_complete` | bool\|null | C | only the authenticated d75 collector may emit `true`; it admits an empty or populated rich lifecycle stream at the production replay boundary. Legacy ids, absent/null or false remain incomplete and cannot authenticate popup history. |
 | `pending_events[]` | list | S | scheduled-but-unfired events (empty in most saves; future-proofed) |
 | `threat[]` | list | S | world-tension CONTRIBUTOR ledger (per threat-action). Each: `{threat, final_threat, daily, tag, date, label}`. **NOT** the aggregate tension scalar (that is not stored — see `world.world_tension_inputs`). |
 | `sunk_convoys[]` | list | S | per-month convoy-loss ledger. Each: `{month (hours-since-epoch bucket), convoys, killer_country, owner}` |

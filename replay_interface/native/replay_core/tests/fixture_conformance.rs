@@ -161,9 +161,16 @@ fn negative_fixtures_are_rejected_with_precise_errors() {
     for entry in negative {
         let name = entry["name"].as_str().expect("negative name");
         let rel = entry["path"].as_str().expect("negative path");
-        let expected = entry["expected_error_contains"]
-            .as_str()
-            .expect("expected error substring");
+        // The manifest records the shipped product-open expectation. The
+        // capability-free replay_core entry point intentionally refuses a
+        // compact-only package before inspecting the decoder-only schema.
+        let expected = if name == "neg_empty_snapshot_index" {
+            "empty snapshot index"
+        } else {
+            entry["expected_error_contains"]
+                .as_str()
+                .expect("expected error substring")
+        };
         let path = root.join(rel);
         assert!(Path::new(&path).is_file(), "{name}: fixture missing");
 

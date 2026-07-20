@@ -1,8 +1,10 @@
-//! Disabled auto-attach integration for the prepared H4CT transport.
+//! Activation-frozen auto-attach integration for the paired H4CR/H4CT transport.
 //!
 //! This module composes the listener-before-injection type state, admitted
-//! deadline channel, recurring heartbeat, and [`WorkerHandle`] lifecycle. It is
-//! intentionally not selected by `run_supervisor` or the live spawner yet.
+//! deadline channel, recurring heartbeat, and [`WorkerHandle`] lifecycle. The
+//! live spawner selects the combined product branch only when both explicit
+//! activation authorities below are true; otherwise it remains byte-for-byte
+//! on the legacy child path.
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,8 +37,8 @@ use super::proof::{
 };
 use super::sources::{WorkerHandle, WorkerSpec, WorkerStatus};
 
-/// Explicit product kill switch. The reusable foundation is testable, but no
-/// live spawner selects it until main/collector activation is separately gated.
+/// Explicit product kill switch. The reusable foundation is testable, but the
+/// live spawner cannot select it until identity-reader activation is also true.
 pub const AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED: bool = false;
 
 /// Opaque product selector.  Offline preparation/tests do not mint it, and the
@@ -47,11 +49,20 @@ pub struct AutoAttachDuplexProductPermit {
 
 pub fn auto_attach_duplex_product_permit(
 ) -> Result<AutoAttachDuplexProductPermit, DuplexWorkerError> {
-    if AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED {
+    if AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED
+        && compact_contract::build_profile::DOMAIN_CAMPAIGN_ID_LIVE_READER_ENABLED
+    {
         Ok(AutoAttachDuplexProductPermit { _private: () })
     } else {
         Err(DuplexWorkerError::ActivationDisabled)
     }
+}
+
+/// One fail-closed identity-mode selector shared by recorder-main consumers.
+/// A duplex-only flag flip cannot silently reinterpret Legacy bytes as CID1.
+pub const fn auto_attach_identity_v1_enabled() -> bool {
+    AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED
+        && compact_contract::build_profile::DOMAIN_CAMPAIGN_ID_LIVE_READER_ENABLED
 }
 
 pub fn required_auto_attach_duplex_capabilities() -> ControlCapabilities {
@@ -2194,6 +2205,7 @@ mod tests {
     #[test]
     fn activation_is_explicitly_disabled_and_listener_precedes_session() {
         assert!(!AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED);
+        assert!(!auto_attach_identity_v1_enabled());
         assert!(matches!(
             auto_attach_duplex_product_permit(),
             Err(DuplexWorkerError::ActivationDisabled)

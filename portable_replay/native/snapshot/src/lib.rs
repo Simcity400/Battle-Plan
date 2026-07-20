@@ -28,12 +28,13 @@ pub mod design_catalog;
 mod dir_store;
 pub mod pack;
 pub mod prefolded;
+pub mod prefolded_decoder;
 pub mod sha256;
 pub mod stream_verify;
 pub mod strict_json;
 pub mod zip;
 
-pub use container::{Container, ContainerError, ExpectedIdentity};
+pub use container::{Container, ContainerError, ExpectedIdentity, SpoolEntryReceipt};
 pub use pack::{
     pack, pack_borrowed, pack_borrowed_to_writer, pack_borrowed_with, pack_borrowed_with_writer,
     pack_mixed_to_writer, pack_streaming_to_writer, pack_streaming_zstd_to_writer,
@@ -42,6 +43,12 @@ pub use pack::{
 };
 pub use prefolded::{
     PrefoldedHourEntry, PrefoldedHourIndex, PrefoldedReplay, PrefoldedReplayError,
+};
+pub use prefolded_decoder::{
+    decode_certified_prefolded, decode_certified_prefolded_spool, CertifiedPrefoldDecoder,
+    CertifiedPrefoldRequest, CertifiedPrefoldSpoolDecoder, CertifiedPrefoldSpoolRequest,
+    CertifiedPrefoldedReplay, CertifiedPrefoldedSpool, PrefoldDecodeError,
+    PrefoldSourceReceipt, PrefoldedSpool, PrefoldedSpoolEntry, COMPACT_STREAM_ROLE,
 };
 pub use stream_verify::{
     verify_replay_container_streaming, verify_replay_container_streaming_file,
@@ -582,8 +589,10 @@ impl Store {
                 }
                 let path = format!("payload/{game}/{relative}");
                 // O(1) membership via the verified entry map — never re-project
-                // the whole manifest per read.
-                if !container.has_entry(&path) {
+                // the whole manifest per read. A poisoned verification lock
+                // propagates as the container's typed refusal instead of
+                // collapsing into an "absent entry" Ok(None) (fail-closed).
+                if !container.has_entry(&path)? {
                     return Ok(None);
                 }
                 Ok(Some(container.read_entry_bytes(&path)?))
@@ -659,5 +668,46 @@ mod tests {
             other => panic!("expected typed Reject, got {other:?}"),
         }
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// A caught panic during container entry verification poisons the entry
+    /// lock. `read_game_file_bytes` must then propagate the container's typed
+    /// lock-poison refusal — never Ok(None) "file absent" (fail-closed).
+    #[test]
+    fn replay_store_poisoned_entry_lock_refuses_instead_of_absent() {
+        let bytes = crate::pack::pack(
+            "g",
+            &[crate::pack::PackEntry {
+                path: "payload/g/index.json".into(),
+                bytes: br#"{"game_id":"g","schema_version":"1","snapshots":[]}"#.to_vec(),
+                role: "index",
+                hour_index: None,
+            }],
+            &crate::pack::PackIdentity::default(),
+            false,
+        )
+        .unwrap();
+        let container = Container::from_bytes(bytes, &ExpectedIdentity::default())
+            .expect("container opens");
+        let store = Store {
+            backend: Backend::Replay {
+                container: Arc::new(container),
+            },
+        };
+        assert!(store
+            .read_game_file_bytes("g", "index.json")
+            .expect("healthy read succeeds")
+            .is_some());
+        store.container().unwrap().poison_entry_lock_for_test();
+        let err = store
+            .read_game_file_bytes("g", "index.json")
+            .expect_err("a poisoned lock must refuse, never report absence");
+        match err {
+            LoadError::Container(ContainerError::Reject(message)) => assert!(
+                message.contains("entry-verification lock poisoned"),
+                "unexpected message: {message}"
+            ),
+            other => panic!("expected typed container Reject, got {other:?}"),
+        }
     }
 }

@@ -85,7 +85,8 @@ Notes:
 
 ### 1.1 ZIP encoding constraints (deterministic, safe)
 
-* Compression: `store` (0) or `deflate` (8) per entry — reader supports both.
+* Compression: `store` (0), `deflate` (8), or Zstandard (93) per entry. Zstandard
+  decoding is constrained by the reader's declared maximum window log.
 * Each entry's path validated against the rules in §4.2 **before** any extraction
   or hashing.
 * **Duplicate entry names are rejected** (a ZIP may legally contain two
@@ -93,9 +94,11 @@ Notes:
   is real). `[Codex b/c]`
 * The reader hashes the **decompressed bytes of the exact central-directory entry**
   it will serve; it never trusts a local-header name for path or content. `[Codex b]`
-* No entry is ever extracted to disk by the reader — it reads entries **in
-  memory**, so zip-slip/symlink/device-name extraction attacks do not apply to the
-  read path. (A future "unpack to dir" tool MUST apply §4.2.) `[Codex b]`
+* No entry is ever extracted to disk by the reader. Path opens retain one pinned
+  archive handle, parse central-directory records incrementally, and materialize
+  only the requested decompressed entry, so zip-slip/symlink/device-name
+  extraction attacks do not apply to the read path. (A future "unpack to dir"
+  tool MUST apply §4.2.) `[Codex b]`
 
 ---
 
@@ -214,30 +217,38 @@ Two independent layers, by intent:
 
 ## 4. Reader algorithm (normative)
 
-Verification is **staged** so a multi-GB file opens fast: cheap whole-file checks
-up front, expensive per-snapshot hashing **lazily on first read**. `[Codex d]`
+Verification is **staged**: structural validation and an incremental CRC-32 pass
+over every payload happen up front without archive-wide RAM residency; expensive
+per-entry SHA-256 authentication happens lazily when bytes are requested.
+`[Codex d]`
 
-### 4.1 Open (up-front, O(manifest))
+### 4.1 Open (up-front, O(total payload), bounded memory)
 
-1. Open the ZIP; read its central directory. Reject a malformed/truncated archive.
+1. Open the ZIP through one pinned file handle; record the handle's observed
+   length and reject a concurrent length change. Parse central-directory records
+   incrementally, retaining only bounded entry metadata, and reject a
+   malformed/truncated archive.
 2. Reject **duplicate entry names**. `[Codex b]`
 3. Validate **every** entry path against §4.2. Reject on any violation. `[Codex b]`
-4. Locate `manifest.json`. **If absent → this is an unfinalized/recovery-only file;
+4. Before decoding or trusting the manifest, incrementally decompress every entry
+   through its declared-size bound and re-derive CRC-32. Any CRC, decompressed-size,
+   compression-stream, or data-descriptor mismatch is an open-time refusal.
+5. Locate `manifest.json`. **If absent → this is an unfinalized/recovery-only file;
    the normal reader REFUSES it** (a separate recovery tool, §6, may rebuild a
    manifest and mark the result `recovered/unverified`). `[Codex c]`
-5. Parse the manifest; reject if `format != "hoi4replay"` or
+6. Parse the manifest; reject if `format != "hoi4replay"` or
    `container_version >` reader max.
-6. Reject if any `required_features[*]` is not in the reader's known set. `[Codex b]`
-7. Recompute `manifest_digest` over the canonical manifest; reject on mismatch.
-8. If `signature` present: verify Ed25519; reject on failure. If absent: continue,
+7. Reject if any `required_features[*]` is not in the reader's known set. `[Codex b]`
+8. Recompute `manifest_digest` over the canonical manifest; reject on mismatch.
+9. If `signature` present: verify Ed25519; reject on failure. If absent: continue,
    flag `unsigned`.
-9. Enforce structural caps (zip-bomb): entry count ≤ cap, each
+10. Enforce structural caps (zip-bomb): entry count ≤ cap, each
    `entries[*].bytes ≤ per-entry cap`, Σ`bytes ≤ total cap`, and each entry's
    declared `bytes` == the ZIP's uncompressed size for that entry. `[Codex b]`
-10. Verify + parse `payload/<game>/index.json` **now** (hash it against its entry,
+11. Verify + parse `payload/<game>/index.json` **now** (hash it against its entry,
     then JSON-parse) — it is the spine the app reads first.
-11. Verify + parse `timeline.json` now if present.
-12. Cross-check identity consistency (§2): `mod_identity` vs a snapshot's
+12. Verify + parse `timeline.json` now if present.
+13. Cross-check identity consistency (§2): `mod_identity` vs a snapshot's
     `provenance.mod`; build hash vs provenance. Reject on contradiction. `[Codex b]`
 
 ### 4.2 Path rules (reject any of these)
@@ -245,8 +256,10 @@ up front, expensive per-snapshot hashing **lazily on first read**. `[Codex d]`
 * absolute path, drive letter (`C:`), UNC (`//`), leading `/`;
 * any component equal to `.` or `..` (zip-slip); `[Codex b]`
 * a backslash `\` anywhere (ambiguous on Windows); `[Codex b]`
-* two entries whose paths are equal **case-insensitively** or under Unicode NFC
-  normalization (would collide when extracted on Windows/macOS); `[Codex b]`
+* any path that is not already Unicode NFC;
+* two entries whose NFC Unicode caseless collision keys are equal, including
+  multi-codepoint/contextual folds such as `Straße`/`STRASSE` and final sigma
+  (would collide when extracted on Windows/macOS); `[Codex b]`
 * a Windows reserved device name component (`CON`, `NUL`, `COM1`…);
 * a path not under `payload/` (except the single top-level `manifest.json`).
 
@@ -259,7 +272,11 @@ On a request for hour *h* (or file *f*):
 2. Read the entry's decompressed bytes (bounded by its declared `bytes`).
 3. SHA-256 the bytes; compare to the entry's `sha256`. Mismatch → error (never
    expose unverified snapshot data). `[Codex d]`
-4. Cache the *verified* status so a re-read is hash-free.
+4. Transition that exact manifest entry record from `Pending` to `Verified` and
+   require `Verified` at the byte-exposure boundary. A mismatch leaves it
+   `Pending`. Immutable byte-buffer archives may reuse that transition; a
+   file-backed reader re-authenticates every exposure because a pinned handle
+   guarantees file identity, not immutable contents.
 5. JSON-parse the verified bytes into the existing `Snapshot` value (raw domains
    stay `serde_json::Value`; the Absent/null/0 trichotomy is preserved by the
    existing reader and asserted by tests).

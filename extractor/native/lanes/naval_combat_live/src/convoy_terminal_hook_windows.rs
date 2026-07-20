@@ -1,0 +1,937 @@
+//! Fail-closed a729 CTA1 pre-collapse call-site observer.
+//!
+//! The installer is fully engineered, but cannot mutate process code while the
+//! H-CONVOY receipt is absent and the activation latch remains false. It
+//! replaces only the authenticated five-byte CALL with a rel32 call to a near
+//! relay; the relay performs a pointer-free absolute jump to the Rust ABI
+//! wrapper. The wrapper invokes the original aggregator exactly once and emits
+//! only after a same-hour, exact D70 before/after mutation has been proved.
+
+#![cfg(all(windows, target_arch = "x86_64"))]
+
+use core::cell::Cell;
+use core::ffi::c_void;
+use core::ptr;
+use std::collections::{BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+use crate::convoy_terminal_attribution::{
+    activation_blockers, capture_candidate, prepare_a729_hook, A729PreCollapseRegisters,
+    ActivationBlocker, ConvoyTerminalAttributionCarrier, ExactMemory, A729_CALL_BYTES,
+    A729_EXE_SHA256, A729_HOOK_RVA, MAX_COUNTRY_TAG_DB_ID,
+};
+use crate::convoy_terminal_runtime::{
+    clear_convoy_terminal_resolver_snapshot, try_current_convoy_terminal_resolver_snapshot,
+    ResolverPublicationReceipt,
+};
+
+type Bool = i32;
+type Dword = u32;
+type Handle = *mut c_void;
+type TerminalAggregator = unsafe extern "system" fn(usize, u32, usize, usize) -> usize;
+
+const MEM_COMMIT: Dword = 0x1000;
+const MEM_RESERVE: Dword = 0x2000;
+const MEM_RELEASE: Dword = 0x8000;
+const PAGE_READWRITE: Dword = 0x04;
+const PAGE_EXECUTE_READ: Dword = 0x20;
+const PAGE_EXECUTE_READWRITE: Dword = 0x40;
+const TH32CS_SNAPTHREAD: Dword = 0x0000_0004;
+const THREAD_SUSPEND_RESUME: Dword = 0x0002;
+const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
+const ERROR_INVALID_HANDLE: Dword = 6;
+const ERROR_INVALID_PARAMETER: Dword = 87;
+const RELAY_LEN: usize = 14;
+const ALLOCATION_GRANULARITY: usize = 0x1_0000;
+const MAX_REL32_DISTANCE: usize = 0x7FFF_0000;
+const MAX_D70_ROWS: usize = 65_536;
+const MAX_CONVOYS_PER_D70_ROW: u32 = 1_000_000;
+const EVENT_QUEUE_CAPACITY: usize = 4_096;
+const QUIESCE_TIMEOUT: Duration = Duration::from_secs(5);
+
+const GS_CURRENT_HOUR_OFF: usize = 0x468;
+const GS_D70_BEGIN_OFF: usize = 0x5A8;
+const GS_D70_CAPACITY_OFF: usize = 0x5B0;
+const GS_D70_COUNT_OFF: usize = 0x5B4;
+const SUNK_CONVOY_INFO_VTABLE_RVA: usize = 0x295_D008;
+
+#[repr(C)]
+struct ThreadEntry32 {
+    size: Dword,
+    usage: Dword,
+    thread_id: Dword,
+    owner_process_id: Dword,
+    base_priority: i32,
+    delta_priority: i32,
+    flags: Dword,
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn VirtualAlloc(
+        address: *mut c_void,
+        size: usize,
+        allocation_type: Dword,
+        protect: Dword,
+    ) -> *mut c_void;
+    fn VirtualFree(address: *mut c_void, size: usize, free_type: Dword) -> Bool;
+    fn VirtualProtect(
+        address: *mut c_void,
+        size: usize,
+        new_protect: Dword,
+        old_protect: *mut Dword,
+    ) -> Bool;
+    fn FlushInstructionCache(process: Handle, address: *const c_void, size: usize) -> Bool;
+    fn ReadProcessMemory(
+        process: Handle,
+        base_address: *const c_void,
+        buffer: *mut c_void,
+        size: usize,
+        bytes_read: *mut usize,
+    ) -> Bool;
+    fn GetCurrentProcess() -> Handle;
+    fn GetCurrentProcessId() -> Dword;
+    fn GetCurrentThreadId() -> Dword;
+    fn GetModuleHandleW(module_name: *const u16) -> Handle;
+    fn CreateToolhelp32Snapshot(flags: Dword, process_id: Dword) -> Handle;
+    fn Thread32First(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
+    fn Thread32Next(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
+    fn OpenThread(access: Dword, inherit: Bool, thread_id: Dword) -> Handle;
+    fn SuspendThread(thread: Handle) -> Dword;
+    fn ResumeThread(thread: Handle) -> Dword;
+    fn CloseHandle(handle: Handle) -> Bool;
+    fn GetLastError() -> Dword;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum D70MutationKind {
+    IncrementExisting,
+    AppendFirstSeen,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct D70MutationProof {
+    pub kind: D70MutationKind,
+    pub ordinal: u32,
+    pub before_rows: u32,
+    pub after_rows: u32,
+    pub before_count: u32,
+    pub after_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConvoyTerminalValidatedEvent {
+    pub carrier: ConvoyTerminalAttributionCarrier,
+    pub d70: D70MutationProof,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConvoyTerminalHookTelemetry {
+    pub callbacks_seen: u64,
+    pub original_calls: u64,
+    pub events_emitted: u64,
+    pub dropped_no_original: u64,
+    pub dropped_teardown: u64,
+    pub dropped_nested: u64,
+    pub dropped_capture_busy: u64,
+    pub dropped_hour_or_epoch: u64,
+    pub dropped_resolver: u64,
+    pub dropped_candidate: u64,
+    pub dropped_d70_pre: u64,
+    pub dropped_d70_post: u64,
+    pub dropped_d70_mutation: u64,
+    pub dropped_queue_busy: u64,
+    pub dropped_queue_full: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConvoyTerminalDrain {
+    pub events: Vec<ConvoyTerminalValidatedEvent>,
+    pub cumulative_telemetry: ConvoyTerminalHookTelemetry,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConvoyTerminalHookHeartbeat {
+    pub installed: bool,
+    pub teardown_requested: bool,
+    pub active_callbacks: usize,
+    pub resolver: ResolverPublicationReceipt,
+    pub telemetry: ConvoyTerminalHookTelemetry,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConvoyTerminalInstallError {
+    PromotionBlocked(Vec<ActivationBlocker>),
+    BinaryGate,
+    AlreadyInstalled,
+    TeardownPending,
+    ModuleBase,
+    AddressOverflow,
+    RelayAllocation,
+    RelayProtect,
+    RelayFlush,
+    Rel32OutOfRange,
+    ThreadSnapshot,
+    ThreadEnumeration,
+    ThreadOpen(Dword),
+    ThreadSuspend(Dword),
+    ByteGateDrift,
+    PatchProtect,
+    PatchFlush,
+    PatchedBytesDrift,
+    QuiesceTimeout,
+    ResolverClear(String),
+}
+
+#[derive(Clone, Copy)]
+struct InstalledState {
+    callsite: usize,
+    relay: usize,
+    patched_call: [u8; 5],
+    patch_restored: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct D70Identity {
+    month: i32,
+    killer: u32,
+    owner: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct D70Row {
+    identity: D70Identity,
+    count: u32,
+}
+
+struct PreObservation {
+    carrier: ConvoyTerminalAttributionCarrier,
+    d70: Vec<D70Row>,
+}
+
+struct ProcessMemory;
+
+impl ExactMemory for ProcessMemory {
+    fn read_exact(&self, address: usize, out: &mut [u8]) -> bool {
+        if out.is_empty() {
+            return true;
+        }
+        if address == 0 {
+            return false;
+        }
+        let mut read = 0usize;
+        unsafe {
+            ReadProcessMemory(
+                GetCurrentProcess(),
+                address as *const c_void,
+                out.as_mut_ptr().cast(),
+                out.len(),
+                &mut read,
+            ) != 0
+                && read == out.len()
+        }
+    }
+}
+
+macro_rules! counters {
+    ($($name:ident),+ $(,)?) => { $(static $name: AtomicU64 = AtomicU64::new(0);)+ };
+}
+
+counters!(
+    CALLBACKS_SEEN,
+    ORIGINAL_CALLS,
+    EVENTS_EMITTED,
+    DROP_NO_ORIGINAL,
+    DROP_TEARDOWN,
+    DROP_NESTED,
+    DROP_CAPTURE_BUSY,
+    DROP_HOUR_OR_EPOCH,
+    DROP_RESOLVER,
+    DROP_CANDIDATE,
+    DROP_D70_PRE,
+    DROP_D70_POST,
+    DROP_D70_MUTATION,
+    DROP_QUEUE_BUSY,
+    DROP_QUEUE_FULL,
+);
+
+static INSTALLED: AtomicBool = AtomicBool::new(false);
+static TEARDOWN: AtomicBool = AtomicBool::new(false);
+static ACTIVE_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+static CAPTURE_BUSY: AtomicBool = AtomicBool::new(false);
+static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_TARGET: AtomicUsize = AtomicUsize::new(0);
+static PRODUCER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static INSTALL_STATE: Mutex<Option<InstalledState>> = Mutex::new(None);
+static EVENT_QUEUE: OnceLock<Mutex<VecDeque<ConvoyTerminalValidatedEvent>>> = OnceLock::new();
+
+thread_local! {
+    static IN_CALLBACK: Cell<bool> = const { Cell::new(false) };
+}
+
+struct ActiveCallback;
+impl ActiveCallback {
+    fn enter() -> Self {
+        ACTIVE_CALLBACKS.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
+}
+impl Drop for ActiveCallback {
+    fn drop(&mut self) {
+        ACTIVE_CALLBACKS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+struct CallbackNesting;
+impl CallbackNesting {
+    fn try_enter() -> Option<Self> {
+        IN_CALLBACK.with(|flag| {
+            if flag.replace(true) {
+                None
+            } else {
+                Some(Self)
+            }
+        })
+    }
+}
+impl Drop for CallbackNesting {
+    fn drop(&mut self) {
+        IN_CALLBACK.with(|flag| flag.set(false));
+    }
+}
+
+struct CaptureLease;
+impl CaptureLease {
+    fn try_acquire() -> Option<Self> {
+        CAPTURE_BUSY
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self)
+    }
+}
+impl Drop for CaptureLease {
+    fn drop(&mut self) {
+        CAPTURE_BUSY.store(false, Ordering::Release);
+    }
+}
+
+pub fn convoy_terminal_hook_installed() -> bool {
+    INSTALLED.load(Ordering::Acquire)
+}
+
+pub fn convoy_terminal_hook_heartbeat() -> ConvoyTerminalHookHeartbeat {
+    let resolver = try_current_convoy_terminal_resolver_snapshot()
+        .map(|snapshot| snapshot.receipt())
+        .unwrap_or_default();
+    ConvoyTerminalHookHeartbeat {
+        installed: convoy_terminal_hook_installed(),
+        teardown_requested: TEARDOWN.load(Ordering::Acquire),
+        active_callbacks: ACTIVE_CALLBACKS.load(Ordering::Acquire),
+        resolver,
+        telemetry: telemetry(),
+    }
+}
+
+pub fn drain_convoy_terminal_events(max_events: usize) -> ConvoyTerminalDrain {
+    let mut events = Vec::new();
+    if max_events != 0 {
+        let queue = EVENT_QUEUE.get_or_init(|| Mutex::new(VecDeque::new()));
+        if let Ok(mut queue) = queue.try_lock() {
+            let take = max_events.min(queue.len());
+            events.reserve(take);
+            for _ in 0..take {
+                if let Some(event) = queue.pop_front() {
+                    events.push(event);
+                }
+            }
+        }
+    }
+    ConvoyTerminalDrain {
+        events,
+        cumulative_telemetry: telemetry(),
+    }
+}
+
+fn telemetry() -> ConvoyTerminalHookTelemetry {
+    let load = |counter: &AtomicU64| counter.load(Ordering::Acquire);
+    ConvoyTerminalHookTelemetry {
+        callbacks_seen: load(&CALLBACKS_SEEN),
+        original_calls: load(&ORIGINAL_CALLS),
+        events_emitted: load(&EVENTS_EMITTED),
+        dropped_no_original: load(&DROP_NO_ORIGINAL),
+        dropped_teardown: load(&DROP_TEARDOWN),
+        dropped_nested: load(&DROP_NESTED),
+        dropped_capture_busy: load(&DROP_CAPTURE_BUSY),
+        dropped_hour_or_epoch: load(&DROP_HOUR_OR_EPOCH),
+        dropped_resolver: load(&DROP_RESOLVER),
+        dropped_candidate: load(&DROP_CANDIDATE),
+        dropped_d70_pre: load(&DROP_D70_PRE),
+        dropped_d70_post: load(&DROP_D70_POST),
+        dropped_d70_mutation: load(&DROP_D70_MUTATION),
+        dropped_queue_busy: load(&DROP_QUEUE_BUSY),
+        dropped_queue_full: load(&DROP_QUEUE_FULL),
+    }
+}
+
+unsafe extern "system" fn convoy_terminal_hook(
+    game_state: usize,
+    count: u32,
+    killer_ref: usize,
+    owner_ref: usize,
+) -> usize {
+    let _active = ActiveCallback::enter();
+    CALLBACKS_SEEN.fetch_add(1, Ordering::Relaxed);
+    let original_address = ORIGINAL_TARGET.load(Ordering::Acquire);
+    if original_address == 0 {
+        DROP_NO_ORIGINAL.fetch_add(1, Ordering::Relaxed);
+        return 0;
+    }
+    let original: TerminalAggregator = unsafe { core::mem::transmute(original_address) };
+    if TEARDOWN.load(Ordering::Acquire) {
+        DROP_TEARDOWN.fetch_add(1, Ordering::Relaxed);
+        let result = unsafe { original(game_state, count, killer_ref, owner_ref) };
+        ORIGINAL_CALLS.fetch_add(1, Ordering::Relaxed);
+        return result;
+    }
+    let Some(_nesting) = CallbackNesting::try_enter() else {
+        DROP_NESTED.fetch_add(1, Ordering::Relaxed);
+        let result = unsafe { original(game_state, count, killer_ref, owner_ref) };
+        ORIGINAL_CALLS.fetch_add(1, Ordering::Relaxed);
+        return result;
+    };
+    let Some(_capture) = CaptureLease::try_acquire() else {
+        DROP_CAPTURE_BUSY.fetch_add(1, Ordering::Relaxed);
+        let result = unsafe { original(game_state, count, killer_ref, owner_ref) };
+        ORIGINAL_CALLS.fetch_add(1, Ordering::Relaxed);
+        return result;
+    };
+
+    let pre = prepare_observation(game_state, count, killer_ref, owner_ref);
+    let result = unsafe { original(game_state, count, killer_ref, owner_ref) };
+    ORIGINAL_CALLS.fetch_add(1, Ordering::Relaxed);
+    if let Some(pre) = pre {
+        complete_observation(game_state, pre);
+    }
+    result
+}
+
+fn prepare_observation(
+    game_state: usize,
+    count: u32,
+    killer_ref: usize,
+    owner_ref: usize,
+) -> Option<PreObservation> {
+    if count != 1 || game_state == 0 || killer_ref == 0 || owner_ref < 0x20 {
+        DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
+        return None;
+    }
+    let memory = ProcessMemory;
+    let Some(hour) = read_stable_i32(&memory, game_state.checked_add(GS_CURRENT_HOUR_OFF)?) else {
+        DROP_HOUR_OR_EPOCH.fetch_add(1, Ordering::Relaxed);
+        return None;
+    };
+    let Some(resolver) = try_current_convoy_terminal_resolver_snapshot() else {
+        DROP_RESOLVER.fetch_add(1, Ordering::Relaxed);
+        return None;
+    };
+    let receipt = resolver.receipt();
+    if receipt.publication_sequence == 0 || receipt.game_hour_raw != hour {
+        DROP_HOUR_OR_EPOCH.fetch_add(1, Ordering::Relaxed);
+        return None;
+    }
+    let sequence = PRODUCER_SEQUENCE.fetch_add(1, Ordering::AcqRel);
+    if sequence == 0 {
+        DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
+        return None;
+    }
+    let member = owner_ref - 0x20;
+    let registers = A729PreCollapseRegisters {
+        rcx_game_state: game_state,
+        edx_count: count,
+        r8_killer_country_ref: killer_ref,
+        r9_owner_country_ref: owner_ref,
+        r12_member: member,
+        r15_killer_country_ref: killer_ref,
+    };
+    let module_base = MODULE_BASE.load(Ordering::Acquire);
+    let carrier = match capture_candidate(
+        &memory,
+        module_base,
+        registers,
+        sequence,
+        hour,
+        resolver.as_ref(),
+        resolver.as_ref(),
+    ) {
+        Ok(carrier) => carrier,
+        Err(_) => {
+            DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+    };
+    let d70 = match read_d70(&memory, module_base, game_state) {
+        Some(rows) => rows,
+        None => {
+            DROP_D70_PRE.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+    };
+    Some(PreObservation { carrier, d70 })
+}
+
+fn complete_observation(game_state: usize, pre: PreObservation) {
+    let memory = ProcessMemory;
+    let Some(hour) = read_stable_i32(&memory, game_state.checked_add(GS_CURRENT_HOUR_OFF).unwrap_or(0)) else {
+        DROP_HOUR_OR_EPOCH.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    if hour != pre.carrier.game_hour_raw {
+        DROP_HOUR_OR_EPOCH.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    let module_base = MODULE_BASE.load(Ordering::Acquire);
+    let Some(after) = read_d70(&memory, module_base, game_state) else {
+        DROP_D70_POST.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    let Some(d70) = prove_d70_mutation(
+        &pre.d70,
+        &after,
+        pre.carrier.owner_tag_db_id,
+        pre.carrier.killer_tag_db_id,
+    ) else {
+        DROP_D70_MUTATION.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    enqueue(ConvoyTerminalValidatedEvent {
+        carrier: pre.carrier,
+        d70,
+    });
+}
+
+fn enqueue(event: ConvoyTerminalValidatedEvent) {
+    let queue = EVENT_QUEUE.get_or_init(|| Mutex::new(VecDeque::new()));
+    let Ok(mut queue) = queue.try_lock() else {
+        DROP_QUEUE_BUSY.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    if queue.len() >= EVENT_QUEUE_CAPACITY {
+        DROP_QUEUE_FULL.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    queue.push_back(event);
+    EVENTS_EMITTED.fetch_add(1, Ordering::Relaxed);
+}
+
+fn read_d70(memory: &ProcessMemory, module_base: usize, game_state: usize) -> Option<Vec<D70Row>> {
+    if module_base == 0 || game_state == 0 {
+        return None;
+    }
+    let read_header = || {
+        Some((
+            memory.u64(game_state.checked_add(GS_D70_BEGIN_OFF)?)? as usize,
+            memory.u32(game_state.checked_add(GS_D70_CAPACITY_OFF)?)?,
+            memory.u32(game_state.checked_add(GS_D70_COUNT_OFF)?)?,
+        ))
+    };
+    let first = read_header()?;
+    let (begin, capacity, count) = first;
+    if count > capacity || count as usize > MAX_D70_ROWS || (count != 0 && begin == 0) {
+        return None;
+    }
+    let expected_vtable = module_base.checked_add(SUNK_CONVOY_INFO_VTABLE_RVA)? as u64;
+    let mut identities = BTreeSet::new();
+    let mut rows = Vec::with_capacity(count as usize);
+    for ordinal in 0..count as usize {
+        let slot = begin.checked_add(ordinal.checked_mul(8)?)?;
+        let object = memory.u64(slot)? as usize;
+        if object == 0 || memory.u64(object)? != expected_vtable {
+            return None;
+        }
+        let fields = || {
+            Some(D70Row {
+                identity: D70Identity {
+                    month: read_i32(memory, object.checked_add(0x08)?)?,
+                    killer: memory.u32(object.checked_add(0x10)?)?,
+                    owner: memory.u32(object.checked_add(0x14)?)?,
+                },
+                count: memory.u32(object.checked_add(0x0C)?)?,
+            })
+        };
+        let row = fields()?;
+        if fields()? != row
+            || row.count == 0
+            || row.count > MAX_CONVOYS_PER_D70_ROW
+            || row.identity.killer == 0
+            || row.identity.killer > MAX_COUNTRY_TAG_DB_ID
+            || row.identity.owner == 0
+            || row.identity.owner > MAX_COUNTRY_TAG_DB_ID
+            || !identities.insert(row.identity)
+        {
+            return None;
+        }
+        rows.push(row);
+    }
+    (read_header()? == first).then_some(rows)
+}
+
+fn prove_d70_mutation(
+    before: &[D70Row],
+    after: &[D70Row],
+    owner: u32,
+    killer: u32,
+) -> Option<D70MutationProof> {
+    if after.len() == before.len() {
+        let mut changed = None;
+        for (ordinal, (old, new)) in before.iter().zip(after).enumerate() {
+            if old == new {
+                continue;
+            }
+            if changed.is_some()
+                || old.identity != new.identity
+                || old.identity.owner != owner
+                || old.identity.killer != killer
+                || new.count != old.count.checked_add(1)?
+            {
+                return None;
+            }
+            changed = Some((ordinal, old.count, new.count));
+        }
+        let (ordinal, before_count, after_count) = changed?;
+        return Some(D70MutationProof {
+            kind: D70MutationKind::IncrementExisting,
+            ordinal: u32::try_from(ordinal).ok()?,
+            before_rows: u32::try_from(before.len()).ok()?,
+            after_rows: u32::try_from(after.len()).ok()?,
+            before_count,
+            after_count,
+        });
+    }
+    if after.len() != before.len().checked_add(1)?
+        || after.get(..before.len())? != before
+    {
+        return None;
+    }
+    let appended = after.last()?;
+    if appended.identity.owner != owner || appended.identity.killer != killer || appended.count != 1 {
+        return None;
+    }
+    Some(D70MutationProof {
+        kind: D70MutationKind::AppendFirstSeen,
+        ordinal: u32::try_from(before.len()).ok()?,
+        before_rows: u32::try_from(before.len()).ok()?,
+        after_rows: u32::try_from(after.len()).ok()?,
+        before_count: 0,
+        after_count: 1,
+    })
+}
+
+fn read_i32(memory: &ProcessMemory, address: usize) -> Option<i32> {
+    memory.u32(address).map(|value| i32::from_le_bytes(value.to_le_bytes()))
+}
+
+fn read_stable_i32(memory: &ProcessMemory, address: usize) -> Option<i32> {
+    let first = read_i32(memory, address)?;
+    (read_i32(memory, address)? == first).then_some(first)
+}
+
+/// Install only after the exact-ten and H-CONVOY hashes are pinned and the
+/// compile-time activation latch is reviewed true. In the current source tree
+/// this always returns `PromotionBlocked` before any process mutation.
+pub fn install_convoy_terminal_hook(
+    executable_sha256: &str,
+) -> Result<(), ConvoyTerminalInstallError> {
+    let blockers = activation_blockers();
+    if !blockers.is_empty() {
+        return Err(ConvoyTerminalInstallError::PromotionBlocked(blockers));
+    }
+    if !executable_sha256.eq_ignore_ascii_case(A729_EXE_SHA256) {
+        return Err(ConvoyTerminalInstallError::BinaryGate);
+    }
+    let mut state = INSTALL_STATE.lock().unwrap_or_else(|poison| poison.into_inner());
+    if let Some(existing) = *state {
+        return Err(if existing.patch_restored {
+            ConvoyTerminalInstallError::TeardownPending
+        } else {
+            ConvoyTerminalInstallError::AlreadyInstalled
+        });
+    }
+    let module_base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
+    if module_base == 0 {
+        return Err(ConvoyTerminalInstallError::ModuleBase);
+    }
+    let memory = ProcessMemory;
+    let prepared = prepare_a729_hook(&memory, module_base, executable_sha256)
+        .map_err(|_| ConvoyTerminalInstallError::BinaryGate)?;
+    if !prepared.activation_blockers.is_empty() {
+        return Err(ConvoyTerminalInstallError::PromotionBlocked(
+            prepared.activation_blockers,
+        ));
+    }
+    let relay = unsafe { allocate_near_relay(prepared.hook_address)? };
+    let patched_call = match make_rel32_call(prepared.hook_address, relay as usize) {
+        Some(bytes) => bytes,
+        None => {
+            unsafe { VirtualFree(relay.cast(), 0, MEM_RELEASE) };
+            return Err(ConvoyTerminalInstallError::Rel32OutOfRange);
+        }
+    };
+    let suspended = unsafe { SuspendedProcessThreads::suspend_all_other_threads()? };
+    if prepare_a729_hook(&memory, module_base, executable_sha256).is_err() {
+        drop(suspended);
+        unsafe { VirtualFree(relay.cast(), 0, MEM_RELEASE) };
+        return Err(ConvoyTerminalInstallError::ByteGateDrift);
+    }
+    MODULE_BASE.store(module_base, Ordering::Release);
+    ORIGINAL_TARGET.store(prepared.original_target_address, Ordering::Release);
+    TEARDOWN.store(false, Ordering::Release);
+    if let Err(error) = unsafe { write_code(prepared.hook_address, &patched_call) } {
+        let mut observed = [0u8; 5];
+        if memory.read_exact(prepared.hook_address, &mut observed) && observed != A729_CALL_BYTES {
+            // A failed cache flush or protection restore may still have made
+            // the call live. Preserve every dependency and expose the state so
+            // teardown can restore it; freeing the relay here would be unsafe.
+            *state = Some(InstalledState {
+                callsite: prepared.hook_address,
+                relay: relay as usize,
+                patched_call,
+                patch_restored: false,
+            });
+            INSTALLED.store(true, Ordering::Release);
+            drop(suspended);
+            return Err(error);
+        }
+        ORIGINAL_TARGET.store(0, Ordering::Release);
+        MODULE_BASE.store(0, Ordering::Release);
+        drop(suspended);
+        unsafe { VirtualFree(relay.cast(), 0, MEM_RELEASE) };
+        return Err(error);
+    }
+    *state = Some(InstalledState {
+        callsite: prepared.hook_address,
+        relay: relay as usize,
+        patched_call,
+        patch_restored: false,
+    });
+    INSTALLED.store(true, Ordering::Release);
+    drop(suspended);
+    Ok(())
+}
+
+pub fn uninstall_convoy_terminal_hook() -> Result<(), ConvoyTerminalInstallError> {
+    let mut state = INSTALL_STATE.lock().unwrap_or_else(|poison| poison.into_inner());
+    let Some(mut installed) = *state else {
+        clear_convoy_terminal_resolver_snapshot()
+            .map_err(ConvoyTerminalInstallError::ResolverClear)?;
+        return Ok(());
+    };
+    TEARDOWN.store(true, Ordering::Release);
+    if !installed.patch_restored {
+        let suspended = unsafe { SuspendedProcessThreads::suspend_all_other_threads()? };
+        let memory = ProcessMemory;
+        let mut current = [0u8; 5];
+        if !memory.read_exact(installed.callsite, &mut current) || current != installed.patched_call {
+            drop(suspended);
+            return Err(ConvoyTerminalInstallError::PatchedBytesDrift);
+        }
+        if let Err(error) = unsafe { write_code(installed.callsite, &A729_CALL_BYTES) } {
+            let mut observed = [0u8; 5];
+            if memory.read_exact(installed.callsite, &mut observed) && observed == A729_CALL_BYTES {
+                installed.patch_restored = true;
+                *state = Some(installed);
+                INSTALLED.store(false, Ordering::Release);
+            }
+            drop(suspended);
+            return Err(error);
+        }
+        installed.patch_restored = true;
+        *state = Some(installed);
+        INSTALLED.store(false, Ordering::Release);
+        drop(suspended);
+    }
+    if unsafe {
+        FlushInstructionCache(
+            GetCurrentProcess(),
+            installed.callsite as *const c_void,
+            A729_CALL_BYTES.len(),
+        )
+    } == 0
+    {
+        return Err(ConvoyTerminalInstallError::PatchFlush);
+    }
+    let deadline = Instant::now() + QUIESCE_TIMEOUT;
+    while ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 {
+        if Instant::now() >= deadline {
+            // The callsite is restored. Retain the relay and original pointer
+            // so an in-flight callback can finish safely; retrying teardown can
+            // reclaim them after quiescence.
+            return Err(ConvoyTerminalInstallError::QuiesceTimeout);
+        }
+        std::thread::yield_now();
+    }
+    clear_convoy_terminal_resolver_snapshot().map_err(ConvoyTerminalInstallError::ResolverClear)?;
+    unsafe { VirtualFree(installed.relay as *mut c_void, 0, MEM_RELEASE) };
+    ORIGINAL_TARGET.store(0, Ordering::Release);
+    MODULE_BASE.store(0, Ordering::Release);
+    *state = None;
+    TEARDOWN.store(false, Ordering::Release);
+    Ok(())
+}
+
+unsafe fn allocate_near_relay(callsite: usize) -> Result<*mut u8, ConvoyTerminalInstallError> {
+    let hook = convoy_terminal_hook as *const c_void;
+    let aligned = callsite & !(ALLOCATION_GRANULARITY - 1);
+    let mut distance = 0usize;
+    while distance <= MAX_REL32_DISTANCE {
+        let candidates = [aligned.checked_add(distance), aligned.checked_sub(distance)];
+        for candidate in candidates.into_iter().flatten() {
+            if make_rel32_call(callsite, candidate).is_none() {
+                continue;
+            }
+            let relay = unsafe {
+                VirtualAlloc(
+                    candidate as *mut c_void,
+                    RELAY_LEN,
+                    MEM_RESERVE | MEM_COMMIT,
+                    PAGE_READWRITE,
+                ) as *mut u8
+            };
+            if relay.is_null() {
+                continue;
+            }
+            let mut bytes = [0u8; RELAY_LEN];
+            bytes[..6].copy_from_slice(&[0xFF, 0x25, 0, 0, 0, 0]);
+            bytes[6..].copy_from_slice(&(hook as usize as u64).to_le_bytes());
+            unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), relay, bytes.len()) };
+            let mut old = 0;
+            if unsafe { VirtualProtect(relay.cast(), RELAY_LEN, PAGE_EXECUTE_READ, &mut old) } == 0 {
+                unsafe { VirtualFree(relay.cast(), 0, MEM_RELEASE) };
+                return Err(ConvoyTerminalInstallError::RelayProtect);
+            }
+            if unsafe { FlushInstructionCache(GetCurrentProcess(), relay.cast(), RELAY_LEN) } == 0 {
+                unsafe { VirtualFree(relay.cast(), 0, MEM_RELEASE) };
+                return Err(ConvoyTerminalInstallError::RelayFlush);
+            }
+            return Ok(relay);
+        }
+        distance = match distance.checked_add(ALLOCATION_GRANULARITY) {
+            Some(next) => next,
+            None => break,
+        };
+    }
+    Err(ConvoyTerminalInstallError::RelayAllocation)
+}
+
+fn make_rel32_call(callsite: usize, destination: usize) -> Option<[u8; 5]> {
+    let resume = callsite.checked_add(5)?;
+    let displacement = (destination as i128) - (resume as i128);
+    let displacement = i32::try_from(displacement).ok()?;
+    let mut bytes = [0u8; 5];
+    bytes[0] = 0xE8;
+    bytes[1..].copy_from_slice(&displacement.to_le_bytes());
+    Some(bytes)
+}
+
+unsafe fn write_code(address: usize, bytes: &[u8]) -> Result<(), ConvoyTerminalInstallError> {
+    let mut old = 0;
+    if unsafe {
+        VirtualProtect(
+            address as *mut c_void,
+            bytes.len(),
+            PAGE_EXECUTE_READWRITE,
+            &mut old,
+        )
+    } == 0
+    {
+        return Err(ConvoyTerminalInstallError::PatchProtect);
+    }
+    unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), address as *mut u8, bytes.len()) };
+    let mut ignored = 0;
+    if unsafe { VirtualProtect(address as *mut c_void, bytes.len(), old, &mut ignored) } == 0 {
+        return Err(ConvoyTerminalInstallError::PatchProtect);
+    }
+    if unsafe { FlushInstructionCache(GetCurrentProcess(), address as *const c_void, bytes.len()) }
+        == 0
+    {
+        return Err(ConvoyTerminalInstallError::PatchFlush);
+    }
+    Ok(())
+}
+
+struct SuspendedProcessThreads {
+    handles: Vec<Handle>,
+}
+
+impl SuspendedProcessThreads {
+    unsafe fn suspend_all_other_threads() -> Result<Self, ConvoyTerminalInstallError> {
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(ConvoyTerminalInstallError::ThreadSnapshot);
+        }
+        let process_id = unsafe { GetCurrentProcessId() };
+        let current_thread_id = unsafe { GetCurrentThreadId() };
+        let mut entry = ThreadEntry32 {
+            size: core::mem::size_of::<ThreadEntry32>() as Dword,
+            usage: 0,
+            thread_id: 0,
+            owner_process_id: 0,
+            base_priority: 0,
+            delta_priority: 0,
+            flags: 0,
+        };
+        let mut handles = Vec::new();
+        let mut present = unsafe { Thread32First(snapshot, &mut entry) } != 0;
+        while present {
+            if entry.owner_process_id == process_id && entry.thread_id != current_thread_id {
+                let handle = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.thread_id) };
+                if handle.is_null() {
+                    let error = unsafe { GetLastError() };
+                    if error == ERROR_INVALID_PARAMETER {
+                        present = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+                        continue;
+                    }
+                    unsafe { CloseHandle(snapshot) };
+                    resume_and_close(&mut handles);
+                    return Err(ConvoyTerminalInstallError::ThreadOpen(entry.thread_id));
+                }
+                if unsafe { SuspendThread(handle) } == Dword::MAX {
+                    let error = unsafe { GetLastError() };
+                    unsafe { CloseHandle(handle) };
+                    if error == ERROR_INVALID_HANDLE || error == ERROR_INVALID_PARAMETER {
+                        present = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+                        continue;
+                    }
+                    unsafe { CloseHandle(snapshot) };
+                    resume_and_close(&mut handles);
+                    return Err(ConvoyTerminalInstallError::ThreadSuspend(entry.thread_id));
+                }
+                handles.push(handle);
+            }
+            present = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+        }
+        let enumeration_error = unsafe { GetLastError() };
+        unsafe { CloseHandle(snapshot) };
+        if enumeration_error != 0 && enumeration_error != 18 {
+            resume_and_close(&mut handles);
+            return Err(ConvoyTerminalInstallError::ThreadEnumeration);
+        }
+        Ok(Self { handles })
+    }
+}
+
+impl Drop for SuspendedProcessThreads {
+    fn drop(&mut self) {
+        resume_and_close(&mut self.handles);
+    }
+}
+
+fn resume_and_close(handles: &mut Vec<Handle>) {
+    for handle in handles.drain(..).rev() {
+        unsafe {
+            ResumeThread(handle);
+            CloseHandle(handle);
+        }
+    }
+}

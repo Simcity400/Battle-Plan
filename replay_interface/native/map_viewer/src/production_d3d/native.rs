@@ -1,5 +1,8 @@
 use super::*;
-use crate::d3d11_device::{native_d3d11_create_device, D3dPtr, NativeD3d11Device};
+use crate::d3d11_device::{
+    native_d3d11_check_void_upload_device, native_d3d11_create_device, D3dPtr,
+    NativeD3d11Device,
+};
 use replay_core::RenderOutputState;
 use replay_core::{
     ConstantBufferBinding, DepthStencilAttachmentView, PreparedRenderTarget,
@@ -1460,6 +1463,13 @@ unsafe fn create_exact_graph_texture(
                 initial.row_pitch,
                 initial.slice_pitch,
             );
+            native_d3d11_check_void_upload_device(
+                &device.device,
+                &format!(
+                    "UpdateSubresource sparse exact render-graph {:?} subresource {}",
+                    resource.dimension, initial.subresource_ordinal
+                ),
+            )?;
         }
     }
     Ok(texture)
@@ -1495,6 +1505,21 @@ mod exact_target_consumer_tests {
                 .into_iter()
                 .collect(),
         )
+    }
+
+    #[test]
+    fn sparse_update_device_failure_is_typed_and_fail_closed() {
+        let error = crate::d3d11_device::native_d3d11_validate_void_upload_result(
+            0x887A_0005u32 as i32,
+            "UpdateSubresource sparse exact render-graph Texture2d subresource 3",
+        )
+        .expect_err("device removal must reject sparse exact initialization");
+        assert!(error
+            .downcast_ref::<crate::d3d11_device::NativeD3d11UploadError>()
+            .is_some());
+        let message = error.to_string();
+        assert!(message.contains("subresource 3"), "{message}");
+        assert!(message.contains("uploaded state was not admitted"), "{message}");
     }
 
     #[test]

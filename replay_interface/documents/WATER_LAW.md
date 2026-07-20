@@ -346,8 +346,9 @@ heatmap + region map are written beside the stats JSON.
 - **Synthesized vs engine geometry** — the only capture shape that carries the
   seafloor textures is the chunk library, whose geometry is synthesized; a
   byte-exact engine proof needs a session with the engine's exact underwater draw
-  stream AND the seafloor textures (none exists yet). Recapture of `restore_gate_1`
-  with the underwater-pass SRVs would close this.
+  stream AND the seafloor textures (none exists yet). A new underwater capture
+  carrying those SRVs would close this; recovering the original `restore_gate_1`
+  cannot add payloads that frame never captured.
 - **Camera-frustum vs whole-world coverage** — the oracle synthesis renders the
   whole world rect; the engine's underwater pass is frustum-culled. This inflates
   the `clear` region divergence.

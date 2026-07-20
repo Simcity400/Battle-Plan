@@ -26,16 +26,23 @@
 //! snapshot entries a container ships today, so `replay_core`'s `world.rs`
 //! parsing keeps working unchanged.
 //!
+//! # Portable ownership boundary
+//!
+//! `portable_replay/native/snapshot` owns [`snapshot::CertifiedPrefoldDecoder`]
+//! and [`snapshot::PrefoldedReplay`]. This extractor crate implements that
+//! neutral contract with [`ProductionCertifiedPrefoldDecoder`]; replay_core
+//! never links this crate, `recorder_host`, or any lane decoder.
+//!
 //! # Memory model
 //!
 //! Iteration is bounded: each finished game-hour is drained from the fold the
 //! moment its `FRAME_END` closes ([`WorldFold::take_finished`]) and handed to
 //! the caller; no previous hour is retained. Peak memory is
 //! `O(current fold state + one hour's snapshot)`, independent of stream length.
-//! (The container source is the one exception: it materializes the verified
+//! (The legacy `open_container` path is the one exception: it materializes the verified
 //! stream entry in RAM first — see [`open`] — because the container reader has
-//! no streaming-entry API yet. Use a standalone raw or zstd `collector_stream.bin`
-//! for large fold passes.)
+//! a separate explicit streaming-entry API. Use the certified spool capability
+//! for production activation and large fold passes.)
 //!
 //! # Example (a `replay_core` consumer)
 //!
@@ -68,7 +75,8 @@ use compact_contract::{
     COMPACT_RECORD_TYPE_FRAME_END,
 };
 use recorder_host::stream_fold::{
-    strict_stream_certification_verdict, validate_domain_data_payload, BoundaryTracker,
+    fold_compact_stream_file, strict_stream_certification_verdict,
+    validate_domain_data_payload, BoundaryTracker,
 };
 use recorder_host::world_fold::{schema_version, WorldFold};
 use snapshot::container::{Container, ExpectedIdentity};
@@ -511,6 +519,7 @@ pub fn fold_raw_h4cr_prefolded(
             DecodeError::Io(error) => OpenError::Io(error),
         })?);
     }
+    validate_prefold_cardinality(&cursor, folded.len())?;
     cursor
         .take_index()
         .map_err(|error| OpenError::Certification(error.to_string()))?;
@@ -529,6 +538,296 @@ pub fn fold_raw_h4cr_prefolded(
             "certified fold did not satisfy the neutral prefolded contract: {error}"
         ))
     })
+}
+
+/// The extractor-owned implementation of the neutral portable pre-fold seam.
+///
+/// This zero-sized adapter does not move or duplicate the fold: it drives this
+/// crate's existing cursor, which in turn drives the single production
+/// [`WorldFold`]. `replay_core` depends only on the portable trait and never on
+/// this type or crate.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ProductionCertifiedPrefoldDecoder;
+
+impl snapshot::CertifiedPrefoldDecoder for ProductionCertifiedPrefoldDecoder {
+    fn decoder_id(&self) -> &'static str {
+        "extractor.replay_decoder.production_world_fold.v1"
+    }
+
+    fn decode_certified(
+        &self,
+        request: snapshot::CertifiedPrefoldRequest,
+    ) -> Result<snapshot::PrefoldedReplay, snapshot::PrefoldDecodeError> {
+        let (game_id, raw_h4cr) = request.into_parts();
+        fold_raw_h4cr_bytes_prefolded(raw_h4cr, game_id).map_err(|error| {
+            snapshot::PrefoldDecodeError::new(format!(
+                "{}: {error}",
+                snapshot::CertifiedPrefoldDecoder::decoder_id(self)
+            ))
+        })
+    }
+}
+
+impl snapshot::CertifiedPrefoldSpoolDecoder for ProductionCertifiedPrefoldDecoder {
+    fn decoder_id(&self) -> &'static str {
+        "extractor.replay_decoder.production_world_fold.spool.v1"
+    }
+
+    fn decode_certified_spool(
+        &self,
+        request: snapshot::CertifiedPrefoldSpoolRequest,
+    ) -> Result<snapshot::PrefoldedSpool, snapshot::PrefoldDecodeError> {
+        fold_raw_h4cr_file_spooled(request).map_err(|error| {
+            snapshot::PrefoldDecodeError::new(format!(
+                "{}: {error}",
+                snapshot::CertifiedPrefoldSpoolDecoder::decoder_id(self)
+            ))
+        })
+    }
+}
+
+/// Bounded production adapter: authenticate the exact raw spool while driving
+/// the existing file-backed `WorldFold`, then return only a compact manifest of
+/// per-hour files. Neither the H4CR stream nor all snapshots are retained in
+/// memory.
+pub fn fold_raw_h4cr_file_spooled(
+    request: snapshot::CertifiedPrefoldSpoolRequest,
+) -> Result<snapshot::PrefoldedSpool, OpenError> {
+    let (game_id, raw_path, snapshot_dir, expected_len, expected_sha256) =
+        request.into_parts();
+    let source_meta = fs::symlink_metadata(&raw_path)?;
+    if !source_meta.file_type().is_file() || source_meta.file_type().is_symlink() {
+        return Err(OpenError::Certification(format!(
+            "raw H4CR spool is not a regular non-symlink file: {}",
+            raw_path.display()
+        )));
+    }
+    if source_meta.len() != expected_len {
+        return Err(OpenError::Certification(format!(
+            "raw H4CR spool length {} != authenticated source length {expected_len}",
+            source_meta.len()
+        )));
+    }
+    let mut source = fs::File::open(&raw_path)?;
+    let mut magic = [0u8; 4];
+    source.read_exact(&mut magic)?;
+    if magic != *compact_contract::COMPACT_RECORD_MAGIC {
+        return Err(OpenError::UnrecognizedInput(format!(
+            "{} is not a physically raw H4CR stream",
+            raw_path.display()
+        )));
+    }
+    drop(source);
+
+    let output_meta = fs::symlink_metadata(&snapshot_dir)?;
+    if !output_meta.file_type().is_dir() || output_meta.file_type().is_symlink() {
+        return Err(OpenError::Certification(format!(
+            "snapshot spool is not a regular non-symlink directory: {}",
+            snapshot_dir.display()
+        )));
+    }
+    if fs::read_dir(&snapshot_dir)?.next().is_some() {
+        return Err(OpenError::Certification(format!(
+            "snapshot spool directory is not empty: {}",
+            snapshot_dir.display()
+        )));
+    }
+
+    let canonical_snapshot_dir = fs::canonicalize(&snapshot_dir)?;
+    let (files, stats) = fold_compact_stream_file(&raw_path, &game_id, &snapshot_dir)?;
+    strict_stream_certification_verdict(
+        stats.stop_reason.as_deref(),
+        stats.truncated_tail_bytes,
+        stats.malformed_payload_records,
+        stats.ends_at_frame_end,
+        None,
+    )
+    .map_err(OpenError::Certification)?;
+    if stats.stream_bytes != expected_len || stats.decoded_sha256 != expected_sha256 {
+        return Err(OpenError::Certification(format!(
+            "folded H4CR source identity mismatch: bytes {} vs {expected_len}, sha256 {} vs {expected_sha256}",
+            stats.stream_bytes, stats.decoded_sha256
+        )));
+    }
+    if stats.frame_end_records != stats.hours_emitted
+        || stats.hours_emitted != files.len() as u64
+    {
+        return Err(OpenError::Certification(format!(
+            "closed-hour cardinality mismatch: {} FRAME_END record(s), {} WorldFold emission(s), {} spilled snapshot(s)",
+            stats.frame_end_records,
+            stats.hours_emitted,
+            files.len()
+        )));
+    }
+
+    let mut entries = Vec::with_capacity(files.len());
+    let mut expected_files = std::collections::BTreeSet::new();
+    for file in files {
+        let canonical_path = fs::canonicalize(&file.path)?;
+        if canonical_path.parent() != Some(canonical_snapshot_dir.as_path()) {
+            return Err(OpenError::Certification(format!(
+                "WorldFold snapshot escaped private spool: {}",
+                file.path.display()
+            )));
+        }
+        let meta = fs::symlink_metadata(&file.path)?;
+        if !meta.file_type().is_file()
+            || meta.file_type().is_symlink()
+            || meta.len() != file.byte_len as u64
+        {
+            return Err(OpenError::Certification(format!(
+                "WorldFold snapshot identity changed after spill: {}",
+                file.path.display()
+            )));
+        }
+        let file_name = file
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                OpenError::Certification(format!(
+                    "WorldFold emitted a non-portable snapshot name: {}",
+                    file.path.display()
+                ))
+            })?
+            .to_string();
+        if !expected_files.insert(file_name.clone()) {
+            return Err(OpenError::Certification(format!(
+                "WorldFold emitted duplicate snapshot file {file_name:?}"
+            )));
+        }
+        let sha256 = file.sha256.ok_or_else(|| {
+            OpenError::Certification(format!(
+                "WorldFold omitted snapshot SHA-256 for {file_name:?}"
+            ))
+        })?;
+        let bytes = fs::read(&file.path)?;
+        let observed_sha256 = to_hex(&Sha256::digest(&bytes));
+        if bytes.len() as u64 != file.byte_len as u64 || observed_sha256 != sha256 {
+            return Err(OpenError::Certification(format!(
+                "WorldFold snapshot bytes changed after authenticated spill: {file_name:?}"
+            )));
+        }
+        let parsed = snapshot::PrefoldedHourEntry::from_json(file.hour_index, &bytes)
+            .map_err(|error| OpenError::Certification(error.to_string()))?;
+        match parsed.snapshot().game_id.as_deref() {
+            Some(body_game_id) if body_game_id == game_id => {}
+            other => {
+                return Err(OpenError::Certification(format!(
+                    "spooled hour {} game_id {:?} != request {:?}",
+                    file.hour_index, other, game_id
+                )))
+            }
+        }
+        if parsed.snapshot().schema_version.as_ref()
+            != Some(&serde_json::Value::String(schema_version().to_string()))
+        {
+            return Err(OpenError::Certification(format!(
+                "spooled hour {} schema_version does not match production schema {}",
+                file.hour_index,
+                schema_version()
+            )));
+        }
+        entries.push(
+            snapshot::PrefoldedSpoolEntry::try_new(
+                file.hour_index,
+                file.date,
+                file_name,
+                file.byte_len as u64,
+                sha256,
+            )
+            .map_err(|error| OpenError::Certification(error.to_string()))?,
+        );
+    }
+    let observed_files = fs::read_dir(&snapshot_dir)?
+        .map(|entry| {
+            let entry = entry?;
+            entry.file_name().into_string().map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "snapshot spool contains a non-Unicode file name",
+                )
+            })
+        })
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    if observed_files != expected_files {
+        return Err(OpenError::Certification(
+            "snapshot spool contains files not emitted by the certified WorldFold".to_string(),
+        ));
+    }
+
+    snapshot::PrefoldedSpool::try_new(
+        game_id,
+        serde_json::Value::String(schema_version().to_string()),
+        entries,
+    )
+    .map_err(|error| OpenError::Certification(error.to_string()))
+}
+
+/// Fully fold and certify verified, physically raw H4CR bytes transferred by a
+/// portable container reader.
+///
+/// Unlike the pull cursor, this function exposes no prefix. It drains through
+/// physical EOF, applies the exact full-stream certification verdict, checks
+/// declared-vs-consumed length, and constructs the neutral result only after
+/// those gates pass.
+pub fn fold_raw_h4cr_bytes_prefolded(
+    raw_h4cr: Vec<u8>,
+    game_id: impl Into<String>,
+) -> Result<snapshot::PrefoldedReplay, OpenError> {
+    if !raw_h4cr.starts_with(compact_contract::COMPACT_RECORD_MAGIC) {
+        return Err(OpenError::UnrecognizedInput(
+            "physically raw H4CR input required at the portable prefold boundary".to_string(),
+        ));
+    }
+    let total_len = raw_h4cr.len() as u64;
+    let game_id = game_id.into();
+    let mut cursor = HourCursor::from_reader(
+        Box::new(Cursor::new(raw_h4cr)),
+        total_len,
+        game_id.clone(),
+    );
+    let schema_version = serde_json::Value::String(cursor.metadata().schema_version.clone());
+    let mut folded = Vec::new();
+    while let Some(hour) = cursor.next_hour() {
+        folded.push(hour.map_err(|error| match error {
+            DecodeError::Io(error) => OpenError::Io(error),
+        })?);
+    }
+    validate_prefold_cardinality(&cursor, folded.len())?;
+    cursor
+        .certify_complete()
+        .map_err(|error| OpenError::Certification(error.to_string()))?;
+
+    let entries = folded
+        .into_iter()
+        .map(|hour| snapshot::PrefoldedHourEntry::from_json(hour.hour_index, &hour.snapshot))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            OpenError::Certification(format!(
+                "certified fold did not satisfy the neutral prefolded contract: {error}"
+            ))
+        })?;
+    snapshot::PrefoldedReplay::try_new(game_id, schema_version, entries).map_err(|error| {
+        OpenError::Certification(format!(
+            "certified fold did not satisfy the neutral prefolded contract: {error}"
+        ))
+    })
+}
+
+fn validate_prefold_cardinality(
+    cursor: &HourCursor,
+    folded_len: usize,
+) -> Result<(), OpenError> {
+    let stats = cursor.stats();
+    let folded_len = folded_len as u64;
+    if stats.frame_end_records != stats.hours_emitted || stats.hours_emitted != folded_len {
+        return Err(OpenError::Certification(format!(
+            "closed-hour cardinality mismatch: {} FRAME_END record(s), {} WorldFold emission(s), {folded_len} retained snapshot(s)",
+            stats.frame_end_records, stats.hours_emitted
+        )));
+    }
+    Ok(())
 }
 
 fn read_up_to(r: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
@@ -558,9 +857,18 @@ fn extract_container_stream(path: &Path) -> Result<(Vec<u8>, String), OpenError>
                 path.display()
             )))
         }
-        1 => container
-            .read_entry_bytes(&entries[0].path)
-            .map_err(|e| OpenError::Container(format!("read {}: {e}", entries[0].path)))?,
+        1 => {
+            let expected_prefix = format!("payload/{game_id}/");
+            if !entries[0].path.starts_with(&expected_prefix) {
+                return Err(OpenError::Container(format!(
+                    "stream role entry {:?} is outside manifest game namespace {expected_prefix:?}",
+                    entries[0].path
+                )));
+            }
+            container
+                .read_entry_bytes(&entries[0].path)
+                .map_err(|e| OpenError::Container(format!("read {}: {e}", entries[0].path)))?
+        }
         n => {
             return Err(OpenError::Container(format!(
                 "{} has {n} entries with role {STREAM_ROLE:?}; expected exactly one",
@@ -769,6 +1077,34 @@ impl HourCursor {
     /// have a stable re-openable source identity. Prefix/reader-only indexes are
     /// intentionally unavailable through this authoritative API.
     pub fn take_index(self) -> Result<StreamIndex, IndexCertificationError> {
+        self.validate_complete()?;
+        let descriptor = self
+            .index_source
+            .ok_or(IndexCertificationError::UnidentifiedSource)?;
+        let index = StreamIndex {
+            source: CertifiedSourceIdentity {
+                kind: descriptor.kind,
+                canonical_path: descriptor.canonical_path,
+                decoded_len: self.decoded_read,
+                decoded_sha256: to_hex(&self.source_hasher.finalize()),
+            },
+            game_id: self.meta.game_id,
+            hours: self.index_hours,
+        };
+        index
+            .validate_structure()
+            .map_err(IndexCertificationError::InvalidIndex)?;
+        Ok(index)
+    }
+
+    /// Consume a reader-only cursor after proving that it reached and certified
+    /// physical EOF. Unlike [`HourCursor::take_index`], this does not mint a
+    /// persisted seek index and therefore needs no filesystem source identity.
+    pub fn certify_complete(self) -> Result<(), IndexCertificationError> {
+        self.validate_complete()
+    }
+
+    fn validate_complete(&self) -> Result<(), IndexCertificationError> {
         if !self.done {
             return Err(IndexCertificationError::NotExhausted);
         }
@@ -787,23 +1123,7 @@ impl HourCursor {
                 self.total_len, self.decoded_read
             )));
         }
-        let descriptor = self
-            .index_source
-            .ok_or(IndexCertificationError::UnidentifiedSource)?;
-        let index = StreamIndex {
-            source: CertifiedSourceIdentity {
-                kind: descriptor.kind,
-                canonical_path: descriptor.canonical_path,
-                decoded_len: self.decoded_read,
-                decoded_sha256: to_hex(&self.source_hasher.finalize()),
-            },
-            game_id: self.meta.game_id,
-            hours: self.index_hours,
-        };
-        index
-            .validate_structure()
-            .map_err(IndexCertificationError::InvalidIndex)?;
-        Ok(index)
+        Ok(())
     }
 
     /// Advance framing until at least one hour is queued, EOF, or a hard framing

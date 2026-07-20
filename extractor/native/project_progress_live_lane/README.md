@@ -19,3 +19,17 @@ Production certification belongs to the standalone compact production gate in
 `../lanes/compact_replay_verification_gates/`, followed by the production-profile
 checks in `../fold_check/`; those validators bind the capture manifest, required
 domain roster, and requested game-hour duration.
+
+Exact a729 `CProject` lifecycle and fired-reward-history field/writer semantics
+are recorded in `SPECIAL_PROJECT_LIFECYCLE_REWARD_RE_20260719.md` and its JSON
+companion. The reader and downstream `PRHF` contract are integrated fail-closed,
+and production emission/fold/replay is active under the exact-10 authenticated
+promotion manifest `SPECIAL_PROJECT_LIFECYCLE_REWARD_PROMOTION_MANIFEST_20260720.json`.
+
+The exhaustive retained-source closeout for the remaining d65 owner equality and
+breakthrough-handle semantic join is
+`A23_X9_RETAINED_SOURCE_EXHAUSTION_20260720.md` with a machine-readable JSON
+companion. The retained compact corpus has only two raw breakthrough handles because
+the old probe/reader inspected only status record 0. `tools/breakthrough_state_probe.py`
+schema v2 now reads all validated status records for the one remaining same-boundary
+admission capture; it still refuses to infer a mapping.

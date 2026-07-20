@@ -161,23 +161,24 @@ Determinism was checked by writing a second run to
 
 ## Validation v2 (restore_gate_1, ongoing vanilla war save)
 
-> **STORE NOTES (updated 2026-07-19):** `hoi4_captures` paths in this historical
-> section are stale and the original `restore_gate_1` directory remains absent.
-> However, the retained-RDC recovery packet at
-> `re_evidence/rendering_laws/RESTORE_GATE_RETAINED/` now exports two fresh
-> same-frame observations: a terrain consumer at t6 and a water consumer at t3,
-> both binding an all-zero 2816x1024 `ProvinceSecondaryColorMap` with identical
-> SHA-256 `d4d2639a...`. This re-proves the consumer, descriptor, and transparent
-> case, but remains vacuous for the rare non-transparent producer law. Neither
-> RDC is claimed to be the lost original frame.
+> **STORE NOTES (updated 2026-07-19):** the historical `hoi4_captures` path is
+> stale, but the original 243-file `restore_gate_1` directory was recovered and
+> copied byte-exactly to
+> `<local-path>`. The portable
+> authority packet at
+> `re_evidence/rendering_laws/RESTORE_GATE_1_RECOVERY_20260719/` authenticates
+> the `ProvinceSecondaryColorMap` payload plus its terrain-t6 and water-t3
+> consumers. Its all-zero SHA-256 remains `d4d2639a...`, so the observation is
+> genuine but still vacuous for the rare non-transparent producer law. The
+> separate retained-RDC packet remains an independent same-frame observation.
 
 ### Intent
 
 v1 validated only against a 1936-start capture (`live_PAN2`) whose secondary map
 was all-transparent — a weak test, because controller equals owner nearly
 everywhere at game start, so the law's "transparent" prediction matched trivially.
-The `2026-07-06` session
-`C:\Users\Example\AppData\Local\hoi4_captures\restore_gate_1\` captured
+The recovered `2026-07-06` session at
+`<local-path>` captured
 `ProvinceSecondaryColorMap` from the user's ONGOING vanilla save (loaded via
 `--continuelastsave`, matching `autosave.hoi4`, an `IRE` game on "Operation
 Postern v1.19.2.0" with many war/event flags set). A war in progress means
@@ -197,7 +198,7 @@ despite the war-in-progress save.
 Command:
 
 ```powershell
-cargo run -p map_viewer --bin dump_political_colors -- --game "<local-path> of Iron IV" --capture "C:\Users\Example\AppData\Local\hoi4_captures\restore_gate_1" --out "...\map_viewer\out\political_colors_restore_gate_1"
+cargo run -p map_viewer --bin dump_political_colors -- --game "<local-path> of Iron IV" --capture "<local-path>" --out "...\map_viewer\out\political_colors_restore_gate_1"
 ```
 
 | Metric | Value |

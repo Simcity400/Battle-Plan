@@ -1618,13 +1618,12 @@ posteffect_volumes = {
 
     /// The live restore capture (the shipped composed ColorCube SRV payload):
     /// `BATTLE_PLAN_CAPTURES_ROOT` (joined with the restore_gate_1 payload path) when
-    /// set, else the machine-local capture store the gate was recorded on.
+    /// set, else the canonical preserved evidence root.
     ///
-    /// NOTE: the restore_gate_1 store was recorded as LOST in the 2026-07-19
-    /// evidence consolidation (see GRADING_LAW.md "STORE LOST"), so the LUT
-    /// byte-exact gate currently skips on ALL machines until a fresh
-    /// restore-pass capture is produced; `BATTLE_PLAN_CAPTURES_ROOT` is the intended
-    /// way to point at a re-captured store.
+    /// The original 243-file store was recovered byte-exactly on 2026-07-19;
+    /// its identity is admitted by the RESTORE_GATE_1_RECOVERY_20260719 packet.
+    /// `BATTLE_PLAN_CAPTURES_ROOT` remains the portable override for another preserved
+    /// evidence mount.
     fn restore_capture_color_cube() -> std::path::PathBuf {
         let rel = std::path::Path::new("restore_gate_1").join(
             "restore_frame_draw_map_frame_shared_payload_ps_srv_ColorCube_fb9c4f759c5171c9.d3d11",
@@ -1632,7 +1631,7 @@ posteffect_volumes = {
         std::env::var_os("BATTLE_PLAN_CAPTURES_ROOT").or_else(|| std::env::var_os("HOI4_CAPTURES_ROOT"))
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
-                std::path::PathBuf::from(r"C:\Users\Example\AppData\Local\hoi4_captures")
+                std::path::PathBuf::from(r"C:\hoi4_evidence\capture_corpus_preserved")
             })
             .join(rel)
     }

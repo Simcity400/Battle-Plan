@@ -14,8 +14,8 @@ const DIAGNOSTIC_LIVENESS_RESPONSE_MAGIC: &[u8; 4] = b"EDRP";
 const DIAGNOSTIC_END_MAGIC: &[u8; 4] = b"EDND";
 pub const EARLY_HOOK_COMPLETENESS_MASK: u16 = 0x03ff;
 pub const EARLY_STAGED_HOOK_GENERATION: u64 = 1;
-pub const EARLY_STAGED_HOOK_COUNT: u32 = 51;
-pub const EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK: u64 = 0xff;
+pub const EARLY_STAGED_HOOK_COUNT: u32 = 57;
+pub const EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK: u64 = 0x3ff;
 pub const EARLY_DIAGNOSTIC_MIN_HOLD_MS: u64 = 210_000;
 pub const EARLY_DIAGNOSTIC_END_RECORDER_CANCEL: u16 = 1;
 
@@ -23,7 +23,7 @@ pub fn staged_hook_count_for_group_mask(group_mask: u64) -> Option<u32> {
     if group_mask & !EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK != 0 || group_mask & 1 == 0 {
         return None;
     }
-    let group_counts = [19u32, 2, 3, 8, 7, 7, 2, 3];
+    let group_counts = [19u32, 2, 3, 8, 8, 7, 2, 3, 2, 3];
     Some(
         group_counts
             .into_iter()

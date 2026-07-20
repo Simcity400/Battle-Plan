@@ -11,6 +11,48 @@ This lane owns compact domains from `extractor/documents/DOMAIN_REGISTRY.md`:
 - `49 = naval_combat_lifecycle_live`
 - `50 = naval_combat_members_live`
 
+## Engineered convoy terminal observer (promotion-disabled)
+
+`src/convoy_terminal_attribution.rs` contains the prepared a729 pre-collapse
+convoy-loss boundary. `src/convoy_terminal_runtime.rs` atomically binds that
+member to the same-hour validated d49/d50 epoch and authenticated live route
+snapshot. `src/convoy_terminal_hook_windows.rs` contains the concrete x64
+five-byte call-site installer, near relay, original-call wrapper, D70 mutation
+proof, bounded queue, heartbeat, drop telemetry, and quiescing teardown. It is
+not registered as a compact domain. The matching on-disk executable pins the call at RVA
+`0x1962378` to bytes `E8 13 8B 86 FE`, targeting RVA `0x1CAE90`; preparation
+checks the complete 25-byte argument-setup window beginning at RVA `0x1962364`.
+
+The candidate decoder validates the `CFEXMember` vtable and preserves the
+convoy handle at `+0x10`, owner at `+0x20`, client handle at `+0xD0`, convoy
+index at `+0xD8`, terminal state at `+0xE0`, and battle slot at `+0x120`. Exact
+combat-epoch and live route-manager resolvers must provide the remaining joins.
+Its 96-byte `CTA1/v1` carrier contains only numeric handles, country IDs,
+combat identity, endpoint kinds/IDs, and provenance flags; process pointers
+are excluded.
+
+The exact-ten static authority is accepted and pinned by
+`CTA1_EXACT10_AUTHORITY_RECEIPT_20260720.json` (SHA-256
+`42cfb445...c5614d`). That receipt binds the exact pool receipt and every
+required replacement request, job.json, and artifact hash. Discovery jobs and
+their hashes are not promotable by themselves, including a byte-identical
+artifact produced under different custody.
+
+Activation remains deliberately impossible: the installer returns before any
+OS or process mutation while the H-CONVOY control-pair pin is `None` and
+`ACTIVATION_COMPILED` is false. The root-owned promotion patch must satisfy
+those remaining gates after the controlled positive/negative observation.
+Retained-save correlation, current province, time-window, task force, or ship
+name cannot implement the live route resolver.
+
+The exhausted offline census and the minimal remaining live boundary are
+recorded in
+`../../../re_evidence/A6_A7_SUPPLY_CONVOY/H_CONVOY_RETAINED_CORPUS_INVENTORY.json`
+and
+`../../../re_evidence/A6_A7_SUPPLY_CONVOY/H_CONVOY_MINIMAL_LIVE_CAPTURE.md`.
+The retained same-hour save repeat is negative oracle evidence only; it does
+not authenticate a live route-manager traversal or armed callback.
+
 ## 2026-07-19 lifecycle and anti-air closeout
 
 The retained production speed-five stream contains 402 paired d49/d50 hours:
@@ -40,6 +82,8 @@ serially port validated constants into shared hot files after live validation.
 - `src/extractor.rs`: lane-local extraction boundary for validated
   `CNavalCombat -> CNavalCombatant -> CFEXGroup -> CFEXMember` rows plus the
   current `CFEXMember -> CShip -> CTaskForce/CFleet` join.
+- `src/convoy_terminal_attribution.rs`: byte-gated, pointer-free pre-collapse
+  convoy attribution carrier; deliberately prepared but not activated.
 - `src/bin/naval_combat_lane_proof.rs`: proof harness for synthetic and
   `--fixture-json` active-fixture compact/replay verification.
 - `tools/active_fixture_proof.py`: bounded live harness that waits for a valid

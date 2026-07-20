@@ -1503,9 +1503,14 @@ fn rt_power_balance_combat() {
         let want: Vec<replay_core::ConvoyLossRow> = sc
             .iter()
             .map(|o| replay_core::ConvoyLossRow {
+                month: exp_i64(o.get("month")),
                 killer: exp_string(o.get("killer_country")),
                 owner: exp_string(o.get("owner")),
                 convoys: exp_i64(o.get("convoys")),
+                first_seen_aggregate_ordinal: exp_i64(
+                    o.get("first_seen_aggregate_ordinal"),
+                ),
+                attribution_scope: exp_string(o.get("attribution_scope")),
             })
             .collect();
         assert_eq!(

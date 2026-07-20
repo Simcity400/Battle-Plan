@@ -22,6 +22,7 @@ pub mod early_render_vfs_payload;
 pub mod first_compact_ack;
 pub mod identity_control;
 pub mod naval_history;
+pub mod rail_replay;
 pub mod record_header;
 pub mod record_semantics;
 pub mod sink_failure;
@@ -1315,6 +1316,19 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         true,
         &[],
     ),
+    // Exact CRailwayGfx producer carrier for 1.19.2.0.a729. This snapshots
+    // per-province engine-selected anchors plus the ordered RailwayInfo
+    // law is known but its complete live owner root remains unavailable, so
+    // that independent sub-scope is explicitly fail-closed in schema v1.
+    domain(
+        81,
+        "rail_replay_state_live",
+        "rail_replay_state_live",
+        CompactDomainStatus::ValidatedSliceOpenGaps,
+        true,
+        true,
+        &[],
+    ),
     domain(
         1000,
         "frame",
@@ -1487,7 +1501,7 @@ mod tests {
             1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32,
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
             55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76,
-            77, 78, 79, 80, 1000,
+            77, 78, 79, 80, 81, 1000,
         ];
         for id in expected {
             assert!(

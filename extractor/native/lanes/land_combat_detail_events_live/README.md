@@ -7,31 +7,53 @@ Shared collector scheduling intentionally forces domain 21 `land_combats` when
 domain 55 is requested, because detail events derive from the same in-frame
 combat snapshot and logical generation tracker.
 
-This lane currently proves only the production-shaped subset that can be derived
-from the accepted domain-21 `CLandCombat` root:
+This lane proves the production-shaped subset derived from the accepted
+domain-21 `CLandCombat` root and the exact-gated terminal writer hook:
 
 - phase lifecycle rows: started, updated, ended;
-- participant delta rows: joined, left-unclassified.
+- participant delta rows: joined, left-unclassified;
+- exact per-side counts, damage accumulators, progress, and tactic identity;
+- exact reserve-member identities in engine order;
+- exact country-to-country `SDamageDone` attribution;
+- pointer-free terminal combat records joined to `(combat_id,generation)`.
+
+Schema v7 also reserves fail-closed, pointer-free transport for the last two X2
+observations. `src/x2_carriers.rs` contains the exact synchronous width-call
+carrier and the current-loss writer contract seam. Both activation constants
+remain false until their retained human-input control cards are satisfied, so
+the production collector emits empty v7 observation families today.
+
+The terminal writer is separately production-enabled. Its exact-10 replacement
+authority hashes are pinned in `src/a729_hook.rs`; installation remains
+all-or-nothing behind the normal-writer, overrun-writer, and allocator entry
+sentinels. The width producer and leaf exact-10 hashes are pinned in
+`src/x2_carriers.rs`, but authority re-export does not replace the required
+runtime transition control and therefore does not activate width.
 
 The left-side participant row is deliberately named unclassified. The validated
 domain-21 root can prove a division disappeared from a side vector, but it does
 not distinguish retreat, overrun, casualty removal, or combat resolution.
 
-Still open for the master row:
+Still unavailable/fail-closed for the master row:
 
-- casualty amounts;
-- equipment loss amounts;
+- current-epoch manpower casualty amounts;
+- current-epoch equipment loss amounts;
 - retreat versus overrun classification;
-- tactics;
-- reserves;
 - combat width;
 - terrain;
 - combat modifiers.
+
+The retained-evidence census and minimal remaining capture boundaries live in
+`../../../re_evidence/X2_LAND_COMBAT_RESIDUALS/REPORT.md` and
+`HUMAN_INPUT_REQUIREMENTS.json` in that directory. Exact `SDamageDone`
+attribution must not be relabelled as manpower or equipment loss.
 
 ## Files
 
 - `src/lib.rs`: compact domain-55 encoder, transition builder, decoder/gate, and
   tests.
+- `src/x2_carriers.rs`: dormant exact-build width and loss carrier seams with
+  byte/identity gates, bounded queues, and pointer-erasing projectors.
 - `src/bin/land_combat_detail_lane_proof.rs`: lane-local compact/replay proof
   harness.
 - `src/bin/land_combat_detail_stream_validate.rs`: read-only standalone product
@@ -44,8 +66,8 @@ requires sequence 1 followed by exact non-wrapping +1 steps, canonical record
 envelopes, consecutive hours, exactly one domain-55 DATA and PERF record per
 closed hour, and a final canonical FRAME_END. The D55 DATA/PERF pair must agree
 exactly on status, elapsed-wall timestamp, and all four PERF count fields; each
-PERF count must equal the total decoded event + side-detail + attribution row
-count. Payloads owned by other domains remain opaque. Within D55, participant
+PERF count must equal the total decoded row count across every schema family,
+including the v7 width/current-loss families. Payloads owned by other domains remain opaque. Within D55, participant
 joins/leaves must form a complete delta set whose side/division identities and
 old/new count direction reconcile exactly. `gate_stream_for_product`
 additionally requires an explicitly positive minimum game-hour advancement

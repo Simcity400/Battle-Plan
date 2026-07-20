@@ -64,19 +64,20 @@ Rejected/narrowed current-build candidates:
   The v5 bounded graph proof found `0` controller-country matches and `0`
   occupied-country matches while validating `203` rows by `+0x50` state and
   `+0x58` occupation-data joins.
-- Garrison scalar/manpower/equipment/detail offsets remain unwired. The v23
-  bounded proof compared `368` save garrison rows, `305` live rows, `296` key
-  matches, and `295` same-law matches. It rejected the inline scalar candidates
-  for `strength_ratio`, `garrison_required`, and `army_manpower_need`; rejected
-  the same fields across `3374` direct/root pointer scans from
-  `CStateGarrisonData+0x0..0x17F`; and rejected detail candidates for
-  `manpower_pool` value, `equipment_need` values (`infantry_equipment`,
-  `support_equipment`, `motorized_equipment`), and reinforcement request count.
+- The three per-state garrison scalars are wired and closed by the wave-3
+  dynamic proof plus the 2026-07-19 serializer/deserializer RE recorded below.
+  The earlier v23 bounded proof compared `368` save garrison rows, `305` live
+  rows, `296` key matches, and `295` same-law matches but rejected those scalar
+  candidates because that fixture did not discriminate them. It remains valid
+  negative evidence for detail candidates: `3374` direct/root pointer scans
+  from `CStateGarrisonData+0x0..0x17F` did not identify `manpower_pool` value,
+  `equipment_need` values (`infantry_equipment`, `support_equipment`,
+  `motorized_equipment`), or reinforcement request count.
   The current fixture has `340` manpower-pool rows, all single-tag and all
   matching the already emitted controller tag, so it does not prove an
-  independent manpower vector. Keep garrison scalar/manpower/equipment detail
-  badged unavailable until a same-hour or one-variable controlled fixture
-  proves a different vector/root layout.
+  independent manpower vector. Keep manpower/equipment/suppression/request
+  detail badged unavailable until a same-hour or one-variable controlled
+  fixture proves a distinct vector/root layout.
 - Collaboration/GIE detail remains unwired, with the current targeted live
   candidates rejected for this fixture. The v23 occupation oracle reports
   `countries.<TAG>.collaboration` empty for every country. The save melt has
@@ -135,9 +136,10 @@ can be emitted for rows whose `COccupationLaw*` and `CStateGarrisonData*`
 same-offset container pair validates; rows without that exact pair must retain
 the per-state-law unavailable badge and fall back to the controller default law.
 Occupied rows carry the controller-country garrison template id when
-`CCountryOccupationStatus + 0x78` validates as a `CDivisionTemplate*`. Garrison
-need/equilibrium/progress remain badged unavailable until a fixture or
-UI-command flip classifies those scalar values.
+`CCountryOccupationStatus + 0x78` validates as a `CDivisionTemplate*`. The
+production Rust collector also emits the exact engine-derived per-state
+`army_manpower_need`, `strength_ratio`, and `garrison_required` fields described
+in the current closure section below.
 
 The decoder gate fails closed if a row marks garrison signals unavailable while
 carrying nonzero garrison scalar values.
@@ -224,8 +226,9 @@ adds the stable autosave residual pass:
 - `garrison_scalar_probe.py`: current stable fixture verdict is
   `fixture_insufficient`; pinned primitive inline scalar candidates in
   `CStateGarrisonData+0x0..0x17F` remain rejected or below threshold, so
-  garrison need/equilibrium/progress stay badged unavailable. This is
-  superseded by the v23 inline/direct-root/detail rejection proof above.
+  the then-named garrison placeholder slots stayed unavailable. This historical
+  result was first superseded by the v23 detail rejection proof and, for the
+  three production scalars, by the wave-3/current closure below.
 
 `extractor/native/lanes/occupation_resistance_compliance_live/proof_current_head_20260701_bc0797784`
 refreshes the lane against current HEAD `bc0797784`:
@@ -288,8 +291,10 @@ rows (`ROW_FLAG_GARRISON_SCALARS = 1 << 15`, row bytes 32/36/40):
 
 - `garrison_manpower_need` = `CStateGarrisonData+0x88` i32 plain manpower count
   (18/18 discriminating rows, 280/280 all);
-- `garrison_strength_ratio_raw` = `+0xF0` i32 fixed-x100000 (288/288);
-- `garrison_required_raw` = `+0xF8` i32 fixed-x100000 (282/282).
+- `garrison_strength_ratio_raw` = `+0xF0` native i64 fixed-x100000,
+  checked-exact into the domain-52 i32 wire slot (288/288);
+- `garrison_required_raw` = `+0xF8` native i64 fixed-x100000,
+  checked-exact into the domain-52 i32 wire slot (282/282).
 
 Chain: `CCountryOccupationStatus+0x48` -> occupation-data container ->
 `CCountryOccupationData` (vtable RVA `0x296DD00`, `+0x08` status back-ref,
@@ -299,8 +304,19 @@ occupation-data back-ref). Containers are walked with the bounded 0x300-byte
 qword pointer scan the validation probe used; every candidate must pass exact
 vtable + back-ref + validated-state-pointer joins from a single blob read.
 The earlier v19/v23 rejections of `0x88/0xF0/0xF8` are explicitly OVERTURNED by
-the wave-3 D04 proof (`extractor/documents/WAVE3_CRACKS_870EBF_D04.md`, item 3:
+the wave-3 D04 proof
+(`extractor/documents/archive/WAVE3_CRACKS_870EBF_D04.md`, item 3:
 clean diagonal, 303 rows, 0 stale).
+
+Static serializer/deserializer RE on 2026-07-19 then confirmed the native
+storage widths and exact save-schema keys. The reader now authenticates the
+complete i64 at `+0xF0/+0xF8` and fails closed if either value cannot be
+represented exactly by wire v1. See `GARRISON_RESIDUAL_ANALYSIS.md` and
+`GARRISON_SCALAR_STATIC_COMPLETION_20260719.json`. Earlier references in this
+README to `need/equilibrium/progress` being unavailable describe historical
+Python-probe runs and are superseded for the production Rust path by this
+section; `garrison_equilibrium` and `garrison_progress` are not engine schema
+keys.
 
 Join semantics (live-derived): the attach requires only controller equality
 between the walk root and the state row (a 303/303 live invariant). The

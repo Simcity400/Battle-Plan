@@ -405,8 +405,10 @@ name = "land_combat_detail_events_live_lane"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
+ "minhook",
  "serde_json",
  "snapshot",
+ "windows-sys",
 ]
 
 [[package]]

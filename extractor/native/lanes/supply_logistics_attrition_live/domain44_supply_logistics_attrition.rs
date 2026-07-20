@@ -14,7 +14,9 @@ pub const ROW_KIND_PROVINCE_LOGISTICS: u32 = 1;
 pub const ROW_KIND_DIVISION_SUPPLY: u32 = 2;
 pub const ROW_KIND_COMPUTED_BADGE: u32 = 3;
 pub const ROW_KIND_CSUPPLY_PROVINCE_INPUT: u32 = 4;
-pub const ROW_KIND_FOREIGN_HOMEBASE_PRESSURE_CANDIDATE: u32 = 5;
+// Shared production row kind 5 is exact CCountrySupplySystem disrupted_supply.
+// Keep this lane-local, explicitly non-production candidate on a disjoint id.
+pub const ROW_KIND_FOREIGN_HOMEBASE_PRESSURE_CANDIDATE: u32 = 6;
 
 pub const ROW_FLAG_RAIL: u32 = 1;
 pub const ROW_FLAG_SUPPLY_NODE: u32 = 1 << 1;

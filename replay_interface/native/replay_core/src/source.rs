@@ -4,20 +4,26 @@
 //! (REPLAY_ARCHITECTURE.md, "Ingest boundary"). Backend 1 — the
 //! snapshot-flavor `.battleplan` container or directory store — is read
 //! through the verified `snapshot` crate reader (reuse, not a fork).
-//! Backend 2 — a compact-stream-only container — is rejected as incomplete;
-//! portable production packages must include canonical folded snapshots.
+//! Backend 2 — a compact-stream-only container — remains rejected by the
+//! ordinary product open path. An explicit caller may inject either neutral
+//! certified capability; the production-shaped route authenticates to a
+//! private spool through [`snapshot::CertifiedPrefoldSpoolDecoder`] and lazily
+//! loads one immutable certified hour at a time.
 
 use serde_json::{Map, Value};
 use snapshot::{ExpectedIdentity, Store};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::fs;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Timeline format id the production recorder writes for compact-stream-only
 /// recordings (`extractor/native/recorder_host`).
 const COMPACT_STREAM_TIMELINE_FORMAT: &str = "hoi4_compact_stream_timeline_v1";
 /// Manifest-entry / timeline role of the raw compact domain stream.
-const COMPACT_STREAM_ROLE: &str = "collector_compact_stream";
+const COMPACT_STREAM_ROLE: &str = snapshot::COMPACT_STREAM_ROLE;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RecorderSessionBinding {
@@ -117,6 +123,12 @@ pub trait ReplaySource: Send + Sync {
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
         None
     }
+    /// Exact source-byte and decoder identity for an explicitly prefolded
+    /// compact-stream container. Snapshot-native and trusted direct-prefold
+    /// sources return `None`.
+    fn prefold_receipt(&self) -> Option<&snapshot::PrefoldSourceReceipt> {
+        None
+    }
     /// Raw snapshot frame for one canonical hour from [`ReplaySource::hours`].
     fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError>;
 }
@@ -126,7 +138,7 @@ pub trait ReplaySource: Send + Sync {
 /// containing `<game_id>/index.json`). A directory store holding more than
 /// one game returns [`SourceError::MultipleGames`].
 pub fn open_recording(path: &Path) -> Result<Box<dyn ReplaySource>, SourceError> {
-    open_recording_impl(path, None)
+    open_recording_impl(path, None, None, None)
 }
 
 /// As [`open_recording`], selecting one game explicitly (required when a
@@ -135,7 +147,53 @@ pub fn open_recording_game(
     path: &Path,
     game_id: &str,
 ) -> Result<Box<dyn ReplaySource>, SourceError> {
-    open_recording_impl(path, Some(game_id))
+    open_recording_impl(path, Some(game_id), None, None)
+}
+
+/// Open a recording with an explicitly supplied portable certified pre-folder.
+///
+/// Snapshot-flavor recordings follow the ordinary path and do not invoke the
+/// decoder. For a compact-stream-only `.battleplan`, the verified unique
+/// `collector_compact_stream` entry is transferred to `decoder`; replay_core
+/// admits only the complete [`snapshot::PrefoldedReplay`] it returns. The
+/// default [`open_recording`] policy remains fail-closed and no extractor crate
+/// is a dependency of replay_core.
+pub fn open_recording_with_decoder(
+    path: &Path,
+    decoder: &dyn snapshot::CertifiedPrefoldDecoder,
+) -> Result<Box<dyn ReplaySource>, SourceError> {
+    open_recording_impl(path, None, Some(decoder), None)
+}
+
+/// As [`open_recording_with_decoder`], selecting one game explicitly.
+pub fn open_recording_game_with_decoder(
+    path: &Path,
+    game_id: &str,
+    decoder: &dyn snapshot::CertifiedPrefoldDecoder,
+) -> Result<Box<dyn ReplaySource>, SourceError> {
+    open_recording_impl(path, Some(game_id), Some(decoder), None)
+}
+
+/// Open a compact-stream-only container through the bounded authenticated
+/// spool seam. `spool_base` must be an existing regular directory; replay_core
+/// creates a private identity-marked child, removes it on every failed open,
+/// and retains it only for the lifetime of the returned lazy source.
+pub fn open_recording_with_spooled_decoder(
+    path: &Path,
+    spool_base: &Path,
+    decoder: &dyn snapshot::CertifiedPrefoldSpoolDecoder,
+) -> Result<Box<dyn ReplaySource>, SourceError> {
+    open_recording_impl(path, None, None, Some((spool_base, decoder)))
+}
+
+/// As [`open_recording_with_spooled_decoder`], selecting one game explicitly.
+pub fn open_recording_game_with_spooled_decoder(
+    path: &Path,
+    game_id: &str,
+    spool_base: &Path,
+    decoder: &dyn snapshot::CertifiedPrefoldSpoolDecoder,
+) -> Result<Box<dyn ReplaySource>, SourceError> {
+    open_recording_impl(path, Some(game_id), None, Some((spool_base, decoder)))
 }
 
 /// Admit a neutral set of canonical snapshots that was fully folded before it
@@ -145,6 +203,9 @@ pub fn open_recording_game(
 /// not accept H4CR bytes, a compact-stream cursor, or an extractor callback.
 /// Compact-only packages therefore remain fail-closed until an extractor-side
 /// producer has completed/certified the fold and supplied [`snapshot::PrefoldedReplay`].
+/// This is a trusted-capability API for an already authenticated producer; use
+/// [`open_recording_with_decoder`] when source-byte length/hash and decoder
+/// identity must be bound mechanically by the portable invocation receipt.
 pub fn open_prefolded_replay(
     replay: snapshot::PrefoldedReplay,
 ) -> Result<Box<dyn ReplaySource>, SourceError> {
@@ -152,19 +213,27 @@ pub fn open_prefolded_replay(
     Ok(Box::new(PrefoldedSource {
         replay,
         warnings: Vec::new(),
+        store: None,
+        recorder_binding: None,
+        design_catalog: None,
+        prefold_receipt: None,
     }))
 }
 
 fn open_recording_impl(
     path: &Path,
     requested_game: Option<&str>,
+    decoder: Option<&dyn snapshot::CertifiedPrefoldDecoder>,
+    spool_decoder: Option<(&Path, &dyn snapshot::CertifiedPrefoldSpoolDecoder)>,
 ) -> Result<Box<dyn ReplaySource>, SourceError> {
-    open_recording_impl_with_post_anchor(path, requested_game, |_| {})
+    open_recording_impl_with_post_anchor(path, requested_game, decoder, spool_decoder, |_| {})
 }
 
 fn open_recording_impl_with_post_anchor<F>(
     path: &Path,
     requested_game: Option<&str>,
+    decoder: Option<&dyn snapshot::CertifiedPrefoldDecoder>,
+    spool_decoder: Option<(&Path, &dyn snapshot::CertifiedPrefoldSpoolDecoder)>,
     post_anchor: F,
 ) -> Result<Box<dyn ReplaySource>, SourceError>
 where
@@ -231,10 +300,29 @@ where
         .index(&game_id)
         .map_err(|e| SourceError::Open(format!("read index for game {game_id:?}: {e}")))?;
 
-    // FAIL-CLOSED: an empty snapshot index is an incomplete compact-only
-    // package. Portable production packages must include canonical folded
-    // per-hour snapshots.
+    // FAIL-CLOSED by default. Only an explicit portable certified pre-folder
+    // can turn a verified compact-only container into immutable canonical
+    // snapshots; replay_core never sees H4CR records or extractor fold types.
     if index.snapshots.is_empty() {
+        if let Some((spool_base, spool_decoder)) = spool_decoder {
+            return open_compact_stream_with_spooled_decoder(
+                store,
+                game_id,
+                index.schema_version.clone(),
+                metadata,
+                spool_base,
+                spool_decoder,
+            );
+        }
+        if let Some(decoder) = decoder {
+            return open_compact_stream_with_decoder(
+                store,
+                game_id,
+                index.schema_version.clone(),
+                metadata,
+                decoder,
+            );
+        }
         return Err(SourceError::Unsupported(empty_index_message(
             &store,
             metadata.timeline.as_ref(),
@@ -286,6 +374,347 @@ where
     }))
 }
 
+fn open_compact_stream_with_decoder(
+    store: Store,
+    game_id: String,
+    declared_schema_version: Option<Value>,
+    metadata: MetadataRoute,
+    decoder: &dyn snapshot::CertifiedPrefoldDecoder,
+) -> Result<Box<dyn ReplaySource>, SourceError> {
+    let container = store.container().ok_or_else(|| {
+        SourceError::Unsupported(format!(
+            "recording {game_id:?} is a compact-stream-only directory store; the portable decoder seam accepts authenticated .battleplan container role entries only"
+        ))
+    })?;
+    let entries = container.entries_by_role(snapshot::COMPACT_STREAM_ROLE);
+    let entry = match entries.as_slice() {
+        [entry] => entry,
+        [] => {
+            return Err(SourceError::Unsupported(format!(
+                "recording {game_id:?} has an empty snapshot index but no manifest entry with role {:?}",
+                snapshot::COMPACT_STREAM_ROLE
+            )))
+        }
+        _ => {
+            return Err(SourceError::Open(format!(
+                "recording {game_id:?} has {} manifest entries with role {:?}; expected exactly one",
+                entries.len(),
+                snapshot::COMPACT_STREAM_ROLE
+            )))
+        }
+    };
+    validate_index_schema_version(declared_schema_version.as_ref())?;
+    validate_compact_stream_entry_identity(&entry.path, &game_id, metadata.timeline.as_ref())?;
+    let raw_h4cr = container.read_entry_bytes(&entry.path).map_err(|error| {
+        SourceError::Open(format!(
+            "read verified compact stream role entry {:?}: {error}",
+            entry.path
+        ))
+    })?;
+    let request =
+        snapshot::CertifiedPrefoldRequest::try_new(game_id.clone(), raw_h4cr).map_err(|error| {
+            SourceError::Open(format!(
+                "compact stream role entry {:?} violates the portable pre-fold request: {error}",
+                entry.path
+            ))
+        })?;
+    let certified = snapshot::decode_certified_prefolded(decoder, request).map_err(|error| {
+        SourceError::Open(format!(
+            "portable decoder {:?} rejected compact stream role entry {:?}: {error}",
+            decoder.decoder_id(),
+            entry.path
+        ))
+    })?;
+    validate_index_schema_version(Some(certified.index().schema_version()))?;
+    if let Some(declared) = declared_schema_version.as_ref() {
+        if !same_supported_schema_version(declared, certified.index().schema_version()) {
+            return Err(SourceError::Open(format!(
+                "compact-only index schema_version {declared} does not match decoder {:?} output schema_version {}",
+                decoder.decoder_id(),
+                certified.index().schema_version()
+            )));
+        }
+    }
+    validate_prefolded_container_identity(container, certified.replay())?;
+
+    let design_catalog = read_portable_design_catalog(&store, &game_id)?;
+    let prefold_receipt = Some(certified.receipt().clone());
+    Ok(Box::new(PrefoldedSource {
+        replay: certified.into_replay(),
+        warnings: Vec::new(),
+        store: Some(store),
+        recorder_binding: metadata.binding,
+        design_catalog,
+        prefold_receipt,
+    }))
+}
+
+fn open_compact_stream_with_spooled_decoder(
+    store: Store,
+    game_id: String,
+    declared_schema_version: Option<Value>,
+    metadata: MetadataRoute,
+    spool_base: &Path,
+    decoder: &dyn snapshot::CertifiedPrefoldSpoolDecoder,
+) -> Result<Box<dyn ReplaySource>, SourceError> {
+    let owner = PrefoldSpoolOwner::create(spool_base)?;
+    let raw_path = owner.root().join("source.h4cr");
+    let snapshot_dir = owner.snapshot_dir().to_path_buf();
+
+    let source_receipt = {
+        let container = store.container().ok_or_else(|| {
+            SourceError::Unsupported(format!(
+                "recording {game_id:?} is a compact-stream-only directory store; the bounded portable decoder seam accepts authenticated .battleplan role entries only"
+            ))
+        })?;
+        let entries = container.entries_by_role(snapshot::COMPACT_STREAM_ROLE);
+        let entry = match entries.as_slice() {
+            [entry] => entry,
+            [] => {
+                return Err(SourceError::Unsupported(format!(
+                    "recording {game_id:?} has an empty snapshot index but no manifest entry with role {:?}",
+                    snapshot::COMPACT_STREAM_ROLE
+                )))
+            }
+            _ => {
+                return Err(SourceError::Open(format!(
+                    "recording {game_id:?} has {} manifest entries with role {:?}; expected exactly one",
+                    entries.len(),
+                    snapshot::COMPACT_STREAM_ROLE
+                )))
+            }
+        };
+        validate_index_schema_version(declared_schema_version.as_ref())?;
+        validate_compact_stream_entry_identity(&entry.path, &game_id, metadata.timeline.as_ref())?;
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&raw_path)
+            .map_err(|error| {
+                SourceError::Open(format!(
+                    "create private compact-stream spool {}: {error}",
+                    raw_path.display()
+                ))
+            })?;
+        let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, file);
+        let receipt = container
+            .spool_entry_to_writer(&entry.path, &mut writer)
+            .map_err(|error| {
+                SourceError::Open(format!(
+                    "authenticate compact stream role entry {:?} into private spool: {error}",
+                    entry.path
+                ))
+            })?;
+        if receipt.path() != entry.path.as_str() {
+            return Err(SourceError::Open(
+                "container spool receipt path does not match selected compact role entry"
+                    .to_string(),
+            ));
+        }
+        writer.flush().map_err(|error| {
+            SourceError::Open(format!(
+                "flush private compact-stream spool {}: {error}",
+                raw_path.display()
+            ))
+        })?;
+        writer.get_ref().sync_all().map_err(|error| {
+            SourceError::Open(format!(
+                "sync private compact-stream spool {}: {error}",
+                raw_path.display()
+            ))
+        })?;
+        receipt
+    };
+
+    let request = snapshot::CertifiedPrefoldSpoolRequest::try_new(
+        game_id.clone(),
+        raw_path,
+        snapshot_dir.clone(),
+        source_receipt.uncompressed_len(),
+        source_receipt.sha256(),
+    )
+    .map_err(|error| {
+        SourceError::Open(format!(
+            "authenticated compact stream violates bounded pre-fold request: {error}"
+        ))
+    })?;
+    let certified =
+        snapshot::decode_certified_prefolded_spool(decoder, request).map_err(|error| {
+            SourceError::Open(format!(
+                "bounded portable decoder {:?} rejected authenticated compact stream: {error}",
+                decoder.decoder_id()
+            ))
+        })?;
+    validate_index_schema_version(Some(certified.spool().schema_version()))?;
+    if let Some(declared) = declared_schema_version.as_ref() {
+        if !same_supported_schema_version(declared, certified.spool().schema_version()) {
+            return Err(SourceError::Open(format!(
+                "compact-only index schema_version {declared} does not match bounded decoder {:?} output schema_version {}",
+                decoder.decoder_id(),
+                certified.spool().schema_version()
+            )));
+        }
+    }
+    if certified.snapshot_dir() != snapshot_dir {
+        return Err(SourceError::Open(
+            "bounded decoder result changed the caller-owned snapshot spool path".to_string(),
+        ));
+    }
+    let (spool, certified_snapshot_dir, prefold_receipt) = certified.into_parts();
+    if prefold_receipt.source_len() != source_receipt.uncompressed_len()
+        || prefold_receipt.source_sha256() != source_receipt.sha256()
+    {
+        return Err(SourceError::Open(
+            "bounded decoder receipt is not bound to the authenticated container entry".to_string(),
+        ));
+    }
+    owner.remove_authenticated_source()?;
+
+    let first_entry = spool.entries().first().expect("portable spool is nonempty");
+    let first = read_spooled_hour(&owner, &certified_snapshot_dir, &spool, first_entry)?;
+    validate_snapshot_container_identity(
+        store
+            .container()
+            .expect("spooled compact route requires container"),
+        &first,
+    )?;
+
+    let design_catalog = read_portable_design_catalog(&store, &game_id)?;
+    Ok(Box::new(SpooledPrefoldedSource {
+        spool,
+        snapshot_dir: certified_snapshot_dir,
+        owner,
+        warnings: Vec::new(),
+        store,
+        recorder_binding: metadata.binding,
+        design_catalog,
+        prefold_receipt,
+    }))
+}
+
+fn validate_compact_stream_entry_identity(
+    entry_path: &str,
+    game_id: &str,
+    timeline: Option<&Value>,
+) -> Result<(), SourceError> {
+    let game_prefix = format!("payload/{game_id}/");
+    if !entry_path.starts_with(&game_prefix) {
+        return Err(SourceError::Open(format!(
+            "compact stream role entry {entry_path:?} is outside manifest game namespace {game_prefix:?}"
+        )));
+    }
+
+    let Some(timeline) = timeline.and_then(Value::as_object) else {
+        return Ok(());
+    };
+    let format = timeline.get("format").and_then(Value::as_str);
+    let role = timeline.get("raw_stream_role").and_then(Value::as_str);
+    let declares_compact =
+        format == Some(COMPACT_STREAM_TIMELINE_FORMAT) || role == Some(COMPACT_STREAM_ROLE);
+    if !declares_compact {
+        return Ok(());
+    }
+    if format != Some(COMPACT_STREAM_TIMELINE_FORMAT) || role != Some(COMPACT_STREAM_ROLE) {
+        return Err(SourceError::Open(format!(
+            "compact timeline identity is incomplete: format={format:?}, raw_stream_role={role:?}"
+        )));
+    }
+    let relative = timeline
+        .get("stream")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            SourceError::Open("compact timeline declares no nonblank stream path".to_string())
+        })?;
+    if relative.starts_with('/')
+        || relative.contains(char::from(92))
+        || relative
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        || snapshot::zip::validate_path(relative).is_err()
+    {
+        return Err(SourceError::Open(format!(
+            "compact timeline stream path is not a valid game-relative forward-slash path: {relative:?}"
+        )));
+    }
+    let expected_path = format!("{game_prefix}{relative}");
+    if entry_path != expected_path {
+        return Err(SourceError::Open(format!(
+            "compact stream role entry {entry_path:?} does not byte-match timeline stream {expected_path:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_prefolded_container_identity(
+    container: &snapshot::Container,
+    replay: &snapshot::PrefoldedReplay,
+) -> Result<(), SourceError> {
+    let first = replay
+        .entries()
+        .first()
+        .expect("PrefoldedReplay construction guarantees at least one hour")
+        .snapshot();
+    validate_snapshot_container_identity(container, first)
+}
+
+fn validate_snapshot_container_identity(
+    container: &snapshot::Container,
+    first: &snapshot::Snapshot,
+) -> Result<(), SourceError> {
+    let manifest = container.manifest();
+    let provenance = first.rest.get("provenance");
+    let manifest_modset = manifest
+        .get("mod_identity")
+        .and_then(|value| value.get("modset_id"))
+        .and_then(Value::as_str);
+    let snapshot_modset = provenance
+        .and_then(|value| value.get("mod"))
+        .and_then(|value| value.get("modset_id"))
+        .and_then(Value::as_str);
+    if let (Some(manifest), Some(snapshot_modset_id)) = (manifest_modset, snapshot_modset) {
+        if manifest != snapshot_modset_id {
+            let error = snapshot::ContainerError::ModsetMismatch {
+                manifest: manifest.to_string(),
+                snapshot: snapshot_modset_id.to_string(),
+            };
+            return Err(SourceError::ModsetMismatch(format!(
+                "open .battleplan: {error}"
+            )));
+        }
+    }
+
+    let manifest_sha = manifest
+        .get("build")
+        .and_then(|value| value.get("exe_sha256"))
+        .and_then(Value::as_str);
+    for (label, snapshot_sha) in [
+        (
+            "collector",
+            provenance
+                .and_then(|value| value.get("collector"))
+                .and_then(|value| value.get("exe_sha256"))
+                .and_then(Value::as_str),
+        ),
+        (
+            "memory",
+            provenance
+                .and_then(|value| value.get("memory"))
+                .and_then(|value| value.get("exe_sha256"))
+                .and_then(Value::as_str),
+        ),
+    ] {
+        if let (Some(manifest), Some(snapshot)) = (manifest_sha, snapshot_sha) {
+            if manifest != snapshot {
+                return Err(SourceError::Open(format!(
+                    "open .battleplan: container rejected: manifest build.exe_sha256 {manifest:?} disagrees with prefolded snapshot provenance.{label}.exe_sha256 {snapshot:?}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn read_portable_design_catalog(
     store: &Store,
     game_id: &str,
@@ -320,6 +749,14 @@ fn validate_index_schema_version(version: Option<&Value>) -> Result<(), SourceEr
             "incompatible replay index schema_version {value}; this standalone replayer supports schema_version \"1\""
         ))),
     }
+}
+
+fn same_supported_schema_version(left: &Value, right: &Value) -> bool {
+    fn is_v1(value: &Value) -> bool {
+        matches!(value, Value::String(text) if text == "1")
+            || matches!(value, Value::Number(number) if number.as_u64() == Some(1))
+    }
+    is_v1(left) && is_v1(right)
 }
 
 fn recorder_metadata_route(store: &Store, game_id: &str) -> Result<MetadataRoute, SourceError> {
@@ -687,8 +1124,9 @@ fn validate_display_variant(
 /// naming the compact-stream evidence when it is present.
 fn empty_index_message(store: &Store, timeline: Option<&Value>, game_id: &str) -> String {
     let contract = "playback requires either per-hour snapshot entries per \
-                    HOI4REPLAY_CONTAINER_SPEC.md or a shared decoder crate from the \
-                    extraction layer; replay_core does not guess compact record layouts";
+                    HOI4REPLAY_CONTAINER_SPEC.md or an explicitly supplied certified \
+                    portable pre-folder; ordinary product open does not guess or fold \
+                    compact record layouts";
     match compact_stream_evidence(store, timeline) {
         Some(evidence) => format!(
             "recording {game_id:?} is a compact-stream-only production recording \
@@ -743,6 +1181,381 @@ fn timeline_compact_evidence(timeline: &Value) -> Option<String> {
 /// store index and are the documented per-open floor of the source's working
 /// set (~210 KB + file-name strings for a 3-year hourly recording).
 /// `warnings` is bounded by the number of malformed index entries.
+static PREFOLD_SPOOL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const PREFOLD_SPOOL_MARKER: &str = ".hoi4-prefold-owner";
+
+/// RAII ownership for one private bounded pre-fold workspace. Cleanup is
+/// attempted only when the exact canonical directory and unique-per-open
+/// marker still match; an identity discrepancy leaves evidence in place rather
+/// than recursively deleting an unknown target.
+struct PrefoldSpoolOwner {
+    root: PathBuf,
+    canonical_root: PathBuf,
+    snapshot_dir: PathBuf,
+    marker_value: String,
+}
+
+impl PrefoldSpoolOwner {
+    fn create(base: &Path) -> Result<Self, SourceError> {
+        let meta = fs::symlink_metadata(base).map_err(|error| {
+            SourceError::Open(format!(
+                "inspect prefold spool base {}: {error}",
+                base.display()
+            ))
+        })?;
+        if !meta.file_type().is_dir() || meta.file_type().is_symlink() {
+            return Err(SourceError::Open(format!(
+                "prefold spool base is not a regular non-symlink directory: {}",
+                base.display()
+            )));
+        }
+        let canonical_base = fs::canonicalize(base).map_err(|error| {
+            SourceError::Open(format!(
+                "canonicalize prefold spool base {}: {error}",
+                base.display()
+            ))
+        })?;
+        let sequence = PREFOLD_SPOOL_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| SourceError::Open(format!("prefold spool clock: {error}")))?
+            .as_nanos();
+        let marker_value = format!("{}-{now:032x}-{sequence:016x}", std::process::id());
+
+        for attempt in 0..64u64 {
+            let root = canonical_base.join(format!(
+                ".hoi4-prefold-{}-{now:032x}-{:016x}",
+                std::process::id(),
+                sequence.wrapping_add(attempt)
+            ));
+            match fs::create_dir(&root) {
+                Ok(()) => {
+                    let canonical_root = match fs::canonicalize(&root) {
+                        Ok(path) if path.parent() == Some(canonical_base.as_path()) => path,
+                        Ok(_) => {
+                            let _ = fs::remove_dir(&root);
+                            return Err(SourceError::Open(
+                                "private prefold spool escaped its canonical base".to_string(),
+                            ));
+                        }
+                        Err(error) => {
+                            let _ = fs::remove_dir(&root);
+                            return Err(SourceError::Open(format!(
+                                "canonicalize private prefold spool {}: {error}",
+                                root.display()
+                            )));
+                        }
+                    };
+                    let setup = (|| -> Result<PathBuf, SourceError> {
+                        let marker_path = canonical_root.join(PREFOLD_SPOOL_MARKER);
+                        let mut marker = fs::OpenOptions::new()
+                            .write(true)
+                            .create_new(true)
+                            .open(&marker_path)
+                            .map_err(|error| {
+                                SourceError::Open(format!(
+                                    "create prefold ownership marker {}: {error}",
+                                    marker_path.display()
+                                ))
+                            })?;
+                        marker.write_all(marker_value.as_bytes()).map_err(|error| {
+                            SourceError::Open(format!(
+                                "write prefold ownership marker {}: {error}",
+                                marker_path.display()
+                            ))
+                        })?;
+                        marker.sync_all().map_err(|error| {
+                            SourceError::Open(format!(
+                                "sync prefold ownership marker {}: {error}",
+                                marker_path.display()
+                            ))
+                        })?;
+                        let snapshot_dir = canonical_root.join("snapshots");
+                        fs::create_dir(&snapshot_dir).map_err(|error| {
+                            SourceError::Open(format!(
+                                "create private snapshot spool {}: {error}",
+                                snapshot_dir.display()
+                            ))
+                        })?;
+                        Ok(snapshot_dir)
+                    })();
+                    match setup {
+                        Ok(snapshot_dir) => {
+                            return Ok(Self {
+                                root: canonical_root.clone(),
+                                canonical_root,
+                                snapshot_dir,
+                                marker_value,
+                            });
+                        }
+                        Err(error) => {
+                            if fs::canonicalize(&root).ok().as_deref()
+                                == Some(canonical_root.as_path())
+                            {
+                                let _ = fs::remove_dir_all(&root);
+                            }
+                            return Err(error);
+                        }
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(SourceError::Open(format!(
+                        "create private prefold spool {}: {error}",
+                        root.display()
+                    )))
+                }
+            }
+        }
+        Err(SourceError::Open(
+            "could not allocate a unique private prefold spool directory".to_string(),
+        ))
+    }
+
+    fn root(&self) -> &Path {
+        &self.root
+    }
+    fn snapshot_dir(&self) -> &Path {
+        &self.snapshot_dir
+    }
+
+    fn identity_intact(&self) -> bool {
+        let Ok(meta) = fs::symlink_metadata(&self.root) else {
+            return false;
+        };
+        if !meta.file_type().is_dir() || meta.file_type().is_symlink() {
+            return false;
+        }
+        if fs::canonicalize(&self.root).ok().as_deref() != Some(self.canonical_root.as_path()) {
+            return false;
+        }
+        let Ok(snapshot_meta) = fs::symlink_metadata(&self.snapshot_dir) else {
+            return false;
+        };
+        if !snapshot_meta.file_type().is_dir() || snapshot_meta.file_type().is_symlink() {
+            return false;
+        }
+        if fs::canonicalize(&self.snapshot_dir).ok().as_deref() != Some(self.snapshot_dir.as_path())
+        {
+            return false;
+        }
+        let marker = self.root.join(PREFOLD_SPOOL_MARKER);
+        let Ok(marker_meta) = fs::symlink_metadata(&marker) else {
+            return false;
+        };
+        if !marker_meta.file_type().is_file() || marker_meta.file_type().is_symlink() {
+            return false;
+        }
+        if fs::read_to_string(marker).ok().as_deref() != Some(self.marker_value.as_str()) {
+            return false;
+        }
+        let Ok(root_entries) = fs::read_dir(&self.root) else {
+            return false;
+        };
+        for entry in root_entries {
+            let Ok(entry) = entry else {
+                return false;
+            };
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                return false;
+            };
+            if name != PREFOLD_SPOOL_MARKER && name != "source.h4cr" && name != "snapshots" {
+                return false;
+            }
+            if name == "source.h4cr" {
+                let Ok(meta) = fs::symlink_metadata(entry.path()) else {
+                    return false;
+                };
+                if !meta.file_type().is_file() || meta.file_type().is_symlink() {
+                    return false;
+                }
+                let Ok(canonical) = fs::canonicalize(entry.path()) else {
+                    return false;
+                };
+                if canonical.parent() != Some(self.root.as_path()) {
+                    return false;
+                }
+            }
+        }
+        let Ok(snapshot_entries) = fs::read_dir(&self.snapshot_dir) else {
+            return false;
+        };
+        for entry in snapshot_entries {
+            let Ok(entry) = entry else {
+                return false;
+            };
+            let Ok(meta) = fs::symlink_metadata(entry.path()) else {
+                return false;
+            };
+            if !meta.file_type().is_file() || meta.file_type().is_symlink() {
+                return false;
+            }
+            let Ok(canonical) = fs::canonicalize(entry.path()) else {
+                return false;
+            };
+            if canonical.parent() != Some(self.snapshot_dir.as_path()) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn require_identity(&self) -> Result<(), SourceError> {
+        if self.identity_intact() {
+            Ok(())
+        } else {
+            Err(SourceError::Open(
+                "private prefold spool identity changed; refusing read and automatic cleanup"
+                    .to_string(),
+            ))
+        }
+    }
+
+    fn remove_authenticated_source(&self) -> Result<(), SourceError> {
+        self.require_identity()?;
+        let path = self.root.join("source.h4cr");
+        let meta = fs::symlink_metadata(&path).map_err(|error| {
+            SourceError::Open(format!(
+                "inspect authenticated source spool {}: {error}",
+                path.display()
+            ))
+        })?;
+        let canonical = fs::canonicalize(&path).map_err(|error| {
+            SourceError::Open(format!(
+                "canonicalize authenticated source spool {}: {error}",
+                path.display()
+            ))
+        })?;
+        if !meta.file_type().is_file()
+            || meta.file_type().is_symlink()
+            || canonical.parent() != Some(self.root.as_path())
+        {
+            return Err(SourceError::Open(
+                "authenticated source spool identity changed before cleanup".to_string(),
+            ));
+        }
+        fs::remove_file(&path).map_err(|error| {
+            SourceError::Open(format!(
+                "remove authenticated source spool {}: {error}",
+                path.display()
+            ))
+        })
+    }
+}
+
+impl Drop for PrefoldSpoolOwner {
+    fn drop(&mut self) {
+        if self.identity_intact() {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+}
+
+fn read_spooled_hour(
+    owner: &PrefoldSpoolOwner,
+    snapshot_dir: &Path,
+    spool: &snapshot::PrefoldedSpool,
+    entry: &snapshot::PrefoldedSpoolEntry,
+) -> Result<snapshot::Snapshot, SourceError> {
+    owner.require_identity()?;
+    if fs::canonicalize(snapshot_dir).ok().as_deref() != Some(owner.snapshot_dir()) {
+        return Err(SourceError::Open(
+            "private snapshot spool identity changed".to_string(),
+        ));
+    }
+    let path = snapshot_dir.join(entry.file_name());
+    let canonical = fs::canonicalize(&path).map_err(|error| {
+        SourceError::Open(format!(
+            "canonicalize spooled snapshot {}: {error}",
+            path.display()
+        ))
+    })?;
+    if canonical.parent() != Some(snapshot_dir) {
+        return Err(SourceError::Open(format!(
+            "spooled snapshot escaped private directory: {}",
+            path.display()
+        )));
+    }
+    let path_meta = fs::symlink_metadata(&path).map_err(|error| {
+        SourceError::Open(format!(
+            "inspect spooled snapshot {}: {error}",
+            path.display()
+        ))
+    })?;
+    if !path_meta.file_type().is_file()
+        || path_meta.file_type().is_symlink()
+        || path_meta.len() != entry.byte_len()
+    {
+        return Err(SourceError::Open(format!(
+            "spooled snapshot metadata changed for hour {}",
+            entry.hour_index()
+        )));
+    }
+    let file = fs::File::open(&canonical).map_err(|error| {
+        SourceError::Open(format!(
+            "open spooled snapshot {}: {error}",
+            canonical.display()
+        ))
+    })?;
+    if file
+        .metadata()
+        .map_err(|error| SourceError::Open(error.to_string()))?
+        .len()
+        != entry.byte_len()
+    {
+        return Err(SourceError::Open(format!(
+            "spooled snapshot length changed while opening hour {}",
+            entry.hour_index()
+        )));
+    }
+    let mut bytes = Vec::new();
+    file.take(entry.byte_len().saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            SourceError::Open(format!(
+                "read spooled snapshot for hour {}: {error}",
+                entry.hour_index()
+            ))
+        })?;
+    if bytes.len() as u64 != entry.byte_len() {
+        return Err(SourceError::Open(format!(
+            "spooled snapshot byte count changed for hour {}",
+            entry.hour_index()
+        )));
+    }
+    let actual_sha = snapshot::sha256::to_hex(&snapshot::sha256::Sha256::digest(&bytes));
+    if actual_sha != entry.sha256() {
+        return Err(SourceError::Open(format!(
+            "spooled snapshot SHA-256 changed for hour {}",
+            entry.hour_index()
+        )));
+    }
+    let strict = snapshot::parse_json_strict(&bytes).map_err(|error| {
+        SourceError::Open(format!(
+            "spooled hour {} is not strict snapshot JSON: {error}",
+            entry.hour_index()
+        ))
+    })?;
+    let snapshot: snapshot::Snapshot = serde_json::from_value(strict).map_err(|error| {
+        SourceError::Open(format!(
+            "spooled hour {} is not canonical snapshot JSON: {error}",
+            entry.hour_index()
+        ))
+    })?;
+    if snapshot.hour_index != Some(entry.hour_index())
+        || snapshot.game_id.as_deref() != Some(spool.game_id())
+        || snapshot.schema_version.as_ref() != Some(spool.schema_version())
+        || snapshot.date.as_deref() != Some(entry.date())
+    {
+        return Err(SourceError::Open(format!(
+            "spooled snapshot identity disagrees with certified manifest at hour {}",
+            entry.hour_index()
+        )));
+    }
+    Ok(snapshot)
+}
+
 struct StoreSource {
     store: Store,
     game_id: String,
@@ -753,12 +1566,94 @@ struct StoreSource {
     design_catalog: Option<Arc<crate::design_catalog::PortableDesignCatalog>>,
 }
 
+struct SpooledPrefoldedSource {
+    spool: snapshot::PrefoldedSpool,
+    snapshot_dir: PathBuf,
+    owner: PrefoldSpoolOwner,
+    warnings: Vec<String>,
+    store: Store,
+    recorder_binding: Option<RecorderSessionBinding>,
+    design_catalog: Option<Arc<crate::design_catalog::PortableDesignCatalog>>,
+    prefold_receipt: snapshot::PrefoldSourceReceipt,
+}
+
 /// Neutral, immutable already-folded backend. The portable contract owns the
 /// index/entry identity checks; this adapter only projects each typed snapshot
 /// into replay_core's existing raw-frame boundary.
 struct PrefoldedSource {
     replay: snapshot::PrefoldedReplay,
     warnings: Vec<String>,
+    store: Option<Store>,
+    recorder_binding: Option<RecorderSessionBinding>,
+    design_catalog: Option<Arc<crate::design_catalog::PortableDesignCatalog>>,
+    prefold_receipt: Option<snapshot::PrefoldSourceReceipt>,
+}
+
+impl ReplaySource for SpooledPrefoldedSource {
+    fn game_id(&self) -> &str {
+        self.spool.game_id()
+    }
+    fn hours(&self) -> &[i64] {
+        self.spool.hours()
+    }
+    fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    fn content_manifest(&self) -> Option<&portable_content_manifest::ContentManifest> {
+        self.store
+            .container()
+            .and_then(|container| container.content_manifest())
+    }
+
+    fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
+        self.design_catalog.as_ref()
+    }
+
+    fn prefold_receipt(&self) -> Option<&snapshot::PrefoldSourceReceipt> {
+        Some(&self.prefold_receipt)
+    }
+
+    fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
+        let entry = self.spool.entry(hour_index).ok_or_else(|| {
+            SourceError::Open(format!(
+                "no spooled prefolded snapshot for hour_index {hour_index} in game {:?}",
+                self.game_id()
+            ))
+        })?;
+        let snapshot = read_spooled_hour(&self.owner, &self.snapshot_dir, &self.spool, entry)?;
+        let mut rest = snapshot.rest;
+        if let Some(binding) = &self.recorder_binding {
+            validate_existing_recorder_metadata(&rest, binding)?;
+            let session = rest
+                .entry("session".to_string())
+                .or_insert_with(|| Value::Object(Map::new()))
+                .as_object_mut()
+                .ok_or_else(|| SourceError::Open("snapshot session is not an object".into()))?;
+            bind_or_match(
+                session,
+                "active_dlcs",
+                serde_json::json!(binding.active_dlcs),
+            )?;
+            bind_or_match(
+                session,
+                "localisation_language",
+                serde_json::json!(binding.localisation_language),
+            )?;
+            bind_or_match(
+                session,
+                "display_variant",
+                serde_json::json!(binding.display_variant),
+            )?;
+        }
+        Ok(RawFrame {
+            hour_index,
+            date: snapshot.date,
+            save_version: snapshot.save_version,
+            schema_version: snapshot.schema_version,
+            rest,
+        })
+    }
 }
 
 impl ReplaySource for PrefoldedSource {
@@ -774,6 +1669,21 @@ impl ReplaySource for PrefoldedSource {
         &self.warnings
     }
 
+    fn content_manifest(&self) -> Option<&portable_content_manifest::ContentManifest> {
+        self.store
+            .as_ref()
+            .and_then(Store::container)
+            .and_then(|container| container.content_manifest())
+    }
+
+    fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
+        self.design_catalog.as_ref()
+    }
+
+    fn prefold_receipt(&self) -> Option<&snapshot::PrefoldSourceReceipt> {
+        self.prefold_receipt.as_ref()
+    }
+
     fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
         let entry = self.replay.entry(hour_index).ok_or_else(|| {
             SourceError::Open(format!(
@@ -782,12 +1692,36 @@ impl ReplaySource for PrefoldedSource {
             ))
         })?;
         let snapshot = entry.snapshot();
+        let mut rest = snapshot.rest.clone();
+        if let Some(binding) = &self.recorder_binding {
+            validate_existing_recorder_metadata(&rest, binding)?;
+            let session = rest
+                .entry("session".to_string())
+                .or_insert_with(|| Value::Object(Map::new()))
+                .as_object_mut()
+                .ok_or_else(|| SourceError::Open("snapshot session is not an object".into()))?;
+            bind_or_match(
+                session,
+                "active_dlcs",
+                serde_json::json!(binding.active_dlcs),
+            )?;
+            bind_or_match(
+                session,
+                "localisation_language",
+                serde_json::json!(binding.localisation_language),
+            )?;
+            bind_or_match(
+                session,
+                "display_variant",
+                serde_json::json!(binding.display_variant),
+            )?;
+        }
         Ok(RawFrame {
             hour_index,
             date: snapshot.date.clone(),
             save_version: snapshot.save_version.clone(),
             schema_version: snapshot.schema_version.clone(),
-            rest: snapshot.rest.clone(),
+            rest,
         })
     }
 }
@@ -1024,6 +1958,26 @@ mod tests {
         root
     }
 
+    #[test]
+    fn private_prefold_spool_cleanup_is_identity_gated() {
+        let base = temp_root("prefold_spool_owner");
+        let owner = PrefoldSpoolOwner::create(&base).unwrap();
+        let owned_root = owner.root().to_path_buf();
+        drop(owner);
+        assert!(!owned_root.exists(), "intact private spool must be cleaned");
+
+        let owner = PrefoldSpoolOwner::create(&base).unwrap();
+        let preserved_root = owner.root().to_path_buf();
+        fs::write(preserved_root.join(PREFOLD_SPOOL_MARKER), "different-owner").unwrap();
+        drop(owner);
+        assert!(
+            preserved_root.exists(),
+            "identity mismatch must preserve evidence instead of recursive deletion"
+        );
+        fs::remove_dir_all(&preserved_root).unwrap();
+        fs::remove_dir_all(&base).unwrap();
+    }
+
     fn write_playable_store(root: &Path, game: &str, recorder: bool, label: &str) {
         let game_dir = root.join(game);
         fs::create_dir_all(game_dir.join("recorder")).unwrap();
@@ -1172,7 +2126,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         write_playable_store(&root, "g", true, "ANCHORED");
         let moved = parent.join("anchored_object");
-        let source = open_recording_impl_with_post_anchor(&root, None, |_| {
+        let source = open_recording_impl_with_post_anchor(&root, None, None, None, |_| {
             fs::rename(&root, &moved).unwrap();
             fs::create_dir_all(&root).unwrap();
             write_playable_store(&root, "g", false, "IMPOSTOR");
@@ -1209,7 +2163,7 @@ mod tests {
         )
         .unwrap();
         let moved = parent.join("anchored_object");
-        let result = open_recording_impl_with_post_anchor(&root, None, |_| {
+        let result = open_recording_impl_with_post_anchor(&root, None, None, None, |_| {
             fs::rename(&root, &moved).unwrap();
             let impostor = root.join(game);
             fs::create_dir_all(&impostor).unwrap();
@@ -1750,6 +2704,13 @@ mod tests {
                     "snapshot/stream_verify.rs",
                     "File::open(path).map_err(|e| format!(\"open container {}: {e}\", path.display()))?;"
                 )
+                // The file-backed container root open (2026-07-20): the one
+                // sanctioned caller-supplied pathname the product reader opens.
+                | ("snapshot/container.rs", "use std::fs::File;")
+                | (
+                    "snapshot/container.rs",
+                    "let file = File::open(path.as_ref())?;"
+                )
         )
     }
 
@@ -1813,6 +2774,63 @@ mod tests {
             ),
             _ => false,
         }
+    }
+
+    /// Exact production file-capability census for the replay-owned prefold
+    /// spool. These are not caller-selected descendant reads: replay_core
+    /// creates a private, identity-marked child beneath its product-owned
+    /// parent, rejects links/replacements/extra entries before every read, and
+    /// removes only that authenticated child. Keep this list exact so any new
+    /// filesystem operation still fails the F4 gate pending review.
+    fn classified_private_prefold_spool_site(module: &str, line: &str) -> bool {
+        module == "replay_core/source.rs"
+            && matches!(
+                line,
+                "use std::fs;"
+                    | "use std::path::{Path, PathBuf};"
+                    | "let raw_path = owner.root().join(\"source.h4cr\");"
+                    | "let file = fs::OpenOptions::new()"
+                    | ".open(&raw_path)"
+                    | "let meta = fs::symlink_metadata(base).map_err(|error| {"
+                    | "if !meta.file_type().is_dir() || meta.file_type().is_symlink() {"
+                    | "let canonical_base = fs::canonicalize(base).map_err(|error| {"
+                    | "let root = canonical_base.join(format!("
+                    | "match fs::create_dir(&root) {"
+                    | "let canonical_root = match fs::canonicalize(&root) {"
+                    | "let _ = fs::remove_dir(&root);"
+                    | "let _ = fs::remove_dir_all(&root);"
+                    | "let marker_path = canonical_root.join(PREFOLD_SPOOL_MARKER);"
+                    | "let mut marker = fs::OpenOptions::new()"
+                    | ".open(&marker_path)"
+                    | "let snapshot_dir = canonical_root.join(\"snapshots\");"
+                    | "fs::create_dir(&snapshot_dir).map_err(|error| {"
+                    | "if fs::canonicalize(&root).ok().as_deref()"
+                    | "let Ok(meta) = fs::symlink_metadata(&self.root) else {"
+                    | "if fs::canonicalize(&self.root).ok().as_deref() != Some(self.canonical_root.as_path()) {"
+                    | "let Ok(snapshot_meta) = fs::symlink_metadata(&self.snapshot_dir) else {"
+                    | "if !snapshot_meta.file_type().is_dir() || snapshot_meta.file_type().is_symlink() {"
+                    | "if fs::canonicalize(&self.snapshot_dir).ok().as_deref() != Some(self.snapshot_dir.as_path())"
+                    | "let marker = self.root.join(PREFOLD_SPOOL_MARKER);"
+                    | "let Ok(marker_meta) = fs::symlink_metadata(&marker) else {"
+                    | "if !marker_meta.file_type().is_file() || marker_meta.file_type().is_symlink() {"
+                    | "if fs::read_to_string(marker).ok().as_deref() != Some(self.marker_value.as_str()) {"
+                    | "let Ok(root_entries) = fs::read_dir(&self.root) else {"
+                    | "let Ok(meta) = fs::symlink_metadata(entry.path()) else {"
+                    | "if !meta.file_type().is_file() || meta.file_type().is_symlink() {"
+                    | "let Ok(canonical) = fs::canonicalize(entry.path()) else {"
+                    | "let Ok(snapshot_entries) = fs::read_dir(&self.snapshot_dir) else {"
+                    | "let path = self.root.join(\"source.h4cr\");"
+                    | "let meta = fs::symlink_metadata(&path).map_err(|error| {"
+                    | "let canonical = fs::canonicalize(&path).map_err(|error| {"
+                    | "if !meta.file_type().is_file()"
+                    | "fs::remove_file(&path).map_err(|error| {"
+                    | "let _ = fs::remove_dir_all(&self.root);"
+                    | "if fs::canonicalize(snapshot_dir).ok().as_deref() != Some(owner.snapshot_dir()) {"
+                    | "let path = snapshot_dir.join(entry.file_name());"
+                    | "let path_meta = fs::symlink_metadata(&path).map_err(|error| {"
+                    | "if !path_meta.file_type().is_file()"
+                    | "let file = fs::File::open(&canonical).map_err(|error| {"
+            )
     }
 
     fn cfg_test_item_end(source: &str, mut cursor: usize) -> Result<usize, String> {
@@ -2001,6 +3019,7 @@ mod tests {
             candidates += 1;
             if classified_root_or_handle_site(module, line)
                 || classified_non_loader_site(module, line)
+                || classified_private_prefold_spool_site(module, line)
             {
                 classified += 1;
             } else {

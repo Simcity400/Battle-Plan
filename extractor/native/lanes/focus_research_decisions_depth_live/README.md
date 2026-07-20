@@ -24,10 +24,11 @@ stream with fail-closed decoder checks.
   active timed-decision start/stop/day-delta/state-change rows plus per-country
   status-vector counts for active timed, targeted, targeted timed, re-enable,
   alternate re-enable, and live timed rows.
-- Fail-closed badge rows for fields that are intentionally omitted until a
-  production-safe root exists:
-  focus pause, targeted/cooldown decision target fields, and direct engine event
-  hooks.
+- Fail-closed badge rows for fields absent from this historical derivation
+  path's base domain-12/domain-16 inputs: focus pause, detailed target bodies,
+  and direct engine event hooks. The integrated production collector does not
+  use this lossy route for pause or decision bodies; it emits those exact
+  fields directly into D45.
 
 ## Production Domain
 
@@ -207,6 +208,23 @@ claims below for focus pause, decision cooldowns, and target storage:
   non-false `state_target` declaration makes the numeric value a state ID.
   The pinned game-file corpus has 278 such declarations and no
   `province_target` producer.
+
+## 2026-07-19 residual cleanup
+
+The promoted targeted-decision body also includes exact lifecycle
+`record+0x28`, ignore `record+0x2C`, and days `record+0x30`. The serializer and
+deserializer evidence for all three fields is recorded in
+`A2_A12_RE_REPORT.md` and `A2_A12_RE_EVIDENCE.json`. Integrated production D45
+sets the exact pause/targets/cooldowns status bits and emits only the remaining
+direct-hook-unavailable badge. This lane-local proof derivation retains its
+pause/target badges because its older base compact inputs do not carry those
+new exact fields; it must not be mistaken for the production producer path.
+
+The direct-hook candidate census additionally rejects the remaining named
+sources as effect validation, metrics formatting, static registration, or GUI
+consumption. No callback RVA is guessed or promoted. A future direct-hook
+promotion still requires an engine mutator/callback argument contract and
+authenticated same-frame invocation observations.
 
 The following residual narrative is retained as historical evidence of the
 search path; it is no longer the current A2/A12 RE status.

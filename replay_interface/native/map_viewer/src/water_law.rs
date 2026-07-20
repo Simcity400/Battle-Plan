@@ -588,7 +588,7 @@ mod tests {
     ///   vSecondVirtualSunPos  = (0,    600, 100, 5000)
     ///   vSecondVirtualMoonPos = (2816, 600, 100, 550)
     /// (measured directly from
-    ///  C:\Users\Example\AppData\Local\hoi4_captures\restore_gate_1\map_frame_draw000_ps_constant_buffer_slot0.bin
+    ///  C:\hoi4_evidence\capture_corpus_preserved\restore_gate_1\map_frame_draw000_ps_constant_buffer_slot0.bin
     ///  and .../live_PAN2/water_frame_draw000_ps_constant_buffer_slot0.bin)
     fn captured_cb0_from_restore_gate_1_and_live_pan2() -> Vec<u8> {
         let mut cb0 = vec![0u8; 272];

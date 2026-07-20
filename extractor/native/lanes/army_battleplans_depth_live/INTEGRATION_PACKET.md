@@ -1,5 +1,20 @@
 # Integration Packet: `army_battleplans_depth_live` domain 54
 
+> Historical application packet. Its draft snippets and
+> `SHARED_INTEGRATION_PENDING` wording are not current authority. Current
+> authority is `src/lib.rs`, `A729_BATTLEPLAN_RE_EVIDENCE.json`,
+> `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`, and
+> `extractor/documents/dossiers/W13_RESIDUAL_COMBAT_PROJECT_RE.md`: domain 54
+> uses a 60-byte header and 88-byte rows with exact `+0x244` order identity,
+> exact `+0x210/+0x21C` per-order assigned-division children, and exact
+> `+0x248` active/execution state. The four remaining observation gates are
+> activation-false and require no new Ghidra seed.
+>
+> 2026-07-19 residual RE correction: see `A729_BATTLEPLAN_RE_REPORT.md` and
+> `A729_BATTLEPLAN_RE_EVIDENCE.json`. Type 5 is area defense, not offensive;
+> exact `+0x70/+0x78` geometry is restricted to authenticated type-2 line and
+> type-3 invasion rows. Execution/activation is exact at `order+0x248`.
+
 Packet scope: registration-ready plan for the validated domain-54 slice only.
 Do not apply this packet while another worker owns shared collector/recorder
 entrypoints.
@@ -12,8 +27,8 @@ the lane archive and proof gate identify the validated executable as
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad` and list
 the dereferenced field policy validated for that build: `CArmy` vtable RVA
 `0x293BC60`, order vtable RVA `0x296FAE8`, `CArmy+0x98`,
-`order+0x30`, `order+0x38`, type-5 `order+0xE0/+0xE8`, and non-type-5
-`order+0x70/+0x78`.
+`order+0x30`, `order+0x38`, type-5 area-defense `order+0xE0/+0xE8`, and
+type-2/type-3 `order+0x70/+0x78`.
 
 Runtime collector identity is not a full executable-SHA read. Shared production
 matching uses `compact_contract::build_profile` sentinel checks for the profile
@@ -25,7 +40,7 @@ dependency paths.
 The decisive proof family is
 `extractor/native/runs/army_battleplans_depth_live_save_geometry_870ebf_20260701_v1`:
 the archive records `137/171` save/live paired type-5 rows matching save
-`states` at `order+0xE0/+0xE8`, `95/111` save/live paired non-type-5 rows
+`states` at `order+0xE0/+0xE8`, `95/111` save/live paired type-2/type-3 rows
 matching save `path` at `order+0x70/+0x78`, and rejection of the old type-3
 `order+0xC0/+0xC8` primary path candidate (`0/17` matches). The direct-root
 candidate families remain rejected or partial and are not part of this hot-loop
@@ -38,14 +53,14 @@ Integrate only these fields:
 - active army orders already reachable through the validated division-root to
   `CArmy+0xB0` to `CArmy+0x98` order-vector path;
 - `order+0x30` order type and `order+0x38` back-reference validation;
-- exact type-5 target-state vectors at `order+0xE0/+0xE8`;
-- exact non-type-5 path geometry vectors at `order+0x70/+0x78`, emitted as an
+- exact type-5 area-defense target-state vectors at `order+0xE0/+0xE8`;
+- exact type-2 line/type-3 invasion path geometry vectors at
+  `order+0x70/+0x78`, emitted as an
   8-byte province child table only when the live vector validates;
 - exact same-frame assigned-unit and order-linkage status, derived from the
   paired `oob_command` army row for the same frame;
-- explicit badges only for not-yet-validated fields:
-  execution as `STATUS_FIXTURE_REQUIRED`, stance/aggressiveness as
-  `STATUS_UNKNOWN`.
+- exact active/execution state from `order+0x248`, plus explicit
+  `STATUS_UNKNOWN` badges for stance/aggressiveness.
 
 Keep out of this integration:
 
@@ -55,9 +70,9 @@ Keep out of this integration:
 - pure preflight address cache, targeted arena-wide handle refresh, and plain
   pointer-table direct-root candidates. Existing proof rejects these as
   scheduled hot-loop paths;
-- redraw/toggle lifecycle semantics, activation/execution values, plan-value
-  caches, stance/aggressiveness values, non-path geometry semantics, and UI
-  semantic reconstruction of fronts.
+- an authenticated baseline -> same-instance type-2 redraw -> delete lifecycle,
+  type-4 geometry, plan-value caches, stance/aggressiveness values, non-path
+  geometry semantics, and UI semantic reconstruction of fronts.
 
 Lane-local code in this packet:
 
@@ -173,8 +188,11 @@ fn read_army_battleplans_depth_path_provinces(
     order_ptr: usize,
     order_type: i32,
 ) -> (Option<Vec<u32>>, &'static str) {
-    if order_type == ORDER_TYPE5_OFFENSIVE {
+    if order_type == ORDER_TYPE_AREA_DEFENSE {
         return (None, "exact");
+    }
+    if !matches!(order_type, ORDER_TYPE_LINE | ORDER_TYPE_INVASION) {
+        return (None, "unsupported");
     }
     let Some(begin_addr) = order_ptr.checked_add(battleplans54::ORDER_OFF_PATH_BEGIN as usize) else {
         return (None, "fixture_required");
@@ -373,6 +391,7 @@ fn read_compact_army_battleplans_depth_live(
             battleplans54::RawOrderObservation {
                 army_id: row.army_id,
                 generation: row.generation,
+                engine_order_instance_id: row.engine_order_instance_id,
                 deleted: row.deleted,
                 slot_index: row.slot_index,
                 order_type: row.order_type,
@@ -381,6 +400,7 @@ fn read_compact_army_battleplans_depth_live(
                 target_declared_count: row.target_state_count,
                 target_status: battleplans54::status_code_from_name(row.target_status),
                 geometry_status: battleplans54::status_code_from_name(row.geometry_status),
+                assigned_division_ids: row.assigned_division_ids.clone().unwrap_or_default(),
                 assigned_units_status: if linked {
                     battleplans54::STATUS_EXACT
                 } else {
@@ -391,6 +411,8 @@ fn read_compact_army_battleplans_depth_live(
                 } else {
                     battleplans54::STATUS_FIXTURE_REQUIRED
                 },
+                active: row.active.unwrap_or(false),
+                active_status: battleplans54::status_code_from_name(row.active_status),
                 stance_status: battleplans54::STATUS_UNKNOWN,
                 aggressiveness_status: battleplans54::STATUS_UNKNOWN,
             }
@@ -415,8 +437,7 @@ fn read_compact_army_battleplans_depth_live(
         target_state_rows: encoded.extraction.type5_exact_rows,
         path_geometry_rows: encoded.extraction.path_geometry_rows,
         non_type5_exact_path_rows: encoded.extraction.non_type5_exact_path_rows,
-        fixture_blocked_rows: encoded.extraction.non_type5_fixture_blocked_rows
-            .saturating_add(encoded.extraction.execution_fixture_blocked_rows),
+        fixture_blocked_rows: encoded.extraction.non_type5_fixture_blocked_rows,
     }
 }
 
@@ -603,11 +624,7 @@ fn decode_compact_army_battleplans_depth_live_data_payload(
         summary,
         COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE,
         "army_battleplans_fixture_blocked_rows",
-        lane_summary
-            .totals
-            .unsupported_geometry_rows
-            .saturating_add(lane_summary.totals.execution_fixture_required_rows)
-            as usize,
+        lane_summary.totals.unsupported_geometry_rows as usize,
     );
     add_compact_domain_data_unit(
         summary,
@@ -780,7 +797,9 @@ The extra JSON should include:
       "target_declared_count": 2,
       "target_status": "exact",
       "geometry_status": "exact",
-      "execution_status": "fixture_required",
+      "active": true,
+      "active_status": "exact",
+      "execution_status": "exact",
       "assigned_units_status": "exact",
       "order_linkage_status": "exact",
       "stance_status": "unknown",
@@ -863,10 +882,11 @@ upsert/delete rows after the baseline. If a delta arrives before a baseline or
 the compact status carries a failure bit, the fold keeps prior state, marks the
 bucket `known=false` for that hour, and records the reason in provenance.
 
-Rows carry only the validated slice: exact type-5 `target_states`, exact
-non-type-5 `path_provinces` from live `order+0x70/+0x78`, exact
-assigned-unit/order-linkage statuses, and explicit `fixture_required` or
-`unknown` badges for unvalidated execution, stance, and aggressiveness fields.
+Rows carry only the validated slice: exact type-5 area-defense `target_states`,
+exact type-2 line/type-3 invasion `path_provinces` from live
+`order+0x70/+0x78`, exact active/execution state from `order+0x248`, exact
+assigned-unit/order-linkage statuses, and explicit `unknown` badges for
+unvalidated stance and aggressiveness fields.
 ```
 
 ## Contract and Registry Wording After Integration
@@ -874,19 +894,19 @@ assigned-unit/order-linkage statuses, and explicit `fixture_required` or
 `extractor/documents/MASTER_EXTRACTION_CONTRACT.md` row:
 
 ```markdown
-| `army_battleplans_depth_live` / 54 | `SHARED_INTEGRATION_PENDING` | Shared collector/recorder/fold wiring exists for the validated partial slice: exact type-5 target-state rows and exact save/live-paired non-type-5 `order+0x70/+0x78` path-geometry rows with same-frame assignment/linkage status. Shared speed-five `.battleplan` proof and live redraw/toggle fixture closure remain. |
+| `army_battleplans_depth_live` / 54 | `SHARED_INTEGRATION_PENDING` | Shared collector/recorder/fold wiring exists for the validated partial slice: exact type-5 area-defense target-state rows, exact save/live-paired type-2/type-3 `order+0x70/+0x78` path-geometry rows, exact `order+0x248` active/execution state, and same-frame assignment/linkage status. Shared speed-five `.battleplan` proof and live redraw/delete fixture closure remain. |
 ```
 
 Battleplan geometry capability row:
 
 ```markdown
-| Battleplan geometry | Frontline/offensive line/fallback/garrison geometry, redraws, activation/execution state. | `SHARED_INTEGRATION_PENDING` | `army_battleplans_depth_live` / 54; shared wiring covers exact type-5 target states and exact non-type-5 `order+0x70/+0x78` path rows from the validated save/live paired slice. | Pass shared DLL/Rust/.battleplan proof; close or exactly reject redraw lifecycle, activation/execution, stance/aggressiveness, and non-path geometry semantics. |
+| Battleplan geometry | Line/invasion/area-defense geometry, redraws, and activation/execution state. | `SHARED_INTEGRATION_PENDING` | `army_battleplans_depth_live` / 54; shared wiring covers exact type-5 area-defense target states, exact type-2/type-3 `order+0x70/+0x78` path rows from the validated save/live paired slice, and exact `order+0x248` active/execution state. | Pass shared DLL/Rust/.battleplan proof; capture the minimal same-instance type-2 redraw/delete and type-4 discriminator; close or exactly reject stance/aggressiveness and non-path geometry semantics. |
 ```
 
 `extractor/documents/DOMAIN_REGISTRY.md` row:
 
 ```markdown
-| 54 | `army_battleplans_depth_live` | shared integration pending: validated type-5 target states and non-type-5 `order+0x70/+0x78` path geometry slice wired; redraw/toggle lifecycle and direct-root manager coverage open | army OOB/orders/battleplans depth |
+| 54 | `army_battleplans_depth_live` | shared integration pending: validated type-5 area-defense target states, type-2/type-3 `order+0x70/+0x78` path geometry, and `order+0x248` active/execution state wired; redraw/delete fixture and direct-root manager coverage open | army OOB/orders/battleplans depth |
 ```
 
 Do not call the whole lane complete until the open fields below are validated,
@@ -897,11 +917,12 @@ rejected with proof, or fixture-blocked with exact evidence.
 - Direct roots for empty/inactive armies, army groups, and theatres:
   stay out until a complete current-build manager/container root or bounded
   DLL-native refresh contract exists. Cold-preflight rows are not production.
-- Redraw/toggle lifecycle and non-path geometry semantics:
-  require live fixture evidence or exact rejection.
+- Redraw/delete lifecycle and type-4/non-path geometry semantics:
+  require the minimal controlled fixture in
+  `X1_X8_REMAINING_HUMAN_FIXTURE_CARD.json` or exact rejection.
 - Activation/execution state:
-  `order+0x150` as `is_executing: u8` is rejected for the current proof family.
-  Do not emit a value.
+  exact at `order+0x248`; `order+0x150` remains a rejected candidate and must
+  not be retried or emitted.
 - Stance/aggressiveness:
   `CArmy+0x1A4/+0x1A8/+0x1AC` are near-match scalar candidates only. Width and
   exactness are unresolved. Emit `unknown` only.
@@ -923,6 +944,7 @@ current-equivalent capture with domain 54 scheduled. Required pass criteria:
 - no `source_unavailable`, `partial_data`, `bridge_unavailable`, or
   `worker_panic` failure bits;
 - `.battleplan` verifies;
-- decoder units show exact type-5 rows and exact path-geometry rows when present;
+- decoder units show exact type-5 area-defense rows and exact type-2/type-3
+  path-geometry rows when present;
 - all non-deleted rows have exact assignment and order-linkage status;
-- execution remains `fixture_required`; stance/aggressiveness remain `unknown`.
+- active/execution status is exact; stance/aggressiveness remain `unknown`.

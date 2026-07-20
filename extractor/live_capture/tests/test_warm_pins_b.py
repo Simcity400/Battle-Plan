@@ -245,7 +245,7 @@ class _ArmyProc:
             self.mem[optr + 0x00] = self.order_vt
             self.mem[optr + CO.ORDER_ARMY_BACKREF_OFF] = a
             self.mem[optr + CO.ORDER_TYPE_OFF] = otype
-            if otype == CO.TYPE5_OFFENSIVE and states:
+            if otype == CO.TYPE5_AREA_DEFENSE and states:
                 sbegin = optr + 0x200
                 self.mem[optr + CO.ORDER_T5_STATES_BEGIN] = sbegin
                 self.mem[optr + CO.ORDER_T5_STATES_SIZE] = len(states)
@@ -279,7 +279,7 @@ class TestConstructionArmiesModule(unittest.TestCase):
     def _proc(self):
         import construction_orders_live as CO
         p = _ArmyProc()
-        p.add_army(7, orders=[(CO.TYPE5_OFFENSIVE, [101, 102]), (1, None)])
+        p.add_army(7, orders=[(CO.TYPE5_AREA_DEFENSE, [101, 102]), (1, None)])
         p.add_army(9, orders=[])           # army with NO orders -> excluded from output
         return p
 
@@ -291,7 +291,7 @@ class TestConstructionArmiesModule(unittest.TestCase):
         out = CO.read_orders_from_armies(p, armies)
         self.assertIn(7, out)                              # army 7 has orders
         self.assertNotIn(9, out)                           # army 9 (0 orders) excluded
-        t5 = [o for o in out[7] if o["order_type"] == CO.TYPE5_OFFENSIVE]
+        t5 = [o for o in out[7] if o["order_type"] == CO.TYPE5_AREA_DEFENSE]
         self.assertEqual(t5[0]["target_states"], [101, 102])
 
     def test_validate_miss_on_vtable_change(self):

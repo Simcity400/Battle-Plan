@@ -161,7 +161,15 @@
       "properties": {
         "level": {"type": "integer", "minimum": 0},
         "healthy_level": {"type": ["integer", "null"], "minimum": 0},
-        "partial_health_raw": {"type": "integer", "minimum": 0, "maximum": 10000000},
+        "partial_health_raw": {
+          "type": "integer",
+          "minimum": 0,
+          "x-hoi4-maximum-product": {
+            "property": "level",
+            "multiplier": 10000000,
+            "rule": "partial_health_raw <= level * 10000000"
+          }
+        },
         "damaged": {"type": "boolean"},
         "token": {"type": "string", "minLength": 1}
       }

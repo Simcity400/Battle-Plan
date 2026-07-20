@@ -153,13 +153,56 @@ impl std::fmt::Display for DeviceLossError {
 
 impl std::error::Error for DeviceLossError {}
 
-/// True only for a typed device-loss failure, including one retained in an
-/// error source chain. This is the escape hatch from feature-local omission
-/// boundaries; it deliberately does not inspect diagnostic strings.
+/// Typed terminal error for a failed void D3D11 command when the device
+/// reports an HRESULT outside the three named DXGI loss reasons. Preserve the
+/// exact observation instead of guessing which device-loss category occurred.
+#[derive(Debug)]
+pub struct DeviceUnavailableError {
+    action: String,
+    removed_reason: i32,
+}
+
+impl std::fmt::Display for DeviceUnavailableError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "replay_app D3D11: {} left the device unavailable (GetDeviceRemovedReason 0x{:08X}); rendering stopped fail-closed because the upload result cannot be admitted; restart replay_app",
+            self.action,
+            self.removed_reason as u32,
+        )
+    }
+}
+
+impl std::error::Error for DeviceUnavailableError {}
+
+fn void_device_call_result(device_removed_reason: i32, action: &str) -> Result<()> {
+    if device_removed_reason >= 0 {
+        return Ok(());
+    }
+    if let Some(loss) = DeviceLoss::from_hresult(device_removed_reason) {
+        return Err(Box::new(DeviceLossError::new(
+            action,
+            loss,
+            device_removed_reason,
+            Some(device_removed_reason),
+        )));
+    }
+    Err(Box::new(DeviceUnavailableError {
+        action: action.to_string(),
+        removed_reason: device_removed_reason,
+    }))
+}
+
+/// True only for a typed terminal device failure, including an unclassified
+/// negative `GetDeviceRemovedReason` retained in an error source chain. This
+/// is the escape hatch from feature-local omission boundaries; it deliberately
+/// does not inspect diagnostic strings.
 pub fn is_device_loss_error(error: &(dyn std::error::Error + 'static)) -> bool {
     let mut current = Some(error);
     while let Some(candidate) = current {
-        if candidate.downcast_ref::<DeviceLossError>().is_some() {
+        if candidate.downcast_ref::<DeviceLossError>().is_some()
+            || candidate.downcast_ref::<DeviceUnavailableError>().is_some()
+        {
             return true;
         }
         current = candidate.source();
@@ -295,6 +338,15 @@ impl Gfx {
             )));
         }
         hr_ok(hr, action)
+    }
+
+    /// D3D11 immediate-context upload calls such as `UpdateSubresource` return
+    /// `void`. Query the owning device immediately after the command so a
+    /// removed, reset, hung, or otherwise unavailable device is propagated as
+    /// a typed terminal error instead of admitting the upload silently.
+    pub(crate) fn check_void_device_call(&self, action: &str) -> Result<()> {
+        let removed_reason = unsafe { (*self.device.as_raw()).GetDeviceRemovedReason() };
+        void_device_call_result(removed_reason, action)
     }
 
     /// Clear and bind the product target when no admitted non-UI pass is
@@ -628,5 +680,31 @@ mod tests {
             assert!(message.contains("stopped fail-closed"), "{message}");
             assert!(message.contains("restart replay_app"), "{message}");
         }
+    }
+
+    #[test]
+    fn void_upload_result_is_admitted_only_while_device_is_available() {
+        void_device_call_result(0, "UpdateSubresource RestoreScene ColorCube")
+            .expect("S_OK device state admits the completed void upload");
+
+        let removed = void_device_call_result(
+            DXGI_ERROR_DEVICE_REMOVED,
+            "UpdateSubresource RestoreScene ColorCube",
+        )
+        .expect_err("device removal must reject the upload");
+        assert!(removed.downcast_ref::<DeviceLossError>().is_some());
+        assert!(is_device_loss_error(removed.as_ref()));
+
+        let unknown_reason = 0x8000_4005u32 as i32;
+        let unavailable = void_device_call_result(
+            unknown_reason,
+            "UpdateSubresource RestoreScene ColorCube",
+        )
+        .expect_err("an unknown negative device reason must reject the upload");
+        assert!(unavailable
+            .downcast_ref::<DeviceUnavailableError>()
+            .is_some());
+        assert!(is_device_loss_error(unavailable.as_ref()));
+        assert!(unavailable.to_string().contains("cannot be admitted"));
     }
 }

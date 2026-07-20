@@ -432,7 +432,7 @@ advanced 48 game hours in 55.031 wall seconds, verified replay output, resolved
 496 army bodies from cache in 0.078s, emitted 476 army-order events, observed
 463 `army_order_added` and 13 `army_order_removed` events, and reported zero raw
 gap domains. It still failed `--require-army-order-raw-updates`; this segment
-must not be promoted until an already-sampled type-5 offensive order is
+must not be promoted until an already-sampled type-2 line order is
 redrawn/resized during a live capture and the strict update gate passes. A
 second fixture window
 `replay_interface/replay/snapshots/_collector_session_raw_military_gate/20260629T201839Z_pid43412`

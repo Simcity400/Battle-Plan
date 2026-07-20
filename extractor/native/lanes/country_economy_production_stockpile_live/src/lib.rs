@@ -1426,6 +1426,7 @@ fn decode_production_trailer_chain(
     let mut plic_seen = false;
     let mut pvj_seen = false;
     let mut pfr_seen = false;
+    let mut ppr_seen = false;
     let mut pls_seen = false;
     let mut pef_seen = false;
     let mut pmi_seen = false;
@@ -1474,6 +1475,20 @@ fn decode_production_trailer_chain(
             pfr_seen = true;
             let Some(next) =
                 decode_production_pfr1_segment(offset, payload, cursor, base_lines, summary)
+            else {
+                return;
+            };
+            cursor = next;
+        } else if magic == b"PPR1" {
+            if ppr_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production has duplicate PPR1 trailer"
+                ));
+                return;
+            }
+            ppr_seen = true;
+            let Some(next) =
+                decode_production_ppr1_segment(offset, payload, cursor, base_lines, summary)
             else {
                 return;
             };
@@ -2076,6 +2091,80 @@ fn decode_production_pfr1_segment(
         "production_requested_factories_rows",
         row_count as u64,
     );
+    Some(trailer_offset + segment_len)
+}
+
+/// Decode the exact a729 line+0x44 priority/order witness. PPR1 must cover the
+/// frozen D11 equipment-line key set bijectively and never accepts a fabricated
+/// ordinal outside the collector's bounded production vector.
+fn decode_production_ppr1_segment(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    base_lines: &BTreeSet<(u32, u32, i32)>,
+    summary: &mut CompactStreamSummary,
+) -> Option<usize> {
+    const HEADER_LEN: usize = 20;
+    const ROW_LEN: usize = 16;
+    const MAX_PRIORITY: i32 = 4095;
+    let Some(trailer) = payload.get(trailer_offset..) else {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: PPR1 offset beyond payload"));
+        return None;
+    };
+    if trailer.len() < HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PPR1 trailer shorter than {HEADER_LEN} bytes"
+        ));
+        return None;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let segment_len = read_u32_le(trailer, 8) as usize;
+    let row_count = read_u32_le(trailer, 12) as usize;
+    let reserved = read_u32_le(trailer, 16);
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: PPR1 header/length is invalid"));
+        return None;
+    }
+    let mut cursor = HEADER_LEN;
+    let mut seen = BTreeSet::new();
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32_le(trailer, cursor);
+        let kind = read_u32_le(trailer, cursor + 4);
+        let line_id = read_i32_le(trailer, cursor + 8);
+        let priority = read_i32_le(trailer, cursor + 12);
+        cursor += ROW_LEN;
+        let key = (tag_db_id, kind, line_id);
+        if tag_db_id == 0 || (kind != 1 && kind != 2) || !(0..=MAX_PRIORITY).contains(&priority) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PPR1 row {row_index} has invalid tag/kind/priority"
+            ));
+        }
+        if !seen.insert(key) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PPR1 row {row_index} duplicates line key"
+            ));
+        }
+    }
+    if seen != *base_lines {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PPR1 line coverage is not bijective: trailer_rows={} base_lines={}",
+            seen.len(),
+            base_lines.len()
+        ));
+    }
+    let domain = domain_entry(summary, DOMAIN_PRODUCTION);
+    add_unit(domain, "production_priority_rows", row_count as u64);
     Some(trailer_offset + segment_len)
 }
 
@@ -2986,6 +3075,53 @@ mod tests {
             summary.per_domain[&DOMAIN_PRODUCTION]
                 .data_units_total
                 .get("production_requested_factories_rows")
+                .copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn decodes_bijective_ppr1_priority_order_join() {
+        let mut payload = encode_production_payload(
+            9,
+            0,
+            1,
+            &[],
+            &[ProductionLineRow {
+                tag_db_id: 47,
+                kind: 1,
+                line_id: 349,
+                active_factories: 3,
+                cost_raw: 1,
+                speed_raw: 1,
+                produced_raw: 1,
+                amount: 0,
+            }],
+            &[],
+            &[],
+        );
+        payload.extend_from_slice(b"PPR1");
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&20u16.to_le_bytes());
+        payload.extend_from_slice(&36u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&349i32.to_le_bytes());
+        payload.extend_from_slice(&0i32.to_le_bytes());
+
+        let mut summary = CompactStreamSummary::default();
+        decode_production_payload(0, &payload, &mut summary);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary.per_domain[&DOMAIN_PRODUCTION]
+                .data_units_total
+                .get("production_priority_rows")
                 .copied(),
             Some(1)
         );

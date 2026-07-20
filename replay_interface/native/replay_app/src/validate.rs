@@ -1,4 +1,6 @@
 //! E4 recording open/validate UX.
+//! Shipped opens enter through `crate::recording_open`, which statically selects
+//! the bounded decoder capability and never retries ordinary or raw input.
 //!
 //! Opens a `.battleplan` through the SHARED validator — `replay_core::
 //! open_recording`, the exact entry `replay_core/source.rs` and the timeline
@@ -10,7 +12,7 @@
 
 use std::path::Path;
 
-use replay_core::{open_recording, SourceError, WorldTimeline};
+use replay_core::{SourceError, WorldTimeline};
 
 /// Category of a rejected recording, for a readable headline. The precise
 /// underlying message is carried alongside in [`OpenOutcome::Rejected::message`].
@@ -51,6 +53,9 @@ pub struct OpenReport {
     pub first_hour: i64,
     pub last_hour: i64,
     pub warnings: Vec<String>,
+    pub prefold_decoder_id: Option<String>,
+    pub prefold_source_len: Option<u64>,
+    pub prefold_source_sha256: Option<String>,
 }
 
 /// The open/validate result surfaced to the UX.
@@ -70,7 +75,7 @@ impl OpenOutcome {
     pub fn summary(&self) -> String {
         match self {
             OpenOutcome::Opened(report) => format!(
-                "opened {:?}: {} hour(s), {}..={}{}",
+                "opened {:?}: {} hour(s), {}..={}{}{}",
                 report.game_id,
                 report.hour_count,
                 report.first_hour,
@@ -79,6 +84,16 @@ impl OpenOutcome {
                     String::new()
                 } else {
                     format!(" ({} warning(s))", report.warnings.len())
+                },
+                match (
+                    report.prefold_decoder_id.as_deref(),
+                    report.prefold_source_len,
+                    report.prefold_source_sha256.as_deref(),
+                ) {
+                    (Some(decoder), Some(bytes), Some(sha256)) => format!(
+                        " [compact source: decoder {decoder}, {bytes} bytes, sha256 {sha256}]"
+                    ),
+                    _ => String::new(),
                 }
             ),
             OpenOutcome::Rejected { kind, message } => {
@@ -99,13 +114,19 @@ impl OpenOutcome {
 /// rejected for playback.
 pub fn open_and_validate(path: &Path) -> OpenOutcome {
     match open_timeline(path) {
-        Ok(timeline) => OpenOutcome::Opened(OpenReport {
+        Ok(timeline) => {
+            let receipt = timeline.prefold_receipt();
+            OpenOutcome::Opened(OpenReport {
             game_id: timeline.game_id().to_string(),
             hour_count: timeline.hours().len(),
             first_hour: timeline.first_hour(),
             last_hour: timeline.last_hour(),
             warnings: timeline.warnings().to_vec(),
-        }),
+            prefold_decoder_id: receipt.map(|value| value.decoder_id().to_string()),
+            prefold_source_len: receipt.map(|value| value.source_len()),
+            prefold_source_sha256: receipt.map(|value| value.source_sha256().to_string()),
+        })
+        }
         Err(outcome) => outcome,
     }
 }
@@ -113,7 +134,8 @@ pub fn open_and_validate(path: &Path) -> OpenOutcome {
 /// Open through the same shared container/timeline path while retaining the
 /// timeline for the selected-installation compatibility gate.
 pub fn open_timeline(path: &Path) -> Result<WorldTimeline, OpenOutcome> {
-    let source = open_recording(path).map_err(classify_source_error)?;
+    let source = crate::recording_open::open_product_recording(path)
+        .map_err(classify_source_error)?;
     let timeline = WorldTimeline::open(source).map_err(|err| OpenOutcome::Rejected {
         kind: RejectionKind::Timeline,
         message: format!("recording opened but its timeline is unusable: {err}"),

@@ -19,7 +19,32 @@ pub const PROJECT_PROTOTYPE_STATE_VTABLE_RVA: usize = 0x2A19300;
 pub const PROJECT_SIMPLE_STATE_VTABLE_RVA: usize = 0x2A192A8;
 pub const PROJECT_BREAKTHROUGH_PROGRESS_VTABLE_RVA: usize = 0x2A152E0;
 pub const PROJECT_PROJECT_OFF_STATE_MACHINE_PTR: usize = 0x28;
+pub const PROJECT_PROJECT_OFF_TYPE: usize = 0x08;
+pub const PROJECT_PROJECT_OFF_LOCAL_ID: usize = 0x0C;
+pub const PROJECT_PROJECT_TYPE: u32 = 86;
 pub const PROJECT_PROGRAM_STATUS_OFF_BREAKTHROUGH: usize = 0x50;
+pub const PROJECT_PROJECT_OFF_HISTORY_DATA: usize = 0x68;
+pub const PROJECT_PROJECT_OFF_HISTORY_CAPACITY: usize = 0x70;
+pub const PROJECT_PROJECT_OFF_HISTORY_COUNT: usize = 0x74;
+pub const PROJECT_PROJECT_OFF_START: usize = 0x1BC;
+pub const PROJECT_PROJECT_OFF_COMPLETED: usize = 0x1BD;
+pub const PROJECT_HISTORY_ROW_STRIDE: usize = 0x58;
+pub const PROJECT_HISTORY_VTABLE_RVA: usize = 0x296C220;
+pub const PROJECT_HISTORY_CONTEXT_VTABLE_RVA: usize = 0x296C1D0;
+pub const PROJECT_HISTORY_TOKEN_PROVINCE: u32 = 0x2840;
+pub const PROJECT_HISTORY_TOKEN_PROGRESS: u32 = 0x2B05;
+pub const PROJECT_HISTORY_TOKEN_COUNTRY: u32 = 0x289A;
+pub const PROJECT_HISTORY_TOKEN_SCIENTIST: u32 = 0x4005;
+pub const PROJECT_HISTORY_TOKEN_STATE: u32 = 0x01B7;
+pub const PROJECT_HISTORY_TOKEN_CHARACTER: u32 = 0x4C16;
+pub const PROJECT_HISTORY_TOKEN_CONTEXT: u32 = 0x4029;
+pub const PROJECT_HISTORY_TOKEN_OPTION: u32 = 0x2966;
+pub const PROJECT_HISTORY_TOKEN_PROTOTYPE_REWARD: u32 = 0x2732;
+pub const PROJECT_HISTORY_TOKEN_DATE: u32 = 0x284A;
+pub const PROJECT_HISTORY_TOKEN_HISTORY: u32 = 0x2835;
+pub const PROJECT_TOKEN_COMPLETED: u32 = 0x3127;
+pub const PROJECT_TOKEN_START: u32 = 0x0069;
+pub const PROJECT_HISTORY_UNDEFINED_HANDLE: u32 = 0x4C17;
 pub const PROJECT_STATE_MACHINE_OFF_CURRENT_STATE_PTR: usize = 0x08;
 pub const PROJECT_STATE_MACHINE_OFF_NOT_COMPLETED_FLAG: usize = 0x10;
 pub const PROJECT_STATE_MACHINE_OFF_PROTOTYPE_STATE: usize = 0x18;
@@ -45,6 +70,7 @@ const MAX_PROJECT_PHASE_TARGET_RAW: u32 = 1_000_000;
 const MAX_PROJECT_STATE_ENUM: u32 = 64;
 const MAX_PROJECT_BREAKTHROUGH_POINTS: u32 = 1_000_000_000;
 const MAX_PROJECT_BREAKTHROUGH_ROWS: usize = 16_384;
+const MAX_PROJECT_REWARD_HISTORY_ROWS: u32 = 4_096;
 
 pub trait ProjectMemory {
     fn read_u8(&self, addr: usize) -> Option<u8>;
@@ -80,6 +106,185 @@ pub struct ProjectPin {
     pub addr: usize,
     pub id: u32,
     pub static_def_handle: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OwnedProjectPin {
+    pub addr: usize,
+    pub tag_db_id: u32,
+    pub local_id: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProjectRewardHistoryLayout {
+    pub project_vtable: usize,
+    pub history_vtable: usize,
+    pub context_vtable: usize,
+}
+
+impl ProjectRewardHistoryLayout {
+    pub fn from_module_base(base: usize, project_vtable_rva: usize) -> Self {
+        Self {
+            project_vtable: base.saturating_add(project_vtable_rva),
+            history_vtable: base.saturating_add(PROJECT_HISTORY_VTABLE_RVA),
+            context_vtable: base.saturating_add(PROJECT_HISTORY_CONTEXT_VTABLE_RVA),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectRewardHistoryRow {
+    pub tag_db_id: u32,
+    pub local_id: u32,
+    pub history_index: u32,
+    pub prototype_reward_handle: u32,
+    pub option_handle: u32,
+    pub province: i32,
+    pub progress_raw: u32,
+    pub character_ref_type: u32,
+    pub character_ref_id: u32,
+    pub country_ref: u32,
+    pub scientist_ref: u32,
+    pub state_ref: u32,
+    pub date_raw: i32,
+    pub country_present: bool,
+    pub scientist_present: bool,
+    pub state_present: bool,
+}
+
+pub fn read_project_lifecycle<M: ProjectMemory>(
+    mem: &M,
+    pin: OwnedProjectPin,
+    layout: ProjectRewardHistoryLayout,
+) -> Result<(bool, bool), String> {
+    validate_owned_project(mem, pin, layout)?;
+    let start = read_bool_byte(mem, pin.addr + PROJECT_PROJECT_OFF_START, "start")?;
+    let completed = read_bool_byte(
+        mem,
+        pin.addr + PROJECT_PROJECT_OFF_COMPLETED,
+        "completed",
+    )?;
+    Ok((start, completed))
+}
+
+pub fn read_project_reward_history_rows<M: ProjectMemory>(
+    mem: &M,
+    pin: OwnedProjectPin,
+    layout: ProjectRewardHistoryLayout,
+) -> Result<Vec<ProjectRewardHistoryRow>, String> {
+    validate_owned_project(mem, pin, layout)?;
+    let data = mem
+        .read_u64(pin.addr + PROJECT_PROJECT_OFF_HISTORY_DATA)
+        .map(|value| value as usize)
+        .ok_or_else(|| "project history data pointer unreadable".to_string())?;
+    let capacity = mem
+        .read_u32(pin.addr + PROJECT_PROJECT_OFF_HISTORY_CAPACITY)
+        .ok_or_else(|| "project history capacity unreadable".to_string())?;
+    let count = mem
+        .read_u32(pin.addr + PROJECT_PROJECT_OFF_HISTORY_COUNT)
+        .ok_or_else(|| "project history count unreadable".to_string())?;
+    if count > capacity || count > MAX_PROJECT_REWARD_HISTORY_ROWS {
+        return Err("project history vector bounds are invalid".into());
+    }
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    if !is_live_heap_ptr(data) {
+        return Err("project history data pointer is invalid".into());
+    }
+    let mut rows = Vec::with_capacity(count as usize);
+    for history_index in 0..count {
+        let row_offset = (history_index as usize)
+            .checked_mul(PROJECT_HISTORY_ROW_STRIDE)
+            .ok_or_else(|| "project history row offset overflow".to_string())?;
+        let row = data
+            .checked_add(row_offset)
+            .ok_or_else(|| "project history row address overflow".to_string())?;
+        if mem.read_u64(row).map(|value| value as usize) != Some(layout.history_vtable)
+            || mem
+                .read_u64(row + 0x10)
+                .map(|value| value as usize)
+                != Some(layout.context_vtable)
+        {
+            return Err(format!("project history row {history_index} vtable mismatch"));
+        }
+        let country_present = read_bool_byte(mem, row + 0x2C, "country presence")?;
+        let scientist_present = read_bool_byte(mem, row + 0x34, "scientist presence")?;
+        let state_present = read_bool_byte(mem, row + 0x3C, "state presence")?;
+        let country_ref = required_u32(mem, row + 0x28, "country ref")?;
+        let scientist_ref = required_u32(mem, row + 0x30, "scientist ref")?;
+        let state_ref = required_u32(mem, row + 0x38, "state ref")?;
+        for (label, present, raw) in [
+            ("country", country_present, country_ref),
+            ("scientist", scientist_present, scientist_ref),
+            ("state", state_present, state_ref),
+        ] {
+            if !present && raw != 0 {
+                return Err(format!(
+                    "project history row {history_index} has {label} ref without presence"
+                ));
+            }
+        }
+        let character_ref = mem
+            .read_u64(row + 0x20)
+            .ok_or_else(|| format!("project history row {history_index} character ref unreadable"))?;
+        rows.push(ProjectRewardHistoryRow {
+            tag_db_id: pin.tag_db_id,
+            local_id: pin.local_id,
+            history_index,
+            prototype_reward_handle: required_u32(mem, row + 0x08, "prototype reward")?,
+            option_handle: required_u32(mem, row + 0x0C, "option")?,
+            province: required_u32(mem, row + 0x18, "province")? as i32,
+            progress_raw: required_u32(mem, row + 0x1C, "progress")?,
+            character_ref_type: character_ref as u32,
+            character_ref_id: (character_ref >> 32) as u32,
+            country_ref,
+            scientist_ref,
+            state_ref,
+            date_raw: required_u32(mem, row + 0x48, "date")? as i32,
+            country_present,
+            scientist_present,
+            state_present,
+        });
+    }
+    Ok(rows)
+}
+
+fn validate_owned_project<M: ProjectMemory>(
+    mem: &M,
+    pin: OwnedProjectPin,
+    layout: ProjectRewardHistoryLayout,
+) -> Result<(), String> {
+    if pin.tag_db_id == 0
+        || pin.local_id == 0
+        || pin.local_id > MAX_PROJECT_ID
+        || !is_live_heap_ptr(pin.addr)
+    {
+        return Err("owned project key/address is invalid".into());
+    }
+    if mem.read_u64(pin.addr).map(|value| value as usize) != Some(layout.project_vtable) {
+        return Err("owned project vtable mismatch".into());
+    }
+    if mem.read_u32(pin.addr + PROJECT_PROJECT_OFF_TYPE) != Some(PROJECT_PROJECT_TYPE)
+        || mem.read_u32(pin.addr + PROJECT_PROJECT_OFF_LOCAL_ID) != Some(pin.local_id)
+    {
+        return Err("owned project type/local-id mismatch".into());
+    }
+    Ok(())
+}
+
+fn read_bool_byte<M: ProjectMemory>(mem: &M, addr: usize, label: &str) -> Result<bool, String> {
+    match mem.read_u8(addr) {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
+        Some(value) => Err(format!("{label} byte is outside the boolean domain: {value}")),
+        None => Err(format!("{label} byte unreadable")),
+    }
+}
+
+fn required_u32<M: ProjectMemory>(mem: &M, addr: usize, label: &str) -> Result<u32, String> {
+    mem.read_u32(addr)
+        .ok_or_else(|| format!("{label} unreadable"))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

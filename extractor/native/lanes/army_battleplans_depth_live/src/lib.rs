@@ -58,7 +58,13 @@ pub const COMPACT_STATUS_DELTA_DATA: u32 = compact_contract::COMPACT_STATUS_DELT
 pub const COMPACT_STATUS_PARTIAL_DATA: u32 = compact_contract::COMPACT_STATUS_PARTIAL_DATA;
 pub const COMPACT_STATUS_FAILURE_MASK: u32 = compact_contract::COMPACT_STATUS_FAILURE_MASK;
 
-const ORDER_TYPE5_OFFENSIVE: i32 = 5;
+/// a729 `COrderInstance::GetOrderType()` values proven by the retained
+/// order-tool and order-instance producer/consumer evidence.
+pub const ORDER_TYPE_MOVE: i32 = 1;
+pub const ORDER_TYPE_LINE: i32 = 2;
+pub const ORDER_TYPE_INVASION: i32 = 3;
+pub const ORDER_TYPE_PARADROP: i32 = 4;
+pub const ORDER_TYPE_AREA_DEFENSE: i32 = 5;
 const MAX_CHILD_ROWS: u32 = 5_000;
 const MAX_INLINE_CHILD_ROWS: u32 = 256;
 const MAX_STATE_ID: u32 = 65_535;
@@ -329,7 +335,7 @@ pub fn read_type5_target_states<M: BattleplansDepthMemory>(
     order_ptr: u64,
     order_type: i32,
 ) -> (Vec<u32>, Option<u32>, u32) {
-    if order_type != ORDER_TYPE5_OFFENSIVE {
+    if order_type != ORDER_TYPE_AREA_DEFENSE {
         return (Vec::new(), None, STATUS_UNSUPPORTED);
     }
     read_u32_vector(
@@ -350,8 +356,16 @@ pub fn read_non_type5_path_provinces<M: BattleplansDepthMemory>(
     order_ptr: u64,
     order_type: i32,
 ) -> (Vec<u32>, u32) {
-    if order_type == ORDER_TYPE5_OFFENSIVE {
+    if order_type == ORDER_TYPE_AREA_DEFENSE {
         return (Vec::new(), STATUS_EXACT);
+    }
+    // The retained a729 save/live join authenticates +0x70/+0x78 only for
+    // line orders (type 2) and invasion routes (type 3). Type 1 movement and
+    // type 4 paradrop use the same object storage but do not have a retained
+    // geometry case, so they remain fail-closed rather than inheriting the
+    // broad historical "all non-type-5" claim.
+    if !matches!(order_type, ORDER_TYPE_LINE | ORDER_TYPE_INVASION) {
+        return (Vec::new(), STATUS_UNSUPPORTED);
     }
     read_u32_vector(
         mem,
@@ -406,15 +420,18 @@ pub fn extract_validated_depth_subset(source: &[RawOrderObservation]) -> DepthEx
                 out.assignment_or_linkage_omitted_rows.saturating_add(1);
             continue;
         }
-        if row.order_type == ORDER_TYPE5_OFFENSIVE && row.target_status != STATUS_EXACT {
+        if row.order_type == ORDER_TYPE_AREA_DEFENSE && row.target_status != STATUS_EXACT {
             out.type5_non_exact_omitted_rows = out.type5_non_exact_omitted_rows.saturating_add(1);
             continue;
         }
         let (target_status, geometry_status, path_provinces) =
-            if row.order_type == ORDER_TYPE5_OFFENSIVE {
+            if row.order_type == ORDER_TYPE_AREA_DEFENSE {
                 out.type5_exact_rows = out.type5_exact_rows.saturating_add(1);
                 (STATUS_EXACT, STATUS_EXACT, Vec::new())
-            } else if row.geometry_status == STATUS_EXACT && !row.path_provinces.is_empty() {
+            } else if matches!(row.order_type, ORDER_TYPE_LINE | ORDER_TYPE_INVASION)
+                && row.geometry_status == STATUS_EXACT
+                && !row.path_provinces.is_empty()
+            {
                 out.non_type5_exact_path_rows = out.non_type5_exact_path_rows.saturating_add(1);
                 out.path_geometry_rows = out
                     .path_geometry_rows
@@ -863,13 +880,13 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
             ));
         }
         declared_assigned_divisions = declared_assigned_divisions.saturating_add(assigned_count);
-        if !deleted && order_type == ORDER_TYPE5_OFFENSIVE && target_status != STATUS_EXACT {
+        if !deleted && order_type == ORDER_TYPE_AREA_DEFENSE && target_status != STATUS_EXACT {
             summary.parse_errors.push(format!(
                 "offset {offset}: type-5 row {row_index} is not exact"
             ));
         }
         if has_targets {
-            if order_type != ORDER_TYPE5_OFFENSIVE {
+            if order_type != ORDER_TYPE_AREA_DEFENSE {
                 summary.parse_errors.push(format!(
                     "offset {offset}: non-type-5 row {row_index} has target children"
                 ));
@@ -882,9 +899,9 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
             declared_targets = declared_targets.saturating_add(child_count);
         }
         if has_path {
-            if order_type == ORDER_TYPE5_OFFENSIVE {
+            if !matches!(order_type, ORDER_TYPE_LINE | ORDER_TYPE_INVASION) {
                 summary.parse_errors.push(format!(
-                    "offset {offset}: type-5 row {row_index} has path geometry"
+                    "offset {offset}: unsupported order type {order_type} row {row_index} has path geometry"
                 ));
             }
             if child_count == 0 || child_first.saturating_add(child_count) > path_count {
@@ -1123,7 +1140,7 @@ mod tests {
                 .then_some(target_states.len() as u32),
             target_states,
             path_provinces,
-            target_status: if order_type == ORDER_TYPE5_OFFENSIVE {
+            target_status: if order_type == ORDER_TYPE_AREA_DEFENSE {
                 STATUS_EXACT
             } else {
                 STATUS_UNSUPPORTED
@@ -1319,6 +1336,55 @@ mod tests {
         assert_eq!(row.path_provinces, vec![101, 102, 103]);
         assert_eq!(row.geometry_status, STATUS_EXACT);
         assert_eq!(row.target_status, STATUS_UNSUPPORTED);
+    }
+
+    #[test]
+    fn path_geometry_is_fail_closed_for_unproven_order_types() {
+        let mem = TestMemory::default();
+        for order_type in [ORDER_TYPE_MOVE, ORDER_TYPE_PARADROP, 99] {
+            let (path, status) = read_non_type5_path_provinces(&mem, 0x3000, order_type);
+            assert!(path.is_empty());
+            assert_eq!(status, STATUS_UNSUPPORTED);
+        }
+        let (path, status) =
+            read_non_type5_path_provinces(&mem, 0x3000, ORDER_TYPE_AREA_DEFENSE);
+        assert!(path.is_empty());
+        assert_eq!(status, STATUS_EXACT);
+    }
+
+    #[test]
+    fn prepared_unproven_order_geometry_cannot_bypass_type_dispatch() {
+        let input = exact_order(
+            10,
+            0,
+            ORDER_TYPE_PARADROP,
+            Vec::new(),
+            vec![101, 102],
+        );
+        let record = collect_and_encode_depth_record(&[input], 10, 0, 1, 1);
+        assert_eq!(record.emitted_rows, 1);
+        assert_eq!(record.extraction.non_type5_exact_path_rows, 0);
+        assert_eq!(record.extraction.path_geometry_rows, 0);
+        assert_eq!(record.extraction.non_type5_fixture_blocked_rows, 1);
+    }
+
+    #[test]
+    fn decoder_rejects_path_geometry_for_unproven_order_type() {
+        let input = exact_order(
+            10,
+            0,
+            ORDER_TYPE_INVASION,
+            Vec::new(),
+            vec![101, 102],
+        );
+        let mut record = collect_and_encode_depth_record(&[input], 10, 0, 1, 1);
+        record.payload[HEADER_LEN + 20..HEADER_LEN + 24]
+            .copy_from_slice(&(ORDER_TYPE_PARADROP as u32).to_le_bytes());
+        let decoded = decode_depth_payload(0, &record.payload);
+        assert!(decoded
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("unsupported order type 4")));
     }
 
     fn path_vector_test_memory(begin: u64, size: u32, bytes: Option<Vec<u8>>) -> TestMemory {

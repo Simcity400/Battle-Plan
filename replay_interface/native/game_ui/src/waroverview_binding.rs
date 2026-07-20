@@ -269,6 +269,9 @@ mod tests {
             war_relations,
             wars: Leaf::Absent,
             faction_members: Leaf::Absent,
+            operation_instances: Leaf::Absent,
+            intel_levels: Leaf::Absent,
+            intel_network_graphs: Leaf::Absent,
             relation_flags: BTreeMap::new(),
         }
     }

@@ -6,8 +6,9 @@
 //! without ever materializing it. This module re-reads the finished container
 //! FROM DISK, one entry at a time, seeking to each local header and streaming its
 //! compressed bytes through the decompressor while hashing incrementally. Peak
-//! memory is O(one chunk + the central directory + the manifest JSON), not
-//! O(archive). It performs the same integrity checks the in-RAM reader does
+//! memory is O(one chunk + retained entry metadata + the manifest JSON), not
+//! O(archive): central-directory records are parsed incrementally. It performs
+//! the same integrity checks the in-RAM reader does
 //! (manifest digest, per-entry sha256, manifest↔zip coverage, declared-size
 //! agreement) and, for the collector stream entry, returns its decompressed
 //! sha256 so the caller can compare it to the capture-time hash (the streaming
@@ -16,16 +17,17 @@
 use crate::canon::manifest_canonical_bytes;
 use crate::sha256::{to_hex, Sha256};
 use crate::zip::{
-    portable_path_key, validate_path, INITIAL_ENTRY_RESERVE, MAX_CONTAINER_ENTRY_BYTES,
-    MAX_READER_ENTRIES, STREAMING_MAX_CONTAINER_ENTRY_BYTES, ZIP32_MAX_FIELD_VALUE,
-    ZIP_METHOD_DEFLATE, ZIP_METHOD_STORE, ZIP_METHOD_ZSTD, ZSTD_WINDOW_LOG,
+    portable_path_key, validate_path, validate_payload_path, INITIAL_ENTRY_RESERVE,
+    MAX_CONTAINER_ENTRY_BYTES, MAX_READER_ENTRIES, STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+    ZIP32_MAX_FIELD_VALUE, ZIP_METHOD_DEFLATE, ZIP_METHOD_STORE, ZIP_METHOD_ZSTD, ZSTD_WINDOW_LOG,
 };
-use flate2::write::DeflateDecoder;
+use flate2::read::DeflateDecoder;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::sync::Mutex;
 
 const EOCD_SIG: u32 = 0x0605_4b50;
 const ZIP64_EOCD_SIG: u32 = 0x0606_4b50;
@@ -52,14 +54,150 @@ pub struct StreamVerifyReport {
 }
 
 /// A central-directory record we serve.
-struct CdEntry {
-    name: String,
-    flags: u16,
-    method: u16,
-    crc32: u32,
-    comp_size: u64,
-    uncomp_size: u64,
-    local_header_off: u64,
+#[derive(Debug)]
+pub(crate) struct CdEntry {
+    pub(crate) name: String,
+    pub(crate) version_needed: u16,
+    pub(crate) flags: u16,
+    pub(crate) method: u16,
+    pub(crate) mod_time: u16,
+    pub(crate) mod_date: u16,
+    pub(crate) crc32: u32,
+    pub(crate) comp_size: u64,
+    pub(crate) uncomp_size: u64,
+    pub(crate) local_header_off: u64,
+}
+
+/// File-backed archive used by the product reader. It retains one pinned file
+/// handle for central-directory parsing, up-front CRC validation, and lazy
+/// payload reads; the complete container never resides in a `Vec<u8>`.
+pub(crate) struct FileBackedArchive {
+    file: Mutex<File>,
+    file_len: u64,
+    central_directory_off: u64,
+    entries: Vec<CdEntry>,
+}
+
+impl FileBackedArchive {
+    pub(crate) fn open(mut file: File, max_entries: u64) -> Result<Self, String> {
+        let file_len = file
+            .metadata()
+            .map_err(|error| format!("stat container: {error}"))?
+            .len();
+        let (entries, central_directory_off) =
+            read_central_directory_with_limit(&mut file, file_len, max_entries)?;
+        Ok(Self {
+            file: Mutex::new(file),
+            file_len,
+            central_directory_off,
+            entries,
+        })
+    }
+
+    pub(crate) fn entries(&self) -> &[CdEntry] {
+        &self.entries
+    }
+
+    pub(crate) fn validate_local_headers(&self) -> Result<(), String> {
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| "container file lock poisoned".to_string())?;
+        validate_local_headers_file(
+            &mut file,
+            &self.entries,
+            self.file_len,
+            self.central_directory_off,
+        )
+    }
+
+    pub(crate) fn validate_payloads_crc(&self) -> Result<(), String> {
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| "container file lock poisoned".to_string())?;
+        validate_file_length(&file, self.file_len)?;
+        for entry in &self.entries {
+            verify_entry_crc_streaming(&mut file, entry)?;
+        }
+        validate_file_length(&file, self.file_len)?;
+        Ok(())
+    }
+
+    pub(crate) fn read_entry(
+        &self,
+        index: usize,
+        calculate_sha256: bool,
+    ) -> Result<(Vec<u8>, Option<String>), String> {
+        let entry = self
+            .entries
+            .get(index)
+            .ok_or_else(|| format!("container entry index {index} is out of range"))?;
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| "container file lock poisoned".to_string())?;
+        validate_file_length(&file, self.file_len)?;
+        let mut bytes = Vec::with_capacity(entry.uncomp_size.min(1 << 20) as usize);
+        let (sha256, _) = entry_integrity_inner(
+            &mut file,
+            entry,
+            Some(&mut bytes),
+            calculate_sha256,
+            MAX_CONTAINER_ENTRY_BYTES,
+        )?;
+        validate_file_length(&file, self.file_len)?;
+        Ok((bytes, sha256))
+    }
+
+    /// Decompress one entry directly into a caller-owned writer while deriving
+    /// the same CRC/size/SHA evidence as an ordinary authenticated read. This
+    /// path is intentionally available only on the retained file-backed
+    /// archive: it never materializes the complete entry in memory.
+    pub(crate) fn copy_entry_to_writer<W: Write>(
+        &self,
+        index: usize,
+        writer: &mut W,
+        calculate_sha256: bool,
+    ) -> Result<(Option<String>, u64), String> {
+        let entry = self
+            .entries
+            .get(index)
+            .ok_or_else(|| format!("container entry index {index} is out of range"))?;
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| "container file lock poisoned".to_string())?;
+        validate_file_length(&file, self.file_len)?;
+        let result = entry_integrity_inner(
+            &mut file,
+            entry,
+            Some(writer),
+            calculate_sha256,
+            STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+        )?;
+        validate_file_length(&file, self.file_len)?;
+        Ok(result)
+    }
+}
+
+fn validate_file_length(file: &File, expected: u64) -> Result<(), String> {
+    let observed = file
+        .metadata()
+        .map_err(|error| format!("stat retained container handle: {error}"))?
+        .len();
+    if observed != expected {
+        return Err(format!(
+            "container file length changed while opening (observed {expected}, now {observed})"
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct FileEntryRegion {
+    header_start: u64,
+    region_end: u64,
 }
 
 fn rd_u16(b: &[u8], off: usize) -> Option<u16> {
@@ -133,7 +271,9 @@ pub fn verify_replay_container_streaming_file_at_path(
         .map_err(|e| format!("stat container: {e}"))?
         .len();
 
-    let entries = read_central_directory(&mut file, file_len)?;
+    let (entries, central_directory_off) =
+        read_central_directory_with_limit(&mut file, file_len, MAX_READER_ENTRIES)?;
+    validate_local_headers_file(&mut file, &entries, file_len, central_directory_off)?;
 
     // --- manifest.json (read + parse + digest) ---
     let man_entry = entries
@@ -309,15 +449,28 @@ pub fn verify_replay_container_streaming_file_at_path(
     Ok(report)
 }
 
-/// Locate + parse the End-Of-Central-Directory and read the central directory
-/// (bounded: the CD is small relative to the payloads).
+/// Locate the End-Of-Central-Directory and parse central-directory records
+/// incrementally, retaining only the metadata needed for later reads.
+#[cfg(test)]
 fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>, String> {
+    read_central_directory_with_limit(file, file_len, MAX_READER_ENTRIES)
+        .map(|(entries, _)| entries)
+}
+
+fn read_central_directory_with_limit(
+    file: &mut File,
+    file_len: u64,
+    max_entries: u64,
+) -> Result<(Vec<CdEntry>, u64), String> {
     if file_len < 22 {
         return Err("container too small for an EOCD".to_string());
     }
     // The EOCD sits within the last 22 + 0xFFFF bytes (comment cap). Include
-    // the Zip64 locator + minimum Zip64 EOCD before it, because a max-size EOCD
-    // comment otherwise pushes those records just outside the scanned tail.
+    // the Zip64 locator + minimum Zip64 EOCD before it so the locator is always
+    // inside the scanned tail; the Zip64 EOCD record itself is then reached by
+    // FOLLOWING the locator's declared offset (parse_zip64_eocd), because a
+    // record with an extensible data sector can validly start before any fixed
+    // tail window.
     let tail_len = (EOCD_MIN_LEN + 0xFFFF + ZIP64_LOCATOR_LEN + ZIP64_EOCD_MIN_LEN).min(file_len);
     let tail_start = file_len - tail_len;
     let mut tail = vec![0u8; tail_len as usize];
@@ -349,7 +502,7 @@ fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>
     {
         let locator = locator.ok_or_else(|| "Zip64 locator missing".to_string())?;
         let (zip64_total, zip64_cd_size, zip64_cd_off, zip64_eocd_abs) =
-            parse_zip64_eocd(&tail, tail_start, locator)?;
+            parse_zip64_eocd(file, &tail, tail_start, locator)?;
         crate::zip::validate_ordinary_zip64_field(
             "entries-on-disk count",
             entries_on_disk16 as u64,
@@ -400,9 +553,9 @@ fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>
             "central directory does not end at its end record: {actual_cd_end} != {expected_cd_end}"
         ));
     }
-    if total_u64 > MAX_READER_ENTRIES {
+    if total_u64 > max_entries {
         return Err(format!(
-            "central directory entry count {total_u64} exceeds reader cap {MAX_READER_ENTRIES}"
+            "central directory entry count {total_u64} exceeds reader cap {max_entries}"
         ));
     }
     let total = usize::try_from(total_u64)
@@ -411,63 +564,78 @@ fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>
         return Err("central directory out of range".to_string());
     }
 
-    let cd_size_usize =
-        usize::try_from(cd_size).map_err(|_| "central directory too large".to_string())?;
-    let mut cd = vec![0u8; cd_size_usize];
     file.seek(SeekFrom::Start(cd_off))
         .map_err(|e| format!("seek central dir: {e}"))?;
-    file.read_exact(&mut cd)
-        .map_err(|e| format!("read central dir: {e}"))?;
-
     let mut entries = Vec::with_capacity(total.min(INITIAL_ENTRY_RESERVE));
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_ci: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut p = 0usize;
-    while p + 46 <= cd.len() {
-        let sig = rd_u32(&cd, p).ok_or("truncated cdh")?;
-        if sig != CDH_SIG {
-            break;
+    let mut consumed = 0u64;
+    for record_index in 0..total {
+        let fixed_end = consumed
+            .checked_add(46)
+            .ok_or("central-directory record offset overflow")?;
+        if fixed_end > cd_size {
+            return Err(format!(
+                "central directory record {record_index} is truncated"
+            ));
         }
-        let flags = rd_u16(&cd, p + 8).ok_or("truncated cdh")?;
-        let method = rd_u16(&cd, p + 10).ok_or("truncated cdh")?;
-        let crc32 = rd_u32(&cd, p + 16).ok_or("truncated cdh")?;
+        let mut cdh = [0u8; 46];
+        file.read_exact(&mut cdh)
+            .map_err(|e| format!("read central directory record {record_index}: {e}"))?;
+        let sig = rd_u32(&cdh, 0).ok_or("truncated cdh")?;
+        if sig != CDH_SIG {
+            return Err(format!(
+                "bad central-directory header signature at record {record_index}"
+            ));
+        }
+        let version_needed = rd_u16(&cdh, 6).ok_or("truncated cdh")?;
+        let flags = rd_u16(&cdh, 8).ok_or("truncated cdh")?;
+        let method = rd_u16(&cdh, 10).ok_or("truncated cdh")?;
+        let mod_time = rd_u16(&cdh, 12).ok_or("truncated cdh")?;
+        let mod_date = rd_u16(&cdh, 14).ok_or("truncated cdh")?;
+        let crc32 = rd_u32(&cdh, 16).ok_or("truncated cdh")?;
         if flags & !0x0008 != 0 {
             return Err(format!(
                 "entry has unsupported zip general-purpose flags 0x{flags:04x}"
             ));
         }
-        let comp_size32 = rd_u32(&cd, p + 20).ok_or("truncated cdh")?;
-        let uncomp_size32 = rd_u32(&cd, p + 24).ok_or("truncated cdh")?;
-        let name_len = rd_u16(&cd, p + 28).ok_or("truncated cdh")? as usize;
-        let extra_len = rd_u16(&cd, p + 30).ok_or("truncated cdh")? as usize;
-        let comment_len = rd_u16(&cd, p + 32).ok_or("truncated cdh")? as usize;
-        let disk_start = rd_u16(&cd, p + 34).ok_or("truncated cdh")?;
+        let comp_size32 = rd_u32(&cdh, 20).ok_or("truncated cdh")?;
+        let uncomp_size32 = rd_u32(&cdh, 24).ok_or("truncated cdh")?;
+        let name_len = rd_u16(&cdh, 28).ok_or("truncated cdh")? as usize;
+        let extra_len = rd_u16(&cdh, 30).ok_or("truncated cdh")? as usize;
+        let comment_len = rd_u16(&cdh, 32).ok_or("truncated cdh")? as usize;
+        let disk_start = rd_u16(&cdh, 34).ok_or("truncated cdh")?;
         if disk_start != 0 {
             return Err(format!(
-                "entry at central-directory offset {p} starts on disk {disk_start}; multi-disk ZIP archives are not supported"
+                "entry at central-directory record {record_index} starts on disk {disk_start}; multi-disk ZIP archives are not supported"
             ));
         }
-        let lho32 = rd_u32(&cd, p + 42).ok_or("truncated cdh")?;
-        let name_start = p + 46;
-        let name_end = name_start + name_len;
-        if name_end > cd.len() {
-            return Err("central dir name past end".to_string());
+        let lho32 = rd_u32(&cdh, 42).ok_or("truncated cdh")?;
+        let variable_len = (name_len as u64)
+            .checked_add(extra_len as u64)
+            .and_then(|value| value.checked_add(comment_len as u64))
+            .ok_or("central-directory variable fields overflow")?;
+        let record_end = fixed_end
+            .checked_add(variable_len)
+            .ok_or("central-directory record end overflow")?;
+        if record_end > cd_size {
+            return Err(format!(
+                "central directory record {record_index} extends past declared size"
+            ));
         }
-        let name = std::str::from_utf8(&cd[name_start..name_end])
+        let mut name_bytes = vec![0u8; name_len];
+        file.read_exact(&mut name_bytes)
+            .map_err(|e| format!("read central-directory name {record_index}: {e}"))?;
+        let name = std::str::from_utf8(&name_bytes)
             .map_err(|_| "non-utf8 entry name".to_string())?
             .to_string();
-        let extra_start = name_end;
-        let extra_end = extra_start
-            .checked_add(extra_len)
-            .ok_or("cdh extra overflow")?;
-        if extra_end > cd.len() {
-            return Err("central dir extra past end".to_string());
-        }
-        let extra = &cd[extra_start..extra_end];
+        let mut extra = vec![0u8; extra_len];
+        file.read_exact(&mut extra)
+            .map_err(|e| format!("read central-directory extra {record_index}: {e}"))?;
         let need_uncomp = uncomp_size32 == u32::MAX;
         let need_comp = comp_size32 == u32::MAX;
         let need_lho = lho32 == u32::MAX;
-        let zip64 = parse_zip64_extra(extra, need_uncomp, need_comp, need_lho)?;
+        let zip64 = parse_zip64_extra(&extra, need_uncomp, need_comp, need_lho)?;
         let uncomp_size = if need_uncomp {
             zip64
                 .uncomp_size
@@ -490,6 +658,10 @@ fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>
             lho32 as u64
         };
         validate_path(&name).map_err(|e| format!("unsafe entry path {name}: {e}"))?;
+        if name != "manifest.json" {
+            validate_payload_path(&name)
+                .map_err(|e| format!("entry outside payload root {name}: {e}"))?;
+        }
         if !seen.insert(name.clone()) {
             return Err(format!("duplicate entry name {name}"));
         }
@@ -502,21 +674,22 @@ fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>
         }
         entries.push(CdEntry {
             name,
+            version_needed,
             flags,
             method,
+            mod_time,
+            mod_date,
             crc32,
             comp_size,
             uncomp_size,
             local_header_off: lho,
         });
-        let next = name_end
-            .checked_add(extra_len)
-            .and_then(|v| v.checked_add(comment_len))
-            .ok_or("cdh advance overflow")?;
-        if next > cd.len() {
-            return Err("cdh extra/comment past central dir".to_string());
-        }
-        p = next;
+        consumed = record_end;
+        let next_record = cd_off
+            .checked_add(consumed)
+            .ok_or("central-directory absolute offset overflow")?;
+        file.seek(SeekFrom::Start(next_record))
+            .map_err(|e| format!("seek past central-directory comment {record_index}: {e}"))?;
     }
     if entries.len() != total {
         return Err(format!(
@@ -524,10 +697,10 @@ fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>
             entries.len()
         ));
     }
-    if p != cd.len() {
+    if consumed != cd_size {
         return Err("central directory trailing bytes".to_string());
     }
-    Ok(entries)
+    Ok((entries, cd_off))
 }
 
 fn find_zip64_locator(tail: &[u8], eocd: usize) -> Option<usize> {
@@ -538,10 +711,23 @@ fn find_zip64_locator(tail: &[u8], eocd: usize) -> Option<usize> {
     (rd_u32(tail, off) == Some(ZIP64_LOCATOR_SIG)).then_some(off)
 }
 
+/// Bytes allowed between a Zip64 EOCD record's start and its locator: the
+/// 56-byte fixed prefix plus the record's zip64 extensible data sector. Real
+/// sectors are tiny; the cap only bounds the verifier's window fail-closed.
+const ZIP64_EOCD_MAX_SPAN: u64 = 1024 * 1024;
+
 /// Returns `(total_entries, cd_size, cd_off, zip64_eocd_abs)` — the last is the
 /// ABSOLUTE file offset of the Zip64 EOCD record, i.e. where the central
-/// directory must end.
+/// directory must end. The record is located by FOLLOWING the locator's
+/// declared offset (exactly like the in-RAM reader) instead of requiring it to
+/// start inside the fixed scanned tail: a valid extensible data sector plus a
+/// max-size EOCD comment (or a sector larger than 65,535 bytes) pushes the
+/// record before the tail, and the streaming verifier must accept every Zip64
+/// EOCD the in-memory parser accepts. Only the fixed 56-byte prefix is ever
+/// materialized; a record spanning more than [`ZIP64_EOCD_MAX_SPAN`] bytes
+/// before its locator is a typed refusal.
 fn parse_zip64_eocd(
+    file: &mut File,
     tail: &[u8],
     tail_start: u64,
     locator: usize,
@@ -554,33 +740,54 @@ fn parse_zip64_eocd(
     if total_disks != 1 {
         return Err("multi-disk Zip64 archives are not supported".to_string());
     }
-    if zip64_eocd_abs < tail_start {
-        return Err("Zip64 EOCD outside scanned tail".to_string());
+    let locator_abs = tail_start + locator as u64;
+    if zip64_eocd_abs >= locator_abs {
+        return Err(format!(
+            "Zip64 EOCD offset {zip64_eocd_abs} does not precede its locator at {locator_abs}"
+        ));
     }
-    let off = usize::try_from(zip64_eocd_abs - tail_start)
-        .map_err(|_| "Zip64 EOCD offset too large".to_string())?;
-    if off.checked_add(56).map_or(true, |end| end > tail.len()) {
+    let span = locator_abs - zip64_eocd_abs;
+    if span < ZIP64_EOCD_MIN_LEN {
         return Err("truncated Zip64 EOCD".to_string());
     }
-    if rd_u32(tail, off) != Some(ZIP64_EOCD_SIG) {
+    if span > ZIP64_EOCD_MAX_SPAN {
+        return Err(format!(
+            "Zip64 EOCD record spans {span} bytes before its locator, beyond the verifier cap {ZIP64_EOCD_MAX_SPAN}"
+        ));
+    }
+    let mut record = [0u8; ZIP64_EOCD_MIN_LEN as usize];
+    if zip64_eocd_abs >= tail_start {
+        // Fast path: the record's fixed prefix already sits inside the scanned
+        // tail (span >= 56 guarantees the slice ends at/before the locator).
+        let off = usize::try_from(zip64_eocd_abs - tail_start)
+            .map_err(|_| "Zip64 EOCD offset too large".to_string())?;
+        let record_len = record.len();
+        record.copy_from_slice(&tail[off..off + record_len]);
+    } else {
+        file.seek(SeekFrom::Start(zip64_eocd_abs))
+            .map_err(|e| format!("seek zip64 eocd: {e}"))?;
+        file.read_exact(&mut record)
+            .map_err(|e| format!("read zip64 eocd: {e}"))?;
+    }
+    if rd_u32(&record, 0) != Some(ZIP64_EOCD_SIG) {
         return Err("bad Zip64 EOCD signature".to_string());
     }
-    let record_size = rd_u64(tail, off + 4).ok_or("truncated zip64 eocd")?;
+    let record_size = rd_u64(&record, 4).ok_or("truncated zip64 eocd")?;
     if record_size < 44 {
         return Err("truncated Zip64 EOCD size".to_string());
     }
-    let disk_no = rd_u32(tail, off + 16).ok_or("truncated zip64 eocd")?;
-    let cd_disk = rd_u32(tail, off + 20).ok_or("truncated zip64 eocd")?;
+    let disk_no = rd_u32(&record, 16).ok_or("truncated zip64 eocd")?;
+    let cd_disk = rd_u32(&record, 20).ok_or("truncated zip64 eocd")?;
     if disk_no != 0 || cd_disk != 0 {
         return Err("multi-disk Zip64 archives are not supported".to_string());
     }
-    let entries_on_disk = rd_u64(tail, off + 24).ok_or("truncated zip64 eocd")?;
-    let total_entries = rd_u64(tail, off + 32).ok_or("truncated zip64 eocd")?;
+    let entries_on_disk = rd_u64(&record, 24).ok_or("truncated zip64 eocd")?;
+    let total_entries = rd_u64(&record, 32).ok_or("truncated zip64 eocd")?;
     if entries_on_disk != total_entries {
         return Err("split Zip64 central directories are not supported".to_string());
     }
-    let cd_size = rd_u64(tail, off + 40).ok_or("truncated zip64 eocd")?;
-    let cd_off = rd_u64(tail, off + 48).ok_or("truncated zip64 eocd")?;
+    let cd_size = rd_u64(&record, 40).ok_or("truncated zip64 eocd")?;
+    let cd_off = rd_u64(&record, 48).ok_or("truncated zip64 eocd")?;
     Ok((total_entries, cd_size, cd_off, zip64_eocd_abs))
 }
 
@@ -597,33 +804,196 @@ fn parse_zip64_extra(
         .map_err(|e| e.to_string())
 }
 
+/// Validate every local header and complete physical entry region without
+/// decoding payload bytes, including central-directory order and overlap.
+fn validate_local_headers_file(
+    file: &mut File,
+    entries: &[CdEntry],
+    file_len: u64,
+    central_directory_off: u64,
+) -> Result<(), String> {
+    let mut previous_end = 0u64;
+    for entry in entries {
+        let region =
+            validate_entry_structure(file, entry, file_len, central_directory_off)?;
+        if region.header_start < previous_end {
+            return Err(format!(
+                "entry regions overlap or are out of order: {}",
+                entry.name
+            ));
+        }
+        previous_end = region.region_end;
+    }
+    Ok(())
+}
+
+fn validate_entry_structure(
+    file: &mut File,
+    e: &CdEntry,
+    file_len: u64,
+    central_directory_off: u64,
+) -> Result<FileEntryRegion, String> {
+    let mut lfh = [0u8; 30];
+    file.seek(SeekFrom::Start(e.local_header_off))
+        .map_err(|error| format!("seek local header {}: {error}", e.name))?;
+    file.read_exact(&mut lfh)
+        .map_err(|error| format!("read local header {}: {error}", e.name))?;
+    if rd_u32(&lfh, 0) != Some(LFH_SIG) {
+        return Err(format!("entry {}: bad local header signature", e.name));
+    }
+    let version_needed = rd_u16(&lfh, 4).ok_or("truncated local version")?;
+    let flags = rd_u16(&lfh, 6).ok_or("truncated local flags")?;
+    let method = rd_u16(&lfh, 8).ok_or("truncated local method")?;
+    let mod_time = rd_u16(&lfh, 10).ok_or("truncated local time")?;
+    let mod_date = rd_u16(&lfh, 12).ok_or("truncated local date")?;
+    let crc32 = rd_u32(&lfh, 14).ok_or("truncated local crc")?;
+    let comp_size32 = rd_u32(&lfh, 18).ok_or("truncated local compressed size")?;
+    let uncomp_size32 = rd_u32(&lfh, 22).ok_or("truncated local uncompressed size")?;
+    if version_needed != e.version_needed
+        || flags != e.flags
+        || method != e.method
+        || mod_time != e.mod_time
+        || mod_date != e.mod_date
+    {
+        return Err(format!("entry {}: local/central header mismatch", e.name));
+    }
+    if e.method == ZIP_METHOD_STORE && e.comp_size != e.uncomp_size {
+        return Err(format!(
+            "entry {}: STORE compressed size {} != uncompressed size {}",
+            e.name, e.comp_size, e.uncomp_size
+        ));
+    }
+    let name_len = rd_u16(&lfh, 26).ok_or("truncated local name length")? as u64;
+    let extra_len = rd_u16(&lfh, 28).ok_or("truncated local extra length")? as u64;
+    let name_start = e
+        .local_header_off
+        .checked_add(30)
+        .ok_or_else(|| format!("entry {}: local name start overflow", e.name))?;
+    let data_start = name_start
+        .checked_add(name_len)
+        .and_then(|value| value.checked_add(extra_len))
+        .ok_or_else(|| format!("entry {}: data start overflow", e.name))?;
+    let data_end = data_start
+        .checked_add(e.comp_size)
+        .ok_or_else(|| format!("entry {}: data end overflow", e.name))?;
+    if data_end > file_len || data_end > central_directory_off {
+        return Err(format!("entry {}: data range ends past payload area", e.name));
+    }
+
+    file.seek(SeekFrom::Start(name_start))
+        .map_err(|error| format!("seek local name {}: {error}", e.name))?;
+    let mut local_name = vec![0u8; name_len as usize];
+    file.read_exact(&mut local_name)
+        .map_err(|error| format!("read local name {}: {error}", e.name))?;
+    let mut local_extra = vec![0u8; extra_len as usize];
+    file.read_exact(&mut local_extra)
+        .map_err(|error| format!("read local extra {}: {error}", e.name))?;
+    if local_name != e.name.as_bytes() {
+        return Err(format!("entry {}: local/central name mismatch", e.name));
+    }
+
+    if e.flags & 0x0008 == 0 {
+        let need_uncomp = uncomp_size32 == u32::MAX;
+        let need_comp = comp_size32 == u32::MAX;
+        let zip64 = parse_zip64_extra(&local_extra, need_uncomp, need_comp, false)?;
+        let local_uncomp_size = if need_uncomp {
+            zip64
+                .uncomp_size
+                .ok_or_else(|| format!("entry {}: local Zip64 uncompressed size missing", e.name))?
+        } else {
+            uncomp_size32 as u64
+        };
+        let local_comp_size = if need_comp {
+            zip64
+                .comp_size
+                .ok_or_else(|| format!("entry {}: local Zip64 compressed size missing", e.name))?
+        } else {
+            comp_size32 as u64
+        };
+        if crc32 != e.crc32
+            || local_comp_size != e.comp_size
+            || local_uncomp_size != e.uncomp_size
+        {
+            return Err(format!(
+                "entry {}: local/central crc or size mismatch",
+                e.name
+            ));
+        }
+    } else if crc32 != 0 || comp_size32 != 0 || uncomp_size32 != 0 {
+        return Err(format!(
+            "entry {}: data-descriptor local crc/size fields must be zero",
+            e.name
+        ));
+    }
+
+    let region_end = if e.flags & 0x0008 != 0 {
+        data_descriptor_end_file(file, e, data_end)?
+    } else {
+        data_end
+    };
+    if e.local_header_off >= central_directory_off || region_end > central_directory_off {
+        return Err(format!(
+            "entry {} region {}..{} overlaps central directory at {}",
+            e.name, e.local_header_off, region_end, central_directory_off
+        ));
+    }
+    Ok(FileEntryRegion {
+        header_start: e.local_header_off,
+        region_end,
+    })
+}
+
 /// Read + decompress one entry FULLY into RAM. Only used for small entries
 /// (manifest.json); large entries go through [`hash_entry_streaming`].
 fn read_entry_bytes(file: &mut File, e: &CdEntry) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
-    hash_entry_inner(file, e, Some(&mut out))?;
+    entry_integrity_inner(
+        file,
+        e,
+        Some(&mut out),
+        false,
+        MAX_CONTAINER_ENTRY_BYTES,
+    )?;
     Ok(out)
 }
 
 /// Stream + decompress one entry, returning `(sha256_hex, uncompressed_len)`
 /// without holding the decompressed bytes.
 fn hash_entry_streaming(file: &mut File, e: &CdEntry) -> Result<(String, u64), String> {
-    hash_entry_inner(file, e, None)
+    let (digest, len) = entry_integrity_inner(
+        file,
+        e,
+        None,
+        true,
+        STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+    )?;
+    Ok((
+        digest.ok_or_else(|| format!("entry {}: internal SHA-256 state missing", e.name))?,
+        len,
+    ))
 }
 
-/// Shared core: seek to the entry's data, stream it through the decompressor,
-/// hashing (always) and optionally collecting the bytes into `collect`. Enforces
-/// the declared uncompressed size. Returns `(sha256_hex, uncompressed_len)`.
-fn hash_entry_inner(
+fn verify_entry_crc_streaming(file: &mut File, e: &CdEntry) -> Result<(), String> {
+    entry_integrity_inner(
+        file,
+        e,
+        None,
+        false,
+        STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+    )
+    .map(|_| ())
+}
+
+/// Shared core: seek to the entry's data and stream it through the decompressor,
+/// always deriving CRC-32 and optionally deriving SHA-256 and/or collecting the
+/// bytes. Enforces the declared uncompressed size.
+fn entry_integrity_inner(
     file: &mut File,
     e: &CdEntry,
-    collect: Option<&mut Vec<u8>>,
-) -> Result<(String, u64), String> {
-    let output_cap = if collect.is_some() {
-        MAX_CONTAINER_ENTRY_BYTES
-    } else {
-        STREAMING_MAX_CONTAINER_ENTRY_BYTES
-    };
+    output: Option<&mut dyn Write>,
+    calculate_sha256: bool,
+    output_cap: u64,
+) -> Result<(Option<String>, u64), String> {
     if e.uncomp_size > output_cap || e.comp_size > STREAMING_MAX_CONTAINER_ENTRY_BYTES {
         return Err(format!(
             "entry {} exceeds verifier cap (compressed {}, uncompressed {}, output cap {})",
@@ -639,11 +1009,23 @@ fn hash_entry_inner(
     if rd_u32(&lfh, 0) != Some(LFH_SIG) {
         return Err(format!("entry {}: bad local header signature", e.name));
     }
+    let lh_version_needed = rd_u16(&lfh, 4).unwrap();
     let lh_flags = rd_u16(&lfh, 6).unwrap();
     let lh_method = rd_u16(&lfh, 8).unwrap();
+    let lh_mod_time = rd_u16(&lfh, 10).unwrap();
+    let lh_mod_date = rd_u16(&lfh, 12).unwrap();
     let lh_crc32 = rd_u32(&lfh, 14).unwrap();
     let lh_comp_size = rd_u32(&lfh, 18).unwrap() as u64;
     let lh_uncomp_size = rd_u32(&lfh, 22).unwrap() as u64;
+    // Mirror the in-RAM reader's local/central agreement checks
+    // (zip.rs validate_local_entry) exactly: a container the product reader
+    // refuses must never pass the recorder-side streaming verifier.
+    if lh_version_needed != e.version_needed {
+        return Err(format!(
+            "entry {}: local/central version-needed mismatch (local {lh_version_needed}, central {})",
+            e.name, e.version_needed
+        ));
+    }
     if lh_flags != e.flags {
         return Err(format!(
             "entry {}: local/central flags mismatch (local 0x{lh_flags:04x}, central 0x{:04x})",
@@ -652,6 +1034,12 @@ fn hash_entry_inner(
     }
     if lh_method != e.method {
         return Err(format!("entry {}: local/central method mismatch", e.name));
+    }
+    if lh_mod_time != e.mod_time || lh_mod_date != e.mod_date {
+        return Err(format!(
+            "entry {}: local/central timestamp mismatch",
+            e.name
+        ));
     }
     let lh_name_len = rd_u16(&lfh, 26).unwrap() as u64;
     let lh_extra_len = rd_u16(&lfh, 28).unwrap() as u64;
@@ -703,15 +1091,22 @@ fn hash_entry_inner(
                 e.name
             ));
         }
+    } else if lh_crc32 != 0 || lh_comp_size != 0 || lh_uncomp_size != 0 {
+        // Same rule as the in-RAM reader: with general-purpose bit 3 the local
+        // crc/size fields carry no authority and MUST be zero.
+        return Err(format!(
+            "entry {}: data-descriptor local crc/size fields must be zero",
+            e.name
+        ));
     }
     file.seek(SeekFrom::Start(data_start))
         .map_err(|err| format!("seek entry data {}: {err}", e.name))?;
 
     // A sink that owns the hasher and optionally collects decompressed output.
     let sink = HashSink {
-        hasher: Sha256::new(),
+        hasher: calculate_sha256.then(Sha256::new),
         crc32: crc32fast::Hasher::new(),
-        collect,
+        output,
         len: 0,
         limit: e.uncomp_size.saturating_add(1),
     };
@@ -726,14 +1121,35 @@ fn hash_entry_inner(
             s
         }
         ZIP_METHOD_DEFLATE => {
-            // DEFLATE: feed compressed bytes into a write-side decoder whose output
-            // goes to the hashing sink.
-            let mut dec = DeflateDecoder::new(sink);
-            stream_n(file, e.comp_size, |chunk| {
-                dec.write_all(chunk).map_err(|e| e.to_string())
-            })?;
-            dec.finish()
-                .map_err(|err| format!("entry {}: inflate failed: {err}", e.name))?
+            let mut s = sink;
+            let compressed = std::io::Read::by_ref(file).take(e.comp_size);
+            let mut dec = DeflateDecoder::new(compressed);
+            let mut out = vec![0u8; VERIFY_CHUNK];
+            loop {
+                let n = dec
+                    .read(&mut out)
+                    .map_err(|error| format!("entry {}: inflate failed: {error}", e.name))?;
+                if n == 0 {
+                    break;
+                }
+                s.write_all(&out[..n]).map_err(|error| error.to_string())?;
+            }
+            // Match the in-memory reader: every byte inside the declared
+            // compressed region must belong to the deflate stream.
+            if dec.total_in() != e.comp_size {
+                return Err(format!(
+                    "entry {}: trailing bytes after deflate stream",
+                    e.name
+                ));
+            }
+            drop(dec);
+            file.seek(SeekFrom::Start(
+                data_start
+                    .checked_add(e.comp_size)
+                    .ok_or_else(|| format!("entry {}: data end overflow", e.name))?,
+            ))
+            .map_err(|error| format!("entry {}: seek after deflate data: {error}", e.name))?;
+            s
         }
         ZIP_METHOD_ZSTD => {
             let mut s = sink;
@@ -774,53 +1190,97 @@ fn hash_entry_inner(
     }
     let crc32 = final_sink.crc32.finalize();
     if crc32 != e.crc32 {
+        // Keep the historical "crc32 mismatch" phrase — the negative-fixture
+        // manifest and replay_app's fixture table pin it as the stable
+        // substring for this refusal class.
         return Err(format!(
-            "entry {}: crc32 {crc32:08x} != central {:08x}",
+            "entry {}: crc32 mismatch: {crc32:08x} != central {:08x}",
             e.name, e.crc32
         ));
     }
     if e.flags & 0x0008 != 0 {
-        read_and_validate_data_descriptor(file, e, crc32, e.comp_size, uncomp_len)?;
+        let descriptor_start = data_start
+            .checked_add(e.comp_size)
+            .ok_or_else(|| format!("entry {}: data descriptor offset overflow", e.name))?;
+        data_descriptor_end_file(file, e, descriptor_start)?;
     }
-    Ok((to_hex(&final_sink.hasher.finalize()), uncomp_len))
+    Ok((
+        final_sink
+            .hasher
+            .map(|hasher| to_hex(&hasher.finalize())),
+        uncomp_len,
+    ))
 }
 
-fn read_and_validate_data_descriptor(
+fn data_descriptor_end_file(
     file: &mut File,
     e: &CdEntry,
-    crc32: u32,
-    comp_size: u64,
-    uncomp_size: u64,
-) -> Result<(), String> {
-    let zip64_descriptor = comp_size > ZIP32_MAX_FIELD_VALUE || uncomp_size > ZIP32_MAX_FIELD_VALUE;
-    let mut dd = vec![0u8; if zip64_descriptor { 24 } else { 16 }];
-    file.read_exact(&mut dd)
-        .map_err(|err| format!("entry {}: read data descriptor: {err}", e.name))?;
-    if rd_u32(&dd, 0) != Some(0x0807_4b50) {
-        return Err(format!(
-            "entry {}: data descriptor signature missing",
+    start: u64,
+) -> Result<u64, String> {
+    let signed = data_descriptor_candidate_file(file, e, start, true)?;
+    let unsigned = data_descriptor_candidate_file(file, e, start, false)?;
+    match (signed, unsigned) {
+        (Some(end), None) | (None, Some(end)) => {
+            file.seek(SeekFrom::Start(end))
+                .map_err(|error| format!("entry {}: seek after data descriptor: {error}", e.name))?;
+            Ok(end)
+        }
+        (Some(_), Some(_)) => Err(format!(
+            "entry {}: ambiguous signed/unsigned data descriptor",
             e.name
-        ));
+        )),
+        (None, None) => Err(format!(
+            "entry {}: data descriptor missing, truncated, or inconsistent with central directory",
+            e.name
+        )),
     }
-    let dd_crc32 = rd_u32(&dd, 4).ok_or("truncated data descriptor")?;
-    let (dd_comp_size, dd_uncomp_size) = if zip64_descriptor {
-        (
-            rd_u64(&dd, 8).ok_or("truncated data descriptor")?,
-            rd_u64(&dd, 16).ok_or("truncated data descriptor")?,
-        )
+}
+
+fn data_descriptor_candidate_file(
+    file: &mut File,
+    e: &CdEntry,
+    start: u64,
+    signed: bool,
+) -> Result<Option<u64>, String> {
+    let zip64 = e.comp_size > ZIP32_MAX_FIELD_VALUE || e.uncomp_size > ZIP32_MAX_FIELD_VALUE;
+    let length = (if signed { 4 } else { 0 }) + 4 + if zip64 { 16 } else { 8 };
+    let mut data = vec![0u8; length];
+    file.seek(SeekFrom::Start(start))
+        .map_err(|error| format!("entry {}: seek data descriptor: {error}", e.name))?;
+    if let Err(error) = file.read_exact(&mut data) {
+        if error.kind() == std::io::ErrorKind::UnexpectedEof {
+            return Ok(None);
+        }
+        return Err(format!("entry {}: read data descriptor: {error}", e.name));
+    }
+
+    let mut p = 0usize;
+    if signed {
+        if rd_u32(&data, p) != Some(0x0807_4b50) {
+            return Ok(None);
+        }
+        p += 4;
+    }
+    let crc32 = rd_u32(&data, p).ok_or("truncated data descriptor")?;
+    p += 4;
+    let (comp_size, uncomp_size) = if zip64 {
+        let comp_size = rd_u64(&data, p).ok_or("truncated data descriptor")?;
+        p += 8;
+        let uncomp_size = rd_u64(&data, p).ok_or("truncated data descriptor")?;
+        (comp_size, uncomp_size)
     } else {
-        (
-            rd_u32(&dd, 8).ok_or("truncated data descriptor")? as u64,
-            rd_u32(&dd, 12).ok_or("truncated data descriptor")? as u64,
-        )
+        let comp_size = rd_u32(&data, p).ok_or("truncated data descriptor")? as u64;
+        p += 4;
+        let uncomp_size = rd_u32(&data, p).ok_or("truncated data descriptor")? as u64;
+        (comp_size, uncomp_size)
     };
-    if dd_crc32 != crc32 || dd_comp_size != comp_size || dd_uncomp_size != uncomp_size {
-        return Err(format!(
-            "entry {}: data descriptor mismatch (crc {dd_crc32:08x}/{crc32:08x}, compressed {dd_comp_size}/{comp_size}, uncompressed {dd_uncomp_size}/{uncomp_size})",
-            e.name
-        ));
+    if crc32 != e.crc32 || comp_size != e.comp_size || uncomp_size != e.uncomp_size {
+        return Ok(None);
     }
-    Ok(())
+    start
+        .checked_add(length as u64)
+        .map(Some)
+        .ok_or_else(|| format!("entry {}: data descriptor end overflow", e.name))
 }
 
 /// Read exactly `n` bytes from `file` in chunks, handing each chunk to `f`.
@@ -841,11 +1301,11 @@ fn stream_n(
     Ok(())
 }
 
-/// A `Write` sink that SHA-256-hashes everything and optionally collects it.
+/// A `Write` sink that always derives CRC-32 and optionally hashes/copies.
 struct HashSink<'a> {
-    hasher: Sha256,
+    hasher: Option<Sha256>,
     crc32: crc32fast::Hasher,
-    collect: Option<&'a mut Vec<u8>>,
+    output: Option<&'a mut dyn Write>,
     len: u64,
     limit: u64,
 }
@@ -863,10 +1323,12 @@ impl Write for HashSink<'_> {
                 ),
             ));
         }
-        self.hasher.update(buf);
+        if let Some(hasher) = &mut self.hasher {
+            hasher.update(buf);
+        }
         self.crc32.update(buf);
-        if let Some(c) = self.collect.as_deref_mut() {
-            c.extend_from_slice(buf);
+        if let Some(output) = self.output.as_deref_mut() {
+            output.write_all(buf)?;
         }
         self.len = next;
         Ok(buf.len())
@@ -1182,11 +1644,13 @@ mod tests {
         let entries = read_central_directory(&mut file, len).expect("structure still parses");
         let err = hash_entry_streaming(&mut file, &entries[0])
             .expect_err("trailing bytes after the deflate stream must be refused");
-        // The write-side decoder refuses trailing input as a short write
-        // (WriteZero, "failed to write whole buffer") or an inflate failure —
-        // either way a hard refusal, matching the in-RAM reader's rejection.
+        // Since the 2026-07-19 strictness port the streaming path raises the
+        // in-RAM reader's canonical trailing-bytes refusal directly; the older
+        // incidental short-write/inflate refusals remain acceptable spellings.
         assert!(
-            err.contains("failed to write whole buffer") || err.contains("inflate failed"),
+            err.contains("trailing bytes after deflate stream")
+                || err.contains("failed to write whole buffer")
+                || err.contains("inflate failed"),
             "unexpected error: {err}"
         );
     }
@@ -1224,6 +1688,161 @@ mod tests {
         let entries = read_central_directory(&mut file, len)
             .expect("extended tail includes locator and Zip64 EOCD");
         assert!(entries.is_empty());
+    }
+
+    /// Empty Zip64 archive whose EOCD record carries a `sector_len`-byte
+    /// zip64 extensible data sector (record size declares it) plus an EOCD
+    /// comment — the layouts that push the record before a fixed scanned tail.
+    fn zip64_empty_with_extensible_sector(sector_len: usize, comment_len: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        let zip64_eocd_off = out.len() as u64;
+        out.extend_from_slice(&ZIP64_EOCD_SIG.to_le_bytes());
+        out.extend_from_slice(&(44u64 + sector_len as u64).to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u64.to_le_bytes());
+        out.extend_from_slice(&0u64.to_le_bytes());
+        out.extend_from_slice(&0u64.to_le_bytes()); // cd size
+        out.extend_from_slice(&0u64.to_le_bytes()); // cd offset
+        out.extend(std::iter::repeat(0xEEu8).take(sector_len));
+
+        out.extend_from_slice(&ZIP64_LOCATOR_SIG.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&zip64_eocd_off.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+
+        out.extend_from_slice(&EOCD_SIG.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&(comment_len as u16).to_le_bytes());
+        out.extend(std::iter::repeat(b'z').take(comment_len));
+        out
+    }
+
+    #[test]
+    fn streaming_zip64_extensible_data_sector_before_tail_is_accepted() {
+        let dir = TmpDir::new("zip64_sector");
+
+        // Nonempty extensible sector + max-size EOCD comment: the record
+        // starts before the fixed scanned tail and must be reached through
+        // the locator, exactly as the in-memory parser does.
+        let path = dir.join("sector_max_comment.battleplan");
+        fs::write(&path, zip64_empty_with_extensible_sector(4096, 0xFFFF)).unwrap();
+        let mut file = fs::File::open(&path).unwrap();
+        let len = file.metadata().unwrap().len();
+        let entries = read_central_directory(&mut file, len)
+            .expect("Zip64 EOCD with extensible data sector and max comment parses");
+        assert!(entries.is_empty());
+
+        // A sector larger than 65,535 bytes alone pushes the record out of
+        // any comment-sized tail window.
+        let path = dir.join("large_sector.battleplan");
+        fs::write(&path, zip64_empty_with_extensible_sector(70_000, 0)).unwrap();
+        let mut file = fs::File::open(&path).unwrap();
+        let len = file.metadata().unwrap().len();
+        let entries = read_central_directory(&mut file, len)
+            .expect("Zip64 EOCD with >64KiB extensible data sector parses");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn streaming_zip64_record_span_beyond_cap_is_refused() {
+        let dir = TmpDir::new("zip64_span_cap");
+        let path = dir.join("oversized_sector.battleplan");
+        fs::write(
+            &path,
+            zip64_empty_with_extensible_sector(2 * 1024 * 1024, 0),
+        )
+        .unwrap();
+        let mut file = fs::File::open(&path).unwrap();
+        let len = file.metadata().unwrap().len();
+        let err = read_central_directory(&mut file, len)
+            .expect_err("a record spanning past the sane cap is a typed refusal");
+        assert!(err.contains("verifier cap"), "{err}");
+    }
+
+    #[test]
+    fn streaming_verifier_rejects_local_header_identity_drift() {
+        // The in-RAM reader (zip.rs validate_local_entry) refuses local
+        // headers whose version-needed or modification timestamp disagree
+        // with the central directory; the streaming verifier must refuse the
+        // same bytes (the two readers must never disagree about a container).
+        let dir = TmpDir::new("local_header_drift");
+        let base = crate::zip::test_deflate_zip_with_trailing(0);
+
+        // Control: the untampered entry hashes cleanly.
+        let clean_path = dir.join("clean.zip");
+        fs::write(&clean_path, &base).unwrap();
+        let mut file = fs::File::open(&clean_path).unwrap();
+        let len = file.metadata().unwrap().len();
+        let entries = read_central_directory(&mut file, len).unwrap();
+        hash_entry_streaming(&mut file, &entries[0]).expect("clean entry hashes");
+
+        // Local version-needed drifts from the central directory.
+        let mut tampered = base.clone();
+        tampered[4] = tampered[4].wrapping_add(1); // LFH at 0; version-needed at +4
+        let path = dir.join("version_drift.zip");
+        fs::write(&path, &tampered).unwrap();
+        let mut file = fs::File::open(&path).unwrap();
+        let len = file.metadata().unwrap().len();
+        let entries = read_central_directory(&mut file, len).unwrap();
+        let err = hash_entry_streaming(&mut file, &entries[0])
+            .expect_err("local/central version-needed drift must be refused");
+        assert!(err.contains("version-needed mismatch"), "{err}");
+
+        // Local modification time drifts from the central directory.
+        let mut tampered = base.clone();
+        tampered[10] = tampered[10].wrapping_add(1); // LFH mod-time at +10
+        let path = dir.join("timestamp_drift.zip");
+        fs::write(&path, &tampered).unwrap();
+        let mut file = fs::File::open(&path).unwrap();
+        let len = file.metadata().unwrap().len();
+        let entries = read_central_directory(&mut file, len).unwrap();
+        let err = hash_entry_streaming(&mut file, &entries[0])
+            .expect_err("local/central timestamp drift must be refused");
+        assert!(err.contains("timestamp mismatch"), "{err}");
+    }
+
+    #[test]
+    fn streaming_verifier_requires_zero_local_fields_with_data_descriptor() {
+        // With general-purpose bit 3 the in-RAM reader requires the local
+        // crc/size fields to be ZERO (zip.rs); the streaming verifier must
+        // refuse the same nonzero-field container instead of promoting it.
+        let dir = TmpDir::new("dd_zero_fields");
+        let (container_path, _, _) = build_store_streaming_container(&dir, "dd_zero_fields");
+        let mut bytes = fs::read(&container_path).unwrap();
+        let mut file = fs::File::open(&container_path).unwrap();
+        let len = file.metadata().unwrap().len();
+        let entries = read_central_directory(&mut file, len).unwrap();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.flags & 0x0008 != 0)
+            .expect("streaming container has a data-descriptor entry");
+        let crc_off = usize::try_from(entry.local_header_off).unwrap() + 14;
+        assert_eq!(
+            rd_u32(&bytes, crc_off),
+            Some(0),
+            "packer writes zero local crc under bit 3"
+        );
+        bytes[crc_off..crc_off + 4].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+        let tampered_path = dir.join("dd_zero_fields_tampered.battleplan");
+        fs::write(&tampered_path, &bytes).unwrap();
+
+        let mut file = fs::File::open(&tampered_path).unwrap();
+        let entries = read_central_directory(&mut file, len).unwrap();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.flags & 0x0008 != 0)
+            .expect("tampered container still lists the data-descriptor entry");
+        let err = hash_entry_streaming(&mut file, entry)
+            .expect_err("nonzero local crc under a data descriptor must be refused");
+        assert!(err.contains("must be zero"), "{err}");
     }
 
     #[test]
@@ -1391,10 +2010,10 @@ mod tests {
         );
         assert_eq!(report.stream_entry_bytes, stream_bytes.len() as u64);
 
-        // (2) existing in-RAM reader opens the streamed container and reads each
-        // entry back individually (data-descriptor zip is backward-compatible).
+        // (2) product file-backed reader opens the streamed container and reads
+        // each entry back individually (data-descriptor ZIP is compatible).
         let container = Container::open(&container_path, &ExpectedIdentity::default())
-            .expect("in-RAM Container opens streamed container");
+            .expect("file-backed Container opens streamed container");
         let got_stream = container
             .read_entry_bytes("payload/g/collector_raw/collector_stream.bin")
             .expect("read stream entry");
@@ -1744,7 +2363,7 @@ mod tests {
         );
 
         let container = Container::open(&container_path, &ExpectedIdentity::default())
-            .expect("in-RAM reader accepts zip64 entry count");
+            .expect("file-backed reader accepts zip64 entry count");
         assert_eq!(container.entries().len(), borrowed.len() + 1);
         assert_eq!(
             container
@@ -1800,7 +2419,7 @@ mod tests {
         assert_eq!(report.stream_entry_bytes, uncomp_size);
 
         let err = match Container::open(&container_path, &ExpectedIdentity::default()) {
-            Ok(_) => panic!("in-RAM reader keeps 2 GiB cap"),
+            Ok(_) => panic!("materializing product reader keeps 2 GiB per-entry cap"),
             Err(err) => err,
         };
         assert!(

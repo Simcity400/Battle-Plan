@@ -58,12 +58,15 @@ impl ProductionD3dExecutionBridge for TraceBridge {
 fn empty_frame() -> PreparedProductionMapFrame {
     PreparedProductionMapFrame {
         ordered_static_map_programs: Vec::new(),
+        tree_runtime: None,
+        s1_shadow: None,
         political_textures: Vec::new(),
         tiled_lights: Vec::new(),
         content_manifest_sha256: "11".repeat(32),
         effective_vfs_manifest_sha256: "22".repeat(32),
         selected_submit_index: None,
         selected_submit_global_order: None,
+        c03_camera_replay: None,
         ordered_scene_constant_buffers: Vec::new(),
         ordered_render_operations: Vec::new(),
         ordered_runtime_draws: Vec::new(),
@@ -108,6 +111,7 @@ fn prepared_static_frame(operations: Vec<StaticMapOperation>) -> PreparedProduct
     PreparedProductionD3dFrame {
         content_manifest_sha256: "11".repeat(32),
         effective_vfs_manifest_sha256: "22".repeat(32),
+        c03_camera_replay: None,
         target: None,
         ordered_scene_constant_buffers: Vec::new(),
         ordered_static_programs: vec![StaticMapPassProgram {
@@ -117,6 +121,10 @@ fn prepared_static_frame(operations: Vec<StaticMapOperation>) -> PreparedProduct
             ordered_operations: operations,
             payload_sha256: "33".repeat(32),
         }],
+        mapname_d80_state: replay_core::MapnameD80State::Missing,
+        tree_runtime: None,
+        tree_materialized_execution_sha256: None,
+        s1_shadow: None,
         ordered_static_used_content: Vec::new(),
         ordered_render_operations,
         ordered_runtime_draws: Vec::new(),
@@ -140,6 +148,137 @@ fn headless_execution_receipt_is_byte_deterministic() {
     assert_eq!(first_bridge.calls, vec!["begin:false", "finish"]);
     assert_eq!(first_bridge.calls, second_bridge.calls);
     assert_eq!(first.deterministic_sha256.len(), 64);
+    assert_eq!(first.mapname_d80_state, replay_core::MapnameD80State::Missing);
+}
+
+fn c03_binding() -> C03CameraReplayBinding {
+    C03CameraReplayBinding {
+        schema: crate::C03_CAMERA_REPLAY_BINDING_SCHEMA.into(),
+        submit_index: 7,
+        submit_global_order: 3,
+        carrier_payload_sha256: "ab".repeat(32),
+        event_batch_count: 2,
+        raw_input_event_count: 4,
+        map_pick_count: 1,
+        current_eye_f32_bits: [1, 2, 3],
+        target_eye_f32_bits: [4, 5, 6],
+        target_look_at_f32_bits: [7, 8, 9],
+        mode: crate::C03CameraReplayMode::RecordedEnvelopeStateOnly,
+        raw_event_reapplication_count: 0,
+        envelope_state_selection_count: 1,
+    }
+}
+
+#[test]
+fn v6_receipt_layout_seals_every_concurrent_authority_field_in_order() {
+    let receipt = ProductionD3dExecutionReceipt {
+        schema: PRODUCTION_D3D_EXECUTION_RECEIPT_SCHEMA.into(),
+        content_manifest_sha256: "11".repeat(32),
+        effective_vfs_manifest_sha256: "22".repeat(32),
+        c03_camera_replay: Some(c03_binding()),
+        tree_runtime_payload_sha256: Some("33".repeat(32)),
+        tree_materialized_execution_sha256: Some("34".repeat(32)),
+        s1_shadow_payload_sha256: Some("44".repeat(32)),
+        s1_materialized_execution_sha256: Some("55".repeat(32)),
+        mapname_d80_state: replay_core::MapnameD80State::Authenticated,
+        target: None,
+        ordered_draws: Vec::new(),
+        ordered_used_content: Vec::new(),
+        omissions: Vec::new(),
+        deterministic_sha256: String::new(),
+    };
+    let json = serde_json::to_string(&receipt).unwrap();
+    let ordered_fields = [
+        "schema",
+        "content_manifest_sha256",
+        "effective_vfs_manifest_sha256",
+        "c03_camera_replay",
+        "tree_runtime_payload_sha256",
+        "tree_materialized_execution_sha256",
+        "s1_shadow_payload_sha256",
+        "s1_materialized_execution_sha256",
+        "mapname_d80_state",
+        "target",
+        "ordered_draws",
+        "ordered_used_content",
+        "omissions",
+        "deterministic_sha256",
+    ];
+    let positions = ordered_fields.map(|field| {
+        json.find(&format!("\"{field}\":"))
+            .expect("v6 receipt field")
+    });
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+
+    let sealed = snapshot::sha256::Sha256::hex(&serde_json::to_vec(&receipt).unwrap());
+    let mut missing_materialized_tree = receipt.clone();
+    missing_materialized_tree.tree_materialized_execution_sha256 = None;
+    let missing_tree_seal =
+        snapshot::sha256::Sha256::hex(&serde_json::to_vec(&missing_materialized_tree).unwrap());
+    assert_ne!(sealed, missing_tree_seal);
+
+    let mut missing_materialized_s1 = receipt;
+    missing_materialized_s1.s1_materialized_execution_sha256 = None;
+    let missing_seal =
+        snapshot::sha256::Sha256::hex(&serde_json::to_vec(&missing_materialized_s1).unwrap());
+    assert_ne!(sealed, missing_seal);
+}
+
+#[test]
+fn c07_materialized_seal_without_a_selected_frame_carrier_fails_before_execution() {
+    let mut prepared = prepared_static_frame(Vec::new());
+    prepared.tree_materialized_execution_sha256 = Some("33".repeat(32));
+    let mut bridge = TraceBridge::default();
+    assert!(execute_production_d3d_frame(&prepared, &mut bridge)
+        .unwrap_err()
+        .to_string()
+        .contains("carrier/execution seal nullability mismatch"));
+    assert!(bridge.calls.is_empty());
+}
+
+#[test]
+fn c03_binding_reaches_execution_receipt_without_reapplying_raw_events() {
+    let mut frame = empty_frame();
+    frame.selected_submit_index = Some(7);
+    frame.selected_submit_global_order = Some(3);
+    frame.c03_camera_replay = Some(c03_binding());
+    let prepared = prepare_production_d3d_frame(&frame, &BTreeMap::new()).unwrap();
+    let mut bridge = TraceBridge::default();
+    let receipt = execute_production_d3d_frame(&prepared, &mut bridge).unwrap();
+    let binding = receipt.c03_camera_replay.as_ref().unwrap();
+    assert_eq!(binding, &c03_binding());
+    assert_eq!(binding.raw_event_reapplication_count, 0);
+    assert_eq!(binding.envelope_state_selection_count, 1);
+    assert_eq!(receipt.schema, PRODUCTION_D3D_EXECUTION_RECEIPT_SCHEMA);
+
+    let mut unbound = prepared;
+    unbound.c03_camera_replay = None;
+    let unbound_receipt =
+        execute_production_d3d_frame(&unbound, &mut TraceBridge::default()).unwrap();
+    assert_ne!(receipt.deterministic_sha256, unbound_receipt.deterministic_sha256);
+}
+
+#[test]
+fn c03_binding_fails_closed_on_double_apply_or_selected_submit_mismatch() {
+    let mut double_apply = empty_frame();
+    double_apply.selected_submit_index = Some(7);
+    double_apply.selected_submit_global_order = Some(3);
+    let mut binding = c03_binding();
+    binding.raw_event_reapplication_count = 1;
+    double_apply.c03_camera_replay = Some(binding);
+    assert!(prepare_production_d3d_frame(&double_apply, &BTreeMap::new())
+        .unwrap_err()
+        .to_string()
+        .contains("identity/policy mismatch"));
+
+    let mut wrong_submit = empty_frame();
+    wrong_submit.selected_submit_index = Some(8);
+    wrong_submit.selected_submit_global_order = Some(3);
+    wrong_submit.c03_camera_replay = Some(c03_binding());
+    assert!(prepare_production_d3d_frame(&wrong_submit, &BTreeMap::new())
+        .unwrap_err()
+        .to_string()
+        .contains("different selected submit"));
 }
 
 #[test]
@@ -147,6 +286,95 @@ fn absent_portable_static_programs_produce_no_static_pixels() {
     let prepared = prepare_production_d3d_frame(&empty_frame(), &BTreeMap::new()).unwrap();
     assert!(prepared.ordered_static_programs.is_empty());
     assert!(prepared.ordered_static_used_content.is_empty());
+}
+
+#[test]
+fn legacy_mapname_program_is_omitted_and_receipted_without_reconstruction() {
+    let mut frame = empty_frame();
+    let mut draw = fixture_static_draw();
+    draw.shader_program.effect_token = "mapname".into();
+    frame.ordered_static_map_programs = vec![StaticMapPassProgram {
+        program_ordinal: 0,
+        pass_token: "legacy-mapname".into(),
+        ordered_content_keys: Vec::new(),
+        ordered_operations: vec![StaticMapOperation {
+            operation_ordinal: 7,
+            payload_sha256: "55".repeat(32),
+            command: StaticMapCommand::Draw { draw },
+        }],
+        payload_sha256: "66".repeat(32),
+    }];
+    frame.ordered_render_operations = vec![RenderExecutionRef::Static {
+        operation_ordinal: 7,
+    }];
+
+    let prepared = prepare_production_d3d_frame(&frame, &BTreeMap::new()).unwrap();
+    assert_eq!(
+        prepared.mapname_d80_state,
+        replay_core::MapnameD80State::LegacyUnstamped
+    );
+    assert!(prepared.ordered_static_programs.is_empty());
+    assert!(prepared.ordered_render_operations.is_empty());
+    assert!(prepared.omissions.iter().any(|omission| omission
+        .reason
+        .starts_with("B10 legacy mapname program omitted:")));
+
+    let receipt =
+        execute_production_d3d_frame(&prepared, &mut TraceBridge::default()).unwrap();
+    assert_eq!(receipt.schema, PRODUCTION_D3D_EXECUTION_RECEIPT_SCHEMA);
+    assert_eq!(
+        receipt.mapname_d80_state,
+        replay_core::MapnameD80State::LegacyUnstamped
+    );
+}
+
+#[test]
+fn authenticated_mapname_executes_but_a_legacy_claim_cannot_bypass_the_guard() {
+    let mut raw = Vec::with_capacity(32);
+    for bits in [
+        0.5f32.to_bits(),
+        (-5632.0f32).to_bits(),
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ] {
+        raw.extend_from_slice(&bits.to_le_bytes());
+    }
+    let mut draw = fixture_static_draw();
+    draw.shader_program.effect_token = "mapname".into();
+    draw.ordered_constant_buffers = vec![ConstantBufferBinding {
+        stage_mask_u8: 0b11,
+        slot: 1,
+        byte_offset: 0,
+        byte_count: 32,
+        sha256: snapshot::sha256::Sha256::hex(&raw),
+        raw_bytes: raw,
+        semantic_layout: replay_core::MAPNAME_TRANSP_OFFSET_SEMANTIC.into(),
+    }];
+    let operation = StaticMapOperation {
+        operation_ordinal: 7,
+        payload_sha256: "55".repeat(32),
+        command: StaticMapCommand::Draw { draw },
+    };
+    let mut prepared = prepared_static_frame(vec![operation]);
+    prepared.mapname_d80_state = replay_core::MapnameD80State::Authenticated;
+    let receipt =
+        execute_production_d3d_frame(&prepared, &mut TraceBridge::default()).unwrap();
+    assert_eq!(
+        receipt.mapname_d80_state,
+        replay_core::MapnameD80State::Authenticated
+    );
+
+    prepared.mapname_d80_state = replay_core::MapnameD80State::LegacyUnstamped;
+    let mut bridge = TraceBridge::default();
+    assert!(execute_production_d3d_frame(&prepared, &mut bridge)
+        .unwrap_err()
+        .to_string()
+        .contains("state/omission disagrees"));
+    assert!(bridge.calls.is_empty());
 }
 
 #[test]
@@ -743,6 +971,7 @@ float4 ps_main() : SV_Target { return float4(1.0, 0.0, 0.0, 1.0); }
     let frame = PreparedProductionD3dFrame {
         content_manifest_sha256: "11".repeat(32),
         effective_vfs_manifest_sha256: vfs_hash,
+        c03_camera_replay: None,
         target: Some(desc),
         ordered_scene_constant_buffers: Vec::new(),
         ordered_static_programs: vec![StaticMapPassProgram {
@@ -756,6 +985,10 @@ float4 ps_main() : SV_Target { return float4(1.0, 0.0, 0.0, 1.0); }
             }],
             payload_sha256: "66".repeat(32),
         }],
+        mapname_d80_state: replay_core::MapnameD80State::Missing,
+        tree_runtime: None,
+        tree_materialized_execution_sha256: None,
+        s1_shadow: None,
         ordered_static_used_content: Vec::new(),
         ordered_render_operations: vec![RenderExecutionRef::Static {
             operation_ordinal: 7,

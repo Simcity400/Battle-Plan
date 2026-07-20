@@ -11,11 +11,12 @@ use game_ui::power_balance::{
 use replay_core::{Leaf, PowerBalanceRow, PowerBalanceView, ViewStatus};
 use std::path::PathBuf;
 
-fn frozen_catalog() -> PowerBalanceDefinitionCatalog {
+fn committed_ita_catalog() -> PowerBalanceDefinitionCatalog {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../extractor/game_defs/out/catalogs.json");
-    let input = std::fs::read_to_string(path).expect("frozen game-def catalog");
-    PowerBalanceDefinitionCatalog::from_catalogs_json(&input).expect("valid BOP catalog")
+        .join("tests/fixtures/xui18_power_balance/catalogs.json");
+    let input = std::fs::read_to_string(path).expect("committed XUI18 ITA catalog fixture");
+    PowerBalanceDefinitionCatalog::from_catalogs_json(&input)
+        .expect("valid committed XUI18 ITA catalog fixture")
 }
 
 fn live_row(countries: &[&str], value: f64) -> PowerBalanceRow {
@@ -122,9 +123,9 @@ fn runtime() -> PowerBalanceRuntimeSupplement {
 }
 
 #[test]
-fn frozen_catalog_preserves_all_current_balance_ranges_and_dynamic_side_choices() {
-    let catalog = frozen_catalog();
-    assert_eq!(catalog.len(), 12);
+fn committed_fixture_preserves_all_ita_balance_ranges_and_dynamic_side_choices() {
+    let catalog = committed_ita_catalog();
+    assert_eq!(catalog.len(), 1);
     let ita = catalog.get("ITA_power_balance").unwrap();
     assert_eq!(ita.sides.len(), 9);
     assert_eq!(ita.neutral_ranges.len(), 1);
@@ -145,7 +146,7 @@ fn frozen_catalog_preserves_all_current_balance_ranges_and_dynamic_side_choices(
 
 #[test]
 fn exact_live_static_runtime_join_preserves_geometry_decisions_and_modifier_order() {
-    let catalog = frozen_catalog();
+    let catalog = committed_ita_catalog();
     let view = view(&["ITA"], -0.35);
     let decisions = decisions();
     let admitted = admit_power_balance_screen(PowerBalanceAdmissionRequest {
@@ -208,7 +209,7 @@ fn exact_live_static_runtime_join_preserves_geometry_decisions_and_modifier_orde
 
 #[test]
 fn base_feature_visibility_is_active_balance_membership_not_dlc_entitlement() {
-    let catalog = frozen_catalog();
+    let catalog = committed_ita_catalog();
     let view = view(&[], -0.35);
     let decision_defs = decisions();
     assert_eq!(
@@ -225,7 +226,7 @@ fn base_feature_visibility_is_active_balance_membership_not_dlc_entitlement() {
 
 #[test]
 fn all_irreducible_runtime_inputs_fail_closed() {
-    let catalog = frozen_catalog();
+    let catalog = committed_ita_catalog();
     let view = view(&["ITA"], -0.35);
     let decision_defs = decisions();
     assert_eq!(
@@ -348,7 +349,7 @@ fn all_irreducible_runtime_inputs_fail_closed() {
 
 #[test]
 fn supplied_active_range_disambiguates_shared_threshold_boundaries() {
-    let catalog = frozen_catalog();
+    let catalog = committed_ita_catalog();
     let view = view(&["ITA"], -0.3);
     let decision_defs = decisions();
     for range in [

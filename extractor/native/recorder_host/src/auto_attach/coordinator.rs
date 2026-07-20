@@ -94,6 +94,63 @@ impl Coordinator {
         &self.registry
     }
 
+    /// Transfer every active candidate into explicit-stop ownership. Recording
+    /// workers retain their valid prefix and enter Finalizing; candidates that
+    /// never proved Recording fail closed. The caller must continue
+    /// [`Self::drive_shutdown`] until it returns true so completion/failure is
+    /// durably journalled rather than discarded by Drop.
+    pub fn begin_explicit_stop(&mut self) -> Result<(), String> {
+        let now = self.deps.clock.now_ms();
+        let keys = self.registry.active_keys();
+        // Signal every child before any terminal transition removes a handle.
+        // `ChildWorkerHandle::drop` may wait through the graceful deadline, so
+        // this two-pass form makes all worker drain windows overlap instead of
+        // serializing one 30-second window per active game.
+        for key in &keys {
+            if let Some(worker) = self.workers.get_mut(key) {
+                worker.request_stop();
+            }
+        }
+        for key in keys {
+            let state = match self.registry.get(&key) {
+                Some(candidate) => candidate.state,
+                None => continue,
+            };
+            match state {
+                CandidateState::Recording => {
+                    self.transition(
+                        key,
+                        CandidateState::Finalizing,
+                        ReasonCode::ExplicitStop,
+                        now,
+                        Some("explicit app stop; draining and verifying replay".into()),
+                    )?;
+                }
+                CandidateState::Finalizing => {}
+                _ => {
+                    self.fail(
+                        key,
+                        ReasonCode::ExplicitStop,
+                        now,
+                        Some("explicit app stop before Recording admission".into()),
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Poll only already-owned finalizers; discovery/injection is permanently
+    /// out of scope once explicit shutdown begins.
+    pub fn drive_shutdown(&mut self) -> Result<bool, String> {
+        let now = self.deps.clock.now_ms();
+        let keys: Vec<_> = self.workers.keys().copied().collect();
+        for key in keys {
+            self.drive_worker(key, now)?;
+        }
+        Ok(self.workers.is_empty())
+    }
+
     /// Recover from a prior journal (design §8, gate 10). Every nonterminal
     /// identity that had COMMITTED an injection but whose completion is not
     /// proven is poisoned as `Failed` so it can never be re-injected — the
@@ -320,7 +377,7 @@ impl Coordinator {
                 }
             }
             CandidateState::WaitingForWindow => {
-                if self.deps.env.has_visible_window(key.pid) {
+                if self.deps.env.has_visible_window(key) {
                     self.transition(
                         key,
                         CandidateState::Preparing,
@@ -425,7 +482,7 @@ impl Coordinator {
         if reprobed != expected_identity
             || !reprobed.is_hoi4()
             || !self.same_user(&reprobed)
-            || !self.deps.env.has_visible_window(key.pid)
+            || !self.deps.env.has_visible_window(key)
         {
             self.fail(
                 key,
@@ -937,7 +994,7 @@ mod tests {
         }
     }
     impl AttachEnvironment for FakeEnv {
-        fn has_visible_window(&self, _pid: u32) -> bool {
+        fn has_visible_window(&self, _key: ProcessKey) -> bool {
             *self.window_ready.borrow()
         }
         fn resolve_modset(&self, _id: &ProcessIdentity) -> ModsetResolution {

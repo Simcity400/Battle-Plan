@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -19,6 +20,7 @@ pub const PRODUCT_ID: &str = "battle-plan";
 pub const PACKAGE_MANIFEST_FILE: &str = "replay-package.json";
 pub const ACTIVE_RELEASE_FILE: &str = "active-release.json";
 pub const VERSIONS_DIR: &str = "versions";
+pub const STABLE_LAUNCHER_FILE: &str = "replay_launcher.exe";
 
 const ACTIVE_SCHEMA_VERSION: u32 = 1;
 const UPDATE_LOCK_FILE: &str = ".package-update.lock";
@@ -319,6 +321,183 @@ pub struct VerifiedRelease {
     pub entrypoint: PathBuf,
 }
 
+/// Result of durably retaining a verified staging tree in the immutable,
+/// content-addressed version store. Retention deliberately does not update the
+/// active-release pointer; activation remains a separate policy-gated
+/// transaction through [`promote_release`].
+#[derive(Clone, Debug)]
+pub struct RetainedRelease {
+    pub release: VerifiedRelease,
+    pub already_present: bool,
+}
+
+/// Product-owned process-creation boundary used by the stable launcher.
+///
+/// This crate deliberately supplies no default implementation. In production,
+/// the implementation must create `entrypoint` directly (never through a
+/// shell), use `working_directory`, apply the chosen platform DLL-search and
+/// process-mitigation policy, and preserve `forwarded_args` as arguments rather
+/// than reparsing them as a command line. The install ACL must prevent package
+/// mutation between verification and this call.
+pub trait AdmittedEntrypointLauncher {
+    type Output;
+
+    fn launch(
+        &self,
+        entrypoint: &Path,
+        working_directory: &Path,
+        forwarded_args: &[OsString],
+    ) -> Result<Self::Output>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LauncherFailure {
+    /// The stable-launcher identity, installed layout, active pointer, package,
+    /// signature, runtime identity, or release-admission gate refused launch.
+    Preflight(String),
+    /// All preflight gates passed and the product-owned direct process creation
+    /// callback was attempted, but that callback failed.
+    ProcessCreation(String),
+}
+
+impl std::fmt::Display for LauncherFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Preflight(message) => write!(formatter, "launcher preflight refused: {message}"),
+            Self::ProcessCreation(message) => {
+                write!(formatter, "verified entrypoint process creation failed: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LauncherFailure {}
+
+pub type LauncherResult<T> = std::result::Result<T, LauncherFailure>;
+
+/// Resolve the deterministic install root containing the stable launcher.
+///
+/// The launcher itself is outside every replaceable version directory. Its
+/// platform signature and the ACL on this root are product/deployment policy;
+/// this function only refuses path aliases and the wrong executable name.
+pub fn install_root_from_launcher(launcher_executable: &Path) -> Result<PathBuf> {
+    refuse_symlink(launcher_executable, "stable launcher")?;
+    let launcher = fs::canonicalize(launcher_executable).map_err(|error| {
+        format!(
+            "canonicalize stable launcher {}: {error}",
+            launcher_executable.display()
+        )
+    })?;
+    if !launcher.is_file() {
+        return Err(format!(
+            "stable launcher is not a regular file: {}",
+            launcher.display()
+        ));
+    }
+    let launcher_file = File::open(&launcher)
+        .map_err(|error| format!("open stable launcher {}: {error}", launcher.display()))?;
+    refuse_multi_link_file(&launcher_file, &launcher)?;
+    let file_name = launcher
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or("stable launcher has no portable UTF-8 file name")?;
+    if !file_name.eq_ignore_ascii_case(STABLE_LAUNCHER_FILE) {
+        return Err(format!(
+            "stable launcher must be named {STABLE_LAUNCHER_FILE:?}, found {file_name:?}"
+        ));
+    }
+    let install_root = launcher
+        .parent()
+        .ok_or("stable launcher has no install root")?;
+    refuse_symlink(install_root, "stable launcher install root")?;
+    fs::canonicalize(install_root).map_err(|error| {
+        format!(
+            "canonicalize stable launcher install root {}: {error}",
+            install_root.display()
+        )
+    })
+}
+
+/// Verify the active package through every trust/admission gate and hand only
+/// its admitted entrypoint to the product-owned process launcher.
+///
+/// `forwarded_args` are opaque OS arguments. This layer never interprets a
+/// recording path, guesses HOI4/user-profile locations, invokes a shell, or
+/// accepts a caller-selected executable. A failure before the final callback
+/// guarantees that the callback is not invoked.
+pub fn invoke_active_release_from_current_launcher<L: AdmittedEntrypointLauncher>(
+    forwarded_args: &[OsString],
+    identity: &RuntimeIdentity,
+    signing_policy: &SigningPolicy,
+    verifier: Option<&dyn PackageSignatureVerifier>,
+    release_policy: &dyn ReleaseAdmissionPolicy,
+    process_launcher: &L,
+) -> LauncherResult<L::Output> {
+    let launcher_executable = std::env::current_exe()
+        .map_err(|error| {
+            LauncherFailure::Preflight(format!(
+                "resolve current stable launcher executable: {error}"
+            ))
+        })?;
+    invoke_active_release_from_launcher_path(
+        &launcher_executable,
+        forwarded_args,
+        identity,
+        signing_policy,
+        verifier,
+        release_policy,
+        process_launcher,
+    )
+}
+
+/// Stable-launcher CLI adapter: forward every native argument after argv[0] to
+/// the admitted replay entrypoint without UTF-8 conversion or shell parsing.
+///
+/// This crate defines no launcher-owned update/channel/debug switches. Adding
+/// such switches is product policy and must not make a failed package gate
+/// recover to an alternate executable.
+pub fn invoke_active_release_from_current_cli<L: AdmittedEntrypointLauncher>(
+    identity: &RuntimeIdentity,
+    signing_policy: &SigningPolicy,
+    verifier: Option<&dyn PackageSignatureVerifier>,
+    release_policy: &dyn ReleaseAdmissionPolicy,
+    process_launcher: &L,
+) -> LauncherResult<L::Output> {
+    let forwarded_args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    invoke_active_release_from_current_launcher(
+        &forwarded_args,
+        identity,
+        signing_policy,
+        verifier,
+        release_policy,
+        process_launcher,
+    )
+}
+
+fn invoke_active_release_from_launcher_path<L: AdmittedEntrypointLauncher>(
+    launcher_executable: &Path,
+    forwarded_args: &[OsString],
+    identity: &RuntimeIdentity,
+    signing_policy: &SigningPolicy,
+    verifier: Option<&dyn PackageSignatureVerifier>,
+    release_policy: &dyn ReleaseAdmissionPolicy,
+    process_launcher: &L,
+) -> LauncherResult<L::Output> {
+    let install_root = install_root_from_launcher(launcher_executable)
+        .map_err(LauncherFailure::Preflight)?;
+    let release = discover_active_release(
+        &install_root,
+        identity,
+        signing_policy,
+        verifier,
+        release_policy,
+    )
+    .map_err(LauncherFailure::Preflight)?;
+    process_launcher
+        .launch(&release.entrypoint, &release.root, forwarded_args)
+        .map_err(LauncherFailure::ProcessCreation)
+}
+
 /// Construct the canonical unsigned manifest payload for a completely staged
 /// directory. Signing remains an external release-pipeline operation; this
 /// function only centralizes deterministic enumeration and hashing.
@@ -484,6 +663,82 @@ pub fn verify_sibling_package(
     Ok(release)
 }
 
+/// Copy a completely staged, signed release into
+/// `versions/<package-digest-sha256>` without making it active.
+///
+/// The source is verified before copying. Every payload is copied through an
+/// exclusively-created file while its byte count and digest are recomputed,
+/// then flushed. The canonical signed manifest is written last. The complete
+/// incoming tree is verified again and atomically renamed to its digest path.
+/// A crash can therefore leave only an inert `.incoming-*` directory; neither
+/// discovery nor promotion will select it. Stale-incoming cleanup is an
+/// installer retention decision and is intentionally not guessed here.
+///
+/// If the digest directory already exists it is never rewritten: the existing
+/// tree must independently verify or the operation fails closed.
+pub fn retain_staged_release(
+    install_root: &Path,
+    staged_release: &Path,
+    identity: &RuntimeIdentity,
+    policy: &SigningPolicy,
+    verifier: Option<&dyn PackageSignatureVerifier>,
+) -> Result<RetainedRelease> {
+    let staged = verify_release_dir(staged_release, identity, policy, verifier)?;
+    let digest = staged.manifest.package_digest_sha256.clone();
+    let _lock = UpdateLock::acquire(install_root)?;
+
+    let versions = install_root.join(VERSIONS_DIR);
+    fs::create_dir_all(&versions)
+        .map_err(|error| format!("create version store {}: {error}", versions.display()))?;
+    refuse_symlink(&versions, "version store")?;
+    if !versions.is_dir() {
+        return Err(format!(
+            "version store is not a directory: {}",
+            versions.display()
+        ));
+    }
+
+    let final_root = versions.join(&digest);
+    match fs::symlink_metadata(&final_root) {
+        Ok(_) => {
+            let release = verify_versioned_release(
+                install_root,
+                &digest,
+                identity,
+                policy,
+                verifier,
+            )?;
+            return Ok(RetainedRelease {
+                release,
+                already_present: true,
+            });
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "inspect retained release path {}: {error}",
+                final_root.display()
+            ))
+        }
+    }
+
+    let incoming_root = create_unique_incoming_directory(&versions, &digest)?;
+    let mut incoming = IncomingDirectory::new(incoming_root);
+    copy_verified_release(&staged, incoming.path())?;
+    let copied = verify_release_dir(incoming.path(), identity, policy, verifier)?;
+    if copied.manifest.package_digest_sha256 != digest {
+        return Err("copied release digest changed after staging verification".into());
+    }
+    atomic_install_directory(incoming.path(), &final_root)?;
+    incoming.commit();
+
+    let release = verify_versioned_release(install_root, &digest, identity, policy, verifier)?;
+    Ok(RetainedRelease {
+        release,
+        already_present: false,
+    })
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActiveRelease {
@@ -540,6 +795,15 @@ pub fn discover_active_release(
         verifier,
     )?;
     release_policy.admit_active(&release.manifest)?;
+    // Verification hashes every package file and may take materially longer
+    // than reading the pointer. Refuse a stale launch if an updater promoted or
+    // rolled back while this verification was in progress. The next launcher
+    // attempt will verify the newly selected digest from the beginning.
+    let pointer_after = load_active_pointer(install_root)?
+        .ok_or("active release pointer disappeared during verification")?;
+    if pointer_after != pointer {
+        return Err("active release pointer changed during verification; launch refused".into());
+    }
     Ok(release)
 }
 
@@ -725,6 +989,230 @@ impl Drop for UpdateLock {
     }
 }
 
+struct IncomingDirectory {
+    path: PathBuf,
+    committed: bool,
+}
+
+impl IncomingDirectory {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            committed: false,
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for IncomingDirectory {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+fn create_unique_incoming_directory(versions: &Path, digest: &str) -> Result<PathBuf> {
+    let time_nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    for _ in 0..64 {
+        let counter = TEMP_NONCE.fetch_add(1, Ordering::Relaxed);
+        let path = versions.join(format!(
+            ".incoming-{digest}.{}.{}.{}",
+            std::process::id(),
+            time_nonce,
+            counter
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "create incoming release directory {}: {error}",
+                    path.display()
+                ))
+            }
+        }
+    }
+    Err("could not allocate a unique incoming release directory".into())
+}
+
+fn copy_verified_release(source: &VerifiedRelease, destination: &Path) -> Result<()> {
+    refuse_symlink(destination, "incoming release directory")?;
+    for row in &source.manifest.files {
+        let source_path = checked_join(&source.root, &row.path)?;
+        let destination_path = destination.join(&row.path);
+        let parent = destination_path
+            .parent()
+            .ok_or("incoming package path has no parent")?;
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "create incoming package directory {}: {error}",
+                parent.display()
+            )
+        })?;
+        copy_file_exact(&source_path, &destination_path, row.bytes, &row.sha256)?;
+    }
+
+    let manifest_bytes = source.manifest.canonical_bytes()?;
+    write_new_file_synced(&destination.join(PACKAGE_MANIFEST_FILE), &manifest_bytes)?;
+    sync_directory_tree(destination)
+}
+
+fn copy_file_exact(source: &Path, destination: &Path, bytes: u64, sha256: &str) -> Result<()> {
+    let mut input = File::open(source)
+        .map_err(|error| format!("open staged package file {}: {error}", source.display()))?;
+    refuse_multi_link_file(&input, source)?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|error| {
+            format!(
+                "create incoming package file {}: {error}",
+                destination.display()
+            )
+        })?;
+    let mut hasher = Sha256::new();
+    let mut copied = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = input
+            .read(&mut buffer)
+            .map_err(|error| format!("read staged package file {}: {error}", source.display()))?;
+        if read == 0 {
+            break;
+        }
+        copied = copied
+            .checked_add(read as u64)
+            .ok_or("incoming package byte count overflow")?;
+        if copied > bytes || copied > MAX_PACKAGE_BYTES {
+            return Err(format!(
+                "staged package file changed size while copying: {}",
+                source.display()
+            ));
+        }
+        hasher.update(&buffer[..read]);
+        output.write_all(&buffer[..read]).map_err(|error| {
+            format!(
+                "write incoming package file {}: {error}",
+                destination.display()
+            )
+        })?;
+    }
+    let copied_sha256 = format!("{:x}", hasher.finalize());
+    if copied != bytes || copied_sha256 != sha256 {
+        return Err(format!(
+            "staged package file changed after verification: {}",
+            source.display()
+        ));
+    }
+    output
+        .sync_all()
+        .map_err(|error| format!("flush incoming package file {}: {error}", destination.display()))
+}
+
+fn write_new_file_synced(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| format!("create incoming manifest {}: {error}", path.display()))?;
+    file.write_all(bytes)
+        .map_err(|error| format!("write incoming manifest {}: {error}", path.display()))?;
+    file.sync_all()
+        .map_err(|error| format!("flush incoming manifest {}: {error}", path.display()))
+}
+
+#[cfg(windows)]
+fn sync_directory_tree(_root: &Path) -> Result<()> {
+    // Each payload and the manifest have already been flushed. The final
+    // directory rename below uses MOVEFILE_WRITE_THROUGH; opening directories
+    // for FlushFileBuffers is not supported by std on Windows.
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn sync_directory_tree(root: &Path) -> Result<()> {
+    let mut directories = vec![root.to_path_buf()];
+    let mut cursor = 0usize;
+    while cursor < directories.len() {
+        for entry in fs::read_dir(&directories[cursor]).map_err(|error| {
+            format!(
+                "enumerate incoming directory {} for flush: {error}",
+                directories[cursor].display()
+            )
+        })? {
+            let entry = entry.map_err(|error| format!("enumerate incoming directory: {error}"))?;
+            if entry
+                .file_type()
+                .map_err(|error| format!("inspect incoming directory entry: {error}"))?
+                .is_dir()
+            {
+                directories.push(entry.path());
+            }
+        }
+        cursor += 1;
+    }
+    for directory in directories.into_iter().rev() {
+        File::open(&directory)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| format!("flush incoming directory {}: {error}", directory.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn atomic_install_directory(source: &Path, target: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain([0])
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain([0])
+        .collect::<Vec<_>>();
+    let ok = unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), MOVEFILE_WRITE_THROUGH) };
+    if ok == 0 {
+        Err(format!(
+            "atomic incoming-directory install failed: {}",
+            std::io::Error::last_os_error()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn atomic_install_directory(source: &Path, target: &Path) -> Result<()> {
+    fs::rename(source, target).map_err(|error| {
+        format!(
+            "atomic incoming-directory install {} -> {} failed: {error}",
+            source.display(),
+            target.display()
+        )
+    })?;
+    let parent = target
+        .parent()
+        .ok_or("installed version directory has no parent")?;
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("flush version-store directory {}: {error}", parent.display()))
+}
+
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path
         .parent()
@@ -901,6 +1389,7 @@ fn checked_join(root: &Path, relative: &str) -> Result<PathBuf> {
 fn hash_file(path: &Path) -> Result<(u64, String)> {
     let mut file = File::open(path)
         .map_err(|error| format!("open package file {}: {error}", path.display()))?;
+    refuse_multi_link_file(&file, path)?;
     let mut hasher = Sha256::new();
     let mut bytes = 0u64;
     let mut buffer = [0u8; 64 * 1024];
@@ -922,8 +1411,85 @@ fn hash_file(path: &Path) -> Result<(u64, String)> {
     Ok((bytes, format!("{:x}", hasher.finalize())))
 }
 
+#[cfg(windows)]
+fn refuse_multi_link_file(file: &File, path: &Path) -> Result<()> {
+    use std::ffi::c_void;
+    use std::mem::MaybeUninit;
+    use std::os::windows::io::AsRawHandle;
+
+    #[repr(C)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+
+    #[repr(C)]
+    struct ByHandleFileInformation {
+        attributes: u32,
+        creation_time: FileTime,
+        last_access_time: FileTime,
+        last_write_time: FileTime,
+        volume_serial_number: u32,
+        file_size_high: u32,
+        file_size_low: u32,
+        number_of_links: u32,
+        file_index_high: u32,
+        file_index_low: u32,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandle(
+            file: *mut c_void,
+            information: *mut ByHandleFileInformation,
+        ) -> i32;
+    }
+
+    let mut information = MaybeUninit::<ByHandleFileInformation>::uninit();
+    let ok = unsafe {
+        GetFileInformationByHandle(file.as_raw_handle().cast(), information.as_mut_ptr())
+    };
+    if ok == 0 {
+        return Err(format!(
+            "query package hard-link count for {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    let links = unsafe { information.assume_init() }.number_of_links;
+    if links != 1 {
+        return Err(format!(
+            "package file has {links} hard links and is not immutable-by-path: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn refuse_multi_link_file(file: &File, path: &Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let links = file
+        .metadata()
+        .map_err(|error| format!("inspect open package file {}: {error}", path.display()))?
+        .nlink();
+    if links != 1 {
+        return Err(format!(
+            "package file has {links} hard links and is not immutable-by-path: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(windows, unix)))]
+fn refuse_multi_link_file(_file: &File, _path: &Path) -> Result<()> {
+    Ok(())
+}
+
 fn read_capped(path: &Path, cap: u64) -> Result<Vec<u8>> {
     let file = File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
+    refuse_multi_link_file(&file, path)?;
     let metadata = file
         .metadata()
         .map_err(|error| format!("inspect open file {}: {error}", path.display()))?;
@@ -1078,6 +1644,7 @@ fn decode_sha256(value: &str, label: &str) -> Result<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct FixtureVerifier;
@@ -1085,6 +1652,49 @@ mod tests {
     struct FixtureReleasePolicy;
 
     struct RefuseAllReleases;
+
+    struct RefuseProcessCreation;
+
+    struct PointerMutatingVerifier {
+        install_root: PathBuf,
+        mutated: Cell<bool>,
+    }
+
+    #[derive(Default)]
+    struct FixtureEntrypointLauncher {
+        calls: RefCell<Vec<(PathBuf, PathBuf, Vec<OsString>)>>,
+    }
+
+    impl AdmittedEntrypointLauncher for FixtureEntrypointLauncher {
+        type Output = usize;
+
+        fn launch(
+            &self,
+            entrypoint: &Path,
+            working_directory: &Path,
+            forwarded_args: &[OsString],
+        ) -> Result<Self::Output> {
+            self.calls.borrow_mut().push((
+                entrypoint.to_path_buf(),
+                working_directory.to_path_buf(),
+                forwarded_args.to_vec(),
+            ));
+            Ok(forwarded_args.len())
+        }
+    }
+
+    impl AdmittedEntrypointLauncher for RefuseProcessCreation {
+        type Output = ();
+
+        fn launch(
+            &self,
+            _entrypoint: &Path,
+            _working_directory: &Path,
+            _forwarded_args: &[OsString],
+        ) -> Result<Self::Output> {
+            Err("fixture process creation refusal".into())
+        }
+    }
 
     impl ReleaseAdmissionPolicy for FixtureReleasePolicy {
         fn admit_active(&self, active: &PackageManifest) -> Result<()> {
@@ -1163,6 +1773,33 @@ mod tests {
             } else {
                 Err("fixture signature mismatch".into())
             }
+        }
+    }
+
+    impl PackageSignatureVerifier for PointerMutatingVerifier {
+        fn verify(
+            &self,
+            algorithm: &str,
+            signer_id: &str,
+            payload_sha256: &[u8; 32],
+            signature: &[u8],
+        ) -> Result<()> {
+            FixtureVerifier.verify(algorithm, signer_id, payload_sha256, signature)?;
+            if !self.mutated.replace(true) {
+                let mut pointer = load_active_pointer(&self.install_root)?
+                    .ok_or("fixture active pointer disappeared")?;
+                pointer.generation = pointer
+                    .generation
+                    .checked_add(1)
+                    .ok_or("fixture generation overflow")?;
+                fs::write(
+                    self.install_root.join(ACTIVE_RELEASE_FILE),
+                    serde_json::to_vec(&pointer)
+                        .map_err(|error| format!("encode fixture pointer: {error}"))?,
+                )
+                .map_err(|error| format!("mutate fixture pointer: {error}"))?;
+            }
+            Ok(())
         }
     }
 
@@ -1294,6 +1931,111 @@ mod tests {
     }
 
     #[test]
+    fn retention_copies_reverifies_and_never_activates_implicitly() {
+        let root = temp("retain");
+        let staged = root.join("staged");
+        let install = root.join("installed");
+        let manifest = write_release(&staged, "1.0.0", true);
+
+        let first = retain_staged_release(
+            &install,
+            &staged,
+            &identity(),
+            &production_policy(),
+            Some(&FixtureVerifier),
+        )
+        .unwrap();
+        assert!(!first.already_present);
+        assert_eq!(
+            first.release.root,
+            fs::canonicalize(
+                install
+                    .join(VERSIONS_DIR)
+                    .join(&manifest.package_digest_sha256)
+            )
+            .unwrap()
+        );
+        assert!(!install.join(ACTIVE_RELEASE_FILE).exists());
+
+        let second = retain_staged_release(
+            &install,
+            &staged,
+            &identity(),
+            &production_policy(),
+            Some(&FixtureVerifier),
+        )
+        .unwrap();
+        assert!(second.already_present);
+        assert_eq!(second.release.manifest, manifest);
+
+        let pointer = promote_release(
+            &install,
+            &manifest.package_digest_sha256,
+            &identity(),
+            &production_policy(),
+            Some(&FixtureVerifier),
+            &FixtureReleasePolicy,
+        )
+        .unwrap();
+        assert_eq!(pointer.current_digest_sha256, manifest.package_digest_sha256);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retention_refuses_changed_source_and_corrupt_existing_digest_directory() {
+        let root = temp("retain-refuse");
+        let staged = root.join("staged");
+        let install = root.join("installed");
+        let manifest = write_release(&staged, "1.0.0", true);
+        fs::write(staged.join("replay_app.exe"), b"changed").unwrap();
+        assert!(retain_staged_release(
+            &install,
+            &staged,
+            &identity(),
+            &production_policy(),
+            Some(&FixtureVerifier),
+        )
+        .is_err());
+        assert!(!install.exists());
+
+        fs::write(staged.join("replay_app.exe"), b"1.0.0").unwrap();
+        let occupied = install
+            .join(VERSIONS_DIR)
+            .join(&manifest.package_digest_sha256);
+        fs::create_dir_all(&occupied).unwrap();
+        fs::write(occupied.join("untrusted.exe"), b"do not replace").unwrap();
+        assert!(retain_staged_release(
+            &install,
+            &staged,
+            &identity(),
+            &production_policy(),
+            Some(&FixtureVerifier),
+        )
+        .is_err());
+        assert_eq!(
+            fs::read(occupied.join("untrusted.exe")).unwrap(),
+            b"do not replace"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn manifest_builder_refuses_hard_link_aliases() {
+        let root = temp("hard-link");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("replay_app.exe"), b"fixture").unwrap();
+        fs::hard_link(root.join("replay_app.exe"), root.join("alias.exe")).unwrap();
+        assert!(build_unsigned_manifest(
+            &root,
+            "1.0.0",
+            "fixture-x86_64",
+            "replay_app.exe"
+        )
+        .is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn promotion_and_rollback_switch_only_verified_version_directories() {
         let install = temp("promotion");
         fs::create_dir_all(install.join(VERSIONS_DIR)).unwrap();
@@ -1394,6 +2136,125 @@ mod tests {
             Some(manifest_b.package_digest_sha256)
         );
         assert_eq!(rolled_back.generation, 3);
+        let _ = fs::remove_dir_all(install);
+    }
+
+    #[test]
+    fn stable_launcher_invokes_only_the_admitted_entrypoint_and_forwards_args() {
+        let install = temp("launcher");
+        fs::create_dir_all(install.join(VERSIONS_DIR)).unwrap();
+        let stable_launcher = install.join(STABLE_LAUNCHER_FILE);
+        fs::write(&stable_launcher, b"fixture stable launcher").unwrap();
+
+        let scratch = install.join("staged");
+        let manifest = write_release(&scratch, "1.2.0", true);
+        let release_root = install
+            .join(VERSIONS_DIR)
+            .join(&manifest.package_digest_sha256);
+        fs::rename(&scratch, &release_root).unwrap();
+        promote_release(
+            &install,
+            &manifest.package_digest_sha256,
+            &identity(),
+            &production_policy(),
+            Some(&FixtureVerifier),
+            &FixtureReleasePolicy,
+        )
+        .unwrap();
+
+        let forwarded_args = [
+            OsString::from("--recording"),
+            OsString::from("fixture recording.battleplan"),
+        ];
+        let process_launcher = FixtureEntrypointLauncher::default();
+        let output = invoke_active_release_from_launcher_path(
+            &stable_launcher,
+            &forwarded_args,
+            &identity(),
+            &production_policy(),
+            Some(&FixtureVerifier),
+            &FixtureReleasePolicy,
+            &process_launcher,
+        )
+        .unwrap();
+        assert_eq!(output, forwarded_args.len());
+        let calls = process_launcher.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].0,
+            fs::canonicalize(release_root.join("replay_app.exe")).unwrap()
+        );
+        assert_eq!(calls[0].1, fs::canonicalize(&release_root).unwrap());
+        assert_eq!(calls[0].2, forwarded_args.to_vec());
+        drop(calls);
+
+        let preflight_error = invoke_active_release_from_launcher_path(
+            &stable_launcher,
+            &forwarded_args,
+            &identity(),
+            &production_policy(),
+            Some(&FixtureVerifier),
+            &RefuseAllReleases,
+            &process_launcher,
+        )
+        .expect_err("release-policy failure must refuse before process creation");
+        assert!(matches!(preflight_error, LauncherFailure::Preflight(_)));
+        assert_eq!(process_launcher.calls.borrow().len(), 1);
+
+        let process_error = invoke_active_release_from_launcher_path(
+            &stable_launcher,
+            &forwarded_args,
+            &identity(),
+            &production_policy(),
+            Some(&FixtureVerifier),
+            &FixtureReleasePolicy,
+            &RefuseProcessCreation,
+        )
+        .expect_err("process callback failure must remain distinguishable");
+        assert_eq!(
+            process_error,
+            LauncherFailure::ProcessCreation("fixture process creation refusal".into())
+        );
+
+        let renamed_launcher = install.join("untrusted-name.exe");
+        fs::write(&renamed_launcher, b"fixture renamed launcher").unwrap();
+        assert!(install_root_from_launcher(&renamed_launcher).is_err());
+        let _ = fs::remove_dir_all(install);
+    }
+
+    #[test]
+    fn active_pointer_change_during_verification_refuses_stale_launch() {
+        let install = temp("active-pointer-race");
+        fs::create_dir_all(install.join(VERSIONS_DIR)).unwrap();
+        let scratch = install.join("staged");
+        let manifest = write_release(&scratch, "1.3.0", true);
+        let release_root = install
+            .join(VERSIONS_DIR)
+            .join(&manifest.package_digest_sha256);
+        fs::rename(&scratch, release_root).unwrap();
+        promote_release(
+            &install,
+            &manifest.package_digest_sha256,
+            &identity(),
+            &production_policy(),
+            Some(&FixtureVerifier),
+            &FixtureReleasePolicy,
+        )
+        .unwrap();
+
+        let verifier = PointerMutatingVerifier {
+            install_root: install.clone(),
+            mutated: Cell::new(false),
+        };
+        let error = discover_active_release(
+            &install,
+            &identity(),
+            &production_policy(),
+            Some(&verifier),
+            &FixtureReleasePolicy,
+        )
+        .expect_err("pointer race must refuse launch");
+        assert!(error.contains("active release pointer changed during verification"));
         let _ = fs::remove_dir_all(install);
     }
 }

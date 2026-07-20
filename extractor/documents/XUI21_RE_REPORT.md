@@ -1,6 +1,6 @@
 # XUI21 extractor RE report — fired events and popups
 
-Status: **EXECUTABLE RE COMPLETE; LANE-LOCAL PRODUCER VERIFIED; SHARED COLLECTOR ATTACHMENT NOT YET FROZEN**
+Status: **IMPLEMENTED FAIL-CLOSED; RAW COVERAGE FIXTURE AND 10-SHARD PROMOTION RE-EXPORT REQUIRED**
 
 This is the extractor-owned XUI21 record. It is intentionally separate from the rendering-law report under `replay_interface`. The pinned authority is `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 
@@ -15,11 +15,15 @@ The lane-local a729 implementation now performs:
 - same-call fire tick from `CGameState+0x468`, exact combined-id/static-registry join and monotonically increasing firing sequence;
 - rejection of inactive game-state calls and already-fired `fire_only_once` calls before rich-row emission;
 - visible option ordinals by exact pointer membership in `CEvent+0x368/+0x374`;
-- all five popup classes by the runtime chrome flags plus the static game-file class;
+- classification support for all five popup classes by the runtime chrome flags plus the static game-file class;
 - player, AI, timeout and no-choice resolution correlation without reproducing weights or RNG;
-- a live shadow of the `CGameState+0x538` fired-event hash set, including cycle/count consistency checks.
+- exact pre/post pending-vector set difference for instance correlation; numeric
+  maximum, first-row and observation-order guesses are forbidden;
+- a live equality shadow of the `CGameState+0x538` fired-event hash set,
+  including cycle/count consistency checks. A strict game-set superset is a
+  missed hook observation, not a passing shadow.
 
-Focused Rust verification is 13/13 passing. The game-file compiler test is 1/1 passing. Shared collector installation, d75 emission, recorder fold and replay acceptance must be mechanically frozen before the domain can be marked scheduled or production-promoted.
+The shared collector installation, d75 emission, recorder fold, typed replay acceptance, and independent A25 title/description/per-option context joins are implemented. The executable classifier rejects any CTextBox owner reused across roles. The Rust and Python consumers atomically reject malformed rich rows, duplicate context ids, invalid chronology/resolution invariants, and any legacy identity row paired with `fired_events_complete=true`. The retained corpus has no raw process-authenticated run that actually exercises all five popup classes plus player, AI, timeout, and no-choice resolution. The collector therefore supplies both coverage-attestation bits as false and refuses installation instead of manufacturing `fired_events_complete=true`. Previously recorded focused-test counts are not a substitute for that runtime receipt.
 
 ## Game-file bridge
 
@@ -59,4 +63,25 @@ Every row records function address, job ID, artifact path, artifact SHA-256 and 
 
 ## Remaining promotion gates
 
-There is no remaining Ghidra, game-file, data or RenderDoc question in this XUI21 slice. Remaining work is shared integration: install the collector-owned concrete reader/registry bridge only after the collector snapshot is released; emit schedulable d75 DATA/PERF before FRAME_END; join A25 runtime-text context; verify recorder/replay roundtrip and loss/completeness failure controls; then run two deterministic verification passes and freeze the final manifest.
+The executable and game-file questions are exhausted in retained evidence. The
+exact-ten replacement receipts are now bound to the three promotion consumers.
+One external promotion input remains:
+
+The deterministic retained-corpus census is recorded in
+`replay_interface/re_evidence/rendering_laws/XUI21/retained_runtime_matrix_census_20260720.json`.
+It found zero admissible runtime rows, zero retired cells in the five-class by
+four-resolution matrix, and zero retired lifecycle edges. The persisted D04
+save candidates resolve to 238 country, 9 news, and 3 unit-leader definitions,
+but they lack popup materialisation, resolution, timing, A25 ownership, and
+loss/authentication receipts and therefore retire no row.
+
+1. Run the pinned a729 harness matrix and retain the raw hook trace, process and
+   module identity, zero-loss telemetry, baseline/shadow reconciliation, all
+   five popup classes, player/AI/timeout/no-choice paths, repeated event id, and
+   same-hour correlation. Only that authenticated receipt may turn the two
+   collector coverage bits true.
+The older 20-shard job IDs remain discovery aliases only; they are not the
+promotion authority. Ordinary RenderDoc frames or screenshots cannot satisfy
+the runtime gate. After the
+authenticated fixture is present, centralized Rust validation and a refreshed
+pointer-free manifest remain mechanical integration work.

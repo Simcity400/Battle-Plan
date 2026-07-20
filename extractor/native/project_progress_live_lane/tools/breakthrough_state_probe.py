@@ -1,9 +1,12 @@
 """Validate project breakthrough state rows against the save oracle.
 
 Read-only development probe. This does not feed the production hot loop. It
-checks whether the existing domain-41 breakthrough compact row
+checks whether the domain-41 breakthrough compact row
 (`tag_db_id, specialization_handle, points_raw`) has exact save semantics for
-the current build and fixture.
+the current build and fixture. Unlike the original record-0-only probe, this
+version walks every contiguous, primary-vtable-valid CProgramStatus record in the
+validated three-record/0x160-stride array. Identical handles are deduplicated;
+cross-record point conflicts reject the country and the admission gate.
 """
 
 import argparse
@@ -30,6 +33,9 @@ SPEC_KEYS = (
     "specialization_air",
     "specialization_land",
 )
+
+PROGRAM_STATUS_RECORD_STRIDE = 0x160
+MAX_PROGRAM_STATUS_RECORDS = 3
 
 
 def hx(value):
@@ -71,7 +77,9 @@ def collect_live_breakthroughs(p):
         raise RuntimeError("failed to validate country table/tag table")
 
     status_rows = 0
+    status_record_count = 0
     parse_failures = []
+    duplicate_conflicts = []
     live = {}
     all_handles = Counter()
     examples = []
@@ -92,33 +100,69 @@ def collect_live_breakthroughs(p):
         ):
             continue
         status_rows += 1
-        rows = pp.read_breakthrough_rows(
-            p,
-            status_ptr + 0x50,
-            breakthrough_vtable,
-            max_rows=16,
-        )
-        if rows is None:
-            parse_failures.append(
+        by_handle = {}
+        record_rows = []
+        country_failed = False
+        for record_index in range(MAX_PROGRAM_STATUS_RECORDS):
+            record_ptr = status_ptr + record_index * PROGRAM_STATUS_RECORD_STRIDE
+            if pp.try_u64(p, record_ptr) != status_a_vtable:
+                # The validated layout is a contiguous array. A non-record ends
+                # the walk; record 0 was already checked above.
+                break
+            status_record_count += 1
+            rows = pp.read_breakthrough_rows(
+                p,
+                record_ptr + 0x50,
+                breakthrough_vtable,
+                max_rows=16,
+            )
+            if rows is None:
+                parse_failures.append(
+                    {
+                        "tag": tag,
+                        "tag_db_id": tag_db_id,
+                        "status_ptr": hx(status_ptr),
+                        "record_index": record_index,
+                        "record_ptr": hx(record_ptr),
+                    }
+                )
+                country_failed = True
+                break
+            record_rows.append(
                 {
-                    "tag": tag,
-                    "tag_db_id": tag_db_id,
-                    "status_ptr": hx(status_ptr),
+                    "record_index": record_index,
+                    "record_ptr": hx(record_ptr),
+                    "secondary_vtable": hx(pp.try_u64(p, record_ptr + 8)),
+                    "rows": rows,
                 }
             )
+            for row in rows:
+                handle = int(row["specialization_handle"])
+                points = int(row["points_raw"])
+                prior = by_handle.get(handle)
+                if prior is not None and prior != points:
+                    duplicate_conflicts.append(
+                        {
+                            "tag": tag,
+                            "tag_db_id": tag_db_id,
+                            "specialization_handle": handle,
+                            "first_points_raw": prior,
+                            "conflicting_points_raw": points,
+                            "record_index": record_index,
+                        }
+                    )
+                    country_failed = True
+                else:
+                    by_handle[handle] = points
+        if country_failed or not by_handle:
             continue
-        if not rows:
-            continue
-        by_handle = {}
-        for row in rows:
-            handle = int(row["specialization_handle"])
-            points = int(row["points_raw"])
-            by_handle[handle] = points
+        for handle in by_handle:
             all_handles[handle] += 1
         live[tag] = {
             "tag_db_id": tag_db_id,
             "status_ptr": status_ptr,
             "rows": by_handle,
+            "record_rows": record_rows,
         }
         if len(examples) < 16:
             examples.append(
@@ -126,6 +170,7 @@ def collect_live_breakthroughs(p):
                     "tag": tag,
                     "tag_db_id": tag_db_id,
                     "status_ptr": hx(status_ptr),
+                    "record_rows": record_rows,
                     "rows": [
                         {
                             "specialization_handle": handle,
@@ -143,10 +188,14 @@ def collect_live_breakthroughs(p):
             "tag_row_count": row_count,
         },
         "expected_vtables": {
+            "CProgramStatus_primary": status_a_vtable,
+            "CProgramStatus_secondary": status_b_vtable,
             "CBreakthroughProgress": breakthrough_vtable,
         },
         "status_rows": status_rows,
+        "status_record_count": status_record_count,
         "parse_failures": parse_failures,
+        "duplicate_conflicts": duplicate_conflicts,
         "live": live,
         "handle_counts": dict(sorted(all_handles.items())),
         "examples": examples,
@@ -239,16 +288,25 @@ def probe(args):
         handles = sorted(live_summary["handle_counts"])
         mapping_candidates = score_mapping(handles, live, save) if handles else []
         best = mapping_candidates[0] if mapping_candidates else None
+        zero_mismatch_candidates = [
+            candidate
+            for candidate in mapping_candidates
+            if candidate["matched_rows"] > 0
+            and candidate["mismatch_count"] == 0
+            and candidate["live_tags_missing_from_save_count"] == 0
+        ]
         accepted = bool(
             best
             and len(handles) == len(SPEC_KEYS)
             and not live_summary["parse_failures"]
+            and not live_summary["duplicate_conflicts"]
+            and len(zero_mismatch_candidates) == 1
             and best["matched_rows"] > 0
             and best["mismatch_count"] == 0
             and best["live_tags_missing_from_save_count"] == 0
         )
         return {
-            "schema": "project_progress_breakthrough_state_probe_v1",
+            "schema": "project_progress_breakthrough_state_probe_v2",
             "utc": datetime.now(timezone.utc).isoformat(),
             "pid": args.pid,
             "module_path": fp.get("path"),
@@ -256,7 +314,10 @@ def probe(args):
             "sha256": sha,
             "save_projects_json": save["path"],
             "save_date": save["meta"].get("save_date") or save["meta"].get("date"),
-            "root": "CCountry -> CProgramStatus + 0x50 embedded CBreakthroughProgress",
+            "root": (
+                "CCountry -> contiguous CProgramStatus[0..3), stride 0x160; "
+                "each record + 0x50 embedded CBreakthroughProgress"
+            ),
             "row_shape": {
                 "specialization_handle_offset": "tree_node+0x1C",
                 "points_raw_offset": "tree_node+0x20",
@@ -270,9 +331,11 @@ def probe(args):
             "production_schema_change": False,
             "counts": {
                 "status_rows": live_summary["status_rows"],
+                "status_record_count": live_summary["status_record_count"],
                 "live_countries_with_breakthrough_rows": len(live),
                 "live_rows": sum(len(row["rows"]) for row in live.values()),
                 "parse_failures": len(live_summary["parse_failures"]),
+                "duplicate_conflicts": len(live_summary["duplicate_conflicts"]),
                 "save_countries_with_program_status": len(save["countries"]),
                 "live_handles": handles,
                 "handle_counts": {
@@ -284,14 +347,16 @@ def probe(args):
                 "accepted": accepted,
                 "best": best,
                 "candidate_count": len(mapping_candidates),
+                "zero_mismatch_candidate_count": len(zero_mismatch_candidates),
             },
-            "failure_mode": None
-            if accepted
-            else (
-                "breakthrough live/save mismatch or fixture drift; do not expand semantics from this fixture"
+            "failure_mode": None if accepted else (
+                "cross-record specialization handle has conflicting point values"
+                if live_summary["duplicate_conflicts"]
+                else "breakthrough live/save mismatch, incomplete four-handle coverage, non-unique zero-mismatch mapping, or fixture drift; do not expand semantics from this fixture"
             ),
             "compact_sample_rows": compact_sample_rows(live, args.compact_sample_limit),
             "parse_failure_examples": live_summary["parse_failures"][:32],
+            "duplicate_conflict_examples": live_summary["duplicate_conflicts"][:32],
             "examples": live_summary["examples"],
         }
 

@@ -304,6 +304,7 @@ pub const COMPACT_TECH_SHARING_GROUP_MAX_GROUPS: usize =
 pub const COMPACT_TECH_SHARING_GROUP_MAX_MEMBERS: usize = 512;
 pub const COMPACT_TECH_SHARING_GROUP_MAX_MEMBER_TAG_DB_ID: u32 = 2_048;
 pub const COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE: u16 = compact_contract::naval_history::DOMAIN_ID;
+pub const COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE: u16 = compact_contract::rail_replay::DOMAIN_ID;
 
 pub const COMPACT_SUPPLY_LOGISTICS_HEADER_LEN: usize = 48;
 pub const COMPACT_SUPPLY_LOGISTICS_ROW_LEN: usize = 40;
@@ -311,6 +312,7 @@ pub const COMPACT_SUPPLY_ROW_KIND_PROVINCE_LOGISTICS: u32 = 1;
 pub const COMPACT_SUPPLY_ROW_KIND_DIVISION_SUPPLY: u32 = 2;
 pub const COMPACT_SUPPLY_ROW_KIND_COMPUTED_BADGE: u32 = 3;
 pub const COMPACT_SUPPLY_ROW_KIND_CSUPPLY_PROVINCE_INPUT: u32 = 4;
+pub const COMPACT_SUPPLY_ROW_KIND_COUNTRY_DISRUPTED_SUPPLY: u32 = 5;
 pub const COMPACT_SUPPLY_ROW_FLAG_RAIL: u32 = 1;
 pub const COMPACT_SUPPLY_ROW_FLAG_SUPPLY_NODE: u32 = 1 << 1;
 pub const COMPACT_SUPPLY_ROW_FLAG_NAVAL_SUPPLY_HUB: u32 = 1 << 2;
@@ -330,6 +332,8 @@ pub const COMPACT_SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL: u32 = 1 << 15;
 pub const COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED: u32 = 1 << 16;
 pub const COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_EFFICIENCY: u32 = 1 << 17;
 pub const COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_PROVINCE_ARRAY: u32 = 1 << 18;
+pub const COMPACT_SUPPLY_ROW_FLAG_COUNTRY_DISRUPTED_SUPPLY_EXACT: u32 = 1 << 19;
+pub const COMPACT_SUPPLY_ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE: u32 = 1 << 20;
 pub const COMPACT_SUPPLY_ROW_ID_DELETED: u32 = 1 << 31;
 pub const COMPACT_SUPPLY_ROW_VALID_FLAGS: u32 = COMPACT_SUPPLY_ROW_FLAG_RAIL
     | COMPACT_SUPPLY_ROW_FLAG_SUPPLY_NODE
@@ -349,12 +353,15 @@ pub const COMPACT_SUPPLY_ROW_VALID_FLAGS: u32 = COMPACT_SUPPLY_ROW_FLAG_RAIL
     | COMPACT_SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL
     | COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED
     | COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_EFFICIENCY
-    | COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_PROVINCE_ARRAY;
+    | COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_PROVINCE_ARRAY
+    | COMPACT_SUPPLY_ROW_FLAG_COUNTRY_DISRUPTED_SUPPLY_EXACT
+    | COMPACT_SUPPLY_ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE;
 pub const COMPACT_SUPPLY_BADGE_EXACT_PROVINCE_SUPPLY_TRANSIENT: i32 = 1;
 pub const COMPACT_SUPPLY_BADGE_ATTRITION_RUNTIME_COMPUTED: i32 = 2;
 pub const COMPACT_SUPPLY_BADGE_MOTORIZATION_SETTINGS_UNPINNED: i32 = 3;
 pub const COMPACT_SUPPLY_BADGE_CONVOY_LOGISTICS_PRESSURE_UNPINNED: i32 = 4;
 pub const COMPACT_SUPPLY_BADGE_CSUPPLY_INPUT_ARRAYS_UNSAFE: i32 = 5;
+pub const COMPACT_SUPPLY_BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE: i32 = 6;
 pub const COMPACT_SUPPLY_MAX_PROVINCE_ID: u32 = 13_413;
 pub const COMPACT_SUPPLY_MAX_STATE_ID: u32 = 1_081;
 pub const COMPACT_SUPPLY_MAX_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
@@ -364,6 +371,7 @@ pub const COMPACT_SUPPLY_MAX_SUPPLY_GAIN_RAW: i32 = 500_000;
 pub const COMPACT_SUPPLY_MAX_DIVISION_FUEL_RAW: i32 = i32::MAX;
 pub const COMPACT_SUPPLY_MAX_BUILDING_LEVEL: i32 = 1_000;
 pub const COMPACT_SUPPLY_MAX_CSUPPLY_INPUT_RAW: i32 = COMPACT_FIXED_SCALE_RAW as i32;
+pub const COMPACT_SUPPLY_MAX_DISRUPTED_RAW: i32 = COMPACT_FIXED_SCALE_RAW as i32;
 pub const COMPACT_DIVISION_TYPE: u32 = 4713;
 // E4: division row grew 92 -> 104 to carry strategic_redeployment,
 // current_manpower, and cumulative_losses (must stay in lockstep with
@@ -1121,7 +1129,8 @@ fn decode_compact_production_data_payload(
         cursor += 32;
     }
     // Parse the strict additive D11 trailer chain (`PLIC`, X4-P1 `PVJ1`,
-    // X4-P2 `PFR1`, XUI12 `PLS1`/`PEF1`, and completeness witnesses).
+    // X4-P2 `PFR1`, exact-priority `PPR1`, XUI12 `PLS1`/`PEF1`, and
+    // completeness witnesses).
     if cursor != payload.len() {
         decode_compact_production_trailers(
             offset,
@@ -1147,6 +1156,7 @@ fn decode_compact_production_trailers(
     let mut plic_seen = false;
     let mut pvj_seen = false;
     let mut pfr_seen = false;
+    let mut ppr_seen = false;
     let mut pls_seen = false;
     let mut pef_seen = false;
     let mut pcp_seen = false;
@@ -1190,6 +1200,21 @@ fn decode_compact_production_trailers(
             }
             pfr_seen = true;
             decode_compact_production_requested_factories_trailer(
+                offset,
+                payload,
+                trailer_offset,
+                base_lines,
+                summary,
+            )
+        } else if magic == b"PPR1" {
+            if ppr_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production has duplicate PPR1 trailer"
+                ));
+                return;
+            }
+            ppr_seen = true;
+            decode_compact_production_priority_trailer(
                 offset,
                 payload,
                 trailer_offset,
@@ -1608,6 +1633,82 @@ fn decode_compact_production_requested_factories_trailer(
         "production_requested_factories_rows",
         row_count,
     );
+    Some(trailer_offset + segment_len)
+}
+
+fn decode_compact_production_priority_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    base_lines: &BTreeSet<(u32, u32, i32)>,
+    summary: &mut DomainDataDecodeSummary,
+) -> Option<usize> {
+    const HEADER_LEN: usize = 20;
+    const ROW_LEN: usize = 16;
+    const MAX_PRIORITY: i32 = 4095;
+    let Some(trailer) = payload.get(trailer_offset..) else {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: PPR1 offset beyond payload"));
+        return None;
+    };
+    if trailer.len() < HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PPR1 trailer is {} byte(s), expected at least {HEADER_LEN}",
+            trailer.len()
+        ));
+        return None;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let segment_len = read_u32_le(trailer, 8) as usize;
+    let row_count = read_u32_le(trailer, 12) as usize;
+    let reserved = read_u32_le(trailer, 16);
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PPR1 header shape invalid (version {version}, header_len {header_len}, segment_len {segment_len}, expected {expected}, reserved {reserved}, available {})",
+            trailer.len()
+        ));
+        return None;
+    }
+    let mut cursor = HEADER_LEN;
+    let mut seen = BTreeSet::new();
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32_le(trailer, cursor);
+        let kind = read_u32_le(trailer, cursor + 4);
+        let line_id = read_i32_le(trailer, cursor + 8);
+        let priority = read_i32_le(trailer, cursor + 12);
+        cursor += ROW_LEN;
+        if tag_db_id == 0 || (kind != 1 && kind != 2) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PPR1 row {row_index} has invalid tag/kind ({tag_db_id}, {kind})"
+            ));
+        }
+        if !(0..=MAX_PRIORITY).contains(&priority) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PPR1 row {row_index} has invalid priority {priority}"
+            ));
+        }
+        if !seen.insert((tag_db_id, kind, line_id)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PPR1 row {row_index} duplicates tag_db_id {tag_db_id} kind {kind} line_id {line_id}"
+            ));
+        }
+    }
+    if seen != *base_lines {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PPR1 line coverage is not bijective: trailer_rows={} base_lines={}",
+            seen.len(),
+            base_lines.len()
+        ));
+    }
+    add_compact_domain_data_unit(summary, 11, "production_priority_rows", row_count);
     Some(trailer_offset + segment_len)
 }
 
@@ -7481,7 +7582,10 @@ fn decode_compact_land_combat_detail_events_live_data_payload(
         .len()
         .saturating_add(decoded.side_detail_rows.len())
         .saturating_add(decoded.attribution_rows.len())
-        .saturating_add(decoded.reserve_member_rows.len());
+        .saturating_add(decoded.reserve_member_rows.len())
+        .saturating_add(decoded.terminal_record_rows.len())
+        .saturating_add(decoded.width_observation_rows.len())
+        .saturating_add(decoded.current_loss_observation_rows.len());
     if let Some(domain) = summary
         .per_domain
         .get_mut(&COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE)
@@ -7546,6 +7650,24 @@ fn decode_compact_land_combat_detail_events_live_data_payload(
         COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
         "land_combat_reserve_member_rows",
         decoded.reserve_member_rows.len(),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
+        "land_combat_terminal_record_rows",
+        decoded.terminal_record_rows.len(),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
+        "land_combat_width_observation_rows",
+        decoded.width_observation_rows.len(),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
+        "land_combat_current_loss_observation_rows",
+        decoded.current_loss_observation_rows.len(),
     );
 }
 
@@ -8691,16 +8813,94 @@ fn decode_compact_projects_data_payload(
             ));
         }
     }
-    // Wave-5 project lifecycle: any bytes after the self-delimiting base
-    // payload are the `PLCF` lifecycle trailer; anything else is a trailing-
-    // byte error exactly as before.
+    // Exact lifecycle/reward-history segments follow the self-delimiting base.
     if cursor != payload.len() {
-        decode_compact_project_lifecycle_trailer(offset, payload, cursor, summary);
+        decode_compact_project_trailers(offset, payload, cursor, summary);
     }
 }
 
-/// Decode + gate the domain-41 `PLCF` project-lifecycle trailer. The trailer
-/// must consume the payload to its exact end. Flags are STARTED bit0 /
+fn decode_compact_project_trailers(
+    offset: usize,
+    payload: &[u8],
+    mut cursor: usize,
+    summary: &mut DomainDataDecodeSummary,
+) {
+    let mut saw_lifecycle = false;
+    let mut saw_reward_history = false;
+    while cursor != payload.len() {
+        let Some(magic) = payload.get(cursor..cursor.saturating_add(4)) else {
+            summary.parse_errors.push(format!(
+                "offset {offset}: special-project trailer has truncated magic"
+            ));
+            return;
+        };
+        let (header_len, row_len, label) = match magic {
+            b"PLCF" => {
+                if saw_lifecycle || saw_reward_history {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: PLCF trailer is duplicate or out of order"
+                    ));
+                    return;
+                }
+                saw_lifecycle = true;
+                (20usize, 12usize, "project lifecycle")
+            }
+            b"PRHF" => {
+                if saw_reward_history {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: PRHF trailer is duplicate"
+                    ));
+                    return;
+                }
+                saw_reward_history = true;
+                (20usize, 56usize, "project reward-history")
+            }
+            _ => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: special-project trailer magic is invalid"
+                ));
+                return;
+            }
+        };
+        let Some(header) = payload.get(cursor..cursor.saturating_add(header_len)) else {
+            summary.parse_errors.push(format!(
+                "offset {offset}: {label} trailer header is truncated"
+            ));
+            return;
+        };
+        let row_count = read_u32_le(header, 8) as usize;
+        let Some(segment_len) = row_count
+            .checked_mul(row_len)
+            .and_then(|rows| header_len.checked_add(rows))
+        else {
+            summary.parse_errors.push(format!(
+                "offset {offset}: {label} trailer size overflow"
+            ));
+            return;
+        };
+        let Some(next) = cursor.checked_add(segment_len) else {
+            summary.parse_errors.push(format!(
+                "offset {offset}: {label} trailer end overflow"
+            ));
+            return;
+        };
+        if next > payload.len() {
+            summary.parse_errors.push(format!(
+                "offset {offset}: {label} trailer is truncated"
+            ));
+            return;
+        }
+        if magic == b"PLCF" {
+            decode_compact_project_lifecycle_trailer(offset, &payload[..next], cursor, summary);
+        } else {
+            decode_compact_project_reward_history_trailer(offset, &payload[..next], cursor, summary);
+        }
+        cursor = next;
+    }
+}
+
+/// Decode + gate one domain-41 `PLCF` project-lifecycle segment. The isolated
+/// segment must consume the supplied payload to its exact end. Flags are STARTED bit0 /
 /// COMPLETED bit1 (validated boolean-domain u8s from the collector); the
 /// higher bits must be zero. Per-country (tag, local_id) uniqueness is
 /// enforced.
@@ -8820,6 +9020,146 @@ fn decode_compact_project_lifecycle_trailer(
         summary,
         41,
         "project_lifecycle_aborted_countries",
+        aborted_countries,
+    );
+}
+
+fn decode_compact_project_reward_history_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    summary: &mut DomainDataDecodeSummary,
+) {
+    const HEADER_LEN: usize = 20;
+    const ROW_LEN: usize = 56;
+    const CHARACTER_REF_NONZERO: u32 = 1;
+    const COUNTRY_PRESENT: u32 = 1 << 1;
+    const SCIENTIST_PRESENT: u32 = 1 << 2;
+    const STATE_PRESENT: u32 = 1 << 3;
+    const DELETED: u32 = 1 << 31;
+    const KNOWN_FLAGS: u32 =
+        CHARACTER_REF_NONZERO | COUNTRY_PRESENT | SCIENTIST_PRESENT | STATE_PRESENT | DELETED;
+    let Some(trailer) = payload.get(trailer_offset..) else {
+        summary.parse_errors.push(format!(
+            "offset {offset}: project reward-history trailer offset beyond payload"
+        ));
+        return;
+    };
+    if trailer.len() < HEADER_LEN || &trailer[0..4] != b"PRHF" {
+        summary.parse_errors.push(format!(
+            "offset {offset}: project reward-history trailer header is invalid"
+        ));
+        return;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let row_count = read_u32_le(trailer, 8) as usize;
+    let countries = read_u32_le(trailer, 12) as usize;
+    let aborted_countries = read_u32_le(trailer, 16) as usize;
+    if version != 1 || header_len != HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: project reward-history trailer header shape invalid (version {version}, header_len {header_len})"
+        ));
+        return;
+    }
+    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
+    if trailer.len() != expected {
+        summary.parse_errors.push(format!(
+            "offset {offset}: project reward-history trailer len {} != {expected}",
+            trailer.len()
+        ));
+        return;
+    }
+    let mut cursor = HEADER_LEN;
+    let mut seen = BTreeSet::new();
+    let mut deleted_rows = 0usize;
+    for row_index in 0..row_count {
+        let tag_db_id = read_u32_le(trailer, cursor);
+        let local_id = read_u32_le(trailer, cursor + 4);
+        let history_index = read_u32_le(trailer, cursor + 8);
+        let prototype_reward = read_u32_le(trailer, cursor + 12);
+        let option = read_u32_le(trailer, cursor + 16);
+        let province = read_i32_le(trailer, cursor + 20);
+        let progress = read_u32_le(trailer, cursor + 24);
+        let character_type = read_u32_le(trailer, cursor + 28);
+        let character_id = read_u32_le(trailer, cursor + 32);
+        let country = read_u32_le(trailer, cursor + 36);
+        let scientist = read_u32_le(trailer, cursor + 40);
+        let state = read_u32_le(trailer, cursor + 44);
+        let date = read_i32_le(trailer, cursor + 48);
+        let flags = read_u32_le(trailer, cursor + 52);
+        cursor += ROW_LEN;
+        if tag_db_id == 0 || local_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: project reward-history row {row_index} has zero tag/local key"
+            ));
+        }
+        if !seen.insert((tag_db_id, local_id, history_index)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: project reward-history row {row_index} duplicates its key"
+            ));
+        }
+        if flags & !KNOWN_FLAGS != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: project reward-history row {row_index} has unknown flags {flags:#x}"
+            ));
+        }
+        let deleted = flags & DELETED != 0;
+        if deleted {
+            deleted_rows = deleted_rows.saturating_add(1);
+            if flags != DELETED
+                || prototype_reward != 0
+                || option != 0
+                || province != 0
+                || progress != 0
+                || character_type != 0
+                || character_id != 0
+                || country != 0
+                || scientist != 0
+                || state != 0
+                || date != 0
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: project reward-history deleted row {row_index} has live fields"
+                ));
+            }
+            continue;
+        }
+        let character_nonzero = character_type != 0 || character_id != 0;
+        if character_nonzero != (flags & CHARACTER_REF_NONZERO != 0) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: project reward-history row {row_index} character-ref flag mismatch"
+            ));
+        }
+        for (label, raw, flag) in [
+            ("country", country, COUNTRY_PRESENT),
+            ("scientist", scientist, SCIENTIST_PRESENT),
+            ("state", state, STATE_PRESENT),
+        ] {
+            if flags & flag == 0 && raw != 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: project reward-history row {row_index} has {label} ref without presence flag"
+                ));
+            }
+        }
+    }
+    add_compact_domain_data_unit(summary, 41, "project_reward_history_rows", row_count);
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_reward_history_deleted_rows",
+        deleted_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_reward_history_countries",
+        countries,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_reward_history_aborted_countries",
         aborted_countries,
     );
 }
@@ -10923,6 +11263,51 @@ fn decode_compact_sunk_convoy_history_data_payload(
     );
 }
 
+fn decode_compact_rail_replay_state_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    if payload.len() >= 16 {
+        add_decoder_status(summary, read_u32_le(payload, 12));
+    }
+    let decoded = match compact_contract::rail_replay::decode_payload(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: rail_replay_state RRL1 payload invalid: {error}"
+            ));
+            return;
+        }
+    };
+    let admitted_hub_frames = if decoded.hub_frames_complete
+        && compact_contract::rail_replay::HUB_FRAME_V2_AUTHORITY_PROMOTED
+    {
+        decoded.hub_frames.len()
+    } else {
+        0
+    };
+    if let Some(domain) = summary.per_domain.get_mut(&COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE) {
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(decoded.provinces.len() as u64)
+            .saturating_add(admitted_hub_frames as u64);
+        domain.status_flags_or |= decoded.status_flags;
+    }
+    add_compact_domain_data_unit(summary, COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE, "rail_replay_provinces", decoded.provinces.len());
+    add_compact_domain_data_unit(summary, COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE, "rail_replay_directed_neighbors", decoded.observed_neighbors as usize);
+    if decoded.hub_frames_complete
+        && compact_contract::rail_replay::HUB_FRAME_V2_AUTHORITY_PROMOTED
+    {
+        add_compact_domain_data_unit(
+            summary,
+            COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+            "rail_replay_hub_frames",
+            admitted_hub_frames,
+        );
+    }
+}
+
 fn decode_compact_fired_event_popups_data_payload(
     offset: usize,
     payload: &[u8],
@@ -11155,7 +11540,7 @@ fn decode_compact_supply_logistics_attrition_data_payload(
     add_compact_domain_data_unit(summary, 44, "supply_province_logistics_rows", province_rows);
     add_compact_domain_data_unit(summary, 44, "supply_division_supply_rows", division_rows);
     add_compact_domain_data_unit(summary, 44, "supply_computed_badge_rows", badge_rows);
-    add_compact_domain_data_unit(summary, 44, "supply_csupply_input_rows", csupply_input_rows);
+    add_compact_domain_data_unit(summary, 44, "supply_csupply_rows", csupply_input_rows);
     add_compact_domain_data_unit(
         summary,
         44,
@@ -11173,15 +11558,18 @@ fn decode_compact_supply_logistics_attrition_data_payload(
     let mut decoded_division_rows = 0usize;
     let mut decoded_badge_rows = 0usize;
     let mut decoded_csupply_input_rows = 0usize;
+    let mut decoded_country_disrupted_supply_rows = 0usize;
     let mut seen_provinces = BTreeSet::new();
     let mut seen_divisions = BTreeSet::new();
     let mut seen_csupply_input_provinces = BTreeSet::new();
+    let mut seen_country_disrupted_supply = BTreeSet::new();
     let mut seen_badge_flags = BTreeSet::new();
     let mut has_exact_supply_wall = false;
     let mut has_attrition_wall = false;
     let mut has_motorization_wall = false;
     let mut has_convoy_pressure_wall = false;
     let mut has_csupply_candidate_rejected = false;
+    let mut has_country_disrupted_source_available = false;
     let mut division_fuel_rows = 0usize;
     let mut division_supply_deficit_rows = 0usize;
 
@@ -11467,6 +11855,65 @@ fn decode_compact_supply_logistics_attrition_data_payload(
                     ));
                 }
             }
+            COMPACT_SUPPLY_ROW_KIND_COUNTRY_DISRUPTED_SUPPLY => {
+                decoded_country_disrupted_supply_rows =
+                    decoded_country_disrupted_supply_rows.saturating_add(1);
+                let deleted_id = compact_supply_logistics_deleted_id(entity_id);
+                let province_id = deleted_id.unwrap_or(entity_id);
+                if province_id == 0 || province_id > COMPACT_SUPPLY_MAX_PROVINCE_ID {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics disrupted row {row_index} has invalid province_id {province_id}"
+                    ));
+                }
+                if owner_tag_db_id == 0
+                    || owner_tag_db_id > COMPACT_SUPPLY_MAX_TAG_DB_ID
+                {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics disrupted row {row_index} has invalid owner_tag_db_id {owner_tag_db_id}"
+                    ));
+                }
+                if !seen_country_disrupted_supply.insert((
+                    owner_tag_db_id,
+                    province_id,
+                    join_id,
+                )) {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics disrupted row {row_index} duplicates owner/province/node_type identity"
+                    ));
+                }
+                if deleted_id.is_some() {
+                    if flags != 0
+                        || value_a_raw != 0
+                        || value_b_raw != 0
+                        || value_c_raw != 0
+                        || value_d_raw != 0
+                        || aux_raw != 0
+                    {
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: supply logistics disrupted tombstone row {row_index} has live value fields"
+                        ));
+                    }
+                    continue;
+                }
+                if flags != COMPACT_SUPPLY_ROW_FLAG_COUNTRY_DISRUPTED_SUPPLY_EXACT {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics disrupted row {row_index} has invalid flags {flags:#x}"
+                    ));
+                }
+                validate_supply_logistics_nonnegative_value(
+                    offset,
+                    summary,
+                    row_index,
+                    "country_disrupted_supply_raw",
+                    value_a_raw,
+                    COMPACT_SUPPLY_MAX_DISRUPTED_RAW,
+                );
+                if value_b_raw != 0 || value_c_raw != 0 || value_d_raw != 0 || aux_raw != 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics disrupted row {row_index} has nonzero reserved value fields"
+                    ));
+                }
+            }
             COMPACT_SUPPLY_ROW_KIND_COMPUTED_BADGE => {
                 decoded_badge_rows = decoded_badge_rows.saturating_add(1);
                 if entity_id != 0 || join_id != 0 || owner_tag_db_id != 0 {
@@ -11484,7 +11931,8 @@ fn decode_compact_supply_logistics_attrition_data_payload(
                         | COMPACT_SUPPLY_ROW_FLAG_ATTRITION_WALL
                         | COMPACT_SUPPLY_ROW_FLAG_MOTORIZATION_WALL
                         | COMPACT_SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL
-                        | COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED);
+                        | COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED
+                        | COMPACT_SUPPLY_ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE);
                 if badge_flags.count_ones() != 1 {
                     summary.parse_errors.push(format!(
                         "offset {offset}: supply logistics badge row {row_index} must carry exactly one badge flag"
@@ -11554,6 +12002,17 @@ fn decode_compact_supply_logistics_attrition_data_payload(
                         COMPACT_SUPPLY_BADGE_CSUPPLY_INPUT_ARRAYS_UNSAFE,
                     );
                 }
+                if flags & COMPACT_SUPPLY_ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE != 0 {
+                    has_country_disrupted_source_available = true;
+                    validate_supply_logistics_badge(
+                        offset,
+                        summary,
+                        row_index,
+                        "country-disrupted-source-available",
+                        value_a_raw,
+                        COMPACT_SUPPLY_BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE,
+                    );
+                }
             }
             other => summary.parse_errors.push(format!(
                 "offset {offset}: supply logistics row {row_index} has unknown row_kind {other}"
@@ -11576,12 +12035,15 @@ fn decode_compact_supply_logistics_attrition_data_payload(
             "offset {offset}: supply logistics badge_rows {badge_rows} != decoded {decoded_badge_rows}"
         ));
     }
-    if decoded_csupply_input_rows != csupply_input_rows {
+    if decoded_csupply_input_rows.saturating_add(decoded_country_disrupted_supply_rows)
+        != csupply_input_rows
+    {
         summary.parse_errors.push(format!(
-            "offset {offset}: supply logistics csupply_input_rows {csupply_input_rows} != decoded {decoded_csupply_input_rows}"
+            "offset {offset}: supply logistics csupply_rows {csupply_input_rows} != decoded inputs {} + disrupted {}",
+            decoded_csupply_input_rows, decoded_country_disrupted_supply_rows
         ));
     }
-    // The five computed badges are constant compile-time rows: the collector
+    // The five wall badges are constant compile-time rows: the collector
     // emits them once in the baseline and skips them while unchanged (they never
     // change), and the fold RETAINS them across delta frames. Requiring all five
     // per record therefore only applies to baseline (non-delta) records; a delta
@@ -11604,6 +12066,13 @@ fn decode_compact_supply_logistics_attrition_data_payload(
                 ));
             }
         }
+        if decoded_country_disrupted_supply_rows > 0
+            && !has_country_disrupted_source_available
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: supply logistics disrupted rows lack exact-source availability badge"
+            ));
+        }
     }
     add_compact_domain_data_unit(summary, 44, "supply_division_fuel_rows", division_fuel_rows);
     add_compact_domain_data_unit(
@@ -11617,6 +12086,24 @@ fn decode_compact_supply_logistics_attrition_data_payload(
         44,
         "supply_csupply_efficiency_rows",
         decoded_csupply_input_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        44,
+        "supply_csupply_input_rows",
+        decoded_csupply_input_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        44,
+        "supply_country_disrupted_supply_rows",
+        decoded_country_disrupted_supply_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        44,
+        "supply_country_disrupted_source_available",
+        usize::from(has_country_disrupted_source_available),
     );
 }
 
@@ -13580,6 +14067,9 @@ pub fn summarize_domain_data_payload(
         }
         COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE => {
             decode_compact_sunk_convoy_history_data_payload(offset, payload, &mut summary)
+        }
+        COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE => {
+            decode_compact_rail_replay_state_data_payload(offset, payload, &mut summary)
         }
         tooltip72::DOMAIN_ID => decode_compact_resolved_tooltip_instances_live_data_payload(
             offset,

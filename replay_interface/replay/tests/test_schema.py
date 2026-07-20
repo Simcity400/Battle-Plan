@@ -55,6 +55,22 @@ class TestSourceMap(unittest.TestCase):
         self.assertEqual(schema.source_of("provinces.11596.controller"), "C/M/S/D")
         self.assertEqual(schema.source_of("map.control_by_province"), "C/M/S/D")
 
+    def test_d48_building_sidecar_sources(self):
+        self.assertEqual(
+            schema.source_of(
+                "states.42.construction_buildings_state_damage_live."
+                "state_buildings.type_0x00002fab.partial_health_raw"
+            ),
+            "C",
+        )
+        self.assertEqual(
+            schema.source_of(
+                "provinces.2068.construction_buildings_state_damage_live."
+                "buildings.type_0x00004cc1.damaged"
+            ),
+            "C/D",
+        )
+
     def test_collector_fuel_source(self):
         self.assertEqual(schema.source_of("countries.POR.economy.fuel.current"), "C/M/S")
         self.assertEqual(schema.source_of("countries.POR.economy.fuel.max"), "C/M/S")
@@ -81,8 +97,8 @@ class TestSourceMap(unittest.TestCase):
         self.assertEqual(schema.source_of("countries.POR.focus.progress"), "C/M/S")
 
     def test_fired_event_stream_source(self):
-        self.assertEqual(schema.source_of("world_events.fired_events"), "C/M/S")
-        self.assertEqual(schema.source_of("world_events.fired_events_complete"), "C/M")
+        self.assertEqual(schema.source_of("world_events.fired_events"), "C/S")
+        self.assertEqual(schema.source_of("world_events.fired_events_complete"), "C")
 
     def test_active_ability_source(self):
         self.assertEqual(
@@ -234,6 +250,63 @@ class TestEmptySkeletons(unittest.TestCase):
 
 
 class TestValidator(unittest.TestCase):
+    def _d48_building_snapshot(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["states"]["42"] = {
+            "construction_buildings_state_damage_live": {
+                "source": "C",
+                "state_buildings": {
+                    "type_0x00002fab": {
+                        "level": 5,
+                        "healthy_level": 4,
+                        "partial_health_raw": 8_184_501,
+                        "damaged": True,
+                        "token": "industrial_complex",
+                    }
+                },
+            }
+        }
+        snap["provinces"]["2068"] = {
+            "construction_buildings_state_damage_live": {
+                "source": "C",
+                "state_id": 42,
+                "buildings": {
+                    "type_0x00004cc1": {
+                        "level": 2,
+                        "healthy_level": 2,
+                        "partial_health_raw": 0,
+                        "damaged": False,
+                        "token": "rail_way",
+                    }
+                },
+            }
+        }
+        return snap
+
+    def test_d48_building_sidecars_validate(self):
+        self.assertEqual(schema.validate_snapshot(self._d48_building_snapshot()), [])
+
+    def test_d48_building_sidecars_reject_incoherent_or_invented_rows(self):
+        snap = self._d48_building_snapshot()
+        state_buildings = snap["states"]["42"][
+            "construction_buildings_state_damage_live"
+        ]["state_buildings"]
+        state_buildings["TYPE_0x00002fab"] = state_buildings.pop("type_0x00002fab")
+        province_row = snap["provinces"]["2068"][
+            "construction_buildings_state_damage_live"
+        ]["buildings"]["type_0x00004cc1"]
+        province_row["damaged"] = True
+        province_row["partial_health_raw"] = 20_000_001
+
+        probs = schema.validate_snapshot(snap)
+
+        for token in (
+            "invalid building type key",
+            "partial_health_raw should be an int in 0..20000000",
+            "damaged disagrees",
+        ):
+            self.assertTrue(any(token in problem for problem in probs), (token, probs))
+
     def _fired_event_snapshot(self):
         snap = schema.empty_snapshot("g1", "1940.9.10.13")
         snap["world_events"]["fired_events_complete"] = True

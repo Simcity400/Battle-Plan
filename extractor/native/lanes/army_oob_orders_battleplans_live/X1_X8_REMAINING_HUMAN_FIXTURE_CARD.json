@@ -5,11 +5,71 @@
     "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
     "image_base": "0x140000000"
   },
-  "status": "HUMAN_FIXTURE_REQUIRED_AFTER_RETAINED_EVIDENCE_EXHAUSTION",
+  "status": "HUMAN_FIXTURE_REQUIRED_AFTER_RETAINED_SCHEMA_AND_SAVE_MINING",
+  "retained_offline_inventory": {
+    "artifact": "../army_battleplans_depth_live/D54_RETAINED_OFFLINE_INVENTORY.json",
+    "report": "../army_battleplans_depth_live/D54_RETAINED_OFFLINE_REPORT.md",
+    "complete_raw_streams": 23,
+    "bounded_zstd_schema_probes": 78,
+    "zstd_streams_reaching_clean_eof": 12,
+    "current_60_88_records": 0,
+    "note": "The explicit full-zstd option was not run because manifests declare 510,579,708,465 decoded bytes and the user required lightweight evidence work only. The bounded probes decoded 236,159,817 bytes and every observed D54 record remained in the 52/64 family."
+  },
+  "fixture_carrier": {
+    "contract": "D54_EXACT_FIXTURE_CARRIER_CONTRACT.json",
+    "observer": "d54_exact_fixture_observer.py",
+    "runsheet": "D54_EXACT_FIXTURE_RUNSHEET.md",
+    "input_schema": "hoi4.d54.exact_fixture_observation.v1",
+    "output_schema": "hoi4.d54.exact_fixture_carrier.v1",
+    "wire": "domain 54 current header_len=60 row_len=88",
+    "activation": false,
+    "activation_law": "The carrier preserves observations and receipts only. It cannot activate production semantics; promotion requires a separate reviewed source edit."
+  },
   "requests": [
     {
+      "id": "type2_redraw_delete_and_type4_geometry_discriminator",
+      "why_human_input_is_required": "The a729 producer/consumer chain and retained save/live rows prove type-2/type-3 +0x70 geometry, type-5 area-defense states, exact +0x248 execution, and the delta/tombstone implementation. Complete raw-stream mining found 59 legacy surrogate type-2 path mutations and 768 prior-live tombstones, but every retained row uses an identity-free 52/64 wire, so none can prove unchanged +0x244 identity. Across decoded stream evidence and three retained melts, type 4 occurs zero times.",
+      "required_fixture": {
+        "single_paused_session": true,
+        "orders": [
+          "one existing type-2 line order",
+          "one newly created type-4 paradrop order"
+        ],
+        "transitions": [
+          "extend or shorten the same type-2 line once",
+          "delete that type-2 line",
+          "create the type-4 paradrop order"
+        ],
+        "capture": [
+          "order pointer, army id, +0x244 instance id, and +0x70/+0x78 bytes at baseline and after each transition",
+          "clean domain-27/domain-54 baseline, redraw delta, and delete tombstone",
+          "same-boundary melted-save representation for the type-4 order"
+        ]
+      },
+      "promotion_gate": "The type-2 redraw retains army id and +0x244 instance id, changes the ordered path within one generation, and deletion emits the old-key tombstone. Type 4 is promoted only if live +0x70/+0x78 joins the same-boundary save representation exactly; otherwise it remains unsupported."
+    },
+    {
+      "id": "order_assigned_membership_equality_lifecycle",
+      "why_human_input_is_required": "The substantive retained SOV melt has 3,514 scheduled-member references, but all retained D54 rows use the legacy 52/64 wire and therefore contain no assigned-division child IDs. No authenticated same-paused live/save membership pair or assignment/removal lifecycle survives. Exact set equality cannot be reconstructed from counts or status badges.",
+      "required_fixture": {
+        "single_paused_session": true,
+        "order": "one order with at least two assigned divisions, captured on the current 60/88 D54 wire",
+        "transitions": [
+          "record a baseline current D54 row and same-boundary melted save",
+          "assign one known division and repeat both observations",
+          "remove one known division and repeat both observations"
+        ],
+        "capture": [
+          "army id, +0x244 order instance id, generation, and exact assigned-division child IDs at every boundary",
+          "same-boundary save order instance id and complete scheduled_member IDs",
+          "clean D54 deltas for both transitions"
+        ]
+      },
+      "promotion_gate": "At every boundary, the live assigned-division ID set equals the save scheduled-member ID set exactly under the same army and order instance identity; add/remove deltas change only the intended member and preserve identity."
+    },
+    {
       "id": "empty_inactive_army_manager_root",
-      "why_human_input_is_required": "Retained full-memory reference and table scans found every direct army but rejected every bounded complete pointer-table source; 0 of 13 empty or inactive armies were present in an accepted table run.",
+      "why_human_input_is_required": "Retained full-memory reference and table scans found every direct army but rejected every bounded complete pointer-table source. The newly inventoried D54 corpus has zero empty direct-army-root observations and zero current exact inactive rows; the only substantive melt has zero zero-member armies and 83 zero-order armies. No retained artifact can demonstrate complete manager coverage.",
       "required_fixture": {
         "single_paused_session": true,
         "armies": [

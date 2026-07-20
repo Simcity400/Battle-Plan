@@ -8,7 +8,12 @@ use std::collections::BTreeSet;
 
 pub const DOMAIN_ID: u16 = 70;
 pub const PAYLOAD_MAGIC: u32 = u32::from_le_bytes(*b"SCH1");
-pub const PAYLOAD_VERSION: u16 = 1;
+/// Version 1 canonicalised rows by `(month, killer, owner)` before emission.
+/// That made byte output deterministic but discarded the engine vector's
+/// first-seen aggregate ordering. Version 2 preserves the authoritative vector
+/// order while retaining the same pointer-free row layout.
+pub const LEGACY_PAYLOAD_VERSION: u16 = 1;
+pub const PAYLOAD_VERSION: u16 = 2;
 pub const HEADER_LEN: usize = 32;
 pub const ROW_LEN: usize = 24;
 pub const MAX_ROWS: usize = 65_536;
@@ -23,11 +28,23 @@ pub struct SunkConvoyHistoryRow {
     pub owner_tag_db_id: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SunkConvoyHistoryOrdering {
+    /// Legacy SCH1/v1 order: canonical `(month, killer, owner)` sort. The
+    /// engine's first-seen order was not retained.
+    CanonicalIdentity,
+    /// SCH1/v2 order: the exact `CGameState+0x5A8` pointer-vector order. Static
+    /// RE proves this is first-seen order of aggregate `(month, killer, owner)`
+    /// buckets, not the order or time of individual convoy losses.
+    FirstSeenAggregateIdentity,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedSunkConvoyHistoryPayload {
     pub elapsed_wall_ms: u64,
     pub status_flags: u32,
     pub observed_rows: u32,
+    pub ordering: SunkConvoyHistoryOrdering,
     pub rows: Vec<SunkConvoyHistoryRow>,
 }
 
@@ -37,7 +54,7 @@ pub fn encode_payload(
     status_flags: u32,
     observed_rows: u32,
 ) -> Result<Vec<u8>, String> {
-    validate_rows(rows, observed_rows)?;
+    validate_rows(rows, observed_rows, false)?;
     let row_count = u32::try_from(rows.len())
         .map_err(|_| "sunk-convoy history row count exceeds u32".to_string())?;
     let row_bytes = rows
@@ -85,7 +102,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<DecodedSunkConvoyHistoryPayload,
             "sunk-convoy history payload magic {magic:#010x} is not SCH1"
         ));
     }
-    if version != PAYLOAD_VERSION {
+    if version != LEGACY_PAYLOAD_VERSION && version != PAYLOAD_VERSION {
         return Err(format!(
             "sunk-convoy history payload version {version} is unsupported"
         ));
@@ -129,16 +146,30 @@ pub fn decode_payload(payload: &[u8]) -> Result<DecodedSunkConvoyHistoryPayload,
             owner_tag_db_id: read_u32(payload, base + 12)?,
         });
     }
-    validate_rows(&rows, observed_rows)?;
+    let ordering = if version == LEGACY_PAYLOAD_VERSION {
+        SunkConvoyHistoryOrdering::CanonicalIdentity
+    } else {
+        SunkConvoyHistoryOrdering::FirstSeenAggregateIdentity
+    };
+    validate_rows(
+        &rows,
+        observed_rows,
+        ordering == SunkConvoyHistoryOrdering::CanonicalIdentity,
+    )?;
     Ok(DecodedSunkConvoyHistoryPayload {
         elapsed_wall_ms,
         status_flags,
         observed_rows,
+        ordering,
         rows,
     })
 }
 
-fn validate_rows(rows: &[SunkConvoyHistoryRow], observed_rows: u32) -> Result<(), String> {
+fn validate_rows(
+    rows: &[SunkConvoyHistoryRow],
+    observed_rows: u32,
+    require_canonical_order: bool,
+) -> Result<(), String> {
     if rows.len() > MAX_ROWS {
         return Err(format!(
             "sunk-convoy history row count {} exceeds {MAX_ROWS}",
@@ -177,7 +208,7 @@ fn validate_rows(rows: &[SunkConvoyHistoryRow], observed_rows: u32) -> Result<()
                 "sunk-convoy history row {row_index} duplicates month/killer/owner identity"
             ));
         }
-        if previous.is_some_and(|prior| prior >= identity) {
+        if require_canonical_order && previous.is_some_and(|prior| prior >= identity) {
             return Err(format!(
                 "sunk-convoy history row {row_index} is not strictly sorted by month/killer/owner"
             ));
@@ -246,6 +277,10 @@ mod tests {
         assert_eq!(decoded.elapsed_wall_ms, 77);
         assert_eq!(decoded.status_flags, 0);
         assert_eq!(decoded.observed_rows, 2);
+        assert_eq!(
+            decoded.ordering,
+            SunkConvoyHistoryOrdering::FirstSeenAggregateIdentity
+        );
         assert_eq!(decoded.rows, rows);
     }
 
@@ -270,12 +305,15 @@ mod tests {
     }
 
     #[test]
-    fn encoder_rejects_unsorted_duplicate_and_invalid_rows() {
+    fn v2_preserves_unsorted_first_seen_order_and_rejects_duplicate_and_invalid_rows() {
         let mut unsorted = rows();
         unsorted.reverse();
-        assert!(encode_payload(&unsorted, 0, 0, 2)
-            .unwrap_err()
-            .contains("not strictly sorted"));
+        let decoded = decode_payload(&encode_payload(&unsorted, 0, 0, 2).unwrap()).unwrap();
+        assert_eq!(decoded.rows, unsorted);
+        assert_eq!(
+            decoded.ordering,
+            SunkConvoyHistoryOrdering::FirstSeenAggregateIdentity
+        );
 
         let mut duplicate = rows();
         duplicate.push(duplicate[1]);
@@ -288,5 +326,21 @@ mod tests {
         assert!(encode_payload(&invalid, 0, 0, 2)
             .unwrap_err()
             .contains("convoys"));
+    }
+
+    #[test]
+    fn v1_remains_readable_but_cannot_claim_engine_first_seen_order() {
+        let mut payload = encode_payload(&rows(), 77, 0, 2).unwrap();
+        payload[4..6].copy_from_slice(&LEGACY_PAYLOAD_VERSION.to_le_bytes());
+        let decoded = decode_payload(&payload).unwrap();
+        assert_eq!(decoded.ordering, SunkConvoyHistoryOrdering::CanonicalIdentity);
+
+        let mut unsorted = rows();
+        unsorted.reverse();
+        let mut invalid_legacy = encode_payload(&unsorted, 77, 0, 2).unwrap();
+        invalid_legacy[4..6].copy_from_slice(&LEGACY_PAYLOAD_VERSION.to_le_bytes());
+        assert!(decode_payload(&invalid_legacy)
+            .unwrap_err()
+            .contains("not strictly sorted"));
     }
 }

@@ -265,16 +265,15 @@ pub(crate) fn validate_map_frame_runtime_bundle_for_with_resolver(
     let manifest_path = map_frame_bundle_manifest_path_for(path, spec);
     let bundle_dir = map_frame_bundle_dir_for(path, spec)?;
     if !manifest_path.exists() {
-        return Err(
-            map_capture_session_blocker_error_for(&bundle_dir, spec).unwrap_or_else(|| {
-                format!(
-                    "{} blocked: map-frame bundle {} is missing",
-                    spec.renderer_label,
-                    manifest_path.display()
-                )
-                .into()
-            }),
-        );
+        let session_blocker = map_capture_session_blocker_error_for(&bundle_dir, spec)?;
+        return Err(session_blocker.unwrap_or_else(|| {
+            format!(
+                "{} blocked: map-frame bundle {} is missing",
+                spec.renderer_label,
+                manifest_path.display()
+            )
+            .into()
+        }));
     }
     let mut frame: MapFrameRuntimeBundle = serde_json::from_slice(&fs::read(&manifest_path)?)?;
     if frame.schema != MAP_FRAME_BUNDLE_SCHEMA {
@@ -1280,31 +1279,48 @@ pub(crate) fn validate_map_frame_shader_cache_constants_evidence(
 pub(crate) fn map_capture_session_blocker_error_for(
     bundle_dir: &Path,
     spec: MapFrameBundleValidationSpec,
-) -> Option<Box<dyn Error>> {
+) -> Result<Option<Box<dyn Error>>> {
+    const ROLE: &str = "map capture session";
     let session_path = bundle_dir.join(MAP_CAPTURE_SESSION_FILE);
-    let session: MapCaptureSession = serde_json::from_slice(&fs::read(&session_path).ok()?).ok()?;
+    let session: Option<MapCaptureSession> =
+        crate::json_store::read_optional_json(&session_path, ROLE)?;
+    let Some(session) = session else {
+        return Ok(None);
+    };
     if session.schema != MAP_CAPTURE_SESSION_SCHEMA {
-        return None;
+        return Err(crate::json_store::JsonStoreError::invalid(
+            &session_path,
+            ROLE,
+            format!("unsupported schema {:?}", session.schema),
+        )
+        .into());
     }
     let moment = session
         .moments
         .iter()
-        .find(|moment| moment.name == spec.capture_moment)?;
+        .find(|moment| moment.name == spec.capture_moment)
+        .ok_or_else(|| {
+            crate::json_store::JsonStoreError::invalid(
+                &session_path,
+                ROLE,
+                format!("missing required {:?} moment", spec.capture_moment),
+            )
+        })?;
     if moment.status != "blocked" {
-        return None;
+        return Ok(None);
     }
     let blockers = if moment.blockers.is_empty() {
         "no blocker details recorded".to_string()
     } else {
         moment.blockers.join("; ")
     };
-    Some(
+    Ok(Some(
         format!(
             "{} blocked: map capture session {} is blocked before {} exists: {blockers}",
             spec.renderer_label, spec.capture_moment, spec.bundle_file
         )
         .into(),
-    )
+    ))
 }
 
 pub(crate) fn validate_map_capture_session_manifest_for(
@@ -5585,6 +5601,26 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains(TERRAIN_CAPTURE_MOMENT));
         assert!(message.contains("no active pdxmap pixel shader"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn map_frame_bundle_missing_path_rejects_corrupt_present_session_store() {
+        let root = temp_test_dir("map_frame_corrupt_session_without_bundle");
+        fs::create_dir_all(&root).expect("create temp bundle dir");
+        let path = write_valid_map_frame_bundle(&root, |frame| frame);
+        fs::remove_file(&path).expect("remove map-frame bundle");
+        let session_path = root.join(MAP_CAPTURE_SESSION_FILE);
+        fs::write(&session_path, b"{not-json").expect("corrupt session manifest");
+
+        let error = validate_map_frame_runtime_bundle(&root)
+            .expect_err("corrupt present session must not degrade to absent");
+        assert!(error
+            .downcast_ref::<crate::json_store::JsonStoreError>()
+            .is_some());
+        let message = error.to_string();
+        assert!(message.contains("map capture session"), "{message}");
+        assert!(message.contains("is corrupt"), "{message}");
         let _ = fs::remove_dir_all(&root);
     }
 

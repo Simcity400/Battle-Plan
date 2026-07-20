@@ -1,5 +1,24 @@
 # diplomacy_intel_operatives_live domain 53 integration packet
 
+> Historical integration packet, superseded for current a729 operation/intel
+> families. Domain 53 is now shared-registered and carries exact OPIN v3
+> preparing/prepared/running/finished operation instances, atomic four-lane
+> intel levels, INGR v3 network graphs with exact per-state strengths and
+> mechanically recomputed network-scoped national coverage, and the
+> incoming-action/faction trailers.
+> The old `FIXTURE_BLOCKED`, `SHARED_INTEGRATION_PENDING`, and
+> `omitted_unresolved` examples below are retained only as implementation
+> history and must not be used as current promotion state. Current residuals
+> are controller presentation joins and an authenticated same-frame GH04
+> runtime fixture, the separate
+> unresolved agency/operative labels documented by their `_unvalidated` names,
+> centralized validation, and the remaining exact-10 consumer rewrites.
+
+GH04 traversal custody is the exact-ten `SUP-02-D1-P1` receipt, actual job
+`20260719T223856Z-wave2-r10-sup-02-d1-p1-ea60087c`, artifact SHA-256
+`d50e88d325dc098c7e676de879563e99de6b689d6ab58e5cb094320b1c0903e4`.
+The older 20-shard jobs remain discovery aliases only.
+
 This packet is lane-local only. It does not apply shared edits. The serial
 integration worker should apply these registrations after re-checking the then
 current shared files.

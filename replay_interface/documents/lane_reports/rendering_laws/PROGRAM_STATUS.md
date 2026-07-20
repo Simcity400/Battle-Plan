@@ -251,6 +251,10 @@ size and/or copyrighted game content.
 | `git_history_backup\hoi4-preconsolidation-20260719.bundle` | Full 625-ref pre-consolidation git history (bundle-verified; second copy in `C:\tmp` is expendable) | `C:\Users\Example\hoi4_git_history_backup` |
 | `re_scratch_june\` | June 2026 RE scratch (Codex disassembly runs, minidump analysis) | `C:\Users\Example\Downloads\hoi4_2026*` |
 
-**LOST (not in any store):** `restore_gate_1` (grading/bloom/political-v2
-validation capture) — re-validation of those laws requires a recapture
-(exhaustive search 2026-07-19).
+**RECOVERED 2026-07-19:** the original `restore_gate_1`
+(grading/bloom/political-v2 validation capture) survived under the local Claude
+data backup and is now copied byte-exactly to
+`<local-path>`. The 243-file tree
+and portable admission contract are recorded in
+`re_evidence/rendering_laws/RESTORE_GATE_1_RECOVERY_20260719/`; recapturing the
+original frame is no longer a human requirement.

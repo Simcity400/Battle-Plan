@@ -692,10 +692,10 @@ impl ConnectedWindowsPipePair {
         }
         match unsafe { WaitForSingleObject(self.target.handle.raw(), 0) } {
             WAIT_TIMEOUT => Ok(()),
-            WAIT_OBJECT_0 => {
-                self.cancellation.cancel();
-                Err(WindowsCombinedBackendError::TargetExited)
-            }
+            // Target exit ends control liveness but must not cancel H4CR: the
+            // data half still owns draining every already-written complete
+            // record as the valid crash prefix.
+            WAIT_OBJECT_0 => Err(WindowsCombinedBackendError::TargetExited),
             _ => {
                 self.cancellation.cancel();
                 Err(io::Error::last_os_error().into())
@@ -749,6 +749,45 @@ impl WindowsCombinedRunner {
 
     pub fn cancellation(&self) -> &ControlCancellation {
         &self.cancellation
+    }
+
+    /// Consume the authenticated pair into independently ownable H4CR and
+    /// H4CT drivers. Both retain the same attempt authority and shared
+    /// cancellation; no raw pipe/process handle is exposed. This is the
+    /// product composition boundary for a blocking data-drain worker plus a
+    /// recurring-heartbeat/cooperative-stop control worker.
+    pub fn into_concurrent_parts(
+        self,
+    ) -> Result<(WindowsCombinedDataReader, WindowsCombinedControlDriver), WindowsCombinedBackendError>
+    {
+        let Self {
+            authority,
+            data,
+            control,
+            target,
+            cancellation,
+            next_heartbeat_due,
+        } = self;
+        let control = control.ok_or_else(|| {
+            WindowsCombinedBackendError::Authority(DuplexWorkerError::IllegalTransition {
+                from: super::duplex_worker::DuplexWorkerState::Finalizing,
+                action: "split runner after control close",
+            })
+        })?;
+        Ok((
+            WindowsCombinedDataReader {
+                authority: authority.clone(),
+                data,
+                cancellation: cancellation.clone(),
+            },
+            WindowsCombinedControlDriver {
+                authority,
+                control: Some(control),
+                target,
+                cancellation,
+                next_heartbeat_due,
+            },
+        ))
     }
 
     pub fn read_data_exact_until(
@@ -870,6 +909,169 @@ impl WindowsCombinedRunner {
     }
 }
 
+/// H4CR half of an authenticated combined pair. The underlying overlapped
+/// transport retains its independently opened exact peer-process handle, so a
+/// split does not downgrade PID/creation-FILETIME authority.
+pub struct WindowsCombinedDataReader {
+    authority: DuplexAttemptAuthority,
+    data: WindowsDataIo,
+    cancellation: ControlCancellation,
+}
+
+impl WindowsCombinedDataReader {
+    pub fn authority(&self) -> &DuplexAttemptAuthority {
+        &self.authority
+    }
+
+    pub fn cancellation(&self) -> &ControlCancellation {
+        &self.cancellation
+    }
+
+    pub fn read_exact_until(
+        &mut self,
+        bytes: &mut [u8],
+        deadline: ControlDeadline,
+    ) -> Result<(), WindowsCombinedBackendError> {
+        if self.cancellation.is_cancelled() {
+            return Err(WindowsCombinedBackendError::Cancelled);
+        }
+        self.data
+            .recv_exact_until(bytes, deadline)
+            .map_err(WindowsCombinedBackendError::from)
+    }
+
+    /// Process-lifetime H4CR read. It has no synthetic duration deadline;
+    /// cooperative stop closes H4CT and lets the collector close H4CR, while
+    /// the shared cancellation remains the bounded hard-failure escape hatch.
+    pub fn read_exact(&mut self, bytes: &mut [u8]) -> Result<(), WindowsCombinedBackendError> {
+        if self.cancellation.is_cancelled() {
+            return Err(WindowsCombinedBackendError::Cancelled);
+        }
+        self.data
+            .recv_exact_cancellable(bytes)
+            .map_err(WindowsCombinedBackendError::from)
+    }
+}
+
+/// H4CT half of an authenticated combined pair. It exclusively owns all
+/// control receives, the retained target handle, heartbeat cadence, and the
+/// cooperative close that transfers ownership to H4CR drain/finalization.
+pub struct WindowsCombinedControlDriver {
+    authority: DuplexAttemptAuthority,
+    control: Option<DuplexWorkerSession<WindowsControlIo>>,
+    target: BoundTargetProcess,
+    cancellation: ControlCancellation,
+    next_heartbeat_due: std::time::Instant,
+}
+
+impl WindowsCombinedControlDriver {
+    pub fn authority(&self) -> &DuplexAttemptAuthority {
+        &self.authority
+    }
+
+    pub fn cancellation(&self) -> &ControlCancellation {
+        &self.cancellation
+    }
+
+    pub fn control_session_mut(&mut self) -> Option<&mut DuplexWorkerSession<WindowsControlIo>> {
+        self.control.as_mut()
+    }
+
+    pub fn check_recurring_liveness(&mut self) -> Result<(), WindowsCombinedBackendError> {
+        self.ensure_target_live()?;
+        self.control
+            .as_mut()
+            .ok_or_else(|| {
+                WindowsCombinedBackendError::Authority(DuplexWorkerError::IllegalTransition {
+                    from: super::duplex_worker::DuplexWorkerState::Finalizing,
+                    action: "check liveness after control close",
+                })
+            })?
+            .check_liveness()
+            .map_err(WindowsCombinedBackendError::Authority)
+    }
+
+    pub fn drive_due_heartbeat<S: IdentityDurableCandidateSink>(
+        &mut self,
+        identity: &mut RecorderIdentityControlDispatcher<S>,
+    ) -> Result<Option<RoutedHeartbeatCycle>, WindowsCombinedBackendError> {
+        self.ensure_target_live()?;
+        let now = std::time::Instant::now();
+        if now < self.next_heartbeat_due {
+            return Ok(None);
+        }
+        let challenge = super::staging::generate_secret_128().map_err(|error| {
+            WindowsCombinedBackendError::Authority(DuplexWorkerError::Transport(error))
+        })?;
+        let deadline =
+            ControlDeadline::after(Duration::from_millis(super::policy::HEARTBEAT_INTERVAL_MS))
+                .map_err(|error| {
+                    WindowsCombinedBackendError::Authority(DuplexWorkerError::Transport(
+                        error.to_string(),
+                    ))
+                })?;
+        let outcome = self
+            .control
+            .as_mut()
+            .ok_or_else(|| {
+                WindowsCombinedBackendError::Authority(DuplexWorkerError::IllegalTransition {
+                    from: super::duplex_worker::DuplexWorkerState::Finalizing,
+                    action: "heartbeat after control close",
+                })
+            })?
+            .heartbeat_cycle_with_identity(identity, challenge, deadline)
+            .map_err(WindowsCombinedBackendError::Authority)?;
+        self.ensure_target_live()?;
+        self.next_heartbeat_due = now
+            .checked_add(Duration::from_millis(super::policy::HEARTBEAT_INTERVAL_MS))
+            .ok_or_else(|| {
+                WindowsCombinedBackendError::Authority(DuplexWorkerError::Transport(
+                    "heartbeat schedule overflow".to_string(),
+                ))
+            })?;
+        Ok(Some(outcome))
+    }
+
+    pub fn close_for_graceful_data_drain(
+        &mut self,
+    ) -> Result<ControlDeadline, WindowsCombinedBackendError> {
+        let stop_deadline = ControlDeadline::after(Duration::from_millis(
+            super::policy::GRACEFUL_STOP_DEADLINE_MS,
+        ))
+        .map_err(|error| {
+            WindowsCombinedBackendError::Authority(DuplexWorkerError::Transport(error.to_string()))
+        })?;
+        let mut control = self.control.take().ok_or_else(|| {
+            WindowsCombinedBackendError::Authority(DuplexWorkerError::IllegalTransition {
+                from: super::duplex_worker::DuplexWorkerState::Finalizing,
+                action: "close control twice",
+            })
+        })?;
+        control.request_graceful_stop_at(std::time::Instant::now());
+        control
+            .begin_finalizing()
+            .map_err(WindowsCombinedBackendError::Authority)?;
+        drop(control);
+        Ok(stop_deadline)
+    }
+
+    fn ensure_target_live(&self) -> Result<(), WindowsCombinedBackendError> {
+        if self.cancellation.is_cancelled() {
+            return Err(WindowsCombinedBackendError::Cancelled);
+        }
+        match unsafe { WaitForSingleObject(self.target.handle.raw(), 0) } {
+            WAIT_TIMEOUT => Ok(()),
+            // Do not cancel the data half: it owns valid-prefix drain after a
+            // target exit and will classify EOF only at a record boundary.
+            WAIT_OBJECT_0 => Err(WindowsCombinedBackendError::TargetExited),
+            _ => {
+                self.cancellation.cancel();
+                Err(io::Error::last_os_error().into())
+            }
+        }
+    }
+}
+
 pub struct WindowsDataIo {
     pipe: WindowsOverlappedPipe,
 }
@@ -887,6 +1089,11 @@ impl WindowsDataIo {
         deadline: ControlDeadline,
     ) -> io::Result<()> {
         self.pipe.recv_exact(bytes, deadline, None)
+    }
+
+
+    pub fn recv_exact_cancellable(&mut self, bytes: &mut [u8]) -> io::Result<()> {
+        self.pipe.recv_exact_cancellable(bytes)
     }
 }
 
@@ -957,6 +1164,87 @@ impl WindowsOverlappedPipe {
             bytes = &mut bytes[transferred..];
         }
         Ok(())
+    }
+
+    fn recv_exact_cancellable(&mut self, mut bytes: &mut [u8]) -> io::Result<()> {
+        let mut read_any = false;
+        while !bytes.is_empty() {
+            let len = bytes.len().min(Dword::MAX as usize);
+            let (transferred, buffer) = match self.transfer_cancellable(len) {
+                Ok(completed) => completed,
+                Err(error)
+                    if read_any
+                        && matches!(
+                            error.kind(),
+                            io::ErrorKind::BrokenPipe | io::ErrorKind::UnexpectedEof
+                        ) =>
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "pipe EOF after a partial exact read",
+                    ));
+                }
+                Err(error) => return Err(error),
+            };
+            if transferred == 0 {
+                return Err(io::Error::new(
+                    if read_any {
+                        io::ErrorKind::UnexpectedEof
+                    } else {
+                        io::ErrorKind::BrokenPipe
+                    },
+                    if read_any {
+                        "pipe EOF after a partial exact read"
+                    } else {
+                        "pipe EOF before exact read"
+                    },
+                ));
+            }
+            read_any = true;
+            bytes[..transferred].copy_from_slice(&buffer[..transferred]);
+            bytes = &mut bytes[transferred..];
+        }
+        Ok(())
+    }
+
+    fn transfer_cancellable(&mut self, read_len: usize) -> io::Result<(usize, Vec<u8>)> {
+        if self.shared_cancellation.is_cancelled() {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "pipe cancelled"));
+        }
+        let mut operation = PendingOperation::new(vec![0; read_len])?;
+        let handle = self
+            .handle
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "pipe is terminal"))?;
+        let mut transferred = 0;
+        if unsafe {
+            ReadFile(
+                handle.raw(),
+                operation.buffer.as_mut_ptr().cast(),
+                operation.buffer.len() as Dword,
+                &mut transferred,
+                &mut operation.overlapped,
+            )
+        } == 0
+        {
+            let error = unsafe { GetLastError() };
+            if error != ERROR_IO_PENDING {
+                self.handle.take();
+                return Err(io::Error::from_raw_os_error(error as i32));
+            }
+            let (completed, returned_operation) = wait_pending_transfer_cancellable(
+                &mut self.handle,
+                operation,
+                &self.shared_cancellation,
+            )?;
+            transferred = completed;
+            operation = returned_operation;
+        }
+        if self.shared_cancellation.is_cancelled() {
+            self.handle.take();
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "pipe cancelled"));
+        }
+        Ok((transferred as usize, operation.buffer))
     }
 
     fn send_all(
@@ -1035,6 +1323,47 @@ impl WindowsOverlappedPipe {
             return Err(error);
         }
         Ok((transferred as usize, operation.buffer))
+    }
+}
+
+fn wait_pending_transfer_cancellable(
+    handle: &mut Option<OwnedHandle>,
+    mut operation: Box<PendingOperation>,
+    cancellation: &ControlCancellation,
+) -> io::Result<(Dword, Box<PendingOperation>)> {
+    loop {
+        if cancellation.is_cancelled() {
+            retire_slot(handle, operation);
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "pipe cancelled"));
+        }
+        // Completion wins over a simultaneous process-exit notification so
+        // already-written H4CR bytes remain drainable as a valid prefix.
+        if unsafe { WaitForSingleObject(operation.event.raw(), 0) } == WAIT_OBJECT_0 {
+            let raw = handle.as_ref().expect("live pipe owns handle").raw();
+            let mut transferred = 0;
+            if unsafe {
+                GetOverlappedResult(raw, &mut operation.overlapped, &mut transferred, 0)
+            } == 0
+            {
+                let error = io::Error::last_os_error();
+                handle.take();
+                return Err(error);
+            }
+            return Ok((transferred, operation));
+        }
+        // Do not terminate a data read merely because the retained peer
+        // process signalled exit. The named pipe remains the authority for
+        // buffered bytes followed by EOF, which is how a valid crash prefix is
+        // drained without accepting a different peer.
+        match unsafe { WaitForSingleObject(operation.event.raw(), 20) } {
+            WAIT_OBJECT_0 => {}
+            WAIT_TIMEOUT => continue,
+            _ => {
+                let error = io::Error::last_os_error();
+                retire_slot(handle, operation);
+                return Err(error);
+            }
+        }
     }
 }
 

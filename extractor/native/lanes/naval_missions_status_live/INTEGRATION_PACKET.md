@@ -4,9 +4,12 @@ Packet owner: lane-local only. Shared files are read-only for this packet.
 
 Validated slice targeted:
 
-- Validated live roots: `CGameState`, `CGameState+0x310/+0x31C` country table, `CCountry+0x278/+0x280/+0x284` fleet vector, `CFleet`, `CTaskForce`, `CTaskForce+0x18` current province, `CTaskForce+0x338/+0x344` ship vector, and `CShip+0x3C` aggregate sunk-convoy counter.
-- Integrated rows: full-replace task-force status rows keyed by `task_force_id`, carrying `fleet_id`, `owner_tag_db_id`, current `location_province_id`, optional derived `strategic_region_id`, and optional aggregate `sunk_convoys`.
-- Explicitly out of scope: mission enum/state, home base, repair base/progress, retreat state, and convoy route/context semantics. Those remain fixture-blocked and are badged/omitted.
+- Validated live roots: `CGameState`, `CGameState+0x310/+0x31C` country table, `CCountry+0x278/+0x280/+0x284` fleet vector, `CFleet`, `CTaskForce`, `CTaskForce+0x18` current province, `CTaskForce+0x364` mission enum, `CFleet+0xD8` home-base province pointer, `CTaskForce+0x4B0` repair-target province pointer, `CTaskForce+0x338/+0x344` ship vector, and `CShip+0x3C` aggregate sunk-convoy counter.
+- Integrated rows: full-replace task-force status rows keyed by `task_force_id`, carrying `fleet_id`, `owner_tag_db_id`, current `location_province_id`, optional derived `strategic_region_id`, exact mission enum/name, nullable home/repair-base province ids, and optional aggregate `sunk_convoys`.
+- Explicitly out of scope: live D56 mission state, repair progress, task-force
+  retreat-state enum, and convoy route/context semantics. Those remain absent
+  rather than guessed. The save oracle separately exposes exact persisted
+  mission/repair/path fields and the boolean `task_force.retreat=yes`.
 
 Important lane-local changes made in this packet:
 
@@ -698,15 +701,16 @@ convoy_sunk_count_rows, task_forces[]}`.
 
 Each `task_forces[]` row carries `task_force_id`, `fleet_id`, `owner_tag_db_id`,
 `location_province_id`, optional `strategic_region_id`, nullable
-`mission_enum`, `mission_state`, `home_base_province_id`,
+`mission_enum`, `mission_name`, `mission_state`, `home_base_province_id`,
 `repair_base_province_id`, `repair_progress_milli`, `retreat_state`,
 optional aggregate `sunk_convoys`, nullable `convoy_route_context_id`,
 `fixture_required`, `active_battle_fixture_required`, and
 `source_status_flags`.
 
-Mission, home-base, repair/retreat, and convoy-route fields stay null until
-controlled fixtures select exact semantics. `sunk_convoys` is an aggregate
-`CShip+0x3C` counter only; it is not route context.
+Mission enum/name, home base, and repair target are exact producer-backed
+fields. Live mission state, repair progress, task-force retreat-state enum, and
+convoy-route fields stay null. `sunk_convoys` is an aggregate `CShip+0x3C`
+counter only; it is not route context.
 ```
 
 Rationale: `REPLAY_SCHEMA.md` says high-frequency raw OOB and ship telemetry live outside save-shaped OOB arrays, and R2 requires shapes beyond the documented schema to use a clearly named extra key.
@@ -718,20 +722,20 @@ Use this wording only after the shared registrations are applied. It is intentio
 `extractor/documents/DOMAIN_REGISTRY.md` row 56:
 
 ```markdown
-| 56 | `naval_missions_status_live` | shared integration pending: registered validated task-force status slice; full-replace rows for task_force_id/fleet_id/owner/current province, optional derived region, and aggregate sunk-convoy count; mission/home-base/repair/retreat/route fixtures open | naval missions/status |
+| 56 | `naval_missions_status_live` | shared integration pending: registered validated task-force status slice; full-replace rows for task_force_id/fleet_id/owner/current province, optional derived region, exact mission enum/name, nullable home/repair-base provinces, and aggregate sunk-convoy count; live mission-state/repair-progress/task-force-retreat-enum/route carriers absent (save `retreat=yes` is separate) | naval missions/status |
 ```
 
 `extractor/documents/MASTER_EXTRACTION_CONTRACT.md` compact domain row:
 
 ```markdown
-| `naval_missions_status_live` / 56 | `SHARED_INTEGRATION_PENDING` | Lane-local compact/Rust packet plus collector/recorder/fold registration for the validated fleet/task-force/ship-root slice: task-force id, fleet id, owner tag-db id, current province, optional derived region, and aggregate sunk-convoy count. Mission, home-base, repair/retreat, and convoy route/context semantics remain fixture-blocked; shared speed-five/.battleplan proof still required. |
+| `naval_missions_status_live` / 56 | `SHARED_INTEGRATION_PENDING` | Lane-local compact/Rust packet plus collector/recorder/fold registration for the validated fleet/task-force/ship-root slice: task-force id, fleet id, owner tag-db id, current province, optional derived region, exact mission enum/name, nullable home/repair-base provinces, and aggregate sunk-convoy count. Live mission state, repair progress, task-force retreat-state enum, and convoy route/context remain absent; save `retreat=yes` is a separate parsed boolean; shared speed-five/.battleplan proof still required. |
 ```
 
 Concept rows should stay conservative:
 
 ```markdown
-| Naval missions | Patrol/strike/convoy/repair/training/hold, region assignment, mission state. | `FIXTURE_BLOCKED` | Domain 56 shared integration pending for current task-force location/region and aggregate sunk-convoy counters only; mission enum/state semantics are not promoted. | Controlled mission-change fixture, then compact mission rows or exact rejection. |
-| Home base/repair/retreat | Port, home base, repair queue, retreat state. | `FIXTURE_BLOCKED` | Domain 56 validates current location only; `CTaskForce+0x18` is not home base. | Controlled port-change, damaged-repairing, and retreat fixtures, then shared compact rows or exact rejection. |
+| Naval missions | Patrol/strike/convoy/repair/training/hold, region assignment, mission state. | `PARTIAL` | Domain 56 promotes the exact mission enum/name; exact-ten provenance is closed but no common receiver/base proves a mission-state carrier. | Keep live mission state mechanically rejected/absent. |
+| Home base/repair/retreat | Port, home base, repair queue, retreat state. | `PARTIAL` | Domain 56 promotes exact home-base and repair-target province ids; exact-ten provenance is closed but live repair progress and retreat-state enum remain mechanically rejected/absent. Save OOB separately carries exact repair fields and boolean `retreat=yes`. | Preserve the exact save/live carrier separation. |
 | Convoy combat/losses | Convoy involvement, losses, route/mission context. | `FIXTURE_BLOCKED` | Domain 56 carries aggregate `CShip+0x3C` sunk-convoy counters only. | Active convoy battle/loss route fixture, then compact convoy-event rows or exact rejection. |
 ```
 
@@ -739,10 +743,7 @@ Concept rows should stay conservative:
 
 Keep all of these out of the first shared integration:
 
-- `mission_enum`
 - `mission_state`
-- `home_base_province_id`
-- `repair_base_province_id`
 - `repair_progress_milli`
 - `retreat_state`
 - `convoy_route_context_id`
@@ -751,11 +752,11 @@ Keep all of these out of the first shared integration:
 - Delta emission until the schema has delete tombstones or another exact deletion contract
 - Derived strategic region if the collector lacks an in-DLL province-to-region map
 
-Required fixtures before any of those can be promoted:
+Required evidence before any of those can be promoted:
 
-- Controlled before/after task-force mission change with stable `task_force_id` and `fleet_id`.
-- Controlled home-base port change proving a field distinct from current location.
-- Damaged repairing and retreating task-force fixtures.
+- No further authority input is owed for the formatter/serializer roots: the
+  exact-ten replacements are complete and centrally bound. Their negative
+  receiver/base result keeps the conflicting D56 fields absent.
 - Active convoy battle/loss route fixture tying losses to route/mission context rather than aggregate ship counters.
 
 ## 9. Verification Performed In This Packet
@@ -790,3 +791,35 @@ not the current build contract. The supported current validation command is:
 ```powershell
 cargo test --offline --manifest-path extractor/native/lanes/naval_missions_status_live/Cargo.toml
 ```
+
+## 10. Wave-2 exact disposition (2026-07-19; supersedes residual fixture list)
+
+Pinned build `870ebf` static producer/consumer mining closes the remaining
+task-force activity scope:
+
+- Discovery artifacts are contradictory at the receiver-layout boundary:
+  treats `+0x4B8/+0x4C0` as pointers. The temporary D56 scalar was reverted.
+- The exact-ten replacement roots are complete and centrally bound. They close
+  the provenance gate but do not prove a common D56 receiver/base for the
+  conflicting `+0x4A8/+0x4B8/+0x4C0` observations. D56 `mission_state`,
+  `repair_progress_milli`, and live task-force `retreat_state` therefore remain
+  mechanically rejected/absent, not authority-blocked. The retained-save census separately proves
+  `task_force.retreat=yes` as a save-tick boolean (26 rows in 11 saves plus
+  three control-melt rows); `parse_oob.py` extracts it without aliasing it to
+  D56. D50 member states 8/0x10 are another separate combat-member carrier.
+- The same retained census proves exact nested save mission fields, repair
+  mode/target/link/activity fields, and province movement `path`; it finds no
+  `repair_progress(_milli)`, `convoy_route(_context_id)`, or `route_id` in
+  20,212 task-force rows. The movement path is not convoy route identity.
+  Census SHA-256:
+  `aee3ececd03321899a01782f78730523daf14ef5d916cdb0d25ace9dca9082a2`.
+- The terminal sunk-convoy history carrier contains month, count, killer, and
+  owner only. It has no route identity. D56 preserves cumulative
+  `sunk_convoys` but no longer advertises a task-force-row fixture for a field
+  absent from that carrier. The expanded active-combat census exposes client
+  handles before collapse but lacks a retained route-manager join; the separate
+  pre-collapse acquisition is specified in the naval v2 human-input register.
+
+Evidence jobs/hashes are pinned in
+`../naval_combat_live/evidence/A8_A9_B6_ARTIFACT_MANIFEST.json`. The historical
+fixture bullets above remain provenance but are not active RE requirements.

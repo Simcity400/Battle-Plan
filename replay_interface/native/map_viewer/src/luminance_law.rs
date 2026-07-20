@@ -562,7 +562,8 @@ mod tests {
     // clamp to the MIN_HDR_ADJUSTMENT floor and, quantized to R16, byte-match
     // the captured AverageLuminanceTexture texel (half 0x3800 == 0.5). If it
     // does NOT clamp, the port is wrong — the gate fails (never tunes).
-    const RESTORE_GATE_DIR: &str = r"C:\Users\Example\AppData\Local\hoi4_captures\restore_gate_1";
+    const RESTORE_GATE_DIR: &str =
+        r"C:\hoi4_evidence\capture_corpus_preserved\restore_gate_1";
     const CAPTURED_MAIN_SCENE: &str =
         "restore_frame_draw_map_frame_shared_payload_ps_srv_MainScene_b811e76916a16e8c.d3d11";
     const CAPTURED_AVG_LUM: &str =
@@ -572,14 +573,25 @@ mod tests {
     const CAPTURED_SCENE_H: usize = 1080;
     const CAPTURED_SCENE_ROW_PITCH: usize = 15360; // 1920 * 8, tight rows
 
+    fn restore_gate_dir() -> std::path::PathBuf {
+        if let Some(root) = std::env::var_os("BATTLE_PLAN_RESTORE_GATE_1_ROOT").or_else(|| std::env::var_os("HOI4_RESTORE_GATE_1_ROOT")) {
+            return std::path::PathBuf::from(root);
+        }
+        std::env::var_os("BATTLE_PLAN_CAPTURES_ROOT").or_else(|| std::env::var_os("HOI4_CAPTURES_ROOT"))
+            .map(std::path::PathBuf::from)
+            .map(|root| root.join("restore_gate_1"))
+            .unwrap_or_else(|| std::path::PathBuf::from(RESTORE_GATE_DIR))
+    }
+
     #[test]
     fn gate_captured_scene_reproduces_captured_average_luminance() {
-        let dir = std::path::PathBuf::from(RESTORE_GATE_DIR);
+        let dir = restore_gate_dir();
         let scene_path = dir.join(CAPTURED_MAIN_SCENE);
         let avg_path = dir.join(CAPTURED_AVG_LUM);
         if !scene_path.is_file() || !avg_path.is_file() {
             eprintln!(
-                "skipping captured-AvgLum reproduction gate: {RESTORE_GATE_DIR} scene/avglum payloads absent"
+                "skipping captured-AvgLum reproduction gate: {} scene/avglum payloads absent",
+                dir.display()
             );
             return;
         }

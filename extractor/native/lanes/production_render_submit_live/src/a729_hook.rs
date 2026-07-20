@@ -4,7 +4,9 @@ use crate::{
     canonicalize_packet, fnv1a32, DefinitionIdentity, FinalDrawCall, FinalDrawFamily,
     RawBlendStateCreation, RawBufferSnapshot, RawCaptureLaunchEpoch, RawD3dDrawState,
     RawDepthStencilStateCreation, RawDrawCall, RawDrawFamily, RawDrawIdentity, RawEntitySubmission,
-    RawIndexBufferObject, RawInputElement, RawInputLayoutCreation, RawMapShaderLookup,
+    RawA729CameraCarrier, RawA729CameraEventBatch, RawA729CameraInputEvent,
+    RawA729CameraMapPick, RawA729CameraOwnerKind, RawIndexBufferObject, RawInputElement,
+    RawInputLayoutCreation, RawMapShaderLookup,
     RawOutputViewKind, RawParticlePacket, RawParticleSubmit, RawPayloadSnapshot, RawPayloadSource,
     RawProcessEpoch, RawRasterizerStateCreation, RawRegisteredRenderTargetKind,
     RawRenderCatalogCapture, RawRenderOrderEvent, RawRenderSubmitCapture, RawRenderTargetBlendDesc,
@@ -14,7 +16,8 @@ use crate::{
     RawStageSlotObject, RawStaticD3dDrawState, RawStaticDrawCall, RawStaticStreamOutputBuffer,
     RawStencilFaceDesc, RawTexture2dDesc, RawTextureObject, RawTextureResourceSnapshot,
     RawTextureSubresourceSnapshot, RawVertexBufferObject, RawWeatherEntityPair,
-    RawWeatherEntityRef, RawWeatherFactoryAttempt, RawWeatherObservation, RenderOrderBoundary,
+    RawSnowMudTextureObservation, RawWeatherEntityRef, RawWeatherFactoryAttempt,
+    RawWeatherObservation, RenderOrderBoundary,
     ENGINE_SHADER_EFFECT_LOOKUP_RVA, ENTITY_DESTROY_RVA, ENTITY_FACTORY_RVA, ENTITY_FINAL_DRAW_RVA,
     ENTITY_RENDER_ROOT_RVA, GLOBAL_RENDER_ENVELOPE_RVA, GPU_INSTANCE_STRIDE,
     HIGH_RESOLUTION_SEED_RVA, INDEXED_INSTANCED_FINAL_DRAW_RVA, INSTANCED_FINAL_DRAW_RVA,
@@ -25,6 +28,7 @@ use crate::{
     PARTICLE_RUNTIME_DESTROY_RVA, POST_PROCESS_RENDER_ROOT_RVA, PRESENT_RENDER_ROOT_RVA,
     RAILROAD_EFFECT_REGISTRATION_ROOT_RVA, RENDER_TARGET_CLEAR_RVA,
     RESTORE_BLOOM_EFFECT_REGISTRATION_ROOT_RVA, SHADER_PROGRAM_BINDER_RVA,
+    CAMERA_MAP_PICK_RVA, CAMERA_VERTICAL_EVENT_PRODUCER_RVA, CAMERA_WHEEL_UPDATE_RVA,
     WEATHER_VISUAL_PRODUCER_RVA,
 };
 use core::cell::RefCell;
@@ -38,7 +42,7 @@ use std::mem;
 use std::ptr;
 use std::slice;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 use winapi::um::d3d11::{
     ID3D11Device, ID3D11DeviceContext, D3D11_BLEND_DESC, D3D11_BUFFER_DESC,
@@ -76,7 +80,7 @@ const MAX_D3D_SHADER_BYTECODE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_D3D_INPUT_ELEMENTS: u32 = 32;
 pub const BOOTSTRAP_HOOK_COUNT: usize = 2;
 const HARDWARE_D3D_HOOK_COUNT: usize = 19;
-const ENGINE_HOOK_COUNT: usize = 32;
+const ENGINE_HOOK_COUNT: usize = 38;
 pub const STAGED_HOOK_COUNT: usize = HARDWARE_D3D_HOOK_COUNT + ENGINE_HOOK_COUNT;
 pub const READY_HOOK_COUNT: usize = BOOTSTRAP_HOOK_COUNT + STAGED_HOOK_COUNT;
 pub const STAGED_HOOK_GROUP_COM: u64 = 0x01;
@@ -87,7 +91,9 @@ pub const STAGED_HOOK_GROUP_ENTITY: u64 = 0x10;
 pub const STAGED_HOOK_GROUP_SHADER_EFFECTS: u64 = 0x20;
 pub const STAGED_HOOK_GROUP_WEATHER_SEED: u64 = 0x40;
 pub const STAGED_HOOK_GROUP_SCENE_BOUNDARIES: u64 = 0x80;
-pub const PRODUCTION_STAGED_HOOK_GROUP_MASK: u64 = 0xff;
+pub const STAGED_HOOK_GROUP_SNOW_MUD: u64 = 0x100;
+pub const STAGED_HOOK_GROUP_CAMERA_EVENTS: u64 = 0x200;
+pub const PRODUCTION_STAGED_HOOK_GROUP_MASK: u64 = 0x3ff;
 pub const DIAGNOSTIC_STAGE_MASK_ENV: &str = "BATTLE_PLAN_XN15L_DIAGNOSTIC_STAGE_MASK";
 const A729_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
@@ -113,9 +119,12 @@ const ENTITY_RENDER_LISTS_ALTERNATE_RVA: usize = 0x0344_FE60;
 const ENTITY_SHADER_FALLBACK_RVA: usize = 0x035C_1970;
 const VFS_OPEN_CONSTRUCTOR_RVA: usize = 0x024C_A2F0;
 const ENTITY_NAMED_FACTORY_RVA: usize = 0x0227_8710;
+const ENTITY_DEFINITION_LOOKUP_RVA: usize = 0x0227_E5F0;
 const WINDOW_BACKBUFFER_RTV_PRODUCER_RVA: usize = 0x020F_DDD0;
 const OPAQUE_TEXTURE_TARGET_PRODUCER_RVA: usize = 0x020F_DA10;
 const TEXTURE_CACHE_LOAD_ROOT_RVA: usize = 0x023F_17E0;
+const SNOW_MUD_PRODUCER_RVA: usize = portable_render_stream::SNOW_MUD_PRODUCER_FUNCTION_RVA as usize;
+const SNOW_MUD_UPLOAD_RVA: usize = portable_render_stream::SNOW_MUD_UPLOAD_TARGET_RVA as usize;
 
 const ENVELOPE_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57,
@@ -140,6 +149,9 @@ const ENTITY_FACTORY_SENTINEL: [u8; 16] = [
 ];
 const ENTITY_NAMED_FACTORY_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x40, 0x41, 0x8b, 0xd9, 0x41, 0x8b, 0xf8,
+];
+const ENTITY_DEFINITION_LOOKUP_SENTINEL: [u8; 16] = [
+    0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10, 0x48, 0x89, 0x70, 0x18, 0x48,
 ];
 const VFS_OPEN_CONSTRUCTOR_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x48, 0x89, 0x54, 0x24, 0x10, 0x48,
@@ -204,6 +216,21 @@ const POST_PROCESS_RENDER_ROOT_SENTINEL: [u8; 16] = [
 const PRESENT_RENDER_ROOT_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48,
 ];
+const SNOW_MUD_PRODUCER_SENTINEL: [u8; 16] = [
+    0x48, 0x89, 0x5c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
+];
+const SNOW_MUD_UPLOAD_SENTINEL: [u8; 16] = [
+    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x60, 0x48,
+];
+const CAMERA_WHEEL_UPDATE_SENTINEL: [u8; 16] = [
+    0x48, 0x8b, 0xc4, 0x4c, 0x89, 0x48, 0x20, 0x55, 0x53, 0x56, 0x48, 0x8d, 0x68, 0x98, 0x48, 0x81,
+];
+const CAMERA_VERTICAL_EVENT_PRODUCER_SENTINEL: [u8; 16] = [
+    0x48, 0x8b, 0xc4, 0x88, 0x50, 0x10, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
+];
+const CAMERA_MAP_PICK_SENTINEL: [u8; 16] = [
+    0x4c, 0x8b, 0xdc, 0x45, 0x88, 0x4b, 0x20, 0x49, 0x89, 0x53, 0x10, 0x49, 0x89, 0x4b, 0x08, 0x55,
+];
 const INSTANCED_FINAL_DRAW_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x30, 0x41, 0x8b, 0xf8, 0x8b, 0xda, 0x85,
 ];
@@ -220,9 +247,14 @@ type CreateFn = unsafe extern "system" fn(usize, usize) -> usize;
 type DestroyFn = unsafe extern "system" fn(usize);
 type BuilderFn = unsafe extern "system" fn(usize, usize, *mut u32, usize, *mut u32, u32);
 type ParticleRenderSubmitFn = unsafe extern "system" fn(usize, usize, usize, usize, f32);
+type CameraWheelUpdateFn =
+    unsafe extern "system" fn(usize, usize, usize, usize, f32, u8, u8);
+type CameraVerticalEventProducerFn = unsafe extern "system" fn(usize, u8);
+type CameraMapPickFn = unsafe extern "system" fn(usize, usize, usize, u8) -> usize;
 type ParticleFinalDrawFn = unsafe extern "system" fn(usize, i32, u32);
 type EntityFactoryFn = unsafe extern "system" fn(usize, u32, u32, u32) -> usize;
 type EntityNamedFactoryFn = unsafe extern "system" fn(usize, usize, u32, u32, u32) -> usize;
+type EntityDefinitionLookupFn = unsafe extern "system" fn(usize, usize) -> usize;
 type VfsOpenConstructorFn = unsafe extern "system" fn(usize, usize, usize, u32) -> usize;
 type WindowBackbufferRtvProducerFn = unsafe extern "system" fn(usize) -> i32;
 type OpaqueTextureTargetProducerFn = unsafe extern "system" fn(usize, usize) -> u64;
@@ -259,6 +291,8 @@ type PostProcessRenderFn = unsafe extern "system" fn(
     usize,
 );
 type PresentRenderFn = unsafe extern "system" fn(usize);
+type SnowMudProducerFn = unsafe extern "system" fn(usize, *mut usize, u8);
+type SnowMudUploadFn = unsafe extern "system" fn(usize, *const u8, u32, u32, u32, usize);
 type SoSetTargetsFn = unsafe extern "system" fn(usize, u32, *const usize, *const u32);
 
 static ORIGINAL_ENVELOPE: AtomicUsize = AtomicUsize::new(0);
@@ -271,6 +305,7 @@ static ORIGINAL_PARTICLE_RENDER_SUBMIT: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_PARTICLE_FINAL_DRAW: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_ENTITY_FACTORY: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_ENTITY_NAMED_FACTORY: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_ENTITY_DEFINITION_LOOKUP: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_VFS_OPEN_CONSTRUCTOR: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_WINDOW_BACKBUFFER_RTV_PRODUCER: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_OPAQUE_TEXTURE_TARGET_PRODUCER: AtomicUsize = AtomicUsize::new(0);
@@ -293,6 +328,11 @@ static ORIGINAL_SEED: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_MAP_SCENE_RENDER_ROOT: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_POST_PROCESS_RENDER_ROOT: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_PRESENT_RENDER_ROOT: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_SNOW_MUD_PRODUCER: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_SNOW_MUD_UPLOAD: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_CAMERA_WHEEL_UPDATE: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_CAMERA_VERTICAL_EVENT_PRODUCER: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_CAMERA_MAP_PICK: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_D3D_CREATE_INPUT_LAYOUT: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_D3D_CREATE_VERTEX_SHADER: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_D3D_CREATE_PIXEL_SHADER: AtomicUsize = AtomicUsize::new(0);
@@ -327,6 +367,7 @@ static NEXT_MAP_SHADER_LOOKUP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static NEXT_RENDER_ORDER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static NEXT_RENDER_FRAME_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static NEXT_PRESENT_GLOBAL_ORDER: AtomicU32 = AtomicU32::new(0);
+static NEXT_SNOW_MUD_PRODUCER_ORDINAL: AtomicU64 = AtomicU64::new(1);
 static NEXT_CATALOG_OBSERVATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static PENDING_STAGE_FIRST_CREATION: AtomicU64 = AtomicU64::new(0);
 static PRESENT_GAME_STATE_ROOT_SLOT: AtomicUsize = AtomicUsize::new(0);
@@ -437,6 +478,23 @@ thread_local! {
     static TEXTURE_LOAD_STACK: RefCell<Vec<PendingTextureLoad>> = const { RefCell::new(Vec::new()) };
     static ENTITY_FACTORY_STACK: RefCell<Vec<PendingEntityFactory>> = const { RefCell::new(Vec::new()) };
     static CURRENT_WEATHER: RefCell<Option<PendingWeather>> = const { RefCell::new(None) };
+    static CURRENT_SNOW_MUD_PRODUCER: RefCell<Option<PendingSnowMudProducer>> = const { RefCell::new(None) };
+    static CURRENT_CAMERA_EVENT_PRODUCER: RefCell<Option<PendingCameraEventProducer>> = const { RefCell::new(None) };
+}
+
+#[derive(Clone, Copy)]
+struct PendingSnowMudProducer {
+    resource_before: usize,
+    upload_expected: bool,
+    upload_count: u8,
+    rejected: bool,
+}
+
+struct PendingCameraEventProducer {
+    camera_root: usize,
+    batch: RawA729CameraEventBatch,
+    event_nodes: Vec<usize>,
+    rejected: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -489,7 +547,8 @@ struct PendingWeather {
 
 struct PendingSubmit {
     submit_index: u64,
-    interpolation_phase_f32_bits: u32,
+    camera_carrier_ordinal: u8,
+    camera_carrier: Option<RawA729CameraCarrier>,
     next_builder_ordinal: u32,
     next_global_draw_order: u32,
     next_entity_pass_ordinal: u32,
@@ -650,6 +709,10 @@ struct EngineEffectIdentity {
 struct HookState {
     runtimes: HashMap<usize, RuntimeIdentity>,
     entities: HashMap<usize, EntityIdentity>,
+    /// Authenticated case-sensitive named-registry lookup result. Weather
+    /// later creates through the definition-backed factory directly, so this
+    /// process-local receipt is the only admitted pointer-to-token bridge.
+    entity_definition_tokens: HashMap<usize, String>,
     completed: VecDeque<RawParticleSubmit>,
     completed_catalogs: VecDeque<RawRenderCatalogCapture>,
     shader_creation_observations: Vec<ObservedShaderCreation>,
@@ -661,6 +724,11 @@ struct HookState {
     sampler_state_creations: Vec<RawSamplerStateCreation>,
     created_d3d_objects: HashMap<usize, CreatedD3dObject>,
     weather_changes: VecDeque<RawWeatherObservation>,
+    /// Last airborne code observed at the authenticated visual producer for
+    /// every strategic region reached since hook installation. This is a
+    /// discriminator only: it never substitutes for the ordered membership,
+    /// lifecycle, visibility, or submitted-packet carrier.
+    weather_runtime_codes: HashMap<u32, u8>,
     map_shader_lookups: VecDeque<RawMapShaderLookup>,
     map_shader_program_joins: VecDeque<RawMapShaderProgramJoin>,
     /// Exact successful engine effect token keyed by the process-local
@@ -681,6 +749,8 @@ struct HookState {
     vfs_open_receipts: VecDeque<RawVfsOpenReceipt>,
     pending_render_frame: Option<PendingRenderFrame>,
     completed_render_frames: VecDeque<RawRenderFrameCapture>,
+    latest_snow_mud_observation: Option<Arc<RawSnowMudTextureObservation>>,
+    pending_camera_event_batches: HashMap<usize, VecDeque<RawA729CameraEventBatch>>,
     runtime_publication_generation: u64,
     /// Exact collector cutoff captured while this state lock was held. It is
     /// retained only while a cutoff-eligible Present is waiting for its
@@ -2409,6 +2479,8 @@ pub struct HookDiagnostics {
     pub nested_envelope_count: u64,
     pub live_entity_count: u64,
     pub queued_weather_change_count: u64,
+    pub observed_weather_region_count: u64,
+    pub active_airborne_weather_region_count: u64,
     pub duplicate_entity_count: u64,
     pub nested_weather_count: u64,
     pub queued_map_shader_lookup_count: u64,
@@ -2461,9 +2533,19 @@ pub struct RawRenderFrameCapture {
     pub presentation_qpc_frequency_hz: u64,
     pub process_start_nonce: u64,
     pub hook_epoch_nonce: u64,
+    /// Atomic weather discriminator captured at this Present boundary. These
+    /// counts prove when an empty portable weather carrier would be false;
+    /// they do not replace the weather rows themselves.
+    pub observed_weather_region_count: u64,
+    pub active_airborne_weather_region_count: u64,
+    pub queued_weather_change_count: u64,
     /// Canonical engine hour read at this exact PresentEnd from the validated
     /// a729 CGameState root slot. It is never assigned at collector drain time.
     pub game_hour_raw: i32,
+    /// Latest exact SnowMudData pre-upload observation ordered no later than
+    /// this Present. Shared byte storage avoids copying the 2.75 MiB texture
+    /// when the engine legitimately reuses an unchanged producer result.
+    pub snow_mud_texture: Option<Arc<RawSnowMudTextureObservation>>,
     pub events: Vec<RawRenderOrderEvent>,
     pub static_d3d_captures: Vec<RawStaticD3dCapture>,
     pub static_catalog_fragment: RawStaticCatalogFragment,
@@ -2587,6 +2669,7 @@ pub struct InstalledAddresses {
     pub particle_final_draw: usize,
     pub entity_factory: usize,
     pub entity_named_factory: usize,
+    pub entity_definition_lookup: usize,
     pub entity_destroy: usize,
     pub entity_render_root: usize,
     pub entity_final_draw: usize,
@@ -2605,6 +2688,11 @@ pub struct InstalledAddresses {
     pub map_scene_render_root: usize,
     pub post_process_render_root: usize,
     pub present_render_root: usize,
+    pub snow_mud_producer: usize,
+    pub snow_mud_upload: usize,
+    pub camera_wheel_update: usize,
+    pub camera_vertical_event_producer: usize,
+    pub camera_map_pick: usize,
 }
 
 /// Binds the authenticated a729 global CGameState pointer slot before render
@@ -2659,6 +2747,7 @@ fn engine_hook_specs(a: InstalledAddresses) -> [HookSpec; ENGINE_HOOK_COUNT] {
         hook_particle_final_draw as *mut c_void,
         hook_entity_factory as *mut c_void,
         hook_entity_named_factory as *mut c_void,
+        hook_entity_definition_lookup as *mut c_void,
         hook_entity_destroy as *mut c_void,
         hook_entity_render as *mut c_void,
         hook_entity_final_draw as *mut c_void,
@@ -2677,6 +2766,11 @@ fn engine_hook_specs(a: InstalledAddresses) -> [HookSpec; ENGINE_HOOK_COUNT] {
         hook_map_scene_render_root as *mut c_void,
         hook_post_process_render_root as *mut c_void,
         hook_present_render_root as *mut c_void,
+        hook_snow_mud_producer as *mut c_void,
+        hook_snow_mud_upload as *mut c_void,
+        hook_camera_wheel_update as *mut c_void,
+        hook_camera_vertical_event_producer as *mut c_void,
+        hook_camera_map_pick as *mut c_void,
     ];
     let originals = [
         &ORIGINAL_VFS_OPEN_CONSTRUCTOR,
@@ -2693,6 +2787,7 @@ fn engine_hook_specs(a: InstalledAddresses) -> [HookSpec; ENGINE_HOOK_COUNT] {
         &ORIGINAL_PARTICLE_FINAL_DRAW,
         &ORIGINAL_ENTITY_FACTORY,
         &ORIGINAL_ENTITY_NAMED_FACTORY,
+        &ORIGINAL_ENTITY_DEFINITION_LOOKUP,
         &ORIGINAL_ENTITY_DESTROY,
         &ORIGINAL_ENTITY_RENDER,
         &ORIGINAL_ENTITY_FINAL_DRAW,
@@ -2711,6 +2806,11 @@ fn engine_hook_specs(a: InstalledAddresses) -> [HookSpec; ENGINE_HOOK_COUNT] {
         &ORIGINAL_MAP_SCENE_RENDER_ROOT,
         &ORIGINAL_POST_PROCESS_RENDER_ROOT,
         &ORIGINAL_PRESENT_RENDER_ROOT,
+        &ORIGINAL_SNOW_MUD_PRODUCER,
+        &ORIGINAL_SNOW_MUD_UPLOAD,
+        &ORIGINAL_CAMERA_WHEEL_UPDATE,
+        &ORIGINAL_CAMERA_VERTICAL_EVENT_PRODUCER,
+        &ORIGINAL_CAMERA_MAP_PICK,
     ];
     let targets = targets(a);
     std::array::from_fn(|index| (targets[index], detours[index], originals[index]))
@@ -2757,6 +2857,7 @@ fn staged_hook_identity_labels() -> [&'static str; STAGED_HOOK_COUNT] {
         "engine.ParticleFinalDraw",
         "engine.EntityFactory",
         "engine.EntityNamedFactory",
+        "engine.EntityDefinitionLookup",
         "engine.EntityDestroy",
         "engine.EntityRenderRoot",
         "engine.EntityFinalDraw",
@@ -2775,6 +2876,11 @@ fn staged_hook_identity_labels() -> [&'static str; STAGED_HOOK_COUNT] {
         "engine.MapSceneRenderRoot",
         "engine.PostProcessRenderRoot",
         "engine.PresentRenderRoot",
+        "engine.SnowMudProducer",
+        "engine.SnowMudUpload",
+        "engine.CameraWheelUpdate",
+        "engine.CameraVerticalEventProducer",
+        "engine.CameraMapPick",
     ]
 }
 
@@ -2818,6 +2924,7 @@ fn staged_hook_group_bits() -> [u64; STAGED_HOOK_COUNT] {
         STAGED_HOOK_GROUP_ENTITY,
         STAGED_HOOK_GROUP_ENTITY,
         STAGED_HOOK_GROUP_ENTITY,
+        STAGED_HOOK_GROUP_ENTITY,
         STAGED_HOOK_GROUP_RENDER_TARGETS,
         STAGED_HOOK_GROUP_SHADER_EFFECTS,
         STAGED_HOOK_GROUP_SHADER_EFFECTS,
@@ -2831,6 +2938,11 @@ fn staged_hook_group_bits() -> [u64; STAGED_HOOK_COUNT] {
         STAGED_HOOK_GROUP_SCENE_BOUNDARIES,
         STAGED_HOOK_GROUP_SCENE_BOUNDARIES,
         STAGED_HOOK_GROUP_SCENE_BOUNDARIES,
+        STAGED_HOOK_GROUP_SNOW_MUD,
+        STAGED_HOOK_GROUP_SNOW_MUD,
+        STAGED_HOOK_GROUP_CAMERA_EVENTS,
+        STAGED_HOOK_GROUP_CAMERA_EVENTS,
+        STAGED_HOOK_GROUP_CAMERA_EVENTS,
     ]
 }
 
@@ -2877,7 +2989,7 @@ fn staged_hook_set_receipt_sha256(
         return Err("staged hook-set receipt inputs are incomplete or duplicated".into());
     }
     let mut hasher = Sha256::new();
-    hasher.update(b"hoi4-a729-staged-hook-set-v2\0");
+    hasher.update(b"hoi4-a729-staged-hook-set-v4\0");
     hasher.update(process_id.to_le_bytes());
     hasher.update(process_start_nonce.to_le_bytes());
     hasher.update(hook_epoch_nonce.to_le_bytes());
@@ -2977,6 +3089,11 @@ pub fn install() -> Result<InstalledAddresses, String> {
             &ENTITY_NAMED_FACTORY_SENTINEL,
             "named entity factory",
         ),
+        (
+            a.entity_definition_lookup,
+            &ENTITY_DEFINITION_LOOKUP_SENTINEL,
+            "named entity definition lookup",
+        ),
         (a.entity_destroy, &ENTITY_DESTROY_SENTINEL, "entity destroy"),
         (
             a.entity_render_root,
@@ -3063,6 +3180,31 @@ pub fn install() -> Result<InstalledAddresses, String> {
             &PRESENT_RENDER_ROOT_SENTINEL,
             "present render root",
         ),
+        (
+            a.snow_mud_producer,
+            &SNOW_MUD_PRODUCER_SENTINEL,
+            "SnowMudData CPU producer",
+        ),
+        (
+            a.snow_mud_upload,
+            &SNOW_MUD_UPLOAD_SENTINEL,
+            "SnowMudData upload helper",
+        ),
+        (
+            a.camera_wheel_update,
+            &CAMERA_WHEEL_UPDATE_SENTINEL,
+            "camera wheel update producer",
+        ),
+        (
+            a.camera_vertical_event_producer,
+            &CAMERA_VERTICAL_EVENT_PRODUCER_SENTINEL,
+            "camera vertical event producer",
+        ),
+        (
+            a.camera_map_pick,
+            &CAMERA_MAP_PICK_SENTINEL,
+            "camera screen-to-map picker",
+        ),
     ] {
         verify_sentinel(address, sentinel, label)?;
     }
@@ -3137,6 +3279,11 @@ pub fn install() -> Result<InstalledAddresses, String> {
             a.entity_named_factory,
             hook_entity_named_factory as *mut c_void,
             &ORIGINAL_ENTITY_NAMED_FACTORY,
+        ),
+        (
+            a.entity_definition_lookup,
+            hook_entity_definition_lookup as *mut c_void,
+            &ORIGINAL_ENTITY_DEFINITION_LOOKUP,
         ),
         (
             a.entity_destroy,
@@ -3228,6 +3375,31 @@ pub fn install() -> Result<InstalledAddresses, String> {
             hook_present_render_root as *mut c_void,
             &ORIGINAL_PRESENT_RENDER_ROOT,
         ),
+        (
+            a.snow_mud_producer,
+            hook_snow_mud_producer as *mut c_void,
+            &ORIGINAL_SNOW_MUD_PRODUCER,
+        ),
+        (
+            a.snow_mud_upload,
+            hook_snow_mud_upload as *mut c_void,
+            &ORIGINAL_SNOW_MUD_UPLOAD,
+        ),
+        (
+            a.camera_wheel_update,
+            hook_camera_wheel_update as *mut c_void,
+            &ORIGINAL_CAMERA_WHEEL_UPDATE,
+        ),
+        (
+            a.camera_vertical_event_producer,
+            hook_camera_vertical_event_producer as *mut c_void,
+            &ORIGINAL_CAMERA_VERTICAL_EVENT_PRODUCER,
+        ),
+        (
+            a.camera_map_pick,
+            hook_camera_map_pick as *mut c_void,
+            &ORIGINAL_CAMERA_MAP_PICK,
+        ),
     ];
     if !engine_originals_are_clear(a) {
         return Err("engine hook originals were populated before bootstrap install".into());
@@ -3261,6 +3433,7 @@ pub fn install() -> Result<InstalledAddresses, String> {
 
 pub fn uninstall() -> Result<(), String> {
     if !INSTALLED.load(Ordering::Acquire) {
+        crate::teardown_gui_paint_instrumentation()?;
         return Ok(());
     }
     let staged_targets = STAGED_HOOK_TARGETS
@@ -3288,7 +3461,15 @@ pub fn uninstall() -> Result<(), String> {
         }
     }
     if includes_com {
-        wait_for_com_detour_quiescence()?;
+        if let Err(error) = wait_for_com_detour_quiescence() {
+            let mut message = error;
+            if let Err(teardown_error) = crate::teardown_gui_paint_instrumentation() {
+                message.push_str(&format!(
+                    "; GUI paint instrumentation teardown failed: {teardown_error}"
+                ));
+            }
+            return Err(message);
+        }
     }
     let mut removal_failed = false;
     for target in all_targets.iter().copied() {
@@ -3301,7 +3482,17 @@ pub fn uninstall() -> Result<(), String> {
         }
     }
     if removal_failed {
+        if let Err(error) = crate::teardown_gui_paint_instrumentation() {
+            failures.push(format!(
+                "GUI paint instrumentation teardown failed: {error}"
+            ));
+        }
         return Err(failures.join(", "));
+    }
+    if let Err(error) = crate::teardown_gui_paint_instrumentation() {
+        failures.push(format!(
+            "GUI paint instrumentation teardown failed: {error}"
+        ));
     }
     INSTALLED.store(false, Ordering::Release);
     notify_render_submit_state_change();
@@ -3311,6 +3502,7 @@ pub fn uninstall() -> Result<(), String> {
     NEXT_RENDER_ORDER_SEQUENCE.store(1, Ordering::Release);
     NEXT_RENDER_FRAME_SEQUENCE.store(1, Ordering::Release);
     NEXT_PRESENT_GLOBAL_ORDER.store(0, Ordering::Release);
+    NEXT_SNOW_MUD_PRODUCER_ORDINAL.store(1, Ordering::Release);
     NEXT_CATALOG_OBSERVATION_SEQUENCE.store(1, Ordering::Release);
     for value in [
         &ORIGINAL_VFS_OPEN_CONSTRUCTOR,
@@ -3327,6 +3519,7 @@ pub fn uninstall() -> Result<(), String> {
         &ORIGINAL_PARTICLE_FINAL_DRAW,
         &ORIGINAL_ENTITY_FACTORY,
         &ORIGINAL_ENTITY_NAMED_FACTORY,
+        &ORIGINAL_ENTITY_DEFINITION_LOOKUP,
         &ORIGINAL_ENTITY_DESTROY,
         &ORIGINAL_ENTITY_RENDER,
         &ORIGINAL_ENTITY_FINAL_DRAW,
@@ -3345,6 +3538,11 @@ pub fn uninstall() -> Result<(), String> {
         &ORIGINAL_MAP_SCENE_RENDER_ROOT,
         &ORIGINAL_POST_PROCESS_RENDER_ROOT,
         &ORIGINAL_PRESENT_RENDER_ROOT,
+        &ORIGINAL_SNOW_MUD_PRODUCER,
+        &ORIGINAL_SNOW_MUD_UPLOAD,
+        &ORIGINAL_CAMERA_WHEEL_UPDATE,
+        &ORIGINAL_CAMERA_VERTICAL_EVENT_PRODUCER,
+        &ORIGINAL_CAMERA_MAP_PICK,
         &ORIGINAL_D3D_CREATE_INPUT_LAYOUT,
         &ORIGINAL_D3D_CREATE_VERTEX_SHADER,
         &ORIGINAL_D3D_CREATE_PIXEL_SHADER,
@@ -3412,6 +3610,8 @@ pub fn uninstall() -> Result<(), String> {
     TEXTURE_LOAD_STACK.with(|value| value.borrow_mut().clear());
     ENTITY_FACTORY_STACK.with(|value| value.borrow_mut().clear());
     CURRENT_WEATHER.with(|value| *value.borrow_mut() = None);
+    CURRENT_SNOW_MUD_PRODUCER.with(|value| *value.borrow_mut() = None);
+    CURRENT_CAMERA_EVENT_PRODUCER.with(|value| *value.borrow_mut() = None);
     if failures.is_empty() {
         Ok(())
     } else {
@@ -4577,6 +4777,12 @@ pub fn diagnostics() -> HookDiagnostics {
         nested_envelope_count: state.nested_envelopes,
         live_entity_count: state.entities.len() as u64,
         queued_weather_change_count: state.weather_changes.len() as u64,
+        observed_weather_region_count: state.weather_runtime_codes.len() as u64,
+        active_airborne_weather_region_count: state
+            .weather_runtime_codes
+            .values()
+            .filter(|code| **code != 0)
+            .count() as u64,
         duplicate_entity_count: state.duplicate_entity_ids,
         nested_weather_count: state.nested_weather_calls,
         queued_map_shader_lookup_count: state.map_shader_lookups.len() as u64,
@@ -4671,8 +4877,351 @@ unsafe extern "system" fn hook_bucket(object: usize, render_class: i32) {
     unsafe { original(object, render_class) };
 }
 
-unsafe extern "system" fn hook_envelope(renderer: usize, camera: usize, interpolation_bits: u32) {
+const MAX_CAMERA_INPUT_NODES: usize = 4_096;
+const MAX_PENDING_CAMERA_EVENT_BATCHES_PER_ROOT: usize = 1_024;
+
+#[derive(Clone, Copy)]
+struct AuthenticatedCameraRoot {
+    owner: usize,
+    owner_kind: RawA729CameraOwnerKind,
+    owner_vtable_rva: u32,
+    camera_root_offset: usize,
+    event_list_offset: usize,
+}
+
+fn authenticate_camera_root(root: usize) -> Result<AuthenticatedCameraRoot, String> {
+    let owner = read_usize(root.checked_add(0x08).ok_or("camera owner address overflow")?)
+        .filter(|value| *value != 0)
+        .ok_or("camera owner pointer is null or unreadable")?;
+    let owner_vtable = read_usize(owner).ok_or("camera owner vtable is unreadable")?;
+    let base = MODULE_BASE.load(Ordering::Acquire);
+    let owner_vtable_rva = owner_vtable
+        .checked_sub(base)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or("camera owner vtable is outside the a729 image")?;
+    let (owner_kind, camera_root_offset, event_list_offset) = match owner_vtable_rva {
+        0x0293_3710 => (RawA729CameraOwnerKind::FrontEnd, 0x610, 0x5f0),
+        0x0295_2510 => (RawA729CameraOwnerKind::InGame, 0x750, 0x758),
+        0x0299_3698 => (RawA729CameraOwnerKind::Third, 0x638, 0x648),
+        _ => return Err("camera owner vtable is not one of the three authenticated C00 owners".into()),
+    };
+    if owner.checked_add(camera_root_offset) != Some(root)
+        || read_usize(owner) != Some(owner_vtable)
+    {
+        return Err("camera owner-to-root join changed during authentication".into());
+    }
+    Ok(AuthenticatedCameraRoot {
+        owner,
+        owner_kind,
+        owner_vtable_rva,
+        camera_root_offset,
+        event_list_offset,
+    })
+}
+
+fn camera_vec3_bits(root: usize, offset: usize) -> Option<[u32; 3]> {
+    Some([
+        read_u32(root.checked_add(offset)?)?,
+        read_u32(root.checked_add(offset + 4)?)?,
+        read_u32(root.checked_add(offset + 8)?)?,
+    ])
+}
+
+fn capture_camera_input_nodes(
+    event_head: usize,
+) -> Result<(Vec<RawA729CameraInputEvent>, Vec<usize>), String> {
+    let mut rows = Vec::new();
+    let mut nodes = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut node = event_head;
+    while node != 0 {
+        if rows.len() == MAX_CAMERA_INPUT_NODES || !seen.insert(node) {
+            return Err("camera input list exceeded its bound or contained a cycle".into());
+        }
+        let mut embedded = [0u8; 16];
+        read_exact(
+            node.checked_add(0x48).ok_or("camera event address overflow")?,
+            &mut embedded,
+        )
+        .ok_or("camera embedded event is unreadable")?;
+        rows.push(RawA729CameraInputEvent {
+            node_ordinal: rows.len() as u32,
+            node_kind_i32: read_i32(
+                node.checked_add(0x7c).ok_or("camera node kind address overflow")?,
+            )
+            .ok_or("camera node kind is unreadable")?,
+            consumed_before_u8: read_u8(
+                node.checked_add(0x80).ok_or("camera node consumed address overflow")?,
+            )
+            .ok_or("camera node consumed byte is unreadable")?,
+            consumed_after_u8: 0,
+            event_type_i32: i32::from_le_bytes(
+                embedded[4..8].try_into().map_err(|_| "camera event type decode")?,
+            ),
+            signed_delta_i32: i32::from_le_bytes(
+                embedded[8..12].try_into().map_err(|_| "camera event delta decode")?,
+            ),
+            embedded_event_16_bytes: embedded,
+        });
+        nodes.push(node);
+        node = read_usize(
+            node.checked_add(0x90).ok_or("camera input next address overflow")?,
+        )
+        .ok_or("camera input next pointer is unreadable")?;
+    }
+    Ok((rows, nodes))
+}
+
+fn begin_camera_event_producer(
+    camera_root: usize,
+    producer_rva: u32,
+    event_head: usize,
+    frame_scalar_f32_bits: Option<u32>,
+    producer_flag_0_u8: u8,
+    producer_flag_1_u8: u8,
+) -> Result<(), String> {
+    let auth = authenticate_camera_root(camera_root)?;
+    if auth.owner.checked_add(0x508).and_then(read_usize).filter(|value| *value != 0).is_none()
+        || auth.owner.checked_add(0x500).and_then(read_usize).filter(|value| *value != 0).is_none()
+    {
+        return Err("camera action/cursor producer pointers are null or unreadable".into());
+    }
+    let (input_events, event_nodes) = capture_camera_input_nodes(event_head)?;
+    let batch = RawA729CameraEventBatch {
+        producer_rva,
+        owner_kind: auth.owner_kind,
+        owner_vtable_rva: auth.owner_vtable_rva,
+        action_source_owner_offset: 0x508,
+        cursor_source_owner_offset: 0x500,
+        event_list_owner_offset: auth.event_list_offset as u32,
+        frame_scalar_f32_bits,
+        producer_flag_0_u8,
+        producer_flag_1_u8,
+        input_events,
+        map_picks: Vec::new(),
+        current_eye_before_f32_bits: camera_vec3_bits(camera_root, 0x680)
+            .ok_or("camera current eye before producer is unreadable")?,
+        target_eye_before_f32_bits: camera_vec3_bits(camera_root, 0x698)
+            .ok_or("camera target eye before producer is unreadable")?,
+        target_look_at_before_f32_bits: camera_vec3_bits(camera_root, 0x6a4)
+            .ok_or("camera target look-at before producer is unreadable")?,
+        current_eye_after_f32_bits: [0; 3],
+        target_eye_after_f32_bits: [0; 3],
+        target_look_at_after_f32_bits: [0; 3],
+    };
+    CURRENT_CAMERA_EVENT_PRODUCER.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_some() {
+            return Err("nested C03 camera producers are not authenticated".into());
+        }
+        *slot = Some(PendingCameraEventProducer {
+            camera_root,
+            batch,
+            event_nodes,
+            rejected: false,
+        });
+        Ok(())
+    })
+}
+
+fn finish_camera_event_producer() -> Result<(), String> {
+    let Some(mut pending) = CURRENT_CAMERA_EVENT_PRODUCER.with(|slot| slot.borrow_mut().take()) else {
+        return Err("C03 camera producer exited without an active capture".into());
+    };
+    let auth = authenticate_camera_root(pending.camera_root)?;
+    if auth.owner_kind != pending.batch.owner_kind
+        || auth.owner_vtable_rva != pending.batch.owner_vtable_rva
+        || auth.camera_root_offset == 0
+        || pending.rejected
+        || pending.event_nodes.len() != pending.batch.input_events.len()
+    {
+        return Err("C03 camera producer identity changed during capture".into());
+    }
+    for (row, node) in pending.batch.input_events.iter_mut().zip(&pending.event_nodes) {
+        row.consumed_after_u8 = read_u8(
+            node.checked_add(0x80).ok_or("camera consumed-after address overflow")?,
+        )
+        .ok_or("camera consumed-after byte is unreadable")?;
+    }
+    pending.batch.current_eye_after_f32_bits = camera_vec3_bits(pending.camera_root, 0x680)
+        .ok_or("camera current eye after producer is unreadable")?;
+    pending.batch.target_eye_after_f32_bits = camera_vec3_bits(pending.camera_root, 0x698)
+        .ok_or("camera target eye after producer is unreadable")?;
+    pending.batch.target_look_at_after_f32_bits = camera_vec3_bits(pending.camera_root, 0x6a4)
+        .ok_or("camera target look-at after producer is unreadable")?;
+    let mut state = STATE
+        .get()
+        .and_then(|value| value.lock().ok())
+        .ok_or("render hook state is unavailable")?;
+    let queue = state
+        .pending_camera_event_batches
+        .entry(pending.camera_root)
+        .or_default();
+    if queue.len() == MAX_PENDING_CAMERA_EVENT_BATCHES_PER_ROOT {
+        queue.clear();
+        return Err("pending C03 camera-event queue overflowed before a render envelope".into());
+    }
+    queue.push_back(pending.batch);
+    Ok(())
+}
+
+unsafe extern "system" fn hook_camera_wheel_update(
+    camera_root: usize,
+    action_source: usize,
+    cursor_source: usize,
+    event_list_slot: usize,
+    frame_scalar: f32,
+    flag_0: u8,
+    flag_1: u8,
+) {
+    let begin = authenticate_camera_root(camera_root).and_then(|auth| {
+        if auth.owner.checked_add(0x508).and_then(read_usize) != Some(action_source)
+            || auth.owner.checked_add(0x500).and_then(read_usize) != Some(cursor_source)
+            || auth.owner.checked_add(auth.event_list_offset) != Some(event_list_slot)
+        {
+            return Err("C03 wheel producer arguments do not match authenticated owner offsets".into());
+        }
+        let event_head = read_usize(event_list_slot)
+            .ok_or("C03 wheel event-list head is unreadable")?;
+        begin_camera_event_producer(
+            camera_root,
+            CAMERA_WHEEL_UPDATE_RVA,
+            event_head,
+            Some(frame_scalar.to_bits()),
+            flag_0,
+            flag_1,
+        )
+    });
+    if begin.is_err() {
+        reject();
+    }
+    let original: CameraWheelUpdateFn =
+        unsafe { mem::transmute(ORIGINAL_CAMERA_WHEEL_UPDATE.load(Ordering::Acquire)) };
+    unsafe {
+        original(
+            camera_root,
+            action_source,
+            cursor_source,
+            event_list_slot,
+            frame_scalar,
+            flag_0,
+            flag_1,
+        )
+    };
+    if begin.is_ok() && finish_camera_event_producer().is_err() {
+        reject();
+    }
+}
+
+unsafe extern "system" fn hook_camera_vertical_event_producer(owner: usize, flag: u8) {
+    let begin = (|| {
+        let camera_root = owner.checked_add(0x750).ok_or("vertical camera root overflow")?;
+        let auth = authenticate_camera_root(camera_root)?;
+        if auth.owner != owner || auth.owner_kind != RawA729CameraOwnerKind::InGame {
+            return Err("vertical camera producer is not the authenticated in-game owner".into());
+        }
+        let event_head = read_usize(
+            owner.checked_add(auth.event_list_offset).ok_or("vertical event-list address overflow")?,
+        )
+        .ok_or("vertical camera event-list head is unreadable")?;
+        begin_camera_event_producer(
+            camera_root,
+            CAMERA_VERTICAL_EVENT_PRODUCER_RVA,
+            event_head,
+            None,
+            flag,
+            0,
+        )
+    })();
+    if begin.is_err() {
+        reject();
+    }
+    let original: CameraVerticalEventProducerFn = unsafe {
+        mem::transmute(ORIGINAL_CAMERA_VERTICAL_EVENT_PRODUCER.load(Ordering::Acquire))
+    };
+    unsafe { original(owner, flag) };
+    if begin.is_ok() && finish_camera_event_producer().is_err() {
+        reject();
+    }
+}
+
+unsafe extern "system" fn hook_camera_map_pick(
+    source: usize,
+    output_world_xyz: usize,
+    input_screen_xy: usize,
+    mode: u8,
+) -> usize {
+    let input = read_u32(input_screen_xy).zip(read_u32(input_screen_xy.saturating_add(4)));
+    let original: CameraMapPickFn =
+        unsafe { mem::transmute(ORIGINAL_CAMERA_MAP_PICK.load(Ordering::Acquire)) };
+    let result = unsafe { original(source, output_world_xyz, input_screen_xy, mode) };
+    CURRENT_CAMERA_EVENT_PRODUCER.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(pending) = slot.as_mut() else {
+            return;
+        };
+        if pending.batch.map_picks.len() == MAX_CAMERA_INPUT_NODES {
+            pending.rejected = true;
+            return;
+        }
+        let output = camera_vec3_bits(output_world_xyz, 0);
+        match (input, output, u32::try_from(pending.batch.map_picks.len())) {
+            (Some((x, y)), Some(world), Ok(call_ordinal)) => {
+                pending.batch.map_picks.push(RawA729CameraMapPick {
+                    call_ordinal,
+                    mode_u8: mode,
+                    screen_xy_f32_bits: [x, y],
+                    world_xyz_f32_bits: world,
+                });
+            }
+            _ => pending.rejected = true,
+        }
+    });
+    result
+}
+
+fn take_camera_event_batches(carrier: usize, carrier_ordinal: u8) -> Result<Vec<RawA729CameraEventBatch>, String> {
+    let carrier_offset = [0x10usize, 0x230, 0x450]
+        .get(usize::from(carrier_ordinal))
+        .copied()
+        .ok_or("camera event join carrier ordinal is outside 0..=2")?;
+    let root = carrier
+        .checked_sub(carrier_offset)
+        .ok_or("camera event join carrier underflowed")?;
+    let mut state = STATE
+        .get()
+        .and_then(|value| value.lock().ok())
+        .ok_or("render hook state is unavailable")?;
+    Ok(state
+        .pending_camera_event_batches
+        .remove(&root)
+        .unwrap_or_default()
+        .into_iter()
+        .collect())
+}
+
+unsafe extern "system" fn hook_envelope(renderer: usize, camera: usize, carrier_ordinal: u32) {
     let submit_index = NEXT_SUBMIT_ID.fetch_add(1, Ordering::AcqRel);
+    let mut camera_before = u8::try_from(carrier_ordinal)
+        .ok()
+        .filter(|ordinal| *ordinal <= 2)
+        .ok_or_else(|| "a729 render envelope camera carrier ordinal is outside 0..=2".to_string())
+        .and_then(|ordinal| capture_authenticated_camera_carrier(camera, ordinal).map(|row| (ordinal, row)));
+    let camera_event_batches = camera_before
+        .as_ref()
+        .ok()
+        .and_then(|(ordinal, carrier)| carrier.as_ref().map(|_| *ordinal))
+        .map(|ordinal| take_camera_event_batches(camera, ordinal))
+        .transpose();
+    match camera_event_batches {
+        Ok(Some(batches)) => {
+            if let Ok((_, Some(carrier))) = &mut camera_before {
+                carrier.camera_event_batches = batches;
+            }
+        }
+        Err(error) => camera_before = Err(error),
+        Ok(None) => {}
+    }
     CURRENT_SUBMIT.with(|slot| {
         let mut slot = slot.borrow_mut();
         if slot.is_some() {
@@ -4682,7 +5231,8 @@ unsafe extern "system" fn hook_envelope(renderer: usize, camera: usize, interpol
         }
         *slot = Some(PendingSubmit {
             submit_index,
-            interpolation_phase_f32_bits: interpolation_bits,
+            camera_carrier_ordinal: camera_before.as_ref().map(|row| row.0).unwrap_or(0),
+            camera_carrier: camera_before.as_ref().ok().and_then(|row| row.1.clone()),
             next_builder_ordinal: 0,
             next_global_draw_order: 0,
             next_entity_pass_ordinal: 0,
@@ -4693,13 +5243,20 @@ unsafe extern "system" fn hook_envelope(renderer: usize, camera: usize, interpol
             texture_resource_snapshots: Vec::new(),
             shader_resource_view_snapshots: Vec::new(),
             render_target_view_snapshots: Vec::new(),
-            rejected: false,
+            rejected: camera_before.is_err(),
         });
     });
     let original: EnvelopeFn = unsafe { mem::transmute(ORIGINAL_ENVELOPE.load(Ordering::Acquire)) };
-    unsafe { original(renderer, camera, interpolation_bits) };
+    unsafe { original(renderer, camera, carrier_ordinal) };
     let completed = CURRENT_SUBMIT.with(|slot| slot.borrow_mut().take());
     if let Some(mut completed) = completed {
+        let mut camera_after = capture_authenticated_camera_carrier(camera, completed.camera_carrier_ordinal);
+        if let (Ok(Some(after)), Some(before)) = (&mut camera_after, &completed.camera_carrier) {
+            after.camera_event_batches = before.camera_event_batches.clone();
+        }
+        if camera_after.as_ref().ok() != Some(&completed.camera_carrier) {
+            completed.rejected = true;
+        }
         let all_draws = completed
             .packets
             .len()
@@ -4729,7 +5286,8 @@ unsafe extern "system" fn hook_envelope(renderer: usize, camera: usize, interpol
             }
             let submit = RawParticleSubmit {
                 submit_index: completed.submit_index,
-                interpolation_phase_f32_bits: completed.interpolation_phase_f32_bits,
+                camera_carrier_ordinal: completed.camera_carrier_ordinal,
+                camera_carrier: completed.camera_carrier,
                 packets: completed.packets,
                 entity_submissions: completed.entity_submissions,
             };
@@ -5377,10 +5935,14 @@ unsafe extern "system" fn hook_entity_factory(
     }
     if entity != 0 {
         if let Some(mut state) = STATE.get().and_then(|value| value.lock().ok()) {
+            let registration_token = state
+                .entity_definition_tokens
+                .get(&definition_ptr)
+                .cloned();
             let identity = EntityIdentity {
                 stable_id,
                 definition_ptr,
-                registration_token: None,
+                registration_token,
                 ordered_effect_instance_ids: pending.ordered_effect_instance_ids,
             };
             if state.entities.insert(entity, identity).is_some() {
@@ -5398,6 +5960,40 @@ unsafe extern "system" fn hook_entity_factory(
         }
     });
     entity
+}
+
+unsafe extern "system" fn hook_entity_definition_lookup(
+    registry: usize,
+    entity_name_ptr: usize,
+) -> usize {
+    let entity_name = read_c_string(entity_name_ptr, 512);
+    let original: EntityDefinitionLookupFn = unsafe {
+        mem::transmute(ORIGINAL_ENTITY_DEFINITION_LOOKUP.load(Ordering::Acquire))
+    };
+    let definition_ptr = unsafe { original(registry, entity_name_ptr) };
+    if definition_ptr == 0 {
+        return definition_ptr;
+    }
+    let Some(entity_name) = entity_name.filter(|token| !token.is_empty()) else {
+        reject();
+        return definition_ptr;
+    };
+    let Some(mut state) = STATE.get().and_then(|value| value.lock().ok()) else {
+        reject();
+        return definition_ptr;
+    };
+    if state
+        .entity_definition_tokens
+        .get(&definition_ptr)
+        .is_some_and(|existing| existing != &entity_name)
+    {
+        reject_locked(&mut state);
+        return definition_ptr;
+    }
+    state
+        .entity_definition_tokens
+        .insert(definition_ptr, entity_name);
+    definition_ptr
 }
 
 unsafe extern "system" fn hook_entity_named_factory(
@@ -6321,6 +6917,221 @@ unsafe extern "system" fn hook_present_render_root(renderer: usize) {
     }
 }
 
+unsafe extern "system" fn hook_snow_mud_producer(
+    producer: usize,
+    texture_resource_slot: *mut usize,
+    force_update: u8,
+) {
+    let original: SnowMudProducerFn =
+        unsafe { mem::transmute(ORIGINAL_SNOW_MUD_PRODUCER.load(Ordering::Acquire)) };
+    let slot_address = texture_resource_slot as usize;
+    let before = (slot_address != 0)
+        .then(|| (read_usize(slot_address), read_usize(slot_address)))
+        .and_then(|(first, second)| (first == second).then_some(first))
+        .flatten();
+    let nested = CURRENT_SNOW_MUD_PRODUCER.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_some() {
+            true
+        } else {
+            *slot = Some(PendingSnowMudProducer {
+                resource_before: before.unwrap_or(0),
+                upload_expected: before.is_some_and(|resource| resource != 0),
+                upload_count: 0,
+                rejected: before.is_none(),
+            });
+            false
+        }
+    });
+    if nested {
+        reject_snow_mud_capture();
+        unsafe { original(producer, texture_resource_slot, force_update) };
+        return;
+    }
+    unsafe { original(producer, texture_resource_slot, force_update) };
+    let after = (slot_address != 0)
+        .then(|| (read_usize(slot_address), read_usize(slot_address)))
+        .and_then(|(first, second)| (first == second).then_some(first))
+        .flatten();
+    let completed = CURRENT_SNOW_MUD_PRODUCER.with(|slot| slot.borrow_mut().take());
+    let admitted = completed.filter(|pending| {
+        !pending.rejected
+            && pending.upload_count == u8::from(pending.upload_expected)
+            && after.is_some_and(|resource_after| {
+                if pending.upload_expected {
+                    resource_after == pending.resource_before
+                } else {
+                    resource_after != 0
+                }
+            })
+    });
+    match admitted {
+        Some(pending) if !pending.upload_expected => {
+            if let Some(mut state) = STATE.get().and_then(|value| value.lock().ok()) {
+                state.latest_snow_mud_observation = None;
+            }
+        }
+        Some(_) => {}
+        None => reject_snow_mud_capture(),
+    }
+}
+
+unsafe extern "system" fn hook_snow_mud_upload(
+    upload_context: usize,
+    cpu_bytes: *const u8,
+    width: u32,
+    height: u32,
+    bytes_per_texel: u32,
+    resource: usize,
+) {
+    let original: SnowMudUploadFn =
+        unsafe { mem::transmute(ORIGINAL_SNOW_MUD_UPLOAD.load(Ordering::Acquire)) };
+    let active = CURRENT_SNOW_MUD_PRODUCER.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(pending) = slot.as_mut() else {
+            return false;
+        };
+        pending.upload_count = pending.upload_count.saturating_add(1);
+        if pending.upload_count != 1 || !pending.upload_expected {
+            pending.rejected = true;
+            return false;
+        }
+        true
+    });
+    if active {
+        match capture_snow_mud_preupload(
+            cpu_bytes,
+            width,
+            height,
+            bytes_per_texel,
+            resource,
+        ) {
+            Ok(observation) => {
+                if let Some(mut state) = STATE.get().and_then(|value| value.lock().ok()) {
+                    state.latest_snow_mud_observation = Some(Arc::new(observation));
+                } else {
+                    mark_current_snow_mud_rejected();
+                }
+            }
+            Err(_) => {
+                mark_current_snow_mud_rejected();
+                reject_snow_mud_capture();
+            }
+        }
+    } else if CURRENT_SNOW_MUD_PRODUCER.with(|slot| slot.borrow().is_some()) {
+        reject_snow_mud_capture();
+    }
+    unsafe {
+        original(
+            upload_context,
+            cpu_bytes,
+            width,
+            height,
+            bytes_per_texel,
+            resource,
+        )
+    };
+}
+
+fn mark_current_snow_mud_rejected() {
+    CURRENT_SNOW_MUD_PRODUCER.with(|slot| {
+        if let Some(pending) = slot.borrow_mut().as_mut() {
+            pending.rejected = true;
+        }
+    });
+}
+
+fn reject_snow_mud_capture() {
+    if let Some(mut state) = STATE.get().and_then(|value| value.lock().ok()) {
+        state.latest_snow_mud_observation = None;
+        reject_locked(&mut state);
+    }
+}
+
+fn capture_snow_mud_preupload(
+    cpu_bytes: *const u8,
+    width: u32,
+    height: u32,
+    bytes_per_texel: u32,
+    resource: usize,
+) -> Result<RawSnowMudTextureObservation, String> {
+    if cpu_bytes.is_null()
+        || resource == 0
+        || width != portable_render_stream::SNOW_MUD_TEXTURE_WIDTH
+        || height != portable_render_stream::SNOW_MUD_TEXTURE_HEIGHT
+        || bytes_per_texel != portable_render_stream::SNOW_MUD_TEXTURE_BYTES_PER_TEXEL
+    {
+        return Err("SnowMudData upload descriptor is not the authenticated a729 descriptor".into());
+    }
+    let game_hour_before = capture_present_game_hour_raw()?;
+    let qpc_before =
+        query_performance_counter().ok_or("SnowMudData pre-copy QueryPerformanceCounter failed")?;
+    let mut bytes = vec![0; portable_render_stream::SNOW_MUD_TEXTURE_BYTE_LENGTH];
+    read_exact(cpu_bytes as usize, &mut bytes)
+        .ok_or("SnowMudData CPU pre-upload bytes are unreadable")?;
+    let producer_qpc_ticks =
+        query_performance_counter().ok_or("SnowMudData QueryPerformanceCounter failed")?;
+    let producer_game_hour_raw = capture_present_game_hour_raw()?;
+    if producer_qpc_ticks <= qpc_before || producer_game_hour_raw != game_hour_before {
+        return Err("SnowMudData game hour/QPC changed during the CPU pre-upload copy".into());
+    }
+    let (process_start_nonce, hook_epoch_nonce, producer_qpc_frequency_hz) = {
+        let epoch = EARLY_CAPTURE_EPOCH
+            .get()
+            .ok_or("SnowMudData early capture epoch is unavailable")?
+            .lock()
+            .map_err(|_| "SnowMudData early capture epoch is poisoned")?;
+        let process = epoch
+            .process
+            .as_ref()
+            .ok_or("SnowMudData process epoch is unavailable")?;
+        if process.executable_sha256 != portable_render_stream::A729_EXECUTABLE_SHA256
+            || process.process_start_nonce == 0
+            || epoch.hook_epoch_nonce == 0
+            || epoch.qpc_frequency_hz == 0
+        {
+            return Err("SnowMudData capture epoch/binary identity is incomplete".into());
+        }
+        (
+            process.process_start_nonce,
+            epoch.hook_epoch_nonce,
+            epoch.qpc_frequency_hz,
+        )
+    };
+    let producer_ordinal = NEXT_SNOW_MUD_PRODUCER_ORDINAL
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            current.checked_add(1)
+        })
+        .map_err(|_| "SnowMudData producer ordinal overflowed")?;
+    if producer_ordinal == 0 {
+        return Err("SnowMudData producer ordinal is zero".into());
+    }
+    let payload_sha256 = format!("{:x}", Sha256::digest(&bytes));
+    Ok(RawSnowMudTextureObservation {
+        executable_sha256: portable_render_stream::A729_EXECUTABLE_SHA256.into(),
+        producer_function_rva: portable_render_stream::SNOW_MUD_PRODUCER_FUNCTION_RVA,
+        upload_callsite_rva: portable_render_stream::SNOW_MUD_UPLOAD_CALLSITE_RVA,
+        upload_target_rva: portable_render_stream::SNOW_MUD_UPLOAD_TARGET_RVA,
+        producer_instructions_sha256:
+            portable_render_stream::SNOW_MUD_PRODUCER_INSTRUCTIONS_SHA256.into(),
+        upload_instructions_sha256:
+            portable_render_stream::SNOW_MUD_UPLOAD_INSTRUCTIONS_SHA256.into(),
+        process_start_nonce,
+        hook_epoch_nonce,
+        producer_ordinal,
+        producer_game_hour_raw,
+        producer_qpc_ticks,
+        producer_qpc_frequency_hz,
+        width,
+        height,
+        row_pitch: portable_render_stream::SNOW_MUD_TEXTURE_ROW_PITCH,
+        bytes_per_texel,
+        format: "DXGI_FORMAT_B8G8R8A8_UNORM".into(),
+        bytes,
+        payload_sha256,
+    })
+}
+
 fn has_pending_render_frame() -> bool {
     STATE
         .get()
@@ -6399,6 +7210,22 @@ fn complete_render_frame_locked(
     }
     validate_render_frame_queues(&state)?;
     let static_catalog_fragment = build_static_catalog_fragment(&state)?;
+    let snow_mud_texture = match state.latest_snow_mud_observation.as_ref() {
+        Some(observation)
+            if observation.process_start_nonce == receipt.process_start_nonce
+                && observation.hook_epoch_nonce == receipt.hook_epoch_nonce
+                && observation.producer_qpc_frequency_hz == receipt.frequency_hz
+                && observation.producer_qpc_ticks <= receipt.ticks
+                && observation.producer_game_hour_raw <= receipt.game_hour_raw =>
+        {
+            Some(Arc::clone(observation))
+        }
+        Some(_) => {
+            state.latest_snow_mud_observation = None;
+            return Err("SnowMudData producer observation crosses the Present epoch/hour/order".into());
+        }
+        None => None,
+    };
     let frame = RawRenderFrameCapture {
         frame_sequence: pending.frame_sequence,
         submit_index: pending.submit_index,
@@ -6407,7 +7234,15 @@ fn complete_render_frame_locked(
         presentation_qpc_frequency_hz: receipt.frequency_hz,
         process_start_nonce: receipt.process_start_nonce,
         hook_epoch_nonce: receipt.hook_epoch_nonce,
+        observed_weather_region_count: state.weather_runtime_codes.len() as u64,
+        active_airborne_weather_region_count: state
+            .weather_runtime_codes
+            .values()
+            .filter(|code| **code != 0)
+            .count() as u64,
+        queued_weather_change_count: state.weather_changes.len() as u64,
         game_hour_raw: receipt.game_hour_raw,
+        snow_mud_texture,
         events: state.render_order_events.drain(..).collect(),
         static_d3d_captures: state.static_d3d_captures.drain(..).collect(),
         static_catalog_fragment,
@@ -7097,6 +7932,21 @@ unsafe extern "system" fn hook_weather(producer: usize, view: usize, release_con
         reject();
         return;
     };
+    let observed_code = match current_code {
+        0 | 2 | 3 | 4 | 5 | 7 => current_code,
+        _ => {
+            reject();
+            return;
+        }
+    };
+    let Some(mut state) = STATE.get().and_then(|value| value.lock().ok()) else {
+        reject();
+        return;
+    };
+    state
+        .weather_runtime_codes
+        .insert(pending.strategic_region_id, observed_code);
+    drop(state);
     if current_code == pending.previous_code {
         return;
     }
@@ -7180,6 +8030,7 @@ fn capture_weather_entity(entity: usize, state: &HookState) -> Option<Option<Raw
     let value = state.entities.get(&entity)?;
     Some(Some(RawWeatherEntityRef {
         entity_instance_id: value.stable_id,
+        registration_token: value.registration_token.clone(),
         definition_ptr: value.definition_ptr,
         ordered_effect_instance_ids: value.ordered_effect_instance_ids.clone(),
     }))
@@ -7466,6 +8317,113 @@ fn read_exact(address: usize, out: &mut [u8]) -> Option<()> {
         )
     };
     (ok != 0 && read == out.len()).then_some(())
+}
+
+fn capture_authenticated_camera_carrier(
+    carrier: usize,
+    carrier_ordinal: u8,
+) -> Result<Option<RawA729CameraCarrier>, String> {
+    const ROOT_BYTES: usize = 0x740;
+    const CARRIER_BYTES: usize = 0x1b4;
+    let carrier_offset = [0x10usize, 0x230, 0x450]
+        .get(usize::from(carrier_ordinal))
+        .copied()
+        .ok_or_else(|| "a729 camera carrier ordinal is outside 0..=2".to_string())?;
+    let Some(root) = carrier.checked_sub(carrier_offset) else {
+        return Ok(None);
+    };
+    let mut first = vec![0u8; ROOT_BYTES];
+    let mut second = vec![0u8; ROOT_BYTES];
+    if read_exact(root, &mut first).is_none() || read_exact(root, &mut second).is_none() {
+        return Ok(None);
+    }
+    if first != second {
+        return Err("a729 camera root changed during capture".into());
+    }
+    let owner = usize::from_le_bytes(
+        first[0x08..0x10]
+            .try_into()
+            .map_err(|_| "a729 camera owner pointer decode")?,
+    );
+    if owner == 0 {
+        return Ok(None);
+    }
+    let Some(owner_vtable) = read_usize(owner) else {
+        return Ok(None);
+    };
+    let base = MODULE_BASE.load(Ordering::Acquire);
+    let Some(owner_vtable_rva) = owner_vtable.checked_sub(base) else {
+        return Ok(None);
+    };
+    let (owner_kind, owner_camera_offset) = match owner_vtable_rva {
+        0x0293_3710 => (RawA729CameraOwnerKind::FrontEnd, 0x610usize),
+        0x0295_2510 => (RawA729CameraOwnerKind::InGame, 0x750usize),
+        0x0299_3698 => (RawA729CameraOwnerKind::Third, 0x638usize),
+        _ => return Ok(None),
+    };
+    if owner.checked_add(owner_camera_offset) != Some(root) {
+        return Ok(None);
+    }
+    if read_usize(owner) != Some(owner_vtable) {
+        return Err("a729 camera owner vtable changed during capture".into());
+    }
+    let u32_at = |offset: usize| -> Result<u32, String> {
+        Ok(u32::from_le_bytes(
+            first[offset..offset + 4]
+                .try_into()
+                .map_err(|_| "a729 camera u32 field decode")?,
+        ))
+    };
+    let i32_at = |offset: usize| -> Result<i32, String> {
+        Ok(i32::from_le_bytes(
+            first[offset..offset + 4]
+                .try_into()
+                .map_err(|_| "a729 camera i32 field decode")?,
+        ))
+    };
+    let vec3_at = |offset: usize| -> Result<[u32; 3], String> {
+        Ok([u32_at(offset)?, u32_at(offset + 4)?, u32_at(offset + 8)?])
+    };
+    let min_height_i32 = i32_at(0x6d0)?;
+    let max_height_i32 = i32_at(0x6d4)?;
+    let update_produced_u8 = first[0x6d8];
+    let special_free_state_u8 = first[0x6d9];
+    let wrap_branch_u8 = first[0x6f8];
+    if min_height_i32 > max_height_i32
+        || update_produced_u8 > 1
+        || special_free_state_u8 > 1
+        || wrap_branch_u8 > 1
+        || vec3_at(0x190)? != vec3_at(0x680)?
+        || vec3_at(0x19c)? != vec3_at(0x68c)?
+    {
+        return Err("a729 camera root state invariant mismatch".into());
+    }
+    Ok(Some(RawA729CameraCarrier {
+        carrier_ordinal,
+        carrier_offset: carrier_offset as u32,
+        owner_kind,
+        owner_vtable_rva: owner_vtable_rva as u32,
+        render_view_436_bytes: first[carrier_offset..carrier_offset + CARRIER_BYTES].to_vec(),
+        canonical_render_view_436_bytes: first[0x10..0x10 + CARRIER_BYTES].to_vec(),
+        previous_current_eye_f32_bits: vec3_at(0x674)?,
+        current_eye_f32_bits: vec3_at(0x680)?,
+        current_look_at_f32_bits: vec3_at(0x68c)?,
+        target_eye_f32_bits: vec3_at(0x698)?,
+        target_look_at_f32_bits: vec3_at(0x6a4)?,
+        viewport_i32: [
+            i32_at(0x6c0)?,
+            i32_at(0x6c4)?,
+            i32_at(0x6c8)?,
+            i32_at(0x6cc)?,
+        ],
+        min_height_i32,
+        max_height_i32,
+        update_produced_u8,
+        special_free_state_u8,
+        ramp_f32_bits: u32_at(0x6f4)?,
+        wrap_branch_u8,
+        camera_event_batches: Vec::new(),
+    }))
 }
 fn verify_sentinel(address: usize, expected: &[u8; 16], label: &str) -> Result<(), String> {
     let mut actual = [0u8; 16];
@@ -9746,6 +10704,7 @@ fn addresses(base: usize) -> InstalledAddresses {
         particle_final_draw: base + PARTICLE_FINAL_DRAW_RVA as usize,
         entity_factory: base + ENTITY_FACTORY_RVA as usize,
         entity_named_factory: base + ENTITY_NAMED_FACTORY_RVA,
+        entity_definition_lookup: base + ENTITY_DEFINITION_LOOKUP_RVA,
         entity_destroy: base + ENTITY_DESTROY_RVA as usize,
         entity_render_root: base + ENTITY_RENDER_ROOT_RVA as usize,
         entity_final_draw: base + ENTITY_FINAL_DRAW_RVA as usize,
@@ -9765,9 +10724,14 @@ fn addresses(base: usize) -> InstalledAddresses {
         map_scene_render_root: base + MAP_SCENE_RENDER_ROOT_RVA as usize,
         post_process_render_root: base + POST_PROCESS_RENDER_ROOT_RVA as usize,
         present_render_root: base + PRESENT_RENDER_ROOT_RVA as usize,
+        snow_mud_producer: base + SNOW_MUD_PRODUCER_RVA,
+        snow_mud_upload: base + SNOW_MUD_UPLOAD_RVA,
+        camera_wheel_update: base + CAMERA_WHEEL_UPDATE_RVA as usize,
+        camera_vertical_event_producer: base + CAMERA_VERTICAL_EVENT_PRODUCER_RVA as usize,
+        camera_map_pick: base + CAMERA_MAP_PICK_RVA as usize,
     }
 }
-fn targets(a: InstalledAddresses) -> [usize; 32] {
+fn targets(a: InstalledAddresses) -> [usize; ENGINE_HOOK_COUNT] {
     [
         a.vfs_open_constructor,
         a.window_backbuffer_rtv_producer,
@@ -9783,6 +10747,7 @@ fn targets(a: InstalledAddresses) -> [usize; 32] {
         a.particle_final_draw,
         a.entity_factory,
         a.entity_named_factory,
+        a.entity_definition_lookup,
         a.entity_destroy,
         a.entity_render_root,
         a.entity_final_draw,
@@ -9801,6 +10766,11 @@ fn targets(a: InstalledAddresses) -> [usize; 32] {
         a.map_scene_render_root,
         a.post_process_render_root,
         a.present_render_root,
+        a.snow_mud_producer,
+        a.snow_mud_upload,
+        a.camera_wheel_update,
+        a.camera_vertical_event_producer,
+        a.camera_map_pick,
     ]
 }
 
@@ -10091,7 +11061,8 @@ mod tests {
     fn enqueue_empty_runtime(state: &mut HookState, submit_index: u64) {
         state.completed.push_back(RawParticleSubmit {
             submit_index,
-            interpolation_phase_f32_bits: 0,
+            camera_carrier_ordinal: 0,
+            camera_carrier: None,
             packets: Vec::new(),
             entity_submissions: Vec::new(),
         });
@@ -10841,13 +11812,15 @@ mod tests {
         assert_eq!(engine_hook_specs(addresses(0)).len(), ENGINE_HOOK_COUNT);
         assert_eq!(BOOTSTRAP_HOOK_COUNT, 2);
         assert_eq!(HARDWARE_D3D_HOOK_COUNT, 19);
-        assert_eq!(STAGED_HOOK_COUNT, 51);
-        assert_eq!(READY_HOOK_COUNT, 53);
+        assert_eq!(STAGED_HOOK_COUNT, 57);
+        assert_eq!(READY_HOOK_COUNT, 59);
         assert_eq!(staged_hook_count_for_group_mask(0x01), Some(19));
         assert_eq!(staged_hook_count_for_group_mask(0x03), Some(21));
-        assert_eq!(staged_hook_count_for_group_mask(0xff), Some(51));
+        assert_eq!(staged_hook_count_for_group_mask(0x1ff), Some(54));
+        assert_eq!(staged_hook_count_for_group_mask(0x3ff), Some(57));
         assert_eq!(staged_hook_count_for_group_mask(0x02), None);
-        assert_eq!(staged_hook_count_for_group_mask(0x101), None);
+        assert_eq!(staged_hook_count_for_group_mask(0x101), Some(21));
+        assert_eq!(staged_hook_count_for_group_mask(0x201), Some(22));
         assert_eq!(
             parse_diagnostic_stage_mask(None).unwrap(),
             StagedHookSelection {
@@ -10862,7 +11835,14 @@ mod tests {
                 group_mask: STAGED_HOOK_GROUP_COM,
             }
         );
-        assert!(parse_diagnostic_stage_mask(Some("0xff")).is_err());
+        assert_eq!(
+            parse_diagnostic_stage_mask(Some("0x1ff")).unwrap(),
+            StagedHookSelection {
+                diagnostic_stage_probe: true,
+                group_mask: 0x1ff,
+            }
+        );
+        assert!(parse_diagnostic_stage_mask(Some("0x3ff")).is_err());
         assert!(parse_diagnostic_stage_mask(Some("0x02")).is_err());
     }
 

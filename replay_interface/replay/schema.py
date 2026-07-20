@@ -506,6 +506,7 @@ FIELD_SOURCES: Dict[str, str] = {
     # DISTINCT live-only leaf from the save-shaped decisions.{active,timed,missions}:
     # each timed row is {decision, days, state, state_name}.
     "countries.*.decisions.timed_live": "C/M",
+    "countries.*.delayed_events": "C",
     "countries.*.diplomacy.wars": "S",
     # opinion is now LIVE-first (diplo_relations_live, M) with the save as the backstop: the
     # live reader measures the bilateral cached_sum net opinion (1113/1113 real ordered pairs
@@ -771,8 +772,8 @@ FIELD_SOURCES: Dict[str, str] = {
     # live per-ship roster from the global CShip registry (§12b). All M.
     "order_of_battle.ships": "M",
     # LIVE battle-plan orders (construction_orders_live, M). DISTINCT live-only list: per-army
-    # offensive/front orders, each {army_id, order_type, target_states}. target_states is the
-    # exact state-id set for type-5 (offensive) orders ONLY; non-type-5 geometry is RESISTED
+    # area-defense orders, each {army_id, order_type, target_states}. target_states is the
+    # exact state-id set for type-5 (area defense) orders ONLY; other geometry is RESISTED
     # (null target_states), never fabricated. army_id + target_states are RAW engine ints.
     "order_of_battle.battle_plan_orders": "M",
     # --- per-country OOB view (§12, derived rollup) ---
@@ -793,6 +794,8 @@ FIELD_SOURCES: Dict[str, str] = {
     "special_projects.facilities": "C/M",
     "special_projects.projects": "C/M",
     "special_projects.scientists": "C/M",
+    "special_projects.project_lifecycle": "M",
+    "special_projects.reward_history": "M",
     # resolved scientist TRAIT tokens (projects_live + defnames_live, M-derived). ADDED
     # ALONGSIDE trait_count via the direct trait def-pointer walk; absent when resolution is
     # off or the walk fails closed (no fabrication). A measured-empty [] = a traitless scientist.
@@ -819,6 +822,25 @@ FIELD_SOURCES: Dict[str, str] = {
     # the live reader resolves every per-state building level exactly (validated vs the melt).
     "states.*.buildings": "M/S",
     "states.*.province_buildings": "S",
+    # Compact domain 48 owns these sidecars. Building keys are exact numeric
+    # type identities (`type_0x????????`); known ids additionally carry the
+    # authenticated B8/X6 token. `partial_health_raw` is the exact fixed-5
+    # accumulator and must not be reinterpreted as a guessed damage fraction.
+    "states.*.construction_buildings_state_damage_live": "C",
+    "states.*.construction_buildings_state_damage_live.state_buildings": "C",
+    "states.*.construction_buildings_state_damage_live.state_buildings.*.level": "C",
+    "states.*.construction_buildings_state_damage_live.state_buildings.*.healthy_level": "C",
+    "states.*.construction_buildings_state_damage_live.state_buildings.*.partial_health_raw": "C",
+    "states.*.construction_buildings_state_damage_live.state_buildings.*.damaged": "C/D",
+    "states.*.construction_buildings_state_damage_live.state_buildings.*.token": "C/D",
+    "provinces.*.construction_buildings_state_damage_live": "C",
+    "provinces.*.construction_buildings_state_damage_live.state_id": "C",
+    "provinces.*.construction_buildings_state_damage_live.buildings": "C",
+    "provinces.*.construction_buildings_state_damage_live.buildings.*.level": "C",
+    "provinces.*.construction_buildings_state_damage_live.buildings.*.healthy_level": "C",
+    "provinces.*.construction_buildings_state_damage_live.buildings.*.partial_health_raw": "C",
+    "provinces.*.construction_buildings_state_damage_live.buildings.*.damaged": "C/D",
+    "provinces.*.construction_buildings_state_damage_live.buildings.*.token": "C/D",
     "states.*.victory_points_total": "M/S",       # live state_vp (state_vp_live, measured 0 kept)
     "states.*.victory_points_by_province": "M/S",  # live state_vp (per-province int VP map)
     "states.*.resources": "M/S",          # live state_fields_live (CState def table; live-first)
@@ -978,8 +1000,8 @@ FIELD_SOURCES: Dict[str, str] = {
     "raids.counters": "S",
     "raids.targets": "S",
     "raids.countries": "S",
-    "world_events.fired_events": "C/M/S",
-    "world_events.fired_events_complete": "C/M",
+    "world_events.fired_events": "C/S",
+    "world_events.fired_events_complete": "C",
     "world_events.pending_events": "S",
     "world_events.threat": "S",
     "world_events.sunk_convoys": "S",
@@ -1035,13 +1057,16 @@ def source_of(dotted_path: str) -> Optional[str]:
 # static tags (GER, SOV) AND dynamic/released tags (D01, D02, ...). Field/domain names
 # are lowercase, so they never match (schema integration review finding 2).
 _KEY_SEG = re.compile(r"^[A-Z][A-Z0-9]{1,2}$|^\d+$")
+_D48_TYPE_KEY = re.compile(r"^type_0x[0-9a-f]{8}$")
 
 
 def _normalize_path(dotted_path: str) -> str:
     out = []
     for i, seg in enumerate(dotted_path.split(".")):
         # The segment right after a known container name is an entity key -> '*'.
-        if i > 0 and (_KEY_SEG.match(seg) or seg == "*"):
+        if i > 0 and (
+            _KEY_SEG.match(seg) or _D48_TYPE_KEY.fullmatch(seg) or seg == "*"
+        ):
             out.append("*")
         else:
             out.append(seg)
@@ -1430,6 +1455,9 @@ class Country:
     # Always present; every leaf null until a live read folds it (no fabrication).
     production: Dict[str, Any] = field(default_factory=lambda: asdict(Production()))
     decisions: Dict[str, Any] = field(default_factory=lambda: asdict(Decisions()))
+    # Rooted d64 currently-pending scripted events. None means unavailable;
+    # [] is an authenticated full-replace empty list for this frame.
+    delayed_events: Optional[List[Dict[str, Any]]] = None
     diplomacy: Dict[str, Any] = field(default_factory=lambda: asdict(Diplomacy()))
     intel: Dict[str, Any] = field(default_factory=lambda: asdict(Intel()))
     commanders: Dict[str, Any] = field(default_factory=lambda: asdict(Commanders()))
@@ -1703,13 +1731,16 @@ class NavalAir:
 
 @dataclass
 class Supply:
-    """Live supply PROXY (§13). Where troops are, NOT the exact tooltip number.
+    """Live supply state (§13), mostly proxy and explicitly badged.
 
     ``by_province`` maps a province id to the proxy supply record
-    (``{current, capacity, gain, divisions}``). The exact per-province supply NUMBER
-    is a documented wall (DESIGN §B2); this is the validated division-province proxy
-    LAYER, badged so the UI shows it as an estimate, never authoritative. Always
-    present; null until a live read folds it.
+    (``{current, capacity, gain, divisions}``) and can additionally carry exact
+    stored ``disrupted_supply`` country/node rows. The nested
+    ``r2_logistics_attrition.country_disrupted_supply_available`` flag
+    distinguishes a validated, possibly empty source from a legacy/unwitnessed
+    stream; its row count is null when unavailable. The exact per-province
+    supply NUMBER is still a documented wall (DESIGN §B2); only the disruption
+    leaf is authoritative. Always present; null until a live read folds it.
     """
     by_province: Optional[Dict[str, Any]] = None
     source: Optional[str] = None        # "M" when a live read filled it, else null
@@ -1868,10 +1899,9 @@ class SpecialProjects:
 
     NEW first-class LIVE container, distinct from the SAVE-sourced per-country
     Country.projects / Country.scientists (§3.16, S) — different shape AND
-    provenance, so the save backstop never writes here. The live reader exposes
-    GLOBAL pools with NO resolvable owner TAG (facilities carry only a province id;
-    scientists carry no country), so the lists are world-scoped and are NOT keyed by
-    TAG — per-country attribution is an open ticket, never fabricated.
+    provenance, so the save backstop never writes here. Base facility/project/
+    scientist pools remain world-scoped. Exact lifecycle and fired-reward-history
+    extensions are owner-joined through the validated country walk and keyed by TAG.
 
     ``facilities`` each: {id, province, building(str|None), active_project_handle
     (raw static-def db-id handle, NOT a token name), active(bool),
@@ -1883,12 +1913,17 @@ class SpecialProjects:
     ``scientists`` each: {char_id, name_token(str|None), display_name(str|None),
     skills{specialization_nuclear/_naval/_air/_land: int}, trait_count(int|None)}.
     Trait NAMES are unresolved registry handles -> only the count is carried.
+    ``project_lifecycle`` carries reversible started plus completed per owned project.
+    ``reward_history`` preserves exact raw option/reward handles, signed province,
+    progress/date, CReference halves, and presence-qualified scoped references.
 
     null-but-present until a live read folds it; ``source`` self-badges "C" or "M".
     """
     facilities: Optional[List[Dict[str, Any]]] = None
     projects: Optional[List[Dict[str, Any]]] = None
     scientists: Optional[List[Dict[str, Any]]] = None
+    project_lifecycle: Optional[Dict[str, Any]] = None
+    reward_history: Optional[Dict[str, Any]] = None
     count: Optional[Dict[str, int]] = None   # {facilities, projects, scientists}
     source: Optional[str] = None             # "C"/"M" when a live read filled it
 
@@ -1952,9 +1987,9 @@ class OrderOfBattle:
     # folds it. Validator-inert (a new list key alongside the canonical sub-lists).
     ships: List[Dict[str, Any]] = field(default_factory=list)
     # LIVE battle-plan ORDERS (construction_orders_live, §12d, M). DISTINCT live-only list:
-    # per-army offensive/front orders, each {army_id, order_type, target_states}. target_states
-    # is the EXACT state-id set for type-5 (offensive) orders ONLY (107/108 EXACT vs save); non-
-    # type-5 order geometry is RESISTED (null target_states), never fabricated. army_id +
+    # per-army area-defense orders, each {army_id, order_type, target_states}. target_states
+    # is the EXACT state-id set for type-5 (area defense) orders ONLY (107/108 EXACT vs save);
+    # other order geometry is RESISTED (null target_states), never fabricated. army_id +
     # target_states are RAW engine ints (NOT TAGs). Defaults None (Optional) NOT [] so an
     # unmeasured frame reads None; a measured-empty [] (no battle plans) is written + protected.
     battle_plan_orders: Optional[List[Dict[str, Any]]] = None
@@ -2317,6 +2352,180 @@ _TOP_CONTAINERS = {
 }
 
 
+_D48_PARTIAL_HEALTH_PER_LEVEL = 10_000_000
+
+
+def _validate_d48_building_map(value: Any, ctx: str) -> List[str]:
+    problems: List[str] = []
+    if value is None:
+        return problems
+    if not isinstance(value, dict):
+        return [f"{ctx} should be dict|null"]
+    for type_key, row in value.items():
+        if not isinstance(type_key, str) or _D48_TYPE_KEY.fullmatch(type_key) is None:
+            problems.append(f"{ctx} has invalid building type key {type_key!r}")
+            continue
+        if not isinstance(row, dict):
+            problems.append(f"{ctx}.{type_key} should be dict")
+            continue
+        unexpected = sorted(
+            set(row) - {"level", "healthy_level", "partial_health_raw", "damaged", "token"}
+        )
+        if unexpected:
+            problems.append(f"{ctx}.{type_key} has unexpected fields {unexpected!r}")
+        level = row.get("level")
+        healthy = row.get("healthy_level")
+        partial = row.get("partial_health_raw")
+        damaged = row.get("damaged")
+        token = row.get("token")
+        if type(level) is not int or not 0 <= level <= 0xFFFFFFFF:
+            problems.append(f"{ctx}.{type_key}.level should be an unsigned 32-bit int")
+            continue
+        if "healthy_level" not in row:
+            problems.append(f"{ctx}.{type_key}.healthy_level is required")
+        if healthy is not None and (
+            type(healthy) is not int or not 0 <= healthy <= min(level, 0xFFFFFFFF)
+        ):
+            problems.append(
+                f"{ctx}.{type_key}.healthy_level should be null or an int in 0..level"
+            )
+        if "partial_health_raw" in row and partial is None:
+            problems.append(f"{ctx}.{type_key}.partial_health_raw should be omitted, not null")
+        elif partial is not None:
+            maximum = level * _D48_PARTIAL_HEALTH_PER_LEVEL
+            if type(partial) is not int or not 0 <= partial <= maximum:
+                problems.append(
+                    f"{ctx}.{type_key}.partial_health_raw should be an int in 0..{maximum}"
+                )
+            elif healthy == level and partial != 0:
+                problems.append(
+                    f"{ctx}.{type_key}.partial_health_raw should be zero at full health"
+                )
+        expected_damaged = healthy is not None and healthy < level
+        if type(damaged) is not bool or damaged != expected_damaged:
+            problems.append(
+                f"{ctx}.{type_key}.damaged disagrees with level/healthy_level"
+            )
+        if "token" in row:
+            if (
+                not isinstance(token, str)
+                or not token.strip()
+                or len(token) > SCRIPT_TOKEN_MAX_LENGTH
+            ):
+                problems.append(
+                    f"{ctx}.{type_key}.token should be a non-empty bounded str when present"
+                )
+    return problems
+
+
+def _validate_d48_building_sidecars(snap: Dict[str, Any]) -> List[str]:
+    problems: List[str] = []
+    states = snap.get("states")
+    if not isinstance(states, dict):
+        states = {}
+    for state_id, state in states.items():
+        if not isinstance(state, dict):
+            continue
+        sidecar = state.get("construction_buildings_state_damage_live")
+        if sidecar is None:
+            continue
+        ctx = f"states.{state_id}.construction_buildings_state_damage_live"
+        try:
+            numeric_state_id = int(state_id)
+        except (TypeError, ValueError):
+            numeric_state_id = 0
+        if (
+            str(numeric_state_id) != str(state_id)
+            or not 0 < numeric_state_id <= 0xFFFFFFFF
+        ):
+            problems.append(f"{ctx} has invalid positive unsigned 32-bit state identity")
+        if not isinstance(sidecar, dict):
+            problems.append(f"{ctx} should be dict|null")
+            continue
+        if sidecar.get("source") != "C":
+            problems.append(f"{ctx}.source should be exact collector marker 'C'")
+        problems.extend(
+            _validate_d48_building_map(sidecar.get("state_buildings"), f"{ctx}.state_buildings")
+        )
+
+    provinces = snap.get("provinces")
+    if not isinstance(provinces, dict):
+        provinces = {}
+    for province_id, province in provinces.items():
+        if not isinstance(province, dict):
+            continue
+        sidecar = province.get("construction_buildings_state_damage_live")
+        if sidecar is None:
+            continue
+        ctx = f"provinces.{province_id}.construction_buildings_state_damage_live"
+        try:
+            numeric_province_id = int(province_id)
+        except (TypeError, ValueError):
+            numeric_province_id = 0
+        if (
+            str(numeric_province_id) != str(province_id)
+            or not 0 < numeric_province_id <= 0xFFFFFFFF
+        ):
+            problems.append(f"{ctx} has invalid positive unsigned 32-bit province identity")
+        if not isinstance(sidecar, dict):
+            problems.append(f"{ctx} should be dict|null")
+            continue
+        if sidecar.get("source") != "C":
+            problems.append(f"{ctx}.source should be exact collector marker 'C'")
+        state_id = sidecar.get("state_id")
+        if type(state_id) is not int or not 0 < state_id <= 0xFFFFFFFF:
+            problems.append(f"{ctx}.state_id should be a positive unsigned 32-bit int")
+        problems.extend(
+            _validate_d48_building_map(sidecar.get("buildings"), f"{ctx}.buildings")
+        )
+    return problems
+
+
+def _validate_delayed_events(snap: Dict[str, Any]) -> List[str]:
+    problems: List[str] = []
+    countries = snap.get("countries")
+    if not isinstance(countries, dict):
+        return problems
+    for tag, country in countries.items():
+        if not isinstance(country, dict) or "delayed_events" not in country:
+            continue
+        rows = country.get("delayed_events")
+        ctx = f"countries.{tag}.delayed_events"
+        if rows is None:
+            continue
+        if not isinstance(rows, list):
+            problems.append(f"{ctx} should be list|null")
+            continue
+        if len(rows) > 4096:
+            problems.append(f"{ctx} exceeds 4096 rows")
+            continue
+        for index, row in enumerate(rows):
+            rctx = f"{ctx}[{index}]"
+            if not isinstance(row, dict):
+                problems.append(f"{rctx} should be dict")
+                continue
+            required = {
+                "event_id",
+                "due_remaining_hours",
+                "originator_tag_db_id",
+            }
+            if set(row) != required:
+                problems.append(f"{rctx} has wrong exact d64 field set")
+                continue
+            event_id = row.get("event_id")
+            if type(event_id) is not int or not 100_000 <= event_id <= 4_294_900_000:
+                problems.append(f"{rctx}.event_id is outside the combined-id range")
+            due = row.get("due_remaining_hours")
+            if due is not None and (type(due) is not int or not 0 <= due <= 500_000):
+                problems.append(f"{rctx}.due_remaining_hours is invalid")
+            originator = row.get("originator_tag_db_id")
+            if originator is not None and (
+                type(originator) is not int or not 0 < originator <= 0xFFFFFFFF
+            ):
+                problems.append(f"{rctx}.originator_tag_db_id is invalid")
+    return problems
+
+
 def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
     problems: List[str] = []
 
@@ -2345,6 +2554,9 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             problems.append(f"missing top-level container {key!r}")
         elif not isinstance(snap[key], kind):
             problems.append(f"{key!r} should be {kind.__name__}, got {type(snap[key]).__name__}")
+
+    problems.extend(_validate_d48_building_sidecars(snap))
+    problems.extend(_validate_delayed_events(snap))
 
     # Legacy schema-v1 snapshots may lack this late-added terminal carrier;
     # replay_core exposes that as DomainAbsent. New snapshots always include it.
@@ -3347,6 +3559,10 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             v = sp.get(k)
             if v is not None and not isinstance(v, list):
                 problems.append(f"special_projects.{k} {v!r} not list|null")
+        for k in ("project_lifecycle", "reward_history"):
+            v = sp.get(k)
+            if v is not None and not isinstance(v, dict):
+                problems.append(f"special_projects.{k} {v!r} not dict|null")
     # top-level LIVE equipment-MARKET sidecar (market_live): contracts list|null, count int|null,
     # source str|null. A malformed payload can't slip through as an ignored key.
     mkl = snap.get("market_live")
@@ -3641,9 +3857,19 @@ def _validate_fired_event_history(world_events: Dict[str, Any]) -> List[str]:
         if not isinstance(row, dict):
             problems.append(f"{prefix} not event id|dict")
             continue
+        required_rich_fields = {
+            "event_id", "recipient_tag", "fire_date", "fire_hour", "fire_tick",
+            "event_sequence", "visible_option_ordinals", "chosen_option_ordinal",
+            "selected_desc_key", "shown_picture_gfx", "popup_subtype",
+            "effective_timeout_hours", "timeout_tick", "resolved_tick",
+            "resolution_reason",
+        }
+        missing = sorted(required_rich_fields - set(row))
+        if missing:
+            problems.append(f"{prefix} missing required rich lifecycle fields {missing!r}")
         event_id = row.get("event_id")
-        if not isinstance(event_id, (str, int)) or isinstance(event_id, bool) or not str(event_id).strip():
-            problems.append(f"{prefix}.event_id {event_id!r} not nonempty id")
+        if not isinstance(event_id, str) or not event_id.strip():
+            problems.append(f"{prefix}.event_id {event_id!r} not nonempty script id")
         recipient = row.get("recipient_tag")
         if not valid_tag(recipient):
             problems.append(f"{prefix}.recipient_tag {recipient!r} not TAG")
@@ -3699,6 +3925,24 @@ def _validate_fired_event_history(world_events: Dict[str, Any]) -> List[str]:
             if key in {"selected_desc_key", "shown_picture_gfx"} and isinstance(value, str) and value.strip():
                 presentation_signal = True
         option_contexts = row.get("runtime_option_text_contexts")
+        seen_context_ids = {
+            value
+            for key in (
+                "runtime_title_text_context_id",
+                "runtime_description_text_context_id",
+            )
+            if isinstance((value := row.get(key)), str) and value.strip()
+        }
+        scalar_context_count = sum(
+            1
+            for key in (
+                "runtime_title_text_context_id",
+                "runtime_description_text_context_id",
+            )
+            if isinstance(row.get(key), str) and row[key].strip()
+        )
+        if len(seen_context_ids) != scalar_context_count:
+            problems.append(f"{prefix} reuses a runtime text context across popup roles")
         if option_contexts is not None:
             if not isinstance(option_contexts, list):
                 problems.append(f"{prefix}.runtime_option_text_contexts not list|null")
@@ -3727,6 +3971,12 @@ def _validate_fired_event_history(world_events: Dict[str, Any]) -> List[str]:
                             )
                     if not isinstance(context_id, str) or not context_id.strip():
                         problems.append(f"{context_prefix}.context_id not nonempty str")
+                    elif context_id in seen_context_ids:
+                        problems.append(
+                            f"{context_prefix}.context_id reused across popup roles"
+                        )
+                    else:
+                        seen_context_ids.add(context_id)
         if presentation_signal and chosen is not None and chosen not in visible_set:
             problems.append(f"{prefix}.chosen_option_ordinal not a materialised ordinal|null")
         subtype = row.get("popup_subtype")
@@ -3755,7 +4005,6 @@ def _validate_fired_event_history(world_events: Dict[str, Any]) -> List[str]:
             (reason == "pending" and resolved is None and chosen is None)
             or (reason == "selected" and resolved is not None and chosen is not None)
             or (reason == "timeout" and resolved is not None)
-            or (reason == "dismissed" and resolved is not None and chosen is None)
         )
         if not valid_resolution:
             problems.append(f"{prefix}.resolution state inconsistent")

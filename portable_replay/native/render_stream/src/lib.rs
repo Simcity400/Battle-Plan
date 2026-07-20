@@ -11,8 +11,49 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-pub const SCHEMA: &str = "hoi4.production-render-submit.v3";
+pub const SCHEMA: &str = "hoi4.production-render-submit.v10";
+/// B10 semantic carried by an exact reflected `mapname` draw-local CB1.
+/// A slot/size match without this producer-stamped token is legacy evidence,
+/// not authenticated country-label pixel authority.
+pub const MAPNAME_TRANSP_OFFSET_SEMANTIC: &str =
+    "gfx/FX/mapname.shader:ConstantBuffer(1,32):Transp_OffsetX";
+pub const INCOMPATIBLE_WEATHER_CARRIER_SCHEMA: &str = "hoi4.production-render-submit.v9";
+pub const INCOMPATIBLE_SNOW_MUD_PRESENT_LINK_SCHEMA: &str = "hoi4.production-render-submit.v8";
+pub const INCOMPATIBLE_CAMERA_EVENT_SCHEMA: &str = "hoi4.production-render-submit.v7";
+pub const INCOMPATIBLE_S1_SHADOW_SCHEMA: &str = "hoi4.production-render-submit.v6";
+pub const INCOMPATIBLE_TREE_RUNTIME_SCHEMA: &str = "hoi4.production-render-submit.v5";
+pub const INCOMPATIBLE_SNOW_MUD_CARRIER_SCHEMA: &str = "hoi4.production-render-submit.v4";
+pub const INCOMPATIBLE_CAMERA_CARRIER_SCHEMA: &str = "hoi4.production-render-submit.v3";
 pub const INCOMPATIBLE_ENTITY_SELECTOR_SCHEMA: &str = "hoi4.production-render-submit.v2";
+pub const A729_CAMERA_TEMPORAL_SCHEMA: &str = "hoi4.camera-temporal.a729.v1";
+pub const A729_CAMERA_EXECUTABLE_SHA256: &str =
+    "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
+pub const A729_CAMERA_ENVELOPE_RVA: u32 = 0x0222_8df0;
+pub const A729_CAMERA_UPDATE_RVA: u32 = 0x0124_e290;
+pub const A729_CAMERA_VERTICAL_EVENT_PRODUCER_RVA: u32 = 0x00db_a7c0;
+pub const A729_CAMERA_MAP_PICK_RVA: u32 = 0x00b4_4760;
+pub const A729_CAMERA_RENDER_VIEW_BYTES: usize = 0x1b4;
+pub const A729_EXECUTABLE_SHA256: &str =
+    "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
+pub const SNOW_MUD_TEXTURE_SCHEMA: &str = "hoi4.a729.snow-mud-texture.v2";
+pub const SNOW_MUD_H2_READBACK_SCHEMA: &str = "hoi4.replay.snow-mud-h2-readback.v1";
+pub const SNOW_MUD_PRODUCER_FUNCTION_RVA: u32 = 0x0124_B710;
+pub const SNOW_MUD_UPLOAD_CALLSITE_RVA: u32 = 0x0124_BAA4;
+pub const SNOW_MUD_UPLOAD_TARGET_RVA: u32 = 0x0240_0E40;
+// Both instruction hashes are present in exact-10 replacement root
+// ADDR-03-05 / 20260719T220305Z-wave2-r10-addr-03-05-1df2b63f.
+// The owner is a retained depth-1 entry; the upload target is a requested seed.
+pub const SNOW_MUD_PRODUCER_INSTRUCTIONS_SHA256: &str =
+    "67685a554535ca8924a63558347287cf1e60c70b493f878bddb01c2ffe2e995c";
+pub const SNOW_MUD_UPLOAD_INSTRUCTIONS_SHA256: &str =
+    "9915fc3252c0e4f5a10e7b1814dd01e89beb7ca555c3162dc21305647e81476e";
+pub const SNOW_MUD_TEXTURE_WIDTH: u32 = 1_408;
+pub const SNOW_MUD_TEXTURE_HEIGHT: u32 = 512;
+pub const SNOW_MUD_TEXTURE_BYTES_PER_TEXEL: u32 = 4;
+pub const SNOW_MUD_TEXTURE_ROW_PITCH: u32 =
+    SNOW_MUD_TEXTURE_WIDTH * SNOW_MUD_TEXTURE_BYTES_PER_TEXEL;
+pub const SNOW_MUD_TEXTURE_BYTE_LENGTH: usize =
+    SNOW_MUD_TEXTURE_ROW_PITCH as usize * SNOW_MUD_TEXTURE_HEIGHT as usize;
 const COMPACT_GAME_HOUR_RAW_EPOCH: i64 = 43_799_999;
 
 fn compact_update_index_from_raw(raw: i32) -> Option<u64> {
@@ -31,6 +72,35 @@ pub use m02_combat::{
     M02CombatIndicator, M02CombatKind, M02Direction, M02FogState, M02LawState, M02ObserverRelation,
     M02OverlapState, M02Participants, M02ResultPresentation, M02ResultState, M02WidgetState,
     M02_COMBAT_SCHEMA,
+};
+
+mod c07_trees;
+pub use c07_trees::{
+    C07TreeBucketCarrier, C07TreeCellOrdinalRange, C07TreeContentLibrary, C07TreeContentSelection,
+    C07TreeCoverage, C07TreeCoverageKind, C07TreeCoverageRequirement, C07TreeDrawRef,
+    C07TreeImmutableBucketContent, C07TreePassCarrier, C07TreePassKind, C07TreeRuntimeCarrier,
+    C07_TREE_A729_EXECUTABLE_SHA256, C07_TREE_BUFFER_FACTORY_CALLSITE_RVA,
+    C07_TREE_CONTENT_LIBRARY_BUCKETS, C07_TREE_CONTENT_LIBRARY_CELLS,
+    C07_TREE_CONTENT_LIBRARY_CENSUS_SHA256, C07_TREE_CONTENT_LIBRARY_COVERED_CELL_SET_SHA256,
+    C07_TREE_CONTENT_LIBRARY_GAME_FILE_SET_SHA256, C07_TREE_CONTENT_LIBRARY_INSTANCE_BYTES,
+    C07_TREE_CONTENT_LIBRARY_MISSING_CELL_SET_SHA256, C07_TREE_CONTENT_LIBRARY_PAYLOAD_SHA256,
+    C07_TREE_CONTENT_LIBRARY_PACKED_BYTES_SHA256, C07_TREE_CONTENT_LIBRARY_SCHEMA,
+    C07_TREE_CONTENT_LIBRARY_UNAVAILABLE_BUCKETS,
+    C07_TREE_CONTENT_LIBRARY_UNAVAILABLE_CELLS, C07_TREE_CONTENT_SELECTION_SCHEMA,
+    C07_TREE_GLOBAL_NONZERO_CELLS, C07_TREE_INSTANCE_STRIDE_BYTES, C07_TREE_PRODUCER_FUNCTION_RVA,
+    C07_TREE_RETAINED_BUCKETS, C07_TREE_RETAINED_CONTRACT_SHA256, C07_TREE_RETAINED_PASSES,
+    C07_TREE_RETAINED_RDC_SHA256, C07_TREE_RETAINED_VISIBLE_CELLS, C07_TREE_RUNTIME_SCHEMA,
+    C07_TREE_UNCAPTURED_CELLS,
+};
+
+mod s1_shadow;
+pub use s1_shadow::{
+    S1DrawArguments, S1LightDepthSubmission, S1SelectedLight, S1ShadowCarrier, S1ShadowPipeline,
+    S1TargetBinding, S1TypedOwner, S1_A729_EXECUTABLE_SHA256, S1_CHAIN_AUTHORITY_SHA256,
+    S1_L02_AUTHORITY_SHA256, S1_L03_AUTHORITY_SHA256, S1_LIGHT_DEPTH_DXGI_FORMAT,
+    S1_LIGHT_DEPTH_HEIGHT, S1_LIGHT_DEPTH_WIDTH, S1_PARTITION_ALL, S1_PARTITION_PRIMARY,
+    S1_PARTITION_WRAP_EAST, S1_PARTITION_WRAP_WEST, S1_SCREEN_DXGI_FORMAT, S1_SHADOW_SCHEMA,
+    S1_TARGET_BIND_FLAGS, S1_TARGET_MIP_LEVELS,
 };
 
 mod m03_arrows;
@@ -91,6 +161,9 @@ pub struct ProductionRenderFrame {
     /// authenticated hourly cutoff. Production retains only that one Present;
     /// earlier same-hour candidates are debug-forensics data.
     pub selected_present: SelectedPresentReceipt,
+    /// a729 texture-upload dispatch. `None` is explicit, but map playback must
+    /// fail closed rather than synthesize a replacement.
+    pub snow_mud_texture: Option<SnowMudTexturePacket>,
     pub submits: Vec<RenderSubmit>,
     /// Exact combat-indicator UI-overlay carrier. This is deliberately
     /// separate from static-map programs and particle/entity ordered draws.
@@ -109,6 +182,99 @@ pub struct ProductionRenderFrame {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authenticated_ui_pass: Option<AuthenticatedUiPass>,
     pub checkpoint: RenderCheckpoint,
+}
+
+/// Pointer-free SnowMudData producer observation selected for one displayed
+/// hour. Process pointers and D3D ResourceIds are deliberately absent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnowMudTexturePacket {
+    pub schema: String,
+    pub executable_sha256: String,
+    pub producer_function_rva: u32,
+    pub upload_callsite_rva: u32,
+    pub upload_target_rva: u32,
+    pub producer_instructions_sha256: String,
+    pub upload_instructions_sha256: String,
+    #[serde(with = "decimal_u64")]
+    pub process_start_nonce: u64,
+    #[serde(with = "decimal_u64")]
+    pub hook_epoch_nonce: u64,
+    #[serde(with = "decimal_u64")]
+    pub producer_ordinal: u64,
+    pub producer_game_hour_raw: i32,
+    pub display_game_hour_raw: i32,
+    #[serde(with = "decimal_u64")]
+    pub producer_qpc_ticks: u64,
+    #[serde(with = "decimal_u64")]
+    pub producer_qpc_frequency_hz: u64,
+    pub width: u32,
+    pub height: u32,
+    pub row_pitch: u32,
+    pub bytes_per_texel: u32,
+    pub format: String,
+    pub bytes: Vec<u8>,
+    pub payload_sha256: String,
+    /// Canonical hash of the complete selected-Present receipt. This closes
+    /// the H observation over the exact candidate set/cutoff, not merely a
+    /// coincident hour and QPC value.
+    pub selected_present_sha256: String,
+    pub observation_sha256: String,
+}
+
+impl SnowMudTexturePacket {
+    pub fn computed_observation_sha256(&self) -> Result<String, String> {
+        let mut canonical = self.clone();
+        canonical.observation_sha256.clear();
+        canonical_json_sha256(&canonical)
+    }
+
+    fn validate_against(&self, frame: &ProductionRenderFrame) -> Result<(), String> {
+        if self.schema != SNOW_MUD_TEXTURE_SCHEMA
+            || self.executable_sha256 != A729_EXECUTABLE_SHA256
+            || self.producer_function_rva != SNOW_MUD_PRODUCER_FUNCTION_RVA
+            || self.upload_callsite_rva != SNOW_MUD_UPLOAD_CALLSITE_RVA
+            || self.upload_target_rva != SNOW_MUD_UPLOAD_TARGET_RVA
+            || self.producer_instructions_sha256 != SNOW_MUD_PRODUCER_INSTRUCTIONS_SHA256
+            || self.upload_instructions_sha256 != SNOW_MUD_UPLOAD_INSTRUCTIONS_SHA256
+        {
+            return Err("SnowMudData producer binary/static identity mismatch".into());
+        }
+        if self.process_start_nonce == 0
+            || self.process_start_nonce != frame.authority.process_start_nonce
+            || self.hook_epoch_nonce == 0
+            || self.hook_epoch_nonce != frame.authority.hook_epoch_nonce
+            || self.producer_ordinal == 0
+            || self.producer_qpc_ticks == 0
+            || self.producer_qpc_frequency_hz != frame.presentation_qpc_frequency_hz
+            || self.producer_qpc_ticks > frame.selected_present.selected_qpc_ticks
+            || self.display_game_hour_raw != frame.selected_present.selected_game_hour_raw
+            || compact_update_index_from_raw(self.display_game_hour_raw) != Some(frame.update_index)
+            || compact_update_index_from_raw(self.producer_game_hour_raw).is_none()
+            || self.producer_game_hour_raw > self.display_game_hour_raw
+        {
+            return Err("SnowMudData producer epoch/hour/order identity mismatch".into());
+        }
+        if self.width != SNOW_MUD_TEXTURE_WIDTH
+            || self.height != SNOW_MUD_TEXTURE_HEIGHT
+            || self.row_pitch != SNOW_MUD_TEXTURE_ROW_PITCH
+            || self.bytes_per_texel != SNOW_MUD_TEXTURE_BYTES_PER_TEXEL
+            || self.format != "DXGI_FORMAT_B8G8R8A8_UNORM"
+            || self.bytes.len() != SNOW_MUD_TEXTURE_BYTE_LENGTH
+        {
+            return Err("SnowMudData descriptor/byte-count mismatch".into());
+        }
+        check_sha256(&self.payload_sha256, Some(&self.bytes))?;
+        check_sha256(&self.selected_present_sha256, None)?;
+        if self.selected_present_sha256 != frame.selected_present.computed_sha256()? {
+            return Err("SnowMudData selected-Present receipt SHA-256 mismatch".into());
+        }
+        check_sha256(&self.observation_sha256, None)?;
+        if self.observation_sha256 != self.computed_observation_sha256()? {
+            return Err("SnowMudData observation SHA-256 mismatch".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +311,97 @@ impl SelectedPresentReceipt {
             selected_qpc_ticks,
             selection_cutoff_qpc_ticks,
         }
+    }
+
+    pub fn computed_sha256(&self) -> Result<String, String> {
+        canonical_json_sha256(self)
+    }
+}
+
+/// Durable replay-side H2 observation produced only after the immutable
+/// SnowMud upload has been copied into a staging texture and every tight row
+/// has been read back. It is an execution receipt, never recording authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnowMudReplayReadbackReceipt {
+    pub schema: String,
+    #[serde(with = "decimal_u64")]
+    pub process_start_nonce: u64,
+    #[serde(with = "decimal_u64")]
+    pub hook_epoch_nonce: u64,
+    #[serde(with = "decimal_u64")]
+    pub producer_ordinal: u64,
+    pub producer_game_hour_raw: i32,
+    pub display_game_hour_raw: i32,
+    #[serde(with = "decimal_u64")]
+    pub selected_candidate_id: u64,
+    #[serde(with = "decimal_u64")]
+    pub selected_qpc_ticks: u64,
+    pub selected_present_sha256: String,
+    pub observation_sha256: String,
+    pub payload_sha256: String,
+    pub readback_sha256: String,
+    pub width: u32,
+    pub height: u32,
+    pub source_row_pitch: u32,
+    pub mapped_row_pitch: u32,
+    pub verified_row_count: u32,
+    #[serde(with = "decimal_u64")]
+    pub verified_tight_byte_count: u64,
+    pub receipt_sha256: String,
+}
+
+impl SnowMudReplayReadbackReceipt {
+    pub fn computed_receipt_sha256(&self) -> Result<String, String> {
+        let mut canonical = self.clone();
+        canonical.receipt_sha256.clear();
+        canonical_json_sha256(&canonical)
+    }
+
+    pub fn validate_against(
+        &self,
+        packet: &SnowMudTexturePacket,
+        selected_present: &SelectedPresentReceipt,
+    ) -> Result<(), String> {
+        if self.schema != SNOW_MUD_H2_READBACK_SCHEMA
+            || self.process_start_nonce != packet.process_start_nonce
+            || self.hook_epoch_nonce != packet.hook_epoch_nonce
+            || self.producer_ordinal != packet.producer_ordinal
+            || self.producer_game_hour_raw != packet.producer_game_hour_raw
+            || self.display_game_hour_raw != packet.display_game_hour_raw
+            || self.selected_candidate_id != selected_present.selected_candidate_id
+            || self.selected_qpc_ticks != selected_present.selected_qpc_ticks
+            || self.selected_present_sha256 != packet.selected_present_sha256
+            || self.selected_present_sha256 != selected_present.computed_sha256()?
+            || self.observation_sha256 != packet.observation_sha256
+            || self.payload_sha256 != packet.payload_sha256
+            || self.readback_sha256 != packet.payload_sha256
+        {
+            return Err("SnowMudData H2 identity/readback join mismatch".into());
+        }
+        if self.width != packet.width
+            || self.height != packet.height
+            || self.source_row_pitch != packet.row_pitch
+            || self.mapped_row_pitch < packet.row_pitch
+            || self.verified_row_count != packet.height
+            || self.verified_tight_byte_count
+                != u64::from(packet.row_pitch) * u64::from(packet.height)
+        {
+            return Err("SnowMudData H2 descriptor/coverage mismatch".into());
+        }
+        for sha256 in [
+            &self.selected_present_sha256,
+            &self.observation_sha256,
+            &self.payload_sha256,
+            &self.readback_sha256,
+            &self.receipt_sha256,
+        ] {
+            check_sha256(sha256, None)?;
+        }
+        if self.receipt_sha256 != self.computed_receipt_sha256()? {
+            return Err("SnowMudData H2 receipt SHA-256 mismatch".into());
+        }
+        Ok(())
     }
 }
 
@@ -224,7 +481,13 @@ pub struct RenderSubmit {
     pub global_order: u32,
     #[serde(with = "decimal_u64")]
     pub presentation_qpc_ticks: u64,
-    pub interpolation_phase_f32_bits: u32,
+    /// Exact integer render-view ordinal supplied to the a729 render envelope.
+    /// Earlier schemas incorrectly labelled this argument as an f32 phase.
+    pub camera_carrier_ordinal: u8,
+    /// Present only when the envelope carrier reverses to a C00-authenticated
+    /// map-camera root. Generic render-view callers remain explicit `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_carrier: Option<AuthenticatedCameraCarrier>,
     pub ordered_scene_constant_buffers: Vec<ConstantBufferBinding>,
     /// Complete engine-observed static map program for this selected submit.
     /// Empty means the static map is unavailable and must be omitted. A
@@ -233,6 +496,16 @@ pub struct RenderSubmit {
     /// consumers are feature-local omissions, never inferred programs.
     #[serde(default)]
     pub ordered_static_map_programs: Vec<StaticMapPassProgram>,
+    /// Exact C07 join over authenticated static tree operations. Absence means
+    /// tree runtime selection is unavailable. A present retained-scope carrier
+    /// never authorizes synthesis of its 95,275 uncaptured global cells.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree_runtime: Option<C07TreeRuntimeCarrier>,
+    /// Exact selected-submit L02/L03 shadow projection and resource/pass join.
+    /// Absence is authoritative unavailability; playback must not synthesize
+    /// caster rows, screen targets, blur constants, or consumer edges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub s1_shadow: Option<S1ShadowCarrier>,
     pub effect_lifecycle_events: Vec<EffectLifecycleEvent>,
     pub particles: Vec<ParticlePacket>,
     pub entity_presentations: Vec<EntityPresentationEvent>,
@@ -253,6 +526,350 @@ pub struct RenderSubmit {
     pub weather_membership: Vec<WeatherMembership>,
     #[serde(default)]
     pub political_textures: Vec<PoliticalTexturePacket>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum A729CameraOwnerKind {
+    FrontEnd,
+    InGame,
+    Third,
+}
+
+impl A729CameraOwnerKind {
+    fn expected_vtable_rva(self) -> u32 {
+        match self {
+            Self::FrontEnd => 0x0293_3710,
+            Self::InGame => 0x0295_2510,
+            Self::Third => 0x0299_3698,
+        }
+    }
+
+    fn expected_event_list_offset(self) -> u32 {
+        match self {
+            Self::FrontEnd => 0x5f0,
+            Self::InGame => 0x758,
+            Self::Third => 0x648,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct A729CameraInputEvent {
+    pub node_ordinal: u32,
+    pub node_kind_i32: i32,
+    pub consumed_before_u8: u8,
+    pub consumed_after_u8: u8,
+    pub event_type_i32: i32,
+    pub signed_delta_i32: i32,
+    pub embedded_event_16_bytes: [u8; 16],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct A729CameraMapPick {
+    pub call_ordinal: u32,
+    pub mode_u8: u8,
+    pub screen_xy_f32_bits: [u32; 2],
+    pub world_xyz_f32_bits: [u32; 3],
+}
+
+/// Exact raw C03 event carrier joined to the next d77 envelope for the same
+/// authenticated camera root. Inputs remain engine-native bits/bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct A729CameraEventBatch {
+    pub producer_rva: u32,
+    pub owner_kind: A729CameraOwnerKind,
+    pub owner_vtable_rva: u32,
+    pub action_source_owner_offset: u32,
+    pub cursor_source_owner_offset: u32,
+    pub event_list_owner_offset: u32,
+    pub frame_scalar_f32_bits: Option<u32>,
+    pub producer_flag_0_u8: u8,
+    pub producer_flag_1_u8: u8,
+    pub input_events: Vec<A729CameraInputEvent>,
+    pub map_picks: Vec<A729CameraMapPick>,
+    pub current_eye_before_f32_bits: [u32; 3],
+    pub target_eye_before_f32_bits: [u32; 3],
+    pub target_look_at_before_f32_bits: [u32; 3],
+    pub current_eye_after_f32_bits: [u32; 3],
+    pub target_eye_after_f32_bits: [u32; 3],
+    pub target_look_at_after_f32_bits: [u32; 3],
+}
+
+impl A729CameraEventBatch {
+    fn validate(&self, carrier_owner: A729CameraOwnerKind) -> Result<(), String> {
+        if self.owner_kind != carrier_owner
+            || self.owner_vtable_rva != self.owner_kind.expected_vtable_rva()
+            || self.action_source_owner_offset != 0x508
+            || self.cursor_source_owner_offset != 0x500
+            || self.event_list_owner_offset != self.owner_kind.expected_event_list_offset()
+            || self.input_events.len() > 4_096
+            || self.map_picks.len() > 4_096
+        {
+            return Err("camera event batch owner/layout/bound invariant mismatch".into());
+        }
+        match self.producer_rva {
+            A729_CAMERA_UPDATE_RVA if self.frame_scalar_f32_bits.is_some() => {}
+            A729_CAMERA_VERTICAL_EVENT_PRODUCER_RVA
+                if self.owner_kind == A729CameraOwnerKind::InGame
+                    && self.frame_scalar_f32_bits.is_none()
+                    && self.producer_flag_1_u8 == 0 => {}
+            _ => return Err("camera event batch producer identity mismatch".into()),
+        }
+        for (ordinal, event) in self.input_events.iter().enumerate() {
+            if event.node_ordinal != ordinal as u32
+                || event.consumed_before_u8 > 1
+                || event.consumed_after_u8 > 1
+                || event.event_type_i32
+                    != i32::from_le_bytes(event.embedded_event_16_bytes[4..8].try_into().unwrap())
+                || event.signed_delta_i32
+                    != i32::from_le_bytes(event.embedded_event_16_bytes[8..12].try_into().unwrap())
+            {
+                return Err("camera event row identity/raw-byte invariant mismatch".into());
+            }
+        }
+        for (ordinal, pick) in self.map_picks.iter().enumerate() {
+            if pick.call_ordinal != ordinal as u32 || pick.mode_u8 > 1 {
+                return Err("camera map-pick order/mode invariant mismatch".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn update_digest(&self, hasher: &mut Sha256) {
+        hasher.update(self.producer_rva.to_le_bytes());
+        hasher.update([match self.owner_kind {
+            A729CameraOwnerKind::FrontEnd => 0,
+            A729CameraOwnerKind::InGame => 1,
+            A729CameraOwnerKind::Third => 2,
+        }]);
+        for value in [
+            self.owner_vtable_rva,
+            self.action_source_owner_offset,
+            self.cursor_source_owner_offset,
+            self.event_list_owner_offset,
+        ] {
+            hasher.update(value.to_le_bytes());
+        }
+        match self.frame_scalar_f32_bits {
+            Some(value) => {
+                hasher.update([1]);
+                hasher.update(value.to_le_bytes());
+            }
+            None => hasher.update([0]),
+        }
+        hasher.update([self.producer_flag_0_u8, self.producer_flag_1_u8]);
+        hasher.update((self.input_events.len() as u32).to_le_bytes());
+        for event in &self.input_events {
+            hasher.update(event.node_ordinal.to_le_bytes());
+            hasher.update(event.node_kind_i32.to_le_bytes());
+            hasher.update([event.consumed_before_u8, event.consumed_after_u8]);
+            hasher.update(event.event_type_i32.to_le_bytes());
+            hasher.update(event.signed_delta_i32.to_le_bytes());
+            hasher.update(event.embedded_event_16_bytes);
+        }
+        hasher.update((self.map_picks.len() as u32).to_le_bytes());
+        for pick in &self.map_picks {
+            hasher.update(pick.call_ordinal.to_le_bytes());
+            hasher.update([pick.mode_u8]);
+            for value in pick
+                .screen_xy_f32_bits
+                .into_iter()
+                .chain(pick.world_xyz_f32_bits)
+            {
+                hasher.update(value.to_le_bytes());
+            }
+        }
+        for row in [
+            self.current_eye_before_f32_bits,
+            self.target_eye_before_f32_bits,
+            self.target_look_at_before_f32_bits,
+            self.current_eye_after_f32_bits,
+            self.target_eye_after_f32_bits,
+            self.target_look_at_after_f32_bits,
+        ] {
+            for value in row {
+                hasher.update(value.to_le_bytes());
+            }
+        }
+    }
+}
+
+/// Pointer-free C00/C01/C02 camera state observed at the a729 d77 render
+/// envelope. All floating-point values retain their original binary32 bits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthenticatedCameraCarrier {
+    pub schema: String,
+    pub executable_sha256: String,
+    pub capture_boundary_rva: u32,
+    pub camera_update_rva: u32,
+    pub carrier_ordinal: u8,
+    pub carrier_offset: u32,
+    pub owner_kind: A729CameraOwnerKind,
+    pub owner_vtable_rva: u32,
+    /// Exact C01 carrier bytes `camera_root + carrier_offset + 0x000..0x1b4`.
+    pub render_view_436_bytes: Vec<u8>,
+    /// Exact canonical in-game camera view at `camera_root + 0x10`, retained
+    /// independently of which envelope carrier ordinal (0/1/2) was observed.
+    /// Replay projection always consumes this root view; the selected carrier
+    /// bytes above remain authenticated identity/evidence.
+    pub canonical_camera_root_436_bytes: Vec<u8>,
+    pub previous_current_eye_f32_bits: [u32; 3],
+    pub current_eye_f32_bits: [u32; 3],
+    pub current_look_at_f32_bits: [u32; 3],
+    pub target_eye_f32_bits: [u32; 3],
+    pub target_look_at_f32_bits: [u32; 3],
+    pub viewport_i32: [i32; 4],
+    pub min_height_i32: i32,
+    pub max_height_i32: i32,
+    pub update_produced_u8: u8,
+    pub special_free_state_u8: u8,
+    pub ramp_f32_bits: u32,
+    pub wrap_branch_u8: u8,
+    #[serde(default)]
+    pub camera_event_batches: Vec<A729CameraEventBatch>,
+    pub payload_sha256: String,
+}
+
+impl AuthenticatedCameraCarrier {
+    pub fn view_projection_f32_bits(&self) -> [u32; 16] {
+        std::array::from_fn(|index| {
+            let start = 0x80 + index * 4;
+            u32::from_le_bytes(
+                self.canonical_camera_root_436_bytes[start..start + 4]
+                    .try_into()
+                    .expect("validated C01 carrier length"),
+            )
+        })
+    }
+
+    pub fn computed_payload_sha256(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(self.schema.as_bytes());
+        hasher.update(self.executable_sha256.as_bytes());
+        for value in [
+            self.capture_boundary_rva,
+            self.camera_update_rva,
+            u32::from(self.carrier_ordinal),
+            self.carrier_offset,
+            self.owner_vtable_rva,
+        ] {
+            hasher.update(value.to_le_bytes());
+        }
+        hasher.update([match self.owner_kind {
+            A729CameraOwnerKind::FrontEnd => 0u8,
+            A729CameraOwnerKind::InGame => 1u8,
+            A729CameraOwnerKind::Third => 2u8,
+        }]);
+        hasher.update(&self.render_view_436_bytes);
+        hasher.update(&self.canonical_camera_root_436_bytes);
+        for row in [
+            self.previous_current_eye_f32_bits,
+            self.current_eye_f32_bits,
+            self.current_look_at_f32_bits,
+            self.target_eye_f32_bits,
+            self.target_look_at_f32_bits,
+        ] {
+            for value in row {
+                hasher.update(value.to_le_bytes());
+            }
+        }
+        for value in self.viewport_i32 {
+            hasher.update(value.to_le_bytes());
+        }
+        hasher.update(self.min_height_i32.to_le_bytes());
+        hasher.update(self.max_height_i32.to_le_bytes());
+        hasher.update([self.update_produced_u8, self.special_free_state_u8]);
+        hasher.update(self.ramp_f32_bits.to_le_bytes());
+        hasher.update([self.wrap_branch_u8]);
+        hasher.update((self.camera_event_batches.len() as u32).to_le_bytes());
+        for batch in &self.camera_event_batches {
+            batch.update_digest(&mut hasher);
+        }
+        format!("{:x}", hasher.finalize())
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.schema != A729_CAMERA_TEMPORAL_SCHEMA
+            || self.executable_sha256 != A729_CAMERA_EXECUTABLE_SHA256
+            || self.capture_boundary_rva != A729_CAMERA_ENVELOPE_RVA
+            || self.camera_update_rva != A729_CAMERA_UPDATE_RVA
+        {
+            return Err("camera carrier authority/identity mismatch".into());
+        }
+        let expected_offset = [0x10, 0x230, 0x450]
+            .get(usize::from(self.carrier_ordinal))
+            .copied()
+            .ok_or_else(|| "camera carrier ordinal is outside 0..=2".to_string())?;
+        if self.carrier_offset != expected_offset
+            || self.owner_vtable_rva != self.owner_kind.expected_vtable_rva()
+            || self.render_view_436_bytes.len() != A729_CAMERA_RENDER_VIEW_BYTES
+            || self.canonical_camera_root_436_bytes.len() != A729_CAMERA_RENDER_VIEW_BYTES
+            || self.update_produced_u8 > 1
+            || self.special_free_state_u8 > 1
+            || self.wrap_branch_u8 > 1
+            || self.min_height_i32 > self.max_height_i32
+            || self.camera_event_batches.len() > 1_024
+        {
+            return Err("camera carrier layout/state invariant mismatch".into());
+        }
+        let mut prior_after = None;
+        for batch in &self.camera_event_batches {
+            batch.validate(self.owner_kind)?;
+            if let Some((current_eye, target_eye, target_look_at)) = prior_after {
+                if batch.current_eye_before_f32_bits != current_eye
+                    || batch.target_eye_before_f32_bits != target_eye
+                    || batch.target_look_at_before_f32_bits != target_look_at
+                {
+                    return Err("camera event batches do not form one exact state chain".into());
+                }
+            }
+            prior_after = Some((
+                batch.current_eye_after_f32_bits,
+                batch.target_eye_after_f32_bits,
+                batch.target_look_at_after_f32_bits,
+            ));
+        }
+        if let Some((current_eye, target_eye, target_look_at)) = prior_after {
+            if current_eye != self.current_eye_f32_bits
+                || target_eye != self.target_eye_f32_bits
+                || target_look_at != self.target_look_at_f32_bits
+            {
+                return Err(
+                    "camera event producer result differs from the joined envelope state".into(),
+                );
+            }
+        }
+        let carrier_vec3 = |offset: usize| -> [u32; 3] {
+            std::array::from_fn(|index| {
+                let start = offset + index * 4;
+                u32::from_le_bytes(
+                    self.canonical_camera_root_436_bytes[start..start + 4]
+                        .try_into()
+                        .expect("validated C01 carrier length"),
+                )
+            })
+        };
+        if carrier_vec3(0x180) != self.current_eye_f32_bits
+            || carrier_vec3(0x18c) != self.current_look_at_f32_bits
+        {
+            return Err("camera carrier eye/look-at disagrees with C00 root fields".into());
+        }
+        if self.carrier_ordinal == 0
+            && self.render_view_436_bytes != self.canonical_camera_root_436_bytes
+        {
+            return Err("camera ordinal-zero carrier differs from canonical root view".into());
+        }
+        check_sha256(&self.payload_sha256, None)?;
+        if self.payload_sha256 != self.computed_payload_sha256() {
+            return Err("camera carrier payload SHA-256 mismatch".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -329,6 +946,33 @@ pub struct StaticMapDraw {
     pub ordered_constant_buffers: Vec<ConstantBufferBinding>,
     pub output_state: RenderOutputState,
     pub payload_sha256: String,
+}
+
+/// Compatibility state of the D80 `mapname` operation set.
+///
+/// `LegacyUnstamped` remains decodable so old recordings are distinguishable
+/// from recordings that genuinely contain no `mapname` draw. It is never
+/// executable label authority. Mixing legacy and authenticated draws is an
+/// invalid partial upgrade rather than a fourth, implicitly usable state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MapnameD80State {
+    Missing,
+    LegacyUnstamped,
+    Authenticated,
+}
+
+impl MapnameD80State {
+    pub fn merge(self, next: Self) -> Result<Self, String> {
+        match (self, next) {
+            (Self::Missing, state) | (state, Self::Missing) => Ok(state),
+            (Self::LegacyUnstamped, Self::LegacyUnstamped) => Ok(Self::LegacyUnstamped),
+            (Self::Authenticated, Self::Authenticated) => Ok(Self::Authenticated),
+            _ => Err(
+                "static map programs mix legacy-unstamped and authenticated mapname draws".into(),
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1424,8 +2068,86 @@ pub struct WeatherMembership {
     pub transition_expiry_game_hour_i32: i32,
     pub airborne_runtime_code: u8,
     pub weather_effect_token: Option<String>,
+    /// Exact effective-VFS winner for `map/weatherpositions.txt`. It is stored
+    /// once per region epoch; individual rows retain their source line and raw
+    /// XYZ bits without duplicating this content identity hundreds of times.
+    pub weather_position_source_content: UsedContentKey,
+    /// Pointer-erased content closure for the authored variants actually
+    /// selectable by this region/code. Position rows join to it by exact
+    /// `(class, authored_effect_index, resolved_variant_token)`.
+    pub ordered_variant_content: Vec<WeatherVariantContentJoin>,
     pub ordered_positions: Vec<WeatherPosition>,
     pub ordered_weather_instances: Vec<WeatherInstance>,
+    /// Exact per-producer-update visibility/playback observations in native
+    /// order. They are nested under the membership epoch so checkpoint state
+    /// remains independently decodable without a parallel pointer-bearing map.
+    pub visibility_updates: Vec<WeatherVisibilityPhase>,
+    pub membership_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WeatherVariantContentJoin {
+    pub authored_effect_index: u16,
+    pub class: WeatherPositionClass,
+    pub resolved_variant_token: String,
+    pub primary: WeatherEntityContentJoin,
+    pub fading: Option<WeatherEntityContentJoin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WeatherEntityContentJoin {
+    pub entity_token: String,
+    /// Ordered transitive effective-VFS source chain for the entity, particle
+    /// registration/definition, textures, and shaders. No runtime pointer or
+    /// capture-local graphics resource identity is permitted here.
+    pub ordered_content: Vec<UsedContentKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WeatherVisibilityPhase {
+    #[serde(with = "decimal_u64")]
+    pub sequence: u64,
+    #[serde(with = "decimal_u64")]
+    pub update_index: u64,
+    pub strategic_region_id: u32,
+    pub view_distance_f32_bits: u32,
+    pub camera_branch: WeatherCameraBranch,
+    pub computed_fade_alpha_f32_bits: u32,
+    pub computed_playback_rate_f32_bits: u32,
+    pub ordered_entity_visibility: Vec<WeatherEntityVisibility>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WeatherEntityVisibility {
+    #[serde(with = "decimal_u64")]
+    pub entity_instance_id: u64,
+    pub role: WeatherEntityRole,
+    pub post_update_active: bool,
+    pub post_update_alpha_f32_bits: u32,
+    pub post_update_playback_rate_f32_bits: u32,
+    pub producer_wrote_active: bool,
+    pub producer_wrote_alpha: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WeatherEntityRole {
+    Primary,
+    Fading,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WeatherCameraBranch {
+    NearHidden,
+    NearFade,
+    Full,
+    FarFade,
+    FarHidden,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1448,7 +2170,12 @@ pub struct RenderCheckpoint {
     pub ordered_entity_submissions_sha256: String,
     pub ordered_direct_visual_producers_sha256: String,
     pub ordered_light_submissions_sha256: String,
+    pub weather_state_sha256: String,
     pub weather_membership_sha256: String,
+    pub weather_lifecycle_sha256: String,
+    pub weather_visibility_sha256: String,
+    pub ordered_weather_packets_sha256: String,
+    pub weather_composition_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1484,6 +2211,8 @@ pub enum RenderOutputRef {
 #[serde(deny_unknown_fields)]
 pub struct WeatherPosition {
     pub position_ordinal: u16,
+    pub source_line: u32,
+    pub position_xyz_f32_bits: [u32; 3],
     pub class: WeatherPositionClass,
     pub resolution: WeatherResolution,
     pub selected_authored_effect_index: Option<u16>,
@@ -1493,7 +2222,7 @@ pub struct WeatherPosition {
     pub resolved_variant_token: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WeatherPositionClass {
     Big,
@@ -1505,6 +2234,123 @@ pub enum WeatherPositionClass {
 pub enum WeatherResolution {
     Instantiated,
     ExplicitEmpty,
+}
+
+impl WeatherMembership {
+    pub fn computed_membership_sha256(&self) -> Result<String, String> {
+        let mut canonical = self.clone();
+        canonical.membership_sha256.clear();
+        canonical_json_sha256(&canonical)
+    }
+
+    pub fn seal_membership_sha256(&mut self) -> Result<(), String> {
+        self.membership_sha256 = self.computed_membership_sha256()?;
+        Ok(())
+    }
+}
+
+#[derive(Serialize)]
+struct WeatherStateHashRow<'a> {
+    sequence: String,
+    update_index: String,
+    strategic_region_id: u32,
+    rain_light_active: bool,
+    rain_heavy_active: bool,
+    snow_active: bool,
+    blizzard_active: bool,
+    sandstorm_active: bool,
+    arctic_water_active: bool,
+    region_value_i64_fixed_1e5: i64,
+    transition_expiry_game_hour_i32: i32,
+    airborne_runtime_code: u8,
+    weather_effect_token: &'a Option<String>,
+}
+
+pub fn weather_state_checkpoint_sha256(
+    memberships: &[WeatherMembership],
+) -> Result<String, String> {
+    canonical_json_sha256(
+        &memberships
+            .iter()
+            .map(|weather| WeatherStateHashRow {
+                sequence: weather.sequence.to_string(),
+                update_index: weather.update_index.to_string(),
+                strategic_region_id: weather.strategic_region_id,
+                rain_light_active: weather.rain_light_active,
+                rain_heavy_active: weather.rain_heavy_active,
+                snow_active: weather.snow_active,
+                blizzard_active: weather.blizzard_active,
+                sandstorm_active: weather.sandstorm_active,
+                arctic_water_active: weather.arctic_water_active,
+                region_value_i64_fixed_1e5: weather.region_value_i64_fixed_1e5,
+                transition_expiry_game_hour_i32: weather.transition_expiry_game_hour_i32,
+                airborne_runtime_code: weather.airborne_runtime_code,
+                weather_effect_token: &weather.weather_effect_token,
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+pub fn weather_visibility_checkpoint_sha256(
+    memberships: &[WeatherMembership],
+) -> Result<String, String> {
+    canonical_json_sha256(
+        &memberships
+            .iter()
+            .flat_map(|weather| weather.visibility_updates.iter())
+            .collect::<Vec<_>>(),
+    )
+}
+
+pub fn weather_lifecycle_checkpoint_sha256(
+    memberships: &[WeatherMembership],
+    active_effect_lifecycle: &[EffectLifecycleEvent],
+) -> Result<String, String> {
+    let weather_effects = memberships
+        .iter()
+        .flat_map(|weather| weather.ordered_weather_instances.iter())
+        .map(|instance| instance.effect_instance_id)
+        .collect::<BTreeSet<_>>();
+    canonical_json_sha256(
+        &active_effect_lifecycle
+            .iter()
+            .filter(|event| weather_effects.contains(&event.effect_instance_id))
+            .collect::<Vec<_>>(),
+    )
+}
+
+pub fn ordered_weather_packets_checkpoint_sha256(
+    submits: &[RenderSubmit],
+) -> Result<String, String> {
+    let weather_effects = submits
+        .iter()
+        .flat_map(|submit| submit.weather_membership.iter())
+        .flat_map(|weather| weather.ordered_weather_instances.iter())
+        .map(|instance| instance.effect_instance_id)
+        .collect::<BTreeSet<_>>();
+    canonical_json_sha256(
+        &submits
+            .iter()
+            .flat_map(|submit| submit.particles.iter())
+            .filter(|packet| weather_effects.contains(&packet.effect_instance_id))
+            .collect::<Vec<_>>(),
+    )
+}
+
+pub fn weather_composition_checkpoint_sha256(submits: &[RenderSubmit]) -> Result<String, String> {
+    let weather_outputs = submits
+        .iter()
+        .flat_map(|submit| submit.weather_membership.iter())
+        .flat_map(|weather| weather.ordered_weather_instances.iter())
+        .flat_map(|instance| instance.submitted_outputs.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    canonical_json_sha256(
+        &submits
+            .iter()
+            .flat_map(|submit| submit.ordered_draws.iter())
+            .filter(|output| weather_outputs.contains(*output))
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// Optional exact texture upload.  This is deliberately byte-native: gameplay
@@ -1549,9 +2395,44 @@ struct SchemaProbe {
     schema: String,
 }
 
-/// Shared schema gate: the explicit v2 incompatibility refusal must fire
+/// Shared schema gate: every explicit incompatible-version refusal must fire
 /// before any typed field error.
 fn check_schema(schema: &str) -> Result<(), String> {
+    if schema == INCOMPATIBLE_WEATHER_CARRIER_SCHEMA {
+        return Err(format!(
+            "production render schema {schema} is incompatible with {SCHEMA}: it cannot preserve exact weather placement/content/visibility joins or the complete weather checkpoint hash fold"
+        ));
+    }
+    if schema == INCOMPATIBLE_SNOW_MUD_PRESENT_LINK_SCHEMA {
+        return Err(format!(
+            "production render schema {schema} is incompatible with {SCHEMA}: its SnowMudData H observation does not seal the complete selected-Present candidate-set/cutoff receipt"
+        ));
+    }
+    if schema == INCOMPATIBLE_CAMERA_EVENT_SCHEMA {
+        return Err(format!(
+            "production render schema {schema} is incompatible with {SCHEMA}: it cannot preserve the authenticated raw C03 camera-event producer batches or their exact producer-to-target joins"
+        ));
+    }
+    if schema == INCOMPATIBLE_S1_SHADOW_SCHEMA {
+        return Err(format!(
+            "production render schema {schema} is incompatible with {SCHEMA}: it cannot preserve the exact selected-submit L02/L03 shadow projection, target identities, blur producer, and true-writer consumer chain"
+        ));
+    }
+    if schema == INCOMPATIBLE_TREE_RUNTIME_SCHEMA {
+        return Err(format!(
+            "production render schema {schema} is incompatible with {SCHEMA}: it cannot preserve the exact C07 tree visibility/model/LOD operation join or distinguish retained-subset from complete-pool coverage"
+        ));
+    }
+    if schema == INCOMPATIBLE_SNOW_MUD_CARRIER_SCHEMA {
+        return Err(format!(
+            "production render schema {schema} is incompatible with {SCHEMA}: it cannot preserve the exact a729 SnowMudData CPU pre-upload observation"
+        ));
+    }
+    if schema == INCOMPATIBLE_CAMERA_CARRIER_SCHEMA {
+        return Err(format!(
+            "production render schema {schema} is incompatible with {SCHEMA}: its envelope argument was mislabelled as interpolation f32 bits and it cannot preserve the authenticated C00/C01/C02 camera carrier"
+        ));
+    }
     if schema == INCOMPATIBLE_ENTITY_SELECTOR_SCHEMA {
         return Err(format!(
             "production render schema {schema} is incompatible with {SCHEMA}: exact conversion is unavailable because the older carrier does not preserve selector-native entity and particle authority"
@@ -1676,6 +2557,9 @@ impl ProductionRenderFrame {
         if self.presentation_qpc_frequency_hz == 0 {
             return Err("presentation QPC frequency is zero".into());
         }
+        if let Some(snow_mud) = &self.snow_mud_texture {
+            snow_mud.validate_against(self)?;
+        }
         for submit in &self.submits {
             if last_submit.is_some_and(|v| submit.submit_index <= v) {
                 return Err("submit_index is not strictly increasing".into());
@@ -1689,7 +2573,11 @@ impl ProductionRenderFrame {
             last_submit = Some(submit.submit_index);
             last_global = Some(submit.global_order);
             last_qpc = Some(submit.presentation_qpc_ticks);
-            submit.validate(self.first_sequence, self.last_sequence)?;
+            submit.validate(
+                self.first_sequence,
+                self.last_sequence,
+                &self.authority.effective_vfs_manifest_sha256,
+            )?;
         }
         if let Some(m02) = &self.m02_combat {
             m02.validate()?;
@@ -2034,6 +2922,59 @@ impl ProductionRenderFrame {
             }
             _ => return Err("checkpoint submit frontier does not match frame".into()),
         }
+        let mut expected_weather_by_region = BTreeMap::new();
+        for weather in self
+            .submits
+            .iter()
+            .flat_map(|submit| submit.weather_membership.iter())
+        {
+            if expected_weather_by_region
+                .get(&weather.strategic_region_id)
+                .is_some_and(|prior: &&WeatherMembership| weather.sequence <= prior.sequence)
+            {
+                return Err("weather checkpoint source is non-monotonic by region".into());
+            }
+            expected_weather_by_region.insert(weather.strategic_region_id, weather);
+        }
+        let expected_weather = expected_weather_by_region
+            .into_values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let expected_weather_effects = expected_weather
+            .iter()
+            .flat_map(|weather| weather.ordered_weather_instances.iter())
+            .map(|instance| instance.effect_instance_id)
+            .collect::<BTreeSet<_>>();
+        let checkpoint_weather_effects = self
+            .checkpoint
+            .active_effect_lifecycle
+            .iter()
+            .filter(|event| expected_weather_effects.contains(&event.effect_instance_id))
+            .map(|event| event.effect_instance_id)
+            .collect::<BTreeSet<_>>();
+        if self.checkpoint.weather_state_and_ordered_membership != expected_weather
+            || checkpoint_weather_effects != expected_weather_effects
+            || self.checkpoint.weather_state_sha256
+                != weather_state_checkpoint_sha256(&expected_weather)?
+            || self.checkpoint.weather_membership_sha256
+                != canonical_json_sha256(&expected_weather)?
+            || self.checkpoint.weather_lifecycle_sha256
+                != weather_lifecycle_checkpoint_sha256(
+                    &expected_weather,
+                    &self.checkpoint.active_effect_lifecycle,
+                )?
+            || self.checkpoint.weather_visibility_sha256
+                != weather_visibility_checkpoint_sha256(&expected_weather)?
+            || self.checkpoint.ordered_weather_packets_sha256
+                != ordered_weather_packets_checkpoint_sha256(&self.submits)?
+            || self.checkpoint.weather_composition_sha256
+                != weather_composition_checkpoint_sha256(&self.submits)?
+        {
+            return Err(
+                "weather checkpoint state/membership/visibility/packet/composition fold differs from submits"
+                    .into(),
+            );
+        }
         for hash in [
             &self.checkpoint.active_effect_set_sha256,
             &self.checkpoint.ordered_particle_packets_sha256,
@@ -2041,6 +2982,15 @@ impl ProductionRenderFrame {
             &self.checkpoint.ordered_direct_visual_producers_sha256,
             &self.checkpoint.ordered_light_submissions_sha256,
             &self.checkpoint.weather_membership_sha256,
+        ] {
+            check_sha256(hash, None)?;
+        }
+        for hash in [
+            &self.checkpoint.weather_state_sha256,
+            &self.checkpoint.weather_lifecycle_sha256,
+            &self.checkpoint.weather_visibility_sha256,
+            &self.checkpoint.ordered_weather_packets_sha256,
+            &self.checkpoint.weather_composition_sha256,
         ] {
             check_sha256(hash, None)?;
         }
@@ -2055,13 +3005,35 @@ impl ProductionRenderFrame {
 }
 
 impl RenderSubmit {
-    fn validate(&self, first_sequence: u64, last_sequence: u64) -> Result<(), String> {
+    fn validate(
+        &self,
+        first_sequence: u64,
+        last_sequence: u64,
+        authority_manifest_sha256: &str,
+    ) -> Result<(), String> {
+        if self.camera_carrier_ordinal > 2 {
+            return Err("render submit camera carrier ordinal is outside 0..=2".into());
+        }
+        if let Some(camera) = &self.camera_carrier {
+            camera.validate()?;
+            if camera.carrier_ordinal != self.camera_carrier_ordinal {
+                return Err("render submit camera carrier ordinal disagrees with payload".into());
+            }
+        }
         check_sha256(&self.particle_packet_set_sha256, None)?;
         validate_constant_buffers(&self.ordered_scene_constant_buffers)?;
         validate_static_map_programs(
             &self.ordered_static_map_programs,
             self.ordered_scene_constant_buffers.as_slice(),
         )?;
+        if let Some(tree_runtime) = &self.tree_runtime {
+            tree_runtime
+                .validate_against_submit(self, C07TreeCoverageRequirement::RetainedVisibleSubset)?;
+        }
+        if let Some(s1_shadow) = &self.s1_shadow {
+            s1_shadow.validate_against_submit(self)?;
+        }
+        validate_optional_render_carrier_joins(self)?;
         let mut particle_keys = BTreeSet::new();
         let mut particle_outputs = BTreeSet::new();
         for packet in &self.particles {
@@ -2325,43 +3297,21 @@ impl RenderSubmit {
                 check_sha256(&join.resolved_definition_sha256, None)?;
             }
         }
+        let mut previous_weather_sequence = None;
         for weather in &self.weather_membership {
-            if weather.sequence < first_sequence || weather.sequence > last_sequence {
-                return Err("weather sequence is outside frame range".into());
+            if previous_weather_sequence.is_some_and(|value| weather.sequence <= value) {
+                return Err("weather membership sequence is repeated or non-monotonic".into());
             }
-            if weather.airborne_runtime_code == 0 {
-                if weather.weather_effect_token.is_some()
-                    || weather.ordered_positions.iter().any(|position| {
-                        position.resolution != WeatherResolution::ExplicitEmpty
-                            || position.selected_authored_effect_index.is_some()
-                            || position.primary_entity_instance_id.is_some()
-                            || position.fading_entity_instance_id.is_some()
-                            || !position.ordered_effect_instance_ids.is_empty()
-                            || position.resolved_variant_token.is_some()
-                    })
-                {
-                    return Err("code-zero weather is not explicit-empty".into());
-                }
-            } else if weather.weather_effect_token.is_none() {
-                return Err("nonzero weather code has no token".into());
-            }
-            let mut instance_keys = BTreeSet::new();
-            for instance in &weather.ordered_weather_instances {
-                if !instance_keys.insert((instance.effect_instance_id, instance.position_ordinal)) {
-                    return Err("duplicate weather instance identity/position".into());
-                }
-                if instance.submitted_outputs.is_empty() {
-                    return Err(
-                        "weather instance has no authoritative submitted output join".into(),
-                    );
-                }
-                validate_output_refs(
-                    &instance.submitted_outputs,
-                    &particle_outputs,
-                    &entity_outputs,
-                    "weather instance",
-                )?;
-            }
+            previous_weather_sequence = Some(weather.sequence);
+            validate_weather_membership(
+                weather,
+                first_sequence,
+                last_sequence,
+                authority_manifest_sha256,
+                &particle_outputs,
+                &entity_outputs,
+                &self.ordered_draws,
+            )?;
         }
         let mut texture_orders = BTreeSet::new();
         for texture in &self.political_textures {
@@ -2382,6 +3332,379 @@ impl RenderSubmit {
         }
         Ok(())
     }
+}
+
+/// Cross-carrier compatibility gate. Individual carrier validation proves each
+/// payload in isolation; this join prevents two valid payloads from disagreeing
+/// about the same selected-submit tree-shadow operations or camera state.
+fn validate_optional_render_carrier_joins(submit: &RenderSubmit) -> Result<(), String> {
+    if let (Some(camera), Some(shadow)) = (&submit.camera_carrier, &submit.s1_shadow) {
+        if !shadow.is_zero_fade()
+            && shadow.camera_y_f32_bits != Some(camera.current_eye_f32_bits[1])
+        {
+            return Err("C02 camera current-eye Y differs from active S1 camera Y".into());
+        }
+    }
+
+    let (Some(trees), Some(shadow)) = (&submit.tree_runtime, &submit.s1_shadow) else {
+        return Ok(());
+    };
+    if shadow.is_zero_fade() {
+        return Err("C07 tree-shadow operations conflict with an S1 zero-fade skip".into());
+    }
+    let retained_shadow = trees
+        .ordered_passes
+        .iter()
+        .find(|pass| pass.pass == C07TreePassKind::Shadow)
+        .ok_or("C07 carrier has no retained shadow pass")?
+        .ordered_draws
+        .iter()
+        .map(|draw| RenderExecutionRef::Static {
+            operation_ordinal: draw.operation_ordinal,
+        })
+        .collect::<Vec<_>>();
+    let s1_tree_shadow = shadow
+        .ordered_light_depth_submissions
+        .iter()
+        .filter_map(|submission| match submission {
+            S1LightDepthSubmission::Tree { execution, .. } => Some(execution.clone()),
+            S1LightDepthSubmission::Pdxmesh { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    if retained_shadow != s1_tree_shadow {
+        return Err(
+            "C07 retained shadow operation order differs from S1 L03 tree submissions".into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_weather_membership(
+    weather: &WeatherMembership,
+    first_sequence: u64,
+    last_sequence: u64,
+    authority_manifest_sha256: &str,
+    particle_outputs: &BTreeSet<RenderOutputRef>,
+    entity_outputs: &BTreeSet<RenderOutputRef>,
+    ordered_draws: &[RenderOutputRef],
+) -> Result<(), String> {
+    check_sequence(weather.sequence, first_sequence, last_sequence, "weather")?;
+    if weather.membership_sha256 != weather.computed_membership_sha256()? {
+        return Err("weather membership SHA-256 mismatch".into());
+    }
+    weather.weather_position_source_content.validate()?;
+    if weather
+        .weather_position_source_content
+        .normalized_game_relative_path
+        != "map/weatherpositions.txt"
+        || weather
+            .weather_position_source_content
+            .effective_vfs_manifest_sha256
+            != authority_manifest_sha256
+    {
+        return Err("weather position source has the wrong path or VFS authority".into());
+    }
+
+    let expected_token = match weather.airborne_runtime_code {
+        0 => None,
+        2 => Some("rain_light"),
+        3 => Some("rain_heavy"),
+        4 => Some("snow"),
+        5 => Some("blizzard"),
+        7 => Some("sandstorm"),
+        _ => return Err("weather membership contains an unknown airborne code".into()),
+    };
+    let expected_code = if weather.rain_heavy_active {
+        3
+    } else if weather.rain_light_active {
+        2
+    } else if weather.blizzard_active {
+        5
+    } else if weather.snow_active {
+        4
+    } else if weather.sandstorm_active {
+        7
+    } else {
+        0
+    };
+    if weather.airborne_runtime_code != expected_code {
+        return Err("weather airborne code disagrees with frozen flag priority".into());
+    }
+    if weather.weather_effect_token.as_deref() != expected_token {
+        return Err("weather effect token disagrees with airborne code".into());
+    }
+
+    let mut variant_keys = BTreeSet::new();
+    for variant in &weather.ordered_variant_content {
+        let key = (
+            variant.class,
+            variant.authored_effect_index,
+            variant.resolved_variant_token.as_str(),
+        );
+        if variant.resolved_variant_token.trim().is_empty() || !variant_keys.insert(key) {
+            return Err("weather variant content key is blank or duplicated".into());
+        }
+        for entity in std::iter::once(&variant.primary).chain(variant.fading.iter()) {
+            if entity.entity_token.trim().is_empty() || entity.ordered_content.is_empty() {
+                return Err("weather entity content closure is blank".into());
+            }
+            let mut content_paths = BTreeSet::new();
+            for content in &entity.ordered_content {
+                content.validate()?;
+                if content.effective_vfs_manifest_sha256 != authority_manifest_sha256
+                    || !content_paths.insert(content.normalized_game_relative_path.as_str())
+                {
+                    return Err(
+                        "weather entity content is foreign or repeats a logical path".into(),
+                    );
+                }
+            }
+        }
+    }
+    if weather.airborne_runtime_code == 0 && !weather.ordered_variant_content.is_empty() {
+        return Err("code-zero weather carries authored variant content".into());
+    }
+
+    let mut expected_entities = Vec::new();
+    let mut expected_effects = Vec::new();
+    let mut prior_source_line = None;
+    for (expected_ordinal, position) in weather.ordered_positions.iter().enumerate() {
+        if usize::from(position.position_ordinal) != expected_ordinal
+            || position.source_line == 0
+            || prior_source_line.is_some_and(|line| position.source_line <= line)
+            || position
+                .position_xyz_f32_bits
+                .iter()
+                .any(|bits| !f32::from_bits(*bits).is_finite())
+        {
+            return Err("weather position source/order/XYZ identity is invalid".into());
+        }
+        prior_source_line = Some(position.source_line);
+        match position.resolution {
+            WeatherResolution::ExplicitEmpty => {
+                if position.selected_authored_effect_index.is_some()
+                    || position.primary_entity_instance_id.is_some()
+                    || position.fading_entity_instance_id.is_some()
+                    || !position.ordered_effect_instance_ids.is_empty()
+                    || position.resolved_variant_token.is_some()
+                {
+                    return Err("explicit-empty weather position contains live identity".into());
+                }
+            }
+            WeatherResolution::Instantiated => {
+                let selected_index = position
+                    .selected_authored_effect_index
+                    .ok_or("instantiated weather position has no authored index")?;
+                let variant_token = position
+                    .resolved_variant_token
+                    .as_deref()
+                    .ok_or("instantiated weather position has no variant token")?;
+                let primary = position
+                    .primary_entity_instance_id
+                    .as_deref()
+                    .ok_or("instantiated weather position has no primary entity")?;
+                check_decimal_u64(primary, "weather primary entity")?;
+                let primary_id = primary
+                    .parse::<u64>()
+                    .map_err(|_| "weather primary entity is not u64")?;
+                if primary_id == 0 {
+                    return Err("weather primary entity id is zero".into());
+                }
+                expected_entities.push((primary_id, WeatherEntityRole::Primary));
+                if let Some(fading) = position.fading_entity_instance_id.as_deref() {
+                    check_decimal_u64(fading, "weather fading entity")?;
+                    let fading_id = fading
+                        .parse::<u64>()
+                        .map_err(|_| "weather fading entity is not u64")?;
+                    if fading_id == 0 {
+                        return Err("weather fading entity id is zero".into());
+                    }
+                    expected_entities.push((fading_id, WeatherEntityRole::Fading));
+                }
+                if weather
+                    .ordered_variant_content
+                    .iter()
+                    .filter(|variant| {
+                        variant.class == position.class
+                            && variant.authored_effect_index == selected_index
+                            && variant.resolved_variant_token == variant_token
+                    })
+                    .count()
+                    != 1
+                {
+                    return Err("weather position has no unique content variant join".into());
+                }
+                for effect in &position.ordered_effect_instance_ids {
+                    check_decimal_u64(effect, "weather effect instance")?;
+                    let effect = effect
+                        .parse::<u64>()
+                        .map_err(|_| "weather effect instance is not u64")?;
+                    if effect == 0 {
+                        return Err("weather effect instance id is zero".into());
+                    }
+                    expected_effects.push((
+                        effect,
+                        position.position_ordinal,
+                        position.class,
+                        variant_token,
+                    ));
+                }
+            }
+        }
+    }
+    if weather.airborne_runtime_code == 0
+        && (weather
+            .ordered_positions
+            .iter()
+            .any(|position| position.resolution != WeatherResolution::ExplicitEmpty)
+            || !weather.ordered_weather_instances.is_empty()
+            || !weather.visibility_updates.is_empty())
+    {
+        return Err("code-zero weather is not explicit-empty".into());
+    }
+    if weather.airborne_runtime_code != 0 && weather.visibility_updates.is_empty() {
+        return Err("active weather has no admitted visibility/playback observation".into());
+    }
+
+    if weather.ordered_weather_instances.len() != expected_effects.len() {
+        return Err("weather instance count disagrees with position effect membership".into());
+    }
+    let mut instance_keys = BTreeSet::new();
+    for (instance, expected) in weather
+        .ordered_weather_instances
+        .iter()
+        .zip(expected_effects.iter())
+    {
+        if !instance_keys.insert((instance.effect_instance_id, instance.position_ordinal))
+            || instance.effect_instance_id != expected.0
+            || instance.position_ordinal != expected.1
+            || instance.class != expected.2
+            || instance.resolved_variant_token != expected.3
+            || instance.submitted_outputs.is_empty()
+        {
+            return Err("weather instance identity/order/output join is incomplete".into());
+        }
+        validate_output_refs(
+            &instance.submitted_outputs,
+            particle_outputs,
+            entity_outputs,
+            "weather instance",
+        )?;
+        let complete_effect_outputs = ordered_draws
+            .iter()
+            .filter(|output| {
+                matches!(
+                    output,
+                    RenderOutputRef::Particle {
+                        effect_instance_id,
+                        ..
+                    } if *effect_instance_id == instance.effect_instance_id
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if instance.submitted_outputs != complete_effect_outputs {
+            return Err(
+                "weather instance outputs are not the complete ordered particle cover".into(),
+            );
+        }
+    }
+
+    let mut previous_sequence = None;
+    let mut previous_update = None;
+    let mut prior_entity_state = BTreeMap::new();
+    for visibility in &weather.visibility_updates {
+        check_sequence(
+            visibility.sequence,
+            first_sequence,
+            last_sequence,
+            "weather visibility",
+        )?;
+        if visibility.strategic_region_id != weather.strategic_region_id
+            || visibility.update_index < weather.update_index
+            || visibility.sequence <= weather.sequence
+            || previous_sequence.is_some_and(|value| visibility.sequence <= value)
+            || previous_update.is_some_and(|value| visibility.update_index < value)
+        {
+            return Err("weather visibility order/region/update identity is invalid".into());
+        }
+        previous_sequence = Some(visibility.sequence);
+        previous_update = Some(visibility.update_index);
+        let (branch, alpha_bits, playback_bits) =
+            weather_visibility_law(visibility.view_distance_f32_bits)?;
+        if visibility.camera_branch != branch
+            || visibility.computed_fade_alpha_f32_bits != alpha_bits
+            || visibility.computed_playback_rate_f32_bits != playback_bits
+            || visibility.ordered_entity_visibility.len() != expected_entities.len()
+        {
+            return Err("weather visibility differs from the frozen camera law".into());
+        }
+        for (entity, expected) in visibility
+            .ordered_entity_visibility
+            .iter()
+            .zip(expected_entities.iter())
+        {
+            let expected_writes = match entity.role {
+                WeatherEntityRole::Primary => matches!(
+                    branch,
+                    WeatherCameraBranch::FarFade | WeatherCameraBranch::FarHidden
+                ),
+                WeatherEntityRole::Fading => true,
+            };
+            if (entity.entity_instance_id, entity.role) != *expected
+                || entity.producer_wrote_active != expected_writes
+                || entity.producer_wrote_alpha != expected_writes
+                || entity.post_update_playback_rate_f32_bits != playback_bits
+                || (expected_writes
+                    && (entity.post_update_active != (alpha_bits != 0)
+                        || entity.post_update_alpha_f32_bits != alpha_bits))
+            {
+                return Err("weather entity visibility/write-mask law mismatch".into());
+            }
+            if !expected_writes
+                && prior_entity_state
+                    .get(&entity.entity_instance_id)
+                    .is_some_and(|prior: &(bool, u32)| {
+                        *prior != (entity.post_update_active, entity.post_update_alpha_f32_bits)
+                    })
+            {
+                return Err("weather producer changed an entity in a no-write branch".into());
+            }
+            prior_entity_state.insert(
+                entity.entity_instance_id,
+                (entity.post_update_active, entity.post_update_alpha_f32_bits),
+            );
+        }
+    }
+    Ok(())
+}
+
+pub fn weather_visibility_law(
+    view_distance_f32_bits: u32,
+) -> Result<(WeatherCameraBranch, u32, u32), String> {
+    let distance = f32::from_bits(view_distance_f32_bits);
+    if !distance.is_finite() || distance < 0.0 {
+        return Err("weather view distance is non-finite or negative".into());
+    }
+    let (branch, alpha): (WeatherCameraBranch, f32) = if distance < 358.0 {
+        (WeatherCameraBranch::NearHidden, 0.0)
+    } else if distance < 578.0 {
+        (WeatherCameraBranch::NearFade, (distance - 358.0) / 220.0)
+    } else if distance <= 1100.0 {
+        (WeatherCameraBranch::Full, 1.0)
+    } else if distance <= 1500.0 {
+        (WeatherCameraBranch::FarFade, (1500.0 - distance) / 400.0)
+    } else {
+        (WeatherCameraBranch::FarHidden, 0.0)
+    };
+    let playback: f32 = if distance <= 300.0 {
+        1.0
+    } else if distance < 500.0 {
+        ((500.0 - distance) / 200.0) * 0.85 + 0.15
+    } else {
+        0.15
+    };
+    Ok((branch, alpha.to_bits(), playback.to_bits()))
 }
 
 impl StaticMapPassProgram {
@@ -2419,6 +3742,90 @@ impl StaticMapDraw {
         let mut canonical = self.clone();
         canonical.payload_sha256.clear();
         canonical_json_sha256(&canonical)
+    }
+
+    /// Classify and authenticate this draw's B10 mapname carrier without
+    /// inferring identity from a slot, payload width, draw token, or pass name.
+    pub fn mapname_d80_state(&self) -> Result<MapnameD80State, String> {
+        let stamped = self
+            .ordered_constant_buffers
+            .iter()
+            .filter(|binding| binding.semantic_layout == MAPNAME_TRANSP_OFFSET_SEMANTIC)
+            .collect::<Vec<_>>();
+        if self.shader_program.effect_token != "mapname" {
+            if !stamped.is_empty() {
+                return Err(
+                    "mapname Transp_OffsetX semantic is bound to a non-mapname static draw".into(),
+                );
+            }
+            return Ok(MapnameD80State::Missing);
+        }
+        if stamped.is_empty() {
+            return Ok(MapnameD80State::LegacyUnstamped);
+        }
+
+        const MAPNAME_STAGES: u8 = 0b0000_0011;
+        const CB_BYTES: usize = 32;
+        let mut covered_stages = 0u8;
+        let mut admitted: Option<[u8; CB_BYTES]> = None;
+        for binding in &stamped {
+            if binding.stage_mask_u8 == 0 || binding.stage_mask_u8 & !MAPNAME_STAGES != 0 {
+                return Err("mapname Transp_OffsetX CB has non-VS/PS stage coverage".into());
+            }
+            if binding.slot != 1
+                || binding.byte_offset != 0
+                || binding.byte_count as usize != CB_BYTES
+                || binding.raw_bytes.len() != CB_BYTES
+            {
+                return Err("mapname Transp_OffsetX CB is not the exact CB1 32-byte range".into());
+            }
+            check_sha256(&binding.sha256, Some(&binding.raw_bytes))?;
+            let bytes: [u8; CB_BYTES] = binding
+                .raw_bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| "mapname Transp_OffsetX CB byte conversion failed")?;
+            if admitted.as_ref().is_some_and(|prior| prior != &bytes) {
+                return Err("mapname VS/PS Transp_OffsetX observations disagree".into());
+            }
+            admitted.get_or_insert(bytes);
+            covered_stages |= binding.stage_mask_u8;
+        }
+        if covered_stages != MAPNAME_STAGES {
+            return Err("mapname Transp_OffsetX CB lacks complete VS+PS coverage".into());
+        }
+        if self.ordered_constant_buffers.iter().any(|binding| {
+            binding.slot == 1
+                && binding.stage_mask_u8 & MAPNAME_STAGES != 0
+                && binding.semantic_layout != MAPNAME_TRANSP_OFFSET_SEMANTIC
+        }) {
+            return Err(
+                "authenticated mapname CB1 is shadowed by an unstamped VS/PS binding".into(),
+            );
+        }
+        let bytes = admitted.expect("stamped mapname bindings are non-empty");
+        let alpha = f32::from_le_bytes(bytes[0..4].try_into().expect("four alpha bytes"));
+        let wrap = f32::from_le_bytes(bytes[4..8].try_into().expect("four wrap bytes"));
+        if !alpha.is_finite() || !(0.0..=1.0).contains(&alpha) || !wrap.is_finite() {
+            return Err("mapname Transp_OffsetX alpha/wrap values are invalid".into());
+        }
+        Ok(MapnameD80State::Authenticated)
+    }
+}
+
+impl StaticMapPassProgram {
+    /// Aggregate only exact draw identities. Clear operations are neutral.
+    pub fn mapname_d80_state(&self) -> Result<MapnameD80State, String> {
+        self.ordered_operations
+            .iter()
+            .try_fold(
+                MapnameD80State::Missing,
+                |state, operation| match &operation.command {
+                    StaticMapCommand::Draw { draw } => state.merge(draw.mapname_d80_state()?),
+                    StaticMapCommand::ClearColor { .. }
+                    | StaticMapCommand::ClearDepthStencil { .. } => Ok(state),
+                },
+            )
     }
 }
 
@@ -2815,6 +4222,10 @@ fn validate_static_map_draw(draw: &StaticMapDraw) -> Result<(), String> {
     draw.shader_program.validate()?;
     draw.pipeline.validate()?;
     validate_constant_buffers(&draw.ordered_constant_buffers)?;
+    // Legacy mapname draws remain decodable and explicitly classified, but a
+    // forged/malformed authenticated stamp is rejected at the portable schema
+    // boundary before any renderer can observe it.
+    draw.mapname_d80_state()?;
     draw.output_state.validate()?;
     validate_static_output_state(&draw.output_state)?;
 
@@ -4119,16 +5530,24 @@ impl BufferSource {
 }
 
 fn validate_constant_buffers(bindings: &[ConstantBufferBinding]) -> Result<(), String> {
-    let mut slots = BTreeSet::new();
+    let mut stage_slots = BTreeSet::new();
     for binding in bindings {
         if binding.stage_mask_u8 == 0
             || binding.stage_mask_u8 & !0x3f != 0
             || binding.semantic_layout.trim().is_empty()
-            || !slots.insert((binding.stage_mask_u8, binding.slot))
         {
             return Err(
                 "constant-buffer binding is duplicate/unnamed/has invalid stage mask".into(),
             );
+        }
+        for stage in 0..6 {
+            if binding.stage_mask_u8 & (1 << stage) != 0
+                && !stage_slots.insert((stage, binding.slot))
+            {
+                return Err(
+                    "constant-buffer binding duplicates an already-bound stage/slot".into(),
+                );
+            }
         }
         let end = usize::try_from(binding.byte_offset)
             .ok()
@@ -4390,13 +5809,17 @@ mod tests {
                 500,
                 600,
             ),
+            snow_mud_texture: None,
             submits: vec![RenderSubmit {
                 submit_index: 11,
                 global_order: 1,
                 presentation_qpc_ticks: 500,
-                interpolation_phase_f32_bits: 0,
+                camera_carrier_ordinal: 0,
+                camera_carrier: None,
                 ordered_scene_constant_buffers: vec![],
                 ordered_static_map_programs: vec![],
+                tree_runtime: None,
+                s1_shadow: None,
                 effect_lifecycle_events: vec![],
                 particles: vec![],
                 entity_presentations: vec![],
@@ -4438,9 +5861,12 @@ mod tests {
             submit_index: 12,
             global_order: 2,
             presentation_qpc_ticks: 501,
-            interpolation_phase_f32_bits: 0,
+            camera_carrier_ordinal: 0,
+            camera_carrier: None,
             ordered_scene_constant_buffers: vec![],
             ordered_static_map_programs: vec![],
+            tree_runtime: None,
+            s1_shadow: None,
             effect_lifecycle_events: vec![],
             particles: vec![],
             entity_presentations: vec![],
@@ -4591,6 +6017,22 @@ mod tests {
             raw_bytes: vec![0; 16],
             sha256: hash(&vec![0; 16]),
             semantic_layout: "ProjectionMatrix".into(),
+        }
+    }
+
+    fn mapname_constant_buffer() -> ConstantBufferBinding {
+        let mut raw_bytes = Vec::with_capacity(32);
+        for bits in [0.5f32.to_bits(), (-5632.0f32).to_bits(), 0, 0, 0, 0, 0, 0] {
+            raw_bytes.extend_from_slice(&bits.to_le_bytes());
+        }
+        ConstantBufferBinding {
+            stage_mask_u8: 0b11,
+            slot: 1,
+            byte_offset: 0,
+            byte_count: 32,
+            sha256: hash(&raw_bytes),
+            raw_bytes,
+            semantic_layout: MAPNAME_TRANSP_OFFSET_SEMANTIC.into(),
         }
     }
 
@@ -5798,13 +7240,17 @@ mod tests {
                 500,
                 600,
             ),
+            snow_mud_texture: None,
             submits: vec![RenderSubmit {
                 submit_index: 11,
                 global_order: 1,
                 presentation_qpc_ticks: 500,
-                interpolation_phase_f32_bits: 0,
+                camera_carrier_ordinal: 0,
+                camera_carrier: None,
                 ordered_scene_constant_buffers: vec![constant_buffer()],
                 ordered_static_map_programs: vec![],
+                tree_runtime: None,
+                s1_shadow: None,
                 particle_packet_set_sha256: "5".repeat(64),
                 particles: vec![ParticlePacket {
                     effect_instance_id: 3,
@@ -5970,6 +7416,81 @@ mod tests {
         let encoded = frame.encode_json().unwrap();
         let decoded = ProductionRenderFrame::decode_json(&encoded).unwrap();
         assert_eq!(decoded, frame);
+
+        let mut legacy_mapname = decoded.clone();
+        let StaticMapCommand::Draw { draw } =
+            &mut legacy_mapname.submits[0].ordered_static_map_programs[0].ordered_operations[1]
+                .command
+        else {
+            unreachable!()
+        };
+        draw.shader_program.effect_token = "mapname".into();
+        legacy_mapname.submits[0].ordered_static_map_programs[0]
+            .seal_payload_hashes()
+            .unwrap();
+        let legacy_encoded = serde_json::to_vec(&legacy_mapname).unwrap();
+        let legacy_decoded = ProductionRenderFrame::decode_json(&legacy_encoded).unwrap();
+        assert_eq!(
+            legacy_decoded.submits[0].ordered_static_map_programs[0]
+                .mapname_d80_state()
+                .unwrap(),
+            MapnameD80State::LegacyUnstamped
+        );
+
+        let mut authenticated_mapname = legacy_decoded.clone();
+        let StaticMapCommand::Draw { draw } = &mut authenticated_mapname.submits[0]
+            .ordered_static_map_programs[0]
+            .ordered_operations[1]
+            .command
+        else {
+            unreachable!()
+        };
+        draw.ordered_constant_buffers = vec![mapname_constant_buffer()];
+        authenticated_mapname.submits[0].ordered_static_map_programs[0]
+            .seal_payload_hashes()
+            .unwrap();
+        let authenticated_encoded = serde_json::to_vec(&authenticated_mapname).unwrap();
+        let authenticated_decoded =
+            ProductionRenderFrame::decode_json(&authenticated_encoded).unwrap();
+        assert_eq!(
+            authenticated_decoded.submits[0].ordered_static_map_programs[0]
+                .mapname_d80_state()
+                .unwrap(),
+            MapnameD80State::Authenticated
+        );
+
+        let mut forged_non_mapname = decoded.clone();
+        let StaticMapCommand::Draw { draw } =
+            &mut forged_non_mapname.submits[0].ordered_static_map_programs[0].ordered_operations[1]
+                .command
+        else {
+            unreachable!()
+        };
+        draw.ordered_constant_buffers = vec![mapname_constant_buffer()];
+        forged_non_mapname.submits[0].ordered_static_map_programs[0]
+            .seal_payload_hashes()
+            .unwrap();
+        let forged_encoded = serde_json::to_vec(&forged_non_mapname).unwrap();
+        assert!(ProductionRenderFrame::decode_json(&forged_encoded)
+            .unwrap_err()
+            .contains("semantic is bound to a non-mapname static draw"));
+
+        let mut incomplete_stage = authenticated_decoded.clone();
+        let StaticMapCommand::Draw { draw } =
+            &mut incomplete_stage.submits[0].ordered_static_map_programs[0].ordered_operations[1]
+                .command
+        else {
+            unreachable!()
+        };
+        draw.ordered_constant_buffers[0].stage_mask_u8 = 0b01;
+        incomplete_stage.submits[0].ordered_static_map_programs[0]
+            .seal_payload_hashes()
+            .unwrap();
+        let incomplete_encoded = serde_json::to_vec(&incomplete_stage).unwrap();
+        assert!(ProductionRenderFrame::decode_json(&incomplete_encoded)
+            .unwrap_err()
+            .contains("lacks complete VS+PS coverage"));
+
         assert_eq!(
             decoded.submits[0].entities[0]
                 .content_identity
@@ -6082,6 +7603,102 @@ mod tests {
     }
 
     #[test]
+    fn v3_carrier_fails_instead_of_reinterpreting_ordinal_as_f32_bits() {
+        let error =
+            ProductionRenderFrame::decode_json(br#"{"schema":"hoi4.production-render-submit.v3"}"#)
+                .unwrap_err();
+        assert!(error.contains("incompatible"));
+        assert!(error.contains("mislabelled as interpolation f32 bits"));
+        assert!(error.contains("camera carrier"));
+    }
+
+    #[test]
+    fn authenticated_camera_carrier_checks_identity_layout_join_and_digest() {
+        let current_eye = [1.0f32.to_bits(), 2.0f32.to_bits(), 3.0f32.to_bits()];
+        let current_look = [4.0f32.to_bits(), 5.0f32.to_bits(), 6.0f32.to_bits()];
+        let mut bytes = vec![0u8; A729_CAMERA_RENDER_VIEW_BYTES];
+        for (index, value) in current_eye.into_iter().enumerate() {
+            bytes[0x180 + index * 4..0x184 + index * 4].copy_from_slice(&value.to_le_bytes());
+        }
+        for (index, value) in current_look.into_iter().enumerate() {
+            bytes[0x18c + index * 4..0x190 + index * 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let mut raw_event = [0u8; 16];
+        raw_event[4..8].copy_from_slice(&4i32.to_le_bytes());
+        raw_event[8..12].copy_from_slice(&120i32.to_le_bytes());
+        let mut camera = AuthenticatedCameraCarrier {
+            schema: A729_CAMERA_TEMPORAL_SCHEMA.into(),
+            executable_sha256: A729_CAMERA_EXECUTABLE_SHA256.into(),
+            capture_boundary_rva: A729_CAMERA_ENVELOPE_RVA,
+            camera_update_rva: A729_CAMERA_UPDATE_RVA,
+            carrier_ordinal: 0,
+            carrier_offset: 0x10,
+            owner_kind: A729CameraOwnerKind::InGame,
+            owner_vtable_rva: 0x0295_2510,
+            render_view_436_bytes: bytes.clone(),
+            canonical_camera_root_436_bytes: bytes,
+            previous_current_eye_f32_bits: [0; 3],
+            current_eye_f32_bits: current_eye,
+            current_look_at_f32_bits: current_look,
+            target_eye_f32_bits: [7.0f32.to_bits(); 3],
+            target_look_at_f32_bits: [8.0f32.to_bits(); 3],
+            viewport_i32: [0, 0, 1920, 1080],
+            min_height_i32: 50,
+            max_height_i32: 3000,
+            update_produced_u8: 1,
+            special_free_state_u8: 0,
+            ramp_f32_bits: 1.0f32.to_bits(),
+            wrap_branch_u8: 1,
+            camera_event_batches: vec![A729CameraEventBatch {
+                producer_rva: A729_CAMERA_UPDATE_RVA,
+                owner_kind: A729CameraOwnerKind::InGame,
+                owner_vtable_rva: 0x0295_2510,
+                action_source_owner_offset: 0x508,
+                cursor_source_owner_offset: 0x500,
+                event_list_owner_offset: 0x758,
+                frame_scalar_f32_bits: Some(0.1f32.to_bits()),
+                producer_flag_0_u8: 1,
+                producer_flag_1_u8: 0,
+                input_events: vec![A729CameraInputEvent {
+                    node_ordinal: 0,
+                    node_kind_i32: 0,
+                    consumed_before_u8: 0,
+                    consumed_after_u8: 1,
+                    event_type_i32: 4,
+                    signed_delta_i32: 120,
+                    embedded_event_16_bytes: raw_event,
+                }],
+                map_picks: vec![A729CameraMapPick {
+                    call_ordinal: 0,
+                    mode_u8: 1,
+                    screen_xy_f32_bits: [960.0f32.to_bits(), 540.0f32.to_bits()],
+                    world_xyz_f32_bits: [10.0f32.to_bits(), 0, 20.0f32.to_bits()],
+                }],
+                current_eye_before_f32_bits: current_eye,
+                target_eye_before_f32_bits: [7.0f32.to_bits(); 3],
+                target_look_at_before_f32_bits: [8.0f32.to_bits(); 3],
+                current_eye_after_f32_bits: current_eye,
+                target_eye_after_f32_bits: [7.0f32.to_bits(); 3],
+                target_look_at_after_f32_bits: [8.0f32.to_bits(); 3],
+            }],
+            payload_sha256: String::new(),
+        };
+        camera.payload_sha256 = camera.computed_payload_sha256();
+        camera.validate().unwrap();
+
+        camera.ramp_f32_bits ^= 1;
+        assert!(camera.validate().unwrap_err().contains("payload SHA-256"));
+
+        camera.ramp_f32_bits ^= 1;
+        camera.camera_event_batches[0].target_eye_after_f32_bits[0] ^= 1;
+        camera.payload_sha256 = camera.computed_payload_sha256();
+        assert!(camera
+            .validate()
+            .unwrap_err()
+            .contains("producer result differs"));
+    }
+
+    #[test]
     fn decode_value_equals_decode_json_and_rejects_wrong_schemas() {
         let frame = production_frame_with_m02();
         let encoded = frame.encode_json().unwrap();
@@ -6094,6 +7711,27 @@ mod tests {
         let v2 = serde_json::json!({"schema": INCOMPATIBLE_ENTITY_SELECTOR_SCHEMA});
         let error = ProductionRenderFrame::decode_value(&v2).unwrap_err();
         assert!(error.contains("incompatible"));
+        let v3 = serde_json::json!({"schema": INCOMPATIBLE_CAMERA_CARRIER_SCHEMA});
+        let error = ProductionRenderFrame::decode_value(&v3).unwrap_err();
+        assert!(error.contains("camera carrier"));
+        let v4 = serde_json::json!({"schema": INCOMPATIBLE_SNOW_MUD_CARRIER_SCHEMA});
+        let error = ProductionRenderFrame::decode_value(&v4).unwrap_err();
+        assert!(error.contains("SnowMudData"));
+        let v5 = serde_json::json!({"schema": INCOMPATIBLE_TREE_RUNTIME_SCHEMA});
+        let error = ProductionRenderFrame::decode_value(&v5).unwrap_err();
+        assert!(error.contains("C07 tree visibility/model/LOD"));
+        let v6 = serde_json::json!({"schema": INCOMPATIBLE_S1_SHADOW_SCHEMA});
+        let error = ProductionRenderFrame::decode_value(&v6).unwrap_err();
+        assert!(error.contains("L02/L03 shadow projection"));
+        let v7 = serde_json::json!({"schema": INCOMPATIBLE_CAMERA_EVENT_SCHEMA});
+        let error = ProductionRenderFrame::decode_value(&v7).unwrap_err();
+        assert!(error.contains("raw C03 camera-event producer batches"));
+        let v8 = serde_json::json!({"schema": INCOMPATIBLE_SNOW_MUD_PRESENT_LINK_SCHEMA});
+        let error = ProductionRenderFrame::decode_value(&v8).unwrap_err();
+        assert!(error.contains("selected-Present candidate-set/cutoff receipt"));
+        let v9 = serde_json::json!({"schema": INCOMPATIBLE_WEATHER_CARRIER_SCHEMA});
+        let error = ProductionRenderFrame::decode_value(&v9).unwrap_err();
+        assert!(error.contains("weather placement/content/visibility"));
         let unknown = serde_json::json!({"schema": "hoi4.production-render-submit.v99"});
         let error = ProductionRenderFrame::decode_value(&unknown).unwrap_err();
         assert!(error.contains("unsupported production render schema"));
@@ -6195,13 +7833,17 @@ mod tests {
                 1,
                 2,
             ),
+            snow_mud_texture: None,
             submits: vec![RenderSubmit {
                 submit_index: 1,
                 global_order: 1,
                 presentation_qpc_ticks: 1,
-                interpolation_phase_f32_bits: 0,
+                camera_carrier_ordinal: 0,
+                camera_carrier: None,
                 ordered_scene_constant_buffers: vec![],
                 ordered_static_map_programs: vec![],
+                tree_runtime: None,
+                s1_shadow: None,
                 particle_packet_set_sha256: "5".repeat(64),
                 particles: vec![ParticlePacket {
                     effect_instance_id: 1,
@@ -6370,7 +8012,18 @@ mod tests {
             ordered_entity_submissions_sha256: "8".repeat(64),
             ordered_direct_visual_producers_sha256: "9".repeat(64),
             ordered_light_submissions_sha256: "a".repeat(64),
-            weather_membership_sha256: "b".repeat(64),
+            weather_state_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_membership_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_lifecycle_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_visibility_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            ordered_weather_packets_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_composition_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
         }
     }
 }

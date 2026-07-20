@@ -118,6 +118,7 @@ fn unsupported_static_producer_transitively_omits_dependent_pass_chain() {
         effective_vfs_manifest_sha256: "2".repeat(64),
         selected_submit_index: Some(1),
         selected_submit_global_order: Some(1),
+        c03_camera_replay: None,
         ordered_scene_constant_buffers: Vec::new(),
         ordered_render_operations: [10, 20, 30]
             .into_iter()
@@ -128,6 +129,8 @@ fn unsupported_static_producer_transitively_omits_dependent_pass_chain() {
             program(1, "cascade.first", 20, first_dependent),
             program(2, "cascade.second", 30, second_dependent),
         ],
+        tree_runtime: None,
+        s1_shadow: None,
         political_textures: Vec::new(),
         tiled_lights: Vec::new(),
         ordered_runtime_draws: Vec::new(),
@@ -140,14 +143,25 @@ fn unsupported_static_producer_transitively_omits_dependent_pass_chain() {
     let prepared = crate::prepare_production_d3d_frame(&frame, &BTreeMap::new()).unwrap();
     assert!(prepared.ordered_static_programs.is_empty());
     assert!(prepared.ordered_render_operations.is_empty());
-    assert_eq!(prepared.omissions.len(), 3);
-    assert!(prepared.omissions[0].reason.contains("unsupported"));
-    assert!(prepared.omissions[1]
-        .reason
-        .contains("omitted static operation 10"));
-    assert!(prepared.omissions[2]
-        .reason
-        .contains("omitted static operation 20"));
+    // One frame-global S1 absence plus the three-member static dependency
+    // cascade are each receipted independently.
+    assert_eq!(prepared.omissions.len(), 4);
+    assert!(prepared
+        .omissions
+        .iter()
+        .any(|omission| omission.pass == "c07_s1_shadow"));
+    assert!(prepared
+        .omissions
+        .iter()
+        .any(|omission| omission.reason.contains("unsupported")));
+    assert!(prepared
+        .omissions
+        .iter()
+        .any(|omission| omission.reason.contains("omitted static operation 10")));
+    assert!(prepared
+        .omissions
+        .iter()
+        .any(|omission| omission.reason.contains("omitted static operation 20")));
 
     let mut trace = ReplayConsumerTrace::default();
     let receipt = crate::execute_production_d3d_frame(&prepared, &mut trace).unwrap();
@@ -523,13 +537,17 @@ fn frame_with_static_program(
             200,
             300,
         ),
+        snow_mud_texture: None,
         submits: vec![RenderSubmit {
             submit_index: 12,
             global_order: 2,
             presentation_qpc_ticks: 200,
-            interpolation_phase_f32_bits: 0,
+            camera_carrier_ordinal: 0,
+            camera_carrier: None,
             ordered_scene_constant_buffers: vec![binding],
             ordered_static_map_programs: vec![program],
+            tree_runtime: None,
+            s1_shadow: None,
             effect_lifecycle_events: Vec::new(),
             particles: Vec::new(),
             entity_presentations: Vec::new(),
@@ -563,7 +581,12 @@ fn frame_with_static_program(
             ordered_entity_submissions_sha256: "8".repeat(64),
             ordered_direct_visual_producers_sha256: "9".repeat(64),
             ordered_light_submissions_sha256: "a".repeat(64),
-            weather_membership_sha256: "b".repeat(64),
+            weather_state_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_membership_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_lifecycle_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_visibility_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            ordered_weather_packets_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_composition_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
         },
     }
 }
@@ -1033,13 +1056,17 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
             200,
             300,
         ),
+        snow_mud_texture: None,
         submits: vec![RenderSubmit {
             submit_index: 12,
             global_order: 2,
             presentation_qpc_ticks: 200,
-            interpolation_phase_f32_bits: 0,
+            camera_carrier_ordinal: 0,
+            camera_carrier: None,
             ordered_scene_constant_buffers: vec![binding.clone()],
             ordered_static_map_programs: Vec::new(),
+            tree_runtime: None,
+            s1_shadow: None,
             effect_lifecycle_events: Vec::new(),
             particles: Vec::new(),
             entity_presentations: Vec::new(),
@@ -1088,7 +1115,12 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
             ordered_entity_submissions_sha256: "8".repeat(64),
             ordered_direct_visual_producers_sha256: "9".repeat(64),
             ordered_light_submissions_sha256: "a".repeat(64),
-            weather_membership_sha256: "b".repeat(64),
+            weather_state_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_membership_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_lifecycle_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_visibility_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            ordered_weather_packets_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_composition_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
         },
     };
     let prepared = renderer.prepare_frame(Some(&frame)).unwrap();
@@ -1227,13 +1259,17 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
             200,
             300,
         ),
+        snow_mud_texture: None,
         submits: vec![RenderSubmit {
             submit_index: 12,
             global_order: 2,
             presentation_qpc_ticks: 200,
-            interpolation_phase_f32_bits: 0,
+            camera_carrier_ordinal: 0,
+            camera_carrier: None,
             ordered_scene_constant_buffers: vec![binding],
             ordered_static_map_programs: vec![program.clone()],
+            tree_runtime: None,
+            s1_shadow: None,
             effect_lifecycle_events: Vec::new(),
             particles: Vec::new(),
             entity_presentations: Vec::new(),
@@ -1269,7 +1305,12 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
             ordered_entity_submissions_sha256: "8".repeat(64),
             ordered_direct_visual_producers_sha256: "9".repeat(64),
             ordered_light_submissions_sha256: "a".repeat(64),
-            weather_membership_sha256: "b".repeat(64),
+            weather_state_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_membership_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_lifecycle_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_visibility_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            ordered_weather_packets_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_composition_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
         },
     };
 

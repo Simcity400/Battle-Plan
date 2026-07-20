@@ -13,7 +13,7 @@
 use crate::canon::manifest_canonical_bytes;
 use crate::sha256::{to_hex, Sha256};
 use crate::zip::{
-    portable_path_key, validate_path, MAX_CONTAINER_ENTRY_BYTES,
+    portable_path_key, validate_path, validate_payload_path, MAX_CONTAINER_ENTRY_BYTES,
     STREAMING_MAX_CONTAINER_ENTRY_BYTES, ZIP32_MAX_ENTRY_COUNT, ZIP32_MAX_FIELD_VALUE,
     ZIP_METHOD_DEFLATE, ZIP_METHOD_STORE, ZIP_METHOD_ZSTD, ZSTD_WINDOW_LOG,
 };
@@ -58,10 +58,12 @@ pub struct FileBackedPackEntry<'a> {
 /// [`write_zip_file_streaming`]) instead of the whole file being read into RAM.
 /// This is what lets the recorder append a multi-GB raw compact stream to the
 /// container without ever materializing it. `sha256`, when supplied, is the
-/// caller-computed digest of the file's raw bytes (e.g. the capture-time rolling
-/// hash of the pipe stream); it is trusted for the manifest so the packer does
-/// not re-read the whole file just to hash it. When `None`, the packer streams
-/// the file once to compute the digest.
+/// caller-computed digest of the decoded bytes (e.g. the capture-time rolling
+/// hash of the pipe stream). It seeds the manifest without a separate hash
+/// pass, but the exact decoded bytes emitted into the ZIP are hashed in that
+/// same write pass and must match before the manifest is written. When `None`,
+/// the packer streams the file once to establish the expected digest first and
+/// again to write-and-verify it.
 pub struct StreamingFileEntry<'a> {
     pub path: String,
     pub file_path: &'a Path,
@@ -363,10 +365,11 @@ pub fn pack_mixed_to_writer<W: Write>(
 
     let mut manifest_entries: Vec<Value> =
         Vec::with_capacity(borrowed_entries.len() + file_entries.len());
+    let mut file_expectations = Vec::with_capacity(file_entries.len());
 
     let mut counts_snapshots = 0u64;
     for e in borrowed_entries {
-        validate_path(&e.path).map_err(|_| PackError::BadPath(e.path.clone()))?;
+        validate_payload_path(&e.path).map_err(|_| PackError::BadPath(e.path.clone()))?;
         let sha = to_hex(&Sha256::digest(e.bytes));
         let mut ent = json!({
             "path": e.path,
@@ -385,8 +388,9 @@ pub fn pack_mixed_to_writer<W: Write>(
         manifest_entries.push(ent);
     }
     for e in file_entries {
-        validate_path(&e.path).map_err(|_| PackError::BadPath(e.path.clone()))?;
+        validate_payload_path(&e.path).map_err(|_| PackError::BadPath(e.path.clone()))?;
         let (sha, len) = sha256_file(e.file_path)?;
+        file_expectations.push((sha.clone(), len));
         let mut ent = json!({
             "path": e.path,
             "sha256": sha,
@@ -455,7 +459,9 @@ pub fn pack_mixed_to_writer<W: Write>(
         )?;
         file_count += 1;
     }
-    for e in file_entries {
+    for (e, (expected_sha256, expected_len)) in
+        file_entries.iter().zip(file_expectations.iter())
+    {
         write_zip_file_from_path(
             writer,
             &mut central,
@@ -465,6 +471,8 @@ pub fn pack_mixed_to_writer<W: Write>(
             e.file_path,
             compression,
             CompressionProfile::default(),
+            expected_sha256,
+            *expected_len,
         )?;
         file_count += 1;
     }
@@ -592,6 +600,8 @@ fn pack_streaming_to_writer_with_compression<W: Write>(
     let mut manifest_entries: Vec<Value> =
         Vec::with_capacity(borrowed_entries.len() + file_entries.len() + streaming_entries.len());
     let mut counts_snapshots = 0u64;
+    let mut file_expectations = Vec::with_capacity(file_entries.len());
+    let mut streaming_expectations = Vec::with_capacity(streaming_entries.len());
 
     let mut push_manifest_entry =
         |path: &str, sha: String, bytes: u64, role: &str, hour_index: Option<i64>| {
@@ -613,21 +623,23 @@ fn pack_streaming_to_writer_with_compression<W: Write>(
         };
 
     for e in borrowed_entries {
-        validate_path(&e.path).map_err(|_| PackError::BadPath(e.path.clone()))?;
+        validate_payload_path(&e.path).map_err(|_| PackError::BadPath(e.path.clone()))?;
         let sha = to_hex(&Sha256::digest(e.bytes));
         push_manifest_entry(&e.path, sha, e.bytes.len() as u64, e.role, e.hour_index);
     }
     for e in file_entries {
-        validate_path(&e.path).map_err(|_| PackError::BadPath(e.path.clone()))?;
+        validate_payload_path(&e.path).map_err(|_| PackError::BadPath(e.path.clone()))?;
         let (sha, len) = sha256_file(e.file_path)?;
+        file_expectations.push((sha.clone(), len));
         push_manifest_entry(&e.path, sha, len, e.role, e.hour_index);
     }
     for e in streaming_entries {
-        validate_path(&e.path).map_err(|_| PackError::BadPath(e.path.clone()))?;
+        validate_payload_path(&e.path).map_err(|_| PackError::BadPath(e.path.clone()))?;
         let (sha, len) = match &e.sha256 {
             Some(sha) => (sha.clone(), streaming_entry_decoded_len(e)?),
             None => sha256_streaming_entry(e)?,
         };
+        streaming_expectations.push((sha.clone(), len));
         push_manifest_entry(&e.path, sha, len, e.role, e.hour_index);
     }
 
@@ -683,7 +695,9 @@ fn pack_streaming_to_writer_with_compression<W: Write>(
         )?;
         file_count += 1;
     }
-    for e in file_entries {
+    for (e, (expected_sha256, expected_len)) in
+        file_entries.iter().zip(file_expectations.iter())
+    {
         write_zip_file_from_path(
             writer,
             &mut central,
@@ -693,10 +707,15 @@ fn pack_streaming_to_writer_with_compression<W: Write>(
             e.file_path,
             compression,
             compression_profile,
+            expected_sha256,
+            *expected_len,
         )?;
         file_count += 1;
     }
-    for e in streaming_entries {
+    for (e, (expected_sha256, expected_len)) in streaming_entries
+        .iter()
+        .zip(streaming_expectations.iter())
+    {
         write_zip_file_streaming(
             writer,
             &mut central,
@@ -706,6 +725,8 @@ fn pack_streaming_to_writer_with_compression<W: Write>(
             e,
             compression,
             compression_profile,
+            expected_sha256,
+            *expected_len,
         )?;
         file_count += 1;
     }
@@ -781,7 +802,7 @@ pub fn pack_borrowed_with_writer<W: Write>(
 
     let mut counts_snapshots = 0u64;
     for e in entries {
-        validate_path(&e.path).map_err(|_| PackError::BadPath(e.path.clone()))?;
+        validate_payload_path(&e.path).map_err(|_| PackError::BadPath(e.path.clone()))?;
         let sha = to_hex(&Sha256::digest(&e.bytes));
         let mut ent = json!({
             "path": e.path,
@@ -1026,6 +1047,8 @@ fn write_zip_file_from_path<W: Write>(
     path: &Path,
     compression: PackCompression,
     compression_profile: CompressionProfile,
+    expected_sha256: &str,
+    expected_len: u64,
 ) -> std::io::Result<()> {
     let entry = StreamingFileEntry {
         path: name.to_string(),
@@ -1046,6 +1069,8 @@ fn write_zip_file_from_path<W: Write>(
         compression,
         compression_profile,
         MAX_CONTAINER_ENTRY_BYTES,
+        expected_sha256,
+        expected_len,
     )
 }
 
@@ -1092,6 +1117,8 @@ fn write_zip_file_streaming<W: Write>(
     entry: &StreamingFileEntry<'_>,
     compression: PackCompression,
     compression_profile: CompressionProfile,
+    expected_sha256: &str,
+    expected_len: u64,
 ) -> std::io::Result<()> {
     write_zip_file_streaming_with_entry_limit(
         out,
@@ -1103,6 +1130,8 @@ fn write_zip_file_streaming<W: Write>(
         compression,
         compression_profile,
         STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+        expected_sha256,
+        expected_len,
     )
 }
 
@@ -1116,9 +1145,15 @@ fn write_zip_file_streaming_with_entry_limit<W: Write>(
     compression: PackCompression,
     compression_profile: CompressionProfile,
     entry_limit: u64,
+    expected_sha256: &str,
+    expected_len: u64,
 ) -> std::io::Result<()> {
     let lho = *written;
-    let file_len = streaming_entry_decoded_len(entry)?;
+    // The manifest identity was derived before this second/open-and-write
+    // pass. Use that expected length for compression decisions and then prove
+    // the exact decoded bytes written still have the same length and digest.
+    // This closes the mutable-path window without retaining whole entries.
+    let file_len = expected_len;
     let zip_compression = compression.method_for_entry(name, file_len);
     let method = zip_compression.method();
     // general-purpose bit 3: crc-32 and sizes are in a trailing data descriptor.
@@ -1144,6 +1179,7 @@ fn write_zip_file_streaming_with_entry_limit<W: Write>(
     let mut file =
         compact_stream::open_with_compression(entry.file_path, entry.source_compression)?;
     let mut hasher = crc32fast::Hasher::new();
+    let mut sha256 = Sha256::new();
     let mut data_len: u64 = 0;
     let mut buf = vec![0u8; STREAM_CHUNK];
     let comp_len: u64 = match zip_compression {
@@ -1159,6 +1195,7 @@ fn write_zip_file_streaming_with_entry_limit<W: Write>(
                 })?;
                 ensure_entry_size_within_limit(name, "uncompressed size", next_len, entry_limit)?;
                 hasher.update(&buf[..n]);
+                sha256.update(&buf[..n]);
                 data_len = next_len;
                 ensure_entry_size_within_limit(name, "compressed size", data_len, entry_limit)?;
                 out.write_all(&buf[..n])?;
@@ -1190,6 +1227,7 @@ fn write_zip_file_streaming_with_entry_limit<W: Write>(
                         entry_limit,
                     )?;
                     hasher.update(&buf[..n]);
+                    sha256.update(&buf[..n]);
                     data_len = next_len;
                     enc.write_all(&buf[..n])?;
                 }
@@ -1222,6 +1260,7 @@ fn write_zip_file_streaming_with_entry_limit<W: Write>(
                         entry_limit,
                     )?;
                     hasher.update(&buf[..n]);
+                    sha256.update(&buf[..n]);
                     data_len = next_len;
                     enc.write_all(&buf[..n])?;
                 }
@@ -1230,6 +1269,15 @@ fn write_zip_file_streaming_with_entry_limit<W: Write>(
             cw.count
         }
     };
+    let actual_sha256 = to_hex(&sha256.finalize());
+    if data_len != expected_len || actual_sha256.as_str() != expected_sha256 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "entry {name} changed while packing: expected {expected_len} bytes sha256 {expected_sha256}, wrote {data_len} bytes sha256 {actual_sha256}"
+            ),
+        ));
+    }
     *written = written
         .checked_add(comp_len)
         .ok_or_else(|| zip_limit_err(format!("streaming entry {name} compressed size overflow")))?;
@@ -1755,6 +1803,8 @@ mod tests {
             PackCompression::Store,
             CompressionProfile::default(),
             8,
+            &to_hex(&Sha256::digest(b"0123456789abcdef")),
+            16,
         )
         .expect_err("streaming cap must abort");
 
@@ -1762,6 +1812,46 @@ mod tests {
         assert!(msg.contains("per-entry reader cap"), "{msg}");
         assert!(central.is_empty());
         assert!(!out.windows(4).any(|w| w == b"PK\x05\x06"));
+    }
+
+    #[test]
+    fn streaming_entry_identity_drift_aborts_before_manifest_or_central_directory() {
+        let dir = TmpDir::new("entry_identity_drift");
+        let stream_path = dir.join("stream.bin");
+        fs::write(&stream_path, b"actual bytes").unwrap();
+
+        let entry = StreamingFileEntry {
+            path: "payload/g/collector_raw/stream.bin".to_string(),
+            file_path: &stream_path,
+            source_compression: compact_stream::StreamCompression::None,
+            decoded_len: Some(12),
+            role: "collector_compact_stream",
+            hour_index: None,
+            sha256: Some(to_hex(&Sha256::digest(b"other bytes!"))),
+        };
+        let mut out = Vec::new();
+        let mut central = Vec::new();
+        let mut written = 0u64;
+        let mut zip64_used = false;
+        let err = write_zip_file_streaming_with_entry_limit(
+            &mut out,
+            &mut central,
+            &mut written,
+            &mut zip64_used,
+            &entry.path,
+            &entry,
+            PackCompression::Store,
+            CompressionProfile::default(),
+            MAX_CONTAINER_ENTRY_BYTES,
+            entry.sha256.as_deref().unwrap(),
+            entry.decoded_len.unwrap(),
+        )
+        .expect_err("digest drift must refuse the partially written archive");
+
+        assert!(err.to_string().contains("changed while packing"));
+        assert!(central.is_empty());
+        assert!(!out.windows(13).any(|window| window == b"manifest.json"));
+        assert!(!out.windows(4).any(|window| window == b"PK\x05\x06"));
     }
 
     #[test]
@@ -1859,6 +1949,36 @@ mod tests {
         }];
         assert!(matches!(
             pack("g", &non_nfc, &PackIdentity::default(), false),
+            Err(PackError::BadPath(_))
+        ));
+
+        let full_fold_collision = [
+            PackEntry {
+                path: "payload/g/Stra\u{df}e.json".into(),
+                bytes: b"one".to_vec(),
+                role: "other",
+                hour_index: None,
+            },
+            PackEntry {
+                path: "payload/g/STRASSE.json".into(),
+                bytes: b"two".to_vec(),
+                role: "other",
+                hour_index: None,
+            },
+        ];
+        assert!(matches!(
+            pack("g", &full_fold_collision, &PackIdentity::default(), false),
+            Err(PackError::BadPath(_))
+        ));
+
+        let top_level_payload = [PackEntry {
+            path: "outside-payload.json".into(),
+            bytes: Vec::new(),
+            role: "other",
+            hour_index: None,
+        }];
+        assert!(matches!(
+            pack("g", &top_level_payload, &PackIdentity::default(), false),
             Err(PackError::BadPath(_))
         ));
     }

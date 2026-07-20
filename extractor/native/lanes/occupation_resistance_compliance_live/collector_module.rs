@@ -68,8 +68,11 @@ pub const STATE_GARRISON_DATA_VTABLE_RVA: usize = 0x296DCB0;
 pub const STATE_GARRISON_DATA_STATE_OFF: usize = 0x50;
 pub const STATE_GARRISON_DATA_OCCUPATION_DATA_OFF: usize = 0x58;
 // Validated scalars: +0x88 i32 army_manpower_need (18/18 discriminating rows,
-// 280/280 all), +0xF0 i32 fixed-x100000 strength_ratio (288/288), +0xF8 i32
-// fixed-x100000 garrison_required (282/282).
+// 280/280 all), +0xF0 i64 fixed-x100000 strength_ratio (288/288), +0xF8 i64
+// fixed-x100000 garrison_required (282/282). Domain-52 wire v1 stores the two
+// fixed-point values as i32, so the reader authenticates the complete i64 and
+// admits it only after an exact checked conversion; high-word data can never be
+// silently truncated.
 pub const STATE_GARRISON_DATA_ARMY_MANPOWER_NEED_OFF: usize = 0x88;
 pub const STATE_GARRISON_DATA_STRENGTH_RATIO_OFF: usize = 0xF0;
 pub const STATE_GARRISON_DATA_GARRISON_REQUIRED_OFF: usize = 0xF8;
@@ -730,13 +733,26 @@ pub fn read_state_garrison_scalars<M: OccupationMemory>(
                 };
                 let army_manpower_need =
                     i32_from(&blob, STATE_GARRISON_DATA_ARMY_MANPOWER_NEED_OFF);
-                let strength_ratio_raw = i32_from(&blob, STATE_GARRISON_DATA_STRENGTH_RATIO_OFF);
-                let garrison_required_raw =
-                    i32_from(&blob, STATE_GARRISON_DATA_GARRISON_REQUIRED_OFF);
+                let Ok(strength_ratio_raw) = i32::try_from(i64_from(
+                    &blob,
+                    STATE_GARRISON_DATA_STRENGTH_RATIO_OFF,
+                )) else {
+                    anomaly_rows = anomaly_rows.saturating_add(1);
+                    continue;
+                };
+                let Ok(garrison_required_raw) = i32::try_from(i64_from(
+                    &blob,
+                    STATE_GARRISON_DATA_GARRISON_REQUIRED_OFF,
+                )) else {
+                    anomaly_rows = anomaly_rows.saturating_add(1);
+                    continue;
+                };
                 if army_manpower_need < 0
                     || army_manpower_need > MAX_ABS_FIXED_RAW
-                    || strength_ratio_raw.abs() > MAX_ABS_FIXED_RAW
-                    || garrison_required_raw.abs() > MAX_ABS_FIXED_RAW
+                    || strength_ratio_raw < -MAX_ABS_FIXED_RAW
+                    || strength_ratio_raw > MAX_ABS_FIXED_RAW
+                    || garrison_required_raw < -MAX_ABS_FIXED_RAW
+                    || garrison_required_raw > MAX_ABS_FIXED_RAW
                 {
                     anomaly_rows = anomaly_rows.saturating_add(1);
                     continue;
@@ -1011,6 +1027,12 @@ fn i32_from(data: &[u8], offset: usize) -> i32 {
     i32::from_le_bytes(bytes)
 }
 
+fn i64_from(data: &[u8], offset: usize) -> i64 {
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&data[offset..offset + 8]);
+    i64::from_le_bytes(bytes)
+}
+
 fn win_u64<M: OccupationMemory>(
     win: Option<&[u8]>,
     mem: &M,
@@ -1074,6 +1096,10 @@ mod tests {
         }
 
         fn write_i32(&mut self, address: u64, value: i32) {
+            self.write_bytes(address, &value.to_le_bytes());
+        }
+
+        fn write_i64(&mut self, address: u64, value: i64) {
             self.write_bytes(address, &value.to_le_bytes());
         }
 
@@ -1375,8 +1401,8 @@ mod tests {
         occupation_data_ptr: u64,
         state_ptr: u64,
         manpower_need: i32,
-        strength_ratio_raw: i32,
-        garrison_required_raw: i32,
+        strength_ratio_raw: i64,
+        garrison_required_raw: i64,
     ) {
         mem.write_zeroes(row_ptr, STATE_GARRISON_READ_LEN);
         mem.write_u64(row_ptr, MODULE_BASE + STATE_GARRISON_DATA_VTABLE_RVA as u64);
@@ -1389,11 +1415,11 @@ mod tests {
             row_ptr + STATE_GARRISON_DATA_ARMY_MANPOWER_NEED_OFF as u64,
             manpower_need,
         );
-        mem.write_i32(
+        mem.write_i64(
             row_ptr + STATE_GARRISON_DATA_STRENGTH_RATIO_OFF as u64,
             strength_ratio_raw,
         );
-        mem.write_i32(
+        mem.write_i64(
             row_ptr + STATE_GARRISON_DATA_GARRISON_REQUIRED_OFF as u64,
             garrison_required_raw,
         );
@@ -1477,6 +1503,24 @@ mod tests {
                 .copied(),
             Some(1)
         );
+    }
+
+    #[test]
+    fn garrison_i64_scalar_outside_wire_range_fails_closed() {
+        let mut mem = fake_memory_with_garrison(1);
+        mem.write_i64(
+            GARRISON_ROW + STATE_GARRISON_DATA_STRENGTH_RATIO_OFF as u64,
+            i64::from(i32::MAX) + 1,
+        );
+        let mut roots = BTreeMap::new();
+        roots.insert(10, STATE_10);
+        let extracted =
+            extract_rows_from_state_roots(&mem, GAME_STATE, &roots).unwrap();
+        assert_eq!(extracted.garrison_anomaly_rows, 1);
+        let row = &extracted.rows[0];
+        assert_eq!(row.garrison_strength_ratio_raw, 0);
+        assert!(row.flags & compact::ROW_FLAG_GARRISON_SCALARS == 0);
+        assert!(row.flags & compact::ROW_FLAG_GARRISON_SIGNALS_UNAVAILABLE != 0);
     }
 
     #[test]

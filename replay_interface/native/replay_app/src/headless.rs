@@ -7,9 +7,10 @@
 //! real the game screenshots.
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use map_viewer::GameFileResolver;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::bundle::MapBundle;
@@ -24,6 +25,79 @@ use crate::{Result, TimelineMode};
 /// so every pixel is map content and dumps diff cleanly.
 const DUMP_WIDTH: u32 = 1408;
 const DUMP_HEIGHT: u32 = 512;
+
+/// Machine-readable product-render observation consumed by the close-zoom
+/// golden/pixel gate.  The execution receipt and BGRA pixels are bound in the
+/// same record so a pixel hash can never be promoted from a different ordered
+/// D3D execution.  This receipt is an observation, not engine parity authority.
+#[derive(Debug, Serialize)]
+struct ProductionPixelGateReceipt {
+    schema: &'static str,
+    selected_hour: i64,
+    viewport_width: u32,
+    viewport_height: u32,
+    map_operations: usize,
+    selected_present_operations: usize,
+    selected_present_m02_draws: usize,
+    map_presented: bool,
+    selected_present_executed: bool,
+    receipt_sha256: Option<String>,
+    bgra_sha256: String,
+    pixel_byte_len: usize,
+}
+
+fn production_pixel_gate_receipt_path(out: &Path) -> PathBuf {
+    let mut path = out.as_os_str().to_os_string();
+    path.push(".pixel-gate-receipt.json");
+    PathBuf::from(path)
+}
+
+fn write_production_pixel_gate_receipt(
+    out: &Path,
+    receipt: &ProductionPixelGateReceipt,
+) -> Result<PathBuf> {
+    let path = production_pixel_gate_receipt_path(out);
+    let mut bytes = serde_json::to_vec_pretty(receipt)?;
+    bytes.push(b'\n');
+    std::fs::write(&path, bytes)?;
+    Ok(path)
+}
+
+fn snow_mud_h2_receipt_path(out: &Path) -> PathBuf {
+    let mut path = out.as_os_str().to_os_string();
+    path.push(".snow-mud-h2-receipt.json");
+    PathBuf::from(path)
+}
+
+fn write_snow_mud_h2_receipt(
+    out: &Path,
+    receipt: &replay_core::SnowMudReplayReadbackReceipt,
+) -> Result<PathBuf> {
+    let path = snow_mud_h2_receipt_path(out);
+    let mut bytes = serde_json::to_vec_pretty(receipt)?;
+    bytes.push(b'\n');
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if std::fs::read(&path)? != bytes {
+                return Err(format!(
+                    "SnowMudData H2 receipt path already exists with different bytes: {}",
+                    path.display()
+                )
+                .into());
+            }
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(path)
+}
 
 /// Render `hour` (default: the timeline's first hour) and write a 32-bit BMP.
 /// A supplied bundle selects the debug/capture renderer and overlay. A
@@ -60,6 +134,7 @@ pub fn dump_frame(
     bundle: Option<&MapBundle>,
     mode: &TimelineMode,
     hour: Option<i64>,
+    nth_hour: Option<usize>,
     out: &Path,
     _game_resolver: Option<&GameFileResolver>,
     product_paths: &crate::install_paths::ProductPaths,
@@ -92,6 +167,7 @@ pub fn dump_frame(
         None => dump_production_recording_frame(
             mode,
             hour,
+            nth_hour,
             out,
             product_paths,
             dump_zoom,
@@ -210,6 +286,10 @@ fn dump_debug_frame(
     overlay.draw(&gfx, &hour_label, &line2, hour_index, hours.len())?;
     let pixels = gfx.read_target()?;
     write_bmp(out, DUMP_WIDTH, DUMP_HEIGHT, &pixels)?;
+    let snow_mud_h2_receipt_path = renderer
+        .snow_mud_h2_receipt()
+        .map(|receipt| write_snow_mud_h2_receipt(out, receipt))
+        .transpose()?;
     let day_night_label = match day_night_hour {
         Some(hour) => format!("{hour:.6}"),
         None => "off".to_string(),
@@ -227,6 +307,12 @@ fn dump_debug_frame(
         controllers.len(),
         if overlay.has_text() { "on" } else { "off" }
     );
+    if let Some(path) = snow_mud_h2_receipt_path {
+        println!(
+            "wrote SnowMudData H2 immutable-upload/readback receipt: {}",
+            path.display()
+        );
+    }
     if let Some(stats) = renderer.captured_pass_stats() {
         let stats_day_night = match stats.last_day_night_hour {
             Some(hour) => format!("{hour:.6}"),
@@ -286,6 +372,7 @@ fn dump_debug_frame(
 fn dump_production_recording_frame(
     mode: &TimelineMode,
     hour: Option<i64>,
+    nth_hour: Option<usize>,
     out: &Path,
     product_paths: &crate::install_paths::ProductPaths,
     dump_zoom: Option<f64>,
@@ -316,14 +403,14 @@ fn dump_production_recording_frame(
         .content_manifest()
         .ok_or("portable playback has no admitted content manifest after binding")?;
     let hours = provider.hours();
-    let selected_hour = hour
-        .or_else(|| hours.first().copied())
-        .ok_or("timeline provider has no hours")?;
-    if hours.binary_search(&selected_hour).is_err() {
-        return Err(
-            format!("--dump-hour {selected_hour} is not an exact recorded timeline hour").into(),
-        );
-    }
+    let selected_hour = match (hour, nth_hour) {
+        (Some(hour), None) => resolve_dump_hour(hours, DumpHourRequest::Canonical(hour))?,
+        (None, Some(ordinal)) => resolve_dump_hour(hours, DumpHourRequest::Ordinal(ordinal))?,
+        (None, None) => *hours.first().ok_or("timeline provider has no hours")?,
+        (Some(_), Some(_)) => {
+            return Err("competing canonical and ordinal dump-hour selectors".into())
+        }
+    };
     let initial_frame = provider
         .world_frame_at(hours[0])?
         .ok_or("initial replay frame is unavailable")?;
@@ -420,8 +507,24 @@ fn dump_production_recording_frame(
     let pixels = gfx.read_target()?;
     let pixel_sha256 = format!("{:x}", Sha256::digest(&pixels));
     write_bmp(out, output_width, output_height, &pixels)?;
+    let pixel_gate_receipt = ProductionPixelGateReceipt {
+        schema: "battle-plan-production-pixel-gate-receipt-v1",
+        selected_hour,
+        viewport_width: output_width,
+        viewport_height: output_height,
+        map_operations,
+        selected_present_operations,
+        selected_present_m02_draws,
+        map_presented,
+        selected_present_executed,
+        receipt_sha256: (map_receipt != "none").then(|| map_receipt.clone()),
+        bgra_sha256: pixel_sha256.clone(),
+        pixel_byte_len: pixels.len(),
+    };
+    let pixel_gate_receipt_path =
+        write_production_pixel_gate_receipt(out, &pixel_gate_receipt)?;
     println!(
-        "wrote production recording frame dump: {} ({label}, hour {selected_hour}, {}x{}, {} map operations, {} selected-Present operations including {} M02 draws, map receipt {}, bgra_sha256 {})",
+        "wrote production recording frame dump: {} ({label}, hour {selected_hour}, {}x{}, {} map operations, {} selected-Present operations including {} M02 draws, map receipt {}, bgra_sha256 {}, pixel gate receipt {})",
         out.display(),
         output_width,
         output_height,
@@ -430,6 +533,7 @@ fn dump_production_recording_frame(
         selected_present_m02_draws,
         map_receipt,
         pixel_sha256,
+        pixel_gate_receipt_path.display(),
     );
     Ok(())
 }
@@ -695,8 +799,11 @@ mod tests {
             effective_vfs_manifest_sha256: "22".repeat(32),
             selected_submit_index: None,
             selected_submit_global_order: None,
+            c03_camera_replay: None,
             ordered_scene_constant_buffers: Vec::new(),
             ordered_static_map_programs: Vec::new(),
+            tree_runtime: None,
+            s1_shadow: None,
             ordered_render_operations: Vec::new(),
             political_textures: Vec::new(),
             tiled_lights: Vec::new(),
@@ -714,6 +821,7 @@ mod tests {
         let mut prepared = map_viewer::PreparedProductionD3dFrame {
             content_manifest_sha256: "11".repeat(32),
             effective_vfs_manifest_sha256: "22".repeat(32),
+            c03_camera_replay: None,
             target: None,
             ordered_scene_constant_buffers: Vec::new(),
             ordered_render_operations: Vec::new(),
@@ -721,6 +829,10 @@ mod tests {
             tiled_lights: Vec::new(),
             ordered_static_used_content: Vec::new(),
             ordered_static_programs: Vec::new(),
+            mapname_d80_state: replay_core::MapnameD80State::Missing,
+            tree_runtime: None,
+            tree_materialized_execution_sha256: None,
+            s1_shadow: None,
             ordered_runtime_draws: Vec::new(),
             m02_combat: None,
             authenticated_ui_pass: None,

@@ -93,7 +93,7 @@ def main() -> None:
     remaining = read_rel(remaining_rel)
     require(master.count("production_promotion/contract.json") >= 1, "master links promotion contract", checks)
     require(remaining.count("production_promotion/contract.json") >= 1, "remaining ledger links promotion contract", checks)
-    for token in ("A4/A21 exact regional causes", "A1 exact hub actor/level attribution is closed", "B8/X6 exact building registry", "A2/A12 exact pause", "A15 exact multiplayer/session metadata is closed", "A1 exact actor/level attribution is closed", "A22 exact 24-channel schema are closed"):
+    for token in ("A4/A21 exact regional causes", "A1 exact hub actor/level attribution", "B8/X6 exact building registry", "A2/A12 exact pause", "A15 exact multiplayer/session metadata is closed", "A1 exact actor/level attribution is closed", "A22 exact 24-channel schema are closed"):
         require(token in master, f"master reconciliation: {token}", checks)
     for stale in ("focus-paused A2; decision targets/cooldowns A12", "hotjoin/tag-switch/chat A15", "Per-hub level fixture A1", "24-channel expansion/live fixture A22"):
         require(stale not in master, f"stale master text absent: {stale}", checks)

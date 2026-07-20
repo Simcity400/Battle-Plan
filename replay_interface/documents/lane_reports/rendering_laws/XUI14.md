@@ -36,7 +36,7 @@ The retained intelligence save oracle is an exact join/order fixture containing:
 
 The strategic save parser independently preserves 144 operative-pool entries, 16 entries with a network, and 38 total networks. These are exact saved-state fixtures, not same-tick a729 UI-controller producers.
 
-The current a729 D53 path is reused without overclaiming it. It carries agency raw scalars/capacity, operative identity and numeric lifecycle values, cipher target/amount/decrypting state, and sorted network state topology. The current proof mask does not admit operation detail or four-lane intel-map percentages; the candidate operation owner field remains rejected. The typed replay `IntelView` currently exposes only agency name/created/upgrade progress, operatives, and running-operation count.
+The current a729 D53 path now also carries exact operation-instance detail and the atomic owner-target four-lane intel matrix. Operations preserve definition, owner, country/state target, the distinct preparing/prepared/running/finished states, current-phase progress, timing, and assigned operative ids. Network rows preserve the exact strategic-operative/slot identity, target, sorted graph states, exact fixed-100000 per-state strengths, and mechanically recomputed network-scoped national coverage. These families are exposed through typed replay `DiplomacyView` leaves with explicit unavailable versus measured-empty semantics. They do not by themselves satisfy XUI14's controller-order or visibility contract, and the new per-state strength leaf remains promotion-gated on an authenticated same-frame runtime fixture.
 
 The retained capture census contains 214 RDCs totalling 69,298,844,274 bytes and the UI13 corpus contains 13 capture roots with 7,063,660 CPU events. Neither contains an authenticated intelligence controller trace, and no intelligence-named RDC was found. Further ordinary RenderDoc capture or manual pixel annotation cannot prove hidden rows, stable identities, reciprocal assignments, owner-target percentages, or controller order, so no new capture is requested.
 
@@ -61,8 +61,8 @@ Focused tests cover exact order, collection/cross-reference drift, reciprocal ne
 
 The remaining producer work is intentionally outside this replay-only closure:
 
-- **A10 / operations:** authenticated owner, exact definition and target/location, phase/progress/status, start/duration, assigned operative joins, and lifecycle;
-- **A11 / intelligence and networks:** same-tick owner-target civilian/army/navy/air intel levels plus authenticated network owner, operative joins, strength, and national coverage;
+- **A10 / operations:** the exact D53 runtime row is available; the remaining XUI14 dependency is the same-tick reciprocal operative-assignment projection plus A28 controller membership/order and surface visibility;
+- **A11 / intelligence and networks:** four-lane owner-target levels and network-scoped national coverage are available; per-state current network strength, XUI14 owner projection, reciprocal operative joins, controller order, and surface visibility remain unavailable;
 - **A28 / controller order:** the exact 20-field population/filter/order/group/materialization/clip/scroll trace for every measured XUI14 collection;
 - **A30 / intelligence and operative frame:** complete agency semantics, upgrade/build state, operative identity/presentation/traits/nationalities/assignment/capture/recruitable state, cipher display denominator and flags, all seven visibility gates, and the joins to A10/A11/A28.
 

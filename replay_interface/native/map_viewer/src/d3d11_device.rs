@@ -93,6 +93,84 @@ impl<T> Drop for D3dPtr<T> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeD3d11UploadError {
+    action: String,
+    device_removed_reason: i32,
+}
+
+impl std::fmt::Display for NativeD3d11UploadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "production native D3D11 replay blocked: {} left the device unavailable (GetDeviceRemovedReason 0x{:08X}); uploaded state was not admitted",
+            self.action,
+            self.device_removed_reason as u32
+        )
+    }
+}
+
+impl std::error::Error for NativeD3d11UploadError {}
+
+pub(crate) fn native_d3d11_validate_void_upload_result(
+    device_removed_reason: i32,
+    action: &str,
+) -> Result<()> {
+    if device_removed_reason < 0 {
+        Err(Box::new(NativeD3d11UploadError {
+            action: action.to_string(),
+            device_removed_reason,
+        }))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+pub(crate) unsafe fn native_d3d11_check_void_upload_device(
+    device: &D3dPtr<ID3D11Device>,
+    action: &str,
+) -> Result<()> {
+    native_d3d11_validate_void_upload_result(
+        (*device.as_raw()).GetDeviceRemovedReason(),
+        action,
+    )
+}
+
+#[cfg(test)]
+mod void_upload_tests {
+    use super::*;
+
+    #[test]
+    fn void_upload_result_is_admitted_only_while_device_is_available() {
+        native_d3d11_validate_void_upload_result(0, "UpdateSubresource terrain cb0")
+            .expect("S_OK device state admits the completed void upload");
+
+        let error = native_d3d11_validate_void_upload_result(
+            0x887A_0005u32 as i32,
+            "UpdateSubresource terrain cb0",
+        )
+        .expect_err("negative device reason must reject the upload");
+        assert!(error
+            .downcast_ref::<NativeD3d11UploadError>()
+            .is_some());
+        let message = error.to_string();
+        assert!(message.contains("UpdateSubresource terrain cb0"), "{message}");
+        assert!(message.contains("uploaded state was not admitted"), "{message}");
+    }
+}
+
+#[cfg(windows)]
+unsafe fn native_d3d11_check_update_subresource(
+    context: &D3dPtr<ID3D11DeviceContext>,
+    action: &str,
+) -> Result<()> {
+    let mut device = ptr::null_mut();
+    (*context.as_raw()).GetDevice(&mut device);
+    let device = D3dPtr::from_raw(device, "D3D11 device after UpdateSubresource")?;
+    native_d3d11_check_void_upload_device(&device, action)
+}
+
 #[cfg(windows)]
 pub(crate) struct NativeD3d11Device {
     pub(crate) device: D3dPtr<ID3D11Device>,
@@ -2244,6 +2322,13 @@ pub(crate) unsafe fn native_d3d11_update_prepared_map_pass_scene(
                         0,
                         0,
                     );
+                    native_d3d11_check_update_subresource(
+                        context,
+                        &format!(
+                            "UpdateSubresource for {pass_name} draw {} {TERRAIN_SCENE_CB0_SYMBOL} {} constant buffer slot {}",
+                            camera_patch.draw_index, constant_buffer.stage, constant_buffer.slot
+                        ),
+                    )?;
                 }
                 TerrainSceneCb0CameraUpdateMethod::DynamicMapWriteDiscard => {
                     let mut mapped: D3D11_MAPPED_SUBRESOURCE = mem::zeroed();
@@ -2324,6 +2409,13 @@ pub(crate) unsafe fn native_d3d11_update_prepared_draw_scene(
                     0,
                     0,
                 );
+                native_d3d11_check_update_subresource(
+                    context,
+                    &format!(
+                        "UpdateSubresource for {pass_name} draw {} {TERRAIN_SCENE_CB0_SYMBOL} {} constant buffer slot {}",
+                        camera_patch.draw_index, constant_buffer.stage, constant_buffer.slot
+                    ),
+                )?;
             }
             TerrainSceneCb0CameraUpdateMethod::DynamicMapWriteDiscard => {
                 native_d3d11_write_discard_constant_buffer(

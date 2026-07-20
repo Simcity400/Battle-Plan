@@ -62,9 +62,8 @@ use compact_contract::campaign_rollover::{
     RolloverProposeV1, RolloverReason,
 };
 use compact_contract::control_transport::payloads::{
-    decode_first_compact_frame_ack, decode_heartbeat_challenge,
-    encode_collector_hello_with_capabilities, encode_heartbeat_proof, CollectorHelloV1,
-    FirstCompactFrameAckV1, HeartbeatProofV1, PayloadError, HEARTBEAT_STATE_PAUSED_FOR_CONTROL,
+    decode_heartbeat_challenge, encode_collector_hello_with_capabilities, encode_heartbeat_proof,
+    CollectorHelloV1, HeartbeatProofV1, PayloadError, HEARTBEAT_STATE_PAUSED_FOR_CONTROL,
     HEARTBEAT_STATE_PRODUCING, HEARTBEAT_STATE_WAITING_FOR_WORLD,
 };
 use compact_contract::control_transport::{
@@ -99,7 +98,7 @@ use compact_contract::early_render_vfs_payload::{
 };
 use compact_contract::first_compact_ack::{
     decode_first_compact_frame_ack as decode_canonical_first_compact_frame_ack,
-    FirstCompactAckCodecError,
+    FirstCompactAckCodecError, FirstCompactFrameAckV1,
 };
 use compact_contract::identity_control::{
     decode_identity_failure_ack, encode_identity_failure, IdentityControlCodecError,
@@ -1936,9 +1935,12 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
                 })
             }
             MessageKind::FirstCompactFrameAck => {
-                let ack = match decode_first_compact_frame_ack(&frame.payload) {
+                let ack = match decode_canonical_first_compact_frame_ack(
+                    &frame.payload,
+                    compact_contract::stream_validator::StreamIdentityMode::IdentityV1,
+                ) {
                     Ok(ack) => ack,
-                    Err(err) => return self.fail(ClientError::Payload(err)),
+                    Err(err) => return self.fail(ClientError::FirstCompactAckCodec(err)),
                 };
                 self.first_frame_acked = true;
                 self.phase = ClientPhase::Producing;

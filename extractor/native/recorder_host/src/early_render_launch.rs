@@ -20,7 +20,7 @@ pub const EARLY_LAUNCH_MANIFEST_SCHEMA: &str = "extractor.early-render-launch-ma
 pub const EARLY_HOOK_READY_SCHEMA: &str = "extractor.early-render-hook-ready.v1";
 pub const EARLY_CAPTURE_RECEIPT_SCHEMA: &str = "extractor.early-render-capture-receipt.v1";
 pub const EARLY_DIAGNOSTIC_LIVENESS_SCHEMA: &str = "extractor.early-render-diagnostic-liveness.v1";
-pub const EARLY_DIAGNOSTIC_STAGE_MASK_FULL: u64 = 0xff;
+pub const EARLY_DIAGNOSTIC_STAGE_MASK_FULL: u64 = 0x3ff;
 pub const EARLY_DIAGNOSTIC_STAGE_MASK_COM: u64 = 0x01;
 
 pub fn staged_hook_count_for_group_mask(mask: u64) -> Result<u32, String> {
@@ -29,7 +29,7 @@ pub fn staged_hook_count_for_group_mask(mask: u64) -> Result<u32, String> {
         || mask & EARLY_DIAGNOSTIC_STAGE_MASK_COM == 0
     {
         return Err(
-            "diagnostic staged-hook mask must be within 0x01..=0xff and include COM (0x01)".into(),
+            "diagnostic staged-hook mask must be within 0x01..=0x3ff and include COM (0x01)".into(),
         );
     }
     let groups = [
@@ -37,10 +37,12 @@ pub fn staged_hook_count_for_group_mask(mask: u64) -> Result<u32, String> {
         (0x02, 2),
         (0x04, 3),
         (0x08, 8),
-        (0x10, 7),
+        (0x10, 8),
         (0x20, 7),
         (0x40, 2),
         (0x80, 3),
+        (0x100, 2),
+        (0x200, 3),
     ];
     Ok(groups
         .into_iter()
@@ -3027,10 +3029,12 @@ mod tests {
     fn diagnostic_stage_masks_have_exact_authenticated_hook_counts() {
         assert_eq!(staged_hook_count_for_group_mask(0x01).unwrap(), 19);
         assert_eq!(staged_hook_count_for_group_mask(0x03).unwrap(), 21);
-        assert_eq!(staged_hook_count_for_group_mask(0xff).unwrap(), 51);
+        assert_eq!(staged_hook_count_for_group_mask(0x1ff).unwrap(), 54);
+        assert_eq!(staged_hook_count_for_group_mask(0x3ff).unwrap(), 57);
         assert!(staged_hook_count_for_group_mask(0).is_err());
         assert!(staged_hook_count_for_group_mask(0x02).is_err());
-        assert!(staged_hook_count_for_group_mask(0x101).is_err());
+        assert_eq!(staged_hook_count_for_group_mask(0x101).unwrap(), 21);
+        assert_eq!(staged_hook_count_for_group_mask(0x201).unwrap(), 22);
     }
 
     #[test]

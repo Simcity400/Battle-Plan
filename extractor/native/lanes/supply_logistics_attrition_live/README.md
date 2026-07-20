@@ -12,13 +12,16 @@ explicitly badged:
 - division supply proxy rows from live division bodies;
 - division supply-deficit and fuel proxy rows from the same validated division bodies;
 - bounded CSupplySystem `+0x10` per-province efficiency/fulfilment input rows;
+- exact per-country/node `disrupted_supply` rows from the bounded
+  `CSupplySystem -> CCountrySupplySystem` ownership vector;
 - exact per-province supply tooltip value as a computed/transient wall;
 - attrition flag/reason as a runtime-computed wall until a field or function path is pinned.
-- hub motorization settings, convoy/logistics pressure, and the remaining unsafe CSupplySystem
+- hub motorization settings, terminal convoy-route attribution, and the remaining unsafe CSupplySystem
   province-input siblings as explicit wall/rejection badges until production roots are pinned.
 
 Production integration uses the shared compact health/status field in the 48-byte payload header.
-Lane-specific wall/rejection state is carried by the five required `computed_badge` rows, not by
+Lane-specific wall/rejection state is carried by five legacy-required `computed_badge` rows, plus
+the current-build exact country-disruption source-availability witness when that bounded root validates, not by
 private header bits, so the recorder's worker/source/partial failure gate remains meaningful.
 
 ## Current Build Roots
@@ -42,11 +45,14 @@ For `hoi4.exe` SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5
 - Stale 16022851 `CCountrySupplySystem` vtables `module+0x297B2F8/+0x297B348` and the
   bounded `+0x100F0` translation guess `module+0x298B3E8/+0x298B438` have zero instances on
   870ebf. Do not use them for motorization or convoy/logistics pressure.
-- Current-build RTTI resolves `.?AVCCountrySupplySystem@@` to vtables
-  `module+0x298BBF8` and `module+0x298BC48`. The v5 root proof found `469`
-  double-vtable objects. This pins the replacement class pool, but not the per-country join,
-  node-setting map, disrupted-supply, or foreign-homebase pressure fields. Those remain
-  fixture-gated.
+- Current-build `CCountrySupplySystem` vtables are
+  complete indexed owner vector at `CSupplySystem+0x108` (capacity `+0x110`,
+  count `+0x114`) from the same `CGameState+0x310` country-table index.
+  `CCountry* @ +0x78`. Production kind-5 extraction uses this bounded root,
+  validates the indexed country identity plus all three constructor owner links, and reads the exact
+  `disrupted_supply` robin-hood table at object `+0x88`. The node-setting map,
+  motorization level, foreign-homebase semantics, and terminal convoy-route join
+  remain fixture-gated.
 
 The previous Python logistics readers are still correctly build-gated to
 `16022851eaa571728aa3a0b5fd5f990a56da57e2249a4c1b9cfb30336f59b120` and must not be used
@@ -207,9 +213,9 @@ The current blockers are exact fixture/root blockers, not acceptable omissions:
   `(7081,3)->4017` and FRA `(911,3)->22173`, matching melted values `0.04017` and
   `0.22173`. `CCountrySupplySystem+0x1E0` is separately proved as the foreign-homebase
   vector (pointer `+0x1E0`, count `+0x1EC`, stride `0x70`); it is not disrupted supply.
-  Production emission remains fail-closed because collector-time discovery of each
-  `CCountrySupplySystem` still has only the RTTI heap sweep, not a bounded root path. The
-  retained save also proves that terminal convoy-loss history is monthly owner/killer/count
+  Production emission now uses the exact bounded `CSupplySystem+0x108` owner vector and
+  fails closed on any roster, vtable, backlink, robin-hood header/body, key/value, duplicate,
+  or occupied-count mismatch. The retained save also proves that terminal convoy-loss history is monthly owner/killer/count
   aggregation without route/client identity; active convoy combats retain location and client
   handles but cannot backfill terminal route context;
 - any new `CSupplySystem` sibling path must satisfy province-indexed bounds and semantic oracle
@@ -230,7 +236,22 @@ New row kind `4` carries CSupply per-province input rows:
 - `join_id`, `owner_tag_db_id`, `value_b_raw`, `value_c_raw`, `value_d_raw`, and `aux_raw`:
   must be zero.
 
-New row kind `5` carries lane-local foreign-homebase pressure candidate rows. These rows are
+Shared production row kind `5` carries exact country disrupted-supply rows:
+
+- `entity_id`: node province id.
+- `join_id`: node type from the high `u32` half of the stored node key.
+- `owner_tag_db_id`: exact shared index of `CGameState+0x310` and
+  `CSupplySystem+0x108`, revalidated against `CCountry+0x08`.
+- `flags`: `COUNTRY_DISRUPTED_SUPPLY_EXACT` only.
+- `value_a_raw`: signed stored `i64/100000`, range-gated to `0..=100000` and
+  narrowed losslessly to `i32`.
+- `value_b_raw`, `value_c_raw`, `value_d_raw`, and `aux_raw`: zero.
+
+The legacy header field named `csupply_input_rows` at `+0x2C` now counts both
+CSupply-derived production kinds 4 and 5. This keeps the shared header 48 bytes;
+the decoder separately reports kind-4 inputs and kind-5 disrupted rows.
+
+Lane-local row kind `6` carries foreign-homebase pressure candidate rows. These rows are
 not production pressure capture and do not remove the mandatory convoy-pressure wall badge:
 
 - `entity_id`: province id from `CCountrySupplySystem+0x1E0` record `+0x00`.

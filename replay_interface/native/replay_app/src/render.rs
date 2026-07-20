@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::CString;
+use std::io::Write as _;
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::ptr;
@@ -17,13 +18,15 @@ use map_viewer::{
     AverageLuminanceReduction, BloomBlurKernel, BloomParams, GameFileResolver,
     Hoi4MapCameraDefines, LuminanceClampBounds, NativeD3d11PreparedProductionMap,
     NativeD3d11RenderOptions, NativeD3d11TerrainBundle, NativeD3d11TerrainRenderer,
-    ProductionMapCamera, ProductionMapCameraProjection, RecordedSnowMudLevel,
-    RecordedSnowMudTexture, SnowMudAddressing, SnowMudFeedInputs, RESTORE_PASS_BUNDLE_FILE,
+    C03CameraReplayBinding, ProductionMapCamera, ProductionMapCameraProjection,
+    RESTORE_PASS_BUNDLE_FILE,
 };
 use replay_core::{
-    Leaf, PoliticalTextureFormat, PoliticalTextureKind, ProductionRenderFrame, RenderSubmit,
-    TiledLightSubmission, ViewStatus, WorldFrame,
+    PoliticalTextureFormat, PoliticalTextureKind, ProductionRenderFrame, RenderSubmit,
+    SnowMudReplayReadbackReceipt, SnowMudTexturePacket, TiledLightSubmission, ViewStatus,
+    WorldFrame,
 };
+use sha2::{Digest, Sha256};
 use winapi::shared::dxgiformat::{
     DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_R16G16B16A16_FLOAT,
     DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -583,6 +586,7 @@ pub struct CapturedPassStats {
     pub layer_gaps: Vec<String>,
     pub counter_gpu_draws: usize,
     pub counter_gpu_omission: Option<String>,
+    pub snow_mud_h2_receipt_sha256: Option<String>,
 }
 
 struct CapturedPassLayer {
@@ -601,6 +605,7 @@ struct CapturedPassLayer {
     restore_postfx: RestoreFullPostfx,
     submitted_draw_resolver: GameFileResolver,
     displayed_submit: Option<RenderSubmit>,
+    c03_camera_replay: Option<C03CameraReplayBinding>,
     restore_grade_resolver: Option<GameFileResolver>,
     restore_postfx_cb: Option<ComPtr<ID3D11Buffer>>,
     restore_color_cube: Option<RestoreColorCubeGpu>,
@@ -623,18 +628,18 @@ struct CapturedPassLayer {
     reported_omitted_weather: bool,
     last_camera: Option<CapturedCameraKey>,
     last_restore_grade_key: Option<RestoreGradeKey>,
+    last_snow_mud_h2_receipt: Option<SnowMudReplayReadbackReceipt>,
     dirty: bool,
     last_render: Option<Duration>,
 }
 
-/// Convert only fully measured portable replay state into the B13 shader
-/// carrier. `None` means the recording did not carry this dynamic layer; a
-/// malformed or partially measured present layer is an error, never a zero or
-/// previous-hour fallback.
-fn recorded_snow_mud_texture(
-    bundle: &MapBundle,
+/// Join the measured gameplay fade with the exact B13 CPU pre-upload packet.
+/// Per-province snow/mud values are semantic state and are never rasterized as
+/// a substitute for the producer bytes.
+fn recorded_snow_mud_texture<'a>(
     frame: &WorldFrame,
-) -> Result<Option<RecordedSnowMudTexture>> {
+    render_frame: Option<&'a ProductionRenderFrame>,
+) -> Result<Option<(&'a SnowMudTexturePacket, f32)>> {
     let view = frame.snow_mud();
     if view.status != ViewStatus::Present {
         return Ok(None);
@@ -649,59 +654,27 @@ fn recorded_snow_mud_texture(
         .into());
     }
 
-    let mut levels = BTreeMap::new();
-    for (province_id, cell) in &view.by_province {
-        let (Leaf::Measured(snow), Leaf::Measured(mud)) =
-            (&cell.snow_level_0_255, &cell.mud_level_0_255)
-        else {
-            return Err(format!(
-                "recorded SnowMudData blocked: province {province_id} has an unmeasured snow or mud level"
-            )
-            .into());
-        };
-        let snow = u8::try_from(*snow).map_err(|_| {
-            format!(
-                "recorded SnowMudData blocked: province {province_id} snow level {snow} exceeds 0..255"
-            )
-        })?;
-        let mud = u8::try_from(*mud).map_err(|_| {
-            format!(
-                "recorded SnowMudData blocked: province {province_id} mud level {mud} exceeds 0..255"
-            )
-        })?;
-        levels.insert(
-            *province_id,
-            RecordedSnowMudLevel {
-                snow_0_255: snow,
-                mud_0_255: mud,
-            },
-        );
-    }
-
-    map_viewer::synthesize_snow_mud_from_levels(
-        &SnowMudFeedInputs {
-            levels_by_province: &levels,
-            province_ids: &bundle.province_ids,
-            map_width: bundle.width,
-            map_height: bundle.height,
-            addressing: SnowMudAddressing::default(),
-            flip_source_y: true,
-        },
-        fade_phase as f32,
-    )
-    .map(Some)
+    let render_frame = render_frame.ok_or_else(|| {
+        "recorded SnowMudData blocked: present gameplay view has no production render carrier"
+            .to_string()
+    })?;
+    let packet = render_frame.snow_mud_texture.as_ref().ok_or_else(|| {
+        "recorded SnowMudData blocked: production render frame has no exact CPU pre-upload packet"
+            .to_string()
+    })?;
+    Ok(Some((packet, fade_phase as f32)))
 }
 
 /// Production admission for the dynamic snow/mud carrier. The captured PAN2
 /// bundle contains one historical `SnowMudTexture`, so treating a missing
 /// replay view as "no update" would silently display that unrelated capture.
-/// Exact replay therefore requires a present, fully measured view on every
-/// displayed hour.
-fn required_recorded_snow_mud_texture(
-    bundle: &MapBundle,
+/// Exact replay therefore requires a present measured fade and an authenticated
+/// producer packet on every displayed hour.
+fn required_recorded_snow_mud_texture<'a>(
     frame: &WorldFrame,
-) -> Result<RecordedSnowMudTexture> {
-    recorded_snow_mud_texture(bundle, frame)?.ok_or_else(|| {
+    render_frame: Option<&'a ProductionRenderFrame>,
+) -> Result<(&'a SnowMudTexturePacket, f32)> {
+    recorded_snow_mud_texture(frame, render_frame)?.ok_or_else(|| {
         "recorded SnowMudData blocked: this hour has no present snow/mud view; refusing the captured bundle texture"
             .into()
     })
@@ -974,6 +947,7 @@ impl CapturedPassLayer {
             restore_postfx,
             submitted_draw_resolver: resolver.clone(),
             displayed_submit: None,
+            c03_camera_replay: None,
             restore_grade_resolver,
             restore_postfx_cb,
             restore_color_cube,
@@ -988,6 +962,7 @@ impl CapturedPassLayer {
             reported_omitted_weather: false,
             last_camera: None,
             last_restore_grade_key: None,
+            last_snow_mud_h2_receipt: None,
             dirty: true,
             last_render: None,
         })
@@ -998,24 +973,30 @@ impl CapturedPassLayer {
         self.dirty = true;
     }
 
-    /// B13 production route: turn the portable replay's measured per-province
-    /// snow/mud accumulator into the exact quarter-resolution shader carrier
-    /// and replace every captured-pass `SnowMudTexture` binding. Missing or
-    /// incomplete replay data is deliberately not substituted.
+    /// B13 production route: upload the portable replay's exact a729 CPU
+    /// pre-upload packet and replace every captured-pass `SnowMudTexture`
+    /// binding. Semantic per-province state is never rasterized as a fallback.
     unsafe fn update_recorded_snow_mud(
         &mut self,
         gfx: &Gfx,
-        bundle: &MapBundle,
         frame: &WorldFrame,
+        render_frame: &ProductionRenderFrame,
     ) -> Result<()> {
-        let texture = required_recorded_snow_mud_texture(bundle, frame)?;
-        let (_texture, srv) = create_immutable_texture(
+        let (packet, fade) = required_recorded_snow_mud_texture(frame, Some(render_frame))?;
+        let (texture, srv) = create_immutable_texture_with_pitch(
             gfx,
-            texture.width,
-            texture.height,
+            packet.width as usize,
+            packet.height as usize,
             DXGI_FORMAT_B8G8R8A8_UNORM,
-            &texture.payload,
+            packet.row_pitch as usize,
+            &packet.bytes,
             "recorded SnowMudData",
+        )?;
+        let h2_receipt = verify_immutable_texture_readback(
+            gfx,
+            &texture,
+            packet,
+            &render_frame.selected_present,
         )?;
         let replacements = self.prepared.replace_snow_mud_srv(srv.as_raw())?;
         if replacements == 0 {
@@ -1023,15 +1004,24 @@ impl CapturedPassLayer {
                 "recorded SnowMudData blocked: no production pass sampled SnowMudTexture".into(),
             );
         }
-        self.political_cb0.snow_mud_fade = Some(texture.fade);
+        let h2_receipt_path = persist_snow_mud_h2_receipt(&h2_receipt)?;
+        self.political_cb0.snow_mud_fade = Some(fade);
+        self.last_snow_mud_h2_receipt = Some(h2_receipt.clone());
         self.mark_dirty();
         eprintln!(
-            "replay_app: bound recorded SnowMudData ({} pass bindings, {} covered texels, {} land texels without a recorded level, fade {:.6})",
+            "replay_app: bound exact SnowMudData pre-upload bytes ({} pass bindings, producer ordinal {}, payload {}, H2 receipt {}, fade {:.6})",
             replacements,
-            texture.covered_texels,
-            texture.land_texels_without_level,
-            texture.fade,
+            packet.producer_ordinal,
+            packet.payload_sha256,
+            h2_receipt.receipt_sha256,
+            fade,
         );
+        if let Some(path) = h2_receipt_path {
+            eprintln!(
+                "replay_app: persisted SnowMudData H2 receipt {}",
+                path.display()
+            );
+        }
         Ok(())
     }
 
@@ -1179,8 +1169,17 @@ impl CapturedPassLayer {
         render_frame: &ProductionRenderFrame,
     ) -> Result<()> {
         let next = production_display_submit(render_frame)?.cloned();
-        if self.displayed_submit != next {
+        let next_camera_binding = map_viewer::selected_c03_camera_replay_binding(render_frame)?;
+        if let (Some(submit), Some(binding)) = (&next, &next_camera_binding) {
+            if binding.submit_index != submit.submit_index
+                || binding.submit_global_order != submit.global_order
+            {
+                return Err("recorded C03 camera blocked: binding belongs to a different display submit".into());
+            }
+        }
+        if self.displayed_submit != next || self.c03_camera_replay != next_camera_binding {
             self.displayed_submit = next;
+            self.c03_camera_replay = next_camera_binding;
             self.mark_dirty();
         }
         self.reported_omitted_particles = false;
@@ -1213,12 +1212,24 @@ impl CapturedPassLayer {
             map_clock_time,
         };
         if self.dirty || self.last_camera != Some(key) {
-            let production_camera = production_camera_from_app_camera(
-                self.camera_projection,
-                self.camera_defines,
-                camera,
-                gfx.width,
-            )?;
+            let production_camera = match (
+                self.displayed_submit
+                    .as_ref()
+                    .and_then(|submit| submit.camera_carrier.as_ref()),
+                self.c03_camera_replay.as_ref(),
+            ) {
+                (Some(recorded), Some(binding)) => production_camera_from_recorded_carrier(
+                    recorded, binding, gfx.width, gfx.height,
+                )?,
+                (None, None) => production_camera_from_app_camera(
+                    self.camera_projection,
+                    self.camera_defines,
+                    camera,
+                    gfx.width,
+                )?,
+                _ => return Err("recorded C03 camera blocked: carrier/consumer binding cardinality mismatch".into()),
+            };
+            let frame_camera_projection = ProductionMapCameraProjection::from_camera(production_camera)?;
             unsafe {
                 self.recompose_restore_grade_for_frame(gfx, production_camera, day_night_hour)?;
             }
@@ -1238,7 +1249,7 @@ impl CapturedPassLayer {
             let start = Instant::now();
             for (copy_index, wrap_offset) in wrap_offsets.iter().copied().enumerate() {
                 let copy_camera = production_camera_for_wrap_copy(
-                    self.camera_projection,
+                    frame_camera_projection,
                     production_camera,
                     wrap_offset,
                 )?;
@@ -1863,6 +1874,10 @@ impl CapturedPassLayer {
                 .omission
                 .as_ref()
                 .map(|reason| reason.code().to_string()),
+            snow_mud_h2_receipt_sha256: self
+                .last_snow_mud_h2_receipt
+                .as_ref()
+                .map(|receipt| receipt.receipt_sha256.clone()),
         }
     }
 }
@@ -1927,7 +1942,7 @@ impl MapRenderer {
     pub fn update_state_politics(
         &mut self,
         gfx: &Gfx,
-        bundle: &MapBundle,
+        _bundle: &MapBundle,
         frame: Option<&WorldFrame>,
         _owners: &BTreeMap<u32, String>,
         controllers: &BTreeMap<u32, String>,
@@ -1945,7 +1960,8 @@ impl MapRenderer {
             "occupation stripes DATA_BLOCKED: displayed hour has no production_render carrier carrying ProvinceSecondaryColorMap; refusing the captured bundle texture",
         )?;
         unsafe {
-            self.captured.update_recorded_snow_mud(gfx, bundle, frame)?;
+            self.captured
+                .update_recorded_snow_mud(gfx, frame, render_frame)?;
             self.captured
                 .update_recorded_submitted_draws(render_frame)?;
             self.captured
@@ -1965,6 +1981,10 @@ impl MapRenderer {
     ) -> Result<()> {
         self.captured
             .render(gfx, camera, day_night_hour, map_clock_time)
+    }
+
+    pub fn snow_mud_h2_receipt(&self) -> Option<&SnowMudReplayReadbackReceipt> {
+        self.captured.last_snow_mud_h2_receipt.as_ref()
     }
 
     /// CAP6 captured-map GPU handoff. Callers must supply the already
@@ -2015,50 +2035,6 @@ impl MapRenderer {
 
     pub fn captured_pass_stats(&self) -> Option<CapturedPassStats> {
         Some(self.captured.stats())
-    }
-
-    /// The resolver/bundle-read the game camera defines (00_graphics.lua) this
-    /// renderer's production camera obeys.
-    pub fn camera_defines(&self) -> Hoi4MapCameraDefines {
-        self.captured.camera_defines
-    }
-
-    /// Engine-defines wheel zoom: map the app camera's screen zoom to the
-    /// production camera height (the same `height_for_screen_zoom` law the
-    /// renderer itself applies), step it by `notches` wheel steps of
-    /// `CAMERA_ZOOM_SPEED` scaled toward `CAMERA_ZOOM_SPEED_DISTANCE_MULT`
-    /// with height (00_graphics.lua:1187-1189), clamp to
-    /// `CAMERA_MIN/MAX_HEIGHT` (:1495-1496), and return the multiplicative
-    /// screen-zoom factor that realizes the new height. Replaces the old
-    /// fixed 1.2^notches interaction proxy with the shipped defines.
-    pub fn wheel_zoom_screen_factor(&self, zoom: f64, screen_w: u32, notches: f64) -> Result<f64> {
-        let projection = self.captured.camera_projection;
-        let defines = self.captured.camera_defines;
-        let screen_w = screen_w.max(1) as f32;
-        let height = projection.height_for_screen_zoom(
-            zoom as f32,
-            screen_w,
-            defines.min_height(),
-            defines.max_height(),
-        )?;
-        let stepped = defines.wheel_zoom_stepped_height(height, notches as f32);
-        let new_zoom = projection.screen_zoom_for_height(stepped, screen_w)?;
-        if !(new_zoom.is_finite() && new_zoom > 0.0) {
-            return Err(format!(
-                "wheel zoom produced an invalid screen zoom {new_zoom} at height {stepped}"
-            )
-            .into());
-        }
-        let factor = f64::from(new_zoom) / zoom.max(f64::MIN_POSITIVE);
-        // Direction guard: when the app camera sits OUTSIDE the engine zoom
-        // range (e.g. the whole-map fit view is farther out than
-        // CAMERA_MAX_HEIGHT allows), a further zoom-out must be a no-op, not a
-        // snap back into range; symmetric for zoom-in at CAMERA_MIN_HEIGHT.
-        Ok(if notches >= 0.0 {
-            factor.max(1.0)
-        } else {
-            factor.min(1.0)
-        })
     }
 
     /// COLOR-lane debug readback (`--dump-hdr`): see
@@ -2180,6 +2156,145 @@ unsafe fn create_immutable_texture_with_pitch(
     Ok((texture, srv))
 }
 
+/// Mechanical replay-side H2 receipt: copy the immutable upload into a CPU
+/// staging resource and compare every tight source row byte-for-byte. D3D11
+/// may pad the mapped row pitch; padding is deliberately excluded.
+unsafe fn verify_immutable_texture_readback(
+    gfx: &Gfx,
+    texture: &ComPtr<ID3D11Texture2D>,
+    packet: &SnowMudTexturePacket,
+    selected_present: &replay_core::SelectedPresentReceipt,
+) -> Result<SnowMudReplayReadbackReceipt> {
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: packet.width,
+        Height: packet.height,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Usage: D3D11_USAGE_STAGING,
+        BindFlags: 0,
+        CPUAccessFlags: D3D11_CPU_ACCESS_READ,
+        MiscFlags: 0,
+    };
+    let mut staging: *mut ID3D11Texture2D = ptr::null_mut();
+    let hr = (*gfx.device.as_raw()).CreateTexture2D(&desc, ptr::null(), &mut staging);
+    hr_ok(hr, "CreateTexture2D staging for SnowMudData readback")?;
+    let staging = ComPtr::from_raw(staging, "SnowMudData readback staging")?;
+    let context = gfx.context.as_raw();
+    (*context).CopyResource(staging.as_raw() as *mut _, texture.as_raw() as *mut _);
+    gfx.check_void_device_call("CopyResource SnowMudData readback")?;
+    let mut mapped: D3D11_MAPPED_SUBRESOURCE = mem::zeroed();
+    let hr = (*context).Map(
+        staging.as_raw() as *mut _,
+        0,
+        D3D11_MAP_READ,
+        0,
+        &mut mapped,
+    );
+    hr_ok(hr, "Map staging SnowMudData readback")?;
+    let verification = (|| -> Result<SnowMudReplayReadbackReceipt> {
+        let source_pitch = packet.row_pitch as usize;
+        let mapped_pitch = mapped.RowPitch as usize;
+        if mapped.pData.is_null() || mapped_pitch < source_pitch {
+            return Err("SnowMudData readback returned a null/short mapped row".into());
+        }
+        let mapped_bytes = std::slice::from_raw_parts(
+            mapped.pData as *const u8,
+            mapped_pitch
+                .checked_mul(packet.height as usize)
+                .ok_or("SnowMudData mapped byte length overflow")?,
+        );
+        let mut readback_hasher = Sha256::new();
+        for row in 0..packet.height as usize {
+            let source_start = row * source_pitch;
+            let mapped_start = row * mapped_pitch;
+            if mapped_bytes[mapped_start..mapped_start + source_pitch]
+                != packet.bytes[source_start..source_start + source_pitch]
+            {
+                return Err(format!(
+                    "SnowMudData immutable upload/readback differs at row {row}; refusing H2 receipt"
+                )
+                .into());
+            }
+            readback_hasher.update(&mapped_bytes[mapped_start..mapped_start + source_pitch]);
+        }
+        let readback_sha256 = format!("{:x}", readback_hasher.finalize());
+        let mut receipt = SnowMudReplayReadbackReceipt {
+            schema: replay_core::SNOW_MUD_H2_READBACK_SCHEMA.into(),
+            process_start_nonce: packet.process_start_nonce,
+            hook_epoch_nonce: packet.hook_epoch_nonce,
+            producer_ordinal: packet.producer_ordinal,
+            producer_game_hour_raw: packet.producer_game_hour_raw,
+            display_game_hour_raw: packet.display_game_hour_raw,
+            selected_candidate_id: selected_present.selected_candidate_id,
+            selected_qpc_ticks: selected_present.selected_qpc_ticks,
+            selected_present_sha256: packet.selected_present_sha256.clone(),
+            observation_sha256: packet.observation_sha256.clone(),
+            payload_sha256: packet.payload_sha256.clone(),
+            readback_sha256,
+            width: packet.width,
+            height: packet.height,
+            source_row_pitch: packet.row_pitch,
+            mapped_row_pitch: mapped.RowPitch,
+            verified_row_count: packet.height,
+            verified_tight_byte_count: u64::from(packet.row_pitch) * u64::from(packet.height),
+            receipt_sha256: String::new(),
+        };
+        receipt.receipt_sha256 = receipt.computed_receipt_sha256()?;
+        receipt.validate_against(packet, selected_present)?;
+        Ok(receipt)
+    })();
+    (*context).Unmap(staging.as_raw() as *mut _, 0);
+    verification
+}
+
+/// Optional evidence sink. It is output-only and never changes rendering.
+/// When requested, each producer ordinal gets a create-new, fsynced receipt so
+/// scrubbing cannot silently overwrite an earlier member of the H/H2 pair.
+fn persist_snow_mud_h2_receipt(
+    receipt: &SnowMudReplayReadbackReceipt,
+) -> Result<Option<PathBuf>> {
+    let Some(directory) = std::env::var_os("REPLAY_SNOW_MUD_H2_RECEIPT_DIR") else {
+        return Ok(None);
+    };
+    if directory.is_empty() {
+        return Err("REPLAY_SNOW_MUD_H2_RECEIPT_DIR is empty".into());
+    }
+    let directory = PathBuf::from(directory);
+    std::fs::create_dir_all(&directory)?;
+    let path = directory.join(format!(
+        "snow-mud-h2-p{}-{}.json",
+        receipt.producer_ordinal, receipt.observation_sha256
+    ));
+    let mut bytes = serde_json::to_vec_pretty(receipt)?;
+    bytes.push(b'\n');
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if std::fs::read(&path)? != bytes {
+                return Err(format!(
+                    "SnowMudData H2 receipt path already exists with different bytes: {}",
+                    path.display()
+                )
+                .into());
+            }
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(Some(path))
+}
+
 unsafe fn create_linear_clamp_sampler(gfx: &Gfx) -> Result<ComPtr<ID3D11SamplerState>> {
     // `pdxmap.shader:141-157` declares both GradientBorderChannel samplers as
     // Linear/Linear/Linear with Clamp address modes.
@@ -2295,7 +2410,7 @@ unsafe fn update_restore_color_cube_texture(
         1024 * 4,
         0,
     );
-    Ok(())
+    gfx.check_void_device_call("UpdateSubresource RestoreScene ColorCube")
 }
 
 /// Create a half-res `R16G16B16A16_FLOAT` render target with an RTV and SRV,
@@ -2914,10 +3029,161 @@ fn production_camera_from_app_camera(
     projection.camera_for_ground_center(camera.center_x as f32, ground_z, height)
 }
 
+fn production_camera_from_recorded_carrier(
+    carrier: &replay_core::AuthenticatedCameraCarrier,
+    binding: &map_viewer::C03CameraReplayBinding,
+    screen_w: u32,
+    screen_h: u32,
+) -> Result<ProductionMapCamera> {
+    map_viewer::validate_c03_camera_consumer(carrier, binding)?;
+    let [viewport_x, viewport_y, viewport_w, viewport_h] = carrier.viewport_i32;
+    if viewport_x != 0
+        || viewport_y != 0
+        || viewport_w != i32::try_from(screen_w).unwrap_or(-1)
+        || viewport_h != i32::try_from(screen_h).unwrap_or(-1)
+    {
+        return Err(format!(
+            "recorded C02 camera blocked: viewport [{viewport_x},{viewport_y},{viewport_w},{viewport_h}] does not match replay target {screen_w}x{screen_h}"
+        )
+        .into());
+    }
+    let bits = carrier.view_projection_f32_bits();
+    let matrix = std::array::from_fn(|row| {
+        std::array::from_fn(|column| f32::from_bits(bits[row * 4 + column]))
+    });
+    ProductionMapCamera::new(matrix, carrier.current_eye_f32_bits.map(f32::from_bits))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use replay_core::{ParticleRuntimeMode, RenderAuthority, RenderCheckpoint};
+
+    fn c03_recorded_camera_fixture() -> (
+        replay_core::AuthenticatedCameraCarrier,
+        map_viewer::C03CameraReplayBinding,
+    ) {
+        let current_eye = [10.0f32.to_bits(), 20.0f32.to_bits(), 30.0f32.to_bits()];
+        let current_look = [11.0f32.to_bits(), 0.0f32.to_bits(), 31.0f32.to_bits()];
+        let target_eye = [15.0f32.to_bits(), 16.0f32.to_bits(), 17.0f32.to_bits()];
+        let target_look = [18.0f32.to_bits(), 0.0f32.to_bits(), 19.0f32.to_bits()];
+        let mut bytes = vec![0u8; replay_core::A729_CAMERA_RENDER_VIEW_BYTES];
+        for (index, value) in current_eye.into_iter().enumerate() {
+            bytes[0x180 + index * 4..0x184 + index * 4]
+                .copy_from_slice(&value.to_le_bytes());
+        }
+        for (index, value) in current_look.into_iter().enumerate() {
+            bytes[0x18c + index * 4..0x190 + index * 4]
+                .copy_from_slice(&value.to_le_bytes());
+        }
+        let mut embedded = [0u8; 16];
+        embedded[4..8].copy_from_slice(&4i32.to_le_bytes());
+        embedded[8..12].copy_from_slice(&5i32.to_le_bytes());
+        let event_batch = replay_core::A729CameraEventBatch {
+            producer_rva: replay_core::A729_CAMERA_UPDATE_RVA,
+            owner_kind: replay_core::A729CameraOwnerKind::InGame,
+            owner_vtable_rva: 0x0295_2510,
+            action_source_owner_offset: 0x508,
+            cursor_source_owner_offset: 0x500,
+            event_list_owner_offset: 0x758,
+            frame_scalar_f32_bits: Some(0.1f32.to_bits()),
+            producer_flag_0_u8: 1,
+            producer_flag_1_u8: 0,
+            input_events: vec![replay_core::A729CameraInputEvent {
+                node_ordinal: 0,
+                node_kind_i32: 0,
+                consumed_before_u8: 0,
+                consumed_after_u8: 1,
+                event_type_i32: 4,
+                signed_delta_i32: 5,
+                embedded_event_16_bytes: embedded,
+            }],
+            map_picks: vec![replay_core::A729CameraMapPick {
+                call_ordinal: 0,
+                mode_u8: 1,
+                screen_xy_f32_bits: [320.0f32.to_bits(), 240.0f32.to_bits()],
+                world_xyz_f32_bits: [100.0f32.to_bits(), 0, 200.0f32.to_bits()],
+            }],
+            current_eye_before_f32_bits: [1.0f32.to_bits(); 3],
+            target_eye_before_f32_bits: [2.0f32.to_bits(); 3],
+            target_look_at_before_f32_bits: [3.0f32.to_bits(); 3],
+            current_eye_after_f32_bits: current_eye,
+            target_eye_after_f32_bits: target_eye,
+            target_look_at_after_f32_bits: target_look,
+        };
+        let mut carrier = replay_core::AuthenticatedCameraCarrier {
+            schema: replay_core::A729_CAMERA_TEMPORAL_SCHEMA.into(),
+            executable_sha256: replay_core::A729_CAMERA_EXECUTABLE_SHA256.into(),
+            capture_boundary_rva: replay_core::A729_CAMERA_ENVELOPE_RVA,
+            camera_update_rva: replay_core::A729_CAMERA_UPDATE_RVA,
+            carrier_ordinal: 0,
+            carrier_offset: 0x10,
+            owner_kind: replay_core::A729CameraOwnerKind::InGame,
+            owner_vtable_rva: 0x0295_2510,
+            render_view_436_bytes: bytes.clone(),
+            canonical_camera_root_436_bytes: bytes,
+            previous_current_eye_f32_bits: [0; 3],
+            current_eye_f32_bits: current_eye,
+            current_look_at_f32_bits: current_look,
+            target_eye_f32_bits: target_eye,
+            target_look_at_f32_bits: target_look,
+            viewport_i32: [0, 0, 640, 480],
+            min_height_i32: 1,
+            max_height_i32: 100,
+            update_produced_u8: 1,
+            special_free_state_u8: 0,
+            ramp_f32_bits: 1.0f32.to_bits(),
+            wrap_branch_u8: 1,
+            camera_event_batches: vec![event_batch],
+            payload_sha256: String::new(),
+        };
+        carrier.payload_sha256 = carrier.computed_payload_sha256();
+        let binding = map_viewer::C03CameraReplayBinding {
+            schema: map_viewer::C03_CAMERA_REPLAY_BINDING_SCHEMA.into(),
+            submit_index: 7,
+            submit_global_order: 3,
+            carrier_payload_sha256: carrier.payload_sha256.clone(),
+            event_batch_count: 1,
+            raw_input_event_count: 1,
+            map_pick_count: 1,
+            current_eye_f32_bits: current_eye,
+            target_eye_f32_bits: target_eye,
+            target_look_at_f32_bits: target_look,
+            mode: map_viewer::C03CameraReplayMode::RecordedEnvelopeStateOnly,
+            raw_event_reapplication_count: 0,
+            envelope_state_selection_count: 1,
+        };
+        (carrier, binding)
+    }
+
+    #[test]
+    fn c03_recorded_camera_selects_final_envelope_state_without_reapplying_delta() {
+        let (carrier, binding) = c03_recorded_camera_fixture();
+        let camera = production_camera_from_recorded_carrier(&carrier, &binding, 640, 480)
+            .expect("recorded camera");
+        assert_eq!(camera.position, [10.0, 20.0, 30.0]);
+        assert_eq!(binding.raw_event_reapplication_count, 0);
+
+        let mut double_apply = binding.clone();
+        double_apply.raw_event_reapplication_count = 1;
+        assert!(production_camera_from_recorded_carrier(&carrier, &double_apply, 640, 480)
+            .unwrap_err()
+            .to_string()
+            .contains("binding identity/policy mismatch"));
+
+        let mut changed_raw_event = carrier.clone();
+        changed_raw_event.camera_event_batches[0].input_events[0].signed_delta_i32 = 6;
+        changed_raw_event.payload_sha256 = changed_raw_event.computed_payload_sha256();
+        assert!(production_camera_from_recorded_carrier(
+            &changed_raw_event,
+            &binding,
+            640,
+            480,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("binding/state policy mismatch"));
+    }
 
     #[test]
     fn cull_world_rect_shifts_into_wrap_copy_base_domain() {
@@ -3192,7 +3458,7 @@ MAX_HDR_ADJUSTMENT = 1.0,
     }
 
     #[test]
-    fn relocated_portable_replay_drives_production_snow_mud_carrier() {
+    fn semantic_snow_mud_without_exact_preupload_packet_fails_closed() {
         let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join("fixtures/positive/fx_snow_mud_accumulator.battleplan");
@@ -3206,38 +3472,9 @@ MAX_HDR_ADJUSTMENT = 1.0,
         .expect("open relocated timeline");
         let hour = *timeline.hours().last().expect("recorded hour");
         let frame = timeline.frame(hour).expect("typed frame");
-        let measured = frame
-            .snow_mud()
-            .by_province
-            .get(&1000)
-            .expect("measured province 1000");
-        let expected_snow = *measured.snow_level_0_255.measured().expect("measured snow") as u8;
-        let expected_mud = *measured.mud_level_0_255.measured().expect("measured mud") as u8;
-
-        let bundle = MapBundle {
-            width: 4,
-            height: 4,
-            province_ids: vec![1000; 16],
-            province_to_state: BTreeMap::new(),
-            state_owner_1936: BTreeMap::new(),
-            country_colors: BTreeMap::new(),
-        };
-        let texture = recorded_snow_mud_texture(&bundle, &frame)
-            .expect("admit portable snow/mud")
-            .expect("present texture");
-        assert_eq!(texture.width, 1408);
-        assert_eq!(texture.height, 512);
-        assert_eq!(texture.covered_texels, 16);
-        let texel = map_viewer::decode_snow_mud_texel(&texture.payload, 0)
-            .expect("decode production texture texel");
-        assert_eq!(texel.snow_fade0, expected_snow);
-        assert_eq!(texel.snow_fade1, expected_snow);
-        assert_eq!(texel.mud_fade0, expected_mud);
-        assert_eq!(texel.mud_fade1, expected_mud);
-        assert!(
-            (texture.fade - *frame.snow_mud().fade_phase.measured().unwrap() as f32).abs()
-                < f32::EPSILON
-        );
+        let err = recorded_snow_mud_texture(&frame, None)
+            .expect_err("semantic levels cannot replace exact producer bytes");
+        assert!(err.to_string().contains("no production render carrier"), "{err}");
 
         std::fs::remove_dir_all(relocated_dir).expect("clean relocated replay fixture");
     }
@@ -3255,15 +3492,7 @@ MAX_HDR_ADJUSTMENT = 1.0,
         let frame = timeline.frame(hour).expect("typed frame");
         assert_ne!(frame.snow_mud().status, ViewStatus::Present);
 
-        let bundle = MapBundle {
-            width: 1,
-            height: 1,
-            province_ids: vec![0],
-            province_to_state: BTreeMap::new(),
-            state_owner_1936: BTreeMap::new(),
-            country_colors: BTreeMap::new(),
-        };
-        let err = required_recorded_snow_mud_texture(&bundle, &frame)
+        let err = required_recorded_snow_mud_texture(&frame, None)
             .expect_err("missing first-hour SnowMudData must not retain PAN2's texture");
         assert!(
             err.to_string()
@@ -3298,9 +3527,12 @@ MAX_HDR_ADJUSTMENT = 1.0,
             submit_index,
             global_order,
             presentation_qpc_ticks: qpc,
-            interpolation_phase_f32_bits: 0,
+            camera_carrier_ordinal: 0,
+            camera_carrier: None,
             ordered_scene_constant_buffers: Vec::new(),
             ordered_static_map_programs: Vec::new(),
+            tree_runtime: None,
+            s1_shadow: None,
             effect_lifecycle_events: Vec::new(),
             particles: Vec::new(),
             entity_presentations: Vec::new(),
@@ -3333,7 +3565,12 @@ MAX_HDR_ADJUSTMENT = 1.0,
             ordered_entity_submissions_sha256: "8".repeat(64),
             ordered_direct_visual_producers_sha256: "9".repeat(64),
             ordered_light_submissions_sha256: "a".repeat(64),
-            weather_membership_sha256: "b".repeat(64),
+            weather_state_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_membership_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_lifecycle_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_visibility_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            ordered_weather_packets_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_composition_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
         }
     }
 
@@ -3380,6 +3617,7 @@ MAX_HDR_ADJUSTMENT = 1.0,
                 200,
                 300,
             ),
+            snow_mud_texture: None,
             submits: vec![empty_submit(12, 2, 200)],
             m02_combat: None,
             m03_arrows: None,

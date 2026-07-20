@@ -7,12 +7,12 @@
 
 use crate::{GameFileResolver, Result};
 use replay_core::{
-    AuthenticatedUiPass, BufferSource, ConstantBufferBinding, ContentManifest, EntitySubmission,
-    HudCommandExecution, M02CombatFrame, M03ArrowFrame, O04CityFrame, ParticlePacket,
-    PoliticalTexturePacket, ProductionRenderFrame, RenderExecutionRef, RenderOutputRef,
-    RenderSubmit, RequiredContentKind, StaticGeometrySource, StaticMapCommand,
+    AuthenticatedCameraCarrier, AuthenticatedUiPass, BufferSource, ConstantBufferBinding, ContentManifest, EntitySubmission,
+    C07TreeRuntimeCarrier, HudCommandExecution, M02CombatFrame,
+    M03ArrowFrame, O04CityFrame, ParticlePacket, PoliticalTexturePacket, ProductionRenderFrame,
+    RenderExecutionRef, RenderOutputRef, RenderSubmit, RequiredContentKind, StaticGeometrySource, StaticMapCommand,
     StaticMapPassProgram, StaticShaderResourceSource, TiledLightSubmission, UiPassOperation,
-    UsedContentKey, ValidatedContentAdmission,
+    UsedContentKey, ValidatedContentAdmission, S1ShadowCarrier,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -53,12 +53,148 @@ pub struct ProductionMapDataNeed {
     pub reason: String,
 }
 
+pub const C03_CAMERA_REPLAY_BINDING_SCHEMA: &str = "hoi4.c03.camera-replay-binding.v1";
+
+/// Replay consumes the authenticated envelope camera state exactly once. Raw
+/// wheel/pan/map-pick rows authenticate that state transition but are never
+/// reapplied as input, which would double-advance an already captured camera.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum C03CameraReplayMode {
+    RecordedEnvelopeStateOnly,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct C03CameraReplayBinding {
+    pub schema: String,
+    pub submit_index: u64,
+    pub submit_global_order: u32,
+    pub carrier_payload_sha256: String,
+    pub event_batch_count: u32,
+    pub raw_input_event_count: u32,
+    pub map_pick_count: u32,
+    pub current_eye_f32_bits: [u32; 3],
+    pub target_eye_f32_bits: [u32; 3],
+    pub target_look_at_f32_bits: [u32; 3],
+    pub mode: C03CameraReplayMode,
+    /// Must remain zero: the recorded envelope state already includes every
+    /// accepted raw event in `camera_event_batches`.
+    pub raw_event_reapplication_count: u8,
+    /// Exactly one selected envelope camera state is bound to this submit.
+    pub envelope_state_selection_count: u8,
+}
+
+fn c03_binding_from_submit(submit: &RenderSubmit) -> Result<Option<C03CameraReplayBinding>> {
+    let Some(carrier) = &submit.camera_carrier else {
+        return Ok(None);
+    };
+    if carrier.payload_sha256 != carrier.computed_payload_sha256() {
+        return Err("C03 camera replay binding blocked: carrier payload digest mismatch".into());
+    }
+    let mut raw_input_event_count = 0usize;
+    let mut map_pick_count = 0usize;
+    for batch in &carrier.camera_event_batches {
+        raw_input_event_count = raw_input_event_count
+            .checked_add(batch.input_events.len())
+            .ok_or("C03 camera raw-event count overflow")?;
+        map_pick_count = map_pick_count
+            .checked_add(batch.map_picks.len())
+            .ok_or("C03 camera map-pick count overflow")?;
+    }
+    Ok(Some(C03CameraReplayBinding {
+        schema: C03_CAMERA_REPLAY_BINDING_SCHEMA.into(),
+        submit_index: submit.submit_index,
+        submit_global_order: submit.global_order,
+        carrier_payload_sha256: carrier.payload_sha256.clone(),
+        event_batch_count: u32::try_from(carrier.camera_event_batches.len())
+            .map_err(|_| "C03 camera event-batch count exceeds u32")?,
+        raw_input_event_count: u32::try_from(raw_input_event_count)
+            .map_err(|_| "C03 camera raw-event count exceeds u32")?,
+        map_pick_count: u32::try_from(map_pick_count)
+            .map_err(|_| "C03 camera map-pick count exceeds u32")?,
+        current_eye_f32_bits: carrier.current_eye_f32_bits,
+        target_eye_f32_bits: carrier.target_eye_f32_bits,
+        target_look_at_f32_bits: carrier.target_look_at_f32_bits,
+        mode: C03CameraReplayMode::RecordedEnvelopeStateOnly,
+        raw_event_reapplication_count: 0,
+        envelope_state_selection_count: 1,
+    }))
+}
+
+pub fn selected_c03_camera_replay_binding(
+    frame: &ProductionRenderFrame,
+) -> Result<Option<C03CameraReplayBinding>> {
+    frame
+        .validate()
+        .map_err(|error| format!("invalid portable production-render frame: {error}"))?;
+    match selected_submit(frame)? {
+        Some(submit) => c03_binding_from_submit(submit),
+        None => Ok(None),
+    }
+}
+
+pub fn validate_c03_camera_consumer(
+    carrier: &AuthenticatedCameraCarrier,
+    binding: &C03CameraReplayBinding,
+) -> Result<()> {
+    validate_c03_camera_replay_binding(binding)?;
+    let raw_input_event_count = carrier
+        .camera_event_batches
+        .iter()
+        .try_fold(0usize, |count, batch| {
+            count.checked_add(batch.input_events.len())
+        })
+        .ok_or("C03 camera raw-event count overflow")?;
+    let map_pick_count = carrier
+        .camera_event_batches
+        .iter()
+        .try_fold(0usize, |count, batch| {
+            count.checked_add(batch.map_picks.len())
+        })
+        .ok_or("C03 camera map-pick count overflow")?;
+    if carrier.payload_sha256 != carrier.computed_payload_sha256()
+        || binding.carrier_payload_sha256 != carrier.payload_sha256
+        || binding.current_eye_f32_bits != carrier.current_eye_f32_bits
+        || binding.target_eye_f32_bits != carrier.target_eye_f32_bits
+        || binding.target_look_at_f32_bits != carrier.target_look_at_f32_bits
+        || binding.event_batch_count as usize != carrier.camera_event_batches.len()
+        || binding.raw_input_event_count as usize != raw_input_event_count
+        || binding.map_pick_count as usize != map_pick_count
+        || binding.mode != C03CameraReplayMode::RecordedEnvelopeStateOnly
+        || binding.raw_event_reapplication_count != 0
+        || binding.envelope_state_selection_count != 1
+    {
+        return Err("C03 camera consumer binding/state policy mismatch".into());
+    }
+    Ok(())
+}
+
+pub fn validate_c03_camera_replay_binding(binding: &C03CameraReplayBinding) -> Result<()> {
+    if binding.schema != C03_CAMERA_REPLAY_BINDING_SCHEMA
+        || binding.carrier_payload_sha256.len() != 64
+        || !binding
+            .carrier_payload_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || binding.mode != C03CameraReplayMode::RecordedEnvelopeStateOnly
+        || binding.raw_event_reapplication_count != 0
+        || binding.envelope_state_selection_count != 1
+    {
+        return Err("C03 camera replay binding identity/policy mismatch".into());
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedProductionMapFrame {
     pub content_manifest_sha256: String,
     pub effective_vfs_manifest_sha256: String,
     pub selected_submit_index: Option<u64>,
     pub selected_submit_global_order: Option<u32>,
+    /// Receipt-ready C03 identity for the selected submit. Raw inputs are
+    /// evidence only; consumers select the recorded envelope state once.
+    pub c03_camera_replay: Option<C03CameraReplayBinding>,
     /// Exact scene bindings from the selected portable submit. Static map
     /// interpreters consume these directly; they must never recover camera,
     /// clock, or other scene state from a retained capture bundle.
@@ -67,6 +203,12 @@ pub struct PreparedProductionMapFrame {
     /// An empty vector is authoritative unavailability, never permission to
     /// synthesize pipeline state from vanilla paths or retained captures.
     pub ordered_static_map_programs: Vec<StaticMapPassProgram>,
+    /// C07 operation join admitted against the selected submit. The D3D
+    /// preparation/execution path must retain every referenced static draw.
+    pub tree_runtime: Option<C07TreeRuntimeCarrier>,
+    /// Selected-submit S1 carrier already validated against the unified
+    /// static/runtime operation stream. Absence remains a typed omission.
+    pub s1_shadow: Option<S1ShadowCarrier>,
     /// Sole authenticated cross-family execution order. Backends may not
     /// concatenate static and runtime families heuristically.
     pub ordered_render_operations: Vec<RenderExecutionRef>,
@@ -172,8 +314,11 @@ impl ProductionMapRenderer {
         let (
             selected_submit_index,
             selected_submit_global_order,
+            c03_camera_replay,
             ordered_scene_constant_buffers,
             ordered_static_map_programs,
+            tree_runtime,
+            s1_shadow,
             ordered_render_operations,
             political_textures,
             tiled_lights,
@@ -192,8 +337,11 @@ impl ProductionMapRenderer {
                 (
                     None,
                     None,
+                    None,
                     Vec::new(),
                     Vec::new(),
+                    None,
+                    None,
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),
@@ -229,8 +377,11 @@ impl ProductionMapRenderer {
                     None => (
                         None,
                         None,
+                        None,
                         Vec::new(),
                         Vec::new(),
+                        None,
+                        None,
                         Vec::new(),
                         Vec::new(),
                         Vec::new(),
@@ -241,6 +392,18 @@ impl ProductionMapRenderer {
                         frame.o04_cities.clone(),
                     ),
                     Some(submit) => {
+                        if let Some(tree_runtime) = &submit.tree_runtime {
+                            tree_runtime
+                                .content_selection_against_submit(submit)
+                                .map_err(|error| {
+                                    format!("C07 tree runtime admission blocked: {error}")
+                                })?;
+                        }
+                        if let Some(s1_shadow) = &submit.s1_shadow {
+                            s1_shadow.validate_against_submit(submit).map_err(|error| {
+                                format!("S1 shadow runtime admission blocked: {error}")
+                            })?;
+                        }
                         self.load_selected_static_resources(submit)?;
                         self.validate_static_program_content(submit)?;
                         self.validate_submit_content(submit)?;
@@ -248,8 +411,11 @@ impl ProductionMapRenderer {
                         (
                             Some(submit.submit_index),
                             Some(submit.global_order),
+                            c03_binding_from_submit(submit)?,
                             submit.ordered_scene_constant_buffers.clone(),
                             submit.ordered_static_map_programs.clone(),
+                            submit.tree_runtime.clone(),
+                            submit.s1_shadow.clone(),
                             submit.ordered_render_operations.clone(),
                             submit.political_textures.clone(),
                             submit.tiled_lights.clone(),
@@ -271,6 +437,20 @@ impl ProductionMapRenderer {
                 reason:
                     "portable production frame has no authenticated M02 carrier; feature omitted"
                         .into(),
+            });
+        }
+        if tree_runtime.is_none() {
+            omitted_data_needs.push(ProductionMapDataNeed {
+                packet: "C07/T1".into(),
+                feature: "exact tree visibility/model/LOD draws".into(),
+                reason: "selected submit has no authenticated C07 tree runtime carrier; tree draws omitted rather than reconstructed from camera or files".into(),
+            });
+        }
+        if s1_shadow.is_none() {
+            omitted_data_needs.push(ProductionMapDataNeed {
+                packet: "C07/S1".into(),
+                feature: "exact selected-light shadow producer/blur/consumer chain".into(),
+                reason: "selected submit has no authenticated S1 shadow carrier; the shadow chain is omitted rather than reconstructed from capture identities or guessed caster state".into(),
             });
         }
         if m03_arrows.is_none() {
@@ -297,8 +477,11 @@ impl ProductionMapRenderer {
             effective_vfs_manifest_sha256: self.effective_vfs_manifest_sha256.clone(),
             selected_submit_index,
             selected_submit_global_order,
+            c03_camera_replay,
             ordered_scene_constant_buffers,
             ordered_static_map_programs,
+            tree_runtime,
+            s1_shadow,
             ordered_render_operations,
             political_textures,
             tiled_lights,

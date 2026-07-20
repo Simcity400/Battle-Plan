@@ -7,8 +7,10 @@
 
 use replay_core::world::FactionRosterStatus;
 use replay_core::{
-    open_recording, open_recording_game, Leaf, MapLayerSource, SourceError, ViewStatus, WorldError,
-    WorldFrame, WorldTimeline,
+    open_recording, open_recording_game, open_recording_with_decoder,
+    CertifiedPrefoldDecoder, CertifiedPrefoldRequest, Leaf, MapLayerSource, PrefoldDecodeError,
+    PrefoldedHourEntry, PrefoldedReplay, SourceError, ViewStatus, WorldError, WorldFrame,
+    WorldTimeline,
 };
 use serde_json::{json, Value};
 use snapshot::{pack, PackEntry, PackIdentity};
@@ -1530,11 +1532,206 @@ fn compact_stream_container_fails_closed() {
             assert!(msg.contains("collector_compact_stream"), "msg: {msg}");
             assert!(msg.contains("compact"), "msg: {msg}");
             assert!(msg.contains("HOI4REPLAY_CONTAINER_SPEC"), "msg: {msg}");
-            assert!(msg.contains("extraction"), "msg: {msg}");
+            assert!(msg.contains("portable pre-folder"), "msg: {msg}");
+            assert!(msg.contains("ordinary product open"), "msg: {msg}");
         }
         other => panic!("expected Unsupported, got {other:?}"),
     }
 
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[derive(Debug)]
+struct FixtureCertifiedPrefolder;
+
+impl CertifiedPrefoldDecoder for FixtureCertifiedPrefolder {
+    fn decoder_id(&self) -> &'static str {
+        "test.fixture.certified-prefolder"
+    }
+
+    fn decode_certified(
+        &self,
+        request: CertifiedPrefoldRequest,
+    ) -> Result<PrefoldedReplay, PrefoldDecodeError> {
+        let (game_id, bytes) = request.into_parts();
+        if bytes != b"H4CRfixture-stream" {
+            return Err(PrefoldDecodeError::new("unexpected fixture stream bytes"));
+        }
+        let hour = 7;
+        let snapshot = serde_json::to_vec(&json!({
+            "game_id": game_id,
+            "schema_version": "1",
+            "hour_index": hour,
+            "date": "1936.1.1.7",
+            "countries": {"FRA": {"stability": 0.5}}
+        }))
+        .unwrap();
+        let entry = PrefoldedHourEntry::from_json(hour, &snapshot)
+            .map_err(|error| PrefoldDecodeError::new(error.to_string()))?;
+        PrefoldedReplay::try_new(
+            entry.snapshot().game_id.clone().unwrap(),
+            Value::String("1".into()),
+            vec![entry],
+        )
+        .map_err(|error| PrefoldDecodeError::new(error.to_string()))
+    }
+}
+
+#[derive(Debug)]
+struct ConflictingProvenancePrefolder;
+
+impl CertifiedPrefoldDecoder for ConflictingProvenancePrefolder {
+    fn decoder_id(&self) -> &'static str {
+        "test.conflicting-provenance-prefolder"
+    }
+
+    fn decode_certified(
+        &self,
+        request: CertifiedPrefoldRequest,
+    ) -> Result<PrefoldedReplay, PrefoldDecodeError> {
+        let (game_id, _) = request.into_parts();
+        let snapshot = serde_json::to_vec(&json!({
+            "game_id": game_id,
+            "schema_version": "1",
+            "hour_index": 7,
+            "provenance": {"mod": {"modset_id": "snapshot-modset"}}
+        }))
+        .unwrap();
+        let entry = PrefoldedHourEntry::from_json(7, &snapshot)
+            .map_err(|error| PrefoldDecodeError::new(error.to_string()))?;
+        PrefoldedReplay::try_new(
+            entry.snapshot().game_id.clone().unwrap(),
+            Value::String("1".into()),
+            vec![entry],
+        )
+        .map_err(|error| PrefoldDecodeError::new(error.to_string()))
+    }
+}
+
+#[test]
+fn explicit_portable_prefolder_wires_a_stream_only_container() {
+    let root = unique_temp_dir("compact_prefolded");
+    let game = "compact-prefolded-game";
+    let entries = vec![
+        PackEntry {
+            path: format!("payload/{game}/index.json"),
+            bytes: serde_json::to_vec(&json!({
+                "game_id": game,
+                "schema_version": "1",
+                "snapshots": []
+            }))
+            .unwrap(),
+            role: "index",
+            hour_index: None,
+        },
+        PackEntry {
+            path: format!("payload/{game}/collector_raw/collector_stream.bin"),
+            bytes: b"H4CRfixture-stream".to_vec(),
+            role: "collector_compact_stream",
+            hour_index: None,
+        },
+    ];
+    let identity = PackIdentity {
+        schema_version: Some("1".to_string()),
+        ..Default::default()
+    };
+    let path = root.join("compact_prefolded.battleplan");
+    fs::write(&path, pack(game, &entries, &identity, true).unwrap()).unwrap();
+
+    assert!(matches!(
+        open_recording(&path),
+        Err(SourceError::Unsupported(_))
+    ));
+    let source = open_recording_with_decoder(&path, &FixtureCertifiedPrefolder).unwrap();
+    assert_eq!(source.game_id(), game);
+    assert_eq!(source.hours(), &[7]);
+    let receipt = source.prefold_receipt().expect("compact source receipt");
+    assert_eq!(receipt.decoder_id(), "test.fixture.certified-prefolder");
+    assert_eq!(receipt.source_len(), 18);
+    assert_eq!(receipt.source_sha256().len(), 64);
+    let frame = source.frame(7).unwrap();
+    assert_eq!(frame.date.as_deref(), Some("1936.1.1.7"));
+    assert_eq!(frame.rest["countries"]["FRA"]["stability"], json!(0.5));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn compact_prefold_rejects_cross_game_role_path() {
+    let root = unique_temp_dir("compact_cross_namespace");
+    let game = "compact-prefolded-game";
+    let entries = vec![
+        PackEntry {
+            path: format!("payload/{game}/index.json"),
+            bytes: serde_json::to_vec(&json!({
+                "game_id": game,
+                "schema_version": "1",
+                "snapshots": []
+            }))
+            .unwrap(),
+            role: "index",
+            hour_index: None,
+        },
+        PackEntry {
+            path: "payload/other/collector_raw/collector_stream.bin".to_string(),
+            bytes: b"H4CRfixture-stream".to_vec(),
+            role: "collector_compact_stream",
+            hour_index: None,
+        },
+    ];
+    let path = root.join("cross_namespace.battleplan");
+    fs::write(
+        &path,
+        pack(game, &entries, &PackIdentity::default(), true).unwrap(),
+    )
+    .unwrap();
+
+    let error = match open_recording_with_decoder(&path, &FixtureCertifiedPrefolder) {
+        Err(error) => error,
+        Ok(_) => panic!("cross-game stream role path must be rejected"),
+    };
+    assert!(matches!(error, SourceError::Open(_)));
+    assert!(error.to_string().contains("outside manifest game namespace"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn compact_prefold_reconciles_first_generated_snapshot_provenance() {
+    let root = unique_temp_dir("compact_prefold_provenance");
+    let game = "compact-prefolded-game";
+    let entries = vec![
+        PackEntry {
+            path: format!("payload/{game}/index.json"),
+            bytes: serde_json::to_vec(&json!({
+                "game_id": game,
+                "schema_version": "1",
+                "snapshots": []
+            }))
+            .unwrap(),
+            role: "index",
+            hour_index: None,
+        },
+        PackEntry {
+            path: format!("payload/{game}/collector_raw/collector_stream.bin"),
+            bytes: b"H4CRfixture-stream".to_vec(),
+            role: "collector_compact_stream",
+            hour_index: None,
+        },
+    ];
+    let identity = PackIdentity {
+        mod_identity: Some(json!({"modset_id": "manifest-modset"})),
+        ..Default::default()
+    };
+    let path = root.join("provenance_mismatch.battleplan");
+    fs::write(&path, pack(game, &entries, &identity, true).unwrap()).unwrap();
+
+    let error = match open_recording_with_decoder(&path, &ConflictingProvenancePrefolder) {
+        Err(error) => error,
+        Ok(_) => panic!("conflicting prefold provenance must be rejected"),
+    };
+    assert!(matches!(error, SourceError::ModsetMismatch(_)));
+    assert!(error.to_string().contains("manifest-modset"));
+    assert!(error.to_string().contains("snapshot-modset"));
     let _ = fs::remove_dir_all(&root);
 }
 

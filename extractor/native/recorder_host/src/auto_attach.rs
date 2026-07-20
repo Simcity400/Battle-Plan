@@ -64,8 +64,10 @@ pub struct SupervisorOptions {
 }
 
 /// Run the resident coordinator until `should_stop` returns true (design §1).
-/// Wires the real Windows adapters. This is the product entry point invoked from
-/// `main.rs` under `--auto-attach`.
+/// Wires the real Windows discovery/identity adapters and process-isolated
+/// worker invoked from `main.rs` under `--auto-attach`. Frozen activation keeps
+/// the explicit Legacy path; the jointly gated product path selects the
+/// duplex/combined backend and authenticated cooperative stop event.
 #[cfg(windows)]
 pub fn run_supervisor(
     opts: SupervisorOptions,
@@ -99,7 +101,7 @@ pub fn run_supervisor(
             opts.staging_root,
             now0,
         )),
-        spawner: Box::new(live::ProcessCommandSpawner::new(
+        spawner: Box::new(live::ProductProcessCommandSpawner::new(
             opts.worker_exe,
             opts.worker_extra_args,
         )),
@@ -113,6 +115,10 @@ pub fn run_supervisor(
         coord.step()?;
         std::thread::sleep(std::time::Duration::from_millis(opts.poll_ms));
     }
+    coord.begin_explicit_stop()?;
+    while !coord.drive_shutdown()? {
+        std::thread::sleep(std::time::Duration::from_millis(opts.poll_ms));
+    }
     Ok(())
 }
 
@@ -123,10 +129,15 @@ mod live {
     use std::path::PathBuf;
     use std::process::{Child, Command, Stdio};
     use std::sync::mpsc::{self, Receiver, TryRecvError};
+    use std::{mem, ptr};
 
-    use super::identity::ProcessIdentity;
+    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::ffi::OsStrExt;
+
+    use super::identity::{ProcessIdentity, ProcessKey};
     use super::sources::{
-        AttachEnvironment, ModsetResolution, WorkerHandle, WorkerSpawner, WorkerSpec, WorkerStatus,
+        AttachEnvironment, ModsetResolution, ProcessProbe, ToolhelpProbe, WorkerHandle,
+        WorkerSpawner, WorkerSpec, WorkerStatus,
     };
 
     /// A per-boot coordinator instance id (design §8 `coordinator_instance_id`).
@@ -152,8 +163,8 @@ mod live {
     }
 
     impl AttachEnvironment for LiveAttachEnvironment {
-        fn has_visible_window(&self, pid: u32) -> bool {
-            has_visible_window_for_pid(pid)
+        fn has_visible_window(&self, key: ProcessKey) -> bool {
+            has_visible_window_for_process(key)
         }
 
         fn resolve_modset(&self, id: &ProcessIdentity) -> ModsetResolution {
@@ -163,7 +174,46 @@ mod live {
             // roots) — a `modset.rs` change outside this lane's fence, tracked in
             // the dossier. Its PID-held-log corroboration and fail-closed
             // resolution are reused as-is.
-            let report = crate::modset::resolve_modset(id.key.pid, None);
+            let probe = ToolhelpProbe::new();
+            let before = match probe.identify(id.key.pid) {
+                Ok(identity) if identity == *id => identity,
+                Ok(_) => {
+                    return ModsetResolution {
+                        resolved: false,
+                        reasons: vec![
+                            "process identity changed before modset resolution".to_string(),
+                        ],
+                    }
+                }
+                Err(error) => {
+                    return ModsetResolution {
+                        resolved: false,
+                        reasons: vec![format!(
+                            "process identity unavailable before modset resolution: {error}"
+                        )],
+                    }
+                }
+            };
+            let report = crate::modset::resolve_modset(before.key.pid, None);
+            match probe.identify(before.key.pid) {
+                Ok(after) if after == before => {}
+                Ok(_) => {
+                    return ModsetResolution {
+                        resolved: false,
+                        reasons: vec![
+                            "process identity changed during modset resolution".to_string(),
+                        ],
+                    }
+                }
+                Err(error) => {
+                    return ModsetResolution {
+                        resolved: false,
+                        reasons: vec![format!(
+                            "process identity unavailable after modset resolution: {error}"
+                        )],
+                    }
+                }
+            }
             ModsetResolution {
                 resolved: report.resolved,
                 reasons: report.errors,
@@ -189,12 +239,20 @@ mod live {
         }
     }
 
-    fn has_visible_window_for_pid(pid: u32) -> bool {
-        let mut search = WindowSearch { pid, found: false };
+    fn has_visible_window_for_process(key: ProcessKey) -> bool {
+        let probe = ToolhelpProbe::new();
+        if !matches!(probe.identify(key.pid), Ok(identity) if identity.key == key) {
+            return false;
+        }
+        let mut search = WindowSearch {
+            pid: key.pid,
+            found: false,
+        };
         unsafe {
             EnumWindows(enum_windows_proc, &mut search as *mut _ as isize);
         }
         search.found
+            && matches!(probe.identify(key.pid), Ok(identity) if identity.key == key)
     }
 
     #[link(name = "user32")]
@@ -207,24 +265,200 @@ mod live {
         fn IsWindowVisible(hwnd: *mut std::ffi::c_void) -> i32;
     }
 
+    // -- Worker crash-containment job ----------------------------------
+
+    type Handle = *mut std::ffi::c_void;
+    type Bool = i32;
+    type Dword = u32;
+
+    const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: i32 = 9;
+    const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: Dword = 0x0000_2000;
+    const ERROR_ALREADY_EXISTS: Dword = 183;
+
+    #[repr(C)]
+    struct JobObjectBasicLimitInformation {
+        per_process_user_time_limit: i64,
+        per_job_user_time_limit: i64,
+        limit_flags: Dword,
+        minimum_working_set_size: usize,
+        maximum_working_set_size: usize,
+        active_process_limit: Dword,
+        affinity: usize,
+        priority_class: Dword,
+        scheduling_class: Dword,
+    }
+
+    #[repr(C)]
+    struct IoCounters {
+        read_operation_count: u64,
+        write_operation_count: u64,
+        other_operation_count: u64,
+        read_transfer_count: u64,
+        write_transfer_count: u64,
+        other_transfer_count: u64,
+    }
+
+    #[repr(C)]
+    struct JobObjectExtendedLimitInformation {
+        basic_limit_information: JobObjectBasicLimitInformation,
+        io_info: IoCounters,
+        process_memory_limit: usize,
+        job_memory_limit: usize,
+        peak_process_memory_used: usize,
+        peak_job_memory_used: usize,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateJobObjectW(attributes: *mut std::ffi::c_void, name: *const u16) -> Handle;
+        fn SetInformationJobObject(
+            job: Handle,
+            information_class: i32,
+            information: *const std::ffi::c_void,
+            information_length: Dword,
+        ) -> Bool;
+        fn AssignProcessToJobObject(job: Handle, process: Handle) -> Bool;
+        fn CreateEventW(
+            attributes: *mut std::ffi::c_void,
+            manual_reset: Bool,
+            initial_state: Bool,
+            name: *const u16,
+        ) -> Handle;
+        fn SetEvent(event: Handle) -> Bool;
+        fn GetLastError() -> Dword;
+        fn CloseHandle(handle: Handle) -> Bool;
+    }
+
+    struct WorkerCrashJob(Handle);
+
+    unsafe impl Send for WorkerCrashJob {}
+
+    impl WorkerCrashJob {
+        fn create() -> Result<Self, String> {
+            let handle = unsafe { CreateJobObjectW(ptr::null_mut(), ptr::null()) };
+            if handle.is_null() {
+                return Err(format!(
+                    "create worker crash-containment job failed: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            let mut information: JobObjectExtendedLimitInformation = unsafe { mem::zeroed() };
+            information.basic_limit_information.limit_flags =
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if unsafe {
+                SetInformationJobObject(
+                    handle,
+                    JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+                    (&information as *const JobObjectExtendedLimitInformation).cast(),
+                    mem::size_of::<JobObjectExtendedLimitInformation>() as Dword,
+                )
+            } == 0
+            {
+                let error = std::io::Error::last_os_error();
+                unsafe { CloseHandle(handle) };
+                return Err(format!(
+                    "configure worker kill-on-close job failed: {error}"
+                ));
+            }
+            Ok(Self(handle))
+        }
+
+        fn assign(&self, child: &Child) -> Result<(), String> {
+            let process = child.as_raw_handle() as Handle;
+            if process.is_null() || unsafe { AssignProcessToJobObject(self.0, process) } == 0 {
+                return Err(format!(
+                    "assign worker to crash-containment job failed: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for WorkerCrashJob {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { CloseHandle(self.0) };
+            }
+        }
+    }
+
+    struct SupervisorStopEvent {
+        handle: Handle,
+        name: String,
+    }
+
+    unsafe impl Send for SupervisorStopEvent {}
+
+    impl SupervisorStopEvent {
+        fn create(spec: &WorkerSpec) -> Result<Self, String> {
+            // `pipe_token` is a canonical 128-bit CSPRNG secret already bound
+            // to this attempt. Reusing it in a distinct Local object namespace
+            // adds no second authority source and keeps the raw name out of the
+            // journal.
+            super::proof::decode_hex_16(&spec.payload.pipe_token)
+                .map_err(|error| format!("invalid stop-event token: {error}"))?;
+            let name = format!(
+                r"Local\battle-plan_stop_{}_{}",
+                spec.key.pid, spec.payload.pipe_token
+            );
+            let mut wide: Vec<u16> = std::ffi::OsStr::new(&name).encode_wide().collect();
+            wide.push(0);
+            let handle = unsafe { CreateEventW(ptr::null_mut(), 1, 0, wide.as_ptr()) };
+            if handle.is_null() {
+                return Err(format!(
+                    "create cooperative stop event failed: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+                unsafe { CloseHandle(handle) };
+                return Err("cooperative stop event already existed".to_string());
+            }
+            Ok(Self { handle, name })
+        }
+
+        fn signal(&self) -> Result<(), String> {
+            if unsafe { SetEvent(self.handle) } == 0 {
+                Err(format!(
+                    "signal cooperative stop event failed: {}",
+                    std::io::Error::last_os_error()
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl Drop for SupervisorStopEvent {
+        fn drop(&mut self) {
+            if !self.handle.is_null() {
+                unsafe { CloseHandle(self.handle) };
+            }
+        }
+    }
+
     // -- Child-process worker spawner ------------------------------------
 
     /// Spawns `collector_record --pid <target> --dll <staged> --out-dir <run>`
     /// as the per-game worker (design §5: reuse the existing hook injector; the
     /// coordinator never injects directly). This is the SAME interface the dev
     /// launcher uses (`Start-Hoi4ProductionSpeed5Capture.ps1`).
-    pub struct ProcessCommandSpawner {
+    /// Process-isolated worker adapter. With activation frozen it retains the
+    /// explicit Legacy behavior; a mintable product permit selects the child
+    /// recorder's combined H4CR/H4CT backend plus authenticated stop event.
+    pub struct ProductProcessCommandSpawner {
         exe: PathBuf,
         extra_args: Vec<String>,
     }
 
-    impl ProcessCommandSpawner {
+    impl ProductProcessCommandSpawner {
         pub fn new(exe: PathBuf, extra_args: Vec<String>) -> Self {
             Self { exe, extra_args }
         }
     }
 
-    impl WorkerSpawner for ProcessCommandSpawner {
+    impl WorkerSpawner for ProductProcessCommandSpawner {
         fn spawn(&self, spec: &WorkerSpec) -> Result<Box<dyn WorkerHandle>, String> {
             std::fs::create_dir_all(&spec.out_dir).map_err(|e| format!("create out dir: {e}"))?;
             const RESERVED: &[&str] = &[
@@ -254,6 +488,12 @@ mod live {
                     .map_err(|e| format!("invalid staged DLL hash: {e}"))?,
                 challenge: spec.control_challenge,
             };
+            let cooperative_stop_event =
+                if super::duplex_worker::auto_attach_identity_v1_enabled() {
+                    Some(SupervisorStopEvent::create(spec)?)
+                } else {
+                    None
+                };
             let mut cmd = Command::new(&self.exe);
             cmd.args(&self.extra_args)
                 .arg("--pid")
@@ -285,10 +525,20 @@ mod live {
                 .env(
                     "BATTLE_PLAN_AUTO_ATTACH_SOURCE_DLL_SHA256",
                     &spec.payload.source_sha256,
-                )
+                );
+            if let Some(stop_event) = cooperative_stop_event.as_ref() {
+                cmd.env("BATTLE_PLAN_AUTO_ATTACH_STOP_EVENT", &stop_event.name);
+            }
+            cmd
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped());
+            let crash_job = WorkerCrashJob::create()?;
             let mut child = cmd.spawn().map_err(|e| format!("spawn worker: {e}"))?;
+            if let Err(error) = crash_job.assign(&child) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
             let stdout = match child.stdout.take() {
                 Some(stdout) => stdout,
                 None => {
@@ -311,16 +561,35 @@ mod live {
                         status_tx
                             .send(WorkerStatus::Attached)
                             .map_err(|_| "coordinator dropped proof receiver".to_string())?;
-                        let proof = channel.recv().map_err(|e| e.to_string())?;
-                        if proof.kind != crate::control_transport::MessageKind::HeartbeatProof {
-                            return Err(format!("expected HeartbeatProof, got {:?}", proof.kind));
+                        let mut last_sequence = None;
+                        loop {
+                            let proof = match channel.recv() {
+                                Ok(proof) => proof,
+                                Err(crate::control_transport::ControlError::Io(
+                                    std::io::ErrorKind::UnexpectedEof,
+                                )) if last_sequence.is_some() => break,
+                                Err(error) => return Err(error.to_string()),
+                            };
+                            if proof.kind != crate::control_transport::MessageKind::HeartbeatProof {
+                                return Err(format!(
+                                    "expected HeartbeatProof, got {:?}",
+                                    proof.kind
+                                ));
+                            }
+                            let sequence = super::proof::validate_heartbeat_proof(
+                                &proof.payload,
+                                &expectation,
+                            )?;
+                            if last_sequence.is_some_and(|previous| sequence < previous) {
+                                return Err("worker heartbeat sequence regressed".to_string());
+                            }
+                            last_sequence = Some(sequence);
+                            status_tx
+                                .send(WorkerStatus::Recording {
+                                    last_confirmed_hour: None,
+                                })
+                                .map_err(|_| "coordinator dropped proof receiver".to_string())?;
                         }
-                        super::proof::validate_heartbeat_proof(&proof.payload, &expectation)?;
-                        status_tx
-                            .send(WorkerStatus::Recording {
-                                last_confirmed_hour: None,
-                            })
-                            .map_err(|_| "coordinator dropped proof receiver".to_string())?;
                         Ok(())
                     })();
                     if let Err(reason) = result {
@@ -336,6 +605,10 @@ mod live {
                 child,
                 out_dir: spec.out_dir.clone(),
                 stop_requested: false,
+                hard_kill_sent: false,
+                crash_job: Some(crash_job),
+                cooperative_stop_event,
+                cooperative_stop_started: None,
                 status_rx,
                 saw_attached: false,
                 saw_recording: false,
@@ -345,19 +618,25 @@ mod live {
         }
     }
 
-    /// Handle over a spawned worker child. HONEST LIMITATION (design §9, tracked
-    /// in the dossier): without the collector heartbeat/first-frame proof
-    /// protocol, this handle cannot observe residency or a valid session frame,
-    /// so it gates on child liveness/exit only:
-    /// - child alive        => `Handshaking` (never falsely claims Attached);
-    /// - clean exit + replay => `Complete`;
-    /// - clean exit, no replay, or non-zero exit => `Failed`.
-    /// When the collector begins writing an attach-status sidecar (§9 work),
-    /// map it here to unlock the full residency/recording ladder.
+    /// Handle over the process-isolated recorder worker. Stdout carries only
+    /// attempt-bound hello/first-world/recurring-heartbeat proofs; child exit is
+    /// accepted as Complete only when that ladder succeeded and recorder-main's
+    /// fold/pack/verify pipeline left a replay artifact.
     struct ChildWorkerHandle {
         child: Child,
         out_dir: PathBuf,
         stop_requested: bool,
+        /// True only when the legacy adapter successfully issued
+        /// `TerminateProcess` through `Child::kill`. A subsequently observed
+        /// replay can be retained for forensics, but this path can never prove
+        /// graceful drain/finalization and therefore must not report Complete.
+        hard_kill_sent: bool,
+        /// Retained for the entire child lifetime. Closing it is supervisor-
+        /// crash containment only; normal stop still owns the worker protocol
+        /// and waits/reaps before this handle is dropped.
+        crash_job: Option<WorkerCrashJob>,
+        cooperative_stop_event: Option<SupervisorStopEvent>,
+        cooperative_stop_started: Option<std::time::Instant>,
         status_rx: Receiver<WorkerStatus>,
         saw_attached: bool,
         saw_recording: bool,
@@ -367,6 +646,26 @@ mod live {
 
     impl WorkerHandle for ChildWorkerHandle {
         fn poll(&mut self) -> WorkerStatus {
+            if self
+                .cooperative_stop_started
+                .is_some_and(|started| {
+                    started.elapsed()
+                        >= std::time::Duration::from_millis(
+                            super::policy::GRACEFUL_STOP_DEADLINE_MS,
+                        )
+                })
+                && !self.hard_kill_sent
+            {
+                if self.child.kill().is_ok() {
+                    self.hard_kill_sent = true;
+                }
+            }
+            if self.hard_kill_sent {
+                return WorkerStatus::Failed {
+                    reason: "worker was hard-killed; graceful finalization is unproven"
+                        .into(),
+                };
+            }
             match self.status_rx.try_recv() {
                 Ok(WorkerStatus::Attached) => {
                     self.saw_attached = true;
@@ -380,6 +679,10 @@ mod live {
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => {}
             }
             match self.child.try_wait() {
+                Ok(None) if self.cooperative_stop_started.is_some() => WorkerStatus::Finalizing,
+                Ok(None) if self.saw_recording => WorkerStatus::Recording {
+                    last_confirmed_hour: None,
+                },
                 Ok(None) => WorkerStatus::Handshaking,
                 Ok(Some(status)) => {
                     if status.success() {
@@ -408,10 +711,24 @@ mod live {
         }
 
         fn request_stop(&mut self) {
+            if self.stop_requested {
+                return;
+            }
             self.stop_requested = true;
-            // Best-effort graceful stop is a §9 collector feature; today we can
-            // only hard-stop the child if it outlives an explicit quit.
-            let _ = self.child.kill();
+            if let Some(stop_event) = self.cooperative_stop_event.as_ref() {
+                match stop_event.signal() {
+                    Ok(()) => {
+                        self.cooperative_stop_started = Some(std::time::Instant::now());
+                        return;
+                    }
+                    Err(_) => { /* fall through to explicit failed hard-kill */ }
+                }
+            }
+            // Legacy mode has no cooperative channel, and a product signal
+            // failure cannot be treated as graceful. Both fail closed.
+            if self.child.kill().is_ok() {
+                self.hard_kill_sent = true;
+            }
         }
     }
 
@@ -420,10 +737,28 @@ mod live {
             if !self.stop_requested {
                 self.request_stop();
             }
-            // Rust's `Child::drop` neither terminates nor waits. Reap here so a
-            // coordinator error or normal supervisor shutdown cannot orphan the
-            // injector/capture worker.
-            let _waited = self.child.wait().is_ok();
+            // Rust's `Child::drop` neither terminates nor waits. Give an
+            // authenticated cooperative request its contract deadline, then
+            // use hard termination only as crash/fault containment.
+            let deadline = self.cooperative_stop_started.map(|started| {
+                started
+                    + std::time::Duration::from_millis(
+                        super::policy::GRACEFUL_STOP_DEADLINE_MS,
+                    )
+            });
+            let _waited = loop {
+                match self.child.try_wait() {
+                    Ok(Some(_)) => break true,
+                    Ok(None) if deadline.is_some_and(|value| std::time::Instant::now() < value) => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Ok(None) => {
+                        let _ = self.child.kill();
+                        break self.child.wait().is_ok();
+                    }
+                    Err(_) => break false,
+                }
+            };
             #[cfg(test)]
             if _waited {
                 if let Some(reaped) = &self.test_reaped {
@@ -522,6 +857,10 @@ mod live {
                 child,
                 out_dir: std::env::temp_dir(),
                 stop_requested: false,
+                hard_kill_sent: false,
+                crash_job: None,
+                cooperative_stop_event: None,
+                cooperative_stop_started: None,
                 status_rx,
                 saw_attached: false,
                 saw_recording: false,

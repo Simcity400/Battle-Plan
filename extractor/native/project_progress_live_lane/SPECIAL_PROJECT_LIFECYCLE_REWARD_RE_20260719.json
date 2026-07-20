@@ -1,0 +1,80 @@
+{
+  "schema": "hoi4-special-project-lifecycle-reward-re-v1",
+  "program": {
+    "name": "hoi4.exe",
+    "version": "1.19.2.0.a729",
+    "image_base": "0x140000000",
+    "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+  },
+  "promotion": {
+    "active": true,
+    "collector_manifest": "extractor/native/project_progress_live_lane/SPECIAL_PROJECT_LIFECYCLE_REWARD_PROMOTION_MANIFEST_20260720.json",
+    "collector_manifest_sha256": "33d72cfe1cfb7e11123d83dcb5cba80c1f9a1f6b5dd0027809864a1a42a4a4a2",
+    "reason": "the complete 13-function/two-vtable card is bound to authoritative exact-10 receipts, including the exact five-entry SP-01 supplemental receipt",
+    "discovery_jobs_are_promotion_evidence": false
+  },
+  "owner_chain": {
+    "country_program_status_offset": "0xFA8",
+    "program_status_project_pool_offset": "0x18",
+    "project_pool_array_offset": "0x10",
+    "project_stride": "0x1C0",
+    "project_type": 86,
+    "project_local_id_offset": "0x0C"
+  },
+  "lifecycle": {
+    "start": {"offset": "0x1BC", "width": "u8", "token_id": "0x0069", "token": "start", "reversible": true},
+    "completed": {"offset": "0x1BD", "width": "u8", "token_id": "0x3127", "token": "completed", "writer_sets_before_terminal_append": true}
+  },
+  "reward_history": {
+    "vector": {"data_offset": "0x68", "capacity_offset": "0x70", "count_offset": "0x74"},
+    "row_stride": "0x58",
+    "row_vtable_rva": "0x296C220",
+    "context_offset": "0x10",
+    "context_vtable_rva": "0x296C1D0",
+    "undefined_handle": "0x4C17",
+    "fields": [
+      {"token":"prototype_reward","token_id":"0x2732","offset":"0x08","type":"u32_handle"},
+      {"token":"option","token_id":"0x2966","offset":"0x0C","type":"u32_handle"},
+      {"token":"province","token_id":"0x2840","offset":"0x18","type":"i32"},
+      {"token":"progress","token_id":"0x2B05","offset":"0x1C","type":"u32_raw"},
+      {"token":"character","token_id":"0x4C16","offset":"0x20","type":"u64_creference"},
+      {"token":"country","token_id":"0x289A","offset":"0x28","presence_offset":"0x2C","type":"u32_raw"},
+      {"token":"scientist","token_id":"0x4005","offset":"0x30","presence_offset":"0x34","type":"u32_raw"},
+      {"token":"state","token_id":"0x01B7","offset":"0x38","presence_offset":"0x3C","type":"u32_raw"},
+      {"token":"date","token_id":"0x284A","offset":"0x48","type":"i32_raw"}
+    ]
+  },
+  "d04_discriminator": {
+    "fixture": "extractor/re_evidence/S8_SAVE_ORACLE_FIXTURES/d04_special_project/projects.json",
+    "date": "1944.2.11.18",
+    "projects": 21511,
+    "started": 75,
+    "completed": 68,
+    "reward_events": 413,
+    "reward_projects": 79,
+    "reward_countries": 12,
+    "undefined_terminal_rows": 68,
+    "undefined_terminal_rows_with_province_minus_one": 14,
+    "all_rows_with_province_minus_one": 35,
+    "null_scientists": 35,
+    "progress_min": 0,
+    "progress_max": 24
+  },
+  "ten_shard_reexport": {
+    "functions": [
+      "0x140FD0950", "0x140FCF9A0", "0x140FD02E0", "0x140FCF450",
+      "0x140FCEC50", "0x140FCBB50", "0x141A249B0", "0x141A24A30",
+      "0x141A248A0", "0x141A25300", "0x141A251E0", "0x141A25240",
+      "0x141A250E0"
+    ],
+    "data": ["0x14296C220", "0x14296C1D0"],
+    "status": "complete_and_pinned",
+    "promotion_manifest": "extractor/native/project_progress_live_lane/SPECIAL_PROJECT_LIFECYCLE_REWARD_PROMOTION_MANIFEST_20260720.json",
+    "promotion_manifest_sha256": "33d72cfe1cfb7e11123d83dcb5cba80c1f9a1f6b5dd0027809864a1a42a4a4a2",
+    "sp01_job_id": "20260719T222518Z-wave2-r10-sp-01-special-project-lifecycl-1cbb3f78",
+    "sp01_job_json_sha256": "0a7e6d1db8bbcf555b0de5e796b742aa102dc7d3a37ab5cb3c3bf9f793c37b7b",
+    "sp01_artifact_sha256": "051604945b4e75ed84c45b3774f990a2b1ec7901e568a4d48c310fc316c7c392",
+    "pool_status_sha256": "df67a663059a645bf8f039f34659fed76274a7259af2fc137a2a60b5e8e41395"
+  },
+  "human_input_required": []
+}

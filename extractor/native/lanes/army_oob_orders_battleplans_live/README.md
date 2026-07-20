@@ -1,6 +1,12 @@
 # army_oob_orders_battleplans_live lane
 > Active lane note: this README is the only active lane-local documentation. Historical plans, proof reports, blocker notes, and registration packets for this lane are archived under ../../../documents/archive/native_lanes/army_oob_orders_battleplans_live/. Current extraction completion status lives in ../../../documents/MASTER_EXTRACTION_CONTRACT.md.
 
+> 2026-07-19 residual RE correction: Type 5 is area defense, exact
+> `+0x70/+0x78` geometry is admitted only for authenticated type-2 line/type-3
+> invasion rows, and execution/activation is exact at `order+0x248`. See the
+> integrated domain-54 source and
+> `../army_battleplans_depth_live/A729_BATTLEPLAN_RE_REPORT.md`.
+
 
 Lane scope: land army/army-group command hierarchy, commander assignment,
 formation membership, selected army order roots, battle-plan target slices, and
@@ -51,8 +57,8 @@ Direct-root/theatre proof:
 - active-army comparison: 652 armies reached through live `CDivision+0xB0`
   parents, leaving 8 direct empty/inactive army roots that the active-army
   production slice cannot see;
-- order mix on direct armies: 630 order rows, including 166 exact type-5 target
-  rows and 464 non-type-5 rows (`type=2`: 423, `type=3`: 41);
+- order mix on direct armies: 630 order rows, including 166 exact type-5
+  area-defense target rows, 423 type-2 line rows, and 41 type-3 invasion rows;
 - production position: validated current-build discovery evidence and a
   cold-preflight/cache-refresh candidate, not yet a hot-loop DLL production root.
 
@@ -84,7 +90,7 @@ Army order roots:
 - order instance vtable `MODULE+0x296FAE8`;
 - order type at `order+0x30`;
 - army back-reference at `order+0x38`;
-- type-5 target-state vector:
+- type-5 area-defense target-state vector:
   - begin `order+0xE0`;
   - size `order+0xE8`;
 - max 64 orders per army;
@@ -210,40 +216,57 @@ future redraw/toggle fixture. It converts changed observations into exact rows
 and unchanged observations into exact rejection rows, while rejecting passive
 scan sources.
 
+`d54_exact_fixture_observer.py` supersedes that historical v1 observation
+shape for the four narrowed a729 D54 fixtures. Its contract is
+`D54_EXACT_FIXTURE_CARRIER_CONTRACT.json`. It carries the current 60-byte header
+/ 88-byte row receipt, the raw 88-byte row, raw order pointer and bytes at
+`+0x30`, `+0x38`, `+0x70/+0x78`, `+0x210/+0x21C`, `+0x244`, and `+0x248`, and
+same-paused save receipts. Boundary arrays, paths, member arrays, and manager
+walk entries remain in source order. The resulting carrier always sets every
+activation field to `false`; even mechanically complete observations require a
+separate reviewed promotion edit. The old observer's `+0x150` execution example
+is retained as historical rejected-candidate coverage and is not an open D54
+fixture.
+
 `army_battleplans_depth_collector.rs`,
 `army_battleplans_depth_compact.rs`, `army_battleplans_depth_module.rs`, and
-`army_battleplans_depth_from_stream.py` are the lane-local domain-54 mini stack
-for the validated subset that does not need a redraw/toggle fixture:
+`army_battleplans_depth_from_stream.py` are retained legacy 52-byte-header /
+64-byte-row proof and corpus-mining tools. They are not the current production
+wire authority. The current authority is
+`../army_battleplans_depth_live/src/lib.rs`: a 60-byte header, 88-byte rows,
+exact `+0x244` order identity, exact `+0x210/+0x21C` assigned-division child
+IDs, exact `+0x248` active/execution state, authenticated type-2/type-3 path
+children, and type-5 area-defense state children. Type 4 remains fail-closed.
 
-`army_battleplans_depth_compact.rs` uses the same canonical dependency-free
-record-header include. From the repository root, its direct build and invocation
-are:
+The retained legacy stack covers the previously validated subset as follows:
+
+`army_battleplans_depth_compact.rs` uses the historical canonical
+dependency-free record-header include. Its old direct proof invocation was:
 
 ```powershell
 rustc --edition=2021 .\extractor\native\lanes\army_oob_orders_battleplans_live\army_battleplans_depth_compact.rs -o "$env:TEMP\army_battleplans_depth_compact.exe"
 & "$env:TEMP\army_battleplans_depth_compact.exe" .\extractor\native\runs\<run>\depth_stream.bin 5 --json
 ```
 
-- exact type-5 target-state rows are emitted as exact depth rows;
+- exact type-5 area-defense target-state rows are emitted as exact depth rows;
 - assigned-unit and order-linkage status are carried on every non-deleted
   domain-54 row. The lane-local converter derives assigned-unit status from the
   paired `oob_command` row for the same frame hour and fails the depth gate if a
   live row lacks exact assignment or linkage status;
-- non-type-5 rows with a validated live `order+0x70/+0x78` path vector are
-  emitted as exact path geometry rows with an 8-byte path-province child table;
-  non-type-5 rows without that exact vector are still emitted with geometry
-  fixture-required status;
-- execution state is emitted as fixture-required until a live toggle fixture
-  validates or rejects an offset;
+- type-2 line and type-3 invasion rows with a validated live
+  `order+0x70/+0x78` path vector are emitted as exact path geometry rows with an
+  8-byte path-province child table; all other types are fail-closed and do not
+  dereference that vector;
+- active/execution state is exact from `order+0x248`;
 - stance and aggressiveness are emitted as explicit unknown statuses until a
   live current-build offset is validated or rejected;
-- direct `CArmy`, army-group, and theatre roots can be carried in the domain-54
-  direct-root section with 64-byte rows and 8-byte member child rows. Current
-  proof rows are explicitly `STATUS_COLD_PREFLIGHT_ONLY` because the direct
+- direct `CArmy`, army-group, and theatre roots can be carried in the legacy
+  domain-54 direct-root section with 64-byte rows and 8-byte member child rows.
+  Those proof rows are explicitly `STATUS_COLD_PREFLIGHT_ONLY` because the direct
   root enumerator is validated discovery/preflight evidence, not yet the
   DLL-only hot-loop production source;
-- non-exact type-5 rows are omitted fail-closed rather than guessed.
-- the production module boundary accepts live order observations and emits a
+- non-exact type-5 area-defense rows are omitted fail-closed rather than guessed.
+- the historical production-module boundary accepts live order observations and emits a
   domain-54 payload directly to a compact sink. It also accepts prepared direct
   root rows for a future bounded preflight/cache-refresh hook and no longer
   depends on a domain-27 proof stream conversion for the future DLL hook.
@@ -262,14 +285,17 @@ Assignment/linkage proof run:
 It rebuilds the domain-54 stream from the same live DLL compact proof, joins
 domain 27 order rows to same-hour domain 28 OOB rows, and gates:
 
+The execution and order-label counts below describe that historical pre-RE
+artifact only; they are not the current a729 semantic contract.
+
 - 25 depth data records over 25 frame hours;
 - 24 game hours advanced with zero skipped hours;
 - 564 domain-54 rows, including 552 non-deleted rows;
-- 132 exact type-5/offensive target rows and 550 target-state child rows;
+- 132 exact type-5 target rows and 550 target-state child rows;
 - 552 exact assigned-unit status rows;
 - 552 exact order-linkage status rows;
-- 420 non-type-5 geometry fixture-required rows;
-- 552 execution fixture-required rows;
+- 420 geometry fixture-required rows in the historical artifact;
+- 552 execution fixture-required rows in the historical artifact;
 - 552 stance unknown rows;
 - 552 aggressiveness unknown rows;
 - `.battleplan` byte-identity verification and compact-entry hash check.
@@ -277,13 +303,13 @@ domain 27 order rows to same-hour domain 28 OOB rows, and gates:
 Path-geometry compact proof run:
 `extractor/native/runs/army_battleplans_depth_live_path_geometry_compact_870ebf_20260701_v1`.
 It reruns the save/live geometry proof with full compact-row retention, then
-materializes the exact non-type-5 `order+0x70/+0x78` rows into domain-54 compact
-bytes:
+materializes the exact type-2/type-3 `order+0x70/+0x78` rows into domain-54
+compact bytes:
 
 - save/live geometry gate passed:
   `VALIDATED_PATH70_AND_REJECTED_TYPE3_C0_GEOMETRY`;
 - type-5 pairing control: 137/171 exact rows at `order+0xE0/+0xE8`;
-- path candidate: 95/111 exact non-type-5 rows at `order+0x70/+0x78`;
+- path candidate: 95/111 exact type-2/type-3 rows at `order+0x70/+0x78`;
 - rejected candidate: 0/17 exact type-3 rows at `order+0xC0/+0xC8`;
 - compact stream: 95 domain-54 rows and 324 path-province child rows;
 - Rust gate: ordered, decodable, hourly-or-lower, one frame and one depth record
@@ -429,7 +455,7 @@ sequence match, and uses exact type-5 state vectors as the pairing control:
   order rows;
 - type-5 positive control passed: 137/171 paired type-5 rows exactly matched
   save `states` at live `order+0xE0/+0xE8`;
-- validated geometry slice: 95/111 paired non-type-5 rows exactly matched save
+- validated geometry slice: 95/111 paired type-2/type-3 rows exactly matched save
   `path` at live `order+0x70/+0x78`;
 - rejected geometry candidate: 0/17 paired type-3 rows matched save `path` at
   live `order+0xC0/+0xC8`, so the old type-3 secondary vector candidate should
@@ -437,11 +463,11 @@ sequence match, and uses exact type-5 state vectors as the pairing control:
 - gate passed with
   `candidate_status = VALIDATED_PATH70_AND_REJECTED_TYPE3_C0_GEOMETRY`.
 
-This validates the current-build non-type-5 path-vector offset for exact
+This validates the current-build type-2/type-3 path-vector offset for exact
 save/live paired rows. It does not close the master `Battleplan geometry` row:
 domain 54 now has a lane-local compact path-geometry child table and proof, but
-it still needs shared DLL feed integration, shared Rust decode registration, and
-redraw/toggle lifecycle semantics before the master row can close.
+it still needs shared end-to-end proof and an authenticated same-instance
+type-2 redraw/delete fixture before the master row can close.
 
 Army-level scalar candidate proof run:
 `extractor/native/runs/army_battleplans_depth_live_army_scalar_870ebf_20260701_v2`.
@@ -479,16 +505,14 @@ Not completed by this lane-local slice:
   table probe validates a partial theatre vector covering `73/100` theatre
   roots, but v3 shows that plain table coverage is not stable/complete
   (`49/101` best theatre run in the later frame);
-- non-type-5 front/fallback/offensive-line geometry beyond exact type-5 target
-  state sets. `order+0x70/+0x78` is now validated as a save/live paired path
-  vector for an exact non-type-5 slice and has a lane-local domain-54 compact
-  child-table proof. `order+0xC0/+0xC8` is rejected as the type-3 primary path
-  vector. Promotion still requires shared DLL feed/Rust registration proof, and
-  redraw lifecycle semantics still require fixture evidence or exact rejection;
-- battleplan execution/activation state and plan-value/power runtime caches. The
-  current fixture gate requires exact live execution-state evidence or exact
-  rejection evidence before promotion. `order+0x150` as `is_executing: u8` is
-  rejected for current build `870ebf` and should not be retried;
+- line/invasion geometry beyond the exact type-2/type-3 path slice, plus type-4
+  paradrop geometry. `order+0x70/+0x78` is validated for type 2 and type 3 and
+  has a lane-local domain-54 compact child-table proof. `order+0xC0/+0xC8` is
+  rejected as the type-3 primary path vector. Redraw/delete lifecycle and type-4
+  promotion still require the minimal controlled discriminator fixture;
+- plan-value/power runtime caches. Active/execution state is exact at
+  `order+0x248`; `order+0x150` is a rejected execution candidate for current
+  build `870ebf` and must not be retried;
 - stance/aggressiveness live fields. No current-build live offset is validated
   yet. The v2 scalar probe narrows likely army-level candidates to
   `CArmy+0x1A4/+0x1A8/+0x1AC`, but strict gate fails, so domain 54 still
@@ -517,16 +541,16 @@ an integration slot. The merge-ready path is:
 5. Add theatre rows as direct-root `kind = 5` inside domain 54 only after the
    shared recorder slot is granted; until then, keep the proof as lane-local
    evidence and do not mutate `oob_command` row widths.
-6. Keep non-type-5 geometry and execution state behind
-   `battleplan_fixture_gate.py`. Promotion requires a fixture JSON with DLL-only
-   compact capture, `.battleplan` verification, zero skipped hours, no source or
-   worker failures, and at least one exact or exactly rejected row for each gap.
-   A no-fixture route is acceptable only if it supplies exactly rejected
-   candidates and passes `battleplan_fixture_gate.py --allow-rejection`.
-   The current save/live proof validates `order+0x70/+0x78` as the non-type-5
-   path vector for exact paired rows and rejects `order+0xC0/+0xC8` as the
-   type-3 primary path vector; the production patch still needs an additive
-   path-geometry child table or explicit row version bump.
+6. Keep type-4 geometry, same-instance redraw/delete admission, exact membership
+   lifecycle, and complete empty/inactive manager admission behind the
+   activation-false carrier in `D54_EXACT_FIXTURE_CARRIER_CONTRACT.json`.
+   `d54_exact_fixture_observer.py` requires the current 60/88 D54 wire and raw
+   identity/order receipts. Type-4 promotion additionally requires its raw
+   geometry candidates and a same-paused save order; it does not preselect a
+   geometry vector. The current save/live proof already validates
+   `order+0x70/+0x78` for exact type-2/type-3 rows and rejects
+   `order+0xC0/+0xC8` as the type-3 primary path vector. Active/execution state
+   is already exact at `order+0x248` and is not part of the remaining fixture.
 7. Preserve the existing join boundary with division lane: this lane may consume
    `(owner_tag_db_id, div_id, div_type/body identity, CArmy parent)` but must not
    emit division movement/scalar state.

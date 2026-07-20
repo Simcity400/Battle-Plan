@@ -96,7 +96,9 @@ pub enum RawProcessEvent {
 pub trait AttachEnvironment: Send {
     /// The injector requires a visible PID-owned window (design §6); until then
     /// the candidate stays in `WaitingForWindow`.
-    fn has_visible_window(&self, pid: u32) -> bool;
+    /// PID alone is not authority because Windows may reuse it while a
+    /// candidate waits or while its payload is staged.
+    fn has_visible_window(&self, key: ProcessKey) -> bool;
     /// Resolve the modset for this identity. `resolved == false` blocks
     /// injection (design §3: "auto-attach blocks injection while preserving
     /// errors").
@@ -179,7 +181,10 @@ pub enum WorkerStatus {
 pub trait WorkerHandle: Send {
     /// Non-blocking status poll.
     fn poll(&mut self) -> WorkerStatus;
-    /// Signal a graceful stop (explicit app quit / process-exit finalize).
+    /// Request stop (explicit app quit / process-exit finalize). Product
+    /// implementations must make this cooperative and report finalization;
+    /// legacy adapters that can only hard-kill must fail closed rather than
+    /// reporting a verified completion.
     fn request_stop(&mut self);
 }
 

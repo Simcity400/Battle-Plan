@@ -41,7 +41,9 @@ ROW_KIND_PROVINCE_LOGISTICS = 1
 ROW_KIND_DIVISION_SUPPLY = 2
 ROW_KIND_COMPUTED_BADGE = 3
 ROW_KIND_CSUPPLY_PROVINCE_INPUT = 4
-ROW_KIND_FOREIGN_HOMEBASE_PRESSURE_CANDIDATE = 5
+# Shared production kind 5 is exact country disrupted_supply. This lane-local
+# foreign-homebase layout candidate remains explicitly non-production on kind 6.
+ROW_KIND_FOREIGN_HOMEBASE_PRESSURE_CANDIDATE = 6
 
 ROW_FLAG_RAIL = 1
 ROW_FLAG_SUPPLY_NODE = 1 << 1

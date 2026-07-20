@@ -1150,6 +1150,52 @@ fn certified_raw_h4cr_produces_the_neutral_prefolded_contract() {
 }
 
 #[test]
+fn portable_decoder_contract_drives_the_same_certified_world_fold() {
+    let request = snapshot::CertifiedPrefoldRequest::try_new("fold_check", three_hour_stream())
+        .unwrap();
+    let replay = snapshot::decode_certified_prefolded(
+        &ProductionCertifiedPrefoldDecoder,
+        request,
+    )
+    .unwrap();
+
+    assert_eq!(replay.index().game_id(), "fold_check");
+    assert_eq!(replay.index().hours(), &[HOUR_A, HOUR_B, HOUR_C]);
+    assert_eq!(replay.entries().len(), 3);
+}
+
+#[test]
+fn portable_prefold_rejects_closed_hour_the_world_fold_cannot_key() {
+    let mut stream = three_hour_stream();
+    push_record(
+        &mut stream,
+        7,
+        i32::MAX,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut stream,
+        8,
+        i32::MAX,
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let error = fold_raw_h4cr_bytes_prefolded(stream, "fold_check").unwrap_err();
+    match error {
+        OpenError::Certification(message) => {
+            assert!(message.contains("closed-hour cardinality mismatch"), "{message}");
+            assert!(message.contains("4 FRAME_END"), "{message}");
+            assert!(message.contains("3 WorldFold"), "{message}");
+        }
+        other => panic!("expected certification refusal, got {other}"),
+    }
+}
+
+#[test]
 fn neutral_prefolded_producer_accepts_only_physically_raw_h4cr() {
     let dir = TmpDir::new("neutral_raw_only");
     for (name, bytes) in [

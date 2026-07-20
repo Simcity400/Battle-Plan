@@ -58,6 +58,22 @@ marks R1 DONE). Replay-side action: verify a fresh production recording
 ingests through `replay_core` Backend 1 end-to-end. The compact-stream-only
 fail-closed error stays for OLD recordings.
 
+**X-DECODER ownership update (2026-07-20): mechanically closed.** The neutral
+portable format crate owns `CertifiedPrefoldDecoder` and the immutable
+`PrefoldedReplay` handoff. The extractor adapter drives the existing production
+fold through physical EOF; replay_core's explicit decoder open path accepts
+only the resulting closed hour set and has no extractor-library dependency.
+The ordinary product open path still rejects stream-only packages, preserving
+the release policy until a product owner explicitly supplies that portable
+decoder capability. The bounded activation route is now implemented separately:
+the authenticated stream entry is decompressed directly into an identity-marked
+private spool, the single file-backed production `WorldFold` emits one file per
+closed hour, exact cardinality and source length/SHA are certified, and replay
+loads/re-hashes one hour lazily. The shipped replay app supplies that explicit
+capability through one product-owned spool policy for interactive, headless,
+and validation opens, with no ordinary/raw fallback. The centralized Rust
+validation remains outstanding.
+
 ## 2. Per-hour ownership & control (THE POLITICAL MAP)
 
 Inside item 1's snapshots: `owner` and `controller` per state and per
@@ -465,8 +481,18 @@ map mode later.
 **STATUS (reconciled 2026-07-09): largely extractor-side LANDED** -- D48
 `construction_buildings_state_damage_live` folds state/province building
 rows with `level`, `healthy_level`, `damaged` (`world_fold.rs:9957`,
-`:13049`). Some construction-line fields remain open on their side.
-Replay-side ingest deferred until building rendering is scheduled.
+`:13049`). A14 additionally closes exact target location, repair levels, and
+aggregate fixed-5 `partial_health_raw`; B8/X6 closes full numeric type identity
+and the pinned 55-row vanilla token registry.
+
+**STATUS (reconciled 2026-07-19): replay typed ingest LANDED / presentation
+FAIL-CLOSED.** `replay_core::WorldFrame` exposes the D48 state/province rows
+with a producer-specific availability badge distinct from legacy/save building
+maps. The product still does not render placed buildings from those aggregates:
+O05/XN13P require recorded per-instance semantic identity, selected variant,
+visibility, transform, order, and exact D80 operation joins. Authenticated D80
+operations take precedence; without them D48 remains queryable state only.
+See `extractor/documents/dossiers/D48_D80_BUILDING_PRIORITY_CLOSEOUT_20260719.md`.
 
 ## 11. Rail/supply dynamic state (when the rail layer lands)
 

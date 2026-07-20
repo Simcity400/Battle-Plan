@@ -16,20 +16,24 @@ loads a captured restore bundle, reports file-law deltas, then exits.
 All game-file reads go through the mod-aware `GameFileResolver`
 (`map_viewer/src/mod_resolver.rs`, see `MOD_COMPATIBILITY.md`), never bare paths.
 
-Historical ground-truth capture:
-`C:\Users\Example\AppData\Local\hoi4_captures\restore_gate_1\` (vanilla,
-captured 2026-07-06). That directory remains absent and has not been
-reconstructed or relabelled.
+Ground-truth capture: the original vanilla `restore_gate_1` directory from
+2026-07-06 was recovered intact from a local backup on 2026-07-19 and copied
+byte-exactly to
+`<local-path>`. Its portable
+admission packet and exact per-file hashes are under
+`re_evidence/rendering_laws/RESTORE_GATE_1_RECOVERY_20260719/`; the 243-file
+tree SHA-256 is
+`23df1d3b994187a0ab83043836d07e5dce5a5daee4c73e8d60031f8798e35256`.
 
-> **RETAINED SUBSTITUTE RECOVERED (2026-07-19):** intact, hash-bound RDCs at
-> `<local-path>`
-> and `postfx_frame8467.rdc` now provide a rerunnable RestoreScene t0..t3 plus
-> output boundary. The high-altitude frame independently matches the shipped
-> far-range LUT byte-exactly, carries MiddleGrey 0.55, and re-clamps its
-> scene-derived luminance to the captured f16 0.5. The close frame carries a
-> distinct volume cube and MiddleGrey. See
-> `re_evidence/rendering_laws/RESTORE_GATE_RETAINED/`. This is new substitute
-> evidence, not proof that either RDC is the lost `restore_gate_1` frame.
+The independently retained, hash-bound RDCs at
+`<local-path>`
+and `postfx_frame8467.rdc` provide a rerunnable RestoreScene t0..t3 plus output
+boundary. The high-altitude frame independently matches the shipped far-range
+LUT byte-exactly, carries MiddleGrey 0.55, and re-clamps its scene-derived
+luminance to the captured f16 0.5. The close frame carries a distinct volume
+cube and MiddleGrey. See `re_evidence/rendering_laws/RESTORE_GATE_RETAINED/`.
+They remain independent substitute observations and are not relabelled as the
+recovered original.
 
 Implementation: `replay_app/src/grading_law.rs` (law),
 `replay_app/src/render.rs` (`restore_full_postfx_from_files`,

@@ -2,6 +2,13 @@
 
 Lane: `occupation_resistance_compliance_live`
 
+Historical status: the scalar-discovery steps in this runsheet are superseded
+by `GARRISON_RESIDUAL_ANALYSIS.md`. The production fields
+`army_manpower_need`, `strength_ratio`, and `garrison_required` are closed. Use
+this procedure only when collecting new evidence for the still-separate
+manpower-pool, equipment-need, suppression, or reinforcement-request details;
+do not reopen the three scalar offsets from these commands.
+
 Purpose: next live-session validation for the master-contract `Garrisons` row.
 This runsheet stops at discovery evidence. Do not wire or promote any new
 garrison scalar/detail root from these commands alone.

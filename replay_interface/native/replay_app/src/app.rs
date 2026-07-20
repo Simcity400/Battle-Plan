@@ -33,8 +33,6 @@ const VK_D: i32 = 0x44;
 const VK_N: i32 = 0x4E;
 const VK_O: i32 = 0x4F;
 const VK_R: i32 = 0x52;
-const VK_S: i32 = 0x53;
-const VK_W: i32 = 0x57;
 const VK_1: i32 = 0x31;
 const VK_9: i32 = 0x39;
 
@@ -42,13 +40,11 @@ const VK_9: i32 = 0x39;
 struct PanKeys {
     west: bool,
     east: bool,
-    north: bool,
-    south: bool,
 }
 
 struct DragState {
     start_cursor: (i32, i32),
-    start_center: (f64, f64),
+    start_center_x: f64,
 }
 
 #[derive(Default)]
@@ -179,13 +175,7 @@ fn frame_has_app_presentation(frame: &map_viewer::PreparedProductionD3dFrame) ->
 }
 
 fn frame_has_authenticated_map_operations(frame: &map_viewer::PreparedProductionD3dFrame) -> bool {
-    frame.target.is_some()
-        && (!frame.ordered_static_programs.is_empty()
-            || !frame.ordered_runtime_draws.is_empty()
-            || frame
-                .m03_arrows
-                .as_ref()
-                .is_some_and(|m03| !m03.draws.is_empty()))
+    map_viewer::has_authenticated_d80_map_operations(frame)
 }
 
 pub fn run(
@@ -301,20 +291,6 @@ pub fn run(
             f64::from(gfx.height),
         )
     });
-    // Ground the off-map pan clamp from the shipped camera defines
-    // (CAMERA_OUTSIDE_MAP_DISTANCE_TOP/BOTTOM, 00_graphics.lua:1184-1185,
-    // resolver/bundle-read), replacing the old clamp-to-edge proxy.
-    {
-        if let (Some(renderer), Some(camera)) = (renderer.as_ref(), camera.as_mut()) {
-            let defines = renderer.camera_defines();
-            camera.set_offmap_overpan(
-                f64::from(defines.outside_map_distance_top()),
-                f64::from(defines.outside_map_distance_bottom()),
-                f64::from(gfx.height),
-            );
-        }
-    }
-
     let mut uploaded_hour_index: Option<usize> = None;
     let mut prepared_production_d3d: Option<map_viewer::PreparedProductionD3dFrame> = None;
     let mut prepared_selected_present_ui: Option<map_viewer::PreparedProductionD3dFrame> = None;
@@ -401,15 +377,11 @@ pub fn run(
                     VK_N => {
                         day_night_enabled = !day_night_enabled;
                     }
-                    VK_W => pan_keys.north = true,
-                    VK_S => pan_keys.south = true,
                     VK_A => pan_keys.west = true,
                     VK_D => pan_keys.east = true,
                     _ => {}
                 },
                 WindowEvent::KeyUp { vk } => match vk {
-                    VK_W => pan_keys.north = false,
-                    VK_S => pan_keys.south = false,
                     VK_A => pan_keys.west = false,
                     VK_D => pan_keys.east = false,
                     _ => {}
@@ -426,9 +398,7 @@ pub fn run(
                     if let Some(state) = &drag {
                         if let Some(camera) = &mut camera {
                             let dx = f64::from(x - state.start_cursor.0);
-                            let dy = f64::from(y - state.start_cursor.1);
-                            camera.center_x = state.start_center.0 - dx / camera.zoom;
-                            camera.center_y = state.start_center.1 - dy / camera.zoom;
+                            camera.center_x = state.start_center_x - dx / camera.zoom;
                             camera.normalize(screen_h);
                         }
                     }
@@ -453,7 +423,7 @@ pub fn run(
                         if let Some(camera) = &camera {
                             drag = Some(DragState {
                                 start_cursor: (x, y),
-                                start_center: (camera.center_x, camera.center_y),
+                                start_center_x: camera.center_x,
                             });
                         }
                     }
@@ -465,24 +435,13 @@ pub fn run(
                         drag = None;
                     }
                 }
-                WindowEvent::Wheel { delta, x, y } => {
-                    let notches = f64::from(delta) / 120.0;
-                    // Engine-defines wheel zoom (CAMERA_ZOOM_SPEED /
-                    // _DISTANCE_MULT / CAMERA_MIN/MAX_HEIGHT via the
-                    // renderer's height ladder), replacing the fixed
-                    // 1.2^notches interaction proxy.
-                    if let (Some(renderer), Some(camera)) = (renderer.as_ref(), camera.as_mut()) {
-                        let factor =
-                            renderer.wheel_zoom_screen_factor(camera.zoom, gfx.width, notches)?;
-                        camera.zoom_at(
-                            f64::from(x) + 0.5,
-                            f64::from(y) + 0.5,
-                            screen_w,
-                            screen_h,
-                            factor,
-                        );
-                    }
-                    // A wheel drag would fight the zoom re-anchoring.
+                WindowEvent::Wheel { .. } => {
+                    // Fail closed. C03 proves that wheel input accumulates on
+                    // a 3D target eye along the normalized cursor ray, then
+                    // flows through C02 interpolation and projected-footprint
+                    // repair. Portable replay currently carries none of that
+                    // current/target state, so a 2D zoom-factor substitute is
+                    // not an admissible production behavior.
                     drag = None;
                 }
                 WindowEvent::CaptureLost => {
@@ -495,16 +454,14 @@ pub fn run(
             continue;
         }
 
-        // Keyboard pan (WASD; arrows are reserved for timeline stepping).
+        // Horizontal keyboard pan. Vertical input remains blocked until the
+        // exact C03 projected-footprint repair can consume recorded 3D state.
         let pan_x = (f64::from(pan_keys.east as u8) - f64::from(pan_keys.west as u8))
             * KEY_PAN_SCREEN_PX_PER_SEC
             * dt;
-        let pan_y = (f64::from(pan_keys.south as u8) - f64::from(pan_keys.north as u8))
-            * KEY_PAN_SCREEN_PX_PER_SEC
-            * dt;
-        if pan_x != 0.0 || pan_y != 0.0 {
+        if pan_x != 0.0 {
             if let Some(camera) = &mut camera {
-                camera.pan_screen(pan_x, pan_y, f64::from(gfx.height));
+                camera.pan_screen(pan_x, f64::from(gfx.height));
             }
         }
 
@@ -636,10 +593,16 @@ pub fn run(
                 day_night_enabled.then(|| playback_day_night_hour_from_timeline_hour(hour));
             let mut production_presented = false;
             let mut legacy_presented = false;
+            let building_priority = map_viewer::building_presentation_priority(
+                prepared_production_d3d.as_ref(),
+                world_frame
+                    .as_deref()
+                    .map(replay_core::WorldFrame::d48_buildings_status)
+                    .unwrap_or(replay_core::ViewStatus::DomainAbsent),
+            );
             let authenticated_production_selected = production_map_refused_for_displayed_hour
-                || prepared_production_d3d
-                    .as_ref()
-                    .is_some_and(frame_has_authenticated_map_operations);
+                || building_priority
+                    == map_viewer::BuildingPresentationPriority::AuthenticatedD80Operations;
             if authenticated_production_selected {
                 if let Some(frame) = prepared_production_d3d.as_ref() {
                     match product_production_d3d.execute(
@@ -1092,6 +1055,7 @@ mod product_production_d3d_tests {
         map_viewer::PreparedProductionD3dFrame {
             content_manifest_sha256: "33".repeat(32),
             effective_vfs_manifest_sha256: "11".repeat(32),
+            c03_camera_replay: None,
             target: Some(map_viewer::ProductionMainSceneTargetDesc {
                 color_attachment_ordinal: 4,
                 color_width: 4,
@@ -1120,6 +1084,10 @@ mod product_production_d3d_tests {
                 ordered_operations: vec![operation],
                 payload_sha256: "44".repeat(32),
             }],
+            mapname_d80_state: replay_core::MapnameD80State::Missing,
+            tree_runtime: None,
+            tree_materialized_execution_sha256: None,
+            s1_shadow: None,
             ordered_runtime_draws: Vec::new(),
             m02_combat: None,
             authenticated_ui_pass: None,
@@ -1252,8 +1220,31 @@ mod product_production_d3d_tests {
     fn authenticated_d80_operations_require_a_prepared_map_target() {
         let mut frame = presentation_draw_frame(presentation_test_content(), vec![1], vec![2]);
         assert!(frame_has_authenticated_map_operations(&frame));
+        assert_eq!(
+            map_viewer::building_presentation_priority(
+                Some(&frame),
+                replay_core::ViewStatus::Present
+            ),
+            map_viewer::BuildingPresentationPriority::AuthenticatedD80Operations,
+            "authenticated D80 operations outrank typed semantic building state"
+        );
         frame.target = None;
         assert!(!frame_has_authenticated_map_operations(&frame));
+        assert_eq!(
+            map_viewer::building_presentation_priority(
+                Some(&frame),
+                replay_core::ViewStatus::Present
+            ),
+            map_viewer::BuildingPresentationPriority::TypedSemanticStateOnly,
+            "typed D48 state remains data-only without an executable D80 target"
+        );
+        assert_eq!(
+            map_viewer::building_presentation_priority(
+                Some(&frame),
+                replay_core::ViewStatus::DomainUnavailable
+            ),
+            map_viewer::BuildingPresentationPriority::Unavailable
+        );
 
         frame.target = Some(map_viewer::ProductionMainSceneTargetDesc {
             color_attachment_ordinal: 4,

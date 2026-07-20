@@ -12,8 +12,7 @@ use std::time::Duration;
 
 use compact_contract::control_transport::payloads::{
     decode_collector_hello_with_capabilities, decode_heartbeat_proof,
-    encode_first_compact_frame_ack, encode_heartbeat_challenge, encode_recorder_hello,
-    FirstCompactFrameAckV1, HeartbeatChallengeV1, RecorderHelloV1,
+    encode_heartbeat_challenge, encode_recorder_hello, HeartbeatChallengeV1, RecorderHelloV1,
     COLLECTOR_HELLO_WITH_CAPABILITIES_LEN, HEARTBEAT_STATE_PRODUCING,
 };
 use compact_contract::control_transport::{
@@ -53,6 +52,10 @@ use compact_contract::identity_control::{
     decode_identity_failure, encode_identity_failure_ack, IdentityFailureAckDisposition,
     IdentityFailureAckV1, IdentityFailureReason, IdentityFailureV1,
 };
+use compact_contract::first_compact_ack::{
+    encode_first_compact_frame_ack, FirstCompactFrameAckV1,
+};
+use compact_contract::stream_validator::StreamIdentityMode;
 use compact_contract::sink_failure::{
     decode_sink_failure, SinkErrorClass, SinkFailureKind, SinkFailureReport, SinkTerminality,
     SinkTopology,
@@ -1105,13 +1108,18 @@ fn handshake_heartbeat_and_first_frame_happy_path() {
         session_id,
         1,
         MessageKind::FirstCompactFrameAck,
-        &encode_first_compact_frame_ack(&FirstCompactFrameAckV1 {
-            h4cr_sequence: 12,
-            game_hour: 3,
-            record_type: 5,
-            total_record_len: 4096,
-            record_sha256: [0x77; 32],
-        }),
+        &encode_first_compact_frame_ack(FirstCompactFrameAckV1 {
+            mode: StreamIdentityMode::IdentityV1,
+            logical_stream_id: 0,
+            h4cr_sequence: 0,
+            game_hour_raw: compact_contract::calendar::DATE_EPOCH_CONST + 1936 * 365 * 24,
+            domain_id: compact_contract::campaign_identity::COMPACT_DOMAIN_STREAM_HEADER,
+            record_type: compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER,
+            complete_record_len: 4096,
+            complete_record_sha256: [0x77; 32],
+            payload_sha256: [0x66; 32],
+        })
+        .unwrap(),
     ));
 
     let mut client = client(clock.clone(), session, inbound);
@@ -1132,7 +1140,7 @@ fn handshake_heartbeat_and_first_frame_happy_path() {
 
     let event = client.serve_next(deadline).unwrap();
     match event {
-        ClientEvent::FirstFrameAcked(ack) => assert_eq!(ack.h4cr_sequence, 12),
+        ClientEvent::FirstFrameAcked(ack) => assert_eq!(ack.h4cr_sequence, 0),
         other => panic!("expected first-frame ack, got {other:?}"),
     }
     assert_eq!(client.phase(), ClientPhase::Producing);

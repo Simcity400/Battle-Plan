@@ -56,11 +56,33 @@ only runtime binding is a copied or relocated `.battleplan` file:
   snapshots per `REPLAY_SCHEMA.md`, read through the container rules of
   `HOI4REPLAY_CONTAINER_SPEC.md`. This is the proposed production contract
   (see `EXTRACTION_INTERFACE_REQUESTS.md`).
-- Backend 2 (fail-closed incomplete package): **compact-stream-only
-  container** — a raw compact domain stream with an empty snapshot index is
-  not portable playback data. The recorder's production seal folds the stream
-  and packs indexed per-hour snapshots before publication. The replayer never
-  loads extractor code or folds extractor-private records at runtime.
+- Backend 2 (explicit portable pre-fold seam): **compact-stream-only
+  container** — ordinary product `open_recording` still rejects an empty
+  snapshot index. An owner may explicitly supply the portable
+  `CertifiedPrefoldSpoolDecoder` contract; `replay_core` streams the verified
+  unique role entry through the container's existing CRC/size/SHA verifier into
+  a private identity-marked spool and admits only a completely certified
+  `PrefoldedSpool` manifest. The production implementation drives the existing
+  file-backed single extractor fold. Playback lazily rehashes and strictly
+  parses one hour at a time. The legacy in-memory capability remains available
+  for bounded callers, but is not the activation route. `replay_core` neither
+  links extractor libraries nor sees private record/fold types. No runtime
+  decoder discovery or implicit fallback is allowed; ordinary open stays
+  fail-closed.
+
+The shipped `replay_app` selects one fixed sibling executable,
+`replay_prefold_worker`, in the single `recording_open` policy used by
+interactive playback, headless dumps, and the validate/open UX. The worker is
+built from extractor `replay_decoder` and drives the one production
+`WorldFold`; replay_app reconstructs only the neutral, strictly validated spool
+receipt from its stdout. It must be a regular non-symlink file beside the app,
+and there is no PATH/registry/install discovery or fallback. Its machine-local
+spool parent is product-selected, per-recording children remain identity-marked
+and lifetime-owned by replay_core, and the source receipt remains visible
+through `WorldTimeline`. The product policy does not catch an unsupported
+result and retry ordinary or raw input. A standalone replay distribution is
+still self-contained: it packages the worker as an immutable signed sibling,
+not as a dependency on an installed extractor product.
 
 Rules at the boundary:
 
@@ -86,6 +108,17 @@ Rules at the boundary:
 Neutral build-time format code lives under `portable_replay/native/`. Both
 distributions may statically link it, but neither installed distribution needs
 the other. The portable file remains the sole runtime interface.
+
+The neutral format crate also owns the certified pre-fold decoder interfaces.
+Implementations remain distribution-owned: the extractor adapter drives its
+canonical `WorldFold`, while replay_core accepts only the portable request and
+pre-folded result types. The disk-backed variant additionally owns safe leaf
+names, per-hour byte length/SHA, source receipt, and strictly increasing hour
+cardinality; replay_core owns the private spool lifetime and cleanup identity
+gate. This dependency inversion is the X-DECODER boundary;
+it does not authorize a second decoder or fold. The portable invocation binds
+the raw-stream byte length, SHA-256, and decoder identity into a receipt exposed
+by `ReplaySource`.
 
 House style: raw `winapi` D3D11/Win32 (already the codebase norm), no new
 GUI frameworks. `minifb` remains only inside `map_viewer` debug/reference

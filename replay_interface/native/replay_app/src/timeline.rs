@@ -157,12 +157,20 @@ pub fn build_provider(
             path,
             timeline: config,
         } => {
-            let source = replay_core::open_recording(path)
+            let source = crate::recording_open::open_product_recording(path)
                 .map_err(|err| format!("open recording {}: {err}", path.display()))?;
             // F2: the decoded-frame LRU budget rides the mode (default 16;
             // `--frame-cache` shrinks it for weak-PC profiles).
             let timeline = replay_core::WorldTimeline::open_with_config(source, *config)
                 .map_err(|err| format!("open timeline {}: {err}", path.display()))?;
+            if let Some(receipt) = timeline.prefold_receipt() {
+                eprintln!(
+                    "replay_app: compact source certified by {} ({} bytes, sha256 {})",
+                    receipt.decoder_id(),
+                    receipt.source_len(),
+                    receipt.source_sha256()
+                );
+            }
             let warning_count = timeline.warnings().len();
             for warning in timeline.warnings() {
                 eprintln!("replay_app: recording warning: {warning}");

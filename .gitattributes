@@ -2,3 +2,4 @@ replay_interface/re_evidence/rendering_laws/XN14B/corpus_census.json filter=lfs 
 replay_interface/re_evidence/rendering_laws/M03/_rdtmp/frame filter=lfs diff=lfs merge=lfs -text
 replay_interface/re_evidence/rendering_laws/M03/_rdtmp_postfx/frame filter=lfs diff=lfs merge=lfs -text
 replay_interface/renderdoc/fixtures/w20_furniture_draw/*.json text eol=lf
+replay_interface/documents/lane_reports/evidence/w20-rdc-integrity/w20-rdc-corpus-integrity.json -text

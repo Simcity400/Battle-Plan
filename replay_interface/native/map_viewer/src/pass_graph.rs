@@ -84,6 +84,80 @@ pub enum ProductionMapPassStatus {
     Blocked,
 }
 
+/// Production disposition of each close-zoom law module.  A source-level law
+/// is not a draw authorization: `PixelEvidenceBlocked` means the exact input
+/// seam exists, but no authenticated engine/replay pixel pair is pinned to the
+/// execution receipt yet.  `InputBlocked` means an exact runtime carrier is
+/// still absent.  Neither state may enable a draw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProductionCloseZoomLawStatus {
+    InputBlocked,
+    PixelEvidenceBlocked,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProductionCloseZoomLawPlan {
+    pub module: &'static str,
+    pub status: ProductionCloseZoomLawStatus,
+    pub blockers: Vec<&'static str>,
+}
+
+fn production_close_zoom_law_plan() -> Vec<ProductionCloseZoomLawPlan> {
+    use ProductionCloseZoomLawStatus::{InputBlocked, PixelEvidenceBlocked};
+
+    vec![
+        ProductionCloseZoomLawPlan {
+            module: "shadow_law",
+            status: InputBlocked,
+            blockers: vec![
+                "S1 authenticated per-frame shadow target producer/last-write chain is absent; law constants alone do not authorize caster selection, ordering, mutable transforms, blur ownership, or pixels",
+            ],
+        },
+        ProductionCloseZoomLawPlan {
+            module: "building_files",
+            status: InputBlocked,
+            blockers: vec![
+                "generic building_files has no complete per-hour object/state/LOD/material-variant carrier; preview_all candidates are diagnostic and must never become production instances",
+            ],
+        },
+        ProductionCloseZoomLawPlan {
+            module: "rail_files",
+            status: InputBlocked,
+            blockers: vec![
+                "the replay has no ordered CRailwayGfx province/level pairs, active byte, or supply-hub sprite frame; centroid polylines are approximate and forbidden in production",
+            ],
+        },
+        ProductionCloseZoomLawPlan {
+            module: "occupation_stripe_law",
+            status: PixelEvidenceBlocked,
+            blockers: vec![
+                "the captured shader and byte-native ProvinceSecondaryColorMap seam are exact, but no authenticated raw portable producer/consumer observation plus receipt-bound engine/replay pixel golden is admitted",
+            ],
+        },
+        ProductionCloseZoomLawPlan {
+            module: "tree_instance_synthesis",
+            status: InputBlocked,
+            blockers: vec![
+                "the retained 4,781-cell scope has an exact pointer-free 13-buffer/three-pass visible model/LOD carrier and executes through authenticated static operations; complete-pool synthesis remains blocked on the other 95,275 nonzero cells, and collapsing batches to one mesh draw is forbidden",
+            ],
+        },
+        ProductionCloseZoomLawPlan {
+            module: "camera_interp_law",
+            status: InputBlocked,
+            blockers: vec![
+                "dt normalization and the exact height-to-zoom multiplier remain unresolved; production must consume measured camera projection state instead of applying the partial interpolation helper",
+            ],
+        },
+        ProductionCloseZoomLawPlan {
+            module: "snow_mud_feed",
+            status: PixelEvidenceBlocked,
+            blockers: vec![
+                "the recorded SnowMudData raster/upload seam is exact, but no authenticated raw portable producer/consumer observation plus receipt-bound engine/replay pixel golden is admitted",
+            ],
+        },
+    ]
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProductionMapTargetPlan {
     pub width: u32,
@@ -107,6 +181,7 @@ pub struct ProductionMapPassGraph {
     pub camera: ProductionMapCamera,
     pub target: ProductionMapTargetPlan,
     pub passes: Vec<ProductionMapPassPlan>,
+    pub close_zoom_laws: Vec<ProductionCloseZoomLawPlan>,
 }
 
 pub(crate) fn production_blocked_map_pass(
@@ -315,6 +390,7 @@ impl ProductionMapPassGraph {
             camera,
             target,
             passes: production_pass_plan(ProductionMapPassKind::Terrain.capture_moment()),
+            close_zoom_laws: production_close_zoom_law_plan(),
         })
     }
 
@@ -362,11 +438,33 @@ impl ProductionMapPassGraph {
             camera,
             target,
             passes: production_pass_plan(TERRAIN_CHUNK_LIBRARY_MOMENT),
+            close_zoom_laws: production_close_zoom_law_plan(),
         })
     }
 
     pub fn pass(&self, kind: ProductionMapPassKind) -> Option<&ProductionMapPassPlan> {
         self.passes.iter().find(|pass| pass.kind == kind)
+    }
+
+    pub fn close_zoom_law(&self, module: &str) -> Option<&ProductionCloseZoomLawPlan> {
+        self.close_zoom_laws
+            .iter()
+            .find(|plan| plan.module == module)
+    }
+
+    /// There is deliberately no promotion mutator here.  A close-zoom law can
+    /// become renderable only through an authenticated carrier implementation
+    /// and a receipt-bound pixel gate, not by toggling graph state at runtime.
+    pub fn close_zoom_blockers(&self) -> Vec<(&'static str, &'static str)> {
+        self.close_zoom_laws
+            .iter()
+            .flat_map(|plan| {
+                plan.blockers
+                    .iter()
+                    .copied()
+                    .map(move |blocker| (plan.module, blocker))
+            })
+            .collect()
     }
 
     pub fn with_water_capture(&self, water_bundle: &NativeD3d11TerrainBundle) -> Result<Self> {
@@ -625,6 +723,41 @@ mod tests {
         assert_eq!(graph.target.color_format, DXGI_FORMAT_B8G8R8A8_UNORM);
         assert_eq!(graph.target.depth_format, 45);
         assert_eq!(graph.target.sample_count, 1);
+        assert_eq!(graph.close_zoom_laws.len(), 7);
+        assert_eq!(
+            graph
+                .close_zoom_laws
+                .iter()
+                .map(|plan| plan.module)
+                .collect::<Vec<_>>(),
+            vec![
+                "shadow_law",
+                "building_files",
+                "rail_files",
+                "occupation_stripe_law",
+                "tree_instance_synthesis",
+                "camera_interp_law",
+                "snow_mud_feed",
+            ]
+        );
+        assert_eq!(
+            graph
+                .close_zoom_law("occupation_stripe_law")
+                .expect("occupation stripe disposition")
+                .status,
+            ProductionCloseZoomLawStatus::PixelEvidenceBlocked
+        );
+        assert_eq!(
+            graph
+                .close_zoom_law("snow_mud_feed")
+                .expect("snow/mud disposition")
+                .status,
+            ProductionCloseZoomLawStatus::PixelEvidenceBlocked
+        );
+        assert!(graph
+            .close_zoom_laws
+            .iter()
+            .all(|plan| !plan.blockers.is_empty()));
         assert_eq!(
             graph
                 .passes

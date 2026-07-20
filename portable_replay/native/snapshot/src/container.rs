@@ -17,10 +17,15 @@
 
 use crate::canon::manifest_canonical_bytes;
 use crate::sha256::{to_hex, Sha256};
-use crate::zip::{ZipArchive, ZipEntry, MAX_CONTAINER_ENTRY_BYTES, ZIP_METHOD_STORE};
+use crate::stream_verify::FileBackedArchive;
+use crate::zip::{
+    portable_path_key, validate_payload_path, ZipArchive, MAX_CONTAINER_ENTRY_BYTES,
+    STREAMING_MAX_CONTAINER_ENTRY_BYTES, ZIP_METHOD_STORE,
+};
 use crate::{Index, SegmentGraph, Snapshot};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fs::File;
 use std::path::Path;
 use std::sync::Mutex;
 use unicode_normalization::UnicodeNormalization;
@@ -207,12 +212,153 @@ pub struct ExpectedIdentity {
     pub modset_id: Option<String>,
 }
 
-/// One verified entry, indexed by its container path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryVerificationState {
+    Pending,
+    Verified,
+}
+
+enum ContainerArchive {
+    Memory(ZipArchive),
+    File(FileBackedArchive),
+}
+
+struct ArchiveEntry<'a> {
+    name: &'a str,
+    uncomp_size: u64,
+    method: u16,
+    local_header_off: u64,
+}
+
+impl ContainerArchive {
+    fn len(&self) -> usize {
+        match self {
+            ContainerArchive::Memory(archive) => archive.entries().len(),
+            ContainerArchive::File(archive) => archive.entries().len(),
+        }
+    }
+
+    fn entry(&self, index: usize) -> Option<ArchiveEntry<'_>> {
+        match self {
+            ContainerArchive::Memory(archive) => archive.entries().get(index).map(|entry| {
+                ArchiveEntry {
+                    name: &entry.name,
+                    uncomp_size: entry.uncomp_size,
+                    method: entry.method,
+                    local_header_off: entry.local_header_off,
+                }
+            }),
+            ContainerArchive::File(archive) => archive.entries().get(index).map(|entry| {
+                ArchiveEntry {
+                    name: &entry.name,
+                    uncomp_size: entry.uncomp_size,
+                    method: entry.method,
+                    local_header_off: entry.local_header_off,
+                }
+            }),
+        }
+    }
+
+    /// Central-directory metadata for every entry, in archive order — the
+    /// variant-neutral view the v2 stitched validators iterate.
+    fn entries_meta(&self) -> Vec<ArchiveEntry<'_>> {
+        (0..self.len()).filter_map(|i| self.entry(i)).collect()
+    }
+
+    fn validate_local_headers(&self) -> Result<(), ContainerError> {
+        match self {
+            ContainerArchive::Memory(archive) => archive.validate_local_headers().map_err(Into::into),
+            ContainerArchive::File(archive) => archive
+                .validate_local_headers()
+                .map_err(file_archive_error),
+        }
+    }
+
+    fn validate_payloads_crc(&self) -> Result<(), ContainerError> {
+        match self {
+            ContainerArchive::Memory(archive) => archive.validate_payloads().map_err(Into::into),
+            ContainerArchive::File(archive) => archive
+                .validate_payloads_crc()
+                .map_err(file_archive_error),
+        }
+    }
+
+    fn read_entry(
+        &self,
+        index: usize,
+        calculate_sha256: bool,
+    ) -> Result<(Vec<u8>, Option<String>), ContainerError> {
+        match self {
+            ContainerArchive::Memory(archive) => {
+                let entry = archive.entries().get(index).ok_or_else(|| {
+                    ContainerError::Reject(format!("container entry index {index} is out of range"))
+                })?;
+                let bytes = archive.read_entry(entry)?;
+                let sha256 = calculate_sha256.then(|| to_hex(&Sha256::digest(&bytes)));
+                Ok((bytes, sha256))
+            }
+            ContainerArchive::File(archive) => archive
+                .read_entry(index, calculate_sha256)
+                .map_err(file_archive_error),
+        }
+    }
+
+    fn copy_entry_to_writer<W: std::io::Write>(
+        &self,
+        index: usize,
+        writer: &mut W,
+    ) -> Result<(String, u64), ContainerError> {
+        match self {
+            ContainerArchive::Memory(_) => Err(ContainerError::Reject(
+                "bounded entry spooling requires a file-backed container".to_string(),
+            )),
+            ContainerArchive::File(archive) => {
+                let (digest, len) = archive
+                    .copy_entry_to_writer(index, writer, true)
+                    .map_err(file_archive_error)?;
+                let digest = digest.ok_or_else(|| {
+                    ContainerError::Reject(
+                        "file-backed archive omitted requested spool SHA-256".to_string(),
+                    )
+                })?;
+                Ok((digest, len))
+            }
+        }
+    }
+
+    fn requires_sha256_each_read(&self) -> bool {
+        matches!(self, ContainerArchive::File(_))
+    }
+
+    fn entry_size_cap(&self) -> u64 {
+        match self {
+            ContainerArchive::Memory(_) => MAX_CONTAINER_ENTRY_BYTES,
+            ContainerArchive::File(_) => STREAMING_MAX_CONTAINER_ENTRY_BYTES,
+        }
+    }
+}
+
+fn file_archive_error(error: String) -> ContainerError {
+    ContainerError::Reject(format!("file-backed zip: {error}"))
+}
+
+/// One manifest-authenticated entry, indexed by its exact container path.
 struct EntryRec {
-    zip: ZipEntry,
+    archive_index: usize,
     expected_sha256: String,
-    /// lazily flips true once the bytes have hashed-matched
-    verified: bool,
+    /// Transitions exactly once after decompressed bytes match expected_sha256.
+    sha256_state: EntryVerificationState,
+}
+
+impl EntryRec {
+    fn require_sha256_verified(&self, path: &str) -> Result<(), ContainerError> {
+        if self.sha256_state != EntryVerificationState::Verified {
+            return Err(ContainerError::Reject(format!(
+                "entry {path}: bytes reached the exposure boundary before SHA-256 verification"
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Public metadata for one manifest-listed payload entry. The bytes are not
@@ -225,6 +371,29 @@ pub struct ContainerEntry {
     pub format: Option<String>,
     pub bytes: u64,
     pub sha256: String,
+}
+
+/// Authentication receipt for one manifest entry copied through the bounded
+/// file-backed container path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpoolEntryReceipt {
+    path: String,
+    uncompressed_len: u64,
+    sha256: String,
+}
+
+impl SpoolEntryReceipt {
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub fn uncompressed_len(&self) -> u64 {
+        self.uncompressed_len
+    }
+
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
 }
 
 impl ContainerEntry {
@@ -242,10 +411,11 @@ impl ContainerEntry {
     }
 }
 
-/// An opened, manifest-verified `.battleplan`. Holds the archive in memory and the
-/// per-entry expected hashes; snapshot bytes are verified lazily on read.
+/// An opened, manifest-verified `.battleplan`. Path opens retain one pinned file
+/// handle; byte-buffer opens retain their supplied archive. Snapshot bytes are
+/// verified lazily on read.
 pub struct Container {
-    archive: ZipArchive,
+    archive: ContainerArchive,
     manifest: Value,
     content_manifest: Option<portable_content_manifest::ContentManifest>,
     game_id: String,
@@ -313,14 +483,17 @@ impl Container {
         Self::open_strict(path, expected)
     }
 
-    /// Read the container once and strictly validate the exact manifest buffer
-    /// that constructs the in-memory archive.
+    /// Open through one pinned file handle and retain only bounded ZIP metadata.
+    /// Payload CRC verification still completes up front; payload bytes are
+    /// decompressed again only when their authenticated contents are requested.
     pub fn open_strict<P: AsRef<Path>>(
         path: P,
         expected: &ExpectedIdentity,
     ) -> Result<Container, ContainerError> {
-        let data = std::fs::read(path.as_ref())?;
-        Self::from_bytes_strict(data, expected)
+        let file = File::open(path.as_ref())?;
+        let archive = FileBackedArchive::open(file, MAX_ENTRIES as u64)
+            .map_err(file_archive_error)?;
+        Self::from_archive(ContainerArchive::File(archive), expected)
     }
 
     /// As [`open`](Self::open) but from in-memory bytes (used by tests).
@@ -337,23 +510,36 @@ impl Container {
         data: Vec<u8>,
         expected: &ExpectedIdentity,
     ) -> Result<Container, ContainerError> {
-        let archive = ZipArchive::parse(data)?;
+        let archive = ContainerArchive::Memory(ZipArchive::parse_with_entry_limit(
+            data,
+            MAX_ENTRIES as u64,
+        )?);
+        Self::from_archive(archive, expected)
+    }
+
+    fn from_archive(
+        archive: ContainerArchive,
+        expected: &ExpectedIdentity,
+    ) -> Result<Container, ContainerError> {
         // Validate the physical half of every ZIP entry before reading even the
         // manifest payload. This covers v2 entries that semantic validation does
         // not otherwise materialize, including embedded raw sources.
         archive.validate_local_headers()?;
 
-        // structural zip-bomb caps (spec §4.1, step 9)
-        if archive.entries().len() > MAX_ENTRIES {
+        // structural zip-bomb caps (spec §4.1, step 10)
+        if archive.len() > MAX_ENTRIES {
             return Err(ContainerError::Reject(format!(
                 "too many entries ({} > {})",
-                archive.entries().len(),
+                archive.len(),
                 MAX_ENTRIES
             )));
         }
         let mut total: u64 = 0;
-        for e in archive.entries() {
-            if e.uncomp_size > MAX_CONTAINER_ENTRY_BYTES {
+        for index in 0..archive.len() {
+            let e = archive.entry(index).ok_or_else(|| {
+                ContainerError::Reject(format!("container entry index {index} is out of range"))
+            })?;
+            if e.uncomp_size > archive.entry_size_cap() {
                 return Err(ContainerError::Reject(format!(
                     "entry {} exceeds per-entry cap",
                     e.name
@@ -367,21 +553,44 @@ impl Container {
             ));
         }
 
+        // Spec section 4.2: the only legal top-level member is the manifest.
+        // Reject scope violations before the O(total payload) CRC pass.
+        for index in 0..archive.len() {
+            let entry = archive.entry(index).ok_or_else(|| {
+                ContainerError::Reject(format!("container entry index {index} is out of range"))
+            })?;
+            if entry.name != "manifest.json" {
+                validate_payload_path(entry.name)?;
+            }
+        }
+
         // Re-derive every payload CRC before decoding the manifest or trusting
         // any field inside it. The manifest is attacker-controlled too, so its
         // version/features must never be able to select or skip this pass.
-        archive.validate_payloads()?;
+        archive.validate_payloads_crc()?;
 
-        // (4) manifest present? absent => recovery-only, refused.
-        let man_entry = archive
-            .by_name("manifest.json")
-            .ok_or(ContainerError::NoManifest)?
-            .clone();
-        let man_bytes = archive.read_entry(&man_entry)?;
+        // One borrowed exact-name index supports O(1) manifest joins without
+        // cloning every retained central-directory path a second time. EntryRec
+        // keeps only the resulting stable numeric index after construction.
+        let archive_name_index: HashMap<&str, usize> = (0..archive.len())
+            .filter_map(|index| archive.entry(index).map(|entry| (entry.name, index)))
+            .collect();
+        if archive_name_index.len() != archive.len() {
+            return Err(ContainerError::Reject(
+                "container name index lost an entry".into(),
+            ));
+        }
+
+        // (5) manifest present? absent => recovery-only, refused.
+        let man_entry = archive_name_index
+            .get("manifest.json")
+            .copied()
+            .ok_or(ContainerError::NoManifest)?;
+        let (man_bytes, _) = archive.read_entry(man_entry, false)?;
         let manifest = crate::strict_json::from_slice(&man_bytes)?;
         validate_strict_manifest(&manifest)?;
 
-        // (5) format + version
+        // (6) format + version
         if manifest.get("format").and_then(Value::as_str) != Some("hoi4replay") {
             return Err(ContainerError::Reject(
                 "manifest.format != \"hoi4replay\"".into(),
@@ -396,7 +605,7 @@ impl Container {
                 "container_version {cv} > reader max {MAX_CONTAINER_VERSION}"
             )));
         }
-        // (6) required_features the reader must understand. FAIL-CLOSED on shape:
+        // (7) required_features the reader must understand. FAIL-CLOSED on shape:
         // (collect the declared feature names first so the version<->feature
         // coupling below can be checked.)
         let mut declared_features: Vec<String> = Vec::new();
@@ -430,7 +639,7 @@ impl Container {
             }
         }
 
-        // (6b) version<->feature coupling (§9): a stitched container declares
+        // (7b) version<->feature coupling (§9): a stitched container declares
         // container_version 2 AND required feature `timeline_segments_v1`. A v2+
         // container WITHOUT that feature is malformed — reject fail-closed so a
         // tampered manifest cannot advertise the segment format while omitting the
@@ -486,7 +695,7 @@ impl Container {
             ));
         }
 
-        // (7) manifest_digest over the canonical manifest (strips digest+signature)
+        // (8) manifest_digest over the canonical manifest (strips digest+signature)
         let declared_digest = manifest
             .get("manifest_digest")
             .and_then(Value::as_str)
@@ -499,7 +708,7 @@ impl Container {
             )));
         }
 
-        // (8) signature: present-and-valid => signed; present-and-invalid => reject;
+        // (9) signature: present-and-valid => signed; present-and-invalid => reject;
         // absent => unsigned (allowed). v1 ships the verification SLOT; an actual
         // Ed25519 verify is wired when a key policy is configured (the digest is the
         // signed payload). Until then a NON-NULL signature with no verifier policy
@@ -564,13 +773,27 @@ impl Container {
             .get("entries")
             .and_then(Value::as_array)
             .ok_or_else(|| ContainerError::Reject("manifest.entries missing".into()))?;
-        let mut by_path: HashMap<String, EntryRec> = HashMap::new();
+        if entries.len() > MAX_ENTRIES {
+            return Err(ContainerError::Reject(format!(
+                "manifest has too many entries ({} > {MAX_ENTRIES})",
+                entries.len()
+            )));
+        }
+        let mut by_path: HashMap<String, EntryRec> = HashMap::with_capacity(entries.len());
+        let mut manifest_collision_keys: HashSet<String> = HashSet::with_capacity(entries.len());
         // (filled below; later verify-marks need it mutable)
         for ent in entries {
             let p = ent
                 .get("path")
                 .and_then(Value::as_str)
                 .ok_or_else(|| ContainerError::Reject("entry.path missing".into()))?;
+            validate_payload_path(p)?;
+            let collision_key = portable_path_key(p)?;
+            if !manifest_collision_keys.insert(collision_key) {
+                return Err(ContainerError::Reject(format!(
+                    "duplicate or Unicode-case-colliding manifest entry {p}"
+                )));
+            }
             let sha = ent
                 .get("sha256")
                 .and_then(Value::as_str)
@@ -581,8 +804,13 @@ impl Container {
                 .get("bytes")
                 .and_then(Value::as_u64)
                 .ok_or_else(|| ContainerError::Reject(format!("entry {p}: bytes missing")))?;
-            let ze = archive.by_name(p).ok_or_else(|| {
+            let archive_index = archive_name_index.get(p).copied().ok_or_else(|| {
                 ContainerError::Reject(format!("manifest entry {p} not present in zip"))
+            })?;
+            let ze = archive.entry(archive_index).ok_or_else(|| {
+                ContainerError::Reject(format!(
+                    "container entry index {archive_index} is out of range"
+                ))
             })?;
             // declared bytes must equal the zip's uncompressed size (zip-bomb guard
             // + manifest-can't-lie-about-size). (Codex b)
@@ -596,9 +824,9 @@ impl Container {
                 .insert(
                     p.to_string(),
                     EntryRec {
-                        zip: ze.clone(),
+                        archive_index,
                         expected_sha256: sha.to_string(),
-                        verified: false,
+                        sha256_state: EntryVerificationState::Pending,
                     },
                 )
                 .is_some()
@@ -609,19 +837,25 @@ impl Container {
             }
         }
         // every payload/* zip entry must be covered by the manifest (no stowaways)
-        for ze in archive.entries() {
+        for archive_index in 0..archive.len() {
+            let ze = archive.entry(archive_index).ok_or_else(|| {
+                ContainerError::Reject(format!(
+                    "container entry index {archive_index} is out of range"
+                ))
+            })?;
             if ze.name == "manifest.json" {
                 continue;
             }
-            if !by_path.contains_key(&ze.name) {
+            if !by_path.contains_key(ze.name) {
                 return Err(ContainerError::Reject(format!(
                     "zip entry {} is not listed in the manifest (tamper signal)",
                     ze.name
                 )));
             }
         }
+        drop(archive_name_index);
 
-        // (10) verify + parse index.json NOW (it is the spine the app reads first).
+        // (11) verify + parse index.json NOW (it is the spine the app reads first).
         // `by_path` is already `mut` (its verify-marks need it); verify_and_read
         // hashes the bytes against the manifest before returning them.
         let index_path = format!("payload/{game_id}/index.json");
@@ -649,8 +883,8 @@ impl Container {
             indexed_snapshot_files.extend(retained);
         }
 
-        // (11) verify + parse timeline.json now if it is declared (spec §4.1
-        // step 11): a malformed or duplicate-key timeline must be an open-time
+        // (12) verify + parse timeline.json now if it is declared (spec §4.1
+        // step 12): a malformed or duplicate-key timeline must be an open-time
         // refusal, never a later consumption-time surprise.
         let timeline_path = format!("payload/{game_id}/timeline.json");
         if by_path.contains_key(&timeline_path) {
@@ -660,7 +894,7 @@ impl Container {
             })?;
         }
 
-        // (12) identity consistency: manifest.mod_identity.modset_id must match a
+        // (13) identity consistency: manifest.mod_identity.modset_id must match a
         // representative snapshot's provenance.mod.modset_id (a manifest must not be
         // able to lie about identity). We check the FIRST snapshot in the index.
         if let Some(first) = index.snapshots.first() {
@@ -765,13 +999,48 @@ impl Container {
         verify_and_read(&self.archive, &mut guard, path)
     }
 
+    /// Authenticate and decompress one manifest entry directly into `writer`.
+    ///
+    /// The container must have been opened from a retained file handle. The
+    /// complete entry is never held in memory; ZIP structure, declared sizes,
+    /// CRC-32, and manifest SHA-256 are checked during the same copy pass. A
+    /// caller must discard its destination unless this method returns `Ok`.
+    pub fn spool_entry_to_writer<W: std::io::Write>(
+        &self,
+        path: &str,
+        writer: &mut W,
+    ) -> Result<SpoolEntryReceipt, ContainerError> {
+        let mut guard = self.by_path.lock().map_err(|_| {
+            ContainerError::Reject("container entry-verification lock poisoned".into())
+        })?;
+        let rec = guard
+            .get_mut(path)
+            .ok_or_else(|| ContainerError::Reject(format!("entry {path} not in manifest")))?;
+        let (digest, uncompressed_len) =
+            self.archive
+                .copy_entry_to_writer(rec.archive_index, writer)?;
+        if digest != rec.expected_sha256 {
+            return Err(ContainerError::Reject(format!(
+                "entry {path}: sha256 {digest} != manifest {}",
+                rec.expected_sha256
+            )));
+        }
+        rec.sha256_state = EntryVerificationState::Verified;
+        rec.require_sha256_verified(path)?;
+        Ok(SpoolEntryReceipt {
+            path: path.to_string(),
+            uncompressed_len,
+            sha256: digest,
+        })
+    }
+
     /// The stitched branch graph (`segments.json`), verified and parsed, or `None`
     /// when this is a plain (non-stitched) container. The graph is the
     /// authoritative rollback/branch map (`STITCHING_DESIGN.md` §7.2); the main
     /// `index()` remains the default-playback view.
     pub fn segments(&self) -> Result<Option<SegmentGraph>, ContainerError> {
         let path = format!("payload/{}/segments.json", self.game_id);
-        if !self.has_entry(&path) {
+        if !self.has_entry(&path)? {
             return Ok(None);
         }
         let bytes = self.read_entry_bytes(&path)?;
@@ -781,12 +1050,15 @@ impl Container {
     }
 
     /// Whether a manifest-listed payload entry exists at `path` (O(1); no
-    /// per-call manifest re-projection).
-    pub fn has_entry(&self, path: &str) -> bool {
-        self.by_path
-            .lock()
-            .map(|entries| entries.contains_key(path))
-            .unwrap_or(false)
+    /// per-call manifest re-projection). A poisoned entry-verification lock is
+    /// the SAME typed refusal [`Container::read_entry_bytes`] raises — never a
+    /// silent "absent" (a caught panic mid-verification must fail closed, not
+    /// downgrade an existing entry into `Ok(None)` at the caller).
+    pub fn has_entry(&self, path: &str) -> Result<bool, ContainerError> {
+        let guard = self.by_path.lock().map_err(|_| {
+            ContainerError::Reject("container entry-verification lock poisoned".into())
+        })?;
+        Ok(guard.contains_key(path))
     }
 
     /// Load a snapshot by hour_index — resolved through the INDEX (`file` field),
@@ -796,6 +1068,17 @@ impl Container {
             ContainerError::Reject(format!("no snapshot for hour_index {hour_index}"))
         })?;
         self.load_file(&file)
+    }
+
+    /// Test-only: poison the entry-verification lock by panicking while a
+    /// thread holds it, mimicking a caught panic mid-verification.
+    #[cfg(test)]
+    pub(crate) fn poison_entry_lock_for_test(&self) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = self.by_path.lock().unwrap();
+            panic!("poison entry-verification lock");
+        }));
+        assert!(self.by_path.is_poisoned(), "lock must be poisoned");
     }
 
     /// Full background verification: hash EVERY declared entry. Returns Ok(()) when
@@ -1529,7 +1812,7 @@ fn validate_raw_sources(
 /// superseded rollback snapshots), for [`Container::load_file`]'s
 /// index-authority check.
 fn validate_stitched_v2(
-    archive: &ZipArchive,
+    archive: &ContainerArchive,
     by_path: &mut HashMap<String, EntryRec>,
     manifest: &Value,
     game_id: &str,
@@ -1609,7 +1892,7 @@ fn validate_stitched_v2(
         ));
     }
     if archive
-        .entries()
+        .entries_meta()
         .iter()
         .any(|entry| entry.method != ZIP_METHOD_STORE)
     {
@@ -1622,11 +1905,8 @@ fn validate_stitched_v2(
             "segments.json.publication.entry_order is unsupported/ambiguous",
         ));
     }
-    let actual_order: Vec<&str> = archive
-        .entries()
-        .iter()
-        .map(|entry| entry.name.as_str())
-        .collect();
+    let entry_meta = archive.entries_meta();
+    let actual_order: Vec<&str> = entry_meta.iter().map(|entry| entry.name).collect();
     let declared_order: Vec<&str> = required_array(manifest, "entries", "manifest")?
         .iter()
         .map(|entry| required_string(entry, "path", "manifest.entries"))
@@ -1636,8 +1916,7 @@ fn validate_stitched_v2(
     if actual_order.last().copied() != Some("manifest.json")
         || actual_order[..actual_order.len() - 1] != declared_order
         || declared_order != canonical_order
-        || archive
-            .entries()
+        || entry_meta
             .windows(2)
             .any(|pair| pair[0].local_header_off >= pair[1].local_header_off)
     {
@@ -2235,35 +2514,42 @@ fn validate_stitched_v2(
     Ok(retained_snapshot_files)
 }
 
-/// Read an entry's bytes and verify them against the manifest hash, marking it
-/// verified so a re-read is hash-free. Never returns bytes whose hash didn't match.
+/// Read an entry's bytes and verify them against the manifest hash. Immutable
+/// in-memory entries become hash-free after the first success; file-backed entries
+/// re-authenticate each exposure. Never returns bytes whose hash did not match.
 fn verify_and_read(
-    archive: &ZipArchive,
+    archive: &ContainerArchive,
     by_path: &mut HashMap<String, EntryRec>,
     path: &str,
 ) -> Result<Vec<u8>, ContainerError> {
-    let (entry, expected_sha256, verified) = {
-        let rec = by_path
-            .get(path)
-            .ok_or_else(|| ContainerError::Reject(format!("entry {path} not in manifest")))?;
-        (rec.zip.clone(), rec.expected_sha256.clone(), rec.verified)
-    };
-    let bytes = archive.read_entry(&entry)?;
-    if verified {
-        return Ok(bytes);
+    let rec = by_path
+        .get_mut(path)
+        .ok_or_else(|| ContainerError::Reject(format!("entry {path} not in manifest")))?;
+    // In-memory archive bytes are immutable, so one successful hash is enough.
+    // A retained file handle pins identity, not contents: another writer could
+    // still alter bytes in place after open. Re-authenticate every file-backed
+    // exposure, during the same decompression pass that produces the bytes.
+    let calculate_sha256 = rec.sha256_state == EntryVerificationState::Pending
+        || archive.requires_sha256_each_read();
+    let (bytes, digest) = archive.read_entry(rec.archive_index, calculate_sha256)?;
+    if calculate_sha256 {
+        let got = digest.ok_or_else(|| {
+            ContainerError::Reject(format!(
+                "entry {path}: archive reader omitted requested SHA-256"
+            ))
+        })?;
+        if got != rec.expected_sha256 {
+            return Err(ContainerError::Reject(format!(
+                "entry {path}: sha256 {got} != manifest {}",
+                rec.expected_sha256
+            )));
+        }
+        // Record the successful transition before the exposure guard. In-memory
+        // entries may reuse it; file-backed entries still re-authenticate each
+        // read because the retained handle does not make file contents immutable.
+        rec.sha256_state = EntryVerificationState::Verified;
     }
-    let got = to_hex(&Sha256::digest(&bytes));
-    if got != expected_sha256 {
-        return Err(ContainerError::Reject(format!(
-            "entry {path}: sha256 {got} != manifest {}",
-            expected_sha256
-        )));
-    }
-    // The archive bytes are immutable after parse, so a successful first hash
-    // permanently verifies this EntryRec and repeat reads need not re-hash it.
-    if let Some(rec) = by_path.get_mut(path) {
-        rec.verified = true;
-    }
+    rec.require_sha256_verified(path)?;
     Ok(bytes)
 }
 
@@ -2271,6 +2557,30 @@ fn verify_and_read(
 mod tests {
     use super::*;
     use crate::pack::{pack, pack_with, PackEntry, PackIdentity, PackOptions};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    struct TempContainerFile(std::path::PathBuf);
+
+    impl TempContainerFile {
+        fn write(label: &str, bytes: &[u8]) -> Self {
+            let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "hoi4replay_container_{label}_{}_{}.battleplan",
+                std::process::id(),
+                sequence
+            ));
+            std::fs::write(&path, bytes).expect("write temporary container");
+            Self(path)
+        }
+    }
+
+    impl Drop for TempContainerFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 
     fn entry(path: &str, bytes: &[u8], role: &'static str, hour_index: Option<i64>) -> PackEntry {
         PackEntry {
@@ -2288,6 +2598,26 @@ mod tests {
             "index",
             None,
         )
+    }
+
+    #[test]
+    fn path_open_is_file_backed_while_byte_open_remains_in_memory() {
+        let bytes = pack(
+            "g",
+            &[empty_index_entry()],
+            &PackIdentity::default(),
+            false,
+        )
+        .unwrap();
+        let path = TempContainerFile::write("backend_selection", &bytes);
+
+        let file_backed = Container::open(&path.0, &ExpectedIdentity::default())
+            .expect("path container opens");
+        assert!(matches!(&file_backed.archive, ContainerArchive::File(_)));
+
+        let in_memory = Container::from_bytes(bytes, &ExpectedIdentity::default())
+            .expect("byte container opens");
+        assert!(matches!(&in_memory.archive, ContainerArchive::Memory(_)));
     }
 
     #[test]
@@ -2316,6 +2646,55 @@ mod tests {
             .expect_err("duplicate-member segments.json must refuse");
         assert!(
             err.to_string().contains("duplicate JSON member"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn poisoned_entry_lock_is_a_typed_refusal_never_absence() {
+        // A caught panic during entry verification poisons `by_path`. From that
+        // point every membership answer is unknowable: `has_entry` must raise
+        // the same typed refusal as `read_entry_bytes`, and `segments()` must
+        // never collapse the poison into Ok(None) "no graph" (fail-closed).
+        let bytes = pack(
+            "g",
+            &[
+                empty_index_entry(),
+                entry(
+                    "payload/g/segments.json",
+                    br#"{"segments":[]}"#,
+                    "segments",
+                    None,
+                ),
+            ],
+            &PackIdentity::default(),
+            false,
+        )
+        .unwrap();
+        let container =
+            Container::from_bytes(bytes, &ExpectedIdentity::default()).expect("container opens");
+        assert!(container
+            .has_entry("payload/g/segments.json")
+            .expect("healthy lock answers membership"));
+        container.poison_entry_lock_for_test();
+        let err = container
+            .has_entry("payload/g/segments.json")
+            .expect_err("a poisoned lock must refuse, never report absence");
+        assert!(
+            err.to_string()
+                .contains("entry-verification lock poisoned"),
+            "unexpected error: {err}"
+        );
+        let err = match container.segments() {
+            Ok(graph) => panic!(
+                "poisoned lock must refuse, got Ok(present={})",
+                graph.is_some()
+            ),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("entry-verification lock poisoned"),
             "unexpected error: {err}"
         );
     }
@@ -2399,6 +2778,77 @@ mod tests {
         assert!(
             err.to_string().contains("not listed in the index"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn entry_bytes_cross_only_the_verified_state_boundary() {
+        let second_bytes = br#"{"game_id":"g","hour_index":1}"#;
+        let second_path = "payload/g/000000000001.snapshot.json";
+        let bytes = pack(
+            "g",
+            &[
+                entry(
+                    "payload/g/index.json",
+                    br#"{"game_id":"g","schema_version":"1","snapshots":[{"hour_index":0,"file":"000000000000.snapshot.json"},{"hour_index":1,"file":"000000000001.snapshot.json"}]}"#,
+                    "index",
+                    None,
+                ),
+                entry(
+                    "payload/g/000000000000.snapshot.json",
+                    br#"{"game_id":"g","hour_index":0}"#,
+                    "snapshot",
+                    Some(0),
+                ),
+                entry(second_path, second_bytes, "snapshot", Some(1)),
+            ],
+            &PackIdentity::default(),
+            false,
+        )
+        .unwrap();
+        let container =
+            Container::from_bytes(bytes, &ExpectedIdentity::default()).expect("container opens");
+
+        {
+            let entries = container.by_path.lock().unwrap();
+            assert_eq!(
+                entries.get(second_path).unwrap().sha256_state,
+                EntryVerificationState::Pending,
+                "an untouched non-representative snapshot stays lazy"
+            );
+        }
+
+        {
+            let mut entries = container.by_path.lock().unwrap();
+            entries.get_mut(second_path).unwrap().expected_sha256 = "0".repeat(64);
+        }
+        container
+            .read_entry_bytes(second_path)
+            .expect_err("a mismatched hash must not expose bytes");
+        {
+            let entries = container.by_path.lock().unwrap();
+            assert_eq!(
+                entries.get(second_path).unwrap().sha256_state,
+                EntryVerificationState::Pending,
+                "a failed hash must not advance the state"
+            );
+        }
+
+        {
+            let mut entries = container.by_path.lock().unwrap();
+            entries.get_mut(second_path).unwrap().expected_sha256 =
+                to_hex(&Sha256::digest(second_bytes));
+        }
+        assert_eq!(
+            container
+                .read_entry_bytes(second_path)
+                .expect("matching bytes cross the verified boundary"),
+            second_bytes
+        );
+        let entries = container.by_path.lock().unwrap();
+        assert_eq!(
+            entries.get(second_path).unwrap().sha256_state,
+            EntryVerificationState::Verified
         );
     }
 

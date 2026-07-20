@@ -378,7 +378,8 @@ def _write_outputs(out_dir: Path, report: Dict[str, Any]) -> None:
         "## Residual Blockers",
         "",
         "- Hub motorization: the old per-country `CCountrySupplySystem` root and the bounded +0x100F0 translation both have zero instances on 870ebf. Current-build RTTI now pins the `CCountrySupplySystem` class vtables when double-vtable objects are present, but the per-country join and node-setting map offsets still require a controlled motorization toggle fixture before emitting rows.",
-        "- Convoy/logistics pressure: the same rejected stale per-country supply root was the available path to `disrupted_supply` / `foreign_homebase_nodes` style pressure. Current-build RTTI narrows the replacement root class; pressure rows remain fail-closed until one of the RTTI-backed objects is joined to save/live pressure anchors.",
+        "- Stored disruption: the later exact static pass closes the bounded owner join through `CSupplySystem+0x108[index]`, aligned with `CGameState+0x310[index]`, and production kind 5 now reads `CCountrySupplySystem+0x88` fail-closed. This legacy RTTI probe is discovery evidence only and must not be used per frame.",
+        "- Foreign-homebase / terminal convoy-route pressure: `+0x1E0` is structurally identified, but its exact gameplay semantics and terminal route join remain fail-closed pending their controlled fixtures.",
         "- Attrition flag/reason: current validated division roots carry current/max/gain supply and fuel, but there is no pinned attrition reason field and no lane-local same-frame division attrition oracle. A controlled attrition fixture is required.",
         "- Exact per-province remaining supply: blocked by the separate CProvince/tooltip oracle contract, not by this vtable root scan.",
     ])

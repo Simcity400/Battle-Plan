@@ -9,7 +9,7 @@ writes / no injection / no thread suspension, so it never desyncs MP):
                             (priority). [the country_reports.construction block is only a
                             periodic STATS snapshot, NOT the queue.]
   2. BATTLE-PLAN ORDERS   -- per-army battle plans (the save's orders_group/order_instance):
-                            order type, the army it belongs to, and (for offensive/front
+                            order type, the army it belongs to, and (for area-defense
                             "type 5" orders) the exact target-STATE set.
   3. OPINION MODIFIERS    -- per-ordered-pair list of individual opinion modifiers that sum
                             into the cached_sum (token-db-id + value), decomposing the net
@@ -37,10 +37,11 @@ construction_orders_offsets.draft.json):
       ptr-array of order_instance*. each order_instance:
           vtable == MODULE+0x295FA08 (fail-closed gate);  order_type=i32[+0x30]
           army backref=u64[+0x38] (== the army object; fail-closed filter)
-          TYPE 5 (offensive/front): target STATE vector begin=u64[+0xE0], size=u32[+0xE8] (i32 ids)
+          TYPE 5 (area defense): target STATE vector begin=u64[+0xE0], size=u32[+0xE8] (i32 ids)
       VALIDATED: type-5 orders 107/108 EXACT save state-id set + count + order_type. The save's
       instance_id is a serialize-time id (not a live field); scheduled_member is a runtime cache
-      -> both correctly excluded. RESIDUAL: non-type-5 target geometry (types 1/2/3) ticketed.
+      -> both correctly excluded. RESIDUAL: types 1/4 geometry remains unproven here; the native
+      domain-54 reader authenticates ordered +0x70/+0x78 paths only for types 2/3.
 
   OPINION MODIFIERS  (decomposes the relation cached_sum already pinned by diplo_relations_live):
       rel = u64[ u64[ u64[country_obj+0xF88] + 0x08 ] + target_tag_db_id*8 ]   (== diplo crack)
@@ -119,7 +120,7 @@ ORDER_TYPE_OFF = 0x30         # i32
 ORDER_ARMY_BACKREF_OFF = 0x38  # u64 == army obj
 ORDER_T5_STATES_BEGIN = 0xE0  # u64 begin of state-id i32 vector
 ORDER_T5_STATES_SIZE = 0xE8   # u32 size
-TYPE5_OFFENSIVE = 5
+TYPE5_AREA_DEFENSE = 5
 MAX_ORDERS_PER_ARMY = 64
 MAX_STATES = 5000
 
@@ -280,7 +281,7 @@ def _read_order(p, order_obj, army_obj, order_vt):
     except OSError:
         return None
     target_states = None
-    if otype == TYPE5_OFFENSIVE:
+    if otype == TYPE5_AREA_DEFENSE:
         try:
             sbegin = p.u64(order_obj + ORDER_T5_STATES_BEGIN)
             ssize = p.u32(order_obj + ORDER_T5_STATES_SIZE)
@@ -517,18 +518,18 @@ def _validate():
             aid = int(aid_s)
             live = live_orders.get(aid, [])
             for o in g["orders"]:
-                if o["type"] != TYPE5_OFFENSIVE:
+                if o["type"] != TYPE5_AREA_DEFENSE:
                     continue
                 t5_n += 1
                 want_sample = set(o["states_sample"])
                 for lo in live:
                     st = lo.get("target_states")
-                    if (lo["order_type"] == TYPE5_OFFENSIVE and st is not None
+                    if (lo["order_type"] == TYPE5_AREA_DEFENSE and st is not None
                             and len(st) == o["n_states"]
                             and set(sorted(st)[:10]) == want_sample):
                         t5_ok += 1
                         break
-        print("ORDERS (type-5 offensive, target-state set): %d/%d EXACT" % (t5_ok, t5_n))
+        print("ORDERS (type-5 area defense, target-state set): %d/%d EXACT" % (t5_ok, t5_n))
 
         # ---- 3. opinion modifiers: value-set per pair exact ----
         op_gt = gt["opinion_modifiers"]
@@ -570,8 +571,8 @@ def main():
                   % (tag, len(q), lead["template_id"], lead["active_factories"],
                      lead["cost"], lead["produced"]))
         print("\nbattle-plan orders: %d armies with orders" % len(orders))
-        n_t5 = sum(1 for v in orders.values() for o in v if o["order_type"] == TYPE5_OFFENSIVE)
-        print("  type-5 (offensive/front, with target states): %d" % n_t5)
+        n_t5 = sum(1 for v in orders.values() for o in v if o["order_type"] == TYPE5_AREA_DEFENSE)
+        print("  type-5 (area defense, with target states): %d" % n_t5)
         print("\nopinion modifiers: %d ordered pairs carry explicit modifiers" % len(mods))
         sample = sorted(mods.items(), key=lambda kv: -len(kv[1]["modifiers"]))[:5]
         for key, d in sample:

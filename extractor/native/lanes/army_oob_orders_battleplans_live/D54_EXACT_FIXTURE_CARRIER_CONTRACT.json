@@ -1,0 +1,98 @@
+{
+  "schema": "hoi4.d54.exact_fixture_carrier_contract.v1",
+  "binary": {
+    "version": "1.19.2.0.a729",
+    "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "image_base": "0x140000000"
+  },
+  "observer": "d54_exact_fixture_observer.py",
+  "input_schema": "hoi4.d54.exact_fixture_observation.v1",
+  "output_schema": "hoi4.d54.exact_fixture_carrier.v1",
+  "ghidra_authority": {
+    "seed_required": false,
+    "missing_seeds": [],
+    "scopes": [
+      "D54 current-wire exact fixture carrier",
+      "S4 offline publication/repack integrity gate",
+      "S8 same-boundary save-oracle fixture observations"
+    ],
+    "reason": "D54 static and exact-10 authority are complete. S4 is an offline publication/repack gate and S8 is a save-oracle observation gate; none of these remaining gates needs another Ghidra seed or re-export."
+  },
+  "capture_provenance": {
+    "required": [
+      "session_id",
+      "harness_name",
+      "harness_version",
+      "harness_sha256",
+      "process_id",
+      "single_process",
+      "paused_boundaries",
+      "harness_authenticated"
+    ],
+    "same_boundary_rule": "Each live observation and its save object share the same non-empty boundary_token and preserve save_path plus save_sha256."
+  },
+  "wire": {
+    "domain_id": 54,
+    "header_len": 60,
+    "row_len": 88,
+    "required_raw_record_fields": [
+      "stream_sequence",
+      "game_hour",
+      "record_offset",
+      "payload_sha256",
+      "raw_header_hex"
+    ],
+    "required_raw_row_fields": [
+      "wire_row_index",
+      "wire_flags",
+      "raw_row_hex"
+    ]
+  },
+  "raw_order_fields": [
+    { "name": "order_type", "offset": "+0x30", "width": 4 },
+    { "name": "army_backref", "offset": "+0x38", "width": 8 },
+    { "name": "path_begin", "offset": "+0x70", "width": 8 },
+    { "name": "path_size", "offset": "+0x78", "width": 4 },
+    { "name": "assigned_begin", "offset": "+0x210", "width": 8 },
+    { "name": "assigned_size", "offset": "+0x21C", "width": 4 },
+    { "name": "engine_order_instance_id", "offset": "+0x244", "width": 4 },
+    { "name": "active", "offset": "+0x248", "width": 1 }
+  ],
+  "fixtures": {
+    "type2_redraw_delete": {
+      "phases_in_order": ["baseline", "redraw", "delete"],
+      "identity": ["army_id", "engine_order_instance_id", "generation"],
+      "receipt": "baseline/redraw retain identity and change the ordered path; delete is the same-identity tombstone"
+    },
+    "type4_discriminator": {
+      "phases_in_order": ["created"],
+      "receipt": "live type-4 raw candidates, including +0x70/+0x78, plus raw same-boundary save order; no geometry role is preselected"
+    },
+    "membership_lifecycle": {
+      "phases_in_order": ["baseline", "assign", "remove"],
+      "identity": ["army_id", "engine_order_instance_id", "generation"],
+      "receipt": "ordered live IDs, ordered save IDs, and ordered typed save {id,type} references are preserved; duplicate-free set equality is required at each boundary; add/remove changes exactly one member"
+    },
+    "empty_inactive_manager": {
+      "phases_in_order": ["baseline", "add_member", "remove_member"],
+      "fixture_roles": ["active", "inactive", "zero_member"],
+      "rooting": "producer_rooted or consumer_rooted only; arena_scan=false and cached_address_repair=false; preserve the raw root chain",
+      "receipt": "stable candidate container, producer/consumer address, raw descriptor, exact contiguous begin/end/stride bounds, bounded ordered walk, raw army windows, same-boundary save membership, and all fixture IDs at every boundary"
+    }
+  },
+  "ordering": {
+    "boundary_arrays": "preserve source order",
+    "path_provinces": "preserve engine order",
+    "assigned_division_ids": "preserve engine order; do not sort in carrier",
+    "scheduled_member_ids": "preserve save order; do not sort in carrier",
+    "scheduled_member_refs": "preserve typed save {id,type} identity and source order",
+    "manager_entries": "preserve bounded-walk enumeration order"
+  },
+  "activation": {
+    "same_instance_type2_redraw_delete": false,
+    "type4_geometry": false,
+    "complete_membership_equality_lifecycle": false,
+    "empty_inactive_manager_root": false,
+    "law": "The observer always emits false. A reviewed evidence decision and separate production source edit are required for activation."
+  }
+}

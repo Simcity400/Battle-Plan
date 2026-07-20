@@ -11,9 +11,10 @@
 //! [--game <dir>] [--userdata <dir>] [--recording <path>]
 //! [--capture <session dir>]`
 //!
-//! `--recording` opens a snapshot-flavor `.battleplan` (or snapshot store
-//! directory) through `replay_core` and drives the map from its recorded
-//! state owners. Without it the map shows the grounded 1936 owners.
+//! `--recording` opens a snapshot-flavor or compact-stream-only `.battleplan`
+//! (or a snapshot store directory) through the single bounded product policy
+//! and drives the map from its recorded state owners. Without it the map shows
+//! the grounded 1936 owners.
 //! Replay-driven political color substitution is blocked until the engine's
 //! primary fill / exact GradientBorder generation law is ported.
 //! Debug-only `--capture` loads a validated map_viewer captured-pass session and uses
@@ -24,10 +25,11 @@
 //! user-data/profile root. The versioned local profile retains only those two
 //! roots; replay files remain independently movable and shareable.
 //!
-//! Controls: middle/right-drag or WASD pan; mouse wheel zooms toward the
-//! cursor; `R` resets to whole-map fit; `[`/`]` or Left/Right step one
-//! timeline hour; Space toggles ~4 hours/sec autoplay; left click/drag on
-//! the scrub bar seeks the timeline; Escape quits.
+//! Controls: middle/right-drag or A/D pan horizontally; wheel zoom and
+//! vertical pan are blocked until the portable replay carries the exact C02/C03
+//! 3D current/target camera state; `R` resets to whole-map fit; `[`/`]` or
+//! Left/Right step one timeline hour; Space toggles ~4 hours/sec autoplay;
+//! left click/drag on the scrub bar seeks the timeline; Escape quits.
 
 mod anomaly;
 mod blockers;
@@ -46,6 +48,7 @@ mod observer;
 mod palette;
 #[cfg(test)]
 mod post_effect;
+mod recording_open;
 mod timeline;
 mod tooltip_runtime;
 mod transport;
@@ -105,9 +108,9 @@ terrain chunk synthesis is blocked in replay_app until the remaining runtime/LOD
 --freeze-clock is blocked because replay_app preserves captured map-clock constant-buffer bytes until real runtime timing is capture-derived; \
 --water-full (DEFAULT ON) uploads only the real engine/file-derived water path and fails closed when required inputs are missing; --no-water-full is blocked because it selected the old app-owned approximation; \
 borders are blocked in replay_app until the remaining thin-border fade/loop/sea-region law is ported; use map_viewer border dumps as development tooling; --borders-from-files is blocked; \
-country labels are blocked in replay_app only on owner-vs-controller keying and per-label Transp_OffsetX.x runtime values; the product glyph-VB path exists but --map-labels and --map-labels-fallback remain blocked; \
+country-label production integration is closed: measured control_by_province feeds the B10 controller law, authenticated reflection stamps mapname CB1, and normal D80 playback executes the exact captured glyph draw automatically; --map-labels remains blocked as a legacy manual-layer switch; \
 map furniture is blocked in replay_app only on highlight ring rendering and the 0.40 map-text scale origin; the relation-column law is engine-traced in map_viewer, but non-neutral capture coverage is still pending; the furniture module/projection API exists but --map-furniture remains blocked; \
-tree file-derived replacement layers are blocked until scatter/rotation/model-selection/season-CB law is engine-derived; --trees-from-files and --tree-seasons-by-date are blocked; \
+tree runtime replay admits the exact retained 13-buffer/three-pass model/LOD carrier (4,781 visible cells); file-derived full-map replacement remains blocked because 95,275 of 99,056 global nonzero cells lack an authenticated carrier, and season CB1 is separate; --trees-from-files and --tree-seasons-by-date are blocked; \
 building previews are blocked until map_objects_pass or mesh/material import law exists; --buildings-from-files and --buildings-preview-all are blocked";
 
 const SENSITIVE_GAME_FILE_PATHS: &[&str] = &[
@@ -547,10 +550,10 @@ fn resolve_game_dir(flag: Option<PathBuf>, env: Option<OsString>) -> Option<Path
     flag.or_else(|| env.map(PathBuf::from))
 }
 
-/// Validate explicit recording dump selection before resource discovery or
-/// D3D setup. Besides making CLI failures cheap and testable headlessly, this
-/// guarantees an invalid canonical hour cannot reach a renderer with empty
-/// keying tables.
+/// Test helper for the legacy pre-resolution shape. Shipped playback resolves
+/// the selector against the already-open provider so a compact recording is
+/// never folded twice merely to translate an ordinal.
+#[cfg(test)]
 fn resolve_headless_recording_hour(options: &mut CliOptions) -> Result<()> {
     if options.dump_frame.is_none() {
         return Ok(());
@@ -564,7 +567,7 @@ fn resolve_headless_recording_hour(options: &mut CliOptions) -> Result<()> {
     let (Some(request), TimelineMode::Recording { path, .. }) = (request, &options.mode) else {
         return Ok(());
     };
-    let source = replay_core::open_recording(path)
+    let source = recording_open::open_product_recording(path)
         .map_err(|err| format!("open recording {}: {err}", path.display()))?;
     options.dump_hour = Some(timeline::resolve_dump_hour(source.hours(), request)?);
     Ok(())
@@ -725,8 +728,8 @@ fn run(args: &[String]) -> Result<()> {
         print!("{}", blockers::render_list());
         return Ok(());
     }
-    let mut options = parse_cli(args)?;
-    resolve_headless_recording_hour(&mut options)?;
+    let options = parse_cli(args)?;
+    preflight_snapshot_recording_dump_request(&options)?;
     let bundle = options
         .bundle_dir
         .as_deref()
@@ -847,6 +850,7 @@ fn run(args: &[String]) -> Result<()> {
             bundle.as_ref(),
             &options.mode,
             options.dump_hour,
+            options.dump_nth_hour,
             out,
             game_resolver.as_ref(),
             &configured_paths,
@@ -869,6 +873,37 @@ fn run(args: &[String]) -> Result<()> {
             options.postfx_restore_full,
             options.water_full,
         ),
+    }
+}
+
+/// Reject invalid canonical/ordinal requests for snapshot-native recordings
+/// before machine-local profile discovery. Compact-only recordings are not
+/// folded here: their one certified product fold remains owned by the actual
+/// provider open in `headless`, avoiding a duplicate long-recording pass.
+fn preflight_snapshot_recording_dump_request(options: &CliOptions) -> Result<()> {
+    if options.dump_frame.is_none() {
+        return Ok(());
+    }
+    let request = match (options.dump_hour, options.dump_nth_hour) {
+        (Some(hour), None) => Some(timeline::DumpHourRequest::Canonical(hour)),
+        (None, Some(ordinal)) => Some(timeline::DumpHourRequest::Ordinal(ordinal)),
+        (None, None) => None,
+        (Some(_), Some(_)) => unreachable!("parse_cli rejects competing dump selectors"),
+    };
+    let (Some(request), TimelineMode::Recording { path, .. }) = (request, &options.mode) else {
+        return Ok(());
+    };
+    match replay_core::open_recording(path) {
+        Ok(source) => {
+            timeline::resolve_dump_hour(source.hours(), request)?;
+            Ok(())
+        }
+        Err(replay_core::SourceError::Unsupported(message))
+            if message.contains("compact-stream-only production recording") =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(format!("open recording {}: {error}", path.display()).into()),
     }
 }
 
@@ -992,6 +1027,7 @@ fn dump_frame(
     bundle: Option<&bundle::MapBundle>,
     mode: &TimelineMode,
     hour: Option<i64>,
+    nth_hour: Option<usize>,
     out: &std::path::Path,
     game_resolver: Option<&GameFileResolver>,
     configured_paths: &install_paths::ProductPaths,
@@ -1008,6 +1044,7 @@ fn dump_frame(
         bundle,
         mode,
         hour,
+        nth_hour,
         out,
         game_resolver,
         configured_paths,
@@ -1041,6 +1078,7 @@ fn dump_frame(
     _bundle: Option<&bundle::MapBundle>,
     _mode: &TimelineMode,
     _hour: Option<i64>,
+    _nth_hour: Option<usize>,
     _out: &std::path::Path,
     _game_resolver: Option<&GameFileResolver>,
     _configured_paths: &install_paths::ProductPaths,
@@ -1811,7 +1849,10 @@ mod tests {
                 "neg_modset_mismatch",
                 "disagrees with snapshot provenance.mod",
             ),
-            ("neg_empty_snapshot_index", "empty snapshot index"),
+            (
+                "neg_empty_snapshot_index",
+                "incompatible replay index schema_version",
+            ),
         ];
         for (name, expected) in cases {
             let path = fixture_root().join(format!("negative/{name}.battleplan"));

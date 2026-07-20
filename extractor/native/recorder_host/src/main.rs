@@ -190,6 +190,7 @@ extern "system" {
         bytes_read: *mut usize,
     ) -> Bool;
     fn OpenProcess(desired_access: Dword, inherit_handle: Bool, process_id: Dword) -> Handle;
+    fn OpenEventW(desired_access: Dword, inherit_handle: Bool, name: *const u16) -> Handle;
     fn OpenThread(desired_access: Dword, inherit_handle: Bool, thread_id: Dword) -> Handle;
     fn GetProcessIdOfThread(thread: Handle) -> Dword;
     fn GetProcessTimes(
@@ -907,15 +908,17 @@ fn main() {
     }
 }
 
-/// Minimal product entry for the resident dual-order auto-attach supervisor
+/// Resident support/acceptance entry for the dual-order auto-attach supervisor
 /// (roadmap task #36; design `extractor/documents/AUTO_ATTACH_DESIGN.md`). The
 /// full supervisor/coordinator logic lives in the `recorder_host::auto_attach`
 /// module (unit-tested with fakes); this is just the CLI seam that wires the
 /// real Windows adapters and runs the loop. The installed product resolves its
 /// collector payload beside this executable; `--dll` remains a support override.
-/// Console/session close signals enter coordinator-owned stop handling; the
-/// activation-frozen duplex worker remains the authority for graceful recorder
-/// finalization once its live lifecycle gates pass.
+/// Console/session close signals enter coordinator-owned stop handling. The
+/// selected legacy child still has only finite stdout proof and hard-kill stop,
+/// so this entry is not the product promotion boundary; the activation-frozen
+/// duplex/combined worker remains the authority for graceful finalization once
+/// its live lifecycle gates pass.
 #[cfg(windows)]
 fn run_auto_attach(args: &[String]) -> Result<(), String> {
     use recorder_host::auto_attach::{run_supervisor, SupervisorOptions};
@@ -1221,6 +1224,13 @@ fn run() -> Result<(), String> {
     // inputs rather than the pre-admission CLI state.
     let production_profile_summary = build_production_profile_summary(&cfg);
     let auto_attach_worker = AutoAttachWorkerContext::from_env(&cfg)?;
+    let capture_identity_mode = if auto_attach_worker.is_some()
+        && recorder_host::auto_attach::duplex_worker::auto_attach_identity_v1_enabled()
+    {
+        compact_contract::stream_validator::StreamIdentityMode::IdentityV1
+    } else {
+        compact_contract::stream_validator::StreamIdentityMode::Legacy
+    };
     let pipe_token = match auto_attach_worker.as_ref() {
         Some(context) => context.pipe_token.clone(),
         None if cfg.early_launch.is_some() => {
@@ -1228,7 +1238,12 @@ fn run() -> Result<(), String> {
         }
         None => pipe_token(),
     };
-    write_control_file(&cfg, &pipe_token)?;
+    let ordinary_duplex_challenge = auto_attach_worker.as_ref().and_then(|context| {
+        (capture_identity_mode
+            == compact_contract::stream_validator::StreamIdentityMode::IdentityV1)
+            .then_some(context.expectation.challenge)
+    });
+    write_control_file(&cfg, &pipe_token, ordinary_duplex_challenge)?;
 
     let hook_hold_ms = u64::from(cfg.duration_ms)
         .saturating_add(cfg.dwell_ms)
@@ -1298,12 +1313,18 @@ fn run() -> Result<(), String> {
             (Some(value), _) | (_, Some(value)) => Some(value),
             (None, None) => None,
         };
-        let (retained_dll, proof_emitter) = match auto_attach_worker {
+        let activated_duplex = capture_identity_mode
+            == compact_contract::stream_validator::StreamIdentityMode::IdentityV1;
+        let (retained_dll, proof_emitter, activated_spec, activated_stop_signal) = match auto_attach_worker {
+            Some(context) if activated_duplex => {
+                let (dll, emitter, spec, stop_signal) = context.into_activated_parts(&cfg)?;
+                (Some(dll), Some(emitter), Some(spec), Some(stop_signal))
+            }
             Some(context) => {
                 let (dll, emitter) = context.into_parts()?;
-                (Some(dll), Some(emitter))
+                (Some(dll), Some(emitter), None, None)
             }
-            None => (None, None),
+            None => (None, None, None, None),
         };
         // Acquire every authority before exposing the pipe. In particular, a
         // restart with a coherently rolled-back journal must observe an already
@@ -1379,6 +1400,53 @@ fn run() -> Result<(), String> {
         } else {
             None
         };
+        if activated_duplex {
+            if early_pending.is_some() || cfg.diagnostic_no_commit {
+                return Err("activated auto-attach duplex worker cannot enter early-launch/diagnostic flow".into());
+            }
+            let spec = activated_spec
+                .as_ref()
+                .ok_or("activated duplex worker lost its immutable WorkerSpec")?;
+            let target_proof = target_dll_proof
+                .as_ref()
+                .ok_or("activated duplex worker lost target DLL proof")?;
+            let (data, control, _hook_lease) = prepare_activated_duplex_workers(
+                spec,
+                process_authority.as_ref(),
+                &dll_authority,
+                target_proof,
+                Duration::from_millis(recorder_host::auto_attach::policy::HANDSHAKE_DEADLINE_MS),
+            )?;
+            let loaded_dll_sha256 = verify_target_loaded_dll(target_proof)?;
+            let outcome = capture_combined_pipe_to_file(
+                data,
+                control,
+                &raw_path,
+                stream_compression,
+                proof_expected_domain_ids,
+                proof_emitter.ok_or("activated duplex worker lost supervisor proof emitter")?,
+                loaded_dll_sha256,
+                activated_stop_signal.ok_or("activated duplex worker lost stop signal")?,
+                &cfg.out_dir,
+            )?;
+            let scientist_authority = if scientist_requested {
+                let game = game_module_authority
+                    .take()
+                    .ok_or("activated scientist capture lost game-module authority")?;
+                Some(ScientistCaptureAuthority {
+                    collector_source_dll_sha256: dll_authority.sha256,
+                    collector_staged_dll_sha256: dll_authority.sha256,
+                    collector_loaded_dll_sha256: loaded_dll_sha256,
+                    collector_image_size: dll_authority.image_size,
+                    process_id: process_authority.pid,
+                    process_creation_filetime_utc: process_authority.expected_creation_filetime,
+                    game,
+                })
+            } else {
+                None
+            };
+            (outcome.capture, scientist_authority, None)
+        } else {
         let hook_target_dll_proof = target_dll_proof.clone();
         let pipe_target_process = process_authority.clone();
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
@@ -1600,6 +1668,7 @@ fn run() -> Result<(), String> {
             None => None,
         };
         (outcome.capture, scientist_authority, early_render_process)
+        }
     };
     // Post-capture finalization (summarize + streaming fold + streaming pack +
     // streaming verify) must complete in seconds, not the minutes the old whole-
@@ -1686,7 +1755,10 @@ fn run() -> Result<(), String> {
         StreamFormat::Compact => {
             // Decode raw or zstd storage record-by-record. Peak memory is bounded
             // by the largest H4CR record rather than the full capture.
-            let summary = summarize_compact_stream_file(&raw_path)?;
+            let summary = summarize_compact_stream_file_with_identity_mode(
+                &raw_path,
+                capture_identity_mode,
+            )?;
             let expected_domain_ids = compact_expected_domain_ids(&cfg.scheduled_domains);
             let coverage_errors = compact_domain_coverage_errors(&summary, &expected_domain_ids);
             let gate_status = compact_gate_status(&summary);
@@ -1911,20 +1983,13 @@ fn run() -> Result<(), String> {
                 .capture_id
                 .as_deref()
                 .ok_or_else(|| "static bundle finalization requires --capture-id".to_string())?;
-            let identity_mode =
-                if recorder_host::auto_attach::duplex_worker::AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED
-                {
-                    compact_contract::stream_validator::StreamIdentityMode::IdentityV1
-                } else {
-                    compact_contract::stream_validator::StreamIdentityMode::Legacy
-                };
             let inventory = recorder_host::emitted_token_inventory::build_and_write(
                 &raw_path,
                 &cfg.out_dir.join("emitted_token_inventory.json"),
                 capture_id,
                 &cfg.session_id,
                 &capture.sha256,
-                identity_mode,
+                capture_identity_mode,
             )?;
             let (finalized_request, finalized_verified) =
                 recorder_host::static_bundle_gate::finalize(
@@ -1972,11 +2037,7 @@ fn run() -> Result<(), String> {
                 &launch,
                 &runtime_roots,
                 &raw_path,
-                if recorder_host::auto_attach::duplex_worker::AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED {
-                    compact_contract::stream_validator::StreamIdentityMode::IdentityV1
-                } else {
-                    compact_contract::stream_validator::StreamIdentityMode::Legacy
-                },
+                capture_identity_mode,
                 early_launch_manifest
                     .as_ref()
                     .ok_or("production finalizer lost its in-memory early launch manifest")?,
@@ -5283,7 +5344,7 @@ fn parse_diagnostic_stage_mask(value: Option<&String>, flag: &str) -> Result<u64
     recorder_host::early_render_launch::staged_hook_count_for_group_mask(mask)?;
     if mask == recorder_host::early_render_launch::EARLY_DIAGNOSTIC_STAGE_MASK_FULL {
         return Err(format!(
-            "invalid {flag}: 0xff is the immutable production set, not a diagnostic subset"
+            "invalid {flag}: 0x3ff is the immutable production set, not a diagnostic subset"
         ));
     }
     Ok(mask)
@@ -6728,7 +6789,9 @@ fn write_native_replay_container_streaming(
         })
         .collect::<Vec<_>>();
     // The raw compact stream is the ONLY large entry; it streams from disk. Its
-    // manifest sha256 is the capture-time rolling hash (no re-read to hash it).
+    // manifest sha256 is the capture-time rolling hash (no separate pre-hash
+    // read). The packer hashes the exact decoded bytes again while writing and
+    // refuses before manifest emission if they no longer match this identity.
     let stream_entry_path = format!("payload/{game_id}/{stream_payload_path}");
     let streaming_entries = vec![StreamingFileEntry {
         path: stream_entry_path.clone(),
@@ -7844,7 +7907,11 @@ fn require_domain57_transcript_file_sha256(
     Ok(())
 }
 
-fn write_control_file(cfg: &Config, pipe_token: &str) -> Result<(), String> {
+fn write_control_file(
+    cfg: &Config,
+    pipe_token: &str,
+    ordinary_duplex_challenge: Option<[u8; 16]>,
+) -> Result<(), String> {
     let control_path = cfg
         .dll
         .parent()
@@ -7935,6 +8002,14 @@ fn write_control_file(cfg: &Config, pipe_token: &str) -> Result<(), String> {
             ),
         );
         object.insert("control_challenge".to_string(), json!(pipe_token));
+    } else if let Some(challenge) = ordinary_duplex_challenge {
+        payload
+            .as_object_mut()
+            .expect("collector control payload is an object")
+            .insert(
+                "control_challenge".to_string(),
+                Value::String(to_hex(&challenge)),
+            );
     }
     if let Some(sha256) = cfg.domain57_game_speed_transcript_file_sha256.as_ref() {
         payload
@@ -8555,12 +8630,32 @@ fn verify_target_loaded_dll(proof: &TargetDllProof) -> Result<[u8; 32], String> 
     Ok(backing_hash)
 }
 
-fn attach_hook(
+struct InstalledHookLease {
+    module: Hmodule,
+    hooks: Vec<(Hhook, Dword)>,
+    _thread_authorities: Vec<RetainedThreadAuthority>,
+}
+
+impl Drop for InstalledHookLease {
+    fn drop(&mut self) {
+        unsafe {
+            for (hook, _) in self.hooks.drain(..) {
+                UnhookWindowsHookEx(hook);
+            }
+            if !self.module.is_null() {
+                FreeLibrary(self.module);
+                self.module = ptr::null_mut();
+            }
+        }
+    }
+}
+
+fn install_hook(
     process: &RetainedProcessAuthority,
     dll: &RetainedDllAuthority,
     target_proof: Option<&TargetDllProof>,
-    hold_ms: u64,
-) -> Result<(), String> {
+    poke_ms: u64,
+) -> Result<InstalledHookLease, String> {
     process.revalidate_live()?;
     let pid = process.pid;
     let hwnd = find_main_window(pid).ok_or_else(|| format!("no visible window for pid {pid}"))?;
@@ -8594,15 +8689,25 @@ fn attach_hook(
         return Err(format!("loaded DLL identity verification failed: {error}"));
     }
     if let Some(proof) = target_proof {
-        let local_mapped_hash = mapped_immutable_image_sha256(
+        let local_mapped_hash = match mapped_immutable_image_sha256(
             unsafe { GetCurrentProcess() },
             module as usize,
             &dll.immutable_layout,
-        )?;
-        proof
+        ) {
+            Ok(hash) => hash,
+            Err(error) => {
+                unsafe { FreeLibrary(module) };
+                return Err(error);
+            }
+        };
+        if let Err(error) = proof
             .expected_mapped_immutable_sha256
             .set(local_mapped_hash)
-            .map_err(|_| "target mapped-image expectation was already initialized".to_string())?;
+            .map_err(|_| "target mapped-image expectation was already initialized".to_string())
+        {
+            unsafe { FreeLibrary(module) };
+            return Err(error);
+        }
     }
     // Re-check target residency after local loading and immediately before any
     // SetWindowsHookExW action. An observed prior module is commitment evidence,
@@ -8692,7 +8797,6 @@ fn attach_hook(
             last_error()
         ));
     }
-    let poke_ms = hold_ms.min(500);
     let poke_started = Instant::now();
     while duration_millis_u64(poke_started.elapsed()) <= poke_ms {
         for (_, target_thread_id) in &hooks {
@@ -8705,15 +8809,25 @@ fn attach_hook(
         }
         thread::sleep(Duration::from_millis(50));
     }
+    Ok(InstalledHookLease {
+        module,
+        hooks,
+        _thread_authorities: thread_authorities,
+    })
+}
+
+fn attach_hook(
+    process: &RetainedProcessAuthority,
+    dll: &RetainedDllAuthority,
+    target_proof: Option<&TargetDllProof>,
+    hold_ms: u64,
+) -> Result<(), String> {
+    let hold_started = Instant::now();
+    let lease = install_hook(process, dll, target_proof, hold_ms.min(500))?;
     thread::sleep(Duration::from_millis(
-        hold_ms.saturating_sub(duration_millis_u64(poke_started.elapsed())),
+        hold_ms.saturating_sub(duration_millis_u64(hold_started.elapsed())),
     ));
-    unsafe {
-        for (hook, _) in hooks {
-            UnhookWindowsHookEx(hook);
-        }
-        FreeLibrary(module);
-    }
+    drop(lease);
     Ok(())
 }
 
@@ -9497,6 +9611,46 @@ struct AutoAttachWorkerContext {
     attempt_id: Option<String>,
     source_dll_sha256: Option<String>,
     dll_authority: RetainedDllAuthority,
+    stop_signal: Option<AutoAttachStopSignal>,
+}
+
+struct AutoAttachStopSignal(Handle);
+
+unsafe impl Send for AutoAttachStopSignal {}
+
+impl AutoAttachStopSignal {
+    fn open(name: &str, pid: u32, pipe_token: &str) -> Result<Self, String> {
+        let expected = format!(r"Local\battle-plan_stop_{pid}_{pipe_token}");
+        if name != expected || name.contains('\0') {
+            return Err("auto-attach stop event is not bound to this attempt".to_string());
+        }
+        let wide_name = wide(OsStr::new(name));
+        let handle = unsafe { OpenEventW(SYNCHRONIZE, 0, wide_name.as_ptr()) };
+        if handle.is_null() {
+            Err(format!(
+                "open auto-attach stop event failed: {}",
+                last_error()
+            ))
+        } else {
+            Ok(Self(handle))
+        }
+    }
+
+    fn is_requested(&self) -> Result<bool, String> {
+        match unsafe { WaitForSingleObject(self.0, 0) } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            other => Err(format!("wait on auto-attach stop event returned {other}")),
+        }
+    }
+}
+
+impl Drop for AutoAttachStopSignal {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { CloseHandle(self.0) };
+        }
+    }
 }
 
 impl AutoAttachWorkerContext {
@@ -9507,12 +9661,14 @@ impl AutoAttachWorkerContext {
         let challenge = env::var("BATTLE_PLAN_AUTO_ATTACH_CONTROL_CHALLENGE").or_else(|_| env::var("HOI4_AUTO_ATTACH_CONTROL_CHALLENGE")).ok();
         let attempt_id = env::var("BATTLE_PLAN_AUTO_ATTACH_ATTEMPT_ID").or_else(|_| env::var("HOI4_AUTO_ATTACH_ATTEMPT_ID")).ok();
         let source_dll_sha256 = env::var("BATTLE_PLAN_AUTO_ATTACH_SOURCE_DLL_SHA256").or_else(|_| env::var("HOI4_AUTO_ATTACH_SOURCE_DLL_SHA256")).ok();
+        let stop_event_name = env::var("BATTLE_PLAN_AUTO_ATTACH_STOP_EVENT").or_else(|_| env::var("HOI4_AUTO_ATTACH_STOP_EVENT")).ok();
         if pipe_token.is_none()
             && expected.is_none()
             && expected_dll.is_none()
             && challenge.is_none()
             && attempt_id.is_none()
             && source_dll_sha256.is_none()
+            && stop_event_name.is_none()
         {
             return Ok(None);
         }
@@ -9539,6 +9695,20 @@ impl AutoAttachWorkerContext {
         // hook teardown, so the proof hash cannot outlive the bytes it proves.
         let dll_authority = RetainedDllAuthority::open(&cfg.dll, Some(expected_dll_sha256))?;
         let dll_sha256 = dll_authority.sha256;
+        let stop_signal = if recorder_host::auto_attach::duplex_worker::auto_attach_identity_v1_enabled() {
+            Some(AutoAttachStopSignal::open(
+                stop_event_name
+                    .as_deref()
+                    .ok_or("duplex activation requires BATTLE_PLAN_AUTO_ATTACH_STOP_EVENT")?,
+                cfg.pid,
+                &pipe_token,
+            )?)
+        } else {
+            if stop_event_name.is_some() {
+                return Err("legacy auto-attach worker rejects duplex stop event authority".into());
+            }
+            None
+        };
         Ok(Some(Self {
             pipe_token,
             expected_creation_filetime,
@@ -9553,6 +9723,7 @@ impl AutoAttachWorkerContext {
             attempt_id,
             source_dll_sha256,
             dll_authority,
+            stop_signal,
         }))
     }
 
@@ -9586,7 +9757,12 @@ impl AutoAttachWorkerContext {
             payload: recorder_host::auto_attach::sources::StagedPayload {
                 staging_dir,
                 dll_path: self.dll_authority.load_path.clone(),
-                control_path: cfg.out_dir.join("collector_control.json"),
+                control_path: self
+                    .dll_authority
+                    .load_path
+                    .parent()
+                    .ok_or("duplex staged DLL path has no parent")?
+                    .join("collector_control.json"),
                 dll_sha256: staged_sha256,
                 source_sha256,
                 pipe_token: self.pipe_token.clone(),
@@ -9614,6 +9790,30 @@ impl AutoAttachWorkerContext {
         )?;
         Ok((self.dll_authority, emitter))
     }
+
+    fn into_activated_parts(
+        self,
+        cfg: &Config,
+    ) -> Result<
+        (
+            RetainedDllAuthority,
+            recorder_host::auto_attach::proof::WorkerProofEmitter<std::io::Stdout>,
+            recorder_host::auto_attach::sources::WorkerSpec,
+            AutoAttachStopSignal,
+        ),
+        String,
+    > {
+        let spec = self.worker_spec(cfg)?;
+        let emitter = recorder_host::auto_attach::proof::WorkerProofEmitter::new(
+            std::io::stdout(),
+            self.control_session,
+            self.expectation,
+        )?;
+        let stop_signal = self
+            .stop_signal
+            .ok_or("activated duplex worker lost cooperative stop authority")?;
+        Ok((self.dll_authority, emitter, spec, stop_signal))
+    }
 }
 
 /// Product composition seam for the paired H4CR/H4CT backend. It is compiled
@@ -9621,18 +9821,22 @@ impl AutoAttachWorkerContext {
 /// opaque permit remains unmintable while offline-only collector/host lifecycle
 /// work is activation-frozen pending live proof.
 #[allow(dead_code)]
-fn prepare_activated_duplex_runner(
-    cfg: &Config,
-    context: &AutoAttachWorkerContext,
+fn prepare_activated_duplex_workers(
+    spec: &recorder_host::auto_attach::sources::WorkerSpec,
     process: &RetainedProcessAuthority,
     dll: &RetainedDllAuthority,
     target_dll_proof: &TargetDllProof,
-    hook_hold_ms: u64,
     startup_timeout: Duration,
-) -> Result<recorder_host::auto_attach::windows_combined_backend::WindowsCombinedRunner, String> {
+) -> Result<
+    (
+        recorder_host::auto_attach::windows_combined_backend::WindowsCombinedDataReader,
+        recorder_host::auto_attach::windows_combined_backend::WindowsCombinedControlDriver,
+        InstalledHookLease,
+    ),
+    String,
+> {
     let permit = recorder_host::auto_attach::duplex_worker::auto_attach_duplex_product_permit()
         .map_err(|error| format!("duplex product activation refused: {error}"))?;
-    let spec = context.worker_spec(cfg)?;
     if spec.key.pid != process.pid
         || spec.key.creation_filetime.0 != process.expected_creation_filetime
     {
@@ -9643,12 +9847,13 @@ fn prepare_activated_duplex_runner(
     let cancellation = recorder_host::control_transport::ControlCancellation::new();
     let prepared =
         recorder_host::auto_attach::windows_combined_backend::prepare_server_pair_bounded(
-            &spec,
+            spec,
             recorder_host::windows_control_pipe::RestrictiveSecurityPolicy::default(),
             deadline,
             cancellation,
         )
         .map_err(|error| format!("prepare H4CR/H4CT pair failed: {error}"))?;
+    let mut installed_hook = None;
     let committed = prepared
         .commit_single_injection_for_product(permit, |_ready, authority| {
             if authority.process_key().pid != process.pid
@@ -9656,13 +9861,21 @@ fn prepare_activated_duplex_runner(
             {
                 return Err("duplex listener authority differs from retained process".to_string());
             }
-            attach_hook(process, dll, Some(target_dll_proof), hook_hold_ms)
+            installed_hook = Some(install_hook(process, dll, Some(target_dll_proof), 500)?);
+            Ok(())
         })
         .map_err(|error| format!("duplex one-shot injection failed: {error}"))?;
-    committed
+    let pair = committed
         .accept_and_bind_bounded()
-        .map(|pair| pair.into_runner())
-        .map_err(|error| format!("bind H4CR/H4CT pair failed: {error}"))
+        .map_err(|error| format!("bind H4CR/H4CT pair failed: {error}"))?;
+    let (data, control) = pair.into_runner()
+        .into_concurrent_parts()
+        .map_err(|error| format!("split H4CR/H4CT product workers failed: {error}"))?;
+    Ok((
+        data,
+        control,
+        installed_hook.ok_or("duplex injection returned without a retained hook lease")?,
+    ))
 }
 
 fn hash_file_sha256_bytes(path: &Path) -> Result<[u8; 32], String> {
@@ -9907,6 +10120,251 @@ fn authenticate_connected_pipe_client(
     // checked. Revalidate the same kernel process object after the query so no
     // pipe byte is accepted on a stale FILETIME observation.
     target.revalidate_live()
+}
+
+enum CombinedControlNotice {
+    FirstWorld(recorder_host::auto_attach::proof::ValidatedCompactRecordProof),
+    DataFinished,
+}
+
+fn read_combined_record_until(
+    data: &mut recorder_host::auto_attach::windows_combined_backend::WindowsCombinedDataReader,
+    deadline: recorder_host::control_transport::ControlDeadline,
+) -> Result<Vec<u8>, String> {
+    let mut header = [0u8; COMPACT_RECORD_HEADER_LEN];
+    data.read_exact_until(&mut header, deadline)
+        .map_err(|error| format!("read initial H4CR header failed: {error}"))?;
+    let parsed = compact_contract::parse_compact_record_header(&header)
+        .map_err(|error| format!("initial H4CR header invalid: {error}"))?;
+    let mut record = Vec::with_capacity(parsed.record_len());
+    record.extend_from_slice(&header);
+    record.resize(parsed.record_len(), 0);
+    data.read_exact_until(&mut record[COMPACT_RECORD_HEADER_LEN..], deadline)
+        .map_err(|error| format!("read initial H4CR payload failed: {error}"))?;
+    Ok(record)
+}
+
+fn capture_combined_pipe_to_file(
+    mut data: recorder_host::auto_attach::windows_combined_backend::WindowsCombinedDataReader,
+    mut control: recorder_host::auto_attach::windows_combined_backend::WindowsCombinedControlDriver,
+    out_path: &Path,
+    compression: compact_stream::StreamCompression,
+    proof_expected_domain_ids: Vec<u16>,
+    mut proof_emitter: recorder_host::auto_attach::proof::WorkerProofEmitter<std::io::Stdout>,
+    loaded_dll_sha256: [u8; 32],
+    stop_signal: AutoAttachStopSignal,
+    run_dir: &Path,
+) -> Result<PipeCaptureOutcome, String> {
+    control
+        .control_session_mut()
+        .ok_or("combined control session is absent before hello")?
+        .receive_collector_hello(Instant::now())
+        .map_err(|error| format!("receive product collector hello failed: {error}"))?;
+    proof_emitter.report_connected(loaded_dll_sha256)?;
+
+    let first_deadline = recorder_host::control_transport::ControlDeadline::after(
+        Duration::from_millis(recorder_host::auto_attach::policy::FIRST_FRAME_DEADLINE_MS),
+    )
+    .map_err(|error| format!("create first-frame deadline failed: {error}"))?;
+    let first_record_bytes = read_combined_record_until(&mut data, first_deadline)?;
+    let first_record = recorder_host::duplex_session::identity_control::ValidatedFirstCompactRecord::identity_v1(
+        0,
+        &first_record_bytes,
+    )
+    .map_err(|error| format!("validate first CID1 record failed: {error}"))?;
+    let sink = recorder_host::duplex_session::durable_fs::FilesystemIdentityDurableSink::new(
+        run_dir.join("identity-control"),
+    );
+    let mut identity =
+        recorder_host::duplex_session::identity_control::RecorderIdentityControlDispatcher::new(
+            sink,
+        );
+    let acknowledged = control
+        .control_session_mut()
+        .ok_or("combined control session disappeared before CFA1")?
+        .acknowledge_first_compact_record(&mut identity, first_record, first_deadline)
+        .map_err(|error| format!("durable first CID1 acknowledgement failed: {error}"))?;
+
+    let cancellation = data.cancellation().clone();
+    let control_cancellation = cancellation.clone();
+    let (notice_tx, notice_rx) = std::sync::mpsc::channel::<CombinedControlNotice>();
+    let control_thread = thread::Builder::new()
+        .name("auto-attach-product-control".to_string())
+        .spawn(move || -> Result<(), String> {
+            let result = (|| -> Result<(), String> {
+            let mut acknowledged = Some(acknowledged);
+            let mut recording = false;
+            loop {
+                if stop_signal.is_requested()? {
+                    control
+                        .close_for_graceful_data_drain()
+                        .map_err(|error| format!("close H4CT for graceful drain failed: {error}"))?;
+                    return Ok(());
+                }
+                match notice_rx.recv_timeout(Duration::from_millis(25)) {
+                    Ok(CombinedControlNotice::FirstWorld(first_world)) => {
+                        if recording {
+                            return Err("duplicate first-world proof from H4CR data worker".into());
+                        }
+                        let sequence = first_world.sequence();
+                        let admission = recorder_host::auto_attach::duplex_worker::DuplexRecordingAdmission::from_acknowledged_first_record(
+                            acknowledged
+                                .take()
+                                .ok_or("first-world proof lost acknowledged CID1")?,
+                            first_world,
+                        )
+                        .map_err(|error| format!("recording admission failed: {error}"))?;
+                        control
+                            .control_session_mut()
+                            .ok_or("combined control session disappeared before Recording")?
+                            .first_frame_valid(admission)
+                            .map_err(|error| format!("enter Recording failed: {error}"))?;
+                        proof_emitter.report_first_complete_record(sequence)?;
+                        recording = true;
+                    }
+                    Ok(CombinedControlNotice::DataFinished) => {
+                        if !recording {
+                            return Err("H4CR ended before a validated first-world record".into());
+                        }
+                        control
+                            .close_for_graceful_data_drain()
+                            .map_err(|error| format!("close H4CT after H4CR EOF failed: {error}"))?;
+                        return Ok(());
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err("H4CR data worker disconnected without terminal notice".into())
+                    }
+                }
+                match control.drive_due_heartbeat(&mut identity) {
+                    Ok(Some(cycle)) if recording => {
+                        proof_emitter.report_recurring_heartbeat(
+                            cycle.proof().last_complete_h4cr_sequence,
+                        )?;
+                    }
+                    Ok(_) => {}
+                    Err(recorder_host::auto_attach::windows_combined_backend::WindowsCombinedBackendError::TargetExited) => {
+                        return Ok(())
+                    }
+                    Err(error) => {
+                        control_cancellation.cancel();
+                        return Err(format!("product H4CT heartbeat failed: {error}"));
+                    }
+                }
+            }
+            })();
+            if result.is_err() {
+                control_cancellation.cancel();
+            }
+            result
+        })
+        .map_err(|error| format!("spawn product control worker failed: {error}"))?;
+
+    let mut writer = match compact_stream::StreamWriter::create(out_path, compression) {
+        Ok(writer) => writer,
+        Err(error) => {
+            cancellation.cancel();
+            let _ = control_thread.join();
+            return Err(format!("create combined stream file failed: {error}"));
+        }
+    };
+    let mut hasher = Sha256::new();
+    let mut total = 0u64;
+    let mut write_latency = WriteLatencyHistogram::default();
+    let capture_wall_start = SystemTime::now();
+    let capture_mono_start = Instant::now();
+    let mut first_world_gate =
+        recorder_host::auto_attach::proof::FirstCompactRecordGate::new(proof_expected_domain_ids);
+
+    let mut write_record = |record: &[u8]| -> Result<(), String> {
+        hasher.update(record);
+        let write_started = Instant::now();
+        writer
+            .write_all(record)
+            .map_err(|error| format!("write combined H4CR stream failed: {error}"))?;
+        write_latency.record(
+            write_started
+                .elapsed()
+                .as_micros()
+                .min(u64::MAX as u128) as u64,
+        );
+        total = total.saturating_add(record.len() as u64);
+        Ok(())
+    };
+    if let Err(error) = write_record(&first_record_bytes) {
+        cancellation.cancel();
+        drop(write_record);
+        let _ = control_thread.join();
+        return Err(error);
+    }
+
+    let data_result = (|| -> Result<(), String> {
+        let mut first_world_sent = false;
+        loop {
+            let mut header = [0u8; COMPACT_RECORD_HEADER_LEN];
+            match data.read_exact(&mut header) {
+                Ok(()) => {}
+                Err(recorder_host::auto_attach::windows_combined_backend::WindowsCombinedBackendError::Io(
+                    std::io::ErrorKind::BrokenPipe,
+                )) => break,
+                Err(recorder_host::auto_attach::windows_combined_backend::WindowsCombinedBackendError::Io(
+                    std::io::ErrorKind::UnexpectedEof,
+                )) => return Err("combined H4CR ended with a partial record header".into()),
+                Err(error) => return Err(format!("read combined H4CR header failed: {error}")),
+            }
+            let parsed = compact_contract::parse_compact_record_header(&header)
+                .map_err(|error| format!("combined H4CR header invalid: {error}"))?;
+            let mut record = Vec::with_capacity(parsed.record_len());
+            record.extend_from_slice(&header);
+            record.resize(parsed.record_len(), 0);
+            data.read_exact(&mut record[COMPACT_RECORD_HEADER_LEN..])
+                .map_err(|error| format!("truncated combined H4CR payload: {error}"))?;
+            write_record(&record)?;
+            if !first_world_sent {
+                if let Some(proof) = first_world_gate
+                    .observe(&record)
+                    .map_err(|error| format!("first-world H4CR gate failed: {error}"))?
+                {
+                    notice_tx
+                        .send(CombinedControlNotice::FirstWorld(proof))
+                        .map_err(|_| "product control worker dropped first-world proof".to_string())?;
+                    first_world_sent = true;
+                }
+            }
+        }
+        // The control worker may already have completed a cooperative stop or
+        // observed target exit; EOF remains owned by this data-drain worker.
+        let _ = notice_tx.send(CombinedControlNotice::DataFinished);
+        Ok(())
+    })();
+    if data_result.is_err() {
+        cancellation.cancel();
+    }
+    let control_result = control_thread
+        .join()
+        .map_err(|_| "product control worker panicked".to_string())?;
+    data_result?;
+    control_result?;
+    drop(write_record);
+    writer
+        .finish()
+        .map_err(|error| format!("finish combined stream file failed: {error}"))?;
+    if total == 0 {
+        return Err("combined collector pipe returned no bytes".to_string());
+    }
+    let stored_byte_count = fs::metadata(out_path)
+        .map_err(|error| format!("stat combined stream file failed: {error}"))?
+        .len();
+    Ok(PipeCaptureOutcome {
+        capture: PipeCapture {
+            byte_count: total,
+            stored_byte_count,
+            sha256: to_hex(&hasher.finalize()),
+            write_latency,
+            clock_skew: ClockSkewSample::measure(capture_wall_start, capture_mono_start),
+        },
+        loaded_dll_sha256: Some(loaded_dll_sha256),
+    })
 }
 
 /// Read the collector pipe and stream every byte directly to `out_path` in bounded
@@ -10220,13 +10678,14 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
 }
 
 fn summarize_compact_stream_file(path: &Path) -> Result<CompactSummary, String> {
-    let identity_mode =
-        if recorder_host::auto_attach::duplex_worker::AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED {
-            compact_contract::stream_validator::StreamIdentityMode::IdentityV1
-        } else {
-            compact_contract::stream_validator::StreamIdentityMode::Legacy
-        };
-    summarize_compact_stream_file_with_identity_mode(path, identity_mode)
+    // Ordinary/manual and early-render captures remain Legacy even after the
+    // auto-attach product gate is enabled. IdentityV1 is an attempt-local mode
+    // selected only from an authenticated auto-attach worker context; the live
+    // `run` path passes that explicit mode to the stateful validator.
+    summarize_compact_stream_file_with_identity_mode(
+        path,
+        compact_contract::stream_validator::StreamIdentityMode::Legacy,
+    )
 }
 
 fn summarize_compact_stream_file_with_identity_mode(
@@ -12649,6 +13108,7 @@ fn decode_test_domain_data_payload(
             ..DomainDataContext::default()
         },
     );
+    summary.per_domain.entry(domain_id).or_default();
     merge_domain_data_authority(summary, domain_id, 0, result);
 }
 
@@ -12727,9 +13187,16 @@ mod tests {
             parse_diagnostic_stage_mask(Some(&"41".to_string()), "--mask").unwrap(),
             0x41
         );
-        assert!(parse_diagnostic_stage_mask(Some(&"0xff".to_string()), "--mask").is_err());
+        assert_eq!(
+            parse_diagnostic_stage_mask(Some(&"0xff".to_string()), "--mask").unwrap(),
+            0xff
+        );
         assert!(parse_diagnostic_stage_mask(Some(&"0x02".to_string()), "--mask").is_err());
-        assert!(parse_diagnostic_stage_mask(Some(&"0x101".to_string()), "--mask").is_err());
+        assert_eq!(
+            parse_diagnostic_stage_mask(Some(&"0x101".to_string()), "--mask").unwrap(),
+            0x101
+        );
+        assert!(parse_diagnostic_stage_mask(Some(&"0x3ff".to_string()), "--mask").is_err());
     }
 
     fn minimal_test_pe(marker: u8) -> Vec<u8> {
@@ -18312,6 +18779,24 @@ mod tests {
         }
     }
 
+    fn append_prhf_trailer(payload: &mut Vec<u8>) {
+        payload.extend_from_slice(b"PRHF");
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&20u16.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for value in [47u32, 7, 0, 0x4C17, 0x4C17] {
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+        payload.extend_from_slice(&(-1i32).to_le_bytes());
+        for value in [0u32, 3, 99, 0, 1234, 0] {
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+        payload.extend_from_slice(&456i32.to_le_bytes());
+        payload.extend_from_slice(&(1u32 | (1u32 << 2)).to_le_bytes());
+    }
+
     #[test]
     fn projects_decode_accepts_lifecycle_trailer_and_counts_units() {
         let mut payload = test_projects_data_payload(0);
@@ -18347,6 +18832,28 @@ mod tests {
             .parse_errors
             .iter()
             .any(|e| e.contains("duplicates")));
+    }
+
+    #[test]
+    fn projects_decode_accepts_lifecycle_and_reward_history_segments() {
+        let mut payload = test_projects_data_payload(0);
+        append_plcf_trailer(&mut payload, &[(47, 7, false, true)]);
+        append_prhf_trailer(&mut payload);
+        let mut summary = CompactSummary::default();
+        summary.per_domain.entry(41).or_default();
+        decode_compact_projects_data_payload(0, &payload, &mut summary);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let units = &summary.per_domain.get(&41).unwrap().data_units_total;
+        assert_eq!(units.get("project_lifecycle_rows").copied(), Some(1));
+        assert_eq!(units.get("project_reward_history_rows").copied(), Some(1));
+        assert_eq!(
+            units.get("project_reward_history_countries").copied(),
+            Some(1)
+        );
     }
 
     #[test]
@@ -21686,7 +22193,7 @@ mod tests {
             100,
             44,
             COMPACT_RECORD_TYPE_DOMAIN_PERF,
-            &test_domain_payload(900, 2, 7, 7, 7),
+            &test_domain_payload(900, 2, 9, 8, 9),
         );
         append_test_compact_record(
             &mut raw,
@@ -21715,10 +22222,10 @@ mod tests {
         assert!(compact_domain_coverage_errors(&summary, &[44]).is_empty());
         let supply = summary.per_domain.get(&44).unwrap();
         assert_eq!(supply.row_count_total, 2);
-        assert_eq!(supply.unit_count_total, 7);
+        assert_eq!(supply.unit_count_total, 8);
         assert_eq!(supply.data_record_count, 1);
-        assert_eq!(supply.data_rows_total, 8);
-        assert_eq!(supply.data_changed_rows_total, 8);
+        assert_eq!(supply.data_rows_total, 9);
+        assert_eq!(supply.data_changed_rows_total, 9);
         assert_eq!(
             supply
                 .data_units_total
@@ -21738,7 +22245,7 @@ mod tests {
                 .data_units_total
                 .get("supply_computed_badge_rows")
                 .copied(),
-            Some(5)
+            Some(6)
         );
         assert_eq!(
             supply
@@ -21769,6 +22276,13 @@ mod tests {
             Some(1)
         );
         assert_eq!(
+            supply
+                .data_units_total
+                .get("supply_country_disrupted_source_available")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
             compact_domain_id("supply_logistics_attrition_live"),
             Some(44)
         );
@@ -21779,9 +22293,9 @@ mod tests {
     fn compact_supply_logistics_missing_badge_fails_decode() {
         let mut payload = test_supply_logistics_attrition_data_payload(0);
         payload.truncate(payload.len() - COMPACT_SUPPLY_LOGISTICS_ROW_LEN);
-        payload[8..12].copy_from_slice(&7u32.to_le_bytes());
-        payload[12..16].copy_from_slice(&7u32.to_le_bytes());
-        payload[32..36].copy_from_slice(&4u32.to_le_bytes());
+        payload[8..12].copy_from_slice(&8u32.to_le_bytes());
+        payload[12..16].copy_from_slice(&8u32.to_le_bytes());
+        payload[32..36].copy_from_slice(&5u32.to_le_bytes());
         let mut summary = CompactSummary::default();
 
         decode_compact_supply_logistics_attrition_data_payload(0, &payload, &mut summary);
@@ -21795,11 +22309,11 @@ mod tests {
     #[test]
     fn compact_supply_logistics_delta_record_without_badges_decodes_clean() {
         // A DELTA record legitimately carries ZERO computed-badge rows: the
-        // five constant badges are emitted once in the baseline and RETAINED by
-        // the fold. Strip the five trailing badge rows, set the DELTA flag, and
+        // five constant wall badges and the exact-source witness are emitted in
+        // the baseline and RETAINED by the fold. Strip all six trailing badge rows, and
         // rewrite the counters to describe the three surviving live rows.
         let mut payload = test_supply_logistics_attrition_data_payload(COMPACT_STATUS_DELTA_DATA);
-        payload.truncate(payload.len() - 5 * COMPACT_SUPPLY_LOGISTICS_ROW_LEN);
+        payload.truncate(payload.len() - 6 * COMPACT_SUPPLY_LOGISTICS_ROW_LEN);
         payload[8..12].copy_from_slice(&3u32.to_le_bytes()); // row_count
         payload[12..16].copy_from_slice(&3u32.to_le_bytes()); // changed_rows (== emitted for delta)
         payload[32..36].copy_from_slice(&0u32.to_le_bytes()); // badge_rows
@@ -21829,6 +22343,69 @@ mod tests {
             .parse_errors
             .iter()
             .any(|err| err.contains("csupply row 2 has invalid flags")));
+    }
+
+    #[test]
+    fn compact_supply_logistics_exact_country_disruption_decodes() {
+        let mut payload = test_supply_logistics_attrition_data_payload(0);
+        payload[8..12].copy_from_slice(&10u32.to_le_bytes());
+        payload[12..16].copy_from_slice(&10u32.to_le_bytes());
+        // Header +0x2c counts all CSupply-derived rows (kinds 4 and 5).
+        payload[44..48].copy_from_slice(&2u32.to_le_bytes());
+        for value in [
+            COMPACT_SUPPLY_ROW_KIND_COUNTRY_DISRUPTED_SUPPLY,
+            7081,
+            3,
+            47,
+            COMPACT_SUPPLY_ROW_FLAG_COUNTRY_DISRUPTED_SUPPLY_EXACT,
+        ] {
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+        payload.extend_from_slice(&4017i32.to_le_bytes());
+        for _ in 0..4 {
+            payload.extend_from_slice(&0i32.to_le_bytes());
+        }
+        let mut summary = CompactSummary::default();
+
+        decode_compact_supply_logistics_attrition_data_payload(0, &payload, &mut summary);
+
+        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert_eq!(
+            summary
+                .per_domain
+                .get(&44)
+                .and_then(|domain| domain.data_units_total.get("supply_country_disrupted_supply_rows"))
+                .copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn compact_supply_logistics_disruption_tombstone_preserves_composite_key() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_STATUS_DELTA_DATA.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_SUPPLY_ROW_KIND_COUNTRY_DISRUPTED_SUPPLY.to_le_bytes());
+        payload.extend_from_slice(&(7081u32 | COMPACT_SUPPLY_ROW_ID_DELETED).to_le_bytes());
+        payload.extend_from_slice(&3u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        for _ in 0..6 {
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        let mut summary = CompactSummary::default();
+
+        decode_compact_supply_logistics_attrition_data_payload(0, &payload, &mut summary);
+
+        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
     }
 
     #[test]
@@ -23407,6 +23984,8 @@ mod tests {
                 defender_member_count: Some(8),
                 attacker_positioning_milli: Some(812),
                 defender_positioning_milli: Some(765),
+                attacker_anti_air_raw: Some(123_000),
+                defender_anti_air_raw: Some(98_000),
             }],
         );
         let member_payload = naval4950::encode_member_payload(
@@ -25291,7 +25870,7 @@ mod tests {
             cfg.domain57_omission_reason,
             Some("exact_v2_transcript_gate_not_supplied")
         );
-        write_control_file(&cfg, &"1".repeat(32)).unwrap();
+        write_control_file(&cfg, &"1".repeat(32), None).unwrap();
         let control: Value = serde_json::from_slice(
             &fs::read(cfg.dll.parent().unwrap().join("collector_control.json")).unwrap(),
         )
@@ -25392,7 +25971,7 @@ mod tests {
         }));
         cfg.domain57_game_speed_transcript_file_sha256 = Some(sha256.clone());
 
-        write_control_file(&cfg, "d57-token").unwrap();
+        write_control_file(&cfg, "d57-token", None).unwrap();
         let control: Value =
             serde_json::from_slice(&fs::read(dir.join("collector_control.json")).unwrap()).unwrap();
         assert_eq!(
@@ -25757,7 +26336,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let cfg = parse_args(profile_test_args(&dir, &["--profile", "debug"])).unwrap();
-        write_control_file(&cfg, "tok").unwrap();
+        write_control_file(&cfg, "tok", None).unwrap();
         let control = fs::read_to_string(dir.join("collector_control.json")).unwrap();
 
         assert!(
@@ -25777,11 +26356,20 @@ mod tests {
         assert!(control.contains("\"compact_country_frame\":false"));
         assert!(control.contains("\"stream_format\":\"compact\""));
         assert!(control.contains("\"scheduled_snapshot_step_hours\":1"));
+        assert!(!control.contains("\"control_challenge\""));
+
+        let challenge = [0xabu8; 16];
+        write_control_file(&cfg, "tok", Some(challenge)).unwrap();
+        let duplex = fs::read_to_string(dir.join("collector_control.json")).unwrap();
+        assert!(duplex.contains(&format!(
+            "\"control_challenge\":\"{}\"",
+            to_hex(&challenge)
+        )));
 
         // No profile is resolved to the host's legacy debug-mode settings; JSON
         // null is never emitted because the collector rejects it as malformed.
         let cfg_legacy = parse_args(profile_test_args(&dir, &[])).unwrap();
-        write_control_file(&cfg_legacy, "tok").unwrap();
+        write_control_file(&cfg_legacy, "tok", None).unwrap();
         let legacy = fs::read_to_string(dir.join("collector_control.json")).unwrap();
         assert!(legacy.contains("\"profile\":\"debug\""), "legacy: {legacy}");
         assert!(!legacy.contains("\"domain57_game_speed_gate\""));
@@ -25839,7 +26427,7 @@ mod tests {
             cfg_shadow.d53_relation_read_mode,
             D53RelationReadMode::Shadow
         );
-        write_control_file(&cfg_shadow, "tok").unwrap();
+        write_control_file(&cfg_shadow, "tok", None).unwrap();
         let control = fs::read_to_string(dir.join("collector_control.json")).unwrap();
         assert!(
             control.contains("\"d53_relation_read_mode\":\"shadow\""),
@@ -25869,7 +26457,7 @@ mod tests {
         let cfg_default = parse_args(profile_test_args(&dir, &[])).unwrap();
         assert_eq!(cfg_default.prefetch_dist_relation, None);
         assert_eq!(cfg_default.prefetch_dist_candidates, None);
-        write_control_file(&cfg_default, "tok").unwrap();
+        write_control_file(&cfg_default, "tok", None).unwrap();
         let control = fs::read_to_string(dir.join("collector_control.json")).unwrap();
         assert!(
             control.contains("\"prefetch_dist_relation\":null"),
@@ -25891,7 +26479,7 @@ mod tests {
         .unwrap();
         assert_eq!(cfg_set.prefetch_dist_relation, Some(8));
         assert_eq!(cfg_set.prefetch_dist_candidates, Some(0));
-        write_control_file(&cfg_set, "tok").unwrap();
+        write_control_file(&cfg_set, "tok", None).unwrap();
         let control = fs::read_to_string(dir.join("collector_control.json")).unwrap();
         assert!(
             control.contains("\"prefetch_dist_relation\":8"),
@@ -28387,6 +28975,18 @@ mod tests {
                 0u32,
                 0u32,
                 0u32,
+                COMPACT_SUPPLY_ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE,
+                COMPACT_SUPPLY_BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE,
+                0i32,
+                0i32,
+                0i32,
+                0i32,
+            ),
+            (
+                COMPACT_SUPPLY_ROW_KIND_COMPUTED_BADGE,
+                0u32,
+                0u32,
+                0u32,
                 COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED,
                 COMPACT_SUPPLY_BADGE_CSUPPLY_INPUT_ARRAYS_UNSAFE,
                 0i32,
@@ -28403,7 +29003,7 @@ mod tests {
         payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
-        payload.extend_from_slice(&5u32.to_le_bytes());
+        payload.extend_from_slice(&6u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());

@@ -284,6 +284,22 @@ impl<W: Write> WorkerProofEmitter<W> {
         self.first_record_emitted = true;
         Ok(())
     }
+
+    /// Forward a recorder-authenticated recurring H4CT heartbeat to the
+    /// supervisor after Recording admission. The stdout channel is only a
+    /// parent/child status transport; the proof's authority still comes from
+    /// the admitted collector H4CT exchange.
+    pub fn report_recurring_heartbeat(&mut self, sequence: u64) -> Result<(), String> {
+        if !self.first_record_emitted {
+            return Err("recurring heartbeat cannot precede first-record proof".to_string());
+        }
+        self.channel
+            .send(
+                MessageKind::HeartbeatProof,
+                &heartbeat_proof_payload(&self.expectation, sequence),
+            )
+            .map_err(|error| error.to_string())
+    }
 }
 
 /// The generic PERF envelope immediately preceding a candidate world DATA
@@ -790,11 +806,11 @@ fn d44_supply_data_matches_perf(payload: &[u8], perf: DomainPerfEvidence) -> boo
             1 => &mut actual_province_rows,
             2 => &mut actual_division_rows,
             3 => &mut actual_badge_rows,
-            4 => &mut actual_csupply_rows,
+            4 | 5 => &mut actual_csupply_rows,
             _ => return false,
         };
         *counter = counter.saturating_add(1);
-        if matches!(row_kind, 1 | 2 | 4) && entity_id & (1 << 31) == 0 {
+        if matches!(row_kind, 1 | 2 | 4 | 5) && entity_id & (1 << 31) == 0 {
             live_entity_rows = live_entity_rows.saturating_add(1);
         }
     }

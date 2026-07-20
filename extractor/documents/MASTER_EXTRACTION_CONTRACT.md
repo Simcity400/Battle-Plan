@@ -68,7 +68,9 @@ acceptance proof.
 - **Static and speed admission:** d57 control authority is closed offline (D10). The runtime builder,
   exact v2 source inventory, ordered active-product DLC/mod layers, and all **seven** required static
   roles—including `technology_sharing_static`—are integrated and fail closed (S2/S5/D69). No fresh
-  current-session D-0-4 seven-role bundle or speed-1-to-5 proof has passed production (A3/S9/F6).
+  current-session D-0-4 seven-role bundle has passed production (S9/F6). A3's exact speed-1-to-5
+  law and pause orthogonality are closed; each production capture still requires its separate
+  transcript-bound D57 control-policy gate.
 - **Product composition:** auto-attach, campaign identity, stitching, H4CT framing/heartbeat, and the
   restrictive overlapped Windows control-pipe adapter have offline foundations. Explicit-mode
   CID1/CFA1 validation, durable receipt ordering, and recorder-main manifest admission are green
@@ -125,21 +127,37 @@ they do not block extractor completion and must not be implemented or edited fro
 - [x] A1. Hub motorization LEVEL/settings — exact inner actor attribution and levels 1/2 are implemented in d62 schema v2; the XN07 joint collector/contract/recorder gate passes
 - [x] A2. Focus-paused bit — exact `CCountry+0x1380 -> CNationalFocusProgress+0xB0`
   boolean is implemented with vtable/range/stable-byte validation; the D45 and recorder gates pass
-- [ ] A3. Game-speed live acceptance — the d57 reader and strict control-file integration now bind
-  the declared current build to `CGameState+0x4BC`, `raw 0..4`, and speed-5 raw `4`. Before live
-  acceptance, retain a real speed-1-to-5 multivalue cycle plus pause/resume orthogonality evidence.
-  The tracked machine-readable probe only
-  contains paused `[1,1,1]` samples and explicitly leaves the speed flip unverified; synthetic or
-  asserted control metadata is not live proof.
+- [x] A3. Game-speed live acceptance — the d57 reader and strict control-file integration bind the
+  declared current build to `CGameState+0x4BC`, raw `0..4`, and speed-5 raw `4`. The sealed
+  same-process transcript covers requested UI speeds `1..5` as raw `0..4`, plus running/paused/
+  running orthogonality at raw 2; the exact reader/fold/replay projection is integrated. X12 owns
+  within-hour transition fidelity after its hook exists. Per-capture transcript binding remains a
+  product-composition policy, not another A3 reverse-engineering fixture
+  (`extractor/documents/dossiers/A3_P3_X12_EXHAUSTION_20260719.md`).
 - [x] A4. Air combat lifecycle — exact stored regional combat history and typed damage causes are
   implemented; persistent wing-to-wing pairing and reinforcement-source enum are proven absent
 - [ ] A5. Ace kill_type / wounded variance (d46)
-- [ ] A6. Convoy/port disrupted-supply PRESSURE (nonzero) — blockaded island / cut pocket (d44)
-- [ ] A7. Convoy combat loss route/context — active convoy battle (d44)
-- [ ] A8. Naval mission enum / home base / repair / retreat / route semantics (d56)
-- [ ] A9. Naval combat lifecycle-end + member join/leave/sinking — battle teardown (d49-50)
-- [ ] A10. Running-operation owner/target contrast (operative loc ≠ target) (d53)
-- [ ] A11. Spy-network / intel-map percentages, same-tick (d53)
+- [x] A6. Stored country/node disrupted-supply PRESSURE (nonzero) — exact bounded `CSupplySystem+0x108` owner vector and `CCountrySupplySystem+0x88` robin-hood table integrated in d44; retained D04/FRA nonzero anchors (terminal route attribution remains A7)
+- [ ] A7. Convoy terminal route/client attribution — the exact pre-collapse call
+  `0x141962378`, owner/killer/count aggregation, `CFEXMember+0xD0/+0xD8` client carrier, and
+  retained route oracles are closed; instrument the hook and authoritative live route-manager
+  resolver before the controlled loss/no-loss fixture (d44)
+- [ ] A8. Naval mission enum / home base / repair / retreat / route semantics (d56) — no human
+  fixture is pending. Discovery-only exports conflict on the receiver layout at
+  `+0x4A8/+0x4B8/+0x4C0`; repeat the formatter/serializer/caller/vtable/constructor routes under
+  the clean 10-shard authority gate before promoting any D56 activity field
+  (`extractor/native/lanes/naval_combat_live/A8_A9_B6_HUMAN_INPUT_REQUIREMENTS.json`)
+- [ ] A9. Naval combat lifecycle-end + member join/leave/sinking (d49-50) — the standalone
+  member-leave and terminal-loss human cards are retired. D50 mechanically tombstones every
+  vanished member independently of D49 parent survival; member state `0x20` is exactly
+  `FEX_STATE_SUNK` and is consumed as the terminal sunk row. Generic tombstones remain untyped;
+  controlled leave/loss captures are optional regression validation
+  (`extractor/native/lanes/naval_combat_live/A8_A9_B6_HUMAN_INPUT_REQUIREMENTS.json`)
+- [x] A10. Operation runtime semantics — OPIN v3 carries exact definition, owner, country/state
+  target, preparing/prepared/running/finished status, phase/progress, start/duration, and assigned
+  operative identities. Reciprocal operative projection and UI-controller order/visibility remain A30
+- [ ] A11. Per-state spy-network strength plus same-frame owner/reciprocal-assignment/controller
+  projection. All four owner-target intel levels and network-scoped national coverage are exact
 - [x] A12. Decision targets and cooldowns — exact country/string or numeric target union,
   lifecycle state, re-enable vector, remove vector, definitions, and signed day counters are wired
 - [ ] A13. Scripted-GUI open/state (d51) — OPEN. Only the host-local widget-state portion (which
@@ -161,7 +179,9 @@ they do not block extractor completion and must not be implemented or edited fro
   is done and the authoritative live lane is d67 `country_dynamic_modifiers_live`
 - [ ] A19. Delayed-event `+0xC4` decrement-over-time + originator-vs-scope-country separation;
   static structure is done and the authoritative rooted lane is d64 `delayed_events_live`
-- [ ] A20. Weather region-phenomenon-flags drift confirmation (rain_heavy/arctic_water 305/305 now) — unpaused drift (d24)
+- [ ] A20. Weather region-phenomenon temporal gate — run the retained 423-hour zero-skip d24
+  stream through the existing offline validator before requesting any new observation. Close-zoom
+  particle/entity rooting and temporal SnowMudData are separate replay-rendering residuals
 - [x] A21. Combat killer/cause attribution — typed d42 damage causes and exact domain-70
   sunk-convoy history are wired; finer persistent per-wing pairing is proven absent
 - [x] A22. Complete cumulative air-loss statistics — d61 schema v2 carries the exact 24-channel
@@ -180,8 +200,9 @@ The current bounded query order and exact same-tick acceptance oracles are in
 pass completed in the required order B4 → B7 → B1 → B6 → B2. At that pass none of the five items was
 complete; since then (2026-07-19 reconciliation) B2's inner-container RE has closed promotion-ready
 (see the B2 row and `extractor/re_evidence/B2_COUNTRY_CONVOYS/`, 2026-07-17 jobs). B1 still needs
-inner-container RE, while B4/B6/B7 still need orchestrator-only paused-D04
-acceptance and production integration. Do not interact with or inject into the paused game until the
+inner-container RE, while B4/B7 still need orchestrator-only paused-D04
+acceptance and production integration. B6 is exact and integrated through replay; its former
+eight-side capture card is validation history, not an open RE or human gate. Do not interact with or inject into the paused game until the
 static bundle and every other pre-live gate pass.
 
 - [ ] B1. Market stockpile owner/iterator — save `countries/<TAG>/equipment_market` is rooted at the
@@ -206,10 +227,8 @@ static bundle and every other pre-live gate pass.
   After every pre-live gate, extend only the already-discovered d60 row windows to at most `+0x120`
   and extend the save oracle, then require all-row equality, useful variance, typed bounds, and
   adjacent negative controls. No new heap scan; if paused D04 lacks variance, remain fixture-blocked.
-- [ ] B6. Naval anti-air live acceptance/integration — the current-build naval-side serializer writes
-  save token `anti_air` directly from the 64-bit side member at `+0x150`; no ship/module aggregate or
-  definition-derived formula is justified. Resolve the prior failed read as a side-root/raw-decoding
-  issue, then match all eight D04 sides, including all three nonzero values, before integration
+  `+0x138/+0x150` reads, compact carrier, fold, and replay projection are wired.
+  The former eight-side capture card is historical freshness validation only
 - [ ] B7. Raids live acceptance/integration — static root and both iterators are closed. The correct
   top root is `CGameState+0x3F0` (not `+0x3F8`); the manager's inline status array uses
   start/capacity/count/allocator at `+0xD8/+0xE0/+0xE4/+0xE8`, stride `0xB0`, and each status's child
@@ -220,7 +239,8 @@ static bundle and every other pre-live gate pass.
 - [x] B9. Subject ratio — merged into A16 so the same live transition proves both autonomy dynamics
   and `CSubjectRelation+0x60`; do not count as a second backlog item
 - [x] B10. `CProgram` owner-tag offset — transferred to fixture item A23 because paused D04 is the
-  required oracle; do not count as a no-fixture RE item
+  required oracle; do not count as a no-fixture RE item. This extractor ID is distinct from replay
+  rendering-law B10, whose province-controller key and authenticated mapname CB1 law are RE-closed
 
 ### C. EXTERNAL HANDOFFS — replay layer, explicitly out of extractor implementation scope
 
@@ -422,21 +442,30 @@ evidence/ordering packet for d54, d55, d65, d69, and multi-order membership. It 
 current-build do-not-retry list and requires static-bundle/pre-live closure before paused D04
 corroboration, followed by separate mutation fixtures.
 
-- [ ] X1a. d54 offline integration — carry cracked `COrderInstance+0x244` identity through d27/d54;
-  rename/downgrade `assigned_units_status`, which currently proves only exact owning-army membership,
-  not per-order divisions; split omission telemetry and re-adjudicate partial-fold acceptance
-- [ ] X1b. d54 root work — direct empty/inactive order groups, activation/execution, stance/
-  aggressiveness, and geometry beyond the validated type-5 target/non-type-5 path snapshot
-- [ ] X1c. d54 fixture work — after roots/integration, prove stable-identity redraw/resize/delete and
-  order-assignment add/remove/tombstone lifecycle
-- [ ] X2a. d55 integrate already-cracked battle fields — tactic chain
-  `side+0x110 → tactic_id+0x98/token+0x10/name+0x30` and side progress `+0x418`
-- [ ] X2b. d55 root work — manpower/equipment losses have positive D04 save rows and need live roots;
-  reserve count is captured but reserve-division identities remain open
-- [ ] X2c. d55 fixture work — all-zero side `losses` scalar and retreat/overrun/outcome transitions
-  need a changing battle fixture
-- [ ] X2d. d55 dispositions — terrain is exactly derived; width formula remains unaccepted under the
-  no-fudge rule; cracked planning/dig-in offsets belong in the division schema, not d55
+- [ ] X1a. d54 partial/fold acceptance — `COrderInstance+0x244` identity, exact per-order assigned-
+  division children, and exact `+0x248` active/execution state are integrated; split omission
+  telemetry and prove sparse-fold identity or mark the affected domain/hour unknown
+- [ ] X1b. d54 root work — direct empty/inactive order groups, army execution-type/cohesion/
+  proximity scalars, stance/aggressiveness, and type-1/type-4 or non-path geometry. Exact dispatch is
+  type 2 line, type 3 invasion, type 4 paradrop, and type 5 area defense; only type-2/type-3
+  `+0x70/+0x78` paths and type-5 `+0xE0/+0xE8` state sets are currently admitted
+- [ ] X1c. d54 fixture work — prove one stable-identity type-2 redraw/resize/delete sequence, one
+  type-4 discriminator, complete per-order membership equality plus assignment add/remove, and the
+  empty/inactive-army manager transition. Order execution itself needs no toggle fixture: the exact
+  command/setter/serializer/render join is `order+0x248`
+- [x] X2a. d55 tactic/progress — exact tactic chain
+  `side+0x110 → tactic_id+0x98/token+0x10/name+0x30` and signed fixed-point side progress
+  `+0x418` are implemented fail-closed
+- [ ] X2b. d55 current-epoch manpower/equipment loss carrier — reserve-division identities are
+  implemented; retained all-zero save rows cannot authenticate a live zero and a changing nonzero
+  producer join remains required
+- [ ] X2c. d55 fixture work — the all-zero current-epoch `losses` scalar and retreat classification
+  need a changing battle fixture. Active-to-ended disappearance and the authenticated normal/overrun
+  terminal winner/result record are closed; do not reissue an outcome/end fixture
+- [ ] X2d. d55 synchronized combat-width carrier — exact producer `0x141299610` and wrapper target
+  `0x140C6E270` now have exact-10-authorized synchronous detours, pointer erasure, D55 v7 transport,
+  fold, and replay parsing. Activation remains false until the before/after reserve-to-committed
+  runtime control closes. Terrain remains exactly derived; planning/dig-in belong in d20
 - [ ] X3. d43 market — licensing and MTLL relation joins in addition to global owner work B1
 - [ ] X4. d11/production — requested factories, deployment queues, and MIO joins
 - [ ] X5. d48 construction — exact location and repair semantics in addition to static building identity
@@ -444,14 +473,21 @@ corroboration, followed by separate mutation fixtures.
 - [x] X7. d69 tech-sharing bonuses and full group semantics — TSG2 v2 pairs validated country members
   with signed fixed-5 bonuses, carries four authority masks, and fails the entire frame on invalid
   logical members; static/runtime ordinal identity remains deliberately unjoined
-- [ ] X8. d27 full division-to-multiple-orders membership — current d20 has one primary-order pointer
-  and d28 has army membership, but no d27/d54 `(order_instance_id, division_id)` child table. Static
-  RE must find the serializer/manager/reverse-index root; paused D04 later requires exact equality to
-  all 3,776 save `scheduled_member` pairs over 2,038 divisions
-- [ ] X9. d41/d65 projects — obtain controlled start/completion transition fixtures; resolve d65
-  owner ambiguity through A23; capture fired reward history/option fields; and join breakthrough
-  values to semantic names. d41 already emits started/completed lifecycle rows and breakthrough
-  points with fold support
+- [ ] X8. d54 full division-to-multiple-orders acceptance — the serializer/mutator-backed
+  `COrderInstance+0x210/+0x21C` vector, `+0x244` instance id, and
+  `(order_instance_id, division_id)` child table are integrated. Remaining closure is an
+  authenticated same-boundary equality gate against all 3,776 save `scheduled_member` pairs over
+  2,038 divisions plus assignment add/remove/tombstone coverage; do not fall back to d20's
+  current/primary `CDivision+0xC8` pointer
+- [ ] X9. d41/d65 projects — d41 `PLCF` now carries owner-joined `CProject+0x1BC/+0x1BD`
+  start/completed rows, and the exact per-project `PRHF` reward-history reader, wire segment,
+  recorder-authority decoder, delta fold, and replay schema are implemented fail-closed. `start` is
+  the reversible current accepted/started byte; completion is written before the terminal
+  `undefined` history row. The complete exact-10 promotion card, including `SP-01`, is bound by
+  `SPECIAL_PROJECT_LIFECYCLE_REWARD_PROMOTION_MANIFEST_20260720.json`; its SHA-256 is pinned and
+  production `PRHF` emission/fold/replay is active. No additional controlled start/reward fixture is
+  a semantic RE prerequisite. Remaining X9 work is the d65 owner gate through A23 and the
+  breakthrough-handle semantic-name join/fixture
 - [ ] X10. Direct decision/event/on-action hooks and mod-added state that hourly polling cannot preserve
 - [ ] X11. Audit and explicitly narrow expected-partial scopes for d26, d27, d28, and d54; d54's
   current partials are omission/read/linkage failures, not the fixture-blocked semantics named by its
@@ -473,12 +509,15 @@ gap.
   skipped hours, no untolerated failures (the standing engineering acceptance gate).
 - **Cross-modset validation matrix** — the first non-vanilla captures ever; validates the modset
   resolver + all game-file joins against a real modded session.
-- **d57 game-speed mapping** (registry A3) — a 10s tap at each speed 1–5; and **FACS v2 injected
+- **Per-capture D57 control policy** — bind the real production capture to its sealed same-process
+  speed/pause transcript; the A3 speed law itself is closed. Retain the separate **FACS v2 injected
   capture** to exercise the d53 tri-state against a live faction roster.
 - **Static-bundle admission** (S9) — resolve the current live mod/DLC/load order, rebuild all seven
   artifacts, require `unknown=0`, and prove the same bundle at pre-injection and pre-publication.
-- The **fixture-blocked backlog A1–A23** in the OPEN ITEMS REGISTRY above (each names its exact
-  fixture + accepting gate).
+- The remaining **A1–A23 per-row gates** in the OPEN ITEMS REGISTRY above. Do not flatten their
+  dispositions into a fixture queue: A8 is authority-re-export-first, A9's standalone leave/loss
+  cards are retired, A20 is retained-evidence validation first, and A23 is narrowed to the 26/26
+  d65 owner-equality fixture. d41 lifecycle/reward history is exact-10 pinned and active.
 
 **Platform (owner-confirmed 2026-07-14): Windows-only.** The `snapshot/dir_store` Linux/macOS code
 is unsupported dead weight (Linux impl is cfg-gated and untested; macOS is a fail-closed stub). It
@@ -512,9 +551,10 @@ is **never** a pre-ship residual; a cleanup task to strip/stub it is filed. Do n
 duplex control, and reload/relaunch stitching have merged offline foundations. Their open work is
 production composition and live identity/process-lifecycle proof (P1-P5), not greenfield design.
 
-**Deep-crack + external handoff:** B1-B8 remain open, but not at the same stage: B1/B2 still need
-inner-container RE; B4/B6/B7 have static roots/fields and await pre-live closure, paused-D04
-acceptance, and integration; B3/B5/B8 retain their separately stated work. B9-B10 were transferred
+**Deep-crack + external handoff:** B1, B3-B5, and B7 remain open, but not at the same stage: B1 still needs
+inner-container RE; B4/B7 have static roots/fields and await pre-live closure, paused-D04
+acceptance, and integration; B3/B5 retain their separately stated work. B2, B6, and B8 are closed.
+B9-B10 were transferred
 to A16/A23. C1-C6 are replay-layer handoffs and do not block or authorize extractor-layer work.
 
 **Additional validation surfaces:** two Cargo packages remain outside the workspace
@@ -566,22 +606,22 @@ Domains 10-17, 20-23, and 26-40 remain `existing`; `clock` and `frame` are `infr
 | --- | --- | --- |
 | `country_identity` / 18 | `active_integration` | Built and schedulable but excluded by status from the production profile; promote only after D5-D8 and live proof |
 | `weather_live` / 24 | `validated_slice_open_gaps` | Weather drift A20; realized values are C2 handoff |
-| `projects_live` / 41 | `validated_partial_slice` | Started/completed rows and breakthrough points captured; controlled transitions, reward history/options, semantic joins X9 |
+| `projects_live` / 41 | `validated_partial_slice` | Exact owner-joined `PLCF` lifecycle and per-project `PRHF` reward history/options are exact-10 pinned and active across reader/wire/fold/replay; breakthrough semantic names remain X9 |
 | `air_combat_losses_live` / 42 | `validated_slice_open_gaps` | A4/A21 exact regional causes and sunk-history attribution are closed; ace variance A5 and final integrated live acceptance F6 remain |
 | `market_trade_live` / 43 | `validated_slice_open_gaps` | Market owner B1; licensing/MTLL X3 |
-| `supply_logistics_attrition_live` / 44 | `validated_slice_open_gaps` | A1 exact hub actor/level attribution is closed; pressure/convoy fixtures A6/A7 and exact supply/attrition fields remain |
+| `supply_logistics_attrition_live` / 44 | `validated_slice_open_gaps` | A1 exact hub actor/level attribution and A6 stored country/node disruption are closed with bounded production roots; A7 terminal convoy-route attribution plus exact tooltip supply/attrition fields remain |
 | `focus_research_decisions_depth_live` / 45 | `validated_slice_open_gaps` | A2/A12 exact pause, targets, lifecycle, and cooldowns are closed; direct hooks X10 and focus-tail dispositions E23-E24 remain |
 | `air_variant_archetypes_live` / 46 | `validated_slice_open_gaps` | Ace variance A5 and remaining archetype labels |
 | `characters_leaders_cabinet_live` / 47 | `validated_slice_open_gaps` | Advisor/appointee/portrait/trait revalidation and speed-5 proof |
 | `construction_buildings_state_damage_live` / 48 | `validated_slice_open_gaps` | B8/X6 exact building registry and A14 repair/location semantics are closed; X5 and final integrated live acceptance F6 remain |
-| `naval_combat_lifecycle_live` / 49 | `validated_slice_open_gaps` | Lifecycle-end fixture A9 and speed-5 proof |
-| `naval_combat_members_live` / 50 | `validated_slice_open_gaps` | Member-change/sinking fixture A9 and speed-5 proof |
+| `naval_combat_lifecycle_live` / 49 | `validated_slice_open_gaps` | Exact mechanical teardown/tombstone semantics; A9 controlled transitions are optional regression validation, while final speed-5 proof remains |
+| `naval_combat_members_live` / 50 | `validated_slice_open_gaps` | Exact per-member removal semantics and `FEX_STATE_SUNK` state `0x20`; generic tombstones remain untyped. A9 leave/loss human cards are retired; final speed-5 proof remains |
 | `scripted_state_flags_variables_live` / 51 | `validated_slice_open_gaps` | Host-local scripted-GUI widget state is out of scope (A13); authoritative direct hooks/mod state remain X10; delayed events are d64 |
 | `occupation_resistance_compliance_live` / 52 | `validated_slice_open_gaps` | Garrison equipment B3 and occupation tail reconciliation |
-| `diplomacy_intel_operatives_live` / 53 | `validated_slice_open_gaps` | War B5; operations A10; intel A11; autonomy A16 |
-| `army_battleplans_depth_live` / 54 | `validated_slice_open_gaps` | Validated target/path snapshot; identity/status/partial semantics X1a, roots X1b, fixtures X1c, membership X8 |
+| `diplomacy_intel_operatives_live` / 53 | `validated_slice_open_gaps` | War B5; A10 operation runtime and A11 per-state network strength law are exact; A11 still needs an authenticated same-frame strength fixture, while A30 reciprocal-assignment/controller projection and autonomy A16 remain |
+| `army_battleplans_depth_live` / 54 | `validated_slice_open_gaps` | Exact identity, active/execution, per-order member children, type-2/type-3 paths, and type-5 area-defense states; partial semantics X1a, roots X1b, fixtures X1c/X8 |
 | `land_combat_detail_events_live` / 55 | `validated_slice_open_gaps` | Captured reserve count/committed/units + damage accumulators; exact integration/root/fixture/disposition gaps X2a-X2d |
-| `naval_missions_status_live` / 56 | `validated_slice_open_gaps` | Mission fixture A8; anti-air B6 |
+| `naval_missions_status_live` / 56 | `validated_slice_open_gaps` | Mission/home-base/repair/retreat receiver routes require the clean 10-shard A8 authority re-export before any remaining field promotion; no human fixture is pending. B6 anti-air is closed in d49-d50 |
 | `session_multiplayer_metadata_live` / 57 | `validated_partial_slice` | A15 exact multiplayer/session metadata is closed; speed mapping fixture A3 remains |
 | `country_economy_counters_live` / 58 | `reserved` | Non-schedulable; C5 replay handoff, not a live-domain root task |
 | `templates_equipment_catalog_live` / 59 | `reserved` | Static/non-schedulable; division-template live join is already in d20; S1-S6 own artifact acceptance |
@@ -590,7 +630,7 @@ Domains 10-17, 20-23, and 26-40 remain `existing`; `clock` and `frame` are `infr
 | `hub_motorization_live` / 62 | `validated_slice_open_gaps` | A1 exact actor/level attribution is closed; final integrated live acceptance F6 remains |
 | `country_core_scalars_live` / 63 | `validated_slice_open_gaps` | Remaining scalar census and panic containment D5 |
 | `delayed_events_live` / 64 | `validated_slice_open_gaps` | Decrement/originator fixture A19 |
-| `special_project_programs_live` / 65 | `validated_slice_open_gaps` | Strong owner-tag candidate still needs the 26/26 live gate A23; reward history/options and semantic joins X9 |
+| `special_project_programs_live` / 65 | `validated_slice_open_gaps` | Strong owner-tag candidate still needs the 26/26 live gate A23. Reward history/options are owned by d41's per-`CProject` `PRHF` path and must not be duplicated here |
 | `occupation_state_extras_live` / 66 | `validated_slice_open_gaps` | Remaining occupation extras and field census |
 | `country_dynamic_modifiers_live` / 67 | `validated_slice_open_gaps` | Timed modifier value/expiry A18 |
 | `session_header_live` / 68 | `validated_slice_open_gaps` | Campaign identity P3 and session-header completeness |
@@ -600,12 +640,13 @@ Domains 10-17, 20-23, and 26-40 remain `existing`; `clock` and `frame` are `infr
 | `resolved_tooltip_instances_live` / 72 | `validated_slice` | A26 exact producer/carrier wired and schedulable; final integrated live acceptance F6 remains |
 | `politics_tooltip_inputs_live` / 73 | `reserved` | Non-schedulable; extractor contract frozen in A24 |
 | `power_balance_presentation_live` / 74 | `reserved` | Non-schedulable; extractor contract frozen in A37 |
-| `fired_event_popups_live` / 75 | `reserved` | Non-schedulable; exact callback/completeness contract XUI21-E1 |
+| `fired_event_popups_live` / 75 | `reserved` | Fail-closed fire, pending-baseline, materialisation, player/AI/timeout resolution, A25 owner-join, and completeness contracts are implemented; the five-class/four-resolution H-POPUP runtime coverage receipt remains before scheduling |
 | `runtime_text_inputs_live` / 76 | `reserved` | Non-schedulable; extractor contract frozen in A25 |
 | `production_render_submits_live` / 77 | `reserved` | Non-schedulable; omitted from production until a session-built catalog producer exists (`compact_contract` descriptor note) |
 | `design_catalog_context_live` / 78 | `validated_slice` | A27 promotion gate passes (12/12 twice); final integrated live acceptance F6 remains |
 | `hud_surface_activation_live` / 79 | `validated_slice` | Pointer-free activation rows consumed for post-capture effective-VFS dependency closures; final integrated live acceptance F6 remains |
 | `production_map_content_snapshot_live` / 80 | `reserved` | Non-schedulable; omitted until normal `--production` builds semantic-role closures from admitted inputs (`compact_contract` descriptor note) |
+| `rail_replay_state_live` / 81 | `validated_slice_open_gaps` | Exact a729 engine-selected province anchors plus ordered reciprocal RailwayInfo adjacency/levels are wired collector-to-replay. The hub manager global, type-`0x1a` live vector, icon authentication, province/subtype identity, and selector-to-frame projection are discovery-complete; a clean 10-shard authority re-export and fail-closed schema integration remain, with no human capture required. See `dossiers/D81_EXACT_RAIL_REPLAY_STATE.md`. |
 
 ## Gameplay coverage map (14 areas)
 
@@ -619,13 +660,13 @@ open items in the registry above.
 | 3 | Country core & economy | DONE base (fuel/stockpile/production/market slice) | market owner B1; factory/resource counters C4/C5; licensing; MTLL |
 | 4 | Politics / leaders / cabinet | DONE base | advisors/cabinet/characters (d47 revalidation) |
 | 5 | Focus / research / decisions | DONE base | A2/A12 exact pause, targets, lifecycle, and cooldowns are closed; direct hooks X10 and focus-tail dispositions E23-E24 remain |
-| 6 | Special projects / scientists | DONE base (+ D6 owner-join/reward cracked→ledger) | project lifecycle events; breakthrough |
+| 6 | Special projects / scientists | DONE base (+ D6 owner-join/reward cracked→ledger) | A23 26/26 d65 owner equality and X9 breakthrough-handle semantic join. d41 lifecycle/reward history is exact-10 pinned and active |
 | 7 | Divisions / army / OOB / land combat | DONE base (+E5 attribution committed; D20 manpower/losses) | battleplan lifecycle (d54); land-combat detail fields (d55) |
-| 8 | Navy | DONE base | naval missions A8; combat lifecycle-end/members A9; convoy losses A7; positioning fix D2 / anti_air B6 |
+| 8 | Navy | DONE base | A8 clean 10-shard receiver-route authority re-export; A9 exact member-removal/sunk slice with no human card; convoy losses A7; exact positioning/anti-air B6 closed |
 | 9 | Air | DONE base | A4/A21 exact regional causes and sunk-history attribution are closed; ace death A5 remains; persistent pair/reinforcement-reason fields are proven absent |
 | 10 | Map / weather / construction / occupation | DONE base (+D5 created_date/occupation-law/garrison cracked→ledger) | A14 exact repair/location semantics are closed; garrison equipment B3 and weather internals A20/C2 remain; terrain is UI-owned |
-| 11 | Supply / logistics / attrition | DONE base | A1 exact hub actor/level attribution is closed; exact province supply, convoy/disrupted pressure A6, and attrition reason remain |
-| 12 | Diplomacy / wars / factions / intel | DONE base + d53 slices (+D4 queues/factions/subjects cracked→ledger) | war lifecycle B5; operations A10; intel-map A11; fix D1 |
+| 11 | Supply / logistics / attrition | DONE base | A1 exact hub actor/level attribution and A6 stored country/node disrupted pressure are closed; exact province tooltip supply, terminal convoy route A7, motorization, and attrition reason remain |
+| 12 | Diplomacy / wars / factions / intel | DONE base + d53 slices (+D4 queues/factions/subjects cracked→ledger) | war lifecycle B5; A10 operation runtime closed; A11 per-state strength runtime fixture/controller projection; A16 autonomy; fix D1 |
 | 13 | Scripted state / events / variables | DONE base d51 (+D6 delayed-events cracked→ledger) | authoritative on-action hooks and mod-added state X10; host-local scripted-GUI widget state is out of scope |
 | 14 | Player / multiplayer / session | DONE base (pause + player rows; D3 session header and A15 multiplayer/session metadata closed→ledger) | game-speed A3 and derived alerts C6 remain |
 

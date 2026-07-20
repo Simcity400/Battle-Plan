@@ -325,7 +325,8 @@ fn entity() -> RawEntitySubmission {
 fn raw_submit() -> RawParticleSubmit {
     RawParticleSubmit {
         submit_index: 7,
-        interpolation_phase_f32_bits: 0,
+        camera_carrier_ordinal: 0,
+        camera_carrier: None,
         packets: vec![packet()],
         entity_submissions: vec![entity()],
     }

@@ -9,19 +9,23 @@
 use crate::{
     production_main_scene_desc_from_outputs,
     production_map_interpreter::{materialize_static_program, unsupported_reason},
-    PreparedProductionMapFrame, PreparedRuntimeDraw, ProductionMainSceneTargetDesc,
+    validate_c03_camera_replay_binding, C03CameraReplayBinding, PreparedProductionMapFrame,
+    PreparedRuntimeDraw, ProductionMainSceneTargetDesc,
     ProductionMapResource, Result,
 };
 use replay_core::{
-    BufferSource, ConstantBufferBinding, M03ArrowDraw, M03ArrowFrame, RenderExecutionRef,
-    RenderTargetDesc, RenderTargetInitialSource, StaticGeometrySource, StaticMapCommand,
+    BufferSource, C07TreeRuntimeCarrier, ConstantBufferBinding, M03ArrowDraw, M03ArrowFrame,
+    MapnameD80State, RenderExecutionRef, RenderTargetDesc, RenderTargetInitialSource, StaticGeometrySource, StaticMapCommand,
     StaticMapOperation, StaticMapPassProgram, StaticShaderResourceSource, UsedContentKey,
+    ViewStatus,
 };
 use serde::{Deserialize, Serialize};
 use snapshot::sha256::Sha256;
 use std::collections::BTreeMap;
 
 pub type ProductionD3dStaticPassProgram = StaticMapPassProgram;
+pub const PRODUCTION_D3D_EXECUTION_RECEIPT_SCHEMA: &str =
+    "hoi4.production_d3d_execution.v6";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProductionD3dOmission {
@@ -33,6 +37,9 @@ pub struct ProductionD3dOmission {
 pub struct PreparedProductionD3dFrame {
     pub content_manifest_sha256: String,
     pub effective_vfs_manifest_sha256: String,
+    /// C03 receipt binding only. Exact D3D draw state already contains the
+    /// recorded camera effects, so execution must not reapply raw events.
+    pub c03_camera_replay: Option<C03CameraReplayBinding>,
     pub target: Option<ProductionMainSceneTargetDesc>,
     pub ordered_scene_constant_buffers: Vec<ConstantBufferBinding>,
     pub ordered_render_operations: Vec<RenderExecutionRef>,
@@ -40,11 +47,63 @@ pub struct PreparedProductionD3dFrame {
     pub tiled_lights: Vec<replay_core::TiledLightSubmission>,
     pub ordered_static_used_content: Vec<UsedContentKey>,
     pub ordered_static_programs: Vec<StaticMapPassProgram>,
+    /// B10 compatibility/admission state of the selected submit's D80 mapname
+    /// operations. Legacy draws are omitted before this frame can execute.
+    pub mapname_d80_state: MapnameD80State,
+    /// Already-admitted C07 join. Every referenced operation must survive
+    /// materialization and execute through the ordinary static draw bridge.
+    pub tree_runtime: Option<C07TreeRuntimeCarrier>,
+    /// Preparation-time seal over the exact materialized C07 operations and
+    /// their positions in the unified execution stream.
+    pub tree_materialized_execution_sha256: Option<String>,
+    /// Exact S1 law/pass plan sealed to the materialized unified operations.
+    /// `None` is an explicit feature omission, never a neutral-shadow fallback.
+    pub s1_shadow: Option<PreparedS1ShadowExecution>,
     pub ordered_runtime_draws: Vec<PreparedRuntimeDraw>,
     pub m02_combat: Option<replay_core::M02CombatFrame>,
     pub authenticated_ui_pass: Option<replay_core::AuthenticatedUiPass>,
     pub m03_arrows: Option<M03ArrowFrame>,
     pub omissions: Vec<ProductionD3dOmission>,
+}
+
+/// Exact precedence contract between the opaque D80 operation stream and the
+/// typed semantic building state exposed by D48.
+///
+/// `TypedSemanticStateOnly` is deliberately not pixel authority. It means the
+/// current world frame can answer building-state queries while visible object
+/// rendering remains omitted until an authenticated semantic producer joins
+/// those rows to exact operations. An executable D80 stream always wins as a
+/// complete ordered map program; pass tokens/content names are never used to
+/// classify a building subpass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildingPresentationPriority {
+    AuthenticatedD80Operations,
+    TypedSemanticStateOnly,
+    Unavailable,
+}
+
+pub fn has_authenticated_d80_map_operations(frame: &PreparedProductionD3dFrame) -> bool {
+    frame.target.is_some()
+        && (!frame.ordered_static_programs.is_empty()
+            || !frame.ordered_runtime_draws.is_empty()
+            || frame
+                .m03_arrows
+                .as_ref()
+                .is_some_and(|m03| !m03.draws.is_empty()))
+}
+
+pub fn building_presentation_priority(
+    frame: Option<&PreparedProductionD3dFrame>,
+    buildings_status: ViewStatus,
+) -> BuildingPresentationPriority {
+    if frame.is_some_and(has_authenticated_d80_map_operations) {
+        BuildingPresentationPriority::AuthenticatedD80Operations
+    } else if buildings_status == ViewStatus::Present {
+        BuildingPresentationPriority::TypedSemanticStateOnly
+    } else {
+        BuildingPresentationPriority::Unavailable
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +118,23 @@ pub struct ProductionD3dExecutionReceipt {
     pub schema: String,
     pub content_manifest_sha256: String,
     pub effective_vfs_manifest_sha256: String,
+    pub c03_camera_replay: Option<C03CameraReplayBinding>,
+    /// Sealed pointer-free C07 coverage/pass/bucket identity actually admitted
+    /// by this execution. `None` means tree runtime was unavailable/omitted.
+    pub tree_runtime_payload_sha256: Option<String>,
+    /// Exact selected-frame C07 operation payload/order seal validated again
+    /// immediately before backend execution.
+    pub tree_materialized_execution_sha256: Option<String>,
+    /// Sealed pointer-free S1 shadow execution identity admitted by this
+    /// execution. This authenticates the carrier; it is not a pixel oracle.
+    pub s1_shadow_payload_sha256: Option<String>,
+    /// Exact seal over the materialized S1 operation references and payloads
+    /// that passed the pre-execution validation. `None` is valid only for an
+    /// absent or exact zero-fade S1 carrier.
+    pub s1_materialized_execution_sha256: Option<String>,
+    /// Distinguishes no carried mapname draw, a legacy draw omitted for lack of
+    /// the authenticated CB1 semantic, and authenticated executed authority.
+    pub mapname_d80_state: MapnameD80State,
     pub target: Option<ProductionMainSceneTargetDesc>,
     pub ordered_draws: Vec<ProductionD3dExecutedDraw>,
     pub ordered_used_content: Vec<UsedContentKey>,
@@ -99,16 +175,33 @@ pub fn prepare_production_d3d_frame(
     frame: &PreparedProductionMapFrame,
     resources: &BTreeMap<String, ProductionMapResource>,
 ) -> Result<PreparedProductionD3dFrame> {
+    if let Some(binding) = &frame.c03_camera_replay {
+        validate_c03_camera_replay_binding(binding)?;
+        if frame.selected_submit_index != Some(binding.submit_index)
+            || frame.selected_submit_global_order != Some(binding.submit_global_order)
+        {
+            return Err("C03 camera replay binding belongs to a different selected submit".into());
+        }
+    }
     let mut ordered_static_programs = Vec::new();
     let mut omissions = Vec::new();
+    let mut mapname_d80_state = MapnameD80State::Missing;
     if frame.m02_combat.is_some() && frame.authenticated_ui_pass.is_none() {
         omissions.push(ProductionD3dOmission {
             pass: "m02_combat_indicators".into(),
             reason: "exact M02 swapchain draws are carried, but the complete authenticated selected-Present UI-pass operation stream is absent; the entire M02 pixel route is omitted".into(),
         });
     }
+    if frame.s1_shadow.is_none() {
+        omissions.push(ProductionD3dOmission {
+            pass: "c07_s1_shadow".into(),
+            reason: "selected submit has no authenticated portable S1 carrier; light-depth, terrain-unlit, blur, and shadow-consumer execution remains omitted".into(),
+        });
+    }
     let mut omitted_static_ordinals = std::collections::BTreeSet::new();
     for program in &frame.ordered_static_map_programs {
+        let program_mapname_state = program.mapname_d80_state()?;
+        mapname_d80_state = mapname_d80_state.merge(program_mapname_state)?;
         let mut seen = std::collections::BTreeSet::new();
         if program
             .ordered_content_keys
@@ -124,10 +217,29 @@ pub fn prepare_production_d3d_frame(
             });
             continue;
         }
+        if program_mapname_state == MapnameD80State::LegacyUnstamped {
+            omitted_static_ordinals.extend(
+                program
+                    .ordered_operations
+                    .iter()
+                    .map(|operation| operation.operation_ordinal),
+            );
+            omissions.push(ProductionD3dOmission {
+                pass: program.pass_token.clone(),
+                reason: "B10 legacy mapname program omitted: the draw lacks the authenticated reflected Transp_OffsetX CB1 semantic; reconstructed labels and slot/size inference are forbidden".into(),
+            });
+            continue;
+        }
         let program = match materialize_static_program(program, resources) {
             Ok(program) => program,
             Err(error) => {
                 if let Some(reason) = unsupported_reason(&error) {
+                    if program_mapname_state == MapnameD80State::Authenticated {
+                        return Err(format!(
+                            "authenticated mapname program cannot be omitted during materialization: {reason}"
+                        )
+                        .into());
+                    }
                     omitted_static_ordinals.extend(
                         program
                             .ordered_operations
@@ -193,6 +305,20 @@ pub fn prepare_production_d3d_frame(
         }
     }
 
+    let retained_mapname_state = ordered_static_programs.iter().try_fold(
+        MapnameD80State::Missing,
+        |state, program| state.merge(program.mapname_d80_state()?),
+    )?;
+    match (mapname_d80_state, retained_mapname_state) {
+        (MapnameD80State::Missing, MapnameD80State::Missing)
+        | (MapnameD80State::LegacyUnstamped, MapnameD80State::Missing)
+        | (MapnameD80State::Authenticated, MapnameD80State::Authenticated) => {}
+        (MapnameD80State::Authenticated, _) => {
+            return Err("authenticated mapname program was omitted before production execution".into())
+        }
+        _ => return Err("prepared mapname D80 state disagrees with retained programs".into()),
+    }
+
     let mut ordered_static_used_content = Vec::new();
     let mut output_states = Vec::new();
     for program in &ordered_static_programs {
@@ -227,10 +353,18 @@ pub fn prepare_production_d3d_frame(
         | PreparedRuntimeDraw::O04City { submission, .. } => submission.output_state.clone(),
     }));
     let target = production_main_scene_desc_from_outputs(output_states.iter())?;
+    if let Some(tree_runtime) = &frame.tree_runtime {
+        validate_c07_executor_operations(
+            tree_runtime,
+            &ordered_static_programs,
+            &frame.ordered_render_operations,
+        )?;
+    }
 
-    Ok(PreparedProductionD3dFrame {
+    let mut prepared = PreparedProductionD3dFrame {
         content_manifest_sha256: frame.content_manifest_sha256.clone(),
         effective_vfs_manifest_sha256: frame.effective_vfs_manifest_sha256.clone(),
+        c03_camera_replay: frame.c03_camera_replay.clone(),
         target,
         ordered_scene_constant_buffers: frame.ordered_scene_constant_buffers.clone(),
         ordered_render_operations: frame
@@ -253,18 +387,80 @@ pub fn prepare_production_d3d_frame(
         tiled_lights: frame.tiled_lights.clone(),
         ordered_static_used_content,
         ordered_static_programs,
+        mapname_d80_state,
+        tree_runtime: frame.tree_runtime.clone(),
+        tree_materialized_execution_sha256: None,
+        s1_shadow: None,
         ordered_runtime_draws: frame.ordered_runtime_draws.clone(),
         m02_combat: frame.m02_combat.clone(),
         authenticated_ui_pass: frame.authenticated_ui_pass.clone(),
         m03_arrows,
         omissions,
-    })
+    };
+    if let Some(carrier) = &frame.s1_shadow {
+        prepared.s1_shadow = Some(prepare_s1_shadow_execution(carrier, &prepared)?);
+    }
+    prepared.tree_materialized_execution_sha256 = prepared
+        .tree_runtime
+        .as_ref()
+        .map(|carrier| {
+            c07_materialized_execution_sha256(
+                carrier,
+                &prepared.ordered_static_programs,
+                &prepared.ordered_render_operations,
+            )
+        })
+        .transpose()?;
+    Ok(prepared)
 }
 
 pub fn execute_production_d3d_frame(
     frame: &PreparedProductionD3dFrame,
     bridge: &mut impl ProductionD3dExecutionBridge,
 ) -> Result<ProductionD3dExecutionReceipt> {
+    let retained_mapname_state = frame.ordered_static_programs.iter().try_fold(
+        MapnameD80State::Missing,
+        |state, program| state.merge(program.mapname_d80_state()?),
+    )?;
+    let legacy_omission = frame.omissions.iter().any(|omission| {
+        omission
+            .reason
+            .starts_with("B10 legacy mapname program omitted:")
+    });
+    match (frame.mapname_d80_state, retained_mapname_state) {
+        (MapnameD80State::Missing, MapnameD80State::Missing) if !legacy_omission => {}
+        (MapnameD80State::LegacyUnstamped, MapnameD80State::Missing) if legacy_omission => {}
+        (MapnameD80State::Authenticated, MapnameD80State::Authenticated)
+            if !legacy_omission => {}
+        _ => {
+            return Err(
+                "prepared mapname D80 state/omission disagrees with executable programs".into(),
+            )
+        }
+    }
+    if let Some(binding) = &frame.c03_camera_replay {
+        validate_c03_camera_replay_binding(binding)?;
+    }
+    if let Some(s1_shadow) = &frame.s1_shadow {
+        validate_s1_shadow_execution(s1_shadow, frame)?;
+    }
+    match (
+        &frame.tree_runtime,
+        &frame.tree_materialized_execution_sha256,
+    ) {
+        (Some(tree_runtime), Some(expected)) => {
+            let actual = c07_materialized_execution_sha256(
+                tree_runtime,
+                &frame.ordered_static_programs,
+                &frame.ordered_render_operations,
+            )?;
+            if &actual != expected {
+                return Err("prepared C07 materialized execution stream drifted".into());
+            }
+        }
+        (None, None) => {}
+        _ => return Err("prepared C07 carrier/execution seal nullability mismatch".into()),
+    }
     bridge.begin_frame(frame)?;
     let mut ordinal = 0u32;
     let mut ordered_draws = Vec::new();
@@ -431,9 +627,26 @@ pub fn execute_production_d3d_frame(
 
     let ordered_used_content = used.into_values().collect::<Vec<_>>();
     let mut receipt = ProductionD3dExecutionReceipt {
-        schema: "hoi4.production_d3d_execution.v1".into(),
+        schema: PRODUCTION_D3D_EXECUTION_RECEIPT_SCHEMA.into(),
         content_manifest_sha256: frame.content_manifest_sha256.clone(),
         effective_vfs_manifest_sha256: frame.effective_vfs_manifest_sha256.clone(),
+        c03_camera_replay: frame.c03_camera_replay.clone(),
+        tree_runtime_payload_sha256: frame
+            .tree_runtime
+            .as_ref()
+            .map(|carrier| carrier.payload_sha256.clone()),
+        tree_materialized_execution_sha256: frame
+            .tree_materialized_execution_sha256
+            .clone(),
+        s1_shadow_payload_sha256: frame
+            .s1_shadow
+            .as_ref()
+            .map(|prepared| prepared.carrier.payload_sha256.clone()),
+        s1_materialized_execution_sha256: frame
+            .s1_shadow
+            .as_ref()
+            .and_then(|prepared| prepared.materialized_execution_sha256.clone()),
+        mapname_d80_state: frame.mapname_d80_state,
         target: frame.target.clone(),
         ordered_draws,
         ordered_used_content,
@@ -442,6 +655,107 @@ pub fn execute_production_d3d_frame(
     };
     receipt.deterministic_sha256 = Sha256::hex(&serde_json::to_vec(&receipt)?);
     Ok(receipt)
+}
+
+fn validate_c07_executor_operations(
+    carrier: &C07TreeRuntimeCarrier,
+    programs: &[StaticMapPassProgram],
+    ordered_operations: &[RenderExecutionRef],
+) -> Result<()> {
+    let available = programs
+        .iter()
+        .flat_map(|program| {
+            program
+                .ordered_operations
+                .iter()
+                .map(|operation| operation.operation_ordinal)
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut execution_positions = BTreeMap::new();
+    for (position, reference) in ordered_operations.iter().enumerate() {
+        let RenderExecutionRef::Static { operation_ordinal } = reference else {
+            continue;
+        };
+        if execution_positions
+            .insert(*operation_ordinal, position)
+            .is_some()
+        {
+            return Err("C07 materialized execution order repeats a static operation".into());
+        }
+    }
+    let required = carrier.required_operation_ordinals();
+    let mut unique = std::collections::BTreeSet::new();
+    let mut previous_position = None;
+    for operation_ordinal in required {
+        if !unique.insert(operation_ordinal) || !available.contains(&operation_ordinal) {
+            return Err("C07 tree operation was duplicated or omitted during D3D preparation".into());
+        }
+        let position = *execution_positions
+            .get(&operation_ordinal)
+            .ok_or("C07 tree operation is absent from executor order")?;
+        if previous_position.is_some_and(|previous| position <= previous) {
+            return Err("C07 tree executor order differs from the retained three-pass contract".into());
+        }
+        previous_position = Some(position);
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct C07MaterializedExecutionRow<'a> {
+    operation_ordinal: u32,
+    execution_position: usize,
+    operation: &'a StaticMapOperation,
+}
+
+fn c07_materialized_execution_sha256(
+    carrier: &C07TreeRuntimeCarrier,
+    programs: &[StaticMapPassProgram],
+    ordered_operations: &[RenderExecutionRef],
+) -> Result<String> {
+    if carrier.computed_payload_sha256()? != carrier.payload_sha256 {
+        return Err("prepared C07 carrier payload SHA-256 drifted after admission".into());
+    }
+    validate_c07_executor_operations(carrier, programs, ordered_operations)?;
+    let mut materialized = BTreeMap::new();
+    for operation in programs
+        .iter()
+        .flat_map(|program| program.ordered_operations.iter())
+    {
+        if materialized
+            .insert(operation.operation_ordinal, operation)
+            .is_some()
+        {
+            return Err("C07 materialized programs repeat an operation ordinal".into());
+        }
+    }
+    let execution_positions = ordered_operations
+        .iter()
+        .enumerate()
+        .filter_map(|(position, reference)| match reference {
+            RenderExecutionRef::Static { operation_ordinal } => {
+                Some((*operation_ordinal, position))
+            }
+            _ => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    let rows = carrier
+        .required_operation_ordinals()
+        .into_iter()
+        .map(|operation_ordinal| {
+            Ok(C07MaterializedExecutionRow {
+                operation_ordinal,
+                execution_position: *execution_positions
+                    .get(&operation_ordinal)
+                    .ok_or("C07 materialized operation has no execution position")?,
+                operation: materialized
+                    .get(&operation_ordinal)
+                    .copied()
+                    .ok_or("C07 materialized operation payload is absent")?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Sha256::hex(&serde_json::to_vec(&rows)?))
 }
 
 fn collect_m03_draw_content(packet: &M03ArrowDraw, out: &mut BTreeMap<String, UsedContentKey>) {
@@ -886,6 +1200,11 @@ mod m02_overlay;
 mod native;
 #[cfg(windows)]
 mod native_draw;
+mod s1_shadow;
+
+pub use s1_shadow::{
+    prepare_s1_shadow_execution, validate_s1_shadow_execution, PreparedS1ShadowExecution,
+};
 
 #[cfg(windows)]
 pub use m02_overlay::{

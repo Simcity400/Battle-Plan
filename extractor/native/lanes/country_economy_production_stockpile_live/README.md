@@ -22,6 +22,13 @@ or air/naval/unit extraction. Joins are pointer-free:
 - production lines: `(tag_db_id, kind, line_id)`
 - construction queue rows: `(tag_db_id, line_id, priority)`
 
+The frozen D11 production-line base is extended by strict pointer-free joins:
+`PVJ1` equipment variant id, `PFR1` requested factories, `PPR1` exact
+engine-maintained priority/order from `line+0x44`, `PLS1` runtime subtype,
+`PEF1` efficiency values, `PMI1` MIO identity, and `PCP1` completeness.
+Every present line-key join is bijective; older records may omit a successor
+segment and replay leaves then remain unobtained.
+
 ## Validated roots used by the current compact path
 
 These are the exact roots and offsets this lane gates. They are implemented in
@@ -37,7 +44,8 @@ the shared collector today, but this lane keeps its proof and decoder local.
 - production line fields: exact primary vtable at `+0x00` (military
   `module+0x2965050`, naval `+0x2965238`, railway-gun `+0x2965398`, ship-refit
   `+0x2965858`), legacy type `+0x08`, id `+0x0C`, active factories `+0x18`,
-  cost `+0x28`, speed `+0x30`, produced `+0x38`, amount `+0x48`, exact
+  cost `+0x28`, speed `+0x30`, produced `+0x38`, exact priority/order `+0x44`,
+  amount `+0x48`, exact
   equipment-variant pointer `+0x88`, industrial-manufacturer CID `+0x90`, and
   requested factories `+0xE8`; the CID is `{type:u32,id:u32}`, where `{0,0}` is
   proven null and `{79,id>0}` is an assigned industrial organisation
@@ -52,9 +60,10 @@ the shared collector today, but this lane keeps its proof and decoder local.
 
 - `10 fuel_live`: country fuel rows, fixed scale `32768`
 - `11 production_live`: stockpiles, military/naval production lines, construction
-  queue rows, fixed scale `100000`; additive `PVJ1`, `PFR1`, `PLS1`, `PEF1`,
-  `PMI1`, and `PCP1` self-sized segments carry exact variant, requested-factory,
-  subtype, efficiency, line-owned MIO, and vector-completeness state
+  queue rows, fixed scale `100000`; additive `PVJ1`, `PFR1`, `PPR1`, `PLS1`,
+  `PEF1`, `PMI1`, and `PCP1` self-sized segments carry exact variant,
+  requested-factory, priority/order, subtype, efficiency, line-owned MIO, and
+  vector-completeness state
 - `37 stockpile_variant_defs`: stockpile-sourced variant catalog rows and module
   token children
 - `40 stockpile_variant_upgrades`: stockpile-sourced variant upgrade rows

@@ -697,7 +697,7 @@ def write_proof_md(out_dir, summary):
         "## Honest Walls",
         "",
         "- Per-state occupation law override map: unavailable; rows carry only controller-country default/fallback law tokens and remain badged for per-state override.",
-        "- Garrison need/equilibrium/progress: unavailable in this lane proof; occupied rows are row-badged fail-closed for those scalar values.",
+        "- Legacy Python-probe garrison placeholder slots remain unavailable here. The production Rust collector separately emits the authenticated engine fields army_manpower_need, strength_ratio, and garrison_required; equilibrium/progress are not engine schema keys.",
         "- Government-in-exile/collaboration detail payload: collaboration-status root is validated, but active per-target data remains fixture-gated.",
     ]
     oracle = summary.get("oracle_compare")

@@ -216,7 +216,10 @@ fn frame_row_count(frame: &land_combat_detail_events_live_lane::CaptureFrame) ->
         .len()
         .saturating_add(frame.side_detail_rows.len())
         .saturating_add(frame.attribution_rows.len())
-        .saturating_add(frame.reserve_member_rows.len()) as u32
+        .saturating_add(frame.reserve_member_rows.len())
+        .saturating_add(frame.terminal_record_rows.len())
+        .saturating_add(frame.width_observation_rows.len())
+        .saturating_add(frame.current_loss_observation_rows.len()) as u32
 }
 
 fn append_perf_and_frame_end(

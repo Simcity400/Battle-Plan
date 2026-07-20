@@ -571,6 +571,28 @@ impl ContentManifest {
             &playback.localisation_language,
         );
 
+        // Admission is a capability boundary, so structurally-invalid caller
+        // inventory must be refused even when the bad row is unrelated to one
+        // of the manifest's required rows. Otherwise a matching required
+        // subset can hide malformed ambient state that a later caller might
+        // accidentally consume under the same admission.
+        if playback.localisation_language.trim().is_empty() {
+            issues.push(issue(
+                ContentIssueCode::InvalidManifest,
+                "playback inventory",
+                "localisation language is blank".into(),
+            ));
+        }
+        for (key, value) in &playback.settings {
+            if key.trim().is_empty() || value.trim().is_empty() {
+                issues.push(issue(
+                    ContentIssueCode::InvalidManifest,
+                    "playback inventory",
+                    format!("setting has a blank key/value: {key:?}"),
+                ));
+            }
+        }
+
         for (key, expected) in &self.required_settings {
             match playback.settings.get(key) {
                 Some(actual) if actual == expected => {}
@@ -589,23 +611,83 @@ impl ContentManifest {
 
         // Duplicate inventory rows are typed refusals, never silently
         // canonicalized: a last-wins collapse would let a mismatching row hide
-        // behind a matching one. The first row is kept so the remaining
+        // behind a matching one. Ordinal-uniqueness and id-uniqueness are
+        // refused INDEPENDENTLY, mirroring manifest validation — a composite
+        // (ordinal, id) tuple check alone would admit (1,"mod-a")+(1,"decoy")
+        // or one id at two ordinals. The first row is kept so the remaining
         // comparisons still run deterministically.
         let mut local_layers = BTreeMap::new();
+        let mut local_layer_ordinals = BTreeSet::new();
+        let mut local_layer_ids = BTreeSet::new();
         for layer in &playback.layers {
-            let key = (layer.recorded_ordinal, layer.layer_id.as_str());
-            if local_layers.contains_key(&key) {
+            let mut invalid = false;
+            if let Err(message) = validate_portable_layer_id(&layer.layer_id) {
                 issues.push(issue(
                     ContentIssueCode::InvalidManifest,
                     "playback inventory",
-                    format!(
-                        "duplicate layer row: ordinal {} id {}",
-                        layer.recorded_ordinal, layer.layer_id
-                    ),
+                    message,
                 ));
+                invalid = true;
+            }
+            if let Some(hash) = &layer.descriptor_sha256 {
+                if let Err(message) = validate_sha256(hash, "playback layer descriptor") {
+                    issues.push(issue(
+                        ContentIssueCode::InvalidManifest,
+                        "playback inventory",
+                        message,
+                    ));
+                    invalid = true;
+                }
+            }
+            if let Some(hash) = &layer.source_container_sha256 {
+                if let Err(message) = validate_sha256(hash, "playback layer source container") {
+                    issues.push(issue(
+                        ContentIssueCode::InvalidManifest,
+                        "playback inventory",
+                        message,
+                    ));
+                    invalid = true;
+                }
+            }
+            if layer.storage_kind == LayerStorageKind::ZipArchive
+                && layer.source_container_sha256.is_none()
+            {
+                issues.push(issue(
+                    ContentIssueCode::InvalidManifest,
+                    "playback inventory",
+                    format!("archive layer {} has no archive hash", layer.layer_id),
+                ));
+                invalid = true;
+            }
+            if let Err(message) = unique_normalized_path_set(&layer.replace_paths) {
+                issues.push(issue(
+                    ContentIssueCode::InvalidManifest,
+                    "playback inventory",
+                    message,
+                ));
+                invalid = true;
+            }
+            let mut duplicate = false;
+            if !local_layer_ordinals.insert(layer.recorded_ordinal) {
+                issues.push(issue(
+                    ContentIssueCode::InvalidManifest,
+                    "playback inventory",
+                    format!("duplicate layer ordinal {}", layer.recorded_ordinal),
+                ));
+                duplicate = true;
+            }
+            if !local_layer_ids.insert(layer.layer_id.as_str()) {
+                issues.push(issue(
+                    ContentIssueCode::InvalidManifest,
+                    "playback inventory",
+                    format!("duplicate layer id {}", layer.layer_id),
+                ));
+                duplicate = true;
+            }
+            if invalid || duplicate {
                 continue;
             }
-            local_layers.insert(key, layer);
+            local_layers.insert((layer.recorded_ordinal, layer.layer_id.as_str()), layer);
         }
         for expected in self
             .ordered_layers
@@ -656,10 +738,14 @@ impl ContentManifest {
             }
             // Both sides normalize with error propagation: an un-normalizable
             // playback replace_path is a typed refusal, never silently dropped
-            // from the comparison. (The manifest side is guaranteed valid by
-            // self.validate() above, but is propagated rather than unwrapped.)
+            // from the comparison. The playback side additionally refuses
+            // declarations that DUPLICATE after normalization (e.g.
+            // "gfx/entities" + "GFX\\ENTITIES"), which would otherwise collapse
+            // into one set member and pass the comparison silently. (The
+            // manifest side is guaranteed duplicate-free by self.validate()
+            // above, but is propagated rather than unwrapped.)
             match (
-                normalized_path_set(&actual.replace_paths),
+                unique_normalized_path_set(&actual.replace_paths),
                 normalized_path_set(&expected.replace_paths),
             ) {
                 (Ok(actual_paths), Ok(expected_paths)) if actual_paths == expected_paths => {}
@@ -748,6 +834,14 @@ impl ContentManifest {
 
         let mut local_dlcs = BTreeMap::new();
         for dlc in &playback.dlc_selection {
+            if dlc.dlc_id.trim().is_empty() {
+                issues.push(issue(
+                    ContentIssueCode::InvalidManifest,
+                    "playback inventory",
+                    "DLC id is blank".into(),
+                ));
+                continue;
+            }
             if local_dlcs.contains_key(dlc.dlc_id.as_str()) {
                 issues.push(issue(
                     ContentIssueCode::InvalidManifest,
@@ -774,8 +868,51 @@ impl ContentManifest {
 
         let mut resolved = BTreeMap::new();
         for content in &playback.resolved_content {
-            let key = content.normalized_game_relative_path.as_str();
-            if resolved.contains_key(key) {
+            let key = match normalize_game_relative_path(&content.normalized_game_relative_path) {
+                Ok(key) if key == content.normalized_game_relative_path => key,
+                Ok(key) => {
+                    issues.push(issue(
+                        ContentIssueCode::InvalidManifest,
+                        "playback inventory",
+                        format!(
+                            "resolved path is not normalized: {:?} (canonical {:?})",
+                            content.normalized_game_relative_path, key
+                        ),
+                    ));
+                    continue;
+                }
+                Err(message) => {
+                    issues.push(issue(
+                        ContentIssueCode::InvalidManifest,
+                        "playback inventory",
+                        message,
+                    ));
+                    continue;
+                }
+            };
+            let mut invalid = false;
+            if let Err(message) = validate_portable_layer_id(&content.layer_id) {
+                issues.push(issue(
+                    ContentIssueCode::InvalidManifest,
+                    "playback inventory",
+                    message,
+                ));
+                invalid = true;
+            }
+            for (hash, label) in [
+                (&content.source_sha256, "playback content source"),
+                (&content.payload_sha256, "playback content payload"),
+            ] {
+                if let Err(message) = validate_sha256(hash, label) {
+                    issues.push(issue(
+                        ContentIssueCode::InvalidManifest,
+                        "playback inventory",
+                        message,
+                    ));
+                    invalid = true;
+                }
+            }
+            if resolved.contains_key(&key) {
                 issues.push(issue(
                     ContentIssueCode::InvalidManifest,
                     "playback inventory",
@@ -783,7 +920,9 @@ impl ContentManifest {
                 ));
                 continue;
             }
-            resolved.insert(key, content);
+            if !invalid {
+                resolved.insert(key, content);
+            }
         }
         let mut verified = 0usize;
         for required in &self.required_content {
@@ -923,11 +1062,10 @@ pub fn compute_selection_sha256(
         if let Some(hash) = &layer.source_container_sha256 {
             validate_sha256(hash, "selection layer archive")?;
         }
-        layer.replace_paths = layer
-            .replace_paths
-            .iter()
-            .map(|path| normalize_game_relative_path(path))
-            .collect::<Result<BTreeSet<_>, _>>()?
+        // Duplicates-after-normalization are refused, not silently deduped:
+        // otherwise two declarations collapsing into one set member would
+        // still hash to the recorded selection identity.
+        layer.replace_paths = unique_normalized_path_set(&layer.replace_paths)?
             .into_iter()
             .collect();
     }
@@ -1117,6 +1255,18 @@ fn normalized_path_set(paths: &[String]) -> Result<BTreeSet<String>, String> {
         .iter()
         .map(|path| normalize_game_relative_path(path))
         .collect()
+}
+
+/// As [`normalized_path_set`], additionally refusing declarations that
+/// duplicate after normalization instead of letting them silently collapse
+/// into one set member. Used for caller-supplied (playback-side) lists; the
+/// manifest side is already refused by [`validate_layer`].
+fn unique_normalized_path_set(paths: &[String]) -> Result<BTreeSet<String>, String> {
+    let normalized = normalized_path_set(paths)?;
+    if normalized.len() != paths.len() {
+        return Err("replace_path declarations duplicate after normalization".into());
+    }
+    Ok(normalized)
 }
 
 fn compare_scalar(
@@ -1401,7 +1551,37 @@ mod tests {
         assert!(!report.compatible);
         assert!(report.issues.iter().any(|issue| {
             issue.code == ContentIssueCode::InvalidManifest
-                && issue.message.contains("duplicate layer row")
+                && issue.message.contains("duplicate layer ordinal")
+        }));
+        assert!(report.issues.iter().any(|issue| {
+            issue.code == ContentIssueCode::InvalidManifest
+                && issue.message.contains("duplicate layer id")
+        }));
+
+        // Ordinal-uniqueness and id-uniqueness are independent refusals: a
+        // decoy id sharing an ordinal must not slip past a composite-tuple
+        // check...
+        let mut dup_ordinal = inventory(&manifest);
+        let mut decoy = dup_ordinal.layers[0].clone();
+        decoy.layer_id = "decoy".into();
+        dup_ordinal.layers.push(decoy);
+        let report = manifest.validate_playback(&dup_ordinal);
+        assert!(!report.compatible);
+        assert!(report.issues.iter().any(|issue| {
+            issue.code == ContentIssueCode::InvalidManifest
+                && issue.message.contains("duplicate layer ordinal")
+        }));
+
+        // ...and neither must one id declared at two ordinals.
+        let mut dup_id = inventory(&manifest);
+        let mut moved = dup_id.layers[0].clone();
+        moved.recorded_ordinal = 250;
+        dup_id.layers.push(moved);
+        let report = manifest.validate_playback(&dup_id);
+        assert!(!report.compatible);
+        assert!(report.issues.iter().any(|issue| {
+            issue.code == ContentIssueCode::InvalidManifest
+                && issue.message.contains("duplicate layer id")
         }));
 
         let mut dup_dlc = inventory(&manifest);
@@ -1413,6 +1593,100 @@ mod tests {
             issue.code == ContentIssueCode::InvalidManifest
                 && issue.message.contains("duplicate DLC row")
         }));
+    }
+
+    #[test]
+    fn playback_replace_paths_duplicating_after_normalization_fail_closed() {
+        // manifest expects ["gfx/entities"]; playback declares
+        // ["gfx/entities", "GFX\\ENTITIES"] which normalize into ONE set
+        // member. Both the set comparison and the selection-hash construction
+        // must refuse the collapse instead of reporting compatible=true.
+        let manifest = manifest();
+        let mut inventory = inventory(&manifest);
+        inventory
+            .layers
+            .iter_mut()
+            .find(|layer| layer.layer_id == "mod-override")
+            .unwrap()
+            .replace_paths = vec!["gfx/entities".into(), "GFX\\ENTITIES".into()];
+        let report = manifest.validate_playback(&inventory);
+        assert!(!report.compatible);
+        assert!(report.issues.iter().any(|issue| {
+            issue.code == ContentIssueCode::ReplacePathMismatch
+                && issue.message.contains("duplicate after normalization")
+        }));
+        assert!(report.issues.iter().any(|issue| {
+            issue.code == ContentIssueCode::ProfileMismatch
+                && issue.message.contains("duplicate after normalization")
+        }));
+    }
+
+    #[test]
+    fn malformed_ambient_playback_rows_fail_closed() {
+        let manifest = manifest();
+
+        // A correctly matching required row must not mask a second spelling
+        // that canonicalizes to the same VFS path.
+        let mut alias = inventory(&manifest);
+        let mut extra = alias.resolved_content[0].clone();
+        extra.normalized_game_relative_path = extra
+            .normalized_game_relative_path
+            .replace('/', "\\")
+            .to_ascii_uppercase();
+        alias.resolved_content.push(extra);
+        let report = manifest.validate_playback(&alias);
+        assert!(!report.compatible);
+        assert!(report.issues.iter().any(|issue| {
+            issue.code == ContentIssueCode::InvalidManifest
+                && issue.message.contains("resolved path is not normalized")
+        }));
+
+        let mut traversal = inventory(&manifest);
+        let mut extra = traversal.resolved_content[0].clone();
+        extra.normalized_game_relative_path = "../escape.asset".into();
+        traversal.resolved_content.push(extra);
+        let report = manifest.validate_playback(&traversal);
+        assert!(!report.compatible);
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == ContentIssueCode::InvalidManifest));
+
+        let mut bad_hash = inventory(&manifest);
+        let mut extra = bad_hash.resolved_content[0].clone();
+        extra.normalized_game_relative_path = "gfx/entities/unused.asset".into();
+        extra.payload_sha256 = "not-a-sha256".into();
+        bad_hash.resolved_content.push(extra);
+        let report = manifest.validate_playback(&bad_hash);
+        assert!(!report.compatible);
+        assert!(report.issues.iter().any(|issue| {
+            issue.code == ContentIssueCode::InvalidManifest
+                && issue.message.contains("playback content payload")
+        }));
+    }
+
+    #[test]
+    fn malformed_ambient_layer_dlc_and_settings_fail_closed() {
+        let manifest = manifest();
+
+        let mut bad_layer = inventory(&manifest);
+        let mut extra = bad_layer.layers[0].clone();
+        extra.recorded_ordinal = 999;
+        extra.layer_id = "../unsafe-layer".into();
+        bad_layer.layers.push(extra);
+        assert!(!manifest.validate_playback(&bad_layer).compatible);
+
+        let mut blank_dlc = inventory(&manifest);
+        blank_dlc.dlc_selection.push(DlcSelection {
+            dlc_id: " ".into(),
+            enabled: true,
+            required_for_playback: false,
+        });
+        assert!(!manifest.validate_playback(&blank_dlc).compatible);
+
+        let mut blank_setting = inventory(&manifest);
+        blank_setting.settings.insert("ambient".into(), " ".into());
+        assert!(!manifest.validate_playback(&blank_setting).compatible);
     }
 
     #[test]

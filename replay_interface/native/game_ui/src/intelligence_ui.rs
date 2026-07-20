@@ -143,6 +143,7 @@ pub enum OperationTarget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperationStatus {
     Preparing,
+    Prepared,
     Running,
     Finished,
     Aborted,
@@ -403,9 +404,22 @@ pub fn admit_intelligence_ui(trace: &IntelligenceUiTrace) -> Result<AdmittedInte
                 OperationTarget::State(_) => {}
             }
             fixed(row.progress_fixed, "operation progress")?;
-            if row.phase_count == 0 || row.phase_index >= row.phase_count || row.duration_hours == 0
-            {
+            if row.phase_count == 0 || row.phase_index >= row.phase_count {
                 return Err(fail("operation phase/duration is invalid"));
+            }
+            match row.status {
+                OperationStatus::Preparing | OperationStatus::Prepared => {
+                    if row.start_hour != 0 || row.duration_hours != 0 {
+                        return Err(fail("pre-start operation carries runtime timing"));
+                    }
+                }
+                OperationStatus::Running
+                | OperationStatus::Finished
+                | OperationStatus::Aborted => {
+                    if row.start_hour <= 0 || row.duration_hours == 0 {
+                        return Err(fail("started operation lacks runtime timing"));
+                    }
+                }
             }
             let mut assigned = BTreeSet::new();
             for id in &row.assigned_operative_ids {

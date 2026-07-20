@@ -15,6 +15,9 @@ structure** from a melted the game save:
   2. NAVY:  ``countries.<TAG>.units.fleet[]`` -> ``task_force[]`` -> ``ship[]``.
        fleet.leader = commanding ADMIRAL id. ship.definition = hull/class;
        ship.equipment id={id,type=70} joins the equipment-variant index.
+       Current task forces persist a nested mission block, movement path,
+       repair/activity links and a save-tick retreat boolean; these are emitted
+       exactly and are not relabeled as live mission/repair/retreat enums.
        ``countries.<TAG>.navy_theater.theater_group[]`` = naval theatre grouping
        (fleet id refs).
   3. AIR:   top-level ``strategic_air.<TAG>.air_wing_pool[].air_wings[]`` = the
@@ -365,6 +368,79 @@ def _parse_ship(tz: Tokenizer):
     return ship
 
 
+def _parse_task_force_mission(tz: Tokenizer):
+    """Parse the persisted ``task_force.mission`` state block.
+
+    This is a block in current a729 saves, not the scalar that the original
+    oracle assumed.  The retained-corpus census found the fields below in
+    20,212 task forces across 257 saves.  Lists and typed object references are
+    kept structurally distinct so a movement/region list cannot be mistaken
+    for a stable convoy-route identity.
+    """
+    mission = {
+        "mission": None,
+        "is_in_regions": None,
+        "hours_in_mission": None,
+        "navy_engagement_rule": None,
+        "accessible_regions_range": None,
+        "accessible_regions": [],
+        "accessible_regions_in_fleet": [],
+        "extra": {},
+        "extra_blocks": [],
+    }
+    integer_fields = {
+        "hours", "hours_in_mission", "hours_in_spotting_region",
+        "hours_to_wait_for_base_check", "mission", "navy_engagement_rule",
+        "num_convoys_in_regions", "spotting_region", "convoy_spotting_region",
+        "strike_force_base", "strike_force_target", "bombardment_region",
+        "move",
+    }
+    float_fields = {
+        "accessible_regions_range", "air_superiority", "radar",
+        "spotting_process", "spotting_speed",
+    }
+    bool_fields = {
+        "already_spotted", "is_in_regions", "stop_training_at_max_xp",
+    }
+    integer_list_fields = {"accessible_regions"}
+    boolean_list_fields = {"accessible_regions_in_fleet"}
+    reference_fields = {
+        "group_to_escort", "spotting_convoy_client", "spotting_target",
+    }
+
+    for k, op in iter_block_entries(tz):
+        if op is LBRACE:
+            if k in integer_list_fields:
+                mission[k] = [to_int(x) for x in read_scalar_list(tz)
+                              if to_int(x) is not None]
+            elif k in boolean_list_fields:
+                mission[k] = [x == "yes" for x in read_scalar_list(tz)]
+            elif k in reference_fields:
+                mission["extra"][k] = _idkey(read_id_block(tz))
+            else:
+                mission["extra_blocks"].append(k)
+                _skip_block_body(tz)
+            continue
+
+        val = atom_value(op)
+        if val is None:
+            continue
+        if k in integer_fields:
+            parsed = to_int(val)
+        elif k in float_fields:
+            parsed = to_float(val)
+        elif k in bool_fields:
+            parsed = (val == "yes")
+        else:
+            parsed = val
+
+        if k in mission:
+            mission[k] = parsed
+        else:
+            mission["extra"][k] = parsed
+    return mission
+
+
 def _parse_task_force(tz: Tokenizer):
     tf = {
         "id": None,
@@ -372,7 +448,22 @@ def _parse_task_force(tz: Tokenizer):
         "location_province": None,
         "owner": None,            # logical_country
         "ships": [],
-        "mission": None,          # task-force mission/order context (raw scalar)
+        "mission": None,          # numeric enum from nested mission.mission
+        "mission_details": None,  # exact persisted task-force mission block
+        "path": [],               # current movement path (province ids)
+        "movement_progress": None,
+        "repair_mode": None,
+        "repair_split": None,
+        "repair_target": None,
+        "repair_parent": None,
+        "repair_child": None,
+        "repair_last_mission": None,
+        "detached_activity": None,
+        "hours_to_wait_for_repair_check": None,
+        "hours_waited_for_repairs": None,
+        "retreat": None,          # save boolean; not a live retreat-state enum
+        "sortie_efficiency": None,
+        "underway_replenishment": None,
         "extra_keys": [],
     }
     for k, op in iter_block_entries(tz):
@@ -381,8 +472,16 @@ def _parse_task_force(tz: Tokenizer):
                 tf["id"] = _idkey(read_id_block(tz))
             elif k == "ship":
                 tf["ships"].append(_parse_ship(tz))
+            elif k == "mission":
+                tf["mission_details"] = _parse_task_force_mission(tz)
+                tf["mission"] = tf["mission_details"]["mission"]
+            elif k == "path":
+                tf["path"] = [to_int(x) for x in read_scalar_list(tz)
+                              if to_int(x) is not None]
+            elif k in ("repair_parent", "repair_child"):
+                tf[k] = _idkey(read_id_block(tz))
             else:
-                # path, mission blocks, splits, etc.
+                # officer, AI composition, refit variant, HQ and cosmetic data.
                 _skip_block_body(tz)
             continue
         val = atom_value(op)
@@ -395,7 +494,20 @@ def _parse_task_force(tz: Tokenizer):
         elif k == "logical_country":
             tf["owner"] = val
         elif k == "mission":
-            tf["mission"] = val
+            # Legacy saves may persist a scalar.  Current a729 saves use the
+            # block handled above; retain scalar compatibility without
+            # inventing mission_details.
+            tf["mission"] = to_int(val)
+        elif k in ("repair_mode", "repair_target", "repair_last_mission",
+                   "hours_to_wait_for_repair_check",
+                   "hours_waited_for_repairs", "sortie_efficiency"):
+            tf[k] = to_int(val)
+        elif k == "movement_progress":
+            tf[k] = to_float(val)
+        elif k in ("repair_split", "retreat", "underway_replenishment"):
+            tf[k] = (val == "yes")
+        elif k == "detached_activity":
+            tf[k] = val
         elif k not in ("previous", "last_combat_date", "move_priority", "seed"):
             if k not in tf["extra_keys"]:
                 tf["extra_keys"].append(k)

@@ -3612,7 +3612,7 @@ def _r_construction_orders(ctx: CaptureContext, co) -> Dict[str, Any]:
         produced, priority}; the build target STATE is RESISTED (absent), never fabricated.
       * orders -> per-army battle-plan orders. Each order carries a diagnostic `obj` heap addr
         -> STRIPPED. We flatten to a world list [{army_id, order_type, target_states}];
-        target_states is the EXACT type-5 set or None (non-type-5 geometry RESISTED).
+        target_states is the EXACT type-5 area-defense set or None (other geometry RESISTED).
       * opinion_modifiers -> {"SRC|TGT": {cached_sum, modifiers:[{token_id, value}]}}. We
         re-key per SOURCE country into {SRC: {TGT: [{token_id, value}]}}, splitting the
         "SRC|TGT" key and re-validating BOTH ends via valid_tag. The token id->NAME registry

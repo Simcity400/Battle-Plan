@@ -1789,9 +1789,8 @@ fn negative_fixtures(seed: u64) -> Result<Vec<NegativeFixture>> {
     compact_identity.schema_version = Some("native_collector_session_v1".to_string());
     out.push(NegativeFixture {
         name: "neg_empty_snapshot_index",
-        description:
-            "Compact-stream flavor signature: finalized container with an empty snapshot index.",
-        expected_error_contains: "empty snapshot index",
+        description: "Compact-stream flavor signature with an obsolete non-v1 index schema. Compact-only packages are now product-supported only through the certified worker and must still declare canonical replay index schema_version 1.",
+        expected_error_contains: "incompatible replay index schema_version",
         bytes: pack(game, &compact_entries, &compact_identity, true)?,
     });
 

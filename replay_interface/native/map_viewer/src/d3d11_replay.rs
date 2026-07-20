@@ -405,6 +405,18 @@ impl NativeD3d11PreparedProductionMap {
             .collect()
     }
 
+    /// Exact fail-closed disposition of all seven close-zoom law modules.
+    /// This is exposed from the prepared D3D object so production callers and
+    /// the golden/pixel gate cannot mistake a compiled law for an authorized
+    /// pixel route.
+    pub fn close_zoom_law_plans(&self) -> &[ProductionCloseZoomLawPlan] {
+        &self.graph.close_zoom_laws
+    }
+
+    pub fn close_zoom_blockers(&self) -> Vec<(&'static str, &'static str)> {
+        self.graph.close_zoom_blockers()
+    }
+
     pub fn target_width(&self) -> u32 {
         self.terrain.target_width
     }
@@ -568,6 +580,14 @@ impl NativeD3d11PreparedProductionMap {
 impl NativeD3d11PreparedSynthesizedProductionMap {
     pub fn graph(&self) -> &ProductionMapPassGraph {
         &self.graph
+    }
+
+    pub fn close_zoom_law_plans(&self) -> &[ProductionCloseZoomLawPlan] {
+        &self.graph.close_zoom_laws
+    }
+
+    pub fn close_zoom_blockers(&self) -> Vec<(&'static str, &'static str)> {
+        self.graph.close_zoom_blockers()
     }
 
     pub fn terrain(&self) -> &NativeD3d11PreparedTerrainChunkSynthesis {
@@ -2513,6 +2533,12 @@ unsafe fn native_d3d11_patch_generated_tree_pass(
     inputs: &MapLayerSynthesisInputs,
 ) -> Result<()> {
     let synthesis = synthesize_tree_instances(inputs)?;
+    if synthesis.stats.instance_count != 0 {
+        return Err(
+            "generated tree synthesis blocked: this path requires the complete 99,056-cell static pool, but the authenticated C07 runtime carrier covers only the 4,781 visible retained cells and exact 13-buffer/three-pass model/LOD order; 95,275 global cells remain uncaptured and batches cannot be collapsed into one mesh draw"
+                .into(),
+        );
+    }
     let draw = pass
         .draws
         .first_mut()
@@ -2580,6 +2606,12 @@ unsafe fn native_d3d11_patch_tree_pass_from_files(
     pass: &mut NativeD3d11PreparedMapPass,
     layer: &TreeFileDerivedLayer,
 ) -> Result<()> {
+    if layer.instances.stats.instance_count != 0 {
+        return Err(
+            "file-derived tree layer blocked: this path requires the complete 99,056-cell static pool, but the authenticated C07 runtime carrier covers only the 4,781 visible retained cells and exact 13-buffer/three-pass model/LOD order; 95,275 global cells remain uncaptured and batches cannot be collapsed into one selected mesh draw"
+                .into(),
+        );
+    }
     let draw = pass
         .draws
         .first_mut()

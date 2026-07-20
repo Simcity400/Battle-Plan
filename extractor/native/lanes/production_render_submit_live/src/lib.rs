@@ -11,10 +11,11 @@ use portable_content_manifest::UsedContentKey;
 use portable_render_stream::{
     BufferSource, ConstantBufferBinding, DirectVisualKind, DirectVisualOperation,
     DirectVisualProducer, DrawCommand, EntityContentIdentity, EntitySubmission, GeometryBinding,
-    LightSlotJoin, ParticlePacket, PipelineDesc, RenderExecutionRef, RenderOutputRef,
+    LightSlotJoin, ParticlePacket, PipelineDesc, RenderExecutionRef, RenderOutputRef, RenderSubmit,
     RenderOutputState, ShaderProgram, Skinning, StaticMapCommand, StaticMapPassProgram,
-    TextureBinding, TiledLightSubmission, WeatherInstance, WeatherMembership, WeatherPosition,
-    WeatherResolution,
+    TextureBinding, TiledLightSubmission, WeatherCameraBranch, WeatherEntityRole,
+    WeatherEntityVisibility, WeatherInstance, WeatherMembership, WeatherPosition,
+    WeatherResolution, WeatherVariantContentJoin, WeatherVisibilityPhase,
 };
 pub use production_render_catalog_capture_contract::{
     correlate_content_creation, materialize_d77_draw_authority, materialize_d80_static_authority,
@@ -48,14 +49,20 @@ use std::sync::{Mutex, OnceLock};
 
 #[cfg(windows)]
 pub mod a729_hook;
+mod weather_catalog;
+pub use weather_catalog::*;
 mod authority_producer;
+mod gui_paint_receipt;
 mod observed_live_authority;
 mod runtime_content_interpreter;
+mod snow_mud_preupload;
 #[cfg(windows)]
 pub mod shader_reflection;
 pub use authority_producer::*;
+pub use gui_paint_receipt::*;
 pub use observed_live_authority::*;
 pub use runtime_content_interpreter::*;
+pub use snow_mud_preupload::*;
 
 pub const GLOBAL_RENDER_ENVELOPE_RVA: u32 = 0x0222_8DF0;
 pub const PARTICLE_OBJECT_CTOR_RVA: u32 = 0x0227_EA10;
@@ -92,6 +99,21 @@ pub const POST_PROCESS_RENDER_ROOT_RVA: u32 = 0x00FF_3450;
 pub const PRESENT_RENDER_ROOT_RVA: u32 = 0x020B_6530;
 pub const WEATHER_VISUAL_PRODUCER_RVA: u32 = 0x0166_EC50;
 pub const HIGH_RESOLUTION_SEED_RVA: u32 = 0x024D_BE60;
+/// Static promotion provenance for all three C03 hooks is pinned in the C03
+/// `C03_EXACT10_CONSUMER_AUTHORITY_20260720.json` evidence manifest. Wheel and
+/// vertical producer use retained pre-Wave exact-10 evidence; map-pick uses Wave 2
+/// exact-10 replacement root ADDR-03-03. Quarantined twenty-shard artifacts
+/// are not authority for these constants or their sentinels.
+/// C03 raw wheel/update producer. The three authenticated owner callers pass
+/// their camera root, action source, cursor source, event-list slot and raw
+/// frame scalar directly to this function.
+pub const CAMERA_WHEEL_UPDATE_RVA: u32 = 0x0124_E290;
+/// In-game event/update producer containing the two runtime vertical-camera
+/// action queries and the exact target-height writer call.
+pub const CAMERA_VERTICAL_EVENT_PRODUCER_RVA: u32 = 0x00DB_A7C0;
+/// Exact screen-to-map picker called by both C03 producers. Calls are retained
+/// in producer order and are not relabelled as physical input devices.
+pub const CAMERA_MAP_PICK_RVA: u32 = 0x00B4_4760;
 
 pub const PACKET_BYTES: usize = 0x70;
 pub const GPU_INSTANCE_STRIDE: u32 = 0x30;
@@ -513,10 +535,97 @@ pub struct RawParticlePacket {
     pub parent_entity_instance_id: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RawA729CameraOwnerKind {
+    FrontEnd,
+    InGame,
+    Third,
+}
+
+/// Pointer-free snapshot of one engine input node before and after an exact
+/// C03 producer invocation. The embedded bytes are kept raw; type/delta are
+/// duplicated only as exact little-endian fields at event `+0x4/+0x8`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawA729CameraInputEvent {
+    pub node_ordinal: u32,
+    pub node_kind_i32: i32,
+    pub consumed_before_u8: u8,
+    pub consumed_after_u8: u8,
+    pub event_type_i32: i32,
+    pub signed_delta_i32: i32,
+    pub embedded_event_16_bytes: [u8; 16],
+}
+
+/// was active on the same thread. No ray reconstruction or coordinate
+/// normalization occurs in the extractor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawA729CameraMapPick {
+    pub call_ordinal: u32,
+    pub mode_u8: u8,
+    pub screen_xy_f32_bits: [u32; 2],
+    pub world_xyz_f32_bits: [u32; 3],
+}
+
+/// One authenticated producer-to-camera-target join. Multiple updates may
+/// precede one d77 render envelope, so the render carrier retains the complete
+/// ordered batch rather than selecting or normalizing a single event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawA729CameraEventBatch {
+    pub producer_rva: u32,
+    pub owner_kind: RawA729CameraOwnerKind,
+    pub owner_vtable_rva: u32,
+    pub action_source_owner_offset: u32,
+    pub cursor_source_owner_offset: u32,
+    pub event_list_owner_offset: u32,
+    pub frame_scalar_f32_bits: Option<u32>,
+    pub producer_flag_0_u8: u8,
+    pub producer_flag_1_u8: u8,
+    pub input_events: Vec<RawA729CameraInputEvent>,
+    pub map_picks: Vec<RawA729CameraMapPick>,
+    pub current_eye_before_f32_bits: [u32; 3],
+    pub target_eye_before_f32_bits: [u32; 3],
+    pub target_look_at_before_f32_bits: [u32; 3],
+    pub current_eye_after_f32_bits: [u32; 3],
+    pub target_eye_after_f32_bits: [u32; 3],
+    pub target_look_at_after_f32_bits: [u32; 3],
+}
+
+/// Exact pointer-free C00/C01/C02 state captured from a map-camera-owned d77
+/// render-view carrier. The live hook authenticates the root before emission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawA729CameraCarrier {
+    pub carrier_ordinal: u8,
+    pub carrier_offset: u32,
+    pub owner_kind: RawA729CameraOwnerKind,
+    pub owner_vtable_rva: u32,
+    /// Exact envelope-selected carrier at `camera_root + carrier_offset`.
+    pub render_view_436_bytes: Vec<u8>,
+    /// Exact canonical C01 map-camera carrier at `camera_root + 0x10`, retained
+    /// independently because the selected envelope may use ordinal 1 or 2.
+    pub canonical_render_view_436_bytes: Vec<u8>,
+    pub previous_current_eye_f32_bits: [u32; 3],
+    pub current_eye_f32_bits: [u32; 3],
+    pub current_look_at_f32_bits: [u32; 3],
+    pub target_eye_f32_bits: [u32; 3],
+    pub target_look_at_f32_bits: [u32; 3],
+    pub viewport_i32: [i32; 4],
+    pub min_height_i32: i32,
+    pub max_height_i32: i32,
+    pub update_produced_u8: u8,
+    pub special_free_state_u8: u8,
+    pub ramp_f32_bits: u32,
+    pub wrap_branch_u8: u8,
+    /// All exact C03 producers completed for this authenticated camera root
+    /// since the preceding render envelope. Empty means no such producer was
+    /// observed, not a fabricated no-input event.
+    pub camera_event_batches: Vec<RawA729CameraEventBatch>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawParticleSubmit {
     pub submit_index: u64,
-    pub interpolation_phase_f32_bits: u32,
+    pub camera_carrier_ordinal: u8,
+    pub camera_carrier: Option<RawA729CameraCarrier>,
     pub packets: Vec<RawParticlePacket>,
     pub entity_submissions: Vec<RawEntitySubmission>,
 }
@@ -1297,6 +1406,11 @@ impl From<&RawParticlePacket> for ParticleDrawCatalogKey {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawWeatherEntityRef {
     pub entity_instance_id: u64,
+    /// Exact named-factory token when the native creation path supplied one.
+    /// Direct-definition weather entities remain `None` and cannot be erased
+    /// to portable content identity without a separate authenticated registry
+    /// receipt.
+    pub registration_token: Option<String>,
     /// Process-local join consumed only by the effective-VFS catalog resolver.
     /// It is never serialized into the portable replay.
     pub definition_ptr: usize,
@@ -1339,8 +1453,21 @@ pub struct RawWeatherObservation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawWeatherVisibilityObservation {
+    pub observation_index: u64,
+    pub strategic_region_id: u32,
+    pub view_distance_f32_bits: u32,
+    pub camera_branch: WeatherCameraBranch,
+    pub computed_fade_alpha_f32_bits: u32,
+    pub computed_playback_rate_f32_bits: u32,
+    pub ordered_entity_visibility: Vec<WeatherEntityVisibility>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedWeatherCatalogRow {
     pub weather_effect_token: Option<String>,
+    pub weather_position_source_content: UsedContentKey,
+    pub ordered_variant_content: Vec<WeatherVariantContentJoin>,
     /// Includes every authored position, including explicit-empty membership.
     pub ordered_positions: Vec<WeatherPosition>,
     pub ordered_weather_instances: Vec<WeatherInstance>,
@@ -3041,11 +3168,36 @@ pub fn promote_weather_observation<R: ExactWeatherCatalogResolver>(
     let row = resolver.resolve(raw).ok_or_else(|| {
         PromotionError::Invalid("weather catalog could not resolve exact ordered membership".into())
     })?;
-    if (raw.airborne_runtime_code == 0) != row.weather_effect_token.is_none() {
-        return invalid("weather token nullability disagrees with runtime code");
+    let expected_token = match raw.airborne_runtime_code {
+        0 => None,
+        2 => Some("rain_light"),
+        3 => Some("rain_heavy"),
+        4 => Some("snow"),
+        5 => Some("blizzard"),
+        7 => Some("sandstorm"),
+        _ => return invalid("weather observation contains an unknown airborne code"),
+    };
+    let expected_code = if raw.rain_heavy_active {
+        3
+    } else if raw.rain_light_active {
+        2
+    } else if raw.blizzard_active {
+        5
+    } else if raw.snow_active {
+        4
+    } else if raw.sandstorm_active {
+        7
+    } else {
+        0
+    };
+    if raw.airborne_runtime_code != expected_code {
+        return invalid("weather airborne code disagrees with frozen flag priority");
     }
-    validate_weather_resolution(raw, &row)?;
-    Ok(WeatherMembership {
+    if row.weather_effect_token.as_deref() != expected_token {
+        return invalid("weather token disagrees with the exact airborne-code table");
+    }
+    validate_weather_resolution(raw, &row, resolver.authority_manifest_sha256())?;
+    let mut membership = WeatherMembership {
         sequence,
         update_index,
         strategic_region_id: raw.strategic_region_id,
@@ -3059,21 +3211,204 @@ pub fn promote_weather_observation<R: ExactWeatherCatalogResolver>(
         transition_expiry_game_hour_i32: raw.transition_expiry_game_hour_i32,
         airborne_runtime_code: raw.airborne_runtime_code,
         weather_effect_token: row.weather_effect_token,
+        weather_position_source_content: row.weather_position_source_content,
+        ordered_variant_content: row.ordered_variant_content,
         ordered_positions: row.ordered_positions,
         ordered_weather_instances: row.ordered_weather_instances,
+        visibility_updates: Vec::new(),
+        membership_sha256: String::new(),
+    };
+    membership
+        .seal_membership_sha256()
+        .map_err(PromotionError::Invalid)?;
+    Ok(membership)
+}
+
+pub fn promote_weather_visibility_observation(
+    raw: &RawWeatherVisibilityObservation,
+    sequence: u64,
+    update_index: u64,
+) -> Result<WeatherVisibilityPhase, PromotionError> {
+    if raw.observation_index == 0 || sequence == 0 {
+        return invalid("weather visibility observation identity is zero");
+    }
+    let (branch, alpha_bits, playback_bits) =
+        portable_render_stream::weather_visibility_law(raw.view_distance_f32_bits)
+            .map_err(PromotionError::Invalid)?;
+    if raw.camera_branch != branch
+        || raw.computed_fade_alpha_f32_bits != alpha_bits
+        || raw.computed_playback_rate_f32_bits != playback_bits
+        || raw.ordered_entity_visibility.is_empty()
+    {
+        return invalid("weather visibility observation differs from the frozen camera law");
+    }
+    let mut entity_ids = std::collections::BTreeSet::new();
+    for entity in &raw.ordered_entity_visibility {
+        let expected_writes = match entity.role {
+            WeatherEntityRole::Primary => matches!(
+                branch,
+                WeatherCameraBranch::FarFade | WeatherCameraBranch::FarHidden
+            ),
+            WeatherEntityRole::Fading => true,
+        };
+        if entity.entity_instance_id == 0
+            || !entity_ids.insert(entity.entity_instance_id)
+            || entity.producer_wrote_active != expected_writes
+            || entity.producer_wrote_alpha != expected_writes
+            || entity.post_update_playback_rate_f32_bits != playback_bits
+            || (expected_writes
+                && (entity.post_update_active != (alpha_bits != 0)
+                    || entity.post_update_alpha_f32_bits != alpha_bits))
+        {
+            return invalid("weather visibility entity state/write mask is invalid");
+        }
+    }
+    Ok(WeatherVisibilityPhase {
+        sequence,
+        update_index,
+        strategic_region_id: raw.strategic_region_id,
+        view_distance_f32_bits: raw.view_distance_f32_bits,
+        camera_branch: raw.camera_branch,
+        computed_fade_alpha_f32_bits: raw.computed_fade_alpha_f32_bits,
+        computed_playback_rate_f32_bits: raw.computed_playback_rate_f32_bits,
+        ordered_entity_visibility: raw.ordered_entity_visibility.clone(),
     })
+}
+
+pub fn append_weather_visibility_phase(
+    membership: &mut WeatherMembership,
+    phase: WeatherVisibilityPhase,
+) -> Result<(), PromotionError> {
+    if membership.airborne_runtime_code == 0
+        || phase.strategic_region_id != membership.strategic_region_id
+        || phase.update_index < membership.update_index
+        || phase.sequence <= membership.sequence
+        || membership
+            .visibility_updates
+            .last()
+            .is_some_and(|prior| {
+                phase.sequence <= prior.sequence || phase.update_index < prior.update_index
+            })
+    {
+        return invalid("weather visibility phase crosses membership/order identity");
+    }
+    membership.visibility_updates.push(phase);
+    membership
+        .seal_membership_sha256()
+        .map_err(PromotionError::Invalid)
+}
+
+/// Replaces the last process-local weather/effect join with the complete
+/// portable output cover from one authenticated selected submit. This must be
+/// called after particle promotion and before the membership enters a frame;
+/// effect IDs with no submitted packet are not representable as exact replay.
+pub fn join_weather_membership_to_submit_outputs(
+    membership: &mut WeatherMembership,
+    submit: &RenderSubmit,
+) -> Result<(), PromotionError> {
+    let submit_effects = submit
+        .particles
+        .iter()
+        .map(|packet| packet.effect_instance_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    for instance in &mut membership.ordered_weather_instances {
+        if !submit_effects.contains(&instance.effect_instance_id) {
+            return invalid("weather effect has no particle packet in the selected submit");
+        }
+        let outputs = submit
+            .ordered_draws
+            .iter()
+            .filter(|output| {
+                matches!(
+                    output,
+                    RenderOutputRef::Particle {
+                        effect_instance_id,
+                        ..
+                    } if *effect_instance_id == instance.effect_instance_id
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if outputs.is_empty() {
+            return invalid("weather effect has no ordered selected-submit output");
+        }
+        instance.submitted_outputs = outputs;
+    }
+    membership
+        .seal_membership_sha256()
+        .map_err(PromotionError::Invalid)
 }
 
 fn validate_weather_resolution(
     raw: &RawWeatherObservation,
     row: &ResolvedWeatherCatalogRow,
+    authority_manifest_sha256: &str,
 ) -> Result<(), PromotionError> {
+    validate_content_key(
+        &row.weather_position_source_content,
+        authority_manifest_sha256,
+        "weather position source",
+    )?;
+    if row
+        .weather_position_source_content
+        .normalized_game_relative_path
+        != "map/weatherpositions.txt"
+    {
+        return invalid("weather position source is not map/weatherpositions.txt");
+    }
+    let mut variant_keys = std::collections::BTreeSet::new();
+    for variant in &row.ordered_variant_content {
+        if variant.resolved_variant_token.trim().is_empty()
+            || !variant_keys.insert((
+                variant.class,
+                variant.authored_effect_index,
+                variant.resolved_variant_token.as_str(),
+            ))
+        {
+            return invalid("weather variant content key is blank or duplicated");
+        }
+        for (role, entity) in [("primary", Some(&variant.primary)), ("fading", variant.fading.as_ref())]
+        {
+            let Some(entity) = entity else { continue };
+            if entity.entity_token.trim().is_empty() || entity.ordered_content.is_empty() {
+                return invalid(&format!("weather {role} entity content closure is empty"));
+            }
+            let mut paths = std::collections::BTreeSet::new();
+            for content in &entity.ordered_content {
+                validate_content_key(content, authority_manifest_sha256, "weather entity content")?;
+                if !paths.insert(content.normalized_game_relative_path.as_str()) {
+                    return invalid("weather entity content closure repeats a logical path");
+                }
+            }
+        }
+    }
+    if raw.airborne_runtime_code == 0 && !row.ordered_variant_content.is_empty() {
+        return invalid("code-zero weather carries authored variant content");
+    }
     let mut observed_entity_ids = Vec::new();
     for pair in &raw.ordered_live_pairs {
         if let Some(primary) = &pair.primary {
+            if primary
+                .registration_token
+                .as_deref()
+                .map_or(true, str::is_empty)
+            {
+                return invalid(
+                    "weather primary entity has no authenticated pointer-to-token join",
+                );
+            }
             observed_entity_ids.push(primary.entity_instance_id);
         }
         if let Some(fading) = &pair.fading {
+            if fading
+                .registration_token
+                .as_deref()
+                .map_or(true, str::is_empty)
+            {
+                return invalid(
+                    "weather fading entity has no authenticated pointer-to-token join",
+                );
+            }
             observed_entity_ids.push(fading.entity_instance_id);
         }
     }
@@ -3098,15 +3433,56 @@ fn validate_weather_resolution(
     }
     let mut expected_pairs = Vec::new();
     let mut expected_effects = Vec::new();
-    let mut last_ordinal = None;
-    for position in &row.ordered_positions {
-        if last_ordinal.is_some_and(|value| position.position_ordinal <= value) {
-            return invalid("weather position ordinals are not strictly increasing");
+    let mut expected_entity_tokens = Vec::new();
+    let mut last_source_line = None;
+    let mut selection_seed = raw.selection_seed_words;
+    for (expected_ordinal, position) in row.ordered_positions.iter().enumerate() {
+        if usize::from(position.position_ordinal) != expected_ordinal
+            || position.source_line == 0
+            || last_source_line.is_some_and(|value| position.source_line <= value)
+            || position
+                .position_xyz_f32_bits
+                .iter()
+                .any(|bits| !f32::from_bits(*bits).is_finite())
+        {
+            return invalid("weather position source/order/XYZ identity is invalid");
         }
-        last_ordinal = Some(position.position_ordinal);
+        last_source_line = Some(position.source_line);
+        if raw.airborne_runtime_code == 0 {
+            if position.resolution != WeatherResolution::ExplicitEmpty {
+                return invalid("code-zero weather instantiated an authored position");
+            }
+        } else {
+            let seed = selection_seed
+                .as_mut()
+                .ok_or_else(|| PromotionError::Invalid("weather selection seed vanished".into()))?;
+            let selection_word = weather_selection_word(*seed);
+            seed[0] = seed[0].wrapping_add(1);
+            let candidates = row
+                .ordered_variant_content
+                .iter()
+                .filter(|variant| variant.class == position.class)
+                .collect::<Vec<_>>();
+            if candidates.is_empty() {
+                if position.resolution != WeatherResolution::ExplicitEmpty {
+                    return invalid("weather selected an empty class vector but instantiated");
+                }
+            } else {
+                let selected = candidates[selection_word as usize % candidates.len()];
+                if position.resolution != WeatherResolution::Instantiated
+                    || position.selected_authored_effect_index
+                        != Some(selected.authored_effect_index)
+                    || position.resolved_variant_token.as_deref()
+                        != Some(selected.resolved_variant_token.as_str())
+                {
+                    return invalid("weather authored variant differs from captured PRNG selection");
+                }
+            }
+        }
         match position.resolution {
             WeatherResolution::ExplicitEmpty => {
-                if position.primary_entity_instance_id.is_some()
+                if position.selected_authored_effect_index.is_some()
+                    || position.primary_entity_instance_id.is_some()
                     || position.fading_entity_instance_id.is_some()
                     || !position.ordered_effect_instance_ids.is_empty()
                     || position.resolved_variant_token.is_some()
@@ -3117,11 +3493,26 @@ fn validate_weather_resolution(
             WeatherResolution::Instantiated => {
                 if position.selected_authored_effect_index.is_none()
                     || position.resolved_variant_token.is_none()
-                    || (position.primary_entity_instance_id.is_none()
-                        && position.fading_entity_instance_id.is_none())
+                    || position.primary_entity_instance_id.is_none()
                 {
                     return invalid("instantiated weather position is incomplete");
                 }
+                let mut variant_matches = row.ordered_variant_content.iter().filter(|variant| {
+                    Some(variant.authored_effect_index) == position.selected_authored_effect_index
+                        && variant.class == position.class
+                        && Some(variant.resolved_variant_token.as_str())
+                            == position.resolved_variant_token.as_deref()
+                });
+                let Some(selected) = variant_matches.next() else {
+                    return invalid("weather position has no unique pointer-erased variant join");
+                };
+                if variant_matches.next().is_some() {
+                    return invalid("weather position repeats its pointer-erased variant join");
+                }
+                expected_entity_tokens.push((
+                    selected.primary.entity_token.as_str(),
+                    selected.fading.as_ref().map(|entity| entity.entity_token.as_str()),
+                ));
                 expected_pairs.push((
                     position.primary_entity_instance_id.clone(),
                     position.fading_entity_instance_id.clone(),
@@ -3165,6 +3556,28 @@ fn validate_weather_resolution(
         .collect();
     if expected_pairs != observed_pairs {
         return invalid("resolved weather positions disagree with the exact live pair vector");
+    }
+    let observed_entity_tokens = raw
+        .ordered_live_pairs
+        .iter()
+        .map(|pair| {
+            (
+                pair.primary
+                    .as_ref()
+                    .and_then(|entity| entity.registration_token.as_deref()),
+                pair.fading
+                    .as_ref()
+                    .and_then(|entity| entity.registration_token.as_deref()),
+            )
+        })
+        .collect::<Vec<_>>();
+    if expected_entity_tokens
+        .iter()
+        .map(|(primary, fading)| (Some(*primary), *fading))
+        .collect::<Vec<_>>()
+        != observed_entity_tokens
+    {
+        return invalid("weather pointer-to-token joins disagree with authored variant content");
     }
     let instance_effects: Vec<_> = row
         .ordered_weather_instances
@@ -3781,7 +4194,8 @@ mod tests {
         RawRenderSubmitCapture {
             submit: RawParticleSubmit {
                 submit_index: 1,
-                interpolation_phase_f32_bits: 0,
+                camera_carrier_ordinal: 0,
+                camera_carrier: None,
                 packets: vec![packet],
                 entity_submissions: vec![],
             },
@@ -3876,7 +4290,8 @@ mod tests {
     fn pointer_is_zero_and_single_gpu_blob_promotes() {
         let raw = RawParticleSubmit {
             submit_index: 1,
-            interpolation_phase_f32_bits: 0,
+            camera_carrier_ordinal: 0,
+            camera_carrier: None,
             packets: vec![packet()],
             entity_submissions: vec![],
         };
@@ -3936,7 +4351,8 @@ mod tests {
         };
         let raw = RawParticleSubmit {
             submit_index: 3,
-            interpolation_phase_f32_bits: 0,
+            camera_carrier_ordinal: 0,
+            camera_carrier: None,
             packets: vec![particle],
             entity_submissions: vec![entity],
         };

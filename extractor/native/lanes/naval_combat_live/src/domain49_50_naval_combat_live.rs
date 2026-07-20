@@ -37,6 +37,8 @@ pub const LIFECYCLE_DEFENDER_COUNT_PRESENT: u32 = 1 << 3;
 pub const LIFECYCLE_ATTACKER_POSITIONING_PRESENT: u32 = 1 << 4;
 pub const LIFECYCLE_DEFENDER_POSITIONING_PRESENT: u32 = 1 << 5;
 pub const LIFECYCLE_REGION_PRESENT: u32 = 1 << 6;
+pub const LIFECYCLE_ATTACKER_ANTI_AIR_PRESENT: u32 = 1 << 7;
+pub const LIFECYCLE_DEFENDER_ANTI_AIR_PRESENT: u32 = 1 << 8;
 
 pub const MEMBER_ROW_DELETED: u32 = 1 << 0;
 pub const MEMBER_SHIP_INSTANCE_PRESENT: u32 = 1 << 1;
@@ -58,7 +60,9 @@ const LIFECYCLE_KNOWN_FLAGS: u32 = LIFECYCLE_ROW_DELETED
     | LIFECYCLE_DEFENDER_COUNT_PRESENT
     | LIFECYCLE_ATTACKER_POSITIONING_PRESENT
     | LIFECYCLE_DEFENDER_POSITIONING_PRESENT
-    | LIFECYCLE_REGION_PRESENT;
+    | LIFECYCLE_REGION_PRESENT
+    | LIFECYCLE_ATTACKER_ANTI_AIR_PRESENT
+    | LIFECYCLE_DEFENDER_ANTI_AIR_PRESENT;
 const MEMBER_KNOWN_FLAGS: u32 = MEMBER_ROW_DELETED
     | MEMBER_SHIP_INSTANCE_PRESENT
     | MEMBER_OWNER_PRESENT
@@ -130,6 +134,10 @@ pub struct LifecycleRow {
     pub defender_member_count: Option<u32>,
     pub attacker_positioning_milli: Option<i32>,
     pub defender_positioning_milli: Option<i32>,
+    /// Exact signed fixed-point x100000 `CNavalCombatant+0x150` producer output.
+    pub attacker_anti_air_raw: Option<i64>,
+    /// Exact signed fixed-point x100000 `CNavalCombatant+0x150` producer output.
+    pub defender_anti_air_raw: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -242,6 +250,9 @@ struct DecodedLifecycleRow {
     defender_member_count: u32,
     attacker_positioning_milli: i32,
     defender_positioning_milli: i32,
+    attacker_anti_air_raw: i64,
+    defender_anti_air_raw: i64,
+    reserved_tail: u64,
 }
 
 #[derive(Debug)]
@@ -307,6 +318,12 @@ pub fn encode_lifecycle_payload(
         if row.defender_positioning_milli.is_some() {
             flags |= LIFECYCLE_DEFENDER_POSITIONING_PRESENT;
         }
+        if row.attacker_anti_air_raw.is_some() {
+            flags |= LIFECYCLE_ATTACKER_ANTI_AIR_PRESENT;
+        }
+        if row.defender_anti_air_raw.is_some() {
+            flags |= LIFECYCLE_DEFENDER_ANTI_AIR_PRESENT;
+        }
         push_u32(&mut payload, row.combat_id);
         push_u64(&mut payload, row.generation);
         push_u64(&mut payload, row.body_ptr);
@@ -317,8 +334,8 @@ pub fn encode_lifecycle_payload(
         push_u32(&mut payload, row.defender_member_count.unwrap_or(0));
         push_i32(&mut payload, row.attacker_positioning_milli.unwrap_or(0));
         push_i32(&mut payload, row.defender_positioning_milli.unwrap_or(0));
-        push_u64(&mut payload, 0);
-        push_u64(&mut payload, 0);
+        push_i64(&mut payload, row.attacker_anti_air_raw.unwrap_or(0));
+        push_i64(&mut payload, row.defender_anti_air_raw.unwrap_or(0));
         push_u64(&mut payload, 0);
     }
     append_empty_string_table(&mut payload);
@@ -471,6 +488,10 @@ pub fn decode_lifecycle_rows(payload: &[u8]) -> Result<(u32, Vec<LifecycleRow>),
                 .then_some(row.attacker_positioning_milli),
             defender_positioning_milli: (row.flags & LIFECYCLE_DEFENDER_POSITIONING_PRESENT != 0)
                 .then_some(row.defender_positioning_milli),
+            attacker_anti_air_raw: (row.flags & LIFECYCLE_ATTACKER_ANTI_AIR_PRESENT != 0)
+                .then_some(row.attacker_anti_air_raw),
+            defender_anti_air_raw: (row.flags & LIFECYCLE_DEFENDER_ANTI_AIR_PRESENT != 0)
+                .then_some(row.defender_anti_air_raw),
         })
         .collect();
     Ok((header.status_flags, decoded))
@@ -1643,6 +1664,9 @@ fn decode_lifecycle_payload(
             defender_member_count: read_u32(payload, cursor + 36),
             attacker_positioning_milli: read_i32(payload, cursor + 40),
             defender_positioning_milli: read_i32(payload, cursor + 44),
+            attacker_anti_air_raw: read_i64(payload, cursor + 48),
+            defender_anti_air_raw: read_i64(payload, cursor + 56),
+            reserved_tail: read_u64(payload, cursor + 64),
         });
         cursor += LIFECYCLE_ROW_LEN;
     }
@@ -1841,6 +1865,21 @@ fn validate_decoded_lifecycle_row(
     {
         errors.push(format!(
             "offset {offset}: lifecycle row {row_index} has defender positioning without flag"
+        ));
+    }
+    if row.flags & LIFECYCLE_ATTACKER_ANTI_AIR_PRESENT == 0 && row.attacker_anti_air_raw != 0 {
+        errors.push(format!(
+            "offset {offset}: lifecycle row {row_index} has attacker anti-air without flag"
+        ));
+    }
+    if row.flags & LIFECYCLE_DEFENDER_ANTI_AIR_PRESENT == 0 && row.defender_anti_air_raw != 0 {
+        errors.push(format!(
+            "offset {offset}: lifecycle row {row_index} has defender anti-air without flag"
+        ));
+    }
+    if row.reserved_tail != 0 {
+        errors.push(format!(
+            "offset {offset}: lifecycle row {row_index} trailing reserved field is nonzero"
         ));
     }
 }
@@ -2224,6 +2263,10 @@ fn push_i32(out: &mut Vec<u8>, value: i32) {
     out.extend_from_slice(&value.to_le_bytes());
 }
 
+fn push_i64(out: &mut Vec<u8>, value: i64) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
 fn push_u64(out: &mut Vec<u8>, value: u64) {
     out.extend_from_slice(&value.to_le_bytes());
 }
@@ -2247,6 +2290,19 @@ fn read_i32(data: &[u8], offset: usize) -> i32 {
         data[offset + 1],
         data[offset + 2],
         data[offset + 3],
+    ])
+}
+
+fn read_i64(data: &[u8], offset: usize) -> i64 {
+    i64::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+        data[offset + 4],
+        data[offset + 5],
+        data[offset + 6],
+        data[offset + 7],
     ])
 }
 
@@ -2376,6 +2432,8 @@ mod tests {
             defender_member_count: Some(1),
             attacker_positioning_milli: Some(812),
             defender_positioning_milli: Some(765),
+            attacker_anti_air_raw: Some(123_000),
+            defender_anti_air_raw: Some(98_000),
         }
     }
 
@@ -3444,6 +3502,8 @@ mod tests {
             defender_member_count: Some(1),
             attacker_positioning_milli: None,
             defender_positioning_milli: None,
+            attacker_anti_air_raw: None,
+            defender_anti_air_raw: None,
         }];
         let payload = encode_lifecycle_payload(42, STATUS_DELTA_DATA, &lifecycle);
         let stream = compact_record(

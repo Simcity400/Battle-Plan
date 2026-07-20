@@ -184,12 +184,12 @@ pub fn tree_file_derived_layer_from_resolver(
         // captured draw — the full-detail `tree` family is the rendered path.
         // See tree_second_subdraw.rs.
         "the low-gfx tree pixel shader 6b77b6df9ba8f03d (gfx/FX/tree.shader:tree_low_gfx) is compiled but unused at the captured graphics settings; the full-detail tree family is the rendered path (TREES2)".to_string(),
-        "exact Clausewitz scatter law is unknown; this layer uses one instance per nonzero trees.bmp cell with deterministic rotation".to_string(),
-        "multiple tree palette/model variants are currently collapsed to the selected first-sub-draw mesh; per-index counts are retained for a later multi-mesh layer".to_string(),
+        "the exact a729 24-byte instance producer is retained by palette/chunk bucket, but this development layer still collapses those batches to one selected mesh draw".to_string(),
+        "per-palette model choice, per-frame visible bucket set/order, and mesh LOD choice are not yet carried into the production draw graph".to_string(),
         "tree diffuse/normal material atlas is not replaced yet; D3D runtime keeps the captured tree pass material SRVs".to_string(),
     ];
     let stats = TreeFileDerivedLayerStats {
-        schema: "battle-plan-tree-file-derived-layer-v1".to_string(),
+        schema: "battle-plan-tree-file-derived-layer-v2".to_string(),
         selected_tree_index: binding.object_index,
         selected_binding: format!("{}:{}", binding.source, binding.name_line),
         selected_mesh: binding.mesh.clone(),
@@ -202,7 +202,6 @@ pub fn tree_file_derived_layer_from_resolver(
         tint_texture: [tint.width, tint.height],
         season_texture: [season.width, season.height],
         shader,
-        convention: "selected mesh is the most common nonzero map/trees.bmp palette value that has a gfx/entities/trees.gfx mapobject_N binding; all nonzero trees.bmp cells become instances".to_string(),
         gaps,
     };
     Ok(TreeFileDerivedLayer {
@@ -1270,21 +1269,26 @@ mod tests {
     }
 
     #[test]
-    fn resolver_tree_instance_generation_honors_vfs_then_fails_closed() {
+    fn resolver_tree_instance_generation_honors_vfs_with_exact_producer() {
         let root = temp_test_dir("tree_file_resolver_overrides");
         let vanilla = root.join("vanilla");
         let mod_root = root.join("mod");
         write_indexed_bmp_values(&vanilla.join(TREES_BMP_SOURCE), 2, 1, &[1, 1]);
-        write_indexed_bmp_values(&vanilla.join(TREE_HEIGHTMAP_SOURCE), 4, 4, &[10; 16]);
+        write_indexed_bmp_values(
+            &vanilla.join(TREE_HEIGHTMAP_SOURCE),
+            256,
+            256,
+            &vec![10; 256 * 256],
+        );
         write_indexed_bmp_values(&mod_root.join(TREES_BMP_SOURCE), 2, 1, &[0, 6]);
         let resolver =
             GameFileResolver::with_mod_paths(&vanilla, vec![mod_root]).expect("resolver");
-        let error = synthesize_tree_instances_from_resolver(&resolver, 4, 4)
-            .expect_err("unresolved yaw and slope producers must omit instances");
-        assert!(
-            error.to_string().contains(TREE_INSTANCE_GENERATOR_OMISSION),
-            "{error}"
-        );
+        let generated = synthesize_tree_instances_from_resolver(&resolver, 256, 256)
+            .expect("exact generator");
+        assert_eq!(generated.stats.instance_count, 1);
+        assert_eq!(generated.stats.tree_index_counts.get(&6), Some(&1));
+        assert_eq!(generated.batches.len(), 1);
+        assert_eq!(generated.batches[0].palette_index, 6);
         assert_eq!(resolver.stats().overridden_file_count, 1);
         let _ = fs::remove_dir_all(root);
     }

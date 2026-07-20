@@ -7,6 +7,18 @@
     "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
   },
   "owner": "extractor domain 11 successor schema",
+  "legacy_residual_closeout": {
+    "status": "PROVEN_NATIVE_WIRED",
+    "dossier": "extractor/documents/dossiers/X4_PRODUCTION_LEGACY_RESIDUAL_CLOSEOUT_20260719.md",
+    "static_proof": "extractor/re_evidence/X4_PRIORITY/production_priority_static_proof.json",
+    "priority": {
+      "memory_law": "signed dword line+0x44 is the engine-maintained production vector ordinal",
+      "producer_chain": "priority UI reads +0x44 and displays +1; CChangeProductionLinePriorityCommand dispatches to military/naval reorder routines that verify vector[+0x44] == line and rewrite +0x44 for every moved line",
+      "wire": "all-or-nothing PPR1 trailer with bijective (tag_db_id,kind,line_id) coverage"
+    },
+    "requested_factories": "X4-P2 PFR1 remains the exact line+0xE8 field",
+    "equipment_variant_index": "serializer name for X4-P1 typed equipment variant identity; no duplicate index field is admitted"
+  },
   "current_line_row": {
     "bytes": 32,
     "fields": [

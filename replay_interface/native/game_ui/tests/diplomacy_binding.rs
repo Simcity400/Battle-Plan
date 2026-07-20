@@ -23,8 +23,7 @@ use game_ui::binding::{diplomacy_panel_from_frame, FactionRow, RelationRow};
 use replay_core::world::FactionRosterStatus;
 use replay_core::{open_recording, Leaf, WorldTimeline};
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -50,53 +49,6 @@ fn rel<'a>(rows: &'a [RelationRow], other: &str) -> &'a RelationRow {
     rows.iter()
         .find(|r| r.other_tag == other)
         .unwrap_or_else(|| panic!("no relation row for {other}"))
-}
-
-fn run_extractor_cargo(extractor_native: &Path, temp_dir: &Path, args: &[&str]) {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let output = Command::new(cargo)
-        .current_dir(extractor_native)
-        .env("TEMP", temp_dir)
-        .env("TMP", temp_dir)
-        .args(args)
-        .output()
-        .expect("launch extractor cargo command");
-    assert!(
-        output.status.success(),
-        "extractor cargo command failed: {} stdout={} stderr={}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-fn relocate_h4cr_stream_hour(stream: &mut [u8], game_hour_raw: i32) -> usize {
-    let mut offset = 0usize;
-    let mut records = 0usize;
-    while offset < stream.len() {
-        assert!(
-            stream.len() - offset >= 32,
-            "truncated H4CR header at byte {offset}"
-        );
-        assert_eq!(&stream[offset..offset + 4], b"H4CR");
-        let header_len =
-            u16::from_le_bytes(stream[offset + 6..offset + 8].try_into().unwrap()) as usize;
-        let payload_len =
-            u32::from_le_bytes(stream[offset + 24..offset + 28].try_into().unwrap()) as usize;
-        assert!(header_len >= 32, "invalid H4CR header length {header_len}");
-        let next = offset
-            .checked_add(header_len)
-            .and_then(|value| value.checked_add(payload_len))
-            .expect("H4CR record length overflow");
-        assert!(
-            next <= stream.len(),
-            "truncated H4CR record at byte {offset}"
-        );
-        stream[offset + 16..offset + 20].copy_from_slice(&game_hour_raw.to_le_bytes());
-        offset = next;
-        records += 1;
-    }
-    records
 }
 
 /// GATE 2a — faction membership matrix appears exactly at the tick-3 change and
@@ -267,134 +219,23 @@ fn faction_roster_binding_timeline() -> (PathBuf, WorldTimeline) {
     (root, timeline)
 }
 
-/// Build the positive binding fixture through the production d53 encoder and
-/// recorder fold. The fold deliberately projects only `leader`/`is_leader` to
-/// `countries.*.politics.faction`; it does not fabricate the faction name that
-/// d53 carries only as a hash.
-fn production_faction_roster_binding_timeline() -> (PathBuf, WorldTimeline, i64) {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "game_ui_faction_fold_{}_{}_{}",
-        std::process::id(),
-        n,
-        nanos
-    ));
-    fs::create_dir_all(&root).unwrap();
-
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
-        .canonicalize()
-        .unwrap();
-    let extractor_native = repo_root.join("extractor/native");
-    let extractor_temp = root.join("extractor_tmp");
-    fs::create_dir_all(&extractor_temp).unwrap();
-
-    let proof_record = root.join("d53.compact.bin");
-    let proof_report = root.join("d53.proof.json");
-    let proof_manifest = root.join("d53.manifest.json");
-    let proof_replay = root.join("d53.battleplan");
-    run_extractor_cargo(
-        &extractor_native,
-        &extractor_temp,
-        &[
-            "run",
-            "--locked",
-            "--offline",
-            "--quiet",
-            "-p",
-            "diplomacy_intel_operatives_live",
-            "--bin",
-            "domain53_proof",
-            "--",
-            "--out-record",
-            proof_record.to_str().unwrap(),
-            "--out-report",
-            proof_report.to_str().unwrap(),
-            "--out-manifest",
-            proof_manifest.to_str().unwrap(),
-            "--out-replay",
-            proof_replay.to_str().unwrap(),
-        ],
-    );
-
-    let mut stream = fs::read(&proof_record).unwrap();
-    assert_eq!(&stream[..4], b"H4CR");
-    assert_eq!(u16::from_le_bytes(stream[20..22].try_into().unwrap()), 53);
-    let raw_hour = 43_799_999i32 + (1936 * 365 * 24);
-    // `domain53_proof` now emits a complete H4CR stream (SESSION_META, D53
-    // DATA, FRAME_END), not a single D53 record. Relocate every record header
-    // together; relocating only the first header leaves the data at the proof
-    // CLI's historical smoke hour and makes the tested hour correctly fold an
-    // unavailable roster. Payload bytes remain byte-identical.
-    assert!(
-        relocate_h4cr_stream_hour(&mut stream, raw_hour) >= 3,
-        "the proof stream must include metadata, D53 data, and frame end"
-    );
-    let stream_path = root.join("collector_stream.bin");
-    fs::write(&stream_path, stream).unwrap();
-
-    let game = "faction_roster_production_fold";
-    let store_root = root.join("store");
-    let game_dir = store_root.join(game);
-    fs::create_dir_all(&game_dir).unwrap();
-    run_extractor_cargo(
-        &extractor_native,
-        &extractor_temp,
-        &[
-            "run",
-            "--locked",
-            "--offline",
-            "--quiet",
-            "-p",
-            "recorder_host",
-            "--bin",
-            "stream_fold",
-            "--",
-            stream_path.to_str().unwrap(),
-            game_dir.to_str().unwrap(),
-            "--game-id",
-            game,
-            "--workers",
-            "1",
-        ],
-    );
-
-    let snapshots = fs::read_dir(&game_dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(".snapshot.json"))
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        snapshots.len(),
-        1,
-        "the one-hour fold must emit one snapshot"
-    );
-    let snapshot_path = &snapshots[0];
-    let file = snapshot_path.file_name().unwrap().to_str().unwrap();
-    let hour = file
-        .strip_suffix(".snapshot.json")
-        .unwrap()
-        .parse::<i64>()
-        .unwrap();
-    fs::write(
-        game_dir.join("index.json"),
-        format!(
-            r#"{{"game_id":"{game}","schema_version":"1","snapshots":[{{"hour_index":{hour},"file":"{file}"}}]}}"#
-        ),
+/// Open the reviewed replay-owned projection of the D53 proof fixture through
+/// the recorder fold. The committed boundary retains only the fields consumed
+/// by this binding law; its adjacent provenance binds the extractor producers.
+fn committed_faction_roster_binding_timeline() -> (WorldTimeline, i64) {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/diplomacy_binding_production_fold");
+    let timeline = WorldTimeline::open(
+        open_recording(&root)
+            .unwrap_or_else(|error| panic!("open committed D53 fold fixture: {error}")),
     )
-    .unwrap();
-
-    let timeline = WorldTimeline::open(open_recording(&store_root).unwrap()).unwrap();
-    (root, timeline, hour)
+    .unwrap_or_else(|error| panic!("committed D53 fold timeline: {error}"));
+    let hour = {
+        let hours = timeline.hours();
+        assert_eq!(hours, &[16_959_360], "committed D53 fold fixture census");
+        hours[0]
+    };
+    (timeline, hour)
 }
 
 #[test]
@@ -428,12 +269,12 @@ fn non_nonempty_roster_status_suppresses_country_faction_rows() {
 }
 
 #[test]
-fn measured_nonempty_real_fold_without_country_names_keeps_d53_roster() {
-    let (root, timeline, hour) = production_faction_roster_binding_timeline();
+fn measured_nonempty_committed_fold_without_country_names_keeps_d53_roster() {
+    let (timeline, hour) = committed_faction_roster_binding_timeline();
     let frame = timeline.frame(hour).unwrap();
     assert!(
         !frame.diplomacy().countries.is_empty(),
-        "the production fold must project the roster member countries"
+        "the reviewed fold projection must retain the roster member countries"
     );
     assert!(
         frame
@@ -441,7 +282,7 @@ fn measured_nonempty_real_fold_without_country_names_keeps_d53_roster() {
             .countries
             .values()
             .all(|country| matches!(&country.faction_name, Leaf::Absent)),
-        "the real d53 fold must not fabricate countries.*.politics.faction.name"
+        "the reviewed D53 fold projection must not fabricate countries.*.politics.faction.name"
     );
     assert_eq!(
         frame
@@ -451,7 +292,7 @@ fn measured_nonempty_real_fold_without_country_names_keeps_d53_roster() {
             .unwrap()
             .get("1"),
         Some(&vec!["1".to_string(), "3".to_string(), "22".to_string()]),
-        "the typed view must retain the actual folded d53 member identities"
+        "the typed view must retain the reviewed folded D53 member identities"
     );
 
     let nonempty = diplomacy_panel_from_frame(&frame, "1");
@@ -463,10 +304,6 @@ fn measured_nonempty_real_fold_without_country_names_keeps_d53_roster() {
     assert_eq!(
         nonempty.factions,
         vec![faction("1", "1", &["1", "22", "3"])],
-        "the binding must render the authoritative d53 roster even though every country faction name is absent"
+        "the binding must render the source-derived D53 roster even though every country faction name is absent"
     );
-
-    drop(frame);
-    drop(timeline);
-    fs::remove_dir_all(root).unwrap();
 }

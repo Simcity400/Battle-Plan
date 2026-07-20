@@ -159,7 +159,8 @@ const ROW_COMPACT_STATE_EVENT_LEN: usize = 32;
 // self-delimiting payload; MTD1/ACE1/PLIC/PLCF precedent).
 const OPERATION_INSTANCE_TRAILER_MAGIC: &[u8; 4] = b"OPIN";
 const OPERATION_INSTANCE_TRAILER_VERSION_V1: u16 = 1;
-const OPERATION_INSTANCE_TRAILER_VERSION: u16 = 2;
+const OPERATION_INSTANCE_TRAILER_VERSION_V2: u16 = 2;
+const OPERATION_INSTANCE_TRAILER_VERSION: u16 = 3;
 const OPERATION_INSTANCE_TRAILER_HEADER_LEN: usize = 12;
 const OPERATION_INSTANCE_TRAILER_V1_ROW_LEN: usize = 12;
 const OPERATION_INSTANCE_TRAILER_V2_ROW_HEADER_LEN: usize = 48;
@@ -178,9 +179,14 @@ pub const MAX_INCOMING_ACTION_QUEUE_ROWS: usize = 4_096;
 pub const MAX_ACTION_DATE_HOURS: u32 = 100_000_000;
 
 const INTEL_NETWORK_GRAPH_TRAILER_MAGIC: &[u8; 4] = b"INGR";
-const INTEL_NETWORK_GRAPH_TRAILER_VERSION: u16 = 1;
+const INTEL_NETWORK_GRAPH_TRAILER_VERSION_V1: u16 = 1;
+const INTEL_NETWORK_GRAPH_TRAILER_VERSION_V2: u16 = 2;
+const INTEL_NETWORK_GRAPH_TRAILER_VERSION: u16 = 3;
 const INTEL_NETWORK_GRAPH_TRAILER_HEADER_LEN: usize = 12;
-const INTEL_NETWORK_GRAPH_ROW_HEADER_LEN: usize = 16;
+const INTEL_NETWORK_GRAPH_V1_ROW_HEADER_LEN: usize = 16;
+const INTEL_NETWORK_GRAPH_V2_ROW_HEADER_LEN: usize = 88;
+const INTEL_NETWORK_GRAPH_V3_ROW_HEADER_LEN: usize = 92;
+const INTEL_NETWORK_GRAPH_V3_FLAG_COVERAGE: u32 = 1 << 0;
 
 // `FACS` faction-roster trailer (tail-appended after the base self-delimiting
 // payload; DIAQ/INGR precedent). Per faction: a fixed row header + a
@@ -341,8 +347,16 @@ fn intel_network_graph_trailer_capacity(rows: &[IntelNetworkGraphRow]) -> usize 
     } else {
         rows.iter()
             .fold(INTEL_NETWORK_GRAPH_TRAILER_HEADER_LEN, |acc, row| {
-                acc.saturating_add(INTEL_NETWORK_GRAPH_ROW_HEADER_LEN)
-                    .saturating_add(row.state_ids.len().saturating_mul(4))
+                let row_header_len = if row.state_strengths.is_some() {
+                    INTEL_NETWORK_GRAPH_V3_ROW_HEADER_LEN
+                } else if row.coverage.is_some() {
+                    INTEL_NETWORK_GRAPH_V2_ROW_HEADER_LEN
+                } else {
+                    INTEL_NETWORK_GRAPH_V1_ROW_HEADER_LEN
+                };
+                let state_len = if row.state_strengths.is_some() { 12 } else { 4 };
+                acc.saturating_add(row_header_len)
+                    .saturating_add(row.state_ids.len().saturating_mul(state_len))
             })
     }
 }
@@ -488,13 +502,12 @@ pub struct OperationAnchorRow {
     pub detail_resisted: bool,
 }
 
-/// Wave-5 running-operation instance row: {instance_id, def_ref_ok,
-/// associated_country}. The `owner` (+0x10) field is REJECTED and NOT carried.
-/// `associated_country` is PROVISIONAL — semantics are associated-country;
-/// target-vs-operative-location is undistinguished (all 8 coincided on D04).
+/// Exact GH03 operation-instance runtime status. OPIN v1/v2 remain decodable,
+/// while OPIN v3 preserves the distinct prepared state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperationInstanceStatus {
     Preparing,
+    Prepared,
     Running,
     Finished,
 }
@@ -502,9 +515,9 @@ pub enum OperationInstanceStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OperationInstanceRow {
     pub instance_id: u32,
-    /// OPIN-v1 compatibility witness. Always true on exact v2 rows.
+    /// OPIN-v1 compatibility witness. Always true on exact v2/v3 rows.
     pub def_ref_ok: bool,
-    /// OPIN-v1 compatibility value. On exact v2 rows this is the authored
+    /// OPIN-v1 compatibility value. On exact v2/v3 rows this is the authored
     /// target-country CId at +0x58, never the owner pointer at +0x50.
     pub associated_country_tag_db_id: Option<u32>,
     pub definition_id: Option<String>,
@@ -573,6 +586,86 @@ pub struct IntelNetworkGraphRow {
     pub target_tag_db_id: u32,
     /// Sorted unique state ids from CCountryIntelNetwork graph vertices.
     pub state_ids: Vec<u32>,
+    /// Exact sorted per-state strengths. `None` is retained only for decoding
+    /// legacy INGR v1/v2 payloads; current a729 extraction emits this atomically
+    /// with `state_ids` under the fixed 100000 scale.
+    pub state_strengths: Option<Vec<IntelNetworkStateStrength>>,
+    pub coverage: Option<IntelNetworkCoverage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntelNetworkStateStrength {
+    pub state_id: u32,
+    pub strength_raw: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntelNetworkCoverage {
+    pub covered_core_states: u32,
+    pub covered_controlled_states: u32,
+    pub covered_worth: u32,
+    pub controlled_strength_sum_raw: i64,
+    pub core_strength_sum_raw: i64,
+    pub total_core_states: u32,
+    pub total_controlled_states: u32,
+    pub total_worth: u32,
+    pub weight_controlled_raw: i64,
+    pub weight_owned_raw: i64,
+    pub weight_owned_worth_raw: i64,
+    pub national_coverage_raw: i64,
+}
+
+fn recompute_intel_network_national_coverage(value: &IntelNetworkCoverage) -> Option<i64> {
+    fn ratio(count: u32, total: u32, weight: i64) -> Option<i64> {
+        if total == 0 {
+            return Some(0);
+        }
+        i64::try_from(i128::from(count) * i128::from(weight) / i128::from(total)).ok()
+    }
+    fn average(sum: i64, count: u32) -> Option<i64> {
+        if count == 0 {
+            return Some(0);
+        }
+        i64::try_from(i128::from(sum) / (i128::from(count) * 100)).ok()
+    }
+    fn contribution(average: i64, weighted_ratio: i64) -> Option<i64> {
+        i64::try_from(i128::from(average) * i128::from(weighted_ratio) / 100_000).ok()
+    }
+    let average_controlled = average(
+        value.controlled_strength_sum_raw,
+        value.covered_controlled_states,
+    )?;
+    let average_core = average(value.core_strength_sum_raw, value.covered_core_states)?;
+    let controlled = contribution(
+        average_controlled,
+        ratio(
+            value.covered_controlled_states,
+            value.total_controlled_states,
+            value.weight_controlled_raw,
+        )?,
+    )?;
+    let owned = contribution(
+        average_core,
+        ratio(
+            value.covered_core_states,
+            value.total_core_states,
+            value.weight_owned_raw,
+        )?,
+    )?;
+    let owned_worth = contribution(
+        average_controlled,
+        ratio(
+            value.covered_worth,
+            value.total_worth,
+            value.weight_owned_worth_raw,
+        )?,
+    )?;
+    Some(
+        controlled
+            .saturating_add(owned)
+            .saturating_add(owned_worth)
+            .clamp(0, 100_000),
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1339,10 +1432,10 @@ fn append_operation_instance_trailer(payload: &mut Vec<u8>, rows: &[OperationIns
     if rows.is_empty() {
         return;
     }
-    let exact_v2 = rows.iter().all(OperationInstanceRow::is_exact_runtime);
+    let exact_runtime = rows.iter().all(OperationInstanceRow::is_exact_runtime);
     payload.extend_from_slice(OPERATION_INSTANCE_TRAILER_MAGIC);
     payload.extend_from_slice(
-        &(if exact_v2 {
+        &(if exact_runtime {
             OPERATION_INSTANCE_TRAILER_VERSION
         } else {
             OPERATION_INSTANCE_TRAILER_VERSION_V1
@@ -1351,7 +1444,7 @@ fn append_operation_instance_trailer(payload: &mut Vec<u8>, rows: &[OperationIns
     );
     payload.extend_from_slice(&(OPERATION_INSTANCE_TRAILER_HEADER_LEN as u16).to_le_bytes());
     payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    if exact_v2 {
+    if exact_runtime {
         for row in rows {
             let definition_id = row.definition_id.as_deref().unwrap_or_default().as_bytes();
             let owner = row.owner_country_tag_db_id.unwrap_or_default();
@@ -1359,9 +1452,10 @@ fn append_operation_instance_trailer(payload: &mut Vec<u8>, rows: &[OperationIns
             let target_state = row.target_state_id.unwrap_or_default();
             let status = match row.status {
                 Some(OperationInstanceStatus::Preparing) => 0u8,
-                Some(OperationInstanceStatus::Running) => 1u8,
-                Some(OperationInstanceStatus::Finished) => 2u8,
-                None => unreachable!("exact OPIN v2 row requires status"),
+                Some(OperationInstanceStatus::Prepared) => 1u8,
+                Some(OperationInstanceStatus::Running) => 2u8,
+                Some(OperationInstanceStatus::Finished) => 3u8,
+                None => unreachable!("exact OPIN v3 row requires status"),
             };
             let flags = if row.target_state_id.is_some() {
                 OPERATION_INSTANCE_V2_FLAG_STATE_TARGET
@@ -1425,8 +1519,36 @@ fn append_intel_network_graph_trailer(payload: &mut Vec<u8>, rows: &[IntelNetwor
     if rows.is_empty() {
         return;
     }
+    let exact_coverage = rows.iter().all(|row| row.coverage.is_some());
+    let any_coverage = rows.iter().any(|row| row.coverage.is_some());
+    let any_state_strengths = rows.iter().any(|row| row.state_strengths.is_some());
+    let exact_state_strengths = rows.iter().all(|row| {
+        row.state_strengths.as_ref().is_some_and(|strengths| {
+            strengths.len() == row.state_ids.len()
+                && strengths
+                    .iter()
+                    .zip(&row.state_ids)
+                    .all(|(strength, state_id)| {
+                        strength.state_id == *state_id
+                            && (0..=compact_contract::build_profile::DOMAIN53_INTEL_NETWORK_STRENGTH_SCALE)
+                                .contains(&strength.strength_raw)
+                    })
+        })
+    });
+    // Mixed or malformed v3 rows have no truthful legacy representation: do
+    // not silently discard a subset of measured strengths.
+    if (any_coverage && !exact_coverage) || (any_state_strengths && !exact_state_strengths) {
+        return;
+    }
     payload.extend_from_slice(INTEL_NETWORK_GRAPH_TRAILER_MAGIC);
-    payload.extend_from_slice(&INTEL_NETWORK_GRAPH_TRAILER_VERSION.to_le_bytes());
+    let version = if exact_state_strengths {
+        INTEL_NETWORK_GRAPH_TRAILER_VERSION
+    } else if exact_coverage {
+        INTEL_NETWORK_GRAPH_TRAILER_VERSION_V2
+    } else {
+        INTEL_NETWORK_GRAPH_TRAILER_VERSION_V1
+    };
+    payload.extend_from_slice(&version.to_le_bytes());
     payload.extend_from_slice(&(INTEL_NETWORK_GRAPH_TRAILER_HEADER_LEN as u16).to_le_bytes());
     payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
     for row in rows {
@@ -1435,8 +1557,45 @@ fn append_intel_network_graph_trailer(payload: &mut Vec<u8>, rows: &[IntelNetwor
         payload.extend_from_slice(&row.target_tag_db_id.to_le_bytes());
         payload
             .extend_from_slice(&(row.state_ids.len().min(u32::MAX as usize) as u32).to_le_bytes());
-        for state_id in &row.state_ids {
-            payload.extend_from_slice(&state_id.to_le_bytes());
+        if version == INTEL_NETWORK_GRAPH_TRAILER_VERSION {
+            payload.extend_from_slice(
+                &(if row.coverage.is_some() {
+                    INTEL_NETWORK_GRAPH_V3_FLAG_COVERAGE
+                } else {
+                    0
+                })
+                .to_le_bytes(),
+            );
+        }
+        if let Some(coverage) = &row.coverage {
+            payload.extend_from_slice(&coverage.covered_core_states.to_le_bytes());
+            payload.extend_from_slice(&coverage.covered_controlled_states.to_le_bytes());
+            payload.extend_from_slice(&coverage.covered_worth.to_le_bytes());
+            payload.extend_from_slice(&coverage.controlled_strength_sum_raw.to_le_bytes());
+            payload.extend_from_slice(&coverage.core_strength_sum_raw.to_le_bytes());
+            payload.extend_from_slice(&coverage.total_core_states.to_le_bytes());
+            payload.extend_from_slice(&coverage.total_controlled_states.to_le_bytes());
+            payload.extend_from_slice(&coverage.total_worth.to_le_bytes());
+            payload.extend_from_slice(&coverage.weight_controlled_raw.to_le_bytes());
+            payload.extend_from_slice(&coverage.weight_owned_raw.to_le_bytes());
+            payload.extend_from_slice(&coverage.weight_owned_worth_raw.to_le_bytes());
+            payload.extend_from_slice(&coverage.national_coverage_raw.to_le_bytes());
+        } else if version == INTEL_NETWORK_GRAPH_TRAILER_VERSION {
+            payload.extend_from_slice(&[0u8; 72]);
+        }
+        if version == INTEL_NETWORK_GRAPH_TRAILER_VERSION {
+            for strength in row
+                .state_strengths
+                .as_ref()
+                .expect("v3 strength completeness checked above")
+            {
+                payload.extend_from_slice(&strength.state_id.to_le_bytes());
+                payload.extend_from_slice(&strength.strength_raw.to_le_bytes());
+            }
+        } else {
+            for state_id in &row.state_ids {
+                payload.extend_from_slice(&state_id.to_le_bytes());
+            }
         }
     }
 }
@@ -1475,7 +1634,9 @@ fn decode_operation_instance_trailer(
     let row_count = read_u32_le(trailer, 8) as usize;
     if !matches!(
         version,
-        OPERATION_INSTANCE_TRAILER_VERSION_V1 | OPERATION_INSTANCE_TRAILER_VERSION
+        OPERATION_INSTANCE_TRAILER_VERSION_V1
+            | OPERATION_INSTANCE_TRAILER_VERSION_V2
+            | OPERATION_INSTANCE_TRAILER_VERSION
     ) || header_len != OPERATION_INSTANCE_TRAILER_HEADER_LEN
     {
         errors.push(format!(
@@ -1597,10 +1758,23 @@ fn decode_operation_instance_trailer(
             assigned_operative_ids.push(read_u32_le(trailer, cursor));
             cursor += 4;
         }
-        let status = match status_raw {
-            0 => Some(OperationInstanceStatus::Preparing),
-            1 => Some(OperationInstanceStatus::Running),
-            2 => Some(OperationInstanceStatus::Finished),
+        let status = match (version, status_raw) {
+            (_, 0) => Some(OperationInstanceStatus::Preparing),
+            (OPERATION_INSTANCE_TRAILER_VERSION_V2, 1) => {
+                Some(OperationInstanceStatus::Running)
+            }
+            (OPERATION_INSTANCE_TRAILER_VERSION_V2, 2) => {
+                Some(OperationInstanceStatus::Finished)
+            }
+            (OPERATION_INSTANCE_TRAILER_VERSION, 1) => {
+                Some(OperationInstanceStatus::Prepared)
+            }
+            (OPERATION_INSTANCE_TRAILER_VERSION, 2) => {
+                Some(OperationInstanceStatus::Running)
+            }
+            (OPERATION_INSTANCE_TRAILER_VERSION, 3) => {
+                Some(OperationInstanceStatus::Finished)
+            }
             _ => None,
         };
         if instance_id == 0
@@ -1616,6 +1790,7 @@ fn decode_operation_instance_trailer(
                 .iter()
                 .any(|id| *id == 0 || *id > MAX_OPERATIVE_ID)
             || phase_count == 0
+            || phase_count > MAX_OPERATION_PHASES
             || phase_index >= phase_count
             || !(0..=compact_contract::build_profile::DOMAIN53_OPERATION_PROGRESS_SCALE)
                 .contains(&progress_fixed)
@@ -1623,12 +1798,22 @@ fn decode_operation_instance_trailer(
             || flags & !OPERATION_INSTANCE_V2_FLAG_STATE_TARGET != 0
             || reserved != 0
             || (flags & OPERATION_INSTANCE_V2_FLAG_STATE_TARGET != 0) != (target_state != 0)
-            || (matches!(status, Some(OperationInstanceStatus::Preparing))
-                && (start_hour != 0 || duration_hours != 0))
+            || (matches!(
+                status,
+                Some(OperationInstanceStatus::Preparing | OperationInstanceStatus::Prepared)
+            )
+                && (start_hour != 0 || duration_hours != 0 || phase_index != 0))
+            || (matches!(status, Some(OperationInstanceStatus::Prepared))
+                && progress_fixed
+                    != compact_contract::build_profile::DOMAIN53_OPERATION_PROGRESS_SCALE)
             || (matches!(
                 status,
                 Some(OperationInstanceStatus::Running | OperationInstanceStatus::Finished)
             ) && duration_hours == 0)
+            || (matches!(status, Some(OperationInstanceStatus::Finished))
+                && (phase_index + 1 != phase_count
+                    || progress_fixed
+                        != compact_contract::build_profile::DOMAIN53_OPERATION_PROGRESS_SCALE))
         {
             errors.push(format!(
                 "offset {offset}: operation-instance v2 row {instance_id} violates the exact runtime contract"
@@ -1883,7 +2068,12 @@ fn decode_intel_network_graph_trailer(
     let version = read_u16_le(trailer, 4);
     let header_len = read_u16_le(trailer, 6) as usize;
     let row_count = read_u32_le(trailer, 8) as usize;
-    if version != INTEL_NETWORK_GRAPH_TRAILER_VERSION
+    if !matches!(
+        version,
+        INTEL_NETWORK_GRAPH_TRAILER_VERSION_V1
+            | INTEL_NETWORK_GRAPH_TRAILER_VERSION_V2
+            | INTEL_NETWORK_GRAPH_TRAILER_VERSION
+    )
         || header_len != INTEL_NETWORK_GRAPH_TRAILER_HEADER_LEN
     {
         errors.push(format!(
@@ -1902,7 +2092,12 @@ fn decode_intel_network_graph_trailer(
     let mut seen = BTreeSet::new();
     let mut cursor = INTEL_NETWORK_GRAPH_TRAILER_HEADER_LEN;
     for _ in 0..row_count {
-        if trailer.len().saturating_sub(cursor) < INTEL_NETWORK_GRAPH_ROW_HEADER_LEN {
+        let row_header_len = match version {
+            INTEL_NETWORK_GRAPH_TRAILER_VERSION_V1 => INTEL_NETWORK_GRAPH_V1_ROW_HEADER_LEN,
+            INTEL_NETWORK_GRAPH_TRAILER_VERSION_V2 => INTEL_NETWORK_GRAPH_V2_ROW_HEADER_LEN,
+            _ => INTEL_NETWORK_GRAPH_V3_ROW_HEADER_LEN,
+        };
+        if trailer.len().saturating_sub(cursor) < row_header_len {
             errors.push(format!(
                 "offset {offset}: intel-network graph row header truncated at byte {cursor}"
             ));
@@ -1912,14 +2107,58 @@ fn decode_intel_network_graph_trailer(
         let network_slot = read_u32_le(trailer, cursor + 4);
         let target = read_u32_le(trailer, cursor + 8);
         let state_count = read_u32_le(trailer, cursor + 12) as usize;
-        cursor += INTEL_NETWORK_GRAPH_ROW_HEADER_LEN;
+        let coverage_offset = if version == INTEL_NETWORK_GRAPH_TRAILER_VERSION {
+            let flags = read_u32_le(trailer, cursor + 16);
+            if flags & !INTEL_NETWORK_GRAPH_V3_FLAG_COVERAGE != 0 {
+                errors.push(format!(
+                    "offset {offset}: intel-network graph v3 row has unknown flags 0x{flags:08x}"
+                ));
+            }
+            if flags & INTEL_NETWORK_GRAPH_V3_FLAG_COVERAGE != 0 {
+                Some(cursor + 20)
+            } else {
+                if trailer[cursor + 20..cursor + INTEL_NETWORK_GRAPH_V3_ROW_HEADER_LEN]
+                    .iter()
+                    .any(|byte| *byte != 0)
+                {
+                    errors.push(format!(
+                        "offset {offset}: intel-network graph v3 row has non-zero reserved coverage bytes"
+                    ));
+                }
+                None
+            }
+        } else if version == INTEL_NETWORK_GRAPH_TRAILER_VERSION_V2 {
+            Some(cursor + 16)
+        } else {
+            None
+        };
+        let coverage = coverage_offset.map(|coverage_offset| IntelNetworkCoverage {
+                covered_core_states: read_u32_le(trailer, coverage_offset),
+                covered_controlled_states: read_u32_le(trailer, coverage_offset + 4),
+                covered_worth: read_u32_le(trailer, coverage_offset + 8),
+                controlled_strength_sum_raw: read_i64_le(trailer, coverage_offset + 12),
+                core_strength_sum_raw: read_i64_le(trailer, coverage_offset + 20),
+                total_core_states: read_u32_le(trailer, coverage_offset + 28),
+                total_controlled_states: read_u32_le(trailer, coverage_offset + 32),
+                total_worth: read_u32_le(trailer, coverage_offset + 36),
+                weight_controlled_raw: read_i64_le(trailer, coverage_offset + 40),
+                weight_owned_raw: read_i64_le(trailer, coverage_offset + 48),
+                weight_owned_worth_raw: read_i64_le(trailer, coverage_offset + 56),
+                national_coverage_raw: read_i64_le(trailer, coverage_offset + 64),
+            });
+        cursor += row_header_len;
         if state_count == 0 || state_count > MAX_INTEL_NETWORK_STATES {
             errors.push(format!(
                 "offset {offset}: intel-network graph row has invalid state_count {state_count}"
             ));
             return (Vec::new(), 0);
         }
-        let states_len = state_count.saturating_mul(4);
+        let state_row_len = if version == INTEL_NETWORK_GRAPH_TRAILER_VERSION {
+            12
+        } else {
+            4
+        };
+        let states_len = state_count.saturating_mul(state_row_len);
         if trailer.len().saturating_sub(cursor) < states_len {
             errors.push(format!(
                 "offset {offset}: intel-network graph state list truncated at byte {cursor}"
@@ -1936,11 +2175,38 @@ fn decode_intel_network_graph_trailer(
                 "offset {offset}: intel-network graph duplicates operative {strategic_operative_index} slot {network_slot}"
             ));
         }
+        if let Some(coverage) = &coverage {
+            if coverage.covered_core_states > coverage.total_core_states
+                || coverage.covered_controlled_states > coverage.total_controlled_states
+                || coverage.covered_worth > coverage.total_worth
+                || coverage.controlled_strength_sum_raw < 0
+                || coverage.core_strength_sum_raw < 0
+                || coverage.weight_controlled_raw < 0
+                || coverage.weight_owned_raw < 0
+                || coverage.weight_owned_worth_raw < 0
+                || !(0..=100_000).contains(&coverage.national_coverage_raw)
+                || recompute_intel_network_national_coverage(coverage)
+                    != Some(coverage.national_coverage_raw)
+            {
+                errors.push(format!(
+                    "offset {offset}: intel-network graph coverage inputs are invalid"
+                ));
+            }
+        }
         let mut state_ids = Vec::with_capacity(state_count);
+        let mut state_strengths = (version == INTEL_NETWORK_GRAPH_TRAILER_VERSION)
+            .then(|| Vec::with_capacity(state_count));
         let mut previous = None;
         for _ in 0..state_count {
             let state_id = read_u32_le(trailer, cursor);
             cursor += 4;
+            let strength_raw = if version == INTEL_NETWORK_GRAPH_TRAILER_VERSION {
+                let value = read_i64_le(trailer, cursor);
+                cursor += 8;
+                Some(value)
+            } else {
+                None
+            };
             if state_id == 0 || state_id > MAX_INTEL_NETWORK_STATE_ID {
                 errors.push(format!(
                     "offset {offset}: intel-network graph row has invalid state_id {state_id}"
@@ -1953,12 +2219,30 @@ fn decode_intel_network_graph_trailer(
             }
             previous = Some(state_id);
             state_ids.push(state_id);
+            if let Some(strength_raw) = strength_raw {
+                if !(0..=compact_contract::build_profile::DOMAIN53_INTEL_NETWORK_STRENGTH_SCALE)
+                    .contains(&strength_raw)
+                {
+                    errors.push(format!(
+                        "offset {offset}: intel-network graph state {state_id} has invalid strength_raw {strength_raw}"
+                    ));
+                }
+                state_strengths
+                    .as_mut()
+                    .expect("v3 strength vector initialized")
+                    .push(IntelNetworkStateStrength {
+                        state_id,
+                        strength_raw,
+                    });
+            }
         }
         rows.push(IntelNetworkGraphRow {
             strategic_operative_index,
             network_slot,
             target_tag_db_id: target,
             state_ids,
+            state_strengths,
+            coverage,
         });
     }
     (rows, cursor)
@@ -5047,7 +5331,7 @@ mod tests {
     }
 
     #[test]
-    fn operation_runtime_v2_round_trips_exact_contract() {
+    fn operation_runtime_v3_round_trips_exact_contract() {
         let mut snapshot = fixture_snapshot();
         snapshot.operation_instances = vec![OperationInstanceRow {
             instance_id: 18_568,
@@ -5070,8 +5354,8 @@ mod tests {
             .windows(4)
             .position(|window| window == OPERATION_INSTANCE_TRAILER_MAGIC)
             .expect("OPIN trailer");
-        assert_eq!(read_u16_le(&payload, trailer + 4), 2);
-        let decoded = decode_snapshot_payload(0, &payload).expect("decode OPIN v2");
+        assert_eq!(read_u16_le(&payload, trailer + 4), 3);
+        let decoded = decode_snapshot_payload(0, &payload).expect("decode OPIN v3");
         assert_eq!(decoded.operation_instances, snapshot.operation_instances);
     }
 
@@ -5164,12 +5448,16 @@ mod tests {
                 network_slot: 0,
                 target_tag_db_id: 2,
                 state_ids: vec![121, 122, 123],
+                state_strengths: None,
+                coverage: None,
             },
             IntelNetworkGraphRow {
                 strategic_operative_index: 1,
                 network_slot: 1,
                 target_tag_db_id: 3,
                 state_ids: vec![219, 253, 254],
+                state_strengths: None,
+                coverage: None,
             },
         ];
         let payload = encode_payload(&snapshot);
@@ -5447,12 +5735,16 @@ mod tests {
                 network_slot: 0,
                 target_tag_db_id: 2,
                 state_ids: vec![121, 122, 123],
+                state_strengths: None,
+                coverage: None,
             },
             IntelNetworkGraphRow {
                 strategic_operative_index: 1,
                 network_slot: 0,
                 target_tag_db_id: 3,
                 state_ids: vec![219, 253, 254],
+                state_strengths: None,
+                coverage: None,
             },
         ];
         let payload = encode_payload(&snapshot);
@@ -5723,6 +6015,8 @@ mod tests {
             network_slot: 0,
             target_tag_db_id: 3,
             state_ids: vec![11, 42, 108],
+            state_strengths: None,
+            coverage: None,
         }];
         snapshot.factions = vec![FactionRow {
             faction_id: 1,

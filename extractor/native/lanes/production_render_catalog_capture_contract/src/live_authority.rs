@@ -387,6 +387,11 @@ pub struct RawReflectedStageSemantics {
     pub ordered_outputs: Vec<RawShaderSignatureParameter>,
 }
 
+/// B10 pointer-free semantic emitted only after the complete reflected
+/// mapname VS+PS/program discriminator succeeds.
+pub const MAPNAME_TRANSP_OFFSET_SEMANTIC: &str =
+    "gfx/FX/mapname.shader:ConstantBuffer(1,32):Transp_OffsetX";
+
 impl RawShaderBytecodeReflectionObservation {
     pub fn validate_against_creation(&self, creation: &RawShaderCreation) -> Result<(), String> {
         if self.reflection_sequence == 0
@@ -784,12 +789,20 @@ pub fn materialize_d80_static_authority(
         &observed.vertex_reflection,
         &observed.pixel_reflection,
     )?;
-    let vertex = observed
+    let mut vertex = observed
         .vertex_reflection
         .materialize_stage_semantics(&observed.vertex_creation)?;
-    let pixel = observed
+    let mut pixel = observed
         .pixel_reflection
         .materialize_stage_semantics(&observed.pixel_creation)?;
+    if authenticated_mapname_reflection_pair(
+        &program_identity,
+        &observed.vertex_reflection,
+        &observed.pixel_reflection,
+    ) {
+        stamp_mapname_transp_offset_semantic(&mut vertex)?;
+        stamp_mapname_transp_offset_semantic(&mut pixel)?;
+    }
     let mut textures = vertex.ordered_texture_semantics;
     textures.extend(pixel.ordered_texture_semantics);
     if observed.capture_sequence == 0
@@ -855,6 +868,86 @@ pub fn materialize_d80_static_authority(
             .map(|receipt| receipt.target.clone()),
         ordered_content: observed.ordered_content.clone(),
     })
+}
+
+fn authenticated_mapname_reflection_pair(
+    program: &RawProgramIdentity,
+    vertex: &RawShaderBytecodeReflectionObservation,
+    pixel: &RawShaderBytecodeReflectionObservation,
+) -> bool {
+    const FLOAT32_COMPONENT: u32 = 3;
+    let vertex_signature = vertex.ordered_inputs.len() == 2
+        && vertex
+            .ordered_inputs
+            .iter()
+            .any(|input| exact_mapname_input(input, "POSITION", 0, 0, FLOAT32_COMPONENT, 0x07))
+        && vertex
+            .ordered_inputs
+            .iter()
+            .any(|input| exact_mapname_input(input, "TEXCOORD", 0, 1, FLOAT32_COMPONENT, 0x03));
+    let pixel_diffuse = pixel.ordered_resources.iter().any(|resource| {
+        resource.kind == RawReflectedResourceKind::Texture
+            && resource.bind_point == 0
+            && resource.bind_count == 1
+            && resource.semantic_token == "DiffuseTexture_Texture"
+    });
+    program.effect_token == "mapname"
+        && vertex.stage == RawShaderStage::Vertex
+        && pixel.stage == RawShaderStage::Pixel
+        && vertex_signature
+        && pixel_diffuse
+        && reflected_transp_offset_cb1(vertex)
+        && reflected_transp_offset_cb1(pixel)
+}
+
+fn exact_mapname_input(
+    input: &RawShaderSignatureParameter,
+    semantic: &str,
+    semantic_index: u32,
+    register_index: u32,
+    component_type: u32,
+    mask: u8,
+) -> bool {
+    input.semantic_token.eq_ignore_ascii_case(semantic)
+        && input.semantic_index == semantic_index
+        && input.register_index == register_index
+        && input.system_value_type_u32 == 0
+        && input.component_type_u32 == component_type
+        && input.mask_u8 == mask
+        && input.read_write_mask_u8 == mask
+        && input.stream_index == 0
+        && input.min_precision_u32 == 0
+}
+
+fn reflected_transp_offset_cb1(reflection: &RawShaderBytecodeReflectionObservation) -> bool {
+    reflection.ordered_resources.iter().any(|resource| {
+        resource.kind == RawReflectedResourceKind::ConstantBuffer
+            && resource.bind_point == 1
+            && resource.bind_count == 1
+            && resource.constant_buffer_byte_count == Some(32)
+            && resource.ordered_variables.len() == 1
+            && resource.ordered_variables[0].name == "Transp_OffsetX"
+            && resource.ordered_variables[0].start_offset == 0
+            && resource.ordered_variables[0].byte_count == 16
+            && resource.ordered_variables[0].flags_u32 == 0
+            && resource.ordered_variables[0].type_token == "float4"
+    })
+}
+
+fn stamp_mapname_transp_offset_semantic(
+    stage: &mut RawReflectedStageSemantics,
+) -> Result<(), String> {
+    let mut matched = 0usize;
+    for binding in &mut stage.ordered_constant_buffer_semantics {
+        if binding.slot == 1 && binding.byte_offset == 0 && binding.byte_count == 32 {
+            binding.semantic_layout = MAPNAME_TRANSP_OFFSET_SEMANTIC.into();
+            matched += 1;
+        }
+    }
+    if matched != 1 {
+        return Err("authenticated mapname stage lacks one exact Transp_OffsetX CB1".into());
+    }
+    Ok(())
 }
 
 fn validate_signatures(rows: &[RawShaderSignatureParameter], label: &str) -> Result<(), String> {
@@ -1121,6 +1214,102 @@ mod tests {
             }],
             ordered_resources: resources,
         }
+    }
+
+    #[test]
+    fn b10_mapname_semantic_requires_complete_reflected_pair() {
+        let vs = creation(RawShaderStage::Vertex, 1, 0x501, b"vs", &"b".repeat(64));
+        let ps = creation(RawShaderStage::Pixel, 2, 0x502, b"ps", &"c".repeat(64));
+        let transp = || RawShaderReflectedResource {
+            semantic_token: "dx11_cb1".into(),
+            kind: RawReflectedResourceKind::ConstantBuffer,
+            bind_point: 1,
+            bind_count: 1,
+            flags_u32: 0,
+            return_type_u32: 0,
+            dimension_u32: 0,
+            sample_count: 0,
+            constant_buffer_byte_count: Some(32),
+            constant_buffer_layout_token: Some("reflected-layout".into()),
+            ordered_variables: vec![RawReflectedConstantBufferVariable {
+                name: "Transp_OffsetX".into(),
+                start_offset: 0,
+                byte_count: 16,
+                flags_u32: 0,
+                type_token: "float4".into(),
+            }],
+        };
+        let mut vertex = reflection(
+            RawShaderStage::Vertex,
+            3,
+            &vs,
+            0x900,
+            "VertexMain",
+            vec![transp()],
+        );
+        vertex.ordered_inputs.push(RawShaderSignatureParameter {
+            semantic_token: "TEXCOORD".into(),
+            semantic_index: 0,
+            register_index: 1,
+            system_value_type_u32: 0,
+            component_type_u32: 3,
+            mask_u8: 0x03,
+            read_write_mask_u8: 0x03,
+            stream_index: 0,
+            min_precision_u32: 0,
+        });
+        let diffuse = RawShaderReflectedResource {
+            semantic_token: "DiffuseTexture_Texture".into(),
+            kind: RawReflectedResourceKind::Texture,
+            bind_point: 0,
+            bind_count: 1,
+            flags_u32: 0,
+            return_type_u32: 5,
+            dimension_u32: 4,
+            sample_count: 0,
+            constant_buffer_byte_count: None,
+            constant_buffer_layout_token: None,
+            ordered_variables: Vec::new(),
+        };
+        let pixel = reflection(
+            RawShaderStage::Pixel,
+            4,
+            &ps,
+            0x900,
+            "PixelMain",
+            vec![diffuse, transp()],
+        );
+        let mut program = RawProgramIdentity {
+            observation_sequence: 5,
+            shader_program_ptr: 0x900,
+            source: RawVfsContentIdentity {
+                logical_path: "opaque/modded/path".into(),
+                winning_layer_ordinal: 0,
+                layer_kind: "base".into(),
+                layer_id: "base".into(),
+                source_sha256: "d".repeat(64),
+                payload_sha256: "e".repeat(64),
+                payload_bytes: 1,
+            },
+            effect_token: "mapname".into(),
+            vertex_entry_token: "VertexMain".into(),
+            pixel_entry_token: "PixelMain".into(),
+            ordered_defines: Vec::new(),
+        };
+        assert!(authenticated_mapname_reflection_pair(
+            &program, &vertex, &pixel
+        ));
+        let mut signature_collision = vertex.clone();
+        signature_collision.ordered_inputs[1].register_index = 7;
+        assert!(!authenticated_mapname_reflection_pair(
+            &program,
+            &signature_collision,
+            &pixel,
+        ));
+        program.effect_token = "particle".into();
+        assert!(!authenticated_mapname_reflection_pair(
+            &program, &vertex, &pixel
+        ));
     }
 
     #[test]

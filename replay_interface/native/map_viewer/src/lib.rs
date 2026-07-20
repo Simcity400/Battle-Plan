@@ -25,6 +25,7 @@ mod fow_law;
 mod frame_bundle;
 mod game_data;
 mod image_load;
+mod json_store;
 mod keying;
 mod light_depth_projection;
 mod light_law;
@@ -62,6 +63,7 @@ mod seasons;
 mod shader_compile;
 mod shader_meta;
 mod shadow_law;
+mod shadow_pass_plan;
 mod snow_law;
 mod snow_mud_feed;
 mod terrain_chunk_library;
@@ -157,9 +159,9 @@ pub use camera::{
     ProductionMapCamera, ProductionMapCameraProjection,
 };
 pub use camera_interp_law::{
-    camera_interp_step, clamp_height, interp_remaining_fraction, zoom_step_speed,
-    CAMERA_INTERPOLATION_SPEED, CAMERA_MAX_HEIGHT, CAMERA_MIN_HEIGHT, CAMERA_ZOOM_SPEED,
-    CAMERA_ZOOM_SPEED_DISTANCE_MULT,
+    camera_temporal_update_and_bounds_repair, CameraTemporalInputs, CameraTemporalOutcome,
+    CameraTemporalState, CAMERA_DISTANCE_SQUARED_GATE, CAMERA_INTERPOLATION_SPEED,
+    CAMERA_MAX_HEIGHT, CAMERA_MIN_HEIGHT, CAMERA_RAW_DELTA_CAP, CAMERA_SPEED_IN_MENUS,
 };
 pub use cap4_sea_referee::{
     find_unique_payload, mine_sea_base_referee, mine_sea_base_referee_round_dir, SeaBaseReferee,
@@ -268,11 +270,13 @@ pub use map_label_capture::{
     MAPNAME_VERTEX_STRIDE, POSITION_OFFSET, TEXCOORD_OFFSET, VERTS_PER_GLYPH,
 };
 pub use map_label_law::{
-    build_mapname_vertices, compute_country_label_placements,
+    build_mapname_vertices, compute_controller_label_placements,
+    compute_controller_label_placements_with_text, compute_country_label_placements,
     compute_country_label_placements_with_text, label_draw_visible,
     mapname_measured_glyph_parameters, mapname_tracked_advance_px, mapname_tracking_px,
-    principal_axis, CountryLabelPlacement, EngineCurve, GlyphScale, LabelLawInputs,
-    LabelTextMetrics, MapLabelGlyphLayoutQuad, MapLabelStraightLayoutStation, ProvinceKind,
+    principal_axis, ControllerLabelLawInputs, CountryLabelPlacement, EngineCurve, GlyphScale,
+    LabelLawInputs, LabelTextMetrics, MapLabelGlyphLayoutQuad, MapLabelStraightLayoutStation,
+    ProvinceKind,
     ENGINE_TITLE_CAP_COEF, ENGINE_TITLE_FIT_COEF, LABEL_AB_HYSTERESIS, LABEL_HEIGHT_BREADTH_K,
     LABEL_OFFSET_PX, LABEL_SAMPLE_STEP,
 };
@@ -367,8 +371,8 @@ pub use occupation_stripe_law::{
     smoothstep as occupation_smoothstep, SEC_MAP_TILE, STRIPE_ANGLE,
 };
 pub use pass_graph::{
-    ProductionMapPassGraph, ProductionMapPassKind, ProductionMapPassPlan, ProductionMapPassStatus,
-    ProductionMapTargetPlan,
+    ProductionCloseZoomLawPlan, ProductionCloseZoomLawStatus, ProductionMapPassGraph,
+    ProductionMapPassKind, ProductionMapPassPlan, ProductionMapPassStatus, ProductionMapTargetPlan,
 };
 pub use pdx_mesh::{
     extract_pdx_anim, extract_pdx_model, parse_pdx_asset, pdx_anim_from_resolver,
@@ -388,9 +392,12 @@ pub use political_color_synthesis::{
     PROVINCE_COLOR_MAP_WIDTH, PROVINCE_SECONDARY_COLOR_MAP_SHADER_SLOT,
 };
 pub use production_d3d::{
-    execute_production_d3d_frame, prepare_production_d3d_frame, PreparedProductionD3dFrame,
-    ProductionD3dExecutedDraw, ProductionD3dExecutionBridge, ProductionD3dExecutionReceipt,
-    ProductionD3dOmission, ProductionD3dStaticPassProgram,
+    building_presentation_priority, execute_production_d3d_frame,
+    has_authenticated_d80_map_operations, prepare_production_d3d_frame,
+    prepare_s1_shadow_execution, validate_s1_shadow_execution, BuildingPresentationPriority,
+    PreparedProductionD3dFrame, PreparedS1ShadowExecution, ProductionD3dExecutedDraw,
+    ProductionD3dExecutionBridge, ProductionD3dExecutionReceipt, ProductionD3dOmission,
+    ProductionD3dStaticPassProgram, PRODUCTION_D3D_EXECUTION_RECEIPT_SCHEMA,
 };
 #[cfg(windows)]
 pub use production_d3d::{
@@ -403,8 +410,10 @@ pub use production_map_interpreter::{
     RAW_VERTEX_INDEX_BUFFERS_V1,
 };
 pub use production_map_renderer::{
+    selected_c03_camera_replay_binding, validate_c03_camera_consumer,
+    validate_c03_camera_replay_binding, C03CameraReplayBinding, C03CameraReplayMode,
     PreparedProductionMapFrame, PreparedRuntimeDraw, ProductionMapDataNeed, ProductionMapRenderer,
-    ProductionMapResource,
+    ProductionMapResource, C03_CAMERA_REPLAY_BINDING_SCHEMA,
 };
 #[cfg(windows)]
 pub use production_map_target::NativeProductionMainSceneTarget;
@@ -413,16 +422,19 @@ pub use production_map_target::{
     ProductionMainSceneTargetDesc,
 };
 pub use rail_files::{
-    compute_province_centroids, cubic_bezier, parse_rail_geometry_defines, rail_control_handle_len,
+    compute_province_centroids, cubic_bezier, exact_rail_segments_from_replay,
+    parse_rail_geometry_defines, rail_control_handle_len,
     rail_file_derived_layer_from_resolver, rail_geometry_defines_from_resolver, rail_level_v_band,
     rail_max_level_from_resolver, rail_polylines, rail_render_law, rail_ribbon_edges,
+    railway_alpha_draws, railway_alpha_step,
     supply_hub_markers, ProvinceCentroid, RailFileDerivedLayer, RailFileDerivedStats,
-    RailGeometryDefines, RailLawRow, RailPolyline, SupplyHubMarker,
+    ExactRailSegment, RailGeometryDefines, RailLawRow, RailPolyline, SupplyHubMarker,
     DEFINES_SOURCE as RAIL_DEFINES_SOURCE, DEFINITION_CSV_SOURCE as RAIL_DEFINITION_CSV_SOURCE,
     GRAPHICS_DEFINES_SOURCE as RAIL_GRAPHICS_DEFINES_SOURCE, MAP_HEIGHT as RAIL_MAP_HEIGHT,
     MAP_WIDTH as RAIL_MAP_WIDTH, PROVINCES_BMP_SOURCE as RAIL_PROVINCES_BMP_SOURCE, RAIL_LEVEL_MAX,
     RAIL_MAX_LEVEL_DEFINE, RAIL_SHADER_EFFECT, RAIL_SHADER_SOURCE, RAIL_TEXTURE_DAMAGED_SOURCE,
-    RAIL_TEXTURE_SOURCE, SUPPLY_GFX_SOURCE, SUPPLY_HUB_ICON_FRAMES, SUPPLY_HUB_ICON_SPRITE,
+    RAIL_TEXTURE_SOURCE, RAILWAY_ALPHA_DRAW_THRESHOLD, RAILWAY_ALPHA_INITIAL,
+    SUPPLY_GFX_SOURCE, SUPPLY_HUB_ICON_FRAMES, SUPPLY_HUB_ICON_SPRITE,
     SUPPLY_HUB_ICON_TEXTURE,
 };
 pub use restore_evidence::{
@@ -454,11 +466,18 @@ pub use shader_meta::PoliticalSceneCb0;
 pub use shadow_law::{
     build_shadow_frame, calculate_shadow, compose_shadow_map_texture_matrix,
     fit_shadow_map_matrices, get_shadow_scaled, pcf_tap_offsets, select_shadow_light,
-    shadow_blur_3tap, shadow_fade_factor, shadow_gated_by_daynight, terrain_shadow_term,
-    SelectedShadowLight, ShadowFrameInput, ShadowFrameMatrices, ShadowLightKind, ShadowMat4,
+    shadow_blur_3tap, shadow_blur_constant_buffers, shadow_fade_factor,
+    shadow_gated_by_daynight, terrain_shadow_term, SelectedShadowLight,
+    ShadowBlurConstantBuffers, ShadowFrameInput, ShadowFrameMatrices, ShadowLightKind, ShadowMat4,
     DRAW_SHADOWS_CUTOFF, DRAW_SHADOWS_FADE_LENGTH, LIGHT_SHADOW_DIRECTION, PCF_BIAS,
-    SHADOW_FIT_EYE_MARGIN, SHADOW_FIT_GRID, SHADOW_MAP_SIZE, SHADOW_WEIGHT_TERRAIN,
-    SHADOW_WEIGHT_WATER,
+    SHADOW_BLUR_CAMERA_DISTANCE, SHADOW_BLUR_OFFSET_1_BASE, SHADOW_BLUR_OFFSET_2_BASE,
+    SHADOW_BLUR_WEIGHTS, SHADOW_FIT_EYE_MARGIN, SHADOW_FIT_GRID, SHADOW_MAP_SIZE,
+    SHADOW_WEIGHT_TERRAIN, SHADOW_WEIGHT_WATER,
+};
+pub use shadow_pass_plan::{
+    plan_s1_shadow_screen_chain, ShadowScreenChainPlan, ShadowScreenPassKind,
+    ShadowScreenPassPlan, ShadowScreenTarget, SHADOW_SCREEN_BIND_FLAGS,
+    SHADOW_SCREEN_DXGI_FORMAT, SHADOW_SCREEN_MIP_LEVELS,
 };
 pub use xn13_unit_presentation::{
     admit_xn13_rows, parse_and_admit_xn13_rows, Xn13AdmissionError, Xn13AdmittedPresentationRows,
@@ -549,8 +568,11 @@ pub use tree_files::{
     TREE_SHADER_SOURCE, TREE_TINT_TEXTURE_SOURCE,
 };
 pub use tree_instance_synthesis::{
-    synthesize_tree_instances_from_resolver, TreeCaptureDecodeReport, TreeInstanceSynthesis,
-    TreeInstanceSynthesisStats,
+    exact_tree_yaw_radians, synthesize_tree_instances_from_resolver, TreeCaptureDecodeReport,
+    TreeInstanceBatch, TreeInstanceSynthesis, TreeInstanceSynthesisStats,
+    TREE_DEGREES_TO_RADIANS_BITS, TREE_INSTANCE_BUCKET_COUNT, TREE_INSTANCE_STRIDE_BYTES,
+    TREE_YAW_HASH_ADDEND, TREE_YAW_HASH_MULTIPLIER_1, TREE_YAW_HASH_MULTIPLIER_2,
+    TREE_YAW_HASH_SUBTRAHEND, TREE_YAW_KEY_MULTIPLIER, TREE_YAW_SEED,
 };
 pub use tree_second_subdraw::{
     identify_tree_pixel_shader, tree_second_subdraw_verdict, TreePixelShaderEvidence,

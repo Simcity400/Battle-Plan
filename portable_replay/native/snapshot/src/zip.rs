@@ -170,6 +170,17 @@ impl ZipArchive {
     /// every name. Supports Zip64 metadata; `read_entry` still enforces the
     /// in-RAM materialization cap.
     pub fn parse(data: Vec<u8>) -> Result<ZipArchive, ZipError> {
+        Self::parse_with_entry_limit(data, MAX_READER_ENTRIES)
+    }
+
+    /// Parse with a caller-specific entry ceiling applied before allocating the
+    /// entry vector. Container open has a stricter cap than generic ZIP tooling;
+    /// applying it at the EOCD boundary prevents hostile archives from forcing
+    /// work or allocation toward the broader reader ceiling first.
+    pub(crate) fn parse_with_entry_limit(
+        data: Vec<u8>,
+        max_entries: u64,
+    ) -> Result<ZipArchive, ZipError> {
         let eocd = find_eocd(&data).ok_or(ZipError::Truncated("no EOCD record"))?;
         let disk_no = rd_u16(&data, eocd + 4).ok_or(ZipError::Truncated("eocd"))?;
         let cd_disk = rd_u16(&data, eocd + 6).ok_or(ZipError::Truncated("eocd"))?;
@@ -239,9 +250,9 @@ impl ZipArchive {
                 "central directory does not end at its end record: {actual_cd_end} != {expected_cd_end}"
             )));
         }
-        if total > MAX_READER_ENTRIES {
+        if total > max_entries {
             return Err(ZipError::Unsupported(format!(
-                "entry count {total} exceeds reader cap {MAX_READER_ENTRIES}"
+                "entry count {total} exceeds reader cap {max_entries}"
             )));
         }
         let total = usize::try_from(total)
@@ -1066,12 +1077,27 @@ pub fn validate_path(name: &str) -> Result<(), ZipError> {
     Ok(())
 }
 
+/// Container payload paths must be descendants of `payload/`. The sole legal
+/// top-level ZIP member, `manifest.json`, is generated and handled separately.
+pub(crate) fn validate_payload_path(name: &str) -> Result<(), ZipError> {
+    validate_path(name)?;
+    match name.strip_prefix("payload/") {
+        Some(rest) if !rest.is_empty() => Ok(()),
+        _ => Err(ZipError::BadPath(name.to_string())),
+    }
+}
+
 /// Filesystem collision key shared by the in-memory and streaming readers.
-/// Paths are required to be NFC first; Unicode lowercase then catches aliases
-/// beyond ASCII-only case folding without changing the serialized path.
+/// Paths are required to be NFC first. Uppercase-then-lowercase expansion,
+/// followed by NFC again, is deliberately conservative for portable extraction:
+/// it catches multi-codepoint and contextual caseless aliases such as
+/// `Straße`/`STRASSE` and Greek final sigma that lowercase-only mapping misses.
+/// The serialized path itself is never changed.
 pub(crate) fn portable_path_key(name: &str) -> Result<String, ZipError> {
     validate_path(name)?;
-    Ok(name.chars().flat_map(char::to_lowercase).collect())
+    let uppercase: String = name.chars().flat_map(char::to_uppercase).collect();
+    let lowercase: String = uppercase.chars().flat_map(char::to_lowercase).collect();
+    Ok(lowercase.nfc().collect())
 }
 
 #[cfg(test)]
@@ -1131,11 +1157,22 @@ mod tests {
         assert!(validate_path("payload/nul.json").is_err());
         assert!(validate_path("payload/g/index.json").is_ok());
         assert!(validate_path("manifest.json").is_ok());
+        assert!(validate_payload_path("manifest.json").is_err());
+        assert!(validate_payload_path("payload/g/index.json").is_ok());
+        assert!(validate_payload_path("other/g/index.json").is_err());
         assert!(validate_path("payload/g/trailing. ").is_err());
         assert!(validate_path("payload/g/cafe\u{301}.json").is_err());
         assert_eq!(
             portable_path_key("payload/g/CAF\u{c9}.json").unwrap(),
             portable_path_key("payload/g/caf\u{e9}.json").unwrap()
+        );
+        assert_eq!(
+            portable_path_key("payload/g/Stra\u{df}e.json").unwrap(),
+            portable_path_key("payload/g/STRASSE.json").unwrap()
+        );
+        assert_eq!(
+            portable_path_key("payload/g/\u{3bf}\u{3c2}.json").unwrap(),
+            portable_path_key("payload/g/\u{39f}\u{3a3}.json").unwrap()
         );
     }
 
@@ -1176,6 +1213,18 @@ mod tests {
         };
         assert!(
             matches!(&err, ZipError::Unsupported(msg) if msg.contains("entry count") && msg.contains("reader cap")),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn caller_specific_entry_cap_applies_before_cd_allocation() {
+        let err = match ZipArchive::parse_with_entry_limit(zip64_empty_with_entry_count(3), 2) {
+            Ok(_) => panic!("caller-specific entry cap should reject at EOCD"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(&err, ZipError::Unsupported(msg) if msg.contains("entry count 3") && msg.contains("reader cap 2")),
             "unexpected error: {err}"
         );
     }

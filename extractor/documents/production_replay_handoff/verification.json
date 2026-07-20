@@ -209,6 +209,30 @@
       "status": "PASS"
     },
     {
+      "check": "D48 aggregate has no incorrect per-object constant maximum",
+      "status": "PASS"
+    },
+    {
+      "check": "D48 level-dependent aggregate bound is declared exactly",
+      "status": "PASS"
+    },
+    {
+      "check": "D48 multi-level aggregate above one-object bound is admitted",
+      "status": "PASS"
+    },
+    {
+      "check": "D48 aggregate exact level-dependent ceiling is admitted",
+      "status": "PASS"
+    },
+    {
+      "check": "D48 aggregate above level-dependent ceiling is rejected",
+      "status": "PASS"
+    },
+    {
+      "check": "D48 aggregate cross-field validation is deterministic",
+      "status": "PASS"
+    },
+    {
       "check": "A15 event kinds",
       "status": "PASS"
     },
@@ -341,62 +365,6 @@
       "status": "PASS"
     },
     {
-      "check": "bounded patch-plan token world_fold.rs",
-      "status": "PASS"
-    },
-    {
-      "check": "bounded patch-plan token world_fold/tests.rs",
-      "status": "PASS"
-    },
-    {
-      "check": "bounded patch-plan token SOURCE_FLAG_MESSAGE_HOOK_VALIDATED",
-      "status": "PASS"
-    },
-    {
-      "check": "bounded patch-plan token SOURCE_FLAG_COMMAND_HOOK_VALIDATED",
-      "status": "PASS"
-    },
-    {
-      "check": "bounded patch-plan token 1 << 3",
-      "status": "PASS"
-    },
-    {
-      "check": "bounded patch-plan token 1 << 4",
-      "status": "PASS"
-    },
-    {
-      "check": "bounded patch-plan token hotjoin",
-      "status": "PASS"
-    },
-    {
-      "check": "bounded patch-plan token tag_switch",
-      "status": "PASS"
-    },
-    {
-      "check": "bounded patch-plan token chat",
-      "status": "PASS"
-    },
-    {
-      "check": "bounded patch-plan token system_message",
-      "status": "PASS"
-    },
-    {
-      "check": "bounded patch-plan token No compact payload, collector",
-      "status": "PASS"
-    },
-    {
-      "check": "patch plan excludes PROGRAM_STATUS",
-      "status": "PASS"
-    },
-    {
-      "check": "patch plan completion status",
-      "status": "PASS"
-    },
-    {
-      "check": "actual d42 diagnostic recorded",
-      "status": "PASS"
-    },
-    {
       "check": "frozen d42 header size 48",
       "status": "PASS"
     },
@@ -423,45 +391,25 @@
     {
       "check": "A15 focused test chunk2_d57_unknown_event_kind_fails_closed",
       "status": "PASS"
-    },
-    {
-      "check": "cargo fmt recorder_host",
-      "status": "PASS"
-    },
-    {
-      "check": "cargo check recorder_host",
-      "status": "PASS"
-    },
-    {
-      "check": "focused A15 recorder tests 6/6",
-      "status": "PASS"
-    },
-    {
-      "check": "focused d42 diagnostic test 1/1",
-      "status": "PASS"
-    },
-    {
-      "check": "full recorder_host suite",
-      "status": "PASS"
     }
   ],
-  "checks_passed": 111,
+  "checks_passed": 98,
   "frozen_inputs": {
-    "extractor/documents/production_promotion/contract.json": "50286e9afead2d64766fca50d6c7502e82ab8ecf678b4569a23903d90eb777a9",
-    "extractor/documents/production_promotion/manifest.json": "9cd6b83b70902fdd212f2370ab798938aabd268d1bfb0ee8b39ebefd797b43ca",
-    "extractor/documents/production_promotion/verification.json": "c17b7d3ae5f8071a63ea03c7e6b402e0d98f96a6cc9647f14b17ebf79895059b",
-    "extractor/documents/production_promotion/verify_promotion.py": "ce941484b5180183917623f10450c2cde4c9af0462540e08ec924629b40e03a3",
-    "extractor/documents/production_replay_handoff/PATCH_PLAN.md": "981149b259735e678cf945c1acdbd0339f7361c5fc8fdac2f99bdd8199f4b557",
-    "extractor/documents/production_replay_handoff/handoff_contract.json": "82ddd6832e0e8e389a9c7adb675352e6a68fa8a425a512e7a4702b1cbeeda220",
-    "extractor/documents/production_replay_handoff/replay_payload.schema.json": "62763ac52b2f2b55a0ffb46f5ec12e612354650c97945578df04c972211b249f",
-    "extractor/documents/production_replay_handoff/verify_handoff.py": "12b29a756f251cce14c8ebaa1378d3d8fac0b687cf9781edf3a617d0b318b868",
-    "extractor/native/recorder_host/src/domain_data_authority.rs": "1bcc03a41790b4c77640f3f5c4ebe08b29fb61f90aed90367b6527bd2ac68ad1",
-    "extractor/native/recorder_host/src/main.rs": "aa35d560d22ef409e5e91e04de811d09d12655861402933b42b012f669ed5a81",
-    "extractor/native/recorder_host/src/world_fold.rs": "d0e42d67c678a38ba6e214af0e542287730812fbd553c2bdc9a1b09d28bb6cab",
-    "extractor/native/recorder_host/src/world_fold/tests.rs": "55ba4f4d8ea813909f8e903f33cb4edf043e0d3ea960c2694e03ce82d93af07a"
+    "extractor/documents/production_promotion/contract.json": "adaf8094097d398d2df8ece9a1ab92a4d1767a6742a2b4b0acc8ebc10ff10af5",
+    "extractor/documents/production_promotion/manifest.json": "0d4b9502976600c458867cf9207a2702b56745d0e5a42d280e7b5429298e9643",
+    "extractor/documents/production_promotion/verification.json": "8739b1ce3bc601d17f628acb1bd346cc73d621356303ead4eb4bfe99c67fc6b5",
+    "extractor/documents/production_promotion/verify_promotion.py": "8fe28d9d6dd3c49ea5750c22d1d26e8bfd66273cae37a4c61f479371f070902b",
+    "extractor/documents/production_replay_handoff/handoff_contract.json": "4a10c5ec002f6236404f6aa76228db93a142145bab1beaf9307eecb6b2b52542",
+    "extractor/documents/production_replay_handoff/replay_payload.schema.json": "9a602cc1524c5f85fb07aeb62f9dced813d904299bfa00108a52ce72db1212fe",
+    "extractor/documents/production_replay_handoff/verify_handoff.py": "a8cd6ac09f2ae789863b7d5b3a91000bb93dd89a2e094051da5fd4b5474d75bc",
+    "extractor/native/recorder_host/src/domain_data_authority.rs": "ca8aeedd1caaf8713f41dbd5218c5af5073dbf2632ac88075f521408707af5d9",
+    "extractor/native/recorder_host/src/main.rs": "40a735777b56bbe6b5fb3cb58075116b9a97ddfab67200d4cf66e3aad29cff13",
+    "extractor/native/recorder_host/src/world_fold.rs": "f72205bbcb3de8b02148eb207b8cf2ca95315ae41c882e8a6532e90a56c05e3e",
+    "extractor/native/recorder_host/src/world_fold/tests.rs": "db999a13b17c89984f3fa00446eed5690b888470c0af0a19765a4bcb1de5ea5d"
   },
   "production_admission": true,
-  "reason": "all seven promoted replay surface groups and the full recorder matrix pass",
+  "reason": "all seven promoted replay surface groups pass static handoff admission; Rust validation is owned by the repository central gate",
+  "rust_validation": "EXTERNAL_CENTRAL_GATE_REQUIRED",
   "schema": "hoi4.extractor.production_replay_handoff.verification.v1",
   "status": "PASS",
   "upstream": "PASS 106/106"

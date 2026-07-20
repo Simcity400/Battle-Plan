@@ -143,6 +143,16 @@ pub unsafe fn execute_submitted_draws(
     if !resolver.has_content_admission() {
         return Err("submitted draw execution requires validated effective-VFS admission".into());
     }
+    for weather in &submit.weather_membership {
+        resolver.read_admitted_used_content(&weather.weather_position_source_content)?;
+        for variant in &weather.ordered_variant_content {
+            for entity in std::iter::once(&variant.primary).chain(variant.fading.iter()) {
+                for content in &entity.ordered_content {
+                    resolver.read_admitted_used_content(content)?;
+                }
+            }
+        }
+    }
     let ordered = ordered_draws(submit)?;
     let mut stream_output = StreamOutputBuffers::default();
     let mut stats = SubmittedDrawStats {
@@ -1514,9 +1524,12 @@ mod tests {
             submit_index: 1,
             global_order: 1,
             presentation_qpc_ticks: 1,
-            interpolation_phase_f32_bits: 0,
+            camera_carrier_ordinal: 0,
+            camera_carrier: None,
             ordered_scene_constant_buffers: Vec::new(),
             ordered_static_map_programs: Vec::new(),
+            tree_runtime: None,
+            s1_shadow: None,
             effect_lifecycle_events: Vec::new(),
             particles: Vec::new(),
             entity_presentations: Vec::new(),

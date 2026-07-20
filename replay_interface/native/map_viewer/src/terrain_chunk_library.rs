@@ -112,6 +112,9 @@ struct RuntimeTextureCaptureSidecar {
     superseded_hash: Option<String>,
 }
 
+const RUNTIME_TEXTURE_CAPTURE_SCHEMA: &str = "battle-plan-runtime-texture-capture-v1";
+const RUNTIME_TEXTURE_CAPTURE_ROLE: &str = "runtime texture capture sidecar";
+
 #[derive(Clone, Debug)]
 pub struct NativeD3d11TerrainChunkLibrary {
     pub(crate) manifest_path: PathBuf,
@@ -309,14 +312,9 @@ fn reconcile_terrain_chunk_runtime_texture_sidecars(
         if !name.ends_with("_capture.json") {
             continue;
         }
-        let sidecar: RuntimeTextureCaptureSidecar = match serde_json::from_slice(&fs::read(&path)?)
-        {
-            Ok(sidecar) => sidecar,
-            Err(_) => continue,
-        };
-        if sidecar.schema != "battle-plan-runtime-texture-capture-v1" {
+        let Some(sidecar) = read_runtime_texture_capture_sidecar(&path)? else {
             continue;
-        }
+        };
         let Some(superseded_hash) = sidecar.superseded_hash.as_deref() else {
             continue;
         };
@@ -352,6 +350,32 @@ fn reconcile_terrain_chunk_runtime_texture_sidecars(
         }
     }
     Ok(())
+}
+
+fn read_runtime_texture_capture_sidecar(
+    path: &Path,
+) -> Result<Option<RuntimeTextureCaptureSidecar>> {
+    let value: serde_json::Value =
+        crate::json_store::read_required_json(path, RUNTIME_TEXTURE_CAPTURE_ROLE)?;
+    let schema = value
+        .get("schema")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            crate::json_store::JsonStoreError::invalid(
+                path,
+                RUNTIME_TEXTURE_CAPTURE_ROLE,
+                "missing string schema",
+            )
+        })?;
+    if schema != RUNTIME_TEXTURE_CAPTURE_SCHEMA {
+        return Ok(None);
+    }
+    let sidecar = crate::json_store::decode_json_value(
+        value,
+        path,
+        RUNTIME_TEXTURE_CAPTURE_ROLE,
+    )?;
+    Ok(Some(sidecar))
 }
 
 fn terrain_chunk_sidecar_reference_count(
@@ -954,6 +978,39 @@ mod tests {
     use super::*;
     use crate::test_support::*;
     use std::fs;
+
+    #[test]
+    fn runtime_texture_sidecar_distinguishes_other_schema_from_corrupt_store() {
+        let root = temp_test_dir("runtime_texture_sidecar_corrupt_store");
+        fs::create_dir_all(&root).expect("create root");
+        let path = root.join("probe_capture.json");
+
+        fs::write(&path, br#"{"schema":"unrelated-capture-v1"}"#)
+            .expect("write unrelated sidecar");
+        assert!(read_runtime_texture_capture_sidecar(&path)
+            .expect("other well-formed capture schema is not a runtime texture")
+            .is_none());
+
+        fs::write(&path, b"{not-json").expect("write corrupt sidecar");
+        let error = read_runtime_texture_capture_sidecar(&path)
+            .expect_err("corrupt present capture JSON must not degrade to absent");
+        assert!(error
+            .downcast_ref::<crate::json_store::JsonStoreError>()
+            .is_some());
+        assert!(error.to_string().contains("is corrupt"));
+
+        fs::write(
+            &path,
+            br#"{"schema":"battle-plan-runtime-texture-capture-v1"}"#,
+        )
+        .expect("write incomplete runtime sidecar");
+        let error = read_runtime_texture_capture_sidecar(&path)
+            .expect_err("schema-selected malformed sidecar must fail closed");
+        assert!(error
+            .downcast_ref::<crate::json_store::JsonStoreError>()
+            .is_some());
+        let _ = fs::remove_dir_all(root);
+    }
 
     fn identity_camera() -> ProductionMapCamera {
         ProductionMapCamera::new(

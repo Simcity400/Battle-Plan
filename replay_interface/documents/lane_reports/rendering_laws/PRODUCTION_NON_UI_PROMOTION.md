@@ -50,11 +50,16 @@ No new Ghidra operation was issued by this production integration. It consumes t
 
 | Function / role | Job ID | Artifact path | Manifest SHA-256 |
 |---|---|---|---|
-| `0x14124b710` SnowMud CPU producer/upload | `20260716T093102Z-l02-preframe-camera-light-update-v1-5c11a5bf` | `C:\Users\Example\ghidra_agent_exports\20260716T093102Z-l02-preframe-camera-light-update-v1-5c11a5bf\evidence\func_14124b710.decompile.c` | `b25ed3a0a4270d067536a634bcc13acc65e5f4ad63c493c467564c5136da91e3` |
+| `0x14124b710` SnowMud owner scope and CPU producer | `20260719T220305Z-wave2-r10-addr-03-05-1df2b63f` (`ADDR-03-05`, actual `shard-03`) | `<local-path>` | exact-10 manifest `492e712cd283a75b9b6357eb42f4bc98137d1ab138cfa857164f8d353f675c28`; artifact `6a8acb1cd322e54ebf473e808905019c3b2af878dad3a65c742bbed80cb820bb` |
+| `0x142400e40` SnowMud CPU preupload helper | `20260719T220305Z-wave2-r10-addr-03-05-1df2b63f` (`ADDR-03-05`, actual `shard-03`) | `<local-path>` | exact-10 manifest `492e712cd283a75b9b6357eb42f4bc98137d1ab138cfa857164f8d353f675c28`; artifact `f1fa4242316dbd01954367c42644ae56149f212ea361fc08eaddc25a693fef08` |
 | `0x14227f420` particle bind/draw submit | `20260717T004345Z-xn12a-cpdxparticleobject-update-callers-98b14e19` | `C:\Users\Example\ghidra_agent_exports\20260717T004345Z-xn12a-cpdxparticleobject-update-callers-98b14e19\evidence\func_14227f420.decompile.c` | `a64495ae47dfaaa2a6f752ca1b5d96ec1f764041b68074ea8e79d88cea51f6d1` |
 | `0x1423dd730` particle instance update / canonical packet producer | `20260717T004108Z-xn12b-particle-instance-render-update-co-75672612` | `C:\Users\Example\ghidra_agent_exports\20260717T004108Z-xn12b-particle-instance-render-update-co-75672612\evidence\func_1423dd730.decompile.c` | `b8482288abf63d70128ddd097186c3cba5c7e9e8eb48d906df3cd5b00670192d` |
 | `0x1422644c0` entity VB/layout/IB/material/palette submit root | `20260716T084950Z-l03-shadow-model-list-producer-v1-bbb15676` | `C:\Users\Example\ghidra_agent_exports\20260716T084950Z-l03-shadow-model-list-producer-v1-bbb15676\evidence\func_1422644c0.decompile.c` | `5c3e7986b4350f612b2eb908ef1a6fa533cda1523ac9b2a42f91621a21da3e4f` |
 | `0x14166ec50` weather membership/visibility/playback producer | `20260717T012439Z-xn14a-weather-region-getter-all-callers-e6227833` | `C:\Users\Example\ghidra_agent_exports\20260717T012439Z-xn14a-weather-region-getter-all-callers-e6227833\evidence\func_14166ec50.decompile.c` | `fd99de197bf7699319a522e0d2e68dbd63a36d9a778ded8ca368597d9679d9c8` |
+
+The two SnowMud rows close static hook custody only. They do not activate the
+new H/H2 transport: that lane remains false until two authenticated live H/H2
+pairs, including a content change, pass its separate admission contract.
 
 The complete XN15 ledger is `replay_interface/re_evidence/rendering_laws/XN15/evidence_ledger.md`, SHA-256 `2d48349125008e7db36ab5af887bb7261c8831a44dedae4099e38efe0dd42527`.
 

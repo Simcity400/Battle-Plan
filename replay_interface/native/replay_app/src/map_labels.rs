@@ -1,21 +1,29 @@
 //! World-space country-label vertex-buffer path for the captured the game
 //! `mapname` pass.
 //!
-//! This module intentionally does not enable labels in product CLI. It provides
-//! the product render surface that was missing: replay_app builds float3/float2
-//! glyph vertices by calling the proven `map_viewer` mapname geometry law, then
-//! draws them with the captured shader semantics (`ViewProjectionMatrix`,
-//! `Transp_OffsetX.y` wrap offset, `Transp_OffsetX.x` alpha multiplier).
+//! Normal product playback does not expose labels as an optional CLI layer: it
+//! executes the authenticated `mapname` draw in the immutable D80 static
+//! program. This module retains the controller-keyed semantic projection and
+//! the exact glyph-VB render surface for evidence/admission work; both consume
+//! captured shader semantics (`ViewProjectionMatrix`, `Transp_OffsetX.y` wrap
+//! offset, `Transp_OffsetX.x` alpha multiplier) without free-form substitutes.
 #![allow(dead_code)]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CString;
 use std::mem;
 use std::ptr;
 
 use map_viewer::{
-    build_mapname_vertices, mapname_measured_glyph_parameters, mapname_tracked_advance_px,
-    mapname_tracking_px, CountryLabelPlacement, MapLabelGlyphLayoutQuad,
+    build_mapname_vertices, compute_controller_label_placements_with_text,
+    mapname_measured_glyph_parameters, mapname_tracked_advance_px, mapname_tracking_px,
+    ControllerLabelLawInputs, CountryLabelPlacement, LabelTextMetrics, MapLabelGlyphLayoutQuad,
+    ProvinceKind,
 };
+use replay_core::{
+    ConstantBufferBinding, Leaf, MapnameD80State, StaticMapDraw, ViewStatus, WorldFrame,
+};
+use sha2::{Digest, Sha256};
 use winapi::shared::dxgiformat::{
     DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM,
 };
@@ -42,6 +50,196 @@ use crate::Result;
 /// `interface/core.gfx:1679-1680` declares the map-name atlas as bitmapfont
 /// `tahoma_60` backed by `gfx/fonts/hoi_mapfont4`.
 pub const MAP_LABEL_FONT_NAME: &str = "tahoma_60";
+
+/// Exact producer contract for the a729 `mapname.shader` slot-1 constant
+/// buffer. The production-render extractor must emit this token only after the
+/// draw has passed the reflected mapname VS+PS discriminator; a slot number or
+/// a coincidental 32-byte payload is not sufficient evidence.
+pub const MAP_LABEL_TRANSP_OFFSET_SEMANTIC: &str =
+    replay_core::MAPNAME_TRANSP_OFFSET_SEMANTIC;
+
+/// Hash-authenticated draw-time bytes consumed by the existing glyph-VB path.
+///
+/// N04 proves that `.x` is the selected persistent country/far alpha and `.y`
+/// is the wrap translation. Keeping the complete 32 bytes prevents the replay
+/// path from inventing padding or silently accepting a different CB layout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthenticatedMapLabelRuntimeConstants {
+    pub transp_offset_x_f32_bits: [u32; 4],
+    pub trailing_f32_bits: [u32; 4],
+    pub raw_sha256: String,
+}
+
+/// Static map/file inputs needed to project one exact replay hour's measured
+/// province controllers through the B10 placement law.
+pub struct ReplayControllerLabelInputs<'a> {
+    pub province_ids: &'a [u32],
+    pub width: usize,
+    pub height: usize,
+    pub province_to_state: &'a BTreeMap<u32, u32>,
+    pub impassable_states: &'a BTreeSet<u32>,
+    pub province_importance: &'a BTreeMap<u32, u64>,
+    pub province_type: &'a BTreeMap<u32, ProvinceKind>,
+}
+
+/// Materialize only measured controller rows from the exact replay frame.
+/// Missing province ids remain genuinely uncontrolled; an explicitly present
+/// absent/null/malformed controller row blocks the complete label projection.
+pub fn measured_control_by_province(frame: &WorldFrame) -> Result<BTreeMap<u32, String>> {
+    measured_controller_rows(
+        frame.control_by_province_status(),
+        frame.control_by_province(),
+    )
+}
+
+fn measured_controller_rows(
+    status: ViewStatus,
+    rows: &BTreeMap<u32, Leaf<String>>,
+) -> Result<BTreeMap<u32, String>> {
+    if status != ViewStatus::Present {
+        return Err("map labels: control_by_province domain is not present".into());
+    }
+    let mut measured = BTreeMap::new();
+    for (&province_id, controller) in rows {
+        match controller {
+            Leaf::Measured(tag) if !tag.trim().is_empty() => {
+                measured.insert(province_id, tag.clone());
+            }
+            Leaf::Measured(_) => {
+                return Err(format!(
+                    "map labels: province {province_id} has an empty measured controller"
+                )
+                .into());
+            }
+            Leaf::Absent => {
+                return Err(format!(
+                    "map labels: province {province_id} controller row is explicitly absent"
+                )
+                .into());
+            }
+            Leaf::Unobtained => {
+                return Err(format!(
+                    "map labels: province {province_id} controller row is unobtained"
+                )
+                .into());
+            }
+        }
+    }
+    Ok(measured)
+}
+
+/// Exact replay-state-to-placement join. This is the only product-authorized
+/// placement entrypoint in replay_app; legal state owners are never accepted as
+/// a fallback for missing controller state.
+pub fn controller_label_placements_from_replay(
+    frame: &WorldFrame,
+    inputs: &ReplayControllerLabelInputs<'_>,
+    text_metrics: &BTreeMap<String, LabelTextMetrics>,
+) -> Result<Vec<CountryLabelPlacement>> {
+    let controllers = measured_control_by_province(frame)?;
+    Ok(compute_controller_label_placements_with_text(
+        &ControllerLabelLawInputs {
+            province_ids: inputs.province_ids,
+            width: inputs.width,
+            height: inputs.height,
+            province_to_state: inputs.province_to_state,
+            controllers: &controllers,
+            impassable_states: inputs.impassable_states,
+            province_importance: inputs.province_importance,
+            province_type: inputs.province_type,
+        },
+        text_metrics,
+    ))
+}
+
+impl AuthenticatedMapLabelRuntimeConstants {
+    /// Join the portable production static draw to the glyph renderer. The
+    /// extractor-stamped semantic is the discriminator; the engine effect token
+    /// is rechecked here so a corrupted cross-program binding fails closed.
+    pub fn from_static_map_draw(draw: &StaticMapDraw) -> Result<Option<Self>> {
+        match draw.mapname_d80_state()? {
+            MapnameD80State::Missing => Ok(None),
+            MapnameD80State::LegacyUnstamped => Err(
+                "map labels: legacy mapname draw lacks authenticated Transp_OffsetX semantic"
+                    .into(),
+            ),
+            MapnameD80State::Authenticated => {
+                Self::from_constant_buffers(&draw.ordered_constant_buffers).map(Some)
+            }
+        }
+    }
+
+    /// Admit only an exact, stage-complete mapname CB1 observation.
+    ///
+    /// A producer may merge VS+PS into one stage mask or retain two identical
+    /// stage-local bindings. Conflicting stage-local bytes fail closed. The
+    /// semantic token is mandatory because slot 1 and byte width alone collide
+    /// with unrelated effects.
+    pub fn from_constant_buffers(bindings: &[ConstantBufferBinding]) -> Result<Self> {
+        const MAPNAME_STAGES: u8 = 0b0000_0011;
+        const CB_BYTES: usize = 32;
+
+        let mut covered_stages = 0u8;
+        let mut admitted: Option<([u8; CB_BYTES], String)> = None;
+        for binding in bindings.iter().filter(|binding| {
+            binding.slot == 1 && binding.semantic_layout == MAP_LABEL_TRANSP_OFFSET_SEMANTIC
+        }) {
+            if binding.stage_mask_u8 == 0 || binding.stage_mask_u8 & !MAPNAME_STAGES != 0 {
+                return Err("map labels: Transp_OffsetX CB has non-mapname shader stages".into());
+            }
+            if binding.byte_offset != 0
+                || binding.byte_count as usize != CB_BYTES
+                || binding.raw_bytes.len() != CB_BYTES
+            {
+                return Err("map labels: Transp_OffsetX CB is not the exact 32-byte range".into());
+            }
+            let observed_sha256 = format!("{:x}", Sha256::digest(&binding.raw_bytes));
+            if observed_sha256 != binding.sha256 {
+                return Err("map labels: Transp_OffsetX CB SHA-256 mismatch".into());
+            }
+            let bytes: [u8; CB_BYTES] = binding
+                .raw_bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| "map labels: Transp_OffsetX CB byte conversion failed")?;
+            if let Some((prior, _)) = &admitted {
+                if prior != &bytes {
+                    return Err(
+                        "map labels: VS/PS Transp_OffsetX observations disagree".into(),
+                    );
+                }
+            } else {
+                admitted = Some((bytes, observed_sha256));
+            }
+            covered_stages |= binding.stage_mask_u8;
+        }
+
+        if covered_stages != MAPNAME_STAGES {
+            return Err(
+                "map labels: authenticated Transp_OffsetX CB is missing VS or PS coverage".into(),
+            );
+        }
+        let (bytes, raw_sha256) = admitted
+            .ok_or_else(|| "map labels: authenticated Transp_OffsetX CB is absent".to_string())?;
+        let mut words = [0u32; 8];
+        for (index, chunk) in bytes.chunks_exact(4).enumerate() {
+            words[index] = u32::from_le_bytes(chunk.try_into().expect("four-byte chunk"));
+        }
+        let alpha = f32::from_bits(words[0]);
+        let wrap = f32::from_bits(words[1]);
+        if !alpha.is_finite() || !(0.0..=1.0).contains(&alpha) {
+            return Err("map labels: authenticated Transp_OffsetX.x is outside [0,1]".into());
+        }
+        if !wrap.is_finite() {
+            return Err("map labels: authenticated Transp_OffsetX.y is non-finite".into());
+        }
+        Ok(Self {
+            transp_offset_x_f32_bits: words[0..4].try_into().expect("four words"),
+            trailing_f32_bits: words[4..8].try_into().expect("four words"),
+            raw_sha256,
+        })
+    }
+}
 
 const MAP_LABEL_SHADER_HLSL: &str = r#"
 cbuffer SceneConstants : register(b0) {
@@ -334,8 +532,7 @@ impl MapLabelRenderer {
         gfx: &Gfx,
         batches: &[MapLabelVertexBatch],
         view_projection: [[f32; 4]; 4],
-        transparency: f32,
-        wrap_offset_x: f32,
+        runtime: &AuthenticatedMapLabelRuntimeConstants,
     ) -> Result<()> {
         if batches.is_empty() {
             return Ok(());
@@ -355,8 +552,8 @@ impl MapLabelRenderer {
                 context,
                 &self.transp_cb,
                 &MapLabelTranspOffset {
-                    transp_offset_x: [transparency.clamp(0.0, 1.0), wrap_offset_x, 0.0, 0.0],
-                    _pad: [0.0; 4],
+                    transp_offset_x: runtime.transp_offset_x_f32_bits.map(f32::from_bits),
+                    _pad: runtime.trailing_f32_bits.map(f32::from_bits),
                 },
                 "Map map-label Transp_OffsetX constants",
             )?;
@@ -592,6 +789,76 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::Path;
+
+    fn transp_offset_binding(stage_mask_u8: u8, words: [u32; 8]) -> ConstantBufferBinding {
+        let raw_bytes = words
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        ConstantBufferBinding {
+            stage_mask_u8,
+            slot: 1,
+            byte_offset: 0,
+            byte_count: raw_bytes.len() as u32,
+            sha256: format!("{:x}", Sha256::digest(&raw_bytes)),
+            raw_bytes,
+            semantic_layout: MAP_LABEL_TRANSP_OFFSET_SEMANTIC.into(),
+        }
+    }
+
+    #[test]
+    fn b10_admits_hash_verified_stage_complete_transp_offset_bits() {
+        let words = [
+            0x3f22_1719,
+            (-5632.0f32).to_bits(),
+            0,
+            0,
+            0x7fc0_0001,
+            0x8000_0000,
+            0,
+            0,
+        ];
+        let runtime = AuthenticatedMapLabelRuntimeConstants::from_constant_buffers(&[
+            transp_offset_binding(0b01, words),
+            transp_offset_binding(0b10, words),
+        ])
+        .expect("authenticated mapname CB1");
+        assert_eq!(runtime.transp_offset_x_f32_bits, words[0..4]);
+        assert_eq!(runtime.trailing_f32_bits, words[4..8]);
+    }
+
+    #[test]
+    fn b10_rejects_slot_only_or_conflicting_transp_offset_observations() {
+        let words = [1.0f32.to_bits(), 0, 0, 0, 0, 0, 0, 0];
+        let mut slot_only = transp_offset_binding(0b11, words);
+        slot_only.semantic_layout = "unproven_slot_1".into();
+        assert!(AuthenticatedMapLabelRuntimeConstants::from_constant_buffers(&[slot_only])
+            .is_err());
+
+        let mut conflicting = words;
+        conflicting[0] = 0.5f32.to_bits();
+        assert!(AuthenticatedMapLabelRuntimeConstants::from_constant_buffers(&[
+            transp_offset_binding(0b01, words),
+            transp_offset_binding(0b10, conflicting),
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn b10_materializes_only_measured_controller_rows() {
+        let rows = BTreeMap::from([
+            (10, Leaf::Measured("GER".to_string())),
+            (11, Leaf::Measured("POL".to_string())),
+        ]);
+        assert_eq!(
+            measured_controller_rows(ViewStatus::Present, &rows).expect("measured rows"),
+            BTreeMap::from([(10, "GER".to_string()), (11, "POL".to_string())])
+        );
+
+        let unobtained = BTreeMap::from([(10, Leaf::Unobtained)]);
+        assert!(measured_controller_rows(ViewStatus::Present, &unobtained).is_err());
+        assert!(measured_controller_rows(ViewStatus::DomainAbsent, &BTreeMap::new()).is_err());
+    }
 
     fn write_font_tga(path: &Path) {
         let mut tga = vec![0u8; 18];
