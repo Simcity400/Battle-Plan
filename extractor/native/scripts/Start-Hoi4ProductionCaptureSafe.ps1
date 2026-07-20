@@ -30,6 +30,7 @@ param(
     [int]$MaxFinalizeSeconds = 1800,
     [int]$CancellationGraceSeconds = 5,
     [string]$AttemptStateRoot = "",
+    [string]$PrebuiltArtifactAttestationPath = "",
     [string]$Rung = "",
     [ValidateSet("production", "synthetic-fault", "paused")][string]$AcceptanceMode = "production",
     [string]$AcceptanceTestNonce = "",
@@ -44,7 +45,7 @@ Set-StrictMode -Version Latest
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $nativeRoot = (Resolve-Path -LiteralPath (Join-Path $scriptDir "..")).Path
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $nativeRoot "..\..")).Path
-$targetRoot = if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) { Join-Path $repoRoot '.cargo-target' } else { [System.IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) }
+$targetRoot = Join-Path $repoRoot '.cargo-target'
 $env:CARGO_TARGET_DIR = $targetRoot
 $releaseRoot = Join-Path $targetRoot "release"
 $sourceDll = Join-Path $releaseRoot "collector.dll"
@@ -65,6 +66,7 @@ $expectedSpeedEvidenceProbeSha = "7302d6981b74b5eba149a58b30e359c9e519e7b7e27527
 $expectedSpeedEvidenceSchemaSha = "84ff925213ada78f2302fc2115350067dd4975f3ccc6fc295a7ff86c49d22f59"
 $expectedHoi4ExeSha = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
 . (Join-Path $scriptDir "ProductionCapture.Validation.ps1")
+. (Join-Path $scriptDir "ProductionArtifact.Attestation.ps1")
 $pythonCommand=Get-Command $PythonExe -CommandType Application -ErrorAction Stop
 $PythonExe=$pythonCommand.Source
 $preparedModsetReceipt=$null
@@ -77,7 +79,7 @@ if (-not [string]::IsNullOrWhiteSpace($PreparedProductModsetDir)) {
     $preparedReceiptPath=Join-Path $PreparedProductModsetDir "product_modset_capture_ready.json"
     if (-not (Test-Path -LiteralPath $preparedReceiptPath -PathType Leaf)) { throw "prepared product-modset receipt is missing" }
     $preparedModsetReceipt=Get-Content -LiteralPath $preparedReceiptPath -Raw | ConvertFrom-Json
-    if ([string]$preparedModsetReceipt.schema -cne 'extractor.product_modset_capture_ready.v1' -or [string]$preparedModsetReceipt.status -cne 'ready_for_selected_modset_capture' -or [string]$preparedModsetReceipt.product_modset_sha256 -cnotmatch '^[0-9a-f]{64}$' -or [string]$preparedModsetReceipt.preparation_tool_sha256 -cnotmatch '^[0-9a-f]{64}$' -or -not (Test-Path -LiteralPath $productModsetPrepareScript -PathType Leaf) -or (Get-FileHash -LiteralPath $productModsetPrepareScript -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$preparedModsetReceipt.preparation_tool_sha256) {
+    if ([string]$preparedModsetReceipt.schema -cne 'extractor.product_modset_capture_ready.v1' -or [string]$preparedModsetReceipt.status -cne 'ready_for_selected_modset_capture' -or @('live_binding_resolution','authenticated_binding_corpus') -cnotcontains [string]$preparedModsetReceipt.preparation_mode -or [string]$preparedModsetReceipt.binding_corpus_sha256 -cnotmatch '^[0-9a-f]{64}$' -or [string]$preparedModsetReceipt.binding_corpus.sha256 -cne [string]$preparedModsetReceipt.binding_corpus_sha256 -or [string]$preparedModsetReceipt.product_modset_sha256 -cnotmatch '^[0-9a-f]{64}$' -or [string]$preparedModsetReceipt.preparation_tool_sha256 -cnotmatch '^[0-9a-f]{64}$' -or -not (Test-Path -LiteralPath $productModsetPrepareScript -PathType Leaf) -or (Get-FileHash -LiteralPath $productModsetPrepareScript -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$preparedModsetReceipt.preparation_tool_sha256) {
         throw "prepared product-modset receipt is malformed"
     }
     $StaticBundleDir=Join-Path $PreparedProductModsetDir "static_bundle\bundle"
@@ -126,6 +128,7 @@ if ([string]::IsNullOrWhiteSpace($AttemptStateRoot)) {
     if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw "LOCALAPPDATA is unavailable; pass -AttemptStateRoot" }
     $AttemptStateRoot = Join-Path $env:LOCALAPPDATA "Hoi4MpStats\capture_attempts"
 }
+$AttemptStateRoot = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($AttemptStateRoot)
 if (-not (Test-Path -LiteralPath $SpeedEvidenceTranscriptPath -PathType Leaf)) { throw "speed evidence transcript not found: $SpeedEvidenceTranscriptPath" }
 $SpeedEvidenceTranscriptPath=(Resolve-Path -LiteralPath $SpeedEvidenceTranscriptPath).Path
 if (-not (Test-Path -LiteralPath $SpeedEvidenceNonceLedgerRoot -PathType Container)) { throw "speed evidence nonce ledger root not found: $SpeedEvidenceNonceLedgerRoot" }
@@ -202,12 +205,20 @@ $drive = [System.IO.DriveInfo]::new($driveRoot)
 $requiredBytes = [int64]($DurationSeconds * $EstimatedMegabytesPerSecond * 1MB * 1.25)
 if ($drive.AvailableFreeSpace -lt $requiredBytes) { throw "insufficient disk: need $requiredBytes bytes, free $($drive.AvailableFreeSpace) bytes" }
 
+if ([string]::IsNullOrWhiteSpace($PrebuiltArtifactAttestationPath)) {
+    $PrebuiltArtifactAttestationPath = Join-Path $releaseRoot "hoi4-production-prebuilt-artifacts.json"
+}
+$prebuiltArtifacts = Test-ProductionArtifactAttestation `
+    -RepoRoot $repoRoot `
+    -ReceiptPath $PrebuiltArtifactAttestationPath `
+    -ExpectedDriverPath $MyInvocation.MyCommand.Path
+$sourceDll = [string]$prebuiltArtifacts.artifacts.collector_dll
+$recorder = [string]$prebuiltArtifacts.artifacts.recorder_host
+$foldCheck = [string]$prebuiltArtifacts.artifacts.fold_check
+$compactGate = [string]$prebuiltArtifacts.artifacts.compact_replay_gate
+$packReplay = [string]$prebuiltArtifacts.artifacts.container_verify
 if (-not $SkipBuild) {
-    if ($DryRun) { Write-Host "DRY RUN: cargo build --release for collector, recorder, fold, compact gate, and container verifier" }
-    else {
-        & cargo build --release --manifest-path (Join-Path $nativeRoot "Cargo.toml") -p collector -p recorder_host -p fold_check -p compact_replay_verification_gates -p snapshot
-        if ($LASTEXITCODE -ne 0) { throw "release build failed with exit $LASTEXITCODE" }
-    }
+    Write-Host "Using centralized prebuilt artifacts; the capture launcher never invokes Cargo."
 }
 foreach ($file in @($sourceDll, $recorder, $foldCheck, $compactGate, $packReplay, $registryPath, $profilePath,$staticBundleScript,$speedStreamVerifier,$ModStatePath,$DlcStatePath,$LoadOrderPath,$SourceInventoryPath,$LiveResolutionReportPath)) {
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "required file missing: $file" }
@@ -215,12 +226,17 @@ foreach ($file in @($sourceDll, $recorder, $foldCheck, $compactGate, $packReplay
 
 $stageDir = Join-Path $OutDir "staging\$nonce"
 New-Item -ItemType Directory -Path $stageDir | Out-Null
+$retainedPrebuiltAttestationPath = Join-Path $stageDir "hoi4-production-prebuilt-artifacts.json"
+Copy-Item -LiteralPath $prebuiltArtifacts.receipt_path -Destination $retainedPrebuiltAttestationPath
+if ((Get-FileHash -LiteralPath $retainedPrebuiltAttestationPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$prebuiltArtifacts.receipt_sha256) {
+    throw "retained prebuilt artifact attestation hash mismatch"
+}
 $stagedDll = Join-Path $stageDir "collector.dll"
 $collectorControlPath = Join-Path $stageDir "collector_control.json"
 Copy-Item -LiteralPath $sourceDll -Destination $stagedDll
 $sourceSha = (Get-FileHash -LiteralPath $sourceDll -Algorithm SHA256).Hash.ToLowerInvariant()
 $stagedSha = (Get-FileHash -LiteralPath $stagedDll -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($sourceSha -ne $stagedSha) { throw "staged DLL hash mismatch" }
+if ($sourceSha -ne $stagedSha -or $sourceSha -cne [string]$prebuiltArtifacts.artifact_sha256.collector_dll) { throw "staged DLL hash mismatch" }
 
 if (-not (Test-Path -LiteralPath $StaticBundleDir -PathType Container)) { throw "static bundle directory missing: $StaticBundleDir" }
 $StaticBundleDir=(Resolve-Path -LiteralPath $StaticBundleDir).Path
@@ -249,6 +265,7 @@ if ($null -ne $preparedModsetReceipt) {
         load_order=@($LoadOrderPath,$preparedModsetReceipt.bindings.load_order)
         source_inventory=@($SourceInventoryPath,$preparedModsetReceipt.bindings.source_inventory)
         resolution_report=@($LiveResolutionReportPath,$preparedModsetReceipt.bindings.resolution_report)
+        ui14_engine_vfs=@((Join-Path $PreparedProductModsetDir "bindings\ui14_engine_vfs.json"),$preparedModsetReceipt.engine_vfs_receipt)
     }
     foreach($entry in $preparedFiles.GetEnumerator()) {
         $actualPath=[System.IO.Path]::GetFullPath([string]$entry.Value[0])
@@ -256,6 +273,25 @@ if ($null -ne $preparedModsetReceipt) {
         $receiptPath=[System.IO.Path]::GetFullPath((Join-Path $PreparedProductModsetDir ([string]$receiptFile.file)))
         if ($actualPath -ine $receiptPath -or [int64]$receiptFile.bytes -ne (Get-Item -LiteralPath $actualPath).Length -or [string]$receiptFile.sha256 -cnotmatch '^[0-9a-f]{64}$' -or (Get-FileHash -LiteralPath $actualPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$receiptFile.sha256) {
             throw "prepared product-modset $($entry.Key) receipt differs from retained bytes"
+        }
+    }
+    $bindingCorpusFiles=@{
+        'mod_state.json'=$ModStatePath
+        'dlc_state.json'=$DlcStatePath
+        'load_order.json'=$LoadOrderPath
+        'source_inventory.json'=$SourceInventoryPath
+        'resolution_report.json'=$LiveResolutionReportPath
+        'ui14_engine_vfs.json'=(Join-Path $PreparedProductModsetDir "bindings\ui14_engine_vfs.json")
+    }
+    $corpusRows=@($preparedModsetReceipt.binding_corpus.files)
+    if ([string]$preparedModsetReceipt.binding_corpus.schema -cne 'extractor.product_modset_binding_corpus.v1' -or $corpusRows.Count -ne $bindingCorpusFiles.Count) {
+        throw "prepared product-modset binding corpus is malformed"
+    }
+    foreach($entry in $bindingCorpusFiles.GetEnumerator()) {
+        $matches=@($corpusRows | Where-Object { [string]$_.name -ceq [string]$entry.Key })
+        $actualPath=[System.IO.Path]::GetFullPath([string]$entry.Value)
+        if ($matches.Count -ne 1 -or [int64]$matches[0].bytes -ne (Get-Item -LiteralPath $actualPath).Length -or [string]$matches[0].sha256 -cnotmatch '^[0-9a-f]{64}$' -or (Get-FileHash -LiteralPath $actualPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$matches[0].sha256) {
+            throw "prepared product-modset binding corpus differs for $($entry.Key)"
         }
     }
 }
@@ -294,6 +330,10 @@ $plan = [ordered]@{
     schema = "battle-plan.production_capture_plan.v1"; capture_id = $CaptureId; session_id = $SessionId; pid = $Hoi4Pid
     injection_attempt_budget = 1; source_dll_sha256 = $sourceSha; staged_dll = $stagedDll
     staged_dll_sha256 = $stagedSha; output_dir = $OutDir; speed_required_raw = 4
+    prebuilt_artifact_attestation_path = $retainedPrebuiltAttestationPath
+    prebuilt_artifact_attestation_authority_path = $prebuiltArtifacts.receipt_path
+    prebuilt_artifact_attestation_sha256 = $prebuiltArtifacts.receipt_sha256
+    prebuilt_source_input_sha256 = $prebuiltArtifacts.source_input_sha256
     unpaused_required = ($AcceptanceMode -ne "paused"); hour_latch_required = $true
     domain57_game_speed_gate_v2 = $SpeedRootGatePath; domain57_game_speed_gate_v2_sha256 = $speedRootGateSha
     speed_evidence_transcript_sha256 = $SpeedEvidenceTranscriptSha256; speed_evidence_session_id = $SpeedEvidenceSessionId
@@ -396,11 +436,14 @@ if (-not $preflightStatic.passed) { throw "static bundle failed binding verifica
 
 New-Item -ItemType Directory -Path $AttemptStateRoot -Force | Out-Null
 $attemptMarkerPath=Join-Path $AttemptStateRoot ("hoi4_pid_{0}.unresolved.json" -f $Hoi4Pid)
+$resolvedMarker=Join-Path $AttemptStateRoot ("$SessionId.resolved.json")
 if (Test-Path -LiteralPath $attemptMarkerPath -PathType Leaf) { throw "unresolved prior injection attempt exists: $attemptMarkerPath; use Resolve-Hoi4ProductionCaptureAttempt.ps1 after proving the child/module is gone" }
+if (Test-Path -LiteralPath $resolvedMarker) { throw "resolved attempt destination already exists: $resolvedMarker; refusing to overwrite retained evidence" }
 $attemptMarker=@{
     schema="battle-plan.production_capture_attempt.v1"; state="committed_pre_launch"; session_id=$SessionId; capture_id=$CaptureId; pid=$Hoi4Pid
     process_start_utc=$game.StartTime.ToUniversalTime().ToString('o'); exe_sha256=$exeSha.ToLowerInvariant()
     staged_dll=$stagedDll; staged_dll_sha256=$stagedSha; capture_plan_sha256=$planSha
+    prebuilt_artifact_attestation_path=$retainedPrebuiltAttestationPath; prebuilt_artifact_attestation_sha256=$prebuiltArtifacts.receipt_sha256; prebuilt_source_input_sha256=$prebuiltArtifacts.source_input_sha256
     domain57_game_speed_gate_v2=$SpeedRootGatePath; domain57_game_speed_gate_v2_sha256=$speedRootGateSha
     speed_evidence_session_id=$SpeedEvidenceSessionId; speed_evidence_process_creation_filetime_utc=$speedRootGate.process_creation_filetime_utc; speed_evidence_module_base=$speedRootGate.module_base
     speed_evidence_transcript_path=$SpeedEvidenceTranscriptPath; speed_evidence_transcript_sha256=$SpeedEvidenceTranscriptSha256; speed_evidence_transcript_file_sha256=$SpeedEvidenceTranscriptFileSha256
@@ -437,6 +480,13 @@ try {
         $samples.Add($sample); $monitorWriter.WriteLine(($sample | ConvertTo-Json -Compress))
         if ($sample.speed_raw -ne 4 -or [bool]$sample.paused -ne $expectedPaused) { throw "preflight speed/pause state does not match acceptance mode $AcceptanceMode" }
         Start-Sleep -Milliseconds 100
+    }
+    $prelaunchArtifacts = Test-ProductionArtifactAttestation `
+        -RepoRoot $repoRoot `
+        -ReceiptPath $PrebuiltArtifactAttestationPath `
+        -ExpectedDriverPath $MyInvocation.MyCommand.Path
+    if ([string]$prelaunchArtifacts.receipt_sha256 -cne [string]$prebuiltArtifacts.receipt_sha256) {
+        throw "prebuilt artifact attestation changed after capture planning"
     }
     # This is the sole recorder launch and therefore the sole injection attempt.
     $recorderStart=[System.Diagnostics.ProcessStartInfo]::new()
@@ -479,7 +529,7 @@ try {
     $speedProofPath = Join-Path $OutDir "speed5_proof.json"
     Write-DurableJson -Path $speedProofPath -Value $proof
 
-    if ([string]$captureManifest.session_id -cne $SessionId) { throw "capture manifest session id differs from the capture plan" }
+    if ([string]$captureManifest.session_id -cne $SessionId -or [string]$captureManifest.capture_id -cne $CaptureId) { throw "capture manifest capture/session identity differs from the capture plan" }
     if (
         [string]$captureManifest.static_bundle.product_modset_sha256 -cne $productModsetSha256 -or
         [string]$captureManifest.portable_content_manifest.schema -cne 'hoi4.portable-content-manifest.v2' -or
@@ -565,10 +615,16 @@ if ($AcceptanceMode -eq "production") {
     $proofGate = Invoke-IndependentCaptureGate -Name "verify_acceptance_proof" -FilePath $PythonExe -Arguments @($proofScript,"--run-dir",$OutDir,"--snapshot-dir",$snapshotDir,"--extraction-report",$extractionReport,"--out",$proofReport) -LogDir (Join-Path $OutDir "acceptance_proof_logs") -TimeoutSeconds $MaxFinalizeSeconds -CancellationGraceSeconds $CancellationGraceSeconds
     if (-not $proofGate.passed -or -not (Test-Path -LiteralPath $proofReport -PathType Leaf)) { throw "acceptance proof verification failed" }
     $validation = Get-Content -LiteralPath $proofReport -Raw | ConvertFrom-Json
-    if ($validation.ok -ne $true) { throw "acceptance proof failed: $($validation.problems -join ', ')" }
+    $expectedAcceptanceSchema = if ($AcceptanceMode -eq "synthetic-fault") { "battle-plan.f6_synthetic_fault_proof.v1" } else { "battle-plan.f6_pause_proof.v1" }
+    if (
+        [string]$validation.schema -cne $expectedAcceptanceSchema -or
+        $validation.ok -isnot [bool] -or
+        $validation.ok -ne $true
+    ) { throw "acceptance proof failed or returned a noncanonical verdict: $($validation.problems -join ', ')" }
     $validationReportPath = $proofReport
 }
-$resolvedMarker=Join-Path $AttemptStateRoot ("$SessionId.resolved.json")
+$validationReceiptPath=Join-Path $OutDir "capture_validation_receipt.json"
+$transportedResolvedMarkerPath=Join-Path $OutDir "resolved_attempt_marker.json"
 $validationState = if ($AcceptanceMode -eq "production") { "validation_passed" } else { "acceptance_validation_passed" }
 $manifestPath = Join-Path $OutDir "native_session_manifest.json"
 $validationReceipt = [ordered]@{
@@ -584,6 +640,14 @@ $validationReceipt = [ordered]@{
     validation_report_path = $validationReportPath
     validation_report_sha256 = (Get-FileHash -LiteralPath $validationReportPath -Algorithm SHA256).Hash.ToLowerInvariant()
     validation_report_schema = [string]$validation.schema
+    prebuilt_artifact_attestation_path = $retainedPrebuiltAttestationPath
+    prebuilt_artifact_attestation_sha256 = $prebuiltArtifacts.receipt_sha256
+    prebuilt_source_input_sha256 = $prebuiltArtifacts.source_input_sha256
+    receipt_path = $validationReceiptPath
+    resolved_attempt_marker_path = $resolvedMarker
+    transported_resolved_attempt_marker_path = $transportedResolvedMarkerPath
+    resolved_attempt_marker_schema = "battle-plan.production_capture_attempt.v1"
+    resolved_attempt_marker_state = $validationState
     admissible_for_production = ($AcceptanceMode -eq "production")
 }
 if ($AcceptanceMode -ne "production") {
@@ -595,6 +659,12 @@ if ($AcceptanceMode -ne "production") {
     $validationReceipt["acceptance_proof"] = $validation
     $validationReceipt["acceptance_test_observation"] = $manifest.acceptance_test_observation
 }
-Update-AttemptMarker $attemptMarkerPath $attemptMarker $validationState @{validation_report=$validationReportPath; validation_receipt=$validationReceipt; admissible_for_production=($AcceptanceMode -eq "production")}
+Write-DurableJson -Path $validationReceiptPath -Value $validationReceipt
+$validationReceiptSha=(Get-FileHash -LiteralPath $validationReceiptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+Update-AttemptMarker $attemptMarkerPath $attemptMarker $validationState @{validation_report=$validationReportPath; validation_receipt_path=$validationReceiptPath; validation_receipt_sha256=$validationReceiptSha; validation_receipt=$validationReceipt; admissible_for_production=($AcceptanceMode -eq "production")}
+Copy-Item -LiteralPath $attemptMarkerPath -Destination $transportedResolvedMarkerPath
+$transportedMarkerStream=[System.IO.File]::Open($transportedResolvedMarkerPath,[System.IO.FileMode]::Open,[System.IO.FileAccess]::ReadWrite,[System.IO.FileShare]::None)
+try { $transportedMarkerStream.Flush($true) } finally { $transportedMarkerStream.Dispose() }
+if ((Get-FileHash -LiteralPath $attemptMarkerPath -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $transportedResolvedMarkerPath -Algorithm SHA256).Hash) { throw "transported resolved-attempt marker hash mismatch" }
 Move-Item -LiteralPath $attemptMarkerPath -Destination $resolvedMarker
 Write-Host "$AcceptanceMode capture validated: $OutDir"

@@ -110,7 +110,7 @@ pub fn collect_and_validate_scripted_gui_runtime<S: ExactScriptedGuiRuntimeSourc
     if !source.is_exact_a729_scripted_gui_source() {
         return Err(CarrierError::UnauthenticatedSource);
     }
-    let frame = source
+    let mut frame = source
         .collect_runtime_frame(hour_index)
         .map_err(CarrierError::Source)?;
     if frame.hour_index != hour_index {
@@ -128,6 +128,7 @@ pub fn collect_and_validate_scripted_gui_runtime<S: ExactScriptedGuiRuntimeSourc
     source
         .authenticate_runtime_frame(&frame)
         .map_err(CarrierError::Source)?;
+    sanitize_runtime_diagnostics(&mut frame);
     validate_scripted_gui_runtime_frame(&frame)?;
     Ok(frame)
 }
@@ -149,7 +150,7 @@ pub fn validate_scripted_gui_runtime_frame(
     if frame.static_authority_receipt_sha256 != EXACT20_A38_STATIC_AUTHORITY_RECEIPT_SHA256 {
         return invalid("scripted-GUI frame is not bound to the admitted exact20 A38 receipt");
     }
-    validate_text(&frame.producer_record_identity, "producer record identity")?;
+    validate_portable_identity(&frame.producer_record_identity, "producer record identity")?;
     if frame.rows.len() > MAX_GUI_ROWS {
         return invalid("scripted-GUI row count exceeds bound");
     }
@@ -218,8 +219,11 @@ fn validate_definition_identity(
     definition: &ScriptedGuiDefinitionIdentity,
 ) -> Result<(), CarrierError> {
     validate_game_relative_path(&definition.logical_path)?;
-    if !definition.logical_path.starts_with("common/scripted_guis/")
-        || !definition.logical_path.ends_with(".txt")
+    if !definition
+        .logical_path
+        .strip_prefix("common/scripted_guis/")
+        .and_then(|relative| relative.strip_suffix(".txt"))
+        .is_some_and(|stem| !stem.is_empty() && !stem.ends_with('/'))
         || !matches!(
             definition.layer_kind.as_str(),
             "base" | "integrated_dlc" | "dlc" | "mod"
@@ -231,8 +235,9 @@ fn validate_definition_identity(
     {
         return invalid("scripted-GUI definition winner identity is incomplete");
     }
-    validate_text(&definition.context_type, "definition context type")?;
-    validate_text(&definition.window_name, "definition window name")?;
+    validate_portable_identity(&definition.layer_id, "definition layer id")?;
+    validate_portable_identity(&definition.context_type, "definition context type")?;
+    validate_portable_identity(&definition.window_name, "definition window name")?;
     Ok(())
 }
 
@@ -264,7 +269,7 @@ fn validate_named_results<T>(
 
 fn validate_result<T>(result: &EngineResult<T>, label: &str) -> Result<(), CarrierError> {
     if let EngineResult::Unavailable(reason) = result {
-        validate_text(reason, &format!("{label} unavailable reason"))?;
+        validate_portable_identity(reason, &format!("{label} unavailable reason"))?;
     }
     Ok(())
 }
@@ -285,6 +290,68 @@ fn validate_text(value: &str, label: &str) -> Result<(), CarrierError> {
         return invalid(&format!("{label} is empty"));
     }
     validate_text_allow_empty(value, label)
+}
+
+fn validate_portable_identity(value: &str, label: &str) -> Result<(), CarrierError> {
+    validate_text(value, label)?;
+    if value.trim().is_empty() || leaks_host_detail(value) {
+        return invalid(&format!("{label} contains pointer or host-path detail"));
+    }
+    Ok(())
+}
+
+fn sanitize_runtime_diagnostics(frame: &mut ScriptedGuiRuntimeFrame) {
+    fn sanitize<T>(result: &mut EngineResult<T>) {
+        if let EngineResult::Unavailable(reason) = result {
+            *reason = portable_unavailable_diagnostic(reason);
+        }
+    }
+    for row in &mut frame.rows {
+        sanitize(&mut row.visible);
+        sanitize(&mut row.enabled);
+        for result in row.triggers.values_mut() {
+            sanitize(result);
+        }
+        for result in row.properties.values_mut() {
+            sanitize(result);
+        }
+        for result in row.effect_enabled.values_mut() {
+            sanitize(result);
+        }
+    }
+}
+
+fn leaks_host_detail(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let rooted_unix_token = bytes.iter().enumerate().any(|(index, byte)| {
+        *byte == b'/'
+            && (index == 0
+                || bytes[index - 1].is_ascii_whitespace()
+                || matches!(bytes[index - 1], b'(' | b'=' | b'\'' | b'"'))
+    });
+    if rooted_unix_token
+        || value.contains("\\\\")
+        || bytes.windows(3).any(|part| {
+            part[0].is_ascii_alphabetic()
+                && part[1] == b':'
+                && (part[2] == b'\\' || part[2] == b'/')
+        })
+    {
+        return true;
+    }
+    value.to_ascii_lowercase().as_bytes().windows(8).any(|part| {
+        part[0] == b'0'
+            && part[1] == b'x'
+            && part[2..].iter().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
+pub(crate) fn portable_unavailable_diagnostic(value: &str) -> String {
+    if leaks_host_detail(value) {
+        "producer_diagnostic_redacted".to_string()
+    } else {
+        value.to_string()
+    }
 }
 
 fn validate_text_allow_empty(value: &str, label: &str) -> Result<(), CarrierError> {
@@ -370,6 +437,47 @@ mod tests {
         let mut value = frame();
         value.rows[0].triggers.clear();
         assert!(validate_scripted_gui_runtime_frame(&value).is_err());
+    }
+
+    #[test]
+    fn canonical_definition_identity_and_portable_diagnostics_are_mandatory() {
+        for bad_path in [
+            "C:/game/common/scripted_guis/a.txt",
+            "common\\scripted_guis\\a.txt",
+            "common/scripted_guis/../a.txt",
+            "common/scripted_guis/a.gui",
+        ] {
+            let mut value = frame();
+            value.rows[0].definition.logical_path = bad_path.into();
+            assert!(validate_scripted_gui_runtime_frame(&value).is_err(), "{bad_path}");
+        }
+        let mut value = frame();
+        value.rows[0].definition.layer_kind = "local_folder".into();
+        assert!(validate_scripted_gui_runtime_frame(&value).is_err());
+        let mut value = frame();
+        value.rows[0].definition.payload_bytes = 0;
+        assert!(validate_scripted_gui_runtime_frame(&value).is_err());
+        let mut value = frame();
+        value.rows[0].definition.source_sha256 = [0; 32];
+        assert!(validate_scripted_gui_runtime_frame(&value).is_err());
+
+        let mut value = frame();
+        value.rows[0].enabled =
+            EngineResult::Unavailable("failed at C:\\Users\\Example\\capture.bin 0x141234567".into());
+        assert!(validate_scripted_gui_runtime_frame(&value).is_err());
+        sanitize_runtime_diagnostics(&mut value);
+        assert_eq!(
+            value.rows[0].enabled,
+            EngineResult::Unavailable("producer_diagnostic_redacted".into())
+        );
+        validate_scripted_gui_runtime_frame(&value).unwrap();
+
+        let mut mod_value = frame();
+        mod_value.rows[0].definition.layer_kind = "mod".into();
+        mod_value.rows[0].definition.layer_id = "workshop:3470184538".into();
+        mod_value.rows[0].definition.logical_path =
+            "common/scripted_guis/subfolder/panel.txt".into();
+        validate_scripted_gui_runtime_frame(&mod_value).unwrap();
     }
 
     struct Source {

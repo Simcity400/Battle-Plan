@@ -265,6 +265,10 @@ struct Config {
     pid: Dword,
     dll: PathBuf,
     early_launch: Option<EarlyLaunchCli>,
+    /// Optional production-owned G2 request loaded and authenticated before
+    /// the selected game process is created. The collector is the sole D3D
+    /// hook owner and receives this only over the early H4CT channel.
+    g2_capture_intent: Option<recorder_host::early_render_launch::G2CaptureIntent>,
     /// Explicit diagnostic-only staged hook subset. This can never produce a
     /// replay and is valid only with `diagnostic_no_commit`.
     diagnostic_staged_hook_mask: Option<u64>,
@@ -376,6 +380,8 @@ struct Config {
 enum AcceptanceTestMode {
     SyntheticFault,
     Paused,
+    SinkOpenFault,
+    SinkWriteFault,
 }
 
 impl AcceptanceTestMode {
@@ -383,6 +389,8 @@ impl AcceptanceTestMode {
         match value {
             "synthetic-fault" => Some(Self::SyntheticFault),
             "paused" => Some(Self::Paused),
+            "sink-open-fault" => Some(Self::SinkOpenFault),
+            "sink-write-fault" => Some(Self::SinkWriteFault),
             _ => None,
         }
     }
@@ -391,7 +399,13 @@ impl AcceptanceTestMode {
         match self {
             Self::SyntheticFault => "synthetic-fault",
             Self::Paused => "paused",
+            Self::SinkOpenFault => "sink-open-fault",
+            Self::SinkWriteFault => "sink-write-fault",
         }
+    }
+
+    fn is_sink_fault(self) -> bool {
+        matches!(self, Self::SinkOpenFault | Self::SinkWriteFault)
     }
 }
 
@@ -454,6 +468,16 @@ struct StaticArtifactRequest {
 struct DesignCatalogLiveRequest {
     path: PathBuf,
     expected_sha256: Option<String>,
+}
+
+const G2_PACKAGED_CAPTURE_SCHEMA: &str = "hoi4-g2-packaged-engine-capture-v1";
+const G2_PACKAGED_WITNESS_PATH: &str = "g2/g2_engine_pixel_witness.json";
+const G2_PACKAGED_BMP_PATH: &str = "g2/g2_engine_map_boundary.bmp";
+
+struct ResolvedG2EngineCapture {
+    witness_bytes: Vec<u8>,
+    bmp_bytes: Vec<u8>,
+    index_descriptor: Value,
 }
 
 #[derive(Debug)]
@@ -1002,6 +1026,23 @@ fn run_auto_attach(_args: &[String]) -> Result<(), String> {
     Err("auto-attach is only supported on Windows".to_string())
 }
 
+fn absolute_g2_output_directory(cfg: &Config) -> Result<Option<PathBuf>, String> {
+    cfg.g2_capture_intent
+        .as_ref()
+        .map(|_| absolute_run_g2_output_directory(&cfg.out_dir))
+        .transpose()
+}
+
+fn absolute_run_g2_output_directory(out_dir: &Path) -> Result<PathBuf, String> {
+    if out_dir.is_absolute() {
+        Ok(out_dir.join("g2_engine"))
+    } else {
+        env::current_dir()
+            .map(|current| current.join(out_dir).join("g2_engine"))
+            .map_err(|error| format!("resolve absolute G2 output directory failed: {error}"))
+    }
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--fold-and-repack-existing-run-dir") {
@@ -1016,6 +1057,19 @@ fn run() -> Result<(), String> {
             "production/profile capture requires authenticated --early-launch-exe so render creation cannot be missed"
                 .into(),
         );
+    }
+    let g2_output_directory = absolute_g2_output_directory(&cfg)?;
+    if let Some(intent) = cfg.g2_capture_intent.as_ref() {
+        intent.validate_unchanged()?;
+        if g2_output_directory
+            .as_ref()
+            .is_some_and(|output| output.exists())
+        {
+            return Err(
+                "G2 output directory already exists before suspended launch; refusing overwrite"
+                    .into(),
+            );
+        }
     }
     let mut early_pending = match cfg.early_launch.as_ref() {
         Some(early) => {
@@ -1035,7 +1089,7 @@ fn run() -> Result<(), String> {
         None => None,
     };
     fs::create_dir_all(&cfg.out_dir).map_err(|e| format!("create out dir failed: {e}"))?;
-    let raw_path = cfg.out_dir.join(cfg.stream_format.stream_file_name());
+    let mut raw_path = cfg.out_dir.join(cfg.stream_format.stream_file_name());
     let manifest_path = cfg.out_dir.join("native_session_manifest.json");
     let normal_replay_path = replay_path_for_gate(&cfg.out_dir, true);
     let replay_game_id = replay_game_id(&cfg.session_id);
@@ -1224,6 +1278,38 @@ fn run() -> Result<(), String> {
     } else {
         (None, None, None, None, None, None, None)
     };
+    if let Some(intent) = cfg.g2_capture_intent.as_ref() {
+        let content = early_full_content_manifest
+            .as_ref()
+            .ok_or("G2 capture lost its pre-resume content manifest")?;
+        if content.localisation_language != intent.localisation_language {
+            return Err(
+                "G2 intent localisation language differs from launch-bound content authority"
+                    .into(),
+            );
+        }
+        if content
+            .required_settings
+            .get("settings_file_sha256")
+            .map(String::as_str)
+            != Some(intent.settings_file_sha256.as_str())
+        {
+            return Err(
+                "G2 intent settings digest differs from launch-bound settings authority".into(),
+            );
+        }
+        if content.manifest_digest_sha256.is_none() {
+            return Err("G2 capture requires a sealed pre-resume content manifest".into());
+        }
+        intent.validate_context_authority(
+            &early_launch_manifest
+                .as_ref()
+                .ok_or("G2 capture lost its launch manifest")?
+                .executable_sha256,
+            &intent.settings_file_sha256,
+            &intent.localisation_language,
+        )?;
+    }
     // Bundle admission replaces the loose artifact list with the six canonical
     // verified artifacts, so the production summary must reflect the admitted
     // inputs rather than the pre-admission CLI state.
@@ -1248,6 +1334,7 @@ fn run() -> Result<(), String> {
             == compact_contract::stream_validator::StreamIdentityMode::IdentityV1)
             .then_some(context.expectation.challenge)
     });
+    write_sink_failure_acceptance_plan(&cfg, &pipe_token)?;
     write_control_file(&cfg, &pipe_token, ordinary_duplex_challenge)?;
 
     let hook_hold_ms = u64::from(cfg.duration_ms)
@@ -1292,7 +1379,7 @@ fn run() -> Result<(), String> {
     };
     // The pipe stream is written STRAIGHT to disk during capture (bounded memory);
     // `capture` carries only the byte count + rolling sha256, never the bytes.
-    let (capture, scientist_capture_authority, early_render_process) = {
+    let (mut capture, rollover_set, scientist_capture_authority, early_render_process) = {
         let pipe_name = pipe_name.clone();
         let raw_path = raw_path.clone();
         let pipe_session_token = pipe_token.clone();
@@ -1450,7 +1537,12 @@ fn run() -> Result<(), String> {
             } else {
                 None
             };
-            (outcome.capture, scientist_authority, None)
+            (
+                outcome.capture,
+                outcome.rollover_set,
+                scientist_authority,
+                None,
+            )
         } else {
         let hook_target_dll_proof = target_dll_proof.clone();
         let pipe_target_process = process_authority.clone();
@@ -1491,6 +1583,18 @@ fn run() -> Result<(), String> {
                     manifest: manifest.clone(),
                     hook_ready_timeout_ms: early.timeout_ms,
                     diagnostic_staged_hook_mask: cfg.diagnostic_staged_hook_mask,
+                    g2_capture_intent: cfg.g2_capture_intent.clone(),
+                    g2_output_directory: g2_output_directory.clone(),
+                    g2_content_manifest_digest_sha256: cfg
+                        .g2_capture_intent
+                        .as_ref()
+                        .map(|_| {
+                            early_full_content_manifest
+                                .as_ref()
+                                .and_then(|content| content.manifest_digest_sha256.clone())
+                                .ok_or("G2 capture lost its sealed content digest")
+                        })
+                        .transpose()?,
                 };
                 let validation_process = process_authority.clone();
                 let validation_result = deferred_early_game_module.clone();
@@ -1640,7 +1744,8 @@ fn run() -> Result<(), String> {
                         Ok(Ok(_)) => "data pipe closed cleanly after terminal sink report".to_string(),
                         Ok(Err(error)) | Err(error) => error,
                     };
-                    let receipt_path = write_authenticated_sink_failure_receipt(&cfg, &report)?;
+                    let receipt_path =
+                        write_authenticated_sink_failure_receipt(&cfg, &pipe_token, &report)?;
                     return Err(format!(
                         "collector reported authenticated terminal sink failure; receipt={}; data_pipe={pipe_status}",
                         receipt_path.display()
@@ -1672,8 +1777,56 @@ fn run() -> Result<(), String> {
             }
             None => None,
         };
-        (outcome.capture, scientist_authority, early_render_process)
+        (
+            outcome.capture,
+            outcome.rollover_set,
+            scientist_authority,
+            early_render_process,
+        )
         }
+    };
+    if let Some(descriptor) = rollover_set.as_ref() {
+        if cfg.stream_format != StreamFormat::Compact
+            || cfg.stream_compression != compact_stream::StreamCompression::None
+        {
+            return Err(
+                "ordered CID1 logical-stream publication requires raw compact storage"
+                    .to_string(),
+            );
+        }
+        let first = descriptor
+            .ordered_streams
+            .first()
+            .ok_or("ordered CID1 logical-stream descriptor is empty")?;
+        if first.logical_stream_id != 0 {
+            return Err("ordered CID1 logical-stream descriptor does not start at zero".into());
+        }
+        raw_path = cfg.out_dir.join("logical-streams").join(&first.relative_path);
+        capture.byte_count = first.file_bytes;
+        capture.stored_byte_count = first.file_bytes;
+        capture.sha256 = first.file_sha256_hex.clone();
+    }
+    let g2_capture_artifact_seal = if let Some(intent) = cfg.g2_capture_intent.as_ref() {
+        let content_digest = early_full_content_manifest
+            .as_ref()
+            .and_then(|content| content.manifest_digest_sha256.as_deref())
+            .ok_or("G2 finalizer lost its sealed pre-resume content digest")?;
+        Some(recorder_host::early_render_launch::seal_g2_capture_artifacts(
+            intent,
+            g2_output_directory
+                .as_deref()
+                .ok_or("G2 finalizer lost its absolute output directory")?,
+            early_launch_manifest
+                .as_ref()
+                .ok_or("G2 finalizer lost its early launch manifest")?,
+            &early_render_process
+                .as_ref()
+                .ok_or("G2 finalizer lost its authenticated capture receipt")?
+                .receipt,
+            content_digest,
+        )?)
+    } else {
+        None
     };
     // Post-capture finalization (summarize + streaming fold + streaming pack +
     // streaming verify) must complete in seconds, not the minutes the old whole-
@@ -1828,7 +1981,11 @@ fn run() -> Result<(), String> {
                     "schema": "native_collector_session_v1",
                     "pid": cfg.pid,
                     "dll": cfg.dll.display().to_string(),
-                    "raw_stream": raw_path.file_name().and_then(|v| v.to_str()).unwrap_or("collector_stream.bin"),
+                    "raw_stream": rollover_set
+                        .as_ref()
+                        .and_then(|set| set.ordered_streams.first())
+                        .map(|stream| format!("logical-streams/{}", stream.relative_path))
+                        .unwrap_or_else(|| raw_path.file_name().and_then(|v| v.to_str()).unwrap_or("collector_stream.bin").to_string()),
                     "session_id": cfg.session_id,
                     "duration_ms": cfg.duration_ms,
                     "sample_ms": cfg.sample_ms,
@@ -2019,7 +2176,6 @@ fn run() -> Result<(), String> {
         }
         None => None,
     };
-    let replay_packaging = replay_packaging_manifest_json(&cfg)?;
     let portable_content_manifest = if cfg.production {
         let admission = static_bundle_admission
             .as_ref()
@@ -2106,6 +2262,14 @@ fn run() -> Result<(), String> {
             None => None,
         }
     };
+    let replay_content_manifest_digest = portable_content_manifest
+        .as_ref()
+        .and_then(|content| content.manifest_digest_sha256.as_deref());
+    let replay_packaging = replay_packaging_manifest_json(
+        &cfg,
+        g2_capture_artifact_seal.as_ref(),
+        replay_content_manifest_digest,
+    )?;
     if let Some(obj) = manifest.as_object_mut() {
         obj.insert("replay_packaging".to_string(), replay_packaging);
         obj.insert(
@@ -2206,6 +2370,37 @@ fn run() -> Result<(), String> {
         // must not assume vanilla.
         obj.insert("modset".to_string(), modset_report.as_json());
         obj.insert("capture_id".to_string(), json!(cfg.capture_id));
+        if let Some(descriptor) = rollover_set.as_ref() {
+            let descriptor_path = cfg
+                .out_dir
+                .join("logical-streams")
+                .join(recorder_host::duplex_session::rollover_fs::SET_DESCRIPTOR_FILE);
+            obj.insert("logical_stream_id".to_string(), json!(0));
+            obj.insert(
+                "acceptance_telemetry_scope".to_string(),
+                json!("logical_stream_set_aggregate"),
+            );
+            obj.insert(
+                "logical_stream_set".to_string(),
+                json!({
+                    "schema": descriptor.schema,
+                    "descriptor": format!(
+                        "logical-streams/{}",
+                        recorder_host::duplex_session::rollover_fs::SET_DESCRIPTOR_FILE
+                    ),
+                    "descriptor_sha256": to_hex(&hash_file_sha256_bytes(&descriptor_path)?),
+                    "member_count": descriptor.ordered_streams.len(),
+                }),
+            );
+            obj.insert(
+                "logical_stream_package_set".to_string(),
+                json!({
+                    "schema": "cid1-rollover-package-set-v1",
+                    "descriptor": recorder_host::duplex_session::rollover_fs::PACKAGE_SET_DESCRIPTOR_FILE,
+                    "selection": "ordered_logical_stream_segments",
+                }),
+            );
+        }
         obj.insert(
             "emitted_token_inventory".to_string(),
             emitted_token_inventory
@@ -2471,19 +2666,6 @@ fn run() -> Result<(), String> {
         }
     }
 
-    if cfg.production {
-        if let Some(request) = cfg.design_catalog_live.as_ref() {
-            if let Err(error) = fs::remove_file(&request.path) {
-                eprintln!(
-                    "recorder warning: packed A27 source cleanup failed for {}: {error}",
-                    request.path.display()
-                );
-            }
-        }
-        let owned_dir = cfg.out_dir.join("recorder_owned");
-        let _ = fs::remove_dir(&owned_dir);
-    }
-
     // G5 telemetry: record the host's peak private/working-set bytes plus the
     // streaming finalize accounting into native_session_manifest.json so bounded
     // memory is measurable from the manifest of every future run. Best-effort:
@@ -2496,6 +2678,31 @@ fn run() -> Result<(), String> {
         cfg.skip_host_fold && cfg.stream_format == StreamFormat::Compact,
         verify_report_telemetry.as_ref(),
     );
+
+    if let Some(descriptor) = rollover_set.as_ref() {
+        publish_rollover_package_set(
+            &cfg,
+            descriptor,
+            &manifest_path,
+            &manifest,
+            &capture,
+            capture_identity_mode,
+            static_bundle_admission.as_ref(),
+        )?;
+    }
+
+    if cfg.production {
+        if let Some(request) = cfg.design_catalog_live.as_ref() {
+            if let Err(error) = fs::remove_file(&request.path) {
+                eprintln!(
+                    "recorder warning: packed A27 source cleanup failed for {}: {error}",
+                    request.path.display()
+                );
+            }
+        }
+        let owned_dir = cfg.out_dir.join("recorder_owned");
+        let _ = fs::remove_dir(&owned_dir);
+    }
 
     if !hourly_met && !acceptance_test_met {
         let quarantine_detail = normal_quarantine
@@ -2522,7 +2729,16 @@ fn run() -> Result<(), String> {
             quarantine_detail
         ));
     }
-    println!("{}", manifest_path.display());
+    if rollover_set.is_some() {
+        println!(
+            "{}",
+            cfg.out_dir
+                .join(recorder_host::duplex_session::rollover_fs::PACKAGE_SET_DESCRIPTOR_FILE)
+                .display()
+        );
+    } else {
+        println!("{}", manifest_path.display());
+    }
     Ok(())
 }
 
@@ -2603,12 +2819,107 @@ fn write_diagnostic_probe_receipt(
     Ok(())
 }
 
+fn write_sink_failure_acceptance_plan(cfg: &Config, pipe_token: &str) -> Result<(), String> {
+    let Some(acceptance) = cfg
+        .acceptance_test
+        .as_ref()
+        .filter(|acceptance| acceptance.mode.is_sink_fault())
+    else {
+        return Ok(());
+    };
+    let early_launch = cfg
+        .early_launch
+        .as_ref()
+        .ok_or_else(|| "sink-failure plan requires an early-launch process".to_string())?;
+    let mode = acceptance.mode.as_str();
+    let authorization = acceptance_test_authorization(
+        pipe_token,
+        &cfg.session_id,
+        mode,
+        &acceptance.nonce,
+    );
+    let collector_dll_sha256 = to_hex(&hash_file_sha256_bytes(&cfg.dll)?);
+    let game_executable_sha256 =
+        to_hex(&hash_file_sha256_bytes(&early_launch.executable)?);
+    let collector_dll_file = cfg
+        .dll
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "sink-failure collector DLL has no portable leaf name".to_string())?;
+    let game_executable_file = early_launch
+        .executable
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "sink-failure game executable has no portable leaf name".to_string())?;
+    let document = json!({
+        "schema": "extractor.sink-failure-acceptance-plan.v1",
+        "admissible_for_production": false,
+        "mode": mode,
+        "nonce": acceptance.nonce,
+        "control_authorization_v1": authorization,
+        "session_id": cfg.session_id,
+        "capture_id": cfg.capture_id,
+        "process_id": cfg.pid,
+        "game_executable_file": game_executable_file,
+        "game_executable_sha256": game_executable_sha256,
+        "collector_dll_file": collector_dll_file,
+        "collector_dll_sha256": collector_dll_sha256,
+        "expected_receipt_schema": "extractor.authenticated-sink-failure.v2",
+        "expected_topology": "sole_pipe",
+        "expected_terminality": "attempt_terminal",
+    });
+    let bytes = serde_json::to_vec_pretty(&document)
+        .map_err(|error| format!("serialize sink-failure acceptance plan: {error}"))?;
+    let path = cfg.out_dir.join("sink_failure_acceptance_plan.json");
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&path)
+        .map_err(|error| format!("create sink-failure acceptance plan: {error}"))?;
+    if let Err(error) = file
+        .write_all(&bytes)
+        .and_then(|_| file.write_all(b"\n"))
+        .and_then(|_| file.sync_all())
+    {
+        drop(file);
+        let _ = fs::remove_file(&path);
+        return Err(format!("durably write sink-failure acceptance plan: {error}"));
+    }
+    Ok(())
+}
+
 fn write_authenticated_sink_failure_receipt(
     cfg: &Config,
+    pipe_token: &str,
     report: &recorder_host::transport_status::SinkFailureReport,
 ) -> Result<PathBuf, String> {
+    let acceptance_plan_sha256 = match cfg.acceptance_test.as_ref() {
+        Some(acceptance) if acceptance.mode.is_sink_fault() => Some(to_hex(
+            &hash_file_sha256_bytes(&cfg.out_dir.join("sink_failure_acceptance_plan.json"))?,
+        )),
+        _ => None,
+    };
+    let acceptance_test = cfg.acceptance_test.as_ref().map(|acceptance| {
+        let mode = acceptance.mode.as_str();
+        let authorization = acceptance_test_authorization(
+            pipe_token,
+            &cfg.session_id,
+            mode,
+            &acceptance.nonce,
+        );
+        json!({
+            "mode": mode,
+            "nonce": acceptance.nonce,
+            "control_authorization_v1": authorization,
+            "acceptance_plan_sha256": acceptance_plan_sha256.clone(),
+            "report_matches_armed_fault": sink_failure_matches_acceptance_mode(
+                acceptance.mode,
+                report,
+            ),
+        })
+    });
     let document = json!({
-        "schema": "extractor.authenticated-sink-failure.v1",
+        "schema": "extractor.authenticated-sink-failure.v2",
         "admissible_for_production": false,
         "attempt_terminal": true,
         "authenticated_h4ct_session": true,
@@ -2626,6 +2937,7 @@ fn write_authenticated_sink_failure_receipt(
         "file_bytes_committed": report.file_bytes_committed,
         "pipe_bytes_committed": report.pipe_bytes_committed,
         "replay_created": false,
+        "acceptance_test": acceptance_test,
     });
     let bytes = serde_json::to_vec_pretty(&document)
         .map_err(|error| format!("serialize authenticated sink-failure receipt: {error}"))?;
@@ -2662,6 +2974,41 @@ fn write_authenticated_sink_failure_receipt(
         ));
     }
     Ok(path)
+}
+
+fn sink_failure_matches_acceptance_mode(
+    mode: AcceptanceTestMode,
+    report: &recorder_host::transport_status::SinkFailureReport,
+) -> bool {
+    use recorder_host::transport_status::{SinkErrorClass, SinkFailureKind, SinkTopology};
+    let sole_pipe = report.requested.bits() == SinkTopology::PIPE
+        && report.failed.bits() == SinkTopology::PIPE
+        && report.file_bytes_committed == 0;
+    match mode {
+        AcceptanceTestMode::SinkOpenFault => {
+            sole_pipe
+                && report.kind == SinkFailureKind::Setup
+                && report.opened.bits() == 0
+                && report.error_class == SinkErrorClass::OtherIo
+                && report.win32_error.is_none()
+                && report.last_complete_sequence.is_none()
+                && report.failed_sequence.is_none()
+                && report.pipe_bytes_committed == 0
+        }
+        AcceptanceTestMode::SinkWriteFault => {
+            sole_pipe
+                && report.kind == SinkFailureKind::Terminal
+                && report.opened.bits() == SinkTopology::PIPE
+                && report.error_class == SinkErrorClass::OtherIo
+                && report.win32_error.is_none()
+                && report.pipe_bytes_committed > 0
+                && report
+                    .last_complete_sequence
+                    .zip(report.failed_sequence)
+                    .is_some_and(|(last, failed)| last.checked_add(1) == Some(failed))
+        }
+        AcceptanceTestMode::SyntheticFault | AcceptanceTestMode::Paused => false,
+    }
 }
 
 fn parse_repack_args(args: &[String]) -> Result<RepackConfig, String> {
@@ -2887,7 +3234,11 @@ fn parse_repack_args(args: &[String]) -> Result<RepackConfig, String> {
     })
 }
 
-fn replay_packaging_manifest_json(cfg: &Config) -> Result<Value, String> {
+fn replay_packaging_manifest_json(
+    cfg: &Config,
+    g2: Option<&recorder_host::early_render_launch::G2CaptureArtifactSeal>,
+    replay_content_manifest_digest_sha256: Option<&str>,
+) -> Result<Value, String> {
     let game_id = replay_game_id(&cfg.session_id);
     let mut static_artifacts = Vec::with_capacity(cfg.static_artifacts.len());
     for request in &cfg.static_artifacts {
@@ -2912,6 +3263,24 @@ fn replay_packaging_manifest_json(cfg: &Config) -> Result<Value, String> {
                 "bytes": resolved.bytes.len() as u64,
             })
         });
+    let g2_engine_capture = g2
+        .map(|seal| {
+            let replay_content_digest = replay_content_manifest_digest_sha256
+                .filter(|value| is_lower_sha256(value))
+                .ok_or("G2 packaging has no finalized replay content manifest digest")?;
+            Ok::<Value, String>(json!({
+            "schema": G2_PACKAGED_CAPTURE_SCHEMA,
+            "witness_path": G2_PACKAGED_WITNESS_PATH,
+            "witness_sha256": seal.witness_sha256.as_str(),
+            "witness_bytes": seal.witness_bytes,
+            "bmp_path": G2_PACKAGED_BMP_PATH,
+            "bmp_sha256": seal.bmp_sha256.as_str(),
+            "bmp_bytes": seal.bmp_bytes,
+            "capture_content_manifest_digest_sha256": seal.capture_content_manifest_digest_sha256.as_str(),
+            "replay_content_manifest_digest_sha256": replay_content_digest,
+        }))
+        })
+        .transpose()?;
     Ok(json!({
         "created_utc": created_utc_label(),
         "compression": {
@@ -2920,6 +3289,7 @@ fn replay_packaging_manifest_json(cfg: &Config) -> Result<Value, String> {
         },
         "static_artifacts": static_artifacts,
         "design_catalog_live": design_catalog_live,
+        "g2_engine_capture": g2_engine_capture,
     }))
 }
 
@@ -3048,6 +3418,126 @@ fn recorded_replay_compression_profile(manifest: &Value) -> Result<CompressionPr
     Ok(profile)
 }
 
+fn read_stable_g2_packaging_file(path: &Path, label: &str) -> Result<Vec<u8>, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("read packaged G2 {label} metadata failed: {error}"))?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err(format!("packaged G2 {label} is not a regular non-symlink file"));
+    }
+    let first = fs::read(path)
+        .map_err(|error| format!("read packaged G2 {label} failed: {error}"))?;
+    let second = fs::read(path)
+        .map_err(|error| format!("re-read packaged G2 {label} failed: {error}"))?;
+    if first != second {
+        return Err(format!("packaged G2 {label} changed while being read"));
+    }
+    Ok(first)
+}
+
+fn resolve_recorded_g2_engine_capture(
+    cfg: &Config,
+    manifest: &Value,
+) -> Result<Option<ResolvedG2EngineCapture>, String> {
+    let recorded = manifest
+        .get("replay_packaging")
+        .and_then(|value| value.get("g2_engine_capture"));
+    let Some(recorded) = recorded.filter(|value| !value.is_null()) else {
+        if cfg.g2_capture_intent.is_some() {
+            return Err("requested G2 capture is absent from the capture-time replay seal".into());
+        }
+        return Ok(None);
+    };
+    let object = recorded
+        .as_object()
+        .ok_or("manifest replay_packaging.g2_engine_capture is not an object")?;
+    let expected_fields = BTreeSet::from([
+        "schema",
+        "witness_path",
+        "witness_sha256",
+        "witness_bytes",
+        "bmp_path",
+        "bmp_sha256",
+        "bmp_bytes",
+        "capture_content_manifest_digest_sha256",
+        "replay_content_manifest_digest_sha256",
+    ]);
+    let observed_fields = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    if observed_fields != expected_fields
+        || object.get("schema").and_then(Value::as_str) != Some(G2_PACKAGED_CAPTURE_SCHEMA)
+        || object.get("witness_path").and_then(Value::as_str)
+            != Some(G2_PACKAGED_WITNESS_PATH)
+        || object.get("bmp_path").and_then(Value::as_str) != Some(G2_PACKAGED_BMP_PATH)
+    {
+        return Err("manifest packaged G2 identity fields drifted".into());
+    }
+    let expected_witness_sha256 = object
+        .get("witness_sha256")
+        .and_then(Value::as_str)
+        .filter(|value| is_lower_sha256(value))
+        .ok_or("manifest packaged G2 witness SHA-256 is invalid")?;
+    let expected_bmp_sha256 = object
+        .get("bmp_sha256")
+        .and_then(Value::as_str)
+        .filter(|value| is_lower_sha256(value))
+        .ok_or("manifest packaged G2 BMP SHA-256 is invalid")?;
+    let expected_witness_bytes = object
+        .get("witness_bytes")
+        .and_then(Value::as_u64)
+        .ok_or("manifest packaged G2 witness byte count is invalid")?;
+    let expected_bmp_bytes = object
+        .get("bmp_bytes")
+        .and_then(Value::as_u64)
+        .ok_or("manifest packaged G2 BMP byte count is invalid")?;
+    let capture_content_digest = object
+        .get("capture_content_manifest_digest_sha256")
+        .and_then(Value::as_str)
+        .filter(|value| is_lower_sha256(value))
+        .ok_or("manifest packaged G2 capture content digest is invalid")?;
+    let replay_content_digest = object
+        .get("replay_content_manifest_digest_sha256")
+        .and_then(Value::as_str)
+        .filter(|value| is_lower_sha256(value))
+        .ok_or("manifest packaged G2 replay content digest is invalid")?;
+    if manifest
+        .get("portable_content_manifest")
+        .and_then(|value| value.get("manifest_digest_sha256"))
+        .and_then(Value::as_str)
+        != Some(replay_content_digest)
+    {
+        return Err("packaged G2 replay content digest differs from recorder manifest".into());
+    }
+    let source = absolute_run_g2_output_directory(&cfg.out_dir)?;
+    let witness_bytes = read_stable_g2_packaging_file(
+        &source.join(recorder_host::early_render_launch::G2_ENGINE_WITNESS_FILE),
+        "witness",
+    )?;
+    let bmp_bytes = read_stable_g2_packaging_file(
+        &source.join(recorder_host::early_render_launch::G2_ENGINE_BMP_FILE),
+        "BMP",
+    )?;
+    if witness_bytes.len() as u64 != expected_witness_bytes
+        || bmp_bytes.len() as u64 != expected_bmp_bytes
+        || to_hex(&Sha256::digest(&witness_bytes)) != expected_witness_sha256
+        || to_hex(&Sha256::digest(&bmp_bytes)) != expected_bmp_sha256
+    {
+        return Err("packaged G2 source bytes differ from the capture-time replay seal".into());
+    }
+    let witness = snapshot::parse_json_strict(&witness_bytes)
+        .map_err(|error| format!("strict parse packaged G2 witness failed: {error}"))?;
+    if witness
+        .get("content_manifest_digest_sha256")
+        .and_then(Value::as_str)
+        != Some(capture_content_digest)
+    {
+        return Err("packaged G2 capture digest differs from the raw witness".into());
+    }
+    Ok(Some(ResolvedG2EngineCapture {
+        witness_bytes,
+        bmp_bytes,
+        index_descriptor: recorded.clone(),
+    }))
+}
+
 fn recorded_static_artifacts(manifest: &Value) -> Result<Vec<(String, String)>, String> {
     manifest
         .get("replay_packaging")
@@ -3093,6 +3583,7 @@ fn repack_writer_config(
         pid: 0,
         dll: PathBuf::new(),
         early_launch: None,
+        g2_capture_intent: None,
         diagnostic_staged_hook_mask: None,
         diagnostic_no_commit: false,
         // Repack never writes a new raw stream; the transparent reader decodes
@@ -4184,6 +4675,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut early_launch_executable: Option<PathBuf> = None;
     let mut early_launch_arguments: Vec<String> = Vec::new();
     let mut early_hook_timeout_ms = 30_000u32;
+    let mut g2_capture_intent_path: Option<PathBuf> = None;
     let mut diagnostic_staged_hook_mask: Option<u64> = None;
     let mut diagnostic_no_commit = false;
     let mut out_dir = None;
@@ -4292,6 +4784,16 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     return Err("--early-hook-timeout-ms must be in 1..=120000".into());
                 }
             }
+            "--g2-capture-intent" => {
+                if g2_capture_intent_path.is_some() {
+                    return Err("duplicate --g2-capture-intent is not allowed".into());
+                }
+                i += 1;
+                g2_capture_intent_path = Some(PathBuf::from(required(
+                    args.get(i),
+                    "--g2-capture-intent",
+                )?));
+            }
             "--diagnostic-staged-hook-mask" => {
                 i += 1;
                 diagnostic_staged_hook_mask = Some(parse_diagnostic_stage_mask(
@@ -4343,7 +4845,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 let value = required(args.get(i), "--acceptance-test-mode")?;
                 acceptance_test_mode =
                     Some(AcceptanceTestMode::parse(&value).ok_or_else(|| {
-                        "--acceptance-test-mode must be synthetic-fault or paused".to_string()
+                        "--acceptance-test-mode must be synthetic-fault, paused, sink-open-fault, or sink-write-fault".to_string()
                     })?);
             }
             "--acceptance-test-nonce" => {
@@ -4974,6 +5476,18 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     "synthetic-fault acceptance mode requires scheduled weather domain 24".into(),
                 );
             }
+            if mode.is_sink_fault() && early_launch.is_none() {
+                return Err(
+                    "sink fault acceptance modes require --early-launch-exe so authenticated H4CT remains independent of the failed data pipe"
+                        .into(),
+                );
+            }
+            if mode.is_sink_fault() && sidecar_log {
+                return Err(
+                    "sink fault acceptance modes require the production sole-pipe topology and forbid --sidecar-log"
+                        .into(),
+                );
+            }
             Some(AcceptanceTestCli { mode, nonce })
         }
         _ => {
@@ -4981,6 +5495,24 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 "--acceptance-test-mode and --acceptance-test-nonce must be supplied together"
                     .into(),
             )
+        }
+    };
+    let g2_capture_intent = match g2_capture_intent_path {
+        None => None,
+        Some(path) => {
+            if profile != Some(compact_contract::CaptureProfile::Production)
+                || early_launch.is_none()
+                || diagnostic_no_commit
+                || acceptance_test.is_some()
+            {
+                return Err(
+                    "--g2-capture-intent requires a normal --profile production early launch"
+                        .into(),
+                );
+            }
+            Some(recorder_host::early_render_launch::G2CaptureIntent::load(
+                &path,
+            )?)
         }
     };
     if production && special_projects_scan && !is_canonical_lower_uuid(&session_id) {
@@ -4993,6 +5525,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         pid: pid.unwrap_or(0),
         dll,
         early_launch,
+        g2_capture_intent,
         diagnostic_staged_hook_mask,
         diagnostic_no_commit,
         out_dir: out_dir.ok_or_else(usage)?,
@@ -5337,7 +5870,7 @@ fn static_artifact_flag_name(name: &str) -> &'static str {
 }
 
 fn usage() -> String {
-    "usage: collector_record (--pid <pid> | --early-launch-exe <hoi4.exe> [--early-launch-arg value]...) --pdx-user-dir <profile> --dll <collector.dll> --out-dir <dir> [--early-hook-timeout-ms N] [--session-id UUID] [--capture-id ID] [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--scheduled-domains-exact] [--profile production|debug] [--production] [--acceptance-test-mode synthetic-fault|paused --acceptance-test-nonce 64hex] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--stream-compression zstd|none] [--replay-zstd-level N] [--replay-zstd-window-log N] [--skip-host-fold] [--hour-latch] [--hour-latch-poll-ms N] [--hour-latch-queue-cap N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-bundle-manifest path --static-bundle-mod-state path --static-bundle-dlc-state path --static-bundle-load-order path --static-bundle-source-inventory path --static-bundle-live-resolution-report path] [--portable-content-use-trace path] [--static-bundle-verifier path] [--static-bundle-python path] [--static-bundle-timeout-ms N] [--domain57-game-speed-gate-v2 path --domain57-game-speed-transcript-file-sha256 hex] [--design-catalog-live path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path] [--static-technology-sharing path]\n\
+    "usage: collector_record (--pid <pid> | --early-launch-exe <hoi4.exe> [--early-launch-arg value]...) --pdx-user-dir <profile> --dll <collector.dll> --out-dir <dir> [--early-hook-timeout-ms N] [--g2-capture-intent json] [--session-id UUID] [--capture-id ID] [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--scheduled-domains-exact] [--profile production|debug] [--production] [--acceptance-test-mode synthetic-fault|paused|sink-open-fault|sink-write-fault --acceptance-test-nonce 64hex] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--stream-compression zstd|none] [--replay-zstd-level N] [--replay-zstd-window-log N] [--skip-host-fold] [--hour-latch] [--hour-latch-poll-ms N] [--hour-latch-queue-cap N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-bundle-manifest path --static-bundle-mod-state path --static-bundle-dlc-state path --static-bundle-load-order path --static-bundle-source-inventory path --static-bundle-live-resolution-report path] [--portable-content-use-trace path] [--static-bundle-verifier path] [--static-bundle-python path] [--static-bundle-timeout-ms N] [--domain57-game-speed-gate-v2 path --domain57-game-speed-transcript-file-sha256 hex] [--design-catalog-live path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path] [--static-technology-sharing path]\n\
      \n\
      Static artifacts: non-production probes may omit them. Production requires one\n\
      admitted bundle containing all seven deterministic artifacts plus exact\n\
@@ -5558,7 +6091,7 @@ fn expected_static_artifact_schema(name: &str) -> &'static str {
         }
         STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC => "idea_tech_loc_xref_static.static_artifact.v1",
         STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC => "ship_definitions_static.static_artifact.v1",
-        STATIC_ARTIFACT_GFX_ICON_MANIFEST => "gfx_icon_asset_manifest_static.static_artifact.v1",
+        STATIC_ARTIFACT_GFX_ICON_MANIFEST => "gfx_icon_asset_manifest_static.static_artifact.v2",
         STATIC_ARTIFACT_TECHNOLOGY_SHARING_STATIC => "technology_sharing_static.static_artifact.v1",
         _ => "unknown.static_artifact.v1",
     }
@@ -6585,8 +7118,9 @@ where
                 "absence_reason": "not supplied to the recorder for this recording",
             })
         });
+    let resolved_g2_engine_capture = resolve_recorded_g2_engine_capture(cfg, manifest)?;
 
-    let index_bytes = serde_json::to_vec_pretty(&json!({
+    let mut index_value = json!({
         "game_id": game_id.clone(),
         "schema_version": "1",
         "snapshots": index_snapshots,
@@ -6594,7 +7128,14 @@ where
         // and provenance/mod-identity keying carried from the artifact itself.
         "static_artifacts": static_artifact_index,
         "design_catalog_live": design_catalog_live_index,
-    }))
+    });
+    if let Some(g2) = resolved_g2_engine_capture.as_ref() {
+        index_value
+            .as_object_mut()
+            .expect("replay index is an object")
+            .insert("g2_engine_capture".to_string(), g2.index_descriptor.clone());
+    }
+    let index_bytes = serde_json::to_vec_pretty(&index_value)
     .map_err(|e| format!("serialize replay index failed: {e}"))?;
     let timeline_bytes = serde_json::to_vec_pretty(&json!({
         "format": "hoi4_compact_stream_timeline_v1",
@@ -6659,6 +7200,20 @@ where
             ),
             bytes: &resolved.bytes,
             role: "design_catalog_live",
+            hour_index: None,
+        });
+    }
+    if let Some(g2) = &resolved_g2_engine_capture {
+        entries.push(BorrowedPackEntry {
+            path: format!("payload/{game_id}/{G2_PACKAGED_WITNESS_PATH}"),
+            bytes: &g2.witness_bytes,
+            role: "g2_engine_witness",
+            hour_index: None,
+        });
+        entries.push(BorrowedPackEntry {
+            path: format!("payload/{game_id}/{G2_PACKAGED_BMP_PATH}"),
+            bytes: &g2.bmp_bytes,
+            role: "g2_engine_bgra_bmp",
             hour_index: None,
         });
     }
@@ -6759,6 +7314,504 @@ fn validate_fold_campaign_identity_join(
     Ok(())
 }
 
+/// Finalize every sealed member of a CID1 rollover set independently. Member
+/// zero has already passed the ordinary inline finalizer; later members are
+/// sent through the same summary, logical-boundary, fold, container-write, and
+/// from-disk verification gates. Only after every immutable manifest/package
+/// pair exists is the ordered package-set descriptor atomically published.
+fn publish_rollover_package_set(
+    cfg: &Config,
+    descriptor: &recorder_host::duplex_session::rollover_fs::DurableRolloverSetDescriptor,
+    root_manifest_path: &Path,
+    root_manifest: &Value,
+    root_capture: &PipeCapture,
+    identity_mode: compact_contract::stream_validator::StreamIdentityMode,
+    static_bundle_admission: Option<&StaticBundleAdmission>,
+) -> Result<(), String> {
+    use recorder_host::duplex_session::rollover_fs::{
+        publish_immutable_descriptor, PACKAGE_SET_DESCRIPTOR_FILE, SET_DESCRIPTOR_FILE,
+    };
+
+    if descriptor.schema != "cid1-rollover-set-v1" || descriptor.ordered_streams.is_empty() {
+        return Err("rollover package selector received a malformed/empty ordered set".into());
+    }
+    let raw_root = cfg.out_dir.join("logical-streams");
+    let recovered = recorder_host::duplex_session::rollover_fs::FilesystemRolloverStore::recover_publication_descriptor(&raw_root)?;
+    if &recovered != descriptor {
+        return Err("in-memory rollover descriptor differs from recovered durable set".into());
+    }
+    let source_descriptor_path = raw_root.join(SET_DESCRIPTOR_FILE);
+    let source_descriptor_sha256 = to_hex(&hash_file_sha256_bytes(&source_descriptor_path)?);
+    let existing_package_descriptor = cfg.out_dir.join(PACKAGE_SET_DESCRIPTOR_FILE);
+    if existing_package_descriptor.exists() {
+        return verify_published_rollover_package_set(
+            &cfg.out_dir,
+            &existing_package_descriptor,
+            descriptor,
+            &source_descriptor_sha256,
+        );
+    }
+    let package_root = raw_root.join("packages");
+    fs::create_dir_all(&package_root)
+        .map_err(|error| format!("create rollover package root failed: {error}"))?;
+
+    let expected_domain_ids = compact_expected_domain_ids(&cfg.scheduled_domains);
+    let mut published_members = Vec::with_capacity(descriptor.ordered_streams.len());
+    let mut recovery_members = Vec::new();
+    for (expected_id, stream) in descriptor.ordered_streams.iter().enumerate() {
+        let expected_id = u64::try_from(expected_id)
+            .map_err(|_| "rollover logical-stream count exceeds u64".to_string())?;
+        if stream.logical_stream_id != expected_id {
+            return Err(format!(
+                "rollover package selector expected logical id {expected_id}, got {}",
+                stream.logical_stream_id
+            ));
+        }
+        let raw_path = raw_root.join(&stream.relative_path);
+        let metadata = fs::symlink_metadata(&raw_path)
+            .map_err(|error| format!("inspect rollover raw member failed: {error}"))?;
+        if !metadata.file_type().is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.len() != stream.file_bytes
+            || to_hex(&hash_file_sha256_bytes(&raw_path)?) != stream.file_sha256_hex
+        {
+            return Err(format!(
+                "rollover raw member {} differs from its durable descriptor",
+                stream.logical_stream_id
+            ));
+        }
+
+        if stream.logical_stream_id == 0 {
+            let replay_name = root_manifest
+                .get("replay_file")
+                .and_then(Value::as_str)
+                .ok_or("root rollover manifest has no replay_file")?;
+            let replay_path = cfg.out_dir.join(replay_name);
+            if !replay_path.is_file() || !root_manifest_path.is_file() {
+                return Err("root rollover member was not fully finalized".into());
+            }
+            if root_manifest
+                .get("replay_artifact")
+                .and_then(|value| value.get("recovery"))
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+            {
+                recovery_members.push(stream.logical_stream_id);
+            }
+            published_members.push(json!({
+                "logical_stream_id": stream.logical_stream_id,
+                "campaign_id_hex": stream.campaign_id_hex,
+                "cid1_payload_sha256_hex": stream.cid1_payload_sha256_hex,
+                "raw_relative_path": format!("logical-streams/{}", stream.relative_path),
+                "raw_bytes": stream.file_bytes,
+                "raw_sha256": stream.file_sha256_hex,
+                "manifest_relative_path": root_manifest_path.file_name().and_then(|v| v.to_str()).ok_or("root manifest file name is not UTF-8")?,
+                "manifest_sha256": to_hex(&hash_file_sha256_bytes(root_manifest_path)?),
+                "package_relative_path": replay_name,
+                "package_sha256": to_hex(&hash_file_sha256_bytes(&replay_path)?),
+                "recovery": root_manifest.get("replay_artifact").and_then(|v| v.get("recovery")).and_then(Value::as_bool).unwrap_or(true),
+            }));
+            continue;
+        }
+
+        let member_dir = package_root.join(format!("{:020}", stream.logical_stream_id));
+        fs::create_dir_all(&member_dir)
+            .map_err(|error| format!("create logical-stream package directory failed: {error}"))?;
+        let member_manifest_path = member_dir.join("native_session_manifest.json");
+        let member_capture = PipeCapture {
+            byte_count: stream.file_bytes,
+            stored_byte_count: stream.file_bytes,
+            sha256: stream.file_sha256_hex.clone(),
+            write_latency: root_capture.write_latency.clone(),
+            clock_skew: root_capture.clock_skew,
+        };
+        let member_finalize_started = Instant::now();
+        let summary = summarize_compact_stream_file_with_identity_mode(&raw_path, identity_mode)?;
+        let coverage_errors = compact_domain_coverage_errors(&summary, &expected_domain_ids);
+        let gate_status = compact_gate_status(&summary);
+        let control_invalid_seen =
+            (gate_status.failure_status_flags_or & COMPACT_STATUS_CONTROL_INVALID) != 0;
+        let collector_control_errors = if control_invalid_seen {
+            if summary.control_invalid_reasons.is_empty() {
+                vec!["control_invalid:compact_status_control_invalid_without_reason".to_string()]
+            } else {
+                summary
+                    .control_invalid_reasons
+                    .keys()
+                    .map(|reason| format!("control_invalid:{reason}"))
+                    .collect()
+            }
+        } else {
+            Vec::new()
+        };
+        let mut hourly_problems =
+            compact_hourly_problems(&summary, cfg.min_game_hours, &coverage_errors);
+        hourly_problems.extend(domain57_gate_problems(
+            &summary,
+            expected_domain_ids.contains(&COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE),
+        ));
+        hourly_problems.extend(hour_latch_gate_problems(&summary, cfg.hour_latch_enabled));
+        if cfg.production {
+            hourly_problems.extend(acceptance_telemetry_problems(
+                &summary,
+                &expected_domain_ids,
+                Some(&member_capture),
+            ));
+        }
+        let hourly_met = hourly_problems.is_empty();
+        if !hourly_met {
+            recovery_members.push(stream.logical_stream_id);
+        }
+        let member_gate_problems = hourly_problems.clone();
+        let mut compact_stream = compact_stream_manifest_json(
+            &summary,
+            &expected_domain_ids,
+            &coverage_errors,
+            &cfg.scheduled_domains,
+            Some(&member_capture),
+        );
+        if let Some(object) = compact_stream.as_object_mut() {
+            object.insert(
+                "acceptance_telemetry_scope".to_string(),
+                json!("logical_stream_set_aggregate"),
+            );
+        }
+        let campaign_identity = recorder_host::campaign_identity::to_manifest_json(
+            &compact_summary_campaign_identity(&summary),
+        );
+        let replay_game_id = format!(
+            "{}-logical-stream-{}",
+            replay_game_id(&cfg.session_id),
+            stream.logical_stream_id
+        );
+        let replay_path = replay_path_for_gate(&member_dir, hourly_met);
+        let normal_member_replay_path = replay_path_for_gate(&member_dir, true);
+        let member_quarantine = (!hourly_met)
+            .then(|| quarantine_normal_replay(&normal_member_replay_path));
+        let replay_name = replay_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or("logical-stream replay file name is not UTF-8")?
+            .to_string();
+        let mut member_manifest = root_manifest.clone();
+        let root_acceptance_telemetry = compact_stream
+            .get("acceptance_telemetry")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let object = member_manifest
+            .as_object_mut()
+            .ok_or("root rollover manifest is not an object")?;
+        object.insert(
+            "raw_stream".to_string(),
+            json!(format!("logical-streams/{}", stream.relative_path)),
+        );
+        object.insert("logical_stream_id".to_string(), json!(stream.logical_stream_id));
+        object.insert("compact_stream".to_string(), compact_stream);
+        object.insert("campaign_identity".to_string(), campaign_identity);
+        object.insert("first_game_hour_raw".to_string(), json!(summary.first_hour));
+        object.insert("last_game_hour_raw".to_string(), json!(summary.last_hour));
+        object.insert(
+            "unique_game_hour_count".to_string(),
+            json!(summary.unique_hours.len()),
+        );
+        object.insert("skipped_game_hours".to_string(), json!(summary.skipped_hours));
+        object.insert(
+            "game_hours_advanced".to_string(),
+            json!(summary
+                .first_hour
+                .zip(summary.last_hour)
+                .map(|(first, last)| last.saturating_sub(first))),
+        );
+        object.insert(
+            "hourly_requirement".to_string(),
+            json!({
+                "required": true,
+                "requested_game_hours": cfg.min_game_hours,
+                "met": hourly_met,
+                "problems": hourly_problems,
+            }),
+        );
+        object.insert(
+            "expected_partial_tolerances_applied".to_string(),
+            compact_expected_partial_tolerances_applied_json(&summary),
+        );
+        object.insert("collector_control_errors".to_string(), json!(collector_control_errors));
+        object.insert("parse_errors".to_string(), json!(summary.parse_errors));
+        object.insert("ordering_errors".to_string(), json!(summary.ordering_errors));
+        object.insert("replay_file".to_string(), json!(replay_name));
+        object.insert("replay_game_id".to_string(), json!(replay_game_id.clone()));
+        object.insert(
+            "replay_artifact".to_string(),
+            json!({
+                "normal_file": "native_session.battleplan",
+                "written_file": replay_name,
+                "recovery": !hourly_met,
+                "reason": if hourly_met { "gate_passed" } else { "gate_failed" },
+                "gate_problems": member_gate_problems,
+                "normal_file_quarantine": member_quarantine
+                    .as_ref()
+                    .map(ReplayQuarantineReport::as_json)
+                    .unwrap_or(Value::Null),
+            }),
+        );
+        object.insert(
+            "replay_entries".to_string(),
+            json!({
+                "index": "index.json",
+                "timeline": "timeline.json",
+                "stream": "collector_raw/collector_stream.bin",
+                "stream_role": "collector_compact_stream",
+                "session_manifest": "recorder/native_session_manifest.json",
+                "session_manifest_role": "recorder_manifest",
+            }),
+        );
+        object.insert(
+            "stream_storage".to_string(),
+            json!({
+                "compression": "none",
+                "decoded_bytes": member_capture.byte_count,
+                "stored_bytes": member_capture.stored_byte_count,
+                "decoded_sha256": member_capture.sha256,
+            }),
+        );
+        object.insert("acceptance_telemetry".to_string(), root_acceptance_telemetry);
+        object.insert(
+            "acceptance_telemetry_scope".to_string(),
+            json!("logical_stream_set_aggregate"),
+        );
+        object.remove("host_finalize");
+        write_synced_json(&member_manifest_path, &member_manifest)?;
+
+        let (fold_stats, verify_report) = if cfg.skip_host_fold {
+            recorder_host::stream_fold::verify_stream_logical_boundary_with_identity_mode(
+                &raw_path,
+                identity_mode,
+            )
+            .map_err(|error| {
+                format!(
+                    "logical stream boundary verification failed for {}: {error}",
+                    raw_path.display()
+                )
+            })?;
+            verify_static_bundle_before_publication(static_bundle_admission, cfg.production)?;
+            let verify = write_native_replay_container_streaming(
+                cfg,
+                &raw_path,
+                &member_capture,
+                &[],
+                None,
+                identity_mode,
+                &member_manifest,
+                &member_manifest_path,
+                &replay_path,
+            )?;
+            (None, Some(verify))
+        } else {
+            let spill = create_unique_snapshot_spill_dir(&member_dir)?;
+            let result = (|| {
+                let (snapshots, fold_outcome) =
+                    recorder_host::stream_fold::fold_compact_stream_file_parallel_with_identity_mode(
+                        &raw_path,
+                        &replay_game_id,
+                        &spill,
+                        recorder_host::stream_fold::default_fold_workers(),
+                        identity_mode,
+                    )
+                    .map_err(|error| format!("rollover streaming fold failed: {error}"))?;
+                validate_fold_campaign_identity_join(
+                    &fold_outcome,
+                    &member_manifest,
+                    identity_mode,
+                )?;
+                let stats = fold_outcome.stats;
+                if stats.truncated_tail_bytes > 0
+                    || stats.stop_reason.is_some()
+                    || !stats.ends_at_frame_end
+                {
+                    return Err(format!(
+                        "refusing to seal logical stream {}: source does not end at a closed game hour",
+                        stream.logical_stream_id
+                    ));
+                }
+                verify_static_bundle_before_publication(
+                    static_bundle_admission,
+                    cfg.production,
+                )?;
+                let verify = write_native_replay_container_streaming(
+                    cfg,
+                    &raw_path,
+                    &member_capture,
+                    &snapshots,
+                    Some(&stats),
+                    identity_mode,
+                    &member_manifest,
+                    &member_manifest_path,
+                    &replay_path,
+                )?;
+                Ok::<_, String>((stats, verify))
+            })();
+            cleanup_snapshot_spill_dir(&spill);
+            let (stats, verify) = result?;
+            (Some(stats), Some(verify))
+        };
+        write_host_finalize_telemetry(
+            &member_manifest_path,
+            &member_capture,
+            member_finalize_started.elapsed(),
+            fold_stats.as_ref(),
+            cfg.skip_host_fold,
+            verify_report.as_ref(),
+        );
+        published_members.push(json!({
+            "logical_stream_id": stream.logical_stream_id,
+            "campaign_id_hex": stream.campaign_id_hex,
+            "cid1_payload_sha256_hex": stream.cid1_payload_sha256_hex,
+            "raw_relative_path": format!("logical-streams/{}", stream.relative_path),
+            "raw_bytes": stream.file_bytes,
+            "raw_sha256": stream.file_sha256_hex,
+            "manifest_relative_path": format!("logical-streams/packages/{:020}/native_session_manifest.json", stream.logical_stream_id),
+            "manifest_sha256": to_hex(&hash_file_sha256_bytes(&member_manifest_path)?),
+            "package_relative_path": format!("logical-streams/packages/{:020}/{replay_name}", stream.logical_stream_id),
+            "package_sha256": to_hex(&hash_file_sha256_bytes(&replay_path)?),
+            "recovery": !hourly_met,
+        }));
+    }
+
+    let package_descriptor = json!({
+        "schema": "cid1-rollover-package-set-v1",
+        "source_descriptor": format!("logical-streams/{SET_DESCRIPTOR_FILE}"),
+        "source_descriptor_sha256": source_descriptor_sha256,
+        "ordered_streams": published_members,
+        "transitions": descriptor.transitions,
+    });
+    let bytes = serde_json::to_vec_pretty(&package_descriptor)
+        .map_err(|error| format!("encode rollover package-set descriptor: {error}"))?;
+    publish_immutable_descriptor(&cfg.out_dir, PACKAGE_SET_DESCRIPTOR_FILE, &bytes)?;
+    if recovery_members.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "rollover package set is recovery-only because logical streams {recovery_members:?} failed production gates"
+        ))
+    }
+}
+
+fn verify_published_rollover_package_set(
+    root: &Path,
+    path: &Path,
+    raw_descriptor: &recorder_host::duplex_session::rollover_fs::DurableRolloverSetDescriptor,
+    expected_source_sha256: &str,
+) -> Result<(), String> {
+    let bytes = fs::read(path)
+        .map_err(|error| format!("read published rollover package set failed: {error}"))?;
+    if bytes.len() > 16 * 1024 * 1024 {
+        return Err("published rollover package set exceeds 16 MiB cap".into());
+    }
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("decode published rollover package set failed: {error}"))?;
+    if value.get("schema").and_then(Value::as_str)
+        != Some("cid1-rollover-package-set-v1")
+        || value
+            .get("source_descriptor_sha256")
+            .and_then(Value::as_str)
+            != Some(expected_source_sha256)
+    {
+        return Err("published rollover package set has the wrong source authority".into());
+    }
+    let expected_transitions = serde_json::to_value(&raw_descriptor.transitions)
+        .map_err(|error| format!("encode expected rollover transitions: {error}"))?;
+    if value.get("transitions") != Some(&expected_transitions) {
+        return Err("published rollover package transitions differ from raw authority".into());
+    }
+    let members = value
+        .get("ordered_streams")
+        .and_then(Value::as_array)
+        .ok_or("published rollover package set has no ordered_streams")?;
+    if members.len() != raw_descriptor.ordered_streams.len() {
+        return Err("published rollover package member count differs from raw set".into());
+    }
+    let mut recovery_members = Vec::new();
+    for (index, (member, raw)) in members
+        .iter()
+        .zip(&raw_descriptor.ordered_streams)
+        .enumerate()
+    {
+        let expected_id = u64::try_from(index)
+            .map_err(|_| "published rollover package member count exceeds u64".to_string())?;
+        if member.get("logical_stream_id").and_then(Value::as_u64) != Some(expected_id)
+            || raw.logical_stream_id != expected_id
+            || member.get("campaign_id_hex").and_then(Value::as_str)
+                != Some(raw.campaign_id_hex.as_str())
+            || member
+                .get("cid1_payload_sha256_hex")
+                .and_then(Value::as_str)
+                != Some(raw.cid1_payload_sha256_hex.as_str())
+            || member.get("raw_sha256").and_then(Value::as_str)
+                != Some(raw.file_sha256_hex.as_str())
+        {
+            return Err(format!(
+                "published rollover package member {expected_id} differs from raw authority"
+            ));
+        }
+        for (path_field, digest_field) in [
+            ("raw_relative_path", "raw_sha256"),
+            ("manifest_relative_path", "manifest_sha256"),
+            ("package_relative_path", "package_sha256"),
+        ] {
+            let relative = member
+                .get(path_field)
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("published member {expected_id} lacks {path_field}"))?;
+            let relative_path = Path::new(relative);
+            if relative_path.is_absolute()
+                || relative_path.components().any(|component| {
+                    !matches!(component, std::path::Component::Normal(_))
+                })
+            {
+                return Err(format!(
+                    "published member {expected_id} has unsafe {path_field}"
+                ));
+            }
+            let expected_digest = member
+                .get(digest_field)
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("published member {expected_id} lacks {digest_field}"))?;
+            let actual = to_hex(&hash_file_sha256_bytes(&root.join(relative_path))?);
+            if actual != expected_digest {
+                return Err(format!(
+                    "published member {expected_id} {path_field} hash changed"
+                ));
+            }
+        }
+        if member.get("recovery").and_then(Value::as_bool) != Some(false) {
+            recovery_members.push(expected_id);
+        }
+    }
+    if recovery_members.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "published rollover package set is recovery-only for logical streams {recovery_members:?}"
+        ))
+    }
+}
+
+fn write_synced_json(path: &Path, value: &Value) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(value)
+        .map_err(|error| format!("serialize {}: {error}", path.display()))?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)
+        .map_err(|error| format!("open {}: {error}", path.display()))?;
+    file.write_all(&bytes)
+        .map_err(|error| format!("write {}: {error}", path.display()))?;
+    file.flush()
+        .and_then(|_| file.sync_all())
+        .map_err(|error| format!("sync {}: {error}", path.display()))
+}
+
 /// Streaming production container writer. The raw compact stream is appended
 /// straight from disk in bounded-memory chunks (never buffered whole)
 /// and the finished container is re-verified FROM DISK, one entry at a time. The
@@ -6852,8 +7905,9 @@ fn write_native_replay_container_streaming(
                 "absence_reason": "not supplied to the recorder for this recording",
             })
         });
+    let resolved_g2_engine_capture = resolve_recorded_g2_engine_capture(cfg, manifest)?;
 
-    let index_bytes = serde_json::to_vec_pretty(&json!({
+    let mut index_value = json!({
         "game_id": game_id.clone(),
         "schema_version": "1",
         // Explicit skip marker: consumers must never confuse "host fold skipped
@@ -6863,7 +7917,14 @@ fn write_native_replay_container_streaming(
         "snapshots": index_snapshots,
         "static_artifacts": static_artifact_index,
         "design_catalog_live": design_catalog_live_index,
-    }))
+    });
+    if let Some(g2) = resolved_g2_engine_capture.as_ref() {
+        index_value
+            .as_object_mut()
+            .expect("replay index is an object")
+            .insert("g2_engine_capture".to_string(), g2.index_descriptor.clone());
+    }
+    let index_bytes = serde_json::to_vec_pretty(&index_value)
     .map_err(|e| format!("serialize replay index failed: {e}"))?;
     let timeline_bytes = serde_json::to_vec_pretty(&json!({
         "format": "hoi4_compact_stream_timeline_v1",
@@ -6912,6 +7973,20 @@ fn write_native_replay_container_streaming(
             ),
             bytes: &resolved.bytes,
             role: "design_catalog_live",
+            hour_index: None,
+        });
+    }
+    if let Some(g2) = &resolved_g2_engine_capture {
+        borrowed_entries.push(BorrowedPackEntry {
+            path: format!("payload/{game_id}/{G2_PACKAGED_WITNESS_PATH}"),
+            bytes: &g2.witness_bytes,
+            role: "g2_engine_witness",
+            hour_index: None,
+        });
+        borrowed_entries.push(BorrowedPackEntry {
+            path: format!("payload/{game_id}/{G2_PACKAGED_BMP_PATH}"),
+            bytes: &g2.bmp_bytes,
+            role: "g2_engine_bgra_bmp",
             hour_index: None,
         });
     }
@@ -10175,6 +11250,9 @@ struct PipeCapture {
 struct PipeCaptureOutcome {
     capture: PipeCapture,
     loaded_dll_sha256: Option<[u8; 32]>,
+    rollover_set: Option<
+        recorder_host::duplex_session::rollover_fs::DurableRolloverSetDescriptor,
+    >,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10324,17 +11402,55 @@ fn capture_combined_pipe_to_file(
         .acknowledge_first_compact_record(&mut identity, first_record, first_deadline)
         .map_err(|error| format!("durable first CID1 acknowledgement failed: {error}"))?;
 
+    let rollover_enabled =
+        recorder_host::auto_attach::duplex_worker::auto_attach_rollover_enabled();
+    if rollover_enabled && compression != compact_stream::StreamCompression::None {
+        return Err(
+            "CID1 rollover storage requires raw per-logical-stream H4CR files; compression is applied independently during packaging"
+                .to_string(),
+        );
+    }
+    let (mut rollover_store, rollover_writer) = if rollover_enabled {
+        let root = run_dir.join("logical-streams");
+        let (store, writer) =
+            recorder_host::duplex_session::rollover_fs::FilesystemRolloverStore::create(
+                &root,
+                &acknowledged,
+            )?;
+        (Some(store), Some(writer))
+    } else {
+        (None, None)
+    };
+    let mut rollover = if rollover_enabled {
+        Some(
+            recorder_host::duplex_session::rollover_control::RecorderRolloverCoordinator::new(
+                &acknowledged,
+            )
+            .map_err(|error| format!("initialize product rollover coordinator: {error}"))?,
+        )
+    } else {
+        None
+    };
+
     let cancellation = data.cancellation().clone();
     let control_cancellation = cancellation.clone();
     let (notice_tx, notice_rx) = std::sync::mpsc::channel::<CombinedControlNotice>();
+    let (rollover_store_tx, rollover_store_rx) = std::sync::mpsc::sync_channel(1);
     let control_thread = thread::Builder::new()
         .name("auto-attach-product-control".to_string())
         .spawn(move || -> Result<(), String> {
             let result = (|| -> Result<(), String> {
             let mut acknowledged = Some(acknowledged);
             let mut recording = false;
+            let mut first_product_world_reported = false;
             loop {
                 if stop_signal.is_requested()? {
+                    if !recording {
+                        return Err(
+                            "cooperative stop arrived before the current logical stream admitted FirstWorld"
+                                .into(),
+                        );
+                    }
                     control
                         .close_for_graceful_data_drain()
                         .map_err(|error| format!("close H4CT for graceful drain failed: {error}"))?;
@@ -10358,7 +11474,10 @@ fn capture_combined_pipe_to_file(
                             .ok_or("combined control session disappeared before Recording")?
                             .first_frame_valid(admission)
                             .map_err(|error| format!("enter Recording failed: {error}"))?;
-                        proof_emitter.report_first_complete_record(sequence)?;
+                        if !first_product_world_reported {
+                            proof_emitter.report_first_complete_record(sequence)?;
+                            first_product_world_reported = true;
+                        }
                         recording = true;
                     }
                     Ok(CombinedControlNotice::DataFinished) => {
@@ -10375,37 +11494,134 @@ fn capture_combined_pipe_to_file(
                         return Err("H4CR data worker disconnected without terminal notice".into())
                     }
                 }
-                match control.drive_due_heartbeat(&mut identity) {
-                    Ok(Some(cycle)) if recording => {
-                        proof_emitter.report_recurring_heartbeat(
-                            cycle.proof().last_complete_h4cr_sequence,
-                        )?;
+                if rollover_enabled {
+                    let cycle = control.drive_due_heartbeat_with_rollover(
+                        &mut identity,
+                        rollover
+                            .as_mut()
+                            .ok_or("rollover-enabled control lost its coordinator")?,
+                        rollover_store
+                            .as_mut()
+                            .ok_or("rollover-enabled control lost its durable store")?,
+                    );
+                    match cycle {
+                        Ok(Some(cycle)) => {
+                            if recording {
+                                proof_emitter.report_recurring_heartbeat(
+                                    cycle.proof().last_complete_h4cr_sequence,
+                                )?;
+                            }
+                            if let Some(proposal) = cycle.rollover() {
+                                let header_deadline =
+                                    recorder_host::control_transport::ControlDeadline::after(
+                                        Duration::from_millis(
+                                            recorder_host::auto_attach::policy::FIRST_FRAME_DEADLINE_MS,
+                                        ),
+                                    )
+                                    .map_err(|error| {
+                                        format!("create rollover CID1 deadline failed: {error}")
+                                    })?;
+                                let header = rollover_store
+                                    .as_ref()
+                                    .ok_or("rollover durable store disappeared before CID1")?
+                                    .wait_for_new_header(
+                                        header_deadline,
+                                        &control_cancellation,
+                                    )?;
+                                let first = recorder_host::duplex_session::identity_control::ValidatedFirstCompactRecord::identity_v1(
+                                    proposal.proposed_logical_stream_id,
+                                    &header,
+                                )
+                                .map_err(|error| {
+                                    format!("validate rollover CID1 record failed: {error}")
+                                })?;
+                                // The old logical stream has ended as soon as the
+                                // authenticated proposal has reached its durable
+                                // new-CID1 barrier. Clear Recording before CFA1 is
+                                // sent so a fast producer cannot race its next
+                                // FirstWorld notice against stale stream state.
+                                recording = false;
+                                let next_acknowledged = control
+                                    .control_session_mut()
+                                    .ok_or("combined control session disappeared before second CFA1")?
+                                    .acknowledge_filesystem_rollover_first_compact_record(
+                                        rollover
+                                            .as_mut()
+                                            .ok_or("rollover coordinator disappeared before second CFA1")?,
+                                        &mut identity,
+                                        rollover_store
+                                            .as_mut()
+                                            .ok_or("rollover store disappeared before second CFA1")?,
+                                        first,
+                                        header_deadline,
+                                    )
+                                    .map_err(|error| {
+                                        format!("durable rollover CID1 acknowledgement failed: {error}")
+                                    })?;
+                                acknowledged = Some(next_acknowledged);
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(recorder_host::auto_attach::windows_combined_backend::WindowsCombinedBackendError::TargetExited) => {
+                            if !recording {
+                                return Err("target exited before the current rollover stream admitted FirstWorld".into());
+                            }
+                            return Ok(())
+                        }
+                        Err(error) => {
+                            control_cancellation.cancel();
+                            return Err(format!("product rollover H4CT heartbeat failed: {error}"));
+                        }
                     }
-                    Ok(_) => {}
-                    Err(recorder_host::auto_attach::windows_combined_backend::WindowsCombinedBackendError::TargetExited) => {
-                        return Ok(())
-                    }
-                    Err(error) => {
-                        control_cancellation.cancel();
-                        return Err(format!("product H4CT heartbeat failed: {error}"));
+                } else {
+                    match control.drive_due_heartbeat(&mut identity) {
+                        Ok(Some(cycle)) if recording => {
+                            proof_emitter.report_recurring_heartbeat(
+                                cycle.proof().last_complete_h4cr_sequence,
+                            )?;
+                        }
+                        Ok(_) => {}
+                        Err(recorder_host::auto_attach::windows_combined_backend::WindowsCombinedBackendError::TargetExited) => {
+                            if !recording {
+                                return Err("target exited before the current logical stream admitted FirstWorld".into());
+                            }
+                            return Ok(())
+                        }
+                        Err(error) => {
+                            control_cancellation.cancel();
+                            return Err(format!("product H4CT heartbeat failed: {error}"));
+                        }
                     }
                 }
             }
             })();
             if result.is_err() {
                 control_cancellation.cancel();
+                if let Some(store) = rollover_store.as_mut() {
+                    let _ = store.fail_pending_header(
+                        "product control worker failed before rollover filesystem release",
+                    );
+                }
+            } else if let Some(store) = rollover_store.take() {
+                if rollover_store_tx.send(store).is_err() {
+                    return Err("product finalizer dropped rollover store authority".to_string());
+                }
             }
             result
         })
         .map_err(|error| format!("spawn product control worker failed: {error}"))?;
 
-    let mut writer = match compact_stream::StreamWriter::create(out_path, compression) {
-        Ok(writer) => writer,
-        Err(error) => {
-            cancellation.cancel();
-            let _ = control_thread.join();
-            return Err(format!("create combined stream file failed: {error}"));
-        }
+    let mut writer = if rollover_enabled {
+        None
+    } else {
+        Some(match compact_stream::StreamWriter::create(out_path, compression) {
+            Ok(writer) => writer,
+            Err(error) => {
+                cancellation.cancel();
+                let _ = control_thread.join();
+                return Err(format!("create combined stream file failed: {error}"));
+            }
+        })
     };
     let mut hasher = Sha256::new();
     let mut total = 0u64;
@@ -10413,26 +11629,49 @@ fn capture_combined_pipe_to_file(
     let capture_wall_start = SystemTime::now();
     let capture_mono_start = Instant::now();
     let mut first_world_gate =
-        recorder_host::auto_attach::proof::FirstCompactRecordGate::new(proof_expected_domain_ids);
+        recorder_host::auto_attach::proof::FirstCompactRecordGate::new(
+            proof_expected_domain_ids.clone(),
+        );
 
-    let mut write_record = |record: &[u8]| -> Result<(), String> {
+    let write_record = |record: &[u8],
+                        writer: &mut Option<compact_stream::StreamWriter>,
+                        hasher: &mut Sha256,
+                        write_latency: &mut WriteLatencyHistogram,
+                        total: &mut u64|
+     -> Result<(), String> {
         hasher.update(record);
         let write_started = Instant::now();
-        writer
-            .write_all(record)
-            .map_err(|error| format!("write combined H4CR stream failed: {error}"))?;
+        if let Some(rollover_writer) = rollover_writer.as_ref() {
+            rollover_writer.append_complete_record(record)?;
+        } else {
+            writer
+                .as_mut()
+                .ok_or("ordinary combined stream writer is absent")?
+                .write_all(record)
+                .map_err(|error| format!("write combined H4CR stream failed: {error}"))?;
+        }
         write_latency.record(
             write_started
                 .elapsed()
                 .as_micros()
                 .min(u64::MAX as u128) as u64,
         );
-        total = total.saturating_add(record.len() as u64);
+        *total = (*total).saturating_add(record.len() as u64);
         Ok(())
     };
-    if let Err(error) = write_record(&first_record_bytes) {
+    if rollover_enabled {
+        // FilesystemRolloverStore::create durably wrote the move-only admitted
+        // CID1. Account for those decoded bytes without writing them twice.
+        hasher.update(&first_record_bytes);
+        total = first_record_bytes.len() as u64;
+    } else if let Err(error) = write_record(
+        &first_record_bytes,
+        &mut writer,
+        &mut hasher,
+        &mut write_latency,
+        &mut total,
+    ) {
         cancellation.cancel();
-        drop(write_record);
         let _ = control_thread.join();
         return Err(error);
     }
@@ -10458,7 +11697,22 @@ fn capture_combined_pipe_to_file(
             record.resize(parsed.record_len(), 0);
             data.read_exact(&mut record[COMPACT_RECORD_HEADER_LEN..])
                 .map_err(|error| format!("truncated combined H4CR payload: {error}"))?;
-            write_record(&record)?;
+            if parsed.sequence == 0 {
+                if !rollover_enabled {
+                    return Err("ordinary combined H4CR stream received a second sequence-zero record".into());
+                }
+                first_world_gate = recorder_host::auto_attach::proof::FirstCompactRecordGate::new(
+                    proof_expected_domain_ids.clone(),
+                );
+                first_world_sent = false;
+            }
+            write_record(
+                &record,
+                &mut writer,
+                &mut hasher,
+                &mut write_latency,
+                &mut total,
+            )?;
             if !first_world_sent {
                 if let Some(proof) = first_world_gate
                     .observe(&record)
@@ -10484,16 +11738,35 @@ fn capture_combined_pipe_to_file(
         .map_err(|_| "product control worker panicked".to_string())?;
     data_result?;
     control_result?;
-    drop(write_record);
-    writer
-        .finish()
-        .map_err(|error| format!("finish combined stream file failed: {error}"))?;
+    let rollover_set = if rollover_enabled {
+        let mut store = rollover_store_rx
+            .recv()
+            .map_err(|_| "product control worker did not return rollover store authority".to_string())?;
+        Some(store.seal_for_publication()?)
+    } else {
+        writer
+            .take()
+            .ok_or("ordinary combined stream writer disappeared before finish")?
+            .finish()
+            .map_err(|error| format!("finish combined stream file failed: {error}"))?;
+        None
+    };
     if total == 0 {
         return Err("combined collector pipe returned no bytes".to_string());
     }
-    let stored_byte_count = fs::metadata(out_path)
-        .map_err(|error| format!("stat combined stream file failed: {error}"))?
-        .len();
+    let stored_byte_count = match rollover_set.as_ref() {
+        Some(descriptor) => descriptor
+            .ordered_streams
+            .iter()
+            .try_fold(0u64, |total, stream| {
+                total
+                    .checked_add(stream.file_bytes)
+                    .ok_or("rollover stored byte count overflow".to_string())
+            })?,
+        None => fs::metadata(out_path)
+            .map_err(|error| format!("stat combined stream file failed: {error}"))?
+            .len(),
+    };
     Ok(PipeCaptureOutcome {
         capture: PipeCapture {
             byte_count: total,
@@ -10503,6 +11776,7 @@ fn capture_combined_pipe_to_file(
             clock_skew: ClockSkewSample::measure(capture_wall_start, capture_mono_start),
         },
         loaded_dll_sha256: Some(loaded_dll_sha256),
+        rollover_set,
     })
 }
 
@@ -10710,6 +11984,7 @@ fn capture_pipe_to_file(
                 clock_skew: ClockSkewSample::measure(capture_wall_start, capture_mono_start),
             },
             loaded_dll_sha256,
+            rollover_set: None,
         })
     }
 }
@@ -11602,7 +12877,7 @@ fn compact_projects_root_source(cfg: &Config, summary: &CompactSummary) -> &'sta
     }
     let state_rows = domain
         .data_units_total
-        .get("project_state_rows")
+        .get("project_owner_progress_rows")
         .copied()
         .unwrap_or(0);
     let breakthrough_rows = domain
@@ -11620,6 +12895,8 @@ fn compact_projects_root_source(cfg: &Config, summary: &CompactSummary) -> &'sta
         "control_bridge"
     } else if state_rows > 0 && breakthrough_rows > 0 && !cfg.special_projects_scan {
         "dll_project_cache_progress"
+    } else if state_rows > 0 && !cfg.special_projects_scan {
+        "dll_owner_joined_project_progress"
     } else if cfg.special_projects_scan {
         "dll_startup_heap_scan"
     } else {
@@ -11630,7 +12907,10 @@ fn compact_projects_root_source(cfg: &Config, summary: &CompactSummary) -> &'sta
 fn compact_projects_root_discovery_debt(source: &str) -> &'static str {
     match source {
         "dll_project_cache_progress" => {
-            "none; projects_live includes anchored DLL project state/progress raw rows from CProject+0x28 and breakthrough rows from CProgramStatus+0x50"
+            "none; projects_live includes owner-joined anchored DLL PPGF state/progress rows from CProject+0x28 and breakthrough rows from CProgramStatus+0x50"
+        }
+        "dll_owner_joined_project_progress" => {
+            "none for A20; projects_live includes owner-joined anchored DLL PPGF raw state/progress rows from the country CProject pool; breakthrough coverage is reported independently"
         }
         "dll_project_cache" => {
             "partial DLL-native path: CProject rows, CProgram facility rows, and CCharacter/CScientist rows came from anchored country roots; project progress/completion still need anchored DLL coverage before projects_live is fully DLL-complete"
@@ -12135,6 +13415,7 @@ fn acceptance_test_observation_json(cfg: &Config, summary: &CompactSummary) -> V
         AcceptanceTestMode::Paused => {
             paused_observed && !non_d57_source_unavailable_domains.is_empty()
         }
+        AcceptanceTestMode::SinkOpenFault | AcceptanceTestMode::SinkWriteFault => false,
     };
     json!({
         "schema": "battle-plan.acceptance_test_observation.v1",
@@ -18757,6 +20038,8 @@ mod tests {
     #[test]
     fn compact_summary_decodes_projects_data_record() {
         let mut raw = Vec::new();
+        let mut projects_payload = test_projects_data_payload(0);
+        append_ppgf_trailer(&mut projects_payload);
         append_test_compact_record(
             &mut raw,
             1,
@@ -18771,7 +20054,7 @@ mod tests {
             100,
             41,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
-            &test_projects_data_payload(0),
+            &projects_payload,
         );
         append_test_compact_record(
             &mut raw,
@@ -18841,6 +20124,13 @@ mod tests {
             projects
                 .data_units_total
                 .get("project_observed_breakthrough_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            projects
+                .data_units_total
+                .get("project_owner_progress_rows")
                 .copied(),
             Some(1)
         );
@@ -18944,6 +20234,20 @@ mod tests {
             payload.extend_from_slice(&tag.to_le_bytes());
             payload.extend_from_slice(&lid.to_le_bytes());
             payload.extend_from_slice(&flags.to_le_bytes());
+        }
+    }
+
+    fn append_ppgf_trailer(payload: &mut Vec<u8>) {
+        payload.extend_from_slice(b"PPGF");
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&20u16.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for value in [
+            1u32, 91_234, 6_655, 0x18, 0, 0, 1, 2, 3, 7, 3_000_000, 60, 1,
+        ] {
+            payload.extend_from_slice(&value.to_le_bytes());
         }
     }
 
@@ -24576,6 +25880,7 @@ mod tests {
             pid: 1,
             dll: dir.join("collector.dll"),
             early_launch: None,
+            g2_capture_intent: None,
             diagnostic_staged_hook_mask: None,
             diagnostic_no_commit: false,
             out_dir: dir.clone(),
@@ -26231,7 +27536,152 @@ mod tests {
         ))
         .unwrap_err();
         assert!(missing_nonce.contains("must be supplied together"));
+
+        let sink_without_early_launch = parse_args(profile_test_args(
+            &dir,
+            &[
+                "--profile",
+                "production",
+                "--acceptance-test-mode",
+                "sink-write-fault",
+                "--acceptance-test-nonce",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ],
+        ))
+        .unwrap_err();
+        assert!(sink_without_early_launch.contains("require --early-launch-exe"));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sink_acceptance_receipt_matcher_requires_exact_sole_pipe_progress() {
+        use recorder_host::transport_status::{
+            SinkErrorClass, SinkFailureKind, SinkFailureReport, SinkTerminality, SinkTopology,
+        };
+        let pipe = SinkTopology::from_bits(SinkTopology::PIPE).unwrap();
+        let empty = SinkTopology::from_bits(0).unwrap();
+        let setup = SinkFailureReport {
+            kind: SinkFailureKind::Setup,
+            requested: pipe,
+            opened: empty,
+            failed: pipe,
+            terminality: SinkTerminality::AttemptTerminal,
+            error_class: SinkErrorClass::OtherIo,
+            win32_error: None,
+            last_complete_sequence: None,
+            failed_sequence: None,
+            file_bytes_committed: 0,
+            pipe_bytes_committed: 0,
+        };
+        assert!(sink_failure_matches_acceptance_mode(
+            AcceptanceTestMode::SinkOpenFault,
+            &setup,
+        ));
+        assert!(!sink_failure_matches_acceptance_mode(
+            AcceptanceTestMode::SinkWriteFault,
+            &setup,
+        ));
+
+        let terminal = SinkFailureReport {
+            kind: SinkFailureKind::Terminal,
+            requested: pipe,
+            opened: pipe,
+            failed: pipe,
+            terminality: SinkTerminality::AttemptTerminal,
+            error_class: SinkErrorClass::OtherIo,
+            win32_error: None,
+            last_complete_sequence: Some(8),
+            failed_sequence: Some(9),
+            file_bytes_committed: 0,
+            pipe_bytes_committed: 4096,
+        };
+        assert!(sink_failure_matches_acceptance_mode(
+            AcceptanceTestMode::SinkWriteFault,
+            &terminal,
+        ));
+        let mut gap = terminal;
+        gap.failed_sequence = Some(10);
+        assert!(!sink_failure_matches_acceptance_mode(
+            AcceptanceTestMode::SinkWriteFault,
+            &gap,
+        ));
+    }
+
+    #[test]
+    fn sink_failure_plan_and_receipt_bind_the_same_authenticated_arm() {
+        use recorder_host::transport_status::{
+            SinkErrorClass, SinkFailureKind, SinkFailureReport, SinkTerminality, SinkTopology,
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "hoi4_sink_failure_receipt_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let mut cfg = test_config(vec!["session_header_live"], None);
+        cfg.out_dir = dir.clone();
+        cfg.dll = dir.join("collector.dll");
+        fs::write(&cfg.dll, b"sink acceptance collector fixture").unwrap();
+        cfg.pid = 1234;
+        let game_executable = dir.join("hoi4.exe");
+        fs::write(&game_executable, b"sink acceptance game fixture").unwrap();
+        cfg.early_launch = Some(EarlyLaunchCli {
+            executable: game_executable,
+            semantic_arguments: Vec::new(),
+            timeout_ms: 30_000,
+        });
+        cfg.acceptance_test = Some(AcceptanceTestCli {
+            mode: AcceptanceTestMode::SinkWriteFault,
+            nonce: "c".repeat(64),
+        });
+        let token = "0123456789abcdef0123456789abcdef";
+        write_sink_failure_acceptance_plan(&cfg, token).unwrap();
+        let pipe = SinkTopology::from_bits(SinkTopology::PIPE).unwrap();
+        let report = SinkFailureReport {
+            kind: SinkFailureKind::Terminal,
+            requested: pipe,
+            opened: pipe,
+            failed: pipe,
+            terminality: SinkTerminality::AttemptTerminal,
+            error_class: SinkErrorClass::OtherIo,
+            win32_error: None,
+            last_complete_sequence: Some(4),
+            failed_sequence: Some(5),
+            file_bytes_committed: 0,
+            pipe_bytes_committed: 2048,
+        };
+        write_authenticated_sink_failure_receipt(&cfg, token, &report).unwrap();
+        let plan: Value = serde_json::from_slice(
+            &fs::read(dir.join("sink_failure_acceptance_plan.json")).unwrap(),
+        )
+        .unwrap();
+        let receipt: Value = serde_json::from_slice(
+            &fs::read(dir.join("collector_sink_failure.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            plan["control_authorization_v1"],
+            receipt["acceptance_test"]["control_authorization_v1"]
+        );
+        assert_eq!(
+            plan["game_executable_sha256"],
+            json!(to_hex(
+                &hash_file_sha256_bytes(cfg.early_launch.as_ref().unwrap().executable.as_path())
+                    .unwrap()
+            ))
+        );
+        assert_eq!(
+            receipt["acceptance_test"]["acceptance_plan_sha256"],
+            json!(to_hex(
+                &hash_file_sha256_bytes(&dir.join("sink_failure_acceptance_plan.json")).unwrap()
+            ))
+        );
+        assert_eq!(receipt["acceptance_test"]["report_matches_armed_fault"], json!(true));
+        assert_eq!(receipt["schema"], json!("extractor.authenticated-sink-failure.v2"));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     fn base_profile_test_args(dir: &Path, extra: &[&str]) -> Vec<String> {
@@ -26772,6 +28222,7 @@ mod tests {
             pid: 1,
             dll: PathBuf::from("collector.dll"),
             early_launch: None,
+            g2_capture_intent: None,
             diagnostic_staged_hook_mask: None,
             diagnostic_no_commit: false,
             out_dir: PathBuf::from("."),
@@ -26822,6 +28273,70 @@ mod tests {
             domain57_omission_reason: None,
             acceptance_test: None,
         }
+    }
+
+    #[test]
+    fn packaged_g2_source_is_bound_to_the_capture_time_replay_seal() {
+        let root = env::temp_dir().join(format!(
+            "hoi4_g2_packaging_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let output = root.join("g2_engine");
+        fs::create_dir_all(&output).unwrap();
+        let capture_content_digest = "55".repeat(32);
+        let replay_content_digest = "66".repeat(32);
+        let witness = serde_json::to_vec(&json!({
+            "schema": "hoi4-g2-engine-pixel-witness-v1",
+            "content_manifest_digest_sha256": capture_content_digest.as_str(),
+        }))
+        .unwrap();
+        let bmp = b"BMpackaged-g2-fixture";
+        fs::write(
+            output.join(recorder_host::early_render_launch::G2_ENGINE_WITNESS_FILE),
+            &witness,
+        )
+        .unwrap();
+        fs::write(
+            output.join(recorder_host::early_render_launch::G2_ENGINE_BMP_FILE),
+            bmp,
+        )
+        .unwrap();
+        let mut cfg = test_config(Vec::new(), None);
+        cfg.out_dir = root.clone();
+        let manifest = json!({
+            "portable_content_manifest": {
+                "manifest_digest_sha256": replay_content_digest.as_str(),
+            },
+            "replay_packaging": {
+                "g2_engine_capture": {
+                    "schema": G2_PACKAGED_CAPTURE_SCHEMA,
+                    "witness_path": G2_PACKAGED_WITNESS_PATH,
+                    "witness_sha256": to_hex(&Sha256::digest(&witness)),
+                    "witness_bytes": witness.len(),
+                    "bmp_path": G2_PACKAGED_BMP_PATH,
+                    "bmp_sha256": to_hex(&Sha256::digest(bmp)),
+                    "bmp_bytes": bmp.len(),
+                    "capture_content_manifest_digest_sha256": capture_content_digest.as_str(),
+                    "replay_content_manifest_digest_sha256": replay_content_digest.as_str(),
+                }
+            }
+        });
+        let resolved = resolve_recorded_g2_engine_capture(&cfg, &manifest)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.witness_bytes, witness);
+        assert_eq!(resolved.bmp_bytes, bmp);
+        fs::write(
+            output.join(recorder_host::early_render_launch::G2_ENGINE_WITNESS_FILE),
+            b"mutated",
+        )
+        .unwrap();
+        assert!(resolve_recorded_g2_engine_capture(&cfg, &manifest).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn test_domain_payload_with_status(
@@ -30861,7 +32376,7 @@ mod tests {
                 "settings_file_sha256": "7".repeat(64)
             }
         });
-        manifest["replay_packaging"] = replay_packaging_manifest_json(&cfg).unwrap();
+        manifest["replay_packaging"] = replay_packaging_manifest_json(&cfg, None, None).unwrap();
         fs::write(
             &manifest_path,
             serde_json::to_vec_pretty(&manifest).unwrap(),
@@ -31098,7 +32613,7 @@ mod tests {
 
     fn fake_gfx_icon_manifest_catalog() -> Value {
         json!({
-            "schema": "gfx_icon_asset_manifest_static.static_artifact.v1",
+            "schema": "gfx_icon_asset_manifest_static.static_artifact.v2",
             "artifact_kind": "deterministic_static_replay_enrichment",
             "artifact_sha256": "gfx-sha",
             "layers": [

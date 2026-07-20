@@ -1,12 +1,20 @@
 //! XUI14 fail-closed intelligence/operative UI admission.
 //!
 //! Static GUI and definition files identify chrome and catalog entries, while
-//! save/domain-53 data supplies gameplay rows. Neither proves controller
-//! visibility or list order. Every measured list therefore carries the exact
-//! XUI03 dynamic-collection trace used by the engine-facing producer.
+//! save/domain-53 data supplies gameplay rows. Engine-authored lists carry the
+//! exact XUI03 dynamic-collection trace used by their producer. Intel networks
+//! are the deliberate exception: the installed a729 UI has no network
+//! collection, so replay exposes a product-authored deterministic summary and
+//! never labels its stable content-key order as engine UI order.
 
 use crate::dynamic_collection::DynamicCollectionTrace;
 use crate::{ErrorKind, GameUiError, Result};
+use replay_core::agency_upgrade_controller::{
+    admit_agency_upgrade_controller_refresh, AgencyUpgradeControllerRefreshExact,
+};
+use replay_core::cipher_controller::{
+    admit_cipher_controller_refresh, CipherControllerRefreshExact,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const FIXED_ONE: i64 = 100_000;
@@ -202,6 +210,19 @@ pub struct IntelNetworkUiRow {
     pub national_coverage_fixed: i64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetworkSummaryOrderAuthority {
+    /// Product-authored order by
+    /// `(owner_country, target_country, network_id, stable_item_id)`.
+    ProductStableContentKeyV1,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntelNetworkSummary {
+    pub order_authority: NetworkSummaryOrderAuthority,
+    pub rows: Vec<IntelNetworkUiRow>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntelligenceUiTrace {
     pub authority: IntelligenceTraceAuthority,
@@ -218,8 +239,174 @@ pub struct IntelligenceUiTrace {
     pub operations: ProducerValue<MeasuredList<OperationUiRow>>,
     pub ciphers: ProducerValue<MeasuredList<CipherUiRow>>,
     pub intel_levels: ProducerValue<MeasuredList<IntelLevelUiRow>>,
-    pub networks: ProducerValue<MeasuredList<IntelNetworkUiRow>>,
+    /// Exact engine-derived network values presented as a replay-product
+    /// summary. There is no corresponding a729 authored list/controller order.
+    pub networks: ProducerValue<IntelNetworkSummary>,
     pub visibility: Vec<VisibilityGate>,
+}
+
+/// Derive the operative -> operation relationship from the exact operation
+/// producer. This deliberately does not inspect operative status text or infer
+/// a relationship from shared targets. Duplicate or orphan handles fail the
+/// complete projection closed.
+pub fn project_operation_assignments(
+    operatives: &ProducerValue<MeasuredList<OperativeUiRow>>,
+    operations: &ProducerValue<MeasuredList<OperationUiRow>>,
+) -> Result<ProducerValue<BTreeMap<String, String>>> {
+    let (ProducerValue::Measured(operatives), ProducerValue::Measured(operations)) =
+        (operatives, operations)
+    else {
+        let mut reasons = Vec::new();
+        if let ProducerValue::Unobtained { reason } = operatives {
+            reasons.push(format!("operatives: {reason}"));
+        }
+        if let ProducerValue::Unobtained { reason } = operations {
+            reasons.push(format!("operations: {reason}"));
+        }
+        return Ok(ProducerValue::Unobtained {
+            reason: if reasons.is_empty() {
+                "operation assignment inputs unavailable".into()
+            } else {
+                reasons.join("; ")
+            },
+        });
+    };
+    let known_operatives = operatives
+        .rows
+        .iter()
+        .map(|row| row.operative_id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut projected = BTreeMap::new();
+    for operation in &operations.rows {
+        nonempty(&operation.operation_id, "operation_id")?;
+        let mut within_operation = BTreeSet::new();
+        for operative_id in &operation.assigned_operative_ids {
+            nonempty(operative_id, "assigned operative id")?;
+            if !within_operation.insert(operative_id.as_str()) {
+                return Err(fail("operation assignment duplicates an operative"));
+            }
+            if !known_operatives.contains(operative_id) {
+                return Err(fail("operation assignment references an unknown operative"));
+            }
+            if projected
+                .insert(operative_id.clone(), operation.operation_id.clone())
+                .is_some()
+            {
+                return Err(fail("operative is assigned to multiple operations"));
+            }
+        }
+    }
+    Ok(ProducerValue::Measured(projected))
+}
+
+/// Join the dormant exact-a729 selected-agency refresh carrier to semantic
+/// upgrade rows. This does not activate the producer or replace the required
+/// XUI03 materialization trace; it is the pointer-free identity/order seam the
+/// future domain-53 fold must satisfy before that trace can be admitted.
+pub fn project_agency_upgrade_refresh_order(
+    refresh: &AgencyUpgradeControllerRefreshExact,
+    expected_frame_hour: u64,
+    expected_owner_country: &str,
+    upgrades: &ProducerValue<MeasuredList<AgencyUpgradeRow>>,
+) -> Result<ProducerValue<Vec<String>>> {
+    let admitted = admit_agency_upgrade_controller_refresh(refresh, expected_frame_hour)
+        .map_err(|error| fail(&error.message))?;
+    if refresh.owner != expected_owner_country {
+        return Err(fail("agency-upgrade refresh owner mismatch"));
+    }
+    let ProducerValue::Measured(upgrades) = upgrades else {
+        let reason = match upgrades {
+            ProducerValue::Unobtained { reason } => reason,
+            ProducerValue::Measured(_) => unreachable!("let-else excluded measured upgrades"),
+        };
+        return Ok(ProducerValue::Unobtained {
+            reason: format!("upgrades: {reason}"),
+        });
+    };
+    let mut rows = BTreeMap::new();
+    let mut stable_item_ids = BTreeSet::new();
+    for row in &upgrades.rows {
+        nonempty(&row.stable_item_id, "upgrade stable_item_id")?;
+        nonempty(&row.upgrade_id, "upgrade_id")?;
+        nonempty(&row.branch_id, "upgrade branch_id")?;
+        if !stable_item_ids.insert(row.stable_item_id.as_str())
+            || rows.insert(row.upgrade_id.as_str(), row).is_some()
+        {
+            return Err(fail(
+                "duplicate upgrade stable_item_id or upgrade_id in semantic producer",
+            ));
+        }
+    }
+    let mut ordered = Vec::new();
+    for (branch_id, controller_row) in admitted.ordered_upgrades() {
+        let Some(row) = rows.get(controller_row.upgrade_id.as_str()) else {
+            return Err(fail(
+                "agency-upgrade controller references an unjoined semantic row",
+            ));
+        };
+        if row.branch_id != branch_id {
+            return Err(fail("agency-upgrade branch definition join mismatch"));
+        }
+        ordered.push(row.stable_item_id.clone());
+    }
+    if ordered.len() != upgrades.rows.len() {
+        return Err(fail(
+            "semantic upgrade producer contains rows absent from the controller refresh",
+        ));
+    }
+    Ok(ProducerValue::Measured(ordered))
+}
+
+/// Join the activation-disabled exact cryptology-country controller vector to
+/// semantic cipher rows. The final vector is captured after the engine's
+/// selected-first/name sort, so replay never reimplements that comparator.
+pub fn project_cipher_controller_order(
+    refresh: &CipherControllerRefreshExact,
+    expected_frame_hour: u64,
+    expected_owner_country: &str,
+    ciphers: &ProducerValue<MeasuredList<CipherUiRow>>,
+) -> Result<ProducerValue<Vec<String>>> {
+    let admitted = admit_cipher_controller_refresh(refresh, expected_frame_hour)
+        .map_err(|error| fail(&error.message))?;
+    if refresh.owner != expected_owner_country {
+        return Err(fail("cipher controller owner mismatch"));
+    }
+    let ProducerValue::Measured(ciphers) = ciphers else {
+        let reason = match ciphers {
+            ProducerValue::Unobtained { reason } => reason,
+            ProducerValue::Measured(_) => unreachable!("let-else excluded measured ciphers"),
+        };
+        return Ok(ProducerValue::Unobtained {
+            reason: format!("ciphers: {reason}"),
+        });
+    };
+    let mut rows = BTreeMap::new();
+    let mut stable_item_ids = BTreeSet::new();
+    for row in &ciphers.rows {
+        nonempty(&row.stable_item_id, "cipher stable_item_id")?;
+        nonempty(&row.target_country, "cipher target_country")?;
+        if row.owner_country != expected_owner_country
+            || !stable_item_ids.insert(row.stable_item_id.as_str())
+            || rows.insert(row.target_country.as_str(), row).is_some()
+        {
+            return Err(fail(
+                "cipher owner, stable identity, or target identity mismatch",
+            ));
+        }
+    }
+    let mut ordered = Vec::with_capacity(refresh.targets.len());
+    for target in admitted.ordered_targets() {
+        let Some(row) = rows.get(target.target.as_str()) else {
+            return Err(fail("cipher controller references an unjoined semantic row"));
+        };
+        ordered.push(row.stable_item_id.clone());
+    }
+    if ordered.len() != ciphers.rows.len() {
+        return Err(fail(
+            "semantic cipher producer contains rows absent from the controller refresh",
+        ));
+    }
+    Ok(ProducerValue::Measured(ordered))
 }
 
 #[derive(Debug)]
@@ -329,12 +516,7 @@ pub fn admit_intelligence_ui(trace: &IntelligenceUiTrace) -> Result<AdmittedInte
         trace.frame_hour,
         &visibility,
     )?;
-    validate_family(
-        &trace.networks,
-        IntelligenceSurface::Networks,
-        trace.frame_hour,
-        &visibility,
-    )?;
+    validate_network_summary(&trace.networks, &visibility)?;
 
     let operative_ids: BTreeSet<String> = match &trace.operatives {
         ProducerValue::Measured(rows) => rows
@@ -373,6 +555,8 @@ pub fn admit_intelligence_ui(trace: &IntelligenceUiTrace) -> Result<AdmittedInte
             return Err(fail("duplicate network_id"));
         }
     }
+    let operation_assignment_projection =
+        project_operation_assignments(&trace.operatives, &trace.operations)?;
     if let ProducerValue::Measured(rows) = &trace.upgrades {
         let mut upgrade_ids = BTreeSet::new();
         for row in &rows.rows {
@@ -491,6 +675,15 @@ pub fn admit_intelligence_ui(trace: &IntelligenceUiTrace) -> Result<AdmittedInte
                     if !reciprocal {
                         return Err(fail("operative/operation assignment is not reciprocal"));
                     }
+                    if !matches!(
+                        &operation_assignment_projection,
+                        ProducerValue::Measured(projected)
+                            if projected.get(&row.operative_id) == Some(operation_id)
+                    ) {
+                        return Err(fail(
+                            "operative operation assignment contradicts the OPIN inverse",
+                        ));
+                    }
                 }
                 OperativeAssignment::Network { network_id } => {
                     if !network_ids.contains(network_id) {
@@ -528,6 +721,24 @@ pub fn admit_intelligence_ui(trace: &IntelligenceUiTrace) -> Result<AdmittedInte
                 };
                 if !reciprocal {
                     return Err(fail("operation/operative assignment is not reciprocal"));
+                }
+            }
+        }
+    }
+    if let ProducerValue::Measured(projected) = &operation_assignment_projection {
+        if let ProducerValue::Measured(operatives) = &trace.operatives {
+            for (operative_id, operation_id) in projected {
+                if !operatives.rows.iter().any(|row| {
+                    row.operative_id == *operative_id
+                        && matches!(
+                            &row.assignment,
+                            OperativeAssignment::Operation { operation_id: row_operation_id }
+                                if row_operation_id == operation_id
+                        )
+                }) {
+                    return Err(fail(
+                        "OPIN inverse lacks the matching operative assignment projection",
+                    ));
                 }
             }
         }
@@ -625,7 +836,13 @@ impl<'a> AdmittedIntelligenceUi<'a> {
         ordered(&self.trace.intel_levels)
     }
     pub fn ordered_networks(&self) -> Result<Vec<&'a IntelNetworkUiRow>> {
-        ordered(&self.trace.networks)
+        let summary = match &self.trace.networks {
+            ProducerValue::Measured(summary) => summary,
+            ProducerValue::Unobtained { .. } => return Ok(Vec::new()),
+        };
+        let mut rows = summary.rows.iter().collect::<Vec<_>>();
+        rows.sort_by(|left, right| network_content_key(left).cmp(&network_content_key(right)));
+        Ok(rows)
     }
 
     /// Builds all seven panels in the frozen surface order. The method is
@@ -749,6 +966,43 @@ fn validate_family<T: StableItem>(
             Ok(())
         }
     }
+}
+
+fn validate_network_summary(
+    value: &ProducerValue<IntelNetworkSummary>,
+    gates: &BTreeMap<IntelligenceSurface, VisibilityDisposition>,
+) -> Result<()> {
+    match value {
+        ProducerValue::Unobtained { reason } => {
+            nonempty(reason, "network summary unobtained reason")?;
+            require_available(gates, IntelligenceSurface::Networks, false)
+        }
+        ProducerValue::Measured(summary) => {
+            require_available(gates, IntelligenceSurface::Networks, true)?;
+            if summary.order_authority
+                != NetworkSummaryOrderAuthority::ProductStableContentKeyV1
+            {
+                return Err(fail("unknown network summary order authority"));
+            }
+            let mut stable_ids = BTreeSet::new();
+            for row in &summary.rows {
+                nonempty(&row.stable_item_id, "network stable_item_id")?;
+                if !stable_ids.insert(row.stable_item_id.as_str()) {
+                    return Err(fail("duplicate network summary stable_item_id"));
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn network_content_key(row: &IntelNetworkUiRow) -> (&str, &str, &str, &str) {
+    (
+        row.owner_country.as_str(),
+        row.target_country.as_str(),
+        row.network_id.as_str(),
+        row.stable_item_id.as_str(),
+    )
 }
 
 fn ordered<T: StableItem>(value: &'_ ProducerValue<MeasuredList<T>>) -> Result<Vec<&T>> {

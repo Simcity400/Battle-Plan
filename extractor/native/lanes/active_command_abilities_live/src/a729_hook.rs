@@ -1,21 +1,24 @@
 //! Discovery-complete, promotion-gated a729 ability-list transition observer.
 //!
 //! This module records the exact engine leaves needed by the A36 human
-//! transition matrix.  It deliberately does not implement
-//! `ExactA729AbilityControllerSource`: runtime pointers and aggregate scratch
-//! records are diagnostic identities, not portable replay data.  Promotion is
-//! additionally separated from live/compact promotion until the required human
-//! transitions are captured.
+//! transition matrix and captures the exact same-row disabled-reason
+//! accumulator before its destruction. Runtime pointers and aggregate scratch
+//! records remain diagnostic identities. Only `JoinedExactA729AbilitySource`,
+//! produced after a complete pointer-erasing row join, implements
+//! `ExactA729AbilityControllerSource`. Promotion remains separated from
+//! live/compact scheduling until the required game-state transitions exist.
 
 use core::ffi::c_void;
 use minhook::MinHook;
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::mem;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
-use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
+use windows_sys::Win32::System::Diagnostics::Debug::{
+    ReadProcessMemory, RtlCaptureStackBackTrace,
+};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
@@ -24,6 +27,16 @@ pub const CONTEXT_INVALID_PROBE_RVA: u32 = 0x00B5_8CA0;
 pub const ACTIVE_COOLDOWN_PROBE_RVA: u32 = 0x006F_3370;
 pub const AVAILABILITY_EVALUATOR_RVA: u32 = 0x006D_0DE0;
 pub const SPECIAL_CONTEXT_PROBE_RVA: u32 = 0x01D0_6480;
+pub const TOOLTIP_BUILDER_RVA: u32 = 0x01D0_49C0;
+pub const STRING_APPEND_RVA: u32 = 0x0012_9700;
+pub const EFFECTIVE_COMMAND_POWER_COST_RVA: u32 = 0x00FF_4C30;
+pub const ICON_RESOLVER_RVA: u32 = 0x0222_3EB0;
+/// Return address immediately after the one append which copies the temporary
+/// disabled-reason accumulator into the final tooltip. The accumulator is the
+/// exact source argument at this call and is still alive until 0x141D063A3.
+pub const DISABLED_REASON_APPEND_RETURN_RVA: u32 = 0x01D0_6057;
+pub const EFFECTIVE_COST_RETURN_RVA: u32 = 0x01D0_4E38;
+pub const ICON_RESOLVER_RETURN_RVA: u32 = 0x01D0_8BA6;
 
 /// Static hook authority bound to the mechanically reconciled a729 receipt.
 /// This opens diagnostic observer installation only; it does not promote ABL1
@@ -52,9 +65,32 @@ const AVAILABILITY_SENTINEL: [u8; 16] = [
 const SPECIAL_CONTEXT_SENTINEL: [u8; 16] = [
     0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0xb9, 0x39, 0x00, 0x00, 0x00, 0xe8, 0xad,
 ];
+const TOOLTIP_SENTINEL: [u8; 16] = [
+    0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41,
+];
+const STRING_APPEND_SENTINEL: [u8; 16] = [
+    0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0xf9, 0x49, 0x8b, 0xf0,
+];
+const DISABLED_REASON_CALLSITE_SENTINEL: [u8; 16] = [
+    0xe8, 0xa9, 0x36, 0x42, 0xfe, 0x48, 0x8b, 0x4e, 0x10, 0x48, 0x85, 0xc9, 0x74, 0x54, 0x4c, 0x8b,
+];
+const EFFECTIVE_COST_SENTINEL: [u8; 16] = [
+    0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57,
+];
+const EFFECTIVE_COST_CALLSITE_SENTINEL: [u8; 16] = [
+    0xe8, 0xf8, 0xfd, 0x2e, 0xff, 0x48, 0x8b, 0x9b, 0xf0, 0x01, 0x00, 0x00, 0x45, 0x38, 0xa6, 0xe9,
+];
+const ICON_RESOLVER_SENTINEL: [u8; 16] = [
+    0x48, 0x81, 0xc1, 0x00, 0x01, 0x00, 0x00, 0xe9, 0x14, 0x92, 0x80, 0xfe, 0xcc, 0xcc, 0xcc, 0xcc,
+];
+const ICON_RESOLVER_CALLSITE_SENTINEL: [u8; 16] = [
+    0xe8, 0x0a, 0xb3, 0x51, 0x00, 0x48, 0x85, 0xc0, 0x0f, 0x85, 0x28, 0x01, 0x00, 0x00, 0x38, 0x05,
+];
 
 const MAX_ROWS: usize = 4096;
 const MAX_OBSERVATIONS: usize = 128;
+const MAX_TEXT_OBSERVATIONS: usize = MAX_ROWS;
+const MAX_TEXT_BYTES: usize = 1 << 20;
 const FM_STATE_STRIDE: usize = 0x68;
 const FM_LEADER_STATE_STRIDE: usize = 0x28;
 
@@ -63,19 +99,30 @@ type ContextProbeFn = unsafe extern "system" fn(usize) -> u8;
 type ActiveProbeFn = unsafe extern "system" fn(usize, usize, usize, *mut u8, *mut i32) -> usize;
 type AvailabilityFn = unsafe extern "system" fn(usize, usize, usize, usize) -> usize;
 type SpecialContextFn = unsafe extern "system" fn(usize) -> u8;
+type TooltipFn = unsafe extern "system" fn(usize, usize, usize) -> usize;
+type StringAppendFn = unsafe extern "system" fn(usize, usize, usize) -> usize;
+type EffectiveCostFn = unsafe extern "system" fn(usize, *mut i64, usize) -> usize;
+type IconResolverFn = unsafe extern "system" fn(usize, usize) -> usize;
 
 static ORIGINAL_REFRESH: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_CONTEXT_PROBE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_ACTIVE_PROBE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_AVAILABILITY: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_SPECIAL_CONTEXT: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_TOOLTIP: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_STRING_APPEND: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_EFFECTIVE_COST: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_ICON_RESOLVER: AtomicUsize = AtomicUsize::new(0);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
+static INSTALL_BROKEN: AtomicBool = AtomicBool::new(false);
 static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static STATE: OnceLock<Mutex<ObserverState>> = OnceLock::new();
+static INSTALL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 thread_local! {
     static TRACE: RefCell<Option<OpenTrace>> = const { RefCell::new(None) };
+    static TOOLTIP_TRACE: RefCell<Option<OpenTooltipTrace>> = const { RefCell::new(None) };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,6 +163,7 @@ pub enum ProbeEvent {
         available: bool,
     },
     SpecialContext { controller_runtime: usize, allowed: bool },
+    IconResolved { icon: String, resolved: bool },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -123,6 +171,75 @@ struct OpenTrace {
     controller_runtime: usize,
     events: Vec<ProbeEvent>,
     nested_or_replaced: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TooltipRuntimeIdentity {
+    controller_sequence: u64,
+    callback_owner_runtime: usize,
+    hovered_widget_runtime: usize,
+    tooltip_output_runtime: usize,
+    controller_runtime: usize,
+    context_mode: u32,
+    selected_root_runtime: usize,
+    selected_leader_runtime: usize,
+    selected_army_runtime: usize,
+    selected_army_group_runtime: usize,
+    selected_other_runtime: usize,
+    field_marshal_aggregate: bool,
+    row_ordinal: u32,
+    definition_runtime: usize,
+    source_definition_runtime: Vec<usize>,
+    row_owner_runtime: Vec<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OpenTooltipTrace {
+    identity: TooltipRuntimeIdentity,
+    disabled_reason_bytes: Option<Vec<u8>>,
+    effective_command_power_cost_fixed: Option<i64>,
+    duplicate_effective_cost: bool,
+    accumulator_callsite_seen: bool,
+    duplicate_accumulator_append: bool,
+    nested_or_replaced: bool,
+}
+
+/// Diagnostic-only exact same-row text observation. Runtime addresses are
+/// process-local join keys and are never serialized into ABL1 or ABA2.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisabledReasonObservation {
+    pub sequence: u64,
+    pub controller_sequence: u64,
+    pub controller_runtime: usize,
+    pub callback_owner_runtime: usize,
+    pub hovered_widget_runtime: usize,
+    pub context_mode: u32,
+    pub selected_root_runtime: usize,
+    pub selected_leader_runtime: usize,
+    pub selected_army_runtime: usize,
+    pub selected_army_group_runtime: usize,
+    pub selected_other_runtime: usize,
+    pub field_marshal_aggregate: bool,
+    pub row_ordinal: u32,
+    pub definition_runtime: usize,
+    pub source_definition_runtime: Vec<usize>,
+    pub row_owner_runtime: Vec<usize>,
+    pub final_tooltip: String,
+    /// Exact evaluated accumulator bytes before the final-tooltip append. An
+    /// empty string is a measured empty accumulator, not a missing value.
+    pub disabled_reason: String,
+    pub accumulator_callsite_seen: bool,
+    /// Exact fixed-point result written by 0x140FF4C30 at the unique ordinary
+    /// tooltip call returning at 0x141D04E38. Field-marshal rows use the
+    /// already-retained aggregate cost record instead.
+    pub effective_command_power_cost_fixed: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DefinitionPresentation {
+    pub definition_runtime: usize,
+    pub ability_id: String,
+    pub resolved_icon: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -197,7 +314,9 @@ pub struct ControllerObservation {
     pub field_marshal_aggregate: bool,
     pub aggregate_leader_runtime: Vec<usize>,
     pub source_definition_runtime: Vec<usize>,
+    pub row_owner_runtime: Vec<usize>,
     pub definitions: Vec<DefinitionLeaves>,
+    pub definition_presentations: Vec<DefinitionPresentation>,
     pub ordinary_leaves: Vec<OrdinaryAbilityLeaf>,
     pub field_marshal_leaves: Vec<FieldMarshalAbilityLeaf>,
     pub row_widget_count: u32,
@@ -211,14 +330,22 @@ pub struct HookDiagnostics {
     pub rejected_refreshes: u64,
     pub nested_refreshes: u64,
     pub retained_observations: u64,
+    pub completed_tooltips: u64,
+    pub rejected_tooltips: u64,
+    pub nested_tooltips: u64,
+    pub retained_disabled_reasons: u64,
 }
 
 #[derive(Default)]
 struct ObserverState {
     observations: VecDeque<ControllerObservation>,
+    disabled_reasons: VecDeque<DisabledReasonObservation>,
     completed_refreshes: u64,
     rejected_refreshes: u64,
     nested_refreshes: u64,
+    completed_tooltips: u64,
+    rejected_tooltips: u64,
+    nested_tooltips: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -228,6 +355,10 @@ pub struct InstalledHookAddresses {
     pub active_cooldown_probe: usize,
     pub availability_evaluator: usize,
     pub special_context_probe: usize,
+    pub tooltip_builder: usize,
+    pub string_append: usize,
+    pub effective_command_power_cost: usize,
+    pub icon_resolver: usize,
 }
 
 pub fn diagnostics() -> HookDiagnostics {
@@ -239,6 +370,10 @@ pub fn diagnostics() -> HookDiagnostics {
         rejected_refreshes: state.rejected_refreshes,
         nested_refreshes: state.nested_refreshes,
         retained_observations: state.observations.len() as u64,
+        completed_tooltips: state.completed_tooltips,
+        rejected_tooltips: state.rejected_tooltips,
+        nested_tooltips: state.nested_tooltips,
+        retained_disabled_reasons: state.disabled_reasons.len() as u64,
     }
 }
 
@@ -258,9 +393,409 @@ pub fn take_observations() -> Vec<ControllerObservation> {
         .unwrap_or_default()
 }
 
+pub fn disabled_reason_observations() -> Vec<DisabledReasonObservation> {
+    STATE
+        .get()
+        .and_then(|state| state.lock().ok())
+        .map(|state| state.disabled_reasons.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
+pub fn take_disabled_reason_observations() -> Vec<DisabledReasonObservation> {
+    STATE
+        .get()
+        .and_then(|state| state.lock().ok())
+        .map(|mut state| state.disabled_reasons.drain(..).collect())
+        .unwrap_or_default()
+}
+
+/// Portable identity from the authenticated character/OOB root snapshot.
+/// Runtime addresses are lookup keys only and never enter ABL1.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortableContextIdentity {
+    pub country_tag: String,
+    pub kind: crate::SelectedContextKind,
+    pub stable_id: u64,
+}
+
+/// One immutable same-epoch join catalog built by the exact root collectors.
+/// Ability tokens and icons are deliberately absent: A36 observes those from
+/// the CAbility definition and exact UI resolver callsite itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExactA729PortableIdentityCatalog {
+    pub epoch: u64,
+    pub contexts_by_runtime: BTreeMap<usize, PortableContextIdentity>,
+    pub division_ids_by_leader_runtime: BTreeMap<usize, Vec<u32>>,
+}
+
+/// Frozen pointer-free source built from engine observations. No caller may
+/// supply an AbilityFrame or any row field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JoinedExactA729AbilitySource {
+    frame: crate::AbilityFrame,
+    controller_sequence: u64,
+    identity_catalog_epoch: u64,
+    tooltip_sequences: Vec<u64>,
+}
+
+impl JoinedExactA729AbilitySource {
+    pub fn bind_from_exact_root_catalog(
+        frame_hour: u64,
+        elapsed_wall_ms: u64,
+        catalog: &ExactA729PortableIdentityCatalog,
+        controller: &ControllerObservation,
+        observations: &[DisabledReasonObservation],
+    ) -> Result<Self, String> {
+        let (frame, tooltip_sequences) = materialize_abl1_frame(
+            frame_hour,
+            elapsed_wall_ms,
+            catalog,
+            controller,
+            observations,
+        )?;
+        Ok(Self {
+            frame,
+            controller_sequence: controller.sequence,
+            identity_catalog_epoch: catalog.epoch,
+            tooltip_sequences,
+        })
+    }
+
+    pub fn controller_sequence(&self) -> u64 {
+        self.controller_sequence
+    }
+
+    pub fn tooltip_sequences(&self) -> &[u64] {
+        &self.tooltip_sequences
+    }
+}
+
+impl crate::sealed::Sealed for JoinedExactA729AbilitySource {}
+
+impl crate::ExactA729AbilityControllerSource for JoinedExactA729AbilitySource {
+    fn is_exact_a729_ability_controller(&self) -> bool {
+        EXACT_A729_AUTHORITY_BOUND
+            && self.controller_sequence != 0
+            && self.identity_catalog_epoch != 0
+            && self.tooltip_sequences.len() == self.frame.rows.len()
+            && self.tooltip_sequences.iter().all(|sequence| *sequence != 0)
+    }
+
+    fn collect_frame(&self, frame_hour: u64) -> Result<crate::AbilityFrame, String> {
+        if frame_hour != self.frame.frame_hour {
+            return Err("A36 joined source requested at a different frame hour".into());
+        }
+        Ok(self.frame.clone())
+    }
+}
+
+fn materialize_abl1_frame(
+    frame_hour: u64,
+    elapsed_wall_ms: u64,
+    catalog: &ExactA729PortableIdentityCatalog,
+    controller: &ControllerObservation,
+    observations: &[DisabledReasonObservation],
+) -> Result<(crate::AbilityFrame, Vec<u64>), String> {
+    validate_identity_catalog(catalog)?;
+    if controller.sequence == 0
+        || catalog.epoch != controller.sequence
+        || controller.source_definition_runtime.len() != controller.row_widget_count as usize
+        || controller.definition_presentations.len() != controller.source_definition_runtime.len()
+        || controller.definitions.len() != controller.source_definition_runtime.len() {
+        return Err("A36 ABL1 row count does not match retained refresh identity".into());
+    }
+    let selected_runtime = selected_context_runtime(controller)?;
+    let context = catalog.contexts_by_runtime.get(&selected_runtime)
+        .ok_or_else(|| "A36 selected context is absent from the exact root catalog".to_string())?;
+    validate_context_identity(context, controller)?;
+    let selected_context_id = context_wire_id(context);
+    let mut rows = Vec::with_capacity(controller.source_definition_runtime.len());
+    let mut tooltip_sequences = Vec::with_capacity(rows.capacity());
+    for ordinal in 0..controller.source_definition_runtime.len() {
+        let matches = observations
+            .iter()
+            .filter(|observation| {
+                observation.controller_sequence == controller.sequence
+                    && observation.controller_runtime == controller.controller_runtime
+                    && observation.row_ordinal as usize == ordinal
+                    && observation.definition_runtime
+                        == controller.source_definition_runtime[ordinal]
+                    && observation.source_definition_runtime
+                        == controller.source_definition_runtime
+                    && observation.row_owner_runtime == controller.row_owner_runtime
+                    && observation.context_mode == controller.context_mode
+                    && observation.selected_root_runtime == controller.selected_root_runtime
+                    && observation.selected_leader_runtime == controller.selected_leader_runtime
+                    && observation.selected_army_runtime == controller.selected_army_runtime
+                    && observation.selected_army_group_runtime
+                        == controller.selected_army_group_runtime
+                    && observation.selected_other_runtime == controller.selected_other_runtime
+                    && observation.field_marshal_aggregate == controller.field_marshal_aggregate
+            })
+            .collect::<Vec<_>>();
+        if matches.len() != 1 {
+            return Err("A36 ABL1 row lacks one exact tooltip transaction".into());
+        }
+        let observation = matches[0];
+        if observation.sequence <= controller.sequence
+            || tooltip_sequences.last().is_some_and(|prior| observation.sequence <= *prior)
+            || observation.final_tooltip.is_empty()
+            || observation.accumulator_callsite_seen != !observation.disabled_reason.is_empty()
+        {
+            return Err("A36 tooltip/disabled-reason availability law disagrees".into());
+        }
+        let definition = &controller.definitions[ordinal];
+        let presentation = &controller.definition_presentations[ordinal];
+        if definition.definition_runtime != controller.source_definition_runtime[ordinal]
+            || presentation.definition_runtime != definition.definition_runtime {
+            return Err("A36 definition leaves/presentation/source identity disagree".into());
+        }
+        let (active, activation_elapsed, cooldown_remaining, duration_remaining, cost, active_leaders) =
+            materialize_state(controller, definition, observation)?;
+        if cost < 0 {
+            return Err("A36 effective command-power cost is negative".into());
+        }
+        let activation_hour = if active {
+            Some(frame_hour.checked_sub(u64::try_from(activation_elapsed)
+                .map_err(|_| "A36 active row has a negative activation elapsed value")?)
+                .ok_or_else(|| "A36 activation elapsed predates frame zero".to_string())?)
+        } else { None };
+        let mut affected_division_ids = BTreeSet::new();
+        for leader in active_leaders {
+            for division_id in catalog.division_ids_by_leader_runtime.get(&leader)
+                .ok_or_else(|| "A36 active leader is absent from exact division membership roots".to_string())? {
+                if *division_id == 0 || !affected_division_ids.insert(*division_id) {
+                    return Err("A36 exact division membership contains zero or duplicate identity".into());
+                }
+            }
+        }
+        rows.push(crate::AbilityRow {
+            ability_id: presentation.ability_id.clone(),
+            available: !observation.accumulator_callsite_seen,
+            active,
+            activation_hour,
+            cooldown_total: cooldown_total(definition.cooldown_hours)?,
+            cooldown_remaining,
+            cost_command_power_fixed: cost,
+            target_kind: Some(context_kind_name(context.kind).into()),
+            target_id: Some(selected_context_id.clone()),
+            duration_total: duration_total(definition.duration_hours)?,
+            duration_remaining,
+            display_order: ordinal as u32,
+            icon: presentation.resolved_icon.clone(),
+            tooltip: observation.final_tooltip.clone(),
+            disabled_reason: observation.accumulator_callsite_seen
+                .then(|| observation.disabled_reason.clone()),
+            affected_division_ids: affected_division_ids.into_iter()
+                .map(|id| format!("division:{id}"))
+                .collect(),
+        });
+        tooltip_sequences.push(observation.sequence);
+    }
+    if rows.is_empty() && !controller.measured_empty {
+        return Err("A36 empty source lacks the exact measured-empty witness".into());
+    }
+    let frame = crate::AbilityFrame {
+        elapsed_wall_ms,
+        status_flags: 0,
+        frame_hour,
+        country_tag: context.country_tag.clone(),
+        selected_context_kind: context.kind,
+        selected_context_id: selected_context_id.clone(),
+        source_record_id: format!(
+            "a729:a36:{frame_hour}:{}:{}:{selected_context_id}",
+            context.country_tag,
+            context.kind.wire()
+        ),
+        complete: true,
+        rows,
+    };
+    crate::validate_frame(&frame).map_err(|error| format!("A36 joined ABL1 frame invalid: {error:?}"))?;
+    Ok((frame, tooltip_sequences))
+}
+
+fn selected_context_runtime(controller: &ControllerObservation) -> Result<usize, String> {
+    [
+        controller.selected_leader_runtime,
+        controller.selected_army_group_runtime,
+        controller.selected_army_runtime,
+        controller.selected_other_runtime,
+    ]
+    .into_iter()
+    .find(|value| *value != 0)
+    .ok_or_else(|| "A36 selected context lacks an exact runtime identity".into())
+}
+
+fn validate_identity_catalog(catalog: &ExactA729PortableIdentityCatalog) -> Result<(), String> {
+    if catalog.epoch == 0 {
+        return Err("A36 exact root catalog has no snapshot epoch".into());
+    }
+    let mut context_ids = BTreeSet::new();
+    for (runtime, context) in &catalog.contexts_by_runtime {
+        if *runtime == 0
+            || context.stable_id == 0
+            || context.country_tag.len() != 3
+            || !context.country_tag.bytes().all(|byte| byte.is_ascii_uppercase())
+            || !context_ids.insert((context.country_tag.clone(), context.kind.wire(), context.stable_id))
+        {
+            return Err("A36 exact root catalog carries an invalid or duplicate context identity".into());
+        }
+    }
+    let mut division_ids = BTreeSet::new();
+    for (leader_runtime, divisions) in &catalog.division_ids_by_leader_runtime {
+        if *leader_runtime == 0
+            || divisions.iter().any(|division| *division == 0 || !division_ids.insert(*division))
+        {
+            return Err("A36 exact division catalog carries a null or duplicate identity".into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_context_identity(
+    context: &PortableContextIdentity,
+    controller: &ControllerObservation,
+) -> Result<(), String> {
+    if context.stable_id == 0
+        || context.country_tag.len() != 3
+        || !context.country_tag.bytes().all(|byte| byte.is_ascii_uppercase())
+    {
+        return Err("A36 exact context catalog carries an invalid portable identity".into());
+    }
+    let expected = if controller.selected_leader_runtime != 0 {
+        if controller.field_marshal_aggregate {
+            crate::SelectedContextKind::FieldMarshal
+        } else {
+            crate::SelectedContextKind::ArmyLeader
+        }
+    } else if controller.selected_army_group_runtime != 0 {
+        crate::SelectedContextKind::ArmyGroup
+    } else if controller.selected_army_runtime != 0 {
+        crate::SelectedContextKind::Army
+    } else {
+        crate::SelectedContextKind::Other(controller.context_mode)
+    };
+    if context.kind != expected {
+        return Err("A36 root catalog context kind contradicts controller selection".into());
+    }
+    Ok(())
+}
+
+fn context_kind_name(kind: crate::SelectedContextKind) -> &'static str {
+    match kind {
+        crate::SelectedContextKind::ArmyLeader => "army_leader",
+        crate::SelectedContextKind::FieldMarshal => "field_marshal",
+        crate::SelectedContextKind::ArmyGroup => "army_group",
+        crate::SelectedContextKind::Army => "army",
+        crate::SelectedContextKind::Other(_) => "other",
+    }
+}
+
+fn context_wire_id(context: &PortableContextIdentity) -> String {
+    let prefix = match context.kind {
+        crate::SelectedContextKind::ArmyLeader | crate::SelectedContextKind::FieldMarshal => "leader",
+        crate::SelectedContextKind::ArmyGroup => "army_group",
+        crate::SelectedContextKind::Army => "army",
+        crate::SelectedContextKind::Other(_) => "other",
+    };
+    format!("{prefix}:{}", context.stable_id)
+}
+
+fn duration_total(raw: i32) -> Result<crate::TimerValue, String> {
+    match raw {
+        -1 => Ok(crate::TimerValue::Indefinite),
+        value if value >= 0 => Ok(crate::TimerValue::Hours(value as u32)),
+        _ => Err("A36 duration sentinel is outside the exact -1/nonnegative law".into()),
+    }
+}
+
+fn cooldown_total(raw: i32) -> Result<crate::TimerValue, String> {
+    match raw {
+        -1 => Ok(crate::TimerValue::NotStarted),
+        value if value >= 0 => Ok(crate::TimerValue::Hours(value as u32)),
+        _ => Err("A36 cooldown sentinel is outside the exact -1/nonnegative law".into()),
+    }
+}
+
+fn remaining_timer(raw: i32) -> Result<crate::TimerValue, String> {
+    if raw < 0 {
+        Err("A36 running timer has a negative remaining value".into())
+    } else {
+        Ok(crate::TimerValue::Hours(raw as u32))
+    }
+}
+
+fn materialize_state(
+    controller: &ControllerObservation,
+    definition: &DefinitionLeaves,
+    tooltip: &DisabledReasonObservation,
+) -> Result<(bool, i32, crate::TimerValue, crate::TimerValue, i64, Vec<usize>), String> {
+    if controller.field_marshal_aggregate {
+        let state = controller.field_marshal_leaves.iter()
+            .find(|row| row.definition_runtime == definition.definition_runtime)
+            .ok_or_else(|| "A36 field-marshal definition lacks its exact state record".to_string())?;
+        let active = state.group_already_active;
+        let cooldown_remaining = if !active && state.cooldown_count != 0 {
+            remaining_timer(state.minimum_cooldown_remaining_hours)?
+        } else { crate::TimerValue::NotStarted };
+        let duration_remaining = if active {
+            if definition.duration_hours == -1 { crate::TimerValue::Indefinite }
+            else { remaining_timer(state.minimum_active_remaining_hours)? }
+        } else { crate::TimerValue::NotStarted };
+        let active_leaders = state.leaders.iter()
+            .filter(|leader| leader.state_code == 1)
+            .map(|leader| leader.leader_runtime)
+            .collect::<Vec<_>>();
+        if active && active_leaders.is_empty() {
+            return Err("A36 active field-marshal row has no active leader membership".into());
+        }
+        Ok((active, state.group_activation_elapsed_hours, cooldown_remaining,
+            duration_remaining, state.allocated_command_power_cost_fixed, active_leaders))
+    } else {
+        let state = controller.ordinary_leaves.iter()
+            .find(|row| row.definition_runtime == definition.definition_runtime)
+            .ok_or_else(|| "A36 ordinary definition lacks its exact state record".to_string())?;
+        let active = state.state == OrdinaryAbilityState::Active;
+        let cooldown_remaining = if state.state == OrdinaryAbilityState::Cooldown {
+            let remaining = i64::from(definition.duration_hours)
+                .checked_add(i64::from(definition.cooldown_hours))
+                .and_then(|value| value.checked_sub(i64::from(state.activation_elapsed_hours)))
+                .ok_or_else(|| "A36 cooldown remaining calculation overflowed".to_string())?;
+            remaining_timer(i32::try_from(remaining.max(0))
+                .map_err(|_| "A36 cooldown remaining exceeds i32")?)?
+        } else { crate::TimerValue::NotStarted };
+        let duration_remaining = if active {
+            if definition.duration_hours == -1 { crate::TimerValue::Indefinite }
+            else {
+                let remaining = i64::from(definition.duration_hours)
+                    .checked_sub(i64::from(state.activation_elapsed_hours))
+                    .ok_or_else(|| "A36 duration remaining calculation overflowed".to_string())?;
+                remaining_timer(i32::try_from(remaining.max(0))
+                    .map_err(|_| "A36 duration remaining exceeds i32")?)?
+            }
+        } else { crate::TimerValue::NotStarted };
+        let cost = tooltip.effective_command_power_cost_fixed
+            .ok_or_else(|| "A36 ordinary row lacks its exact effective command-power cost".to_string())?;
+        let leaders = if active && controller.selected_leader_runtime != 0 {
+            vec![controller.selected_leader_runtime]
+        } else {
+            Vec::new()
+        };
+        Ok((active, state.activation_elapsed_hours, cooldown_remaining,
+            duration_remaining, cost, leaders))
+    }
+}
+
 pub fn install_a729_ability_transition_hook() -> Result<InstalledHookAddresses, String> {
+    let _install_guard = INSTALL_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "A36 hook install lock poisoned".to_string())?;
     if !EXACT_A729_AUTHORITY_BOUND {
         return Err("A36 exact-a729 static authority receipt is not bound".into());
+    }
+    if INSTALL_BROKEN.load(Ordering::Acquire) {
+        return Err("A36 prior hook rollback was incomplete; process restart required".into());
     }
     if INSTALLED.load(Ordering::Acquire) {
         return Ok(installed_addresses(MODULE_BASE.load(Ordering::Acquire)));
@@ -276,15 +811,31 @@ pub fn install_a729_ability_transition_hook() -> Result<InstalledHookAddresses, 
         ("active/cooldown probe", addresses.active_cooldown_probe, ACTIVE_PROBE_SENTINEL.as_slice()),
         ("availability evaluator", addresses.availability_evaluator, AVAILABILITY_SENTINEL.as_slice()),
         ("special-context probe", addresses.special_context_probe, SPECIAL_CONTEXT_SENTINEL.as_slice()),
+        ("ability tooltip", addresses.tooltip_builder, TOOLTIP_SENTINEL.as_slice()),
+        ("string append", addresses.string_append, STRING_APPEND_SENTINEL.as_slice()),
+        ("effective command-power cost", addresses.effective_command_power_cost, EFFECTIVE_COST_SENTINEL.as_slice()),
+        ("ability icon resolver", addresses.icon_resolver, ICON_RESOLVER_SENTINEL.as_slice()),
+        ("ordinary effective-cost callsite", base + (EFFECTIVE_COST_RETURN_RVA - 5) as usize, EFFECTIVE_COST_CALLSITE_SENTINEL.as_slice()),
+        ("ability icon resolver callsite", base + (ICON_RESOLVER_RETURN_RVA - 5) as usize, ICON_RESOLVER_CALLSITE_SENTINEL.as_slice()),
+        (
+            "disabled-reason accumulator append callsite",
+            base + (DISABLED_REASON_APPEND_RETURN_RVA - 5) as usize,
+            DISABLED_REASON_CALLSITE_SENTINEL.as_slice(),
+        ),
     ] {
         verify_sentinel(label, address, sentinel)?;
     }
     STATE.get_or_init(|| Mutex::new(ObserverState::default()));
+    MODULE_BASE.store(base, Ordering::Release);
     let specs = [
         (addresses.context_invalid_probe, hook_context_probe as *mut c_void, &ORIGINAL_CONTEXT_PROBE),
         (addresses.active_cooldown_probe, hook_active_probe as *mut c_void, &ORIGINAL_ACTIVE_PROBE),
         (addresses.availability_evaluator, hook_availability as *mut c_void, &ORIGINAL_AVAILABILITY),
         (addresses.special_context_probe, hook_special_context as *mut c_void, &ORIGINAL_SPECIAL_CONTEXT),
+        (addresses.string_append, hook_string_append as *mut c_void, &ORIGINAL_STRING_APPEND),
+        (addresses.effective_command_power_cost, hook_effective_cost as *mut c_void, &ORIGINAL_EFFECTIVE_COST),
+        (addresses.icon_resolver, hook_icon_resolver as *mut c_void, &ORIGINAL_ICON_RESOLVER),
+        (addresses.tooltip_builder, hook_tooltip as *mut c_void, &ORIGINAL_TOOLTIP),
         (addresses.refresh, hook_refresh as *mut c_void, &ORIGINAL_REFRESH),
     ];
     let mut created = 0usize;
@@ -295,29 +846,49 @@ pub fn install_a729_ability_transition_hook() -> Result<InstalledHookAddresses, 
                 created += 1;
             }
             Err(status) => {
-                rollback(&specs, created);
-                return Err(format!("A36 hook creation failed at 0x{target:X}: {status}"));
+                let rollback = rollback(&specs, created, 0);
+                return Err(format!(
+                    "A36 hook creation failed at 0x{target:X}: {status}{rollback}"
+                ));
             }
         }
     }
     for (enabled, (target, _, _)) in specs.iter().enumerate() {
         if let Err(status) = unsafe { MinHook::enable_hook(*target as *mut c_void) } {
-            for (prior, _, _) in specs.iter().take(enabled) {
-                let _ = unsafe { MinHook::disable_hook(*prior as *mut c_void) };
-            }
-            rollback(&specs, created);
-            return Err(format!("A36 hook enable failed at 0x{target:X}: {status}"));
+            let rollback = rollback(&specs, created, enabled);
+            return Err(format!(
+                "A36 hook enable failed at 0x{target:X}: {status}{rollback}"
+            ));
         }
     }
-    MODULE_BASE.store(base, Ordering::Release);
     INSTALLED.store(true, Ordering::Release);
     Ok(addresses)
 }
 
-fn rollback(specs: &[(usize, *mut c_void, &AtomicUsize); 5], created: usize) {
-    for (target, _, original) in specs.iter().take(created).rev() {
-        let _ = unsafe { MinHook::remove_hook(*target as *mut c_void) };
-        original.store(0, Ordering::Release);
+fn rollback(
+    specs: &[(usize, *mut c_void, &AtomicUsize)],
+    created: usize,
+    enabled: usize,
+) -> String {
+    let mut failures = Vec::new();
+    for (index, (target, _, original)) in specs.iter().take(created).enumerate().rev() {
+        if index < enabled {
+            if let Err(status) = unsafe { MinHook::disable_hook(*target as *mut c_void) } {
+                failures.push(format!("0x{target:X} disable: {status}"));
+                continue;
+            }
+        }
+        match unsafe { MinHook::remove_hook(*target as *mut c_void) } {
+            Ok(()) => original.store(0, Ordering::Release),
+            Err(status) => failures.push(format!("0x{target:X}: {status}")),
+        }
+    }
+    if failures.is_empty() {
+        MODULE_BASE.store(0, Ordering::Release);
+        String::new()
+    } else {
+        INSTALL_BROKEN.store(true, Ordering::Release);
+        format!("; rollback retained live trampolines at {}", failures.join(", "))
     }
 }
 
@@ -328,6 +899,10 @@ fn installed_addresses(base: usize) -> InstalledHookAddresses {
         active_cooldown_probe: base + ACTIVE_COOLDOWN_PROBE_RVA as usize,
         availability_evaluator: base + AVAILABILITY_EVALUATOR_RVA as usize,
         special_context_probe: base + SPECIAL_CONTEXT_PROBE_RVA as usize,
+        tooltip_builder: base + TOOLTIP_BUILDER_RVA as usize,
+        string_append: base + STRING_APPEND_RVA as usize,
+        effective_command_power_cost: base + EFFECTIVE_COMMAND_POWER_COST_RVA as usize,
+        icon_resolver: base + ICON_RESOLVER_RVA as usize,
     }
 }
 
@@ -426,6 +1001,340 @@ unsafe extern "system" fn hook_special_context(controller: usize) -> u8 {
     result
 }
 
+unsafe extern "system" fn hook_icon_resolver(registry: usize, icon_string: usize) -> usize {
+    let original: IconResolverFn = unsafe {
+        mem::transmute(ORIGINAL_ICON_RESOLVER.load(Ordering::Acquire))
+    };
+    let result = unsafe { original(registry, icon_string) };
+    if immediate_game_return_rva() == Some(ICON_RESOLVER_RETURN_RVA) {
+        let icon = read_engine_string(icon_string)
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .unwrap_or_default();
+        record_event(ProbeEvent::IconResolved {
+            icon,
+            resolved: result != 0,
+        });
+    }
+    result
+}
+
+unsafe extern "system" fn hook_effective_cost(
+    definition: usize,
+    cost_out: *mut i64,
+    scope: usize,
+) -> usize {
+    let original: EffectiveCostFn = unsafe {
+        mem::transmute(ORIGINAL_EFFECTIVE_COST.load(Ordering::Acquire))
+    };
+    let result = unsafe { original(definition, cost_out, scope) };
+    if immediate_game_return_rva() == Some(EFFECTIVE_COST_RETURN_RVA) {
+        let value = rpm(cost_out as usize, 8).and_then(|bytes| le_i64(&bytes, 0).ok());
+        TOOLTIP_TRACE.with(|trace| {
+            let mut trace = trace.borrow_mut();
+            let Some(open) = trace.as_mut() else { return };
+            let Some(value) = value else {
+                open.duplicate_effective_cost = true;
+                return;
+            };
+            if open.identity.field_marshal_aggregate
+                || definition != open.identity.definition_runtime
+                || open.effective_command_power_cost_fixed.replace(value).is_some()
+            {
+                open.duplicate_effective_cost = true;
+            }
+        });
+    }
+    result
+}
+
+unsafe extern "system" fn hook_tooltip(
+    callback_owner: usize,
+    hovered_widget: usize,
+    tooltip_output: usize,
+) -> usize {
+    let identity = read_tooltip_identity(callback_owner, hovered_widget, tooltip_output).ok();
+    let identity_present = identity.is_some();
+    let nested = TOOLTIP_TRACE.with(|trace| {
+        let mut trace = trace.borrow_mut();
+        if let Some(open) = trace.as_mut() {
+            open.nested_or_replaced = true;
+            true
+        } else if let Some(identity) = identity.clone() {
+            *trace = Some(OpenTooltipTrace {
+                identity,
+                disabled_reason_bytes: None,
+                effective_command_power_cost_fixed: None,
+                duplicate_effective_cost: false,
+                accumulator_callsite_seen: false,
+                duplicate_accumulator_append: false,
+                nested_or_replaced: false,
+            });
+            false
+        } else {
+            false
+        }
+    });
+    if nested {
+        reject_nested_tooltip();
+    } else if !identity_present {
+        reject_tooltip();
+    }
+    let original = ORIGINAL_TOOLTIP.load(Ordering::Acquire);
+    let result = if original == 0 {
+        0
+    } else {
+        let original: TooltipFn = unsafe { mem::transmute(original) };
+        unsafe { original(callback_owner, hovered_widget, tooltip_output) }
+    };
+    if nested || !identity_present {
+        return result;
+    }
+    let trace = TOOLTIP_TRACE.with(|trace| trace.borrow_mut().take());
+    match trace.and_then(|trace| finish_tooltip_trace(trace, result).ok()) {
+        Some(observation) => retain_disabled_reason(observation),
+        None => reject_tooltip(),
+    }
+    result
+}
+
+unsafe extern "system" fn hook_string_append(
+    destination: usize,
+    source: usize,
+    length: usize,
+) -> usize {
+    let tooltip_open = TOOLTIP_TRACE.with(|trace| trace.borrow().is_some());
+    if tooltip_open && immediate_game_return_rva() == Some(DISABLED_REASON_APPEND_RETURN_RVA) {
+        TOOLTIP_TRACE.with(|trace| {
+            let mut trace = trace.borrow_mut();
+            let Some(open) = trace.as_mut() else {
+                return;
+            };
+            open.accumulator_callsite_seen = true;
+            if destination != open.identity.tooltip_output_runtime
+                || length == 0
+                || length > MAX_TEXT_BYTES
+            {
+                open.duplicate_accumulator_append = true;
+                return;
+            }
+            let Some(bytes) = rpm(source, length) else {
+                open.duplicate_accumulator_append = true;
+                return;
+            };
+            if open.disabled_reason_bytes.replace(bytes).is_some() {
+                open.duplicate_accumulator_append = true;
+            }
+        });
+    }
+    let original = ORIGINAL_STRING_APPEND.load(Ordering::Acquire);
+    if original == 0 {
+        destination
+    } else {
+        let original: StringAppendFn = unsafe { mem::transmute(original) };
+        unsafe { original(destination, source, length) }
+    }
+}
+
+fn read_tooltip_identity(
+    callback_owner: usize,
+    hovered_widget: usize,
+    tooltip_output: usize,
+) -> Result<TooltipRuntimeIdentity, String> {
+    let controller = callback_owner
+        .checked_sub(0x28)
+        .ok_or_else(|| "ability tooltip callback owner underflow".to_string())?;
+    if hovered_widget == 0 || tooltip_output == 0 {
+        return Err("ability tooltip has a null widget/output".into());
+    }
+    let before = read_meta(controller)?;
+    validate_header(before.source, 8, "tooltip source")?;
+    validate_header(before.row_widgets, 8, "tooltip row widget")?;
+    if before.source.count == 0 || before.source.count != before.row_widgets.count {
+        return Err("ability tooltip source/widget counts are empty or unequal".into());
+    }
+    let source_first = read_vector(before.source, 8)?;
+    let rows_first = read_vector(before.row_widgets, 8)?;
+    let source = read_vector(before.source, 8)?;
+    let rows = read_vector(before.row_widgets, 8)?;
+    let after = read_meta(controller)?;
+    if before != after || source_first != source || rows_first != rows {
+        return Err("ability tooltip row identity changed during snapshot".into());
+    }
+    let source_definition_runtime = pointer_rows(&source)?;
+    let row_owner_runtime = pointer_rows(&rows)?;
+    if source_definition_runtime.iter().any(|value| *value == 0)
+        || row_owner_runtime.iter().any(|value| *value == 0)
+    {
+        return Err("ability tooltip row identity contains null".into());
+    }
+    let matching = row_owner_runtime
+        .iter()
+        .enumerate()
+        .filter_map(|(ordinal, owner)| {
+            owner
+                .checked_add(0x30)
+                .filter(|embedded_widget| *embedded_widget == hovered_widget)
+                .map(|_| ordinal)
+        })
+        .collect::<Vec<_>>();
+    if matching.len() != 1 {
+        return Err("ability tooltip widget lacks one exact embedded-row owner".into());
+    }
+    let ordinal = matching[0];
+    let definition_runtime = source_definition_runtime[ordinal];
+    let mut identity = TooltipRuntimeIdentity {
+        controller_sequence: 0,
+        callback_owner_runtime: callback_owner,
+        hovered_widget_runtime: hovered_widget,
+        tooltip_output_runtime: tooltip_output,
+        controller_runtime: controller,
+        context_mode: after.context_mode,
+        selected_root_runtime: after.selected_root,
+        selected_leader_runtime: after.selected_leader,
+        selected_army_runtime: after.selected_army,
+        selected_army_group_runtime: after.selected_army_group,
+        selected_other_runtime: after.selected_other,
+        field_marshal_aggregate: after.field_marshal_aggregate,
+        row_ordinal: ordinal as u32,
+        definition_runtime,
+        source_definition_runtime,
+        row_owner_runtime,
+    };
+    identity.controller_sequence = matching_controller_sequence(&identity)
+        .ok_or_else(|| "ability tooltip lacks an exact retained refresh transaction".to_string())?;
+    Ok(identity)
+}
+
+fn matching_controller_sequence(identity: &TooltipRuntimeIdentity) -> Option<u64> {
+    STATE
+        .get()
+        .and_then(|state| state.lock().ok())
+        .and_then(|state| {
+            state
+                .observations
+                .iter()
+                .rev()
+                .find(|observation| {
+                    observation.controller_runtime == identity.controller_runtime
+                        && observation.context_mode == identity.context_mode
+                        && observation.selected_root_runtime == identity.selected_root_runtime
+                        && observation.selected_leader_runtime == identity.selected_leader_runtime
+                        && observation.selected_army_runtime == identity.selected_army_runtime
+                        && observation.selected_army_group_runtime
+                            == identity.selected_army_group_runtime
+                        && observation.selected_other_runtime == identity.selected_other_runtime
+                        && observation.field_marshal_aggregate == identity.field_marshal_aggregate
+                        && observation.source_definition_runtime
+                            == identity.source_definition_runtime
+                        && observation.row_owner_runtime == identity.row_owner_runtime
+                })
+                .map(|observation| observation.sequence)
+        })
+}
+
+fn finish_tooltip_trace(
+    trace: OpenTooltipTrace,
+    tooltip_result: usize,
+) -> Result<DisabledReasonObservation, String> {
+    if tooltip_result == 0
+        || trace.nested_or_replaced
+        || trace.duplicate_accumulator_append
+        || trace.duplicate_effective_cost
+        || (!trace.identity.field_marshal_aggregate
+            && trace.effective_command_power_cost_fixed.is_none())
+    {
+        return Err("ability tooltip transaction was unsuccessful or ambiguous".into());
+    }
+    let after = read_tooltip_identity(
+        trace.identity.callback_owner_runtime,
+        trace.identity.hovered_widget_runtime,
+        trace.identity.tooltip_output_runtime,
+    )?;
+    if after != trace.identity {
+        return Err("ability tooltip row identity changed across invocation".into());
+    }
+    if trace.accumulator_callsite_seen != trace.disabled_reason_bytes.is_some() {
+        return Err("ability tooltip accumulator callsite/body disagreement".into());
+    }
+    let final_tooltip = String::from_utf8(
+        read_engine_string(trace.identity.tooltip_output_runtime)
+            .ok_or_else(|| "ability final tooltip string unreadable".to_string())?,
+    )
+    .map_err(|_| "ability final tooltip is not UTF-8".to_string())?;
+    if final_tooltip.is_empty() {
+        return Err("ability final tooltip is empty".into());
+    }
+    let disabled_reason = String::from_utf8(trace.disabled_reason_bytes.unwrap_or_default())
+        .map_err(|_| "ability disabled-reason accumulator is not UTF-8".to_string())?;
+    let identity = trace.identity;
+    Ok(DisabledReasonObservation {
+        sequence: NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        controller_sequence: identity.controller_sequence,
+        controller_runtime: identity.controller_runtime,
+        callback_owner_runtime: identity.callback_owner_runtime,
+        hovered_widget_runtime: identity.hovered_widget_runtime,
+        context_mode: identity.context_mode,
+        selected_root_runtime: identity.selected_root_runtime,
+        selected_leader_runtime: identity.selected_leader_runtime,
+        selected_army_runtime: identity.selected_army_runtime,
+        selected_army_group_runtime: identity.selected_army_group_runtime,
+        selected_other_runtime: identity.selected_other_runtime,
+        field_marshal_aggregate: identity.field_marshal_aggregate,
+        row_ordinal: identity.row_ordinal,
+        definition_runtime: identity.definition_runtime,
+        source_definition_runtime: identity.source_definition_runtime,
+        row_owner_runtime: identity.row_owner_runtime,
+        final_tooltip,
+        disabled_reason,
+        accumulator_callsite_seen: trace.accumulator_callsite_seen,
+        effective_command_power_cost_fixed: trace.effective_command_power_cost_fixed,
+    })
+}
+
+fn immediate_game_return_rva() -> Option<u32> {
+    let base = MODULE_BASE.load(Ordering::Acquire);
+    let pe_offset = read_u32(base.checked_add(0x3c)?).ok()? as usize;
+    let image_size = read_u32(base.checked_add(pe_offset)?.checked_add(0x50)?).ok()? as usize;
+    let mut stack = [ptr::null_mut::<c_void>(); 8];
+    let count = unsafe {
+        RtlCaptureStackBackTrace(0, stack.len() as u32, stack.as_mut_ptr(), ptr::null_mut())
+    } as usize;
+    nearest_game_return_rva(
+        base,
+        image_size,
+        &stack[..count]
+            .iter()
+            .map(|address| *address as usize)
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn nearest_game_return_rva(base: usize, image_size: usize, stack: &[usize]) -> Option<u32> {
+    let end = base.checked_add(image_size)?;
+    let address = stack
+        .iter()
+        .copied()
+        .find(|address| *address >= base && *address < end)?;
+    u32::try_from(address.checked_sub(base)?).ok()
+}
+
+fn read_engine_string(address: usize) -> Option<Vec<u8>> {
+    let length = read_usize(address.checked_add(0x10)?).ok()?;
+    let capacity = read_usize(address.checked_add(0x18)?).ok()?;
+    if length > capacity || length > MAX_TEXT_BYTES {
+        return None;
+    }
+    if length == 0 {
+        return Some(Vec::new());
+    }
+    let data = if capacity <= 15 {
+        address
+    } else {
+        read_usize(address).ok()?
+    };
+    rpm(data, length)
+}
+
 fn record_event(event: ProbeEvent) {
     TRACE.with(|trace| {
         if let Some(open) = trace.borrow_mut().as_mut() {
@@ -451,16 +1360,47 @@ fn build_observation(trace: OpenTrace) -> Result<ControllerObservation, String> 
         return Err("row widget count differs from exact source order".into());
     }
     let sources = pointer_rows(&source_bytes)?;
+    let row_owners = pointer_rows(&row_widget_bytes)?;
     let aggregate_leaders = pointer_rows(&leader_bytes)?;
     if aggregate_leaders.iter().any(|pointer| *pointer == 0) {
         return Err("field-marshal leader vector contains a null identity".into());
     }
-    if pointer_rows(&row_widget_bytes)?.iter().any(|pointer| *pointer == 0) {
+    if row_owners.iter().any(|pointer| *pointer == 0) {
         return Err("row widget vector contains a null owner".into());
     }
     let mut definitions = Vec::with_capacity(sources.len());
     for definition in &sources {
         definitions.push(read_definition(*definition)?);
+    }
+    let icon_events = trace
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            ProbeEvent::IconResolved { icon, resolved } => Some((icon, *resolved)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if icon_events.len() != sources.len() {
+        return Err("ability icon resolver observations differ from source row count".into());
+    }
+    let mut ability_ids = BTreeSet::new();
+    let mut definition_presentations = Vec::with_capacity(sources.len());
+    for (definition_runtime, (icon, resolved)) in sources.iter().zip(icon_events) {
+        let ability_id = read_engine_string(*definition_runtime + 0x70)
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .filter(|value| valid_portable_token(value))
+            .ok_or_else(|| "ability definition intrinsic token is unreadable or non-portable".to_string())?;
+        if !ability_ids.insert(ability_id.clone())
+            || !resolved
+            || !valid_portable_token(icon)
+        {
+            return Err("ability token/icon identity is duplicate, unresolved or non-portable".into());
+        }
+        definition_presentations.push(DefinitionPresentation {
+            definition_runtime: *definition_runtime,
+            ability_id,
+            resolved_icon: icon.clone(),
+        });
     }
     let field_marshal_leaves = parse_field_marshal_states(&state_bytes)?;
     let state_definitions = field_marshal_leaves
@@ -505,7 +1445,9 @@ fn build_observation(trace: OpenTrace) -> Result<ControllerObservation, String> 
         field_marshal_aggregate: meta.field_marshal_aggregate,
         aggregate_leader_runtime: aggregate_leaders,
         source_definition_runtime: sources,
+        row_owner_runtime: row_owners,
         definitions,
+        definition_presentations,
         ordinary_leaves,
         field_marshal_leaves,
         row_widget_count: meta.row_widgets.count,
@@ -719,6 +1661,17 @@ fn read_definition(definition: usize) -> Result<DefinitionLeaves, String> {
     })
 }
 
+fn valid_portable_token(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    !value.is_empty()
+        && value.len() <= 1024
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'/' | b':')
+        })
+        && !lower.starts_with("0x")
+        && !lower.contains(":0x")
+}
+
 fn parse_field_marshal_states(bytes: &[u8]) -> Result<Vec<FieldMarshalAbilityLeaf>, String> {
     let mut out = Vec::new();
     for record in bytes.chunks_exact(FM_STATE_STRIDE) {
@@ -798,6 +1751,17 @@ fn retain(observation: ControllerObservation) {
     state.observations.push_back(observation);
 }
 
+fn retain_disabled_reason(observation: DisabledReasonObservation) {
+    let Ok(mut state) = STATE.get_or_init(|| Mutex::new(ObserverState::default())).lock() else {
+        return;
+    };
+    state.completed_tooltips = state.completed_tooltips.saturating_add(1);
+    if state.disabled_reasons.len() >= MAX_TEXT_OBSERVATIONS {
+        state.disabled_reasons.pop_front();
+    }
+    state.disabled_reasons.push_back(observation);
+}
+
 fn reject_refresh() {
     if let Ok(mut state) = STATE.get_or_init(|| Mutex::new(ObserverState::default())).lock() {
         state.rejected_refreshes = state.rejected_refreshes.saturating_add(1);
@@ -807,6 +1771,18 @@ fn reject_refresh() {
 fn reject_nested() {
     if let Ok(mut state) = STATE.get_or_init(|| Mutex::new(ObserverState::default())).lock() {
         state.nested_refreshes = state.nested_refreshes.saturating_add(1);
+    }
+}
+
+fn reject_tooltip() {
+    if let Ok(mut state) = STATE.get_or_init(|| Mutex::new(ObserverState::default())).lock() {
+        state.rejected_tooltips = state.rejected_tooltips.saturating_add(1);
+    }
+}
+
+fn reject_nested_tooltip() {
+    if let Ok(mut state) = STATE.get_or_init(|| Mutex::new(ObserverState::default())).lock() {
+        state.nested_tooltips = state.nested_tooltips.saturating_add(1);
     }
 }
 
@@ -875,4 +1851,178 @@ fn rpm(address: usize, len: usize) -> Option<Vec<u8>> {
         )
     };
     (ok != 0 && read == len).then_some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn controller() -> ControllerObservation {
+        ControllerObservation {
+            sequence: 41,
+            controller_runtime: 0x7ff6_1000_0000,
+            context_mode: 1,
+            selected_root_runtime: 0x7ff6_2000_0000,
+            selected_leader_runtime: 0x7ff6_2000_0100,
+            selected_army_runtime: 0,
+            selected_army_group_runtime: 0,
+            selected_other_runtime: 0,
+            field_marshal_aggregate: false,
+            aggregate_leader_runtime: Vec::new(),
+            source_definition_runtime: vec![0x7ff6_3000_0000],
+            row_owner_runtime: vec![0x7ff6_4000_0000],
+            definitions: vec![DefinitionLeaves {
+                definition_runtime: 0x7ff6_3000_0000,
+                cancelable: false,
+                special_context_required: false,
+                duration_hours: 168,
+                cooldown_hours: 504,
+            }],
+            definition_presentations: vec![DefinitionPresentation {
+                definition_runtime: 0x7ff6_3000_0000,
+                ability_id: "force_attack".into(),
+                resolved_icon: "GFX_ability_force_attack".into(),
+            }],
+            ordinary_leaves: vec![OrdinaryAbilityLeaf {
+                definition_runtime: 0x7ff6_3000_0000,
+                scope_runtime: 0x7ff6_2000_0100,
+                state: OrdinaryAbilityState::Unavailable,
+                activation_elapsed_hours: -1,
+                availability_evaluated: Some(false),
+                special_context_allowed: None,
+            }],
+            field_marshal_leaves: Vec::new(),
+            row_widget_count: 1,
+            measured_empty: false,
+            probe_events: Vec::new(),
+        }
+    }
+
+    fn catalog() -> ExactA729PortableIdentityCatalog {
+        ExactA729PortableIdentityCatalog {
+            epoch: 41,
+            contexts_by_runtime: BTreeMap::from([(
+                0x7ff6_2000_0100,
+                PortableContextIdentity {
+                    country_tag: "GER".into(),
+                    kind: crate::SelectedContextKind::ArmyLeader,
+                    stable_id: 42,
+                },
+            )]),
+            division_ids_by_leader_runtime: BTreeMap::from([(
+                0x7ff6_2000_0100,
+                vec![7],
+            )]),
+        }
+    }
+
+    fn observation() -> DisabledReasonObservation {
+        DisabledReasonObservation {
+            sequence: 42,
+            controller_sequence: 41,
+            controller_runtime: 0x7ff6_1000_0000,
+            callback_owner_runtime: 0x7ff6_1000_0028,
+            hovered_widget_runtime: 0x7ff6_4000_0030,
+            context_mode: 1,
+            selected_root_runtime: 0x7ff6_2000_0000,
+            selected_leader_runtime: 0x7ff6_2000_0100,
+            selected_army_runtime: 0,
+            selected_army_group_runtime: 0,
+            selected_other_runtime: 0,
+            field_marshal_aggregate: false,
+            row_ordinal: 0,
+            definition_runtime: 0x7ff6_3000_0000,
+            source_definition_runtime: vec![0x7ff6_3000_0000],
+            row_owner_runtime: vec![0x7ff6_4000_0000],
+            final_tooltip: "Force Attack\nCannot use while retreating".into(),
+            disabled_reason: "Cannot use while retreating".into(),
+            accumulator_callsite_seen: true,
+            effective_command_power_cost_fixed: Some(125_000),
+        }
+    }
+
+    #[test]
+    fn exact_disabled_reason_transaction_materializes_pointer_free_abl1_and_aba2() {
+        let source = JoinedExactA729AbilitySource::bind_from_exact_root_catalog(
+            900,
+            12,
+            &catalog(),
+            &controller(),
+            &[observation()],
+        )
+        .expect("bind exact tooltip transaction");
+        assert!(crate::ExactA729AbilityControllerSource::is_exact_a729_ability_controller(&source));
+        assert_eq!(source.controller_sequence(), 41);
+        assert_eq!(source.tooltip_sequences(), &[42]);
+        assert_eq!(source.frame.rows[0].disabled_reason.as_deref(), Some("Cannot use while retreating"));
+        let production = crate::production_carrier::ProductionAbilityFrame {
+            elapsed_wall_ms: source.frame.elapsed_wall_ms,
+            frame_hour: source.frame.frame_hour,
+            status_flags: 0,
+            authority: crate::production_carrier::AuthorityState::Exact20Receipt,
+            snapshot: Some(source.frame.clone()),
+        };
+        crate::production_carrier::validate_frame(&production)
+            .expect("joined frame is admissible to the dormant ABA2 carrier");
+    }
+
+    #[test]
+    fn duplicate_or_cross_refresh_tooltip_transactions_fail_closed() {
+        let row = observation();
+        assert!(JoinedExactA729AbilitySource::bind_from_exact_root_catalog(
+            900,
+            12,
+            &catalog(),
+            &controller(),
+            &[row.clone(), row.clone()],
+        )
+        .is_err());
+        let mut wrong_refresh = row;
+        wrong_refresh.controller_sequence = 40;
+        assert!(JoinedExactA729AbilitySource::bind_from_exact_root_catalog(
+            900,
+            12,
+            &catalog(),
+            &controller(),
+            &[wrong_refresh],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn callsite_filter_uses_nearest_game_frame_only() {
+        let base = 0x1400_0000_0usize;
+        let expected = base + DISABLED_REASON_APPEND_RETURN_RVA as usize;
+        assert_eq!(
+            nearest_game_return_rva(base, 0x4000_0000, &[0x7fff_0000, expected]),
+            Some(DISABLED_REASON_APPEND_RETURN_RVA)
+        );
+        assert_eq!(
+            nearest_game_return_rva(
+                base,
+                0x4000_0000,
+                &[0x7fff_0000, base + 0x1234, expected],
+            ),
+            Some(0x1234)
+        );
+    }
+
+    #[test]
+    fn army_group_context_uses_engine_selection_precedence() {
+        let mut controller = controller();
+        controller.selected_leader_runtime = 0;
+        controller.selected_army_group_runtime = 0x7ff6_2000_0200;
+        controller.selected_army_runtime = 0x7ff6_2000_0300;
+        assert_eq!(
+            selected_context_runtime(&controller),
+            Ok(0x7ff6_2000_0200)
+        );
+    }
+
+    #[test]
+    fn portable_token_filter_rejects_pointer_shapes_not_embedded_hex_text() {
+        assert!(valid_portable_token("GFX_ability_model_0x_variant"));
+        assert!(!valid_portable_token("0x7ff610000000"));
+        assert!(!valid_portable_token("ability:0x7ff610000000"));
+    }
 }

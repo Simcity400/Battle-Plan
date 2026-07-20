@@ -6,7 +6,7 @@
 //! renders that can be diffed across hours, builds, and eventually against
 //! real the game screenshots.
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use map_viewer::GameFileResolver;
@@ -58,20 +58,6 @@ struct ProductionPixelGateReceipt {
     receipt_sha256: Option<String>,
     bgra_sha256: String,
     pixel_byte_len: usize,
-}
-
-fn sha256_file(path: &Path) -> Result<String> {
-    let mut file = std::fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 1024 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn production_pixel_gate_receipt_path(out: &Path) -> PathBuf {
@@ -409,8 +395,28 @@ fn dump_production_recording_frame(
     capture_dir: Option<&Path>,
     day_night_hour_override: Option<f32>,
 ) -> Result<()> {
-    let recording_path = match mode {
-        TimelineMode::Recording { path, .. } => path,
+    let (provider, label, recording_sha256) = match mode {
+        TimelineMode::Recording {
+            path,
+            logical_stream_id,
+            timeline,
+        } => {
+            let opened = crate::recording_open::open_product_recording_segment_with_authority(
+                path,
+                *logical_stream_id,
+            )
+            .map_err(|error| format!("open recording {}: {error}", path.display()))?;
+            let recording_sha256 = opened.authority_sha256.ok_or(
+                "production frame receipt requires a single retained replay-container authority",
+            )?;
+            let (provider, label) = crate::timeline::build_recording_provider(
+                None,
+                opened.source,
+                *timeline,
+                &path.display().to_string(),
+            )?;
+            (provider, label, recording_sha256)
+        }
         TimelineMode::Static1936 => {
             return Err(
                 "bundle-less --dump-frame is a production recording command and requires --recording"
@@ -426,7 +432,6 @@ fn dump_production_recording_frame(
         day_night_hour_override,
     )?;
 
-    let (provider, label) = build_provider(None, mode)?;
     let (game_resolver, content_admission) =
         crate::content_compatibility::bind_provider_content(provider.as_ref(), product_paths)
             .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
@@ -491,17 +496,44 @@ fn dump_production_recording_frame(
     let gfx = Gfx::create_offscreen(output_width, output_height)?;
     gfx.clear_target([0.0, 0.0, 0.0, 1.0])?;
     let has_map_route = prepared.target.is_some() && !prepared.ordered_render_operations.is_empty();
-    let (map_operations, map_receipt, map_presented) = if has_map_route {
+    let (map_operations, map_receipt, map_presented, snow_mud_proof) = if has_map_route {
         let mut runtime = crate::app::ProductProductionD3dRuntime::default();
         let outcome =
-            runtime.execute(&gfx, &game_resolver, production_map.resources(), &prepared)?;
+            runtime.execute_with_snow_mud_h2(
+                &gfx,
+                &game_resolver,
+                production_map.resources(),
+                &prepared,
+            )?;
         (
             outcome.executed_operations,
             outcome.receipt_sha256,
             outcome.presented_to_app_target,
+            outcome.snow_mud_proof,
         )
     } else {
-        (0, "none".into(), false)
+        (0, "none".into(), false, None)
+    };
+    let snow_mud_h2_receipt = match (
+        production_render.snow_mud_texture.as_ref(),
+        snow_mud_proof.as_ref(),
+    ) {
+        (None, None) => None,
+        (Some(packet), Some(proof)) => {
+            let receipt = crate::render::seal_product_snow_mud_h2_receipt(
+                packet,
+                &production_render.selected_present,
+                proof,
+            )?;
+            crate::render::persist_snow_mud_h2_receipt(&receipt)?;
+            Some(receipt)
+        }
+        (Some(_), None) => {
+            return Err("production SnowMudData H packet produced no product H2 proof".into())
+        }
+        (None, Some(_)) => {
+            return Err("production SnowMudData product H2 proof has no H packet".into())
+        }
     };
 
     let mut selected_present_operations = 0usize;
@@ -553,11 +585,15 @@ fn dump_production_recording_frame(
     let pixels = gfx.read_target()?;
     let pixel_sha256 = format!("{:x}", Sha256::digest(&pixels));
     write_bmp(out, output_width, output_height, &pixels)?;
+    let snow_mud_h2_receipt_path = snow_mud_h2_receipt
+        .as_ref()
+        .map(|receipt| write_snow_mud_h2_receipt(out, receipt))
+        .transpose()?;
     let pixel_gate_receipt = ProductionPixelGateReceipt {
         schema: "battle-plan-production-pixel-gate-receipt-v3",
         render_boundary: "post_authenticated_map_bgra8_no_selected_present_writers",
         authority_exe_sha256: content_manifest.source_game.executable_sha256.clone(),
-        recording_sha256: sha256_file(recording_path)?,
+        recording_sha256,
         production_render_sha256,
         selected_present_sha256,
         launch_epoch_sha256: production_render.authority.launch_epoch_sha256.clone(),
@@ -600,6 +636,12 @@ fn dump_production_recording_frame(
         pixel_sha256,
         pixel_gate_receipt_path.display(),
     );
+    if let Some(path) = snow_mud_h2_receipt_path {
+        println!(
+            "wrote product SnowMudData H2 immutable-upload/readback receipt: {}",
+            path.display()
+        );
+    }
     Ok(())
 }
 
@@ -850,6 +892,7 @@ mod tests {
     fn production_recording_dump_rejects_debug_bundle_route() {
         let mode = TimelineMode::Recording {
             path: "portable.battleplan".into(),
+            logical_stream_id: None,
             timeline: replay_core::TimelineConfig::default(),
         };
         assert!(reject_recording_dump_debug_bundle(&mode, false).is_ok());
@@ -868,6 +911,7 @@ mod tests {
             c03_camera_replay: None,
             ordered_scene_constant_buffers: Vec::new(),
             ordered_static_map_programs: Vec::new(),
+            snow_mud_texture: None,
             tree_runtime: None,
             s1_shadow: None,
             ordered_render_operations: Vec::new(),
@@ -892,6 +936,7 @@ mod tests {
             target: None,
             ordered_scene_constant_buffers: Vec::new(),
             ordered_render_operations: Vec::new(),
+            snow_mud_texture: None,
             political_textures: Vec::new(),
             tiled_lights: Vec::new(),
             ordered_static_used_content: Vec::new(),

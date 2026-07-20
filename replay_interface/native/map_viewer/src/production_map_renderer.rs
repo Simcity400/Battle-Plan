@@ -204,6 +204,9 @@ pub struct PreparedProductionMapFrame {
     /// An empty vector is authoritative unavailability, never permission to
     /// synthesize pipeline state from vanilla paths or retained captures.
     pub ordered_static_map_programs: Vec<StaticMapPassProgram>,
+    /// Exact selected-Present runtime SnowMudData packet consumed by static
+    /// bindings carrying `StaticShaderResourceSource::SnowMudTexture`.
+    pub snow_mud_texture: Option<replay_core::SnowMudTexturePacket>,
     /// C07 operation join admitted against the selected submit. The D3D
     /// preparation/execution path must retain every referenced static draw.
     pub tree_runtime: Option<C07TreeRuntimeCarrier>,
@@ -325,6 +328,7 @@ impl ProductionMapRenderer {
             c03_camera_replay,
             ordered_scene_constant_buffers,
             ordered_static_map_programs,
+            snow_mud_texture,
             tree_runtime,
             s1_shadow,
             ordered_render_operations,
@@ -348,6 +352,7 @@ impl ProductionMapRenderer {
                     None,
                     Vec::new(),
                     Vec::new(),
+                    None,
                     None,
                     None,
                     Vec::new(),
@@ -390,6 +395,7 @@ impl ProductionMapRenderer {
                         Vec::new(),
                         None,
                         None,
+                        None,
                         Vec::new(),
                         Vec::new(),
                         Vec::new(),
@@ -422,6 +428,7 @@ impl ProductionMapRenderer {
                             c03_binding_from_submit(submit)?,
                             submit.ordered_scene_constant_buffers.clone(),
                             submit.ordered_static_map_programs.clone(),
+                            frame.snow_mud_texture.clone(),
                             submit.tree_runtime.clone(),
                             submit.s1_shadow.clone(),
                             submit.ordered_render_operations.clone(),
@@ -489,6 +496,7 @@ impl ProductionMapRenderer {
             c03_camera_replay,
             ordered_scene_constant_buffers,
             ordered_static_map_programs,
+            snow_mud_texture,
             tree_runtime,
             s1_shadow,
             ordered_render_operations,

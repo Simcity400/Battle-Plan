@@ -65,6 +65,9 @@ pub struct CollectionTrace {
     pub source_items: Vec<SourceItemTrace>,
     pub ordered_item_ids: Vec<String>,
     pub group_boundaries: Vec<GroupTrace>,
+    /// Controller-level default/family template identity. Individual
+    /// materialized slots retain their exact template and may differ for
+    /// heterogeneous grids such as `decision_grid`.
     pub row_template_id: String,
     pub materialized_slots: Vec<MaterializedSlotTrace>,
     pub clip_rect: RectI32,
@@ -210,10 +213,10 @@ pub fn validate_frame(frame: &TraceFrame) -> Result<(), TraceError> {
         for slot in &collection.materialized_slots {
             validate_nonempty(&slot.slot_id, "slot_id")?;
             validate_nonempty(&slot.bound_item_id, "bound_item_id")?;
+            validate_nonempty(&slot.row_template_id, "materialized row_template_id")?;
             if !slot_ids.insert(slot.slot_id.as_str())
                 || !bound_ids.insert(slot.bound_item_id.as_str())
                 || !ordered.contains(slot.bound_item_id.as_str())
-                || slot.row_template_id != collection.row_template_id
             {
                 return invalid("materialized slot identity/binding invalid");
             }
@@ -575,6 +578,44 @@ mod tests {
         assert!(validate_frame(&frame).is_err());
         let mut frame = exact();
         frame.collections[0].materialized_slots[0].bound_item_id = "missing".into();
+        assert!(validate_frame(&frame).is_err());
+    }
+    #[test]
+    fn heterogeneous_slot_templates_round_trip_without_collapsing_identity() {
+        let mut frame = exact();
+        frame.collections[0].source_items.push(SourceItemTrace {
+            stable_item_id: "item:targeted".into(),
+            source_ordinal: 2,
+            included: true,
+            filter_reason: None,
+        });
+        frame.collections[0]
+            .ordered_item_ids
+            .push("item:targeted".into());
+        frame.collections[0].group_boundaries[0].item_count = 2;
+        frame.collections[0]
+            .materialized_slots
+            .push(MaterializedSlotTrace {
+                slot_id: "slot:1".into(),
+                bound_item_id: "item:targeted".into(),
+                row_template_id: "targeted_decision_entry".into(),
+                rect: RectI32 {
+                    x: 1,
+                    y: 14,
+                    width: 30,
+                    height: 10,
+                },
+            });
+        let bytes = encode_payload(&frame).expect("heterogeneous DCT1");
+        let decoded = decode_payload(&bytes).expect("heterogeneous DCT1 round trip");
+        assert_eq!(
+            decoded.collections[0].materialized_slots[1].row_template_id,
+            "targeted_decision_entry"
+        );
+
+        frame.collections[0].materialized_slots[1]
+            .row_template_id
+            .clear();
         assert!(validate_frame(&frame).is_err());
     }
     struct Fake(bool);

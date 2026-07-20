@@ -958,6 +958,7 @@ fn folded_snapshot(
     let mut fold = crate::world_fold::WorldFold::new("auto_attach_first_world_record_proof");
     if let Some((header, payload)) = record {
         fold.ingest_record(
+            header.sequence,
             header.game_hour_raw,
             header.domain_id,
             header.record_type,
@@ -966,6 +967,7 @@ fn folded_snapshot(
         );
     }
     fold.ingest_record(
+        0,
         game_hour_raw,
         1000,
         compact_contract::COMPACT_RECORD_TYPE_FRAME_END,

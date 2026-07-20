@@ -22,7 +22,8 @@ use crate::duplex_session::identity_control::{
 use crate::duplex_session::rollover_control::{
     RecorderRolloverCoordinator, RecorderRolloverError, RecorderRolloverStore,
 };
-use crate::duplex_session::{HeartbeatError, HeartbeatProof, RecorderHeartbeat};
+use crate::duplex_session::rollover_fs::FilesystemRolloverStore;
+use crate::duplex_session::{HeartbeatError, HeartbeatProof, HeartbeatState, RecorderHeartbeat};
 use crate::transport_status::{decode_sink_failure, SinkFailureReport, SinkStatusError};
 use crate::windows_control_pipe::{
     prepare_control_listener, ControlPipeBackend, ControlPipeError, ListenerReadyProof,
@@ -40,6 +41,11 @@ use super::sources::{WorkerHandle, WorkerSpec, WorkerStatus};
 /// Explicit product kill switch. The reusable foundation is testable, but the
 /// live spawner cannot select it until identity-reader activation is also true.
 pub const AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED: bool = false;
+
+/// Separate CRP1/CRA1 promotion latch. Product storage/router/package
+/// selection is compiled below, but the expanded capability word remains
+/// unreachable until an authenticated live change/rollback lifecycle is sealed.
+pub const AUTO_ATTACH_ROLLOVER_LIVE_LIFECYCLE_EVIDENCE_BOUND: bool = false;
 
 /// Opaque product selector.  Offline preparation/tests do not mint it, and the
 /// constructor fails while the activation constant remains false.
@@ -65,11 +71,19 @@ pub const fn auto_attach_identity_v1_enabled() -> bool {
         && compact_contract::build_profile::DOMAIN_CAMPAIGN_ID_LIVE_READER_ENABLED
 }
 
+pub const fn auto_attach_rollover_enabled() -> bool {
+    auto_attach_identity_v1_enabled() && AUTO_ATTACH_ROLLOVER_LIVE_LIFECYCLE_EVIDENCE_BOUND
+}
+
 pub fn required_auto_attach_duplex_capabilities() -> ControlCapabilities {
     // Single source of truth in the shared codec: the collector client's hello
     // advertises `ControlCapabilities::auto_attach_duplex_v1()` and admission
     // here requires exactly the same closed word, so they cannot drift.
-    ControlCapabilities::auto_attach_duplex_v1()
+    if auto_attach_rollover_enabled() {
+        ControlCapabilities::auto_attach_duplex_rollover_v1()
+    } else {
+        ControlCapabilities::auto_attach_duplex_v1()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -174,6 +188,40 @@ pub struct DuplexRecordingAdmission {
 pub struct RoutedHeartbeatCycle {
     proof: HeartbeatProof,
     acknowledged_identity_failures: Vec<AcknowledgedIdentityFailure>,
+}
+
+/// One heartbeat cycle routed together with an optional authenticated rollover
+/// boundary. A collector announces a pending CRP1 by returning
+/// `PausedForControl`; the router then consumes exactly one following CRP1
+/// under the same deadline before another heartbeat can be sent.
+pub struct RoutedRolloverHeartbeatCycle {
+    proof: HeartbeatProof,
+    acknowledged_identity_failures: Vec<AcknowledgedIdentityFailure>,
+    rollover: Option<compact_contract::campaign_rollover::RolloverProposeV1>,
+}
+
+impl RoutedRolloverHeartbeatCycle {
+    pub fn proof(&self) -> &HeartbeatProof {
+        &self.proof
+    }
+
+    pub fn acknowledged_identity_failures(&self) -> &[AcknowledgedIdentityFailure] {
+        &self.acknowledged_identity_failures
+    }
+
+    pub fn rollover(&self) -> Option<&compact_contract::campaign_rollover::RolloverProposeV1> {
+        self.rollover.as_ref()
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        HeartbeatProof,
+        Vec<AcknowledgedIdentityFailure>,
+        Option<compact_contract::campaign_rollover::RolloverProposeV1>,
+    ) {
+        (self.proof, self.acknowledged_identity_failures, self.rollover)
+    }
 }
 
 impl RoutedHeartbeatCycle {
@@ -1198,6 +1246,43 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
         }
     }
 
+    /// Product composition seam joining the second CFA1 to filesystem release.
+    /// The new data writer remains blocked until the move-only acknowledgement
+    /// has rebound identity and the durable store commits those exact fields.
+    pub fn acknowledge_filesystem_rollover_first_compact_record<
+        S: IdentityDurableCandidateSink,
+    >(
+        &mut self,
+        rollover: &mut RecorderRolloverCoordinator,
+        identity: &mut RecorderIdentityControlDispatcher<S>,
+        store: &mut FilesystemRolloverStore,
+        first_record: ValidatedFirstCompactRecord,
+        deadline: ControlDeadline,
+    ) -> Result<AcknowledgedFirstCompactRecord, DuplexWorkerError> {
+        let acknowledged = match self.acknowledge_rollover_first_compact_record(
+            rollover,
+            identity,
+            first_record,
+            deadline,
+        ) {
+            Ok(acknowledged) => acknowledged,
+            Err(error) => {
+                let _ = store.fail_pending_header(&format!(
+                    "second CFA1 failed before filesystem release: {error}"
+                ));
+                return Err(error);
+            }
+        };
+        if let Err(error) = store.commit_acknowledged_new_header(&acknowledged) {
+            let error = DuplexWorkerError::RolloverControl(format!(
+                "commit acknowledged rollover header failed: {error}"
+            ));
+            self.fail(error.to_string());
+            return Err(error);
+        }
+        Ok(acknowledged)
+    }
+
     pub(crate) fn heartbeat_cycle_at(
         &mut self,
         challenge: [u8; 16],
@@ -1340,6 +1425,110 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
                     self.state = DuplexWorkerState::StopRequested;
                     return Err(DuplexWorkerError::GracefulStopInterrupted);
                 }
+                if self.state != DuplexWorkerState::Failed {
+                    self.fail(error.to_string());
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Rollover-aware single receive router. Heartbeat proof is always
+    /// completed first. Only a `PausedForControl` proof authorizes the next
+    /// ordered frame to be CRP1; that frame is then drained/sealed/opened and
+    /// acknowledged before this method returns in `WaitingForWorld`.
+    pub fn heartbeat_cycle_with_identity_and_rollover<IS, RS>(
+        &mut self,
+        identity: &mut RecorderIdentityControlDispatcher<IS>,
+        rollover: &mut RecorderRolloverCoordinator,
+        store: &mut RS,
+        challenge: [u8; 16],
+        deadline: ControlDeadline,
+    ) -> Result<RoutedRolloverHeartbeatCycle, DuplexWorkerError>
+    where
+        IS: IdentityDurableCandidateSink,
+        RS: RecorderRolloverStore,
+    {
+        self.sync_external_stop(Instant::now());
+        self.require_state(DuplexWorkerState::Recording, "run rollover-aware heartbeat")?;
+        if self.required_capabilities != ControlCapabilities::auto_attach_duplex_rollover_v1() {
+            return Err(DuplexWorkerError::ActivationDisabled);
+        }
+        let result = (|| {
+            self.heartbeat
+                .send_challenge(
+                    &mut self.channel,
+                    challenge,
+                    deadline,
+                    &self.transport_cancellation,
+                )
+                .map_err(DuplexWorkerError::Heartbeat)?;
+            let mut acknowledged_identity_failures = Vec::new();
+            let proof = loop {
+                let frame = self
+                    .channel
+                    .recv_until(deadline, &self.transport_cancellation)
+                    .map_err(|error| DuplexWorkerError::Transport(error.to_string()))?;
+                if matches!(
+                    frame.kind,
+                    MessageKind::SinkSetupFailure | MessageKind::SinkTerminalFailure
+                ) {
+                    return Err(self.consume_sink_failure(frame));
+                }
+                if frame.kind == MessageKind::IdentityFailure {
+                    let acknowledged = identity
+                        .dispatch_identity_failure_frame(
+                            &mut self.channel,
+                            frame,
+                            deadline,
+                            &self.transport_cancellation,
+                        )
+                        .map_err(|error| DuplexWorkerError::IdentityControl(error.to_string()))?;
+                    acknowledged_identity_failures.push(acknowledged);
+                    continue;
+                }
+                break self
+                    .heartbeat
+                    .accept_proof_frame(&mut self.channel, frame)
+                    .map_err(DuplexWorkerError::Heartbeat)?;
+            };
+            let rollover_proposal = if proof.state == HeartbeatState::PausedForControl {
+                let frame = self
+                    .channel
+                    .recv_until(deadline, &self.transport_cancellation)
+                    .map_err(|error| DuplexWorkerError::Transport(error.to_string()))?;
+                let proposal = rollover
+                    .receive_frame_drain_seal_open_and_ack(
+                        &mut self.channel,
+                        store,
+                        frame,
+                        deadline,
+                        &self.transport_cancellation,
+                    )
+                    .map_err(|error| DuplexWorkerError::RolloverControl(error.to_string()))?;
+                self.heartbeat
+                    .begin_logical_stream()
+                    .map_err(DuplexWorkerError::Heartbeat)?;
+                self.recording_admission = None;
+                self.last_confirmed_hour = None;
+                self.waiting_for_world_since = Some(Instant::now());
+                self.state = DuplexWorkerState::WaitingForWorld;
+                Some(proposal)
+            } else {
+                None
+            };
+            Ok(RoutedRolloverHeartbeatCycle {
+                proof,
+                acknowledged_identity_failures,
+                rollover: rollover_proposal,
+            })
+        })();
+        match result {
+            Ok(outcome) => {
+                self.last_proven_alive = Some(Instant::now());
+                Ok(outcome)
+            }
+            Err(error) => {
                 if self.state != DuplexWorkerState::Failed {
                     self.fail(error.to_string());
                 }

@@ -2,7 +2,13 @@ use game_ui::research_canvas::{
     admit_research_canvas, AdmissionRejectionCode, DoctrineCanvasRequest, FocusCanvasRequest,
     LocalizedTextWitness, PixelRect, ProducerDoctrineLayout, ProducerDoctrineTrack,
     ProducerResolvedFocusPositions, ProducerTechnologyLayout, RecordedFocusTransform,
-    ResearchCanvasKind, ResearchCanvasRequest, TechnologyCanvasRequest,
+    technology_canvas_request_from_view, ResearchCanvasKind, ResearchCanvasRequest,
+    TechnologyCanvasRequest,
+};
+use replay_core::{
+    DynamicCollectionRect, TechnologyCanvasAuthority, TechnologyCanvasAxisState,
+    TechnologyCanvasBoundary, TechnologyCanvasDrawable, TechnologyCanvasObservation,
+    TechnologyCanvasSourceItem, TechnologyCanvasDrawableKind, TechnologyCanvasView, ViewStatus,
 };
 use std::collections::BTreeMap;
 
@@ -295,4 +301,107 @@ fn rejects_runtime_text_without_locale_and_resolved_strings() {
             AdmissionRejectionCode::RuntimeLocalizedTextExtent
         );
     }
+}
+
+fn replay_technology_canvas_view() -> TechnologyCanvasView {
+    let hash = "a".repeat(64);
+    TechnologyCanvasView {
+        status: ViewStatus::Present,
+        observation: Some(TechnologyCanvasObservation {
+            schema_version: 1,
+            authority: TechnologyCanvasAuthority {
+                executable_sha256:
+                    "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+                        .into(),
+                exact20_receipt_sha256: hash.clone(),
+                exact20_preflight_receipt_sha256: hash.clone(),
+                root_producer_manifest_sha256: hash.clone(),
+                helper_producer_manifest_sha256: hash.clone(),
+                live_observation_receipt_sha256: hash.clone(),
+                live_producer_manifest_sha256: hash.clone(),
+                owner_registry_manifest_sha256: hash.clone(),
+                content_manifest_sha256: hash,
+            },
+            source_record_id: "a729:technology_canvas:record".into(),
+            owner_instance_id: "a729:technology_canvas_owner:owner".into(),
+            frame_hour: 42,
+            elapsed_wall_ms: 7,
+            capture_sequence: 3,
+            boundary: TechnologyCanvasBoundary::PopulationCommitted,
+            controller_mode: 6,
+            source_items: vec![TechnologyCanvasSourceItem {
+                stable_item_id: "infantry_weapons".into(),
+                hierarchy_path: "countrytechtree/infantry/folder/infantry_weapons".into(),
+                folder_id: "infantry".into(),
+                source_ordinal: 0,
+                kind: TechnologyCanvasDrawableKind::TechnologyNode,
+                included: true,
+                exclusion_reason: None,
+            }],
+            final_draw_order: vec!["infantry_weapons".into()],
+            materialized_drawables: vec![TechnologyCanvasDrawable {
+                drawable_id: "infantry_weapons".into(),
+                hierarchy_path: "countrytechtree/infantry/folder/infantry_weapons".into(),
+                slot_id: "countrytechtree/infantry/folder/infantry_weapons".into(),
+                draw_ordinal: 0,
+                rect: DynamicCollectionRect {
+                    x: 24,
+                    y: 138,
+                    width: 183,
+                    height: 84,
+                },
+            }],
+            clip_rect: DynamicCollectionRect {
+                x: 21,
+                y: 138,
+                width: 2706,
+                height: 990,
+            },
+            content_extent_pixels: [2706, 1500],
+            viewport_extent_pixels: [2706, 990],
+            pan_pixels_fixed5: [16, -1280],
+            horizontal_scroll_fixed5: TechnologyCanvasAxisState {
+                min: 0,
+                max: 320,
+                current: 16,
+                target: 16,
+            },
+            vertical_scroll_fixed5: TechnologyCanvasAxisState {
+                min: -3200,
+                max: 0,
+                current: -1280,
+                target: -1280,
+            },
+        }),
+    }
+}
+
+#[test]
+fn replay_tcv1_adapter_preserves_exact_layout_for_existing_admission() {
+    let request = technology_canvas_request_from_view(&replay_technology_canvas_view(), text())
+        .expect("typed replay technology canvas");
+    let layout = request.producer_layout.as_ref().expect("producer layout");
+    assert_eq!(layout.source_record_id, "a729:technology_canvas:record");
+    assert_eq!(layout.pan_pixels, Some([0.5, -40.0]));
+    assert_eq!(
+        admit_research_canvas(&ResearchCanvasRequest::Technology(request))
+            .expect("UI09 admission")
+            .kind(),
+        ResearchCanvasKind::Technology
+    );
+}
+
+#[test]
+fn replay_tcv1_adapter_rejects_unavailable_or_missing_observation() {
+    let mut view = replay_technology_canvas_view();
+    view.status = ViewStatus::DomainUnavailable;
+    assert_eq!(
+        technology_canvas_request_from_view(&view, text())
+            .expect_err("unavailable TCV1 must fail")
+            .code,
+        AdmissionRejectionCode::TechnologyLiveCanvas
+    );
+    view.status = ViewStatus::Present;
+    view.observation = None;
+    assert!(technology_canvas_request_from_view(&view, text()).is_err());
 }

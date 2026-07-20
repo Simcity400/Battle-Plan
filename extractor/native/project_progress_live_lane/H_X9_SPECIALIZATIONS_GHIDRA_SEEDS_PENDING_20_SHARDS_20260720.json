@@ -1,15 +1,20 @@
 {
   "schema": "h-x9-specializations-ghidra-seeds-v1",
   "generated_date": "2026-07-20",
+  "status": "fulfilled_superseded",
+  "superseded_by": "extractor/native/project_progress_live_lane/X9_SPECIALIZATION_TOKEN_NAMESPACE_PROMOTION_20260720.json",
   "supported_binary": {
     "binary_id": "hoi4.exe 1.19.2.0.a729",
     "image_base": "0x140000000",
     "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
   },
   "execution_state": {
-    "submitted": false,
-    "reason": "fresh broker status reported 10 ready pinned shards, not the lane-required exact 20; a later root-level temporary broker freeze also prohibited submissions",
-    "required_before_submission": "fresh status must report exactly 20 ready shards pinned to the supported binary identity, and the root must explicitly release the broker freeze"
+    "submitted": true,
+    "fresh_status_ready_shards": 20,
+    "successful_jobs": 5,
+    "failed_jobs": 1,
+    "result": "the bounded split jobs proved the exact serializer-token namespace join; the broad export failure is retained as negative operational evidence",
+    "receipt_authority": "extractor/native/project_progress_live_lane/X9_SPECIALIZATION_TOKEN_NAMESPACE_PROMOTION_20260720.json"
   },
   "retained_inputs": [
     {

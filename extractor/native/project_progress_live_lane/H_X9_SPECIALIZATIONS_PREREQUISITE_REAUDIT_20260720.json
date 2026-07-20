@@ -1,6 +1,8 @@
 {
   "schema": "h-x9-specializations-prerequisite-reaudit-v1",
   "generated_date": "2026-07-20",
+  "status": "superseded_closed",
+  "superseded_by": "extractor/native/project_progress_live_lane/X9_SPECIALIZATION_TOKEN_NAMESPACE_PROMOTION_20260720.json",
   "supported_binary": {
     "binary_id": "hoi4.exe 1.19.2.0.a729",
     "image_base": "0x140000000",
@@ -9,13 +11,15 @@
   "ghidra_gate": {
     "fresh_status_checked": true,
     "identity_pinned": true,
-    "reported_shards": 10,
-    "ready_shards": 10,
+    "reported_shards": 20,
+    "ready_shards": 20,
     "required_ready_shards": 20,
-    "admitted": false,
-    "jobs_submitted": 0,
-    "later_freeze": "root temporarily froze broker submissions while restarting cached brokers",
-    "pending_seed_package": "extractor/native/project_progress_live_lane/H_X9_SPECIALIZATIONS_GHIDRA_SEEDS_PENDING_20_SHARDS_20260720.json"
+    "admitted": true,
+    "jobs_submitted": 6,
+    "jobs_succeeded": 5,
+    "jobs_failed": 1,
+    "receipt_authority": "extractor/native/project_progress_live_lane/X9_SPECIALIZATION_TOKEN_NAMESPACE_PROMOTION_20260720.json",
+    "seed_package": "extractor/native/project_progress_live_lane/H_X9_SPECIALIZATIONS_GHIDRA_SEEDS_PENDING_20_SHARDS_20260720.json"
   },
   "authored_universe": [
     "specialization_nuclear",
@@ -100,13 +104,11 @@
   },
   "runtime_dictionary_alternative": {
     "existing_mechanism": "collector air-variant archetype tracker scans authenticated token records and maps wanted u32 ids to exact text while rejecting ambiguity",
-    "why_not_promoted_for_x9": [
-      "no retained producer/consumer proof establishes that CBreakthroughProgress tree keys use that token-record id namespace",
-      "equal u32 values across unjoined namespaces would be correlation, not identity proof",
-      "the current d41 row has no authenticated semantic carrier; fold intentionally writes specialization as null"
-    ],
-    "next_static_route": "pending Ghidra seeds join the CBreakthroughProgress vtable producers and four authored literal consumers to the exact tree key",
-    "next_live_route": "the exact-boundary four-column permutation independently proves the mapping without relying on token-namespace assumptions"
+    "promoted_for_x9": true,
+    "exact_join": "CBreakthroughProgress writer 0x1419F14F0 serializes node+0x1C through the engine token serializer and reader 0x1419F10C0 inserts parser+0x30 token ids at node+0x1C",
+    "admission": "complete ambiguity-checked authenticated token-record census; publish only exact authored names",
+    "fallback": "retain the raw u32 handle and emit no semantic bits when unresolved or ambiguous",
+    "optional_regression_route": "an exact-boundary four-column live/save permutation may independently validate the mapping but is not required for production"
   },
   "compact_fold_replay": {
     "wire_row": [
@@ -116,17 +118,20 @@
       "flags:u32"
     ],
     "row_length": 16,
+    "d41_header_extension": 5,
     "key": ["tag_db_id", "specialization_handle"],
     "four_value_capacity": "no schema or row-size change required",
     "fold": "validates nonzero unique keys and flags, applies full/delta rows, and keeps d41 unknown on PARTIAL_DATA",
-    "fold_projection": "special_projects._r2_breakthroughs preserves country, tag_db_id, points_raw, and _r2_specialization_handle; specialization remains null",
-    "replay": "WorldFrame retains the full raw top-level map and exposes raw()/domain(), so all four raw rows remain reachable",
-    "typed_semantic_view": false,
+    "fold_projection": "special_projects._r2_breakthroughs preserves country, tag_db_id, points_raw, and _r2_specialization_handle; specialization is exact or null and carries exact_a729_serializer_token_record authority only when exact",
+    "replay": "WorldFrame retains the full raw map and exposes a fail-closed typed exact breakthrough view that requires the closed token set and exact authority marker",
+    "typed_semantic_view": true,
     "data_loss": false,
-    "semantic_name_status": "blocked until exact four-handle mapping is proved"
+    "semantic_name_status": "promoted fail-closed through the exact serializer-token namespace join"
   },
   "remaining_exact_observation": {
     "id": "X9-BREAKTHROUGH-ALL-RECORD-JOIN",
+    "required_for_production": false,
+    "disposition": "optional_regression_only",
     "minimum": "one coherent paused a729 boundary plus projects.json from the exact same raw hour, captured after the all-record collector/probe is deployed",
     "acceptance": [
       "exactly four distinct live handles",
@@ -139,9 +144,9 @@
     "on_failure": "retain raw numeric handles and null specialization names"
   },
   "disposition": {
-    "raw_four_value_transport": "production prerequisite engineered; awaiting central validation and a new capture",
-    "semantic_specialization_names": "not promoted",
-    "human_input_required_now": true,
-    "human_input_count": 1
+    "raw_four_value_transport": "production carrier wired; awaiting root central validation",
+    "semantic_specialization_names": "promoted fail-closed",
+    "human_input_required_now": false,
+    "human_input_count": 0
   }
 }

@@ -9,6 +9,8 @@
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
+pub mod owner_glyph_capture;
+
 pub const DOMAIN_ID: u16 = 76;
 pub const DOMAIN_NAME: &str = "runtime_text_inputs_live";
 pub const SCHEMA_VERSION: u32 = 2;
@@ -647,6 +649,8 @@ impl<'a> Reader<'a> {
 
 #[cfg(windows)]
 pub mod a729_hook;
+#[cfg(windows)]
+pub mod owner_glyph_probe;
 
 #[cfg(test)]
 mod tests {

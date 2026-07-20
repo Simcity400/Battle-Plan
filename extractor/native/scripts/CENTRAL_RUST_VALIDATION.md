@@ -23,6 +23,17 @@ Available modes:
 - `Release`: release build and release-profile nextest run.
 - `Stats`: show sccache statistics without compiling.
 
+Full extractor `Final` and `Release` runs also own the two intentionally
+standalone Cargo surfaces, `project_progress_live_lane` and the occupation
+replay verifier. `Test-ProductionCaptureScripts.ps1` performs no Cargo work.
+After a successful full extractor `Release` (including `-Workspace All`), the
+runner atomically writes
+`.cargo-target/release/hoi4-production-prebuilt-artifacts.json`. The receipt
+binds the current source/compiler-input digest, capture-driver and runner
+hashes, workspace/package selection, and exact paths, sizes, and SHA-256s for
+all five production capture artifacts. A failed or interrupted release leaves
+no receipt.
+
 `Check`, `Build`, `Fast`, `Integration`, `Test`, and `Evidence` use Cargo's normal default targets unless an exact selector is supplied:
 
 - `-Lib`: only the package library target.

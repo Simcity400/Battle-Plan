@@ -317,11 +317,17 @@ pub(super) unsafe fn execute_static_exact_used_draw(
     target: &SubmittedMainSceneTarget,
     stream_output: &mut StreamOutputBuffers,
 ) -> Result<()> {
+    let mut snow_mud_proof = None;
+    let mut snow_mud_binding_count = 0;
     execute_static_exact_used_draw_mrt(
         gfx,
         resolver,
         scene_constant_buffers,
         draw,
+        None,
+        &mut snow_mud_proof,
+        &mut snow_mud_binding_count,
+        false,
         political_textures,
         tiled_lights,
         prepared_targets,
@@ -336,6 +342,10 @@ pub(super) unsafe fn execute_static_exact_used_draw_mrt(
     resolver: &GameFileResolver,
     scene_constant_buffers: &[ConstantBufferBinding],
     draw: &replay_core::StaticMapDraw,
+    snow_mud_texture: Option<&replay_core::SnowMudTexturePacket>,
+    snow_mud_proof: &mut Option<super::SnowMudD3dExecutionProof>,
+    snow_mud_binding_count: &mut u32,
+    collect_snow_mud_h2: bool,
     political_textures: &[replay_core::PoliticalTexturePacket],
     tiled_lights: &[replay_core::TiledLightSubmission],
     prepared_targets: &[PreparedTargetTexture],
@@ -393,6 +403,48 @@ pub(super) unsafe fn execute_static_exact_used_draw_mrt(
                     _resource: None,
                     view: ComPtr::from_raw(native_view, "prepared render-graph SRV")?,
                 });
+            }
+            replay_core::StaticShaderResourceSource::SnowMudTexture {
+                producer_ordinal,
+                payload_sha256,
+                resource,
+                view,
+            } => {
+                let packet = snow_mud_texture
+                    .filter(|packet| {
+                        packet.producer_ordinal == *producer_ordinal
+                            && packet.payload_sha256 == *payload_sha256
+                    })
+                    .ok_or("SnowMudTexture source has no exact H packet")?;
+                if packet.width != resource.width || packet.height != resource.height {
+                    return Err("SnowMudTexture H packet/resource descriptor mismatch".into());
+                }
+                let mut immutable_resource = resource.clone();
+                immutable_resource.usage_u32 = D3D11_USAGE_IMMUTABLE;
+                immutable_resource.cpu_access_flags_u32 = 0;
+                let inline = create_inline_texture_view(
+                    gfx,
+                    resolver,
+                    binding.stage,
+                    binding.slot.into(),
+                    &immutable_resource,
+                    view,
+                    &packet.bytes,
+                    packet.row_pitch,
+                    packet
+                        .row_pitch
+                        .checked_mul(packet.height)
+                        .ok_or("SnowMudTexture slice overflow")?,
+                    payload_sha256,
+                )?;
+                *snow_mud_binding_count = snow_mud_binding_count
+                    .checked_add(1)
+                    .ok_or("SnowMudTexture executed binding count overflow")?;
+                if collect_snow_mud_h2 {
+                    let proof = verify_snow_mud_inline_readback(gfx, &inline, packet)?;
+                    merge_snow_mud_execution_proof(snow_mud_proof, proof)?;
+                }
+                dynamic_views.push(inline);
             }
             replay_core::StaticShaderResourceSource::PoliticalTexture {
                 texture_kind,
@@ -1180,6 +1232,115 @@ unsafe fn create_inline_texture_view(
         _resource: Some(resource),
         view: ComPtr::from_raw(view, "dynamic portable map texture view")?,
     })
+}
+
+fn merge_snow_mud_execution_proof(
+    accumulated: &mut Option<super::SnowMudD3dExecutionProof>,
+    next: super::SnowMudD3dExecutionProof,
+) -> Result<()> {
+    match accumulated {
+        None => {
+            *accumulated = Some(next);
+        }
+        Some(current) => {
+            if current.readback_sha256 != next.readback_sha256
+                || current.mapped_row_pitch != next.mapped_row_pitch
+                || current.verified_row_count != next.verified_row_count
+                || current.verified_tight_byte_count != next.verified_tight_byte_count
+            {
+                return Err("SnowMudTexture consumers produced inconsistent GPU readbacks".into());
+            }
+            current.replaced_binding_count = current
+                .replaced_binding_count
+                .checked_add(next.replaced_binding_count)
+                .ok_or("SnowMudTexture replacement count overflow")?;
+        }
+    }
+    Ok(())
+}
+
+unsafe fn verify_snow_mud_inline_readback(
+    gfx: &Gfx,
+    inline: &TextureViewGpu,
+    packet: &replay_core::SnowMudTexturePacket,
+) -> Result<super::SnowMudD3dExecutionProof> {
+    let Some(TextureResourceGpu::Texture2d(texture)) = inline._resource.as_ref() else {
+        return Err("SnowMudTexture replay upload is not a Texture2D".into());
+    };
+    let mut source_desc: D3D11_TEXTURE2D_DESC = mem::zeroed();
+    (*texture.as_raw()).GetDesc(&mut source_desc);
+    if source_desc.Width != packet.width
+        || source_desc.Height != packet.height
+        || source_desc.Format as u32 != 87
+        || source_desc.MipLevels != 1
+        || source_desc.ArraySize != 1
+        || source_desc.SampleDesc.Count != 1
+    {
+        return Err("SnowMudTexture replay upload descriptor changed before readback".into());
+    }
+    let staging_desc = D3D11_TEXTURE2D_DESC {
+        Usage: D3D11_USAGE_STAGING,
+        BindFlags: 0,
+        CPUAccessFlags: D3D11_CPU_ACCESS_READ,
+        MiscFlags: 0,
+        ..source_desc
+    };
+    let mut staging = ptr::null_mut();
+    hr_ok(
+        (*gfx.device.as_raw()).CreateTexture2D(&staging_desc, ptr::null(), &mut staging),
+        "CreateTexture2D staging for product SnowMudTexture H2",
+    )?;
+    let staging = ComPtr::from_raw(staging, "product SnowMudTexture H2 staging")?;
+    (*gfx.context.as_raw()).CopyResource(
+        staging.as_raw() as *mut _,
+        texture.as_raw() as *mut _,
+    );
+    let mut mapped: D3D11_MAPPED_SUBRESOURCE = mem::zeroed();
+    hr_ok(
+        (*gfx.context.as_raw()).Map(
+            staging.as_raw() as *mut _,
+            0,
+            D3D11_MAP_READ,
+            0,
+            &mut mapped,
+        ),
+        "Map product SnowMudTexture H2 staging",
+    )?;
+    let verification = (|| -> Result<super::SnowMudD3dExecutionProof> {
+        let source_pitch = usize::try_from(packet.row_pitch)
+            .map_err(|_| "SnowMudTexture source pitch exceeds usize")?;
+        let mapped_pitch = usize::try_from(mapped.RowPitch)
+            .map_err(|_| "SnowMudTexture mapped pitch exceeds usize")?;
+        if mapped.pData.is_null() || mapped_pitch < source_pitch {
+            return Err("SnowMudTexture product readback returned a null/short row".into());
+        }
+        let mapped_len = mapped_pitch
+            .checked_mul(packet.height as usize)
+            .ok_or("SnowMudTexture mapped byte length overflow")?;
+        let mapped_bytes = std::slice::from_raw_parts(mapped.pData as *const u8, mapped_len);
+        let mut tight = Vec::with_capacity(packet.bytes.len());
+        for row in 0..packet.height as usize {
+            let mapped_start = row * mapped_pitch;
+            let source_start = row * source_pitch;
+            let row_bytes = &mapped_bytes[mapped_start..mapped_start + source_pitch];
+            if row_bytes != &packet.bytes[source_start..source_start + source_pitch] {
+                return Err(format!(
+                    "SnowMudTexture product readback differs from H at row {row}"
+                )
+                .into());
+            }
+            tight.extend_from_slice(row_bytes);
+        }
+        Ok(super::SnowMudD3dExecutionProof {
+            readback_sha256: Sha256::hex(&tight),
+            mapped_row_pitch: mapped.RowPitch,
+            verified_row_count: packet.height,
+            verified_tight_byte_count: u64::from(packet.row_pitch) * u64::from(packet.height),
+            replaced_binding_count: 1,
+        })
+    })();
+    (*gfx.context.as_raw()).Unmap(staging.as_raw() as *mut _, 0);
+    verification
 }
 
 /// BC1-BC7 block-compressed DXGI format ids, including the TYPELESS and SRGB

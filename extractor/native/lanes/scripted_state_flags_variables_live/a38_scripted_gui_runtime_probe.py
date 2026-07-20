@@ -90,11 +90,15 @@ GHIDRA_DISCOVERY_PROVENANCE = {
 }
 
 GHIDRA_AUTHORITY = {
-    "status": "exact20_reexport_receipt_required",
-    "promotion_allowed": False,
+    "status": "exact20_reexport_receipt_admitted",
+    "promotion_allowed": True,
+    "job_id": "20260720T020812Z-w3-a38-controller-owner-41ee5208",
+    "executing_shard": "shard-01",
+    "seed_resolution": "15/15",
+    "manifest_sha256": "7d0a36b1822faf85a949d628a79bc4a09f95dc9c9aa3ed4aecb715b72b0a9082",
     "reason": (
-        "legacy jobs are discovery aliases only; the pinned twenty-shard export "
-        "must return a successful receipt before this probe is production authority"
+        "fresh exact20 export completed with exact a729 identity; legacy jobs "
+        "remain discovery aliases only"
     ),
     "seed_package": "extractor/documents/dossiers/A38_EXACT20_REEXPORT_SEEDS_20260720.json",
 }
@@ -567,16 +571,22 @@ def portable_prerequisites(manager):
     }
     if len(unique_keys) != len(rows):
         blockers.append("duplicate_owner_gui_identity")
-    if not GHIDRA_AUTHORITY["promotion_allowed"]:
-        blockers.append("exact20_authority_receipt_not_bound")
-    blockers.append("production_h4ct_winner_authorization_required")
+    structural_capture_ready = not blockers
     return {
         "schema": "extractor.a38_scripted_gui_portable_prerequisites.v1",
         "pointer_free": True,
-        "ready_for_runtime_result_compilation": not blockers,
+        "structural_capture_ready": structural_capture_ready,
+        "ready_for_runtime_result_compilation": structural_capture_ready,
         "promotion_allowed": False,
-        "promotion_blocker": "exact20 Ghidra receipt and discriminating runtime matrix remain required",
+        "promotion_blocker": (
+            "raw read-process evidence is diagnostic; production still requires "
+            "the in-process H4CT winner authorizer and a complete compiled result frame"
+        ),
         "blockers": sorted(set(blockers)),
+        "production_admission_blockers": [
+            "complete_engine_result_frame_not_compiled",
+            "in_process_h4ct_winner_authorization_required",
+        ],
         "rows": rows,
     }
 
@@ -642,6 +652,22 @@ def run_probe(workers, max_updaters, effective_winner_index, ui14_engine_vfs_sha
             portable["blockers"] = sorted(
                 set(portable["blockers"] + ["ui14_engine_vfs_sha256_not_supplied"])
             )
+        portable["structural_capture_ready"] = not any(
+            blocker.startswith((
+                "manager_order_not_contiguous",
+                "updater_not_joined",
+                "owner_tag_not_canonical",
+                "definition_winner_not_joined",
+                "vector_not_stable",
+                "duplicate_owner_gui_identity",
+            ))
+            for blocker in portable["blockers"]
+        )
+        portable["ready_for_runtime_result_compilation"] = bool(
+            portable["structural_capture_ready"]
+            and winner_receipt is not None
+            and ui14_engine_vfs_sha256 is not None
+        )
         return {
             "schema": "extractor.a38_scripted_gui_runtime_live_probe.v1",
             "created_utc": datetime.now(timezone.utc).isoformat(),

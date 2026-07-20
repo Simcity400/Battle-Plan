@@ -135,7 +135,9 @@ fn topbar_scalar_sweep_renders_generator_values() {
                 Some(format!("{}", (500 + base * 10 + t * 25) as f64)),
                 "{tag} fuel @t{t}"
             );
-            assert_eq!(b.nukes, Some(format!("{}", t / 4)), "{tag} nukes @t{t}");
+            // This legacy fixture predates the exact d83 sidecar and retained
+            // D18 numeric join, so its scalar cannot reach the product UI.
+            assert_eq!(b.nukes, None, "{tag} nukes exact authority @t{t}");
             assert_eq!(
                 b.factory_counts,
                 Some(FactoryCounts {

@@ -69,12 +69,12 @@ save before/after one membership transition.
 
 ### Empty/inactive manager coverage
 
-The SOV save has no zero-member army and 83 armies with zero orders. The other
-two melts contain no parsed armies. The decoded D54 records contain zero empty
-direct-army-root observations and no current exact inactive rows. Even an empty
-legacy direct-root row would not prove a bounded complete manager walk. A
-manager/container receipt that enumerates known active, inactive, and
-zero-member fixture armies remains required.
+The retained corpus remains a useful negative: it has no manager carrier. That
+negative no longer creates a human-input requirement. Exact a729 registered-
+reference functions prove the complete type-53 table and iteration boundary,
+and production now emits the pointer-free `OGS1` census including zero-order
+armies. See
+`../army_oob_orders_battleplans_live/ORDERS_MANAGER_SCALARS_RE_20260720.md`.
 
 ## Exact remaining human boundary
 
@@ -88,11 +88,6 @@ zero-member fixture armies remains required.
 3. At one paused boundary, capture the exact assigned-division ID set for one
    order and the matching save scheduled-member set; then repeat after one
    assignment and one removal.
-4. Capture a bounded manager/container walk containing one known active army,
-   one known inactive army, and one known zero-member army before/after adding
-   and removing a division. Arena scans and cached-address repair remain
-   inadmissible.
-
 The 510.6 GB compressed logical corpus is an explicit non-human, machine-load
 deferment rather than a reverse-engineering fixture. Its sampled records all use
 the legacy precursor schema, so it cannot supply the missing `+0x244`, assigned

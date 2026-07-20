@@ -46,3 +46,17 @@ requested roots and manifest SHA-256
 This closes the static receipt only. Source activation remains false until an
 authenticated complete pointer-free fixture proves the observer output;
 central validation remains required after that activation change.
+
+The subsequent production-wiring pass implemented reserved compact domain 89
+(`NFP1`): the fail-closed process-local owner/item producer, stable-id compact
+codec, collector seam, recorder fold, typed replay view, and exact XUI10
+admission. The static receipt is bound by both manifest SHA-256 and job JSON
+SHA-256. This does not change the final activation sentence above: scheduling
+and live-fixture acceptance remain false until the authenticated stable plus
+transition fixture exists.
+
+The Wave4 acquisition pass then closed the remaining no-caller gap. The
+injected collector now has an owner-runnable, evidence-only hook transaction
+and a fail-closed receipt writer/regrader; see
+`A31_ACQUISITION_OWNER_20260720.md`. This makes the live fixture collectible
+without changing either d89 activation latch.

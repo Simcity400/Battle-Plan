@@ -13,6 +13,7 @@ use std::mem;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThreadId};
@@ -53,6 +54,9 @@ static ORIGINAL_PAUSE_TOGGLE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_PAUSE_FORCED: AtomicUsize = AtomicUsize::new(0);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
+static ACCEPTING_CALLBACKS: AtomicBool = AtomicBool::new(false);
+static CALLBACKS_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+static CALLBACK_FATAL: AtomicBool = AtomicBool::new(false);
 static STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
 
 thread_local! {
@@ -138,11 +142,19 @@ pub fn install() -> Result<InstalledAddresses, String> {
     *state
         .lock()
         .map_err(|_| "X12 hook state mutex poisoned before install")? = HookState::fresh();
+    CALLBACK_FATAL.store(false, Ordering::Release);
+    CALLBACKS_IN_FLIGHT.store(0, Ordering::Release);
+    ACCEPTING_CALLBACKS.store(true, Ordering::Release);
 
-    let speed = unsafe {
+    let speed = match unsafe {
         MinHook::create_hook(addresses.speed_setter as *mut c_void, hook_speed as *mut c_void)
-    }
-    .map_err(|status| format!("X12 speed hook creation failed: {status}"))?;
+    } {
+        Ok(original) => original,
+        Err(status) => {
+            ACCEPTING_CALLBACKS.store(false, Ordering::Release);
+            return Err(format!("X12 speed hook creation failed: {status}"));
+        }
+    };
     ORIGINAL_SPEED.store(speed as usize, Ordering::Release);
     let pause_toggle = match unsafe {
         MinHook::create_hook(addresses.pause_toggle as *mut c_void, hook_pause_toggle as *mut c_void)
@@ -181,9 +193,22 @@ pub fn install() -> Result<InstalledAddresses, String> {
 }
 
 pub fn uninstall() -> Result<(), String> {
+    seal_after_final_drain_and_uninstall()
+}
+
+/// Close the callback admission gate, remove all three detours, and prove that
+/// no mutation escaped the collector's final D57 drain.
+///
+/// The old drain-then-uninstall sequence had a real race: a callback could
+/// publish after the final drain but before MinHook disabled the target.  This
+/// operation closes admission first, disables the targets, waits for callbacks
+/// that entered before the close to finish, and only then examines the queue
+/// and sticky error state.  Any such late mutation is a terminal capture error.
+pub fn seal_after_final_drain_and_uninstall() -> Result<(), String> {
     if !INSTALLED.swap(false, Ordering::AcqRel) {
         return Ok(());
     }
+    ACCEPTING_CALLBACKS.store(false, Ordering::Release);
     let base = MODULE_BASE.swap(0, Ordering::AcqRel);
     let addresses = InstalledAddresses {
         speed_setter: base + SPEED_SETTER_RVA,
@@ -191,21 +216,74 @@ pub fn uninstall() -> Result<(), String> {
         pause_forced: base + PAUSE_FORCED_RVA,
     };
     let mut errors = Vec::new();
-    for (target, name) in [
+    let targets = [
         (addresses.speed_setter, "speed"),
         (addresses.pause_toggle, "pause-toggle"),
         (addresses.pause_forced, "forced-pause"),
-    ] {
+    ];
+    let mut disabled = [false; 3];
+    for (index, (target, name)) in targets.iter().copied().enumerate() {
         if let Err(status) = unsafe { MinHook::disable_hook(target as *mut c_void) } {
             errors.push(format!("disable {name}: {status}"));
-        }
-        if let Err(status) = unsafe { MinHook::remove_hook(target as *mut c_void) } {
-            errors.push(format!("remove {name}: {status}"));
+        } else {
+            disabled[index] = true;
         }
     }
-    ORIGINAL_SPEED.store(0, Ordering::Release);
-    ORIGINAL_PAUSE_TOGGLE.store(0, Ordering::Release);
-    ORIGINAL_PAUSE_FORCED.store(0, Ordering::Release);
+
+    let wait_started = Instant::now();
+    while CALLBACKS_IN_FLIGHT.load(Ordering::Acquire) != 0 {
+        if wait_started.elapsed() >= Duration::from_secs(5) {
+            errors.push(format!(
+                "{} X12 callback(s) remained in flight during teardown",
+                CALLBACKS_IN_FLIGHT.load(Ordering::Acquire)
+            ));
+            break;
+        }
+        std::thread::yield_now();
+    }
+    if CALLBACK_FATAL.load(Ordering::Acquire) {
+        errors.push("X12 callback admission/state failed during final teardown".into());
+    }
+    match STATE.get().and_then(|state| state.lock().ok()) {
+        Some(mut state) => {
+            if let Some(error) = &state.current_error {
+                errors.push(format!("X12 final hook state failed: {error}"));
+            }
+            if !state.pending.is_empty() {
+                errors.push(format!(
+                    "{} X12 transition(s) published after the final D57 drain",
+                    state.pending.len()
+                ));
+                state.pending.clear();
+            }
+        }
+        None => errors.push("X12 final hook state mutex unavailable".into()),
+    }
+
+    if disabled.iter().all(|value| *value) {
+        for (target, name) in targets.iter().copied() {
+            if let Err(status) = unsafe { MinHook::remove_hook(target as *mut c_void) } {
+                errors.push(format!("remove {name}: {status}"));
+            }
+        }
+        ORIGINAL_SPEED.store(0, Ordering::Release);
+        ORIGINAL_PAUSE_TOGGLE.store(0, Ordering::Release);
+        ORIGINAL_PAUSE_FORCED.store(0, Ordering::Release);
+    } else {
+        // A failed disable leaves at least one detour executable. Preserve its
+        // trampoline and restore the successfully disabled siblings so the
+        // hook set cannot remain partially active. Zeroing either trampoline
+        // or the base would corrupt the next still-live engine callback.
+        for (index, (target, name)) in targets.iter().copied().enumerate() {
+            if disabled[index] {
+                if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
+                    errors.push(format!("restore {name} after partial disable: {status}"));
+                }
+            }
+        }
+        MODULE_BASE.store(base, Ordering::Release);
+        INSTALLED.store(true, Ordering::Release);
+    }
     if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
 }
 
@@ -224,6 +302,9 @@ pub fn evidence_activation_enabled() -> bool {
 pub fn drain() -> Result<Vec<SpeedPauseTransition>, String> {
     if !installed() {
         return Err("X12 speed/pause hooks are not installed".into());
+    }
+    if CALLBACK_FATAL.load(Ordering::Acquire) {
+        return Err("X12 callback admission/state failed".into());
     }
     let mut state = STATE
         .get()
@@ -249,6 +330,8 @@ pub fn diagnostics() -> HookDiagnostics {
 }
 
 unsafe extern "system" fn hook_speed(cgame_state: usize, requested: i32) {
+    let _callback = CallbackFlight::enter();
+    let accepting = ACCEPTING_CALLBACKS.load(Ordering::Acquire);
     let nested = IN_CALLBACK.with(|guard| guard.replace(true));
     let before = (!nested).then(|| observe(cgame_state)).transpose();
     let original = ORIGINAL_SPEED.load(Ordering::Acquire);
@@ -256,13 +339,17 @@ unsafe extern "system" fn hook_speed(cgame_state: usize, requested: i32) {
         let original: SpeedSetterFn = unsafe { mem::transmute(original) };
         unsafe { original(cgame_state, requested) };
     }
-    if !nested {
+    if !accepting {
+        CALLBACK_FATAL.store(true, Ordering::Release);
+    } else if !nested {
         publish_change(TransitionKind::Speed, before, observe(cgame_state));
     }
     IN_CALLBACK.with(|guard| guard.set(nested));
 }
 
 unsafe extern "system" fn hook_pause_toggle(idler: usize, mode: u8, text: usize) {
+    let _callback = CallbackFlight::enter();
+    let accepting = ACCEPTING_CALLBACKS.load(Ordering::Acquire);
     let nested = IN_CALLBACK.with(|guard| guard.replace(true));
     let before = (!nested).then(|| observe_from_idler(idler)).transpose();
     let original = ORIGINAL_PAUSE_TOGGLE.load(Ordering::Acquire);
@@ -270,13 +357,17 @@ unsafe extern "system" fn hook_pause_toggle(idler: usize, mode: u8, text: usize)
         let original: PauseToggleFn = unsafe { mem::transmute(original) };
         unsafe { original(idler, mode, text) };
     }
-    if !nested {
+    if !accepting {
+        CALLBACK_FATAL.store(true, Ordering::Release);
+    } else if !nested {
         publish_change(TransitionKind::PauseToggle, before, observe_from_idler(idler));
     }
     IN_CALLBACK.with(|guard| guard.set(nested));
 }
 
 unsafe extern "system" fn hook_pause_forced(idler: usize, reason: i32) {
+    let _callback = CallbackFlight::enter();
+    let accepting = ACCEPTING_CALLBACKS.load(Ordering::Acquire);
     let nested = IN_CALLBACK.with(|guard| guard.replace(true));
     let before = (!nested).then(|| observe_from_idler(idler)).transpose();
     let original = ORIGINAL_PAUSE_FORCED.load(Ordering::Acquire);
@@ -284,7 +375,9 @@ unsafe extern "system" fn hook_pause_forced(idler: usize, reason: i32) {
         let original: PauseForcedFn = unsafe { mem::transmute(original) };
         unsafe { original(idler, reason) };
     }
-    if !nested {
+    if !accepting {
+        CALLBACK_FATAL.store(true, Ordering::Release);
+    } else if !nested {
         publish_change(TransitionKind::PauseForced, before, observe_from_idler(idler));
     }
     IN_CALLBACK.with(|guard| guard.set(nested));
@@ -295,7 +388,10 @@ fn publish_change(
     before: Result<Option<ObservedState>, String>,
     after: Result<ObservedState, String>,
 ) {
-    let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) else { return; };
+    let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) else {
+        CALLBACK_FATAL.store(true, Ordering::Release);
+        return;
+    };
     state.callback_count = state.callback_count.saturating_add(1);
     let before = match before {
         Ok(before) => before,
@@ -408,6 +504,7 @@ fn verify_sentinel(address: usize, expected: &[u8; 16], name: &str) -> Result<()
 }
 
 fn rollback_created(addresses: &InstalledAddresses) {
+    ACCEPTING_CALLBACKS.store(false, Ordering::Release);
     for target in [addresses.speed_setter, addresses.pause_toggle, addresses.pause_forced] {
         let _ = unsafe { MinHook::remove_hook(target as *mut c_void) };
     }
@@ -417,6 +514,7 @@ fn rollback_created(addresses: &InstalledAddresses) {
 }
 
 fn rollback_enabled(addresses: &InstalledAddresses) {
+    ACCEPTING_CALLBACKS.store(false, Ordering::Release);
     for target in [addresses.speed_setter, addresses.pause_toggle, addresses.pause_forced] {
         let _ = unsafe { MinHook::disable_hook(target as *mut c_void) };
         let _ = unsafe { MinHook::remove_hook(target as *mut c_void) };
@@ -445,3 +543,18 @@ fn read_u8(address: usize) -> Option<u8> { let mut b=[0;1]; read_process(address
 fn read_u32(address: usize) -> Option<u32> { let mut b=[0;4]; read_process(address,&mut b).then_some(u32::from_le_bytes(b)) }
 fn read_i32(address: usize) -> Option<i32> { read_u32(address).map(|v| v as i32) }
 fn read_usize(address: usize) -> Option<usize> { let mut b=[0;mem::size_of::<usize>()]; read_process(address,&mut b).then_some(usize::from_le_bytes(b)) }
+
+struct CallbackFlight;
+
+impl CallbackFlight {
+    fn enter() -> Self {
+        CALLBACKS_IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
+}
+
+impl Drop for CallbackFlight {
+    fn drop(&mut self) {
+        CALLBACKS_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+    }
+}

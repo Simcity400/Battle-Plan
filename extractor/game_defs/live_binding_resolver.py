@@ -1012,6 +1012,60 @@ def _catalog_mod_names(catalog: dict[str, Any]) -> list[str]:
     return names
 
 
+def validate_ui14_mod_collision_winners(
+    mod_inventory_by_id: dict[str, list[dict[str, Any]]],
+    effective_winners: list[dict[str, Any]],
+) -> None:
+    """Join engine winner receipts to the complete loose/archive namespace."""
+    collision_candidates: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    for layer_id, inventory in mod_inventory_by_id.items():
+        for row in inventory:
+            collision_candidates.setdefault(
+                row["relpath"].replace("\\", "/").casefold(), []
+            ).append((layer_id, row))
+    collisions = {
+        key: rows for key, rows in collision_candidates.items() if len(rows) > 1
+    }
+    winner_rows: dict[str, dict[str, Any]] = {}
+    for index, row in enumerate(effective_winners):
+        if not isinstance(row, dict) or set(row) != {"relpath", "winner_id", "sha256"}:
+            raise ResolutionError(f"UI14 engine VFS winner row {index} is malformed")
+        relpath = row.get("relpath")
+        winner_id = row.get("winner_id")
+        payload_sha = row.get("sha256")
+        if not isinstance(relpath, str):
+            raise ResolutionError(f"UI14 engine VFS winner row {index} path is invalid")
+        normalized = relpath.replace("\\", "/")
+        parts = PurePosixPath(normalized).parts
+        key = normalized.casefold()
+        if (
+            not normalized
+            or PurePosixPath(normalized).is_absolute()
+            or (len(normalized) >= 2 and normalized[0].isalpha() and normalized[1] == ":")
+            or any(part in {"", ".", ".."} for part in parts)
+            or winner_id not in mod_inventory_by_id
+            or not isinstance(payload_sha, str)
+            or re.fullmatch(r"[0-9a-f]{64}", payload_sha) is None
+            or key in winner_rows
+        ):
+            raise ResolutionError(f"UI14 engine VFS winner row {index} identity is invalid")
+        winner_rows[key] = {**row, "relpath": normalized}
+    if set(winner_rows) != set(collisions):
+        raise ResolutionError(
+            "UI14 engine VFS winner rows do not exactly cover mod collisions"
+        )
+    for key, winner in winner_rows.items():
+        matches = [
+            row
+            for layer_id, row in collisions[key]
+            if layer_id == winner["winner_id"]
+        ]
+        if len(matches) != 1 or matches[0]["sha256"] != winner["sha256"]:
+            raise ResolutionError(
+                f"UI14 engine VFS effective winner mismatch: {winner['relpath']}"
+            )
+
+
 def catalog_compatibility(
     validated: dict[str, dict[str, Any]],
     active_mod_names: list[str],
@@ -1128,13 +1182,14 @@ def resolve_live_bindings(
         content_root = (userdir / content_ref).resolve() if not Path(content_ref).is_absolute() else Path(content_ref).resolve()
         if content_root.is_file():
             content_sha, content_bytes = _hash_file_stable(content_root)
-            inventory = [{
-                "layer_kind": "mod",
-                "layer_id": token,
-                "relpath": content_root.name,
-                "bytes": content_bytes,
-                "sha256": content_sha,
-            }]
+            (
+                _namespace_sha,
+                inventory,
+                archive_sha,
+                archive_bytes,
+            ) = _zip_namespace_rows(content_root, token, layer_kind="mod")
+            if archive_sha != content_sha or archive_bytes != content_bytes:
+                raise ResolutionError(f"mod archive changed while resolving: {token}")
         else:
             content_sha, inventory = hash_tree(content_root, layer_kind="mod", layer_id=token)
         mod_inventory.extend(inventory)
@@ -1168,18 +1223,9 @@ def resolve_live_bindings(
             f"engine-receipt mod names {mod_names} != runtime active mods {runtime['active_mods']}"
         )
 
-    collision_candidates: dict[str, list[tuple[str, dict[str, Any]]]] = {}
-    for layer_id, inventory in mod_inventory_by_id.items():
-        for row in inventory:
-            collision_candidates.setdefault(row["relpath"].replace("\\", "/").casefold(), []).append((layer_id, row))
-    collisions = {key: rows for key, rows in collision_candidates.items() if len(rows) > 1}
-    winner_rows = {row["relpath"].casefold(): row for row in ui14_receipt["effective_winners"]}
-    if set(winner_rows) != set(collisions):
-        raise ResolutionError("UI14 engine VFS winner rows do not exactly cover loose-mod collisions")
-    for key, winner in winner_rows.items():
-        matches = [row for layer_id, row in collisions[key] if layer_id == winner["winner_id"]]
-        if len(matches) != 1 or matches[0]["sha256"] != winner["sha256"]:
-            raise ResolutionError(f"UI14 engine VFS effective winner mismatch: {winner['relpath']}")
+    validate_ui14_mod_collision_winners(
+        mod_inventory_by_id, ui14_receipt["effective_winners"]
+    )
 
     source_rows: list[dict[str, Any]] = []
     vanilla_sha, vanilla_inventory = hash_tree(

@@ -72,6 +72,14 @@ Notes:
   snapshot index. It is discoverable through `manifest.raw_streams` and
   `entries[*].role == "collector_raw_stream"`; it MUST NOT be put in
   `required_features` until native readers advertise support for that feature.
+* An optional G2 engine capture lives at `g2/g2_engine_pixel_witness.json`
+  and `g2/g2_engine_map_boundary.bmp`. It is declared only by the selected
+  game's exact `index.json.g2_engine_capture` object and uses roles
+  `g2_engine_witness` and `g2_engine_bgra_bmp`. The declaration binds both
+  hashes and lengths, plus the immutable capture-time content digest and the
+  finalized replay-content digest. Replay admission rejects undeclared roles,
+  missing/duplicate entries, path/hash/length drift, malformed witness/BMP
+  bytes, or recorder-authority join drift. Loose files are not replay authority.
 * **Excluded by design** (machine-local / volatile, not portable): the capture
   `*.lock` files, `_continuity/continuity_state.json` (carries PIDs/runtime
   state). The continuity *information the reader needs* already travels inside each

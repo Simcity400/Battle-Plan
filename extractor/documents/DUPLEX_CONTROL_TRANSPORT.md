@@ -170,6 +170,18 @@ allocation is superseded: ids 14/15 are the existing sink-failure messages, whil
 adjacent ids 16/17 are `IdentityFailure`/`IdentityFailureAck`. Both require the distinct
 `CAMPAIGN_IDENTITY = 1 << 5` capability.
 
+The authenticated early-render family occupies ids 18 through 33 and requires
+`EARLY_RENDER`. Kind 33 is recorder-to-collector
+`EarlyRenderG2CaptureArm` (`EG2A`, version 1). It is optional, may occur only
+immediately before `EarlyRenderCommitReceipt`, and binds the process/hook
+epoch, launch manifest, mechanically derived launch epoch, matching capture
+receipt, executable, effective VFS, sealed content manifest, settings, camera,
+isolated capture-context digest, selected hour, observation tokens, and local
+input/output paths. The collector rejects an arm unless every launch-binding
+field matches and its receipt equals the following COMMIT. It commits that
+receipt before arming the existing production D3D hook owner; the message never
+authorizes injection or a second hook graph.
+
 #### One canonical first-record acknowledgement
 
 `FirstCompactFrameAck` (`CFA1`) is exactly 104 bytes:
@@ -216,6 +228,24 @@ fresh product attempt after the old module is positively proven absent. If that 
 unavailable while the game remains alive, the visible result stays failed; **there is no reinjection**.
 This is deliberately stricter than a recoverable reconnect because the already-running DLL has no
 independent authenticated way to acquire a new pipe/session secret without adding another channel.
+
+### Authenticated sink-failure acceptance
+
+`sink-open-fault` and `sink-write-fault` are explicit acceptance-only collector-control modes.
+They require the production compact profile, explicit capture identity, a fresh 64-hex nonce, and
+the early-launch H4CT path. The recorder-generated authorization binds pipe token, session id,
+mode, and nonce; missing, malformed, replayed under another session, or caller-invented fields fail
+control admission. Ordinary production carries none of these fields and cannot arm either fault.
+
+The open arm first proves that the sole data pipe opened naturally, invalidates it only after H4CT
+authentication, then sends message 14; a natural pipe-open failure cannot satisfy the arm.
+The write arm permits one or more complete commits and fails the next whole topology attempt, then
+sends message 15 with exact committed bytes and consecutive last-complete/first-failed sequences.
+The recorder durably publishes a portable pointer-free pre-injection plan bound to the exact
+game-executable and collector-DLL leaf names and hashes plus
+`extractor.authenticated-sink-failure.v2`, publishes no replay, and exits nonzero. The independent
+`verify_sink_reconciliation.py` regrader requires exact plan/receipt authorization, identity,
+topology, progress, and non-publication equality.
 
 ### Ordering, replay, and parsing
 

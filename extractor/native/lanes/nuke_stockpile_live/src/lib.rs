@@ -1,9 +1,10 @@
 //! A17 exact a729 country nuke-stockpile carrier (compact domain 83).
 //!
-//! The wire and replay consumers are production-integrated, but the domain is
-//! deliberately reserved and this crate's live admission gate is false until
-//! the root exact-ten receipt is bound. Discovery artifacts or a caller's
-//! self-declared source flag cannot activate production emission.
+//! Static authority, wire, recorder, and replay consumers are production-
+//! integrated. Live admission is restricted to an exact-a729 source; the
+//! collector supplies that source from its double-stable, vtable/tag-checked
+//! current-process country roster. An unavailable or torn roster is encoded as
+//! unavailable and can never masquerade as a measured-empty stockpile.
 
 #[path = "../nuke_stockpile_exact.rs"]
 mod exact;
@@ -21,14 +22,16 @@ pub const DOMAIN_ID: u16 = 83;
 pub const DOMAIN_NAME: &str = "nuke_stockpile_live";
 pub const MAGIC: u32 = u32::from_le_bytes(*b"NUK1");
 pub const SCHEMA_VERSION: u32 = 1;
-pub const AUTHORITY_PENDING_EXACT10: u32 = 0;
+pub const AUTHORITY_SOURCE_UNAVAILABLE: u32 = 0;
 pub const AUTHORITY_EXACT_A729_RECEIPT: u32 = 1;
 pub const MAX_COUNTRIES: usize = 2_048;
 
-/// Root-controlled promotion switch. Static authority is receipted below, but
-/// the authenticated current-process source/hook has not been admitted, so
-/// production collection must still reject a structurally valid source.
-pub const PRODUCTION_AUTHORITY_ENABLED: bool = false;
+/// Root-controlled promotion switch. The exact20 function/data receipts and
+/// the collector's authenticated current-process country-roster source are now
+/// bound together. This does not make source failures permissive: callers must
+/// still authenticate the exact source and every memory read remains coherent
+/// and fail-closed.
+pub const PRODUCTION_AUTHORITY_ENABLED: bool = true;
 pub const EXACT20_FUNCTION_MANIFEST_SHA256: [u8; 32] =
     hex32(b"3befb21facb2fdd5724602b2a72655ade23995b8270521aeecbe5eddeed34301");
 pub const EXACT20_DATA_ARTIFACT_SHA256: [u8; 32] =
@@ -58,21 +61,21 @@ const fn hex32(input: &[u8; 64]) -> [u8; 32] {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthorityState {
-    PendingExact10,
+    SourceUnavailable,
     ExactA729Receipt,
 }
 
 impl AuthorityState {
     const fn raw(self) -> u32 {
         match self {
-            Self::PendingExact10 => AUTHORITY_PENDING_EXACT10,
+            Self::SourceUnavailable => AUTHORITY_SOURCE_UNAVAILABLE,
             Self::ExactA729Receipt => AUTHORITY_EXACT_A729_RECEIPT,
         }
     }
 
     fn from_raw(value: u32) -> Result<Self, CarrierError> {
         match value {
-            AUTHORITY_PENDING_EXACT10 => Ok(Self::PendingExact10),
+            AUTHORITY_SOURCE_UNAVAILABLE => Ok(Self::SourceUnavailable),
             AUTHORITY_EXACT_A729_RECEIPT => Ok(Self::ExactA729Receipt),
             _ => invalid("NUK1 authority state is unknown"),
         }
@@ -177,8 +180,10 @@ pub fn read_snapshot_from_country_roots<M: NukeMemory>(
     Ok(snapshot)
 }
 
-/// Production collector seam. This intentionally fails before consulting the
-/// source while the exact-ten receipt constant is unbound.
+/// Production collector seam. Only an authenticated exact-a729 current-process
+/// source may produce a clean frame. Source rejection or read failure is an
+/// error; the collector converts that error into an explicit unavailable d83
+/// frame rather than a measured-empty snapshot.
 pub fn collect_and_encode<S: ExactNukeStockpileSource>(
     source: &S,
     frame_hour: u64,
@@ -214,7 +219,7 @@ pub fn encode_source_unavailable(
         elapsed_wall_ms,
         status_flags,
         frame_hour,
-        authority: AuthorityState::PendingExact10,
+        authority: AuthorityState::SourceUnavailable,
         receipt_sha256: [0; 32],
         snapshot: None,
     })
@@ -238,12 +243,12 @@ pub fn validate_snapshot(snapshot: &NukeStockpileSnapshot) -> Result<(), Carrier
 
 pub fn validate_frame(frame: &NukeStockpileFrame) -> Result<(), CarrierError> {
     match frame.authority {
-        AuthorityState::PendingExact10 => {
+        AuthorityState::SourceUnavailable => {
             if frame.status_flags == 0
                 || frame.receipt_sha256 != [0; 32]
                 || frame.snapshot.is_some()
             {
-                return invalid("pending A17 frame must be unavailable and receipt-free");
+                return invalid("unavailable A17 frame must be receipt-free and rowless");
             }
         }
         AuthorityState::ExactA729Receipt => {
@@ -450,9 +455,9 @@ mod tests {
     }
 
     #[test]
-    fn pending_authority_cannot_carry_measured_rows() {
+    fn unavailable_authority_cannot_carry_measured_rows() {
         let mut frame = receipted_frame();
-        frame.authority = AuthorityState::PendingExact10;
+        frame.authority = AuthorityState::SourceUnavailable;
         frame.receipt_sha256 = [0; 32];
         assert!(encode_payload(&frame).is_err());
         assert!(encode_source_unavailable(900, 7, 0).is_err());
@@ -475,12 +480,31 @@ mod tests {
     }
 
     #[test]
-    fn production_source_gate_rejects_before_touching_source() {
+    fn production_source_gate_consults_authenticated_source() {
         let source = NeverRead(Cell::new(false));
         assert_eq!(
             collect_and_encode(&source, 900, 7),
-            Err(CarrierError::AuthorityPending)
+            Err(CarrierError::Source("must not be reached".into()))
         );
-        assert!(!source.0.get());
+        assert!(source.0.get());
+    }
+
+    struct Unauthenticated;
+    impl ExactNukeStockpileSource for Unauthenticated {
+        fn is_exact_a729_country_nuke_source(&self) -> bool {
+            false
+        }
+        fn read_nuke_stockpile(&self) -> Result<NukeStockpileSnapshot, String> {
+            panic!("unauthenticated source must not be read")
+        }
+    }
+
+    #[test]
+    fn unauthenticated_source_fails_before_memory_read() {
+        assert!(matches!(
+            collect_and_encode(&Unauthenticated, 900, 7),
+            Err(CarrierError::Source(message))
+                if message.contains("did not authenticate")
+        ));
     }
 }

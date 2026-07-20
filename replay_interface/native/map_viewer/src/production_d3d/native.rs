@@ -83,6 +83,10 @@ pub struct NativeProductionD3dExecutor<'a> {
     resources: &'a BTreeMap<String, ProductionMapResource>,
     gfx: super::native_draw::Gfx,
     stream_output: super::native_draw::StreamOutputBuffers,
+    snow_mud_texture: Option<replay_core::SnowMudTexturePacket>,
+    snow_mud_proof: Option<SnowMudD3dExecutionProof>,
+    snow_mud_binding_count: u32,
+    collect_snow_mud_h2: bool,
     political_textures: Vec<replay_core::PoliticalTexturePacket>,
     tiled_lights: Vec<replay_core::TiledLightSubmission>,
     graph_colors: BTreeMap<PreparedRenderTarget, NativeGraphColorTarget>,
@@ -95,6 +99,18 @@ impl<'a> NativeProductionD3dExecutor<'a> {
         resolver: &'a crate::GameFileResolver,
         resources: &'a BTreeMap<String, ProductionMapResource>,
     ) -> Result<Self> {
+        Self::new_with_snow_mud_h2(backend, resolver, resources, false)
+    }
+
+    /// Construct the native executor with optional output-only SnowMud H2
+    /// staging readback. Ordinary interactive rendering leaves this false;
+    /// exact source binding/cardinality remains mandatory in both modes.
+    pub fn new_with_snow_mud_h2(
+        backend: &'a mut NativeProductionD3dBackend,
+        resolver: &'a crate::GameFileResolver,
+        resources: &'a BTreeMap<String, ProductionMapResource>,
+        collect_snow_mud_h2: bool,
+    ) -> Result<Self> {
         if !resolver.has_content_admission() {
             return Err("native production D3D execution requires an admission-bound VFS".into());
         }
@@ -105,11 +121,21 @@ impl<'a> NativeProductionD3dExecutor<'a> {
             resources,
             gfx,
             stream_output: Default::default(),
+            snow_mud_texture: None,
+            snow_mud_proof: None,
+            snow_mud_binding_count: 0,
+            collect_snow_mud_h2,
             political_textures: Vec::new(),
             tiled_lights: Vec::new(),
             graph_colors: BTreeMap::new(),
             graph_depths: BTreeMap::new(),
         })
+    }
+
+    /// Product-only H2 materialization proof for the most recently executed
+    /// frame. It is absent when the frame had no SnowMudTexture consumers.
+    pub fn snow_mud_execution_proof(&self) -> Option<&SnowMudD3dExecutionProof> {
+        self.snow_mud_proof.as_ref()
     }
 
     fn submitted_target(
@@ -349,6 +375,9 @@ impl<'a> NativeProductionD3dExecutor<'a> {
 impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
     fn begin_frame(&mut self, frame: &PreparedProductionD3dFrame) -> Result<()> {
         self.political_textures = frame.political_textures.clone();
+        self.snow_mud_texture = frame.snow_mud_texture.clone();
+        self.snow_mud_proof = None;
+        self.snow_mud_binding_count = 0;
         self.tiled_lights = frame.tiled_lights.clone();
         self.graph_colors.clear();
         self.graph_depths.clear();
@@ -512,6 +541,10 @@ impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
                         self.resolver,
                         _ordered_scene_constant_buffers,
                         draw,
+                        self.snow_mud_texture.as_ref(),
+                        &mut self.snow_mud_proof,
+                        &mut self.snow_mud_binding_count,
+                        self.collect_snow_mud_h2,
                         &self.political_textures,
                         &self.tiled_lights,
                         &prepared_targets,
@@ -563,6 +596,10 @@ impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
                 self.resolver,
                 ordered_scene_constant_buffers,
                 &packet.draw,
+                self.snow_mud_texture.as_ref(),
+                &mut self.snow_mud_proof,
+                &mut self.snow_mud_binding_count,
+                self.collect_snow_mud_h2,
                 &self.political_textures,
                 &self.tiled_lights,
                 &prepared_targets,
@@ -574,6 +611,25 @@ impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
     }
 
     fn finish_frame(&mut self) -> Result<()> {
+        match (&self.snow_mud_texture, self.snow_mud_binding_count) {
+            (None, 0) => {}
+            (Some(packet), count) if count == packet.snow_mud_fade_consumer_count => {}
+            (Some(_), _) => {
+                return Err(
+                    "product SnowMudTexture binding/fade consumer cardinality mismatch"
+                        .into(),
+                )
+            }
+            (None, _) => {
+                return Err("product SnowMudTexture binding has no H packet".into())
+            }
+        }
+        match (self.collect_snow_mud_h2, &self.snow_mud_texture, &self.snow_mud_proof) {
+            (false, _, None) | (true, None, None) => {}
+            (true, Some(packet), Some(proof))
+                if proof.replaced_binding_count == packet.snow_mud_fade_consumer_count => {}
+            _ => return Err("product SnowMudTexture H2 proof collection is incomplete".into()),
+        }
         unsafe { (*self.backend.context()).Flush() };
         Ok(())
     }

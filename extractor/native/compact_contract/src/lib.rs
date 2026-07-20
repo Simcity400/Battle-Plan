@@ -14,6 +14,7 @@ pub mod calendar;
 pub mod campaign_identity;
 pub mod campaign_rollover;
 pub mod control_transport;
+pub mod dynamic_modifiers;
 pub mod early_render_content_manifest;
 pub mod early_render_control;
 pub mod early_render_runtime_dlc;
@@ -21,6 +22,7 @@ pub mod early_render_vfs;
 pub mod early_render_vfs_payload;
 pub mod first_compact_ack;
 pub mod identity_control;
+pub mod national_focus_presentation;
 pub mod naval_history;
 pub mod rail_replay;
 pub mod record_header;
@@ -1345,15 +1347,16 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         &[],
     ),
     // A17 (2026-07-20): exact pointer-free per-country CNuke rows carrying
-    // amount_raw and nukes_ready. The carrier, recorder fold, and replay view
-    // are wired, but the exact-ten consumer binding is not yet receipted. Keep
-    // d83 reserved and unscheduled; d63's established 48-byte row is unchanged.
+    // amount_raw and nukes_ready. Exact20 function/data authority is bound to
+    // the collector's double-stable, vtable/tag-checked current-process country
+    // roster. Source failure emits explicit unavailable; it never certifies an
+    // empty stockpile. d63's established 48-byte row remains unchanged.
     domain(
         83,
         "nuke_stockpile_live",
         "nuke_stockpile_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ValidatedSlice,
+        true,
         true,
         &[],
     ),
@@ -1403,11 +1406,58 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
     // A34/XUI19 (2026-07-20): complete ordered decision-panel materialization
     // including exact evaluated text and alert membership. The d87 carrier is
     // receipt-bound and fail-closed. Keep reserved and unscheduled until the
-    // inert materializer/text/alert hooks pass the production fixture gate.
+    // signature-gated materializer/text/alert hook graph passes the production
+    // fixture gate. The installer and scheduler epoch are engineered, but both
+    // activation latches remain false without the authenticated live fixture.
     domain(
         87,
         "decision_panel_live",
         "decision_panel_live",
+        CompactDomainStatus::Reserved,
+        false,
+        true,
+        &[],
+    ),
+    // A36/XUI23 (2026-07-20): exact selected-context active-command-ability
+    // rows wrapped in a receipt-bound ABA2 envelope. The nested ABL1 payload
+    // preserves source order, engine-evaluated state/timers/cost, target,
+    // final text, and affected-division identities. Keep reserved and
+    // unscheduled until the authenticated live transition matrix and the
+    // same-row final disabled-reason join are both accepted.
+    domain(
+        88,
+        "active_command_abilities_live",
+        "active_command_abilities_live",
+        CompactDomainStatus::Reserved,
+        false,
+        true,
+        &[],
+    ),
+    // A31/XUI10 (2026-07-20): final CNationalFocusView item order and exact
+    // per-item presentation leaves, with every process address replaced by a
+    // stable focus-definition id. Static exact20 authority and the d89
+    // codec/fold/replay/UI route are complete. Keep reserved and unscheduled
+    // until a complete stable frame plus discriminating transition fixture is
+    // authenticated.
+    domain(
+        89,
+        "national_focus_presentation_live",
+        "national_focus_presentation_live",
+        CompactDomainStatus::Reserved,
+        false,
+        true,
+        &[],
+    ),
+    // H-CONVOY (2026-07-20): exact pre-collapse terminal convoy event with
+    // complete two-word client identity, generic-reference producer join,
+    // serializer-owned endpoints, combat epoch and same-call D70 mutation.
+    // CTA2 includes cumulative hook/drop/queue/publication custody. Keep
+    // reserved and unscheduled until the branched terminal-loss/no-loss live
+    // acceptance pair is authenticated and the hook latch is reviewed.
+    domain(
+        90,
+        "convoy_transport_attack_live",
+        "convoy_transport_attack_live",
         CompactDomainStatus::Reserved,
         false,
         true,
@@ -1497,12 +1547,24 @@ mod tests {
             COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2
         );
         assert_eq!(
+            compact_record_allowed_flags(67, COMPACT_RECORD_TYPE_DOMAIN_DATA),
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2
+        );
+        assert_eq!(
             compact_record_allowed_flags(10, COMPACT_RECORD_TYPE_DOMAIN_PERF),
             COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER
         );
         assert_eq!(
             compact_record_allowed_flags(10, COMPACT_RECORD_TYPE_DOMAIN_DATA),
             0
+        );
+        assert_eq!(
+            compact_record_rejected_flags(
+                67,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            ),
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2
         );
         assert_eq!(
             compact_record_allowed_flags(1000, COMPACT_RECORD_TYPE_FRAME_END),
@@ -1585,7 +1647,7 @@ mod tests {
             1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32,
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
             55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76,
-            77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 1000,
+            77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 1000,
         ];
         for id in expected {
             assert!(
@@ -1781,7 +1843,7 @@ mod tests {
             profile_ids.contains(&70),
             "domain 70 (sunk_convoy_history_live) is a production-ready validated slice"
         );
-        for excluded in [1, 18, 58, 59, 71, 73, 74, 76, 77, 1000] {
+        for excluded in [1, 18, 58, 59, 71, 73, 74, 76, 77, 90, 1000] {
             assert!(
                 !profile_ids.contains(&excluded),
                 "domain {excluded} must stay out of the production profile"

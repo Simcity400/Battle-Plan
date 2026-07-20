@@ -28,7 +28,8 @@ use crate::topbar::{
 };
 use replay_core::world::FactionRosterStatus;
 use replay_core::{
-    CountryIdentity, DiplomacyView, Leaf, TopbarRatios, TopbarScalars, ViewStatus, WorldFrame,
+    CountryIdentity, DiplomacyView, Leaf, SubjectAutonomyDirection, TopbarRatios, TopbarScalars,
+    ViewStatus, WorldFrame,
 };
 
 /// Render an `f64` leaf as its raw shortest round-trip decimal, or `None`
@@ -86,10 +87,9 @@ fn apply_scalars(binding: &mut TopbarBinding, scalars: &TopbarScalars) {
     binding.army_experience = raw_f64(&scalars.xp_army);
     binding.navy_experience = raw_f64(&scalars.xp_navy);
     binding.air_experience = raw_f64(&scalars.xp_air);
-    // Nukes: the view carries total vs ready separately; the topbar shows a
-    // single nuke count. Which one is UNKNOWN (no cited element), so this binds
-    // the total and records the ambiguity in LANE_REPORT.md.
-    binding.nukes = raw_i64(&scalars.nukes_total);
+    // A17 is applied after this generic scalar projection: its displayed value
+    // additionally requires the D18 identity and exact NUK1 sidecar.
+    binding.nukes = None;
     binding.fuel = raw_f64(&scalars.fuel_current);
     binding.world_tension_percent = raw_f64(&scalars.world_tension);
     binding.world_tension = scalars.world_tension.measured().map(|v| *v as f32);
@@ -114,6 +114,59 @@ fn apply_scalars(binding: &mut TopbarBinding, scalars: &TopbarScalars) {
     // The single-count `factory_text` alias is left absent; the triple above is
     // the measured form. (Its `/`-join is UNKNOWN formatting — see report.)
     binding.factory_text = None;
+}
+
+/// Join the D18 identity retained by the recorder to the exact d83 sidecar.
+/// A scalar with the same numeric total is not sufficient: two countries can
+/// legitimately have equal stockpiles, so identity and value must both agree.
+fn apply_exact_nuke_stockpile(
+    binding: &mut TopbarBinding,
+    frame: &WorldFrame,
+    scalars: &TopbarScalars,
+) {
+    let d18_resolved = frame
+        .raw()
+        .get("tag_db_id_index")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|index| index.get("resolved"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    binding.nukes = exact_nuke_display_value(
+        d18_resolved,
+        frame.nuke_stockpile_exact(),
+        scalars,
+    );
+}
+
+fn exact_nuke_display_value(
+    d18_resolved: bool,
+    exact_view: &replay_core::NukeStockpileExactView,
+    scalars: &TopbarScalars,
+) -> Option<String> {
+    let (Some(tag_db_id), Some(projected_total)) = (
+        scalars.nuke_stockpile_tag_db_id.measured().copied(),
+        scalars.nukes_total.measured().copied(),
+    ) else {
+        return None;
+    };
+    if !d18_resolved || exact_view.status != ViewStatus::Present {
+        return None;
+    }
+    let Some(stockpile) = exact_view.stockpile.as_ref() else {
+        return None;
+    };
+    let mut matches = stockpile
+        .countries
+        .iter()
+        .filter(|country| country.tag_db_id == tag_db_id);
+    let Some(exact) = matches.next() else {
+        return None;
+    };
+    if matches.next().is_none() && i64::from(exact.nukes_total) == projected_total {
+        Some(projected_total.to_string())
+    } else {
+        None
+    }
 }
 
 /// Map the three unambiguous ratio leaves onto their exact authored bars.
@@ -161,6 +214,7 @@ pub fn topbar_binding_from_frame(frame: &WorldFrame, pov_tag: &str) -> TopbarBin
     if frame.topbar_status() == ViewStatus::Present {
         if let Some(scalars) = frame.topbar_scalars(pov_tag) {
             apply_scalars(&mut binding, scalars);
+            apply_exact_nuke_stockpile(&mut binding, frame, scalars);
         }
     }
 
@@ -376,6 +430,9 @@ pub fn outliner_binding_from_frame(frame: &WorldFrame, pov_tag: &str) -> Outline
 //     `None` (fail-closed; an unrecorded relation is never asserted false).
 //   * `wars`      — the POV's belligerents (relation rows with `at_war ==
 //     Some(true)`), i.e. the panel's war rows.
+//   * `subject_autonomy` - A16's complete authenticated current-status set,
+//     filtered to rows involving the POV. State identities remain raw hashes;
+//     no unproven display-name or formatting join is introduced here.
 //
 // KNOWN VIEW GAPS (data present in the recording but NOT surfaced by the
 // read-only `DiplomacyView`, so absent here — recorded in `LANE_REPORT.md`):
@@ -416,6 +473,26 @@ pub struct RelationRow {
     pub subject: Option<bool>,
 }
 
+/// One authenticated A16 autonomy row involving the selected country. State
+/// identities remain exact hashes because no reviewed localisation join for
+/// autonomy-state definitions is part of this binding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubjectAutonomyPanelRow {
+    pub counterpart: Option<String>,
+    pub counterpart_tag_db_id: u32,
+    pub pov_is_overlord: bool,
+    pub current_state_hash: u32,
+    pub previous_state_hash: Option<u32>,
+    pub next_state_hash: Option<u32>,
+    pub ratio_raw: i32,
+    pub current_score_raw: i64,
+    pub lower_score_raw: i64,
+    pub upper_score_raw: i64,
+    pub last_modified_date: Option<String>,
+    pub last_modified_date_raw: u32,
+    pub direction: Option<SubjectAutonomyDirection>,
+}
+
 /// Read-only country/diplomacy panel binding for one POV at one hour (D4).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiplomacyPanelBinding {
@@ -433,6 +510,11 @@ pub struct DiplomacyPanelBinding {
     pub relations: Vec<RelationRow>,
     /// The POV's belligerents (relation rows with `at_war == Some(true)`).
     pub wars: Vec<String>,
+    /// `true` only when the complete A16 current-status set was measured.
+    pub subject_autonomy_available: bool,
+    /// Exact current autonomy rows involving the POV. An available empty list
+    /// is distinct from an unavailable source via `subject_autonomy_available`.
+    pub subject_autonomy: Vec<SubjectAutonomyPanelRow>,
 }
 
 fn bool_opt(leaf: &Leaf<bool>) -> Option<bool> {
@@ -499,6 +581,58 @@ fn relation_rows(view: &DiplomacyView, pov_tag: &str) -> Vec<RelationRow> {
     rows
 }
 
+fn subject_autonomy_rows(
+    view: &DiplomacyView,
+    pov_tag: &str,
+) -> (bool, Vec<SubjectAutonomyPanelRow>) {
+    let Leaf::Measured(rows) = &view.subject_autonomy_current else {
+        return (false, Vec::new());
+    };
+    let pov_id = pov_tag.parse::<u32>().ok();
+    let mut projected = rows
+        .iter()
+        .filter_map(|row| {
+            let overlord_matches = row.overlord.measured().is_some_and(|tag| tag == pov_tag)
+                || pov_id == Some(row.overlord_tag_db_id);
+            let subject_matches = row.subject.measured().is_some_and(|tag| tag == pov_tag)
+                || pov_id == Some(row.subject_tag_db_id);
+            let (pov_is_overlord, counterpart, counterpart_tag_db_id) =
+                if overlord_matches && !subject_matches {
+                    (
+                        true,
+                        row.subject.measured().cloned(),
+                        row.subject_tag_db_id,
+                    )
+                } else if subject_matches && !overlord_matches {
+                    (
+                        false,
+                        row.overlord.measured().cloned(),
+                        row.overlord_tag_db_id,
+                    )
+                } else {
+                    return None;
+                };
+            Some(SubjectAutonomyPanelRow {
+                counterpart,
+                counterpart_tag_db_id,
+                pov_is_overlord,
+                current_state_hash: row.current_state_hash,
+                previous_state_hash: row.previous_state_hash,
+                next_state_hash: row.next_state_hash,
+                ratio_raw: row.ratio_raw,
+                current_score_raw: row.current_score_raw,
+                lower_score_raw: row.lower_score_raw,
+                upper_score_raw: row.upper_score_raw,
+                last_modified_date: row.last_modified_date.measured().cloned(),
+                last_modified_date_raw: row.last_modified_date_raw,
+                direction: row.direction.measured().copied(),
+            })
+        })
+        .collect::<Vec<_>>();
+    projected.sort_by_key(|row| (row.pov_is_overlord, row.counterpart_tag_db_id));
+    (true, projected)
+}
+
 /// Build the read-only diplomacy panel for `pov_tag` at one world frame (D4).
 /// When the diplomacy view is not `Present`, returns the fail-closed empty
 /// binding (`available: false`, no faction/relation rows).
@@ -518,6 +652,8 @@ pub fn diplomacy_panel_from_frame(frame: &WorldFrame, pov_tag: &str) -> Diplomac
         .map(|r| r.other_tag.clone())
         .collect();
     let (faction_roster_status, factions) = faction_rows(view);
+    let (subject_autonomy_available, subject_autonomy) =
+        subject_autonomy_rows(view, pov_tag);
     DiplomacyPanelBinding {
         pov_tag: pov_tag.to_string(),
         available: true,
@@ -526,6 +662,8 @@ pub fn diplomacy_panel_from_frame(frame: &WorldFrame, pov_tag: &str) -> Diplomac
         factions,
         relations,
         wars,
+        subject_autonomy_available,
+        subject_autonomy,
     }
 }
 
@@ -771,6 +909,58 @@ mod tests {
     }
 
     #[test]
+    fn a17_generic_scalars_cannot_bypass_exact_identity_join() {
+        let mut scalars = all_absent_scalars();
+        scalars.nuke_stockpile_tag_db_id = Leaf::Measured(23);
+        scalars.nukes_total = Leaf::Measured(2);
+        scalars.nukes_ready = Leaf::Measured(9);
+        let mut binding = TopbarBinding::default();
+        apply_scalars(&mut binding, &scalars);
+        assert_eq!(binding.nukes, None);
+    }
+
+    #[test]
+    fn a17_exact_identity_and_total_are_both_required() {
+        let mut scalars = all_absent_scalars();
+        scalars.nuke_stockpile_tag_db_id = Leaf::Measured(23);
+        scalars.nukes_total = Leaf::Measured(2);
+        scalars.nukes_ready = Leaf::Measured(9);
+        let view = replay_core::NukeStockpileExactView {
+            status: ViewStatus::Present,
+            stockpile: Some(replay_core::NukeStockpileExact {
+                schema_version: 1,
+                authority: "exact_a729_nuke_stockpile".into(),
+                executable_sha256: "e".into(),
+                receipt_sha256: "r".into(),
+                data_artifact_sha256: "d".into(),
+                elapsed_wall_ms: 1,
+                frame_hour: 900,
+                source_sequence: 1,
+                countries: vec![replay_core::NukeStockpileCountryExact {
+                    tag_db_id: 23,
+                    nukes_total: 2,
+                    nukes_ready_total: 9,
+                    nukes: vec![replay_core::NukeStockpileEntryExact {
+                        amount_raw: 250_000_000,
+                        amount: 2,
+                        nukes_ready: 9,
+                    }],
+                }],
+            }),
+        };
+        assert_eq!(
+            exact_nuke_display_value(true, &view, &scalars).as_deref(),
+            Some("2")
+        );
+        assert_eq!(exact_nuke_display_value(false, &view, &scalars), None);
+        scalars.nuke_stockpile_tag_db_id = Leaf::Measured(24);
+        assert_eq!(exact_nuke_display_value(true, &view, &scalars), None);
+        scalars.nuke_stockpile_tag_db_id = Leaf::Measured(23);
+        scalars.nukes_total = Leaf::Measured(3);
+        assert_eq!(exact_nuke_display_value(true, &view, &scalars), None);
+    }
+
+    #[test]
     fn flag_candidates_key_off_identity() {
         let cands = topbar_flag_key_candidates(
             "GER",
@@ -851,6 +1041,7 @@ mod tests {
             fuel_current: Leaf::Absent,
             fuel_max: Leaf::Absent,
             convoys: Leaf::Absent,
+            nuke_stockpile_tag_db_id: Leaf::Absent,
             nukes_total: Leaf::Absent,
             nukes_ready: Leaf::Absent,
             world_tension: Leaf::Absent,

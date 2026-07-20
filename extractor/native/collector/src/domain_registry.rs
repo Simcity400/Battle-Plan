@@ -212,13 +212,20 @@ mod tests {
     }
 
     #[test]
-    fn a17_nuke_stockpile_transport_is_assigned_but_not_scheduled() {
+    fn a17_nuke_stockpile_transport_is_scheduled_from_exact_source() {
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
             assigned_descriptor_by_name("nuke_stockpile_live").map(|d| d.id),
             Some(83)
         );
-        assert!(registry.by_id(83).is_none());
+        assert_eq!(
+            registry.id_for_scheduled_name("nuke_stockpile_live"),
+            Some(83)
+        );
+        assert_eq!(
+            registry.by_id(83).map(|d| d.status),
+            Some(CompactDomainStatus::ValidatedSlice)
+        );
     }
 
     #[test]
@@ -234,6 +241,26 @@ mod tests {
         );
         assert!(registry.by_id(86).is_none());
         assert!(registry.by_id(87).is_none());
+    }
+
+    #[test]
+    fn a31_focus_presentation_transport_is_assigned_but_not_scheduled() {
+        let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
+        assert_eq!(
+            assigned_descriptor_by_name("national_focus_presentation_live").map(|d| d.id),
+            Some(89)
+        );
+        assert!(registry.by_id(89).is_none());
+    }
+
+    #[test]
+    fn h_convoy_transport_is_assigned_but_not_scheduled_before_live_acceptance() {
+        let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
+        assert_eq!(
+            assigned_descriptor_by_name("convoy_transport_attack_live").map(|d| d.id),
+            Some(90)
+        );
+        assert!(registry.by_id(90).is_none());
     }
 
     #[test]

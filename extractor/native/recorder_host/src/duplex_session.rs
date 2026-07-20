@@ -8,6 +8,7 @@
 pub mod durable_fs;
 pub mod identity_control;
 pub mod rollover_control;
+pub mod rollover_fs;
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -293,6 +294,17 @@ impl RecorderHeartbeat {
 
     pub fn last_proven_sequence(&self) -> Option<u64> {
         self.last_proven_sequence
+    }
+
+    /// Reset only the H4CR progress frontier after a fully acknowledged
+    /// logical-stream rollover. Control challenge counters and replay
+    /// protection remain continuous for the lifetime of the H4CT session.
+    pub fn begin_logical_stream(&mut self) -> Result<(), HeartbeatError> {
+        if self.outstanding.is_some() {
+            return Err(HeartbeatError::OutstandingChallenge);
+        }
+        self.last_proven_sequence = None;
+        Ok(())
     }
 }
 
@@ -682,6 +694,37 @@ mod tests {
             Err(HeartbeatError::NoOutstandingChallenge)
         ));
         assert!(!channel.is_poisoned());
+    }
+
+    #[test]
+    fn logical_stream_reset_clears_only_h4cr_frontier() {
+        let challenges = [[0x31; 16], [0x32; 16]];
+        let proofs = [
+            HeartbeatProof {
+                challenge: challenges[0],
+                last_complete_h4cr_sequence: 41,
+                state: HeartbeatState::PausedForControl,
+            },
+            HeartbeatProof {
+                challenge: challenges[1],
+                last_complete_h4cr_sequence: 0,
+                state: HeartbeatState::WaitingForWorld,
+            },
+        ];
+        let mut channel = recorder_channel_with_proofs(&proofs);
+        let cancellation = ControlCancellation::new();
+        let mut heartbeat = RecorderHeartbeat::default();
+        let deadline = ControlDeadline::after(Duration::from_secs(1)).unwrap();
+        heartbeat
+            .send_challenge(&mut channel, challenges[0], deadline, &cancellation)
+            .unwrap();
+        heartbeat.receive_proof(&mut channel, &cancellation).unwrap();
+        heartbeat.begin_logical_stream().unwrap();
+        heartbeat
+            .send_challenge(&mut channel, challenges[1], deadline, &cancellation)
+            .unwrap();
+        heartbeat.receive_proof(&mut channel, &cancellation).unwrap();
+        assert_eq!(heartbeat.last_proven_sequence(), Some(0));
     }
 
     #[test]

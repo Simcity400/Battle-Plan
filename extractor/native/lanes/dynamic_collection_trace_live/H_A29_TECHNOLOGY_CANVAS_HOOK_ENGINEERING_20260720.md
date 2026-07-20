@@ -18,8 +18,9 @@ product payload in this revision:
 - collection rejects before invoking the source while any live gate is absent;
 - structural encode/decode helpers are private; the only public decoder checks
   production activation, persisted preflight, and the live contract;
-- no collector scheduler, d71 fold, recorder fold, or replay consumer calls the
-  module.
+- collector, reserved d71 routing, recorder fold, replay typed view, and UI09
+  admission are now wired; none can admit a payload while the live gates above
+  remain absent.
 
 ## Frozen boundaries
 
@@ -114,21 +115,24 @@ membership, registry-derived owner identity, content-manifest recomputation,
 authenticated-decoder refusal, and compile-time activation refusal. Per
 repository policy they were not run by this subagent.
 
-## Remaining d71 gap
+## Production transport completed
 
-The existing d71 schema still cannot carry `TCV1` without losing required
-proof:
+Reserved domain 71 now discriminates `DCT1` and `TCV1` by carrier magic. TCV1
+is never projected into the older collection schema: the recorder preserves
+the full authority hashes, same-record identity, explicit two-axis pan and
+scroll state, complete source dispositions, hierarchy-derived slots, rectangles
+and mixed draw order under `_r2_technology_canvas_live`. Replay validates the
+exact-a729 authority, current-hour join, complete set/order/slot coverage and
+scroll/rectangle invariants, and independently recomputes both canonical
+content-manifest and source-record SHA-256 values before exposing a typed view. The UI09 adapter maps
+only that typed present view into the existing admission request. Missing,
+unknown, malformed and inactive states remain unavailable.
 
-1. no `source_record_id` or exact20/producer/content manifest binding;
-2. no explicit two-axis pan;
-3. materialized slots may be a strict subset of ordered items;
-4. slot identity need not be a full authored hierarchy path.
-
-`d71_projection_blockers()` exposes those four reasons mechanically. There is
-deliberately no lossy projection function. Exact20 has supplied and pinned the
-static helper exports and sentinels. The remaining gate is an authenticated
-live fixture supplying complete dispositions, portable connector/overlay
-identity, and the owning two-axis fields. The internal callback-label semantics
-remain automated RE work, not a request for human interpretation. Only then may
-root enable collection and revise d71, recorder fold, replay view, and the UI09
-adapter atomically.
+`d71_projection_blockers()` is therefore empty: no lossy projection is used.
+Exact20 has supplied and pinned the static helper exports and sentinels. The
+remaining gate is still an authenticated live fixture supplying complete
+dispositions, portable connector/overlay identity, owning two-axis fields, and
+installed hook/trampoline receipts. The internal callback-label semantics
+remain automated RE work, not a request for human interpretation. Once those
+receipts exist, activation is a contract update rather than another downstream
+schema integration wave.

@@ -14,6 +14,7 @@ sys.path.insert(0, str(HERE))
 import build_runtime_static_bundle as B  # noqa: E402
 import build_all as BUILD_ALL  # noqa: E402
 import live_binding_resolver as LR  # noqa: E402
+import prepare_product_modset_capture as PREPARE  # noqa: E402
 import source_inventory_layers as SIL  # noqa: E402
 import static_bundle as SB  # noqa: E402
 
@@ -231,9 +232,67 @@ def test_resolved_mod_sources_retain_recorded_engine_order_not_binding_sort_orde
     assert [row["ordinal"] for row in loaded] == [0, 1]
 
 
-def test_runtime_staging_and_resume_reject_unattested_archive_mod_before_writes(
-    tmp_path: Path,
-):
+def test_staged_descriptor_preserves_non_utf8_clausewitz_bytes(tmp_path: Path):
+    descriptor = tmp_path / "source/mod/latin1.mod"
+    descriptor.parent.mkdir(parents=True)
+    descriptor.write_bytes(
+        b'name="Caf\xe9"\narchive="mods/latin1.zip"\n# byte:\xff\n'
+    )
+    content_root = tmp_path / "materialized/content"
+    content_root.mkdir(parents=True)
+    source = {"id": "mod/latin1.mod", "descriptor_path": str(descriptor)}
+
+    staged = B._stage_mod_descriptor(source, tmp_path / "runtime_userdir", content_root)
+    raw = staged.read_bytes()
+
+    assert b'name="Caf\xe9"' in raw
+    assert b"# byte:\xff" in raw
+    assert b"archive=" not in raw
+    assert LR.parse_descriptor(staged)["name"] == "Caf\xe9"
+
+
+def test_runtime_staging_and_resume_admit_exact_archive_mod_namespace(tmp_path: Path):
+    bindings_dir, mod_state, sources = _binding_fixture(tmp_path, archive_mod=True)
+    vanilla = tmp_path / "vanilla"
+    (vanilla / "common").mkdir(parents=True)
+    (vanilla / "common/base.txt").write_text("vanilla", encoding="utf-8")
+    source_inventory = LR.recompute_source_inventory(
+        vanilla, sources, [], [], mod_state["identity"]
+    )
+    _write_json(
+        bindings_dir / "source_inventory.json",
+        source_inventory,
+    )
+    destination = tmp_path / "runtime_userdir"
+    launcher = B.prepare_runtime_userdir(bindings_dir, vanilla, destination)
+
+    assert launcher["enabled_mods"] == ["mod/z-last.mod"]
+    assert B._validate_runtime_userdir(bindings_dir, vanilla, destination) == launcher
+    manifest = json.loads(
+        (destination / "static_mod_staging_manifest.json").read_text(encoding="utf-8")
+    )
+    row = manifest["mods"][0]
+    namespace = next(
+        item for item in source_inventory["namespaces"]
+        if item["kind"] == "mod" and item["id"] == "mod/z-last.mod"
+    )
+    assert row["source_content_sha256"] == SB.sha256_file(
+        Path(sources[0]["content_path"])
+    )
+    assert row["content_sha256"] == namespace["content_sha256"]
+    assert row["source_namespace_sha256"] == namespace["content_sha256"]
+    staged_descriptor = destination / row["descriptor_relpath"]
+    staged_fields = LR.parse_descriptor(staged_descriptor)
+    assert "path" in staged_fields and "archive" not in staged_fields
+    staged_root = Path(row["content_path"])
+    assert (staged_root / "common/fixture.txt").read_text(encoding="utf-8") == "zed"
+
+    (staged_root / "common/fixture.txt").write_text("tampered", encoding="utf-8")
+    with pytest.raises(LR.ResolutionError, match=r"runtime staged mod content changed"):
+        B._validate_runtime_userdir(bindings_dir, vanilla, destination)
+
+
+def test_archive_mod_source_mutation_is_rejected_before_staging(tmp_path: Path):
     bindings_dir, mod_state, sources = _binding_fixture(tmp_path, archive_mod=True)
     vanilla = tmp_path / "vanilla"
     (vanilla / "common").mkdir(parents=True)
@@ -242,16 +301,127 @@ def test_runtime_staging_and_resume_reject_unattested_archive_mod_before_writes(
         bindings_dir / "source_inventory.json",
         LR.recompute_source_inventory(vanilla, sources, [], [], mod_state["identity"]),
     )
-    destination = tmp_path / "runtime_userdir"
-    error = r"unattested archive mod is not admitted without a proven native-collision attestation"
+    archive = Path(sources[0]["content_path"])
+    with zipfile.ZipFile(archive, "a", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("common/second.txt", b"changed")
 
-    with pytest.raises(LR.ResolutionError, match=error):
+    destination = tmp_path / "runtime_userdir"
+    with pytest.raises(LR.ResolutionError, match=r"resolved mod content changed"):
         B.prepare_runtime_userdir(bindings_dir, vanilla, destination)
     assert not destination.exists()
 
-    destination.mkdir()
-    with pytest.raises(LR.ResolutionError, match=error):
-        B._validate_runtime_userdir(bindings_dir, vanilla, destination)
+
+def _offline_preparation_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    bindings_dir, mod_state, sources = _binding_fixture(tmp_path)
+    vanilla = tmp_path / "vanilla"
+    (vanilla / "common").mkdir(parents=True)
+    (vanilla / "common/base.txt").write_text("vanilla", encoding="utf-8")
+    exe = vanilla / "hoi4.exe"
+    exe.write_bytes(b"exact executable fixture")
+    inventory = LR.recompute_source_inventory(
+        vanilla, sources, [], [], mod_state["identity"]
+    )
+    load_order = SB.load_object(bindings_dir / "load_order.json", "fixture load order")
+    base_namespace = next(row for row in inventory["namespaces"] if row["kind"] == "vanilla")
+    load_order["entries"][0]["content_sha256"] = base_namespace["content_sha256"]
+    load_order["effective_content_sha256"] = SB._content_digest(load_order["entries"])
+    _write_json(bindings_dir / "load_order.json", load_order)
+    _write_json(bindings_dir / "source_inventory.json", inventory)
+    exe_sha = SB.sha256_file(exe)
+    ui14 = SB.load_object(bindings_dir / B.UI14_ENGINE_VFS_FILE, "fixture UI14")
+    ui14["executable_sha256"] = exe_sha
+    _write_json(bindings_dir / B.UI14_ENGINE_VFS_FILE, ui14)
+    _write_json(
+        bindings_dir / "resolution_report.json",
+        {
+            "schema": LR.RESOLUTION_SCHEMA,
+            "passed": True,
+            "process": {
+                "pid": 4242,
+                "creation_filetime_utc": 133700000000000000,
+                "exe_sha256": exe_sha,
+            },
+            "binding_identity": mod_state["identity"],
+            "source_inventory_rows": len(inventory["rows"]),
+            "source_inventory_sha256": inventory["inventory_sha256"],
+            "resolved_mod_sources": sources,
+        },
+    )
+    return exe, bindings_dir
+
+
+def _fake_product_bundle_build(**kwargs):
+    bindings_dir = Path(kwargs["bindings_dir"])
+    output = Path(kwargs["output"])
+    exe = Path(kwargs["exe"])
+    documents = {
+        role: SB._validate_binding_document(
+            SB.load_object(bindings_dir / f"{role}.json", role), role
+        )
+        for role in ("mod_state", "dlc_state", "load_order")
+    }
+    inventory = LR.validate_source_inventory_document(
+        SB.load_object(bindings_dir / "source_inventory.json", "inventory")
+    )
+    product = SB.product_modset_binding(SB.sha256_file(exe), documents, inventory)
+    manifest = {
+        "schema": SB.BUNDLE_SCHEMA,
+        "bundle_id": "7" * 64,
+        "bindings": {"product_modset": product},
+        "token_join": {"status": "deferred"},
+        "artifacts": [{"role": spec.role} for spec in SB.DEFAULT_SPECS],
+    }
+    bundle = output / "bundle"
+    bundle.mkdir(parents=True)
+    _write_json(bundle / "static_bundle_manifest.json", manifest)
+    return {"schema": B.BUILD_SCHEMA, "passed": True}
+
+
+def test_offline_product_modset_preparation_is_path_free_and_reproducible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    exe, bindings = _offline_preparation_fixture(tmp_path)
+    monkeypatch.setattr(PREPARE.RB, "build", _fake_product_bundle_build)
+
+    first = PREPARE.prepare_offline(
+        exe=exe, bindings=bindings, output=tmp_path / "prepared-a"
+    )
+    second = PREPARE.prepare_offline(
+        exe=exe, bindings=bindings, output=tmp_path / "prepared-b"
+    )
+
+    assert first["preparation_mode"] == "authenticated_binding_corpus"
+    assert first["binding_corpus_sha256"] == second["binding_corpus_sha256"]
+    assert first["product_modset_sha256"] == second["product_modset_sha256"]
+    assert first["static_bundle"]["product_modset_sha256"] == first[
+        "product_modset_sha256"
+    ]
+    PREPARE._reject_pointers(first)
+    persisted = json.loads(
+        (tmp_path / "prepared-a/product_modset_capture_ready.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert persisted == first
+    for name in PREPARE.BINDING_FILES:
+        assert (tmp_path / "prepared-a/bindings" / name).read_bytes() == (
+            bindings / name
+        ).read_bytes()
+
+
+def test_offline_product_modset_preparation_rejects_cross_document_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    exe, bindings = _offline_preparation_fixture(tmp_path)
+    monkeypatch.setattr(PREPARE.RB, "build", _fake_product_bundle_build)
+    report = SB.load_object(bindings / "resolution_report.json", "fixture report")
+    report["source_inventory_sha256"] = "0" * 64
+    _write_json(bindings / "resolution_report.json", report)
+
+    with pytest.raises(LR.ResolutionError, match=r"resolution report does not match"):
+        PREPARE.prepare_offline(
+            exe=exe, bindings=bindings, output=tmp_path / "prepared"
+        )
 
 
 @pytest.mark.parametrize(

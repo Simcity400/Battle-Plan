@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 
 pub mod a729_hook;
+pub mod a729_decision_grid;
 
 pub const DOMAIN_ID: u16 = 74;
 pub const DOMAIN_NAME: &str = "power_balance_presentation_live";

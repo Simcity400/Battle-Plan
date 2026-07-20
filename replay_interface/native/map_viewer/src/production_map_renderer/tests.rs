@@ -130,6 +130,7 @@ fn unsupported_static_producer_transitively_omits_dependent_pass_chain() {
             program(1, "cascade.first", 20, first_dependent),
             program(2, "cascade.second", 30, second_dependent),
         ],
+        snow_mud_texture: None,
         tree_runtime: None,
         s1_shadow: None,
         political_textures: Vec::new(),

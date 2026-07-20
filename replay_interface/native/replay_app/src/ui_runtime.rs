@@ -3,6 +3,9 @@
 use game_ui::assets::AssetResolver;
 use game_ui::gfx::SpriteRegistry;
 use game_ui::power_balance::PowerBalanceRuntimeSupplement;
+use game_ui::power_balance_assets::{
+    resolve_power_balance_content_assets, PortablePowerBalanceContentSet,
+};
 use game_ui::variant_admission::{DisplayVariantKey, InputVariant, PixelExtent};
 use replay_core::{RecordedInputVariant, WorldFrame};
 
@@ -31,6 +34,12 @@ pub struct ProductSelectedPresentRuntime {
     m02: map_viewer::NativeM02OverlayExecutor,
     power_balance_runtime: Vec<PowerBalanceRuntimeSupplement>,
     power_balance_runtime_error: Option<String>,
+    power_balance_assets: Vec<PortablePowerBalanceContentSet>,
+    power_balance_asset_error: Option<String>,
+    special_project_breakthroughs:
+        Vec<game_ui::special_projects::SpecialProjectBreakthroughPresentation>,
+    special_project_breakthrough_error: Option<String>,
+    selected_pov_runtime: crate::selected_pov_runtime::SelectedPovRuntime,
 }
 
 impl ProductSelectedPresentRuntime {
@@ -49,6 +58,8 @@ impl ProductSelectedPresentRuntime {
         let m02 = unsafe {
             map_viewer::NativeM02OverlayExecutor::new(gfx.device.as_raw(), gfx.context.as_raw())?
         };
+        let selected_pov_runtime =
+            crate::selected_pov_runtime::SelectedPovRuntime::new(&assets, &registry);
         Ok(Self {
             pass_identity_sha256: pass.pass_identity_sha256.clone(),
             variant_key: None,
@@ -58,6 +69,13 @@ impl ProductSelectedPresentRuntime {
             m02,
             power_balance_runtime: Vec::new(),
             power_balance_runtime_error: None,
+            power_balance_assets: Vec::new(),
+            power_balance_asset_error: None,
+            special_project_breakthroughs: Vec::new(),
+            special_project_breakthrough_error: Some(
+                "X9 selected country POV has not been evaluated".into(),
+            ),
+            selected_pov_runtime,
         })
     }
 
@@ -77,6 +95,41 @@ impl ProductSelectedPresentRuntime {
         }
     }
 
+    /// Root-independent GFX/texture identities for the latest admitted A37
+    /// rows. This stays feature-local until the authenticated panel-open pass
+    /// exists; a missing BOP dependency cannot contaminate the base HUD pass.
+    pub fn power_balance_assets(
+        &self,
+    ) -> std::result::Result<&[PortablePowerBalanceContentSet], &str> {
+        match self.power_balance_asset_error.as_deref() {
+            Some(error) => Err(error),
+            None => Ok(&self.power_balance_assets),
+        }
+    }
+
+    /// Exact X9 named breakthrough rows for the selected POV. Raw handles and
+    /// unresolved owners never enter this product-facing collection.
+    pub fn special_project_breakthroughs(
+        &self,
+    ) -> std::result::Result<
+        &[game_ui::special_projects::SpecialProjectBreakthroughPresentation],
+        &str,
+    > {
+        match self.special_project_breakthrough_error.as_deref() {
+            Some(error) => Err(error),
+            None => Ok(&self.special_project_breakthroughs),
+        }
+    }
+
+    /// Typed product-facing models for the latest selected POV. Every member
+    /// is independently fail-closed; a dormant producer or missing effective
+    /// static catalog cannot suppress the authenticated base UI pass.
+    pub fn selected_pov_runtime(
+        &self,
+    ) -> &crate::selected_pov_runtime::SelectedPovRuntimeSnapshot {
+        self.selected_pov_runtime.snapshot()
+    }
+
     pub fn execute(
         &mut self,
         gfx: &Gfx,
@@ -88,13 +141,56 @@ impl ProductSelectedPresentRuntime {
     ) -> Result<SelectedPresentUiOutcome> {
         self.power_balance_runtime.clear();
         self.power_balance_runtime_error = None;
+        self.power_balance_assets.clear();
+        self.power_balance_asset_error = None;
+        self.special_project_breakthroughs.clear();
+        self.special_project_breakthrough_error =
+            Some("X9 selected country POV is unavailable".into());
+        self.selected_pov_runtime.refresh(
+            world_frame,
+            pov_tag,
+            crate::selected_pov_runtime::SelectedPovSupplementalInputs::default(),
+        );
         if let Some(country_tag) = pov_tag {
+            match crate::special_projects_runtime::admit_country_special_project_breakthroughs(
+                world_frame,
+                country_tag,
+            ) {
+                Ok(rows) => {
+                    self.special_project_breakthroughs = rows;
+                    self.special_project_breakthrough_error = None;
+                }
+                Err(error) => self.special_project_breakthrough_error = Some(error),
+            }
             match crate::power_balance_runtime::power_balance_runtime_supplements(
                 world_frame,
                 country_tag,
             ) {
-                Ok(runtime) => self.power_balance_runtime = runtime,
-                Err(error) => self.power_balance_runtime_error = Some(error),
+                Ok(runtime) => {
+                    for row in &runtime {
+                        match resolve_power_balance_content_assets(
+                            row,
+                            &self.registry,
+                            &self.resolver,
+                        ) {
+                            Ok(assets) => self.power_balance_assets.push(assets),
+                            Err(error) => {
+                                self.power_balance_assets.clear();
+                                self.power_balance_asset_error = Some(format!(
+                                    "XUI18 portable asset admission rejected: {error:?}"
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                    self.power_balance_runtime = runtime;
+                }
+                Err(error) => {
+                    self.power_balance_asset_error = Some(format!(
+                        "XUI18 portable asset admission unavailable because runtime admission failed: {error}"
+                    ));
+                    self.power_balance_runtime_error = Some(error);
+                }
             }
         }
         let Some(pass) = prepared_frame.authenticated_ui_pass.as_ref() else {

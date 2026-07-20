@@ -13,7 +13,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use replay_core::{Leaf, WorldFrame, WorldTimeline};
+use replay_core::{Leaf, ReplaySource, WorldFrame, WorldTimeline};
 
 use crate::anomaly::{scan_timeline, AnomalyPolicy};
 use crate::bundle::MapBundle;
@@ -155,9 +155,13 @@ pub fn build_provider(
     match mode {
         TimelineMode::Recording {
             path,
+            logical_stream_id,
             timeline: config,
         } => {
-            let source = crate::recording_open::open_product_recording(path)
+            let source = crate::recording_open::open_product_recording_segment(
+                path,
+                *logical_stream_id,
+            )
                 .map_err(|err| format!("open recording {}: {err}", path.display()))?;
             // F2: the decoded-frame LRU budget rides the mode (default 16;
             // `--frame-cache` shrinks it for weak-PC profiles).
@@ -224,6 +228,54 @@ pub fn build_provider(
             ))
         }
     }
+}
+
+/// Build a recording provider from an already-admitted source. Headless
+/// rollover playback uses this entry so the retained container is never
+/// translated back into a pathname and reopened.
+pub fn build_recording_provider(
+    bundle: Option<&MapBundle>,
+    source: Box<dyn ReplaySource>,
+    config: replay_core::TimelineConfig,
+    source_label: &str,
+) -> Result<(Box<dyn OwnerProvider>, String)> {
+    let timeline = replay_core::WorldTimeline::open_with_config(source, config)
+        .map_err(|err| format!("open timeline {source_label}: {err}"))?;
+    if let Some(receipt) = timeline.prefold_receipt() {
+        eprintln!(
+            "replay_app: compact source certified by {} ({} bytes, sha256 {})",
+            receipt.decoder_id(),
+            receipt.source_len(),
+            receipt.source_sha256()
+        );
+    }
+    let warning_count = timeline.warnings().len();
+    for warning in timeline.warnings() {
+        eprintln!("replay_app: recording warning: {warning}");
+    }
+    let known_provinces = bundle.map(|bundle| {
+        bundle
+            .province_to_state
+            .keys()
+            .copied()
+            .collect::<BTreeSet<u32>>()
+    });
+    let policy = scan_timeline(&timeline, known_provinces).map_err(|error| {
+        format!("F4 fail-closed frame validation rejected recording {source_label}: {error}")
+    })?;
+    for diagnostic in policy.diagnostics() {
+        eprintln!("{}", diagnostic.log_line());
+    }
+    let recording = RecordingTimeline::new_with_policy(timeline, Some(policy));
+    let label = if warning_count == 0 {
+        format!("recording {}", recording.game_id())
+    } else {
+        format!(
+            "recording {} [{warning_count} recording warning(s) - see log]",
+            recording.game_id()
+        )
+    };
+    Ok((Box::new(recording), label))
 }
 
 /// Hour-indexed state ownership. Hours are ascending and non-empty.

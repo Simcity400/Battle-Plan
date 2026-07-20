@@ -19,6 +19,7 @@ hub_motorization_live_lane = { path = "../lanes/hub_motorization_live" }
 air_wings_variants_lifecycle_live_lane = { path = "../lanes/air_wings_variants_lifecycle_live" }
 characters_leaders_cabinet_live_lane = { package = "characters_leaders_cabinet_live", path = "../lanes/characters_leaders_cabinet_live" }
 construction_buildings_state_damage_live_lane = { package = "construction_buildings_state_damage_live", path = "../lanes/construction_buildings_state_damage_live" }
+country_dynamic_modifiers_live_lane = { path = "../lanes/country_dynamic_modifiers_live" }
 scripted_state_flags_variables_live_lane = { path = "../lanes/scripted_state_flags_variables_live" }
 occupation_resistance_compliance_live_lane = { path = "../lanes/occupation_resistance_compliance_live" }
 diplomacy_intel_operatives_live = { path = "../lanes/diplomacy_intel_operatives_live" }
@@ -44,6 +45,7 @@ character_presentation_live_lane = { path = "../lanes/character_presentation_liv
 nuke_stockpile_live_lane = { path = "../lanes/nuke_stockpile_live" }
 sunk_ship_history_live_lane = { path = "../lanes/sunk_ship_history_live" }
 decision_panel_live_lane = { path = "../lanes/decision_panel_live" }
+focus_research_decisions_depth_live = { path = "../lanes/focus_research_decisions_depth_live", features = ["a729-focus-fixture-hook"] }
 portable_render_stream = { path = "../../../portable_replay/native/render_stream" }
 serde = "1"
 serde_json = "1"

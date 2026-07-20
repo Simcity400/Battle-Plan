@@ -1765,7 +1765,7 @@ impl<'a, V: AdmittedVfsPayloads> Builder<'a, V> {
                     }
                     _ => None,
                 };
-                let resource = self.static_texture_resource(texture, expected_content)?;
+                let mut resource = self.static_texture_resource(texture, expected_content)?;
                 let view = shader_resource_view(&srv.desc)?;
                 let source = match &semantic.source {
                     RawStaticShaderResourceSource::UsedContent => {
@@ -1805,6 +1805,22 @@ impl<'a, V: AdmittedVfsPayloads> Builder<'a, V> {
                             resource,
                             view,
                             producer: RenderExecutionRef::Static { operation_ordinal },
+                        }
+                    }
+                    RawStaticShaderResourceSource::SnowMudTexture {
+                        producer_ordinal,
+                        payload_sha256,
+                    } => {
+                        // H is the sole portable byte authority for this
+                        // runtime upload. Preserve the exact captured
+                        // descriptor/view but do not duplicate the draw-time
+                        // staging snapshot as invented resource initialization.
+                        resource.ordered_subresources.clear();
+                        StaticShaderResourceSource::SnowMudTexture {
+                            producer_ordinal: *producer_ordinal,
+                            payload_sha256: payload_sha256.clone(),
+                            resource,
+                            view,
                         }
                     }
                     RawStaticShaderResourceSource::PoliticalTexture {

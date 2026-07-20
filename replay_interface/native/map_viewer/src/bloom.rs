@@ -51,7 +51,10 @@ pub struct BloomParams {
 }
 
 impl BloomParams {
-    fn validate(&self) -> Result<()> {
+    /// Validate a fully resolved bloom state before either kernel derivation or
+    /// production upload. Public because replay_app composes the per-volume
+    /// fields while map_viewer owns the bloom law and its fail-closed contract.
+    pub fn validate(&self) -> Result<()> {
         for (name, value) in [
             ("BLOOM_WIDTH", self.bloom_width),
             ("BLOOM_SCALE", self.bloom_scale),

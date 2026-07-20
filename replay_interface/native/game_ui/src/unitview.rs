@@ -331,6 +331,16 @@ pub struct NavalUnitView {
     /// VIEW GAP: no task-force custom-name field in the read-only view → `None`.
     pub display_name: Option<String>,
     pub mission: Option<String>,
+    pub mission_state: Option<i64>,
+    /// Exact persisted D56 state name; intentionally separate from the final
+    /// engine activity label.
+    pub detached_activity: Option<String>,
+    /// Exact localization key for a mechanically closed activity branch.
+    pub activity_key: Option<String>,
+    /// `true` only when same-hour D49/D50 member-epoch authority was present.
+    pub active_combat_epochs_available: bool,
+    pub active_combat_epochs: Vec<String>,
+    pub combat_membership_authority: Option<String>,
     pub ship_count: Option<i64>,
     pub dominant_hull_class: Option<String>,
     pub location_province: Option<u32>,
@@ -344,12 +354,22 @@ pub struct NavalUnitView {
 /// Bind one [`FleetUnitRow`] to a [`NavalUnitView`], fail-closed per field.
 pub fn naval_unit_view_from_row(row: &FleetUnitRow, available: bool) -> NavalUnitView {
     let (ships_available, ships) = ship_lines(&row.ships);
+    let (active_combat_epochs_available, active_combat_epochs) = match &row.active_combat_epochs {
+        Leaf::Measured(epochs) => (true, epochs.clone()),
+        Leaf::Absent | Leaf::Unobtained => (false, Vec::new()),
+    };
     NavalUnitView {
         uid: row.task_force_uid.clone(),
         fleet_uid: opt_string(&row.fleet_uid),
         owner: opt_string(&row.owner),
         display_name: None,
         mission: opt_string(&row.mission),
+        mission_state: opt_i64(&row.mission_state),
+        detached_activity: opt_string(&row.detached_activity),
+        activity_key: opt_string(&row.activity_key),
+        active_combat_epochs_available,
+        active_combat_epochs,
+        combat_membership_authority: opt_string(&row.combat_membership_authority),
         ship_count: opt_i64(&row.ship_count),
         dominant_hull_class: opt_string(&row.dominant_hull_class),
         location_province: opt_u32(&row.location_province),
@@ -494,6 +514,49 @@ mod tests {
         // equipment leaf is Measured-but-empty → available, zero lines.
         assert!(view.equipment_available);
         assert!(view.equipment.is_empty());
+    }
+
+    #[test]
+    fn naval_activity_keeps_detached_state_separate_from_member_epoch_branch() {
+        let row = FleetUnitRow {
+            task_force_uid: "201".to_string(),
+            fleet_uid: Leaf::Measured("200".to_string()),
+            owner: Leaf::Measured("GER".to_string()),
+            location_province: Leaf::Measured(6434),
+            mission: Leaf::Measured("STRIKE_FORCE".to_string()),
+            mission_enum: Leaf::Measured(2),
+            mission_state: Leaf::Measured(3),
+            detached_activity: Leaf::Measured("refitting".to_string()),
+            activity_key: Leaf::Measured(
+                "TASK_FORCE_ACTIVITY_DESC_IN_COMBAT".to_string(),
+            ),
+            active_combat_epochs: Leaf::Measured(vec!["240580:7:attacker".to_string()]),
+            combat_membership_authority: Leaf::Measured(
+                "d49_d50_member_epoch".to_string(),
+            ),
+            home_base_province: Leaf::Measured(4021),
+            repair_base_province: Leaf::Measured(5088),
+            sunk_convoys: Leaf::Measured(0),
+            ship_count: Leaf::Measured(12),
+            dominant_hull_class: Leaf::Measured("ship_hull_light_1".to_string()),
+            ships: Leaf::Measured(Vec::new()),
+        };
+        let view = naval_unit_view_from_row(&row, true);
+        assert_eq!(view.mission_state, Some(3));
+        assert_eq!(view.detached_activity.as_deref(), Some("refitting"));
+        assert_eq!(
+            view.activity_key.as_deref(),
+            Some("TASK_FORCE_ACTIVITY_DESC_IN_COMBAT")
+        );
+        assert!(view.active_combat_epochs_available);
+        assert_eq!(
+            view.active_combat_epochs,
+            vec!["240580:7:attacker".to_string()]
+        );
+        assert_eq!(
+            view.combat_membership_authority.as_deref(),
+            Some("d49_d50_member_epoch")
+        );
     }
 
     #[test]

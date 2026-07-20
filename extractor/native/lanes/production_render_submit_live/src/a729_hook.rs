@@ -1,5 +1,7 @@
 //! Signature-gated hooks for the pinned a729 particle submit graph.
 
+mod g2_capture;
+
 use crate::{
     canonicalize_packet, fnv1a32, DefinitionIdentity, FinalDrawCall, FinalDrawFamily,
     RawBlendStateCreation, RawBufferSnapshot, RawCaptureLaunchEpoch, RawD3dDrawState,
@@ -17,7 +19,8 @@ use crate::{
     RawStencilFaceDesc, RawTexture2dDesc, RawTextureObject, RawTextureResourceSnapshot,
     RawTextureSubresourceSnapshot, RawVertexBufferObject, RawWeatherEntityPair,
     RawSnowMudTextureObservation, RawWeatherEntityRef, RawWeatherFactoryAttempt,
-    RawWeatherObservation, RenderOrderBoundary,
+    RawWeatherObservation, RawWeatherUpdateOwner, RawWeatherVisibilityObservation,
+    RenderOrderBoundary, WeatherEntityRole, WeatherEntityVisibility,
     ENGINE_SHADER_EFFECT_LOOKUP_RVA, ENTITY_DESTROY_RVA, ENTITY_FACTORY_RVA, ENTITY_FINAL_DRAW_RVA,
     ENTITY_RENDER_ROOT_RVA, GLOBAL_RENDER_ENVELOPE_RVA, GPU_INSTANCE_STRIDE,
     HIGH_RESOLUTION_SEED_RVA, INDEXED_INSTANCED_FINAL_DRAW_RVA, INSTANCED_FINAL_DRAW_RVA,
@@ -29,7 +32,9 @@ use crate::{
     RAILROAD_EFFECT_REGISTRATION_ROOT_RVA, RENDER_TARGET_CLEAR_RVA,
     RESTORE_BLOOM_EFFECT_REGISTRATION_ROOT_RVA, SHADER_PROGRAM_BINDER_RVA,
     CAMERA_MAP_PICK_RVA, CAMERA_VERTICAL_EVENT_PRODUCER_RVA, CAMERA_WHEEL_UPDATE_RVA,
-    WEATHER_VISUAL_PRODUCER_RVA,
+    WEATHER_EDITOR_REFRESH_OWNER_RVA, WEATHER_ENTITY_ACTIVE_SETTER_RVA,
+    WEATHER_ENTITY_ALPHA_SETTER_RVA, WEATHER_ENTITY_PLAYBACK_SETTER_RVA,
+    WEATHER_NORMAL_UPDATE_OWNER_RVA, WEATHER_VISUAL_PRODUCER_RVA,
 };
 use core::cell::RefCell;
 use core::ffi::c_void;
@@ -79,8 +84,8 @@ const MAX_VFS_OPEN_RECEIPTS: usize = 1_048_576;
 const MAX_D3D_SHADER_BYTECODE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_D3D_INPUT_ELEMENTS: u32 = 32;
 pub const BOOTSTRAP_HOOK_COUNT: usize = 2;
-const HARDWARE_D3D_HOOK_COUNT: usize = 19;
-const ENGINE_HOOK_COUNT: usize = 38;
+const HARDWARE_D3D_HOOK_COUNT: usize = 23;
+const ENGINE_HOOK_COUNT: usize = 43;
 pub const STAGED_HOOK_COUNT: usize = HARDWARE_D3D_HOOK_COUNT + ENGINE_HOOK_COUNT;
 pub const READY_HOOK_COUNT: usize = BOOTSTRAP_HOOK_COUNT + STAGED_HOOK_COUNT;
 pub const STAGED_HOOK_GROUP_COM: u64 = 0x01;
@@ -174,6 +179,19 @@ const ENTITY_RENDER_SENTINEL: [u8; 16] = [
 const WEATHER_SENTINEL: [u8; 16] = [
     0x48, 0x8b, 0xc4, 0x48, 0x89, 0x50, 0x10, 0x55, 0x53, 0x57, 0x41, 0x54, 0x41, 0x56, 0x41, 0x57,
 ];
+const WEATHER_NORMAL_UPDATE_OWNER_SENTINEL: [u8; 16] = [
+    0x40, 0x57, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xec, 0x50, 0x48, 0x89, 0x5c, 0x24, 0x78, 0x4d,
+];
+const WEATHER_EDITOR_REFRESH_OWNER_SENTINEL: [u8; 16] = [
+    0x48, 0x89, 0x5c, 0x24, 0x20, 0x89, 0x54, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55,
+];
+const WEATHER_ACTIVE_SETTER_SENTINEL: [u8; 16] = [
+    0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48,
+];
+const WEATHER_ALPHA_SETTER_SENTINEL: [u8; 16] = [
+    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57,
+];
+const WEATHER_PLAYBACK_SETTER_SENTINEL: [u8; 16] = WEATHER_ALPHA_SETTER_SENTINEL;
 const SEED_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xf9, 0xe8, 0x9e, 0xc7,
 ];
@@ -273,6 +291,11 @@ type MapNameEffectRegistrationRootFn = unsafe extern "system" fn(usize, usize) -
 type RestoreBloomEffectRegistrationRootFn = unsafe extern "system" fn(usize, usize);
 type LutBlendEffectRegistrationRootFn = unsafe extern "system" fn(usize, usize) -> usize;
 type WeatherFn = unsafe extern "system" fn(usize, usize, usize);
+type WeatherNormalUpdateOwnerFn = unsafe extern "system" fn(usize, usize, usize, f32, u8);
+type WeatherEditorRefreshOwnerFn = unsafe extern "system" fn(usize, u32);
+type WeatherActiveSetterFn = unsafe extern "system" fn(usize, u8);
+type WeatherAlphaSetterFn = unsafe extern "system" fn(usize, f32);
+type WeatherPlaybackSetterFn = unsafe extern "system" fn(usize, f64);
 type SeedFn = unsafe extern "system" fn(*mut u32);
 type MapSceneRenderFn = unsafe extern "system" fn(usize, usize, i32, u8);
 type PostProcessRenderFn = unsafe extern "system" fn(
@@ -324,6 +347,11 @@ static ORIGINAL_MAP_NAME_EFFECT_REGISTRATION_ROOT: AtomicUsize = AtomicUsize::ne
 static ORIGINAL_RESTORE_BLOOM_EFFECT_REGISTRATION_ROOT: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_LUT_BLEND_EFFECT_REGISTRATION_ROOT: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_WEATHER: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_WEATHER_NORMAL_UPDATE_OWNER: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_WEATHER_EDITOR_REFRESH_OWNER: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_WEATHER_ACTIVE_SETTER: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_WEATHER_ALPHA_SETTER: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_WEATHER_PLAYBACK_SETTER: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_SEED: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_MAP_SCENE_RENDER_ROOT: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_POST_PROCESS_RENDER_ROOT: AtomicUsize = AtomicUsize::new(0);
@@ -354,6 +382,10 @@ static ORIGINAL_D3D_CREATE_DSV: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_D3D11_CREATE_DEVICE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_D3D_COMPILE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_D3D_SO_SET_TARGETS: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_D3D_DRAW_INDEXED: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_D3D_DRAW: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_D3D_DRAW_INDEXED_INSTANCED: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_D3D_DRAW_INSTANCED: AtomicUsize = AtomicUsize::new(0);
 static COM_DETOUR_TEARDOWN: AtomicBool = AtomicBool::new(false);
 static ACTIVE_COM_DETOURS: AtomicUsize = AtomicUsize::new(0);
 static COM_DETOUR_QUIESCENCE: OnceLock<(Mutex<()>, Condvar)> = OnceLock::new();
@@ -363,6 +395,7 @@ static NEXT_EFFECT_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_SUBMIT_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_ENTITY_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_WEATHER_OBSERVATION_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_WEATHER_UPDATE_INDEX: AtomicU64 = AtomicU64::new(1);
 static NEXT_MAP_SHADER_LOOKUP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static NEXT_RENDER_ORDER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static NEXT_RENDER_FRAME_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -460,6 +493,10 @@ fn com_originals() -> [&'static AtomicUsize; HARDWARE_D3D_HOOK_COUNT] {
         &ORIGINAL_D3D_CREATE_RTV,
         &ORIGINAL_D3D_CREATE_DSV,
         &ORIGINAL_D3D_SO_SET_TARGETS,
+        &ORIGINAL_D3D_DRAW_INDEXED,
+        &ORIGINAL_D3D_DRAW,
+        &ORIGINAL_D3D_DRAW_INDEXED_INSTANCED,
+        &ORIGINAL_D3D_DRAW_INSTANCED,
     ]
 }
 
@@ -478,6 +515,7 @@ thread_local! {
     static TEXTURE_LOAD_STACK: RefCell<Vec<PendingTextureLoad>> = const { RefCell::new(Vec::new()) };
     static ENTITY_FACTORY_STACK: RefCell<Vec<PendingEntityFactory>> = const { RefCell::new(Vec::new()) };
     static CURRENT_WEATHER: RefCell<Option<PendingWeather>> = const { RefCell::new(None) };
+    static CURRENT_WEATHER_OWNER: RefCell<Option<WeatherUpdateOwner>> = const { RefCell::new(None) };
     static CURRENT_SNOW_MUD_PRODUCER: RefCell<Option<PendingSnowMudProducer>> = const { RefCell::new(None) };
     static CURRENT_CAMERA_EVENT_PRODUCER: RefCell<Option<PendingCameraEventProducer>> = const { RefCell::new(None) };
 }
@@ -538,11 +576,32 @@ struct PendingEntityFactory {
 }
 
 struct PendingWeather {
+    producer: usize,
+    update_index: u64,
+    owner: RawWeatherUpdateOwner,
     strategic_region_id: u32,
     previous_code: u8,
+    view_distance_f32_bits: u32,
     selection_seed_words: Option<[u32; 2]>,
     factory_attempts: Vec<RawWeatherFactoryAttempt>,
+    setter_writes: HashMap<usize, PendingWeatherSetterWrites>,
     rejected: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WeatherUpdateOwner {
+    update_index: u64,
+    owner: RawWeatherUpdateOwner,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PendingWeatherSetterWrites {
+    active_count: u8,
+    active_value: bool,
+    alpha_count: u8,
+    alpha_f32_bits: u32,
+    playback_count: u8,
+    playback_f32_bits: u32,
 }
 
 struct PendingSubmit {
@@ -724,6 +783,13 @@ struct HookState {
     sampler_state_creations: Vec<RawSamplerStateCreation>,
     created_d3d_objects: HashMap<usize, CreatedD3dObject>,
     weather_changes: VecDeque<RawWeatherObservation>,
+    weather_visibility_updates: VecDeque<RawWeatherVisibilityObservation>,
+    latest_weather_observation_by_region: BTreeMap<u32, RawWeatherObservation>,
+    latest_weather_visibility_by_region: BTreeMap<u32, RawWeatherVisibilityObservation>,
+    /// Exact region-record count from the authenticated CGameState weather
+    /// manager. A selected gameplay Present is incomplete until every region
+    /// has supplied its first normal-update membership row.
+    expected_weather_region_count: Option<u32>,
     /// Last airborne code observed at the authenticated visual producer for
     /// every strategic region reached since hook installation. This is a
     /// discriminator only: it never substitutes for the ordered membership,
@@ -1238,6 +1304,26 @@ fn actual_hardware_d3d_hook_specs(device: usize, context: usize) -> Result<Vec<H
             context_method(37, "SOSetTargets")?,
             hook_d3d_so_set_targets as *mut c_void,
             &ORIGINAL_D3D_SO_SET_TARGETS,
+        ),
+        (
+            context_method(12, "DrawIndexed")?,
+            hook_d3d_draw_indexed as *mut c_void,
+            &ORIGINAL_D3D_DRAW_INDEXED,
+        ),
+        (
+            context_method(13, "Draw")?,
+            hook_d3d_draw as *mut c_void,
+            &ORIGINAL_D3D_DRAW,
+        ),
+        (
+            context_method(20, "DrawIndexedInstanced")?,
+            hook_d3d_draw_indexed_instanced as *mut c_void,
+            &ORIGINAL_D3D_DRAW_INDEXED_INSTANCED,
+        ),
+        (
+            context_method(21, "DrawInstanced")?,
+            hook_d3d_draw_instanced as *mut c_void,
+            &ORIGINAL_D3D_DRAW_INSTANCED,
         ),
     ];
     debug_assert_eq!(specs.len(), HARDWARE_D3D_HOOK_COUNT);
@@ -2536,9 +2622,20 @@ pub struct RawRenderFrameCapture {
     /// Atomic weather discriminator captured at this Present boundary. These
     /// counts prove when an empty portable weather carrier would be false;
     /// they do not replace the weather rows themselves.
+    pub expected_weather_region_count: u64,
     pub observed_weather_region_count: u64,
     pub active_airborne_weather_region_count: u64,
     pub queued_weather_change_count: u64,
+    /// Latest complete normal-update membership/checkpoint row per observed
+    /// region at this exact PresentEnd, ordered by strategic-region id.
+    pub weather_membership_updates: Vec<RawWeatherObservation>,
+    /// Latest complete normal-update visibility row per active region at this
+    /// exact PresentEnd, ordered by strategic-region id.
+    pub weather_visibility_updates: Vec<RawWeatherVisibilityObservation>,
+    pub latest_completed_weather_update_index: u64,
+    /// Pointer-free semantic digest of both vectors. It is folded into every
+    /// candidate receipt so selection cannot detach weather from Present.
+    pub weather_snapshot_sha256: String,
     /// Canonical engine hour read at this exact PresentEnd from the validated
     /// a729 CGameState root slot. It is never assigned at collector drain time.
     pub game_hour_raw: i32,
@@ -2683,7 +2780,12 @@ pub struct InstalledAddresses {
     pub map_name_effect_registration_root: usize,
     pub restore_bloom_effect_registration_root: usize,
     pub lut_blend_effect_registration_root: usize,
+    pub weather_normal_update_owner: usize,
+    pub weather_editor_refresh_owner: usize,
     pub weather_visual_producer: usize,
+    pub weather_entity_active_setter: usize,
+    pub weather_entity_alpha_setter: usize,
+    pub weather_entity_playback_setter: usize,
     pub high_resolution_seed: usize,
     pub map_scene_render_root: usize,
     pub post_process_render_root: usize,
@@ -2693,6 +2795,107 @@ pub struct InstalledAddresses {
     pub camera_wheel_update: usize,
     pub camera_vertical_event_producer: usize,
     pub camera_map_pick: usize,
+}
+
+unsafe extern "system" fn hook_d3d_draw_indexed(
+    device_context: usize,
+    index_count: u32,
+    start_index: u32,
+    base_vertex: i32,
+) {
+    let Some(_active_detour) = ActiveComDetour::enter() else {
+        return;
+    };
+    let original_ptr = ORIGINAL_D3D_DRAW_INDEXED.load(Ordering::Acquire);
+    if original_ptr == 0 {
+        reject();
+        return;
+    }
+    g2_capture::capture_before_draw(device_context, "DrawIndexed", index_count);
+    let original: unsafe extern "system" fn(usize, u32, u32, i32) =
+        unsafe { mem::transmute(original_ptr) };
+    unsafe { original(device_context, index_count, start_index, base_vertex) };
+}
+
+unsafe extern "system" fn hook_d3d_draw(
+    device_context: usize,
+    vertex_count: u32,
+    start_vertex: u32,
+) {
+    let Some(_active_detour) = ActiveComDetour::enter() else {
+        return;
+    };
+    let original_ptr = ORIGINAL_D3D_DRAW.load(Ordering::Acquire);
+    if original_ptr == 0 {
+        reject();
+        return;
+    }
+    g2_capture::capture_before_draw(device_context, "Draw", vertex_count);
+    let original: unsafe extern "system" fn(usize, u32, u32) =
+        unsafe { mem::transmute(original_ptr) };
+    unsafe { original(device_context, vertex_count, start_vertex) };
+}
+
+unsafe extern "system" fn hook_d3d_draw_indexed_instanced(
+    device_context: usize,
+    index_count_per_instance: u32,
+    instance_count: u32,
+    start_index: u32,
+    base_vertex: i32,
+    start_instance: u32,
+) {
+    let Some(_active_detour) = ActiveComDetour::enter() else {
+        return;
+    };
+    let original_ptr = ORIGINAL_D3D_DRAW_INDEXED_INSTANCED.load(Ordering::Acquire);
+    if original_ptr == 0 {
+        reject();
+        return;
+    }
+    let draw_count = index_count_per_instance.saturating_mul(instance_count);
+    g2_capture::capture_before_draw(device_context, "DrawIndexedInstanced", draw_count);
+    let original: unsafe extern "system" fn(usize, u32, u32, u32, i32, u32) =
+        unsafe { mem::transmute(original_ptr) };
+    unsafe {
+        original(
+            device_context,
+            index_count_per_instance,
+            instance_count,
+            start_index,
+            base_vertex,
+            start_instance,
+        )
+    };
+}
+
+unsafe extern "system" fn hook_d3d_draw_instanced(
+    device_context: usize,
+    vertex_count_per_instance: u32,
+    instance_count: u32,
+    start_vertex: u32,
+    start_instance: u32,
+) {
+    let Some(_active_detour) = ActiveComDetour::enter() else {
+        return;
+    };
+    let original_ptr = ORIGINAL_D3D_DRAW_INSTANCED.load(Ordering::Acquire);
+    if original_ptr == 0 {
+        reject();
+        return;
+    }
+    let draw_count = vertex_count_per_instance.saturating_mul(instance_count);
+    g2_capture::capture_before_draw(device_context, "DrawInstanced", draw_count);
+    let original: unsafe extern "system" fn(usize, u32, u32, u32, u32) =
+        unsafe { mem::transmute(original_ptr) };
+    unsafe {
+        original(
+            device_context,
+            vertex_count_per_instance,
+            instance_count,
+            start_vertex,
+            start_instance,
+        )
+    };
 }
 
 /// Binds the authenticated a729 global CGameState pointer slot before render
@@ -2761,7 +2964,12 @@ fn engine_hook_specs(a: InstalledAddresses) -> [HookSpec; ENGINE_HOOK_COUNT] {
         hook_map_name_effect_registration_root as *mut c_void,
         hook_restore_bloom_effect_registration_root as *mut c_void,
         hook_lut_blend_effect_registration_root as *mut c_void,
+        hook_weather_normal_update_owner as *mut c_void,
+        hook_weather_editor_refresh_owner as *mut c_void,
         hook_weather as *mut c_void,
+        hook_weather_active_setter as *mut c_void,
+        hook_weather_alpha_setter as *mut c_void,
+        hook_weather_playback_setter as *mut c_void,
         hook_seed as *mut c_void,
         hook_map_scene_render_root as *mut c_void,
         hook_post_process_render_root as *mut c_void,
@@ -2801,7 +3009,12 @@ fn engine_hook_specs(a: InstalledAddresses) -> [HookSpec; ENGINE_HOOK_COUNT] {
         &ORIGINAL_MAP_NAME_EFFECT_REGISTRATION_ROOT,
         &ORIGINAL_RESTORE_BLOOM_EFFECT_REGISTRATION_ROOT,
         &ORIGINAL_LUT_BLEND_EFFECT_REGISTRATION_ROOT,
+        &ORIGINAL_WEATHER_NORMAL_UPDATE_OWNER,
+        &ORIGINAL_WEATHER_EDITOR_REFRESH_OWNER,
         &ORIGINAL_WEATHER,
+        &ORIGINAL_WEATHER_ACTIVE_SETTER,
+        &ORIGINAL_WEATHER_ALPHA_SETTER,
+        &ORIGINAL_WEATHER_PLAYBACK_SETTER,
         &ORIGINAL_SEED,
         &ORIGINAL_MAP_SCENE_RENDER_ROOT,
         &ORIGINAL_POST_PROCESS_RENDER_ROOT,
@@ -2843,6 +3056,10 @@ fn staged_hook_identity_labels() -> [&'static str; STAGED_HOOK_COUNT] {
         "d3d.device.CreateRenderTargetView",
         "d3d.device.CreateDepthStencilView",
         "d3d.context.SOSetTargets",
+        "d3d.context.DrawIndexed.g2_owner",
+        "d3d.context.Draw.g2_owner",
+        "d3d.context.DrawIndexedInstanced.g2_owner",
+        "d3d.context.DrawInstanced.g2_owner",
         "engine.VfsOpenConstructor",
         "engine.WindowBackbufferRtvProducer",
         "engine.OpaqueTextureTargetProducer",
@@ -2871,7 +3088,12 @@ fn staged_hook_identity_labels() -> [&'static str; STAGED_HOOK_COUNT] {
         "engine.MapNameEffectRegistrationRoot",
         "engine.RestoreBloomEffectRegistrationRoot",
         "engine.LutBlendEffectRegistrationRoot",
+        "engine.WeatherNormalUpdateOwner",
+        "engine.WeatherEditorRefreshOwner",
         "engine.WeatherVisualProducer",
+        "engine.WeatherEntityActiveSetter",
+        "engine.WeatherEntityAlphaSetter",
+        "engine.WeatherEntityPlaybackSetter",
         "engine.HighResolutionSeed",
         "engine.MapSceneRenderRoot",
         "engine.PostProcessRenderRoot",
@@ -2905,6 +3127,10 @@ fn staged_hook_group_bits() -> [u64; STAGED_HOOK_COUNT] {
         STAGED_HOOK_GROUP_COM,
         STAGED_HOOK_GROUP_COM,
         STAGED_HOOK_GROUP_COM,
+        STAGED_HOOK_GROUP_COM,
+        STAGED_HOOK_GROUP_COM,
+        STAGED_HOOK_GROUP_COM,
+        STAGED_HOOK_GROUP_COM,
         STAGED_HOOK_GROUP_VFS_CONTENT,
         STAGED_HOOK_GROUP_RENDER_TARGETS,
         STAGED_HOOK_GROUP_RENDER_TARGETS,
@@ -2933,6 +3159,11 @@ fn staged_hook_group_bits() -> [u64; STAGED_HOOK_COUNT] {
         STAGED_HOOK_GROUP_SHADER_EFFECTS,
         STAGED_HOOK_GROUP_SHADER_EFFECTS,
         STAGED_HOOK_GROUP_SHADER_EFFECTS,
+        STAGED_HOOK_GROUP_WEATHER_SEED,
+        STAGED_HOOK_GROUP_WEATHER_SEED,
+        STAGED_HOOK_GROUP_WEATHER_SEED,
+        STAGED_HOOK_GROUP_WEATHER_SEED,
+        STAGED_HOOK_GROUP_WEATHER_SEED,
         STAGED_HOOK_GROUP_WEATHER_SEED,
         STAGED_HOOK_GROUP_WEATHER_SEED,
         STAGED_HOOK_GROUP_SCENE_BOUNDARIES,
@@ -3156,9 +3387,34 @@ pub fn install() -> Result<InstalledAddresses, String> {
             "LUT-blend-effect registration root",
         ),
         (
+            a.weather_normal_update_owner,
+            &WEATHER_NORMAL_UPDATE_OWNER_SENTINEL,
+            "weather normal-update owner",
+        ),
+        (
+            a.weather_editor_refresh_owner,
+            &WEATHER_EDITOR_REFRESH_OWNER_SENTINEL,
+            "weather editor-refresh owner",
+        ),
+        (
             a.weather_visual_producer,
             &WEATHER_SENTINEL,
             "weather visual producer",
+        ),
+        (
+            a.weather_entity_active_setter,
+            &WEATHER_ACTIVE_SETTER_SENTINEL,
+            "weather entity-active setter",
+        ),
+        (
+            a.weather_entity_alpha_setter,
+            &WEATHER_ALPHA_SETTER_SENTINEL,
+            "weather entity-alpha setter",
+        ),
+        (
+            a.weather_entity_playback_setter,
+            &WEATHER_PLAYBACK_SETTER_SENTINEL,
+            "weather entity-playback setter",
         ),
         (
             a.high_resolution_seed,
@@ -3351,9 +3607,34 @@ pub fn install() -> Result<InstalledAddresses, String> {
             &ORIGINAL_LUT_BLEND_EFFECT_REGISTRATION_ROOT,
         ),
         (
+            a.weather_normal_update_owner,
+            hook_weather_normal_update_owner as *mut c_void,
+            &ORIGINAL_WEATHER_NORMAL_UPDATE_OWNER,
+        ),
+        (
+            a.weather_editor_refresh_owner,
+            hook_weather_editor_refresh_owner as *mut c_void,
+            &ORIGINAL_WEATHER_EDITOR_REFRESH_OWNER,
+        ),
+        (
             a.weather_visual_producer,
             hook_weather as *mut c_void,
             &ORIGINAL_WEATHER,
+        ),
+        (
+            a.weather_entity_active_setter,
+            hook_weather_active_setter as *mut c_void,
+            &ORIGINAL_WEATHER_ACTIVE_SETTER,
+        ),
+        (
+            a.weather_entity_alpha_setter,
+            hook_weather_alpha_setter as *mut c_void,
+            &ORIGINAL_WEATHER_ALPHA_SETTER,
+        ),
+        (
+            a.weather_entity_playback_setter,
+            hook_weather_playback_setter as *mut c_void,
+            &ORIGINAL_WEATHER_PLAYBACK_SETTER,
         ),
         (
             a.high_resolution_seed,
@@ -3504,6 +3785,7 @@ pub fn uninstall() -> Result<(), String> {
     NEXT_PRESENT_GLOBAL_ORDER.store(0, Ordering::Release);
     NEXT_SNOW_MUD_PRODUCER_ORDINAL.store(1, Ordering::Release);
     NEXT_CATALOG_OBSERVATION_SEQUENCE.store(1, Ordering::Release);
+    NEXT_WEATHER_UPDATE_INDEX.store(1, Ordering::Release);
     for value in [
         &ORIGINAL_VFS_OPEN_CONSTRUCTOR,
         &ORIGINAL_WINDOW_BACKBUFFER_RTV_PRODUCER,
@@ -3533,7 +3815,12 @@ pub fn uninstall() -> Result<(), String> {
         &ORIGINAL_MAP_NAME_EFFECT_REGISTRATION_ROOT,
         &ORIGINAL_RESTORE_BLOOM_EFFECT_REGISTRATION_ROOT,
         &ORIGINAL_LUT_BLEND_EFFECT_REGISTRATION_ROOT,
+        &ORIGINAL_WEATHER_NORMAL_UPDATE_OWNER,
+        &ORIGINAL_WEATHER_EDITOR_REFRESH_OWNER,
         &ORIGINAL_WEATHER,
+        &ORIGINAL_WEATHER_ACTIVE_SETTER,
+        &ORIGINAL_WEATHER_ALPHA_SETTER,
+        &ORIGINAL_WEATHER_PLAYBACK_SETTER,
         &ORIGINAL_SEED,
         &ORIGINAL_MAP_SCENE_RENDER_ROOT,
         &ORIGINAL_POST_PROCESS_RENDER_ROOT,
@@ -3610,6 +3897,7 @@ pub fn uninstall() -> Result<(), String> {
     TEXTURE_LOAD_STACK.with(|value| value.borrow_mut().clear());
     ENTITY_FACTORY_STACK.with(|value| value.borrow_mut().clear());
     CURRENT_WEATHER.with(|value| *value.borrow_mut() = None);
+    CURRENT_WEATHER_OWNER.with(|value| *value.borrow_mut() = None);
     CURRENT_SNOW_MUD_PRODUCER.with(|value| *value.borrow_mut() = None);
     CURRENT_CAMERA_EVENT_PRODUCER.with(|value| *value.borrow_mut() = None);
     if failures.is_empty() {
@@ -4223,7 +4511,7 @@ fn selected_render_frame_receipt_sha256(
     consumed_unselected_sha256: &str,
 ) -> Result<String, String> {
     let mut hasher = Sha256::new();
-    hasher.update(b"hoi4.a729.selected-present.v2\0");
+    hasher.update(b"hoi4.a729.selected-present.v3\0");
     hasher.update(target_game_hour_raw.to_le_bytes());
     hasher.update(cutoff_qpc_ticks.to_le_bytes());
     hasher.update(cutoff_qpc_frequency_hz.to_le_bytes());
@@ -4237,6 +4525,12 @@ fn selected_render_frame_receipt_sha256(
     hasher.update(selected.process_start_nonce.to_le_bytes());
     hasher.update(selected.hook_epoch_nonce.to_le_bytes());
     hasher.update(selected.game_hour_raw.to_le_bytes());
+    hasher.update(selected.expected_weather_region_count.to_le_bytes());
+    hasher.update(selected.observed_weather_region_count.to_le_bytes());
+    hasher.update(selected.active_airborne_weather_region_count.to_le_bytes());
+    hasher.update(selected.queued_weather_change_count.to_le_bytes());
+    hasher.update(selected.latest_completed_weather_update_index.to_le_bytes());
+    update_hash_bytes(&mut hasher, selected.weather_snapshot_sha256.as_bytes())?;
     hasher.update(discarded_candidate_count.to_le_bytes());
     update_hash_bytes(&mut hasher, consumed_unselected_sha256.as_bytes())?;
     Ok(format!("{:x}", hasher.finalize()))
@@ -4251,6 +4545,30 @@ pub fn validate_selected_render_frame_receipt(
 ) -> Result<(), String> {
     let receipt = &selected.receipt;
     let frame = &selected.selected.frame;
+    let expected_weather_update_index = frame
+        .weather_membership_updates
+        .iter()
+        .map(|row| row.update_index)
+        .chain(frame.weather_visibility_updates.iter().map(|row| row.update_index))
+        .max()
+        .unwrap_or(0);
+    if frame.expected_weather_region_count == 0
+        || frame.observed_weather_region_count != frame.expected_weather_region_count
+        || frame.observed_weather_region_count
+        != u64::try_from(frame.weather_membership_updates.len())
+            .map_err(|_| "selected render-frame weather membership count exceeds u64")?
+        || frame.active_airborne_weather_region_count
+            != u64::try_from(frame.weather_visibility_updates.len())
+                .map_err(|_| "selected render-frame weather visibility count exceeds u64")?
+        || frame.latest_completed_weather_update_index != expected_weather_update_index
+        || frame.weather_snapshot_sha256
+            != weather_snapshot_sha256(
+                &frame.weather_membership_updates,
+                &frame.weather_visibility_updates,
+            )?
+    {
+        return Err("selected render-frame weather snapshot digest does not recompute".into());
+    }
     if receipt.candidate_count == 0
         || receipt.discarded_candidate_count.checked_add(1) != Some(receipt.candidate_count)
         || usize::try_from(receipt.discarded_candidate_count).ok()
@@ -4298,6 +4616,11 @@ fn hash_render_candidate_metadata(
     hasher.update(frame.game_hour_raw.to_le_bytes());
     hasher.update(frame.process_start_nonce.to_le_bytes());
     hasher.update(frame.hook_epoch_nonce.to_le_bytes());
+    hasher.update(frame.expected_weather_region_count.to_le_bytes());
+    hasher.update(frame.observed_weather_region_count.to_le_bytes());
+    hasher.update(frame.active_airborne_weather_region_count.to_le_bytes());
+    hasher.update(frame.latest_completed_weather_update_index.to_le_bytes());
+    update_hash_bytes(hasher, frame.weather_snapshot_sha256.as_bytes())?;
     update_hash_bytes(hasher, catalog.process.executable_sha256.as_bytes())?;
     update_hash_bytes(
         hasher,
@@ -4347,7 +4670,7 @@ fn fold_online_candidate_proof(
         .checked_add(1)
         .ok_or("online current-hour candidate count overflowed")?;
     let mut candidate_hasher = Sha256::new();
-    candidate_hasher.update(b"hoi4.a729.present-candidate-rolling.v2\0");
+    candidate_hasher.update(b"hoi4.a729.present-candidate-rolling.v3\0");
     candidate_hasher.update(proof.candidate_rolling_sha256);
     hash_render_candidate_metadata(&mut candidate_hasher, frame, catalog)?;
     proof
@@ -4429,13 +4752,13 @@ fn finalized_online_candidate_set_sha256(
     let mut rolling = proof.map_or([0; 32], |value| value.candidate_rolling_sha256);
     for candidate in candidates {
         let mut hasher = Sha256::new();
-        hasher.update(b"hoi4.a729.present-candidate-rolling.v2\0");
+        hasher.update(b"hoi4.a729.present-candidate-rolling.v3\0");
         hasher.update(rolling);
         hash_render_candidate_metadata(&mut hasher, &candidate.frame, &candidate.runtime.catalog)?;
         rolling.copy_from_slice(&hasher.finalize());
     }
     let mut final_hasher = Sha256::new();
-    final_hasher.update(b"hoi4.a729.present-candidate-set.v2\0");
+    final_hasher.update(b"hoi4.a729.present-candidate-set.v3\0");
     final_hasher.update(total_count.to_le_bytes());
     final_hasher.update(rolling);
     Ok((total_count, format!("{:x}", final_hasher.finalize())))
@@ -4918,6 +5241,133 @@ unsafe extern "system" fn hook_bucket(object: usize, render_class: i32) {
     }
     let original: BucketFn = unsafe { mem::transmute(ORIGINAL_BUCKET.load(Ordering::Acquire)) };
     unsafe { original(object, render_class) };
+}
+
+fn weather_snapshot_sha256(
+    membership: &[RawWeatherObservation],
+    visibility: &[RawWeatherVisibilityObservation],
+) -> Result<String, String> {
+    fn hash_owner(hasher: &mut Sha256, owner: RawWeatherUpdateOwner) {
+        hasher.update([match owner {
+            RawWeatherUpdateOwner::NormalStrategicRegionUpdate => 0,
+            RawWeatherUpdateOwner::EditorRefresh => 1,
+        }]);
+    }
+    fn hash_entity(hasher: &mut Sha256, entity: &Option<RawWeatherEntityRef>) -> Result<(), String> {
+        let Some(entity) = entity else {
+            hasher.update([0]);
+            return Ok(());
+        };
+        hasher.update([1]);
+        hasher.update(entity.entity_instance_id.to_le_bytes());
+        match &entity.registration_token {
+            Some(token) => {
+                hasher.update([1]);
+                update_hash_bytes(hasher, token.as_bytes())?;
+            }
+            None => hasher.update([0]),
+        }
+        let count = u32::try_from(entity.ordered_effect_instance_ids.len())
+            .map_err(|_| "weather effect-id count exceeds u32")?;
+        hasher.update(count.to_le_bytes());
+        for effect in &entity.ordered_effect_instance_ids {
+            hasher.update(effect.to_le_bytes());
+        }
+        Ok(())
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"hoi4.a729.selected-present-weather-snapshot.v1\0");
+    hasher.update(
+        u32::try_from(membership.len())
+            .map_err(|_| "weather membership snapshot exceeds u32")?
+            .to_le_bytes(),
+    );
+    for row in membership {
+        hasher.update(row.observation_index.to_le_bytes());
+        hasher.update(row.sequence.to_le_bytes());
+        hasher.update(row.update_index.to_le_bytes());
+        hash_owner(&mut hasher, row.owner);
+        hasher.update([
+            u8::from(row.initial_observation),
+            u8::from(row.checkpoint_observation),
+        ]);
+        hasher.update(row.strategic_region_id.to_le_bytes());
+        hasher.update([
+            u8::from(row.rain_light_active),
+            u8::from(row.rain_heavy_active),
+            u8::from(row.snow_active),
+            u8::from(row.blizzard_active),
+            u8::from(row.sandstorm_active),
+            u8::from(row.arctic_water_active),
+            row.previous_airborne_runtime_code,
+            row.airborne_runtime_code,
+        ]);
+        hasher.update(row.region_value_i64_fixed_1e5.to_le_bytes());
+        hasher.update(row.transition_expiry_game_hour_i32.to_le_bytes());
+        match row.selection_seed_words {
+            Some(words) => {
+                hasher.update([1]);
+                hasher.update(words[0].to_le_bytes());
+                hasher.update(words[1].to_le_bytes());
+            }
+            None => hasher.update([0]),
+        }
+        hasher.update(
+            u32::try_from(row.ordered_factory_attempts.len())
+                .map_err(|_| "weather factory-attempt count exceeds u32")?
+                .to_le_bytes(),
+        );
+        for attempt in &row.ordered_factory_attempts {
+            hasher.update(attempt.allocated_entity_instance_id.to_le_bytes());
+            hasher.update(attempt.returned_entity_instance_id.unwrap_or(0).to_le_bytes());
+        }
+        hasher.update(
+            u32::try_from(row.ordered_live_pairs.len())
+                .map_err(|_| "weather live-pair count exceeds u32")?
+                .to_le_bytes(),
+        );
+        for pair in &row.ordered_live_pairs {
+            hash_entity(&mut hasher, &pair.primary)?;
+            hash_entity(&mut hasher, &pair.fading)?;
+        }
+    }
+    hasher.update(
+        u32::try_from(visibility.len())
+            .map_err(|_| "weather visibility snapshot exceeds u32")?
+            .to_le_bytes(),
+    );
+    for row in visibility {
+        hasher.update(row.observation_index.to_le_bytes());
+        hasher.update(row.sequence.to_le_bytes());
+        hasher.update(row.update_index.to_le_bytes());
+        hash_owner(&mut hasher, row.owner);
+        hasher.update(row.strategic_region_id.to_le_bytes());
+        hasher.update(row.view_distance_f32_bits.to_le_bytes());
+        hasher.update([row.camera_branch as u8]);
+        hasher.update(row.computed_fade_alpha_f32_bits.to_le_bytes());
+        hasher.update(row.computed_playback_rate_f32_bits.to_le_bytes());
+        hasher.update(
+            u32::try_from(row.ordered_entity_visibility.len())
+                .map_err(|_| "weather entity-visibility count exceeds u32")?
+                .to_le_bytes(),
+        );
+        for entity in &row.ordered_entity_visibility {
+            hasher.update(entity.entity_instance_id.to_le_bytes());
+            hasher.update([match entity.role {
+                WeatherEntityRole::Primary => 0,
+                WeatherEntityRole::Fading => 1,
+            }]);
+            hasher.update([
+                u8::from(entity.post_update_active),
+                u8::from(entity.producer_wrote_active),
+                u8::from(entity.producer_wrote_alpha),
+            ]);
+            hasher.update(entity.post_update_alpha_f32_bits.to_le_bytes());
+            hasher.update(entity.post_update_playback_rate_f32_bits.to_le_bytes());
+        }
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 const MAX_CAMERA_INPUT_NODES: usize = 4_096;
@@ -7165,6 +7615,7 @@ fn capture_snow_mud_preupload(
         producer_game_hour_raw,
         producer_qpc_ticks,
         producer_qpc_frequency_hz,
+        resource_ptr: resource,
         width,
         height,
         row_pitch: portable_render_stream::SNOW_MUD_TEXTURE_ROW_PITCH,
@@ -7180,6 +7631,46 @@ fn has_pending_render_frame() -> bool {
         .get()
         .and_then(|state| state.lock().ok())
         .is_some_and(|state| state.pending_render_frame.is_some())
+}
+
+/// Extractor-local candidate identity for the dormant A25 owner-glyph probe.
+/// This accessor is valid only inside the authenticated render envelope. It
+/// exposes no process pointer and cannot predict which Present the hour latch
+/// will select.
+pub fn current_a25_owner_glyph_present_candidate(
+    frame_hour: u64,
+) -> Result<runtime_text_inputs_live_lane::owner_glyph_probe::OwnerGlyphPresentCandidate, String>
+{
+    let submit_index = CURRENT_SUBMIT
+        .with(|slot| slot.borrow().as_ref().map(|submit| submit.submit_index))
+        .ok_or("A25 owner render is outside the authenticated render envelope")?;
+    let frame_sequence = STATE
+        .get()
+        .ok_or("render hook state is unavailable")?
+        .lock()
+        .map_err(|_| "render hook state poisoned")?
+        .pending_render_frame
+        .filter(|pending| pending.submit_index == submit_index)
+        .map(|pending| pending.frame_sequence)
+        .ok_or("A25 owner render is outside the active Present candidate")?;
+    let process = current_process_epoch();
+    let launch = current_capture_launch_epoch()
+        .ok_or("A25 owner render has no authenticated early-launch epoch")?;
+    if process.process_start_nonce == 0
+        || launch.process_start_nonce != process.process_start_nonce
+        || launch.hook_epoch_nonce == 0
+    {
+        return Err("A25 owner render capture epoch is incomplete".into());
+    }
+    Ok(
+        runtime_text_inputs_live_lane::owner_glyph_probe::OwnerGlyphPresentCandidate {
+            process_start_nonce: process.process_start_nonce,
+            hook_epoch_nonce: launch.hook_epoch_nonce,
+            submit_index,
+            frame_sequence,
+            frame_hour,
+        },
+    )
 }
 
 fn begin_render_frame(submit_index: u64) -> Result<u64, String> {
@@ -7269,6 +7760,53 @@ fn complete_render_frame_locked(
         }
         None => None,
     };
+    let weather_membership_updates = state
+        .latest_weather_observation_by_region
+        .values()
+        .filter(|row| row.owner == RawWeatherUpdateOwner::NormalStrategicRegionUpdate)
+        .cloned()
+        .collect::<Vec<_>>();
+    let weather_visibility_updates = state
+        .latest_weather_visibility_by_region
+        .iter()
+        .filter(|(region, row)| {
+            row.owner == RawWeatherUpdateOwner::NormalStrategicRegionUpdate
+                && state
+                    .weather_runtime_codes
+                    .get(region)
+                    .is_some_and(|code| *code != 0)
+        })
+        .map(|(_, row)| row)
+        .cloned()
+        .collect::<Vec<_>>();
+    for (region, code) in &state.weather_runtime_codes {
+        let membership = state
+            .latest_weather_observation_by_region
+            .get(region)
+            .ok_or("weather region has no initial/checkpoint observation")?;
+        if membership.airborne_runtime_code != *code {
+            return Err("weather region discriminator differs from its Present snapshot".into());
+        }
+        if *code != 0 {
+            let visibility = state
+                .latest_weather_visibility_by_region
+                .get(region)
+                .ok_or("active weather region has no completed visibility update")?;
+            if visibility.update_index < membership.update_index {
+                return Err("active weather visibility predates its membership epoch".into());
+            }
+        }
+    }
+    let latest_completed_weather_update_index = weather_membership_updates
+        .iter()
+        .map(|row| row.update_index)
+        .chain(weather_visibility_updates.iter().map(|row| row.update_index))
+        .max()
+        .unwrap_or(0);
+    let weather_snapshot_sha256 = weather_snapshot_sha256(
+        &weather_membership_updates,
+        &weather_visibility_updates,
+    )?;
     let frame = RawRenderFrameCapture {
         frame_sequence: pending.frame_sequence,
         submit_index: pending.submit_index,
@@ -7277,6 +7815,7 @@ fn complete_render_frame_locked(
         presentation_qpc_frequency_hz: receipt.frequency_hz,
         process_start_nonce: receipt.process_start_nonce,
         hook_epoch_nonce: receipt.hook_epoch_nonce,
+        expected_weather_region_count: state.expected_weather_region_count.unwrap_or(0) as u64,
         observed_weather_region_count: state.weather_runtime_codes.len() as u64,
         active_airborne_weather_region_count: state
             .weather_runtime_codes
@@ -7284,6 +7823,10 @@ fn complete_render_frame_locked(
             .filter(|code| **code != 0)
             .count() as u64,
         queued_weather_change_count: state.weather_changes.len() as u64,
+        weather_membership_updates,
+        weather_visibility_updates,
+        latest_completed_weather_update_index,
+        weather_snapshot_sha256,
         game_hour_raw: receipt.game_hour_raw,
         snow_mud_texture,
         events: state.render_order_events.drain(..).collect(),
@@ -7934,15 +8477,139 @@ unsafe extern "system" fn hook_seed(words: *mut u32) {
     });
 }
 
+unsafe extern "system" fn hook_weather_normal_update_owner(
+    region_visual: usize,
+    view: usize,
+    release_context: usize,
+    transition: f32,
+    update_visuals: u8,
+) {
+    let update_index = NEXT_WEATHER_UPDATE_INDEX.fetch_add(1, Ordering::AcqRel);
+    let owner = WeatherUpdateOwner {
+        update_index,
+        owner: RawWeatherUpdateOwner::NormalStrategicRegionUpdate,
+    };
+    let previous = CURRENT_WEATHER_OWNER.with(|slot| slot.borrow_mut().replace(owner));
+    if update_index == 0 || previous.is_some() {
+        reject();
+    }
+    let original: WeatherNormalUpdateOwnerFn = unsafe {
+        mem::transmute(ORIGINAL_WEATHER_NORMAL_UPDATE_OWNER.load(Ordering::Acquire))
+    };
+    unsafe { original(region_visual, view, release_context, transition, update_visuals) };
+    let completed = CURRENT_WEATHER_OWNER.with(|slot| slot.borrow_mut().take());
+    if completed != Some(owner) {
+        reject();
+    }
+    CURRENT_WEATHER_OWNER.with(|slot| *slot.borrow_mut() = previous);
+}
+
+unsafe extern "system" fn hook_weather_editor_refresh_owner(editor: usize, region_index: u32) {
+    let update_index = NEXT_WEATHER_UPDATE_INDEX.fetch_add(1, Ordering::AcqRel);
+    let owner = WeatherUpdateOwner {
+        update_index,
+        owner: RawWeatherUpdateOwner::EditorRefresh,
+    };
+    let previous = CURRENT_WEATHER_OWNER.with(|slot| slot.borrow_mut().replace(owner));
+    if update_index == 0 || previous.is_some() {
+        reject();
+    }
+    let original: WeatherEditorRefreshOwnerFn = unsafe {
+        mem::transmute(ORIGINAL_WEATHER_EDITOR_REFRESH_OWNER.load(Ordering::Acquire))
+    };
+    unsafe { original(editor, region_index) };
+    let completed = CURRENT_WEATHER_OWNER.with(|slot| slot.borrow_mut().take());
+    if completed != Some(owner) {
+        reject();
+    }
+    CURRENT_WEATHER_OWNER.with(|slot| *slot.borrow_mut() = previous);
+}
+
+fn weather_entity_role(producer: usize, entity: usize) -> Option<WeatherEntityRole> {
+    let pair_count = read_u32(producer.checked_add(0x54)?)?;
+    if pair_count > MAX_WEATHER_PAIRS {
+        return None;
+    }
+    let pairs = read_usize(producer.checked_add(0x48)?)?;
+    for index in 0..pair_count as usize {
+        let pair = pairs.checked_add(index.checked_mul(0x10)?)?;
+        if read_usize(pair)? == entity {
+            return Some(WeatherEntityRole::Primary);
+        }
+        if read_usize(pair.checked_add(8)?)? == entity {
+            return Some(WeatherEntityRole::Fading);
+        }
+    }
+    None
+}
+
+fn record_weather_setter(
+    entity: usize,
+    update: impl FnOnce(&mut PendingWeatherSetterWrites) -> bool,
+) {
+    CURRENT_WEATHER.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(pending) = slot.as_mut() else { return };
+        if weather_entity_role(pending.producer, entity).is_none() {
+            return;
+        }
+        let row = pending.setter_writes.entry(entity).or_default();
+        if !update(row) {
+            pending.rejected = true;
+        }
+    });
+}
+
+unsafe extern "system" fn hook_weather_active_setter(entity: usize, active: u8) {
+    record_weather_setter(entity, |row| {
+        row.active_count = row.active_count.saturating_add(1);
+        row.active_value = active != 0;
+        row.active_count == 1 && active <= 1
+    });
+    let original: WeatherActiveSetterFn =
+        unsafe { mem::transmute(ORIGINAL_WEATHER_ACTIVE_SETTER.load(Ordering::Acquire)) };
+    unsafe { original(entity, active) };
+}
+
+unsafe extern "system" fn hook_weather_alpha_setter(entity: usize, alpha: f32) {
+    record_weather_setter(entity, |row| {
+        row.alpha_count = row.alpha_count.saturating_add(1);
+        row.alpha_f32_bits = alpha.to_bits();
+        row.alpha_count == 1 && alpha.is_finite()
+    });
+    let original: WeatherAlphaSetterFn =
+        unsafe { mem::transmute(ORIGINAL_WEATHER_ALPHA_SETTER.load(Ordering::Acquire)) };
+    unsafe { original(entity, alpha) };
+}
+
+unsafe extern "system" fn hook_weather_playback_setter(entity: usize, playback: f64) {
+    record_weather_setter(entity, |row| {
+        row.playback_count = row.playback_count.saturating_add(1);
+        row.playback_f32_bits = (playback as f32).to_bits();
+        row.playback_count == 1 && playback.is_finite()
+    });
+    let original: WeatherPlaybackSetterFn =
+        unsafe { mem::transmute(ORIGINAL_WEATHER_PLAYBACK_SETTER.load(Ordering::Acquire)) };
+    unsafe { original(entity, playback) };
+}
+
 unsafe extern "system" fn hook_weather(producer: usize, view: usize, release_context: usize) {
+    let owner = CURRENT_WEATHER_OWNER.with(|slot| *slot.borrow());
     let region_id = read_usize(producer + 0x30).and_then(|region| read_u32(region + 0x58));
     let previous_code = read_u32(producer + 0x60).and_then(|value| u8::try_from(value).ok());
-    let pending = match (region_id, previous_code) {
-        (Some(strategic_region_id), Some(previous_code)) => Some(PendingWeather {
+    let view_distance_f32_bits = read_u32(view + 0x184);
+    let pending = match (owner, region_id, previous_code, view_distance_f32_bits) {
+        (Some(owner), Some(strategic_region_id), Some(previous_code), Some(view_distance_f32_bits))
+            if owner.update_index != 0 && !has_pending_render_frame() => Some(PendingWeather {
+            producer,
+            update_index: owner.update_index,
+            owner: owner.owner,
             strategic_region_id,
             previous_code,
+            view_distance_f32_bits,
             selection_seed_words: None,
             factory_attempts: Vec::new(),
+            setter_writes: HashMap::new(),
             rejected: false,
         }),
         _ => {
@@ -7982,34 +8649,152 @@ unsafe extern "system" fn hook_weather(producer: usize, view: usize, release_con
             return;
         }
     };
+    if pending.owner == RawWeatherUpdateOwner::EditorRefresh {
+        // The editor refresh root is deliberately authenticated and scoped so
+        // it cannot masquerade as a normal strategic-region update. Editor
+        // rows are not eligible for production Present ownership.
+        return;
+    }
+    let base = MODULE_BASE.load(Ordering::Acquire);
+    let expected_region_count = base
+        .checked_add(0x0331_6E90)
+        .and_then(read_usize)
+        .and_then(|game_state| game_state.checked_add(0x688))
+        .and_then(read_usize)
+        .and_then(|manager| manager.checked_add(0x4c))
+        .and_then(read_u32);
+    let Some(expected_region_count) = expected_region_count.filter(|count| {
+        *count != 0 && pending.strategic_region_id < *count
+    }) else {
+        reject();
+        return;
+    };
     let Some(mut state) = STATE.get().and_then(|value| value.lock().ok()) else {
         reject();
         return;
     };
+    let prior_membership = state
+        .latest_weather_observation_by_region
+        .get(&pending.strategic_region_id)
+        .cloned();
+    if state
+        .expected_weather_region_count
+        .is_some_and(|prior| prior != expected_region_count)
+    {
+        drop(state);
+        reject();
+        return;
+    }
+    state.expected_weather_region_count = Some(expected_region_count);
+    let initial_observation = prior_membership.is_none();
     state
         .weather_runtime_codes
         .insert(pending.strategic_region_id, observed_code);
     drop(state);
-    if current_code == pending.previous_code {
-        return;
-    }
-    let Some(observation) = capture_weather_change(producer, current_code, pending) else {
+    if initial_observation && current_code != 0 && current_code == pending.previous_code {
         reject();
         return;
+    }
+    let membership = if initial_observation || current_code != pending.previous_code {
+        let sequence = NEXT_RENDER_ORDER_SEQUENCE.fetch_add(1, Ordering::AcqRel);
+        let Some(observation) = capture_weather_change(
+            producer,
+            current_code,
+            &pending,
+            sequence,
+            initial_observation,
+            false,
+        ) else {
+            reject();
+            return;
+        };
+        Some(observation)
+    } else {
+        let Some(prior) = prior_membership.as_ref() else {
+            reject();
+            return;
+        };
+        let checkpoint_pending = PendingWeather {
+            producer: pending.producer,
+            update_index: pending.update_index,
+            owner: pending.owner,
+            strategic_region_id: pending.strategic_region_id,
+            previous_code: current_code,
+            view_distance_f32_bits: pending.view_distance_f32_bits,
+            selection_seed_words: prior.selection_seed_words,
+            factory_attempts: prior.ordered_factory_attempts.clone(),
+            setter_writes: pending.setter_writes.clone(),
+            rejected: false,
+        };
+        let sequence = NEXT_RENDER_ORDER_SEQUENCE.fetch_add(1, Ordering::AcqRel);
+        let Some(candidate) = capture_weather_change(
+            producer,
+            current_code,
+            &checkpoint_pending,
+            sequence,
+            false,
+            true,
+        ) else {
+            reject();
+            return;
+        };
+        weather_checkpoint_changed(prior, &candidate).then_some(candidate)
+    };
+    let visibility = if current_code != 0 {
+        let sequence = NEXT_RENDER_ORDER_SEQUENCE.fetch_add(1, Ordering::AcqRel);
+        let Some(observation) = capture_weather_visibility(&pending, sequence) else {
+            reject();
+            return;
+        };
+        Some(observation)
+    } else {
+        None
     };
     if let Some(mut state) = STATE.get().and_then(|value| value.lock().ok()) {
-        if state.weather_changes.len() == MAX_SUBMITS {
-            state.weather_changes.pop_front();
-            state.evicted_submits += 1;
+        if let Some(observation) = membership {
+            if state.weather_changes.len() == MAX_SUBMITS {
+                state.weather_changes.pop_front();
+            }
+            state
+                .latest_weather_observation_by_region
+                .insert(observation.strategic_region_id, observation.clone());
+            state.weather_changes.push_back(observation);
         }
-        state.weather_changes.push_back(observation);
+        if let Some(observation) = visibility {
+            if state.weather_visibility_updates.len() == MAX_SUBMITS {
+                state.weather_visibility_updates.pop_front();
+            }
+            state
+                .latest_weather_visibility_by_region
+                .insert(observation.strategic_region_id, observation.clone());
+            state.weather_visibility_updates.push_back(observation);
+        }
     }
+}
+
+fn weather_checkpoint_changed(
+    prior: &RawWeatherObservation,
+    current: &RawWeatherObservation,
+) -> bool {
+    prior.rain_light_active != current.rain_light_active
+        || prior.rain_heavy_active != current.rain_heavy_active
+        || prior.snow_active != current.snow_active
+        || prior.blizzard_active != current.blizzard_active
+        || prior.sandstorm_active != current.sandstorm_active
+        || prior.arctic_water_active != current.arctic_water_active
+        || prior.region_value_i64_fixed_1e5 != current.region_value_i64_fixed_1e5
+        || prior.transition_expiry_game_hour_i32 != current.transition_expiry_game_hour_i32
+        || prior.airborne_runtime_code != current.airborne_runtime_code
+        || prior.ordered_live_pairs != current.ordered_live_pairs
 }
 
 fn capture_weather_change(
     producer: usize,
     current_code: u8,
-    pending: PendingWeather,
+    pending: &PendingWeather,
+    sequence: u64,
+    initial_observation: bool,
+    checkpoint_observation: bool,
 ) -> Option<RawWeatherObservation> {
     let base = MODULE_BASE.load(Ordering::Acquire);
     let game_state = read_usize(base.checked_add(0x0331_6E90)?)?;
@@ -8049,6 +8834,11 @@ fn capture_weather_change(
     drop(state);
     Some(RawWeatherObservation {
         observation_index: NEXT_WEATHER_OBSERVATION_ID.fetch_add(1, Ordering::AcqRel),
+        sequence,
+        update_index: pending.update_index,
+        owner: pending.owner,
+        initial_observation,
+        checkpoint_observation,
         strategic_region_id: pending.strategic_region_id,
         rain_light_active: read_u8(region.checked_add(0x108)?)? != 0,
         rain_heavy_active: read_u8(region.checked_add(0x110)?)? != 0,
@@ -8061,8 +8851,141 @@ fn capture_weather_change(
         previous_airborne_runtime_code: pending.previous_code,
         airborne_runtime_code: current_code,
         selection_seed_words: pending.selection_seed_words,
-        ordered_factory_attempts: pending.factory_attempts,
+        ordered_factory_attempts: pending.factory_attempts.clone(),
         ordered_live_pairs: pairs,
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WeatherEntityPostState {
+    active: bool,
+    alpha_f32_bits: u32,
+    playback_f32_bits: u32,
+}
+
+fn read_weather_entity_post_state_once(entity: usize) -> Option<WeatherEntityPostState> {
+    let active = read_u8(entity.checked_add(0xe8)?)? != 0;
+    let playback = f64::from_bits(read_usize(entity.checked_add(0x78)?)? as u64) as f32;
+    if !playback.is_finite() {
+        return None;
+    }
+    let child_count = read_u32(entity.checked_add(0x8c)?)?;
+    if child_count == 0 || child_count > MAX_ENTITY_LIST_ROWS {
+        return None;
+    }
+    let child_slots = read_usize(entity.checked_add(0x80)?)?;
+    let mut common = None;
+    for index in 0..child_count as usize {
+        let slot = child_slots.checked_add(index.checked_mul(mem::size_of::<usize>())?)?;
+        let slot_ptr = read_usize(slot)?;
+        let child = read_usize(slot_ptr)?;
+        let child_state = read_usize(child.checked_add(0x70)?)?;
+        let child_active = read_u8(child.checked_add(0x60)?)? & 1 != 0;
+        let alpha_f32_bits = read_u32(child_state.checked_add(0x4c)?)?;
+        let playback_f32_bits = read_u32(child_state.checked_add(0x50)?)?;
+        if !f32::from_bits(alpha_f32_bits).is_finite()
+            || !f32::from_bits(playback_f32_bits).is_finite()
+            || child_active != active
+            || playback_f32_bits != playback.to_bits()
+        {
+            return None;
+        }
+        let row = WeatherEntityPostState {
+            active: child_active,
+            alpha_f32_bits,
+            playback_f32_bits,
+        };
+        if common.is_some_and(|prior| prior != row) {
+            return None;
+        }
+        common = Some(row);
+    }
+    common
+}
+
+fn capture_weather_entity_visibility(
+    entity: usize,
+    role: WeatherEntityRole,
+    writes: PendingWeatherSetterWrites,
+    state: &HookState,
+) -> Option<WeatherEntityVisibility> {
+    let stable_id = state.entities.get(&entity)?.stable_id;
+    if stable_id == 0
+        || writes.active_count > 1
+        || writes.alpha_count > 1
+        || writes.playback_count != 1
+    {
+        return None;
+    }
+    let before = read_weather_entity_post_state_once(entity)?;
+    let after = read_weather_entity_post_state_once(entity)?;
+    if before != after
+        || writes.playback_f32_bits != after.playback_f32_bits
+        || (writes.active_count == 1 && writes.active_value != after.active)
+        || (writes.alpha_count == 1 && writes.alpha_f32_bits != after.alpha_f32_bits)
+    {
+        return None;
+    }
+    Some(WeatherEntityVisibility {
+        entity_instance_id: stable_id,
+        role,
+        post_update_active: after.active,
+        post_update_alpha_f32_bits: after.alpha_f32_bits,
+        post_update_playback_rate_f32_bits: after.playback_f32_bits,
+        producer_wrote_active: writes.active_count == 1,
+        producer_wrote_alpha: writes.alpha_count == 1,
+    })
+}
+
+fn capture_weather_visibility(
+    pending: &PendingWeather,
+    sequence: u64,
+) -> Option<RawWeatherVisibilityObservation> {
+    let (camera_branch, computed_fade_alpha_f32_bits, computed_playback_rate_f32_bits) =
+        portable_render_stream::weather_visibility_law(pending.view_distance_f32_bits).ok()?;
+    let pair_count = read_u32(pending.producer.checked_add(0x54)?)?;
+    let pair_capacity = read_u32(pending.producer.checked_add(0x50)?)?;
+    if pair_count == 0 || pair_count > pair_capacity || pair_count > MAX_WEATHER_PAIRS {
+        return None;
+    }
+    let pairs = read_usize(pending.producer.checked_add(0x48)?)?;
+    let state = STATE.get()?.lock().ok()?;
+    let mut seen = BTreeSet::new();
+    let mut ordered_entity_visibility = Vec::new();
+    for index in 0..pair_count as usize {
+        let pair = pairs.checked_add(index.checked_mul(0x10)?)?;
+        for (role, entity) in [
+            (WeatherEntityRole::Primary, read_usize(pair)?),
+            (WeatherEntityRole::Fading, read_usize(pair.checked_add(8)?)?),
+        ] {
+            if entity == 0 {
+                continue;
+            }
+            if !seen.insert(entity) {
+                return None;
+            }
+            let writes = pending.setter_writes.get(&entity).copied().unwrap_or_default();
+            ordered_entity_visibility.push(capture_weather_entity_visibility(
+                entity, role, writes, &state,
+            )?);
+        }
+    }
+    if ordered_entity_visibility.is_empty()
+        || pending.setter_writes.keys().any(|entity| !seen.contains(entity))
+    {
+        return None;
+    }
+    Some(RawWeatherVisibilityObservation {
+        observation_index: NEXT_WEATHER_OBSERVATION_ID.fetch_add(1, Ordering::AcqRel),
+        sequence,
+        update_index: pending.update_index,
+        owner: pending.owner,
+        strategic_region_id: pending.strategic_region_id,
+        view_distance_f32_bits: pending.view_distance_f32_bits,
+        camera_branch,
+        computed_fade_alpha_f32_bits,
+        computed_playback_rate_f32_bits,
+        ordered_entity_visibility,
     })
 }
 
@@ -9266,6 +10189,15 @@ pub fn commit_capture_receipt(
         None => epoch.capture_receipt_sha256 = Some(capture_receipt_sha256.to_owned()),
     }
     Ok(())
+}
+
+/// Accept one H4CT-authenticated G2 arm after the exact capture receipt has
+/// been committed. The existing production hook graph remains the only D3D
+/// owner; no auxiliary capture DLL participates.
+pub fn arm_g2_capture(
+    arm: compact_contract::early_render_control::EarlyG2CaptureArmV1,
+) -> Result<(), String> {
+    g2_capture::arm(arm)
 }
 
 pub fn early_capture_readiness() -> Result<EarlyCaptureReadiness, String> {
@@ -10762,7 +11694,12 @@ fn addresses(base: usize) -> InstalledAddresses {
         restore_bloom_effect_registration_root: base
             + RESTORE_BLOOM_EFFECT_REGISTRATION_ROOT_RVA as usize,
         lut_blend_effect_registration_root: base + LUT_BLEND_EFFECT_REGISTRATION_ROOT_RVA as usize,
+        weather_normal_update_owner: base + WEATHER_NORMAL_UPDATE_OWNER_RVA as usize,
+        weather_editor_refresh_owner: base + WEATHER_EDITOR_REFRESH_OWNER_RVA as usize,
         weather_visual_producer: base + WEATHER_VISUAL_PRODUCER_RVA as usize,
+        weather_entity_active_setter: base + WEATHER_ENTITY_ACTIVE_SETTER_RVA as usize,
+        weather_entity_alpha_setter: base + WEATHER_ENTITY_ALPHA_SETTER_RVA as usize,
+        weather_entity_playback_setter: base + WEATHER_ENTITY_PLAYBACK_SETTER_RVA as usize,
         high_resolution_seed: base + HIGH_RESOLUTION_SEED_RVA as usize,
         map_scene_render_root: base + MAP_SCENE_RENDER_ROOT_RVA as usize,
         post_process_render_root: base + POST_PROCESS_RENDER_ROOT_RVA as usize,
@@ -10804,7 +11741,12 @@ fn targets(a: InstalledAddresses) -> [usize; ENGINE_HOOK_COUNT] {
         a.map_name_effect_registration_root,
         a.restore_bloom_effect_registration_root,
         a.lut_blend_effect_registration_root,
+        a.weather_normal_update_owner,
+        a.weather_editor_refresh_owner,
         a.weather_visual_producer,
+        a.weather_entity_active_setter,
+        a.weather_entity_alpha_setter,
+        a.weather_entity_playback_setter,
         a.high_resolution_seed,
         a.map_scene_render_root,
         a.post_process_render_root,
@@ -11854,16 +12796,16 @@ mod tests {
 
         assert_eq!(engine_hook_specs(addresses(0)).len(), ENGINE_HOOK_COUNT);
         assert_eq!(BOOTSTRAP_HOOK_COUNT, 2);
-        assert_eq!(HARDWARE_D3D_HOOK_COUNT, 19);
-        assert_eq!(STAGED_HOOK_COUNT, 57);
-        assert_eq!(READY_HOOK_COUNT, 59);
-        assert_eq!(staged_hook_count_for_group_mask(0x01), Some(19));
-        assert_eq!(staged_hook_count_for_group_mask(0x03), Some(21));
-        assert_eq!(staged_hook_count_for_group_mask(0x1ff), Some(54));
-        assert_eq!(staged_hook_count_for_group_mask(0x3ff), Some(57));
+        assert_eq!(HARDWARE_D3D_HOOK_COUNT, 23);
+        assert_eq!(STAGED_HOOK_COUNT, 66);
+        assert_eq!(READY_HOOK_COUNT, 68);
+        assert_eq!(staged_hook_count_for_group_mask(0x01), Some(23));
+        assert_eq!(staged_hook_count_for_group_mask(0x03), Some(25));
+        assert_eq!(staged_hook_count_for_group_mask(0x1ff), Some(63));
+        assert_eq!(staged_hook_count_for_group_mask(0x3ff), Some(66));
         assert_eq!(staged_hook_count_for_group_mask(0x02), None);
-        assert_eq!(staged_hook_count_for_group_mask(0x101), Some(21));
-        assert_eq!(staged_hook_count_for_group_mask(0x201), Some(22));
+        assert_eq!(staged_hook_count_for_group_mask(0x101), Some(25));
+        assert_eq!(staged_hook_count_for_group_mask(0x201), Some(26));
         assert_eq!(
             parse_diagnostic_stage_mask(None).unwrap(),
             StagedHookSelection {

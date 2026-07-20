@@ -27,10 +27,12 @@ use compact_contract::early_render_control::{
     canonical_early_diagnostic_liveness_response_binding_bytes,
     decode_early_diagnostic_liveness_response, decode_early_first_game_d3d,
     encode_early_commit_capture_receipt, encode_early_diagnostic_end,
+    encode_early_g2_capture_arm,
     encode_early_diagnostic_liveness_request, encode_early_render_launch_bind,
     EarlyCommitCaptureReceiptV1, EarlyDiagnosticEndV1, EarlyDiagnosticLivenessRequestV1,
     EarlyDiagnosticLivenessResponseV1, EarlyFirstGameD3dV1, EarlyHookReadyV1,
-    EarlyRenderLaunchBindV1, EARLY_DIAGNOSTIC_END_RECORDER_CANCEL, EARLY_DIAGNOSTIC_MIN_HOLD_MS,
+    EarlyG2CaptureArmV1, EarlyRenderLaunchBindV1, EARLY_DIAGNOSTIC_END_RECORDER_CANCEL,
+    EARLY_DIAGNOSTIC_MIN_HOLD_MS,
     EARLY_HOOK_COMPLETENESS_MASK, EARLY_STAGED_HOOK_COUNT, EARLY_STAGED_HOOK_GENERATION,
 };
 use compact_contract::early_render_runtime_dlc::{
@@ -443,7 +445,7 @@ fn early_vfs_index_rejects_foreign_bind_digest_before_ready() {
 }
 
 #[test]
-fn early_transaction_is_exactly_hello_bind_ready_first_commit() {
+fn early_transaction_authenticates_g2_arm_immediately_before_commit() {
     let clock = FakeClock::at(0);
     let (session, session_id) = fresh_session();
     let rows = vec![vfs_row("gfx/test.asset")];
@@ -471,6 +473,26 @@ fn early_transaction_is_exactly_hello_bind_ready_first_commit() {
         process_start_nonce: identity().creation_filetime,
         hook_epoch_nonce: 9,
         receipt_sha256: [6; 32],
+    };
+    let g2_arm = EarlyG2CaptureArmV1 {
+        process_id: commit.process_id,
+        process_start_nonce: commit.process_start_nonce,
+        hook_epoch_nonce: commit.hook_epoch_nonce,
+        launch_manifest_sha256: bind.launch_manifest_sha256,
+        launch_epoch_sha256: [7; 32],
+        capture_receipt_sha256: commit.receipt_sha256,
+        authority_exe_sha256: bind.executable_sha256,
+        effective_vfs_manifest_sha256: bind.effective_vfs_manifest_sha256,
+        content_manifest_digest_sha256: [8; 32],
+        settings_file_sha256: [9; 32],
+        camera_payload_sha256: [10; 32],
+        capture_context_sha256: [11; 32],
+        expected_selected_hour: 123,
+        observation_id: "g2-test-observation".into(),
+        localisation_language: "english".into(),
+        pov_country_or_global: "global".into(),
+        capture_context_path: "C:\\capture\\context.json".into(),
+        output_directory: "C:\\capture\\g2_engine".into(),
     };
     let bind_payload = encode_early_render_launch_bind(&bind).unwrap();
     let launch_bind_sha256: [u8; 32] = Sha256::digest(&bind_payload).into();
@@ -582,18 +604,24 @@ fn early_transaction_is_exactly_hello_bind_ready_first_commit() {
     inbound.extend(recorder_frame(
         session_id,
         5,
+        MessageKind::EarlyRenderG2CaptureArm,
+        &encode_early_g2_capture_arm(&g2_arm).unwrap(),
+    ));
+    inbound.extend(recorder_frame(
+        session_id,
+        6,
         MessageKind::EarlyRenderCommitReceipt,
         &encode_early_commit_capture_receipt(&commit).unwrap(),
     ));
     inbound.extend(recorder_frame(
         session_id,
-        6,
+        7,
         MessageKind::EarlyRenderVfsPayloadChunk,
         &encode_early_render_vfs_payload_chunk(&payload_response).unwrap(),
     ));
     inbound.extend(recorder_frame(
         session_id,
-        7,
+        8,
         MessageKind::EarlyRenderVfsPayloadCommit,
         &encode_early_render_vfs_payload_commit(&payload_commit).unwrap(),
     ));
@@ -690,7 +718,7 @@ fn early_transaction_is_exactly_hello_bind_ready_first_commit() {
         client
             .receive_early_render_commit(ready.hook_epoch_nonce, deadline)
             .unwrap(),
-        commit
+        (commit, Some(g2_arm))
     );
     let payload = client
         .request_early_render_vfs_payload_range(
@@ -774,7 +802,7 @@ fn diagnostic_first(binding: &EarlyRenderControlBinding) -> EarlyFirstGameD3dV1 
         first_creation_sequence: 13,
         creation_qpc: 12,
         staged_hook_generation: EARLY_STAGED_HOOK_GENERATION,
-        staged_hook_count: 19,
+        staged_hook_count: 23,
         diagnostic_stage_probe: true,
         staged_hook_group_mask: TEST_DIAGNOSTIC_COM_GROUP_MASK,
         staged_hook_set_sha256: [8; 32],

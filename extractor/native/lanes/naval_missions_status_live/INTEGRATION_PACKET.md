@@ -701,7 +701,9 @@ convoy_sunk_count_rows, task_forces[]}`.
 
 Each `task_forces[]` row carries `task_force_id`, `fleet_id`, `owner_tag_db_id`,
 `location_province_id`, optional `strategic_region_id`, nullable
-`mission_enum`, `mission_name`, `mission_state`, `home_base_province_id`,
+`mission_enum`, `mission_name`, `mission_state`, `detached_activity`,
+nullable `activity_key`, `active_combat_epochs`,
+`combat_membership_authority`, `home_base_province_id`,
 `repair_base_province_id`, `repair_progress_milli`, `retreat_state`,
 optional aggregate `sunk_convoys`, nullable `convoy_route_context_id`,
 `fixture_required`, `active_battle_fixture_required`, and
@@ -711,6 +713,16 @@ Mission enum/name, detached-activity mission state, home base, and repair target
 are exact producer-backed fields. Repair progress, task-force retreat-state
 enum, and convoy-route fields stay null. `sunk_convoys` is an aggregate `CShip+0x3C`
 counter only; it is not route context.
+
+`active_combat_epochs` is derived only from same-hour successful D49 lifecycle
+and D50 member folds and uses `combat_id:generation:side` identities. The
+in-combat key additionally requires exact D50 `FEX_STATE_FIGHTING` state 2. A
+measured-empty array is exact not-in-combat; null means membership authority is
+unavailable. The only promoted complete activity branch is
+`TASK_FORCE_ACTIVITY_DESC_IN_COMBAT`, which the exact a729 formatter evaluates
+before all mission/movement/detached-state branches. Non-fighting membership
+does not invent that key. The latter branches remain
+null until all of their engine inputs are carried.
 ```
 
 Rationale: `REPLAY_SCHEMA.md` says high-frequency raw OOB and ship telemetry live outside save-shaped OOB arrays, and R2 requires shapes beyond the documented schema to use a clearly named extra key.

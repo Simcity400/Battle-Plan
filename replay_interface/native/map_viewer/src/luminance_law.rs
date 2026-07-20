@@ -31,12 +31,14 @@
 //!    `vCurrentLuminance = clamp( exp(vSum), MinHdr_MaxHdr.x, MinHdr_MaxHdr.y )`
 //!    (`:128`), then eases `LastLuminance` toward it
 //!    (`CalculateAdaptedLuminance`, `:99-104`).
-//!    `MinHdr_MaxHdr = { MIN_HDR_ADJUSTMENT 0.5, MAX_HDR_ADJUSTMENT 1.0 }`
-//!    (`common/defines/00_graphics.lua:1038-1039`).
+//!    `MinHdr_MaxHdr` is supplied by the resolved posteffect volume. Its
+//!    `hdr_min_adjustment` / `hdr_max_adjustment` fields fall back to
+//!    `MIN_HDR_ADJUSTMENT` / `MAX_HDR_ADJUSTMENT` from
+//!    `common/defines/00_graphics.lua` when omitted.
 //!
 //! So the fully-adapted (steady-state) average luminance is
 //! `clamp( exp( mean( log( max(0, dot(rgb, LUMINANCE_VECTOR)) + 1e-4 ) ) ),
-//! MIN_HDR_ADJUSTMENT, MAX_HDR_ADJUSTMENT )`, and the engine stores it in a 1x1
+//! resolved_min_hdr, resolved_max_hdr )`, and the engine stores it in a 1x1
 //! `R16_FLOAT` texture that the restore pass samples — so this module also
 //! **quantizes the result to an R16 half** before it is handed to the exposure
 //! constant, matching the engine's storage precision byte-for-byte.
@@ -72,9 +74,11 @@ pub const LUMINANCE_VECTOR: [f32; 3] = [0.2125, 0.7154, 0.0721];
 /// `downsample.shader:70` `+ 0.0001f` inside the `log`.
 pub const LOG_LUMINANCE_EPSILON: f32 = 0.0001;
 
-/// The parameters this reduction needs, sourced from the resolver-loaded
-/// `common/defines/00_graphics.lua` (`MIN_HDR_ADJUSTMENT` / `MAX_HDR_ADJUSTMENT`,
-/// the `MinHdr_MaxHdr` clamp bounds).
+/// The resolved posteffect `MinHdr_MaxHdr` clamp bounds. Per-volume
+/// `hdr_min_adjustment` / `hdr_max_adjustment` values override and blend over
+/// the resolver-loaded `common/defines/00_graphics.lua` fallbacks. The engine's
+/// HLSL `min(max(x, min), max)` order is defined even when shipped or modded
+/// bounds are reversed, so validation intentionally permits either ordering.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LuminanceClampBounds {
     pub min_hdr_adjustment: f32,
@@ -88,11 +92,12 @@ pub struct AverageLuminanceReduction {
     /// of the scene luminance, BEFORE the clamp. This is `exp(vSum)` in
     /// `downsample_luminance.shader:128`.
     pub geometric_mean_luminance: f32,
-    /// `clamp(geometric_mean_luminance, min_hdr, max_hdr)` — the engine's
-    /// `vCurrentLuminance`, and (for a static dump) the fully-adapted average.
+    /// HLSL `min(max(geometric_mean_luminance, min_hdr), max_hdr)` — the
+    /// engine's `vCurrentLuminance`, and (for a static dump) the fully-adapted
+    /// average. This spelling records the defined behavior for reversed bounds.
     pub clamped: f32,
     /// True iff the clamp bit (not the raw mean) is what the exposure uses,
-    /// i.e. the raw geometric mean fell outside `[min_hdr, max_hdr]`.
+    /// i.e. the HLSL clamp changed the raw geometric mean.
     pub clamped_to_bound: bool,
     /// `clamped` after quantizing to an IEEE-754 half (R16_FLOAT), matching the
     /// engine's 1x1 `R16_FLOAT` `AverageLuminanceTexture` storage precision.
@@ -143,7 +148,7 @@ pub fn scene_average_luminance_r16g16b16a16_float(
     if !(bounds.min_hdr_adjustment.is_finite()
         && bounds.max_hdr_adjustment.is_finite()
         && bounds.min_hdr_adjustment > 0.0
-        && bounds.max_hdr_adjustment >= bounds.min_hdr_adjustment)
+        && bounds.max_hdr_adjustment > 0.0)
     {
         return Err(format!(
             "luminance clamp bounds are invalid: min {} max {}",
@@ -199,10 +204,15 @@ pub fn scene_average_luminance_r16g16b16a16_float(
     // downsample_luminance.shader:126 divides by the tap count; :128 exp + clamp.
     let mean_log = (sum_log / count as f64) as f32;
     let geometric_mean_luminance = mean_log.exp();
-    let clamped =
-        geometric_mean_luminance.clamp(bounds.min_hdr_adjustment, bounds.max_hdr_adjustment);
-    let clamped_to_bound = geometric_mean_luminance < bounds.min_hdr_adjustment
-        || geometric_mean_luminance > bounds.max_hdr_adjustment;
+    // Preserve HLSL `clamp(x, min, max)` operation order as
+    // `min(max(x, min), max)`. Some shipped posteffect values intentionally
+    // have hdr_min_adjustment > hdr_max_adjustment; Rust's `f32::clamp` would
+    // panic for that exact engine input, while the shader deterministically
+    // resolves to the max argument.
+    let clamped = geometric_mean_luminance
+        .max(bounds.min_hdr_adjustment)
+        .min(bounds.max_hdr_adjustment);
+    let clamped_to_bound = clamped.to_bits() != geometric_mean_luminance.to_bits();
     let r16_bits = f32_to_f16_bits(clamped);
     let r16_quantized = f16_bits_to_f32(r16_bits);
 
@@ -475,6 +485,24 @@ mod tests {
         assert!(out.clamped_to_bound);
         assert_eq!(out.clamped, 1.0);
         assert_eq!(out.r16_bits, 0x3C00);
+    }
+
+    #[test]
+    fn reversed_shipped_hdr_bounds_preserve_hlsl_clamp_order() {
+        let scene = solid_scene(4, 4, [0.7, 0.7, 0.7]);
+        let out = scene_average_luminance(
+            &scene,
+            4,
+            4,
+            4 * 8,
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            LuminanceClampBounds {
+                min_hdr_adjustment: 1.0,
+                max_hdr_adjustment: 0.3,
+            },
+        )
+        .expect("HLSL clamp permits reversed shipped bounds");
+        assert_eq!(out.clamped.to_bits(), 0.3_f32.to_bits());
     }
 
     #[test]

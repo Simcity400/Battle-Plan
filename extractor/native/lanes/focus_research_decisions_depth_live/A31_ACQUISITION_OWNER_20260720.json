@@ -1,0 +1,66 @@
+{
+  "schema": "hoi4.a31.acquisition_owner.v1",
+  "date": "2026-07-20",
+  "lane": "H-A31",
+  "disposition": "OWNER_RUNNABLE_EVIDENCE_MODE_PRODUCTION_DORMANT",
+  "binary_identity": {
+    "binary_id": "hoi4.exe 1.19.2.0.a729",
+    "image_base": "0x140000000",
+    "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+  },
+  "fresh_ghidra": {
+    "function_job_id": "20260720T062545Z-w4-a31-owner-runnable-producer-e5090f36",
+    "function_manifest_sha256": "510353dae716bccaaf37f988b0f7101e31552ecf687ecbd613bce1dd2efb784a",
+    "requested_roots_resolved": "6/6",
+    "sentinel_job_id": "20260720T062745Z-w4-a31-hook-entry-sentinels-284611de",
+    "sentinel_dump_sha256": "498d09aa4161bedf4087983b47ee97626c4d78df9a4537026aff2ea1b4671429",
+    "country_context_sentinel_job_id": "20260720T065515Z-w4-a31-country-context-hook-sentinel-44d091b1",
+    "country_context_sentinel_dump_sha256": "4c85cfe84aee03808798f821e90f8ab5a7e019e990be67ee48b47d34c09d83b4"
+  },
+  "hook_graph": {
+    "vector_publisher": "0x14136f750",
+    "dynamic_refresh": "0x14137a780",
+    "item_state_writer": "0x1413778f0",
+    "item_state_producer": "0x141379a50",
+    "highlight_producer": "0x141377430",
+    "install": "sentinel-gated transactional MinHook create/enable with rollback",
+    "uninstall": "disable/remove followed by callback quiescence before state/trampoline release"
+  },
+  "owner_runner": {
+    "type": "collector::A31FixtureAcquisitionOwner",
+    "decoder": "collector::attach_log::A31CollectorDecoder",
+    "memory_boundary": "existing SEH-guarded stable reads and D12 focus-token decoder",
+    "transaction": [
+      "install",
+      "arm(frame_hour,country_tag,authenticated_country_object_address)",
+      "record exact internal display-percent and joint-country callsite leaves",
+      "seal against selected-Present order/QPC/receipt",
+      "encode exact NFP1 in evidence mode",
+      "sync NFP1 then commit authenticated JSON receipt"
+    ]
+  },
+  "ordering": {
+    "engine_item_order": "CNationalFocusView+0x2058 pointer vector 0..count-1",
+    "frame_join": "armed frame hour and canonical country tag",
+    "selected_present_join": "refresh completion QPC must not exceed selected Present QPC and QPC frequencies must match",
+    "callback_order": "monotonic process-local callback sequence retained in receipt"
+  },
+  "portable_boundary": {
+    "stable_owner_identity": "nationalfocusview:<country_tag>",
+    "stable_item_identity": "D12-authenticated CNationalFocus id at definition+0x18",
+    "pointer_free_before_encode": true,
+    "evidence_encoder": "compact_contract::national_focus_presentation::encode_payload",
+    "regrader": "tools/verify_a31_acquisition_receipt.py"
+  },
+  "activation": {
+    "domain_id": 89,
+    "production_scheduling_enabled": false,
+    "live_fixture_accepted": false,
+    "reason": "The owner is runnable, but no authenticated stable plus discriminating transition receipt has passed the root-owned regrader."
+  },
+  "validation": {
+    "subagent_builds_or_tests_run": false,
+    "central_validation_required": true,
+    "live_fixture_run": false
+  }
+}

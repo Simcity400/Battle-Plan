@@ -1,139 +1,90 @@
 # H-X9 specialization prerequisite re-audit (2026-07-20)
 
-## Outcome
+## Superseded outcome
 
-The production prerequisite for carrying all four breakthrough values is now engineered in source,
-but the semantic name mapping is still correctly blocked.
+X9 is closed by the fresh exact-a729 serializer-token namespace proof and production wiring recorded
+in `X9_SPECIALIZATION_TOKEN_NAMESPACE_PROMOTION_20260720.json`. The former same-tick four-value
+permutation is optional regression evidence, not a human or production prerequisite.
 
-The old d41 collector read only `CProgramStatus` record 0 and accepted a partial tree prefix as usable
-data. The updated collector and lane library walk all three validated contiguous records at stride
-`0x160`, read each inline `CBreakthroughProgress` at `+0x50`, merge identical aliases, reject
-same-tree duplicates or conflicting aliases, and reject a whole country's snapshot if any tree is
-torn. The collector also
-revalidates the cached `CCountry` vtable and live `tag_db_id` at the d41 read boundary. A rejected
-country increments the existing invalid count, which makes d41 emit `PARTIAL_DATA`; the fold then
-keeps special-project state unknown for that hour rather than fabricating disappearance or
-persistence.
+No build, compile, Cargo, test, formatter, or verifier command was run in this subagent lane. Root
+owns the single central validation pass.
 
-No build, compile, Cargo, test, or verifier command was run in this subagent lane. The static tests
-were added for the primary agent's one central validation pass.
+## Fresh exact-20 Ghidra authority
 
-## Fresh Ghidra gate
+The broker reported all 20 shards ready in read-only/no-analysis mode for:
 
-The fresh broker status was pinned to the correct binary identity:
+- `hoi4.exe 1.19.2.0.a729`;
+- image base `0x140000000`;
+- SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 
-- `hoi4.exe 1.19.2.0.a729`
-- image base `0x140000000`
-- SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`
+Six bounded jobs were submitted. Five completed and one broad export failed at
+`EXTERNAL:00000107`; two smaller function exports superseded that broad request for all internal
+functions while preserving the failure as negative operational evidence. The exact job IDs,
+executing shard, and artifact or manifest hashes are pinned in the promotion receipt.
 
-It reported only 10 ready shards, not the lane-required exact 20. No Ghidra work was submitted. The
-root subsequently froze broker submissions while restarting cached brokers. The grounded follow-up
-seeds are therefore packaged, unexecuted, in
-`H_X9_SPECIALIZATIONS_GHIDRA_SEEDS_PENDING_20_SHARDS_20260720.json`.
+## Exact namespace join
 
-## Retained evidence exhausted
+The decisive evidence is the `CBreakthroughProgress` serializer pair:
 
-The existing exhaustive census remains decisive:
+- writer `0x1419F14F0` walks every ordered-tree node and calls the engine serializer with the key at
+  `node+0x1C` and the points value at `node+0x20`;
+- reader `0x1419F10C0` reads the parser token ID at `parser+0x30`, inserts that ID as the tree key at
+  `node+0x1C`, and stores the parsed points at `node+0x20`.
 
-- 113 retained `collector_stream.bin` files were fully scanned;
-- 101 contained d41 data;
-- every one of those 101 contained exactly handles `{22214, 22215}`;
-- no retained stream contained four handles;
-- the closest retained a729 live frames were at raw hour `60830439`, while the D04 save oracle was
-  raw hour `60830441`;
-- across 56 known-tag anchor comparisons, that two-hour-off pair produced zero exact value matches.
+Therefore the D41 `specialization_handle` is an engine serializer token ID. It is the same namespace
+resolved by the collector's already-authenticated token-record scanner; it is not a coincidentally
+equal integer from an unjoined namespace.
 
-It is therefore invalid to name `22214` or `22215`, and the two handles hidden by the record-zero
-collector cannot be inferred.
-
-Two newly retained save-side discriminators were also mined:
-
-| Save oracle | Build | Countries | Any nonzero | Distinct four-value vectors | Admission |
-|---|---:|---:|---:|---:|---|
-| `SOV_1946_05_19_09/country_extra.json` | `1.19.1.0.b49d (1722)` | 143 | 46 | 47 | Rejected for a729 mapping |
-| `GER_1940_09_10_13/country_extra.json` | `1.19.1.0.b49d (d4f6)` | 1 | 1 | 1 | Rejected for a729 mapping |
-
-The GER vector is especially discriminating—nuclear `6204`, naval `11895`, air `7932`, land
-`19390`—but both sources are save-only, from a different executable build, and lack an exact-tick
-live d41 pairing. They cannot authenticate a729 runtime handles.
-
-The authored game-file universe remains exactly:
+The authored semantic set is closed to:
 
 1. `specialization_nuclear`
 2. `specialization_naval`
 3. `specialization_air`
 4. `specialization_land`
 
-Retained Ghidra evidence proves literal presence for nuclear/naval/land and a runtime
-construction/hash/object-identity consumer for naval. It does not prove a portable four-handle
-table. The exact `specialization_air` literal was absent from the retained executable string search;
-that negative result must be preserved, not repaired by guessing.
+The collector publishes a semantic code only after a complete committed-private heap census finds
+one unambiguous authenticated token record for that handle and its text equals one member of this
+closed set. An unresolved, ambiguous, or differently named token stays raw and unnamed.
 
-The collector's air-variant path contains an authenticated token-record heap scanner that can map a
-wanted u32 token id to exact text while rejecting ambiguity. It is not admissible for X9 yet: no
-retained producer/consumer join proves that `CBreakthroughProgress` tree keys inhabit that same token
-id namespace. Equal u32 values across unjoined namespaces would still be correlation. The pending
-Ghidra package explicitly targets that join; the exact-boundary live/save permutation is the
-independent dynamic route.
+## Production carrier and consumers
 
-## Owner equality
-
-The d41 and d65 owner questions are separate:
-
-- d41 starts from the validated `CCountry` identity row. The new boundary recheck requires the live
-  object's country vtable and `CCountry` `tag_db_id` to equal the cached identity before reading any
-  status record. This is the correct owner for that country's breakthrough values.
-- d65 starts from `CProgram` pointers that can be reachable from multiple country traversals. Those
-  multiply-reachable facilities remain dropped. `CProgram+0x170` is still only a candidate owner
-  field because retained coverage is 1/26 and lacks adjacent negative controls.
-
-No d65 owner inference is used to label d41 breakthrough rows.
-
-## Compact, fold, and replay semantics
-
-No wire expansion is needed for four values. A d41 breakthrough row is already 16 bytes:
+The existing D41 row remains 16 bytes:
 
 `tag_db_id:u32, specialization_handle:u32, points_raw:u32, flags:u32`
 
-The stable key is `(tag_db_id, specialization_handle)`. The collector delta tracker therefore
-supports four rows per country without a schema change. The fold rejects zero or duplicate keys,
-rejects unknown flags, applies valid full/delta rows, and retains the domain as unknown on
-`PARTIAL_DATA`.
+Header extension 5 is the first version that admits specialization bits. Extensions 0 through 4
+require those formerly reserved bits to stay zero.
 
-The folded projection preserves each raw value under
-`special_projects._r2_breakthroughs` with `country`, `tag_db_id`, `points_raw`, and
-`_r2_specialization_handle`. `specialization` intentionally remains `null`. Replay core retains the
-entire raw top-level JSON map in `WorldFrame` and exposes it through `raw()` and `domain()`, so the
-four raw rows survive replay ingestion without data loss. There is no typed semantic specialization
-view yet; adding one before the exact mapping would only turn an unknown into a guess.
+Bit 0 marks an exact semantic enum, bits 1 through 3 carry codes 1=nuclear, 2=naval, 3=air, and
+4=land, and bit 31 retains deletion semantics. Unknown flag combinations, invalid codes, a code
+without the present bit, and impure deletion rows are rejected.
 
-## Source changes awaiting central validation
+The fold preserves the raw handle and points in all admitted rows. It emits `specialization` and
+`_r2_specialization_authority=exact_a729_serializer_token_record` only for an exact semantic code;
+otherwise specialization is `null`. Replay core exposes a typed exact breakthrough view only when
+every row has a closed authored name and that exact authority marker. The game UI adapter consumes
+only this typed view and remains unavailable for raw-only, partial, ambiguous, or forged input.
 
-- `extractor/native/collector/src/lib.rs`
-  - all-record d41 acquisition;
-  - country-atomic fail-closed merge;
-  - live country owner equality recheck;
-  - tests for three-record collection, alias dedupe/conflict, torn-tree rejection, and stale owner
-    rejection.
-- `extractor/native/project_progress_live_lane/src/lib.rs`
-  - reusable all-record reader;
-  - a four-value regression fixture across three status records;
-  - conflict and torn-tree rejection fixtures.
+## Retained dynamic evidence
 
-## Minimum remaining human input
+The older retained census remains useful negative and regression evidence:
 
-One coherent paused a729 process/save boundary is still required after the all-record collector or
-schema-v2 probe is deployed. The same raw hour must provide both live status records and
-`projects.json`.
+- 113 retained collector streams were scanned and 101 contained D41 data;
+- those streams exposed only handles `{22214, 22215}` through the former record-zero path;
+- the closest retained a729 live/save pair was two game hours apart and had no exact value matches;
+- b49d save-only four-column vectors cannot authenticate a729 runtime values.
 
-Promotion requires all of the following mechanically:
+Those facts still prohibit naming numeric handles by order or visual correlation. They no longer
+block production because semantics are acquired from the exact engine token namespace at runtime.
 
-- exactly four distinct live handles;
-- zero record parse failures;
-- zero cross-record conflicts;
-- at least one compared country row;
-- exactly one zero-mismatch permutation to the four authored save keys;
-- zero live tags missing from the save.
+## Owner boundary
 
-If that observation fails any condition, production must continue emitting raw numeric handles with
-`specialization: null`. No additional human transcription or judgment is required.
+D41 specialization ownership remains the directly validated `CCountry` root, with live vtable and
+`tag_db_id` equality rechecked at the read boundary. D65 facility ownership is a separate A23 lane;
+no D65 candidate field or multiply-reachable facility is used to label D41 rows.
+
+## Human-input disposition
+
+No human input is required for X9. A coherent same-tick save/live observation containing all four
+values is welcome as an independent regression fixture, but it is not an admission gate and no
+manual transcription or semantic judgment is accepted.

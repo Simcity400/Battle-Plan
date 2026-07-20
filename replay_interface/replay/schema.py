@@ -20,7 +20,14 @@ import re
 from dataclasses import dataclass, field, asdict, fields as dataclass_fields
 from typing import Any, Dict, List, Optional
 
+from .wave4_schema import validate_wave4_snapshot
+
 SCHEMA_VERSION = "1"
+ACTIVE_ABILITY_EXECUTABLE_SHA256 = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+ACTIVE_ABILITY_EXACT20_MANIFEST_SHA256 = "12768dfa9a8b47ceda4feae9cdc45b76811f602ecd557008aa936e95adf2db45"
+ACTIVE_ABILITY_REFRESH_DECOMPILE_SHA256 = "aa4eb90663e60c74b031d83b41c7a28a1867245611a05a6c9d4b1856ae0076f7"
+ACTIVE_ABILITY_AUTHORITY = 0xA7290036
+ACTIVE_ABILITY_FIXED_SCALE = 100_000
 PRODUCTION_VARIANT_ID_MAX = 10_000_000
 PRODUCTION_LINE_ID_MAX = 10_000_000
 PRODUCTION_FACTORY_COUNT_MAX = 100_000
@@ -651,25 +658,30 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.abilities.officer_corps": "S",
     "countries.*.abilities.officer_corps.captured_enemy_generals": "D",
     "countries.*.abilities.officer_corps.own_generals_captured": "D",
-    # XUI23 frame-authoritative selected-context command-ability bar.  Static
-    # definitions corroborate identity/base art only; every display row is C/M.
-    "countries.*.active_abilities.complete": "C/M",
-    "countries.*.active_abilities.rows": "C/M",
-    "countries.*.active_abilities.rows.*.ability_id": "C/M",
-    "countries.*.active_abilities.rows.*.available": "C/M",
-    "countries.*.active_abilities.rows.*.active": "C/M",
-    "countries.*.active_abilities.rows.*.activation_hour": "C/M",
-    "countries.*.active_abilities.rows.*.cooldown_hours": "C/M",
-    "countries.*.active_abilities.rows.*.cooldown_remaining_hours": "C/M",
-    "countries.*.active_abilities.rows.*.cost_command_power": "C/M",
-    "countries.*.active_abilities.rows.*.target_kind": "C/M",
-    "countries.*.active_abilities.rows.*.target_id": "C/M",
-    "countries.*.active_abilities.rows.*.duration_hours": "C/M",
-    "countries.*.active_abilities.rows.*.duration_remaining_hours": "C/M",
-    "countries.*.active_abilities.rows.*.display_order": "C/M",
-    "countries.*.active_abilities.rows.*.icon": "C/M",
-    "countries.*.active_abilities.rows.*.tooltip": "C/M",
-    "countries.*.active_abilities.rows.*.disabled_reason": "C/M",
+    # XUI23 frame-authoritative selected-context command-ability envelope.
+    # ABA2 receipt identity and the complete ABL1 snapshot are inseparable C/M.
+    "countries.*.active_abilities.carrier": "C/M",
+    "countries.*.active_abilities.carrier.*": "C/M",
+    "countries.*.active_abilities.snapshot": "C/M",
+    "countries.*.active_abilities.snapshot.complete": "C/M",
+    "countries.*.active_abilities.snapshot.rows": "C/M",
+    "countries.*.active_abilities.snapshot.rows.*.ability_id": "C/M",
+    "countries.*.active_abilities.snapshot.rows.*.available": "C/M",
+    "countries.*.active_abilities.snapshot.rows.*.active": "C/M",
+    "countries.*.active_abilities.snapshot.rows.*.activation_hour": "C/M",
+    "countries.*.active_abilities.snapshot.rows.*.cooldown_total": "C/M",
+    "countries.*.active_abilities.snapshot.rows.*.cooldown_remaining": "C/M",
+    "countries.*.active_abilities.snapshot.rows.*.cost_command_power_fixed": "C/M",
+    "countries.*.active_abilities.snapshot.rows.*.cost_command_power_scale": "C/M",
+    "countries.*.active_abilities.snapshot.rows.*.target_kind": "C/M",
+    "countries.*.active_abilities.snapshot.rows.*.target_id": "C/M",
+    "countries.*.active_abilities.snapshot.rows.*.duration_total": "C/M",
+    "countries.*.active_abilities.snapshot.rows.*.duration_remaining": "C/M",
+    "countries.*.active_abilities.snapshot.rows.*.display_order": "C/M",
+    "countries.*.active_abilities.snapshot.rows.*.icon": "C/M",
+    "countries.*.active_abilities.snapshot.rows.*.tooltip": "C/M",
+    "countries.*.active_abilities.snapshot.rows.*.disabled_reason": "C/M",
+    "countries.*.active_abilities.snapshot.rows.*.affected_division_ids": "C/M",
     # --- country.projects + scientists (§3.16, from projects.json). S, two joins D. ---
     "countries.*.projects": "S",
     "countries.*.projects.facilities.*.scientist_token": "D",
@@ -776,6 +788,10 @@ FIELD_SOURCES: Dict[str, str] = {
     # exact state-id set for type-5 (area defense) orders ONLY; other geometry is RESISTED
     # (null target_states), never fabricated. army_id + target_states are RAW engine ints.
     "order_of_battle.battle_plan_orders": "M",
+    # Exact a729 domain-54 registered-reference type-53 census. The manager is
+    # a complete, pointer-free hourly snapshot including zero-order armies and
+    # raw command-backed execution/cohesion/leader-proximity ordinals.
+    "order_of_battle.extra.army_battleplans_depth_live.orders_group_manager": "C",
     # --- per-country OOB view (§12, derived rollup) ---
     "countries.*.order_of_battle": "S/D",
     # --- top-level live MIO catalog (§11b, mio_live.py). All M. ---
@@ -789,13 +805,17 @@ FIELD_SOURCES: Dict[str, str] = {
     # --- top-level live special-projects catalog (§11c, projects_live.py / DLL
     # projects_live). Catalog rows are C/M; resolved traits remain memory-derived.
     # Raw static-def db-id HANDLES (active_project_handle / static_def_handle) are
-    # measured ids, not resolved names. project_progress/phase_progress/
-    # current_state are serialize-COMPUTED and intentionally NOT carried. ---
+    # measured ids, not resolved names. Exact serialize-computed progress lives
+    # only in the separate owner-joined project_progress carrier below. ---
     "special_projects.facilities": "C/M",
     "special_projects.projects": "C/M",
     "special_projects.scientists": "C/M",
     "special_projects.project_lifecycle": "M",
     "special_projects.reward_history": "M",
+    # X9 exact serializer-token census projected as a portable closed enum.
+    # The raw engine token id is deliberately stripped before replay JSON.
+    "special_projects._r2_breakthroughs": "C",
+    "special_projects._r2_project_authority": "C",
     # resolved scientist TRAIT tokens (projects_live + defnames_live, M-derived). ADDED
     # ALONGSIDE trait_count via the direct trait def-pointer walk; absent when resolution is
     # off or the walk fails closed (no fabrication). A measured-empty [] = a traitless scientist.
@@ -1028,6 +1048,37 @@ FIELD_SOURCES: Dict[str, str] = {
     "map.vp_by_state": "S/D",
     "map.controlled_industry_share": "D",
     "map.front_lines": "D",
+    # --- Wave-4 exact compact carriers and their canonical projections. ---
+    # Explicit leaves are required because source_of() otherwise inherits broad
+    # save-side parents such as countries.*.extra = S.
+    "countries.*._r2_tag_db_id": "C",
+    "measured_countries": "C",
+    "measured_countries.*": "C",
+    "countries.*.extra.nuke_stockpile_tag_db_id": "C",
+    "countries.*.extra.nukes_total": "C/S",
+    "countries.*.extra.nukes_ready_total": "C/S",
+    "countries.*.extra.nukes": "C/S",
+    "_r2_nuke_stockpile_live": "C",
+    "countries.*.dynamic_modifier_instances": "C",
+    "_r2_dynamic_modifier_lifecycle_live": "C",
+    "special_projects.project_progress": "C",
+    "countries.*.special_project_programs": "C",
+    "runtime_text": "C",
+    "diplomacy_world.domain53_extra.operation_instance_rows": "C",
+    "diplomacy_world.domain53_extra.intel_level_rows": "C",
+    "diplomacy_world.domain53_extra.intel_network_graph_rows": "C",
+    "diplomacy_world.domain53_extra.agency_upgrade_controller_refresh": "C",
+    "diplomacy_world.domain53_extra.cipher_controller_refresh": "C",
+    "_r2_national_focus_presentation_live": "C",
+    "_r2_character_presentation_live": "C",
+    "order_of_battle.extra.naval_missions_status_live": "C/D",
+    "combats.*.land_combat_detail_events_live": "C",
+    "combats.*.land_combat_detail_events_live.*.current_loss_observations": "C",
+    "combats.*.land_combat_detail_events_live.*.width_observations": "C",
+    "ended_combats.*.land_combat_detail_events_live": "C",
+    "ended_combats.*.land_combat_detail_events_live.*.current_loss_observations": "C",
+    "ended_combats.*.land_combat_detail_events_live.*.width_observations": "C",
+    "map._r2_weather_live": "C",
     # --- events (§9) ---
     "events.*": "D",
 }
@@ -1445,6 +1496,9 @@ class Commanders:
 
 @dataclass
 class Country:
+    # Current-hour D18 witness used by exact compact owner joins. Optional so
+    # legacy schema-v1 snapshots remain readable.
+    _r2_tag_db_id: Optional[int] = None
     economy: Dict[str, Any] = field(default_factory=lambda: asdict(Economy()))
     military: Dict[str, Any] = field(default_factory=lambda: asdict(Military()))
     politics: Dict[str, Any] = field(default_factory=lambda: asdict(Politics()))
@@ -1504,6 +1558,10 @@ class Country:
     projects: Optional[Dict[str, Any]] = None
     # projects.json scientists roster for this TAG (§3.16). null until ingested (S).
     scientists: Optional[List[Dict[str, Any]]] = None
+    # Exact current-hour compact projections. None is unavailable; [] is an
+    # authenticated measured-empty owner roster.
+    dynamic_modifier_instances: Optional[List[Dict[str, Any]]] = None
+    special_project_programs: Optional[List[Dict[str, Any]]] = None
 
 
 @dataclass
@@ -1903,29 +1961,43 @@ class SpecialProjects:
     scientist pools remain world-scoped. Exact lifecycle and fired-reward-history
     extensions are owner-joined through the validated country walk and keyed by TAG.
 
-    ``facilities`` each: {id, province, building(str|None), active_project_handle
+    Legacy extractor catalogs are lists; the compact recorder catalogs are
+    stable id-keyed objects. ``facilities`` entries are {id, province,
+    building(str|None), active_project_handle
     (raw static-def db-id handle, NOT a token name), active(bool),
     scientist_char_id(int|None), unread_prototype_rewards(int)}.
     ``projects`` each: {id, static_def_handle (raw handle, NOT a token name),
-    iterations(int), worked_at_facility(facility_id|None)}. project_progress /
-    phase_progress / current_state are serialize-time COMPUTED (not stored live) and
-    stay absent — never fabricated.
+    iterations(int), worked_at_facility(facility_id|None)}. ``project_progress``
+    is the separate exact owner-joined serialize-time counter projection; it is
+    null when unavailable and never synthesized from the legacy project rows.
     ``scientists`` each: {char_id, name_token(str|None), display_name(str|None),
     skills{specialization_nuclear/_naval/_air/_land: int}, trait_count(int|None)}.
     Trait NAMES are unresolved registry handles -> only the count is carried.
     ``project_lifecycle`` carries reversible started plus completed per owned project.
     ``reward_history`` preserves exact raw option/reward handles, signed province,
     progress/date, CReference halves, and presence-qualified scoped references.
+    ``_r2_breakthroughs`` preserves country, exact closed specialization token,
+    and points only; the engine serializer token id is not portable identity.
+    ``_r2_project_authority`` is the terminal PPA1 producer/roster seal.  It is
+    optional so pre-PPA1 inner-only recordings remain structurally readable,
+    but typed replay requires a valid PPA1 cross-join before exposing either
+    project-progress or breakthrough data as exact.
 
-    null-but-present until a live read folds it; ``source`` self-badges "C" or "M".
+    The entire compact container may be null when D41 is unavailable. Legacy
+    ``source`` uses C/M; compact ``source`` uses scan/bridge.
     """
-    facilities: Optional[List[Dict[str, Any]]] = None
-    projects: Optional[List[Dict[str, Any]]] = None
-    scientists: Optional[List[Dict[str, Any]]] = None
+    # Legacy extractor snapshots use lists; the compact recorder uses stable
+    # id-keyed objects. Both are schema-v1 compatibility variants.
+    facilities: Optional[Any] = None
+    projects: Optional[Any] = None
+    scientists: Optional[Any] = None
     project_lifecycle: Optional[Dict[str, Any]] = None
+    project_progress: Optional[Dict[str, Any]] = None
     reward_history: Optional[Dict[str, Any]] = None
-    count: Optional[Dict[str, int]] = None   # {facilities, projects, scientists}
-    source: Optional[str] = None             # "C"/"M" when a live read filled it
+    _r2_breakthroughs: Optional[List[Dict[str, Any]]] = None
+    _r2_project_authority: Optional[Dict[str, Any]] = None
+    count: Optional[Any] = None  # legacy count object or compact catalog row count
+    source: Optional[str] = None  # legacy C/M or compact scan/bridge producer badge
 
 
 @dataclass
@@ -1993,6 +2065,9 @@ class OrderOfBattle:
     # target_states are RAW engine ints (NOT TAGs). Defaults None (Optional) NOT [] so an
     # unmeasured frame reads None; a measured-empty [] (no battle plans) is written + protected.
     battle_plan_orders: Optional[List[Dict[str, Any]]] = None
+    # Recorder-owned live annotations. The exact d54 orders-group manager lives
+    # here; None preserves honest absence for save-only/legacy snapshots.
+    extra: Optional[Dict[str, Any]] = None
 
 
 # --- Event (§9) ---
@@ -2338,7 +2413,7 @@ _TOP_CONTAINERS = {
     # top-level LIVE equipment-MARKET sidecar (§7c, market_live). Always present (null-but-
     # present block); validated as a dict so a malformed payload can't pass as an ignored key.
     "market_live": dict,
-    "special_projects": dict,
+    "special_projects": (dict, type(None)),
     # top-level LIVE diplomacy sidecar (§13b, diplomacy_live). Always present
     # (null-but-present block); validated as a dict so a malformed payload can't pass
     # as an ignored unknown key.
@@ -2526,6 +2601,105 @@ def _validate_delayed_events(snap: Dict[str, Any]) -> List[str]:
     return problems
 
 
+def _validate_orders_group_manager(oob: Dict[str, Any]) -> List[str]:
+    problems: List[str] = []
+    extra = oob.get("extra")
+    if extra is None:
+        return problems
+    if not isinstance(extra, dict):
+        return ["order_of_battle.extra should be dict|null"]
+    domain = extra.get("army_battleplans_depth_live")
+    if domain is None:
+        return problems
+    ctx = "order_of_battle.extra.army_battleplans_depth_live"
+    if not isinstance(domain, dict):
+        return [f"{ctx} should be dict"]
+    domain_known = domain.get("known")
+    if type(domain_known) is not bool:
+        problems.append(f"{ctx}.known should be bool")
+
+    manager = domain.get("orders_group_manager")
+    if manager is None:
+        return problems
+    mctx = f"{ctx}.orders_group_manager"
+    if not isinstance(manager, dict):
+        problems.append(f"{mctx} should be dict")
+        return problems
+    manager_fields = {
+        "known", "complete", "source", "registered_entry_count",
+        "army_group_count", "armies",
+    }
+    if set(manager) != manager_fields:
+        problems.append(f"{mctx} has wrong exact field set")
+        return problems
+    known = manager.get("known")
+    if type(known) is not bool:
+        problems.append(f"{mctx}.known should be bool")
+        return problems
+    if not known:
+        if manager.get("complete") is not False:
+            problems.append(f"{mctx}.complete should be false when unavailable")
+        for key in ("source", "registered_entry_count", "army_group_count"):
+            if manager.get(key) is not None:
+                problems.append(f"{mctx}.{key} should be null when unavailable")
+        if manager.get("armies") != []:
+            problems.append(f"{mctx}.armies should be empty when unavailable")
+        return problems
+
+    if domain_known is not True:
+        problems.append(f"{mctx} cannot be known while its domain is unavailable")
+    if manager.get("complete") is not True:
+        problems.append(f"{mctx}.complete should be true for measured authority")
+    if manager.get("source") != "registered_reference_type_53":
+        problems.append(f"{mctx}.source has unknown authority")
+    registered = manager.get("registered_entry_count")
+    group_count = manager.get("army_group_count")
+    rows = manager.get("armies")
+    if type(registered) is not int or not 0 <= registered <= 262_144:
+        problems.append(f"{mctx}.registered_entry_count should be an exact bounded u32")
+    if type(group_count) is not int or not 0 <= group_count <= 262_144:
+        problems.append(f"{mctx}.army_group_count should be an exact bounded u32")
+    if not isinstance(rows, list):
+        problems.append(f"{mctx}.armies should be a list")
+        return problems
+    if (
+        type(registered) is int
+        and type(group_count) is int
+        and registered != len(rows) + group_count
+    ):
+        problems.append(f"{mctx} registered count disagrees with army and army-group rows")
+
+    previous_id = 0
+    for index, row in enumerate(rows):
+        rctx = f"{mctx}.armies[{index}]"
+        if not isinstance(row, dict):
+            problems.append(f"{rctx} should be dict")
+            continue
+        if set(row) != {
+            "army_id", "execution_type", "cohesion_type", "leader_proximity",
+        }:
+            problems.append(f"{rctx} has wrong exact field set")
+            continue
+        army_id = row.get("army_id")
+        execution = row.get("execution_type")
+        cohesion = row.get("cohesion_type")
+        proximity = row.get("leader_proximity")
+        if type(army_id) is not int or not 0 < army_id <= 0x7FFFFFFF:
+            problems.append(f"{rctx}.army_id should be a positive signed-range u32")
+        elif army_id <= previous_id:
+            problems.append(f"{rctx}.army_id should be strictly increasing")
+        else:
+            previous_id = army_id
+        for key, value, maximum in (
+            ("execution_type", execution, 2),
+            ("cohesion_type", cohesion, 3),
+            ("leader_proximity", proximity, 4),
+        ):
+            if type(value) is not int or not 0 <= value <= maximum:
+                problems.append(f"{rctx}.{key} should be an int in 0..{maximum}")
+    return problems
+
+
 def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
     problems: List[str] = []
 
@@ -2553,10 +2727,15 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
         if key not in snap:
             problems.append(f"missing top-level container {key!r}")
         elif not isinstance(snap[key], kind):
-            problems.append(f"{key!r} should be {kind.__name__}, got {type(snap[key]).__name__}")
+            expected = "|".join(candidate.__name__ for candidate in kind) \
+                if isinstance(kind, tuple) else kind.__name__
+            problems.append(
+                f"{key!r} should be {expected}, got {type(snap[key]).__name__}"
+            )
 
     problems.extend(_validate_d48_building_sidecars(snap))
     problems.extend(_validate_delayed_events(snap))
+    problems.extend(validate_wave4_snapshot(snap))
 
     # Legacy schema-v1 snapshots may lack this late-added terminal carrier;
     # replay_core exposes that as DomainAbsent. New snapshots always include it.
@@ -3394,72 +3573,159 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             problems.append(
                 f"country {tag!r}.active_abilities {active_abilities!r} not dict|null")
         elif isinstance(active_abilities, dict):
-            complete = active_abilities.get("complete")
-            rows = active_abilities.get("rows")
-            if complete is not None and not isinstance(complete, bool):
-                problems.append(
-                    f"country {tag!r}.active_abilities.complete {complete!r} not bool|null")
-            if rows is not None and not isinstance(rows, list):
-                problems.append(
-                    f"country {tag!r}.active_abilities.rows {rows!r} not list|null")
-            if complete is True and not isinstance(rows, list):
-                problems.append(
-                    f"country {tag!r}.active_abilities.complete true without measured rows")
-            if isinstance(rows, list):
-                seen_orders = set()
-                seen_keys = set()
-                for idx, row in enumerate(rows):
-                    prefix = f"country {tag!r}.active_abilities.rows[{idx}]"
-                    if not isinstance(row, dict):
-                        problems.append(f"{prefix} {row!r} not dict")
-                        continue
-                    ability_id = row.get("ability_id")
-                    if not valid_script_token(ability_id):
-                        problems.append(f"{prefix}.ability_id {ability_id!r} not token")
-                    for key in ("available", "active"):
-                        if not isinstance(row.get(key), bool):
-                            problems.append(f"{prefix}.{key} {row.get(key)!r} not bool")
-                    for key in (
-                        "activation_hour", "cooldown_hours",
-                        "cooldown_remaining_hours", "duration_hours",
-                        "duration_remaining_hours", "display_order",
-                    ):
-                        value = row.get(key)
-                        if not isinstance(value, int) or isinstance(value, bool) or value < -1:
-                            problems.append(f"{prefix}.{key} {value!r} not int >= -1")
-                    cost = row.get("cost_command_power")
-                    if not _is_finite_number(cost) or cost < 0:
-                        problems.append(
-                            f"{prefix}.cost_command_power {cost!r} not finite nonnegative")
-                    for key in ("target_kind", "target_id", "icon", "tooltip", "disabled_reason"):
-                        if not isinstance(row.get(key), str):
-                            problems.append(f"{prefix}.{key} {row.get(key)!r} not str")
-                    order = row.get("display_order")
-                    if isinstance(order, int) and not isinstance(order, bool):
-                        if order in seen_orders:
-                            problems.append(f"{prefix}.display_order {order!r} duplicate")
-                        seen_orders.add(order)
-                    identity = (ability_id, row.get("target_kind"), row.get("target_id"))
-                    if identity in seen_keys:
-                        problems.append(f"{prefix} duplicate ability/target identity")
-                    seen_keys.add(identity)
-                    active = row.get("active")
-                    remaining = row.get("duration_remaining_hours")
-                    if active is True and isinstance(remaining, int) and remaining == 0:
-                        problems.append(f"{prefix} active with zero remaining duration")
-                    cooldown = row.get("cooldown_remaining_hours")
-                    cooldown_total = row.get("cooldown_hours")
-                    if (isinstance(cooldown, int) and isinstance(cooldown_total, int)
-                            and cooldown >= 0 and cooldown_total >= 0
-                            and cooldown > cooldown_total):
-                        problems.append(f"{prefix} cooldown remaining exceeds total")
-                    duration = row.get("duration_hours")
-                    if (isinstance(remaining, int) and isinstance(duration, int)
-                            and remaining >= 0 and duration >= 0 and remaining > duration):
-                        problems.append(f"{prefix} duration remaining exceeds total")
-                if complete is True and seen_orders != set(range(len(rows))):
-                    problems.append(
-                        f"country {tag!r}.active_abilities display_order not exact 0..N-1")
+            prefix = f"country {tag!r}.active_abilities"
+            if set(active_abilities) != {"carrier", "snapshot"}:
+                problems.append(f"{prefix} must contain exactly carrier and snapshot")
+            carrier = active_abilities.get("carrier")
+            ability_snapshot = active_abilities.get("snapshot")
+            carrier_keys = {
+                "magic", "schema_version", "authority", "status_flags",
+                "fixed_header_bytes", "nested_payload_bytes", "reserved",
+                "executable_sha256", "exact20_function_manifest_sha256",
+                "ability_refresh_decompile_sha256", "elapsed_wall_ms", "frame_hour",
+            }
+            snapshot_keys = {
+                "magic", "schema_version", "authority", "status_flags", "header_bytes",
+                "elapsed_wall_ms", "frame_hour", "row_count", "country_tag",
+                "selected_context_kind", "selected_context_id", "source_record_id",
+                "complete", "rows",
+            }
+            if not isinstance(carrier, dict) or set(carrier) != carrier_keys:
+                problems.append(f"{prefix}.carrier is not the strict ABA2 object")
+                carrier = {}
+            if not isinstance(ability_snapshot, dict) or set(ability_snapshot) != snapshot_keys:
+                problems.append(f"{prefix}.snapshot is not the strict ABL1 object")
+                ability_snapshot = {}
+            expected_hour = snap.get("hour_index")
+            expected_hour_valid = type(expected_hour) is int and expected_hour >= 0
+            exact_carrier = {
+                "magic": "ABA2", "schema_version": 1, "authority": "exact20_receipt",
+                "status_flags": 0, "fixed_header_bytes": 136, "reserved": 0,
+                "executable_sha256": ACTIVE_ABILITY_EXECUTABLE_SHA256,
+                "exact20_function_manifest_sha256": ACTIVE_ABILITY_EXACT20_MANIFEST_SHA256,
+                "ability_refresh_decompile_sha256": ACTIVE_ABILITY_REFRESH_DECOMPILE_SHA256,
+            }
+            for key, expected in exact_carrier.items():
+                actual = carrier.get(key)
+                if (actual != expected or
+                        (type(expected) is int and type(actual) is not int) or
+                        (type(expected) is bool and type(actual) is not bool)):
+                    problems.append(f"{prefix}.carrier.{key} does not match exact ABA2 authority")
+            nested_bytes = carrier.get("nested_payload_bytes")
+            if (type(nested_bytes) is not int or
+                    not 40 <= nested_bytes <= 16 * 1024 * 1024):
+                problems.append(f"{prefix}.carrier.nested_payload_bytes invalid")
+            for key in ("elapsed_wall_ms", "frame_hour"):
+                if type(carrier.get(key)) is not int or carrier.get(key) < 0:
+                    problems.append(f"{prefix}.carrier.{key} not nonnegative int")
+            if carrier.get("frame_hour") != expected_hour:
+                problems.append(f"{prefix}.carrier.frame_hour does not match snapshot hour")
+            exact_snapshot = {
+                "magic": "ABL1", "schema_version": 1,
+                "authority": ACTIVE_ABILITY_AUTHORITY, "status_flags": 0,
+                "header_bytes": 40, "country_tag": tag, "complete": True,
+            }
+            for key, expected in exact_snapshot.items():
+                actual = ability_snapshot.get(key)
+                if (actual != expected or
+                        (type(expected) is int and type(actual) is not int) or
+                        (type(expected) is bool and type(actual) is not bool)):
+                    problems.append(f"{prefix}.snapshot.{key} does not match exact ABL1 authority")
+            if ability_snapshot.get("elapsed_wall_ms") != carrier.get("elapsed_wall_ms"):
+                problems.append(f"{prefix} carrier/snapshot elapsed_wall_ms mismatch")
+            if (not expected_hour_valid or ability_snapshot.get("frame_hour") != expected_hour
+                    or ability_snapshot.get("frame_hour") != carrier.get("frame_hour")):
+                problems.append(f"{prefix} carrier/snapshot frame_hour mismatch")
+            portable = lambda value: (isinstance(value, str) and 0 < len(value) <= 4096 and
+                all(ch.isascii() and (ch.isalnum() or ch in "_.-:/@") for ch in value))
+            context_kind = ability_snapshot.get("selected_context_kind")
+            context_codes = {"army_leader": 1, "field_marshal": 2, "army_group": 3, "army": 4}
+            context_code = context_codes.get(context_kind)
+            if context_code is None and isinstance(context_kind, str) and context_kind.startswith("other:"):
+                try:
+                    raw_context = int(context_kind[6:])
+                    if 0 <= raw_context < 0x80000000:
+                        context_code = raw_context | 0x80000000
+                except ValueError:
+                    pass
+            context_id = ability_snapshot.get("selected_context_id")
+            if context_code is None or not portable(context_id):
+                problems.append(f"{prefix}.snapshot selected context is not portable")
+            expected_source = f"a729:a36:{expected_hour}:{tag}:{context_code}:{context_id}"
+            if ability_snapshot.get("source_record_id") != expected_source:
+                problems.append(f"{prefix}.snapshot.source_record_id disagrees with frame context")
+            rows = ability_snapshot.get("rows")
+            row_count = ability_snapshot.get("row_count")
+            if (not isinstance(rows, list) or len(rows) > 4096 or
+                    type(row_count) is not int or row_count != len(rows)):
+                problems.append(f"{prefix}.snapshot row_count/rows mismatch")
+                rows = []
+            row_keys = {
+                "ability_id", "available", "active", "activation_hour",
+                "cooldown_total", "cooldown_remaining", "cost_command_power_fixed",
+                "cost_command_power_scale", "target_kind", "target_id",
+                "duration_total", "duration_remaining", "display_order", "icon",
+                "tooltip", "disabled_reason", "affected_division_ids",
+            }
+            seen_ids = set()
+            for idx, row in enumerate(rows):
+                row_prefix = f"{prefix}.snapshot.rows[{idx}]"
+                if not isinstance(row, dict) or set(row) != row_keys:
+                    problems.append(f"{row_prefix} is not the strict ABL1 row object")
+                    continue
+                if (not portable(row.get("ability_id")) or not portable(row.get("target_kind"))
+                        or not portable(row.get("target_id")) or not portable(row.get("icon"))):
+                    problems.append(f"{row_prefix} contains nonportable identity")
+                ability_id = row.get("ability_id")
+                if isinstance(ability_id, str):
+                    if ability_id in seen_ids:
+                        problems.append(f"{row_prefix}.ability_id duplicate")
+                    seen_ids.add(ability_id)
+                if type(row.get("display_order")) is not int or row.get("display_order") != idx:
+                    problems.append(f"{row_prefix}.display_order not exact source ordinal")
+                available, active = row.get("available"), row.get("active")
+                reason, activation_hour = row.get("disabled_reason"), row.get("activation_hour")
+                if type(available) is not bool or type(active) is not bool:
+                    problems.append(f"{row_prefix}.available/active not bool")
+                if not isinstance(reason, str) or len(reason) > 4096 or available == bool(reason):
+                    problems.append(f"{row_prefix}.disabled_reason availability mismatch")
+                if (type(activation_hour) is not int or
+                        (active and (not expected_hour_valid or
+                                     not 0 <= activation_hour <= expected_hour)) or
+                        (not active and activation_hour != -1)):
+                    problems.append(f"{row_prefix}.activation_hour activity mismatch")
+                if (type(row.get("cost_command_power_fixed")) is not int or
+                        row.get("cost_command_power_fixed") < 0 or
+                        row.get("cost_command_power_scale") != ACTIVE_ABILITY_FIXED_SCALE):
+                    problems.append(f"{row_prefix}.cost_command_power fixed-point value invalid")
+                def timer(value):
+                    if not isinstance(value, dict) or set(value) != {"kind", "hours"}:
+                        return None
+                    kind, hours = value.get("kind"), value.get("hours")
+                    if kind in ("not_started", "indefinite") and hours is None:
+                        return kind, None
+                    if kind == "hours" and type(hours) is int and hours >= 0:
+                        return kind, hours
+                    return None
+                cooldown_total, cooldown_remaining = timer(row.get("cooldown_total")), timer(row.get("cooldown_remaining"))
+                duration_total, duration_remaining = timer(row.get("duration_total")), timer(row.get("duration_remaining"))
+                if None in (cooldown_total, cooldown_remaining, duration_total, duration_remaining):
+                    problems.append(f"{row_prefix} timer kind/value mismatch")
+                else:
+                    if (cooldown_total[1] is not None and cooldown_remaining[1] is not None and
+                            cooldown_remaining[1] > cooldown_total[1]):
+                        problems.append(f"{row_prefix} cooldown remaining exceeds total")
+                    if (duration_total[1] is not None and duration_remaining[1] is not None and
+                            duration_remaining[1] > duration_total[1]):
+                        problems.append(f"{row_prefix} duration remaining exceeds total")
+                    if (active and duration_remaining[0] == "not_started") or (not active and duration_remaining[0] != "not_started"):
+                        problems.append(f"{row_prefix} duration timer disagrees with activity")
+                tooltip, affected = row.get("tooltip"), row.get("affected_division_ids")
+                if not isinstance(tooltip, str) or not tooltip or len(tooltip) > 4096:
+                    problems.append(f"{row_prefix}.tooltip not bounded nonempty str")
+                if (not isinstance(affected, list) or any(not portable(identity) for identity in affected)
+                        or len(set(affected)) != len(affected)):
+                    problems.append(f"{row_prefix}.affected_division_ids not unique portable list")
 
         st = c.get("politics", {}).get("stability")
         if st is not None and not (isinstance(st, (int, float)) and -0.01 <= st <= 1.01):
@@ -3543,6 +3809,7 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
         bpo = oob.get("battle_plan_orders")
         if bpo is not None and not isinstance(bpo, list):
             problems.append(f"order_of_battle.battle_plan_orders {bpo!r} not list|null")
+        problems.extend(_validate_orders_group_manager(oob))
 
     # Top-level LIVE catalogs: validate the documented leaves so a malformed
     # payload can't slip through (schema review #8). mio_live.by_tag/by_id are
@@ -3557,12 +3824,71 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
     if isinstance(sp, dict):
         for k in ("facilities", "projects", "scientists"):
             v = sp.get(k)
-            if v is not None and not isinstance(v, list):
-                problems.append(f"special_projects.{k} {v!r} not list|null")
+            if v is not None and not isinstance(v, (list, dict)):
+                problems.append(f"special_projects.{k} {v!r} not list|dict|null")
+        breakthroughs = sp.get("_r2_breakthroughs")
+        if breakthroughs is not None and not isinstance(breakthroughs, list):
+            problems.append(
+                f"special_projects._r2_breakthroughs {breakthroughs!r} not list|null"
+            )
+        elif isinstance(breakthroughs, list):
+            seen_breakthroughs = set()
+            countries = snap.get("countries")
+            countries = countries if isinstance(countries, dict) else {}
+            specializations = {
+                "specialization_nuclear",
+                "specialization_naval",
+                "specialization_air",
+                "specialization_land",
+            }
+            for index, row in enumerate(breakthroughs):
+                path = f"special_projects._r2_breakthroughs[{index}]"
+                if not isinstance(row, dict):
+                    problems.append(f"{path} not a dict")
+                    continue
+                country = row.get("country")
+                tag_db_id = row.get("tag_db_id")
+                specialization = row.get("specialization")
+                authority = row.get("_r2_specialization_authority")
+                points_raw = row.get("points_raw")
+                country_obj = countries.get(country) if isinstance(country, str) else None
+                d18_id = country_obj.get("_r2_tag_db_id") \
+                    if isinstance(country_obj, dict) else None
+                if "_r2_specialization_handle" in row:
+                    problems.append(f"{path} leaks nonportable specialization handle")
+                if (not valid_tag(country)
+                        or not isinstance(tag_db_id, int)
+                        or isinstance(tag_db_id, bool)
+                        or tag_db_id <= 0
+                        or d18_id != tag_db_id
+                        or row.get("_r2_country_authority") != "exact_country_identity"):
+                    problems.append(f"{path} country/D18 identity invalid")
+                if (not isinstance(points_raw, int)
+                        or isinstance(points_raw, bool)
+                        or points_raw < 0):
+                    problems.append(f"{path}.points_raw invalid")
+                if specialization is None:
+                    if authority is not None:
+                        problems.append(f"{path} null specialization has authority")
+                elif (not isinstance(specialization, str)
+                      or specialization not in specializations
+                      or authority != "exact_a729_serializer_token_enum_join"):
+                    problems.append(f"{path} specialization enum/authority invalid")
+                if isinstance(tag_db_id, int) and isinstance(specialization, str):
+                    identity = (tag_db_id, specialization)
+                    if identity in seen_breakthroughs:
+                        problems.append(f"{path} duplicate portable specialization identity")
+                    seen_breakthroughs.add(identity)
         for k in ("project_lifecycle", "reward_history"):
             v = sp.get(k)
             if v is not None and not isinstance(v, dict):
                 problems.append(f"special_projects.{k} {v!r} not dict|null")
+        count = sp.get("count")
+        if count is not None and not isinstance(count, (int, dict)):
+            problems.append(f"special_projects.count {count!r} not int|dict|null")
+        source = sp.get("source")
+        if source is not None and source not in {"C", "M", "scan", "bridge"}:
+            problems.append(f"special_projects.source {source!r} not a known producer badge")
     # top-level LIVE equipment-MARKET sidecar (market_live): contracts list|null, count int|null,
     # source str|null. A malformed payload can't slip through as an ignored key.
     mkl = snap.get("market_live")

@@ -5,8 +5,9 @@
 //! and the exact20 root/helper receipt and sentinels are now frozen. The
 //! two-axis scroll owner and final connector identity remain unproven, so this
 //! module supplies a complete fail-closed engineering seam while
-//! [`PRODUCTION_ACTIVATION`] remains false. It is not wired to d71, the recorder
-//! fold, or replay_core.
+//! [`PRODUCTION_ACTIVATION`] remains false. The carrier is wired end-to-end on
+//! reserved domain 71, but collection and authenticated decode remain disabled
+//! until the persisted preflight and live producer contracts are frozen.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -367,7 +368,6 @@ pub fn activation_blockers() -> Vec<&'static str> {
     if AUTHENTICATED_LIVE_PRODUCER_CONTRACT.is_none() {
         blockers.push("authenticated live producer/registry/hook contract is absent; internal callback-label semantics and two-axis ownership remain unproven");
     }
-    blockers.push("d71 schema lacks same-record manifests and explicit two-axis pan");
     blockers
 }
 
@@ -641,9 +641,9 @@ pub fn validate_frame(frame: &TechnologyCanvasFrame) -> Result<(), ObserverError
     let mut included = BTreeSet::new();
     let mut paths = BTreeMap::new();
     for (expected_ordinal, item) in frame.source_items.iter().enumerate() {
-        nonempty(&item.stable_item_id, "stable_item_id")?;
-        nonempty(&item.hierarchy_path, "source hierarchy_path")?;
-        nonempty(&item.folder_id, "folder_id")?;
+        portable_canvas_atom(&item.stable_item_id, "stable_item_id")?;
+        portable_canvas_path(&item.hierarchy_path, "source hierarchy_path")?;
+        portable_canvas_atom(&item.folder_id, "folder_id")?;
         if !source_ids.insert(item.stable_item_id.as_str())
             || !source_ordinals.insert(item.source_ordinal)
             || item.source_ordinal as usize != expected_ordinal
@@ -669,7 +669,7 @@ pub fn validate_frame(frame: &TechnologyCanvasFrame) -> Result<(), ObserverError
 
     let mut ordered = BTreeSet::new();
     for id in &frame.final_draw_order {
-        nonempty(id, "final draw id")?;
+        portable_canvas_atom(id, "final draw id")?;
         if !ordered.insert(id.as_str()) || !included.contains(id.as_str()) {
             return invalid("final draw order contains a duplicate, absent, or excluded id");
         }
@@ -681,9 +681,9 @@ pub fn validate_frame(frame: &TechnologyCanvasFrame) -> Result<(), ObserverError
     let mut drawables = BTreeSet::new();
     let mut slots = BTreeSet::new();
     for (expected_ordinal, drawable) in frame.materialized_drawables.iter().enumerate() {
-        nonempty(&drawable.drawable_id, "drawable_id")?;
-        nonempty(&drawable.hierarchy_path, "drawable hierarchy_path")?;
-        nonempty(&drawable.slot_id, "slot_id")?;
+        portable_canvas_atom(&drawable.drawable_id, "drawable_id")?;
+        portable_canvas_path(&drawable.hierarchy_path, "drawable hierarchy_path")?;
+        portable_canvas_path(&drawable.slot_id, "slot_id")?;
         if drawable.draw_ordinal as usize != expected_ordinal
             || frame.final_draw_order.get(expected_ordinal) != Some(&drawable.drawable_id)
             || !drawables.insert(drawable.drawable_id.as_str())
@@ -921,15 +921,11 @@ pub fn decode_authenticated_payload(
     Ok(frame)
 }
 
-/// These are deliberate schema blockers. d71 must be revised atomically with
-/// its fold and replay consumer rather than silently dropping these fields.
-pub fn d71_projection_blockers() -> [&'static str; 4] {
-    [
-        "d71 has no source_record_id/exact20/producer/content manifest fields",
-        "d71 has no explicit two-axis pan_pixels field",
-        "d71 permits a materialized subset instead of complete drawable rectangles",
-        "d71 slot identity does not require a full authored hierarchy path",
-    ]
+/// `TCV1` is transported as a first-class domain-71 payload rather than being
+/// projected into lossy `DCT1` collection rows. Kept as a mechanical promotion
+/// check for the hook installer and recorder integration.
+pub fn d71_projection_blockers() -> [&'static str; 0] {
+    []
 }
 
 /// Computes the canonical same-transition content manifest. Authority hashes
@@ -1019,6 +1015,55 @@ fn nonempty(value: &str, field: &str) -> Result<(), ObserverError> {
     } else {
         Ok(())
     }
+}
+
+/// Portable authored/runtime token used for technology, folder, drawable, and
+/// final-order identities. This deliberately supports the punctuation used by
+/// exact connector identities (`edge:a->b:0`) and common mod identifiers while
+/// excluding separators, whitespace, pointer spellings, and host paths.
+fn portable_canvas_atom(value: &str, field: &str) -> Result<(), ObserverError> {
+    let bytes = value.as_bytes();
+    let valid = !bytes.is_empty()
+        && bytes.len() <= MAX_STR
+        && (bytes[0].is_ascii_alphanumeric() || bytes[0] == b'_')
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b'_' | b'-' | b'.' | b'@' | b':' | b'>')
+        })
+        && !value.contains("..")
+        && !looks_like_pointer(value);
+    if valid {
+        Ok(())
+    } else {
+        invalid(&format!("{field} is not a portable canvas identity"))
+    }
+}
+
+/// Canonical logical hierarchy/slot path. `/` is the only separator and every
+/// component is itself a portable canvas atom; absolute, drive, UNC, empty,
+/// dot, and parent components therefore fail closed.
+fn portable_canvas_path(value: &str, field: &str) -> Result<(), ObserverError> {
+    if value.len() > MAX_STR
+        || value.starts_with('/')
+        || value.ends_with('/')
+        || value.contains('\\')
+        || value.split('/').any(|part| {
+            matches!(part, "" | "." | "..") || portable_canvas_atom(part, field).is_err()
+        })
+    {
+        invalid(&format!("{field} is not a canonical portable canvas path"))
+    } else {
+        Ok(())
+    }
+}
+
+fn looks_like_pointer(value: &str) -> bool {
+    value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .is_some_and(|digits| {
+            digits.len() >= 8 && digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
 }
 
 fn positive_rect(rect: RectI32, field: &str) -> Result<(), ObserverError> {
@@ -1451,6 +1496,59 @@ mod tests {
         assert!(validate_frame(&frame).is_err());
     }
 
+    fn reseal(mut frame: TechnologyCanvasFrame) -> TechnologyCanvasFrame {
+        frame.authority.content_manifest_sha256 = compute_content_manifest_sha256(&frame).unwrap();
+        frame.source_record_id = expected_source_record_id(
+            &frame.owner_instance_id,
+            frame.frame_hour,
+            frame.capture_sequence,
+            frame.boundary,
+            &frame.authority.exact20_preflight_receipt_sha256,
+            &frame.authority.root_producer_manifest_sha256,
+            &frame.authority.helper_producer_manifest_sha256,
+            &frame.authority.live_observation_receipt_sha256,
+            &frame.authority.live_producer_manifest_sha256,
+            &frame.authority.owner_registry_manifest_sha256,
+            &frame.authority.content_manifest_sha256,
+        );
+        frame
+    }
+
+    #[test]
+    fn canvas_identities_reject_pointer_and_host_path_mutations_even_when_resealed() {
+        let mut atom = complete();
+        atom.source_items[0].stable_item_id = "0x000001abcdef1234".into();
+        atom.final_draw_order[0] = atom.source_items[0].stable_item_id.clone();
+        atom.materialized_drawables[0].drawable_id = atom.source_items[0].stable_item_id.clone();
+        assert!(validate_frame(&reseal(atom)).is_err());
+
+        for bad_path in [
+            r"C:\\hoi4\\countrytechtreeview\\infantry",
+            "/opt/hoi4/countrytechtreeview/infantry",
+            r"\\capture-host\\share\\countrytechtreeview",
+            "countrytechtreeview/../infantry",
+            "countrytechtreeview//infantry",
+        ] {
+            let mut frame = complete();
+            frame.source_items[0].hierarchy_path = bad_path.into();
+            frame.materialized_drawables[0].hierarchy_path = bad_path.into();
+            frame.materialized_drawables[0].slot_id = bad_path.into();
+            assert!(validate_frame(&reseal(frame)).is_err(), "{bad_path}");
+        }
+    }
+
+    #[test]
+    fn canvas_identity_grammar_preserves_mod_and_connector_tokens() {
+        for atom in ["my_mod.tech-v2", "shared@folder", "edge:a->b:17"] {
+            assert!(portable_canvas_atom(atom, "fixture").is_ok(), "{atom}");
+        }
+        assert!(portable_canvas_path(
+            "countrytechtreeview/my_mod.folder/edge:a->b:17/segment:0",
+            "fixture"
+        )
+        .is_ok());
+    }
+
     #[test]
     fn owner_identity_is_derived_from_registry_witness() {
         let raw = population_raw();
@@ -1469,6 +1567,6 @@ mod tests {
             Err(ObserverError::Inactive(_))
         ));
         assert!(!activation_blockers().is_empty());
-        assert_eq!(d71_projection_blockers().len(), 4);
+        assert!(d71_projection_blockers().is_empty());
     }
 }

@@ -33,6 +33,7 @@ character_presentation_live_lane = { path = "../lanes/character_presentation_liv
 nuke_stockpile_live_lane = { path = "../lanes/nuke_stockpile_live" }
 sunk_ship_history_live_lane = { path = "../lanes/sunk_ship_history_live" }
 decision_panel_live_lane = { path = "../lanes/decision_panel_live" }
+active_command_abilities_live_lane = { path = "../lanes/active_command_abilities_live" }
 production_render_submit_live_lane = { path = "../lanes/production_render_submit_live" }
 scientists_live_lane = { path = "../scientists_live_lane" }
 serde = { version = "1", features = ["derive"] }

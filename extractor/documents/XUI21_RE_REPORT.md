@@ -1,6 +1,6 @@
 # XUI21 extractor RE report — fired events and popups
 
-Status: **IMPLEMENTED FAIL-CLOSED; RAW COVERAGE FIXTURE AND 10-SHARD PROMOTION RE-EXPORT REQUIRED**
+Status: **IMPLEMENTED FAIL-CLOSED; RAW H-POPUP RUNTIME MATRIX ONLY**
 
 This is the extractor-owned XUI21 record. It is intentionally separate from the rendering-law report under `replay_interface`. The pinned authority is `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 
@@ -23,7 +23,7 @@ The lane-local a729 implementation now performs:
   including cycle/count consistency checks. A strict game-set superset is a
   missed hook observation, not a passing shadow.
 
-The shared collector installation, d75 emission, recorder fold, typed replay acceptance, and independent A25 title/description/per-option context joins are implemented. The executable classifier rejects any CTextBox owner reused across roles. The Rust and Python consumers atomically reject malformed rich rows, duplicate context ids, invalid chronology/resolution invariants, and any legacy identity row paired with `fired_events_complete=true`. The retained corpus has no raw process-authenticated run that actually exercises all five popup classes plus player, AI, timeout, and no-choice resolution. The collector therefore supplies both coverage-attestation bits as false and refuses installation instead of manufacturing `fired_events_complete=true`. Previously recorded focused-test counts are not a substitute for that runtime receipt.
+The shared collector installation, d75 emission, recorder fold, typed replay acceptance, and independent A25 title/description/per-option context joins are implemented. The executable classifier rejects any CTextBox owner reused across roles. The Rust and Python consumers atomically reject malformed rich rows, duplicate context ids, invalid chronology/resolution invariants, and any legacy identity row paired with `fired_events_complete=true`. The retained corpus has no raw process-authenticated run that actually exercises all five popup classes plus player, AI, timeout, and no-choice resolution. The collector therefore supplies both coverage-attestation bits as false while keeping the exact hooks installed to collect H-POPUP; `zero_gap()` keeps `fired_events_complete=false` instead of manufacturing completeness. Previously recorded focused-test counts are not a substitute for that runtime receipt.
 
 ## Game-file bridge
 
@@ -60,6 +60,16 @@ Every row records function address, job ID, artifact path, artifact SHA-256 and 
 - Description selection has single, first-admitted, RNG-selected and fallback paths. The exact output is captured at the function return, not guessed from the authored list.
 - Picture selection has multiple ordered candidate call sites. The exact materialised lookup result is required.
 - No authenticated unselected-dismiss producer exists in this binary. Window disappearance remains inadmissible as a dismissal.
+
+The final Wave-4 pass removed the last picture-name inference: the three exact
+lookups at `0x141225487`, `0x141225837`, and `0x141225A0B` reach
+to the picture widget. The runtime now records that first successful key
+without equality or suffix matching. It also retires a resolved
+`(instance,event,recipient,sequence)` binding only after an authenticated
+player, AI, or due-timeout terminal edge; pre-due polls and unobserved window
+disappearance retain the binding and cannot fabricate resolution. Fresh
+receipt-bound evidence is in
+`replay_interface/re_evidence/rendering_laws/XUI21/H_POPUP_AUTONOMOUS_CLOSEOUT_20260720.json`.
 
 ## Remaining promotion gates
 

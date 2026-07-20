@@ -1,0 +1,65 @@
+{
+  "schema": "hoi4.h_a31.d89.production_wiring.v1",
+  "date": "2026-07-20",
+  "lane": "H-A31",
+  "domain": {
+    "id": 89,
+    "name": "national_focus_presentation_live",
+    "magic": "NFP1",
+    "schema_version": 1,
+    "status": "reserved",
+    "schedulable": false
+  },
+  "authority": {
+    "binary_id": "hoi4.exe 1.19.2.0.a729",
+    "image_base": "0x140000000",
+    "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "exact20_job_id": "20260720T020812Z-w3-a31-focus-owner-93fbbf62",
+    "exact20_job_json_sha256": "c6c3fb002bc05f1e092d7eb9b436aa720ca2cf19ad08f055747216dfa5871b4f",
+    "exact20_function_manifest_sha256": "303351ed65468aa7655b904998819c96ca1c325f906b5a3bf32c4f18decc7969",
+    "seed_resolution": "10/10 exact requested entries",
+    "executing_shard": "shard-17"
+  },
+  "pointer_free_identity": {
+    "view_id": "nationalfocusview:<country_tag>",
+    "producer_record_identity": "a729:a31:<frame_hour>:<country_tag>:<source_sequence>",
+    "item_identity": "stable CNationalFocus id decoded at definition+0x18",
+    "forbidden_wire_values": [
+      "CNationalFocusView address",
+      "CNationalFocusTreeItem address",
+      "CNationalFocus definition address",
+      "detail-object address"
+    ]
+  },
+  "producer": {
+    "module": "extractor/native/lanes/focus_research_decisions_depth_live/src/a729_focus_item_producer.rs",
+    "acquisition_module": "extractor/native/lanes/focus_research_decisions_depth_live/src/a729_focus_item_hook.rs",
+    "owner_runner": "collector::A31FixtureAcquisitionOwner",
+    "evidence_regrader": "extractor/native/lanes/focus_research_decisions_depth_live/tools/verify_a31_acquisition_receipt.py",
+    "owner_authentication": "CNationalFocusView primary vtable 0x14299d680",
+    "item_authentication": "primary vtable 0x14299dd40 and secondary vtable 0x14299dde0",
+    "atomicity": "opening header and pointer array equal closing header and pointer array; rebuild, dynamic refresh, and transient epoch all complete",
+    "transient_requirements": [
+      "exact display percent from 0x141bb5df0",
+      "highlight state from 0x141377430",
+      "measured hidden or positive country from the joint-view helper"
+    ]
+  },
+  "transport_and_consumers": {
+    "codec": "extractor/native/compact_contract/src/national_focus_presentation.rs",
+    "collector_seam": "collector::encode_a31_exact_national_focus_presentation_frame",
+    "recorder_projection": "_r2_national_focus_presentation_live",
+    "replay_typed_view": "replay_core::NationalFocusPresentationExactView",
+    "ui_admission": "game_ui::national_focus::admit_exact_national_focus_presentation"
+  },
+  "activation": {
+    "production_scheduling_enabled": false,
+    "live_fixture_accepted": false,
+    "reason": "No authenticated complete stable frame plus discriminating transition fixture exists.",
+    "required_fixture": "one exact-a729 complete focus-view frame and one transition changing at least one final item-state or transient presentation leaf"
+  },
+  "validation": {
+    "subagent_builds_or_tests_run": false,
+    "central_validation_required": true
+  }
+}

@@ -6,7 +6,12 @@
 //! See `replay_interface/documents/REPLAY_ARCHITECTURE.md`.
 
 pub mod design_catalog;
+pub mod g2_engine_capture;
+pub mod agency_upgrade_controller;
+pub mod cipher_controller;
 pub mod runtime_text;
+pub mod orders_group_manager;
+pub mod rollover_package_set;
 pub mod source;
 pub mod world;
 
@@ -94,6 +99,17 @@ pub use runtime_text::{
     RuntimeTextProducer, RuntimeTextRecord, RuntimeTextSource, A729_FORMATTER_RVA,
     A729_TEXT_SETTER_RVA, RUNTIME_TEXT_SCHEMA,
 };
+pub use orders_group_manager::{
+    ArmyOrdersGroupManagerView, ArmyOrdersGroupScalarExact, ORDERS_GROUP_MANAGER_AUTHORITY,
+};
+pub use g2_engine_capture::{
+    G2EnginePixelWitness, G2UiBoundaryAuthentication, PackagedG2EngineCapture,
+};
+pub use rollover_package_set::{
+    authenticate_rollover_segment, AuthenticatedRolloverPackage, RolloverPackageSegment, RolloverPackageSet,
+    RolloverPackageTransition,
+    ROLLOVER_PACKAGE_SET_FILE, ROLLOVER_PACKAGE_SET_SCHEMA, ROLLOVER_SOURCE_SET_FILE,
+};
 pub use snapshot::{
     CertifiedPrefoldDecoder, CertifiedPrefoldRequest, CertifiedPrefoldSpoolDecoder,
     CertifiedPrefoldSpoolRequest, CertifiedPrefoldedReplay, CertifiedPrefoldedSpool,
@@ -102,7 +118,7 @@ pub use snapshot::{
     PrefoldedReplay, PrefoldedReplayError, PrefoldedSpool, PrefoldedSpoolEntry,
 };
 pub use source::{
-    open_prefolded_replay, open_recording, open_recording_game, open_recording_game_with_decoder,
+    open_container_with_spooled_decoder, open_prefolded_replay, open_recording, open_recording_game, open_recording_game_with_decoder,
     open_recording_game_with_spooled_decoder, open_recording_with_decoder,
     open_recording_with_spooled_decoder, RawFrame, RecordedCampaignIdentity,
     RecordedCampaignIdentityWitnesses, ReplaySource, SourceError,
@@ -114,11 +130,18 @@ pub use world::{
     CharacterPresentationExact, CharacterPresentationExactView, CharacterRosterExactView,
     CharacterTraitNodeObservation, CharacterTraitNodeState, CharacterTraitTreeObservation,
     CombatParticipantEvent,
-    CombatRow, CommandAbilityRow, ConvoyLossRow, CountryCore, CountryDiplomacy, CountryIdentity,
+    CombatRow, CommandAbilityCarrierAuthority, CommandAbilityEnvelope, CommandAbilityRow,
+    CommandAbilitySnapshot, CommandAbilityTimer, CommandAbilityTimerKind,
+    ConvoyD70MutationKindExact, ConvoyLossRow, ConvoyRouteEndpointKindExact,
+    ConvoyRouteProducerKindExact, ConvoyTransportAttackExactRow,
+    ConvoyTransportAttackExactView, CountryCore, CountryDiplomacy, CountryIdentity,
     CountryLeaderRoleExactRow, DelayedEventRow, DesignsView, DiplomacyView, DiplomaticPairState,
     DivisionRow, DivisionTemplateRow, DivisionUnitRow, DoctrineCompletedRow, DoctrineProgressRow,
     DoctrineView, DynamicCollectionGroup, DynamicCollectionMaterializedSlot, DynamicCollectionRect,
     DynamicCollectionSourceItem, DynamicCollectionTraceRow, DynamicCollectionTraceView,
+    DynamicModifierContinuityExact, DynamicModifierInstanceExact,
+    DynamicModifierLifecycleExact, DynamicModifierLifecycleExactView,
+    DynamicModifierTransitionExact, DynamicModifierTransitionKindExact,
     EndedCombatRow, EquipmentAmount, EquipmentProductionLineRow, EquipmentStock,
     EquipmentVariantRow, FiredEventOptionTextContextRow, FiredEventRow, FiredEventsView,
     FleetUnitRow, FocusView, GarrisonReinforcementExactRow, HudSurfaceActivation,
@@ -129,7 +152,8 @@ pub use world::{
     LandCombatWidthWrapper, LandDamageAttributionRow, LeaderRosterView, LeaderRow, Leaf,
     MapLayerSource, NavalAirCombatView, NavalCombatMemberRow, NavalCombatRow, NavalSupremacyRow,
     NukeStockpileCountryExact, NukeStockpileEntryExact, NukeStockpileExact,
-    NukeStockpileExactView,
+    NukeStockpileExactView, NationalFocusPresentationExact,
+    NationalFocusPresentationExactView, NationalFocusPresentationItemExact,
     DecisionAvailabilityExact, DecisionCostExact, DecisionLifecycleExact, DecisionPanelExact,
     DecisionPanelExactView, DecisionPanelRowExact, DecisionTargetExact,
     OccupationEquipmentExactRow, OccupationHistoryExactRow, OccupationManpowerExactRow,
@@ -138,20 +162,28 @@ pub use world::{
     PowerBalanceBarStateExact, PowerBalanceChangeCadenceExact, PowerBalanceDecisionAvailabilityExact,
     PowerBalanceDecisionExact, PowerBalancePresentationExact, PowerBalancePresentationExactView,
     PowerBalancePresentationRowExact, PowerBalanceRow, PowerBalanceTrendExact, PowerBalanceView,
+    ProjectSpecializationExact, SpecialProjectBreakthroughExactRow,
+    SpecialProjectBreakthroughExactView, SpecialProjectProgressExactRow,
+    SpecialProjectProgressExactView,
     ProductionLineRow, ProductionView, ProvenanceView, ResolvedPowerBalanceTextRefsExact,
     A729_POWER_BALANCE_CONTROLLER_MANIFEST_SHA256,
     ProvinceVisibility, RaidStateView, RailNeighborCarrier, RailProvinceCarrier, RailReplayView,
     ResearchLiveProgressRow, ResearchProgressRow, ResearchTechnologyRow, ResearchView,
     EngineMaterialized, ResourceTradeDealRow, ScriptedGuiDefinitionIdentityView,
-    ScriptedGuiRuntimeInputs, ScriptedGuiView, SessionMetadataView,
+    ScriptedGuiManagerOrderView, ScriptedGuiRuntimeAuthorityView, ScriptedGuiRuntimeInputs,
+    ScriptedGuiTombstoneView, ScriptedGuiView, SessionMetadataView,
     OrderedDesignIdentityExact, SelectedDesignerFamilyExact, SelectedDesignerIdentityExact,
     SelectedDesignerIdentityExactView, SelectedDesignerOwnerExact, StableDesignIdentityExact,
     ShipCompositionRow, SnowMudCell, SnowMudView, SpeedEvent, SpottedUnitsView, StateBuildings,
     SubjectAutonomyCurrentRow, SubjectAutonomyDirection,
     SunkShipEventExact, SunkShipHistoryExact, SunkShipHistoryExactView,
-    TimelineConfig, TimelineLookup, TopbarAlerts, TopbarRatios, TopbarScalars, TradeContractRow,
+    TechnologyCanvasAuthority, TechnologyCanvasAxisState, TechnologyCanvasBoundary,
+    TechnologyCanvasDrawable, TechnologyCanvasDrawableKind, TechnologyCanvasObservation,
+    TechnologyCanvasSourceItem, TechnologyCanvasView, TimelineConfig, TimelineLookup,
+    TopbarAlerts, TopbarRatios, TopbarScalars, TradeContractRow,
     TradeResourceRow, TradeView, UnitLeaderAssignmentExact, UnitLeaderAssignmentKind,
     UnitLeaderExactRow, ViewStatus, WarObjectRow, WarParticipantOverviewRow,
-    WarParticipationBreakdown, WarRelationRow, WeatherRegionRow, WingUnitRow, WorldError,
-    WorldFrame, WorldTimeline,
+    WarParticipationBreakdown, WarRelationRow, WeatherProvinceSnowView, WeatherRegionRow,
+    WingUnitRow, WorldError, WorldFrame, WorldTimeline, WEATHER_PROVINCE_SNOW_MAX_RAW,
+    WEATHER_PROVINCE_SNOW_SCALE_RAW,
 };

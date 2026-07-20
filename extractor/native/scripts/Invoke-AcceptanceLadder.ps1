@@ -25,7 +25,9 @@
                                   coalesced hours, frame budget held for the run.
 
     This script orchestrates and can self-test the machinery. It never builds per
-    rung: live launches pass -SkipBuild and reuse the final prebuilt binaries.
+    rung: live launches pass -SkipBuild and reuse the final centrally built,
+    hash-attested binaries. The safe launcher independently rejects a missing or
+    stale centralized Release receipt.
     Actually launching the game is
     owner-gated: a live rung requires the explicit -Live switch AND a running
     hoi4.exe. Every rung verdict must rest on evidence PROVABLY produced by THIS
@@ -778,11 +780,30 @@ function Get-LadderAuthoritativeVerdict {
         $proof = Get-Content -LiteralPath $regradePath -Raw | ConvertFrom-Json
         $proofOk = (Get-ObjectProperty $proof "ok")
         $proofProblems = if ($proofOk -is [bool] -and $proofOk -eq $true) { @() } else { @(Get-ObjectProperty $proof "problems") }
+        $receiptRegrade = $null
+        if ($acceptanceMode -eq "paused" -and $proofOk -is [bool] -and $proofOk -eq $true) {
+            # The Safe launcher transports a durable receipt inside the run and
+            # hash-binds that receipt from the external resolved-attempt marker.
+            # Re-grade that join as well as the replay-derived pause evidence, so
+            # deleting or editing either receipt invalidates the rung.
+            $receiptScript = Join-Path $scriptDir "verify_f6_pause_attempt_receipt.py"
+            $receiptRegradePath = Join-Path $RunDir "ladder_pause_receipt_regrade.json"
+            & $pythonPath $receiptScript --run-dir $RunDir --out $receiptRegradePath | Out-Null
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $receiptRegradePath -PathType Leaf)) {
+                return [pscustomobject]@{ schema = "battle-plan.production_capture_validation.v2"; ok = $false; problems = @("independent paused-attempt receipt re-grade failed") }
+            }
+            $receiptRegrade = Get-Content -LiteralPath $receiptRegradePath -Raw | ConvertFrom-Json
+            $receiptOk = Get-ObjectProperty $receiptRegrade "ok"
+            if ($receiptOk -isnot [bool] -or $receiptOk -ne $true) {
+                return [pscustomobject]@{ schema = "battle-plan.production_capture_validation.v2"; ok = $false; problems = @(Get-ObjectProperty $receiptRegrade "problems"); acceptance_proof = $proof; acceptance_receipt = $receiptRegrade }
+            }
+        }
         return [pscustomobject]@{
             schema = "battle-plan.production_capture_validation.v2"
             ok = ($proofOk -is [bool] -and $proofOk -eq $true)
             problems = $proofProblems
             acceptance_proof = $proof
+            acceptance_receipt = $receiptRegrade
         }
     }
 

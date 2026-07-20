@@ -1,9 +1,10 @@
 //! XUI17 exact a729 trait-tree state/order and ace portrait observations.
 //!
 //! This pointer-free carrier records only values produced by authenticated
-//! engine routes. Trait progress deliberately remains optional: the retained
-//! evidence proves node membership, source order, and state, but not a complete
-//! progress producer. An absent progress value must never be rendered as zero.
+//! engine routes. Trait progress follows the exact selected-leader sparse
+//! trait-XP vector: kinds 2/3 carry the observed numerator (or exact zero when
+//! absent from that vector), while other definition kinds carry `None` because
+//! progress is not applicable.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -12,13 +13,15 @@ pub mod a729_hook;
 
 pub const DOMAIN_ID: u16 = 82;
 pub const DOMAIN_NAME: &str = "character_presentation_live";
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const AUTHORITY_EXACT_A729_CHARACTER_PRESENTATION: u32 = 1;
 pub const MAGIC: u32 = u32::from_le_bytes(*b"CPR1");
 pub const MAX_TRAIT_TREES: usize = 8_192;
 pub const MAX_TRAIT_NODES: usize = 131_072;
 pub const MAX_ACE_PORTRAITS: usize = 65_536;
 pub const MAX_TOKEN_BYTES: usize = 1_024;
+pub const MAX_MODIFIER_TEXT_BYTES: usize = 1 << 20;
+pub const MAX_TOTAL_MODIFIER_TEXT_BYTES: usize = 64 << 20;
 
 pub const EXECUTABLE_SHA256: [u8; 32] =
     hex32(b"870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad");
@@ -26,10 +29,16 @@ pub const TRAIT_COLLECTION_MANIFEST_SHA256: [u8; 32] =
     hex32(b"837c8b4db6a6cbc03fa5c950dc24c814f5156d6cf0de08f5041bfcccab7d78c9");
 pub const TRAIT_STATE_MANIFEST_SHA256: [u8; 32] =
     hex32(b"63ca92c9e5238a0a342e24209417188b7ceeabd7f01a21c45475f58bb3e29e8c");
+pub const TRAIT_PROGRESS_MANIFEST_SHA256: [u8; 32] =
+    hex32(b"134d8fc1d5056e05023ebd46e33bda913ba3dde6c1f0945d423297d464dae547");
 pub const ACE_REFRESH_MANIFEST_SHA256: [u8; 32] =
     hex32(b"4be836cc67b9f59d748a05a73fa4c5d9c46db357d283d25b756c7ad18fcb2674");
 pub const ACE_BIND_SORT_MANIFEST_SHA256: [u8; 32] =
     hex32(b"ea545ce9457982590bd42741d1f573a7874594b7c3f836bf290ae8a276f83396");
+pub const ACE_MODIFIER_SETTER_ARTIFACT_SHA256: [u8; 32] =
+    hex32(b"3b49c9eb735a03fc711f7322b74a5b86ad64b25ffdbcaa73a390b64a2edfd552");
+pub const ACE_MODIFIER_FORMATTER_MANIFEST_SHA256: [u8; 32] =
+    hex32(b"79fd3a1e1b9eafb09566b2721260936c8430acffcf0ba408cc866c6292ac8f0b");
 
 const fn hex32(input: &[u8; 64]) -> [u8; 32] {
     const fn nibble(value: u8) -> u8 {
@@ -104,8 +113,12 @@ pub struct TraitNodeObservation {
     /// pointer retained at CUnitLeaderTraitTreeItem+0x20 is still live.
     pub trait_token: String,
     pub state: TraitNodeState,
-    /// Not populated until its independent producer route is authenticated.
+    /// Exact selected-leader trait-XP numerator for definition kinds 2/3.
+    /// Sparse-vector absence is `Some(0)`; `None` means not applicable.
     pub progress_raw: Option<i64>,
+    /// Optional pointer-free join to A25's exact runtime-text row for the
+    /// currently materialized hover reason. Text remains owned by d76.
+    pub reason_context_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,6 +138,9 @@ pub struct AcePortraitObservation {
     pub visible_ordinal: u32,
     /// Final sprite selected by the owner-qualified literal/fallback route.
     pub portrait_gfx: String,
+    /// Exact final newline-capable string supplied to the always-visible ace
+    /// modifier textbox. Empty is a measured-empty engine result.
+    pub modifier_text: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -199,6 +215,7 @@ pub fn validate_snapshot(snapshot: &CharacterPresentationSnapshot) -> Result<(),
         return invalid("trait node count exceeds bound");
     }
     let mut tree_keys = BTreeSet::new();
+    let mut reason_context_ids = BTreeSet::new();
     for tree in &snapshot.trait_trees {
         if tree.owner_tag_db_id == 0 || tree.unit_leader_id == 0 {
             return invalid("trait tree contains zero owner or leader identity");
@@ -209,6 +226,12 @@ pub fn validate_snapshot(snapshot: &CharacterPresentationSnapshot) -> Result<(),
         let mut tokens = BTreeSet::new();
         for node in &tree.nodes {
             validate_token(&node.trait_token, "trait token")?;
+            if let Some(context_id) = &node.reason_context_id {
+                validate_token(context_id, "trait reason context id")?;
+                if !reason_context_ids.insert(context_id.as_str()) {
+                    return invalid("trait reason context id is bound to multiple nodes");
+                }
+            }
             if !tokens.insert(node.trait_token.as_str()) {
                 return invalid("duplicate trait token within tree");
             }
@@ -216,11 +239,21 @@ pub fn validate_snapshot(snapshot: &CharacterPresentationSnapshot) -> Result<(),
     }
     let mut ace_keys = BTreeSet::new();
     let mut ordinals: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    let mut total_modifier_text_bytes = 0usize;
     for ace in &snapshot.ace_portraits {
         if ace.owner_tag_db_id == 0 || ace.ace_id == 0 {
             return invalid("ace portrait contains zero owner or ace identity");
         }
         validate_token(&ace.portrait_gfx, "ace portrait gfx")?;
+        if ace.modifier_text.len() > MAX_MODIFIER_TEXT_BYTES {
+            return invalid("ace modifier text exceeds byte bound");
+        }
+        total_modifier_text_bytes = total_modifier_text_bytes
+            .checked_add(ace.modifier_text.len())
+            .ok_or_else(|| CarrierError::Invalid("ace modifier text byte total overflowed".into()))?;
+        if total_modifier_text_bytes > MAX_TOTAL_MODIFIER_TEXT_BYTES {
+            return invalid("ace modifier text total exceeds frame byte bound");
+        }
         if !ace_keys.insert((ace.owner_tag_db_id, ace.ace_id)) {
             return invalid("duplicate owner-qualified ace identity");
         }
@@ -281,8 +314,11 @@ pub fn encode_payload(frame: &CharacterPresentationFrame) -> Result<Vec<u8>, Car
         EXECUTABLE_SHA256,
         TRAIT_COLLECTION_MANIFEST_SHA256,
         TRAIT_STATE_MANIFEST_SHA256,
+        TRAIT_PROGRESS_MANIFEST_SHA256,
         ACE_REFRESH_MANIFEST_SHA256,
         ACE_BIND_SORT_MANIFEST_SHA256,
+        ACE_MODIFIER_SETTER_ARTIFACT_SHA256,
+        ACE_MODIFIER_FORMATTER_MANIFEST_SHA256,
     ] {
         out.extend_from_slice(&hash);
     }
@@ -304,9 +340,13 @@ pub fn encode_payload(frame: &CharacterPresentationFrame) -> Result<Vec<u8>, Car
         for node in &tree.nodes {
             out.push(node.state.raw());
             out.push(u8::from(node.progress_raw.is_some()));
-            u16v(&mut out, 0);
+            out.push(u8::from(node.reason_context_id.is_some()));
+            out.push(0);
             i64v(&mut out, node.progress_raw.unwrap_or_default());
             string(&mut out, &node.trait_token)?;
+            if let Some(context_id) = &node.reason_context_id {
+                string(&mut out, context_id)?;
+            }
         }
     }
     for ace in &snapshot.ace_portraits {
@@ -314,6 +354,7 @@ pub fn encode_payload(frame: &CharacterPresentationFrame) -> Result<Vec<u8>, Car
         u64v(&mut out, ace.ace_id);
         u32v(&mut out, ace.visible_ordinal);
         string(&mut out, &ace.portrait_gfx)?;
+        text(&mut out, &ace.modifier_text)?;
     }
     Ok(out)
 }
@@ -333,8 +374,11 @@ pub fn decode_payload(payload: &[u8]) -> Result<CharacterPresentationFrame, Carr
         EXECUTABLE_SHA256,
         TRAIT_COLLECTION_MANIFEST_SHA256,
         TRAIT_STATE_MANIFEST_SHA256,
+        TRAIT_PROGRESS_MANIFEST_SHA256,
         ACE_REFRESH_MANIFEST_SHA256,
         ACE_BIND_SORT_MANIFEST_SHA256,
+        ACE_MODIFIER_SETTER_ARTIFACT_SHA256,
+        ACE_MODIFIER_FORMATTER_MANIFEST_SHA256,
     ] {
         if reader.bytes(32)? != expected {
             return invalid("CPR1 executable or producer manifest mismatch");
@@ -372,17 +416,25 @@ pub fn decode_payload(payload: &[u8]) -> Result<CharacterPresentationFrame, Carr
             for _ in 0..node_count {
                 let state = TraitNodeState::from_raw(reader.u8()?)?;
                 let has_progress = reader.bool()?;
-                if reader.u16()? != 0 {
-                    return invalid("CPR1 trait node reserved field is nonzero");
+                let has_reason_context = reader.bool()?;
+                if reader.u8()? != 0 {
+                    return invalid("CPR1 trait node reserved byte is nonzero");
                 }
                 let progress = reader.i64()?;
                 if !has_progress && progress != 0 {
                     return invalid("CPR1 absent trait progress has nonzero storage");
                 }
+                let trait_token = reader.string()?;
+                let reason_context_id = if has_reason_context {
+                    Some(reader.string()?)
+                } else {
+                    None
+                };
                 nodes.push(TraitNodeObservation {
-                    trait_token: reader.string()?,
+                    trait_token,
                     state,
                     progress_raw: has_progress.then_some(progress),
+                    reason_context_id,
                 });
             }
             trait_trees.push(TraitTreeObservation {
@@ -399,6 +451,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<CharacterPresentationFrame, Carr
                 ace_id: reader.u64()?,
                 visible_ordinal: reader.u32()?,
                 portrait_gfx: reader.string()?,
+                modifier_text: reader.text()?,
             });
         }
         Some(CharacterPresentationSnapshot {
@@ -457,6 +510,19 @@ fn string(out: &mut Vec<u8>, value: &str) -> Result<(), CarrierError> {
     Ok(())
 }
 
+fn text(out: &mut Vec<u8>, value: &str) -> Result<(), CarrierError> {
+    if value.len() > MAX_MODIFIER_TEXT_BYTES {
+        return invalid("serialized text exceeds byte bound");
+    }
+    u32v(
+        out,
+        u32::try_from(value.len())
+            .map_err(|_| CarrierError::Invalid("serialized text is too long".into()))?,
+    );
+    out.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
 struct Reader<'a> {
     payload: &'a [u8],
     at: usize,
@@ -502,6 +568,14 @@ impl<'a> Reader<'a> {
         String::from_utf8(self.bytes(len)?.to_vec())
             .map_err(|_| CarrierError::Invalid("CPR1 string is not UTF-8".into()))
     }
+    fn text(&mut self) -> Result<String, CarrierError> {
+        let len = self.u32()? as usize;
+        if len > MAX_MODIFIER_TEXT_BYTES {
+            return invalid("CPR1 text exceeds byte bound");
+        }
+        String::from_utf8(self.bytes(len)?.to_vec())
+            .map_err(|_| CarrierError::Invalid("CPR1 text is not UTF-8".into()))
+    }
 }
 
 #[cfg(test)]
@@ -525,11 +599,13 @@ mod tests {
                             trait_token: "panzer_leader".into(),
                             state: TraitNodeState::Picked,
                             progress_raw: None,
+                            reason_context_id: Some("leader_traits::trait_tooltip::0".into()),
                         },
                         TraitNodeObservation {
                             trait_token: "armor_officer".into(),
                             state: TraitNodeState::Pickable,
                             progress_raw: Some(42),
+                            reason_context_id: None,
                         },
                     ],
                 }],
@@ -538,13 +614,14 @@ mod tests {
                     ace_id: 11,
                     visible_ordinal: 0,
                     portrait_gfx: "GFX_GER_ace_m_7".into(),
+                    modifier_text: "+10% agility\n+5% air attack".into(),
                 }],
             }),
         }
     }
 
     #[test]
-    fn exact_observations_roundtrip_without_inventing_progress() {
+    fn exact_observations_roundtrip_progress_and_a25_reason_context_distinctly() {
         let expected = frame();
         let encoded = encode_payload(&expected).unwrap();
         assert_eq!(decode_payload(&encoded).unwrap(), expected);
@@ -553,6 +630,35 @@ mod tests {
                 .progress_raw,
             None
         );
+        assert_eq!(
+            decode_payload(&encoded).unwrap().snapshot.unwrap().trait_trees[0].nodes[1]
+                .progress_raw,
+            Some(42)
+        );
+        assert_eq!(
+            decode_payload(&encoded).unwrap().snapshot.unwrap().trait_trees[0].nodes[0]
+                .reason_context_id
+                .as_deref(),
+            Some("leader_traits::trait_tooltip::0")
+        );
+    }
+
+    #[test]
+    fn measured_empty_modifier_text_roundtrips_distinct_from_unavailable() {
+        let mut expected = frame();
+        expected.snapshot.as_mut().unwrap().ace_portraits[0]
+            .modifier_text
+            .clear();
+        let encoded = encode_payload(&expected).unwrap();
+        assert_eq!(decode_payload(&encoded).unwrap(), expected);
+    }
+
+    #[test]
+    fn oversized_modifier_text_fails_closed() {
+        let mut oversized = frame();
+        oversized.snapshot.as_mut().unwrap().ace_portraits[0].modifier_text =
+            "x".repeat(MAX_MODIFIER_TEXT_BYTES + 1);
+        assert!(encode_payload(&oversized).is_err());
     }
 
     #[test]
@@ -569,6 +675,7 @@ mod tests {
                 ace_id: 12,
                 visible_ordinal: 2,
                 portrait_gfx: "GFX_GER_ace_m_8".into(),
+                modifier_text: String::new(),
             });
         assert!(encode_payload(&duplicate).is_err());
     }
@@ -578,5 +685,15 @@ mod tests {
         assert!(encode_source_unavailable(1, 2, 0, "missing hook").is_err());
         let bytes = encode_source_unavailable(1, 2, 1, "missing hook").unwrap();
         assert!(decode_payload(&bytes).unwrap().snapshot.is_none());
+    }
+
+    #[test]
+    fn one_a25_reason_context_cannot_bind_multiple_trait_nodes() {
+        let mut duplicate = frame();
+        let mut second = duplicate.snapshot.as_ref().unwrap().trait_trees[0].clone();
+        second.root = TraitTreeRoot::ControllerOffset130;
+        second.nodes.truncate(1);
+        duplicate.snapshot.as_mut().unwrap().trait_trees.push(second);
+        assert!(encode_payload(&duplicate).is_err());
     }
 }

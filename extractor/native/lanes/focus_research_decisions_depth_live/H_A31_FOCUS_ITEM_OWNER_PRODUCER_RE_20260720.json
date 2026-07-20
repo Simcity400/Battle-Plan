@@ -2,14 +2,14 @@
   "schema": "hoi4.h_a31.focus_item_owner_producer_re.v1",
   "date": "2026-07-20",
   "lane": "H-A31",
-  "disposition": "STATIC_OWNER_AND_PRODUCER_ROUTE_EXACT20_BOUND_AND_OBSERVER_ENGINEERING_PENDING",
+  "disposition": "OWNER_RUNNABLE_EVIDENCE_MODE_AND_EXACT20_BOUND_LIVE_FIXTURE_PENDING",
   "binary_identity": {
     "binary_id": "hoi4.exe 1.19.2.0.a729",
     "image_base": "0x140000000",
     "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
     "ghidra_status_ready": true,
-    "observed_shards": 10,
-    "ready_shards": 10,
+    "observed_shards": 20,
+    "ready_shards": 20,
     "read_only": true,
     "analysis_disabled": true
   },
@@ -138,22 +138,21 @@
   },
   "repository_audit": {
     "carrier": "extractor/native/lanes/focus_research_decisions_depth_live/src/national_focus_presentation.rs",
-    "current_state": "The strict pointer-free carrier boundary exists, but no live CNationalFocusView observer, compact serialization, recorder fold, or replay admission is scheduled.",
-    "code_change_in_this_pass": false,
-    "reason": "No new H-A31 seed has a consolidated exact-ten receipt. Wiring discovery hashes would violate repository authority policy."
+    "current_state": "The exact20-bound pointer-free owner/item producer, owner-runnable selected-Present acquisition transaction, evidence receipt/regrader, reserved d89 NFP1 codec, collector seam, recorder fold, typed replay view, and exact XUI10 admission route are implemented. Production scheduling remains false.",
+    "code_change_in_this_pass": true,
+    "reason": "The consolidated exact20 receipt resolves all ten requested entries exactly and is bound by manifest and job-receipt SHA-256. No discovery-only hash is used for activation."
   },
   "promotion_gate": {
-    "current_wave2_receipt": "extractor/documents/WAVE2_EXACT10_REEXPORT_RECEIPT_20260720.json",
-    "current_wave2_exact_request_membership": false,
-    "next_request": "H_A31_EXACT10_REEXPORT_REQUEST_20260720.json",
+    "current_exact20_job_id": "20260720T020812Z-w3-a31-focus-owner-93fbbf62",
+    "current_exact20_function_manifest_sha256": "303351ed65468aa7655b904998819c96ca1c325f906b5a3bf32c4f18decc7969",
+    "current_exact20_job_json_sha256": "c6c3fb002bc05f1e092d7eb9b436aa720ca2cf19ad08f055747216dfa5871b4f",
+    "exact_requested_membership": "10/10",
+    "next_request": null,
     "promotion_authorized": false
   },
   "human_input_boundary": {
-    "current_state": "NOT_YET_REQUESTABLE",
+    "current_state": "STATIC_AND_AGENT_IMPLEMENTATION_COMPLETE_PENDING_ROOT_VALIDATION_AND_RUNTIME_FIXTURE",
     "agent_prerequisites": [
-      "receive and bind the consolidated exact-ten receipt",
-      "implement the authenticated fail-closed live observer",
-      "implement compact serialization, recorder fold, and replay admission",
       "complete root-owned central validation"
     ],
     "later_irreducible_fixture": "After those prerequisites close, one exact-a729 stable frame and one discriminating transition frame remain required to prove real invocation, zero-loss transient joins, and transition behavior."

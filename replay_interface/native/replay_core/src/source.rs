@@ -78,6 +78,8 @@ struct RecorderDisplayVariant {
 struct MetadataRoute {
     binding: Option<RecorderSessionBinding>,
     timeline: Option<Value>,
+    recorder_manifest: Option<Map<String, Value>>,
+    g2_engine_capture: Option<crate::g2_engine_capture::PackagedG2EngineCapture>,
 }
 
 #[derive(Debug)]
@@ -153,6 +155,11 @@ pub trait ReplaySource: Send + Sync {
     fn campaign_identity(&self) -> Option<&RecordedCampaignIdentity> {
         None
     }
+    /// Strictly admitted recorder-owned pre-first-UI engine capture, when the
+    /// selected game index declares the dedicated two-entry G2 package.
+    fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
+        None
+    }
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
         None
     }
@@ -219,6 +226,23 @@ pub fn open_recording_with_spooled_decoder(
     open_recording_impl(path, None, None, Some((spool_base, decoder)))
 }
 
+/// Consume an already-open pinned container through the bounded decoder seam.
+/// No pathname is reopened: the resulting store and lazy source retain the
+/// exact container handle authenticated by the caller.
+pub fn open_container_with_spooled_decoder(
+    container: snapshot::Container,
+    spool_base: &Path,
+    decoder: &dyn snapshot::CertifiedPrefoldSpoolDecoder,
+) -> Result<Box<dyn ReplaySource>, SourceError> {
+    open_store_impl(
+        Store::from_container(container),
+        "authenticated retained replay container",
+        None,
+        None,
+        Some((spool_base, decoder)),
+    )
+}
+
 /// As [`open_recording_with_spooled_decoder`], selecting one game explicitly.
 pub fn open_recording_game_with_spooled_decoder(
     path: &Path,
@@ -250,6 +274,7 @@ pub fn open_prefolded_replay(
         recorder_binding: None,
         design_catalog: None,
         prefold_receipt: None,
+        g2_engine_capture: None,
     }))
 }
 
@@ -295,6 +320,23 @@ where
     };
     post_anchor(&store);
 
+    open_store_impl(
+        store,
+        &path.display().to_string(),
+        requested_game,
+        decoder,
+        spool_decoder,
+    )
+}
+
+fn open_store_impl(
+    store: Store,
+    source_label: &str,
+    requested_game: Option<&str>,
+    decoder: Option<&dyn snapshot::CertifiedPrefoldDecoder>,
+    spool_decoder: Option<(&Path, &dyn snapshot::CertifiedPrefoldSpoolDecoder)>,
+) -> Result<Box<dyn ReplaySource>, SourceError> {
+
     let games = store
         .games()
         .map_err(|e| SourceError::Open(format!("list games in store: {e}")))?;
@@ -315,8 +357,7 @@ where
         None => match games.len() {
             0 => {
                 return Err(SourceError::Open(format!(
-                    "no game found (no <game_id>/index.json) under {}",
-                    path.display()
+                    "no game found (no <game_id>/index.json) under {source_label}"
                 )))
             }
             1 => games[0].clone(),
@@ -327,7 +368,13 @@ where
     // Route recorder metadata before consulting snapshot availability. An
     // explicit or inconsistent metadata signal can never be downgraded to
     // legacy/unsupported because an index or role entry is missing.
-    let metadata = recorder_metadata_route(&store, &game_id)?;
+    let mut metadata = recorder_metadata_route(&store, &game_id)?;
+    metadata.g2_engine_capture = crate::g2_engine_capture::admit_from_store(
+        &store,
+        &game_id,
+        metadata.recorder_manifest.as_ref(),
+    )
+    .map_err(|error| SourceError::Open(format!("admit packaged G2 engine capture: {error}")))?;
 
     let index = store
         .index(&game_id)
@@ -404,6 +451,7 @@ where
         warnings,
         recorder_binding: metadata.binding,
         design_catalog,
+        g2_engine_capture: metadata.g2_engine_capture,
     }))
 }
 
@@ -484,6 +532,7 @@ fn open_compact_stream_with_decoder(
         recorder_binding: metadata.binding,
         design_catalog,
         prefold_receipt,
+        g2_engine_capture: metadata.g2_engine_capture,
     }))
 }
 
@@ -629,6 +678,7 @@ fn open_compact_stream_with_spooled_decoder(
         recorder_binding: metadata.binding,
         design_catalog,
         prefold_receipt,
+        g2_engine_capture: metadata.g2_engine_capture,
     }))
 }
 
@@ -849,6 +899,8 @@ fn recorder_metadata_route(store: &Store, game_id: &str) -> Result<MetadataRoute
                 return Ok(MetadataRoute {
                     binding: None,
                     timeline: None,
+                    recorder_manifest: None,
+                    g2_engine_capture: None,
                 });
             }
             return Err(SourceError::Open(format!(
@@ -868,6 +920,8 @@ fn recorder_metadata_route(store: &Store, game_id: &str) -> Result<MetadataRoute
                 return Ok(MetadataRoute {
                     binding: None,
                     timeline: Some(Value::Object(timeline)),
+                    recorder_manifest: None,
+                    g2_engine_capture: None,
                 });
             }
             return Err(SourceError::Open(
@@ -896,10 +950,14 @@ fn recorder_metadata_route(store: &Store, game_id: &str) -> Result<MetadataRoute
                 entry.path
             ))
         })?;
-        let binding = recorder_manifest_binding(&manifest_bytes, &reference)?;
+        let recorder_manifest =
+            parse_metadata_object(&manifest_bytes, &format!("recorder manifest {reference:?}"))?;
+        let binding = recorder_manifest_binding_value(&recorder_manifest, &reference)?;
         return Ok(MetadataRoute {
             binding: Some(binding),
             timeline: Some(Value::Object(timeline)),
+            recorder_manifest: Some(recorder_manifest),
+            g2_engine_capture: None,
         });
     }
 
@@ -929,12 +987,16 @@ where
         return Ok(MetadataRoute {
             binding: None,
             timeline: None,
+            recorder_manifest: None,
+            g2_engine_capture: None,
         });
     };
     let Some(reference) = session_manifest_reference(&timeline)? else {
         return Ok(MetadataRoute {
             binding: None,
             timeline: Some(Value::Object(timeline)),
+            recorder_manifest: None,
+            g2_engine_capture: None,
         });
     };
     let manifest = read_optional_metadata_object_once(
@@ -946,10 +1008,12 @@ where
             "timeline.json.session_manifest references missing recorder manifest {reference:?}"
         ))
     })?;
-    let binding = recorder_manifest_binding_value(manifest, &reference)?;
+    let binding = recorder_manifest_binding_value(&manifest, &reference)?;
     Ok(MetadataRoute {
         binding: Some(binding),
         timeline: Some(Value::Object(timeline)),
+        recorder_manifest: Some(manifest),
+        g2_engine_capture: None,
     })
 }
 
@@ -998,16 +1062,8 @@ fn session_manifest_reference(
     Ok(Some(reference.to_string()))
 }
 
-fn recorder_manifest_binding(
-    bytes: &[u8],
-    reference: &str,
-) -> Result<RecorderSessionBinding, SourceError> {
-    let root = parse_metadata_object(bytes, &format!("recorder manifest {reference:?}"))?;
-    recorder_manifest_binding_value(root, reference)
-}
-
 fn recorder_manifest_binding_value(
-    root: Map<String, Value>,
+    root: &Map<String, Value>,
     reference: &str,
 ) -> Result<RecorderSessionBinding, SourceError> {
     let campaign_identity = recorder_campaign_identity(&root, reference)?;
@@ -1836,6 +1892,7 @@ struct StoreSource {
     warnings: Vec<String>,
     recorder_binding: Option<RecorderSessionBinding>,
     design_catalog: Option<Arc<crate::design_catalog::PortableDesignCatalog>>,
+    g2_engine_capture: Option<crate::g2_engine_capture::PackagedG2EngineCapture>,
 }
 
 struct SpooledPrefoldedSource {
@@ -1847,6 +1904,7 @@ struct SpooledPrefoldedSource {
     recorder_binding: Option<RecorderSessionBinding>,
     design_catalog: Option<Arc<crate::design_catalog::PortableDesignCatalog>>,
     prefold_receipt: snapshot::PrefoldSourceReceipt,
+    g2_engine_capture: Option<crate::g2_engine_capture::PackagedG2EngineCapture>,
 }
 
 /// Neutral, immutable already-folded backend. The portable contract owns the
@@ -1859,6 +1917,7 @@ struct PrefoldedSource {
     recorder_binding: Option<RecorderSessionBinding>,
     design_catalog: Option<Arc<crate::design_catalog::PortableDesignCatalog>>,
     prefold_receipt: Option<snapshot::PrefoldSourceReceipt>,
+    g2_engine_capture: Option<crate::g2_engine_capture::PackagedG2EngineCapture>,
 }
 
 impl ReplaySource for SpooledPrefoldedSource {
@@ -1882,6 +1941,10 @@ impl ReplaySource for SpooledPrefoldedSource {
         self.recorder_binding
             .as_ref()
             .and_then(|binding| binding.campaign_identity.as_ref())
+    }
+
+    fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
+        self.g2_engine_capture.as_ref()
     }
 
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
@@ -1960,6 +2023,10 @@ impl ReplaySource for PrefoldedSource {
             .and_then(|binding| binding.campaign_identity.as_ref())
     }
 
+    fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
+        self.g2_engine_capture.as_ref()
+    }
+
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
         self.design_catalog.as_ref()
     }
@@ -2029,6 +2096,9 @@ impl ReplaySource for StoreSource {
         self.recorder_binding
             .as_ref()
             .and_then(|binding| binding.campaign_identity.as_ref())
+    }
+    fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
+        self.g2_engine_capture.as_ref()
     }
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
         self.design_catalog.as_ref()
@@ -3130,7 +3200,57 @@ mod tests {
                     "snapshot/container.rs",
                     "let file = File::open(path.as_ref())?;"
                 )
+                | (
+                    "snapshot/container.rs",
+                    "let mut file = File::open(path.as_ref())?;"
+                )
         )
+    }
+
+    /// Exact capability census for CID1 rollover descriptor discovery. These
+    /// sites only identify/read the caller-selected package-set descriptor or
+    /// perform bounded, portable path validation; they do not open a member
+    /// selected by an unauthenticated descendant pathname. Keep the list exact
+    /// so any new discovery primitive or descriptor read fails closed here.
+    fn classified_rollover_descriptor_discovery_site(module: &str, line: &str) -> bool {
+        module == "replay_core/rollover_package_set.rs"
+            && matches!(
+                line,
+                "use std::fs;"
+                    | "use std::path::{Component, Path, PathBuf};"
+                    | "let descriptor_path = if path.is_dir() {"
+                    | "let metadata = fs::symlink_metadata(path).map_err(|error| {"
+                    | "if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {"
+                    | "path.join(ROLLOVER_PACKAGE_SET_FILE)"
+                    | ".unwrap_or_else(|| Path::new(\".\"));"
+                    | "let parent_metadata = fs::symlink_metadata(descriptor_parent).map_err(|error| {"
+                    | "if !parent_metadata.file_type().is_dir() || parent_metadata.file_type().is_symlink() {"
+                    | "if source_descriptor != Path::new(ROLLOVER_SOURCE_SET_FILE) {"
+                    | "|| Path::new(&source_stream.relative_path) != expected_relative"
+                    | "let discovered_descriptor = path.is_dir() && path.join(ROLLOVER_PACKAGE_SET_FILE).is_file();"
+                    | "let path = PathBuf::from(value);"
+                    | "let metadata = fs::symlink_metadata(path)"
+                    | "if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {"
+                    | "let file = fs::File::open(path)"
+            )
+    }
+
+    /// Exact capability census for descriptor-authorized rollover members.
+    /// The descriptor supplies strict relative paths and expected digests;
+    /// resolution rejects links/escapes, and bytes are consumed only from the
+    /// retained file/container handle whose receipt is then checked. This is
+    /// intentionally line-exact rather than a module-wide filesystem waiver.
+    fn classified_rollover_retained_handle_site(module: &str, line: &str) -> bool {
+        module == "replay_core/rollover_package_set.rs"
+            && matches!(
+                line,
+                "let root = fs::canonicalize(root)"
+                    | "let candidate = root.join(relative);"
+                    | "let metadata = fs::symlink_metadata(&candidate)"
+                    | "if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {"
+                    | "let canonical = fs::canonicalize(&candidate)"
+                    | "let mut file = fs::File::open(&canonical)"
+            )
     }
 
     fn classified_non_loader_site(module: &str, line: &str) -> bool {
@@ -3437,6 +3557,8 @@ mod tests {
             }
             candidates += 1;
             if classified_root_or_handle_site(module, line)
+                || classified_rollover_descriptor_discovery_site(module, line)
+                || classified_rollover_retained_handle_site(module, line)
                 || classified_non_loader_site(module, line)
                 || classified_private_prefold_spool_site(module, line)
             {

@@ -58,6 +58,7 @@ impl ProductionD3dExecutionBridge for TraceBridge {
 fn empty_frame() -> PreparedProductionMapFrame {
     PreparedProductionMapFrame {
         ordered_static_map_programs: Vec::new(),
+        snow_mud_texture: None,
         tree_runtime: None,
         s1_shadow: None,
         political_textures: Vec::new(),
@@ -129,6 +130,7 @@ fn prepared_static_frame(operations: Vec<StaticMapOperation>) -> PreparedProduct
         s1_shadow: None,
         ordered_static_used_content: Vec::new(),
         ordered_render_operations,
+        snow_mud_texture: None,
         ordered_runtime_draws: Vec::new(),
         political_textures: Vec::new(),
         tiled_lights: Vec::new(),
@@ -1006,6 +1008,7 @@ float4 ps_main() : SV_Target { return float4(1.0, 0.0, 0.0, 1.0); }
         ordered_render_operations: vec![RenderExecutionRef::Static {
             operation_ordinal: 7,
         }],
+        snow_mud_texture: None,
         ordered_runtime_draws: Vec::new(),
         political_textures: Vec::new(),
         tiled_lights: Vec::new(),

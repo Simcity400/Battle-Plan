@@ -113,7 +113,12 @@ impl OpenOutcome {
 /// here will open for playback, and a negative that is rejected here is
 /// rejected for playback.
 pub fn open_and_validate(path: &Path) -> OpenOutcome {
-    match open_timeline(path) {
+    open_and_validate_segment(path, None)
+}
+
+/// Validate one explicitly selected member of an ordered CID1 package set.
+pub fn open_and_validate_segment(path: &Path, logical_stream_id: Option<u64>) -> OpenOutcome {
+    match open_timeline_segment(path, logical_stream_id) {
         Ok(timeline) => {
             let receipt = timeline.prefold_receipt();
             OpenOutcome::Opened(OpenReport {
@@ -134,8 +139,18 @@ pub fn open_and_validate(path: &Path) -> OpenOutcome {
 /// Open through the same shared container/timeline path while retaining the
 /// timeline for the selected-installation compatibility gate.
 pub fn open_timeline(path: &Path) -> Result<WorldTimeline, OpenOutcome> {
-    let source = crate::recording_open::open_product_recording(path)
-        .map_err(classify_source_error)?;
+    open_timeline_segment(path, None)
+}
+
+pub fn open_timeline_segment(
+    path: &Path,
+    logical_stream_id: Option<u64>,
+) -> Result<WorldTimeline, OpenOutcome> {
+    let source = match logical_stream_id {
+        Some(id) => crate::recording_open::open_product_recording_segment(path, Some(id)),
+        None => crate::recording_open::open_product_recording(path),
+    }
+    .map_err(classify_source_error)?;
     let timeline = WorldTimeline::open(source).map_err(|err| OpenOutcome::Rejected {
         kind: RejectionKind::Timeline,
         message: format!("recording opened but its timeline is unusable: {err}"),

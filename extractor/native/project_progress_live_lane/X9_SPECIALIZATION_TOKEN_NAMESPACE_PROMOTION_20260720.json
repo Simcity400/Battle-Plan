@@ -1,0 +1,101 @@
+{
+  "schema": "x9-specialization-token-namespace-promotion-v1",
+  "date": "2026-07-20",
+  "binary": {
+    "binary_id": "hoi4.exe 1.19.2.0.a729",
+    "image_base": "0x140000000",
+    "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+  },
+  "fresh_exact20_receipts": [
+    {
+      "job_id": "20260720T050925Z-w4-x9-four-specialization-literal-xrefs-a798340e",
+      "operation": "search_strings",
+      "shard": "shard-05",
+      "artifact_sha256": "e14989d7b81aa36baf9499811e0ab8665207057e7fc265fd2c4533e20a9e56f5"
+    },
+    {
+      "job_id": "20260720T050943Z-w4-x9-retained-naval-consumers-4ef74f3e",
+      "operation": "export_functions",
+      "shard": "shard-05",
+      "manifest_sha256": "7819eda447c5be7dc1359842cdcad53fb7da1c2d44ec009d1326ab61130c9302"
+    },
+    {
+      "job_id": "20260720T051113Z-w4-x9-breakthrough-status-vtable-methods-440871fe",
+      "operation": "dump_data",
+      "shard": "shard-05",
+      "artifact_sha256": "3475c1186e127d5c89b0f6617d8d0c86fc0d3a60c6b7c5b0f93668b99f52d8bc"
+    },
+    {
+      "job_id": "20260720T051439Z-w4-x9-breakthrough-vtable-methods-split-647c4e3c",
+      "operation": "export_functions",
+      "shard": "shard-05",
+      "manifest_sha256": "48c5da842263fa296611eda942ec4354f64dc903aa5c3f7c4ea6fd46d12fac35"
+    },
+    {
+      "job_id": "20260720T051841Z-w4-x9-status-vtable-methods-split-656d54d0",
+      "operation": "export_functions",
+      "shard": "shard-05",
+      "manifest_sha256": "a69c678c42c67be460f6eb00ce3147ec4417e02b95b7e9139a1c38a574c0f054"
+    }
+  ],
+  "retained_failure": {
+    "job_id": "20260720T051123Z-w4-x9-breakthrough-status-vtable-consume-6f05a280",
+    "error": "decompile failed for EXTERNAL:00000107",
+    "disposition": "negative operational evidence; superseded for internal functions by the two bounded depth-one split jobs"
+  },
+  "exact_namespace_join": {
+    "writer": {
+      "function": "0x1419F14F0",
+      "law": "iterate every CBreakthroughProgress tree node and call 0x1424ADFE0(serializer, node+0x1C, node+0x20)",
+      "key": "node+0x1C u32 serializer token id",
+      "value": "node+0x20 u32 points_raw"
+    },
+    "reader": {
+      "function": "0x1419F10C0",
+      "law": "read the parser token id at parser+0x30 and insert it as the ordered-tree key at node+0x1C; store parsed value at node+0x20"
+    },
+    "conclusion": "D41 specialization_handle and the authenticated runtime token-record dictionary use the same engine serializer token-id namespace"
+  },
+  "authored_closed_set": [
+    "specialization_nuclear",
+    "specialization_naval",
+    "specialization_air",
+    "specialization_land"
+  ],
+  "production_carrier": {
+    "row_shape": "tag_db_id:u32, specialization_handle:u32, points_raw:u32, flags:u32",
+    "row_bytes": 16,
+    "d41_header_extension": 5,
+    "compatibility": "extensions 0 through 4 require semantic flag bits to remain zero; extension 5 is the first version that admits the exact specialization enum",
+    "flags": {
+      "bit0": "exact specialization enum present",
+      "bits1_3": "closed code 1=nuclear, 2=naval, 3=air, 4=land",
+      "bit31": "deleted"
+    },
+    "admission": "publish a semantic code only after a gap-free complete committed-private heap census finds one unambiguous authenticated token record for the handle and its text exactly equals one authored token",
+    "fallback": "retain the raw numeric handle only inside the compact collector/fold delta tracker, emit zero semantic bits, and fold specialization as null; never publish the engine token id into portable replay JSON"
+  },
+  "portable_identity_boundary": {
+    "portable_key": "(resolved country tag_db_id, closed specialization enum)",
+    "country_join": "fold emits countries[TAG]._r2_tag_db_id only from the current-hour D18 map; replay requires every X9 row's country and tag_db_id to match that witness",
+    "raw_engine_handle_published": false,
+    "typed_replay_and_ui": "carry the closed enum and exact authored token only; reject any replay row that attempts to reintroduce _r2_specialization_handle",
+    "authority": "exact_a729_serializer_token_enum_join"
+  },
+  "production_wiring": [
+    "collector d41 token dictionary and 16-byte breakthrough carrier",
+    "recorder authority and world fold",
+    "typed replay-core exact breakthrough view requiring resolved d18 country identity",
+    "fail-closed game-ui special-project breakthrough adapter",
+    "replay-app country/global breakthrough admission seam"
+  ],
+  "human_input": {
+    "required": false,
+    "retired_id": "H-X9-SPECIALIZATIONS",
+    "reason": "the exact producer/consumer namespace join plus automatic ambiguity-checked token-record acquisition removes the former same-tick permutation requirement"
+  },
+  "validation": {
+    "subagent_ran_builds_or_tests": false,
+    "root_central_validation_required": true
+  }
+}

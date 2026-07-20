@@ -28,12 +28,15 @@ use crate::windows_control_pipe::RestrictiveSecurityPolicy;
 
 use super::duplex_worker::{
     AutoAttachDuplexProductPermit, DuplexAttemptAuthority, DuplexWorkerError, DuplexWorkerSession,
-    RoutedHeartbeatCycle,
+    RoutedHeartbeatCycle, RoutedRolloverHeartbeatCycle,
 };
 use super::identity::ProcessKey;
 use super::sources::WorkerSpec;
 use crate::duplex_session::identity_control::{
     IdentityDurableCandidateSink, RecorderIdentityControlDispatcher,
+};
+use crate::duplex_session::rollover_control::{
+    RecorderRolloverCoordinator, RecorderRolloverStore,
 };
 
 type Bool = i32;
@@ -862,6 +865,62 @@ impl WindowsCombinedRunner {
         Ok(Some(outcome))
     }
 
+    /// Rollover-aware heartbeat cadence. This is the production router for a
+    /// rollover-capable session: a PausedForControl proof is followed by one
+    /// CRP1 durable transaction under the unchanged cycle deadline.
+    pub fn drive_due_heartbeat_with_rollover<IS, RS>(
+        &mut self,
+        identity: &mut RecorderIdentityControlDispatcher<IS>,
+        rollover: &mut RecorderRolloverCoordinator,
+        store: &mut RS,
+    ) -> Result<Option<RoutedRolloverHeartbeatCycle>, WindowsCombinedBackendError>
+    where
+        IS: IdentityDurableCandidateSink,
+        RS: RecorderRolloverStore,
+    {
+        self.ensure_target_live()?;
+        let now = std::time::Instant::now();
+        if now < self.next_heartbeat_due {
+            return Ok(None);
+        }
+        let challenge = super::staging::generate_secret_128().map_err(|error| {
+            WindowsCombinedBackendError::Authority(DuplexWorkerError::Transport(error))
+        })?;
+        let deadline =
+            ControlDeadline::after(Duration::from_millis(super::policy::HEARTBEAT_INTERVAL_MS))
+                .map_err(|error| {
+                    WindowsCombinedBackendError::Authority(DuplexWorkerError::Transport(
+                        error.to_string(),
+                    ))
+                })?;
+        let outcome = self
+            .control
+            .as_mut()
+            .ok_or_else(|| {
+                WindowsCombinedBackendError::Authority(DuplexWorkerError::IllegalTransition {
+                    from: super::duplex_worker::DuplexWorkerState::Finalizing,
+                    action: "rollover heartbeat after control close",
+                })
+            })?
+            .heartbeat_cycle_with_identity_and_rollover(
+                identity,
+                rollover,
+                store,
+                challenge,
+                deadline,
+            )
+            .map_err(WindowsCombinedBackendError::Authority)?;
+        self.ensure_target_live()?;
+        self.next_heartbeat_due = now
+            .checked_add(Duration::from_millis(super::policy::HEARTBEAT_INTERVAL_MS))
+            .ok_or_else(|| {
+                WindowsCombinedBackendError::Authority(DuplexWorkerError::Transport(
+                    "heartbeat schedule overflow".to_string(),
+                ))
+            })?;
+        Ok(Some(outcome))
+    }
+
     /// Transfer explicit-stop ownership from H4CT to the H4CR drain/finalizer.
     /// Dropping the control session closes the server handle, which is the v1
     /// collector's authenticated graceful-stop receipt.  It intentionally does
@@ -1020,6 +1079,60 @@ impl WindowsCombinedControlDriver {
                 })
             })?
             .heartbeat_cycle_with_identity(identity, challenge, deadline)
+            .map_err(WindowsCombinedBackendError::Authority)?;
+        self.ensure_target_live()?;
+        self.next_heartbeat_due = now
+            .checked_add(Duration::from_millis(super::policy::HEARTBEAT_INTERVAL_MS))
+            .ok_or_else(|| {
+                WindowsCombinedBackendError::Authority(DuplexWorkerError::Transport(
+                    "heartbeat schedule overflow".to_string(),
+                ))
+            })?;
+        Ok(Some(outcome))
+    }
+
+    /// Rollover-aware variant used by the split production control driver.
+    pub fn drive_due_heartbeat_with_rollover<IS, RS>(
+        &mut self,
+        identity: &mut RecorderIdentityControlDispatcher<IS>,
+        rollover: &mut RecorderRolloverCoordinator,
+        store: &mut RS,
+    ) -> Result<Option<RoutedRolloverHeartbeatCycle>, WindowsCombinedBackendError>
+    where
+        IS: IdentityDurableCandidateSink,
+        RS: RecorderRolloverStore,
+    {
+        self.ensure_target_live()?;
+        let now = std::time::Instant::now();
+        if now < self.next_heartbeat_due {
+            return Ok(None);
+        }
+        let challenge = super::staging::generate_secret_128().map_err(|error| {
+            WindowsCombinedBackendError::Authority(DuplexWorkerError::Transport(error))
+        })?;
+        let deadline =
+            ControlDeadline::after(Duration::from_millis(super::policy::HEARTBEAT_INTERVAL_MS))
+                .map_err(|error| {
+                    WindowsCombinedBackendError::Authority(DuplexWorkerError::Transport(
+                        error.to_string(),
+                    ))
+                })?;
+        let outcome = self
+            .control
+            .as_mut()
+            .ok_or_else(|| {
+                WindowsCombinedBackendError::Authority(DuplexWorkerError::IllegalTransition {
+                    from: super::duplex_worker::DuplexWorkerState::Finalizing,
+                    action: "rollover heartbeat after control close",
+                })
+            })?
+            .heartbeat_cycle_with_identity_and_rollover(
+                identity,
+                rollover,
+                store,
+                challenge,
+                deadline,
+            )
             .map_err(WindowsCombinedBackendError::Authority)?;
         self.ensure_target_live()?;
         self.next_heartbeat_due = now

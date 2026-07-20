@@ -887,6 +887,14 @@ fn validate_explicit_source(
                 "used-content texture source omitted a file-backed resource snapshot".into(),
             )
         }
+        RawStaticShaderResourceSource::SnowMudTexture {
+            producer_ordinal,
+            payload_sha256,
+        } => {
+            if *producer_ordinal == 0 || !valid_sha(payload_sha256) {
+                return Err("SnowMudTexture source receipt is incomplete".into());
+            }
+        }
         RawStaticShaderResourceSource::PreparedTarget {
             target,
             producer_capture_sequence,

@@ -1,7 +1,9 @@
 use crate::research_canvas::{
     admit_research_canvas, AdmissionRejection, ResearchCanvasKind, ResearchCanvasRequest,
 };
-use replay_core::{FocusView, Leaf};
+use replay_core::{
+    FocusView, Leaf, NationalFocusPresentationExactView, ViewStatus,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const DEFAULT_FOCUS_ICON_SPRITE: &str = "GFX_goal_unknown";
@@ -67,6 +69,13 @@ pub struct FocusNodePresentation {
     pub icon_sprite: String,
     pub overlay_sprite: Option<String>,
     pub title_loc_key: String,
+    /// Exact A31 leaves. `None` means the d89 sidecar was not used; `Some(false)`
+    /// is an authenticated hidden result and must not be conflated with absence.
+    pub display_progress_percent: Option<u8>,
+    pub continuous_glow_visible: Option<bool>,
+    pub highlight_glow_visible: Option<bool>,
+    pub historical_marker_visible: Option<bool>,
+    pub joint_viewing_country_tag: Option<Option<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -92,6 +101,7 @@ pub enum FocusAdmissionCode {
     InvalidBackground,
     MissingVisibleText,
     Canvas,
+    ExactPresentation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -351,6 +361,11 @@ pub fn admit_national_focus_presentation(
             icon_sprite,
             overlay_sprite,
             title_loc_key: def.title_loc_key.clone(),
+            display_progress_percent: None,
+            continuous_glow_visible: None,
+            highlight_glow_visible: None,
+            historical_marker_visible: None,
+            joint_viewing_country_tag: None,
         });
     }
 
@@ -376,4 +391,125 @@ pub fn admit_national_focus_presentation(
         paused,
         nodes,
     })
+}
+
+/// Production A31/XUI10 admission. The legacy D12/D45 state remains useful for
+/// tree/current/completed context, but every final per-item presentation leaf
+/// and engine order must agree with the exact, hour-bound d89 sidecar.
+pub fn admit_exact_national_focus_presentation(
+    focus: &FocusView,
+    exact: &NationalFocusPresentationExactView,
+    country_tag: &str,
+    topology: &FocusTreeTopology,
+    catalog: &FocusCatalog,
+    canvas: &ResearchCanvasRequest,
+) -> Result<AdmittedNationalFocusPresentation, FocusAdmissionRejection> {
+    if exact.status != ViewStatus::Present {
+        return Err(reject(
+            FocusAdmissionCode::ExactPresentation,
+            "national-focus d89 presentation is absent or unavailable",
+        ));
+    }
+    let presentation = exact.presentation.as_ref().ok_or_else(|| {
+        reject(
+            FocusAdmissionCode::ExactPresentation,
+            "national-focus d89 present status omitted its typed presentation",
+        )
+    })?;
+    if presentation.country_tag != country_tag {
+        return Err(reject(
+            FocusAdmissionCode::ExactPresentation,
+            "national-focus d89 country differs from selected replay country",
+        ));
+    }
+
+    let mut admitted = admit_national_focus_presentation(focus, topology, catalog, canvas)?;
+    if presentation.items.len() != admitted.nodes.len()
+        || presentation.expected_visible_item_count as usize != admitted.nodes.len()
+    {
+        return Err(reject(
+            FocusAdmissionCode::ExactPresentation,
+            "national-focus d89 item count differs from the admitted canvas",
+        ));
+    }
+    for (ordinal, (node, item)) in admitted
+        .nodes
+        .iter_mut()
+        .zip(&presentation.items)
+        .enumerate()
+    {
+        let exact_state = match item.presentation_state_code {
+            0 => FocusNodeState::Unavailable,
+            1 => FocusNodeState::Completed,
+            2 => FocusNodeState::Available,
+            3 => FocusNodeState::Current,
+            _ => {
+                return Err(reject(
+                    FocusAdmissionCode::ExactPresentation,
+                    "national-focus d89 state code escaped typed replay validation",
+                ));
+            }
+        };
+        if item.source_ordinal as usize != ordinal
+            || !portable_focus_id(&item.focus_id)
+            || !portable_focus_id(&node.id)
+            || item.focus_id != node.id
+            || exact_state != node.state
+        {
+            return Err(reject(
+                FocusAdmissionCode::ExactPresentation,
+                format!(
+                    "national-focus d89 item {ordinal} disagrees with D12/D45/UI09 identity or state"
+                ),
+            ));
+        }
+        node.display_progress_percent = Some(item.display_progress_percent);
+        node.continuous_glow_visible = Some(item.continuous_glow_visible);
+        node.highlight_glow_visible = Some(item.highlight_glow_visible);
+        node.historical_marker_visible = Some(item.historical_marker_visible);
+        node.joint_viewing_country_tag = Some(item.joint_viewing_country_tag.clone());
+    }
+    Ok(admitted)
+}
+
+fn portable_focus_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > 128
+        || !(bytes[0].is_ascii_alphanumeric() || bytes[0] == b'_')
+        || value.bytes().any(|byte| {
+            !(byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'@'))
+        })
+        || value.contains("..")
+    {
+        return false;
+    }
+    !value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .is_some_and(|digits| {
+            digits.len() >= 8 && digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+}
+
+#[cfg(test)]
+mod portable_identity_tests {
+    use super::portable_focus_id;
+
+    #[test]
+    fn ui_boundary_preserves_mod_ids_and_rejects_pointer_path_mutations() {
+        for accepted in ["GER_autobahn", "mod-focus.v2", "shared@branch"] {
+            assert!(portable_focus_id(accepted), "{accepted}");
+        }
+        for rejected in [
+            "0x000001abcdef1234",
+            r"C:\\hoi4\\focus",
+            "/opt/hoi4/focus",
+            r"\\host\\share\\focus",
+            "focus/child",
+            "focus child",
+        ] {
+            assert!(!portable_focus_id(rejected), "{rejected}");
+        }
+    }
 }

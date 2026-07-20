@@ -79,6 +79,27 @@
                         "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
                     },
                     {
+                        "sprite":  "GFX_subtech_carrier_plane_currently_researching_item_bg",
+                        "texturefile":  "gfx/interface/subtech_air_techs_currently_researching_item_bg.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/countrytechtreeview.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_technology_air_techs_folder_foreign_currently_researching_item_bg",
+                        "texturefile":  "gfx/interface/researching_anim_strip.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/countrytechtreeview.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
+                        "sprite":  "GFX_technology_bba_air_techs_folder_foreign_currently_researching_item_bg",
+                        "texturefile":  "gfx/interface/researching_anim_strip.dds",
+                        "source_layer":  "vanilla",
+                        "source_file":  "interface/countrytechtreeview.gfx",
+                        "reason":  "absent in vanilla root, integrated_dlc/*, enabled dlc/*, and as extension variant; engine renders placeholder at runtime"
+                    },
+                    {
                         "sprite":  "GFX_TRADE_resource_overall",
                         "texturefile":  "gfx/interface/tradeview/resource_overall.tga",
                         "source_layer":  "vanilla",

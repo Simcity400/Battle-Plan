@@ -427,6 +427,66 @@ def test_archive_mod_replace_path_inventory_survives_relocation(tmp_path: Path):
     assert winner is not None and winner[0]["storage_kind"] == "zip_archive"
 
 
+def test_ui14_collision_join_covers_archive_members_and_loose_mods(tmp_path: Path):
+    archive = tmp_path / "archive.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("common/shared.txt", b"archive winner")
+    _digest, archive_rows, _container_sha, _container_bytes = R._zip_namespace_rows(
+        archive, "mod/archive.mod"
+    )
+    loose = tmp_path / "loose"
+    (loose / "common").mkdir(parents=True)
+    (loose / "common/shared.txt").write_bytes(b"loose loser")
+    _loose_sha, loose_rows = R.hash_tree(
+        loose, layer_kind="mod", layer_id="mod/loose.mod"
+    )
+    winner = {
+        "relpath": "COMMON\\SHARED.TXT",
+        "winner_id": "mod/archive.mod",
+        "sha256": archive_rows[0]["sha256"],
+    }
+
+    R.validate_ui14_mod_collision_winners(
+        {
+            "mod/loose.mod": loose_rows,
+            "mod/archive.mod": archive_rows,
+        },
+        [winner],
+    )
+    with pytest.raises(R.ResolutionError, match=r"effective winner mismatch"):
+        R.validate_ui14_mod_collision_winners(
+            {
+                "mod/loose.mod": loose_rows,
+                "mod/archive.mod": archive_rows,
+            },
+            [{**winner, "sha256": "0" * 64}],
+        )
+    with pytest.raises(R.ResolutionError, match=r"exactly cover mod collisions"):
+        R.validate_ui14_mod_collision_winners(
+            {
+                "mod/loose.mod": loose_rows,
+                "mod/archive.mod": archive_rows,
+            },
+            [],
+        )
+    with pytest.raises(R.ResolutionError, match=r"winner row 0 is malformed"):
+        R.validate_ui14_mod_collision_winners(
+            {
+                "mod/loose.mod": loose_rows,
+                "mod/archive.mod": archive_rows,
+            },
+            [{**winner, "unexpected": True}],
+        )
+    with pytest.raises(R.ResolutionError, match=r"winner row 1 identity is invalid"):
+        R.validate_ui14_mod_collision_winners(
+            {
+                "mod/loose.mod": loose_rows,
+                "mod/archive.mod": archive_rows,
+            },
+            [winner, {**winner, "relpath": "common/shared.txt"}],
+        )
+
+
 def test_engine_mount_plan_rejects_dependency_cycle_instead_of_hanging():
     rows = [
         {

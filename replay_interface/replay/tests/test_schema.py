@@ -1,5 +1,9 @@
 """Tests for replay/schema.py — date math, source map, empty skeletons, validator."""
+import copy
+import hashlib
+import json
 import os
+from pathlib import Path
 import sys
 import unittest
 
@@ -47,6 +51,15 @@ class TestSourceMap(unittest.TestCase):
     def test_prefix_fallback_for_list_subfield(self):
         # divisions.*.equipment is mapped; a deeper subfield inherits it
         self.assertEqual(schema.source_of("divisions.5.equipment"), "M/S")
+
+    def test_orders_group_manager_source(self):
+        self.assertEqual(
+            schema.source_of(
+                "order_of_battle.extra.army_battleplans_depth_live."
+                "orders_group_manager.armies.0.execution_type"
+            ),
+            "C",
+        )
 
     def test_state_and_province(self):
         self.assertEqual(schema.source_of("states.23.owner"), "C/M/S")
@@ -102,11 +115,19 @@ class TestSourceMap(unittest.TestCase):
 
     def test_active_ability_source(self):
         self.assertEqual(
-            schema.source_of("countries.GER.active_abilities.rows.0.ability_id"),
+            schema.source_of("countries.GER.active_abilities.snapshot.rows.0.ability_id"),
             "C/M",
         )
         self.assertEqual(
-            schema.source_of("countries.GER.active_abilities.rows.0.disabled_reason"),
+            schema.source_of("countries.GER.active_abilities.snapshot.rows.0.disabled_reason"),
+            "C/M",
+        )
+        self.assertEqual(
+            schema.source_of("countries.GER.active_abilities.snapshot.rows.0.cooldown_total.kind"),
+            "C/M",
+        )
+        self.assertEqual(
+            schema.source_of("countries.GER.active_abilities.snapshot.rows.0.cost_command_power_fixed"),
             "C/M",
         )
 
@@ -121,6 +142,8 @@ class TestSourceMap(unittest.TestCase):
         self.assertEqual(schema.source_of("special_projects.facilities"), "C/M")
         self.assertEqual(schema.source_of("special_projects.projects"), "C/M")
         self.assertEqual(schema.source_of("special_projects.scientists"), "C/M")
+        self.assertEqual(schema.source_of("special_projects._r2_breakthroughs"), "C")
+        self.assertEqual(schema.source_of("special_projects.project_progress"), "C")
         self.assertEqual(
             schema.source_of("special_projects.scientists.0.traits"), "M")
 
@@ -151,6 +174,24 @@ class TestSourceMap(unittest.TestCase):
 
     def test_unknown_returns_none(self):
         self.assertIsNone(schema.source_of("countries.GER.nonsense.field"))
+
+    def test_wave4_exact_carrier_sources(self):
+        expected = {
+            "countries.GER.extra.nukes_total": "C/S",
+            "_r2_nuke_stockpile_live.countries.0.amount_raw": "C",
+            "countries.GER.dynamic_modifier_instances.0.remaining_days": "C",
+            "_r2_dynamic_modifier_lifecycle_live.transitions.0.kind": "C",
+            "countries.GER.special_project_programs.0.program_id": "C",
+            "runtime_text.contexts.0.final_text.sha256": "C",
+            "diplomacy_world.domain53_extra.operation_instance_rows.0.status": "C",
+            "_r2_national_focus_presentation_live.items.0.focus_id": "C",
+            "_r2_character_presentation_live.trait_trees.0.nodes.0.state": "C",
+            "order_of_battle.extra.naval_missions_status_live.task_forces.0.activity_key": "C/D",
+            "combats.0.land_combat_detail_events_live.attacker.width_observations.0.source": "C",
+            "map._r2_weather_live.provinces.1.snow_raw": "C",
+        }
+        for path, source in expected.items():
+            self.assertEqual(schema.source_of(path), source, path)
 
     def test_every_mapped_value_is_a_legal_tag(self):
         legal = set()
@@ -250,6 +291,42 @@ class TestEmptySkeletons(unittest.TestCase):
 
 
 class TestValidator(unittest.TestCase):
+    def _x9_breakthrough_snapshot(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        country = schema.empty_country()
+        country["_r2_tag_db_id"] = 47
+        snap["countries"] = {"GER": country}
+        snap["special_projects"]["_r2_breakthroughs"] = [{
+            "country": "GER",
+            "tag_db_id": 47,
+            "specialization": "specialization_air",
+            "points_raw": 7932,
+            "_r2_specialization_authority":
+                "exact_a729_serializer_token_enum_join",
+            "_r2_country_authority": "exact_country_identity",
+        }]
+        return snap
+
+    def test_x9_portable_specialization_enum_validates_without_engine_handle(self):
+        self.assertEqual(schema.validate_snapshot(self._x9_breakthrough_snapshot()), [])
+
+    def test_x9_rejects_raw_handle_and_swapped_d18_identity(self):
+        leaked = self._x9_breakthrough_snapshot()
+        leaked["special_projects"]["_r2_breakthroughs"][0][
+            "_r2_specialization_handle"
+        ] = 22216
+        self.assertTrue(any(
+            "nonportable specialization handle" in problem
+            for problem in schema.validate_snapshot(leaked)
+        ))
+
+        swapped = self._x9_breakthrough_snapshot()
+        swapped["special_projects"]["_r2_breakthroughs"][0]["tag_db_id"] = 99
+        self.assertTrue(any(
+            "country/D18 identity invalid" in problem
+            for problem in schema.validate_snapshot(swapped)
+        ))
+
     def _d48_building_snapshot(self):
         snap = schema.empty_snapshot("g1", "1940.9.10.13")
         snap["states"]["42"] = {
@@ -395,28 +472,16 @@ class TestValidator(unittest.TestCase):
         )
 
     def _active_ability_snapshot(self):
-        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        fixture = (Path(__file__).parents[2] / "re_evidence" / "rendering_laws" /
+                   "XUI23" / "canonical_active_abilities_envelope.json")
+        raw = fixture.read_bytes()
+        self.assertEqual(
+            hashlib.sha256(raw).hexdigest(),
+            fixture.with_suffix(".sha256").read_text(encoding="utf-8").split()[0],
+        )
+        snap = schema.empty_snapshot("g1", "1936.1.1.0")
         snap["countries"]["GER"] = schema.empty_country()
-        snap["countries"]["GER"]["active_abilities"] = {
-            "complete": True,
-            "rows": [{
-                "ability_id": "force_attack",
-                "available": False,
-                "active": True,
-                "activation_hour": 17,
-                "cooldown_hours": 504,
-                "cooldown_remaining_hours": 336,
-                "cost_command_power": 22.0,
-                "target_kind": "army_leader",
-                "target_id": "73",
-                "duration_hours": 168,
-                "duration_remaining_hours": 120,
-                "display_order": 0,
-                "icon": "GFX_ability_force_attack",
-                "tooltip": "Force Attack",
-                "disabled_reason": "Already active",
-            }],
-        }
+        snap["countries"]["GER"]["active_abilities"] = json.loads(raw)
         return snap
 
     def test_xui23_active_ability_contract_validates(self):
@@ -424,16 +489,35 @@ class TestValidator(unittest.TestCase):
 
     def test_xui23_active_ability_contract_rejects_inference_shapes(self):
         snap = self._active_ability_snapshot()
-        row = snap["countries"]["GER"]["active_abilities"]["rows"][0]
+        row = snap["countries"]["GER"]["active_abilities"]["snapshot"]["rows"][0]
         row["available"] = "yes"
         row["display_order"] = 2
-        row["cooldown_remaining_hours"] = 505
+        row["cooldown_remaining"] = {"kind": "hours", "hours": 505}
         row["tooltip"] = None
+        row["affected_division_ids"] = ["division:9", "division:9"]
         probs = schema.validate_snapshot(snap)
         for token in (
-            ".available", "display_order", "cooldown remaining exceeds total", ".tooltip"
+            ".available", "display_order", "cooldown remaining exceeds total", ".tooltip",
+            "affected_division_ids",
         ):
             self.assertTrue(any(token in problem for problem in probs), (token, probs))
+
+    def test_xui23_active_ability_authority_mutations_reject(self):
+        base = self._active_ability_snapshot()
+        mutations = (
+            lambda envelope: envelope["carrier"].__setitem__("executable_sha256", "0" * 64),
+            lambda envelope: envelope["snapshot"].__setitem__(
+                "source_record_id", "a729:a36:16959360:GER:1:leader:99"),
+            lambda envelope: envelope["carrier"].__setitem__("frame_hour", 16959361),
+            lambda envelope: envelope["snapshot"]["rows"][0].__setitem__(
+                "cooldown_remaining", {"kind": "indefinite", "hours": 0}),
+            lambda envelope: envelope["snapshot"]["rows"][0].__setitem__(
+                "cost_command_power_scale", 1),
+        )
+        for mutate in mutations:
+            snap = copy.deepcopy(base)
+            mutate(snap["countries"]["GER"]["active_abilities"])
+            self.assertTrue(schema.validate_snapshot(snap))
 
     def _trade_snapshot(self):
         snap = schema.empty_snapshot("g1", "1940.9.10.13")
@@ -754,12 +838,357 @@ class TestValidator(unittest.TestCase):
         probs = schema.validate_snapshot(snap)
         self.assertTrue(any("strategic_navy.max_allowed" in p for p in probs))
 
+    def test_complete_orders_group_manager_validates(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["order_of_battle"]["extra"] = {
+            "army_battleplans_depth_live": {
+                "known": True,
+                "orders_group_manager": {
+                    "known": True,
+                    "complete": True,
+                    "source": "registered_reference_type_53",
+                    "registered_entry_count": 3,
+                    "army_group_count": 1,
+                    "armies": [
+                        {"army_id": 17, "execution_type": 0,
+                         "cohesion_type": 1, "leader_proximity": 2},
+                        {"army_id": 18, "execution_type": 2,
+                         "cohesion_type": 3, "leader_proximity": 4},
+                    ],
+                },
+            },
+        }
+        self.assertEqual(schema.validate_snapshot(snap), [])
+
+    def test_malformed_orders_group_manager_is_rejected(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["order_of_battle"]["extra"] = {
+            "army_battleplans_depth_live": {
+                "known": True,
+                "orders_group_manager": {
+                    "known": True,
+                    "complete": True,
+                    "source": "registered_reference_type_53",
+                    "registered_entry_count": 1,
+                    "army_group_count": 0,
+                    "armies": [
+                        {"army_id": 17, "execution_type": 3,
+                         "cohesion_type": 1, "leader_proximity": 2},
+                    ],
+                },
+            },
+        }
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("execution_type" in problem for problem in probs), probs)
+
+        manager = snap["order_of_battle"]["extra"]["army_battleplans_depth_live"][
+            "orders_group_manager"
+        ]
+        manager["armies"][0]["execution_type"] = 2
+        manager["object_ptr"] = "0x200000000"
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("wrong exact field set" in problem for problem in probs), probs)
+        del manager["object_ptr"]
+        manager.update({
+            "known": False,
+            "complete": False,
+            "source": None,
+            "registered_entry_count": None,
+            "army_group_count": None,
+        })
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("armies should be empty" in problem for problem in probs), probs)
+
     def test_event_validator(self):
         good = schema.make_event("focus_completed", subject="GER", key="X", to="X",
                                  source="D", confidence="interval")
         self.assertEqual(schema.validate_event(good), [])
         bad = schema.make_event("not_a_type", confidence="weird", source="??")
         self.assertTrue(schema.validate_event(bad))
+
+
+class TestWave4ExactSchema(unittest.TestCase):
+    EXECUTABLE = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+
+    def _base(self):
+        return schema.empty_snapshot("wave4", "1936.1.1.0")
+
+    def _project_authority(self, owner_rows, breakthrough_rows, walked):
+        return {
+            "schema": "a729_d41_project_authority_v1", "status": "exact",
+            "record_sequence": 1, "game_hour_raw": 0, "source_status_flags": 0,
+            "executable_sha256": self.EXECUTABLE,
+            "a20_static_receipt_sha256": "f10a9cad9e53c660b50364f5a242891013be38f77cb873b870aede44da1d8f3a",
+            "x9_producer_manifest_sha256": "86f3aa3a916a203ea657cda01a84fb297e1812e03df59b481b004b16e0ad7ff6",
+            "d18_identity_sha256": "0f0afc254220cdfac660083a6e7225b7e1d1b6eed3ae9e6bd935f89c97359ec1",
+            "d18_country_count": 1, "owner_progress_row_count": owner_rows,
+            "breakthrough_row_count": breakthrough_rows, "walked_countries": walked,
+            "aborted_countries": 0, "authority_flags": 15,
+            "carrier_payload_sha256": "11" * 32,
+        }
+
+    def test_native_special_projects_null_and_id_map_variants(self):
+        unavailable = self._base()
+        unavailable["special_projects"] = None
+        self.assertEqual(schema.validate_snapshot(unavailable), [])
+
+        native = self._base()
+        native["special_projects"] = {
+            "facilities": {}, "projects": {}, "scientists": {},
+            "project_lifecycle": None, "project_progress": None,
+            "reward_history": None, "_r2_header_extension": 5,
+            "_r2_project_states": {}, "_r2_breakthroughs": [],
+            "count": 0, "source": "scan",
+        }
+        self.assertEqual(schema.validate_snapshot(native), [])
+
+    def test_a17_exact_projection_and_d18_join(self):
+        snap = self._base()
+        country = schema.empty_country()
+        country["_r2_tag_db_id"] = 17
+        country["extra"] = {
+            "nuke_stockpile_tag_db_id": 17,
+            "nukes_total": 1,
+            "nukes_ready_total": 2,
+            "nukes": [{"amount": 1, "nukes_ready": 2}],
+        }
+        snap["countries"]["GER"] = country
+        snap["_r2_nuke_stockpile_live"] = {
+            "schema_version": 1,
+            "authority": "exact_a729_nuke_stockpile",
+            "executable_sha256": self.EXECUTABLE,
+            "receipt_sha256": "3befb21facb2fdd5724602b2a72655ade23995b8270521aeecbe5eddeed34301",
+            "data_artifact_sha256": "20f780f52303e5c59868fcce8ee09258d4dc997bf5d3aadbdec3a3c00ce509bf",
+            "elapsed_wall_ms": 5,
+            "frame_hour": snap["hour_index"],
+            "source_sequence": 1,
+            "countries": [{
+                "tag_db_id": 17, "nukes_total": 1, "nukes_ready_total": 2,
+                "nukes": [{"amount_raw": 100_000_000, "amount": 1, "nukes_ready": 2}],
+            }],
+        }
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        snap["countries"]["GER"]["extra"]["nukes_total"] = 2
+        self.assertTrue(any("canonical country projection" in p for p in schema.validate_snapshot(snap)))
+
+    def test_a18_known_empty_and_transition_join(self):
+        snap = self._base()
+        snap["measured_countries"] = {
+            "known": True, "source": "country_identity", "count": 0,
+            "tag_db_ids": [], "tags": [], "note": "measured empty",
+        }
+        snap["_r2_dynamic_modifier_lifecycle_live"] = {
+            "schema_version": 2,
+            "authority": "exact_a729_dynamic_modifier_instance",
+            "source_binary_sha256": self.EXECUTABLE,
+            "static_authority_receipt_sha256": "bdbac3cb1158c971b408586611d6aba618ecfe85b5265e3b9e8c2c0bf545e415",
+            "elapsed_wall_ms": 1, "frame_hour": snap["hour_index"],
+            "continuity": "baseline", "transitions": [],
+        }
+        self.assertEqual(schema.validate_snapshot(snap), [])
+
+        country = schema.empty_country()
+        country["dynamic_modifier_instances"] = [{
+            "source_ordinal": 0, "modifier": "test_modifier", "enabled": True,
+            "values_raw": [10], "value_scale": 100_000, "remaining_days": 0,
+        }]
+        snap["countries"]["GER"] = country
+        snap["measured_countries"].update({"count": 1, "tag_db_ids": [17], "tags": ["GER"]})
+        snap["_r2_dynamic_modifier_lifecycle_live"]["transitions"] = [{
+            "owner_tag_db_id": 17, "owner_tag": "GER", "modifier": "test_modifier",
+            "kind": "baseline_present", "previous_remaining_days": None,
+            "current_remaining_days": 0, "expiry_classification": None,
+        }]
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        snap["countries"]["GER"]["dynamic_modifier_instances"][0]["remaining_days"] = None
+        self.assertTrue(any("current instance projection" in p for p in schema.validate_snapshot(snap)))
+
+    def test_a20_project_progress_bounds_and_owner_join(self):
+        snap = self._base()
+        country = schema.empty_country(); country["_r2_tag_db_id"] = 17
+        snap["countries"]["GER"] = country
+        snap["special_projects"]["project_progress"] = {
+            "authority": "exact_a729_owner_joined_project_progress",
+            "countries": {"GER": [{
+                "local_id": 1, "static_def_handle": 2, "current_state_offset": 0x18,
+                "current_state_enum": 1, "prototype_state_enum": 2,
+                "simple_state_1_enum": 3, "simple_state_2_enum": 4,
+                "simple_state_3_enum": 5, "prototype_iterations": 6,
+                "phase_progress_raw": 7, "phase_target_raw": 8, "completed": False,
+            }]},
+            "row_count": 1, "walked_countries": 1, "aborted_countries": 0,
+        }
+        # PPA1 seals both exact inner carriers.  A measured-empty X9 list is
+        # therefore required; null means the breakthrough carrier was absent.
+        snap["special_projects"]["_r2_breakthroughs"] = []
+        snap["special_projects"]["_r2_project_authority"] = self._project_authority(1, 0, 1)
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        snap["special_projects"]["project_progress"]["countries"]["GER"][0]["phase_target_raw"] = 0
+        self.assertTrue(any("exact bounds" in p for p in schema.validate_snapshot(snap)))
+
+    def test_a23_x9_and_runtime_text_semantics(self):
+        snap = self._base()
+        country = schema.empty_country(); country["_r2_tag_db_id"] = 17
+        country["special_project_programs"] = [{
+            "program_id": 4, "province": 12, "unread_prototype_rewards": 0,
+        }]
+        snap["countries"]["GER"] = country
+        snap["special_projects"]["_r2_breakthroughs"] = [{
+            "country": "GER", "tag_db_id": 17, "specialization": "specialization_air",
+            "points_raw": 10,
+            "_r2_specialization_authority": "exact_a729_serializer_token_enum_join",
+            "_r2_country_authority": "exact_country_identity",
+        }]
+        snap["special_projects"]["project_progress"] = {
+            "authority": "exact_a729_owner_joined_project_progress",
+            "countries": {}, "row_count": 0, "walked_countries": 0,
+            "aborted_countries": 0,
+        }
+        snap["special_projects"]["_r2_project_authority"] = self._project_authority(0, 1, 0)
+        empty_hash = hashlib.sha256(b"").hexdigest()
+        snap["runtime_text"] = {
+            "schema": "hoi4-runtime-text-v1", "state": "measured",
+            "contexts_complete": True, "contexts": [{
+                "context_id": "test:reason", "frame_hour": snap["hour_index"],
+                "pov_country_or_global": "GER", "view_id": "leader_traits",
+                "element_id": "trait_tooltip", "source": {"kind": "authored_token", "identity": "trait_reason"},
+                "final_text": {"bytes_hex": "", "utf8": "", "sha256": empty_hash},
+                "variables": {}, "data_functions": {}, "dynamic_colors": {},
+                "layout": {"mode": "authored_reproducible"},
+                "producer": {"setter_entry_rva": 0x1732DAD0, "setter_caller_rva": None,
+                             "formatter_entry_rva": None, "identity_source": "authored_widget_registration"},
+            }],
+        }
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        snap["special_projects"]["_r2_breakthroughs"][0]["specialization"] = None
+        snap["special_projects"]["_r2_breakthroughs"][0]["_r2_specialization_authority"] = None
+        self.assertTrue(any("project_authority" in p for p in schema.validate_snapshot(snap)))
+
+    def test_a30_exact_intel_level_and_d18_swap(self):
+        snap = self._base()
+        for tag, ident in (("GER", 17), ("ENG", 18)):
+            country = schema.empty_country(); country["_r2_tag_db_id"] = ident
+            snap["countries"][tag] = country
+        snap["diplomacy_world"]["domain53_extra"] = {"intel_level_rows": [{
+            "owner": "GER", "target": "ENG", "owner_tag_db_id": 17,
+            "target_tag_db_id": 18, "civilian_raw": 1, "army_raw": 2,
+            "navy_raw": 3, "air_raw": 4, "scale": 100_000,
+            "lane_order": ["civilian", "army", "navy", "air"],
+            "producer": "FUN_141417F60",
+        }]}
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        snap["diplomacy_world"]["domain53_extra"]["intel_level_rows"][0]["target_tag_db_id"] = 17
+        self.assertTrue(any("intel level" in p for p in schema.validate_snapshot(snap)))
+
+    def test_a31_a39_exact_headers_and_runtime_reason_join(self):
+        snap = self._base()
+        country = schema.empty_country(); country["_r2_tag_db_id"] = 17
+        snap["countries"]["GER"] = country
+        snap["_r2_national_focus_presentation_live"] = {
+            "schema_version": 2, "authority": "exact_a729_national_focus_view_items",
+            "executable_sha256": self.EXECUTABLE,
+            "function_manifest_sha256": "303351ed65468aa7655b904998819c96ca1c325f906b5a3bf32c4f18decc7969",
+            "job_receipt_sha256": "c6c3fb002bc05f1e092d7eb9b436aa720ca2cf19ad08f055747216dfa5871b4f",
+            "elapsed_wall_ms": 1, "frame_hour": snap["hour_index"], "source_sequence": 9,
+            "producer_complete": True, "country_tag": "GER", "view_id": "nationalfocusview:GER",
+            "producer_record_identity": f"a729:a31:{snap['hour_index']}:GER:9",
+            "expected_visible_item_count": 0, "items": [],
+        }
+        character_hashes = {
+            "trait_collection_manifest_sha256": "837c8b4db6a6cbc03fa5c950dc24c814f5156d6cf0de08f5041bfcccab7d78c9",
+            "trait_state_manifest_sha256": "63ca92c9e5238a0a342e24209417188b7ceeabd7f01a21c45475f58bb3e29e8c",
+            "trait_progress_manifest_sha256": "134d8fc1d5056e05023ebd46e33bda913ba3dde6c1f0945d423297d464dae547",
+            "ace_refresh_manifest_sha256": "4be836cc67b9f59d748a05a73fa4c5d9c46db357d283d25b756c7ad18fcb2674",
+            "ace_bind_sort_manifest_sha256": "ea545ce9457982590bd42741d1f573a7874594b7c3f836bf290ae8a276f83396",
+            "ace_modifier_setter_artifact_sha256": "3b49c9eb735a03fc711f7322b74a5b86ad64b25ffdbcaa73a390b64a2edfd552",
+            "ace_modifier_formatter_manifest_sha256": "79fd3a1e1b9eafb09566b2721260936c8430acffcf0ba408cc866c6292ac8f0b",
+        }
+        empty_hash = hashlib.sha256(b"").hexdigest()
+        snap["runtime_text"] = {
+            "schema": "hoi4-runtime-text-v1", "state": "measured",
+            "contexts_complete": True, "contexts": [{
+                "context_id": "a39:trait:reason", "frame_hour": snap["hour_index"],
+                "pov_country_or_global": "GER", "view_id": "leader_traits",
+                "element_id": "trait_reason", "source": {
+                    "kind": "authored_token", "identity": "trait_reason",
+                },
+                "final_text": {"bytes_hex": "", "utf8": "", "sha256": empty_hash},
+                "variables": {}, "data_functions": {}, "dynamic_colors": {},
+                "layout": {"mode": "authored_reproducible"},
+                "producer": {
+                    "setter_entry_rva": 0x1732DAD0, "setter_caller_rva": None,
+                    "formatter_entry_rva": None,
+                    "identity_source": "authored_widget_registration",
+                },
+            }],
+        }
+        snap["_r2_character_presentation_live"] = {
+            "schema_version": 2, "authority": "exact_a729_character_presentation",
+            "executable_sha256": self.EXECUTABLE, **character_hashes,
+            "elapsed_wall_ms": 1, "frame_hour": snap["hour_index"],
+            "completeness_record_identity": "a39:complete", "source_sequence": 1,
+            "trait_trees": [{
+                "owner_tag_db_id": 17, "unit_leader_id": 33,
+                "tree_root_offset": 0x120, "nodes": [{
+                    "source_ordinal": 0, "trait_token": "trait_test",
+                    "state_raw": 0, "state": "blocked", "progress_raw": None,
+                    "reason_context_id": "a39:trait:reason",
+                }],
+            }],
+            "ace_portraits": [],
+        }
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        snap["_r2_national_focus_presentation_live"]["expected_visible_item_count"] = 1
+        self.assertTrue(any("completeness" in p for p in schema.validate_snapshot(snap)))
+        snap["_r2_national_focus_presentation_live"]["expected_visible_item_count"] = 0
+        snap["runtime_text"]["contexts"][0]["pov_country_or_global"] = "ENG"
+        self.assertTrue(any("runtime-text join" in p for p in schema.validate_snapshot(snap)))
+
+    def test_d56_and_x2_fail_closed_mutations(self):
+        snap = self._base()
+        snap["order_of_battle"]["extra"] = {"naval_missions_status_live": {
+            "source": "C", "confidence": "validated_slice",
+            "projection": "R2 order_of_battle.extra annotation",
+            "task_force_existence_owner_domain": "oob_command_live",
+            "ship_existence_owner_domain": "ships", "task_force_count": 0,
+            "validated_location_rows": 0, "derived_region_rows": 0,
+            "ship_summary_rows": 0, "dominant_hull_rows": 0,
+            "fixture_required_rows": 0, "convoy_sunk_count_rows": 0,
+            "oob_command_join_checked": True, "oob_command_orphan_rows": 0,
+            "task_forces": [],
+        }}
+        snap["combats"].append({"land_combat_detail_events_live": {"attacker": {
+            "committed": 1, "counts_incomplete": False,
+            "losses_status": "unavailable_no_authenticated_live_carrier",
+            "width_status": "exact_synchronous_call",
+            "width_observations": [{"capture_sequence": 1, "final_width_raw": 5,
+                                    "wrappers": [{"ordinal": 0, "division_id": 9, "width_raw": 5}],
+                                    "source": "authenticated_a729_141299610_call"}],
+        }}})
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        snap["combats"][0]["land_combat_detail_events_live"]["attacker"]["width_observations"][0]["final_width_raw"] = 4
+        self.assertTrue(any("width decomposition" in p for p in schema.validate_snapshot(snap)))
+
+    def test_native_weather_counts_and_null_semantics(self):
+        snap = self._base()
+        regions = {}
+        for region_id in range(305):
+            regions[str(region_id)] = {
+                "region_id": region_id, "temperature": 0.0, "temperature_raw": 0,
+                "phenomenon": 0, "next_weather_change_raw": 0,
+                "active_modifier_count": 0, "intensity": 0,
+                "rain_light": False, "rain_heavy": False, "snow": False,
+                "blizzard": False, "arctic_water": False, "active_signal": False,
+                "phenomenon_active": False, "sandstorm": False,
+            }
+        snap["map"]["_r2_weather_live"] = {
+            "source": "weather_live", "active_region_count": 0,
+            "observed_region_rows": 305, "observed_province_rows": 0,
+            "scale_raw": 100_000, "regions": regions, "provinces": {},
+        }
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        snap["map"]["_r2_weather_live"]["observed_region_rows"] = 304
+        self.assertTrue(any("completeness counts" in p for p in schema.validate_snapshot(snap)))
 
 
 if __name__ == "__main__":

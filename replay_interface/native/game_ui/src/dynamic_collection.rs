@@ -45,6 +45,8 @@ pub struct DynamicCollectionTrace {
     pub source_items: Vec<CollectionItemTrace>,
     pub ordered_item_ids: Vec<String>,
     pub group_boundaries: Vec<CollectionGroupTrace>,
+    /// Controller-level default/family identity. Exact materialized templates
+    /// live on each slot and may be heterogeneous.
     pub row_template_id: String,
     pub materialized_slots: Vec<MaterializedSlotTrace>,
     pub clip_rect: Rect,
@@ -149,11 +151,7 @@ impl DynamicCollectionTrace {
             if !materialized_items.insert(slot.bound_item_id.as_str()) {
                 return Err(fail("item materialized into multiple slots in one frame"));
             }
-            if slot.row_template_id != self.row_template_id {
-                return Err(fail(
-                    "materialized slot template differs from collection template",
-                ));
-            }
+            nonempty(&slot.row_template_id, "materialized row_template_id")?;
             if !ordered.contains(slot.bound_item_id.as_str()) {
                 return Err(fail("materialized slot binds an item outside final order"));
             }

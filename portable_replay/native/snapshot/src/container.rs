@@ -26,6 +26,7 @@ use crate::{Index, SegmentGraph, Snapshot};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Mutex;
 use unicode_normalization::UnicodeNormalization;
@@ -494,6 +495,33 @@ impl Container {
         let archive = FileBackedArchive::open(file, MAX_ENTRIES as u64)
             .map_err(file_archive_error)?;
         Self::from_archive(ContainerArchive::File(archive), expected)
+    }
+
+    /// Open through one pinned handle and bind a whole-file receipt to that
+    /// exact handle before it becomes the retained archive authority. External
+    /// package-set descriptors can therefore authenticate and consume one file
+    /// object without a pathname reopen window.
+    pub fn open_strict_with_file_receipt<P: AsRef<Path>>(
+        path: P,
+        expected: &ExpectedIdentity,
+    ) -> Result<(Container, u64, String), ContainerError> {
+        let mut file = File::open(path.as_ref())?;
+        let source_len = file.metadata()?.len();
+        let mut digest = Sha256::new();
+        let mut buffer = [0u8; 128 * 1024];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            digest.update(&buffer[..read]);
+        }
+        file.seek(SeekFrom::Start(0))?;
+        let source_sha256 = to_hex(&digest.finalize());
+        let archive = FileBackedArchive::open(file, MAX_ENTRIES as u64)
+            .map_err(file_archive_error)?;
+        let container = Self::from_archive(ContainerArchive::File(archive), expected)?;
+        Ok((container, source_len, source_sha256))
     }
 
     /// As [`open`](Self::open) but from in-memory bytes (used by tests).

@@ -14,17 +14,19 @@ use std::time::{Duration, Instant};
 
 use map_viewer::{
     hoi4_map_camera_defines_from_bundle, load_restore_scene_bundle_session_dir, map_wrap_offsets,
-    resolve_bloom_params_for_volume, scene_average_luminance, tree_second_subdraw_verdict,
+    scene_average_luminance, tree_second_subdraw_verdict,
     AverageLuminanceReduction, BloomBlurKernel, BloomParams, GameFileResolver,
     Hoi4MapCameraDefines, LuminanceClampBounds, NativeD3d11PreparedProductionMap,
     NativeD3d11RenderOptions, NativeD3d11TerrainBundle, NativeD3d11TerrainRenderer,
-    C03CameraReplayBinding, ProductionMapCamera, ProductionMapCameraProjection,
+    C03CameraReplayBinding, PostEffectRegionWeightManifest, ProductionMapCamera,
+    ProductionMapCameraProjection,
     RESTORE_PASS_BUNDLE_FILE,
 };
 use replay_core::{
     PoliticalTextureFormat, PoliticalTextureKind, ProductionRenderFrame, RenderSubmit,
     SnowMudReplayReadbackReceipt, SnowMudTexturePacket, StaticMapCommand,
-    StaticShaderResourceSource, TiledLightSubmission, ViewStatus, WorldFrame,
+    StaticShaderResourceSource, TiledLightSubmission, ViewStatus, WeatherProvinceSnowView,
+    WorldFrame,
 };
 use sha2::{Digest, Sha256};
 use winapi::shared::dxgiformat::{
@@ -54,8 +56,8 @@ use crate::camera::Camera;
 use crate::counter_gpu::{CounterGpuFrameAdmission, CounterGpuPass};
 use crate::d3d::{hr_ok, ComPtr, Gfx};
 use crate::grading_law::{
-    file_derived_grade, file_derived_grade_per_frame, load_graphics_grading_defines,
-    FileDerivedGrade, GradingSelectionState,
+    file_derived_grade, file_derived_grade_per_frame, load_posteffect_region_weight_manifest,
+    posteffect_region_winter_input_for_frame, FileDerivedGrade, GradingSelectionState,
 };
 use crate::Result;
 
@@ -361,13 +363,14 @@ struct RestoreFullPostfx {
     evidence_found: bool,
     constants: RestorePostfxConstants,
     color_cube_rgba8: Vec<u8>,
-    /// Files-first bloom law resolved for the SAME posteffect volume the grade
-    /// selected (so bloom and LUT never disagree about the active volume).
+    /// Files-first bloom law from the same exact six-scalar height/region
+    /// blend as the LUT and MiddleGrey.
     /// `Some` iff `enabled`; the render composites `bloom.rgb + scene` before
     /// exposure/tonemap/LUT per restorescene.shader:208-223.
     bloom: Option<RestoreBloomLaw>,
-    /// `MinHdr_MaxHdr` clamp bounds (`MIN_HDR_ADJUSTMENT` / `MAX_HDR_ADJUSTMENT`
-    /// from `00_graphics.lua`, resolver-loaded). `Some` iff `enabled`; drives
+    /// `MinHdr_MaxHdr` clamp bounds after exact per-volume inheritance and
+    /// height/region blending (NGraphics defines are the final fallback).
+    /// `Some` iff `enabled`; drives
     /// the per-frame luminance-adaptation reduction that recomputes exposure
     /// from the rendered scene (`downsample_luminance.shader` chain, ported in
     /// `map_viewer::luminance_law`). When present the composite pass replaces
@@ -380,8 +383,9 @@ struct RestoreFullPostfx {
 }
 
 /// The resolved, files-first bloom parameters + derived separable-blur kernel.
-/// Both come from the installed content through the mod-aware resolver
-/// (`resolve_bloom_params_for_volume`); no captured texture is a runtime input.
+/// The three per-volume fields come from the exact six-scalar grade blend;
+/// emissive strength remains the resolver-loaded NGraphics global. No captured
+/// texture is a runtime input.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct RestoreBloomLaw {
     params: BloomParams,
@@ -398,14 +402,21 @@ struct RestoreGradeKey {
     camera: [u32; 3],
     night: bool,
     winter: bool,
+    region_winter_factor: Option<u32>,
+    region_snow_inputs_sha256: Option<[u8; 32]>,
 }
 
 impl RestoreGradeKey {
-    fn from_state(state: GradingSelectionState) -> Self {
+    fn from_state(
+        state: GradingSelectionState,
+        region_snow_inputs_sha256: Option<[u8; 32]>,
+    ) -> Self {
         Self {
             camera: state.camera.map(f32::to_bits),
             night: state.night,
             winter: state.winter,
+            region_winter_factor: state.region_winter_factor.map(f32::to_bits),
+            region_snow_inputs_sha256,
         }
     }
 }
@@ -415,6 +426,7 @@ struct RestoreGradeCpuUpdate {
     constants_changed: bool,
     color_cube_changed: bool,
     bloom_changed: bool,
+    luminance_bounds_changed: bool,
 }
 
 /// GPU resources for the files-first bloom chain: a half-resolution bright-pass
@@ -610,6 +622,8 @@ struct CapturedPassLayer {
     restore_postfx_cb: Option<ComPtr<ID3D11Buffer>>,
     restore_color_cube: Option<RestoreColorCubeGpu>,
     restore_bloom: Option<RestoreBloomGpu>,
+    restore_region_weights: Option<PostEffectRegionWeightManifest>,
+    current_weather_province_snow: Option<WeatherProvinceSnowView>,
     /// CAP6 captured-map seam only. This pass never executes on the sealed
     /// authenticated portable map/UI route. A CPU batch without an exact
     /// frame tint/order/target receipt remains a feature-local zero draw.
@@ -633,49 +647,35 @@ struct CapturedPassLayer {
     last_render: Option<Duration>,
 }
 
-/// Reject the legacy semantic fade at the exact B13 CPU pre-upload boundary.
-/// Per-province snow/mud values are semantic state and are never rasterized as
-/// a substitute for the producer bytes, and `WorldFrame::snow_mud()` carries no
-/// selected-Present identity with which to authenticate its fade against H.
+/// Resolve only the exact selected-Present-bound SnowMud carrier. Per-province
+/// semantic weather state is deliberately ignored: both the texture bytes and
+/// the fade bits come from the production render carrier's authenticated
+/// producer-to-D3D-consumer join.
 fn recorded_snow_mud_texture<'a>(
-    frame: &WorldFrame,
+    _frame: &WorldFrame,
     render_frame: Option<&'a ProductionRenderFrame>,
 ) -> Result<Option<(&'a SnowMudTexturePacket, f32)>> {
-    let view = frame.snow_mud();
-    if view.status != ViewStatus::Present {
-        return Ok(None);
-    }
-    let Some(fade_phase) = view.fade_phase.measured().copied() else {
-        return Err("recorded SnowMudData blocked: present view has no measured fade_phase".into());
-    };
-    if !fade_phase.is_finite() || !(0.0..=1.0).contains(&fade_phase) {
-        return Err(format!(
-            "recorded SnowMudData blocked: fade_phase must be measured in [0,1], got {fade_phase}"
-        )
-        .into());
-    }
-
     let render_frame = render_frame.ok_or_else(|| {
-        "recorded SnowMudData blocked: present gameplay view has no production render carrier"
+        "recorded SnowMudData blocked: displayed hour has no production render carrier"
             .to_string()
     })?;
     let packet = render_frame.snow_mud_texture.as_ref().ok_or_else(|| {
         "recorded SnowMudData blocked: production render frame has no exact CPU pre-upload packet"
             .to_string()
     })?;
-    let _ = packet;
-    Err(format!(
-        "recorded SnowMudData blocked: semantic fade_phase {fade_phase} is not bound to the packet selected Present; an exact same-boundary SnowMudFade observation is required"
-    )
-    .into())
+    let fade = f32::from_bits(packet.snow_mud_fade_f32_bits);
+    if !fade.is_finite() || !(0.0..=1.0).contains(&fade) {
+        return Err("recorded SnowMudData blocked: exact fade bits are not finite in [0,1]".into());
+    }
+    Ok(Some((packet, fade)))
 }
 
 /// Production admission for the dynamic snow/mud carrier. The captured PAN2
 /// bundle contains one historical `SnowMudTexture`, so treating a missing
 /// replay view as "no update" would silently display that unrelated capture.
-/// Exact replay therefore requires an authenticated producer packet and a
-/// selected-Present-bound fade on every displayed hour. The current semantic
-/// view is deliberately rejected until that fade carrier exists.
+/// Exact replay therefore requires an authenticated producer packet and its
+/// reflected selected-Present fade on every displayed hour. The semantic view
+/// remains deliberately rejected because it is not the same render boundary.
 fn required_recorded_snow_mud_texture<'a>(
     frame: &WorldFrame,
     render_frame: Option<&'a ProductionRenderFrame>,
@@ -920,6 +920,15 @@ impl CapturedPassLayer {
         } else {
             None
         };
+        let restore_region_weights = if restore_postfx.enabled {
+            Some(load_posteffect_region_weight_manifest(resolver).map_err(|error| {
+                format!(
+                    "--postfx-restore-full RG-E1 blocked: exact posteffect region weights failed: {error}"
+                )
+            })?)
+        } else {
+            None
+        };
         let restore_postfx_cb = if restore_postfx.enabled {
             Some(create_restore_postfx_constant_buffer(
                 gfx,
@@ -993,6 +1002,8 @@ impl CapturedPassLayer {
             restore_postfx_cb,
             restore_color_cube,
             restore_bloom,
+            restore_region_weights,
+            current_weather_province_snow: None,
             counter_gpu: CounterGpuPass::new(resolver.clone(), session_dir.to_path_buf()),
             political_cb0,
             recorded_political_bindings: std::collections::BTreeSet::new(),
@@ -1012,6 +1023,14 @@ impl CapturedPassLayer {
     #[allow(dead_code)]
     fn mark_dirty(&mut self) {
         self.dirty = true;
+    }
+
+    fn update_weather_province_snow(&mut self, frame: &WorldFrame) {
+        if self.restore_region_weights.is_some() {
+            self.current_weather_province_snow =
+                Some(frame.weather_province_snow().clone());
+            self.mark_dirty();
+        }
     }
 
     /// B13 production route: upload the portable replay's exact a729 CPU
@@ -1417,24 +1436,38 @@ impl CapturedPassLayer {
         let night = day_night_hour
             .map(|hour| !(0.25..0.75).contains(&hour))
             .unwrap_or(false);
+        let resolver = self.restore_grade_resolver.as_ref().ok_or(
+            "--postfx-restore-full GRADE2 blocked: missing game-file resolver for per-frame grade recomposition",
+        )?;
+        let region_winter = match self.restore_region_weights.as_ref() {
+            Some(weights) => posteffect_region_winter_input_for_frame(
+                resolver,
+                weights,
+                self.current_weather_province_snow.as_ref(),
+                production_camera.position,
+                night,
+            )?,
+            None => None,
+        };
         let state = GradingSelectionState {
             camera: production_camera.position,
             night,
             winter: false,
+            region_winter_factor: region_winter.as_ref().map(|input| input.factor()),
         };
-        let key = RestoreGradeKey::from_state(state);
+        let key = RestoreGradeKey::from_state(
+            state,
+            region_winter.as_ref().map(|input| input.used_rows_sha256),
+        );
         if self.last_restore_grade_key == Some(key) {
             return Ok(Some(RestoreGradeCpuUpdate::default()));
         }
-        let resolver = self.restore_grade_resolver.as_ref().ok_or(
-            "--postfx-restore-full GRADE2 blocked: missing game-file resolver for per-frame grade recomposition",
-        )?;
         let grade = file_derived_grade_per_frame(resolver, state, None).map_err(|err| {
             format!(
                 "--postfx-restore-full GRADE2 blocked: per-frame grade recomposition failed: {err}"
             )
         })?;
-        let bloom = restore_bloom_law_for_volume(resolver, &grade.resolved.value_name)?;
+        let bloom = restore_bloom_law_for_grade(&grade)?;
         let update = apply_restore_grade_cpu(&mut self.restore_postfx, &grade, bloom);
 
         if update.constants_changed {
@@ -1466,13 +1499,18 @@ impl CapturedPassLayer {
             )?;
         }
         self.last_restore_grade_key = Some(key);
-        if update.constants_changed || update.color_cube_changed || update.bloom_changed {
+        if update.constants_changed
+            || update.color_cube_changed
+            || update.bloom_changed
+            || update.luminance_bounds_changed
+        {
             eprintln!(
-                "replay_app: GRADE2 per-frame grade recomposed: {}; uploads constants={}, LUT={}, bloom={}",
+                "replay_app: GRADE2 per-frame grade recomposed: {}; uploads constants={}, LUT={}, bloom={}; luminance bounds changed={}",
                 grade.source_note,
                 update.constants_changed,
                 update.color_cube_changed,
                 update.bloom_changed,
+                update.luminance_bounds_changed,
             );
         }
         Ok(Some(update))
@@ -2005,6 +2043,7 @@ impl MapRenderer {
         let render_frame = frame.production_render().ok_or(
             "occupation stripes DATA_BLOCKED: displayed hour has no production_render carrier carrying ProvinceSecondaryColorMap; refusing the captured bundle texture",
         )?;
+        self.captured.update_weather_province_snow(frame);
         unsafe {
             self.captured
                 .update_recorded_snow_mud(gfx, frame, render_frame)?;
@@ -2304,6 +2343,11 @@ fn seal_snow_mud_h2_receipt(
         selected_candidate_id: selected_present.selected_candidate_id,
         selected_qpc_ticks: selected_present.selected_qpc_ticks,
         selected_present_sha256: packet.selected_present_sha256.clone(),
+        snow_mud_fade_f32_bits: packet.snow_mud_fade_f32_bits,
+        snow_mud_fade_consumer_count: packet.snow_mud_fade_consumer_count,
+        snow_mud_fade_consumer_set_sha256: packet
+            .snow_mud_fade_consumer_set_sha256
+            .clone(),
         observation_sha256: packet.observation_sha256.clone(),
         payload_sha256: packet.payload_sha256.clone(),
         readback_sha256: readback.readback_sha256,
@@ -2321,10 +2365,31 @@ fn seal_snow_mud_h2_receipt(
     Ok(receipt)
 }
 
+/// Seal the capture-independent product executor's per-consumer immutable
+/// upload/readback proof into the same portable H2 contract as the legacy
+/// captured-pass diagnostic path.
+pub(crate) fn seal_product_snow_mud_h2_receipt(
+    packet: &SnowMudTexturePacket,
+    selected_present: &replay_core::SelectedPresentReceipt,
+    proof: &map_viewer::SnowMudD3dExecutionProof,
+) -> Result<SnowMudReplayReadbackReceipt> {
+    seal_snow_mud_h2_receipt(
+        packet,
+        selected_present,
+        SnowMudTextureReadbackProof {
+            readback_sha256: proof.readback_sha256.clone(),
+            mapped_row_pitch: proof.mapped_row_pitch,
+            verified_row_count: proof.verified_row_count,
+            verified_tight_byte_count: proof.verified_tight_byte_count,
+        },
+        proof.replaced_binding_count as usize,
+    )
+}
+
 /// Optional evidence sink. It is output-only and never changes rendering.
 /// When requested, each producer ordinal gets a create-new, fsynced receipt so
 /// scrubbing cannot silently overwrite an earlier member of the H/H2 pair.
-fn persist_snow_mud_h2_receipt(
+pub(crate) fn persist_snow_mud_h2_receipt(
     receipt: &SnowMudReplayReadbackReceipt,
 ) -> Result<Option<PathBuf>> {
     let Some(directory) = std::env::var_os("REPLAY_SNOW_MUD_H2_RECEIPT_DIR") else {
@@ -2753,24 +2818,23 @@ fn restore_full_postfx_from_files(
         ],
         night,
         winter: false,
+        region_winter_factor: None,
     };
     // The replay has no runtime average-luminance readback, so the adaptation
     // law's documented steady-state floor (MIN_HDR_ADJUSTMENT) is used.
     let grade = file_derived_grade(resolver, state, None)?;
-    // Files-first bloom, resolved for the SAME volume the grade selected so the
-    // active volume never disagrees between bloom and LUT (restorescene.shader
-    // composites both from the one PostEffectBase state). Fails closed under the
-    // flag if the modset omits a bloom key (never a silent no-bloom).
-    let bloom = restore_bloom_law_for_volume(resolver, &grade.resolved.value_name)?;
+    // Files-first bloom from the same exact six-scalar composition as the LUT:
+    // height first, then ordinary-to-winter, then spatial region. NGraphics is
+    // the final inheritance fallback; there is no endpoint-only bloom lookup.
+    let bloom = restore_bloom_law_for_grade(&grade)?;
     // Files-first per-frame exposure adaptation (FIDELITY_LEDGER debt #2): the
-    // `MinHdr_MaxHdr` clamp bounds come from the resolver-loaded defines and let
+    // `MinHdr_MaxHdr` clamp bounds come from the same resolved/blended scalar state and let
     // the composite pass recompute AvgLum from the rendered scene each frame via
     // the ported `downsample_luminance.shader` chain, instead of the
     // MIN_HDR_ADJUSTMENT steady-state floor `file_derived_grade` used above.
-    let defines = load_graphics_grading_defines(resolver)?;
     let luminance_bounds = LuminanceClampBounds {
-        min_hdr_adjustment: defines.min_hdr_adjustment,
-        max_hdr_adjustment: defines.max_hdr_adjustment,
+        min_hdr_adjustment: grade.posteffect_scalars.min_hdr_adjustment,
+        max_hdr_adjustment: grade.posteffect_scalars.max_hdr_adjustment,
     };
     restore.evidence_found = true;
     restore.middle_grey = grade.resolved.middle_grey;
@@ -2826,7 +2890,12 @@ pub fn restore_full_postfx_validate_capture(
         "--postfx-validate-capture needs --game <the game install dir> to compose the file-law grade",
     )?;
     let bundle = load_restore_scene_bundle_session_dir(capture_dir)?
-        .ok_or_else(|| format!("no {RESTORE_PASS_BUNDLE_FILE} in {}", capture_dir.display()))?;
+        .ok_or_else(|| {
+            format!(
+                "no {RESTORE_PASS_BUNDLE_FILE} or retained RestoreScene manifest in {}",
+                capture_dir.display()
+            )
+        })?;
     let night = day_night_hour
         .map(|hour| !(0.25..0.75).contains(&hour))
         .unwrap_or(false);
@@ -2838,6 +2907,7 @@ pub fn restore_full_postfx_validate_capture(
         ],
         night,
         winter: false,
+        region_winter_factor: None,
     };
     let grade = file_derived_grade(resolver, state, None)?;
 
@@ -2932,15 +3002,14 @@ impl RestorePostfxConstants {
     }
 }
 
-fn restore_bloom_law_for_volume(
-    resolver: &GameFileResolver,
-    value_name: &str,
-) -> Result<RestoreBloomLaw> {
-    let params = resolve_bloom_params_for_volume(resolver, value_name).map_err(|err| {
-        format!(
-            "--postfx-restore-full bloom blocked: could not resolve files-first bloom params for volume '{value_name}': {err}"
-        )
-    })?;
+fn restore_bloom_law_for_grade(grade: &FileDerivedGrade) -> Result<RestoreBloomLaw> {
+    let params = BloomParams {
+        bloom_width: grade.posteffect_scalars.bloom_width,
+        bloom_scale: grade.posteffect_scalars.bloom_scale,
+        bright_threshold: grade.posteffect_scalars.bright_threshold,
+        emissive_bloom_strength: grade.emissive_bloom_strength,
+    };
+    params.validate()?;
     let kernel = BloomBlurKernel::from_gaussian(params.bloom_width, params.bloom_scale)?;
     Ok(RestoreBloomLaw { params, kernel })
 }
@@ -2954,14 +3023,20 @@ fn apply_restore_grade_cpu(
         grade.resolved.middle_grey,
         grade.average_luminance,
     );
+    let luminance_bounds = Some(LuminanceClampBounds {
+        min_hdr_adjustment: grade.posteffect_scalars.min_hdr_adjustment,
+        max_hdr_adjustment: grade.posteffect_scalars.max_hdr_adjustment,
+    });
     let update = RestoreGradeCpuUpdate {
         constants_changed: restore.constants != constants
             || restore.middle_grey.to_bits() != grade.resolved.middle_grey.to_bits(),
         color_cube_changed: restore.color_cube_rgba8 != grade.color_cube_rgba8,
         bloom_changed: restore.bloom != Some(bloom),
+        luminance_bounds_changed: restore.luminance_bounds != luminance_bounds,
     };
     restore.constants = constants;
     restore.middle_grey = grade.resolved.middle_grey;
+    restore.luminance_bounds = luminance_bounds;
     if update.color_cube_changed {
         restore.color_cube_rgba8 = grade.color_cube_rgba8.clone();
     }
@@ -3368,6 +3443,9 @@ posteffect_values = {
     name = standard
     lut = "gfx/world/colorcorrection_standard.tga"
     tonemap_middlegrey = 0.55
+    BLOOM_WIDTH = 1.5
+    BLOOM_SCALE = 0.9
+    BRIGHT_THRESHOLD = 0.9
 }
 posteffect_values = {
     name = default
@@ -3379,6 +3457,11 @@ posteffect_values = {
     inherit = standard
     lut = "gfx/world/colorcorrection_midrange.tga"
     tonemap_middlegrey = 0.45
+    hdr_min_adjustment = 0.8
+    hdr_max_adjustment = 0.6
+    BLOOM_WIDTH = 2.5
+    BLOOM_SCALE = 1.2
+    BRIGHT_THRESHOLD = 0.4
 }
 posteffect_values = {
     name = max_distance
@@ -3415,6 +3498,14 @@ TONE_MAP_MIDDLE_GREY = 0.5,
 TONE_MAP_LUMINANCE_WHITE = 1.0,
 MIN_HDR_ADJUSTMENT = 0.5,
 MAX_HDR_ADJUSTMENT = 1.0,
+BLOOM_WIDTH = 1.5,
+BLOOM_SCALE = 0.9,
+BRIGHT_THRESHOLD = 0.9,
+EMISSIVE_BLOOM_STRENGTH = 1.0,
+POSTEFFECT_PER_PROVINCE_MIN_SNOW = 0.1,
+POSTEFFECT_PER_PROVINCE_MAX_SNOW = 0.2,
+POSTEFFECT_TOTAL_MIN_SNOW = 0.0,
+POSTEFFECT_TOTAL_MAX_SNOW = 0.05,
 "#,
         )
         .expect("write graphics defines");
@@ -3424,25 +3515,18 @@ MAX_HDR_ADJUSTMENT = 1.0,
         dir
     }
 
-    fn test_bloom_law() -> RestoreBloomLaw {
-        let params = BloomParams {
-            bloom_width: 2.0,
-            bloom_scale: 1.0,
-            bright_threshold: 0.4,
-            emissive_bloom_strength: 0.2,
-        };
-        RestoreBloomLaw {
-            params,
-            kernel: BloomBlurKernel::from_gaussian(params.bloom_width, params.bloom_scale)
-                .expect("test bloom kernel"),
-        }
-    }
-
     #[test]
     fn gate_grade2_changed_input_changes_lut_and_same_input_skips_upload() {
         let game_dir = write_grade2_fixture_game_dir("grade2_render_upload");
         let resolver = GameFileResolver::vanilla(game_dir).expect("fixture resolver");
-        let bloom = test_bloom_law();
+        let high_state = GradingSelectionState {
+            camera: [2816.0, 2958.0, 1400.0],
+            night: false,
+            winter: false,
+            region_winter_factor: None,
+        };
+        let high = file_derived_grade_per_frame(&resolver, high_state, None).expect("high grade");
+        let bloom = restore_bloom_law_for_grade(&high).expect("high bloom");
         let mut restore = RestoreFullPostfx {
             enabled: true,
             evidence_found: true,
@@ -3452,12 +3536,6 @@ MAX_HDR_ADJUSTMENT = 1.0,
             luminance_bounds: None,
             middle_grey: 1.0,
         };
-        let high_state = GradingSelectionState {
-            camera: [2816.0, 2958.0, 1400.0],
-            night: false,
-            winter: false,
-        };
-        let high = file_derived_grade_per_frame(&resolver, high_state, None).expect("high grade");
         let mut lut_uploads = 0u32;
         let first = apply_restore_grade_cpu(&mut restore, &high, bloom);
         if first.color_cube_changed {
@@ -3489,6 +3567,7 @@ MAX_HDR_ADJUSTMENT = 1.0,
             camera: [2816.0, 1700.0, 1400.0],
             night: false,
             winter: false,
+            region_winter_factor: None,
         };
         let faded =
             file_derived_grade_per_frame(&resolver, faded_state, None).expect("faded grade");
@@ -3496,18 +3575,37 @@ MAX_HDR_ADJUSTMENT = 1.0,
             faded.color_cube_rgba8, high_bytes,
             "changed camera height inside the file fade window must change LUT bytes"
         );
-        let changed = apply_restore_grade_cpu(&mut restore, &faded, bloom);
+        let faded_bloom = restore_bloom_law_for_grade(&faded).expect("faded bloom");
+        let changed = apply_restore_grade_cpu(&mut restore, &faded, faded_bloom);
         if changed.color_cube_changed {
             lut_uploads += 1;
         }
         assert!(
-            changed.color_cube_changed && changed.constants_changed,
-            "changed grade input must request LUT and constants uploads"
+            changed.color_cube_changed
+                && changed.constants_changed
+                && changed.bloom_changed
+                && changed.luminance_bounds_changed,
+            "changed six-scalar grade input must update LUT, constants, bloom, and HDR bounds"
         );
         assert_eq!(
             lut_uploads, 2,
             "only first frame and changed-input frame may upload the LUT"
         );
+    }
+
+    #[test]
+    fn restore_grade_cache_key_includes_selected_region_snow_rows() {
+        let state = GradingSelectionState {
+            camera: [2712.5, 300.0, 1700.0],
+            night: false,
+            winter: false,
+            region_winter_factor: Some(0.5),
+        };
+        let first = RestoreGradeKey::from_state(state, Some([0x11; 32]));
+        let changed_snow_same_factor =
+            RestoreGradeKey::from_state(state, Some([0x22; 32]));
+        assert_ne!(first, changed_snow_same_factor);
+        assert_ne!(first, RestoreGradeKey::from_state(state, None));
     }
 
     #[test]
@@ -3565,7 +3663,7 @@ MAX_HDR_ADJUSTMENT = 1.0,
             .expect_err("missing first-hour SnowMudData must not retain PAN2's texture");
         assert!(
             err.to_string()
-                .contains("refusing the captured bundle texture"),
+                .contains("displayed hour has no production render carrier"),
             "{err}"
         );
     }

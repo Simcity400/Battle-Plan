@@ -15,7 +15,8 @@ use compact_contract::campaign_rollover::{
 use compact_contract::stream_validator::StreamIdentityMode;
 
 use crate::control_transport::{
-    ControlCancellation, ControlDeadline, DeadlineControlChannel, DeadlineControlIo, MessageKind,
+    ControlCancellation, ControlDeadline, ControlFrame, DeadlineControlChannel, DeadlineControlIo,
+    MessageKind,
 };
 use crate::duplex_session::identity_control::{
     AcknowledgedFirstCompactRecord, IdentityDurableCandidateSink,
@@ -214,6 +215,33 @@ impl RecorderRolloverCoordinator {
         let frame = channel
             .recv_until(deadline, cancellation)
             .map_err(|error| self.fail(RecorderRolloverError::Transport(error.to_string())))?;
+        self.receive_frame_drain_seal_open_and_ack(
+            channel,
+            store,
+            frame,
+            deadline,
+            cancellation,
+        )
+    }
+
+    /// Execute a rollover from a frame already consumed by the single H4CT
+    /// router. This prevents the heartbeat loop and rollover transaction from
+    /// racing two independent receives on one ordered control channel.
+    pub fn receive_frame_drain_seal_open_and_ack<I, S>(
+        &mut self,
+        channel: &mut DeadlineControlChannel<I>,
+        store: &mut S,
+        frame: ControlFrame,
+        deadline: ControlDeadline,
+        cancellation: &ControlCancellation,
+    ) -> Result<RolloverProposeV1, RecorderRolloverError>
+    where
+        I: DeadlineControlIo,
+        S: RecorderRolloverStore,
+    {
+        if self.phase != RecorderRolloverPhase::Streaming {
+            return Err(RecorderRolloverError::IllegalPhase(self.phase));
+        }
         if frame.kind != MessageKind::RolloverPropose {
             channel.poison();
             return Err(self.fail(RecorderRolloverError::WrongMessage(frame.kind)));

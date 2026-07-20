@@ -185,10 +185,9 @@ fn exact() -> IntelligenceUiTrace {
             }],
             &["intel:ENG"],
         ),
-        networks: measured(
-            frame,
-            "networks",
-            vec![IntelNetworkUiRow {
+        networks: ProducerValue::Measured(IntelNetworkSummary {
+            order_authority: NetworkSummaryOrderAuthority::ProductStableContentKeyV1,
+            rows: vec![IntelNetworkUiRow {
                 stable_item_id: "network:1".into(),
                 network_id: "net:1".into(),
                 owner_country: "GER".into(),
@@ -198,8 +197,7 @@ fn exact() -> IntelligenceUiTrace {
                 strength_fixed: 75_000,
                 national_coverage_fixed: 20_000,
             }],
-            &["network:1"],
-        ),
+        }),
         visibility: visible(),
     }
 }
@@ -207,6 +205,13 @@ fn exact() -> IntelligenceUiTrace {
 #[test]
 fn exact_trace_admits_and_preserves_controller_order() {
     let trace = exact();
+    let ProducerValue::Measured(assignments) =
+        project_operation_assignments(&trace.operatives, &trace.operations)
+            .expect("exact OPIN inverse")
+    else {
+        panic!("exact operation assignments must be measured");
+    };
+    assert_eq!(assignments.get("7").map(String::as_str), Some("op:9"));
     let admitted = admit_intelligence_ui(&trace).expect("exact XUI14 trace");
     assert_eq!(
         admitted
@@ -225,6 +230,68 @@ fn exact_trace_admits_and_preserves_controller_order() {
         admitted.visibility(IntelligenceSurface::Networks),
         VisibilityDisposition::Visible
     );
+}
+
+#[test]
+fn network_summary_uses_product_stable_content_key_not_engine_order() {
+    let mut trace = exact();
+    let ProducerValue::Measured(summary) = &mut trace.networks else {
+        unreachable!();
+    };
+    summary.rows.insert(
+        0,
+        IntelNetworkUiRow {
+            stable_item_id: "network:2".into(),
+            network_id: "net:0".into(),
+            owner_country: "GER".into(),
+            target_country: "FRA".into(),
+            operative_ids: Vec::new(),
+            state_ids: vec![2, 8],
+            strength_fixed: 25_000,
+            national_coverage_fixed: 10_000,
+        },
+    );
+    let admitted = admit_intelligence_ui(&trace).expect("exact network values");
+    assert_eq!(
+        admitted
+            .ordered_networks()
+            .unwrap()
+            .into_iter()
+            .map(|row| row.network_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["net:1", "net:0"]
+    );
+}
+
+#[test]
+fn operation_assignment_projection_rejects_cross_operation_duplicates() {
+    let mut trace = exact();
+    let ProducerValue::Measured(operations) = &mut trace.operations else {
+        unreachable!();
+    };
+    let mut duplicate = operations.rows[0].clone();
+    duplicate.stable_item_id = "operation:10".into();
+    duplicate.operation_id = "op:10".into();
+    operations.rows.push(duplicate);
+    assert!(project_operation_assignments(&trace.operatives, &trace.operations)
+        .unwrap_err()
+        .message
+        .contains("multiple operations"));
+}
+
+#[test]
+fn operation_assignment_projection_preserves_unavailable_inputs() {
+    let trace = exact();
+    let unavailable = ProducerValue::Unobtained {
+        reason: "controller frame missing".into(),
+    };
+    let ProducerValue::Unobtained { reason } =
+        project_operation_assignments(&trace.operatives, &unavailable)
+            .expect("unavailable input is a typed result")
+    else {
+        panic!("unavailable operation source must not become measured-empty");
+    };
+    assert!(reason.contains("controller frame missing"));
 }
 
 #[test]

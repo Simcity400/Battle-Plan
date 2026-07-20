@@ -76,14 +76,8 @@ fn main() -> Result<()> {
 
     // --- Read the raw captured MainScene + RestoreBloom payloads. ---
     let raw = serde_json::from_slice::<serde_json::Value>(&fs::read(&bundle_path)?)?;
-    let draw = raw
-        .get("draws")
-        .and_then(|d| d.as_array())
-        .and_then(|d| d.first())
-        .ok_or("bloom validation blocked: bundle has no draws[0]")?;
-
-    let main_bind = find_ps_srv(draw, MAIN_SCENE_NAME)?;
-    let bloom_bind = find_ps_srv(draw, RESTORE_BLOOM_NAME)?;
+    let main_bind = find_ps_srv(&raw, MAIN_SCENE_NAME)?;
+    let bloom_bind = find_ps_srv(&raw, RESTORE_BLOOM_NAME)?;
 
     let main_scene = load_captured_rgba16f(&bundle_dir, &main_bind, MAIN_SCENE_NAME)?;
     let expected_bloom = load_captured_rgba16f(&bundle_dir, &bloom_bind, RESTORE_BLOOM_NAME)?;
@@ -262,15 +256,19 @@ fn locate_bundle(arg: &Path) -> Result<(PathBuf, PathBuf)> {
     }
     if arg.is_dir() {
         let path = arg.join(map_viewer::RESTORE_PASS_BUNDLE_FILE);
-        if !path.is_file() {
-            return Err(format!(
-                "bloom validation blocked: {} has no {}",
-                arg.display(),
-                map_viewer::RESTORE_PASS_BUNDLE_FILE
-            )
-            .into());
+        if path.is_file() {
+            return Ok((arg.to_path_buf(), path));
         }
-        return Ok((arg.to_path_buf(), path));
+        let retained = arg.join("manifest.json");
+        if retained.is_file() {
+            return Ok((arg.to_path_buf(), retained));
+        }
+        return Err(format!(
+            "bloom validation blocked: {} has neither {} nor a retained manifest.json",
+            arg.display(),
+            map_viewer::RESTORE_PASS_BUNDLE_FILE
+        )
+        .into());
     }
     Err(format!(
         "bloom validation blocked: --bundle {} is not a file or directory",
@@ -289,7 +287,17 @@ struct CapturedBinding {
     dxgi_format: u64,
 }
 
-fn find_ps_srv(draw: &serde_json::Value, declared_name: &str) -> Result<CapturedBinding> {
+fn find_ps_srv(root: &serde_json::Value, declared_name: &str) -> Result<CapturedBinding> {
+    if root.get("schema").and_then(|value| value.as_str())
+        == Some("hoi4.restore-gate.retained-rdc.v1")
+    {
+        return find_retained_input(root, declared_name);
+    }
+    let draw = root
+        .get("draws")
+        .and_then(|draws| draws.as_array())
+        .and_then(|draws| draws.first())
+        .ok_or("bloom validation blocked: bundle has no draws[0]")?;
     let resources = draw
         .get("shader_resources")
         .and_then(|r| r.as_array())
@@ -336,6 +344,62 @@ fn find_ps_srv(draw: &serde_json::Value, declared_name: &str) -> Result<Captured
         row_pitch,
         file_offset,
         dxgi_format,
+    })
+}
+
+fn find_retained_input(root: &serde_json::Value, declared_name: &str) -> Result<CapturedBinding> {
+    let expected_slot = match declared_name {
+        MAIN_SCENE_NAME => 0,
+        RESTORE_BLOOM_NAME => 1,
+        _ => return Err(format!("unsupported retained RestoreScene input {declared_name}").into()),
+    };
+    let inputs = root
+        .get("inputs")
+        .and_then(|inputs| inputs.as_array())
+        .ok_or("bloom validation blocked: retained manifest has no inputs")?;
+    let matching: Vec<_> = inputs
+        .iter()
+        .filter(|row| {
+            row.get("symbol").and_then(|value| value.as_str()) == Some(declared_name)
+                && row.get("consumer_slot").and_then(|value| value.as_u64())
+                    == Some(expected_slot)
+        })
+        .collect();
+    if matching.len() != 1 {
+        return Err(format!(
+            "bloom validation blocked: retained manifest has {} {declared_name}@t{expected_slot} rows",
+            matching.len()
+        )
+        .into());
+    }
+    let row = matching[0];
+    let texture = row
+        .get("texture")
+        .ok_or_else(|| format!("bloom validation blocked: {declared_name} has no texture"))?;
+    let format = texture
+        .get("format")
+        .and_then(|value| value.get("name"))
+        .and_then(|value| value.as_str());
+    if format != Some("R16G16B16A16_FLOAT") {
+        return Err(format!(
+            "bloom validation blocked: retained {declared_name} format is {format:?}, expected R16G16B16A16_FLOAT"
+        )
+        .into());
+    }
+    let width = json_usize(texture, "width", declared_name)?;
+    let height = json_usize(texture, "height", declared_name)?;
+    let file = row
+        .get("file")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("bloom validation blocked: retained {declared_name} has no file"))?
+        .to_string();
+    Ok(CapturedBinding {
+        file,
+        width,
+        height,
+        row_pitch: width * 8,
+        file_offset: 0,
+        dxgi_format: DXGI_FORMAT_R16G16B16A16_FLOAT,
     })
 }
 

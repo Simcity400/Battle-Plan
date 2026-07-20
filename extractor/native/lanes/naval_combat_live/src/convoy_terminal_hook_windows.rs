@@ -22,9 +22,17 @@ use crate::convoy_terminal_attribution::{
     ActivationBlocker, ConvoyTerminalAttributionCarrier, ExactMemory, A729_CALL_BYTES,
     A729_EXE_SHA256, A729_HOOK_RVA, MAX_COUNTRY_TAG_DB_ID,
 };
+use crate::convoy_route_source::{
+    read_exact_a729_client_route, ExactA729RouteRead, RouteSourceError,
+};
 use crate::convoy_terminal_runtime::{
-    clear_convoy_terminal_resolver_snapshot, try_current_convoy_terminal_resolver_snapshot,
-    ResolverPublicationReceipt,
+    clear_convoy_terminal_resolver_snapshot, current_convoy_terminal_publication_receipt,
+    try_current_convoy_terminal_resolver_snapshot, ResolverPublicationReceipt,
+};
+use crate::convoy_transport_attack::{
+    encode_convoy_transport_attack_batch, BatchDecodeError, ConvoyD70MutationKind,
+    ConvoyD70MutationProof, ConvoyTransportAttackRow, ConvoyTransportAttackTelemetry,
+    ConvoyTransportAttackWitness,
 };
 
 type Bool = i32;
@@ -150,6 +158,11 @@ pub struct ConvoyTerminalHookTelemetry {
 pub struct ConvoyTerminalDrain {
     pub events: Vec<ConvoyTerminalValidatedEvent>,
     pub cumulative_telemetry: ConvoyTerminalHookTelemetry,
+    pub queue_drain_complete: bool,
+    pub remaining_events: u32,
+    pub active_callbacks: u32,
+    pub producer_sequence_next: u64,
+    pub resolver: ResolverPublicationReceipt,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -159,6 +172,7 @@ pub struct ConvoyTerminalHookHeartbeat {
     pub active_callbacks: usize,
     pub resolver: ResolverPublicationReceipt,
     pub telemetry: ConvoyTerminalHookTelemetry,
+    pub producer_sequence_next: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -183,6 +197,24 @@ pub enum ConvoyTerminalInstallError {
     PatchedBytesDrift,
     QuiesceTimeout,
     ResolverClear(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConvoyTerminalSealError {
+    Hook(ConvoyTerminalInstallError),
+    Batch(BatchDecodeError),
+}
+
+impl From<ConvoyTerminalInstallError> for ConvoyTerminalSealError {
+    fn from(value: ConvoyTerminalInstallError) -> Self {
+        Self::Hook(value)
+    }
+}
+
+impl From<BatchDecodeError> for ConvoyTerminalSealError {
+    fn from(value: BatchDecodeError) -> Self {
+        Self::Batch(value)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -233,6 +265,17 @@ impl ExactMemory for ProcessMemory {
                 && read == out.len()
         }
     }
+}
+
+/// Resolve one complete client handle through the exact engine reference
+/// registry law and concrete producer serializer layout. This uses only
+/// repeated process-memory reads: it performs no engine call, save correlation,
+/// or endpoint inference.
+pub fn read_live_a729_client_route(
+    client: crate::convoy_terminal_attribution::EntityHandle,
+) -> Result<ExactA729RouteRead, RouteSourceError> {
+    let module_base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
+    read_exact_a729_client_route(&ProcessMemory, module_base, client)
 }
 
 macro_rules! counters {
@@ -331,11 +374,14 @@ pub fn convoy_terminal_hook_heartbeat() -> ConvoyTerminalHookHeartbeat {
         active_callbacks: ACTIVE_CALLBACKS.load(Ordering::Acquire),
         resolver,
         telemetry: telemetry(),
+        producer_sequence_next: PRODUCER_SEQUENCE.load(Ordering::Acquire),
     }
 }
 
 pub fn drain_convoy_terminal_events(max_events: usize) -> ConvoyTerminalDrain {
     let mut events = Vec::new();
+    let mut queue_drain_complete = false;
+    let mut remaining_events = 0u32;
     if max_events != 0 {
         let queue = EVENT_QUEUE.get_or_init(|| Mutex::new(VecDeque::new()));
         if let Ok(mut queue) = queue.try_lock() {
@@ -346,12 +392,94 @@ pub fn drain_convoy_terminal_events(max_events: usize) -> ConvoyTerminalDrain {
                     events.push(event);
                 }
             }
+            remaining_events = u32::try_from(queue.len()).unwrap_or(u32::MAX);
+            queue_drain_complete = remaining_events == 0;
         }
     }
     ConvoyTerminalDrain {
         events,
         cumulative_telemetry: telemetry(),
+        queue_drain_complete,
+        remaining_events,
+        active_callbacks: u32::try_from(ACTIVE_CALLBACKS.load(Ordering::Acquire))
+            .unwrap_or(u32::MAX),
+        producer_sequence_next: PRODUCER_SEQUENCE.load(Ordering::Acquire),
+        resolver: current_convoy_terminal_publication_receipt().unwrap_or_default(),
     }
+}
+
+/// Drain the callback queue into one strict domain-90 CTA2 payload.
+///
+/// `None` means the hook is not installed. An installed empty drain retains
+/// its cumulative heartbeat witness and is exact only when every counter,
+/// queue and resolver-publication invariant proves completeness.
+pub fn drain_convoy_transport_attack_payload(
+    max_events: usize,
+) -> Result<Option<Vec<u8>>, BatchDecodeError> {
+    let drain = drain_convoy_terminal_events(max_events);
+    if !INSTALLED.load(Ordering::Acquire) {
+        return Ok(None);
+    }
+    encode_convoy_transport_attack_drain(drain, true).map(Some)
+}
+
+fn encode_convoy_transport_attack_drain(
+    drain: ConvoyTerminalDrain,
+    observed_hook_installed: bool,
+) -> Result<Vec<u8>, BatchDecodeError> {
+    let rows = drain
+        .events
+        .iter()
+        .map(|event| ConvoyTransportAttackRow {
+            carrier: event.carrier,
+            d70: ConvoyD70MutationProof {
+                kind: match event.d70.kind {
+                    D70MutationKind::IncrementExisting => {
+                        ConvoyD70MutationKind::IncrementExisting
+                    }
+                    D70MutationKind::AppendFirstSeen => {
+                        ConvoyD70MutationKind::AppendFirstSeen
+                    }
+                },
+                ordinal: event.d70.ordinal,
+                before_rows: event.d70.before_rows,
+                after_rows: event.d70.after_rows,
+                before_count: event.d70.before_count,
+                after_count: event.d70.after_count,
+            },
+        })
+        .collect::<Vec<_>>();
+    let telemetry = drain.cumulative_telemetry;
+    let witness = ConvoyTransportAttackWitness {
+        hook_installed: observed_hook_installed,
+        queue_drain_complete: drain.queue_drain_complete,
+        producer_sequence_next: drain.producer_sequence_next,
+        drained_rows: u32::try_from(rows.len()).unwrap_or(u32::MAX),
+        remaining_events: drain.remaining_events,
+        active_callbacks: drain.active_callbacks,
+        resolver_publication_sequence: drain.resolver.publication_sequence,
+        resolver_game_hour_raw: drain.resolver.game_hour_raw,
+        resolver_member_bindings: drain.resolver.member_bindings,
+        resolver_route_bindings: drain.resolver.route_bindings,
+        telemetry: ConvoyTransportAttackTelemetry {
+            callbacks_seen: telemetry.callbacks_seen,
+            original_calls: telemetry.original_calls,
+            events_emitted: telemetry.events_emitted,
+            dropped_no_original: telemetry.dropped_no_original,
+            dropped_teardown: telemetry.dropped_teardown,
+            dropped_nested: telemetry.dropped_nested,
+            dropped_capture_busy: telemetry.dropped_capture_busy,
+            dropped_hour_or_epoch: telemetry.dropped_hour_or_epoch,
+            dropped_resolver: telemetry.dropped_resolver,
+            dropped_candidate: telemetry.dropped_candidate,
+            dropped_d70_pre: telemetry.dropped_d70_pre,
+            dropped_d70_post: telemetry.dropped_d70_post,
+            dropped_d70_mutation: telemetry.dropped_d70_mutation,
+            dropped_queue_busy: telemetry.dropped_queue_busy,
+            dropped_queue_full: telemetry.dropped_queue_full,
+        },
+    };
+    encode_convoy_transport_attack_batch(&rows, witness)
 }
 
 fn telemetry() -> ConvoyTerminalHookTelemetry {
@@ -372,6 +500,32 @@ fn telemetry() -> ConvoyTerminalHookTelemetry {
         dropped_d70_mutation: load(&DROP_D70_MUTATION),
         dropped_queue_busy: load(&DROP_QUEUE_BUSY),
         dropped_queue_full: load(&DROP_QUEUE_FULL),
+    }
+}
+
+fn reset_observer_state_for_install() {
+    for counter in [
+        &CALLBACKS_SEEN,
+        &ORIGINAL_CALLS,
+        &EVENTS_EMITTED,
+        &DROP_NO_ORIGINAL,
+        &DROP_TEARDOWN,
+        &DROP_NESTED,
+        &DROP_CAPTURE_BUSY,
+        &DROP_HOUR_OR_EPOCH,
+        &DROP_RESOLVER,
+        &DROP_CANDIDATE,
+        &DROP_D70_PRE,
+        &DROP_D70_POST,
+        &DROP_D70_MUTATION,
+        &DROP_QUEUE_BUSY,
+        &DROP_QUEUE_FULL,
+    ] {
+        counter.store(0, Ordering::Release);
+    }
+    PRODUCER_SEQUENCE.store(1, Ordering::Release);
+    if let Some(queue) = EVENT_QUEUE.get() {
+        queue.lock().unwrap_or_else(|poison| poison.into_inner()).clear();
     }
 }
 
@@ -684,6 +838,7 @@ pub fn install_convoy_terminal_hook(
         unsafe { VirtualFree(relay.cast(), 0, MEM_RELEASE) };
         return Err(ConvoyTerminalInstallError::ByteGateDrift);
     }
+    reset_observer_state_for_install();
     MODULE_BASE.store(module_base, Ordering::Release);
     ORIGINAL_TARGET.store(prepared.original_target_address, Ordering::Release);
     TEARDOWN.store(false, Ordering::Release);
@@ -720,12 +875,11 @@ pub fn install_convoy_terminal_hook(
     Ok(())
 }
 
-pub fn uninstall_convoy_terminal_hook() -> Result<(), ConvoyTerminalInstallError> {
+fn restore_and_quiesce_convoy_terminal_hook(
+) -> Result<Option<InstalledState>, ConvoyTerminalInstallError> {
     let mut state = INSTALL_STATE.lock().unwrap_or_else(|poison| poison.into_inner());
     let Some(mut installed) = *state else {
-        clear_convoy_terminal_resolver_snapshot()
-            .map_err(ConvoyTerminalInstallError::ResolverClear)?;
-        return Ok(());
+        return Ok(None);
     };
     TEARDOWN.store(true, Ordering::Release);
     if !installed.patch_restored {
@@ -771,13 +925,49 @@ pub fn uninstall_convoy_terminal_hook() -> Result<(), ConvoyTerminalInstallError
         }
         std::thread::yield_now();
     }
+    Ok(Some(installed))
+}
+
+fn finalize_convoy_terminal_uninstall(
+    installed: Option<InstalledState>,
+) -> Result<(), ConvoyTerminalInstallError> {
     clear_convoy_terminal_resolver_snapshot().map_err(ConvoyTerminalInstallError::ResolverClear)?;
-    unsafe { VirtualFree(installed.relay as *mut c_void, 0, MEM_RELEASE) };
+    if let Some(installed) = installed {
+        unsafe { VirtualFree(installed.relay as *mut c_void, 0, MEM_RELEASE) };
+    }
     ORIGINAL_TARGET.store(0, Ordering::Release);
     MODULE_BASE.store(0, Ordering::Release);
-    *state = None;
+    *INSTALL_STATE.lock().unwrap_or_else(|poison| poison.into_inner()) = None;
     TEARDOWN.store(false, Ordering::Release);
     Ok(())
+}
+
+/// Restore the callsite, wait for every in-flight callback, and only then
+/// encode the final queue drain while the resolver receipt is still resident.
+/// This is the evidence-mode terminal boundary: a concurrent callback is
+/// reflected by a drop counter and therefore produces an explicitly
+/// incomplete CTA2 witness rather than a silently truncated ledger.
+pub fn seal_and_drain_convoy_transport_attack_payload(
+    max_events: usize,
+) -> Result<Option<Vec<u8>>, ConvoyTerminalSealError> {
+    let installed = restore_and_quiesce_convoy_terminal_hook()?;
+    let Some(installed) = installed else {
+        finalize_convoy_terminal_uninstall(None)?;
+        return Ok(None);
+    };
+    let drain = drain_convoy_terminal_events(max_events);
+    let payload = encode_convoy_transport_attack_drain(drain, true);
+    let finalized = finalize_convoy_terminal_uninstall(Some(installed));
+    match (payload, finalized) {
+        (Ok(payload), Ok(())) => Ok(Some(payload)),
+        (Err(error), _) => Err(error.into()),
+        (Ok(_), Err(error)) => Err(error.into()),
+    }
+}
+
+pub fn uninstall_convoy_terminal_hook() -> Result<(), ConvoyTerminalInstallError> {
+    let installed = restore_and_quiesce_convoy_terminal_hook()?;
+    finalize_convoy_terminal_uninstall(installed)
 }
 
 unsafe fn allocate_near_relay(callsite: usize) -> Result<*mut u8, ConvoyTerminalInstallError> {

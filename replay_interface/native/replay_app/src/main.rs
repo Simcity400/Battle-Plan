@@ -50,6 +50,8 @@ mod power_balance_runtime;
 #[cfg(test)]
 mod post_effect;
 mod recording_open;
+mod selected_pov_runtime;
+mod special_projects_runtime;
 mod timeline;
 mod tooltip_runtime;
 mod transport;
@@ -92,11 +94,12 @@ use map_viewer::{sensitive_file_overrides, GameFileResolver, GameFileResolverOpt
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 const USAGE: &str = "usage: replay_app [--configure] [--config <profile.json>] [--non-interactive] [--list-blockers] [--validate-recording <path>] [--validate-playback <path>] [--bundle <dir>] [--game <the game install dir>] \
-[--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--recording <path> [--frame-cache <entries>]] [--capture <session dir>] [--dump-frame <out.bmp> [--dump-hour <canonical-hour-index> | --dump-nth-hour <ordinal>] \
+[--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--recording <path> [--logical-stream <id>] [--frame-cache <entries>]] [--capture <session dir>] [--dump-frame <out.bmp> [--dump-hour <canonical-hour-index> | --dump-nth-hour <ordinal>] \
 [--hour <0..1>] [--dump-zoom <screen-px-per-map-px>] [--dump-center <x,y>] [--dump-hdr <out.rgba16f>]] \
     [--postfx] [--postfx-restore-full] [--postfx-validate-capture] [--water-full]\n\
 --dump-hour selects the exact canonical REPLAY_SCHEMA hour_index; --dump-nth-hour selects a zero-based ordinal in the recording snapshot index and resolves it to that canonical hour; \
 --frame-cache <entries> shrinks the recording's decoded-frame LRU budget for weak-PC profiles (default 16 hot frames; requires --recording); \
+--logical-stream <id> selects one independent timeline from logical-stream-package-set.json; package sets never default to or concatenate segments; \
 --configure selects/replaces the two machine-local content roots without opening a replay; --config provides a portable/headless configuration location; \
 normal product playback reconstructs the launcher's effective selection from the configured user-data dlc_load.json; --mod remains an explicit development/test override; \
 --bundle and --capture are debug/evidence inputs only; normal portable recording playback never requires either. `--recording <portable> --dump-frame <bmp>` executes one exact recorded hour on an app-owned offscreen D3D11 target and fails instead of writing when any production carrier/input/output is omitted; \
@@ -131,6 +134,9 @@ enum TimelineMode {
     Static1936,
     Recording {
         path: PathBuf,
+        /// Explicit member of a CID1 rollover package set. `None` is valid for
+        /// ordinary recordings but deliberately does not default a set to 0.
+        logical_stream_id: Option<u64>,
         /// F2 memory budget for the decoded-frame LRU (default 16 entries;
         /// `--frame-cache <entries>` shrinks it for weak-PC profiles).
         timeline: replay_core::TimelineConfig,
@@ -178,6 +184,7 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
     let mut bundle_dir = None;
     let mut game_dir = None;
     let mut recording = None;
+    let mut logical_stream_id = None;
     let mut frame_cache: Option<usize> = None;
     let mut mod_paths = Vec::new();
     let mut use_dlc_load = false;
@@ -256,6 +263,18 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
                     .get(index)
                     .ok_or_else(|| format!("--recording requires a path\n{USAGE}"))?;
                 recording = Some(PathBuf::from(value));
+            }
+            "--logical-stream" => {
+                index += 1;
+                if logical_stream_id.is_some() {
+                    return Err(format!("--logical-stream may be passed only once\n{USAGE}").into());
+                }
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| format!("--logical-stream requires an unsigned id\n{USAGE}"))?;
+                logical_stream_id = Some(value.parse::<u64>().map_err(|error| {
+                    format!("--logical-stream: invalid id {value:?}: {error}\n{USAGE}")
+                })?);
             }
             "--frame-cache" => {
                 index += 1;
@@ -476,6 +495,7 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
     let mode = match recording {
         Some(path) => TimelineMode::Recording {
             path,
+            logical_stream_id,
             timeline: match frame_cache {
                 Some(entries) => replay_core::TimelineConfig {
                     frame_cache_entries: entries,
@@ -490,6 +510,12 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
                 return Err(format!(
                     "--frame-cache requires --recording (the static 1936 baseline has no \
                      frame cache)\n{USAGE}"
+                )
+                .into());
+            }
+            if logical_stream_id.is_some() {
+                return Err(format!(
+                    "--logical-stream requires --recording <logical-stream-package-set.json or containing directory>\n{USAGE}"
                 )
                 .into());
             }
@@ -565,10 +591,10 @@ fn resolve_headless_recording_hour(options: &mut CliOptions) -> Result<()> {
         (None, None) => None,
         (Some(_), Some(_)) => unreachable!("parse_cli rejects competing dump selectors"),
     };
-    let (Some(request), TimelineMode::Recording { path, .. }) = (request, &options.mode) else {
+    let (Some(request), TimelineMode::Recording { path, logical_stream_id, .. }) = (request, &options.mode) else {
         return Ok(());
     };
-    let source = recording_open::open_product_recording(path)
+    let source = recording_open::open_product_recording_segment(path, *logical_stream_id)
         .map_err(|err| format!("open recording {}: {err}", path.display()))?;
     options.dump_hour = Some(timeline::resolve_dump_hour(source.hours(), request)?);
     Ok(())
@@ -720,7 +746,8 @@ fn run(args: &[String]) -> Result<()> {
         let path = args
             .get(index + 1)
             .ok_or_else(|| format!("--validate-recording requires a path\n{USAGE}"))?;
-        return run_validate_recording(std::path::Path::new(path));
+        let logical_stream_id = parse_standalone_logical_stream(args)?;
+        return run_validate_recording(std::path::Path::new(path), logical_stream_id);
     }
     // G3: emit the canonical product-blocker list mechanically for audits and
     // the definition-of-done. Intercepted before `parse_cli` so it needs no
@@ -795,7 +822,7 @@ fn run(args: &[String]) -> Result<()> {
     // fail-closed for validation-only callers.
     if options.postfx_validate_capture {
         let capture_dir = options.capture_dir.as_deref().ok_or(
-            "--postfx-validate-capture requires --capture <session dir> with a restore-pass bundle",
+            "--postfx-validate-capture requires --capture <session dir> with an original restore-pass bundle or retained RestoreScene manifest",
         )?;
         let report = render::restore_full_postfx_validate_capture(
             game_resolver.as_ref(),
@@ -877,6 +904,25 @@ fn run(args: &[String]) -> Result<()> {
     }
 }
 
+fn parse_standalone_logical_stream(args: &[String]) -> Result<Option<u64>> {
+    let mut selected = None;
+    for (index, arg) in args.iter().enumerate() {
+        if arg != "--logical-stream" {
+            continue;
+        }
+        if selected.is_some() {
+            return Err(format!("--logical-stream may be passed only once\n{USAGE}").into());
+        }
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("--logical-stream requires an unsigned id\n{USAGE}"))?;
+        selected = Some(value.parse::<u64>().map_err(|error| {
+            format!("--logical-stream: invalid id {value:?}: {error}\n{USAGE}")
+        })?);
+    }
+    Ok(selected)
+}
+
 /// Reject invalid canonical/ordinal requests for snapshot-native recordings
 /// before machine-local profile discovery. Compact-only recordings are not
 /// folded here: their one certified product fold remains owned by the actual
@@ -891,9 +937,18 @@ fn preflight_snapshot_recording_dump_request(options: &CliOptions) -> Result<()>
         (None, None) => None,
         (Some(_), Some(_)) => unreachable!("parse_cli rejects competing dump selectors"),
     };
-    let (Some(request), TimelineMode::Recording { path, .. }) = (request, &options.mode) else {
+    let (Some(request), TimelineMode::Recording { path, logical_stream_id, .. }) = (request, &options.mode) else {
         return Ok(());
     };
+    let is_rollover = path.file_name().and_then(|value| value.to_str())
+        == Some(replay_core::ROLLOVER_PACKAGE_SET_FILE)
+        || (path.is_dir() && path.join(replay_core::ROLLOVER_PACKAGE_SET_FILE).is_file());
+    if logical_stream_id.is_some() || is_rollover {
+        // Rollover members are opened exactly once by the actual provider so
+        // the descriptor-authenticated container handle is never discarded by
+        // this optional snapshot-native preflight.
+        return Ok(());
+    }
     match replay_core::open_recording(path) {
         Ok(source) => {
             timeline::resolve_dump_hour(source.hours(), request)?;
@@ -912,6 +967,7 @@ fn preflight_snapshot_recording_dump_request(options: &CliOptions) -> Result<()>
 /// this verifies the selected local VFS against the replay content manifest.
 fn run_validate_playback(args: &[String]) -> Result<()> {
     let mut replay = None;
+    let mut logical_stream_id = None;
     let mut game = None;
     let mut user_data = None;
     let mut config = None;
@@ -930,6 +986,18 @@ fn run_validate_playback(args: &[String]) -> Result<()> {
                 game = Some(PathBuf::from(args.get(index).ok_or_else(|| {
                     format!("--game requires a directory\n{USAGE}")
                 })?));
+            }
+            "--logical-stream" => {
+                index += 1;
+                if logical_stream_id.is_some() {
+                    return Err(format!("--logical-stream may be passed only once\n{USAGE}").into());
+                }
+                let value = args.get(index).ok_or_else(|| {
+                    format!("--logical-stream requires an unsigned id\n{USAGE}")
+                })?;
+                logical_stream_id = Some(value.parse::<u64>().map_err(|error| {
+                    format!("--logical-stream: invalid id {value:?}: {error}\n{USAGE}")
+                })?);
             }
             "--userdata" => {
                 index += 1;
@@ -964,7 +1032,7 @@ fn run_validate_playback(args: &[String]) -> Result<()> {
             non_interactive,
         },
     )?;
-    let timeline = match validate::open_timeline(&replay) {
+    let timeline = match validate::open_timeline_segment(&replay, logical_stream_id) {
         Ok(timeline) => timeline,
         Err(outcome) => {
             let summary = outcome.summary();
@@ -981,8 +1049,8 @@ fn run_validate_playback(args: &[String]) -> Result<()> {
 /// diagnostic. Exit success on a clean open, error (exit 2) on any rejection —
 /// the specific validator string (schema / hash / modset / version) is
 /// surfaced verbatim in the message.
-fn run_validate_recording(path: &std::path::Path) -> Result<()> {
-    let outcome = validate::open_and_validate(path);
+fn run_validate_recording(path: &std::path::Path, logical_stream_id: Option<u64>) -> Result<()> {
+    let outcome = validate::open_and_validate_segment(path, logical_stream_id);
     println!("{}", outcome.summary());
     match outcome {
         validate::OpenOutcome::Opened(report) => {
@@ -1159,6 +1227,7 @@ mod tests {
             options.mode,
             TimelineMode::Recording {
                 path: PathBuf::from("some/session.battleplan"),
+                logical_stream_id: None,
                 timeline: replay_core::TimelineConfig::default(),
             }
         );
@@ -1175,6 +1244,32 @@ mod tests {
         assert_eq!(options.bundle_dir, None);
         assert_eq!(options.capture_dir, None);
         assert!(matches!(options.mode, TimelineMode::Recording { .. }));
+    }
+
+    #[test]
+    fn cli_retains_explicit_rollover_logical_stream_selection() {
+        let options = parse_cli(&args(&[
+            "--recording",
+            "shared/logical-stream-package-set.json",
+            "--logical-stream",
+            "7",
+        ]))
+        .expect("rollover package-set selection parse");
+        assert_eq!(
+            options.mode,
+            TimelineMode::Recording {
+                path: PathBuf::from("shared/logical-stream-package-set.json"),
+                logical_stream_id: Some(7),
+                timeline: replay_core::TimelineConfig::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn cli_rejects_logical_stream_without_recording() {
+        let error = parse_cli(&args(&["--logical-stream", "0"]))
+            .expect_err("logical stream without recording must fail");
+        assert!(error.to_string().contains("requires --recording"), "{error}");
     }
 
     #[test]
@@ -1210,6 +1305,7 @@ mod tests {
             options.mode,
             TimelineMode::Recording {
                 path: PathBuf::from("some/session.battleplan"),
+                logical_stream_id: None,
                 timeline: replay_core::TimelineConfig {
                     frame_cache_entries: 4
                 },

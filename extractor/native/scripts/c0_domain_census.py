@@ -104,6 +104,27 @@ ROSTER = {
     "country_dynamic_modifiers_live": (67, True),
     "session_header_live": (68, True),
     "tech_sharing_groups_live": (69, True),
+    "sunk_convoy_history_live": (70, True),
+    "dynamic_collection_trace_live": (71, False),
+    "resolved_tooltip_instances_live": (72, True),
+    "politics_tooltip_inputs_live": (73, False),
+    "power_balance_presentation_live": (74, False),
+    "fired_event_popups_live": (75, True),
+    "runtime_text_inputs_live": (76, False),
+    "production_render_submits_live": (77, False),
+    "design_catalog_context_live": (78, True),
+    "hud_surface_activation_live": (79, True),
+    "production_map_content_snapshot_live": (80, False),
+    "rail_replay_state_live": (81, True),
+    "character_presentation_live": (82, False),
+    "nuke_stockpile_live": (83, True),
+    "scripted_gui_runtime_live": (84, False),
+    "selected_designer_identity_live": (85, False),
+    "sunk_ship_history_live": (86, False),
+    "decision_panel_live": (87, False),
+    "active_command_abilities_live": (88, False),
+    "national_focus_presentation_live": (89, False),
+    "convoy_transport_attack_live": (90, False),
     "frame": (1000, False),
 }
 PROFILE = {n: i for n, (i, p) in ROSTER.items() if p}
@@ -483,7 +504,7 @@ def registry_drift(dump_text, golden_loader=load_registry_golden):
                     f"({pinned['wire_name']!r}) field {field}: golden "
                     f"{pinned[field]!r}, compiled {compiled[field]!r}")
 
-    # Keep the original 60-entry semantic pins as an independent cross-check.
+    # Keep the full semantic pins as an independent cross-check.
     if len(entries) != len(ROSTER):
         findings.append(f"compiled registry has {len(entries)} descriptors, "
                         f"semantic roster has {len(ROSTER)}")

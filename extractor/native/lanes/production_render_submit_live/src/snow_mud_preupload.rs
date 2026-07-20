@@ -1,6 +1,6 @@
 use crate::{hex_sha256, PromotionError};
 use portable_render_stream::{
-    SelectedPresentReceipt, SnowMudTexturePacket, A729_EXECUTABLE_SHA256,
+    SelectedPresentReceipt, SnowMudFadeReceipt, SnowMudTexturePacket, A729_EXECUTABLE_SHA256,
     SNOW_MUD_PRODUCER_FUNCTION_RVA,
     SNOW_MUD_PRODUCER_INSTRUCTIONS_SHA256, SNOW_MUD_TEXTURE_BYTES_PER_TEXEL,
     SNOW_MUD_TEXTURE_BYTE_LENGTH, SNOW_MUD_TEXTURE_HEIGHT, SNOW_MUD_TEXTURE_ROW_PITCH,
@@ -25,6 +25,10 @@ pub struct RawSnowMudTextureObservation {
     pub producer_game_hour_raw: i32,
     pub producer_qpc_ticks: u64,
     pub producer_qpc_frequency_hz: u64,
+    /// Process-local join key only. It identifies selected-submit SRV
+    /// consumers whose exact draw-time snapshot must then equal these H bytes;
+    /// the pointer is never serialized into H.
+    pub resource_ptr: usize,
     pub width: u32,
     pub height: u32,
     pub row_pitch: u32,
@@ -36,7 +40,7 @@ pub struct RawSnowMudTextureObservation {
 
 /// Seals one authenticated live observation into the current portable render
 /// carrier. The outer schema version advances independently as new optional
-/// exact families are added; this SnowMud payload keeps its own v2 identity.
+/// exact families are added; this SnowMud payload keeps its own v3 identity.
 /// The display envelope is supplied by the selected Present and all
 /// epoch/hour/QPC joins are checked here before any process-local state is
 /// discarded.
@@ -46,6 +50,7 @@ pub fn promote_snow_mud_texture_observation(
     selected_present_qpc_frequency_hz: u64,
     expected_process_start_nonce: u64,
     expected_hook_epoch_nonce: u64,
+    fade_receipt: &SnowMudFadeReceipt,
 ) -> Result<SnowMudTexturePacket, PromotionError> {
     let identity_matches = raw.executable_sha256 == A729_EXECUTABLE_SHA256
         && raw.producer_function_rva == SNOW_MUD_PRODUCER_FUNCTION_RVA
@@ -63,6 +68,7 @@ pub fn promote_snow_mud_texture_observation(
         || raw.process_start_nonce != expected_process_start_nonce
         || raw.hook_epoch_nonce != expected_hook_epoch_nonce
         || raw.producer_ordinal == 0
+        || raw.resource_ptr == 0
         || raw.producer_game_hour_raw > selected_present.selected_game_hour_raw
         || raw.producer_qpc_ticks == 0
         || raw.producer_qpc_ticks > selected_present.selected_qpc_ticks
@@ -100,6 +106,20 @@ pub fn promote_snow_mud_texture_observation(
         ));
     }
 
+    if fade_receipt.consumer_count == 0
+        || fade_receipt.consumer_set_sha256.len() != 64
+        || !fade_receipt
+            .consumer_set_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || !f32::from_bits(fade_receipt.fade_f32_bits).is_finite()
+        || !(0.0..=1.0).contains(&f32::from_bits(fade_receipt.fade_f32_bits))
+    {
+        return Err(PromotionError::Invalid(
+            "SnowMudData selected-Present fade receipt is incomplete".into(),
+        ));
+    }
+
     let mut packet = SnowMudTexturePacket {
         schema: SNOW_MUD_TEXTURE_SCHEMA.into(),
         executable_sha256: raw.executable_sha256.clone(),
@@ -125,6 +145,9 @@ pub fn promote_snow_mud_texture_observation(
         selected_present_sha256: selected_present
             .computed_sha256()
             .map_err(PromotionError::Invalid)?,
+        snow_mud_fade_f32_bits: fade_receipt.fade_f32_bits,
+        snow_mud_fade_consumer_count: fade_receipt.consumer_count,
+        snow_mud_fade_consumer_set_sha256: fade_receipt.consumer_set_sha256.clone(),
         observation_sha256: String::new(),
     };
     packet.observation_sha256 = packet
@@ -152,6 +175,7 @@ mod tests {
             producer_game_hour_raw: 44_000_000,
             producer_qpc_ticks: 100,
             producer_qpc_frequency_hz: 10_000_000,
+            resource_ptr: 0x1234,
             width: SNOW_MUD_TEXTURE_WIDTH,
             height: SNOW_MUD_TEXTURE_HEIGHT,
             row_pitch: SNOW_MUD_TEXTURE_ROW_PITCH,
@@ -174,6 +198,14 @@ mod tests {
         )
     }
 
+    fn fade_receipt() -> SnowMudFadeReceipt {
+        SnowMudFadeReceipt {
+            fade_f32_bits: 0.25f32.to_bits(),
+            consumer_count: 2,
+            consumer_set_sha256: "b".repeat(64),
+        }
+    }
+
     #[test]
     fn exact_observation_is_sealed() {
         let packet = promote_snow_mud_texture_observation(
@@ -182,6 +214,7 @@ mod tests {
             10_000_000,
             11,
             12,
+            &fade_receipt(),
         )
         .unwrap();
         assert_eq!(packet.observation_sha256, packet.computed_observation_sha256().unwrap());
@@ -210,6 +243,7 @@ mod tests {
                 10_000_000,
                 11,
                 12,
+                &fade_receipt(),
             )
             .is_err());
         }
@@ -219,6 +253,7 @@ mod tests {
             10_000_000,
             99,
             12,
+            &fade_receipt(),
         )
         .is_err());
     }

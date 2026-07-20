@@ -102,7 +102,11 @@ pub const SO_D48_LANE_FAILED_PROVINCE_BUILDING_ROOTS: usize = 38;
 pub const SO_D48_LANE_SKIPPED_CONSTRUCTION_ROWS: usize = 39;
 pub const SO_D48_LANE_SKIPPED_BUILDING_ROWS: usize = 40;
 pub const SO_D48_LANE_SKIPPED_RESOURCE_ROWS: usize = 41;
-pub const STATUS_ORIGIN_ID_COUNT: usize = 42;
+/// d65 rooted walk began from a validated country but a status/vector/program
+/// read was torn or structurally invalid.  The row set must be retained as
+/// partial rather than interpreted as authoritative deletion.
+pub const SO_D65_PARTIAL_WALK_FAILURE: usize = 42;
+pub const STATUS_ORIGIN_ID_COUNT: usize = 43;
 
 /// Unit names, index-aligned with the ids. `<name>` counts introductions
 /// (summed in the recorder); `<name>_sample` (emitted only when a site
@@ -152,6 +156,7 @@ pub const STATUS_ORIGIN_UNITS: [&str; STATUS_ORIGIN_ID_COUNT] = [
     "so_d48_lane_skipped_construction_rows",
     "so_d48_lane_skipped_building_rows",
     "so_d48_lane_skipped_resource_rows",
+    "so_d65_partial_walk_failure",
 ];
 
 #[allow(clippy::declare_interior_mutable_const)]
@@ -417,6 +422,10 @@ mod tests {
             (
                 SO_D48_LANE_SKIPPED_RESOURCE_ROWS,
                 "so_d48_lane_skipped_resource_rows",
+            ),
+            (
+                SO_D65_PARTIAL_WALK_FAILURE,
+                "so_d65_partial_walk_failure",
             ),
         ];
         for (id, name) in expected {

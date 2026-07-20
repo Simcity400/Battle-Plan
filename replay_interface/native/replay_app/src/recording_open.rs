@@ -171,8 +171,95 @@ fn prefold_worker_path() -> Result<PathBuf, PrefoldDecodeError> {
 pub(crate) fn open_product_recording(
     path: &Path,
 ) -> Result<Box<dyn ReplaySource>, SourceError> {
+    open_product_recording_segment(path, None)
+}
+
+/// Open either one ordinary portable recording or one explicitly selected
+/// member of an ordered CID1 rollover package set.
+pub(crate) fn open_product_recording_segment(
+    path: &Path,
+    logical_stream_id: Option<u64>,
+) -> Result<Box<dyn ReplaySource>, SourceError> {
+    Ok(open_product_recording_segment_with_authority(path, logical_stream_id)?.source)
+}
+
+pub(crate) struct ProductRecordingOpen {
+    pub source: Box<dyn ReplaySource>,
+    /// Whole-file SHA-256 from the exact container handle moved into `source`.
+    /// Directory stores have no single-file authority and return `None`.
+    pub authority_sha256: Option<String>,
+}
+
+pub(crate) fn open_product_recording_segment_with_authority(
+    path: &Path,
+    logical_stream_id: Option<u64>,
+) -> Result<ProductRecordingOpen, SourceError> {
+    // Resolve the stable machine-local root before authenticating a package-set
+    // member, so the normal container open follows the retained-handle join
+    // immediately with no intervening filesystem setup.
     let root = product_spool_root()?;
-    open_product_recording_at(path, root, &PRODUCTION_DECODER)
+    let is_rollover = path.file_name().and_then(|value| value.to_str())
+        == Some(replay_core::ROLLOVER_PACKAGE_SET_FILE)
+        || (path.is_dir() && path.join(replay_core::ROLLOVER_PACKAGE_SET_FILE).is_file());
+    let (source, authority_sha256) = if is_rollover {
+        let selected = replay_core::authenticate_rollover_segment(path, logical_stream_id)
+            .map_err(SourceError::Unsupported)?;
+        let sha256 = selected.package_sha256().to_string();
+        let source = replay_core::open_container_with_spooled_decoder(
+            selected.into_container(),
+            root.path(),
+            &PRODUCTION_DECODER,
+        )?;
+        (source, Some(sha256))
+    } else {
+        if let Some(selected) = logical_stream_id {
+            return Err(SourceError::Unsupported(format!(
+                "--logical-stream {selected} requires a {} descriptor or a directory containing one",
+                replay_core::ROLLOVER_PACKAGE_SET_FILE
+            )));
+        }
+        if path.is_file() {
+            let (container, _bytes, sha256) = snapshot::Container::open_strict_with_file_receipt(
+                path,
+                &snapshot::ExpectedIdentity::default(),
+            )
+            .map_err(|error| {
+                let message = format!("open retained replay container: {error}");
+                // The retained-handle product path opens the snapshot container
+                // directly, bypassing replay_core's Store adapter. Preserve the
+                // same typed modset-mismatch signal here instead of flattening it
+                // into a generic container/schema error at the UX boundary.
+                match error {
+                    snapshot::ContainerError::ModsetMismatch { .. } => {
+                        SourceError::ModsetMismatch(message)
+                    }
+                    _ => SourceError::Open(message),
+                }
+            })?;
+            let source = replay_core::open_container_with_spooled_decoder(
+                container,
+                root.path(),
+                &PRODUCTION_DECODER,
+            )?;
+            (source, Some(sha256))
+        } else {
+            (
+                replay_core::open_recording_with_spooled_decoder(
+                    path,
+                    root.path(),
+                    &PRODUCTION_DECODER,
+                )?,
+                None,
+            )
+        }
+    };
+    Ok(ProductRecordingOpen {
+        source: Box::new(ProductReplaySource {
+            inner: source,
+            _spool_root: root,
+        }),
+        authority_sha256,
+    })
 }
 
 fn open_product_recording_at(

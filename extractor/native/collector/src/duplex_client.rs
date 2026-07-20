@@ -78,9 +78,10 @@ use compact_contract::early_render_control::{
     canonical_early_diagnostic_liveness_response_binding_bytes,
     decode_early_commit_capture_receipt, decode_early_diagnostic_end,
     decode_early_diagnostic_liveness_request, decode_early_render_launch_bind,
-    encode_early_diagnostic_liveness_response, encode_early_first_game_d3d,
+    decode_early_g2_capture_arm, encode_early_diagnostic_liveness_response,
+    encode_early_first_game_d3d,
     encode_early_hook_ready, EarlyCommitCaptureReceiptV1, EarlyDiagnosticLivenessResponseV1,
-    EarlyFirstGameD3dV1, EarlyHookReadyV1, EarlyRenderCodecError,
+    EarlyFirstGameD3dV1, EarlyG2CaptureArmV1, EarlyHookReadyV1, EarlyRenderCodecError,
     EARLY_DIAGNOSTIC_END_RECORDER_CANCEL, EARLY_DIAGNOSTIC_MIN_HOLD_MS,
 };
 use compact_contract::early_render_runtime_dlc::{
@@ -113,6 +114,18 @@ use compact_contract::sink_failure::{
 /// gated on this constant (kept `false` until owner sign-off on live
 /// validation), exactly like the recorder-side duplex activation seam.
 pub const DUPLEX_CONTROL_CLIENT_ENABLED: bool = false;
+
+/// Independent promotion latch for the CRP1/CRA1 logical-stream lifecycle.
+/// The complete product route is compiled and selected through
+/// [`CollectorControlClient::new_product`], but the ordinary
+/// AUTO_ATTACH_DUPLEX_V1 word remains
+/// authoritative until one authenticated live change/rollback run proves the
+/// drain, durable seal, second CID1, and second CFA1 boundaries end to end.
+pub const ROLLOVER_LIVE_LIFECYCLE_EVIDENCE_BOUND: bool = false;
+
+pub const fn product_rollover_enabled() -> bool {
+    DUPLEX_CONTROL_CLIENT_ENABLED && ROLLOVER_LIVE_LIFECYCLE_EVIDENCE_BOUND
+}
 
 /// Move-only proof that the activation gate was consulted (mirrors the
 /// recorder-side `AutoAttachDuplexProductPermit`). Every production entry point
@@ -725,6 +738,33 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
             None,
             ControlCapabilities::auto_attach_duplex_v1(),
         )
+    }
+
+    /// Product constructor whose capability word is selected by the independent
+    /// rollover evidence latch. Keeping this choice in the client owner prevents
+    /// a caller from advertising ROLLOVER while still running the old terminal
+    /// boundary loop.
+    pub fn new_product(
+        permit: &DuplexClientProductPermit,
+        io: T,
+        clock: C,
+        session: SessionCapability,
+        identity: CollectorIdentity,
+        policy: DuplexClientPolicy,
+    ) -> Self {
+        if product_rollover_enabled() {
+            Self::new_inner(
+                io,
+                clock,
+                session,
+                identity,
+                policy,
+                None,
+                ControlCapabilities::auto_attach_duplex_rollover_v1(),
+            )
+        } else {
+            Self::new(permit, io, clock, session, identity, policy)
+        }
     }
 
     /// Offline-only construction of the next capability word.  Product code
@@ -1385,14 +1425,34 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
         &mut self,
         expected_hook_epoch_nonce: u64,
         deadline: MonotonicDeadline,
-    ) -> Result<EarlyCommitCaptureReceiptV1, ClientError> {
+    ) -> Result<(EarlyCommitCaptureReceiptV1, Option<EarlyG2CaptureArmV1>), ClientError> {
         if !self.early_render_first_game_d3d_sent || !self.early_render_runtime_dlc_sent {
             return self.fail(ClientError::EarlyRenderBinding);
         }
         if self.early_render_diagnostic_stage_probe {
             return self.fail(ClientError::EarlyRenderBinding);
         }
-        let frame = self.recv_frame(deadline)?.ok_or(ClientError::NotUsable)?;
+        let mut frame = self.recv_frame(deadline)?.ok_or(ClientError::NotUsable)?;
+        let g2_arm = if frame.kind == MessageKind::EarlyRenderG2CaptureArm {
+            let arm = decode_early_g2_capture_arm(&frame.payload)?;
+            let binding = self
+                .early_render_binding
+                .as_ref()
+                .ok_or(ClientError::EarlyRenderBinding)?;
+            if arm.process_id != binding.process_id
+                || arm.process_start_nonce != binding.process_start_nonce
+                || arm.hook_epoch_nonce != expected_hook_epoch_nonce
+                || arm.launch_manifest_sha256 != binding.launch_manifest_sha256
+                || arm.effective_vfs_manifest_sha256 != binding.effective_vfs_manifest_sha256
+                || arm.authority_exe_sha256 != binding.executable_sha256
+            {
+                return self.fail(ClientError::EarlyRenderBinding);
+            }
+            frame = self.recv_frame(deadline)?.ok_or(ClientError::NotUsable)?;
+            Some(arm)
+        } else {
+            None
+        };
         if frame.kind != MessageKind::EarlyRenderCommitReceipt {
             return self.fail(ClientError::Unsupported(frame.kind));
         }
@@ -1406,8 +1466,14 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
         if commit.hook_epoch_nonce != expected_hook_epoch_nonce {
             return self.fail(ClientError::EarlyRenderBinding);
         }
+        if g2_arm
+            .as_ref()
+            .is_some_and(|arm| arm.capture_receipt_sha256 != commit.receipt_sha256)
+        {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
         self.early_render_capture_committed = true;
-        Ok(commit)
+        Ok((commit, g2_arm))
     }
 
     fn complete_authenticated_diagnostic_hold<F>(
@@ -1603,7 +1669,7 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
     /// Complete the sole suspended-launch H4CT transcript. READY authenticates
     /// only the two system-export bootstrap hooks while no game D3D object
     /// exists. FIRST is admitted after the real device has staged and receipted
-    /// all 51 COM/engine hooks. The double-stable runtime DLC roster is then
+    /// all 66 COM/engine hooks. The double-stable runtime DLC roster is then
     /// sent before COMMIT and before any buffered d77/d80 capture can drain.
     #[cfg(windows)]
     pub fn complete_early_render_after_bind(
@@ -1692,9 +1758,14 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
             )?;
             return Err(ClientError::EarlyRenderDiagnosticHoldCompleted(proof));
         }
-        let commit = self.receive_early_render_commit(hook_epoch_nonce, commit_deadline)?;
+        let (commit, g2_arm) =
+            self.receive_early_render_commit(hook_epoch_nonce, commit_deadline)?;
         crate::early_render_capture_control::commit_capture_receipt(binding, &commit)
             .map_err(|_| ClientError::EarlyRenderBinding)?;
+        if let Some(arm) = g2_arm {
+            crate::early_render_capture_control::arm_g2_capture(binding, &commit, arm)
+                .map_err(|_| ClientError::EarlyRenderBinding)?;
+        }
         Ok(commit)
     }
 

@@ -12,9 +12,10 @@ const LAUNCH_BIND_MAGIC: &[u8; 4] = b"ELBD";
 const DIAGNOSTIC_LIVENESS_REQUEST_MAGIC: &[u8; 4] = b"EDRQ";
 const DIAGNOSTIC_LIVENESS_RESPONSE_MAGIC: &[u8; 4] = b"EDRP";
 const DIAGNOSTIC_END_MAGIC: &[u8; 4] = b"EDND";
+const G2_CAPTURE_ARM_MAGIC: &[u8; 4] = b"EG2A";
 pub const EARLY_HOOK_COMPLETENESS_MASK: u16 = 0x03ff;
 pub const EARLY_STAGED_HOOK_GENERATION: u64 = 1;
-pub const EARLY_STAGED_HOOK_COUNT: u32 = 57;
+pub const EARLY_STAGED_HOOK_COUNT: u32 = 66;
 pub const EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK: u64 = 0x3ff;
 pub const EARLY_DIAGNOSTIC_MIN_HOLD_MS: u64 = 210_000;
 pub const EARLY_DIAGNOSTIC_END_RECORDER_CANCEL: u16 = 1;
@@ -23,7 +24,7 @@ pub fn staged_hook_count_for_group_mask(group_mask: u64) -> Option<u32> {
     if group_mask & !EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK != 0 || group_mask & 1 == 0 {
         return None;
     }
-    let group_counts = [19u32, 2, 3, 8, 8, 7, 2, 3, 2, 3];
+    let group_counts = [23u32, 2, 3, 8, 8, 7, 2, 3, 7, 3];
     Some(
         group_counts
             .into_iter()
@@ -154,6 +155,31 @@ pub struct EarlyDiagnosticEndV1 {
     pub disposition: u16,
 }
 
+/// Recorder-authored, H4CT-authenticated request for the existing collector
+/// D3D hook owner to retain one pre-first-UI G2 backbuffer witness. Local paths
+/// are transport-only; every portable identity is an exact digest or token.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EarlyG2CaptureArmV1 {
+    pub process_id: u32,
+    pub process_start_nonce: u64,
+    pub hook_epoch_nonce: u64,
+    pub launch_manifest_sha256: [u8; 32],
+    pub launch_epoch_sha256: [u8; 32],
+    pub capture_receipt_sha256: [u8; 32],
+    pub authority_exe_sha256: [u8; 32],
+    pub effective_vfs_manifest_sha256: [u8; 32],
+    pub content_manifest_digest_sha256: [u8; 32],
+    pub settings_file_sha256: [u8; 32],
+    pub camera_payload_sha256: [u8; 32],
+    pub capture_context_sha256: [u8; 32],
+    pub expected_selected_hour: i64,
+    pub observation_id: String,
+    pub localisation_language: String,
+    pub pov_country_or_global: String,
+    pub capture_context_path: String,
+    pub output_directory: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EarlyRenderCodecError {
     Length,
@@ -237,6 +263,173 @@ fn validate_header(
 }
 fn nonzero_hash(value: &[u8; 32]) -> bool {
     value.iter().any(|byte| *byte != 0)
+}
+
+const G2_MAX_TOKEN_BYTES: usize = 512;
+const G2_MAX_PATH_BYTES: usize = 32 * 1024;
+
+fn put_string(
+    out: &mut Vec<u8>,
+    value: &str,
+    max_bytes: usize,
+) -> Result<(), EarlyRenderCodecError> {
+    if value.is_empty()
+        || value.len() > max_bytes
+        || value.as_bytes().contains(&0)
+        || value.chars().any(char::is_control)
+    {
+        return Err(EarlyRenderCodecError::InvalidField);
+    }
+    let length = u32::try_from(value.len()).map_err(|_| EarlyRenderCodecError::Length)?;
+    out.extend_from_slice(&length.to_le_bytes());
+    out.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn string_at(
+    bytes: &[u8],
+    at: &mut usize,
+    max_bytes: usize,
+) -> Result<String, EarlyRenderCodecError> {
+    let length = usize::try_from(u32_at(bytes, at)?).map_err(|_| EarlyRenderCodecError::Length)?;
+    if length == 0 || length > max_bytes {
+        return Err(EarlyRenderCodecError::InvalidField);
+    }
+    let end = (*at)
+        .checked_add(length)
+        .ok_or(EarlyRenderCodecError::Length)?;
+    let value = bytes
+        .get(*at..end)
+        .ok_or(EarlyRenderCodecError::Length)?;
+    *at += length;
+    let value = std::str::from_utf8(value).map_err(|_| EarlyRenderCodecError::InvalidField)?;
+    if value.as_bytes().contains(&0) || value.chars().any(char::is_control) {
+        return Err(EarlyRenderCodecError::InvalidField);
+    }
+    Ok(value.to_owned())
+}
+
+fn validate_g2_arm(value: &EarlyG2CaptureArmV1) -> Result<(), EarlyRenderCodecError> {
+    if value.process_id == 0
+        || value.process_start_nonce == 0
+        || value.hook_epoch_nonce == 0
+        || value.expected_selected_hour < 0
+        || [
+            &value.launch_manifest_sha256,
+            &value.launch_epoch_sha256,
+            &value.capture_receipt_sha256,
+            &value.authority_exe_sha256,
+            &value.effective_vfs_manifest_sha256,
+            &value.content_manifest_digest_sha256,
+            &value.settings_file_sha256,
+            &value.camera_payload_sha256,
+            &value.capture_context_sha256,
+        ]
+        .into_iter()
+        .any(|hash| !nonzero_hash(hash))
+    {
+        return Err(EarlyRenderCodecError::InvalidField);
+    }
+    for (value, max) in [
+        (value.observation_id.as_str(), G2_MAX_TOKEN_BYTES),
+        (value.localisation_language.as_str(), G2_MAX_TOKEN_BYTES),
+        (value.pov_country_or_global.as_str(), G2_MAX_TOKEN_BYTES),
+        (value.capture_context_path.as_str(), G2_MAX_PATH_BYTES),
+        (value.output_directory.as_str(), G2_MAX_PATH_BYTES),
+    ] {
+        let mut sink = Vec::new();
+        put_string(&mut sink, value, max)?;
+    }
+    Ok(())
+}
+
+pub fn encode_early_g2_capture_arm(
+    value: &EarlyG2CaptureArmV1,
+) -> Result<Vec<u8>, EarlyRenderCodecError> {
+    validate_g2_arm(value)?;
+    let mut out = Vec::new();
+    header(&mut out, G2_CAPTURE_ARM_MAGIC);
+    out.extend_from_slice(&value.process_id.to_le_bytes());
+    out.extend_from_slice(&value.process_start_nonce.to_le_bytes());
+    out.extend_from_slice(&value.hook_epoch_nonce.to_le_bytes());
+    for hash in [
+        &value.launch_manifest_sha256,
+        &value.launch_epoch_sha256,
+        &value.capture_receipt_sha256,
+        &value.authority_exe_sha256,
+        &value.effective_vfs_manifest_sha256,
+        &value.content_manifest_digest_sha256,
+        &value.settings_file_sha256,
+        &value.camera_payload_sha256,
+        &value.capture_context_sha256,
+    ] {
+        out.extend_from_slice(hash);
+    }
+    out.extend_from_slice(&value.expected_selected_hour.to_le_bytes());
+    put_string(&mut out, &value.observation_id, G2_MAX_TOKEN_BYTES)?;
+    put_string(
+        &mut out,
+        &value.localisation_language,
+        G2_MAX_TOKEN_BYTES,
+    )?;
+    put_string(
+        &mut out,
+        &value.pov_country_or_global,
+        G2_MAX_TOKEN_BYTES,
+    )?;
+    put_string(&mut out, &value.capture_context_path, G2_MAX_PATH_BYTES)?;
+    put_string(&mut out, &value.output_directory, G2_MAX_PATH_BYTES)?;
+    Ok(out)
+}
+
+pub fn decode_early_g2_capture_arm(
+    bytes: &[u8],
+) -> Result<EarlyG2CaptureArmV1, EarlyRenderCodecError> {
+    if bytes.len() < 6 || bytes.get(..4) != Some(G2_CAPTURE_ARM_MAGIC) {
+        return Err(if bytes.len() < 6 {
+            EarlyRenderCodecError::Length
+        } else {
+            EarlyRenderCodecError::Magic
+        });
+    }
+    let mut at = 4;
+    if u16_at(bytes, &mut at)? != VERSION {
+        return Err(EarlyRenderCodecError::Version);
+    }
+    let value = EarlyG2CaptureArmV1 {
+        process_id: u32_at(bytes, &mut at)?,
+        process_start_nonce: u64_at(bytes, &mut at)?,
+        hook_epoch_nonce: u64_at(bytes, &mut at)?,
+        launch_manifest_sha256: hash_at(bytes, &mut at)?,
+        launch_epoch_sha256: hash_at(bytes, &mut at)?,
+        capture_receipt_sha256: hash_at(bytes, &mut at)?,
+        authority_exe_sha256: hash_at(bytes, &mut at)?,
+        effective_vfs_manifest_sha256: hash_at(bytes, &mut at)?,
+        content_manifest_digest_sha256: hash_at(bytes, &mut at)?,
+        settings_file_sha256: hash_at(bytes, &mut at)?,
+        camera_payload_sha256: hash_at(bytes, &mut at)?,
+        capture_context_sha256: hash_at(bytes, &mut at)?,
+        expected_selected_hour: i64::from_le_bytes(
+            bytes
+                .get(at..at + 8)
+                .ok_or(EarlyRenderCodecError::Length)?
+                .try_into()
+                .unwrap(),
+        ),
+        observation_id: {
+            at += 8;
+            string_at(bytes, &mut at, G2_MAX_TOKEN_BYTES)?
+        },
+        localisation_language: string_at(bytes, &mut at, G2_MAX_TOKEN_BYTES)?,
+        pov_country_or_global: string_at(bytes, &mut at, G2_MAX_TOKEN_BYTES)?,
+        capture_context_path: string_at(bytes, &mut at, G2_MAX_PATH_BYTES)?,
+        output_directory: string_at(bytes, &mut at, G2_MAX_PATH_BYTES)?,
+    };
+    if at != bytes.len() {
+        return Err(EarlyRenderCodecError::Length);
+    }
+    validate_g2_arm(&value)?;
+    Ok(value)
 }
 
 pub fn encode_early_hook_ready(value: &EarlyHookReadyV1) -> Result<Vec<u8>, EarlyRenderCodecError> {
@@ -753,7 +946,7 @@ mod tests {
         let mut diagnostic_first = first.clone();
         diagnostic_first.diagnostic_stage_probe = true;
         diagnostic_first.staged_hook_group_mask = 0x01;
-        diagnostic_first.staged_hook_count = 19;
+        diagnostic_first.staged_hook_count = 23;
         assert_eq!(
             decode_early_first_game_d3d(&encode_early_first_game_d3d(&diagnostic_first).unwrap())
                 .unwrap(),
@@ -856,6 +1049,34 @@ mod tests {
             )
             .unwrap(),
             commit
+        );
+        let g2 = EarlyG2CaptureArmV1 {
+            process_id: 7,
+            process_start_nonce: 8,
+            hook_epoch_nonce: 9,
+            launch_manifest_sha256: [1; 32],
+            launch_epoch_sha256: [2; 32],
+            capture_receipt_sha256: commit.receipt_sha256,
+            authority_exe_sha256: [3; 32],
+            effective_vfs_manifest_sha256: [4; 32],
+            content_manifest_digest_sha256: [5; 32],
+            settings_file_sha256: [6; 32],
+            camera_payload_sha256: [7; 32],
+            capture_context_sha256: [8; 32],
+            expected_selected_hour: 12,
+            observation_id: "g2-fixture".into(),
+            localisation_language: "english".into(),
+            pov_country_or_global: "global".into(),
+            capture_context_path: r"C:\capture\context.json".into(),
+            output_directory: r"C:\capture\g2".into(),
+        };
+        let encoded_g2 = encode_early_g2_capture_arm(&g2).unwrap();
+        assert_eq!(decode_early_g2_capture_arm(&encoded_g2).unwrap(), g2);
+        let mut trailing = encoded_g2;
+        trailing.push(0);
+        assert_eq!(
+            decode_early_g2_capture_arm(&trailing),
+            Err(EarlyRenderCodecError::Length)
         );
         let bind = EarlyRenderLaunchBindV1 {
             process_id: 7,

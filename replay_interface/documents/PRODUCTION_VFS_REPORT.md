@@ -97,9 +97,9 @@ fallback sort.
 
 ## Verification
 
-Focused Rust gate:
+Focused Rust gate (primary agent only):
 
-`cargo test -p map_viewer mod_resolver::tests --lib -- --test-threads=1`
+`extractor/native/scripts/Invoke-CentralRustValidation.ps1 -Mode Test -Workspace Replay -Package map_viewer -FilterExpression 'test(mod_resolver)'`
 
 Result: 19 passed, 0 failed. The fixtures cover loose overrides, exact and
 non-recursive `replace_path`, recursive listings, case/path normalization,
@@ -113,12 +113,16 @@ after admission. A dedicated regression also places a corrupt active unused DLC
 descriptor and a missing enabled unused mod beside a valid required layer and
 proves required-only playback never opens either unused layer.
 
-Build gate:
+Build gate (primary agent only):
 
-`cargo test -p map_viewer --no-run`
+`extractor/native/scripts/Invoke-CentralRustValidation.ps1 -Mode Build -Workspace Replay -Package map_viewer`
 
 Result: success; all map-viewer library, binary, and integration-test targets
 compiled. Existing unrelated warnings remain outside this VFS lane.
+
+Those results predate the 2026-07-20 archive-mod/offline-preparation delta.
+Current certification belongs to the parent wave's single centralized Final
+battery; UI15's Python verifier never invokes Cargo itself.
 
 Machine-readable evidence is in
 `replay_interface/re_evidence/production_vfs/manifest.json`.

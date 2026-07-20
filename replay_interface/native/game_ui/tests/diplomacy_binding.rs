@@ -21,7 +21,7 @@
 
 use game_ui::binding::{diplomacy_panel_from_frame, FactionRow, RelationRow};
 use replay_core::world::FactionRosterStatus;
-use replay_core::{open_recording, Leaf, WorldTimeline};
+use replay_core::{open_recording, Leaf, SubjectAutonomyDirection, WorldTimeline};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -262,6 +262,8 @@ fn non_nonempty_roster_status_suppresses_country_faction_rows() {
             "{label} roster leaked country politics faction rows: {:?}",
             panel.factions
         );
+        assert!(!panel.subject_autonomy_available, "{label}");
+        assert!(panel.subject_autonomy.is_empty(), "{label}");
     }
 
     drop(timeline);
@@ -306,4 +308,79 @@ fn measured_nonempty_committed_fold_without_country_names_keeps_d53_roster() {
         vec![faction("1", "1", &["1", "22", "3"])],
         "the binding must render the source-derived D53 roster even though every country faction name is absent"
     );
+}
+
+#[test]
+fn a16_current_autonomy_is_available_to_both_country_panel_sides() {
+    static A16_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = A16_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "game_ui_a16_binding_{}_{}",
+        std::process::id(),
+        n
+    ));
+    let game = "a16_binding";
+    let dir = root.join(game);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("000000000900.snapshot.json"),
+        r#"{
+          "schema_version":"1",
+          "game_id":"a16_binding",
+          "date":"1940.2.14.20",
+          "hour_index":900,
+          "countries":{"GER":{},"BUL":{}},
+          "diplomacy_world":{"domain53_extra":{
+            "subject_autonomy_current_status":"measured_nonempty",
+            "subject_autonomy_current_rows":[{
+              "overlord":"GER",
+              "subject":"BUL",
+              "overlord_tag_db_id":1,
+              "subject_tag_db_id":22,
+              "current_state_hash":40977,
+              "previous_state_hash":36881,
+              "next_state_hash":49169,
+              "ratio_raw":10000,
+              "current_score_raw":110000,
+              "lower_score_raw":100000,
+              "upper_score_raw":200000,
+              "last_modified_date":"1940.2.14.20",
+              "last_modified_date_raw":60795475,
+              "direction":"toward_next"
+            }]
+          }}
+        }"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("index.json"),
+        r#"{"game_id":"a16_binding","schema_version":"1","snapshots":[{"hour_index":900,"date":"1940.2.14.20","file":"000000000900.snapshot.json"}]}"#,
+    )
+    .unwrap();
+
+    let timeline = WorldTimeline::open(open_recording(&root).unwrap()).unwrap();
+    let frame = timeline.frame(900).unwrap();
+    let ger = diplomacy_panel_from_frame(&frame, "GER");
+    assert!(ger.subject_autonomy_available);
+    assert_eq!(ger.subject_autonomy.len(), 1);
+    assert!(ger.subject_autonomy[0].pov_is_overlord);
+    assert_eq!(ger.subject_autonomy[0].counterpart.as_deref(), Some("BUL"));
+    assert_eq!(ger.subject_autonomy[0].ratio_raw, 10_000);
+    assert_eq!(
+        ger.subject_autonomy[0].direction,
+        Some(SubjectAutonomyDirection::TowardNext)
+    );
+
+    let bul = diplomacy_panel_from_frame(&frame, "BUL");
+    assert!(bul.subject_autonomy_available);
+    assert_eq!(bul.subject_autonomy.len(), 1);
+    assert!(!bul.subject_autonomy[0].pov_is_overlord);
+    assert_eq!(bul.subject_autonomy[0].counterpart.as_deref(), Some("GER"));
+
+    let unrelated = diplomacy_panel_from_frame(&frame, "ENG");
+    assert!(unrelated.subject_autonomy_available);
+    assert!(unrelated.subject_autonomy.is_empty());
+    drop(frame);
+    drop(timeline);
+    fs::remove_dir_all(root).unwrap();
 }

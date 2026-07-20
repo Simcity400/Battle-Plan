@@ -615,6 +615,8 @@ pub struct IncomingActionQueueRow {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntelNetworkGraphRow {
+    /// INGR v1-v3 wire name retained for compatibility. Exact a729
+    /// country CId used to construct every contained CCountryIntelNetwork.
     pub strategic_operative_index: u32,
     pub network_slot: u32,
     pub target_tag_db_id: u32,

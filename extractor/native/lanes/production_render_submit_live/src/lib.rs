@@ -49,6 +49,8 @@ use std::sync::{Mutex, OnceLock};
 
 #[cfg(windows)]
 pub mod a729_hook;
+#[cfg(windows)]
+pub mod a25_runtime_text_present;
 mod weather_catalog;
 pub use weather_catalog::*;
 mod authority_producer;
@@ -98,6 +100,11 @@ pub const MAP_SCENE_RENDER_ROOT_RVA: u32 = 0x00B4_81A0;
 pub const POST_PROCESS_RENDER_ROOT_RVA: u32 = 0x00FF_3450;
 pub const PRESENT_RENDER_ROOT_RVA: u32 = 0x020B_6530;
 pub const WEATHER_VISUAL_PRODUCER_RVA: u32 = 0x0166_EC50;
+pub const WEATHER_NORMAL_UPDATE_OWNER_RVA: u32 = 0x0166_CEC0;
+pub const WEATHER_EDITOR_REFRESH_OWNER_RVA: u32 = 0x01B7_8FB0;
+pub const WEATHER_ENTITY_ACTIVE_SETTER_RVA: u32 = 0x0227_B200;
+pub const WEATHER_ENTITY_ALPHA_SETTER_RVA: u32 = 0x0227_1B40;
+pub const WEATHER_ENTITY_PLAYBACK_SETTER_RVA: u32 = 0x0227_B4A0;
 pub const HIGH_RESOLUTION_SEED_RVA: u32 = 0x024D_BE60;
 /// Static promotion provenance for all three C03 hooks is pinned in the C03
 /// `C03_EXACT10_CONSUMER_AUTHORITY_20260720.json` evidence manifest. Wheel and
@@ -1433,6 +1440,11 @@ pub struct RawWeatherFactoryAttempt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawWeatherObservation {
     pub observation_index: u64,
+    pub sequence: u64,
+    pub update_index: u64,
+    pub owner: RawWeatherUpdateOwner,
+    pub initial_observation: bool,
+    pub checkpoint_observation: bool,
     pub strategic_region_id: u32,
     pub rain_light_active: bool,
     pub rain_heavy_active: bool,
@@ -1452,9 +1464,18 @@ pub struct RawWeatherObservation {
     pub ordered_live_pairs: Vec<RawWeatherEntityPair>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RawWeatherUpdateOwner {
+    NormalStrategicRegionUpdate,
+    EditorRefresh,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawWeatherVisibilityObservation {
     pub observation_index: u64,
+    pub sequence: u64,
+    pub update_index: u64,
+    pub owner: RawWeatherUpdateOwner,
     pub strategic_region_id: u32,
     pub view_distance_f32_bits: u32,
     pub camera_branch: WeatherCameraBranch,
@@ -3151,9 +3172,20 @@ pub fn promote_weather_observation<R: ExactWeatherCatalogResolver>(
         resolver.authority_manifest_sha256(),
         "weather catalog manifest",
     )?;
-    if raw.observation_index == 0 || raw.previous_airborne_runtime_code == raw.airborne_runtime_code
+    if raw.observation_index == 0
+        || sequence == 0
+        || update_index == 0
+        || raw.sequence != sequence
+        || raw.update_index != update_index
+        || raw.owner != RawWeatherUpdateOwner::NormalStrategicRegionUpdate
+        || raw.initial_observation && raw.checkpoint_observation
+        || (raw.checkpoint_observation
+            && raw.previous_airborne_runtime_code != raw.airborne_runtime_code)
+        || (raw.previous_airborne_runtime_code == raw.airborne_runtime_code
+            && !((raw.initial_observation && raw.airborne_runtime_code == 0)
+                || raw.checkpoint_observation))
     {
-        return invalid("weather observation is not an airborne-code change");
+        return invalid("weather observation lacks exact normal-update/change-or-initial ownership");
     }
     if raw.airborne_runtime_code == 0 {
         if raw.selection_seed_words.is_some()
@@ -3229,7 +3261,13 @@ pub fn promote_weather_visibility_observation(
     sequence: u64,
     update_index: u64,
 ) -> Result<WeatherVisibilityPhase, PromotionError> {
-    if raw.observation_index == 0 || sequence == 0 {
+    if raw.observation_index == 0
+        || sequence == 0
+        || update_index == 0
+        || raw.sequence != sequence
+        || raw.update_index != update_index
+        || raw.owner != RawWeatherUpdateOwner::NormalStrategicRegionUpdate
+    {
         return invalid("weather visibility observation identity is zero");
     }
     let (branch, alpha_bits, playback_bits) =
@@ -3244,21 +3282,21 @@ pub fn promote_weather_visibility_observation(
     }
     let mut entity_ids = std::collections::BTreeSet::new();
     for entity in &raw.ordered_entity_visibility {
-        let expected_writes = match entity.role {
-            WeatherEntityRole::Primary => matches!(
-                branch,
-                WeatherCameraBranch::FarFade | WeatherCameraBranch::FarHidden
-            ),
-            WeatherEntityRole::Fading => true,
+        let (expected_active_write, expected_alpha_write) = match (entity.role, branch) {
+            (WeatherEntityRole::Primary, WeatherCameraBranch::FarFade) => (true, true),
+            (WeatherEntityRole::Primary, WeatherCameraBranch::FarHidden) => (true, false),
+            (WeatherEntityRole::Primary, _) => (false, false),
+            (WeatherEntityRole::Fading, WeatherCameraBranch::NearHidden)
+            | (WeatherEntityRole::Fading, WeatherCameraBranch::FarHidden) => (true, false),
+            (WeatherEntityRole::Fading, _) => (true, true),
         };
         if entity.entity_instance_id == 0
             || !entity_ids.insert(entity.entity_instance_id)
-            || entity.producer_wrote_active != expected_writes
-            || entity.producer_wrote_alpha != expected_writes
+            || entity.producer_wrote_active != expected_active_write
+            || entity.producer_wrote_alpha != expected_alpha_write
             || entity.post_update_playback_rate_f32_bits != playback_bits
-            || (expected_writes
-                && (entity.post_update_active != (alpha_bits != 0)
-                    || entity.post_update_alpha_f32_bits != alpha_bits))
+            || (expected_active_write && entity.post_update_active != (alpha_bits != 0))
+            || (expected_alpha_write && entity.post_update_alpha_f32_bits != alpha_bits)
         {
             return invalid("weather visibility entity state/write mask is invalid");
         }
@@ -3301,20 +3339,14 @@ pub fn append_weather_visibility_phase(
 /// Replaces the last process-local weather/effect join with the complete
 /// portable output cover from one authenticated selected submit. This must be
 /// called after particle promotion and before the membership enters a frame;
-/// effect IDs with no submitted packet are not representable as exact replay.
+/// An effect ID with no packet is retained as an explicit empty output subset,
+/// but only because `submit.particles` and `submit.ordered_draws` are the
+/// complete authenticated CPU/final-draw cover for this selected submit.
 pub fn join_weather_membership_to_submit_outputs(
     membership: &mut WeatherMembership,
     submit: &RenderSubmit,
 ) -> Result<(), PromotionError> {
-    let submit_effects = submit
-        .particles
-        .iter()
-        .map(|packet| packet.effect_instance_id)
-        .collect::<std::collections::BTreeSet<_>>();
     for instance in &mut membership.ordered_weather_instances {
-        if !submit_effects.contains(&instance.effect_instance_id) {
-            return invalid("weather effect has no particle packet in the selected submit");
-        }
         let outputs = submit
             .ordered_draws
             .iter()
@@ -3329,9 +3361,6 @@ pub fn join_weather_membership_to_submit_outputs(
             })
             .cloned()
             .collect::<Vec<_>>();
-        if outputs.is_empty() {
-            return invalid("weather effect has no ordered selected-submit output");
-        }
         instance.submitted_outputs = outputs;
     }
     membership
@@ -4857,6 +4886,55 @@ mod tests {
     fn weather_selection_word_matches_frozen_integer_law() {
         assert_eq!(weather_selection_word([1, 0x5ea6_ba9e]), 0x1885_198a);
         assert_eq!(weather_selection_word([2, 0x5ea6_ba9e]), 0x0ff6_e14e);
+    }
+
+    #[test]
+    fn weather_visibility_uses_independent_active_and_alpha_occurrence_masks() {
+        let cases = [
+            (0.0f32, (false, false), (true, false)),
+            (400.0, (false, false), (true, true)),
+            (600.0, (false, false), (true, true)),
+            (1_200.0, (true, true), (true, true)),
+            (1_600.0, (true, false), (true, false)),
+        ];
+        for (distance, primary_mask, fading_mask) in cases {
+            let (branch, alpha, playback) =
+                portable_render_stream::weather_visibility_law(distance.to_bits()).unwrap();
+            let entity = |entity_instance_id, role, mask: (bool, bool)| {
+                WeatherEntityVisibility {
+                    entity_instance_id,
+                    role,
+                    post_update_active: if mask.0 { alpha != 0 } else { true },
+                    post_update_alpha_f32_bits: if mask.1 { alpha } else { 0x3f00_0000 },
+                    post_update_playback_rate_f32_bits: playback,
+                    producer_wrote_active: mask.0,
+                    producer_wrote_alpha: mask.1,
+                }
+            };
+            let raw = RawWeatherVisibilityObservation {
+                observation_index: 1,
+                sequence: 2,
+                update_index: 3,
+                owner: RawWeatherUpdateOwner::NormalStrategicRegionUpdate,
+                strategic_region_id: 4,
+                view_distance_f32_bits: distance.to_bits(),
+                camera_branch: branch,
+                computed_fade_alpha_f32_bits: alpha,
+                computed_playback_rate_f32_bits: playback,
+                ordered_entity_visibility: vec![
+                    entity(5, WeatherEntityRole::Primary, primary_mask),
+                    entity(6, WeatherEntityRole::Fading, fading_mask),
+                ],
+            };
+            assert!(promote_weather_visibility_observation(&raw, 2, 3).is_ok());
+
+            let mut collapsed = raw;
+            collapsed.ordered_entity_visibility[1].producer_wrote_alpha =
+                collapsed.ordered_entity_visibility[1].producer_wrote_active;
+            if fading_mask.0 != fading_mask.1 {
+                assert!(promote_weather_visibility_observation(&collapsed, 2, 3).is_err());
+            }
+        }
     }
 
     #[test]

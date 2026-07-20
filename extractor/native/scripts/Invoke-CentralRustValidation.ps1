@@ -31,8 +31,12 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 $targetDir = Join-Path $repoRoot ".cargo-target"
 $timingReportDir = Join-Path $repoRoot ".cargo-timings"
 $nextestConfig = Join-Path $repoRoot ".config\nextest.toml"
+$artifactAttestationHelper = Join-Path $PSScriptRoot "ProductionArtifact.Attestation.ps1"
+$artifactAttestationPath = Join-Path $targetDir "release\hoi4-production-prebuilt-artifacts.json"
+. $artifactAttestationHelper
 $mutex = [Threading.Mutex]::new($false, "Local\battle_plan_central_rust_validation")
 $ownsMutex = $false
+$releaseInputDigestBefore = $null
 
 function Invoke-Checked {
     param(
@@ -73,6 +77,29 @@ function Save-CargoTimingReport {
     Write-Host "Timing report: $destination"
 }
 
+function Test-CargoManifestHasLibraryTarget {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ManifestPath
+    )
+
+    $manifest = Get-Content -LiteralPath $ManifestPath -Raw
+    if ($manifest -match '(?m)^[ \t]*\[lib\][ \t]*(?:#.*)?$') {
+        return $true
+    }
+
+    # Cargo implicitly creates a library target for src/lib.rs unless the
+    # package explicitly disables automatic library discovery.
+    $packageSection = [regex]::Match(
+        $manifest,
+        '(?ms)^[ \t]*\[package\][ \t]*(?:#.*)?\r?\n(?<body>.*?)(?=^[ \t]*\[|\z)'
+    )
+    $autolibDisabled = $packageSection.Success -and
+        $packageSection.Groups['body'].Value -match '(?m)^[ \t]*autolib[ \t]*=[ \t]*false[ \t]*(?:#.*)?$'
+    $implicitLibrary = Join-Path (Split-Path -Parent $ManifestPath) 'src\lib.rs'
+    return ((-not $autolibDisabled) -and (Test-Path -LiteralPath $implicitLibrary -PathType Leaf))
+}
+
 try {
     $ownsMutex = $mutex.WaitOne(0)
     if (-not $ownsMutex) {
@@ -106,6 +133,18 @@ try {
     if ($Mode -eq "Stats") {
         Invoke-Checked -Program "sccache" -Arguments @("--show-stats")
         return
+    }
+
+    $extractorReleaseRequested = $Mode -eq "Release" -and $Workspace -in @("All", "Extractor")
+    $fullExtractorRelease = $extractorReleaseRequested -and $Package.Count -eq 0 -and [string]::IsNullOrWhiteSpace($FilterExpression)
+    if ($extractorReleaseRequested) {
+        # A failed or interrupted release must not leave an older receipt looking
+        # authoritative. Only the successful end of this centralized invocation
+        # is allowed to mint the replacement.
+        Remove-Item -LiteralPath $artifactAttestationPath -Force -ErrorAction SilentlyContinue
+    }
+    if ($fullExtractorRelease) {
+        $releaseInputDigestBefore = Get-ProductionRustInputDigest -RepoRoot $repoRoot
     }
 
     $hasSpecificTarget = $Lib -or $Bin.Count -gt 0 -or $TestTarget.Count -gt 0
@@ -269,6 +308,49 @@ try {
         finally {
             Pop-Location
         }
+    }
+
+    if ($Package.Count -eq 0 -and $Workspace -in @("All", "Extractor") -and $Mode -in @("Final", "Release")) {
+        $standaloneRoots = @(
+            (Join-Path $repoRoot "extractor\native\project_progress_live_lane"),
+            (Join-Path $repoRoot "extractor\native\lanes\occupation_resistance_compliance_live\replay_verify")
+        )
+        foreach ($standaloneRoot in $standaloneRoots) {
+            $standaloneManifest = Join-Path $standaloneRoot "Cargo.toml"
+            Push-Location $standaloneRoot
+            try {
+                if ($Mode -eq "Final") {
+                    Invoke-Checked -Program "cargo" -Arguments @("nextest", "run", "--all-targets", "--no-fail-fast")
+                    if (Test-CargoManifestHasLibraryTarget -ManifestPath $standaloneManifest) {
+                        Invoke-Checked -Program "cargo" -Arguments @("test", "--doc", "--no-fail-fast")
+                    }
+                    else {
+                        Write-Host "Skipping standalone doctests: no library target in $standaloneManifest"
+                    }
+                }
+                else {
+                    Invoke-Checked -Program "cargo" -Arguments @("build", "--release", "--all-targets")
+                    Invoke-Checked -Program "cargo" -Arguments @("nextest", "run", "--all-targets", "--no-fail-fast", "--cargo-profile", "release")
+                }
+            }
+            finally {
+                Pop-Location
+            }
+        }
+    }
+
+    if ($fullExtractorRelease) {
+        $releaseInputDigestAfter = Get-ProductionRustInputDigest -RepoRoot $repoRoot
+        if ([string]$releaseInputDigestBefore.sha256 -cne [string]$releaseInputDigestAfter.sha256 -or
+            [int]$releaseInputDigestBefore.file_count -ne [int]$releaseInputDigestAfter.file_count) {
+            throw "production Rust inputs changed during centralized Release; no artifact attestation was emitted"
+        }
+        Write-ProductionArtifactAttestation `
+            -RepoRoot $repoRoot `
+            -ReceiptPath $artifactAttestationPath `
+            -RequestedWorkspace $Workspace `
+            -SourceDigest $releaseInputDigestAfter
+        Write-Host "Production artifact attestation: $artifactAttestationPath"
     }
 }
 finally {

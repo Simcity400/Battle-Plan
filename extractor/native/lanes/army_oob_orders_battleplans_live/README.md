@@ -7,6 +7,15 @@
 > integrated domain-54 source and
 > `../army_battleplans_depth_live/A729_BATTLEPLAN_RE_REPORT.md`.
 
+> 2026-07-20 manager/scalar closeout: exact registered-reference table code
+> closes the complete army manager, and exact command writers close the u32
+> execution/cohesion/leader-proximity scalars at `+0x1A4/+0x1A8/+0x1AC`.
+> The fail-closed reader and pointer-free `OGS1` carrier live in
+> `../army_battleplans_depth_live/src/orders_group_live.rs`; receipts and
+> supersession details are in `ORDERS_MANAGER_SCALARS_RE_20260720.md`.
+> Where older sections below say `CArmy` for RVA `0x293BC60`, read that as the
+> army-row `COrdersGroup`; exact MSVC RTTI is `.?AVCOrdersGroup@@`.
+
 
 Lane scope: land army/army-group command hierarchy, commander assignment,
 formation membership, selected army order roots, battle-plan target slices, and
@@ -469,7 +478,7 @@ domain 54 now has a lane-local compact path-geometry child table and proof, but
 it still needs shared end-to-end proof and an authenticated same-instance
 type-2 redraw/delete fixture before the master row can close.
 
-Army-level scalar candidate proof run:
+Historical army-level scalar candidate proof run:
 `extractor/native/runs/army_battleplans_depth_live_army_scalar_870ebf_20260701_v2`.
 It used the current autosave's `orders_group` scalar fields as a candidate
 oracle, then scanned validated live `CArmy` roots over `+0x00..+0x300` as
@@ -483,22 +492,13 @@ oracle, then scanned validated live `CArmy` roots over `+0x00..+0x300` as
   - `execution_type`: `CArmy+0x1A4`, `447/463` matches (`96.54%`);
   - `cohesion_type`: `CArmy+0x1A8`, `462/463` matches (`99.78%`);
   - `proximity_type`: `CArmy+0x1AC`, `455/463` matches (`98.27%`);
-- `u8` and `u32` reads at the same offsets both match the low-value histograms,
-  so width is still unresolved.
+- `u8` and `u32` reads at the same offsets both matched the low-value
+  histograms, so this older artifact alone did not resolve width. It is now
 
 ## Remaining backlog
 
 Not completed by this lane-local slice:
 
-- DLL-native hot-loop or bounded preflight integration of direct full land OOB
-  roots for empty armies not reachable through a live division parent. The
-  domain-54 compact section and gate now exist, but the current rows are
-  cold-preflight proof rows, not DLL-only production rows. A pure cached-address
-  warm loop without refresh is rejected by the v5 proof, the v3 targeted
-  refresh proof rejects cached roots plus arena-wide handle-scan repair as a
-  bounded hot-loop path, and the v3 table probe rejects the complete plain
-  pointer-table path for empty/inactive armies (`0/13` empty armies in accepted
-  table runs);
 - DLL-native hot-loop or bounded preflight integration of theatres and land
   command roots not emitted by the active-army compact slice. The same domain-54
   direct-root section now carries theatre ids as cold-preflight rows. The v2
@@ -513,36 +513,28 @@ Not completed by this lane-local slice:
 - plan-value/power runtime caches. Active/execution state is exact at
   `order+0x248`; `order+0x150` is a rejected execution candidate for current
   build `870ebf` and must not be retried;
-- stance/aggressiveness live fields. No current-build live offset is validated
-  yet. The v2 scalar probe narrows likely army-level candidates to
-  `CArmy+0x1A4/+0x1A8/+0x1AC`, but strict gate fails, so domain 54 still
-  publishes explicit unknown statuses rather than inferring these values from
-  UI labels, saves, or cached battleplan data;
-- UI-level semantic reconstruction of front lines from order geometry;
-- broad integration into shared entrypoints beyond the existing compact
-  domains.
+- order-row stance/aggressiveness live fields remain separate and unknown.
+  They must not be inferred from the now-exact army-level execution, cohesion,
+  or leader-proximity values;
+- UI-level semantic reconstruction of front lines from order geometry.
 
-## Integration patch plan
+## Production integration
 
-Do not edit shared collector/recorder entrypoints until the orchestrator grants
-an integration slot. The merge-ready path is:
+The shared integration slot was granted on 2026-07-20. The production path now:
 
 1. Keep `domain_id = 27` and `domain_id = 28` stable.
-2. Register `domain_id = 54` as schedulable
-   `army_battleplans_depth_live` and call the lane-owned module in
-   `army_battleplans_depth_module.rs`.
+2. Keeps `domain_id = 54` schedulable as
+   `army_battleplans_depth_live` and calls its lane-owned codec.
 3. Promote any new battleplan row fields as additive flags/reserved-field
    expansions, never by changing existing row widths without a version bump.
-4. For direct land-OOB roots, add an isolated collector helper that reuses the
-   validated vtable/type/id checks from `direct_oob_probe.py`, refreshes roots
-   in a bounded preflight/cache-refresh stage, and passes `DirectRootRow` values
-   into `army_battleplans_depth_module.rs` so they are emitted in the domain-54
-   direct-root section.
+4. Adapts collector memory reads to the exact type-53 source in
+   `../army_battleplans_depth_live/src/orders_group_live.rs`; append its sorted,
+   pointer-free `OGS1` carrier and fail the domain closed if the source rejects
+   a snapshot.
 5. Add theatre rows as direct-root `kind = 5` inside domain 54 only after the
    shared recorder slot is granted; until then, keep the proof as lane-local
    evidence and do not mutate `oob_command` row widths.
-6. Keep type-4 geometry, same-instance redraw/delete admission, exact membership
-   lifecycle, and complete empty/inactive manager admission behind the
+6. Keep type-4 geometry and same-instance redraw/delete admission behind the
    activation-false carrier in `D54_EXACT_FIXTURE_CARRIER_CONTRACT.json`.
    `d54_exact_fixture_observer.py` requires the current 60/88 D54 wire and raw
    identity/order receipts. Type-4 promotion additionally requires its raw

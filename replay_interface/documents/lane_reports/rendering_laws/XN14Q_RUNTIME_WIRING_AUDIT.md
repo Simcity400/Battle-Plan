@@ -1,10 +1,10 @@
 # XN14Q - close-zoom weather runtime wiring audit
 
-Status: **STATIC LAW EXHAUSTED; PRODUCTION CARRIER FAILS CLOSED**
+Status: **NON-HUMAN IMPLEMENTATION WIRED; CENTRAL VALIDATION AND SAME-SESSION LIVE PROOF PENDING**
 
 Pinned binary: `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 
-This audit does not promote a new rendering-law authority. It compares the frozen XN14/XN15 authority with the current extractor, portable carrier, and replay implementation. Claims below inherit only the retained frozen evidence named under **Authority**.
+This audit does not promote a new rendering-law authority. It compares the frozen XN14/XN15 authority with the current extractor, portable carrier, and replay implementation. Claims below inherit only the retained frozen evidence named under **Authority**. The 2026-07-20 implementation update is statically wired but has not yet passed the primary agent's central Rust validation or the required same-session early-launch live observation.
 
 ## Result
 
@@ -12,13 +12,13 @@ No close-zoom weather law remains unknown in the retained evidence. The exact pr
 
 1. `a729_hook.rs` observes code-change state, PRNG seed words, ordered factory attempts, live primary/fading pairs, child effect IDs, and the frozen named-registry lookup that binds an entity definition pointer to its case-sensitive registration token.
 2. `production_render_submit_live::AuthenticatedWeatherCatalog` now builds or decodes a hash-pinned effective-VFS catalog for the exact code table, authored variants, dependency closures, and ordered positions. Resolution is exact-or-fail and never falls back across position classes.
-3. The normal selected-Present collector path still does not drain, sequence, and promote the queued weather observations or per-update visibility observations. It refuses every queued change or nonzero active airborne region rather than serializing an empty carrier.
+3. The normal selected-Present collector path now drains the latest complete normal-update membership/checkpoint row per observed region, attaches the latest visibility row for each currently active region, promotes both through the authenticated weather catalog, and joins every child effect to the selected submit's complete ordered CPU output cover.
 4. The portable carrier now includes frozen source-line/XYZ placement, pointer-erased variant/content joins, exact entity/effect membership, per-update visibility/write-mask phases, and weather checkpoint hashes for state, complete membership, active lifecycle, visibility, submitted packets, and composition order.
 5. Replay admits every weather content winner through the effective-VFS resolver, validates the complete weather carrier and checkpoint fold, then executes only the authoritative particle/entity submissions in captured draw order. It never classifies weather from textures or resimulates the effect.
 
-Production must not represent that state as an authenticated empty weather stream. The current hook therefore retains a per-region last-seen airborne-code discriminator, and selected-Present finalization rejects a frame whenever a queued weather change or nonzero active airborne region exists. The discriminator deliberately supplies no replay data and cannot be treated as a weather resolver.
+Production must not represent active state as an unauthenticated empty weather stream. The current hook retains the authenticated manager region count plus a per-region last-seen airborne-code discriminator and requires observed coverage and membership snapshots for every manager region, plus a non-stale visibility row for every active region, at the selected Present. Those rows and their pointer-free digest are bound into candidate selection and the selected receipt; incomplete coverage, missing ownership, or missing catalog/output joins reject the frame.
 
-Wave 2 now also defines the pointer-free carrier side of the closure: source-line/XYZ position identity; one effective-VFS `map/weatherpositions.txt` identity per region epoch; deduplicated authored-variant entity/content chains; per-update visibility/write-mask records; membership payload hashes; strict output-reference validation; by-region checkpoint folding; and replay-time admission of every referenced content winner. The direct-definition path now inherits only the exact-10 authenticated `0x14227e5f0` named-registry receipt; a missing receipt still rejects. Active weather remains fail-closed because the normal transaction has no exact initial-state/per-update visibility capture and no sequence-preserving fold of weather observations into the selected submit.
+Wave 2 defines the pointer-free carrier side of the closure: source-line/XYZ position identity; one effective-VFS `map/weatherpositions.txt` identity per region epoch; deduplicated authored-variant entity/content chains; per-update visibility/write-mask records; membership payload hashes; strict output-reference validation; by-region checkpoint folding; and replay-time admission of every referenced content winner. The direct-definition path inherits only the exact-10 authenticated `0x14227e5f0` named-registry receipt; a missing receipt still rejects. Wave 3 now supplies the normal-update ownership, setter observations, Present binding, and selected-submit fold that were previously absent. Promotion status remains closed until central validation and a same-session live receipt prove that implementation.
 
 ## Exact-10 static authority admission
 
@@ -56,9 +56,9 @@ they do not authenticate any live weather state, update, or selected submit.
 
 The retained render anchors were also re-inventoried: `session12_anchor` contains 9 weather-candidate draws, `session12_last_anchor` 74, `vanilla_anchor` 22, and `vanilla_late_anchor` 0. The zero late anchor is a retained negative observation, not evidence that weather output can be omitted. The positive anchors include both exclusive texture/technique pairs and shared/ambiguous atlases, confirming that texture-only classification cannot close the CPU membership join.
 
-## Required implementation closure
+## Implemented non-human closure
 
-The next promotion may remove the fail-closed discriminator only after all of these joins exist in the normal selected-Present transaction:
+All of these joins now exist in the normal selected-Present transaction, subject to central build/test validation and the live gate:
 
 1. An effective-VFS-authenticated weather catalog resolver for all nine authored rows, 17 reachable entity/particle definitions, and all 588 ordered positions.
 2. A portable position carrier containing source line and XYZ raw bits, plus the existing class, explicit-empty/instantiated result, selected authored index, variant token, entity IDs, and ordered effect IDs.
@@ -68,7 +68,7 @@ The next promotion may remove the fail-closed discriminator only after all of th
 6. Frame and checkpoint folding that maintains state/membership by region and hashes the actual weather stream, including cold-seek equality.
 7. Replay validation of those joins without texture-based weather classification. Shared cloud atlases remain ambiguous without the CPU entity/effect identity.
 
-## Minimal external discriminator
+## Selected-Present discriminator and snapshot
 
 The runtime discriminator is exact and intentionally small:
 
@@ -76,7 +76,7 @@ The runtime discriminator is exact and intentionally small:
 - `active_airborne_weather_region_count`: count whose last authenticated producer code is one of `2,3,4,5,7`.
 - `queued_weather_change_count`: exact code-change observations waiting for process-local promotion.
 
-Any nonzero active or queued count makes selected-Present finalization fail. Code values outside `0,2,3,4,5,7` reject the observation. This closes the prior silent-omission path but is not a substitute for the required carrier.
+Code values outside `0,2,3,4,5,7` reject the observation. At selection, `expected_weather_region_count` must be nonzero and equal both `observed_weather_region_count` and the ordered membership snapshot size; `active_airborne_weather_region_count` must equal the active-only visibility snapshot size. The hook recomputes a pointer-free snapshot digest, binds it and the latest completed weather update index into the candidate and selected-receipt domains, and the collector recomputes that receipt before promotion. Queued compatibility observations no longer cause a blanket rejection because they are not substituted for the selected snapshot.
 
 ## Wave 3 setter-chain admission boundary
 
@@ -89,32 +89,31 @@ request SHA-256 is
 The three setter prologues require the companion dump request whose canonical
 SHA-256 is
 `792a4380f12fa38f6914750f8973085a8932e9c95e3fbd158edaf6c9084579e7`.
-Fresh jobs listed in that request are discovery only. They do not activate a
-detour until the central exact-ten replacement ledger binds the actual broker
-job/shard, identity manifest, artifacts, and ten-ready-shard receipt.
+The Wave 3 exact-20 ledger now binds the actual function and data jobs. That
+static custody authorizes implementation but does not replace the independent
+same-session live activation gate.
 
 The discovery bodies also expose one concrete dormant validator defect. The
 producer does not use one common write mask for active and alpha. Fading
 active is written in every branch, but fading alpha only when computed alpha
 is positive. Primary active is written only in far-fade/far-hidden, and primary
 alpha only in far-fade. Playback is written for both roles on every active
-update. The current extractor and portable validators collapse active and
-alpha occurrence into one boolean and therefore reject the exact hidden-branch
-law. This is recorded for the post-receipt implementation; changing the law
-before the exact-ten receipt would promote discovery-only evidence.
+update. The extractor and portable validators now enforce independent active
+and alpha occurrence masks for all five branches, plus field-specific
+continuity when a setter was not called.
 
-The same request pins the remaining transaction work: first-call code-zero
+The same request pins the implemented transaction work: first-call code-zero
 rows, normal-update ownership distinct from editor refresh, setter-scoped
 occurrence plus double-read post-state, PresentEnd ownership, and complete CPU
-effect-output cover. An empty effect-output subset is admissible only when the
+effect-output cover. An empty effect-output subset is admitted only when the
 complete authenticated selected-submit packet list proves that exact empty
 set. Texture absence and RenderDoc absence remain non-authoritative.
 
 ## Human-input boundary
 
-No human interpretation of weather assets or native behavior is required. Static mining and the exact consolidated request body are exhausted; the central exact-ten receipt and mechanical consumers above remain non-human work. The definition-pointer receipt is implemented from exact-10 XN15L authority and still refuses inference from pointer value, factory order, texture, or position. The retained-observation census searched the retained RDC, XN14B anchors/corpus, XN14V fixtures, native custom-harness runs, and current hook surface; none contains the required unchanged-region initial observation, per-update visibility/write-mask observation, weather-update-to-selected-submit join, or complete effect-output cover. The census is pinned at `replay_interface/re_evidence/rendering_laws/XN14Q/retained_observation_census.json` (SHA-256 `96243fdbc74ceb910118855e58d44399f70b48f55c35bfb30cf1012c70acdb60`) and summarized by `XN14Q_RETAINED_OBSERVATION_CENSUS.md` (SHA-256 `47914c3316fa29a224b5db4896e391dcd367d5050f23e6e93ff51309218fc7ec`).
+No human interpretation of weather assets or native behavior is required. Static mining, exact-20 receipt binding, and the non-human consumers above are exhausted. The definition-pointer receipt is implemented from exact-10 XN15L authority and still refuses inference from pointer value, factory order, texture, or position. The retained-observation census searched the retained RDC, XN14B anchors/corpus, XN14V fixtures, native custom-harness runs, and current hook surface; none contains the required same-session proof. The census is pinned at `replay_interface/re_evidence/rendering_laws/XN14Q/retained_observation_census.json` (SHA-256 `96243fdbc74ceb910118855e58d44399f70b48f55c35bfb30cf1012c70acdb60`) and summarized by `XN14Q_RETAINED_OBSERVATION_CENSUS.md` (SHA-256 `47914c3316fa29a224b5db4896e391dcd367d5050f23e6e93ff51309218fc7ec`).
 
-Promotion therefore still requires an authorized central validation/capture run that proves early installation sees every needed named-registry lookup, emits the first successful call per region even when unchanged, records exact per-update visibility and setter write masks, and owns the latest completed update plus complete effect-output cover in the same selected-Present transaction. The earlier 2026-07-18 registry/factory jobs are retained as discovery history only; promotion provenance is the exact-10 replacement receipt above. No static receipt enables active-weather promotion.
+Promotion therefore still requires the primary agent's central Rust validation and an authorized early-launch capture proving that the installed implementation sees every needed named-registry lookup, emits the first successful call per region even when unchanged, records exact per-update visibility and setter write masks, and owns the latest completed update plus complete effect-output cover in the same selected-Present transaction. The earlier 2026-07-18 registry/factory jobs are retained as discovery history only. No static receipt or unexecuted implementation enables active-weather promotion.
 
 ## Authority
 
@@ -131,5 +130,6 @@ Promotion therefore still requires an authorized central validation/capture run 
 - `replay_interface/re_evidence/rendering_laws/XN14Q/exact10_weather_supplement_audit.json`
 - `replay_interface/re_evidence/rendering_laws/XN14Q/retained_observation_census.json`
 - `replay_interface/re_evidence/rendering_laws/XN14Q/weather_update_setter_chain_promotion_request.json`
+- `replay_interface/re_evidence/rendering_laws/XN14Q/automated_selected_present_wiring.json`
 - `replay_interface/documents/lane_reports/rendering_laws/XN14Q_RETAINED_OBSERVATION_CENSUS.md`
 - `replay_interface/documents/lane_reports/rendering_laws/XN14Q_WEATHER_UPDATE_SETTER_CHAIN_PROMOTION_REQUEST.md`

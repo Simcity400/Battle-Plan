@@ -314,6 +314,18 @@ impl std::fmt::Debug for Store {
 }
 
 impl Store {
+    /// Consume an already-open, pinned replay container without reopening its
+    /// pathname. This is the admission path for descriptor-authenticated
+    /// package members whose exact file handle has already been joined to an
+    /// external whole-file receipt.
+    pub fn from_container(container: Container) -> Self {
+        Self {
+            backend: Backend::Replay {
+                container: Arc::new(container),
+            },
+        }
+    }
+
     /// Open a store. If `path` is a regular file it is opened as a `.battleplan`
     /// portable recording (integrity-verified, identity-only); if it is a
     /// directory it is the on-disk snapshot store. A missing path defaults to the

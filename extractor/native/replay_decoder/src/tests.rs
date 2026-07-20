@@ -146,9 +146,13 @@ fn three_hour_stream() -> Vec<u8> {
 const CAMPAIGN_UUID: &str = "a4b17fed-ed12-4361-9064-fb6576638110";
 
 fn identity_v1_stream() -> Vec<u8> {
+    identity_v1_stream_with_seed(1_026_046_527)
+}
+
+fn identity_v1_stream_with_seed(seed: i32) -> Vec<u8> {
     let observation = Cid1Observation {
         game_unique_id: CAMPAIGN_UUID.to_string(),
-        game_unique_seed: 1_026_046_527,
+        game_unique_seed: seed,
         game_hour_raw: raw_for(HOUR_A),
     };
     let fields = Cid1Fields::from_stable_observations(
@@ -1211,6 +1215,196 @@ fn identity_v1_cursor_retains_cid1_and_excludes_it_from_ordinary_dispatch() {
     assert_eq!(cursor.stats().other_records, 0);
     assert!(cursor.stats().certification_verdict().is_ok());
     cursor.certify_complete().unwrap();
+}
+
+#[test]
+fn rollover_stream_set_authenticates_every_cid1_before_yielding_world_hours() {
+    let dir = TmpDir::new("rollover_set");
+    let paths = [dir.0.join("stream-0.h4cr"), dir.0.join("stream-1.h4cr")];
+    let streams = [
+        identity_v1_stream_with_seed(1_026_046_527),
+        identity_v1_stream_with_seed(1_026_046_528),
+    ];
+    let mut descriptors = Vec::new();
+    for (logical_stream_id, (path, bytes)) in paths.iter().zip(streams.iter()).enumerate() {
+        std::fs::write(path, bytes).unwrap();
+        let identity = read_placement_authenticated_cid1(path).unwrap();
+        descriptors.push(RolloverStreamDescriptor {
+            logical_stream_id: logical_stream_id as u64,
+            path: path.clone(),
+            expected_last_complete_sequence: 6,
+            expected_campaign_id: identity.campaign_id(),
+            expected_cid1_payload_sha256: identity.payload_sha256(),
+            expected_file_sha256: Sha256::digest(bytes),
+        });
+    }
+    let transition = RolloverTransitionDescriptor {
+        current_logical_stream_id: 0,
+        proposed_logical_stream_id: 1,
+        last_admitted_h4cr_sequence: descriptors[0].expected_last_complete_sequence,
+        boundary_game_hour_raw: raw_for(HOUR_A),
+        reason: RolloverReason::WholePairChanged,
+        proposal_nonce: 1,
+        current_campaign_id: descriptors[0].expected_campaign_id,
+        proposed_campaign_id: descriptors[1].expected_campaign_id,
+        current_cid1_payload_sha256: descriptors[0].expected_cid1_payload_sha256,
+        proposed_cid1_payload_sha256: descriptors[1].expected_cid1_payload_sha256,
+    };
+    let descriptor = RolloverSetDescriptor {
+        ordered_streams: descriptors,
+        transitions: vec![transition],
+    };
+    let mut set = open_rollover_stream_set(
+        descriptor.clone(),
+        OpenOptions {
+            game_id: Some("rollover-set".to_string()),
+        },
+    )
+    .unwrap();
+    assert_eq!(set.identities().len(), 2);
+    assert_eq!(set.current_logical_stream_id(), Some(0));
+    let hours = std::iter::from_fn(|| set.next_hour())
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(hours.len(), 6);
+    assert_eq!(
+        hours
+            .iter()
+            .map(|hour| hour.logical_stream_id)
+            .collect::<Vec<_>>(),
+        vec![0, 0, 0, 1, 1, 1]
+    );
+    assert_eq!(hours[0].hour.hour_index, HOUR_A);
+    assert_eq!(hours[3].hour.hour_index, HOUR_A);
+    assert_eq!(set.current_logical_stream_id(), None);
+
+    let mut mismatched_receipt = descriptor;
+    mismatched_receipt.ordered_streams[1].expected_cid1_payload_sha256[0] ^= 1;
+    let error = open_rollover_stream_set(mismatched_receipt, OpenOptions::default())
+        .err()
+        .expect("receipt mismatch must fail before a cursor is returned");
+    assert!(error.to_string().contains("durable receipt"));
+}
+
+#[test]
+fn rollover_stream_set_rejects_nonadjacent_transition_before_yielding() {
+    let dir = TmpDir::new("rollover_transition_chain");
+    let paths = [dir.0.join("stream-0.h4cr"), dir.0.join("stream-1.h4cr")];
+    let streams = [
+        identity_v1_stream_with_seed(1_026_046_527),
+        identity_v1_stream_with_seed(1_026_046_528),
+    ];
+    let mut ordered_streams = Vec::new();
+    for (logical_stream_id, (path, bytes)) in paths.iter().zip(streams.iter()).enumerate() {
+        std::fs::write(path, bytes).unwrap();
+        let identity = read_placement_authenticated_cid1(path).unwrap();
+        ordered_streams.push(RolloverStreamDescriptor {
+            logical_stream_id: logical_stream_id as u64,
+            path: path.clone(),
+            expected_last_complete_sequence: 6,
+            expected_campaign_id: identity.campaign_id(),
+            expected_cid1_payload_sha256: identity.payload_sha256(),
+            expected_file_sha256: Sha256::digest(bytes),
+        });
+    }
+    let transition = RolloverTransitionDescriptor {
+        current_logical_stream_id: 0,
+        proposed_logical_stream_id: 1,
+        last_admitted_h4cr_sequence: 6,
+        boundary_game_hour_raw: raw_for(HOUR_A),
+        reason: RolloverReason::WholePairChanged,
+        proposal_nonce: 1,
+        current_campaign_id: ordered_streams[0].expected_campaign_id,
+        proposed_campaign_id: ordered_streams[1].expected_campaign_id,
+        current_cid1_payload_sha256: ordered_streams[0].expected_cid1_payload_sha256,
+        proposed_cid1_payload_sha256: ordered_streams[1].expected_cid1_payload_sha256,
+    };
+    let valid = RolloverSetDescriptor {
+        ordered_streams,
+        transitions: vec![transition],
+    };
+
+    let mut forged_member_frontier = valid.clone();
+    forged_member_frontier.ordered_streams[0].expected_last_complete_sequence = 5;
+    forged_member_frontier.transitions[0].last_admitted_h4cr_sequence = 5;
+    let error = open_rollover_stream_set(forged_member_frontier, OpenOptions::default())
+        .err()
+        .expect("forged member frontier must fail full-stream pre-admission");
+    assert!(error.to_string().contains("durable frontier"), "{error}");
+
+    let mut wrong_frontier = valid.clone();
+    wrong_frontier.transitions[0].last_admitted_h4cr_sequence = 5;
+    let error = open_rollover_stream_set(wrong_frontier, OpenOptions::default())
+        .err()
+        .expect("forged predecessor frontier must fail");
+    assert!(error.to_string().contains("not adjacent"), "{error}");
+
+    let mut wrong_boundary = valid.clone();
+    wrong_boundary.transitions[0].boundary_game_hour_raw = raw_for(HOUR_B);
+    let error = open_rollover_stream_set(wrong_boundary, OpenOptions::default())
+        .err()
+        .expect("boundary/CID1 mismatch must fail");
+    assert!(error.to_string().contains("boundary hour"), "{error}");
+
+    let mut wrong_reason = valid;
+    wrong_reason.transitions[0].reason = RolloverReason::SamePairTimeRollback;
+    let error = open_rollover_stream_set(wrong_reason, OpenOptions::default())
+        .err()
+        .expect("CRP1 reason/campaign mismatch must fail");
+    assert!(error.to_string().contains("CRP1 semantics"), "{error}");
+}
+
+#[test]
+fn rollover_stream_set_requires_strictly_increasing_transition_nonces() {
+    let dir = TmpDir::new("rollover_nonce_chain");
+    let mut ordered_streams = Vec::new();
+    for (logical_stream_id, seed) in [
+        1_026_046_527,
+        1_026_046_528,
+        1_026_046_529,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = dir.0.join(format!("stream-{logical_stream_id}.h4cr"));
+        let bytes = identity_v1_stream_with_seed(seed);
+        std::fs::write(&path, &bytes).unwrap();
+        let identity = read_placement_authenticated_cid1(&path).unwrap();
+        ordered_streams.push(RolloverStreamDescriptor {
+            logical_stream_id: logical_stream_id as u64,
+            path,
+            expected_last_complete_sequence: 6,
+            expected_campaign_id: identity.campaign_id(),
+            expected_cid1_payload_sha256: identity.payload_sha256(),
+            expected_file_sha256: Sha256::digest(&bytes),
+        });
+    }
+    let transitions = (0..2)
+        .map(|index| RolloverTransitionDescriptor {
+            current_logical_stream_id: index as u64,
+            proposed_logical_stream_id: index as u64 + 1,
+            last_admitted_h4cr_sequence: 6,
+            boundary_game_hour_raw: raw_for(HOUR_A),
+            reason: RolloverReason::WholePairChanged,
+            proposal_nonce: 1,
+            current_campaign_id: ordered_streams[index].expected_campaign_id,
+            proposed_campaign_id: ordered_streams[index + 1].expected_campaign_id,
+            current_cid1_payload_sha256: ordered_streams[index]
+                .expected_cid1_payload_sha256,
+            proposed_cid1_payload_sha256: ordered_streams[index + 1]
+                .expected_cid1_payload_sha256,
+        })
+        .collect();
+    let error = open_rollover_stream_set(
+        RolloverSetDescriptor {
+            ordered_streams,
+            transitions,
+        },
+        OpenOptions::default(),
+    )
+    .err()
+    .expect("repeated accepted proposal nonce must fail");
+    assert!(error.to_string().contains("strictly increasing"), "{error}");
 }
 
 #[test]

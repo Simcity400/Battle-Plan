@@ -62,6 +62,12 @@ materialisation/scroll state.
 - `game_ui::compose` supports runtime sprite-token overrides and the exact
   midpoint-interval `progress_minmax` shader path while leaving ordinary
   progress bars unchanged.
+- Portable GUI role schema v2 keeps the exact authored hierarchy, parent,
+  widget type, and same-type sibling ordinal. Identifiers are case-sensitive:
+  a729's direct siblings `powerbalanceview/background` (panel chrome) and
+  `powerbalanceview/Background` (decision chrome) are distinct roles. Exact
+  duplicate selectors still reject, while a valid effective mod winner may
+  supply different sprite and texture identities without a vanilla allowlist.
 - Multi-balance ordering is producer-authenticated. Threshold equality,
   effective icon selection, decision visibility/order/cost/timer/target,
   modifier display order, stable/moving state, trend cadence/magnitude, and

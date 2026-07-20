@@ -152,7 +152,7 @@ fn production_close_zoom_law_plan() -> Vec<ProductionCloseZoomLawPlan> {
             module: "snow_mud_feed",
             status: PixelEvidenceBlocked,
             blockers: vec![
-                "the exact CPU pre-upload packet and replay texture readback/replacement route is pointer-free, but selected-Present SnowMudFade authority, a distinct-session raw H/H2 join, and a receipt-bound engine/replay pixel golden are not admitted",
+                "the exact CPU pre-upload packet, reflected selected-Present SnowMudFade, pointer-free static consumer edges, and product D3D immutable-upload/readback route are wired; two content-changing raw H/H2 pairs and a receipt-bound engine/replay pixel golden are not admitted",
             ],
         },
     ]

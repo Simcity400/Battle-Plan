@@ -8,6 +8,9 @@
 
 use std::collections::BTreeSet;
 
+#[cfg(windows)]
+pub mod a729_hook;
+
 pub const DOMAIN_ID: u16 = 85;
 pub const DOMAIN_NAME: &str = "selected_designer_identity_live";
 pub const SCHEMA_VERSION: u32 = 1;
@@ -149,6 +152,48 @@ pub trait ExactSelectedDesignerIdentitySource {
         frame_hour: u64,
         family: SelectedDesignerFamily,
     ) -> Result<SelectedDesignerIdentityFrame, String>;
+}
+
+/// Fixture-only validation path used by the dormant exact-a729 hook.  This
+/// deliberately does not consult `PRODUCTION_ACTIVATION`: it lets the harness
+/// collect the observations needed to decide that latch without creating a
+/// back door into the scheduled production collector.
+pub fn collect_fixture_and_validate<S: ExactSelectedDesignerIdentitySource>(
+    source: &S,
+    frame_hour: u64,
+    family: SelectedDesignerFamily,
+) -> Result<SelectedDesignerIdentityFrame, SelectedDesignerError> {
+    if !source.is_exact_a729_selected_designer_source() {
+        return Err(SelectedDesignerError::UnauthenticatedSource);
+    }
+    let frame = source
+        .collect_frame(frame_hour, family)
+        .map_err(SelectedDesignerError::Source)?;
+    if frame.frame_hour != frame_hour || frame.family != family {
+        return invalid("requested and returned designer fixture identities differ");
+    }
+    if frame.producer_manifest_sha256 != source.producer_manifest_sha256()
+        || frame.classifier_manifest_sha256 != source.classifier_manifest_sha256()
+    {
+        return invalid("designer fixture/source authority manifest mismatch");
+    }
+    validate_frame(&frame)?;
+    Ok(frame)
+}
+
+pub fn collect_fixture_and_encode<S: ExactSelectedDesignerIdentitySource>(
+    source: &S,
+    frame_hour: u64,
+    elapsed_wall_ms: u64,
+    family: SelectedDesignerFamily,
+) -> Result<Vec<u8>, SelectedDesignerError> {
+    let snapshot = collect_fixture_and_validate(source, frame_hour, family)?;
+    encode_payload(&SelectedDesignerTransportFrame {
+        elapsed_wall_ms,
+        status_flags: 0,
+        frame_hour,
+        snapshot: Some(snapshot),
+    })
 }
 
 pub fn collect_and_validate<S: ExactSelectedDesignerIdentitySource>(
@@ -744,6 +789,17 @@ mod tests {
         assert_eq!(
             collect_and_encode(&Source, 42, 17, SelectedDesignerFamily::Tank),
             Err(SelectedDesignerError::ActivationBlocked)
+        );
+        let fixture = collect_fixture_and_encode(
+            &Source,
+            42,
+            17,
+            SelectedDesignerFamily::Tank,
+        )
+        .unwrap();
+        assert_eq!(
+            decode_payload(&fixture).unwrap().snapshot.unwrap().family,
+            SelectedDesignerFamily::Tank
         );
     }
 }

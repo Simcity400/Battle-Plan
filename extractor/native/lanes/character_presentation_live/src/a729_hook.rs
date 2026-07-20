@@ -7,16 +7,22 @@
 
 use crate::{
     validate_snapshot, AcePortraitObservation, CharacterPresentationSnapshot,
-    ExactCharacterPresentationSource, TraitTreeObservation,
+    ExactCharacterPresentationSource, TraitNodeState, TraitTreeObservation, TraitTreeRoot,
+    MAX_TOKEN_BYTES, MAX_TRAIT_NODES,
 };
 use core::cell::{Cell, RefCell};
 use core::ffi::c_void;
 use minhook::{MinHook, MH_STATUS};
+use runtime_text_inputs_live_lane::a729_hook::{
+    install_a729_runtime_text_hooks, pin_observed_textbox_context,
+    register_post_setter_observer, register_pre_setter_observer,
+};
+use std::collections::BTreeMap;
 use std::mem;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -25,11 +31,15 @@ use windows_sys::Win32::System::Threading::GetCurrentProcess;
 pub const TRAIT_REFRESH_RVA: u32 = 0x016B_DC20;
 pub const ACE_REFRESH_RVA: u32 = 0x0201_E420;
 pub const ACE_ROW_BIND_RVA: u32 = 0x0201_EDC0;
+pub const SPRITE_SET_RVA: u32 = 0x0229_A780;
+pub const TRAIT_TOOLTIP_FORMATTER_RVA: u32 = 0x01CF_F880;
 
 // Retained exact-a729 ABI/sentinel authorities:
 // - trait refresh decompile d44c1228..., instructions ea9ad44f...;
 // - ace refresh decompile cfc1c6ea..., instructions 6059b45a...;
-// - ace bind decompile abb2ce24..., instructions ae58cf9c....
+// - ace bind decompile abb2ce24..., instructions ae58cf9c...;
+// - sprite assignment decompile d26b9550..., instructions d9794c3d...; and
+// - trait tooltip formatter decompile 7283c463..., instructions 87bf138e....
 // The complete hashes and closed historical job identities are recorded in
 // H_A39_PREREQUISITE_ENGINEERING_20260720.md.
 
@@ -50,17 +60,51 @@ const ACE_ROW_BIND_SENTINEL: [u8; 17] = [
     0x48, 0x8b, 0xc4, 0x4c, 0x89, 0x48, 0x20, 0x4c, 0x89, 0x40, 0x18, 0x55, 0x53, 0x56, 0x57, 0x41,
     0x54,
 ];
+const SPRITE_SET_SENTINEL: [u8; 20] = [
+    0x48, 0x85, 0xc9, 0x0f, 0x84, 0x47, 0x01, 0x00, 0x00, 0x48, 0x89, 0x5c, 0x24, 0x18, 0x48,
+    0x89, 0x74, 0x24, 0x20, 0x57,
+];
+const TRAIT_TOOLTIP_FORMATTER_SENTINEL: [u8; 24] = [
+    0x48, 0x89, 0x5c, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41,
+    0x57, 0x48, 0x8d, 0xac, 0x24, 0x30, 0xf8, 0xff, 0xff,
+];
 const MAX_ACE_BINDS_PER_REFRESH: usize = 4_096;
 const TRAIT_SELECTED_LEADER_REFERENCE: usize = 0x78;
 const ACE_OBJECT_ID: usize = 0x0c;
+const ACE_ROW_PORTRAIT_WIDGET: usize = 0x48;
+const ACE_ROW_MODIFIER_TEXT_WIDGET: usize = 0x60;
+const TRAIT_TREE_VECTOR: usize = 0x28;
+const TRAIT_TREE_CAPACITY: usize = 0x30;
+const TRAIT_TREE_COUNT: usize = 0x34;
+const TRAIT_ITEM_DEFINITION: usize = 0x20;
+const TRAIT_ITEM_LEADER_REFERENCE: usize = 0x2c;
+const TRAIT_ITEM_DISABLED_BUTTON: usize = 0x40;
+const TRAIT_ITEM_PICKABLE_BUTTON: usize = 0x598;
+const TRAIT_ITEM_PICKED_BUTTON: usize = 0xaf0;
+const TRAIT_DEFINITION_KIND: usize = 0x920;
+const UNIT_LEADER_TRAIT_XP_VECTOR: usize = 0xdf8;
+const UNIT_LEADER_TRAIT_XP_COUNT: usize = 0xe04;
+const UNIT_LEADER_TRAIT_XP_ENTRY_BYTES: usize = 0x10;
+const GUI_WIDGET_FLAGS: usize = 0x75;
+const GUI_WIDGET_HIDDEN: u8 = 0x10;
+const REFERENCE_REGISTRY_LARGE_RVA: usize = 0x0343_8e50;
+const REFERENCE_REGISTRY_DEFAULT_RVA: usize = 0x0343_8e58;
+const REFERENCE_REGISTRY_SMALL_TABLE_RVA: usize = 0x0343_8e60;
+const REFERENCE_SMALL_TABLE_COUNT: u32 = 100;
+const REFERENCE_DEFAULT_LIMIT: u32 = 0x1269;
+const REFERENCE_HASH_MULTIPLIER: u64 = 0x4963_1a45;
 
 type TraitRefreshFn = unsafe extern "system" fn(usize, usize, i32);
 type AceRefreshFn = unsafe extern "system" fn(usize) -> u64;
 type AceRowBindFn = unsafe extern "system" fn(usize, usize, usize, usize, u32);
+type SpriteSetFn = unsafe extern "system" fn(usize, usize, u8);
+type TraitTooltipFormatterFn = unsafe extern "system" fn(usize, usize, usize) -> u64;
 
 static ORIGINAL_TRAIT_REFRESH: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_ACE_REFRESH: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_ACE_ROW_BIND: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_SPRITE_SET: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_TRAIT_TOOLTIP_FORMATTER: AtomicUsize = AtomicUsize::new(0);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -71,17 +115,23 @@ static IN_FLIGHT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 static HEALTH_EPOCH: AtomicU64 = AtomicU64::new(1);
 static STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
 static FIXTURE_DECODER: OnceLock<Mutex<Option<Arc<dyn ExactA729BoundaryDecoder>>>> = OnceLock::new();
+static COLLECTOR_DECODER: OnceLock<Arc<CollectorBoundaryDecoder>> = OnceLock::new();
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 
 thread_local! {
     static ACTIVE_CALLBACKS: Cell<u8> = const { Cell::new(0) };
     static ACTIVE_ACE_BINDS: RefCell<Option<Vec<ProcessLocalAceBind>>> = const { RefCell::new(None) };
+    static ACTIVE_ACE_PORTRAIT_SET: RefCell<Option<ActiveAcePortraitSet>> = const { RefCell::new(None) };
+    static ACTIVE_ACE_MODIFIER_SET: RefCell<Option<ActiveAceModifierSet>> = const { RefCell::new(None) };
+    static ACTIVE_TRAIT_REASON: RefCell<Option<PendingTraitReason>> = const { RefCell::new(None) };
     static DECODER_ACTIVE: Cell<bool> = const { Cell::new(false) };
 }
 
 const CALLBACK_TRAIT_REFRESH: u8 = 1;
 const CALLBACK_ACE_REFRESH: u8 = 1 << 1;
 const CALLBACK_ACE_BIND: u8 = 1 << 2;
+const CALLBACK_SPRITE_SET: u8 = 1 << 3;
+const CALLBACK_TRAIT_TOOLTIP_FORMATTER: u8 = 1 << 4;
 const CALLBACK_QUIESCE_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct CallbackEpoch;
@@ -152,24 +202,64 @@ struct HookState {
     latest_trait_component: Option<DecodedTraitComponent>,
     latest_ace_component: Option<DecodedAceComponent>,
     trait_refresh_count: u64,
+    trait_tooltip_count: u64,
+    trait_reason_join_count: u64,
     ace_refresh_count: u64,
     ace_bind_count: u64,
     rejected_observation_count: u64,
+    /// Last exact sprite-set observation for a materialized portrait widget.
+    /// This is process-local cache state only and is cleared on reinstall.
+    ace_portrait_by_widget: BTreeMap<usize, String>,
+    /// Current post-refresh process-local item correlation. These addresses
+    /// are never copied into CPR1 and are discarded on every new refresh.
+    trait_items: BTreeMap<usize, TraitItemLocator>,
     /// Intentional fatal fixture-epoch poison. Any ambiguous callback requires
     /// uninstall/reinstall; a success from the other component cannot revive
     /// stale evidence.
     current_error: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TraitItemLocator {
+    tree_index: usize,
+    node_index: usize,
+    trait_definition_ptr: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingTraitReason {
+    item_ptr: usize,
+    locator: TraitItemLocator,
+    expected_text: String,
+    matched_owner_widget: Option<(usize, usize)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ActiveAcePortraitSet {
+    widget_ptr: usize,
+    portrait_gfx: Option<String>,
+    ambiguous: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ActiveAceModifierSet {
+    widget_ptr: usize,
+    modifier_text: Option<String>,
+    write_count: u32,
+    ambiguous: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DecodedTraitComponent {
     sequence: u64,
+    identity_catalog_epoch: Option<u64>,
     rows: Vec<TraitTreeObservation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DecodedAceComponent {
     sequence: u64,
+    identity_catalog_epoch: Option<u64>,
     rows: Vec<AcePortraitObservation>,
 }
 
@@ -182,7 +272,36 @@ pub struct ProcessLocalTraitRefresh {
     /// Exact CReferenceObject pair copied from controller+0x78 after refresh.
     /// It is a process-local join key, not a portable unit-leader identity.
     pub selected_leader_reference_raw: u64,
+    /// Exact live object resolved through the read-only 0x14220A3D0 hash law.
+    /// It is used only to join the authenticated d47 root registry.
+    pub selected_leader_ptr: usize,
     pub refresh_argument_raw: i32,
+    /// Exact post-refresh tree/item layout decoded before the callback epoch
+    /// closes. Definition pointers remain process-local and must be joined to
+    /// the authenticated shared trait-definition registry by the decoder.
+    pub trees: Vec<ProcessLocalTraitTree>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessLocalTraitTree {
+    pub root: TraitTreeRoot,
+    pub nodes: Vec<ProcessLocalTraitNode>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessLocalTraitNode {
+    pub source_ordinal: u32,
+    /// Exact live tree-item address retained only for the formatter/setter
+    /// transition join. The synchronous decoder may inspect it as a local
+    /// lookup key, but it is never copied into its portable rows or CPR1.
+    pub item_ptr: usize,
+    pub trait_definition_ptr: usize,
+    /// Decoded from the exact one-hot visibility law materialized by
+    /// 0x141D011A0, not re-evaluated from static prerequisites.
+    pub state: TraitNodeState,
+    /// Exact raw numerator from the selected leader's +0xDF8/+0xE04 sparse
+    /// trait-XP pairs for trait kinds 2/3. `None` is not applicable.
+    pub progress_raw: Option<i64>,
 }
 
 /// One exact row-bind call in post-sort callback order. The row and ace
@@ -194,6 +313,13 @@ pub struct ProcessLocalAceBind {
     pub ace_id: u32,
     pub row_ptr: usize,
     pub ace_ptr: usize,
+    /// Final sprite key observed at 0x14229A780 while the exact row portrait
+    /// widget is bound. This string is pointer-free even though the enclosing
+    /// record remains process-local correlation evidence.
+    pub portrait_gfx: String,
+    /// Exact final newline-delimited modifier string supplied by
+    /// 0x14201EDC0 to the row+0x60 textbox. Empty is measured-empty.
+    pub modifier_text: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -203,12 +329,20 @@ pub struct ProcessLocalAceRefresh {
     pub binds: Vec<ProcessLocalAceBind>,
 }
 
-/// Future receipt-bound decoder seam. Implementations must immediately copy
-/// stable owner/leader/trait/ace/portrait values and must never persist an
-/// address from either process-local refresh record. A decoder may perform only
+/// Future receipt-bound identity-decoder seam. The hook has already copied the
+/// exact tree layout/state and final portrait string; implementations join only
+/// stable owner/leader/trait/ace identities and must never persist an address
+/// from either process-local refresh record. A decoder may perform only
 /// crash-safe read-only memory/registry joins; it must not call engine/UI code,
 /// install hooks, or otherwise re-enter the observed callback graph.
 pub trait ExactA729BoundaryDecoder: Send + Sync {
+    /// `Some` only for the sealed collector decoder. The adapter samples this
+    /// before and after each synchronous decode to reject catalog replacement
+    /// during a callback and to prevent cross-epoch trait/ace pairing.
+    fn identity_catalog_epoch(&self) -> Option<u64> {
+        None
+    }
+
     fn decode_trait_refresh(
         &self,
         boundary: &ProcessLocalTraitRefresh,
@@ -218,6 +352,260 @@ pub trait ExactA729BoundaryDecoder: Send + Sync {
         &self,
         boundary: &ProcessLocalAceRefresh,
     ) -> Result<Vec<AcePortraitObservation>, String>;
+}
+
+/// Process-local identity joins supplied by the already authenticated d47/d46
+/// root registries. Addresses are lookup keys only and can never enter CPR1.
+/// Constructing this catalog does not authenticate a source. Fixture decoders
+/// may consume an explicitly supplied catalog, while production accepts only
+/// the sealed collector-owned decoder and still requires the activation gate.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProcessLocalIdentityCatalog {
+    pub leaders_by_address: BTreeMap<usize, (u32, u64)>,
+    pub trait_tokens_by_definition: BTreeMap<usize, String>,
+    pub aces_by_address: BTreeMap<usize, (u32, u64)>,
+}
+
+pub fn decode_trait_rows_with_catalog(
+    boundary: &ProcessLocalTraitRefresh,
+    catalog: &ProcessLocalIdentityCatalog,
+) -> Result<Vec<TraitTreeObservation>, String> {
+    let &(owner_tag_db_id, unit_leader_id) = catalog
+        .leaders_by_address
+        .get(&boundary.selected_leader_ptr)
+        .ok_or_else(|| "A39 selected leader address is absent from exact d47 registry".to_string())?;
+    if owner_tag_db_id == 0 || unit_leader_id == 0 {
+        return Err("A39 d47 leader registry carried a zero identity".into());
+    }
+    let mut rows = Vec::with_capacity(boundary.trees.len());
+    for tree in &boundary.trees {
+        let mut nodes = Vec::with_capacity(tree.nodes.len());
+        for (expected_ordinal, node) in tree.nodes.iter().enumerate() {
+            if node.source_ordinal != expected_ordinal as u32 {
+                return Err("A39 process-local trait source ordinal is non-contiguous".into());
+            }
+            let trait_token = catalog
+                .trait_tokens_by_definition
+                .get(&node.trait_definition_ptr)
+                .filter(|token| !token.trim().is_empty() && token.len() <= MAX_TOKEN_BYTES)
+                .cloned()
+                .ok_or_else(|| {
+                    "A39 trait definition is absent from exact d47 registry".to_string()
+                })?;
+            nodes.push(crate::TraitNodeObservation {
+                trait_token,
+                state: node.state,
+                progress_raw: node.progress_raw,
+                reason_context_id: None,
+            });
+        }
+        rows.push(TraitTreeObservation {
+            owner_tag_db_id,
+            unit_leader_id,
+            root: tree.root,
+            nodes,
+        });
+    }
+    validate_snapshot(&CharacterPresentationSnapshot {
+        source_sequence: boundary.sequence,
+        trait_trees: rows.clone(),
+        ace_portraits: Vec::new(),
+    })
+    .map_err(|error| format!("{error:?}"))?;
+    Ok(rows)
+}
+
+pub fn decode_ace_rows_with_catalog(
+    boundary: &ProcessLocalAceRefresh,
+    catalog: &ProcessLocalIdentityCatalog,
+) -> Result<Vec<AcePortraitObservation>, String> {
+    let mut rows = Vec::with_capacity(boundary.binds.len());
+    for (expected_ordinal, bind) in boundary.binds.iter().enumerate() {
+        if bind.visible_ordinal != expected_ordinal as u32 {
+            return Err("A39 process-local ace source ordinal is non-contiguous".into());
+        }
+        let &(owner_tag_db_id, ace_id) = catalog
+            .aces_by_address
+            .get(&bind.ace_ptr)
+            .ok_or_else(|| "A39 ace pointer is absent from exact d46 registry".to_string())?;
+        if owner_tag_db_id == 0 || ace_id == 0 || ace_id != u64::from(bind.ace_id) {
+            return Err("A39 d46 ace registry contradicts the bound ace identity".into());
+        }
+        rows.push(AcePortraitObservation {
+            owner_tag_db_id,
+            ace_id,
+            visible_ordinal: bind.visible_ordinal,
+            portrait_gfx: bind.portrait_gfx.clone(),
+            modifier_text: bind.modifier_text.clone(),
+        });
+    }
+    validate_snapshot(&CharacterPresentationSnapshot {
+        source_sequence: boundary.sequence,
+        trait_trees: Vec::new(),
+        ace_portraits: rows.clone(),
+    })
+    .map_err(|error| format!("{error:?}"))?;
+    Ok(rows)
+}
+
+/// Concrete fixture decoder for an immutable authenticated root snapshot. The
+/// caller must rebuild it when d47/d46 root membership changes; stale or
+/// missing entries reject the entire fixture epoch.
+#[derive(Clone, Debug)]
+pub struct CatalogBoundaryDecoder {
+    catalog: Arc<ProcessLocalIdentityCatalog>,
+}
+
+/// Sealed collector-owned decoder whose catalog is atomically replaced from
+/// one complete d47+d46 root-read epoch. Callback readers clone one immutable
+/// snapshot, so a collector refresh can never tear an in-flight UI decode.
+/// This is not an authentication switch: production hook/source activation
+/// remains governed by `PRODUCTION_ACTIVATION_AUTHORIZED`.
+#[derive(Debug, Default)]
+pub struct CollectorBoundaryDecoder {
+    state: RwLock<CollectorCatalogState>,
+}
+
+#[derive(Debug, Default)]
+struct CollectorCatalogState {
+    epoch: u64,
+    catalog: Option<Arc<ProcessLocalIdentityCatalog>>,
+}
+
+impl CollectorBoundaryDecoder {
+    pub fn publish(&self, catalog: ProcessLocalIdentityCatalog) -> Result<bool, String> {
+        validate_identity_catalog(&catalog)?;
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| "A39 collector identity catalog lock poisoned")?;
+        if state.catalog.as_deref() == Some(&catalog) {
+            return Ok(false);
+        }
+        state.epoch = state.epoch.saturating_add(1).max(1);
+        state.catalog = Some(Arc::new(catalog));
+        Ok(true)
+    }
+
+    /// Any incomplete d47/d46 root epoch removes the prior catalog. Retaining
+    /// stale process addresses would turn known source loss into false identity.
+    pub fn invalidate(&self) -> bool {
+        if let Ok(mut state) = self.state.write() {
+            if state.catalog.take().is_some() {
+                state.epoch = state.epoch.saturating_add(1).max(1);
+                return true;
+            }
+        }
+        false
+    }
+
+    fn snapshot(&self) -> Result<(u64, Arc<ProcessLocalIdentityCatalog>), String> {
+        let state = self
+            .state
+            .read()
+            .map_err(|_| "A39 collector identity catalog lock poisoned")?;
+        let catalog = state
+            .catalog
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "A39 collector identity catalog is unavailable".to_string())?;
+        Ok((state.epoch, catalog))
+    }
+}
+
+impl ExactA729BoundaryDecoder for CollectorBoundaryDecoder {
+    fn identity_catalog_epoch(&self) -> Option<u64> {
+        self.snapshot().ok().map(|(epoch, _)| epoch)
+    }
+
+    fn decode_trait_refresh(
+        &self,
+        boundary: &ProcessLocalTraitRefresh,
+    ) -> Result<Vec<TraitTreeObservation>, String> {
+        let (_, catalog) = self.snapshot()?;
+        decode_trait_rows_with_catalog(boundary, &catalog)
+    }
+
+    fn decode_ace_refresh(
+        &self,
+        boundary: &ProcessLocalAceRefresh,
+    ) -> Result<Vec<AcePortraitObservation>, String> {
+        let (_, catalog) = self.snapshot()?;
+        decode_ace_rows_with_catalog(boundary, &catalog)
+    }
+}
+
+fn validate_identity_catalog(catalog: &ProcessLocalIdentityCatalog) -> Result<(), String> {
+    if catalog
+        .leaders_by_address
+        .iter()
+        .any(|(address, (owner, leader))| *address == 0 || *owner == 0 || *leader == 0)
+    {
+        return Err("A39 collector catalog contains an invalid leader identity".into());
+    }
+    if catalog.trait_tokens_by_definition.iter().any(|(address, token)| {
+        *address == 0 || token.trim().is_empty() || token.len() > MAX_TOKEN_BYTES
+    }) {
+        return Err("A39 collector catalog contains an invalid trait identity".into());
+    }
+    if catalog
+        .aces_by_address
+        .iter()
+        .any(|(address, (owner, ace))| *address == 0 || *owner == 0 || *ace == 0)
+    {
+        return Err("A39 collector catalog contains an invalid ace identity".into());
+    }
+    Ok(())
+}
+
+pub fn collector_boundary_decoder() -> Arc<CollectorBoundaryDecoder> {
+    Arc::clone(COLLECTOR_DECODER.get_or_init(|| Arc::new(CollectorBoundaryDecoder::default())))
+}
+
+pub fn publish_collector_identity_catalog(
+    catalog: ProcessLocalIdentityCatalog,
+) -> Result<(), String> {
+    if collector_boundary_decoder().publish(catalog)? {
+        clear_decoded_components_for_catalog_change();
+    }
+    Ok(())
+}
+
+pub fn invalidate_collector_identity_catalog() {
+    if collector_boundary_decoder().invalidate() {
+        clear_decoded_components_for_catalog_change();
+    }
+}
+
+fn clear_decoded_components_for_catalog_change() {
+    if let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) {
+        state.latest_trait_component = None;
+        state.latest_ace_component = None;
+    }
+}
+
+impl CatalogBoundaryDecoder {
+    pub fn new(catalog: ProcessLocalIdentityCatalog) -> Self {
+        Self {
+            catalog: Arc::new(catalog),
+        }
+    }
+}
+
+impl ExactA729BoundaryDecoder for CatalogBoundaryDecoder {
+    fn decode_trait_refresh(
+        &self,
+        boundary: &ProcessLocalTraitRefresh,
+    ) -> Result<Vec<TraitTreeObservation>, String> {
+        decode_trait_rows_with_catalog(boundary, &self.catalog)
+    }
+
+    fn decode_ace_refresh(
+        &self,
+        boundary: &ProcessLocalAceRefresh,
+    ) -> Result<Vec<AcePortraitObservation>, String> {
+        decode_ace_rows_with_catalog(boundary, &self.catalog)
+    }
 }
 
 /// Reserved d82 source. It is useful to the capture harness now, but cannot
@@ -246,21 +634,61 @@ impl A729ObservedCharacterPresentationSource {
 
 impl ExactCharacterPresentationSource for A729ObservedCharacterPresentationSource {
     fn is_exact_a729_character_presentation_source(&self) -> bool {
-        // Promotion deliberately requires a code change that installs a
-        // sealed receipt-bound decoder. Flipping one public boolean cannot
-        // authenticate an arbitrary caller-supplied decoder.
-        false
+        production_source_ready()
     }
 
     fn read_character_presentation(&self) -> Result<CharacterPresentationSnapshot, String> {
-        if !PRODUCTION_ACTIVATION_AUTHORIZED {
+        if !production_source_ready() {
             return Err(
-                "A39 exact-a729 live source is reserved pending hook receipt and mixed fixtures"
+                "A39 exact-a729 live source is reserved or lacks its sealed collector decoder"
+                    .into()
+            );
+        }
+        let (trait_component, ace_component) = drain_decoded_component_pair()?;
+        let shared_epoch = match (
+            trait_component.identity_catalog_epoch,
+            ace_component.identity_catalog_epoch,
+        ) {
+            (Some(trait_epoch), Some(ace_epoch)) if trait_epoch == ace_epoch => trait_epoch,
+            _ => {
+                return Err(
+                    "A39 production trait/ace components do not share one collector catalog epoch"
+                        .into(),
+                )
+            }
+        };
+        if collector_boundary_decoder().identity_catalog_epoch() != Some(shared_epoch) {
+            return Err(
+                "A39 production trait/ace components are stale for the collector catalog epoch"
                     .into(),
             );
         }
-        Err("A39 production source requires a sealed admitted identity decoder".into())
+        let snapshot = CharacterPresentationSnapshot {
+            source_sequence: trait_component.sequence.max(ace_component.sequence),
+            trait_trees: trait_component.rows,
+            ace_portraits: ace_component.rows,
+        };
+        validate_decoded_snapshot(&snapshot)?;
+        if collector_boundary_decoder().identity_catalog_epoch() != Some(shared_epoch) {
+            return Err("A39 collector catalog changed while reading the production batch".into());
+        }
+        Ok(snapshot)
     }
+}
+
+fn production_source_ready() -> bool {
+    if !PRODUCTION_ACTIVATION_AUTHORIZED
+        || !INSTALLED.load(Ordering::Acquire)
+        || !LIFECYCLE_HEALTHY.load(Ordering::Acquire)
+    {
+        return false;
+    }
+    let registered = FIXTURE_DECODER
+        .get()
+        .and_then(|slot| slot.lock().ok())
+        .and_then(|slot| slot.as_ref().cloned());
+    let collector: Arc<dyn ExactA729BoundaryDecoder> = collector_boundary_decoder();
+    registered.is_some_and(|registered| same_decoder(&registered, &collector))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -268,6 +696,8 @@ pub struct InstalledAddresses {
     pub trait_refresh: usize,
     pub ace_refresh: usize,
     pub ace_row_bind: usize,
+    pub sprite_set: usize,
+    pub trait_tooltip_formatter: usize,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -278,6 +708,8 @@ pub struct HookDiagnostics {
     pub in_flight_callbacks: usize,
     pub production_activation_authorized: bool,
     pub trait_refresh_count: u64,
+    pub trait_tooltip_count: u64,
+    pub trait_reason_join_count: u64,
     pub ace_refresh_count: u64,
     pub ace_bind_count: u64,
     pub rejected_observation_count: u64,
@@ -293,6 +725,7 @@ pub fn install() -> Result<InstalledAddresses, String> {
                 .into(),
         );
     }
+    register_decoder(collector_boundary_decoder())?;
     install_hook_set()
 }
 
@@ -303,6 +736,19 @@ pub fn install() -> Result<InstalledAddresses, String> {
 pub fn install_for_fixture_capture(
     decoder: Arc<dyn ExactA729BoundaryDecoder>,
 ) -> Result<InstalledAddresses, String> {
+    register_decoder(decoder)?;
+    let result = install_hook_set();
+    if result.is_err() && !HOOK_SET_PRESENT.load(Ordering::Acquire) {
+        if let Some(slot) = FIXTURE_DECODER.get() {
+            if let Ok(mut slot) = slot.lock() {
+                *slot = None;
+            }
+        }
+    }
+    result
+}
+
+fn register_decoder(decoder: Arc<dyn ExactA729BoundaryDecoder>) -> Result<(), String> {
     let slot = FIXTURE_DECODER.get_or_init(|| Mutex::new(None));
     {
         let mut slot = slot
@@ -316,13 +762,7 @@ pub fn install_for_fixture_capture(
             *slot = Some(decoder);
         }
     }
-    let result = install_hook_set();
-    if result.is_err() && !HOOK_SET_PRESENT.load(Ordering::Acquire) {
-        if let Ok(mut slot) = slot.lock() {
-            *slot = None;
-        }
-    }
-    result
+    Ok(())
 }
 
 fn install_hook_set() -> Result<InstalledAddresses, String> {
@@ -370,9 +810,25 @@ fn install_hook_set() -> Result<InstalledAddresses, String> {
             &ACE_ROW_BIND_SENTINEL[..],
             "ace row bind",
         ),
+        (
+            resolved.sprite_set,
+            &SPRITE_SET_SENTINEL[..],
+            "sprite set",
+        ),
+        (
+            resolved.trait_tooltip_formatter,
+            &TRAIT_TOOLTIP_FORMATTER_SENTINEL[..],
+            "trait tooltip formatter",
+        ),
     ] {
         verify_sentinel(address, sentinel, label)?;
     }
+    install_a729_runtime_text_hooks()
+        .map_err(|error| format!("A39 shared A25 text-hook install failed: {error}"))?;
+    register_pre_setter_observer(a39_pre_text_setter_observer)
+        .map_err(|error| format!("A39 shared A25 pre-setter observer failed: {error}"))?;
+    register_post_setter_observer(a39_post_text_setter_observer)
+        .map_err(|error| format!("A39 shared A25 post-setter observer failed: {error}"))?;
     let state = STATE.get_or_init(|| Mutex::new(HookState::default()));
     *state.lock().map_err(|_| "A39 hook state poisoned")? = HookState::default();
     MODULE_BASE.store(base, Ordering::Release);
@@ -392,6 +848,16 @@ fn install_hook_set() -> Result<InstalledAddresses, String> {
             resolved.ace_row_bind,
             hook_ace_row_bind as *mut c_void,
             &ORIGINAL_ACE_ROW_BIND,
+        ),
+        (
+            resolved.sprite_set,
+            hook_sprite_set as *mut c_void,
+            &ORIGINAL_SPRITE_SET,
+        ),
+        (
+            resolved.trait_tooltip_formatter,
+            hook_trait_tooltip_formatter as *mut c_void,
+            &ORIGINAL_TRAIT_TOOLTIP_FORMATTER,
         ),
     ];
     HOOK_SET_PRESENT.store(true, Ordering::Release);
@@ -451,6 +917,7 @@ pub fn uninstall() -> Result<(), String> {
     INSTALLED.store(false, Ordering::Release);
     LIFECYCLE_HEALTHY.store(false, Ordering::Release);
     HEALTH_EPOCH.fetch_add(1, Ordering::AcqRel);
+    ACTIVE_TRAIT_REASON.with(|slot| *slot.borrow_mut() = None);
     let removal = disable_and_remove(resolved);
     let in_flight = IN_FLIGHT_CALLBACKS.load(Ordering::Acquire);
     if removal.all_removed && in_flight == 0 {
@@ -493,13 +960,20 @@ pub fn diagnostics() -> HookDiagnostics {
         in_flight_callbacks: IN_FLIGHT_CALLBACKS.load(Ordering::Acquire),
         production_activation_authorized: PRODUCTION_ACTIVATION_AUTHORIZED,
         trait_refresh_count: state.trait_refresh_count,
+        trait_tooltip_count: state.trait_tooltip_count,
+        trait_reason_join_count: state.trait_reason_join_count,
         ace_refresh_count: state.ace_refresh_count,
         ace_bind_count: state.ace_bind_count,
         rejected_observation_count: state.rejected_observation_count,
         has_complete_boundary_batch: INSTALLED.load(Ordering::Acquire)
             && LIFECYCLE_HEALTHY.load(Ordering::Acquire)
-            && state.latest_trait_component.is_some()
-            && state.latest_ace_component.is_some()
+            && state
+                .latest_trait_component
+                .as_ref()
+                .zip(state.latest_ace_component.as_ref())
+                .is_some_and(|(traits, aces)| {
+                    traits.identity_catalog_epoch == aces.identity_catalog_epoch
+                })
             && state.current_error.is_none(),
         current_error: state.current_error.clone(),
     }
@@ -631,6 +1105,12 @@ unsafe extern "system" fn hook_ace_row_bind(
     if nested {
         reject_callback("A39 recursive ace row bind rejected");
     }
+    let capture_portrait = admitted_epoch.is_some()
+        && !nested
+        && begin_ace_portrait_set(row_ptr);
+    let capture_modifiers = admitted_epoch.is_some()
+        && !nested
+        && begin_ace_modifier_set(row_ptr);
     let original = ORIGINAL_ACE_ROW_BIND.load(Ordering::Acquire);
     if original != 0 {
         let original: AceRowBindFn = unsafe { mem::transmute(original) };
@@ -638,13 +1118,112 @@ unsafe extern "system" fn hook_ace_row_bind(
     } else {
         reject_callback("A39 ace row-bind trampoline unavailable");
     }
+    let portrait_set = capture_portrait.then(finish_ace_portrait_set);
+    let modifier_set = capture_modifiers.then(finish_ace_modifier_set);
     if admitted_epoch.is_some_and(capture_epoch_is_current) && !nested && original != 0 {
-        record_ace_bind(row_ptr, ace_ptr);
+        record_ace_bind(row_ptr, ace_ptr, portrait_set, modifier_set);
     }
     leave_callback(prior_callbacks);
 }
 
+unsafe extern "system" fn hook_sprite_set(widget_ptr: usize, string_ptr: usize, mode: u8) {
+    let _epoch = CallbackEpoch::enter();
+    let admitted_epoch = capture_epoch_witness();
+    let prior_callbacks = enter_callback(CALLBACK_SPRITE_SET);
+    let nested = prior_callbacks & CALLBACK_SPRITE_SET != 0;
+    let target_matches = ACTIVE_ACE_PORTRAIT_SET.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|capture| capture.widget_ptr == widget_ptr)
+    });
+    // This is a generic GUI setter and therefore observes unrelated traffic.
+    // Only recursion for the active row portrait target can make the A39
+    // observation ambiguous; foreign widget recursion must not poison d82.
+    if nested && target_matches {
+        reject_callback("A39 recursive sprite set rejected");
+    }
+    if admitted_epoch.is_some_and(capture_epoch_is_current) && !nested && target_matches {
+        capture_ace_portrait_sprite(widget_ptr, string_ptr);
+    }
+    let original = ORIGINAL_SPRITE_SET.load(Ordering::Acquire);
+    if original != 0 {
+        let original: SpriteSetFn = unsafe { mem::transmute(original) };
+        unsafe { original(widget_ptr, string_ptr, mode) };
+    } else {
+        reject_callback("A39 sprite-set trampoline unavailable");
+    }
+    leave_callback(prior_callbacks);
+}
+
+unsafe extern "system" fn hook_trait_tooltip_formatter(
+    item_ptr: usize,
+    argument_2: usize,
+    output_text_ptr: usize,
+) -> u64 {
+    let _epoch = CallbackEpoch::enter();
+    let admitted_epoch = capture_epoch_witness();
+    let prior_callbacks = enter_callback(CALLBACK_TRAIT_TOOLTIP_FORMATTER);
+    let nested = prior_callbacks & CALLBACK_TRAIT_TOOLTIP_FORMATTER != 0;
+    ACTIVE_TRAIT_REASON.with(|slot| *slot.borrow_mut() = None);
+    if nested {
+        reject_callback("A39 recursive trait tooltip formatter rejected");
+    }
+    let mapped_locator = if admitted_epoch.is_some() && !nested && item_ptr != 0 {
+        STATE
+            .get()
+            .and_then(|state| state.lock().ok())
+            .and_then(|state| state.trait_items.get(&item_ptr).copied())
+    } else {
+        None
+    };
+    let locator = mapped_locator.filter(|locator| {
+        item_ptr
+            .checked_add(TRAIT_ITEM_DEFINITION)
+            .and_then(read_usize)
+            == Some(locator.trait_definition_ptr)
+    });
+    if mapped_locator.is_some() && locator.is_none() {
+        reject_callback("A39 trait tooltip item definition changed after exact refresh");
+    }
+    let original = ORIGINAL_TRAIT_TOOLTIP_FORMATTER.load(Ordering::Acquire);
+    let result = if original == 0 {
+        reject_callback("A39 trait tooltip formatter trampoline unavailable");
+        0
+    } else {
+        let original: TraitTooltipFormatterFn = unsafe { mem::transmute(original) };
+        unsafe { original(item_ptr, argument_2, output_text_ptr) }
+    };
+    if result != 0
+        && original != 0
+        && admitted_epoch.is_some_and(capture_epoch_is_current)
+        && !nested
+    {
+        if let Some(locator) = locator {
+            match read_msvc_text(output_text_ptr) {
+                Ok(expected_text) if !expected_text.is_empty() => {
+                    if let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) {
+                        state.trait_tooltip_count = state.trait_tooltip_count.saturating_add(1);
+                    }
+                    ACTIVE_TRAIT_REASON.with(|slot| {
+                        *slot.borrow_mut() = Some(PendingTraitReason {
+                            item_ptr,
+                            locator,
+                            expected_text,
+                            matched_owner_widget: None,
+                        });
+                    });
+                }
+                Ok(_) => {}
+                Err(error) => reject_callback(&error),
+            }
+        }
+    }
+    leave_callback(prior_callbacks);
+    result
+}
+
 fn record_trait_refresh(controller_ptr: usize, refresh_argument_raw: i32) {
+    ACTIVE_TRAIT_REASON.with(|slot| *slot.borrow_mut() = None);
     if controller_ptr == 0 {
         reject_callback("A39 trait refresh supplied null controller");
         return;
@@ -656,24 +1235,95 @@ fn record_trait_refresh(controller_ptr: usize, refresh_argument_raw: i32) {
         reject_callback("A39 selected leader reference was unreadable after trait refresh");
         return;
     };
+    let selected_leader_ptr = match resolve_reference_object(
+        MODULE_BASE.load(Ordering::Acquire),
+        selected_leader_reference_raw,
+    ) {
+        Ok(pointer) => pointer,
+        Err(error) => {
+            reject_callback(&error);
+            return;
+        }
+    };
+    let trees = match read_process_local_trait_trees(
+        controller_ptr,
+        selected_leader_reference_raw,
+        selected_leader_ptr,
+    ) {
+        Ok(trees) => trees,
+        Err(error) => {
+            reject_callback(&error);
+            return;
+        }
+    };
     let boundary = ProcessLocalTraitRefresh {
         sequence: next_sequence(),
         controller_ptr,
         selected_leader_reference_raw,
+        selected_leader_ptr,
         refresh_argument_raw,
+        trees,
     };
     let decoded = decode_trait_synchronously(&boundary);
+    let trait_items = decoded
+        .as_ref()
+        .ok()
+        .and_then(|component| trait_item_locators(&boundary, component).ok());
     let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) else {
         return;
     };
     state.trait_refresh_count = state.trait_refresh_count.saturating_add(1);
+    state.trait_items.clear();
     match decoded {
-        Ok(component) if state.current_error.is_none() => {
+        Ok(component) if state.current_error.is_none() && trait_items.is_some() => {
+            state.trait_items = trait_items.unwrap();
             state.latest_trait_component = Some(component);
         }
+        Ok(_) if state.current_error.is_none() => reject(
+            &mut state,
+            "A39 decoded trait rows do not preserve the exact process-local tree/item shape",
+        ),
         Ok(_) => {}
         Err(error) => reject(&mut state, &error),
     }
+}
+
+fn trait_item_locators(
+    boundary: &ProcessLocalTraitRefresh,
+    component: &DecodedTraitComponent,
+) -> Result<BTreeMap<usize, TraitItemLocator>, String> {
+    if boundary.trees.len() != component.rows.len() {
+        return Err("A39 decoded trait tree count differs from process-local refresh".into());
+    }
+    let mut items = BTreeMap::new();
+    for (tree_index, (boundary_tree, decoded_tree)) in boundary
+        .trees
+        .iter()
+        .zip(&component.rows)
+        .enumerate()
+    {
+        if boundary_tree.root != decoded_tree.root
+            || boundary_tree.nodes.len() != decoded_tree.nodes.len()
+        {
+            return Err("A39 decoded trait tree shape/order differs from process-local refresh".into());
+        }
+        for (node_index, node) in boundary_tree.nodes.iter().enumerate() {
+            if items
+                .insert(
+                    node.item_ptr,
+                    TraitItemLocator {
+                        tree_index,
+                        node_index,
+                        trait_definition_ptr: node.trait_definition_ptr,
+                    },
+                )
+                .is_some()
+            {
+                return Err("A39 process-local trait item address is duplicated".into());
+            }
+        }
+    }
+    Ok(items)
 }
 
 fn begin_ace_refresh() -> bool {
@@ -694,12 +1344,16 @@ fn begin_ace_refresh() -> bool {
 
 fn cancel_ace_refresh() {
     ACTIVE_ACE_BINDS.with(|scratch| *scratch.borrow_mut() = None);
+    ACTIVE_ACE_PORTRAIT_SET.with(|slot| *slot.borrow_mut() = None);
+    ACTIVE_ACE_MODIFIER_SET.with(|slot| *slot.borrow_mut() = None);
 }
 
-fn record_ace_bind(row_ptr: usize, ace_ptr: usize) {
-    if let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) {
-        state.ace_bind_count = state.ace_bind_count.saturating_add(1);
-    }
+fn record_ace_bind(
+    row_ptr: usize,
+    ace_ptr: usize,
+    portrait_set: Option<Result<ActiveAcePortraitSet, String>>,
+    modifier_set: Option<Result<ActiveAceModifierSet, String>>,
+) {
     if !ACTIVE_ACE_BINDS.with(|scratch| scratch.borrow().is_some()) {
         // A foreign-thread or out-of-refresh bind cannot enter another
         // thread's post-sort ordinal set and cannot poison its batch.
@@ -717,6 +1371,49 @@ fn record_ace_bind(row_ptr: usize, ace_ptr: usize) {
         reject_callback("A39 ace row bind carried invalid ace id");
         return;
     }
+    let Some(Ok(portrait_set)) = portrait_set else {
+        reject_callback("A39 ace bind did not own a portrait-set capture epoch");
+        return;
+    };
+    if portrait_set.ambiguous {
+        reject_callback("A39 ace bind observed conflicting portrait sprite writes");
+        return;
+    }
+    let Some(Ok(modifier_set)) = modifier_set else {
+        reject_callback("A39 ace bind did not own a modifier-text capture epoch");
+        return;
+    };
+    if modifier_set.ambiguous || modifier_set.write_count != 1 {
+        reject_callback("A39 ace bind did not observe exactly one modifier-text write");
+        return;
+    }
+    let Some(modifier_text) = modifier_set.modifier_text else {
+        reject_callback("A39 ace bind modifier text was unavailable");
+        return;
+    };
+    let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) else {
+        return;
+    };
+    state.ace_bind_count = state.ace_bind_count.saturating_add(1);
+    let portrait_gfx = match portrait_set.portrait_gfx {
+        Some(portrait_gfx) => {
+            state
+                .ace_portrait_by_widget
+                .insert(portrait_set.widget_ptr, portrait_gfx.clone());
+            portrait_gfx
+        }
+        None => match state.ace_portrait_by_widget.get(&portrait_set.widget_ptr) {
+            Some(portrait_gfx) => portrait_gfx.clone(),
+            None => {
+                reject(
+                    &mut state,
+                    "A39 first observation of an ace portrait widget had no exact sprite write",
+                );
+                return;
+            }
+        },
+    };
+    drop(state);
     let result = ACTIVE_ACE_BINDS.with(|scratch| {
         let mut scratch = scratch.borrow_mut();
         let Some(binds) = scratch.as_mut() else {
@@ -731,11 +1428,441 @@ fn record_ace_bind(row_ptr: usize, ace_ptr: usize) {
             ace_id,
             row_ptr,
             ace_ptr,
+            portrait_gfx,
+            modifier_text,
         });
         Ok(())
     });
     if let Err(error) = result {
         reject_callback(error);
+    }
+}
+
+fn begin_ace_portrait_set(row_ptr: usize) -> bool {
+    let Some(widget_ptr) = row_ptr
+        .checked_add(ACE_ROW_PORTRAIT_WIDGET)
+        .and_then(read_usize)
+        .filter(|value| *value != 0)
+    else {
+        reject_callback("A39 ace row portrait widget was unreadable");
+        return false;
+    };
+    let started = ACTIVE_ACE_PORTRAIT_SET.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_some() {
+            false
+        } else {
+            *slot = Some(ActiveAcePortraitSet {
+                widget_ptr,
+                portrait_gfx: None,
+                ambiguous: false,
+            });
+            true
+        }
+    });
+    if !started {
+        reject_callback("A39 overlapping ace portrait-set capture rejected");
+    }
+    started
+}
+
+fn finish_ace_portrait_set() -> Result<ActiveAcePortraitSet, String> {
+    ACTIVE_ACE_PORTRAIT_SET
+        .with(|slot| slot.borrow_mut().take())
+        .ok_or_else(|| "A39 ace portrait-set capture disappeared before row bind returned".into())
+}
+
+fn capture_ace_portrait_sprite(widget_ptr: usize, string_ptr: usize) {
+    let target_matches = ACTIVE_ACE_PORTRAIT_SET.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|capture| capture.widget_ptr == widget_ptr)
+    });
+    if !target_matches {
+        return;
+    }
+    let portrait_gfx = match read_msvc_string(string_ptr) {
+        Ok(value) => value,
+        Err(error) => {
+            reject_callback(&error);
+            return;
+        }
+    };
+    ACTIVE_ACE_PORTRAIT_SET.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(capture) = slot.as_mut() else {
+            return;
+        };
+        match capture.portrait_gfx.as_deref() {
+            None => capture.portrait_gfx = Some(portrait_gfx),
+            Some(previous) if previous == portrait_gfx => {}
+            Some(_) => capture.ambiguous = true,
+        }
+    });
+}
+
+fn begin_ace_modifier_set(row_ptr: usize) -> bool {
+    let Some(widget_ptr) = row_ptr
+        .checked_add(ACE_ROW_MODIFIER_TEXT_WIDGET)
+        .and_then(read_usize)
+        .filter(|value| *value != 0)
+    else {
+        reject_callback("A39 ace row modifier textbox was unreadable");
+        return false;
+    };
+    let started = ACTIVE_ACE_MODIFIER_SET.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_some() {
+            false
+        } else {
+            *slot = Some(ActiveAceModifierSet {
+                widget_ptr,
+                modifier_text: None,
+                write_count: 0,
+                ambiguous: false,
+            });
+            true
+        }
+    });
+    if !started {
+        reject_callback("A39 overlapping ace modifier-text capture rejected");
+    }
+    started
+}
+
+fn finish_ace_modifier_set() -> Result<ActiveAceModifierSet, String> {
+    ACTIVE_ACE_MODIFIER_SET
+        .with(|slot| slot.borrow_mut().take())
+        .ok_or_else(|| "A39 ace modifier-text capture disappeared before row bind returned".into())
+}
+
+/// A25 owns the sole 0x1422B59E0 detour. This observer runs before its
+/// trampoline consumes the MSVC string. Ace text requires the exact row-bind
+/// TLS epoch plus row+0x60 widget equality; trait text requires exact equality
+/// with the immediately preceding mapped tooltip formatter output.
+unsafe extern "system" fn a39_pre_text_setter_observer(
+    owner_ptr: usize,
+    widget_ptr: usize,
+    text_object_ptr: usize,
+    _caller_rva: u32,
+) {
+    let ace_target_matches = ACTIVE_ACE_MODIFIER_SET.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|capture| capture.widget_ptr == widget_ptr)
+    });
+    let reason_pending = ACTIVE_TRAIT_REASON.with(|slot| slot.borrow().is_some());
+    if !ace_target_matches && !reason_pending {
+        return;
+    }
+    if capture_epoch_witness().is_none() {
+        ACTIVE_TRAIT_REASON.with(|slot| *slot.borrow_mut() = None);
+        return;
+    }
+    let observed_text = match read_msvc_text(text_object_ptr) {
+        Ok(value) => value,
+        Err(error) => {
+            reject_callback(&error);
+            ACTIVE_TRAIT_REASON.with(|slot| *slot.borrow_mut() = None);
+            return;
+        }
+    };
+    if ace_target_matches {
+        ACTIVE_ACE_MODIFIER_SET.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let Some(capture) = slot.as_mut() else {
+                return;
+            };
+            capture.write_count = capture.write_count.saturating_add(1);
+            if capture.write_count != 1 || capture.modifier_text.is_some() {
+                capture.ambiguous = true;
+                return;
+            }
+            capture.modifier_text = Some(observed_text.clone());
+        });
+    }
+    if reason_pending {
+        ACTIVE_TRAIT_REASON.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let Some(pending) = slot.as_mut() else {
+                return;
+            };
+            // Admit only the immediately following exact setter input. The
+            // first foreign setter invalidates this transition so a stale
+            // tooltip string cannot collide with later UI traffic.
+            if pending.expected_text == observed_text && pending.matched_owner_widget.is_none() {
+                pending.matched_owner_widget = Some((owner_ptr, widget_ptr));
+            } else {
+                *slot = None;
+            }
+        });
+    }
+}
+
+unsafe extern "system" fn a39_post_text_setter_observer(
+    owner_ptr: usize,
+    widget_ptr: usize,
+    _caller_rva: u32,
+) {
+    let Some(admitted_epoch) = capture_epoch_witness() else {
+        ACTIVE_TRAIT_REASON.with(|slot| *slot.borrow_mut() = None);
+        return;
+    };
+    let pending = ACTIVE_TRAIT_REASON.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot
+            .as_ref()
+            .is_some_and(|pending| pending.matched_owner_widget == Some((owner_ptr, widget_ptr)))
+        {
+            slot.take()
+        } else {
+            None
+        }
+    });
+    let Some(pending) = pending else {
+        return;
+    };
+    let Some(context) = pin_observed_textbox_context(owner_ptr) else {
+        reject_callback("A39 trait reason setter had no pinnable A25 context");
+        return;
+    };
+    if !capture_epoch_is_current(admitted_epoch) {
+        return;
+    }
+    let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) else {
+        return;
+    };
+    if state.trait_items.get(&pending.item_ptr).copied() != Some(pending.locator) {
+        reject(
+            &mut state,
+            "A39 trait reason item changed before the A25 context join completed",
+        );
+        return;
+    }
+    let locator_in_bounds = state
+        .latest_trait_component
+        .as_ref()
+        .and_then(|component| component.rows.get(pending.locator.tree_index))
+        .is_some_and(|tree| pending.locator.node_index < tree.nodes.len());
+    if !locator_in_bounds {
+        reject(
+            &mut state,
+            "A39 trait reason locator escaped the decoded trait component",
+        );
+        return;
+    }
+    let component = state.latest_trait_component.as_mut().unwrap();
+    for tree in &mut component.rows {
+        for node in &mut tree.nodes {
+            if node.reason_context_id.as_deref() == Some(context.context_id.as_str()) {
+                node.reason_context_id = None;
+            }
+        }
+    }
+    let target = &mut component.rows[pending.locator.tree_index].nodes[pending.locator.node_index];
+    target.reason_context_id = Some(context.context_id);
+    state.trait_reason_join_count = state.trait_reason_join_count.saturating_add(1);
+}
+
+fn read_process_local_trait_trees(
+    controller_ptr: usize,
+    selected_leader_reference_raw: u64,
+    selected_leader_ptr: usize,
+) -> Result<Vec<ProcessLocalTraitTree>, String> {
+    let progress_by_definition = read_trait_progress_catalog(selected_leader_ptr)?;
+    let mut trees = Vec::with_capacity(2);
+    let mut total_nodes = 0usize;
+    for root in [
+        TraitTreeRoot::ControllerOffset120,
+        TraitTreeRoot::ControllerOffset130,
+    ] {
+        let tree_ptr = controller_ptr
+            .checked_add(root.raw_offset() as usize)
+            .and_then(read_usize)
+            .filter(|value| *value != 0)
+            .ok_or_else(|| format!("A39 trait tree {:?} pointer was unreadable", root))?;
+        let count = tree_ptr
+            .checked_add(TRAIT_TREE_COUNT)
+            .and_then(read_u32)
+            .ok_or_else(|| format!("A39 trait tree {:?} count was unreadable", root))?
+            as usize;
+        let capacity = tree_ptr
+            .checked_add(TRAIT_TREE_CAPACITY)
+            .and_then(read_u32)
+            .ok_or_else(|| format!("A39 trait tree {:?} capacity was unreadable", root))?
+            as usize;
+        total_nodes = total_nodes
+            .checked_add(count)
+            .ok_or_else(|| "A39 trait tree node count overflow".to_string())?;
+        if count > capacity || total_nodes > MAX_TRAIT_NODES {
+            return Err(format!(
+                "A39 trait tree {:?} has invalid count/capacity {count}/{capacity}",
+                root
+            ));
+        }
+        let vector_ptr = tree_ptr
+            .checked_add(TRAIT_TREE_VECTOR)
+            .and_then(read_usize)
+            .unwrap_or(0);
+        if count != 0 && vector_ptr == 0 {
+            return Err(format!("A39 trait tree {:?} vector is null", root));
+        }
+        let mut nodes = Vec::with_capacity(count);
+        for source_ordinal in 0..count {
+            let item_ptr = vector_ptr
+                .checked_add(source_ordinal.saturating_mul(mem::size_of::<usize>()))
+                .and_then(read_usize)
+                .filter(|value| *value != 0)
+                .ok_or_else(|| {
+                    format!(
+                        "A39 trait tree {:?} item {source_ordinal} pointer was unreadable",
+                        root
+                    )
+                })?;
+            let trait_definition_ptr = item_ptr
+                .checked_add(TRAIT_ITEM_DEFINITION)
+                .and_then(read_usize)
+                .filter(|value| *value != 0)
+                .ok_or_else(|| {
+                    format!(
+                        "A39 trait tree {:?} item {source_ordinal} definition was unreadable",
+                        root
+                    )
+                })?;
+            let item_leader_reference = item_ptr
+                .checked_add(TRAIT_ITEM_LEADER_REFERENCE)
+                .and_then(read_u64)
+                .ok_or_else(|| {
+                    format!(
+                        "A39 trait tree {:?} item {source_ordinal} leader reference was unreadable",
+                        root
+                    )
+                })?;
+            if item_leader_reference != selected_leader_reference_raw {
+                return Err(format!(
+                    "A39 trait tree {:?} item {source_ordinal} belongs to a different leader reference",
+                    root
+                ));
+            }
+            nodes.push(ProcessLocalTraitNode {
+                source_ordinal: source_ordinal as u32,
+                item_ptr,
+                trait_definition_ptr,
+                state: read_trait_node_state(item_ptr)?,
+                progress_raw: trait_progress_raw(
+                    trait_definition_ptr,
+                    &progress_by_definition,
+                )?,
+            });
+        }
+        trees.push(ProcessLocalTraitTree { root, nodes });
+    }
+    Ok(trees)
+}
+
+fn read_trait_progress_catalog(selected_leader_ptr: usize) -> Result<BTreeMap<usize, i64>, String> {
+    if selected_leader_ptr == 0 {
+        return Err("A39 selected leader pointer is null for trait XP read".into());
+    }
+    let read_header = || -> Result<(usize, usize), String> {
+        let count = selected_leader_ptr
+            .checked_add(UNIT_LEADER_TRAIT_XP_COUNT)
+            .and_then(read_u32)
+            .ok_or_else(|| "A39 leader trait-XP count was unreadable".to_string())?
+            as usize;
+        if count > MAX_TRAIT_NODES {
+            return Err("A39 leader trait-XP count exceeded the fixture bound".into());
+        }
+        let vector = selected_leader_ptr
+            .checked_add(UNIT_LEADER_TRAIT_XP_VECTOR)
+            .and_then(read_usize)
+            .unwrap_or(0);
+        if count != 0 && vector == 0 {
+            return Err("A39 leader trait-XP vector is null with nonzero count".into());
+        }
+        Ok((vector, count))
+    };
+    let read_rows = |vector: usize, count: usize| -> Result<Vec<(usize, i64)>, String> {
+        let mut rows = Vec::with_capacity(count);
+        for ordinal in 0..count {
+            let byte_offset = ordinal
+                .checked_mul(UNIT_LEADER_TRAIT_XP_ENTRY_BYTES)
+                .ok_or_else(|| "A39 leader trait-XP entry offset overflowed".to_string())?;
+            let entry = vector
+                .checked_add(byte_offset)
+                .ok_or_else(|| "A39 leader trait-XP entry address overflowed".to_string())?;
+            let definition = read_usize(entry)
+                .filter(|value| *value != 0)
+                .ok_or_else(|| "A39 leader trait-XP definition was unreadable".to_string())?;
+            let raw = entry
+                .checked_add(mem::size_of::<usize>())
+                .and_then(read_u64)
+                .ok_or_else(|| "A39 leader trait-XP numerator was unreadable".to_string())?
+                as i64;
+            rows.push((definition, raw));
+        }
+        Ok(rows)
+    };
+    let first_header = read_header()?;
+    let first_rows = read_rows(first_header.0, first_header.1)?;
+    let second_header = read_header()?;
+    let second_rows = read_rows(second_header.0, second_header.1)?;
+    if first_header != second_header || first_rows != second_rows {
+        return Err("A39 leader trait-XP vector changed during observation".into());
+    }
+    let mut by_definition = BTreeMap::new();
+    for (definition, raw) in first_rows {
+        if by_definition.insert(definition, raw).is_some() {
+            return Err("A39 leader trait-XP vector repeated a definition".into());
+        }
+    }
+    Ok(by_definition)
+}
+
+fn trait_progress_raw(
+    trait_definition_ptr: usize,
+    progress_by_definition: &BTreeMap<usize, i64>,
+) -> Result<Option<i64>, String> {
+    let kind_address = trait_definition_ptr
+        .checked_add(TRAIT_DEFINITION_KIND)
+        .ok_or_else(|| "A39 trait kind address overflowed".to_string())?;
+    let first_kind = read_u32(kind_address)
+        .ok_or_else(|| "A39 trait kind was unreadable".to_string())?;
+    let second_kind = read_u32(kind_address)
+        .ok_or_else(|| "A39 trait kind re-read was unreadable".to_string())?;
+    if first_kind != second_kind {
+        return Err("A39 trait kind changed during observation".into());
+    }
+    Ok(matches!(first_kind, 2 | 3)
+        .then(|| progress_by_definition.get(&trait_definition_ptr).copied().unwrap_or(0)))
+}
+
+fn read_trait_node_state(item_ptr: usize) -> Result<TraitNodeState, String> {
+    let visible: [Result<bool, String>; 3] = [
+        TRAIT_ITEM_DISABLED_BUTTON,
+        TRAIT_ITEM_PICKABLE_BUTTON,
+        TRAIT_ITEM_PICKED_BUTTON,
+    ]
+    .map(|pointer_offset| {
+        let widget_ptr = item_ptr
+            .checked_add(pointer_offset)
+            .and_then(read_usize)
+            .filter(|value| *value != 0)
+            .ok_or_else(|| "A39 trait state widget pointer was unreadable".to_string())?;
+        let flags = widget_ptr
+            .checked_add(GUI_WIDGET_FLAGS)
+            .and_then(read_u8)
+            .ok_or_else(|| "A39 trait state widget flags were unreadable".to_string())?;
+        Ok(flags & GUI_WIDGET_HIDDEN == 0)
+    });
+    let [disabled, pickable, picked] = visible;
+    match (disabled?, pickable?, picked?) {
+        (true, false, false) => Ok(TraitNodeState::Blocked),
+        (false, true, false) => Ok(TraitNodeState::Pickable),
+        (false, false, true) => Ok(TraitNodeState::Picked),
+        pattern => Err(format!(
+            "A39 trait state widgets are not one-hot: {pattern:?}"
+        )),
     }
 }
 
@@ -772,6 +1899,8 @@ fn reject(state: &mut HookState, message: &str) {
     state.latest_trait_component = None;
     state.latest_ace_component = None;
     ACTIVE_ACE_BINDS.with(|scratch| *scratch.borrow_mut() = None);
+    ACTIVE_ACE_PORTRAIT_SET.with(|slot| *slot.borrow_mut() = None);
+    ACTIVE_ACE_MODIFIER_SET.with(|slot| *slot.borrow_mut() = None);
 }
 
 fn reject_callback(message: &str) {
@@ -813,8 +1942,12 @@ fn decode_trait_synchronously(
 ) -> Result<DecodedTraitComponent, String> {
     let _decoder_guard = DecoderCallGuard::enter()?;
     let decoder = decoder()?;
+    let identity_catalog_epoch = decoder.identity_catalog_epoch();
     let rows = catch_unwind(AssertUnwindSafe(|| decoder.decode_trait_refresh(boundary)))
         .map_err(|_| "A39 trait fixture decoder panicked")??;
+    if decoder.identity_catalog_epoch() != identity_catalog_epoch {
+        return Err("A39 identity catalog changed during trait decode".into());
+    }
     let candidate = CharacterPresentationSnapshot {
         source_sequence: boundary.sequence,
         trait_trees: rows.clone(),
@@ -823,6 +1956,7 @@ fn decode_trait_synchronously(
     validate_decoded_snapshot(&candidate)?;
     Ok(DecodedTraitComponent {
         sequence: boundary.sequence,
+        identity_catalog_epoch,
         rows,
     })
 }
@@ -832,8 +1966,12 @@ fn decode_ace_synchronously(
 ) -> Result<DecodedAceComponent, String> {
     let _decoder_guard = DecoderCallGuard::enter()?;
     let decoder = decoder()?;
+    let identity_catalog_epoch = decoder.identity_catalog_epoch();
     let rows = catch_unwind(AssertUnwindSafe(|| decoder.decode_ace_refresh(boundary)))
         .map_err(|_| "A39 ace fixture decoder panicked")??;
+    if decoder.identity_catalog_epoch() != identity_catalog_epoch {
+        return Err("A39 identity catalog changed during ace decode".into());
+    }
     validate_snapshot(&CharacterPresentationSnapshot {
         source_sequence: boundary.sequence,
         trait_trees: Vec::new(),
@@ -842,19 +1980,12 @@ fn decode_ace_synchronously(
     .map_err(|error| format!("{error:?}"))?;
     Ok(DecodedAceComponent {
         sequence: boundary.sequence,
+        identity_catalog_epoch,
         rows,
     })
 }
 
 fn validate_decoded_snapshot(snapshot: &CharacterPresentationSnapshot) -> Result<(), String> {
-    if snapshot
-        .trait_trees
-        .iter()
-        .flat_map(|tree| &tree.nodes)
-        .any(|node| node.progress_raw.is_some())
-    {
-        return Err("A39 live decoder populated unauthenticated trait progress".into());
-    }
     validate_snapshot(snapshot).map_err(|error| format!("{error:?}"))
 }
 
@@ -863,14 +1994,18 @@ fn addresses(base: usize) -> InstalledAddresses {
         trait_refresh: base + TRAIT_REFRESH_RVA as usize,
         ace_refresh: base + ACE_REFRESH_RVA as usize,
         ace_row_bind: base + ACE_ROW_BIND_RVA as usize,
+        sprite_set: base + SPRITE_SET_RVA as usize,
+        trait_tooltip_formatter: base + TRAIT_TOOLTIP_FORMATTER_RVA as usize,
     }
 }
 
-fn targets(addresses: InstalledAddresses) -> [usize; 3] {
+fn targets(addresses: InstalledAddresses) -> [usize; 5] {
     [
         addresses.trait_refresh,
         addresses.ace_refresh,
         addresses.ace_row_bind,
+        addresses.sprite_set,
+        addresses.trait_tooltip_formatter,
     ]
 }
 
@@ -879,6 +2014,8 @@ fn originals_ready() -> bool {
         &ORIGINAL_TRAIT_REFRESH,
         &ORIGINAL_ACE_REFRESH,
         &ORIGINAL_ACE_ROW_BIND,
+        &ORIGINAL_SPRITE_SET,
+        &ORIGINAL_TRAIT_TOOLTIP_FORMATTER,
     ]
     .into_iter()
     .all(|original| original.load(Ordering::Acquire) != 0)
@@ -956,7 +2093,9 @@ fn clear_removed_hook_set() {
     LIFECYCLE_HEALTHY.store(false, Ordering::Release);
     TEARDOWN_ACTIVE.store(false, Ordering::Release);
     MODULE_BASE.store(0, Ordering::Release);
+    ACTIVE_TRAIT_REASON.with(|slot| *slot.borrow_mut() = None);
     clear_originals();
+    invalidate_collector_identity_catalog();
     if let Some(slot) = FIXTURE_DECODER.get() {
         if let Ok(mut slot) = slot.lock() {
             *slot = None;
@@ -969,6 +2108,8 @@ fn clear_originals() {
         &ORIGINAL_TRAIT_REFRESH,
         &ORIGINAL_ACE_REFRESH,
         &ORIGINAL_ACE_ROW_BIND,
+        &ORIGINAL_SPRITE_SET,
+        &ORIGINAL_TRAIT_TOOLTIP_FORMATTER,
     ] {
         original.store(0, Ordering::Release);
     }
@@ -1009,9 +2150,141 @@ fn read_u32(address: usize) -> Option<u32> {
     read_exact(address, &mut bytes).then(|| u32::from_le_bytes(bytes))
 }
 
+fn read_u8(address: usize) -> Option<u8> {
+    let mut byte = [0u8; 1];
+    read_exact(address, &mut byte).then_some(byte[0])
+}
+
 fn read_u64(address: usize) -> Option<u64> {
     let mut bytes = [0u8; 8];
     read_exact(address, &mut bytes).then(|| u64::from_le_bytes(bytes))
+}
+
+fn read_usize(address: usize) -> Option<usize> {
+    read_u64(address).and_then(|value| usize::try_from(value).ok())
+}
+
+fn read_msvc_string(address: usize) -> Result<String, String> {
+    let value = read_msvc_text(address)?;
+    if value.trim().is_empty() || value.as_bytes().contains(&0) {
+        return Err("A39 sprite string was empty or contained NUL".into());
+    }
+    if value.len() > MAX_TOKEN_BYTES {
+        return Err("A39 sprite string exceeded its token bound".into());
+    }
+    Ok(value)
+}
+
+fn read_msvc_text(address: usize) -> Result<String, String> {
+    if address == 0 {
+        return Err("A39 text setter supplied a null string".into());
+    }
+    let len = address
+        .checked_add(0x10)
+        .and_then(read_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| "A39 text string length was unreadable".to_string())?;
+    let capacity = address
+        .checked_add(0x18)
+        .and_then(read_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| "A39 text string capacity was unreadable".to_string())?;
+    if len > crate::MAX_MODIFIER_TEXT_BYTES || capacity < len {
+        return Err(format!(
+            "A39 text string has invalid length/capacity {len}/{capacity}"
+        ));
+    }
+    if len == 0 {
+        return Ok(String::new());
+    }
+    let data = if capacity <= 15 {
+        address
+    } else {
+        read_usize(address)
+            .filter(|value| *value != 0)
+            .ok_or_else(|| "A39 heap text string pointer was unreadable".to_string())?
+    };
+    let mut bytes = vec![0u8; len];
+    if !read_exact(data, &mut bytes) {
+        return Err("A39 text string bytes were unreadable".into());
+    }
+    String::from_utf8(bytes).map_err(|_| "A39 text string was not valid UTF-8".to_string())
+}
+
+fn resolve_reference_object(module_base: usize, reference_raw: u64) -> Result<usize, String> {
+    if module_base == 0 || reference_raw == 0 {
+        return Err("A39 selected leader reference has no module or identity".into());
+    }
+    let low = reference_raw as u32;
+    let high = (reference_raw >> 32) as u32;
+    let registry_slot = if low < REFERENCE_SMALL_TABLE_COUNT {
+        module_base
+            .checked_add(REFERENCE_REGISTRY_SMALL_TABLE_RVA)
+            .and_then(|address| address.checked_add(low as usize * mem::size_of::<usize>()))
+    } else if low < REFERENCE_DEFAULT_LIMIT {
+        module_base.checked_add(REFERENCE_REGISTRY_DEFAULT_RVA)
+    } else {
+        module_base.checked_add(REFERENCE_REGISTRY_LARGE_RVA)
+    }
+    .ok_or_else(|| "A39 reference registry address overflow".to_string())?;
+    let registry = read_usize(registry_slot)
+        .filter(|value| *value != 0)
+        .ok_or_else(|| "A39 selected leader reference registry is unavailable".to_string())?;
+    let slots = registry
+        .checked_add(8)
+        .and_then(read_usize)
+        .filter(|value| *value != 0)
+        .ok_or_else(|| "A39 selected leader reference slots are unavailable".to_string())?;
+    let mask = registry
+        .checked_add(0x14)
+        .and_then(read_u32)
+        .ok_or_else(|| "A39 selected leader reference mask is unreadable".to_string())?;
+    let max_probe = registry
+        .checked_add(0x18)
+        .and_then(read_u8)
+        .ok_or_else(|| "A39 selected leader reference probe bound is unreadable".to_string())?;
+    if mask == 0 || mask > 0x3fff_ffff {
+        return Err("A39 selected leader reference mask is implausible".into());
+    }
+    let key = (u64::from(low) << 32) | u64::from(high);
+    let product = key.wrapping_mul(REFERENCE_HASH_MULTIPLIER);
+    let mixed = (product as u32) ^ (product >> 32) as u32;
+    let bucket = mixed & mask;
+    let mut slot = slots
+        .checked_add(bucket as usize * 0x18)
+        .ok_or_else(|| "A39 selected leader reference bucket overflow".to_string())?;
+    let mut probe = 1u16;
+    loop {
+        let occupied_distance = slot
+            .checked_add(4)
+            .and_then(read_u8)
+            .ok_or_else(|| "A39 selected leader reference bucket metadata is unreadable".to_string())?;
+        if occupied_distance == 0 || probe > u16::from(occupied_distance) {
+            return Err("A39 selected leader reference was absent from its registry".into());
+        }
+        let observed_low = slot
+            .checked_add(8)
+            .and_then(read_u32)
+            .ok_or_else(|| "A39 selected leader reference bucket key is unreadable".to_string())?;
+        let observed_high = slot
+            .checked_add(0x0c)
+            .and_then(read_u32)
+            .ok_or_else(|| "A39 selected leader reference bucket generation is unreadable".to_string())?;
+        if observed_low == low && observed_high == high {
+            return slot
+                .checked_add(0x10)
+                .and_then(read_usize)
+                .filter(|value| *value != 0)
+                .ok_or_else(|| "A39 selected leader reference resolved to null".to_string());
+        }
+        if probe > u16::from(max_probe).saturating_add(1) {
+            return Err("A39 selected leader reference exceeded registry probe bound".into());
+        }
+        probe = probe.saturating_add(1);
+        slot = slot
+            .checked_add(0x18)
+            .ok_or_else(|| "A39 selected leader reference probe overflow".to_string())?;
+    }
 }
 
 #[cfg(test)]
@@ -1032,6 +2305,7 @@ mod tests {
                     trait_token: "panzer_leader".into(),
                     state: TraitNodeState::Picked,
                     progress_raw,
+                    reason_context_id: None,
                 }],
             }],
             ace_portraits: vec![AcePortraitObservation {
@@ -1039,6 +2313,7 @@ mod tests {
                 ace_id: 11,
                 visible_ordinal: 0,
                 portrait_gfx: "GFX_GER_ace_m_7".into(),
+                modifier_text: "+10% agility".into(),
             }],
         }
     }
@@ -1070,9 +2345,86 @@ mod tests {
     }
 
     #[test]
-    fn live_candidate_forbids_unproven_progress() {
+    fn live_candidate_admits_authenticated_exact_progress() {
         assert!(validate_decoded_snapshot(&candidate(None)).is_ok());
-        assert!(validate_decoded_snapshot(&candidate(Some(100_000))).is_err());
+        assert!(validate_decoded_snapshot(&candidate(Some(100_000))).is_ok());
+    }
+
+    #[test]
+    fn process_local_catalog_joins_trait_and_final_portrait_without_addresses() {
+        let trait_boundary = ProcessLocalTraitRefresh {
+            sequence: 4,
+            controller_ptr: 0x1000,
+            selected_leader_reference_raw: 0x2000,
+            selected_leader_ptr: 0x2500,
+            refresh_argument_raw: 0,
+            trees: vec![ProcessLocalTraitTree {
+                root: TraitTreeRoot::ControllerOffset120,
+                nodes: vec![ProcessLocalTraitNode {
+                    source_ordinal: 0,
+                    item_ptr: 0x2800,
+                    trait_definition_ptr: 0x3000,
+                    state: TraitNodeState::Pickable,
+                    progress_raw: Some(42),
+                }],
+            }],
+        };
+        let ace_boundary = ProcessLocalAceRefresh {
+            sequence: 5,
+            controller_ptr: 0x4000,
+            binds: vec![ProcessLocalAceBind {
+                visible_ordinal: 0,
+                ace_id: 11,
+                row_ptr: 0x5000,
+                ace_ptr: 0x6000,
+                portrait_gfx: "GFX_GER_ace_m_7".into(),
+                modifier_text: "+10% agility".into(),
+            }],
+        };
+        let mut catalog = ProcessLocalIdentityCatalog::default();
+        catalog.leaders_by_address.insert(0x2500, (1, 7));
+        catalog
+            .trait_tokens_by_definition
+            .insert(0x3000, "armor_officer".into());
+        catalog.aces_by_address.insert(0x6000, (1, 11));
+
+        let traits = decode_trait_rows_with_catalog(&trait_boundary, &catalog).unwrap();
+        assert_eq!(traits[0].nodes[0].trait_token, "armor_officer");
+        assert_eq!(traits[0].nodes[0].state, TraitNodeState::Pickable);
+        assert_eq!(traits[0].nodes[0].progress_raw, Some(42));
+        let aces = decode_ace_rows_with_catalog(&ace_boundary, &catalog).unwrap();
+        assert_eq!(aces[0].portrait_gfx, "GFX_GER_ace_m_7");
+    }
+
+    #[test]
+    fn collector_decoder_atomically_replaces_and_invalidates_catalog() {
+        let boundary = ProcessLocalAceRefresh {
+            sequence: 9,
+            controller_ptr: 0x4000,
+            binds: vec![ProcessLocalAceBind {
+                visible_ordinal: 0,
+                ace_id: 11,
+                row_ptr: 0x5000,
+                ace_ptr: 0x6000,
+                portrait_gfx: "GFX_GER_ace_m_7".into(),
+                modifier_text: String::new(),
+            }],
+        };
+        let decoder = CollectorBoundaryDecoder::default();
+        assert!(decoder.decode_ace_refresh(&boundary).is_err());
+
+        let mut catalog = ProcessLocalIdentityCatalog::default();
+        catalog.aces_by_address.insert(0x6000, (1, 11));
+        assert!(decoder.publish(catalog.clone()).unwrap());
+        let epoch = decoder.identity_catalog_epoch().unwrap();
+        assert!(!decoder.publish(catalog).unwrap());
+        assert_eq!(decoder.identity_catalog_epoch(), Some(epoch));
+        assert_eq!(decoder.decode_ace_refresh(&boundary).unwrap()[0].ace_id, 11);
+
+        assert!(decoder.invalidate());
+        assert_eq!(decoder.identity_catalog_epoch(), None);
+        assert!(!decoder.invalidate());
+        assert!(decoder.decode_ace_refresh(&boundary).is_err());
     }
 
     #[test]
@@ -1082,9 +2434,13 @@ mod tests {
         assert_eq!(resolved.trait_refresh, base + 0x016B_DC20);
         assert_eq!(resolved.ace_refresh, base + 0x0201_E420);
         assert_eq!(resolved.ace_row_bind, base + 0x0201_EDC0);
+        assert_eq!(resolved.sprite_set, base + 0x0229_A780);
+        assert_eq!(resolved.trait_tooltip_formatter, base + 0x01CF_F880);
         assert_eq!(TRAIT_REFRESH_SENTINEL.len(), 18);
         assert_eq!(ACE_REFRESH_SENTINEL.len(), 21);
         assert_eq!(ACE_ROW_BIND_SENTINEL.len(), 17);
+        assert_eq!(SPRITE_SET_SENTINEL.len(), 20);
+        assert_eq!(TRAIT_TOOLTIP_FORMATTER_SENTINEL.len(), 24);
         assert_eq!(TRAIT_SELECTED_LEADER_REFERENCE, 0x78);
         assert_eq!(ACE_OBJECT_ID, 0x0c);
     }

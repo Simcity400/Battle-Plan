@@ -4,6 +4,10 @@
 //! shared native workspace by this packet. The serial integration worker can
 //! move these types behind the collector/recorder registration hooks.
 
+pub mod orders_group_live;
+
+use std::collections::BTreeSet;
+
 pub const DOMAIN_ID: u16 = 54;
 pub const DOMAIN_NAME: &str = "army_battleplans_depth_live";
 
@@ -186,6 +190,10 @@ pub struct DecodeTotals {
     pub path_geometry_omitted_rows: u64,
     pub identity_or_active_omitted_rows: u64,
     pub status_flags_or: u32,
+    pub orders_group_extension_records: u64,
+    pub complete_army_rows: u64,
+    pub registered_orders_group_rows: u64,
+    pub registered_army_group_rows: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -517,6 +525,41 @@ pub fn collect_and_encode_depth_record(
     }
 }
 
+/// Production form of the record: the legacy exact order rows plus a complete,
+/// pointer-free type-53 manager/scalar extension.
+pub fn collect_and_encode_depth_record_with_orders_groups(
+    observations: &[RawOrderObservation],
+    elapsed_wall_ms: u64,
+    status_flags: u32,
+    observed_order_rows: u32,
+    orders_groups: &orders_group_live::CompleteArmyOrdersGroups,
+) -> Result<EncodedDepthRecord, orders_group_live::OrdersGroupReadError> {
+    let complete_army_ids = orders_groups
+        .armies
+        .iter()
+        .map(|row| row.army_id)
+        .collect::<BTreeSet<_>>();
+    if let Some(orphan) = observations
+        .iter()
+        .find(|row| !row.deleted && !complete_army_ids.contains(&row.army_id))
+    {
+        return Err(orders_group_live::OrdersGroupReadError::InvalidObject {
+            army_id: orphan.army_id,
+            reason: "order row army absent from complete manager",
+        });
+    }
+    let observed_army_rows = orders_groups.armies.len().min(u32::MAX as usize) as u32;
+    let mut record = collect_and_encode_depth_record(
+        observations,
+        elapsed_wall_ms,
+        status_flags,
+        observed_army_rows,
+        observed_order_rows,
+    );
+    orders_group_live::append_orders_group_extension(&mut record.payload, orders_groups)?;
+    Ok(record)
+}
+
 pub fn collect_and_emit_depth_record(
     observations: &[RawOrderObservation],
     elapsed_wall_ms: u64,
@@ -712,17 +755,40 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
     let path_count = read_u32(payload, 48) as usize;
     let assigned_division_count = read_u32(payload, 52) as usize;
     let identity_or_active_omitted_rows = read_u32(payload, 56) as usize;
-    let expected = HEADER_LEN
+    let legacy_expected = HEADER_LEN
         .saturating_add(row_count.saturating_mul(ROW_LEN))
         .saturating_add(target_count.saturating_mul(TARGET_ROW_LEN))
         .saturating_add(path_count.saturating_mul(PATH_GEOMETRY_ROW_LEN))
         .saturating_add(assigned_division_count.saturating_mul(ASSIGNED_DIVISION_ROW_LEN));
-    if payload.len() != expected {
+    if payload.len() < legacy_expected {
         summary.parse_errors.push(format!(
-            "offset {offset}: domain 54 payload length {} != {expected}",
+            "offset {offset}: domain 54 payload length {} below {legacy_expected}",
             payload.len()
         ));
         return summary;
+    }
+    if payload.len() > legacy_expected {
+        match orders_group_live::decode_orders_group_extension(&payload[legacy_expected..]) {
+            Ok(extension) => {
+                if extension.armies.len() != observed_army_rows {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: complete-manager army count differs from header"
+                    ));
+                    return summary;
+                }
+                summary.totals.orders_group_extension_records = 1;
+                summary.totals.complete_army_rows = extension.armies.len() as u64;
+                summary.totals.registered_orders_group_rows =
+                    extension.registered_entry_count as u64;
+                summary.totals.registered_army_group_rows = extension.army_group_count as u64;
+            }
+            Err(reason) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: invalid orders-group extension: {reason}"
+                ));
+                return summary;
+            }
+        }
     }
     if changed_rows > row_count {
         summary
@@ -1177,6 +1243,101 @@ mod tests {
         assert_eq!(decoded.totals.non_type5_exact_path_rows, 1);
         assert_eq!(decoded.totals.assigned_units_exact_rows, 2);
         assert_eq!(decoded.totals.order_linkage_exact_rows, 2);
+    }
+
+    #[test]
+    fn production_record_carries_complete_armies_and_exact_scalars() {
+        let carrier = orders_group_live::CompleteArmyOrdersGroups {
+            armies: vec![
+                orders_group_live::ArmyOrdersGroupRow {
+                    army_id: 10,
+                    execution_type: 0,
+                    cohesion_type: 1,
+                    leader_proximity: 2,
+                },
+                orders_group_live::ArmyOrdersGroupRow {
+                    army_id: 11,
+                    execution_type: 2,
+                    cohesion_type: 3,
+                    leader_proximity: 4,
+                },
+            ],
+            army_group_count: 1,
+            registered_entry_count: 3,
+        };
+        let record = collect_and_encode_depth_record_with_orders_groups(
+            &[exact_order(10, 0, ORDER_TYPE_LINE, Vec::new(), vec![101])],
+            77,
+            0,
+            1,
+            &carrier,
+        )
+        .unwrap();
+        let decoded = decode_depth_payload(0, &record.payload);
+        assert_eq!(decoded.parse_errors, Vec::<String>::new());
+        assert_eq!(decoded.totals.rows, 1);
+        assert_eq!(decoded.totals.orders_group_extension_records, 1);
+        assert_eq!(decoded.totals.complete_army_rows, 2);
+        assert_eq!(decoded.totals.registered_orders_group_rows, 3);
+        assert_eq!(decoded.totals.registered_army_group_rows, 1);
+    }
+
+    #[test]
+    fn complete_manager_rejects_header_army_count_disagreement() {
+        let carrier = orders_group_live::CompleteArmyOrdersGroups {
+            armies: vec![orders_group_live::ArmyOrdersGroupRow {
+                army_id: 10,
+                execution_type: 2,
+                cohesion_type: 3,
+                leader_proximity: 4,
+            }],
+            army_group_count: 0,
+            registered_entry_count: 1,
+        };
+        let mut record = collect_and_encode_depth_record_with_orders_groups(
+            &[],
+            77,
+            0,
+            0,
+            &carrier,
+        )
+        .unwrap();
+        record.payload[20..24].copy_from_slice(&2u32.to_le_bytes());
+
+        let decoded = decode_depth_payload(0, &record.payload);
+        assert!(decoded
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("complete-manager army count differs from header")));
+        assert_eq!(decoded.totals.orders_group_extension_records, 0);
+    }
+
+    #[test]
+    fn complete_manager_rejects_live_order_for_unregistered_army() {
+        let carrier = orders_group_live::CompleteArmyOrdersGroups {
+            armies: vec![orders_group_live::ArmyOrdersGroupRow {
+                army_id: 10,
+                execution_type: 2,
+                cohesion_type: 3,
+                leader_proximity: 4,
+            }],
+            army_group_count: 0,
+            registered_entry_count: 1,
+        };
+        let result = collect_and_encode_depth_record_with_orders_groups(
+            &[exact_order(11, 0, ORDER_TYPE_LINE, Vec::new(), vec![101])],
+            77,
+            0,
+            1,
+            &carrier,
+        );
+        assert_eq!(
+            result,
+            Err(orders_group_live::OrdersGroupReadError::InvalidObject {
+                army_id: 11,
+                reason: "order row army absent from complete manager",
+            })
+        );
     }
 
     #[test]

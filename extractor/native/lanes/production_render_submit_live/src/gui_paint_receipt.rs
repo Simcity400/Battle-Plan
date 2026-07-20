@@ -53,6 +53,13 @@ pub const GUI_PAINT_EXACT10_CAP6_ARTIFACTS_SHA256: [&str; 11] = [
 ];
 pub const GUI_PAINT_A729_EXECUTABLE_SHA256: &str =
     portable_render_stream::A729_EXECUTABLE_SHA256;
+/// Exact a729 primary and secondary `CUnitCounterItem` vtable RVAs.  These
+/// come from the constructor at RVA `0x018BE360`; they classify a live owner
+/// object only and are never a substitute for the owner/path-to-draw receipt.
+pub const A729_UNIT_COUNTER_ITEM_PRIMARY_VTABLE_RVA: u32 = 0x029F_F890;
+pub const A729_UNIT_COUNTER_ITEM_SECONDARY_VTABLE_RVA: u32 = 0x029F_F930;
+/// Constructor-written discriminator at `CUnitCounterItem + 0x180`.
+pub const A729_UNIT_COUNTER_ITEM_KIND_OFFSET: usize = 0x180;
 /// The schema/materializer is complete, but no retained or live observation
 /// yet authenticates a GUI owner/path scope to these final-draw wrappers.
 /// Production must remain zero-draw until the live producer flips this only
@@ -186,6 +193,66 @@ pub struct RawGuiPaintOwnerObservation {
     pub element_type: String,
     pub name: String,
     pub paint_ordinal: u32,
+}
+
+/// Authenticated object kinds selected by the exact a729
+/// `CUnitCounterItem` constructor before it resolves the authored GUI tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum A729UnitCounterOwnerKind {
+    Land,
+    Naval,
+    RailwayGun,
+}
+
+impl A729UnitCounterOwnerKind {
+    fn from_discriminator(value: u32) -> Result<Self, String> {
+        match value {
+            0 => Ok(Self::Land),
+            1 => Ok(Self::Naval),
+            2 => Ok(Self::RailwayGun),
+            _ => Err("a729 unit-counter object kind is outside the constructor domain".into()),
+        }
+    }
+
+    fn authored_surface(self) -> &'static str {
+        match self {
+            Self::Land => "unit_counter",
+            Self::Naval => "unit_counter_navy",
+            Self::RailwayGun => "unit_counter_railway_gun",
+        }
+    }
+}
+
+/// Classify one live a729 counter owner after the owner resolver has read the
+/// primary vtable, secondary vtable, and constructor discriminator from the
+/// same object.  The portable GUI identity is also required to prove the
+/// effective-VFS definition, runtime root, and authored surface.
+///
+/// This deliberately does not inspect texture hashes, tint values, or fixed
+/// UI ordinals.  Success identifies the owner kind but still does not grant
+/// draw authority: the enclosing same-Present frontier must independently
+/// pass `materialize_gui_paint_frontier` and the frozen live authority latch.
+pub fn classify_a729_unit_counter_owner(
+    owner: &RawGuiPaintOwnerObservation,
+    secondary_vtable_rva: u32,
+    constructor_kind: u32,
+) -> Result<A729UnitCounterOwnerKind, String> {
+    validate_owner(owner)?;
+    if owner.gui_owner_vtable_rva != A729_UNIT_COUNTER_ITEM_PRIMARY_VTABLE_RVA
+        || secondary_vtable_rva != A729_UNIT_COUNTER_ITEM_SECONDARY_VTABLE_RVA
+    {
+        return Err("GUI paint owner is not the exact a729 CUnitCounterItem type".into());
+    }
+    let kind = A729UnitCounterOwnerKind::from_discriminator(constructor_kind)?;
+    if owner.selected_gui_definition.normalized_game_relative_path
+        != "interface/mapicons.gui"
+        || owner.runtime_root != "mapicons_container"
+        || owner.authored_surface_identity != kind.authored_surface()
+    {
+        return Err("a729 counter owner does not match its authored mapicons surface".into());
+    }
+    Ok(kind)
 }
 
 /// Pointer-free fingerprint of one exact D3D lowering inside the GUI scope.
@@ -2107,6 +2174,43 @@ mod instrumentation_tests {
                 paint_ordinal: 0,
             },
         }
+    }
+
+    #[test]
+    fn exact_a729_counter_owner_classifier_requires_all_authored_joins() {
+        let mut owner = start(present(1)).owner;
+        owner.gui_owner_vtable_rva = A729_UNIT_COUNTER_ITEM_PRIMARY_VTABLE_RVA;
+        owner.authored_surface_identity = "unit_counter".into();
+        assert_eq!(
+            classify_a729_unit_counter_owner(
+                &owner,
+                A729_UNIT_COUNTER_ITEM_SECONDARY_VTABLE_RVA,
+                0,
+            )
+            .unwrap(),
+            A729UnitCounterOwnerKind::Land,
+        );
+
+        owner.authored_surface_identity = "unit_counter_navy".into();
+        assert!(classify_a729_unit_counter_owner(
+            &owner,
+            A729_UNIT_COUNTER_ITEM_SECONDARY_VTABLE_RVA,
+            0,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn exact_a729_counter_owner_classifier_rejects_retained_ordinal_substitute() {
+        let mut owner = start(present(1)).owner;
+        owner.authored_surface_identity = "unit_counter".into();
+        owner.paint_ordinal = 103;
+        assert!(classify_a729_unit_counter_owner(
+            &owner,
+            A729_UNIT_COUNTER_ITEM_SECONDARY_VTABLE_RVA,
+            0,
+        )
+        .is_err());
     }
 
     fn draw() -> GuiPaintDrawFingerprint {

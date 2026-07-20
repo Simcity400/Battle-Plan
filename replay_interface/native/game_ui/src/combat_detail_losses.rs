@@ -3,12 +3,15 @@
 //! This module consumes only typed `replay_core` views. It preserves producer
 //! order within every authenticated stream and never invents a cross-domain
 //! total order: land participant events, naval members, air loss deltas, air
-//! regional damage rows, convoy-loss rows, and D60 war rows remain separate.
+//! regional damage rows, d70 convoy aggregates, d90 terminal convoy events,
+//! and D60 war rows remain separate.
 
 use replay_core::{
     AirCombatLossRow, AirRegionCombatRow, CombatParticipantEvent, CombatRow, ConvoyLossRow,
-    DiplomacyView, EndedCombatRow, LandCombatSideDetail, Leaf, NavalCombatRow, ViewStatus,
-    SunkShipEventExact, WarObjectRow, WarRelationRow, WorldFrame,
+    ConvoyD70MutationKindExact, ConvoyRouteEndpointKindExact, ConvoyRouteProducerKindExact,
+    ConvoyTransportAttackExactRow, ConvoyTransportAttackExactView, DiplomacyView, EndedCombatRow,
+    LandCombatSideDetail, Leaf, NavalCombatRow, SunkShipEventExact, ViewStatus, WarObjectRow,
+    WarRelationRow, WorldFrame,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -48,6 +51,9 @@ pub struct Xui20CombatDetailLosses {
     pub air_losses: Leaf<Vec<AirCombatLossRow>>,
     pub air_region_combat: Leaf<Vec<AirRegionCombatRow>>,
     pub sunk_convoys: Leaf<Vec<ConvoyLossRow>>,
+    /// Exact, producer-ordered terminal convoy attacks from d90. This is not
+    /// the monthly d70 aggregate and is never populated from that aggregate.
+    pub convoy_terminal: Leaf<Vec<ConvoyTransportAttackExactRow>>,
     pub sunk_ships: Leaf<Vec<SunkShipEventExact>>,
     pub wars: Leaf<Vec<WarObjectRow>>,
     pub war_relations: Leaf<Vec<WarRelationRow>>,
@@ -64,6 +70,7 @@ impl Xui20CombatDetailLosses {
             || self.air_losses.measured().is_some()
             || self.air_region_combat.measured().is_some()
             || self.sunk_convoys.measured().is_some()
+            || self.convoy_terminal.measured().is_some()
             || self.sunk_ships.measured().is_some()
             || self.wars.measured().is_some()
             || self.war_relations.measured().is_some()
@@ -89,6 +96,7 @@ pub struct Xui20ReplayAdmission {
     pub air_history: Xui20SurfaceState,
     pub air_region_history: Xui20SurfaceState,
     pub convoy_history: Xui20SurfaceState,
+    pub convoy_terminal: Xui20SurfaceState,
     pub combat_log_families: Xui20SurfaceState,
     pub global_cross_family_order: Xui20SurfaceState,
     pub war_pair_history: Xui20SurfaceState,
@@ -238,7 +246,195 @@ fn validate_land_side(side: &LandCombatSideDetail, prefix: &str) -> Result<(), G
         }
     }
     required(&side.tactic_status, &format!("{prefix}.tactic_status"))?;
-    required(&side.losses_status, &format!("{prefix}.losses_status"))?;
+    let losses_status = required(&side.losses_status, &format!("{prefix}.losses_status"))?;
+    match losses_status.as_str() {
+        "exact_current_epoch_writer" => {
+            let observations = required(
+                &side.current_loss_observations,
+                &format!("{prefix}.current_loss_observations"),
+            )?;
+            if observations.is_empty() {
+                return Err(invalid(format!(
+                    "{prefix}.current_loss_observations is empty for exact status"
+                )));
+            }
+            let mut sequences = std::collections::BTreeSet::new();
+            for (observation_index, observation) in observations.iter().enumerate() {
+                let observation_prefix =
+                    format!("{prefix}.current_loss_observations[{observation_index}]");
+                let sequence = *required(
+                    &observation.capture_sequence,
+                    &format!("{observation_prefix}.capture_sequence"),
+                )?;
+                if sequence == 0 || !sequences.insert(sequence) {
+                    return Err(invalid(format!(
+                        "{observation_prefix}.capture_sequence is zero or duplicate"
+                    )));
+                }
+                let manpower_before = *required(
+                    &observation.manpower_before_raw,
+                    &format!("{observation_prefix}.manpower_before_raw"),
+                )?;
+                let manpower_after = *required(
+                    &observation.manpower_after_raw,
+                    &format!("{observation_prefix}.manpower_after_raw"),
+                )?;
+                if manpower_before == manpower_after {
+                    return Err(invalid(format!(
+                        "{observation_prefix} has no manpower delta"
+                    )));
+                }
+                let source = required(
+                    &observation.source,
+                    &format!("{observation_prefix}.source"),
+                )?;
+                if !matches!(
+                    source.as_str(),
+                    "authenticated_a729_active_division_damage_140c7bfc0"
+                        | "authenticated_a729_participant_lifecycle_141299850"
+                ) {
+                    return Err(invalid(format!(
+                        "{observation_prefix}.source is not an authenticated X2 producer"
+                    )));
+                }
+                let equipment = required(
+                    &observation.equipment,
+                    &format!("{observation_prefix}.equipment"),
+                )?;
+                if equipment.is_empty() {
+                    return Err(invalid(format!(
+                        "{observation_prefix}.equipment is empty"
+                    )));
+                }
+                let mut equipment_ids = std::collections::BTreeSet::new();
+                for (ordinal, delta) in equipment.iter().enumerate() {
+                    let delta_prefix = format!("{observation_prefix}.equipment[{ordinal}]");
+                    let actual_ordinal = *required(
+                        &delta.ordinal,
+                        &format!("{delta_prefix}.ordinal"),
+                    )?;
+                    let equipment_id = *required(
+                        &delta.equipment_id,
+                        &format!("{delta_prefix}.equipment_id"),
+                    )?;
+                    let before = *required(
+                        &delta.before_raw,
+                        &format!("{delta_prefix}.before_raw"),
+                    )?;
+                    let after = *required(
+                        &delta.after_raw,
+                        &format!("{delta_prefix}.after_raw"),
+                    )?;
+                    if actual_ordinal != ordinal as i64
+                        || equipment_id <= 0
+                        || !equipment_ids.insert(equipment_id)
+                        || before == after
+                    {
+                        return Err(invalid(format!(
+                            "{delta_prefix} has invalid order, identity, or delta"
+                        )));
+                    }
+                }
+            }
+        }
+        "unavailable_no_authenticated_live_carrier" => {
+            if side.current_loss_observations.measured().is_some() {
+                return Err(invalid(format!(
+                    "{prefix}.current_loss_observations conflicts with unavailable status"
+                )));
+            }
+        }
+        _ => return Err(invalid(format!("{prefix}.losses_status is unknown"))),
+    }
+    let width_status = required(&side.width_status, &format!("{prefix}.width_status"))?;
+    match width_status.as_str() {
+        "exact_synchronous_call" => {
+            let observations = required(
+                &side.width_observations,
+                &format!("{prefix}.width_observations"),
+            )?;
+            if observations.is_empty() {
+                return Err(invalid(format!(
+                    "{prefix}.width_observations is empty for exact status"
+                )));
+            }
+            let committed = *required(&side.committed, &format!("{prefix}.committed"))?;
+            let counts_incomplete =
+                *required(&side.counts_incomplete, &format!("{prefix}.counts_incomplete"))?;
+            let mut sequences = BTreeSet::new();
+            for (observation_index, observation) in observations.iter().enumerate() {
+                let observation_prefix =
+                    format!("{prefix}.width_observations[{observation_index}]");
+                let sequence = *required(
+                    &observation.capture_sequence,
+                    &format!("{observation_prefix}.capture_sequence"),
+                )?;
+                if sequence == 0 || !sequences.insert(sequence) {
+                    return Err(invalid(format!(
+                        "{observation_prefix}.capture_sequence is zero or duplicate"
+                    )));
+                }
+                if required(&observation.source, &format!("{observation_prefix}.source"))?
+                    != "authenticated_a729_141299610_call"
+                {
+                    return Err(invalid(format!(
+                        "{observation_prefix}.source is not the authenticated X2 width producer"
+                    )));
+                }
+                let final_width_raw = *required(
+                    &observation.final_width_raw,
+                    &format!("{observation_prefix}.final_width_raw"),
+                )?;
+                let wrappers = required(
+                    &observation.wrappers,
+                    &format!("{observation_prefix}.wrappers"),
+                )?;
+                if wrappers.is_empty() || (!counts_incomplete && committed != wrappers.len() as i64)
+                {
+                    return Err(invalid(format!(
+                        "{observation_prefix}.wrappers is empty or disagrees with committed count"
+                    )));
+                }
+                let mut division_ids = BTreeSet::new();
+                let mut sum = 0i64;
+                for (ordinal, wrapper) in wrappers.iter().enumerate() {
+                    let wrapper_prefix = format!("{observation_prefix}.wrappers[{ordinal}]");
+                    let actual_ordinal =
+                        *required(&wrapper.ordinal, &format!("{wrapper_prefix}.ordinal"))?;
+                    let division_id = *required(
+                        &wrapper.division_id,
+                        &format!("{wrapper_prefix}.division_id"),
+                    )?;
+                    let width_raw =
+                        *required(&wrapper.width_raw, &format!("{wrapper_prefix}.width_raw"))?;
+                    if actual_ordinal != ordinal as i64
+                        || division_id <= 0
+                        || !division_ids.insert(division_id)
+                    {
+                        return Err(invalid(format!(
+                            "{wrapper_prefix} has invalid order or division identity"
+                        )));
+                    }
+                    sum = sum.checked_add(width_raw).ok_or_else(|| {
+                        invalid(format!("{observation_prefix}.wrapper width sum overflows"))
+                    })?;
+                }
+                if sum != final_width_raw {
+                    return Err(invalid(format!(
+                        "{observation_prefix}.wrapper sum does not equal final width"
+                    )));
+                }
+            }
+        }
+        "unavailable_pending_x2_control" => {
+            if side.width_observations.measured().is_some() {
+                return Err(invalid(format!(
+                    "{prefix}.width_observations conflicts with unavailable status"
+                )));
+            }
+        }
+        _ => return Err(invalid(format!("{prefix}.width_status is unknown"))),
+    }
     required(
         &side.counts_incomplete,
         &format!("{prefix}.counts_incomplete"),
@@ -664,6 +860,140 @@ fn validate_convoys(rows: &Leaf<Vec<ConvoyLossRow>>) -> Result<usize, GateFailur
     Ok(rows.len())
 }
 
+fn convoy_terminal_from_exact_view(
+    view: &ConvoyTransportAttackExactView,
+) -> Leaf<Vec<ConvoyTransportAttackExactRow>> {
+    match view.status {
+        ViewStatus::Present => match &view.events {
+            Leaf::Measured(rows) => Leaf::Measured(rows.clone()),
+            Leaf::Absent | Leaf::Unobtained => Leaf::Unobtained,
+        },
+        ViewStatus::DomainAbsent => Leaf::Absent,
+        ViewStatus::DomainUnavailable => Leaf::Unobtained,
+    }
+}
+
+fn validate_convoy_terminal(
+    rows: &Leaf<Vec<ConvoyTransportAttackExactRow>>,
+) -> Result<usize, GateFailure> {
+    let rows = required(rows, "convoy_transport_attacks exact event ledger")?;
+    let mut expected_sequence = 1u64;
+    let mut d70_rows = rows.first().map(|row| row.d70_before_rows);
+    let mut d70_by_ordinal: BTreeMap<u32, (u32, u32, u32)> = BTreeMap::new();
+    for (index, row) in rows.iter().enumerate() {
+        let prefix = format!("convoy_terminal[{index}]");
+        if row.producer_sequence != expected_sequence {
+            return Err(invalid(format!(
+                "{prefix}.producer_sequence is not the gap-free cumulative ordinal"
+            )));
+        }
+        expected_sequence = expected_sequence
+            .checked_add(1)
+            .ok_or_else(|| invalid(format!("{prefix}.producer_sequence overflows")))?;
+        if row.game_hour_raw <= 0
+            || row.combat_id == 0
+            || row.combat_generation == 0
+            || row.convoy_id == 0
+            || row.convoy_type_tag != 4_713
+            || row.owner_tag_db_id == 0
+            || row.owner_tag_db_id > 2_048
+            || row.killer_tag_db_id == 0
+            || row.killer_tag_db_id > 2_048
+            || row.client_id == 0
+            || row.client_type_tag != 4_713
+            || row.member_state != 32
+            || row.route_key_id != row.client_id
+            || row.route_key_type_tag != row.client_type_tag
+            || row.route_source_id == 0
+            || row.route_destination_id == 0
+        {
+            return Err(invalid(format!(
+                "{prefix} has invalid exact producer identity or route content"
+            )));
+        }
+        match (
+            row.route_producer_kind,
+            row.route_source_kind,
+            row.route_destination_kind,
+        ) {
+            (
+                ConvoyRouteProducerKindExact::NavalTransport,
+                ConvoyRouteEndpointKindExact::Province,
+                ConvoyRouteEndpointKindExact::Province,
+            )
+            | (
+                ConvoyRouteProducerKindExact::LendLease,
+                ConvoyRouteEndpointKindExact::State,
+                ConvoyRouteEndpointKindExact::State,
+            ) => {}
+            (ConvoyRouteProducerKindExact::Export, _, _) => {
+                return Err(invalid(format!(
+                    "{prefix}.route_producer_kind export lacks an authenticated endpoint contract"
+                )));
+            }
+            _ => {
+                return Err(invalid(format!(
+                    "{prefix} route producer and endpoint kinds disagree"
+                )));
+            }
+        }
+        match row.d70_mutation_kind {
+            ConvoyD70MutationKindExact::IncrementExisting
+                if row.d70_before_rows != 0
+                    && row.d70_after_rows == row.d70_before_rows
+                    && row.d70_ordinal < row.d70_before_rows
+                    && row.d70_before_count != 0
+                    && row.d70_before_count.checked_add(1) == Some(row.d70_after_count) => {}
+            ConvoyD70MutationKindExact::AppendFirstSeen
+                if row.d70_before_rows.checked_add(1) == Some(row.d70_after_rows)
+                    && row.d70_ordinal == row.d70_before_rows
+                    && row.d70_before_count == 0
+                    && row.d70_after_count == 1 => {}
+            _ => {
+                return Err(invalid(format!(
+                    "{prefix} has an invalid d70 mutation witness"
+                )));
+            }
+        }
+        if d70_rows != Some(row.d70_before_rows) {
+            return Err(invalid(format!(
+                "{prefix} breaks the d70 cardinality chain"
+            )));
+        }
+        if let Some((owner, killer, count)) = d70_by_ordinal.get(&row.d70_ordinal) {
+            if (*owner, *killer, *count)
+                != (
+                    row.owner_tag_db_id,
+                    row.killer_tag_db_id,
+                    row.d70_before_count,
+                )
+            {
+                return Err(invalid(format!(
+                    "{prefix} breaks the d70 identity or count chain"
+                )));
+            }
+            if matches!(
+                row.d70_mutation_kind,
+                ConvoyD70MutationKindExact::AppendFirstSeen
+            ) {
+                return Err(invalid(format!(
+                    "{prefix} appends an existing d70 identity"
+                )));
+            }
+        }
+        d70_rows = Some(row.d70_after_rows);
+        d70_by_ordinal.insert(
+            row.d70_ordinal,
+            (
+                row.owner_tag_db_id,
+                row.killer_tag_db_id,
+                row.d70_after_count,
+            ),
+        );
+    }
+    Ok(rows.len())
+}
+
 fn validate_war_pairs(rows: &Leaf<Vec<WarObjectRow>>) -> Result<usize, GateFailure> {
     let rows = required(rows, "wars")?;
     for (index, row) in rows.iter().enumerate() {
@@ -818,6 +1148,7 @@ pub fn admit_xui20_replay(binding: &Xui20CombatDetailLosses) -> Xui20ReplayAdmis
     let air = validate_air(&binding.air_losses);
     let air_region = validate_air_region(&binding.air_region_combat);
     let convoys = validate_convoys(&binding.sunk_convoys);
+    let convoy_terminal = validate_convoy_terminal(&binding.convoy_terminal);
     let sunk_ships = validate_sunk_ships(&binding.sunk_ships);
     let war_pairs = validate_war_pairs(&binding.wars);
     let war_overview = validate_war_overview(&binding.wars);
@@ -845,6 +1176,10 @@ pub fn admit_xui20_replay(binding: &Xui20CombatDetailLosses) -> Xui20ReplayAdmis
     let convoy_history = state(
         convoys.as_ref().map_or(0, |count| *count),
         convoys.map(|_| ()),
+    );
+    let convoy_terminal = state(
+        convoy_terminal.as_ref().map_or(0, |count| *count),
+        convoy_terminal.map(|_| ()),
     );
     let naval_terminal = state(
         sunk_ships.as_ref().map_or(0, |count| *count),
@@ -880,6 +1215,7 @@ pub fn admit_xui20_replay(binding: &Xui20CombatDetailLosses) -> Xui20ReplayAdmis
         air_history,
         air_region_history,
         convoy_history,
+        convoy_terminal,
         combat_log_families,
         global_cross_family_order: Xui20SurfaceState::NotApplicable {
             reason: "COrdersGroupLogs persists separate family vectors; no global order exists"
@@ -966,6 +1302,7 @@ fn land_panel(row: &CombatRow) -> LandCombatPanel {
 pub fn combat_detail_losses_from_frame(frame: &WorldFrame) -> Xui20CombatDetailLosses {
     let naval_air = frame.naval_air_combat();
     let diplomacy: &DiplomacyView = frame.diplomacy();
+    let convoy_terminal = convoy_terminal_from_exact_view(frame.convoy_transport_attacks());
     let sunk_ships = match frame.sunk_ship_history_exact().status {
         ViewStatus::Present => frame
             .sunk_ship_history_exact()
@@ -984,6 +1321,7 @@ pub fn combat_detail_losses_from_frame(frame: &WorldFrame) -> Xui20CombatDetailL
         air_losses: naval_air.air_losses.clone(),
         air_region_combat: naval_air.air_region_combat.clone(),
         sunk_convoys: naval_air.sunk_convoys.clone(),
+        convoy_terminal,
         sunk_ships,
         wars: diplomacy.wars.clone(),
         war_relations: diplomacy.war_relations.clone(),
@@ -993,7 +1331,10 @@ pub fn combat_detail_losses_from_frame(frame: &WorldFrame) -> Xui20CombatDetailL
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay_core::{LandCombatDetail, LandCombatSideDetail};
+    use replay_core::{
+        LandCombatCurrentLossObservation, LandCombatDetail, LandCombatEquipmentLossDelta,
+        LandCombatSideDetail, LandCombatWidthObservation, LandCombatWidthWrapper,
+    };
 
     fn empty_side() -> LandCombatSideDetail {
         LandCombatSideDetail {
@@ -1090,5 +1431,183 @@ mod tests {
         assert_eq!(panel.attacker, Leaf::Unobtained);
         assert_eq!(panel.participant_events, Leaf::Unobtained);
         assert_eq!(panel.combat_width, Leaf::Unobtained);
+    }
+
+    #[test]
+    fn exact_current_loss_requires_one_authenticated_producer_and_exact_deltas() {
+        let mut side = empty_side();
+        side.losses_status = Leaf::Measured("exact_current_epoch_writer".into());
+        side.current_loss_observations = Leaf::Measured(vec![
+            LandCombatCurrentLossObservation {
+                capture_sequence: Leaf::Measured(91),
+                manpower_before_raw: Leaf::Measured(300),
+                manpower_after_raw: Leaf::Measured(287),
+                equipment: Leaf::Measured(vec![LandCombatEquipmentLossDelta {
+                    ordinal: Leaf::Measured(0),
+                    equipment_id: Leaf::Measured(4_120),
+                    before_raw: Leaf::Measured(2_000_000),
+                    after_raw: Leaf::Measured(1_900_000),
+                }]),
+                source: Leaf::Measured(
+                    "authenticated_a729_active_division_damage_140c7bfc0".into(),
+                ),
+            },
+        ]);
+        assert!(validate_land_side(&side, "attacker").is_ok());
+
+        let Leaf::Measured(observations) = &mut side.current_loss_observations else {
+            unreachable!();
+        };
+        observations[0].source = Leaf::Measured(
+            "authenticated_a729_participant_lifecycle_141299850".into(),
+        );
+        assert!(validate_land_side(&side, "attacker").is_ok());
+
+        let Leaf::Measured(observations) = &mut side.current_loss_observations else {
+            unreachable!();
+        };
+        observations[0].source = Leaf::Measured("ambiguous_current_loss_writer".into());
+        assert!(validate_land_side(&side, "attacker").is_err());
+    }
+
+    #[test]
+    fn exact_width_requires_authenticated_ordered_exact_sum() {
+        let mut side = empty_side();
+        side.width_status = Leaf::Measured("exact_synchronous_call".into());
+        side.width_observations = Leaf::Measured(vec![LandCombatWidthObservation {
+            capture_sequence: Leaf::Measured(91),
+            final_width_raw: Leaf::Measured(4_000_000),
+            wrappers: Leaf::Measured(vec![
+                LandCombatWidthWrapper {
+                    ordinal: Leaf::Measured(0),
+                    division_id: Leaf::Measured(8_001),
+                    width_raw: Leaf::Measured(2_000_000),
+                },
+                LandCombatWidthWrapper {
+                    ordinal: Leaf::Measured(1),
+                    division_id: Leaf::Measured(8_002),
+                    width_raw: Leaf::Measured(2_000_000),
+                },
+            ]),
+            source: Leaf::Measured("authenticated_a729_141299610_call".into()),
+        }]);
+        assert!(validate_land_side(&side, "attacker").is_ok());
+
+        let Leaf::Measured(observations) = &mut side.width_observations else {
+            unreachable!();
+        };
+        observations[0].final_width_raw = Leaf::Measured(3_999_999);
+        assert!(matches!(
+            validate_land_side(&side, "attacker"),
+            Err(GateFailure::Invalid(_))
+        ));
+
+        let Leaf::Measured(observations) = &mut side.width_observations else {
+            unreachable!();
+        };
+        observations[0].final_width_raw = Leaf::Measured(4_000_000);
+        let Leaf::Measured(wrappers) = &mut observations[0].wrappers else {
+            unreachable!();
+        };
+        wrappers[1].division_id = Leaf::Measured(8_001);
+        assert!(matches!(
+            validate_land_side(&side, "attacker"),
+            Err(GateFailure::Invalid(_))
+        ));
+
+        side.width_status = Leaf::Measured("unavailable_pending_x2_control".into());
+        assert!(matches!(
+            validate_land_side(&side, "attacker"),
+            Err(GateFailure::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn unavailable_current_loss_rejects_measured_rows() {
+        let mut side = empty_side();
+        side.current_loss_observations = Leaf::Measured(Vec::new());
+        assert!(validate_land_side(&side, "defender").is_err());
+    }
+
+    fn convoy_terminal_row(
+        producer_sequence: u64,
+        mutation: ConvoyD70MutationKindExact,
+    ) -> ConvoyTransportAttackExactRow {
+        let (before_count, after_count) = match mutation {
+            ConvoyD70MutationKindExact::AppendFirstSeen => (0, 1),
+            ConvoyD70MutationKindExact::IncrementExisting => (1, 2),
+        };
+        ConvoyTransportAttackExactRow {
+            producer_sequence,
+            game_hour_raw: 61_000_000,
+            combat_id: 21,
+            combat_generation: 4,
+            convoy_id: 158_065,
+            convoy_type_tag: 4_713,
+            owner_tag_db_id: 2,
+            killer_tag_db_id: 51,
+            client_id: 106_381,
+            client_type_tag: 4_713,
+            convoy_index: 8,
+            member_state: 32,
+            battle_slot: 8,
+            route_key_id: 106_381,
+            route_key_type_tag: 4_713,
+            route_producer_kind: ConvoyRouteProducerKindExact::LendLease,
+            route_source_kind: ConvoyRouteEndpointKindExact::State,
+            route_source_id: 282,
+            route_destination_kind: ConvoyRouteEndpointKindExact::State,
+            route_destination_id: 64,
+            d70_mutation_kind: mutation,
+            d70_ordinal: 0,
+            d70_before_rows: if producer_sequence == 1 { 0 } else { 1 },
+            d70_after_rows: 1,
+            d70_before_count: before_count,
+            d70_after_count: after_count,
+        }
+    }
+
+    #[test]
+    fn convoy_terminal_requires_present_exact_replay_view() {
+        let events = vec![
+            convoy_terminal_row(1, ConvoyD70MutationKindExact::AppendFirstSeen),
+            convoy_terminal_row(2, ConvoyD70MutationKindExact::IncrementExisting),
+        ];
+        let exact = ConvoyTransportAttackExactView {
+            status: ViewStatus::Present,
+            events: Leaf::Measured(events.clone()),
+        };
+        let bound = convoy_terminal_from_exact_view(&exact);
+        assert_eq!(bound, Leaf::Measured(events));
+        assert!(matches!(validate_convoy_terminal(&bound), Ok(2)));
+
+        let poisoned = ConvoyTransportAttackExactView {
+            status: ViewStatus::DomainUnavailable,
+            events: exact.events,
+        };
+        let bound = convoy_terminal_from_exact_view(&poisoned);
+        assert_eq!(bound, Leaf::Unobtained);
+        assert!(matches!(
+            validate_convoy_terminal(&bound),
+            Err(GateFailure::External(_))
+        ));
+    }
+
+    #[test]
+    fn convoy_terminal_rejects_gap_or_unsupported_route_contract() {
+        let mut row = convoy_terminal_row(2, ConvoyD70MutationKindExact::AppendFirstSeen);
+        let rows = Leaf::Measured(vec![row.clone()]);
+        assert!(matches!(
+            validate_convoy_terminal(&rows),
+            Err(GateFailure::Invalid(_))
+        ));
+
+        row.producer_sequence = 1;
+        row.route_producer_kind = ConvoyRouteProducerKindExact::Export;
+        let rows = Leaf::Measured(vec![row]);
+        assert!(matches!(
+            validate_convoy_terminal(&rows),
+            Err(GateFailure::Invalid(_))
+        ));
     }
 }

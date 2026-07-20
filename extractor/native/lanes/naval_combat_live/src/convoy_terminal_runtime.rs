@@ -1,8 +1,10 @@
 //! Promotion-gated resolver state shared by the exact d49/d50 member walk and
 //! the a729 convoy-terminal call-site observer.
 //!
-//! This module does not discover a route-manager layout. A future exact live
-//! reader must publish bindings whose raw observation has been authenticated
+//! Static RE proves that there is no separate route-manager hop in this join:
+//! `CFEXMember+0xD0` is resolved through the generic reference resolver and
+//! vtable-gated as a concrete route producer. The exact live reader publishes
+//! bindings whose raw observation has been authenticated
 //! by the accepted H-CONVOY control pair. Save-derived endpoints cannot enter
 //! this registry. Exact-ten static authority is pinned, but the immutable
 //! absent H-CONVOY hash and false activation latch keep publication and
@@ -19,6 +21,7 @@ use crate::convoy_terminal_attribution::{
 };
 use crate::extractor::ValidatedCombatSnapshot;
 use crate::member_epoch_runtime::{build_member_epoch_map, MemberEpochBinding};
+use crate::convoy_route_source::ExactA729RouteRead;
 
 const MAX_ACTIVE_ROUTE_BINDINGS: usize = 65_536;
 
@@ -30,9 +33,8 @@ pub struct AuthenticatedLiveRouteBinding {
     pub client: EntityHandle,
     pub resolution: LiveRouteResolution,
     /// Process-local evidence only. These values are never encoded in CTA1.
-    pub manager_root: usize,
+    pub reference_resolver: usize,
     pub route_object: usize,
-    pub manager_vtable: usize,
     pub route_vtable: usize,
     pub observation_game_hour_raw: i32,
     pub raw_observation_sha256: [u8; 32],
@@ -111,6 +113,24 @@ fn accepted_hashes() -> Result<([u8; 32], [u8; 32]), String> {
     Ok((authority, pair))
 }
 
+pub fn authenticate_exact_a729_route_read(
+    read: ExactA729RouteRead,
+    game_hour_raw: i32,
+) -> Result<AuthenticatedLiveRouteBinding, String> {
+    let (authority_manifest_sha256, control_pair_sha256) = accepted_hashes()?;
+    Ok(AuthenticatedLiveRouteBinding {
+        client: read.client,
+        resolution: read.resolution,
+        reference_resolver: read.reference_resolver,
+        route_object: read.route_object,
+        route_vtable: read.route_vtable,
+        observation_game_hour_raw: game_hour_raw,
+        raw_observation_sha256: read.raw_observation_sha256(game_hour_raw),
+        authority_manifest_sha256,
+        control_pair_sha256,
+    })
+}
+
 fn validate_route_binding(
     binding: &AuthenticatedLiveRouteBinding,
     expected_hour: i32,
@@ -123,9 +143,8 @@ fn validate_route_binding(
     {
         return Err("live route binding has an invalid or nonmatching client key".into());
     }
-    if binding.manager_root == 0
+    if binding.reference_resolver == 0
         || binding.route_object == 0
-        || binding.manager_vtable == 0
         || binding.route_vtable == 0
     {
         return Err("live route binding lacks rooted process-local custody".into());
@@ -157,9 +176,9 @@ fn validate_route_binding(
 }
 
 /// Atomically publish the same validated active-member graph used to produce
-/// d49/d50 together with an authenticated live route-manager snapshot.
+/// d49/d50 together with an authenticated generic-reference route snapshot.
 ///
-/// Route bindings are supplied by the future exact route-manager reader. This
+/// Route bindings are supplied by the exact concrete-producer reader. This
 /// function deliberately accepts no saved-route fallback and no current
 /// province. A callback clones one immutable `Arc`, so its member and route
 /// lookups cannot straddle two publications.
@@ -168,7 +187,6 @@ pub fn publish_convoy_terminal_resolver_snapshot(
     routes: &[AuthenticatedLiveRouteBinding],
     game_hour_raw: i32,
 ) -> Result<ResolverPublicationReceipt, String> {
-    let (authority, pair) = accepted_hashes()?;
     let mut member_bindings = Vec::new();
     for snapshot in snapshots {
         if snapshot.lifecycle.combat_id == 0 || snapshot.lifecycle.generation == 0 {
@@ -194,7 +212,19 @@ pub fn publish_convoy_terminal_resolver_snapshot(
             });
         }
     }
-    let member_epochs: BTreeMap<usize, CombatEpoch> = build_member_epoch_map(&member_bindings)?
+    publish_convoy_terminal_resolver_bindings(&member_bindings, routes, game_hour_raw)
+}
+
+/// Collector adapter for the exact process-local bindings produced by the
+/// clean d49/d50 walk. This avoids rebuilding lossy snapshot objects merely to
+/// publish the member-pointer epoch graph.
+pub fn publish_convoy_terminal_resolver_bindings(
+    member_bindings: &[MemberEpochBinding],
+    routes: &[AuthenticatedLiveRouteBinding],
+    game_hour_raw: i32,
+) -> Result<ResolverPublicationReceipt, String> {
+    let (authority, pair) = accepted_hashes()?;
+    let member_epochs: BTreeMap<usize, CombatEpoch> = build_member_epoch_map(member_bindings)?
         .into_iter()
         .map(|(member_address, resolution)| (member_address, resolution.epoch))
         .collect();
@@ -203,7 +233,7 @@ pub fn publish_convoy_terminal_resolver_snapshot(
     for binding in routes {
         validate_route_binding(binding, game_hour_raw, authority, pair)?;
         if route_map.insert(binding.client, *binding).is_some() {
-            return Err("duplicate client handle in live route-manager publication".into());
+            return Err("duplicate client handle in live generic-reference publication".into());
         }
         if route_map.len() > MAX_ACTIVE_ROUTE_BINDINGS {
             return Err("live route binding cap exceeded".into());

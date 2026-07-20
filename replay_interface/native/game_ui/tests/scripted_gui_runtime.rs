@@ -80,6 +80,7 @@ fn view() -> ScriptedGuiView {
             "TST".to_string(),
             Leaf::Measured(BTreeMap::from([("mod_panel".to_string(), captured)])),
         )]),
+        runtime_authority: Leaf::Absent,
         world_variables: Leaf::Measured(BTreeMap::from([("phase".to_string(), 2.0)])),
         world_flags: Leaf::Measured(vec!["campaign_started".to_string()]),
     }

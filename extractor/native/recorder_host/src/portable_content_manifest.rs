@@ -25,8 +25,8 @@ use crate::early_render_launch::{EarlyRenderCaptureReceipt, EarlyRenderLaunchMan
 use crate::modset::ModsetReport;
 use crate::production_content_vfs::effective_vfs_from_launch;
 use crate::production_map_content_index::{
-    resolve_authenticated_static_program_content, StaticProgramContentObservation,
-    STATIC_PROGRAM_CONSUMER_PREFIX,
+    resolve_authenticated_static_program_content, resolve_authenticated_ui_pass_content,
+    StaticProgramContentObservation, RUNTIME_UI_CONSUMER_PREFIX, STATIC_PROGRAM_CONSUMER_PREFIX,
 };
 
 pub const TRACE_SCHEMA: &str = "extractor.portable-content-use-trace.v1";
@@ -808,6 +808,7 @@ pub fn build_from_finalized_static_bundle(
         None,
         &[],
         &[],
+        &[],
     )
 }
 
@@ -884,6 +885,7 @@ pub fn build_from_finalized_static_bundle_with_hud_snapshot(
         launch,
         product_modset_sha256,
         Some(hud_snapshot),
+        &[],
         &[],
         &[],
     )
@@ -968,6 +970,7 @@ fn build_from_finalized_static_bundle_with_runtime_stream_admission(
         None,
         &[],
         &[],
+        &[],
     )?;
     let runtime =
         scan_runtime_content_snapshots(compact_stream_path, identity_mode, early_admission)?;
@@ -1034,6 +1037,17 @@ fn build_from_finalized_static_bundle_with_runtime_stream_admission(
             &base,
         )?
     };
+    let runtime_ui_content = if runtime.static_program_frames.is_empty() {
+        Vec::new()
+    } else {
+        resolve_authenticated_ui_pass_content(
+            selected_vfs
+                .as_ref()
+                .ok_or("selected-Present UI commands require the selected launch VFS")?,
+            runtime.static_program_frames.iter(),
+            &base,
+        )?
+    };
     build_from_finalized_static_bundle_inner(
         source_inventory_path,
         catalog_source_join_path,
@@ -1042,6 +1056,7 @@ fn build_from_finalized_static_bundle_with_runtime_stream_admission(
         product_modset_sha256,
         hud_snapshot.as_ref(),
         &static_program_content,
+        &runtime_ui_content,
         &runtime.m02_used_content,
     )
 }
@@ -1238,6 +1253,7 @@ fn build_from_finalized_static_bundle_inner(
     product_modset_sha256: &str,
     hud_snapshot: Option<&HudRoleSnapshot>,
     static_program_content: &[StaticProgramContentObservation],
+    runtime_ui_content: &[StaticProgramContentObservation],
     m02_used_content: &[UsedContentKey],
 ) -> Result<ContentManifest, String> {
     let inventory = read_stable_json(source_inventory_path, "live source inventory")?;
@@ -1534,6 +1550,12 @@ fn build_from_finalized_static_bundle_inner(
         &effective_vfs_manifest_sha256,
         &ordered_layers,
     )?;
+    append_runtime_ui_content_observations(
+        &mut observations,
+        runtime_ui_content,
+        &effective_vfs_manifest_sha256,
+        &ordered_layers,
+    )?;
     append_m02_content_observations(
         &mut observations,
         m02_used_content,
@@ -1810,6 +1832,81 @@ fn append_static_program_content_observations(
             None if row.content.source_sha256 != row.content.payload_sha256 => {
                 return Err(format!(
                     "static program {identity} directory source hash differs from payload"
+                ));
+            }
+            _ => {}
+        }
+        observations.push(ContentUseObservation {
+            content_key: normalized.clone(),
+            kind: required_kind_for_path(&normalized),
+            content: row.content.clone(),
+            consumer: row.consumer.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn append_runtime_ui_content_observations(
+    observations: &mut Vec<ContentUseObservation>,
+    runtime_ui_content: &[StaticProgramContentObservation],
+    effective_vfs_manifest_sha256: &str,
+    ordered_layers: &[RecordedContentLayer],
+) -> Result<(), String> {
+    if observations
+        .len()
+        .saturating_add(runtime_ui_content.len())
+        > MAX_OBSERVATIONS
+    {
+        return Err(format!(
+            "portable content trace would exceed the {MAX_OBSERVATIONS} observation bound"
+        ));
+    }
+    let mut seen_pairs = BTreeSet::new();
+    for row in runtime_ui_content {
+        let identity = row
+            .consumer
+            .strip_prefix(RUNTIME_UI_CONSUMER_PREFIX)
+            .ok_or("runtime UI content has a non-canonical consumer")?;
+        if identity.len() != 64
+            || !identity.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || identity != identity.to_ascii_lowercase()
+            || !seen_pairs.insert((row.consumer.as_str(), row.content_key.as_str()))
+        {
+            return Err("runtime UI content has an invalid identity or duplicate key".into());
+        }
+        row.content.validate()?;
+        if row.content.effective_vfs_manifest_sha256 != effective_vfs_manifest_sha256 {
+            return Err(format!(
+                "runtime UI command {identity} names a different effective VFS"
+            ));
+        }
+        let normalized = normalize_game_relative_path(&row.content_key)?;
+        if normalized != row.content_key || normalized != row.content.normalized_game_relative_path
+        {
+            return Err(format!(
+                "runtime UI command {identity} content key/path is not one canonical VFS path"
+            ));
+        }
+        let layer = ordered_layers
+            .get(row.content.winning_layer_ordinal as usize)
+            .filter(|layer| layer.ordinal == row.content.winning_layer_ordinal)
+            .ok_or_else(|| {
+                format!("runtime UI command {identity} names a missing winning layer")
+            })?;
+        if layer.layer_kind != row.content.layer_kind || layer.layer_id != row.content.layer_id {
+            return Err(format!(
+                "runtime UI command {identity} winner kind/id disagrees with launch order"
+            ));
+        }
+        match &layer.source_container_sha256 {
+            Some(expected) if expected != &row.content.source_sha256 => {
+                return Err(format!(
+                    "runtime UI command {identity} source container hash disagrees with winning layer"
+                ));
+            }
+            None if row.content.source_sha256 != row.content.payload_sha256 => {
+                return Err(format!(
+                    "runtime UI command {identity} directory source hash differs from payload"
                 ));
             }
             _ => {}

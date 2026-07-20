@@ -32,6 +32,14 @@ pub struct RawStaticContentJoin {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RawStaticShaderResourceSource {
     UsedContent,
+    /// Exact selected-Present SnowMudData upload joined by the process-local
+    /// resource identity while capture is still in-process, after the exact
+    /// draw-time resource snapshot matches H row-for-row. Only the pointer-free
+    /// producer ordinal and payload digest survive promotion.
+    SnowMudTexture {
+        producer_ordinal: u64,
+        payload_sha256: String,
+    },
     PreparedTarget {
         target: RawOutputTargetSemantic,
         producer_capture_sequence: u64,
@@ -346,6 +354,12 @@ impl RawStaticProgramCapture {
             }
             for semantic in &draw.ordered_texture_semantics {
                 match &semantic.source {
+                    RawStaticShaderResourceSource::SnowMudTexture {
+                        producer_ordinal,
+                        payload_sha256,
+                    } if *producer_ordinal == 0 || !valid_hash(payload_sha256) => {
+                        return Err("static SnowMudTexture identity is incomplete".into())
+                    }
                     RawStaticShaderResourceSource::PoliticalTexture {
                         texture_kind,
                         target_binding_identity,

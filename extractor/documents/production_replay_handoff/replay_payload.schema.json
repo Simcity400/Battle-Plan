@@ -1,8 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "hoi4.extractor.production_replay_handoff.payload.v1",
-  "title": "Promoted extractor replay surfaces",
-  "description": "Target replay projection for the frozen A1/A2/A4/A12/A14/A15/A21/A22/B8-X6 batch. Other snapshot fields are intentionally allowed.",
+  "$id": "hoi4.extractor.production_replay_handoff.payload.v2",
+  "title": "Promoted extractor replay surfaces and externally gated Wave 4 handoffs",
+  "description": "Target replay projection for the frozen A1/A2/A4/A12/A14/A15/A21/A22/B8-X6 batch plus the fail-closed A38/d84 handoff shape. A38 remains unavailable until its authenticated live-producer gate is admitted. Other snapshot fields are intentionally allowed.",
+  "x-hoi4-cross-field-validators": [
+    "d48_partial_health_aggregate",
+    "a38_d84_authority_runtime_exact_join"
+  ],
   "type": "object",
   "additionalProperties": true,
   "properties": {
@@ -23,7 +27,13 @@
     "world_events": {"$ref": "#/$defs/worldEvents"},
     "runtime_text": {"$ref": "#/$defs/runtimeText"},
     "resolved_tooltip_instances": {"$ref": "#/$defs/resolvedTooltipInstances"},
-    "_r2_session_multiplayer_metadata_live": {"$ref": "#/$defs/sessionMetadata"}
+    "_r2_session_multiplayer_metadata_live": {"$ref": "#/$defs/sessionMetadata"},
+    "_r2_scripted_gui_runtime_live": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/scriptedGuiRuntimeAuthority"}
+      ]
+    }
   },
   "$defs": {
     "countryRef": {
@@ -135,7 +145,162 @@
               }
             }
           }
+        },
+        "extra": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "scripted_gui_runtime": {
+              "type": "object",
+              "maxProperties": 65536,
+              "propertyNames": {"$ref": "#/$defs/scriptedGuiPortableIdentity"},
+              "additionalProperties": {"$ref": "#/$defs/scriptedGuiRuntimeInput"}
+            }
+          }
         }
+      }
+    },
+    "nonzeroSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "not": {"pattern": "^0{64}$"}
+    },
+    "scriptedGuiPortableDiagnostic": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536,
+      "pattern": "\\S",
+      "not": {"pattern": "(?:0[xX][0-9A-Fa-f]{6}|[A-Za-z]:[\\\\/]|\\\\\\\\|(?:^|[\\s(='\"])/|\\u0000)"}
+    },
+    "scriptedGuiPortableIdentity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536,
+      "pattern": "\\S",
+      "not": {"pattern": "(?:0[xX][0-9A-Fa-f]{6}|[A-Za-z]:[\\\\/]|\\\\\\\\|(?:^|[\\s(='\"])/|\\u0000)"}
+    },
+    "scriptedGuiBoolResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "unavailable_reason"],
+          "properties": {"value": {"type": "boolean"}, "unavailable_reason": {"type": "null"}}
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "unavailable_reason"],
+          "properties": {"value": {"type": "null"}, "unavailable_reason": {"$ref": "#/$defs/scriptedGuiPortableDiagnostic"}}
+        }
+      ]
+    },
+    "scriptedGuiStringResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "unavailable_reason"],
+          "properties": {"value": {"type": "string", "maxLength": 65536, "not": {"pattern": "\\u0000"}}, "unavailable_reason": {"type": "null"}}
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "unavailable_reason"],
+          "properties": {"value": {"type": "null"}, "unavailable_reason": {"$ref": "#/$defs/scriptedGuiPortableDiagnostic"}}
+        }
+      ]
+    },
+    "scriptedGuiDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logical_path", "winning_layer_ordinal", "layer_kind", "layer_id", "source_sha256", "payload_sha256", "payload_bytes", "context_type", "window_name"],
+      "properties": {
+        "logical_path": {"type": "string", "maxLength": 65536, "pattern": "^common/scripted_guis/(?:[^/]+/)*[^/]+\\.txt$", "not": {"pattern": "(?:\\\\|:|(?:^|/)\\.{1,2}(?:/|$)|\\u0000)"}},
+        "winning_layer_ordinal": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "layer_kind": {"enum": ["base", "integrated_dlc", "dlc", "mod"]},
+        "layer_id": {"$ref": "#/$defs/scriptedGuiPortableIdentity"},
+        "source_sha256": {"$ref": "#/$defs/nonzeroSha256"},
+        "payload_sha256": {"$ref": "#/$defs/nonzeroSha256"},
+        "payload_bytes": {"type": "integer", "minimum": 1},
+        "context_type": {"$ref": "#/$defs/scriptedGuiPortableIdentity"},
+        "window_name": {"$ref": "#/$defs/scriptedGuiPortableIdentity"}
+      }
+    },
+    "scriptedGuiRuntimeInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manager_order_index", "definition", "visible", "enabled", "triggers", "properties", "effect_enabled"],
+      "properties": {
+        "manager_order_index": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "definition": {"$ref": "#/$defs/scriptedGuiDefinition"},
+        "visible": {"$ref": "#/$defs/scriptedGuiBoolResult"},
+        "enabled": {"$ref": "#/$defs/scriptedGuiBoolResult"},
+        "triggers": {"$ref": "#/$defs/scriptedGuiBoolResultMap"},
+        "properties": {"$ref": "#/$defs/scriptedGuiStringResultMap"},
+        "effect_enabled": {"$ref": "#/$defs/scriptedGuiBoolResultMap"}
+      }
+    },
+    "scriptedGuiResultName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536,
+      "not": {"pattern": "\\u0000"}
+    },
+    "scriptedGuiBoolResultMap": {
+      "type": "object",
+      "maxProperties": 131072,
+      "propertyNames": {"$ref": "#/$defs/scriptedGuiResultName"},
+      "additionalProperties": {"$ref": "#/$defs/scriptedGuiBoolResult"}
+    },
+    "scriptedGuiStringResultMap": {
+      "type": "object",
+      "maxProperties": 131072,
+      "propertyNames": {"$ref": "#/$defs/scriptedGuiResultName"},
+      "additionalProperties": {
+        "type": "object",
+        "maxProperties": 131072,
+        "propertyNames": {"$ref": "#/$defs/scriptedGuiResultName"},
+        "additionalProperties": {"$ref": "#/$defs/scriptedGuiStringResult"}
+      },
+      "x-hoi4-maximum-flattened-properties": 131072
+    },
+    "scriptedGuiManagerOrderRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manager_order_index", "country_tag", "gui_id"],
+      "properties": {
+        "manager_order_index": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "country_tag": {"type": "string", "pattern": "^[A-Z0-9]{3}$"},
+        "gui_id": {"$ref": "#/$defs/scriptedGuiPortableIdentity"}
+      }
+    },
+    "scriptedGuiTombstone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["country_tag", "gui_id"],
+      "properties": {
+        "country_tag": {"type": "string", "pattern": "^[A-Z0-9]{3}$"},
+        "gui_id": {"$ref": "#/$defs/scriptedGuiPortableIdentity"}
+      }
+    },
+    "scriptedGuiRuntimeAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "authority", "elapsed_wall_ms", "frame_hour", "producer_record_identity", "executable_sha256", "ui14_engine_vfs_sha256", "static_authority_job_id", "static_authority_receipt_sha256", "producer_manifest_sha256", "manager_order", "tombstones"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "authority": {"const": "exact20_a38_engine_materialized"},
+        "elapsed_wall_ms": {"type": "integer", "minimum": 0},
+        "frame_hour": {"type": "integer", "minimum": 0},
+        "producer_record_identity": {"$ref": "#/$defs/scriptedGuiPortableIdentity"},
+        "executable_sha256": {"const": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"},
+        "ui14_engine_vfs_sha256": {"$ref": "#/$defs/nonzeroSha256"},
+        "static_authority_job_id": {"const": "20260720T020812Z-w3-a38-controller-owner-41ee5208"},
+        "static_authority_receipt_sha256": {"const": "7d0a36b1822faf85a949d628a79bc4a09f95dc9c9aa3ed4aecb715b72b0a9082"},
+        "producer_manifest_sha256": {"$ref": "#/$defs/nonzeroSha256"},
+        "manager_order": {"type": "array", "maxItems": 65536, "uniqueItems": true, "items": {"$ref": "#/$defs/scriptedGuiManagerOrderRow"}},
+        "tombstones": {"type": "array", "maxItems": 65536, "uniqueItems": true, "items": {"$ref": "#/$defs/scriptedGuiTombstone"}}
       }
     },
     "constructionRow": {

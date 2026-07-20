@@ -50,6 +50,7 @@ mod occupation_stripe_law;
 mod pass_graph;
 mod pdx_mesh;
 mod political_color_synthesis;
+mod posteffect_region_weights;
 mod production_d3d;
 mod production_map_interpreter;
 mod production_map_renderer;
@@ -391,13 +392,20 @@ pub use political_color_synthesis::{
     PoliticalColorTextureDescriptor, PROVINCE_COLOR_MAP_DXGI_FORMAT, PROVINCE_COLOR_MAP_HEIGHT,
     PROVINCE_COLOR_MAP_WIDTH, PROVINCE_SECONDARY_COLOR_MAP_SHADER_SLOT,
 };
+pub use posteffect_region_weights::{
+    posteffect_region_weights_from_resolver, PostEffectRegionBoxInput,
+    PostEffectRegionWeightManifest, PostEffectRegionWeightSet, RegionProvinceWeight,
+    POSTEFFECT_REGION_DEFINITION_SOURCE, POSTEFFECT_REGION_PROVINCES_SOURCE,
+    POSTEFFECT_REGION_STATES_SOURCE, POSTEFFECT_REGION_WEIGHT_SCHEMA,
+};
 pub use production_d3d::{
     building_presentation_priority, execute_production_d3d_frame,
     has_authenticated_d80_map_operations, prepare_production_d3d_frame,
     prepare_s1_shadow_execution, validate_s1_shadow_execution, BuildingPresentationPriority,
     PreparedProductionD3dFrame, PreparedS1ShadowExecution, ProductionD3dExecutedDraw,
     ProductionD3dExecutionBridge, ProductionD3dExecutionReceipt, ProductionD3dOmission,
-    ProductionD3dStaticPassProgram, PRODUCTION_D3D_EXECUTION_RECEIPT_SCHEMA,
+    ProductionD3dStaticPassProgram, SnowMudD3dExecutionProof,
+    PRODUCTION_D3D_EXECUTION_RECEIPT_SCHEMA,
 };
 #[cfg(windows)]
 pub use production_d3d::{

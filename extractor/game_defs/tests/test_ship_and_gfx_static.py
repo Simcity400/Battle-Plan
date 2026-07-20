@@ -63,6 +63,47 @@ def _gfx_args(vanilla: Path, userdata: Path, allowlist: Path) -> SimpleNamespace
 
 
 def _patch_layers(monkeypatch, vanilla: Path, mod: Path | None = None):
+    power_balance_gui = vanilla / "interface/powerbalanceview.gui"
+    if not power_balance_gui.exists():
+        _write(vanilla, "interface/powerbalanceview.gui", """
+guiTypes = {
+  iconType = { name = range_bar spriteType = GFX_range }
+  iconType = { name = range_indicator spriteType = GFX_indicator }
+  containerWindowType = {
+    name = powerbalanceview
+    background = { name = background quadTextureSprite = GFX_panel }
+    iconType = { name = bop_bg quadTextureSprite = GFX_art }
+    containerWindowType = {
+      name = decision_container
+      background = { name = Background spriteType = GFX_decision_frame }
+    }
+    iconType = { name = power_balance_header_bg spriteType = GFX_header }
+    buttonType = { name = close quadTextureSprite = GFX_close }
+    iconType = { name = power_balance_frame spriteType = GFX_bar_frame }
+    iconType = { name = power_balance_value }
+    iconType = { name = position_marker spriteType = GFX_marker }
+    iconType = { name = left_power_icon }
+    iconType = { name = right_power_icon }
+    background = { name = Background quadTextureSprite = GFX_decision_bg }
+  }
+}
+""")
+    country_gui = vanilla / "interface/countrypoliticsview.gui"
+    if not country_gui.exists():
+        _write(vanilla, "interface/countrypoliticsview.gui", """
+guiTypes = {
+  containerWindowType = {
+    name = country_politics
+    containerWindowType = {
+      name = power_balance_button
+      buttonType = { name = show_power_balance quadTextureSprite = GFX_launcher }
+      iconType = { name = show_power_balance_glow quadTextureSprite = GFX_glow }
+      iconType = { name = power_balance_ICON quadTextureSprite = GFX_placeholder }
+    }
+  }
+}
+""")
+
     def fake_build_layers(vanilla=None, mods=None, userdata=None, strict_mods=False):
         layers = [Layer("vanilla", Path(vanilla))]
         if mod is not None:
@@ -165,15 +206,170 @@ spriteTypes = {
     name = "GFX_goal_fixture"
     texturefile = "gfx/interface/goals/fixture.dds"
   }
+  progressBarType = {
+    name = "GFX_progress_fixture"
+    textureFile1 = "gfx/interface/front.dds"
+    textureFile2 = "gfx/interface/back.dds"
+  }
+  frameAnimatedSpriteType = {
+    name = "GFX_animated_fixture"
+    texturefile = "gfx/interface/animated.dds"
+  }
 }
 """)
     blocks = list(gfx_icon_manifest_gate._sprite_blocks(root))
     assert [block.get("name") for block in blocks] == [
         "GFX_decision_fixture",
         "GFX_goal_fixture",
+        "GFX_progress_fixture",
+        "GFX_animated_fixture",
     ]
     assert gfx_icon_manifest_gate._classify("GFX_decision_fixture", "gfx/interface/x.dds") == "decision_icon"
     assert gfx_icon_manifest_gate._classify("GFX_goal_fixture", "gfx/interface/x.dds") == "focus_icon"
+
+
+def test_gfx_manifest_preserves_all_progress_bar_texture_slots(tmp_path, monkeypatch):
+    vanilla = tmp_path / "vanilla"
+    userdata = tmp_path / "userdata"
+    userdata.mkdir()
+    _write(userdata, "dlc_load.json", '{"enabled_mods":[],"disabled_dlcs":[]}')
+    _write(vanilla, "interface/powerbalanceview.gfx", """
+spriteTypes = {
+  progressBarType = {
+    name = "GFX_power_balance_left"
+    textureFile1 = "gfx/interface/bop/front.dds"
+    textureFile2 = "gfx/interface/absolute_nothing.dds"
+    effectFile = "gfx/FX/progress_minmax.lua"
+  }
+}
+""")
+    _write_bytes(vanilla, "gfx/interface/bop/front.dds", b"front")
+    _write_bytes(vanilla, "gfx/interface/absolute_nothing.dds", b"back")
+    _patch_layers(monkeypatch, vanilla, None)
+
+    catalog = gfx_icon_manifest_gate.build_catalog(
+        _gfx_args(vanilla, userdata, _allowlist(tmp_path))
+    )
+    row = catalog["sprites"]["GFX_power_balance_left"]
+    assert row["drawable_kind"] == "progressBarType"
+    assert [slot["slot"] for slot in row["texture_slots"]] == [
+        "textureFile1",
+        "textureFile2",
+    ]
+    assert [slot["texturefile"] for slot in row["texture_slots"]] == [
+        "gfx/interface/bop/front.dds",
+        "gfx/interface/absolute_nothing.dds",
+    ]
+    assert all(slot["texture_sha256"] for slot in row["texture_slots"])
+
+
+def test_gfx_manifest_derives_power_balance_roles_from_effective_mod_gui(
+    tmp_path, monkeypatch
+):
+    vanilla = tmp_path / "vanilla"
+    mod = tmp_path / "mod"
+    userdata = tmp_path / "userdata"
+    userdata.mkdir()
+    _write(userdata, "dlc_load.json", '{"enabled_mods":[],"disabled_dlcs":[]}')
+    _write(vanilla, "interface/base.gfx", """
+spriteTypes = { spriteType = { name = GFX_fixture texturefile = "gfx/interface/x.dds" } }
+""")
+    _write_bytes(vanilla, "gfx/interface/x.dds", b"x")
+    _write(mod, "interface/powerbalanceview.gui", """
+guiTypes = {
+  iconType = { name = range_bar spriteType = GFX_mod_range }
+  iconType = { name = range_indicator spriteType = GFX_mod_indicator }
+  containerWindowType = {
+    name = powerbalanceview
+    background = { name = background quadTextureSprite = GFX_mod_panel }
+    iconType = { name = bop_bg quadTextureSprite = GFX_mod_art }
+    containerWindowType = { name = decision_container background = { name = Background spriteType = GFX_mod_frame } }
+    iconType = { name = power_balance_header_bg spriteType = GFX_mod_header }
+    buttonType = { name = close quadTextureSprite = GFX_mod_close }
+    iconType = { name = power_balance_frame spriteType = GFX_mod_bar_frame }
+    iconType = { name = power_balance_value }
+    iconType = { name = position_marker spriteType = GFX_mod_marker }
+    iconType = { name = left_power_icon }
+    iconType = { name = right_power_icon }
+    background = { name = Background quadTextureSprite = GFX_mod_decision_bg }
+  }
+}
+""")
+    _patch_layers(monkeypatch, vanilla, mod)
+
+    catalog = gfx_icon_manifest_gate.build_catalog(
+        _gfx_args(vanilla, userdata, _allowlist(tmp_path))
+    )
+    gui = catalog["power_balance_gui"]
+    assert gui["schema"] == "gfx_icon_asset_manifest_static.power_balance_gui_roles.v2"
+    assert gui["sources"]["interface/powerbalanceview.gui"]["source_layer"] == "Fixture Mod"
+    panel = gui["roles"]["panel_background"]
+    decision = gui["roles"]["decision_background"]
+    assert panel["sprite_name"] == "GFX_mod_panel"
+    assert panel["hierarchy_path"] == "powerbalanceview/background"
+    assert panel["parent_hierarchy_path"] == "powerbalanceview"
+    assert panel["widget_type"] == "background"
+    assert panel["widget_type_ordinal"] == 0
+    assert panel["hierarchy_match"] == "exact_case_sensitive"
+    assert decision["sprite_name"] == "GFX_mod_decision_bg"
+    assert decision["hierarchy_path"] == "powerbalanceview/Background"
+    assert decision["widget_type_ordinal"] == 1
+    assert gui["roles"]["balance_value"]["binding_source"] == "engine"
+    assert "sprite_name" not in gui["roles"]["balance_value"]
+
+
+def test_gfx_manifest_rejects_ambiguous_power_balance_widget_roles(
+    tmp_path, monkeypatch
+):
+    vanilla = tmp_path / "vanilla"
+    userdata = tmp_path / "userdata"
+    userdata.mkdir()
+    _write(userdata, "dlc_load.json", '{"enabled_mods":[],"disabled_dlcs":[]}')
+    _patch_layers(monkeypatch, vanilla)
+    with (vanilla / "interface/powerbalanceview.gui").open("a", encoding="utf-8") as stream:
+        stream.write("\nguiTypes = { containerWindowType = { name = powerbalanceview background = { name = background quadTextureSprite = GFX_duplicate } } }\n")
+
+    with pytest.raises(RuntimeError, match="panel_background has 2 matches"):
+        gfx_icon_manifest_gate.build_catalog(
+            _gfx_args(vanilla, userdata, _allowlist(tmp_path))
+        )
+
+
+def test_gfx_manifest_casefolds_sprite_identity_like_product_registry(
+    tmp_path, monkeypatch
+):
+    vanilla = tmp_path / "vanilla"
+    userdata = tmp_path / "userdata"
+    userdata.mkdir()
+    _write(userdata, "dlc_load.json", '{"enabled_mods":[],"disabled_dlcs":[]}')
+    _write(vanilla, "interface/a.gfx", """
+spriteTypes = {
+  spriteType = {
+    name = "GFX_Case"
+    textureFile = "gfx/interface/first.dds"
+  }
+  spriteType = {
+    name = "gfx_case"
+    textureFile = "gfx/interface/last.dds"
+  }
+}
+""")
+    _write_bytes(vanilla, "gfx/interface/first.dds", b"first")
+    _write_bytes(vanilla, "gfx/interface/last.dds", b"last")
+    _patch_layers(monkeypatch, vanilla)
+
+    catalog = gfx_icon_manifest_gate.build_catalog(
+        _gfx_args(vanilla, userdata, _allowlist(tmp_path))
+    )
+    assert "GFX_Case" not in catalog["sprites"]
+    assert catalog["sprites"]["gfx_case"]["texture_sha256"] == sha256_bytes(b"last")
+    assert catalog["meta"]["id_collisions_last_wins"] == [{
+        "id": "gfx_case",
+        "first_id": "GFX_Case",
+        "first": "interface/a.gfx",
+        "override": "interface/a.gfx",
+        "case_insensitive": True,
+    }]
 
 
 def test_gfx_asset_layers_include_dlc_and_mod_wins(tmp_path, monkeypatch):

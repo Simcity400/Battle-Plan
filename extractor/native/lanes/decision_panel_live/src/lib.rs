@@ -4,6 +4,7 @@
 //! bracket. The renderer never evaluates Clausewitz scripts or reconstructs
 //! order from authored definitions.
 
+#[cfg(windows)]
 pub mod a729_hook;
 use std::collections::BTreeSet;
 

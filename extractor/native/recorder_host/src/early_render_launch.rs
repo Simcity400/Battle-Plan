@@ -22,6 +22,401 @@ pub const EARLY_CAPTURE_RECEIPT_SCHEMA: &str = "extractor.early-render-capture-r
 pub const EARLY_DIAGNOSTIC_LIVENESS_SCHEMA: &str = "extractor.early-render-diagnostic-liveness.v1";
 pub const EARLY_DIAGNOSTIC_STAGE_MASK_FULL: u64 = 0x3ff;
 pub const EARLY_DIAGNOSTIC_STAGE_MASK_COM: u64 = 0x01;
+pub const G2_CAPTURE_INTENT_SCHEMA: &str = "hoi4-g2-recorder-capture-intent-v1";
+pub const G2_ENGINE_WITNESS_SCHEMA: &str = "hoi4-g2-engine-pixel-witness-v1";
+pub const G2_ENGINE_BMP_FILE: &str = "g2_engine_map_boundary.bmp";
+pub const G2_ENGINE_WITNESS_FILE: &str = "g2_engine_pixel_witness.json";
+const G2_ENGINE_STATUS: &str = "AUTHENTICATED_PRE_FIRST_UI_DRAW_MAP_READBACK";
+const G2_RENDER_BOUNDARY: &str = "post_authenticated_map_bgra8_no_selected_present_writers";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct G2CaptureIntentFile {
+    pub schema: String,
+    pub observation_id: String,
+    pub settings_file_sha256: String,
+    pub localisation_language: String,
+    pub camera_payload_sha256: String,
+    pub pov_country_or_global: String,
+    pub expected_selected_hour: i64,
+    pub capture_context_path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct G2CaptureIntent {
+    pub observation_id: String,
+    pub settings_file_sha256: String,
+    pub localisation_language: String,
+    pub camera_payload_sha256: String,
+    pub pov_country_or_global: String,
+    pub expected_selected_hour: i64,
+    pub capture_context_path: PathBuf,
+    pub capture_context_sha256: String,
+}
+
+impl G2CaptureIntent {
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let bytes = fs::read(path)
+            .map_err(|error| format!("read G2 recorder capture intent failed: {error}"))?;
+        let parsed_value = snapshot::parse_json_strict(&bytes)
+            .map_err(|error| format!("strict parse G2 recorder capture intent failed: {error}"))?;
+        let parsed: G2CaptureIntentFile = serde_json::from_value(parsed_value)
+            .map_err(|error| format!("decode G2 recorder capture intent failed: {error}"))?;
+        if parsed.schema != G2_CAPTURE_INTENT_SCHEMA
+            || parsed.observation_id.trim().is_empty()
+            || parsed.observation_id.len() > 512
+            || parsed.localisation_language.trim().is_empty()
+            || parsed.localisation_language.len() > 512
+            || parsed.pov_country_or_global != "global"
+            || parsed.expected_selected_hour < 0
+        {
+            return Err("G2 recorder capture intent has invalid identity fields".into());
+        }
+        require_sha256(&parsed.settings_file_sha256, "G2 settings file")?;
+        require_sha256(&parsed.camera_payload_sha256, "G2 camera payload")?;
+        let capture_context_path = canonical_file(&parsed.capture_context_path, "G2 capture context")?;
+        let first = fs::read(&capture_context_path)
+            .map_err(|error| format!("read G2 capture context failed: {error}"))?;
+        let second = fs::read(&capture_context_path)
+            .map_err(|error| format!("re-read G2 capture context failed: {error}"))?;
+        if first != second {
+            return Err("G2 capture context changed during admission".into());
+        }
+        let context = snapshot::parse_json_strict(&first)
+            .map_err(|error| format!("strict parse G2 capture context failed: {error}"))?;
+        if context.get("schema").and_then(serde_json::Value::as_str)
+            != Some("hoi4-rendering-law-capture-context-v1")
+            || context.get("packets") != Some(&serde_json::json!(["G2"]))
+            || context.pointer("/inventory/active_hoi4_pids")
+                != Some(&serde_json::json!([]))
+        {
+            return Err("G2 capture context is not an isolated pre-launch G2 snapshot".into());
+        }
+        let capture_context_sha256 = to_hex(&Sha256::digest(&first));
+        Ok(Self {
+            observation_id: parsed.observation_id,
+            settings_file_sha256: parsed.settings_file_sha256,
+            localisation_language: parsed.localisation_language,
+            camera_payload_sha256: parsed.camera_payload_sha256,
+            pov_country_or_global: parsed.pov_country_or_global,
+            expected_selected_hour: parsed.expected_selected_hour,
+            capture_context_path,
+            capture_context_sha256,
+        })
+    }
+
+    pub fn validate_unchanged(&self) -> Result<(), String> {
+        require_file_sha256(
+            &self.capture_context_path,
+            &self.capture_context_sha256,
+            "G2 capture context",
+        )
+    }
+
+    pub fn validate_context_authority(
+        &self,
+        executable_sha256: &str,
+        settings_file_sha256: &str,
+        localisation_language: &str,
+    ) -> Result<(), String> {
+        self.validate_unchanged()?;
+        let bytes = fs::read(&self.capture_context_path)
+            .map_err(|error| format!("read G2 capture context authority failed: {error}"))?;
+        let context = snapshot::parse_json_strict(&bytes)
+            .map_err(|error| format!("strict parse G2 capture context authority failed: {error}"))?;
+        let context_language = context
+            .pointer("/inventory/settings/language")
+            .and_then(serde_json::Value::as_str)
+            .map(|value| {
+                value
+                    .strip_prefix('"')
+                    .and_then(|value| value.strip_suffix('"'))
+                    .or_else(|| {
+                        value
+                            .strip_prefix('\'')
+                            .and_then(|value| value.strip_suffix('\''))
+                    })
+                    .unwrap_or(value)
+            });
+        if context
+            .pointer("/inventory/paths/executable/sha256")
+            .and_then(serde_json::Value::as_str)
+            != Some(executable_sha256)
+            || context
+                .pointer("/inventory/paths/settings/sha256")
+                .and_then(serde_json::Value::as_str)
+                != Some(settings_file_sha256)
+            || context_language != Some(localisation_language)
+        {
+            return Err(
+                "G2 capture context differs from launch executable/settings/language".into(),
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct G2UiBoundaryWitness {
+    active_backbuffer_resource: String,
+    pixel_shader_pointer: String,
+    vertex_shader_pointer: String,
+    both_shaders_from_current_swapchain_creation_cache: bool,
+    first_ui_draw_call: String,
+    first_ui_draw_count: u32,
+    first_ui_draw_executed: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct G2EngineWitness {
+    schema: String,
+    status: String,
+    observation_id: String,
+    render_boundary: String,
+    pixel_format: String,
+    authority_exe_sha256: String,
+    launch_epoch_sha256: String,
+    capture_receipt_sha256: String,
+    effective_vfs_manifest_sha256: String,
+    content_manifest_digest_sha256: String,
+    settings_file_sha256: String,
+    localisation_language: String,
+    camera_payload_sha256: String,
+    pov_country_or_global: String,
+    selected_hour: i64,
+    selected_present_sequence: u32,
+    viewport_width: u32,
+    viewport_height: u32,
+    source_dxgi_format: u32,
+    source_sample_count: u32,
+    engine_bmp_file: String,
+    engine_bmp_sha256: String,
+    engine_bgra_sha256: String,
+    pixel_byte_len: usize,
+    capture_context_sha256: String,
+    ui_boundary_authentication: G2UiBoundaryWitness,
+    unreceipted_pixel_writers: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct G2CaptureArtifactSeal {
+    pub observation_id: String,
+    pub capture_context_sha256: String,
+    pub witness_sha256: String,
+    pub witness_bytes: u64,
+    pub bmp_sha256: String,
+    pub bmp_bytes: u64,
+    pub capture_content_manifest_digest_sha256: String,
+}
+
+fn valid_g2_pointer(value: &str) -> bool {
+    let Some(digits) = value.strip_prefix("0x") else {
+        return false;
+    };
+    !digits.is_empty()
+        && digits != "0"
+        && digits
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte))
+}
+
+/// Fail-closed recorder-side admission for the collector-authored raw G2
+/// observation. A requested witness is part of the production capture result;
+/// absence, additional files, identity drift, or malformed BMP bytes aborts
+/// finalization rather than being treated as an optional sidecar.
+pub fn validate_g2_capture_artifacts(
+    intent: &G2CaptureIntent,
+    output_directory: &Path,
+    manifest: &EarlyRenderLaunchManifest,
+    receipt: &EarlyRenderCaptureReceipt,
+    content_manifest_digest_sha256: &str,
+) -> Result<(), String> {
+    intent.validate_unchanged()?;
+    manifest.validate()?;
+    receipt.validate()?;
+    require_sha256(
+        content_manifest_digest_sha256,
+        "G2 content manifest digest",
+    )?;
+    intent.validate_context_authority(
+        &manifest.executable_sha256,
+        &intent.settings_file_sha256,
+        &intent.localisation_language,
+    )?;
+    let mut names = fs::read_dir(output_directory)
+        .map_err(|error| format!("read G2 output directory failed: {error}"))?
+        .map(|entry| {
+            let entry = entry.map_err(|error| format!("read G2 output entry failed: {error}"))?;
+            if !entry
+                .file_type()
+                .map_err(|error| format!("read G2 output entry type failed: {error}"))?
+                .is_file()
+            {
+                return Err("G2 output contains a non-file entry".to_string());
+            }
+            entry
+                .file_name()
+                .into_string()
+                .map_err(|_| "G2 output has a non-Unicode file name".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    names.sort();
+    if names
+        != vec![
+            G2_ENGINE_BMP_FILE.to_string(),
+            G2_ENGINE_WITNESS_FILE.to_string(),
+        ]
+    {
+        return Err("G2 output does not contain exactly the BMP and raw witness".into());
+    }
+    let bmp = fs::read(output_directory.join(G2_ENGINE_BMP_FILE))
+        .map_err(|error| format!("read G2 BMP failed: {error}"))?;
+    let witness_bytes = fs::read(output_directory.join(G2_ENGINE_WITNESS_FILE))
+        .map_err(|error| format!("read G2 witness failed: {error}"))?;
+    let witness_value = snapshot::parse_json_strict(&witness_bytes)
+        .map_err(|error| format!("strict parse G2 witness failed: {error}"))?;
+    let witness: G2EngineWitness = serde_json::from_value(witness_value)
+        .map_err(|error| format!("decode strict G2 witness failed: {error}"))?;
+    let receipt_sha256 = receipt.sha256()?;
+    let launch_epoch_sha256 = portable_render_stream::compute_render_launch_epoch_sha256(
+        receipt.process_id,
+        receipt.process_start_nonce,
+        receipt.hook_ready_qpc,
+        receipt.first_game_d3d_creation_qpc,
+        receipt.first_creation_sequence,
+        receipt.hook_epoch_nonce,
+        &receipt.hook_set_sha256,
+        &receipt_sha256,
+    );
+    if witness.schema != G2_ENGINE_WITNESS_SCHEMA
+        || witness.status != G2_ENGINE_STATUS
+        || witness.observation_id != intent.observation_id
+        || witness.render_boundary != G2_RENDER_BOUNDARY
+        || witness.pixel_format != "BGRA8_UNORM"
+        || witness.authority_exe_sha256 != manifest.executable_sha256
+        || witness.launch_epoch_sha256 != launch_epoch_sha256
+        || witness.capture_receipt_sha256 != receipt_sha256
+        || witness.effective_vfs_manifest_sha256 != manifest.effective_vfs_manifest_sha256
+        || witness.content_manifest_digest_sha256 != content_manifest_digest_sha256
+        || witness.settings_file_sha256 != intent.settings_file_sha256
+        || witness.localisation_language != intent.localisation_language
+        || witness.camera_payload_sha256 != intent.camera_payload_sha256
+        || witness.pov_country_or_global != intent.pov_country_or_global
+        || witness.selected_hour != intent.expected_selected_hour
+        || witness.selected_present_sequence == 0
+        || witness.viewport_width == 0
+        || witness.viewport_height == 0
+        || !matches!(witness.source_dxgi_format, 28 | 29 | 87 | 91)
+        || witness.source_sample_count != 1
+        || witness.engine_bmp_file != G2_ENGINE_BMP_FILE
+        || witness.capture_context_sha256 != intent.capture_context_sha256
+        || witness.unreceipted_pixel_writers != 0
+    {
+        return Err("G2 witness differs from recorder-owned launch/capture authority".into());
+    }
+    let boundary = &witness.ui_boundary_authentication;
+    if !boundary.both_shaders_from_current_swapchain_creation_cache
+        || boundary.first_ui_draw_executed
+        || boundary.first_ui_draw_count == 0
+        || !matches!(
+            boundary.first_ui_draw_call.as_str(),
+            "Draw" | "DrawIndexed" | "DrawInstanced" | "DrawIndexedInstanced"
+        )
+        || !valid_g2_pointer(&boundary.active_backbuffer_resource)
+        || !valid_g2_pointer(&boundary.pixel_shader_pointer)
+        || !valid_g2_pointer(&boundary.vertex_shader_pointer)
+    {
+        return Err("G2 witness has invalid pre-first-UI boundary authentication".into());
+    }
+    if bmp.len() < 54
+        || &bmp[..2] != b"BM"
+        || u32::from_le_bytes(bmp[2..6].try_into().unwrap()) as usize != bmp.len()
+        || &bmp[6..10] != [0u8; 4].as_slice()
+        || u32::from_le_bytes(bmp[10..14].try_into().unwrap()) != 54
+        || u32::from_le_bytes(bmp[14..18].try_into().unwrap()) != 40
+        || u16::from_le_bytes(bmp[26..28].try_into().unwrap()) != 1
+        || u16::from_le_bytes(bmp[28..30].try_into().unwrap()) != 32
+        || u32::from_le_bytes(bmp[30..34].try_into().unwrap()) != 0
+        || &bmp[38..54] != [0u8; 16].as_slice()
+    {
+        return Err("G2 BMP header is not exact top-down BGRA32".into());
+    }
+    let width = i32::from_le_bytes(bmp[18..22].try_into().unwrap());
+    let signed_height = i32::from_le_bytes(bmp[22..26].try_into().unwrap());
+    if width <= 0
+        || signed_height >= 0
+        || width as u32 != witness.viewport_width
+        || signed_height.unsigned_abs() != witness.viewport_height
+    {
+        return Err("G2 BMP dimensions differ from the witness".into());
+    }
+    let pixels = &bmp[54..];
+    let expected_pixels = usize::try_from(witness.viewport_width)
+        .ok()
+        .and_then(|width| width.checked_mul(witness.viewport_height as usize))
+        .and_then(|count| count.checked_mul(4))
+        .ok_or("G2 witness pixel dimensions overflowed")?;
+    if pixels.len() != expected_pixels
+        || witness.pixel_byte_len != expected_pixels
+        || u32::try_from(expected_pixels).ok()
+            != Some(u32::from_le_bytes(bmp[34..38].try_into().unwrap()))
+        || witness.engine_bmp_sha256 != to_hex(&Sha256::digest(&bmp))
+        || witness.engine_bgra_sha256 != to_hex(&Sha256::digest(pixels))
+    {
+        return Err("G2 BMP bytes/digests differ from the witness".into());
+    }
+    Ok(())
+}
+
+/// Seal the exact already-admitted files for replay packaging. The second read
+/// closes the validation-to-pack mutation window; the packer later requires
+/// these hashes and lengths again before it copies either payload.
+pub fn seal_g2_capture_artifacts(
+    intent: &G2CaptureIntent,
+    output_directory: &Path,
+    manifest: &EarlyRenderLaunchManifest,
+    receipt: &EarlyRenderCaptureReceipt,
+    content_manifest_digest_sha256: &str,
+) -> Result<G2CaptureArtifactSeal, String> {
+    validate_g2_capture_artifacts(
+        intent,
+        output_directory,
+        manifest,
+        receipt,
+        content_manifest_digest_sha256,
+    )?;
+    let witness = fs::read(output_directory.join(G2_ENGINE_WITNESS_FILE))
+        .map_err(|error| format!("re-read sealed G2 witness failed: {error}"))?;
+    let bmp = fs::read(output_directory.join(G2_ENGINE_BMP_FILE))
+        .map_err(|error| format!("re-read sealed G2 BMP failed: {error}"))?;
+    // Re-run the admission after the reads so a concurrent replacement cannot
+    // make the returned seal describe bytes other than the admitted pair.
+    validate_g2_capture_artifacts(
+        intent,
+        output_directory,
+        manifest,
+        receipt,
+        content_manifest_digest_sha256,
+    )?;
+    let witness_after = fs::read(output_directory.join(G2_ENGINE_WITNESS_FILE))
+        .map_err(|error| format!("final read of sealed G2 witness failed: {error}"))?;
+    let bmp_after = fs::read(output_directory.join(G2_ENGINE_BMP_FILE))
+        .map_err(|error| format!("final read of sealed G2 BMP failed: {error}"))?;
+    if witness != witness_after || bmp != bmp_after {
+        return Err("G2 artifacts changed while their replay seal was created".into());
+    }
+    Ok(G2CaptureArtifactSeal {
+        observation_id: intent.observation_id.clone(),
+        capture_context_sha256: intent.capture_context_sha256.clone(),
+        witness_sha256: to_hex(&Sha256::digest(&witness)),
+        witness_bytes: u64::try_from(witness.len()).map_err(|_| "G2 witness is too large")?,
+        bmp_sha256: to_hex(&Sha256::digest(&bmp)),
+        bmp_bytes: u64::try_from(bmp.len()).map_err(|_| "G2 BMP is too large")?,
+        capture_content_manifest_digest_sha256: content_manifest_digest_sha256.to_owned(),
+    })
+}
 
 pub fn staged_hook_count_for_group_mask(mask: u64) -> Result<u32, String> {
     if mask == 0
@@ -33,7 +428,7 @@ pub fn staged_hook_count_for_group_mask(mask: u64) -> Result<u32, String> {
         );
     }
     let groups = [
-        (0x01, 19u32),
+        (0x01, 23u32),
         (0x02, 2),
         (0x04, 3),
         (0x08, 8),
@@ -41,7 +436,7 @@ pub fn staged_hook_count_for_group_mask(mask: u64) -> Result<u32, String> {
         (0x20, 7),
         (0x40, 2),
         (0x80, 3),
-        (0x100, 2),
+        (0x100, 7),
         (0x200, 3),
     ];
     Ok(groups
@@ -438,6 +833,11 @@ pub struct EarlyRenderLaunchSpec {
     /// Diagnostic-only subset of the authenticated staged hook set. `None`
     /// preserves the immutable production hook set and child environment.
     pub diagnostic_staged_hook_mask: Option<u64>,
+    /// Optional recorder-owned G2 observation. The existing collector remains
+    /// the sole D3D hook owner; no auxiliary capture DLL is injected.
+    pub g2_capture_intent: Option<G2CaptureIntent>,
+    pub g2_output_directory: Option<PathBuf>,
+    pub g2_content_manifest_digest_sha256: Option<String>,
 }
 
 impl EarlyRenderLaunchSpec {
@@ -448,6 +848,27 @@ impl EarlyRenderLaunchSpec {
         }
         if let Some(mask) = self.diagnostic_staged_hook_mask {
             staged_hook_count_for_group_mask(mask)?;
+        }
+        match (
+            &self.g2_capture_intent,
+            &self.g2_output_directory,
+            &self.g2_content_manifest_digest_sha256,
+        ) {
+            (None, None, None) => {}
+            (Some(intent), Some(output), Some(content_digest)) => {
+                if self.diagnostic_staged_hook_mask.is_some() {
+                    return Err("G2 capture is unavailable in diagnostic no-COMMIT launch".into());
+                }
+                intent.validate_unchanged()?;
+                require_sha256(content_digest, "G2 content manifest digest")?;
+                if !output.is_absolute() {
+                    return Err("G2 output directory is not absolute".into());
+                }
+                if output.exists() {
+                    return Err("G2 output directory already exists; refusing overwrite".into());
+                }
+            }
+            _ => return Err("G2 capture intent/output/content binding is incomplete".into()),
         }
         let executable = canonical_file(&self.executable_path, "game executable")?;
         let collector = canonical_file(&self.collector_path, "collector DLL")?;
@@ -1158,6 +1579,14 @@ pub trait EarlyHookReadyChannel {
         proof: &EarlyDiagnosticLivenessProof,
     ) -> Result<(), String>;
 
+    /// Arms the sole existing collector D3D hook owner for one exact G2
+    /// witness. This message is sent immediately before COMMIT and is bound to
+    /// the same receipt digest; an auxiliary hook DLL is never involved.
+    fn arm_g2_capture(
+        &mut self,
+        arm: &compact_contract::early_render_control::EarlyG2CaptureArmV1,
+    ) -> Result<(), String>;
+
     /// Commits the final host-sealed receipt digest back to the collector.
     /// Buffered d77/d80 rows may be released only after this succeeds, and
     /// every row must carry this exact digest in its launch epoch.
@@ -1179,6 +1608,23 @@ fn require_sha256(value: &str, label: &str) -> Result<(), String> {
         return Err(format!("{label} SHA-256 is not canonical lowercase hex"));
     }
     Ok(())
+}
+
+fn decode_sha256(value: &str, label: &str) -> Result<[u8; 32], String> {
+    require_sha256(value, label)?;
+    let mut out = [0u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let digit = |byte: u8| match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            _ => None,
+        };
+        out[index] = digit(pair[0])
+            .zip(digit(pair[1]))
+            .map(|(high, low)| (high << 4) | low)
+            .ok_or_else(|| format!("{label} SHA-256 is not canonical lowercase hex"))?;
+    }
+    Ok(out)
 }
 
 fn canonical_file(path: &Path, label: &str) -> Result<PathBuf, String> {
@@ -1911,11 +2357,85 @@ mod windows {
             receipt.transcript_sha256 = receipt.expected_transcript_sha256()?;
             receipt.validate()?;
             if spec.diagnostic_staged_hook_mask.is_none() {
+                let receipt_sha256 = receipt.sha256()?;
+                if let (Some(intent), Some(output_directory), Some(content_digest)) = (
+                    spec.g2_capture_intent.as_ref(),
+                    spec.g2_output_directory.as_ref(),
+                    spec.g2_content_manifest_digest_sha256.as_ref(),
+                ) {
+                    intent.validate_unchanged()?;
+                    let launch_epoch_sha256 =
+                        portable_render_stream::compute_render_launch_epoch_sha256(
+                            receipt.process_id,
+                            receipt.process_start_nonce,
+                            receipt.hook_ready_qpc,
+                            receipt.first_game_d3d_creation_qpc,
+                            receipt.first_creation_sequence,
+                            receipt.hook_epoch_nonce,
+                            &receipt.hook_set_sha256,
+                            &receipt_sha256,
+                        );
+                    let arm = compact_contract::early_render_control::EarlyG2CaptureArmV1 {
+                        process_id: receipt.process_id,
+                        process_start_nonce: receipt.process_start_nonce,
+                        hook_epoch_nonce: receipt.hook_epoch_nonce,
+                        launch_manifest_sha256: decode_sha256(
+                            &receipt.launch_manifest_sha256,
+                            "G2 launch manifest",
+                        )?,
+                        launch_epoch_sha256: decode_sha256(
+                            &launch_epoch_sha256,
+                            "G2 launch epoch",
+                        )?,
+                        capture_receipt_sha256: decode_sha256(
+                            &receipt_sha256,
+                            "G2 capture receipt",
+                        )?,
+                        authority_exe_sha256: decode_sha256(
+                            &receipt.executable_sha256,
+                            "G2 authority executable",
+                        )?,
+                        effective_vfs_manifest_sha256: decode_sha256(
+                            &receipt.effective_vfs_manifest_sha256,
+                            "G2 effective VFS manifest",
+                        )?,
+                        content_manifest_digest_sha256: decode_sha256(
+                            content_digest,
+                            "G2 content manifest digest",
+                        )?,
+                        settings_file_sha256: decode_sha256(
+                            &intent.settings_file_sha256,
+                            "G2 settings file",
+                        )?,
+                        camera_payload_sha256: decode_sha256(
+                            &intent.camera_payload_sha256,
+                            "G2 camera payload",
+                        )?,
+                        capture_context_sha256: decode_sha256(
+                            &intent.capture_context_sha256,
+                            "G2 capture context",
+                        )?,
+                        expected_selected_hour: intent.expected_selected_hour,
+                        observation_id: intent.observation_id.clone(),
+                        localisation_language: intent.localisation_language.clone(),
+                        pov_country_or_global: intent.pov_country_or_global.clone(),
+                        capture_context_path: intent
+                            .capture_context_path
+                            .to_str()
+                            .ok_or("G2 capture context path is not Unicode")?
+                            .to_owned(),
+                        output_directory: output_directory
+                            .to_str()
+                            .ok_or("G2 output directory is not Unicode")?
+                            .to_owned(),
+                    };
+                    ready.arm_g2_capture(&arm)?;
+                }
                 ready.commit_capture_receipt(
                     self.process_id,
                     self.process_start_nonce,
                     hook.hook_epoch_nonce,
-                    &receipt.sha256()?,
+                    &receipt_sha256,
                 )?;
             }
 
@@ -3027,14 +3547,14 @@ mod tests {
 
     #[test]
     fn diagnostic_stage_masks_have_exact_authenticated_hook_counts() {
-        assert_eq!(staged_hook_count_for_group_mask(0x01).unwrap(), 19);
-        assert_eq!(staged_hook_count_for_group_mask(0x03).unwrap(), 21);
-        assert_eq!(staged_hook_count_for_group_mask(0x1ff).unwrap(), 54);
-        assert_eq!(staged_hook_count_for_group_mask(0x3ff).unwrap(), 57);
+        assert_eq!(staged_hook_count_for_group_mask(0x01).unwrap(), 23);
+        assert_eq!(staged_hook_count_for_group_mask(0x03).unwrap(), 25);
+        assert_eq!(staged_hook_count_for_group_mask(0x1ff).unwrap(), 63);
+        assert_eq!(staged_hook_count_for_group_mask(0x3ff).unwrap(), 66);
         assert!(staged_hook_count_for_group_mask(0).is_err());
         assert!(staged_hook_count_for_group_mask(0x02).is_err());
-        assert_eq!(staged_hook_count_for_group_mask(0x101).unwrap(), 21);
-        assert_eq!(staged_hook_count_for_group_mask(0x201).unwrap(), 22);
+        assert_eq!(staged_hook_count_for_group_mask(0x101).unwrap(), 30);
+        assert_eq!(staged_hook_count_for_group_mask(0x201).unwrap(), 26);
     }
 
     #[test]
@@ -3066,13 +3586,151 @@ mod tests {
 
         let mut diagnostic = production;
         diagnostic.diagnostic_staged_hook_mask = Some(0x01);
-        diagnostic.staged_hook_count = 19;
+        diagnostic.staged_hook_count = 23;
         diagnostic.transcript_sha256 = diagnostic.expected_transcript_sha256().unwrap();
         diagnostic.validate().unwrap();
         assert_eq!(
             serde_json::to_value(&diagnostic).unwrap()["diagnostic_staged_hook_mask"],
             1
         );
+    }
+
+    #[test]
+    fn recorder_g2_artifact_admission_recomputes_authority_and_bmp_bytes() {
+        let root = temp_root("g2_artifacts");
+        let output = root.join("g2_engine");
+        fs::create_dir_all(&output).unwrap();
+        let context_path = root.join("capture_context.json");
+        let context = serde_json::json!({
+            "schema": "hoi4-rendering-law-capture-context-v1",
+            "packets": ["G2"],
+            "inventory": {
+                "active_hoi4_pids": [],
+                "paths": {
+                    "executable": {"sha256": sha(1)},
+                    "settings": {"sha256": sha(6)}
+                },
+                "settings": {"language": "l_english"}
+            }
+        });
+        let context_bytes = serde_json::to_vec(&context).unwrap();
+        fs::write(&context_path, &context_bytes).unwrap();
+        let intent = G2CaptureIntent {
+            observation_id: "g2-test".into(),
+            settings_file_sha256: sha(6),
+            localisation_language: "l_english".into(),
+            camera_payload_sha256: sha(13),
+            pov_country_or_global: "global".into(),
+            expected_selected_hour: 123,
+            capture_context_path: context_path,
+            capture_context_sha256: hash(&context_bytes),
+        };
+        let manifest = EarlyRenderLaunchManifest::from_bound_launch(
+            &launch(sha(1)),
+            &ordered_layers(),
+            &BTreeMap::from([("base".into(), sha(10))]),
+            requested_profile_selection(),
+            sha(2),
+            sha(9),
+            Vec::new(),
+        )
+        .unwrap();
+        let receipt = receipt(&manifest);
+        let receipt_sha256 = receipt.sha256().unwrap();
+        let launch_epoch_sha256 = portable_render_stream::compute_render_launch_epoch_sha256(
+            receipt.process_id,
+            receipt.process_start_nonce,
+            receipt.hook_ready_qpc,
+            receipt.first_game_d3d_creation_qpc,
+            receipt.first_creation_sequence,
+            receipt.hook_epoch_nonce,
+            &receipt.hook_set_sha256,
+            &receipt_sha256,
+        );
+        let pixels = [1u8, 2, 3, 4];
+        let mut bmp = Vec::new();
+        bmp.extend_from_slice(b"BM");
+        bmp.extend_from_slice(&58u32.to_le_bytes());
+        bmp.extend_from_slice(&[0; 4]);
+        bmp.extend_from_slice(&54u32.to_le_bytes());
+        bmp.extend_from_slice(&40u32.to_le_bytes());
+        bmp.extend_from_slice(&1i32.to_le_bytes());
+        bmp.extend_from_slice(&(-1i32).to_le_bytes());
+        bmp.extend_from_slice(&1u16.to_le_bytes());
+        bmp.extend_from_slice(&32u16.to_le_bytes());
+        bmp.extend_from_slice(&0u32.to_le_bytes());
+        bmp.extend_from_slice(&4u32.to_le_bytes());
+        bmp.extend_from_slice(&[0; 16]);
+        bmp.extend_from_slice(&pixels);
+        fs::write(output.join(G2_ENGINE_BMP_FILE), &bmp).unwrap();
+        let content_digest = sha(14);
+        let witness = serde_json::json!({
+            "schema": G2_ENGINE_WITNESS_SCHEMA,
+            "status": G2_ENGINE_STATUS,
+            "observation_id": intent.observation_id,
+            "render_boundary": G2_RENDER_BOUNDARY,
+            "pixel_format": "BGRA8_UNORM",
+            "authority_exe_sha256": manifest.executable_sha256,
+            "launch_epoch_sha256": launch_epoch_sha256,
+            "capture_receipt_sha256": receipt_sha256,
+            "effective_vfs_manifest_sha256": manifest.effective_vfs_manifest_sha256,
+            "content_manifest_digest_sha256": content_digest,
+            "settings_file_sha256": intent.settings_file_sha256,
+            "localisation_language": intent.localisation_language,
+            "camera_payload_sha256": intent.camera_payload_sha256,
+            "pov_country_or_global": intent.pov_country_or_global,
+            "selected_hour": intent.expected_selected_hour,
+            "selected_present_sequence": 1,
+            "viewport_width": 1,
+            "viewport_height": 1,
+            "source_dxgi_format": 87,
+            "source_sample_count": 1,
+            "engine_bmp_file": G2_ENGINE_BMP_FILE,
+            "engine_bmp_sha256": hash(&bmp),
+            "engine_bgra_sha256": hash(&pixels),
+            "pixel_byte_len": pixels.len(),
+            "capture_context_sha256": intent.capture_context_sha256,
+            "ui_boundary_authentication": {
+                "active_backbuffer_resource": "0x1000",
+                "pixel_shader_pointer": "0x2000",
+                "vertex_shader_pointer": "0x3000",
+                "both_shaders_from_current_swapchain_creation_cache": true,
+                "first_ui_draw_call": "DrawIndexed",
+                "first_ui_draw_count": 3,
+                "first_ui_draw_executed": false
+            },
+            "unreceipted_pixel_writers": 0
+        });
+        fs::write(
+            output.join(G2_ENGINE_WITNESS_FILE),
+            serde_json::to_vec_pretty(&witness).unwrap(),
+        )
+        .unwrap();
+        validate_g2_capture_artifacts(
+            &intent,
+            &output,
+            &manifest,
+            &receipt,
+            &content_digest,
+        )
+        .unwrap();
+
+        let mut drift = witness;
+        drift["unexpected"] = serde_json::json!(true);
+        fs::write(
+            output.join(G2_ENGINE_WITNESS_FILE),
+            serde_json::to_vec_pretty(&drift).unwrap(),
+        )
+        .unwrap();
+        assert!(validate_g2_capture_artifacts(
+            &intent,
+            &output,
+            &manifest,
+            &receipt,
+            &content_digest,
+        )
+        .is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -3106,6 +3764,9 @@ mod tests {
                 manifest: manifest.clone(),
                 hook_ready_timeout_ms: 30_000,
                 diagnostic_staged_hook_mask: None,
+                g2_capture_intent: None,
+                g2_output_directory: None,
+                g2_content_manifest_digest_sha256: None,
             }
             .validate_local_files()
             .unwrap();

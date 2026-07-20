@@ -112,7 +112,7 @@ DEFAULT_SPECS = (
         "gfx_icon_asset_manifest_static",
         HERE / "out/gfx_icon_manifest/gfx_icon_asset_manifest_static/gfx_icon_manifest_catalog.json",
         HERE / "out/gfx_icon_manifest/gfx_icon_manifest_gate_report.json",
-        "gfx_icon_asset_manifest_static.static_artifact.v1",
+        "gfx_icon_asset_manifest_static.static_artifact.v2",
         "gfx_icon_asset_manifest_static.json",
     ),
     ArtifactSpec(

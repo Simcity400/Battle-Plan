@@ -25,13 +25,13 @@ replay-side packet states in
 | A28 | Authenticated dynamic-collection visible order — remaining families (d71) | Open (equipment-grid producer proven) | XUI16, XUI17 |
 | A29 | Research ahead-of-time inputs | DATA BLOCKED extractor-side | — (XUI09 PROVEN with the delivered subset; residual is extractor-side only) |
 | A30 | Intelligence/operative UI state | DATA BLOCKED | XUI14 |
-| A31 | Focus-presentation runtime leaves | Open | — (XUI10 PROVEN with zero extractor reads; residual is extractor-side only) |
+| A31 | Focus-presentation runtime leaves | d89 producer/codec/fold/replay/UI implemented; live activation fixture pending | — (XUI10 exact admission is wired; d89 remains reserved and unscheduled) |
 | A33 | Combat detail/losses | INTEGRATION+RE+FIXTURE | XUI20 |
 | A34 | Decision-panel generic rows/costs/alerts | IN PROGRESS | XUI19 |
 | A36 | Active abilities: availability/activation/cooldown/cost/target/duration/order/tooltip/disabled-reason | DATA BLOCKED | XUI23 |
 | A37 | Power-balance runtime inputs (d74 reserved) | CONTRACT REQUIRED | XUI18 |
 | A38 | Scripted-GUI engine-materialization carrier | CONTRACT REQUIRED | XUI22 |
-| A39 | Character-presentation residuals | Open | — (board lists XUI17's upstream deps as A25/A28 only; A39 residual is extractor-side) |
+| A39 | Character-presentation residuals | Wired, activation-gated | Reserved d82 CPR1 v2 exact order/state/progress, pointer-free A25 hover-reason context join, enforced same-hour d82-before-d76 collector barrier, and final ace portrait/modifier observers; central validation and the frozen mixed live fixture remain before scheduling |
 | A40 | Designer/peace snapshots (live carrier) | Open | XUI08 |
 | XUI21-E1 | Fired-event/popup producer (d75; contract frozen in `extractor/documents/dossiers/XUI21_FIRED_EVENT_POPUP_INPUTS.json`) | RE complete; collector attach + emission not frozen | XUI21 |
 | X4-P1..P6 | Production/deployment-queue inputs | Promotion-ready | XUI12 |
@@ -47,7 +47,7 @@ gate is designer-surface activation authentication, not catalog data), A32
 
 | ID | What the extractor needs | State | Full spec |
 | --- | --- | --- | --- |
-| X-DECODER | The ownership and memory conflicts are mechanically closed without adding an extractor dependency to `replay_core`: the portable crate owns both certified in-memory and disk-backed request/result contracts plus the source receipt; `Container::spool_entry_to_writer` authenticates a file-backed role entry directly into a private spool; `ProductionCertifiedPrefoldDecoder` drives the existing file-backed single `WorldFold`; and `replay_core::open_recording_with_spooled_decoder` lazily reopens and rehashes one certified hour at a time. Source length/SHA, strict EOF, and `FRAME_END == WorldFold emissions == spilled files` cardinality are mandatory. Cleanup is identity/marker/reparse gated. The shipped `replay_app::recording_open` policy now statically supplies that bounded capability from interactive, headless, and validation entry points, exposes the receipt, and has no ordinary/raw fallback. Ordinary library `open_recording` remains fail-closed. | CLOSED implementation and activation; one centralized validation pass pending | `archive/SEAM_EXTRACTION_TO_REPLAY_2026-07-16.md` |
+| X-DECODER | The ownership and memory conflicts are mechanically closed without adding an extractor dependency to `replay_core`: the portable crate owns both certified in-memory and disk-backed request/result contracts plus the source receipt; `Container::spool_entry_to_writer` authenticates a file-backed role entry directly into a private spool; `ProductionCertifiedPrefoldDecoder` drives the existing file-backed single `WorldFold`; and `replay_core::open_recording_with_spooled_decoder` lazily reopens and rehashes one certified hour at a time. Source length/SHA, strict EOF, and `FRAME_END == WorldFold emissions == spilled files` cardinality are mandatory. Cleanup is identity/marker/reparse gated. The shipped `replay_app::recording_open` policy now statically supplies that bounded capability from interactive, headless, and validation entry points, exposes the receipt, and has no ordinary/raw fallback. Ordinary library `open_recording` remains fail-closed. | CLOSED implementation, activation, and centralized validation | `archive/SEAM_EXTRACTION_TO_REPLAY_2026-07-16.md` |
 | X-ENDEDCOMBAT | Consume `ended_combats[]` (typed reader, render ended ≠ active, key by `(combat_id, generation)`) AND fix the `_merge_two_snapshots` union defect in `replay_interface/replay/diff_engine.py` (~1756) — a confirmed zero-data-loss defect | OPEN | same file, §X-ENDEDCOMBAT |
 
 ## 3. Legacy rows pending dedup

@@ -194,6 +194,26 @@ pub enum LeaderPortraitContext {
     Navy,
 }
 
+impl LeaderPortraitContext {
+    pub fn from_exact_leader(row: &UnitLeaderExactRow) -> Result<Self> {
+        match (row.leader_kind_raw, row.leader_kind.as_str()) {
+            (0, "army") => Ok(Self::Army),
+            (1, "navy") => Ok(Self::Navy),
+            (raw, kind) => Err(invalid(format!(
+                "leader {} portrait role contradicts kind/raw {kind:?}/{raw}",
+                row.unit_leader_id
+            ))),
+        }
+    }
+
+    pub const fn role_token(self) -> &'static str {
+        match self {
+            Self::Army => "army",
+            Self::Navy => "navy",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct PortraitChoices(BTreeMap<String, BTreeSet<String>>);
 
@@ -272,6 +292,43 @@ impl CharacterPortraitCatalog {
         };
         let sprite = sprites.get(gfx)?;
         Some((gfx.to_string(), sprite.primary_texture()?.to_string()))
+    }
+
+    /// Resolve the exact portrait role from d47's authenticated leader kind.
+    /// This removes the need to recapture a leader portrait when the effective
+    /// character declaration is unambiguous and its sprite resolves to a
+    /// physical texture. Missing/ambiguous declarations remain unavailable.
+    pub fn resolve_exact_unit_leader(
+        &self,
+        row: &UnitLeaderExactRow,
+        character_token: &str,
+        sprites: &SpriteRegistry,
+    ) -> Result<Option<(String, String)>> {
+        if character_token.trim().is_empty() {
+            return Err(invalid(format!(
+                "leader {} has an empty exact character token",
+                row.unit_leader_id
+            )));
+        }
+        let role = LeaderPortraitContext::from_exact_leader(row)?;
+        let Some(keys) = self
+            .by_token
+            .get(character_token)
+            .and_then(|choices| choices.0.get(role.role_token()))
+        else {
+            return Ok(None);
+        };
+        if keys.len() != 1 {
+            return Ok(None);
+        }
+        let gfx = keys.iter().next().expect("one exact portrait role key");
+        let Some(sprite) = sprites.get(gfx) else {
+            return Ok(None);
+        };
+        let Some(texture) = sprite.primary_texture() else {
+            return Ok(None);
+        };
+        Ok(Some((gfx.clone(), texture.to_string())))
     }
 }
 
@@ -417,10 +474,17 @@ pub enum TraitNodeState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TraitNodePresentation {
+    /// Exact CUnitLeaderTraitTree controller offset (`0x120` or `0x130`).
+    /// Nodes from the two materialized trees are never flattened by token.
+    pub tree_root_offset: u16,
     pub trait_token: String,
     pub state: TraitNodeState,
-    /// `None` is explicit producer unavailability and must not render as zero.
+    /// Exact selected-leader trait-XP numerator. `Some(0)` includes sparse
+    /// vector absence for kinds 2/3; `None` means progress is not applicable.
     pub progress_raw: Option<i64>,
+    /// Pointer-free A25 identity. The replay app resolves this exact row into
+    /// `reason`; callers cannot supply authoritative fallback reason text.
+    pub reason_context_id: Option<String>,
     pub reason: String,
 }
 
@@ -441,7 +505,8 @@ pub struct AcePresentationInput {
     pub visible_ordinal: usize,
     pub display_name: String,
     pub portrait_gfx: String,
-    pub modifier_rows: Vec<String>,
+    /// One exact final newline-capable engine string. Empty is measured empty.
+    pub modifier_text: String,
     pub wing_display_name: Option<String>,
     pub wing_equipment_sprite: Option<String>,
 }
@@ -458,11 +523,72 @@ pub struct AdmittedCharacterUi {
     pub aces: Vec<AcePresentationInput>,
 }
 
+/// Overlay every unambiguous effective-game-file leader portrait onto the
+/// runtime input using the exact d47 token and army/navy role. A missing or
+/// ambiguous static declaration is left untouched for a separately captured
+/// presentation producer; a contradictory identity is rejected.
+pub fn apply_exact_static_leader_portraits(
+    roster: &CharacterRosterExactView,
+    portraits: &CharacterPortraitCatalog,
+    sprites: &SpriteRegistry,
+    input: &CharacterPresentationInput,
+) -> Result<CharacterPresentationInput> {
+    if roster.status != ViewStatus::Present {
+        return Err(invalid("character roster is not Present"));
+    }
+    let mut output = input.clone();
+    let input_index: BTreeMap<u64, usize> = output
+        .leaders
+        .iter()
+        .enumerate()
+        .map(|(index, row)| (row.unit_leader_id, index))
+        .collect();
+    if input_index.len() != output.leaders.len() {
+        return Err(invalid("presentation input contains duplicate leader identity"));
+    }
+    let mut roster_ids = BTreeSet::new();
+    let character_tokens: BTreeMap<u64, &str> = roster
+        .characters
+        .iter()
+        .map(|row| (row.char_id, row.token.as_str()))
+        .collect();
+    if character_tokens.len() != roster.characters.len() {
+        return Err(invalid("exact roster contains duplicate character identity"));
+    }
+    for row in &roster.unit_leaders {
+        if !roster_ids.insert(row.unit_leader_id) {
+            return Err(invalid("exact roster contains duplicate leader identity"));
+        }
+        let Some(&index) = input_index.get(&row.unit_leader_id) else {
+            return Err(invalid(format!(
+                "exact roster leader {} has no presentation input",
+                row.unit_leader_id
+            )));
+        };
+        let character_token = character_tokens.get(&row.char_id).ok_or_else(|| {
+            invalid(format!(
+                "exact roster leader {} has no character token join",
+                row.unit_leader_id
+            ))
+        })?;
+        if let Some((portrait_gfx, _texture)) =
+            portraits.resolve_exact_unit_leader(row, character_token, sprites)?
+        {
+            output.leaders[index].portrait_gfx = portrait_gfx;
+        }
+    }
+    if roster_ids.len() != output.leaders.len() {
+        return Err(invalid("leader membership is not bijective"));
+    }
+    Ok(output)
+}
+
 /// Overlay the authenticated A39 leaves onto the remaining presentation
 /// inputs. This function never manufactures nodes or text: a d82 observation
-/// must join an already named trait node by `(owner, leader, trait_token)`.
-/// D82 progress availability replaces the caller value as well, so a missing
-/// producer remains `None` instead of inheriting an unproved zero.
+/// must join an already named trait node by
+/// `(owner, leader, tree_root_offset, trait_token)`.
+/// D82 progress replaces the caller value as well: kinds 2/3 preserve exact
+/// sparse-vector zero, while non-progress definition kinds remain `None`.
 pub fn apply_exact_a39_observations(
     owner_tag_db_id: u32,
     exact: &CharacterPresentationExactView,
@@ -489,6 +615,7 @@ pub fn apply_exact_a39_observations(
         return Err(invalid("presentation input contains duplicate leader identity"));
     }
     let mut observed_nodes = BTreeSet::new();
+    let mut ordered_nodes_by_leader = BTreeMap::<u64, Vec<TraitNodePresentation>>::new();
     for tree in presentation
         .trait_trees
         .iter()
@@ -500,31 +627,54 @@ pub fn apply_exact_a39_observations(
                 tree.unit_leader_id
             )));
         };
-        let leader = &mut output.leaders[leader_index];
+        let leader = &output.leaders[leader_index];
         for node in &tree.nodes {
-            if !observed_nodes.insert((tree.unit_leader_id, node.trait_token.as_str())) {
+            if !observed_nodes.insert((
+                tree.unit_leader_id,
+                tree.tree_root_offset,
+                node.trait_token.as_str(),
+            )) {
                 return Err(invalid(format!(
-                    "d82 repeated trait node {} for leader {} across tree roots",
-                    node.trait_token, tree.unit_leader_id
+                    "d82 repeated trait node {} in root {:#x} for leader {}",
+                    node.trait_token, tree.tree_root_offset, tree.unit_leader_id
                 )));
             }
             let target = leader
                 .trait_nodes
-                .iter_mut()
-                .find(|candidate| candidate.trait_token == node.trait_token)
+                .iter()
+                .find(|candidate| {
+                    candidate.tree_root_offset == tree.tree_root_offset
+                        && candidate.trait_token == node.trait_token
+                })
                 .ok_or_else(|| {
                     invalid(format!(
-                        "d82 trait node {} has no named presentation input for leader {}",
-                        node.trait_token, tree.unit_leader_id
+                        "d82 trait node {} in root {:#x} has no named presentation input for leader {}",
+                        node.trait_token, tree.tree_root_offset, tree.unit_leader_id
                     ))
                 })?;
+            let mut target = target.clone();
             target.state = match node.state {
                 CharacterTraitNodeState::Blocked => TraitNodeState::Blocked,
                 CharacterTraitNodeState::Pickable => TraitNodeState::Pickable,
                 CharacterTraitNodeState::Picked => TraitNodeState::Picked,
             };
             target.progress_raw = node.progress_raw;
+            target.reason_context_id = node.reason_context_id.clone();
+            target.reason.clear();
+            ordered_nodes_by_leader
+                .entry(tree.unit_leader_id)
+                .or_default()
+                .push(target);
         }
+    }
+    for (unit_leader_id, ordered_nodes) in ordered_nodes_by_leader {
+        let index = leader_index[&unit_leader_id];
+        if ordered_nodes.len() != output.leaders[index].trait_nodes.len() {
+            return Err(invalid(format!(
+                "d82 trait membership for leader {unit_leader_id} is not bijective"
+            )));
+        }
+        output.leaders[index].trait_nodes = ordered_nodes;
     }
 
     let owner_aces = presentation
@@ -551,6 +701,7 @@ pub fn apply_exact_a39_observations(
         output.aces[index].visible_ordinal = usize::try_from(ace.visible_ordinal)
             .map_err(|_| invalid("d82 ace visible ordinal does not fit this platform"))?;
         output.aces[index].portrait_gfx = ace.portrait_gfx.clone();
+        output.aces[index].modifier_text = ace.modifier_text.clone();
     }
     Ok(output)
 }
@@ -615,10 +766,16 @@ pub fn admit_character_ui(
         let mut node_ids = BTreeSet::new();
         for node in &row.trait_nodes {
             nonempty(&node.trait_token, "trait node token")?;
-            if !node_ids.insert(node.trait_token.as_str()) {
+            if !matches!(node.tree_root_offset, 0x120 | 0x130) {
                 return Err(invalid(format!(
-                    "duplicate trait node {}",
-                    node.trait_token
+                    "trait node {} has invalid tree root {:#x}",
+                    node.trait_token, node.tree_root_offset
+                )));
+            }
+            if !node_ids.insert((node.tree_root_offset, node.trait_token.as_str())) {
+                return Err(invalid(format!(
+                    "duplicate trait node {} in root {:#x}",
+                    node.trait_token, node.tree_root_offset
                 )));
             }
         }
@@ -655,6 +812,7 @@ pub fn admit_character_ui(
         return Err(invalid("ace membership is not bijective"));
     }
     let mut seen_aces = BTreeSet::new();
+    let mut total_modifier_text_bytes = 0usize;
     for row in &input.aces {
         if !seen_aces.insert(row.ace_id) || !live_aces.contains_key(&row.ace_id) {
             return Err(invalid(format!(
@@ -664,6 +822,17 @@ pub fn admit_character_ui(
         }
         nonempty(&row.display_name, "ace display_name")?;
         nonempty(&row.portrait_gfx, "ace portrait_gfx")?;
+        total_modifier_text_bytes = total_modifier_text_bytes
+            .checked_add(row.modifier_text.len())
+            .ok_or_else(|| invalid("ace modifier_text byte total overflowed"))?;
+        if row.modifier_text.len() > (1 << 20)
+            || total_modifier_text_bytes > (64 << 20)
+        {
+            return Err(invalid(format!(
+                "ace {} modifier_text exceeds its exact carrier bounds",
+                row.ace_id
+            )));
+        }
         let live = live_aces[&row.ace_id];
         match (
             live.wing_id,
@@ -721,7 +890,7 @@ pub fn required_character_presentation_inputs(
             "ace_visible_ordinal",
             "ace_display_name",
             "ace_portrait_gfx",
-            "ace_modifier_rows",
+            "ace_modifier_text",
             "ace_wing_display_name_and_equipment_sprite",
         ]);
     }
@@ -732,14 +901,20 @@ pub fn required_character_presentation_inputs(
 mod tests {
     use super::*;
     use replay_core::{
-        AceExactRow, UnitLeaderAssignmentExact, UnitLeaderAssignmentKind, UnitLeaderExactRow,
+        AceExactRow, CharacterIdentityExactRow, UnitLeaderAssignmentExact,
+        UnitLeaderAssignmentKind, UnitLeaderExactRow,
     };
 
     fn roster() -> CharacterRosterExactView {
         CharacterRosterExactView {
             status: ViewStatus::Present,
             command_assignments_complete: true,
-            characters: Vec::new(),
+            characters: vec![CharacterIdentityExactRow {
+                producer_ordinal: 0,
+                char_id: 2,
+                name: "Test".into(),
+                token: "GER_test".into(),
+            }],
             country_leader_roles: Vec::new(),
             active_rulers: Vec::new(),
             unit_leaders: vec![UnitLeaderExactRow {
@@ -796,9 +971,11 @@ mod tests {
                 assignment_name: Some("2. Armee".into()),
                 portrait_gfx: "GFX_portrait".into(),
                 trait_nodes: vec![TraitNodePresentation {
+                    tree_root_offset: 0x120,
                     trait_token: "panzer_leader".into(),
                     state: TraitNodeState::Picked,
                     progress_raw: Some(0),
+                    reason_context_id: None,
                     reason: String::new(),
                 }],
             }],
@@ -807,7 +984,7 @@ mod tests {
                 visible_ordinal: 0,
                 display_name: "A 'C' B".into(),
                 portrait_gfx: "GFX_ace".into(),
-                modifier_rows: vec!["+10% agility".into()],
+                modifier_text: "+10% agility".into(),
                 wing_display_name: Some("JG 1".into()),
                 wing_equipment_sprite: Some("GFX_fighter".into()),
             }],
@@ -832,12 +1009,20 @@ mod tests {
     }
 
     #[test]
-    fn a39_exact_overlay_replaces_trait_state_and_owner_qualified_ace_portrait() {
+    fn a39_exact_overlay_replaces_trait_state_and_owner_qualified_ace_presentation() {
         let exact = replay_core::CharacterPresentationExactView {
             status: ViewStatus::Present,
             presentation: Some(replay_core::CharacterPresentationExact {
-                schema_version: 1,
+                schema_version: 2,
                 authority: "exact_a729_character_presentation".into(),
+                executable_sha256: "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad".into(),
+                trait_collection_manifest_sha256: "837c8b4db6a6cbc03fa5c950dc24c814f5156d6cf0de08f5041bfcccab7d78c9".into(),
+                trait_state_manifest_sha256: "63ca92c9e5238a0a342e24209417188b7ceeabd7f01a21c45475f58bb3e29e8c".into(),
+                trait_progress_manifest_sha256: "134d8fc1d5056e05023ebd46e33bda913ba3dde6c1f0945d423297d464dae547".into(),
+                ace_refresh_manifest_sha256: "4be836cc67b9f59d748a05a73fa4c5d9c46db357d283d25b756c7ad18fcb2674".into(),
+                ace_bind_sort_manifest_sha256: "ea545ce9457982590bd42741d1f573a7874594b7c3f836bf290ae8a276f83396".into(),
+                ace_modifier_setter_artifact_sha256: "3b49c9eb735a03fc711f7322b74a5b86ad64b25ffdbcaa73a390b64a2edfd552".into(),
+                ace_modifier_formatter_manifest_sha256: "79fd3a1e1b9eafb09566b2721260936c8430acffcf0ba408cc866c6292ac8f0b".into(),
                 elapsed_wall_ms: 1,
                 frame_hour: 2,
                 completeness_record_identity: "xui17:a729:refresh:3".into(),
@@ -852,6 +1037,7 @@ mod tests {
                         state_raw: 0,
                         state: replay_core::CharacterTraitNodeState::Blocked,
                         progress_raw: None,
+                        reason_context_id: Some("leader_traits::trait_tooltip::0".into()),
                     }],
                 }],
                 ace_portraits: vec![replay_core::CharacterAcePortraitObservation {
@@ -859,13 +1045,157 @@ mod tests {
                     ace_id: 9,
                     visible_ordinal: 0,
                     portrait_gfx: "GFX_GER_ace_m_7".into(),
+                    modifier_text: "+10% agility".into(),
                 }],
             }),
         };
         let overlaid = apply_exact_a39_observations(17, &exact, &complete_input()).unwrap();
         assert_eq!(overlaid.leaders[0].trait_nodes[0].state, TraitNodeState::Blocked);
         assert_eq!(overlaid.leaders[0].trait_nodes[0].progress_raw, None);
+        assert_eq!(
+            overlaid.leaders[0].trait_nodes[0].reason_context_id.as_deref(),
+            Some("leader_traits::trait_tooltip::0")
+        );
+        assert!(overlaid.leaders[0].trait_nodes[0].reason.is_empty());
         assert_eq!(overlaid.aces[0].portrait_gfx, "GFX_GER_ace_m_7");
+        assert_eq!(overlaid.aces[0].modifier_text, "+10% agility");
+    }
+
+    #[test]
+    fn a39_exact_overlay_replaces_static_node_order_and_rejects_extra_membership() {
+        let exact = replay_core::CharacterPresentationExactView {
+            status: ViewStatus::Present,
+            presentation: Some(replay_core::CharacterPresentationExact {
+                schema_version: 2,
+                authority: "exact_a729_character_presentation".into(),
+                executable_sha256: "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad".into(),
+                trait_collection_manifest_sha256: "837c8b4db6a6cbc03fa5c950dc24c814f5156d6cf0de08f5041bfcccab7d78c9".into(),
+                trait_state_manifest_sha256: "63ca92c9e5238a0a342e24209417188b7ceeabd7f01a21c45475f58bb3e29e8c".into(),
+                trait_progress_manifest_sha256: "134d8fc1d5056e05023ebd46e33bda913ba3dde6c1f0945d423297d464dae547".into(),
+                ace_refresh_manifest_sha256: "4be836cc67b9f59d748a05a73fa4c5d9c46db357d283d25b756c7ad18fcb2674".into(),
+                ace_bind_sort_manifest_sha256: "ea545ce9457982590bd42741d1f573a7874594b7c3f836bf290ae8a276f83396".into(),
+                ace_modifier_setter_artifact_sha256: "3b49c9eb735a03fc711f7322b74a5b86ad64b25ffdbcaa73a390b64a2edfd552".into(),
+                ace_modifier_formatter_manifest_sha256: "79fd3a1e1b9eafb09566b2721260936c8430acffcf0ba408cc866c6292ac8f0b".into(),
+                elapsed_wall_ms: 1,
+                frame_hour: 2,
+                completeness_record_identity: "xui17:a729:refresh:4".into(),
+                source_sequence: 4,
+                trait_trees: vec![replay_core::CharacterTraitTreeObservation {
+                    owner_tag_db_id: 17,
+                    unit_leader_id: 7,
+                    tree_root_offset: 0x120,
+                    nodes: vec![
+                        replay_core::CharacterTraitNodeObservation {
+                            source_ordinal: 0,
+                            trait_token: "panzer_leader".into(),
+                            state_raw: 2,
+                            state: replay_core::CharacterTraitNodeState::Picked,
+                            progress_raw: None,
+                            reason_context_id: None,
+                        },
+                        replay_core::CharacterTraitNodeObservation {
+                            source_ordinal: 1,
+                            trait_token: "armor_officer".into(),
+                            state_raw: 1,
+                            state: replay_core::CharacterTraitNodeState::Pickable,
+                            progress_raw: None,
+                            reason_context_id: None,
+                        },
+                    ],
+                }],
+                ace_portraits: vec![replay_core::CharacterAcePortraitObservation {
+                    owner_tag_db_id: 17,
+                    ace_id: 9,
+                    visible_ordinal: 0,
+                    portrait_gfx: "GFX_GER_ace_m_7".into(),
+                    modifier_text: String::new(),
+                }],
+            }),
+        };
+        let mut input = complete_input();
+        input.leaders[0].trait_nodes.insert(
+            0,
+            TraitNodePresentation {
+                tree_root_offset: 0x120,
+                trait_token: "armor_officer".into(),
+                state: TraitNodeState::Blocked,
+                progress_raw: Some(0),
+                reason_context_id: None,
+                reason: "reason".into(),
+            },
+        );
+        let overlaid = apply_exact_a39_observations(17, &exact, &input).unwrap();
+        assert_eq!(overlaid.leaders[0].trait_nodes[0].trait_token, "panzer_leader");
+        assert_eq!(overlaid.leaders[0].trait_nodes[1].trait_token, "armor_officer");
+        assert_eq!(overlaid.leaders[0].trait_nodes[1].state, TraitNodeState::Pickable);
+        assert!(overlaid.leaders[0].trait_nodes[1].reason.is_empty());
+
+        input.leaders[0].trait_nodes.push(TraitNodePresentation {
+            tree_root_offset: 0x120,
+            trait_token: "unobserved".into(),
+            state: TraitNodeState::Blocked,
+            progress_raw: None,
+            reason_context_id: None,
+            reason: String::new(),
+        });
+        assert!(apply_exact_a39_observations(17, &exact, &input).is_err());
+    }
+
+    #[test]
+    fn exact_d47_leader_kind_selects_effective_static_portrait_role() {
+        let character_doc = crate::paradox_text::parse_str(
+            r#"characters = {
+                GER_test = {
+                    portraits = {
+                        army = { large = GFX_portrait_GER_test_army }
+                        navy = { large = GFX_portrait_GER_test_navy }
+                    }
+                }
+            }"#,
+        );
+        let gfx_doc = crate::paradox_text::parse_str(
+            r#"spriteTypes = {
+                spriteType = {
+                    name = GFX_portrait_GER_test_army
+                    texturefile = "gfx/leaders/GER/test_army.dds"
+                }
+            }"#,
+        );
+        let mut portraits = CharacterPortraitCatalog::default();
+        portraits.add_document(&character_doc);
+        let mut sprites = SpriteRegistry::new();
+        sprites.add_document("interface/test.gfx", &gfx_doc);
+        let output = apply_exact_static_leader_portraits(
+            &roster(),
+            &portraits,
+            &sprites,
+            &complete_input(),
+        )
+        .unwrap();
+        assert_eq!(
+            output.leaders[0].portrait_gfx,
+            "GFX_portrait_GER_test_army"
+        );
+
+        let civilian_only = crate::paradox_text::parse_str(
+            r#"characters = {
+                GER_test = {
+                    portraits = {
+                        civilian = { large = GFX_portrait_GER_test_army }
+                    }
+                }
+            }"#,
+        );
+        let mut portraits = CharacterPortraitCatalog::default();
+        portraits.add_document(&civilian_only);
+        let unresolved = apply_exact_static_leader_portraits(
+            &roster(),
+            &portraits,
+            &sprites,
+            &complete_input(),
+        )
+        .unwrap();
+        assert_eq!(unresolved.leaders[0].portrait_gfx, "GFX_portrait");
     }
 
     #[test]

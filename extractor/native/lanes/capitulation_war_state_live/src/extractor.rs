@@ -700,6 +700,144 @@ fn read_war_row<M: CapWarMemory>(
     })
 }
 
+/// Resolve the complete current war-row set through the authenticated H-B5
+/// owner route instead of scanning the heap. The route is bounded by the live
+/// country table: for every viewer country, index its `+0xF88` relation table
+/// by every target country's CID database index, then validate the `+0x2E8`
+/// `CWarRelation*` (exact vtable, live byte) before admitting `object+0x10` as
+/// the already-established D60 row.
+///
+/// A non-null malformed root or torn read rejects the discovery. Null table
+/// entries and retired objects are measured absence. Addresses remain local to
+/// the discovery cache and never enter the compact or replay carrier.
+pub fn discover_war_rows_from_relation_roots<M: CapWarMemory>(
+    mem: &M,
+) -> Result<CapWarDiscovery, ExtractError> {
+    let roots = resolve_frame_roots(mem)?;
+    let module_base = roots.module_base;
+    let valid_tags: BTreeSet<u32> = roots
+        .countries
+        .iter()
+        .map(|country| country.tag_db_id)
+        .collect();
+    let date_vtables = war_date_vtables(module_base)?;
+    let expected_war_vtable = add_addr(
+        module_base,
+        profile::DOMAIN60_WAR_CWARRELATION_VTABLE_RVA,
+    )?;
+    let mut target_indices = Vec::with_capacity(roots.countries.len());
+    let mut unique_target_indices = BTreeSet::new();
+    for target in &roots.countries {
+        let target_index = mem.read_u32(add_addr(
+            target.country_ptr,
+            profile::DOMAIN53_COUNTRY_CID_INDEX,
+        )?)?;
+        if target_index >= profile::DOMAIN53_MAX_COUNTRY_TABLE_SLOTS
+            || !unique_target_indices.insert(target_index)
+        {
+            return Err(ExtractError::InvalidRoot(
+                "capwar_relation_target_index_invalid",
+            ));
+        }
+        target_indices.push(target_index);
+    }
+
+    let mut war_row_addrs = BTreeSet::new();
+    let mut war_pairs = BTreeSet::new();
+    let mut manager_count = 0u32;
+    let mut table_count = 0u32;
+    for viewer in &roots.countries {
+        let manager = mem.read_u64(add_addr(
+            viewer.country_ptr,
+            profile::DOMAIN60_DIPLOMACY_SUB_OBJECT,
+        )?)?;
+        if manager == 0 {
+            continue;
+        }
+        if !is_heap_ptr(manager) {
+            return Err(ExtractError::InvalidRoot(
+                "capwar_relation_manager_invalid",
+            ));
+        }
+        manager_count = manager_count.saturating_add(1);
+        let table = mem.read_u64(add_addr(
+            manager,
+            profile::DOMAIN60_WAR_RELATION_TABLE,
+        )?)?;
+        if table == 0 {
+            continue;
+        }
+        if !is_heap_ptr(table) {
+            return Err(ExtractError::InvalidRoot("capwar_relation_table_invalid"));
+        }
+        table_count = table_count.saturating_add(1);
+        for target_index in &target_indices {
+            let slot = table
+                .checked_add(u64::from(*target_index) * 8)
+                .ok_or(ExtractError::InvalidRoot(
+                    "capwar_relation_slot_overflow",
+                ))?;
+            let relation = mem.read_u64(slot)?;
+            if relation == 0 {
+                continue;
+            }
+            if !is_heap_ptr(relation) {
+                return Err(ExtractError::InvalidRoot("capwar_relation_invalid"));
+            }
+            let war_object = mem.read_u64(add_addr(
+                relation,
+                profile::DOMAIN60_WAR_RELATION_OBJECT_PTR,
+            )?)?;
+            if war_object == 0 {
+                continue;
+            }
+            if !is_heap_ptr(war_object) {
+                return Err(ExtractError::InvalidRoot(
+                    "capwar_relation_object_invalid",
+                ));
+            }
+            let retired = mem.read_bytes(
+                add_addr(war_object, profile::DOMAIN60_WAR_OBJECT_RETIRED)?,
+                1,
+            )?[0];
+            if retired != 0 {
+                continue;
+            }
+            if mem.read_u64(war_object)? != expected_war_vtable {
+                return Err(ExtractError::InvalidRoot(
+                    "capwar_relation_object_vtable_mismatch",
+                ));
+            }
+            let row_addr = add_addr(war_object, profile::DOMAIN60_WAR_OBJECT_TO_ROW)?;
+            if war_row_addrs.contains(&row_addr) {
+                continue;
+            }
+            let row = read_war_row(mem, row_addr, &date_vtables, &valid_tags)?;
+            let pair = if row.first_tag_db_id <= row.second_tag_db_id {
+                (row.first_tag_db_id, row.second_tag_db_id)
+            } else {
+                (row.second_tag_db_id, row.first_tag_db_id)
+            };
+            if !war_pairs.insert(pair) {
+                return Err(ExtractError::InvalidRoot(
+                    "capwar_relation_duplicate_war_pair",
+                ));
+            }
+            war_row_addrs.insert(row_addr);
+        }
+    }
+    if manager_count == 0 || table_count == 0 {
+        return Err(ExtractError::InvalidRoot(
+            "capwar_relation_roots_empty_implausible",
+        ));
+    }
+
+    Ok(CapWarDiscovery {
+        war_row_addrs: war_row_addrs.into_iter().collect(),
+        scan_range_count: 0,
+    })
+}
+
 /// Decode the exact H-B5 fields from an authenticated D60 row window. This is
 /// public so the d53 sidecar can reuse the same typed discriminator law once
 /// the single build-profile activation flag is promoted.
@@ -877,6 +1015,10 @@ mod tests {
                 *country_ptr + profile::DOMAIN53_OBJ_TAG_DB_ID as u64,
                 *tag_db_id,
             );
+            mem.write_u32(
+                *country_ptr + profile::DOMAIN53_COUNTRY_CID_INDEX as u64,
+                slot as u32,
+            );
         }
         setup_rtti(mem);
     }
@@ -950,6 +1092,41 @@ mod tests {
         );
         mem.write_u32(row_addr + profile::DOMAIN53_WAR_ECHO_FIRST as u64, first);
         mem.write_u32(row_addr + profile::DOMAIN53_WAR_ECHO_SECOND as u64, second);
+    }
+
+    fn setup_relation_war_root(
+        mem: &MockMemory,
+        viewer_country: u64,
+        target_index: u32,
+        relation_manager: u64,
+        relation_table: u64,
+        relation_entry: u64,
+        war_object: u64,
+    ) {
+        mem.write_u64(
+            viewer_country + profile::DOMAIN60_DIPLOMACY_SUB_OBJECT as u64,
+            relation_manager,
+        );
+        mem.write_u64(
+            relation_manager + profile::DOMAIN60_WAR_RELATION_TABLE as u64,
+            relation_table,
+        );
+        mem.write_u64(
+            relation_table + u64::from(target_index) * 8,
+            relation_entry,
+        );
+        mem.write_u64(
+            relation_entry + profile::DOMAIN60_WAR_RELATION_OBJECT_PTR as u64,
+            war_object,
+        );
+        mem.write_u64(
+            war_object,
+            MODULE_BASE + profile::DOMAIN60_WAR_CWARRELATION_VTABLE_RVA as u64,
+        );
+        mem.write(
+            war_object + profile::DOMAIN60_WAR_OBJECT_RETIRED as u64,
+            &[0],
+        );
     }
 
     fn base_mock() -> (MockMemory, u64, u64) {
@@ -1086,6 +1263,44 @@ mod tests {
         let junk =
             discover_war_rows_from_raw_hits(&mem, &junk_hits).expect("junk discovery ok-but-empty");
         assert!(junk.war_row_addrs.is_empty());
+    }
+
+    #[test]
+    fn bounded_relation_root_resolves_exact_cwarrelation_row() {
+        let (mem, ger_ptr, fra_ptr) = base_mock();
+        let manager = HEAP_BASE + 0x30_0000;
+        let table = HEAP_BASE + 0x31_0000;
+        let relation = HEAP_BASE + 0x32_0000;
+        let war_object = HEAP_BASE + 0x50_0000;
+        setup_relation_war_root(&mem, ger_ptr, 1, manager, table, relation, war_object);
+        // The second country's clean null manager is measured absence.
+        mem.write_u64(fra_ptr + profile::DOMAIN60_DIPLOMACY_SUB_OBJECT as u64, 0);
+        setup_war_row(
+            &mem,
+            war_object + profile::DOMAIN60_WAR_OBJECT_TO_ROW as u64,
+            47,
+            3,
+            real_date_raw(1939, 244, 4),
+            1110,
+            948,
+        );
+
+        let discovery =
+            discover_war_rows_from_relation_roots(&mem).expect("bounded root discovery");
+        assert_eq!(
+            discovery.war_row_addrs,
+            vec![war_object + profile::DOMAIN60_WAR_OBJECT_TO_ROW as u64]
+        );
+        assert_eq!(discovery.scan_range_count, 0);
+
+        mem.write(
+            war_object + profile::DOMAIN60_WAR_OBJECT_RETIRED as u64,
+            &[1],
+        );
+        assert!(discover_war_rows_from_relation_roots(&mem)
+            .expect("retired object is measured absence")
+            .war_row_addrs
+            .is_empty());
     }
 
     #[test]

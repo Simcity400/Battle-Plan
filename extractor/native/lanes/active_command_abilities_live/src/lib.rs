@@ -8,11 +8,25 @@ use std::collections::BTreeSet;
 
 #[cfg(windows)]
 pub mod a729_hook;
+pub mod production_carrier;
 
 pub const MAGIC: u32 = u32::from_le_bytes(*b"ABL1");
 pub const SCHEMA_VERSION: u32 = 1;
 pub const AUTHORITY_EXACT_A729_ABILITY_CONTROLLER: u32 = 0xA729_0036;
+/// Static exact20 authority permits the diagnostic observer to run. It does
+/// not, by itself, authorize a replay payload.
+pub const EXACT_A729_AUTHORITY_BOUND: bool = true;
+/// Deliberately false until the required live state-transition matrix is
+/// authenticated against the exact-a729 observer.
+pub const LIVE_TRANSITION_PROMOTION_BOUND: bool = false;
+/// Deliberately false until final tooltip and disabled-reason bytes are joined
+/// to the exact ordered ability row that produced them.
+pub const PORTABLE_TEXT_JOIN_BOUND: bool = false;
+/// Domain 88 is reserved but must remain absent from production scheduling
+/// until both live gates above are true.
+pub const COMPACT_DOMAIN_SCHEDULED: bool = false;
 pub const HEADER_LEN: usize = 40;
+pub const COMMAND_POWER_FIXED_SCALE: i64 = 100_000;
 const MAX_ROWS: usize = 4096;
 const MAX_STRING_BYTES: usize = 1 << 20;
 
@@ -107,6 +121,7 @@ pub struct AbilityFrame {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AbilityError {
+    ActivationDisabled,
     UnauthenticatedSource,
     Source(String),
     Invalid(String),
@@ -114,7 +129,11 @@ pub enum AbilityError {
     TrailingBytes,
 }
 
-pub trait ExactA729AbilityControllerSource {
+mod sealed {
+    pub trait Sealed {}
+}
+
+pub trait ExactA729AbilityControllerSource: sealed::Sealed {
     fn is_exact_a729_ability_controller(&self) -> bool;
     fn collect_frame(&self, frame_hour: u64) -> Result<AbilityFrame, String>;
 }
@@ -123,6 +142,13 @@ pub fn collect_and_encode<S: ExactA729AbilityControllerSource>(
     source: &S,
     frame_hour: u64,
 ) -> Result<Vec<u8>, AbilityError> {
+    if !EXACT_A729_AUTHORITY_BOUND
+        || !LIVE_TRANSITION_PROMOTION_BOUND
+        || !PORTABLE_TEXT_JOIN_BOUND
+        || !COMPACT_DOMAIN_SCHEDULED
+    {
+        return Err(AbilityError::ActivationDisabled);
+    }
     if !source.is_exact_a729_ability_controller() {
         return Err(AbilityError::UnauthenticatedSource);
     }
@@ -491,6 +517,7 @@ mod tests {
         assert!(validate_frame(&f).is_err());
     }
     struct Fake(bool);
+    impl sealed::Sealed for Fake {}
     impl ExactA729AbilityControllerSource for Fake {
         fn is_exact_a729_ability_controller(&self) -> bool {
             self.0
@@ -503,8 +530,11 @@ mod tests {
     fn source_authentication_is_fail_closed() {
         assert_eq!(
             collect_and_encode(&Fake(false), 900),
-            Err(AbilityError::UnauthenticatedSource)
+            Err(AbilityError::ActivationDisabled)
         );
-        assert!(collect_and_encode(&Fake(true), 900).is_ok());
+        assert_eq!(
+            collect_and_encode(&Fake(true), 900),
+            Err(AbilityError::ActivationDisabled)
+        );
     }
 }

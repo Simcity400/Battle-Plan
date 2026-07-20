@@ -1,0 +1,58 @@
+{
+  "schema": "hoi4-a20-owner-joined-project-progress-closeout-v1",
+  "date": "2026-07-20",
+  "status": "production_wired_pending_central_validation",
+  "binary_authority": {
+    "image_base": "0x140000000",
+    "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "ghidra_ready": true,
+    "shard_count": 20,
+    "mode": "read_only_no_analysis"
+  },
+  "carrier": {
+    "magic": "PPGF",
+    "version": 1,
+    "header_len": 20,
+    "row_len": 52,
+    "key": ["tag_db_id", "local_id"],
+    "fields": [
+      "static_def_handle",
+      "current_state_offset",
+      "current_state_enum",
+      "prototype_state_enum",
+      "simple_state_1_enum",
+      "simple_state_2_enum",
+      "simple_state_3_enum",
+      "prototype_iterations",
+      "phase_progress_raw",
+      "phase_target_raw",
+      "state_flags"
+    ],
+    "flags": {
+      "completed": 1,
+      "deleted": 2147483648
+    },
+    "trailer_order": ["PLCF", "PPGF", "PRHF"]
+  },
+  "production_path": [
+    "collector country-atomic state-machine read",
+    "D41 compact PPGF trailer",
+    "recorder authority decoder",
+    "world fold keyed by owner and local ID",
+    "replay_core SpecialProjectProgressExactView",
+    "game_ui exact admission",
+    "replay_app selected-country and global typed seam"
+  ],
+  "legacy_disposition": {
+    "bare_local_id_base_project_rows_emitted": false,
+    "bare_local_id_base_state_rows_emitted": false,
+    "reason": "CProject local IDs are country-pool scoped and collide across owners"
+  },
+  "country_atomic": true,
+  "typed_view_requires_aborted_countries_zero": true,
+  "raw_counter_only": true,
+  "inferred_scale_or_percentage": false,
+  "weather_423_hour_evidence_applies": false,
+  "human_input_required": [],
+  "central_validation": "pending_primary_agent"
+}

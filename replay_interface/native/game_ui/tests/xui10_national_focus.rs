@@ -1,5 +1,6 @@
 use game_ui::national_focus::{
-    admit_national_focus_presentation, FocusAdmissionCode, FocusCatalog, FocusDefinitionKind,
+    admit_exact_national_focus_presentation, admit_national_focus_presentation,
+    FocusAdmissionCode, FocusCatalog, FocusDefinitionKind,
     FocusNodeDefinition, FocusNodeState, FocusStateBackgroundSprites, FocusTreeTopology,
     DEFAULT_FOCUS_ICON_SPRITE, STANDARD_FOCUS_AVAILABLE_SPRITE, STANDARD_FOCUS_COMPLETED_SPRITE,
     STANDARD_FOCUS_CURRENT_SPRITE, STANDARD_FOCUS_UNAVAILABLE_SPRITE,
@@ -8,7 +9,10 @@ use game_ui::research_canvas::{
     FocusCanvasRequest, LocalizedTextWitness, ProducerResolvedFocusPositions,
     RecordedFocusTransform, ResearchCanvasRequest,
 };
-use replay_core::{FocusView, Leaf};
+use replay_core::{
+    FocusView, Leaf, NationalFocusPresentationExact, NationalFocusPresentationExactView,
+    NationalFocusPresentationItemExact, ViewStatus,
+};
 
 fn ids() -> Vec<String> {
     ["focus_a", "focus_b", "focus_c", "focus_d"]
@@ -106,6 +110,52 @@ fn canvas(order: Vec<String>) -> ResearchCanvasRequest {
     })
 }
 
+fn exact() -> NationalFocusPresentationExactView {
+    let states = [1u8, 3, 2, 0];
+    NationalFocusPresentationExactView {
+        status: ViewStatus::Present,
+        presentation: Some(NationalFocusPresentationExact {
+            schema_version: 1,
+            authority: "exact_a729_national_focus_view_items".into(),
+            executable_sha256:
+                "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+                    .into(),
+            function_manifest_sha256:
+                "303351ed65468aa7655b904998819c96ca1c325f906b5a3bf32c4f18decc7969"
+                    .into(),
+            job_receipt_sha256:
+                "c6c3fb002bc05f1e092d7eb9b436aa720ca2cf19ad08f055747216dfa5871b4f"
+                    .into(),
+            elapsed_wall_ms: 3,
+            frame_hour: 900,
+            source_sequence: 11,
+            producer_complete: true,
+            country_tag: "GER".into(),
+            view_id: "nationalfocusview:GER".into(),
+            producer_record_identity: "a729:a31:900:GER:11".into(),
+            expected_visible_item_count: 4,
+            items: ids()
+                .into_iter()
+                .enumerate()
+                .map(|(ordinal, focus_id)| NationalFocusPresentationItemExact {
+                    focus_id,
+                    source_ordinal: ordinal as u32,
+                    presentation_state_code: states[ordinal],
+                    display_progress_percent: match states[ordinal] {
+                        1 => 100,
+                        3 => 25,
+                        _ => 0,
+                    },
+                    continuous_glow_visible: states[ordinal] == 3,
+                    highlight_glow_visible: ordinal == 2,
+                    historical_marker_visible: ordinal == 0,
+                    joint_viewing_country_tag: (ordinal == 3).then(|| "ITA".into()),
+                })
+                .collect(),
+        }),
+    }
+}
+
 #[test]
 fn exact_sets_icons_order_pause_and_progress_are_admitted() {
     let admitted =
@@ -159,6 +209,40 @@ fn exact_sets_icons_order_pause_and_progress_are_admitted() {
         admitted.nodes[3].definition_kind,
         FocusDefinitionKind::Joint
     );
+}
+
+#[test]
+fn exact_d89_leaves_are_admitted_without_pointer_or_inference() {
+    let admitted = admit_exact_national_focus_presentation(
+        &focus(),
+        &exact(),
+        "GER",
+        &topology(),
+        &catalog(),
+        &canvas(ids()),
+    )
+    .expect("exact d89 presentation");
+    assert_eq!(admitted.nodes[0].display_progress_percent, Some(100));
+    assert_eq!(admitted.nodes[1].continuous_glow_visible, Some(true));
+    assert_eq!(admitted.nodes[2].highlight_glow_visible, Some(true));
+    assert_eq!(admitted.nodes[0].historical_marker_visible, Some(true));
+    assert_eq!(
+        admitted.nodes[3].joint_viewing_country_tag,
+        Some(Some("ITA".into()))
+    );
+
+    let mut wrong = exact();
+    wrong.presentation.as_mut().unwrap().items[1].focus_id = "focus_other".into();
+    let error = admit_exact_national_focus_presentation(
+        &focus(),
+        &wrong,
+        "GER",
+        &topology(),
+        &catalog(),
+        &canvas(ids()),
+    )
+    .expect_err("cross-identity d89 item must reject");
+    assert_eq!(error.code, FocusAdmissionCode::ExactPresentation);
 }
 
 #[test]

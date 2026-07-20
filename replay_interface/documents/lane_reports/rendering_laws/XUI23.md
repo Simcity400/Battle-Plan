@@ -1,11 +1,12 @@
 # XUI23 — active command abilities
 
-Status: **REPLAY INTEGRATION READY — EXACT A36 PRODUCER INPUTS EXTERNALIZED**
+Status: **D88 CARRIER/FOLD/REPLAY/UI WIRED — LIVE A36 ACTIVATION FALSE**
 
 XUI23 closes every replay-owned command-ability seam without evaluating game
 triggers or inventing timers, costs, targets, ordering, text, or disabled
-reasons. The remaining input is the exact extractor-owned A36 carrier, not a
-rendering approximation or an unsearched capture request.
+reasons. The exact extractor-owned A36 carrier and autonomous same-row source
+builder now exist; the remaining input is the authenticated live transition
+fixture set, not a rendering approximation or an unsearched capture request.
 
 ## Proven authored law
 
@@ -30,18 +31,25 @@ presence; they cannot be promoted as a runtime availability result.
 save-side `abilities` object, which contains aces, leader reassignment/capture
 cooldowns and officer-corps state—not named active command abilities.
 
-Each exact row carries identity, availability, activation hour, total and
-remaining cooldown, effective command-power cost, target kind/id, total and
-remaining duration, source order, resolved icon, resolved tooltip and exact
-disabled reason. A `complete=true` empty list is a proven-empty bar. All absent,
-null, wrong-typed, incomplete, duplicate, out-of-order, timer-inconsistent,
-unknown-definition and icon-mismatch states reject.
+The projected object is one atomic authority envelope: a strict ABA2 carrier
+retains the exact executable, exact20-manifest and refresh-decompile hashes,
+while its nested ABL1 snapshot retains frame/country/context/source identity,
+completeness and rows. No consumer may peel off `rows` or `complete` and discard
+that authority. Each exact row carries identity, availability, activation hour,
+typed total/remaining timers, exact fixed-point effective command-power cost and
+scale, target kind/id, source order, resolved icon, resolved tooltip and exact
+disabled reason. `snapshot.complete=true` with `rows=[]` is a proven-empty bar.
+All absent, null, legacy-flat, wrong-typed, incomplete, duplicate, out-of-order,
+timer-inconsistent, receipt-mismatched, unknown-definition and icon-mismatch
+states reject.
 
-`replay_core::PoliticsDetailView` preserves every row leaf as
-`Absent`/`Unobtained`/`Measured`. `game_ui::active_abilities` admits only complete
-rows and performs no trigger, localization, cost or timer reconstruction. The
-Python snapshot schema enforces the same types, identities, timer bounds,
-completeness and ordering.
+`replay_core::PoliticsDetailView` exposes the entire envelope as one
+`Absent`/`Unobtained`/`Measured` leaf. `game_ui::active_abilities` revalidates
+the envelope before admitting rows and performs no trigger, localization, cost
+or timer reconstruction. `not_started` and `indefinite` stay distinct from
+numeric `hours`; the command-power value remains an integer with scale `100000`.
+The Python snapshot schema enforces the same receipt, identity, type, timer,
+fixed-point, completeness and ordering laws.
 
 `load_active_ability_definitions` consumes the authenticated effective VFS,
 strictly parses every effective `common/abilities` file, resolves icons against
@@ -64,12 +72,48 @@ captures remain useful for pixels and authored-layer corroboration, but a draw
 stream cannot supply the complete identity/availability/target/timer/text row.
 No additional capture is requested for the replay-owned implementation.
 
+The extractor now reserves compact domain 88 and wraps the existing ABL1 row
+codec in the receipt-bound ABA2 production envelope. Recorder authority and
+world fold decode the envelope, reject unavailable/torn/receipt-mismatched
+payloads, and project the full carrier plus snapshot into
+`countries.<TAG>.active_abilities`. Replay and UI also preserve and validate the
+exact `affected_division_ids` set used by the counter-overlay ability seam.
+ABA2 rejects pointer-shaped identity strings and derives its source-record id
+from the exact hour, country, context kind, and portable context identity.
+
+Scheduling remains false. Exact20/Ghidra evidence proves that `0x141D049C0`
+joins the callback widget to `controller+0x70` row order and then indexes the
+same `controller+0x718` ability definition before returning the final tooltip.
+The exact observer now intercepts the unique append returning at `0x141D06057`,
+copies the same-row temporary accumulator before destruction begins at
+`0x141D063A3`, and transactionally joins it to the refresh row owner/source
+vectors before pointer erasure. It also records the exact effective-cost call
+returning at `0x141D04E38`, the chosen icon resolver input returning at
+`0x141D08BA6`, and the intrinsic definition token. The source constructor
+accepts no caller-built ability frame: it derives every ABL1 field and joins
+portable context/division identities through the same-epoch exact root catalog.
+It does not parse the final tooltip. Scheduling remains false because no
+retained live capture supplies the required ordinary, cooldown, multi-leader
+field-marshal and measured-empty game-state matrix.
+
+The recorder-fold, replay-core, and game-ui regressions independently consume
+`canonical_active_abilities_envelope.json` (SHA-256
+`9b05c17bf792fc01a7dfcb34088fbd45e03dc1105b36eb258240cc3eedea7efd`) and each
+rejects an authority mutation. This freezes one production shape without adding
+cross-workspace test dependencies.
+
 ## Mechanical freeze
 
 `build_xui23.py` deterministically rebuilds the static catalog and retained
 source census. `verify_xui23.py` hashes every production source and dossier,
-runs the focused Rust/Python gates, and writes the verification and manifest.
-The verifier must run twice byte-identically before promotion.
+checks the focused Python/Rust test contracts statically, and writes the
+verification and manifest with
+`PASS_STATIC_CONTRACT_CENTRAL_RUST_VALIDATION_REQUIRED`. It executes no test
+runner or compiler. Rust validation is deliberately external: the primary
+agent runs it once via
+`Invoke-CentralRustValidation.ps1 -Mode Final -Workspace All`, so this packet
+verifier cannot start a competing Cargo target or compile. Both freeze passes
+must be byte-identical before promotion.
 
 ## Incidental findings
 
@@ -89,7 +133,11 @@ The verifier must run twice byte-identically before promotion.
 
 | Function address | Job ID | Artifact path | Manifest hash |
 |---|---|---|---|
-| N/A | N/A | N/A | N/A |
+| `0x141D072F0` | `20260720T020812Z-w3-a36-ability-list-feb98226` | `evidence/func_141d072f0.decompile.c` | `12768dfa9a8b47ceda4feae9cdc45b76811f602ecd557008aa936e95adf2db45` |
+| `0x141D049C0` | `20260720T020812Z-w3-a36-ability-list-feb98226` | `evidence/func_141d049c0.decompile.c` | `12768dfa9a8b47ceda4feae9cdc45b76811f602ecd557008aa936e95adf2db45` |
+| `0x140FF44E0` | `20260720T063948Z-w4-a36-definition-identity-icon-roots-f4346705` | `evidence/func_140ff44e0.decompile.c` | `e64f8324769ec88de5bc2c09364097bc57336304e46fe620f3e40469dee4c5e1` |
+| `0x140FF5B20` | `20260720T070828Z-w4-a36-explicit-icon-override-0b0e8bcb` | `evidence/func_140ff5b20.decompile.c` | `514d188b2dd8f2cbb8f384c35cd10d1e97cfe34527ce3ecb71bdbdcc8cf2c493` |
 
-No new binary claim is made. `PROGRAM_STATUS`, unrelated packets and adversarial
-review surfaces were not edited.
+These are retained exact20 artifacts re-read after the mandatory current-broker
+status gate; no analysis job was launched. `PROGRAM_STATUS`, unrelated packets
+and adversarial review surfaces were not edited.

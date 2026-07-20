@@ -91,6 +91,7 @@ name = "character_presentation_live_lane"
 version = "0.1.0"
 dependencies = [
  "minhook",
+ "runtime_text_inputs_live_lane",
  "windows-sys",
 ]
 
@@ -116,12 +117,14 @@ dependencies = [
  "characters_leaders_cabinet_live",
  "compact_contract",
  "construction_buildings_state_damage_live",
+ "country_dynamic_modifiers_live_lane",
  "decision_panel_live_lane",
  "design_catalog_context_live_lane",
  "diplomacy_intel_operatives_live",
  "direct_frd_transitions_live",
  "dynamic_collection_trace_live_lane",
  "fired_event_popups_live_lane",
+ "focus_research_decisions_depth_live",
  "hub_motorization_live_lane",
  "hud_role_observer_live_lane",
  "land_combat_detail_events_live_lane",
@@ -184,6 +187,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "country_dynamic_modifiers_live_lane"
+version = "0.1.0"
+dependencies = [
+ "minhook",
+ "serde",
+ "windows-sys",
+]
+
+[[package]]
 name = "country_economy_counters_live_lane"
 version = "0.1.0"
 dependencies = [
@@ -236,6 +248,11 @@ dependencies = [
 [[package]]
 name = "decision_panel_live_lane"
 version = "0.1.0"
+dependencies = [
+ "minhook",
+ "runtime_text_inputs_live_lane",
+ "windows-sys",
+]
 
 [[package]]
 name = "derive_arbitrary"
@@ -271,8 +288,12 @@ name = "diplomacy_intel_operatives_live"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
+ "minhook",
+ "serde",
  "serde_json",
+ "sha2",
  "snapshot",
+ "windows-sys",
 ]
 
 [[package]]
@@ -352,7 +373,9 @@ version = "0.1.0"
 dependencies = [
  "compact_contract",
  "direct_frd_transitions_live",
+ "minhook",
  "recorder_host",
+ "windows-sys",
 ]
 
 [[package]]
@@ -517,6 +540,7 @@ dependencies = [
  "compact_contract",
  "serde",
  "serde_json",
+ "sha2",
  "snapshot",
 ]
 
@@ -664,6 +688,7 @@ dependencies = [
  "portable_content_manifest",
  "portable_render_stream",
  "production_render_catalog_capture_contract",
+ "runtime_text_inputs_live_lane",
  "serde",
  "serde_json",
  "sha2",
@@ -691,6 +716,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 name = "recorder_host"
 version = "0.1.0"
 dependencies = [
+ "active_command_abilities_live_lane",
  "air_loss_stats_live_lane",
  "air_wings_variants_lifecycle_live_lane",
  "army_battleplans_depth_live_lane",

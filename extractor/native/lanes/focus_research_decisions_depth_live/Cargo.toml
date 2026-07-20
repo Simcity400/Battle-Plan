@@ -15,3 +15,16 @@ path = "src/bin/proof_from_stream.rs"
 compact_contract = { path = "../../compact_contract" }
 direct_frd_transitions_live = { path = "../direct_frd_transitions_live" }
 recorder_host = { path = "../../recorder_host" }
+
+[features]
+default = []
+a729-focus-fixture-hook = []
+
+[target.'cfg(windows)'.dependencies]
+minhook = "0.9.0"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Performance",
+    "Win32_System_Threading",
+] }

@@ -9,7 +9,6 @@ $repoRoot=(Resolve-Path (Join-Path $nativeRoot '..\..')).Path
 $targetRoot = if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) { Join-Path $repoRoot '.cargo-target' } else { [System.IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) }
 $releaseRoot=Join-Path $targetRoot 'release'
 $python=(Get-Command python -ErrorAction Stop).Source
-$cargo=(Get-Command cargo -ErrorAction Stop).Source
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("hoi4_capture_script_test_" + [guid]::NewGuid().ToString("N"))
 $passes = 0; $failures = [System.Collections.Generic.List[string]]::new()
 function Assert-Case([string]$Name, [bool]$Condition) { if ($Condition) { $script:passes++ } else { $script:failures.Add($Name) } }
@@ -49,12 +48,14 @@ try {
 
     # Phase 0 (lane F5/F6): PowerShell syntax gate over every acceptance-tooling
     # script, then the -SelfTest of each script that carries one, in an isolated
-    # child process. Folds into the same pass/fail accounting as the heavyweight
-    # fixture and cargo gates below. Runs no game.
+    # child process. Folds into the same pass/fail accounting as the fixture and
+    # static centralized-runner ownership gates below. Runs no game or compiler.
     $syntaxTargets = @(
         "ProductionCapture.Validation.ps1",
+        "ProductionArtifact.Attestation.ps1",
         "Get-FullGameSizeProjection.ps1",
         "Invoke-AcceptanceLadder.ps1",
+        "Invoke-F6PausedShortProof.ps1",
         "Test-ProductionCaptureScripts.ps1",
         # The ladder reuses the launcher; a syntax break there breaks the ladder.
         "Start-Hoi4ProductionCaptureSafe.ps1",
@@ -140,6 +141,7 @@ try {
     Assert-Case 'durable marker precedes launch' ($driverText.IndexOf('Write-DurableJson -Path $attemptMarkerPath') -lt $driverText.IndexOf('if (-not $process.Start())'))
     Assert-Case 'bounded child cleanup present' ($driverText.Contains('CloseMainWindow()') -and $driverText.Contains('$process.Kill()') -and $driverText.Contains('WaitForExit'))
     Assert-Case 'unresolved attempt refusal present' $driverText.Contains('unresolved prior injection attempt exists')
+    Assert-Case 'resolved attempt destination cannot be overwritten' $driverText.Contains('refusing to overwrite retained evidence')
     Assert-Case 'resolved attempt retains hash-bound validation receipt' (
         $driverText.Contains('battle-plan.production_capture_validation_receipt.v1') -and
         $driverText.Contains('validation_report_sha256') -and
@@ -155,6 +157,31 @@ try {
         $driverText.Contains('acceptance_test_nonce') -and
         $driverText.Contains('acceptance_proof') -and
         $driverText.Contains('acceptance_test_observation')
+    )
+    Assert-Case 'acceptance receipt is durably transported and externally hash joined' (
+        $driverText.Contains('capture_validation_receipt.json') -and
+        $driverText.Contains('Write-DurableJson -Path $validationReceiptPath') -and
+        $driverText.Contains('validation_receipt_path=$validationReceiptPath') -and
+        $driverText.Contains('validation_receipt_sha256=$validationReceiptSha') -and
+        $driverText.Contains('resolved_attempt_marker_path = $resolvedMarker') -and
+        $driverText.Contains('transported_resolved_attempt_marker_path = $transportedResolvedMarkerPath') -and
+        $driverText.Contains('transported resolved-attempt marker hash mismatch')
+    )
+    Assert-Case 'acceptance proof verdict is strict boolean and schema checked' (
+        $driverText.Contains('$validation.ok -isnot [bool]') -and
+        $driverText.Contains('$validation.schema -cne $expectedAcceptanceSchema')
+    )
+    Assert-Case 'capture manifest is exactly capture and session bound' (
+        $driverText.Contains('$captureManifest.session_id -cne $SessionId') -and
+        $driverText.Contains('$captureManifest.capture_id -cne $CaptureId')
+    )
+    $f6OwnerText=Get-Content -LiteralPath (Join-Path $scriptDir 'Invoke-F6PausedShortProof.ps1') -Raw
+    Assert-Case 'F6 owner wrapper is acknowledgement-only and delegates exact live rung' (
+        $f6OwnerText.Contains('[Parameter(Mandatory=$true)][switch]$ConfirmPausedVisible') -and
+        $f6OwnerText.Contains('"-Rung", "paused-short-proof"') -and
+        $f6OwnerText.Contains('"-Live"') -and
+        $f6OwnerText.Contains('"-PinsFile"') -and
+        -not $f6OwnerText.Contains('admissible_for_production = $true')
     )
     Assert-Case 'speed root v2 gate passed exclusively to recorder' ($driverText.Contains('"--domain57-game-speed-gate-v2", $SpeedRootGatePath') -and -not $driverText.Contains('"--speed-root-gate"'))
     Assert-Case 'raw transcript file hash passed separately to recorder' ($driverText.Contains('"--domain57-game-speed-transcript-file-sha256", $SpeedEvidenceTranscriptFileSha256'))
@@ -178,28 +205,34 @@ try {
     Assert-Case 'fold check receives production roster authority' ($validationText.Contains('"--expected-profile","production"'))
     Assert-Case 'technology sharing is a required static role' ($script:RequiredStaticArtifactNames -contains 'technology_sharing_static')
 
-    # F1a/F4: keep every extractor Cargo surface that is not covered by a plain
-    # main-workspace sweep in maintained automation. Scientists now belongs to
-    # the main workspace, but remains named here so this gate cannot silently
-    # lose the originally certified F1a surface.
-    $packageGates = @(
-        [pscustomobject]@{
-            name = 'project_progress_live_lane'
-            arguments = @('test','--manifest-path',(Join-Path $nativeRoot 'project_progress_live_lane\Cargo.toml'),'--all-targets','--quiet')
-        },
-        [pscustomobject]@{
-            name = 'scientists_live_lane'
-            arguments = @('test','--manifest-path',(Join-Path $nativeRoot 'Cargo.toml'),'-p','scientists_live_lane','--all-targets','--quiet')
-        },
-        [pscustomobject]@{
-            name = 'occupation_resistance_compliance_live_replay_verify'
-            arguments = @('test','--manifest-path',(Join-Path $nativeRoot 'lanes\occupation_resistance_compliance_live\replay_verify\Cargo.toml'),'--all-targets','--quiet')
-        }
+    # Rust execution belongs exclusively to the root-owned centralized runner.
+    # This script checks the ownership contract statically and never starts a
+    # compiler, so historical focused counts cannot certify the current tree.
+    $centralText=Get-Content -LiteralPath (Join-Path $scriptDir 'Invoke-CentralRustValidation.ps1') -Raw
+    Assert-Case 'central Final owns standalone project progress tests' ($centralText.Contains('extractor\native\project_progress_live_lane') -and $centralText.Contains('"Final"'))
+    Assert-Case 'central Final owns standalone occupation replay verifier tests' ($centralText.Contains('occupation_resistance_compliance_live\replay_verify') -and $centralText.Contains('"Final"'))
+    Assert-Case 'scientists remains in centralized extractor workspace' ((Get-Content -LiteralPath (Join-Path $nativeRoot 'Cargo.toml') -Raw).Contains('"scientists_live_lane"'))
+    Assert-Case 'safe launcher has no direct Cargo execution' (-not $driverText.Contains('& cargo') -and -not $driverText.Contains('cargo build'))
+    Assert-Case 'safe launcher requires current hash-attested prebuilt artifacts' (
+        $driverText.Contains('Test-ProductionArtifactAttestation') -and
+        $driverText.Contains('prebuilt_artifact_attestation_sha256') -and
+        $driverText.Contains('prebuilt_source_input_sha256')
     )
-    foreach ($gate in $packageGates) {
-        & $cargo @($gate.arguments)
-        Assert-Case ("F1a package gate: " + $gate.name) ($LASTEXITCODE -eq 0)
+    $staticVerifierPaths = @(
+        (Join-Path $repoRoot 'replay_interface\re_evidence\rendering_laws\XUI21\verify_xui21.py'),
+        (Join-Path $repoRoot 'replay_interface\re_evidence\rendering_laws\XUI15\verify_xui15.py'),
+        (Join-Path $repoRoot 'replay_interface\re_evidence\rendering_laws\XUI23\verify_xui23.py'),
+        (Join-Path $repoRoot 'extractor\documents\dossiers\A37\verify_a37.py')
+    )
+    foreach ($verifierPath in $staticVerifierPaths) {
+        $verifierText = Get-Content -LiteralPath $verifierPath -Raw
+        $verifierName = Split-Path -Leaf $verifierPath
+        Assert-Case "static verifier status: $verifierName" ($verifierText.Contains('PASS_STATIC_CONTRACT_CENTRAL_RUST_VALIDATION_REQUIRED'))
+        Assert-Case "static verifier records no Rust execution: $verifierName" ($verifierText.Contains('"performed": False') -and $verifierText.Contains('-Mode Final -Workspace All'))
+        Assert-Case "static verifier does not execute Cargo: $verifierName" (-not $verifierText.Contains('subprocess.run(["cargo"') -and -not $verifierText.Contains("subprocess.run(['cargo'") -and -not $verifierText.Contains('run(["cargo"'))
     }
+    $xui21VerifierText = Get-Content -LiteralPath $staticVerifierPaths[0] -Raw
+    Assert-Case 'XUI21 historical counts cannot certify current sources' (-not $xui21VerifierText.Contains('expected_test_commands') -and $xui21VerifierText.Contains('historical_test_record_is_non_authoritative'))
 }
 finally { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
 Write-Host "production capture script tests: passed=$passes failed=$($failures.Count)"

@@ -19,7 +19,9 @@ pub const fn compact_record_allowed_flags(domain_id: u16, record_type: u16) -> u
     if record_type == COMPACT_RECORD_TYPE_DOMAIN_PERF {
         allowed |= COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER;
     }
-    if record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA && domain_id == 45 {
+    if record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
+        && matches!(domain_id, 45 | 67)
+    {
         allowed |= COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2;
     }
     allowed
@@ -203,12 +205,24 @@ mod tests {
             COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2
         );
         assert_eq!(
+            compact_record_allowed_flags(67, COMPACT_RECORD_TYPE_DOMAIN_DATA),
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2
+        );
+        assert_eq!(
             compact_record_allowed_flags(18, COMPACT_RECORD_TYPE_DOMAIN_PERF),
             COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER
         );
         assert_eq!(
             compact_record_allowed_flags(18, COMPACT_RECORD_TYPE_DOMAIN_DATA),
             0
+        );
+        assert_eq!(
+            compact_record_rejected_flags(
+                67,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            ),
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2
         );
         assert_ne!(
             compact_record_rejected_flags(

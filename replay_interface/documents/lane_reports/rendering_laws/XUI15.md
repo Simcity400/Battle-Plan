@@ -1,8 +1,8 @@
 # XUI15 — country resource-trade state
 
-Status: **PROVEN / REPLAY PROMOTION-READY / EXTERNAL ROUTE-FLAG LEAVES FAIL CLOSED**
+Status: **PROVEN / END-TO-END PRODUCTION INTEGRATED**
 
-This packet is `XUI15`, not canonical archive-mount packet `UI15`. No extractor file or `PROGRAM_STATUS.md` was changed by this replay lane.
+This packet is `XUI15`, not canonical archive-mount packet `UI15`. The Wave 4 producer integration updates the extractor carrier/fold and this program-status row without changing canonical archive-mount packet `UI15`.
 
 ## Promotion result
 
@@ -23,11 +23,13 @@ Implemented replay behavior:
 
 ## Producer boundary
 
-The current carrier supplies structurally complete six-pool `MTRF v2`, controller rows through `MTRR`, factory headers through `MTRH`, and classic deals through `MTRD`. Classic resource deals remain distinct from D43 equipment-market purchase contracts.
+The current carrier supplies structurally complete six-pool `MTRF v2`, controller rows through `MTRR`, factory headers through `MTRH`, and classic deals through `MTRD v2`. Classic resource deals remain distinct from D43 equipment-market purchase contracts.
 
-Two exact route status bytes are not yet carried by `MTRD`: route `+0xE8` no-influence and route `+0xE9` no-resources. Replay schema and typed rows accept them when produced and otherwise retain `Absent`/`Unobtained`; they are never inferred from delivery values or convoy state. This is the only external producer dependency in the promoted replay surface.
+`MTRD v2` now carries the exact route `+0xE8` no-influence byte and route `+0xE9` no-resources byte in the former per-row reserved word. The collector admits only raw byte values zero or one, reciprocal halves must agree, the fold emits measured booleans, and the existing typed replay/UI path consumes them. `MTRD v1` remains accepted for old recordings but projects neither field, so absence cannot silently become false.
 
 ## Mechanical verification
+
+The Wave 4 MTRD v2 change adds static carrier, compatibility, reciprocal-parity, fold, and projection tests. Root-owned centralized validation is required before the hashes and historical pass counts below are re-frozen; this agent did not run Cargo, tests, verifiers, compilers, or formatters.
 
 Two consecutive complete passes succeeded:
 

@@ -24,6 +24,9 @@ The neutral schema is owned by
 
 1. The launcher-equivalent resolver supplies the effective VFS digest, ordered
    base/DLC/mod layers, archive/directory identity, and `replace_path` list.
+   Its collision join enumerates decompressed archive members as logical VFS
+   paths, so archive/loose and archive/archive winners use the same exact UI14
+   receipt law as directory layers.
 2. The finalized static bundle's authenticated
    `proofs/catalog_source_join.json` identifies every effective VFS file
    actually consumed by each admitted extractor interpreter. It records exact
@@ -67,6 +70,11 @@ The neutral schema is owned by
    `portable_content_manifest_v2` and validates the digest when reopened. The
    v2 body requires the static-bundle-v3 `product_modset_sha256`; v1 containers
    are migration-only inputs and are not production-admissible.
+12. Once a live resolver has emitted the authenticated six-file binding corpus,
+   `prepare_product_modset_capture.py --bindings` can copy, re-hash, and rebuild
+   the capture-ready product offline. It never queries a stale PID or rereads
+   launcher/log state, and it must reproduce the same path-independent product
+   key before static generation proceeds.
 
 Production capture cannot finish with an empty, mutating, malformed, or
 launch-mismatched finalized catalog/source join. Debug/recovery captures may
@@ -110,6 +118,10 @@ language, and rendering-relevant settings.
 - A changed mod definition/asset changes the content-manifest digest.
 - Directory and archive mods, `replace_path`, changed DLC selections, and a
   relocated replay are represented without machine paths.
+- Private catalog staging rewrites only the physical descriptor content field,
+  preserves all other narrow-string bytes losslessly, and admits archive mods
+  only when the normalized staged namespace equals the authenticated archive
+  namespace exactly.
 - Source-inventory namespaces marked `binding=asset_only` are content
   observations, not selected playback layers. They are excluded from playback
   precedence and the remaining namespace ordinals are reindexed exactly.

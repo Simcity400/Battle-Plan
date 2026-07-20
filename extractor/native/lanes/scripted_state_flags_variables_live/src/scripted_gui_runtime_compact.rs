@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::scripted_gui_runtime_carrier::{
     collect_and_validate_scripted_gui_runtime, validate_scripted_gui_runtime_frame, CarrierError,
-    EngineResult, ExactScriptedGuiRuntimeSource, ScriptedGuiDefinitionIdentity,
+    portable_unavailable_diagnostic, EngineResult, ExactScriptedGuiRuntimeSource, ScriptedGuiDefinitionIdentity,
     ScriptedGuiRuntimeFrame, ScriptedGuiRuntimeRow,
 };
 
@@ -60,12 +60,13 @@ pub fn encode_source_unavailable(
     status_flags: u32,
     reason: impl Into<String>,
 ) -> Result<Vec<u8>, CompactError> {
+    let reason = portable_unavailable_diagnostic(&reason.into());
     encode_payload(&ScriptedGuiRuntimeEnvelope {
         elapsed_wall_ms,
         status_flags,
         frame_hour,
         frame: None,
-        unavailable_reason: Some(reason.into()),
+        unavailable_reason: Some(reason),
     })
 }
 
@@ -81,6 +82,9 @@ pub fn validate_envelope(value: &ScriptedGuiRuntimeEnvelope) -> Result<(), Compa
         (None, Some(reason)) => {
             if value.status_flags == 0 || reason.trim().is_empty() {
                 return invalid("unavailable d84 frame requires failure status and reason");
+            }
+            if portable_unavailable_diagnostic(reason) != *reason {
+                return invalid("unavailable d84 reason contains pointer or host-path detail");
             }
             bounded_text(reason)?;
             Ok(())
@@ -560,5 +564,18 @@ mod tests {
         let decoded = decode_payload(&bytes).unwrap();
         assert!(decoded.frame.is_none());
         assert_eq!(decoded.unavailable_reason.as_deref(), Some("missing hook"));
+
+        let bytes = encode_source_unavailable(
+            1,
+            2,
+            4,
+            "failed at C:\\Users\\Example\\capture.bin 0x141234567",
+        )
+        .unwrap();
+        let decoded = decode_payload(&bytes).unwrap();
+        assert_eq!(
+            decoded.unavailable_reason.as_deref(),
+            Some("producer_diagnostic_redacted")
+        );
     }
 }

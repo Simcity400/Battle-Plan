@@ -49,21 +49,56 @@ def _runtime_ui14_receipt(
     ):
         raise LR.ResolutionError("UI14 engine VFS receipt is malformed")
     source_by_id = {row.get("id"): row for row in source["layers"] if isinstance(row, dict)}
-    if set(source_by_id) != {row["id"] for row in staged_rows}:
+    staged_ids = {row["id"] for row in staged_rows}
+    if len(source_by_id) != len(source["layers"]) or set(source_by_id) != staged_ids:
         raise LR.ResolutionError("UI14 engine VFS receipt layer set changed during staging")
+    inventory = LR.validate_source_inventory_document(
+        SB.load_object(bindings_dir / "source_inventory.json", "live source inventory")
+    )
+    mod_state = SB.load_object(bindings_dir / "mod_state.json", "resolved mod state")
+    SB._validate_binding_document(mod_state, "mod_state")
+    resolved_source_by_id = {
+        row["id"]: row for row in _load_resolved_mod_sources(bindings_dir, mod_state)
+    }
+    mod_inventory_by_id = {layer_id: [] for layer_id in staged_ids}
+    for row in inventory["rows"]:
+        if row["layer_kind"] == "mod" and row["layer_id"] in mod_inventory_by_id:
+            mod_inventory_by_id[row["layer_id"]].append(row)
+    LR.validate_ui14_mod_collision_winners(
+        mod_inventory_by_id, source["effective_winners"]
+    )
     layers = []
+    descriptor_ordinals: set[int] = set()
+    mount_ordinals: set[int] = set()
     for row in staged_rows:
         source_row = source_by_id[row["id"]]
         if set(source_row) != {
             "id", "descriptor_sha256", "engine_descriptor_ordinal", "engine_mount_ordinal"
         }:
             raise LR.ResolutionError("UI14 engine VFS layer row is malformed")
+        if source_row["descriptor_sha256"] != resolved_source_by_id[row["id"]]["descriptor_sha256"]:
+            raise LR.ResolutionError("UI14 engine VFS source descriptor hash changed")
+        descriptor_ordinal = source_row["engine_descriptor_ordinal"]
+        mount_ordinal = source_row["engine_mount_ordinal"]
+        if (
+            not isinstance(descriptor_ordinal, int)
+            or isinstance(descriptor_ordinal, bool)
+            or descriptor_ordinal < 0
+            or descriptor_ordinal in descriptor_ordinals
+            or not isinstance(mount_ordinal, int)
+            or isinstance(mount_ordinal, bool)
+            or mount_ordinal < 0
+            or mount_ordinal in mount_ordinals
+        ):
+            raise LR.ResolutionError("UI14 engine VFS layer ordinal is invalid")
+        descriptor_ordinals.add(descriptor_ordinal)
+        mount_ordinals.add(mount_ordinal)
         descriptor = destination / row["descriptor_relpath"]
         layers.append({
             "id": row["id"],
             "descriptor_sha256": SB.sha256_file(descriptor),
-            "engine_descriptor_ordinal": source_row["engine_descriptor_ordinal"],
-            "engine_mount_ordinal": source_row["engine_mount_ordinal"],
+            "engine_descriptor_ordinal": descriptor_ordinal,
+            "engine_mount_ordinal": mount_ordinal,
         })
     return {
         "schema": LR.UI14_ENGINE_VFS_SCHEMA,
@@ -287,26 +322,21 @@ def _extract_archive(source: Path, destination: Path) -> None:
                 shutil.copyfileobj(src, dst)
 
 
-def _reject_unattested_archive_mods(sources: list[dict[str, Any]]) -> None:
-    archive_ids = [source["id"] for source in sources if source["content_kind"] == "archive"]
-    if archive_ids:
-        raise LR.ResolutionError(
-            "unattested archive mod is not admitted without a proven native-collision "
-            f"attestation: {', '.join(archive_ids)}"
-        )
-
-
 def _stage_mod_descriptor(source: dict[str, Any], destination: Path, content_root: Path) -> Path:
     target = _safe_launcher_token(source["id"], destination)
-    text = Path(source["descriptor_path"]).read_text(encoding="utf-8-sig", errors="strict")
-    content_text = content_root.resolve().as_posix()
-    if any(char in content_text for char in ('"', "\r", "\n")):
+    # Preserve every source descriptor byte losslessly. Clausewitz descriptors
+    # are narrow byte strings, not guaranteed UTF-8; only the physical content
+    # field is rewritten for the private staging userdir.
+    text = Path(source["descriptor_path"]).read_bytes().decode("latin-1")
+    content_bytes = content_root.resolve().as_posix().encode("utf-8")
+    if any(char in content_bytes for char in (b'"', b"\r", b"\n")):
         raise LR.ResolutionError(f"resolved mod content path cannot be staged: {source['id']}")
+    content_text = content_bytes.decode("latin-1")
     rendered, count = CONTENT_LINE_RE.subn(f'path="{content_text}"', text)
     if count != 1:
         raise LR.ResolutionError(f"resolved mod descriptor content field is ambiguous: {source['id']}")
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(rendered, encoding="utf-8")
+    target.write_bytes(rendered.encode("latin-1"))
     return target
 
 
@@ -316,7 +346,6 @@ def prepare_runtime_userdir(bindings_dir: Path, vanilla: Path, destination: Path
     SB._validate_binding_document(mod_state, "mod_state")
     SB._validate_binding_document(dlc_state, "dlc_state")
     mod_sources = _load_resolved_mod_sources(bindings_dir, mod_state)
-    _reject_unattested_archive_mods(mod_sources)
     source_namespaces = _source_namespace_index(bindings_dir)
     dlc_archive_sources = _active_dlc_archive_sources(
         bindings_dir, vanilla, dlc_state
@@ -416,7 +445,6 @@ def _validate_runtime_userdir(
     SB._validate_binding_document(mod_state, "mod_state")
     SB._validate_binding_document(dlc_state, "dlc_state")
     sources = _load_resolved_mod_sources(bindings_dir, mod_state)
-    _reject_unattested_archive_mods(sources)
     source_namespaces = _source_namespace_index(bindings_dir)
     dlc_archive_sources = _active_dlc_archive_sources(
         bindings_dir, vanilla, dlc_state
@@ -652,7 +680,7 @@ def runtime_specs(root: Path) -> tuple[SB.ArtifactSpec, ...]:
             "gfx_icon_asset_manifest_static",
             root / "gfx/gfx_icon_asset_manifest_static/gfx_icon_manifest_catalog.json",
             root / "gfx/gfx_icon_manifest_gate_report.json",
-            "gfx_icon_asset_manifest_static.static_artifact.v1",
+            "gfx_icon_asset_manifest_static.static_artifact.v2",
             "gfx_icon_asset_manifest_static.json",
         ),
         SB.ArtifactSpec(
@@ -693,6 +721,9 @@ def build(
         raise LR.ResolutionError("cannot prove vanilla root/executable installation identity") from exc
     if not same_install:
         raise LR.ResolutionError("vanilla root must be the executable parent directory")
+    ui14 = SB.load_object(bindings_dir / UI14_ENGINE_VFS_FILE, "UI14 engine VFS receipt")
+    if ui14.get("executable_sha256") != SB.sha256_file(exe):
+        raise LR.ResolutionError("UI14 engine VFS receipt executable mismatch")
     if output.exists() and not resume:
         raise LR.ResolutionError(f"output already exists: {output}")
     if resume and not output.is_dir():

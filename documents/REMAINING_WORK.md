@@ -5,6 +5,16 @@ per-half ledgers (linked); this list is complete at the item level — if it is
 not here (or in `SEAM_CONTRACTS.md`), it is not open. Check items off here;
 update ledgers as usual.
 
+Wave4 human-input reconciliation is final at
+`extractor/documents/dossiers/WAVE4_PROVISIONAL_HUMAN_INPUT_RECONCILIATION_20260720.json`:
+37 atomic external-input claims are covered exactly once by 16 deduplicated
+execution bundles, plus 12 product decisions. Wave4 code is still pending the
+root-owned central validation. A16, A17, A20, X9, B4, army-order cards,
+A11/A30 engine network ordering, A34, and RG-H3 are not human inputs. B1, X4,
+and raid roots return to autonomous engineering until their producer paths are
+exhausted. G3 has no separate run; its external outputs are the G2, CAP6,
+restore, and weather bundles.
+
 ## 1. Extractor
 
 Detail: `extractor/documents/MASTER_EXTRACTION_CONTRACT.md` (§A/B/D/E/F/P/S/X)
@@ -44,8 +54,9 @@ and `extractor/documents/RE_REMAINING.md`.
   replay projection are integrated; the eight-side card is historical validation.)
 - **Committed-code fixes (§D):** D11 sink-intent observability. D12 d55
   active-to-ended lifecycle, reserve membership, and normal/overrun terminal
-  result projection are implemented fail-closed; only the X2 current-epoch
-  loss carrier and synchronized width hook/fixtures remain (see seam).
+  result projection are implemented fail-closed. X2 width static RE and
+  carrier/fold/replay/XUI20 wiring are complete; only its external before/after
+  activation control and the separate current-epoch loss control remain (see seam).
 - **Save-family dispositions (§E):** E12–E29 (18 open).
 - **Build/ops (§F):** F1b one failing `replay_decoder` fixture test (blocks
   S4), F3 Windows capability gates, F5 truthful acceptance telemetry, F6 full
@@ -112,8 +123,13 @@ Detail: `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.m
   129-frame L02/L03/W23 S1 execution chain are authorized and wired. The former
   T1 one-cell discriminator and S1 labelled single-caster pair are optional
   automated/golden validation, not human blockers. Complete-pool trees remain
-  fail-closed for the other 95,275 cells until an authenticated
-  visibility/model/LOD carrier exists; newly recorded replays still require
+  fail-closed for the other 95,275 selected-submit cells until an authenticated
+  visibility/model/LOD carrier exists. The cross-capture immutable library
+  authenticates 11,365 cells and refuses 87,691; retained custom/harness
+  bundles additionally reobserve 21 authenticated buckets and identify
+  main-only candidates 357 and 613 (152 cells), but
+  their missing executable identity and shadow/unlit joins correctly prevent
+  promotion. Newly recorded replays still require
   independently authenticated L02/L03/S1 observations in the promoted submit.
 - **Robustness fix wave LANDED 2026-07-19** (Fable workflow: 304 findings →
   274 confirmed → 190 implemented; full gate green — 1,824 Rust + 251 Python

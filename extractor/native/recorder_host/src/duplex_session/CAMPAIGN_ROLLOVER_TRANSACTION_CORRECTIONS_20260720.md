@@ -33,25 +33,47 @@ must fail before journaling or rebinding. Per repository policy, this lane did
 not run builds, tests, Cargo, verifiers, or Ghidra; central validation remains a
 primary-agent action.
 
-## Deliberately unresolved product seams
+## Production integration added in the following wave
 
-These seams require product integration work and were not silently represented
-as complete:
+- `duplex_session/rollover_fs.rs` is now the concrete H4CR storage owner. Its
+  data and control handles share one guarded state: complete records remain
+  contiguous, buffered records may drain only through the advertised CRP1
+  boundary, the old file is synced and renamed before the next empty file is
+  created and synced, and the exact candidate CID1 is synced before it can be
+  handed to the second CFA1 barrier. The durable JSON state retains each sealed
+  stream's frontier, CID1 digests, and whole-file SHA-256; recovery recomputes
+  all of them. Immutable rejection receipts preserve refused proposals.
+- The H4CT worker now has one rollover-aware receive router. It completes the
+  outstanding heartbeat first; only a `PausedForControl` proof authorizes the
+  immediately following CRP1. CIF1 remains routed and durably acknowledged in
+  the same loop. The Win32 combined runner and its split production control
+  driver expose that same operation, so heartbeat and rollover never race two
+  reads on one channel.
+- `replay_decoder::open_rollover_stream_set` admits a set only when logical ids
+  are exactly `0..N`, every member begins with placement-valid IdentityV1 CID1,
+  and both CID1 digests exactly match the durable recorder descriptor. No world
+  hour is exposed until all members pass this pre-admission gate.
 
-1. Implement the production `RecorderRolloverStore` over the real H4CR storage
-   owner: contiguous drain through the advertised sequence, durable old-stream
-   seal, durable new logical-stream creation, and durable rejection recording.
-2. Connect the H4CR source/router lifecycle so the old source stops exactly at
-   the authenticated boundary and the new source presents sequence-zero CID1
-   before any world record.
-3. Integrate CRP1 with the single H4CT receive router. The heartbeat path must
-   not consume asynchronous CRP1 as a wrong-kind frame; heartbeat/control
-   sequencing must be explicitly suspended and resumed around the rollover
-   transaction.
-4. Connect main-host storage manifests, path ownership, recovery, and process
-   lifecycle handoff for multiple logical streams.
-5. Complete the independent stream-fold and replay-decoder consumer work for
-   multi-logical-stream capture sets.
-6. Keep `AUTO_ATTACH_DUPLEX_V1` unchanged until the storage, router, heartbeat,
-   recovery, and end-to-end evidence gates are complete. The dormant
-   `AUTO_ATTACH_DUPLEX_ROLLOVER_V1` profile remains test/composition-only.
+## Product selection and remaining activation gate
+
+- The active collector owner now classifies an authenticated whole-pair change
+  or same-pair clock rollback before world emission and executes the existing
+  CRP1/CRA1/new-CID1/second-CFA1 coordinator. Sequence numbering and first-world
+  proof gating restart only after the second CFA1 is accepted. Uncertain reads
+  and one-component conflicts remain terminal.
+- Recorder main selects the filesystem rollover store for the rollover
+  capability, seals every logical stream, and re-admits the exact ordered set
+  from durable state before packaging. Each member passes the ordinary summary,
+  boundary, fold, container-write, and from-disk verification gates. The package
+  set descriptor is published atomically only after all member manifests and
+  packages exist; completed raw-state recovery can mechanically recreate a
+  missing raw descriptor after a crash.
+- The shipped replay opener recognizes the package-set descriptor and requires
+  an explicit logical-stream selection. It verifies the hashed raw descriptor,
+  every CRP1 transition, the selected manifest/package pair, and refuses
+  recovery members. It never flattens same-pair rollback hours into a fabricated
+  monotonic timeline; the shared decoder exposes set hours with their logical
+  stream id.
+- `AUTO_ATTACH_DUPLEX_V1` and the separate rollover live-evidence latch remain
+  false. These integration changes do not authorize activation without an
+  authenticated live lifecycle receipt covering the complete two-barrier path.

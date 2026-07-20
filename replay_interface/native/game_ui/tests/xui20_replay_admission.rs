@@ -222,6 +222,7 @@ fn exact_binding() -> Xui20CombatDetailLosses {
         air_losses: Leaf::Measured(vec![air_loss()]),
         air_region_combat: Leaf::Measured(vec![air_region()]),
         sunk_convoys: Leaf::Measured(Vec::new()),
+        convoy_terminal: Leaf::Unobtained,
         sunk_ships: Leaf::Measured(vec![SunkShipEventExact {
             event_sequence: 1,
             combat_id: 9,
@@ -290,6 +291,10 @@ fn exact_replay_owned_surfaces_admit_and_external_joins_stay_explicit() {
         admission.naval_terminal,
         Xui20SurfaceState::Admitted { row_count: 1 }
     );
+    assert!(matches!(
+        admission.convoy_terminal,
+        Xui20SurfaceState::ExternalInputRequired { .. }
+    ));
     assert!(matches!(
         admission.global_cross_family_order,
         Xui20SurfaceState::NotApplicable { .. }

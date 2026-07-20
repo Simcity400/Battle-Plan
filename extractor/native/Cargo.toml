@@ -17,6 +17,7 @@ members = [
     "lanes/characters_leaders_cabinet_live",
     "lanes/compact_replay_verification_gates",
     "lanes/construction_buildings_state_damage_live",
+    "lanes/country_dynamic_modifiers_live",
     "lanes/country_economy_counters_live",
     "lanes/country_economy_production_stockpile_live",
     "lanes/diplomacy_intel_operatives_live",

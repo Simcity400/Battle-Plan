@@ -75,6 +75,27 @@ fn exact_trace_closes_population_order_filter_group_clip_and_virtual_slots() {
 }
 
 #[test]
+fn heterogeneous_decision_slot_templates_are_preserved_and_nonempty() {
+    let mut trace = exact_trace();
+    trace.materialized_slots[0].row_template_id = "targeted_decision_entry".into();
+    trace.materialized_slots[1].row_template_id = "timed_decision_entry".into();
+    trace
+        .validate()
+        .expect("decision_grid admits exact per-slot template identities");
+    assert_eq!(
+        trace.materialized_slots[0].row_template_id,
+        "targeted_decision_entry"
+    );
+    assert_eq!(
+        trace.materialized_slots[1].row_template_id,
+        "timed_decision_entry"
+    );
+
+    trace.materialized_slots[1].row_template_id.clear();
+    assert!(trace.validate().is_err());
+}
+
+#[test]
 fn unaccounted_identity_or_bad_filter_fails_closed() {
     let mut trace = exact_trace();
     trace.ordered_item_ids.pop();

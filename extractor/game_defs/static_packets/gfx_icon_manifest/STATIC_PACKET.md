@@ -8,9 +8,19 @@ Gate report: `extractor/game_defs/out/gfx_icon_manifest/gfx_icon_manifest_gate_r
 
 ## Schema
 
-`gfx_icon_asset_manifest_static.static_artifact.v1`
+`gfx_icon_asset_manifest_static.static_artifact.v2`
 
 - `sprites`: keyed by `SpriteType.name` from effective `interface/*.gfx`; includes category, texture path, texture layer, texture bytes/SHA-256 when resolved, source metadata, and raw sprite block data.
+- `power_balance_gui`: self-contained semantic-role manifest derived from the
+  effective `interface/powerbalanceview.gui` and
+  `interface/countrypoliticsview.gui` winners. Each source carries its exact
+  bytes/SHA-256 and winning layer, while each role records the resolved widget
+  hierarchy, parent hierarchy, widget type, same-type sibling ordinal, and
+  whether its sprite is authored, authored animation, or selected by the
+  engine. Authored GUI identifiers are matched with exact lexical case: a729's
+  direct-child `powerbalanceview/background` and
+  `powerbalanceview/Background` are distinct panel and decision roles. No
+  vanilla role-to-sprite table is compiled into the replay.
 - `flags`: path/hash inventory for effective `gfx/flags` image assets.
 - `source_files`: interface `.gfx` and flag file inventories with bytes and SHA-256.
 - `meta.syntax_allowlist_hits`: documented base-game syntax quirks accepted by the strict precheck. Current known entry is vanilla `interface/powerbalanceview.gfx`, whose installed file is missing the final top-level `spriteTypes` brace while the tolerant parser still recovers sprite blocks.
@@ -53,13 +63,20 @@ layer/file, and the adjudication reason:
 
 - Sprite key: `sprites.<GFX_name>`.
 - Texture path: `sprites.<GFX_name>.texturefile`.
+- Power-balance role: `power_balance_gui.roles.<semantic_role>`; authored
+  sprite identities then join case-insensitively to `sprites.<GFX_name>`.
 - Flag file path: `flags[*].relpath`.
 
 ## Gate Status
 
 The strict gate passes against the real asset layer model. Allowed missing
 textures must exactly match the explicit allowlist; stale allowlist entries or
-new unresolved texture refs fail the gate.
+new unresolved texture refs fail the gate. Missing or ambiguous required
+power-balance widgets, unexpected authored sprites on engine-selected widgets,
+an exact-case duplicate semantic selector, reused structural ordinal, or
+malformed effective GUI files also fail closed. A mod winner is accepted
+when it preserves the engine-required semantic widgets; its authored sprite
+names and texture payloads remain data rather than vanilla constants.
 
 ## Packing
 

@@ -15,12 +15,85 @@ use portable_render_stream::{
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const STATIC_PROGRAM_CONSUMER_PREFIX: &str = "production_map.static_program/";
+pub const RUNTIME_UI_CONSUMER_PREFIX: &str = "production_ui.command/";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StaticProgramContentObservation {
     pub consumer: String,
     pub content_key: String,
     pub content: UsedContentKey,
+}
+
+/// Resolve the exact content already sealed into typed selected-Present HUD
+/// commands. This is the recorder-side half of A25 font/icon portability; it
+/// admits no stable-name or path-search fallback.
+pub fn resolve_authenticated_ui_pass_content<'a>(
+    vfs: &EffectiveVfs,
+    frames: impl IntoIterator<Item = &'a ProductionRenderFrame>,
+    manifest: &ContentManifest,
+) -> Result<Vec<StaticProgramContentObservation>, String> {
+    manifest
+        .validate()
+        .map_err(|error| format!("UI-pass content manifest is invalid: {error}"))?;
+    if manifest.manifest_digest_sha256.is_none() {
+        return Err("UI-pass content manifest is not finalized".into());
+    }
+    let mut observations = Vec::new();
+    let mut winner_by_pair = BTreeMap::new();
+    for frame in frames {
+        frame
+            .validate()
+            .map_err(|error| format!("UI-pass frame is invalid: {error}"))?;
+        if frame.authority.effective_vfs_manifest_sha256
+            != manifest.effective_vfs_manifest_sha256
+            || frame.authority.effective_vfs_manifest_sha256 != vfs.authority_manifest_sha256()
+        {
+            return Err("UI-pass frame, manifest, and selected VFS authorities differ".into());
+        }
+        let Some(pass) = &frame.authenticated_ui_pass else {
+            continue;
+        };
+        for operation in &pass.ui_pass_operations {
+            let portable_render_stream::UiPassOperation::HudCommand { command } = operation else {
+                continue;
+            };
+            let consumer = format!(
+                "{RUNTIME_UI_CONSUMER_PREFIX}{}",
+                command.command_identity_sha256
+            );
+            for content in &command.ordered_effective_vfs_used_content {
+                let resolved = vfs.resolve_required(
+                    &content.normalized_game_relative_path,
+                    "selected-Present UI command content",
+                )?;
+                if resolved.content != *content {
+                    return Err(format!(
+                        "selected-Present UI command winner changed for {}",
+                        content.normalized_game_relative_path
+                    ));
+                }
+                let pair = (
+                    consumer.clone(),
+                    content.normalized_game_relative_path.clone(),
+                );
+                match winner_by_pair.get(&pair) {
+                    Some(existing) if existing != content => {
+                        return Err("selected-Present UI command content changed across frames".into())
+                    }
+                    Some(_) => {}
+                    None => {
+                        winner_by_pair.insert(pair, content.clone());
+                        observations.push(StaticProgramContentObservation {
+                            consumer: consumer.clone(),
+                            content_key: content.normalized_game_relative_path.clone(),
+                            content: content.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(observations)
 }
 
 /// Resolve the exact ordered keys named by every authenticated selected-frame
@@ -156,6 +229,7 @@ fn nested_program_content(
                             append_texture_resource_content(resource, &mut nested);
                         }
                         StaticShaderResourceSource::PreparedTarget { resource, .. }
+                        | StaticShaderResourceSource::SnowMudTexture { resource, .. }
                         | StaticShaderResourceSource::PoliticalTexture { resource, .. }
                         | StaticShaderResourceSource::TiledLightIndex { resource, .. }
                         | StaticShaderResourceSource::TiledLightData { resource, .. } => {

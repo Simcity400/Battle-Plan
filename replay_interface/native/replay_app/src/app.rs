@@ -58,6 +58,7 @@ pub(crate) struct ProductProductionD3dOutcome {
     pub(crate) executed_draw_tokens: Vec<String>,
     pub(crate) presented_to_app_target: bool,
     pub(crate) receipt_sha256: String,
+    pub(crate) snow_mud_proof: Option<map_viewer::SnowMudD3dExecutionProof>,
 }
 
 impl ProductProductionD3dRuntime {
@@ -73,6 +74,27 @@ impl ProductProductionD3dRuntime {
         resolver: &GameFileResolver,
         resources: &std::collections::BTreeMap<String, map_viewer::ProductionMapResource>,
         frame: &map_viewer::PreparedProductionD3dFrame,
+    ) -> Result<ProductProductionD3dOutcome> {
+        self.execute_inner(gfx, resolver, resources, frame, false)
+    }
+
+    pub(crate) fn execute_with_snow_mud_h2(
+        &mut self,
+        gfx: &Gfx,
+        resolver: &GameFileResolver,
+        resources: &std::collections::BTreeMap<String, map_viewer::ProductionMapResource>,
+        frame: &map_viewer::PreparedProductionD3dFrame,
+    ) -> Result<ProductProductionD3dOutcome> {
+        self.execute_inner(gfx, resolver, resources, frame, true)
+    }
+
+    fn execute_inner(
+        &mut self,
+        gfx: &Gfx,
+        resolver: &GameFileResolver,
+        resources: &std::collections::BTreeMap<String, map_viewer::ProductionMapResource>,
+        frame: &map_viewer::PreparedProductionD3dFrame,
+        collect_snow_mud_h2: bool,
     ) -> Result<ProductProductionD3dOutcome> {
         let target = frame
             .target
@@ -109,9 +131,14 @@ impl ProductProductionD3dRuntime {
             )?;
         }
         let presented_to_app_target = frame_has_app_presentation(frame);
-        let mut executor =
-            map_viewer::NativeProductionD3dExecutor::new(backend, resolver, resources)?;
+        let mut executor = map_viewer::NativeProductionD3dExecutor::new_with_snow_mud_h2(
+            backend,
+            resolver,
+            resources,
+            collect_snow_mud_h2,
+        )?;
         let receipt = map_viewer::execute_production_d3d_frame(frame, &mut executor)?;
+        let snow_mud_proof = executor.snow_mud_execution_proof().cloned();
         Ok(ProductProductionD3dOutcome {
             executed_operations: receipt.ordered_draws.len(),
             executed_draw_tokens: receipt
@@ -121,6 +148,7 @@ impl ProductProductionD3dRuntime {
                 .collect(),
             presented_to_app_target,
             receipt_sha256: receipt.deterministic_sha256,
+            snow_mud_proof,
         })
     }
 }
@@ -1076,6 +1104,7 @@ mod product_production_d3d_tests {
             ordered_render_operations: vec![RenderExecutionRef::Static {
                 operation_ordinal: 0,
             }],
+            snow_mud_texture: None,
             political_textures: Vec::new(),
             tiled_lights: Vec::new(),
             ordered_static_used_content: Vec::new(),

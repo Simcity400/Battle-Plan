@@ -196,6 +196,14 @@ pub const CURRENT_LOSS_FLAG_TWO_HOUR_CONTROL: u32 = 1 << 2;
 pub const CURRENT_LOSS_FLAG_MANPOWER_DELTA: u32 = 1 << 3;
 pub const CURRENT_LOSS_FLAG_EQUIPMENT_DELTA: u32 = 1 << 4;
 pub const CURRENT_LOSS_FLAG_EQUIPMENT_IDENTITY: u32 = 1 << 5;
+/// The synchronous update came from the active division-damage producer at
+/// `hoi4.exe+0x0C7BFC0`.
+pub const CURRENT_LOSS_FLAG_SOURCE_ACTIVE_DAMAGE: u32 = 1 << 6;
+/// The synchronous update came from the participant-lifecycle producer at
+/// `hoi4.exe+0x1299850`.
+pub const CURRENT_LOSS_FLAG_SOURCE_PARTICIPANT_LIFECYCLE: u32 = 1 << 7;
+pub const CURRENT_LOSS_SOURCE_FLAG_MASK: u32 = CURRENT_LOSS_FLAG_SOURCE_ACTIVE_DAMAGE
+    | CURRENT_LOSS_FLAG_SOURCE_PARTICIPANT_LIFECYCLE;
 pub const CURRENT_LOSS_REQUIRED_FLAG_MASK: u32 = CURRENT_LOSS_FLAG_WRITER_SENTINEL
     | CURRENT_LOSS_FLAG_ACTIVE_EPOCH_BOUND
     | CURRENT_LOSS_FLAG_TWO_HOUR_CONTROL
@@ -1542,7 +1550,11 @@ fn validate_current_loss_observation_row(
         || row.equipment_count as usize > MAX_SIDE_UNITS
         || row.ordinal >= row.equipment_count
         || row.equipment_id == 0
-        || row.control_flags != CURRENT_LOSS_REQUIRED_FLAG_MASK
+        || row.control_flags & CURRENT_LOSS_REQUIRED_FLAG_MASK
+            != CURRENT_LOSS_REQUIRED_FLAG_MASK
+        || row.control_flags & !(CURRENT_LOSS_REQUIRED_FLAG_MASK | CURRENT_LOSS_SOURCE_FLAG_MASK)
+            != 0
+        || (row.control_flags & CURRENT_LOSS_SOURCE_FLAG_MASK).count_ones() != 1
         || row.manpower_before_raw == row.manpower_after_raw
         || row.equipment_before_raw == row.equipment_after_raw
     {
@@ -2406,6 +2418,7 @@ fn validate_current_loss_observation_groups(
             group[0].manpower_before_raw,
             group[0].manpower_after_raw,
         );
+        let source_flags = group[0].control_flags & CURRENT_LOSS_SOURCE_FLAG_MASK;
         let ordinals = group.iter().map(|row| row.ordinal).collect::<BTreeSet<_>>();
         let equipment = group
             .iter()
@@ -2418,6 +2431,7 @@ fn validate_current_loss_observation_groups(
             || group.iter().any(|row| {
                 row.equipment_count as usize != expected
                     || (row.manpower_before_raw, row.manpower_after_raw) != manpower
+                    || row.control_flags & CURRENT_LOSS_SOURCE_FLAG_MASK != source_flags
             })
         {
             errors.push(format!(
@@ -4891,7 +4905,8 @@ mod tests {
                 ordinal: 0,
                 equipment_count: 2,
                 equipment_id: 70,
-                control_flags: CURRENT_LOSS_REQUIRED_FLAG_MASK,
+                control_flags: CURRENT_LOSS_REQUIRED_FLAG_MASK
+                    | CURRENT_LOSS_FLAG_SOURCE_ACTIVE_DAMAGE,
                 manpower_before_raw: 100,
                 manpower_after_raw: 90,
                 equipment_before_raw: 50,
@@ -4910,7 +4925,8 @@ mod tests {
                     ordinal: 0,
                     equipment_count: 2,
                     equipment_id: 70,
-                    control_flags: CURRENT_LOSS_REQUIRED_FLAG_MASK,
+                    control_flags: CURRENT_LOSS_REQUIRED_FLAG_MASK
+                        | CURRENT_LOSS_FLAG_SOURCE_ACTIVE_DAMAGE,
                     manpower_before_raw: 100,
                     manpower_after_raw: 90,
                     equipment_before_raw: 50,
@@ -4933,7 +4949,7 @@ mod tests {
         assert_eq!(decoded.width_observation_rows, widths.to_vec());
         assert_eq!(decoded.current_loss_observation_rows, losses.to_vec());
 
-        let mut corrupt = payload;
+        let mut corrupt = payload.clone();
         let width_start = PAYLOAD_HEADER_LEN + SIDE_DETAIL_ROW_LEN;
         corrupt[width_start + 40..width_start + 48]
             .copy_from_slice(&1_999_999i64.to_le_bytes());
@@ -4941,6 +4957,28 @@ mod tests {
             .unwrap_err()
             .iter()
             .any(|error| error.contains("exact-sum")));
+
+        let loss_start = width_start + widths.len() * WIDTH_OBSERVATION_ROW_LEN;
+        let mut source_less = payload.clone();
+        source_less[loss_start + 36..loss_start + 40]
+            .copy_from_slice(&CURRENT_LOSS_REQUIRED_FLAG_MASK.to_le_bytes());
+        assert!(decode_detail_events_payload(0, &source_less)
+            .unwrap_err()
+            .iter()
+            .any(|error| error.contains("identity/control/delta")));
+
+        let mut mixed_source = payload;
+        mixed_source[loss_start + CURRENT_LOSS_OBSERVATION_ROW_LEN + 36
+            ..loss_start + CURRENT_LOSS_OBSERVATION_ROW_LEN + 40]
+            .copy_from_slice(
+                &(CURRENT_LOSS_REQUIRED_FLAG_MASK
+                    | CURRENT_LOSS_FLAG_SOURCE_PARTICIPANT_LIFECYCLE)
+                    .to_le_bytes(),
+            );
+        assert!(decode_detail_events_payload(0, &mixed_source)
+            .unwrap_err()
+            .iter()
+            .any(|error| error.contains("complete/order-unique/consistent")));
     }
 
     #[test]

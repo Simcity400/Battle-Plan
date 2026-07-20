@@ -139,9 +139,13 @@ transcript — see the note before the launch table).
 
 ### Preconditions (whole sequence)
 
-- Main dev PC. The extractor release binaries are built (`collector.dll`, `collector_record.exe`,
-  `fold_check.exe`, `compact_replay_gate.exe`, `pack_replay.exe` under
-  `extractor/native/target/release`). The Safe launcher builds them unless `-SkipBuild`.
+- Main dev PC. Run the root-owned centralized `Release` for the extractor or
+  all workspaces first. It writes the five release binaries under
+  `.cargo-target/release` plus the hash-bound
+  `hoi4-production-prebuilt-artifacts.json` receipt. The Safe launcher never
+  invokes Cargo and refuses missing, stale, source-mismatched, or byte-mismatched
+  prebuilt artifacts; `-SkipBuild` is retained only for acceptance-ladder CLI
+  compatibility.
 - The D04 1944.2.11.18 save is available to load (see OPEN QUESTION above).
 - Production profile: `vanilla_latest_2026_06_30.json` (`Start-Hoi4ProductionCaptureSafe.ps1`
   `$profilePath`). Zero active mods, 24 active DLCs is the expected S9 bundle resolution

@@ -32,9 +32,11 @@ use compact_contract::early_render_content_manifest::{
 use compact_contract::early_render_control::{
     decode_early_diagnostic_liveness_response, decode_early_first_game_d3d,
     decode_early_hook_ready, encode_early_commit_capture_receipt, encode_early_diagnostic_end,
-    encode_early_diagnostic_liveness_request, encode_early_render_launch_bind,
+    encode_early_diagnostic_liveness_request, encode_early_g2_capture_arm,
+    encode_early_render_launch_bind,
     EarlyCommitCaptureReceiptV1, EarlyDiagnosticEndV1, EarlyDiagnosticLivenessRequestV1,
-    EarlyRenderLaunchBindV1, EARLY_DIAGNOSTIC_END_RECORDER_CANCEL, EARLY_HOOK_COMPLETENESS_MASK,
+    EarlyG2CaptureArmV1, EarlyRenderLaunchBindV1, EARLY_DIAGNOSTIC_END_RECORDER_CANCEL,
+    EARLY_HOOK_COMPLETENESS_MASK,
 };
 use compact_contract::early_render_runtime_dlc::decode_early_render_runtime_dlc_roster;
 use compact_contract::early_render_vfs::{
@@ -994,6 +996,32 @@ impl EarlyHookReadyChannel for PreparedEarlyRenderHostChannel {
             .map_err(|error| format!("send early diagnostic END: {error}"))
     }
 
+    fn arm_g2_capture(&mut self, arm: &EarlyG2CaptureArmV1) -> Result<(), String> {
+        if arm.process_id != self.expectation.pid
+            || arm.process_start_nonce != self.expectation.creation_filetime
+            || arm.launch_manifest_sha256
+                != decode_hex_32(&self.manifest.sha256()?)
+                    .map_err(|error| format!("G2 launch manifest digest: {error}"))?
+            || arm.effective_vfs_manifest_sha256
+                != decode_hex_32(&self.manifest.effective_vfs_manifest_sha256)
+                    .map_err(|error| format!("G2 effective VFS digest: {error}"))?
+        {
+            return Err("G2 arm differs from the prepared early-render authority".into());
+        }
+        let payload = encode_early_g2_capture_arm(arm)
+            .map_err(|error| format!("encode early G2 arm: {error:?}"))?;
+        self.channel
+            .as_mut()
+            .ok_or("early H4CT channel is not connected")?
+            .send_until(
+                MessageKind::EarlyRenderG2CaptureArm,
+                &payload,
+                deadline(self.timeout_ms)?,
+                &self.cancellation,
+            )
+            .map_err(|error| format!("send early G2 arm: {error}"))
+    }
+
     fn commit_capture_receipt(
         &mut self,
         process_id: u32,
@@ -1124,7 +1152,8 @@ mod tests {
     use crate::early_render_launch::{EarlyHookCompleteness, EffectiveRuntimeDlcReceipt};
     use compact_contract::early_render_control::{
         decode_early_diagnostic_end, encode_early_diagnostic_liveness_response,
-        EarlyDiagnosticLivenessResponseV1, EARLY_DIAGNOSTIC_MIN_HOLD_MS,
+        EarlyDiagnosticLivenessResponseV1, EarlyRenderCodecError,
+        EARLY_DIAGNOSTIC_MIN_HOLD_MS,
         EARLY_STAGED_HOOK_GENERATION,
     };
     use portable_content_manifest::effective_vfs::EffectiveVfsLayerMount;
@@ -1160,7 +1189,7 @@ mod tests {
             first_creation_sequence: 3,
             first_game_d3d_creation_qpc: 1_000_000,
             staged_hook_generation: EARLY_STAGED_HOOK_GENERATION,
-            staged_hook_count: 19,
+            staged_hook_count: 23,
             staged_hook_set_sha256: "88".repeat(32),
             diagnostic_staged_hook_mask: Some(0x01),
             game_device_ptr: 0x1111,
@@ -1291,8 +1320,17 @@ mod tests {
     #[test]
     fn diagnostic_liveness_rejects_every_mutated_first_or_transcript_binding() {
         let (receipt, session_id, request, request_sha256, response) = diagnostic_wire_fixture();
-        let reject = |mutated: EarlyDiagnosticLivenessResponseV1| {
-            let payload = seal_diagnostic_response(mutated);
+        let reject = |mut mutated: EarlyDiagnosticLivenessResponseV1| {
+            mutated.response_sha256 = [1; 32];
+            let provisional = match encode_early_diagnostic_liveness_response(&mutated) {
+                Ok(payload) => payload,
+                Err(EarlyRenderCodecError::InvalidField) => return,
+                Err(error) => panic!("mutated diagnostic response failed unexpectedly: {error:?}"),
+            };
+            assert_eq!(provisional.len(), 214);
+            mutated.response_sha256 = Sha256::digest(&provisional[..182]);
+            let payload = encode_early_diagnostic_liveness_response(&mutated)
+                .expect("encodable mutation remains valid after sealing");
             assert!(validate_diagnostic_liveness_response(
                 &receipt,
                 session_id,

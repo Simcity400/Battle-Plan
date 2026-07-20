@@ -21,8 +21,24 @@ than guessed. The first two are mechanically rejected as scalar D56 carriers;
 only pre-collapse route/client acquisition remains in the naval-combat lane's
 `A8_A9_B6_HUMAN_INPUT_REQUIREMENTS.json`.
 
+The recorder also performs the exact cross-domain activity join that is now
+possible without another hook. The a729 formatter tests combat membership
+before every mission/movement/detachment branch. A same-hour successful D49
+active `(combat_id,generation)` set plus a D50 `task_force_id`/side member in
+exact `FEX_STATE_FIGHTING` state 2 therefore emits
+`TASK_FORCE_ACTIVITY_DESC_IN_COMBAT` and pointer-free
+`active_combat_epochs`. D49/D50 failure produces `null`; measured no membership
+produces `[]`; non-fighting membership retains its epochs but no activity key.
+The other formatter branches remain unavailable because their
+full target/area/accessibility/efficiency inputs are not carried, so the fold
+does not turn `mission_state` into a guessed display label. Fresh exact-20
+authority and the production disposition are pinned in
+`../naval_combat_live/evidence/D56_ACTIVITY_MEMBER_EPOCH_PRODUCTION_20260720.json`.
+
 The existing shared collector/recorder integration is retained; the recorder
-projection now adds the exact `mission_name` beside the raw enum. No master
+projection adds exact mission/detached-state names and the D49/D50 epoch join.
+The replay typed fleet view and selected-naval-unit binding preserve all four
+activity leaves independently. No master
 status file is edited by this lane.
 
 ## Files

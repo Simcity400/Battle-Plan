@@ -77,6 +77,7 @@ use compact_contract::{
 use compact_contract::campaign_identity::{
     ValidatedCid1, COMPACT_DOMAIN_STREAM_HEADER, COMPACT_RECORD_TYPE_STREAM_HEADER,
 };
+use compact_contract::campaign_rollover::{RolloverProposeV1, RolloverReason};
 use compact_contract::stream_validator::{AcceptedRecordKind, StatefulStreamValidator};
 pub use compact_contract::stream_validator::StreamIdentityMode;
 use recorder_host::stream_fold::{
@@ -107,6 +108,374 @@ pub const STREAM_ROLE: &str = "collector_compact_stream";
 /// therefore in the per-hour hash, so identical stream bytes folded under the
 /// same id hash identically.
 pub const DEFAULT_GAME_ID: &str = "replay";
+
+/// One recorder-sealed logical stream in a CID1 rollover set. The expected
+/// digests come from the durable seal/open ledger, never from file names or
+/// replay metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RolloverStreamDescriptor {
+    pub logical_stream_id: u64,
+    pub path: PathBuf,
+    pub expected_last_complete_sequence: u64,
+    pub expected_campaign_id: [u8; 32],
+    pub expected_cid1_payload_sha256: [u8; 32],
+    pub expected_file_sha256: [u8; 32],
+}
+
+/// One exact durable CRP1 transition joining adjacent sealed logical streams.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RolloverTransitionDescriptor {
+    pub current_logical_stream_id: u64,
+    pub proposed_logical_stream_id: u64,
+    pub last_admitted_h4cr_sequence: u64,
+    pub boundary_game_hour_raw: i32,
+    pub reason: RolloverReason,
+    pub proposal_nonce: u64,
+    pub current_campaign_id: [u8; 32],
+    pub proposed_campaign_id: [u8; 32],
+    pub current_cid1_payload_sha256: [u8; 32],
+    pub proposed_cid1_payload_sha256: [u8; 32],
+}
+
+impl RolloverTransitionDescriptor {
+    fn proposal(&self) -> RolloverProposeV1 {
+        RolloverProposeV1 {
+            proposed_logical_stream_id: self.proposed_logical_stream_id,
+            last_admitted_h4cr_sequence: self.last_admitted_h4cr_sequence,
+            boundary_game_hour_raw: self.boundary_game_hour_raw,
+            reason: self.reason,
+            current_campaign_id: self.current_campaign_id,
+            proposed_campaign_id: self.proposed_campaign_id,
+            current_cid1_payload_sha256: self.current_cid1_payload_sha256,
+            proposed_cid1_payload_sha256: self.proposed_cid1_payload_sha256,
+            proposal_nonce: self.proposal_nonce,
+        }
+    }
+}
+
+/// Exact ordered recorder publication selected for replay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RolloverSetDescriptor {
+    pub ordered_streams: Vec<RolloverStreamDescriptor>,
+    pub transitions: Vec<RolloverTransitionDescriptor>,
+}
+
+/// Placement-authenticated identities for an admitted logical stream set.
+#[derive(Debug, Clone)]
+pub struct AdmittedRolloverIdentity {
+    pub logical_stream_id: u64,
+    pub identity: ValidatedCid1,
+}
+
+/// Sequential replay view over independently sealed IdentityV1 streams. Each
+/// member is validated from sequence-zero CID1 before any cursor is exposed.
+pub struct RolloverStreamSet {
+    cursors: VecDeque<HourCursor>,
+    identities: Vec<AdmittedRolloverIdentity>,
+    transitions: Vec<RolloverTransitionDescriptor>,
+    completed_streams: usize,
+    terminal: bool,
+}
+
+/// One decoded hour tagged by the logical stream that owns it. Raw game hours
+/// may repeat or decrease across a same-pair rollback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RolloverWorldHour {
+    pub logical_stream_id: u64,
+    pub hour: WorldHour,
+}
+
+#[derive(Debug)]
+pub enum RolloverSetDecodeError {
+    Decode {
+        logical_stream_id: u64,
+        error: DecodeError,
+    },
+    Certification {
+        logical_stream_id: u64,
+        error: String,
+    },
+}
+
+impl std::fmt::Display for RolloverSetDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Decode {
+                logical_stream_id,
+                error,
+            } => write!(f, "logical stream {logical_stream_id} decode failed: {error}"),
+            Self::Certification {
+                logical_stream_id,
+                error,
+            } => write!(
+                f,
+                "logical stream {logical_stream_id} failed certification: {error}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RolloverSetDecodeError {}
+
+impl RolloverStreamSet {
+    pub fn identities(&self) -> &[AdmittedRolloverIdentity] {
+        &self.identities
+    }
+
+    pub fn transitions(&self) -> &[RolloverTransitionDescriptor] {
+        &self.transitions
+    }
+
+    pub fn current_logical_stream_id(&self) -> Option<u64> {
+        self.identities
+            .get(self.completed_streams)
+            .map(|identity| identity.logical_stream_id)
+    }
+
+    pub fn next_hour(&mut self) -> Option<Result<RolloverWorldHour, RolloverSetDecodeError>> {
+        if self.terminal {
+            return None;
+        }
+        loop {
+            let logical_stream_id = self
+                .current_logical_stream_id()
+                .unwrap_or(self.completed_streams as u64);
+            let cursor = self.cursors.front_mut()?;
+            if let Some(hour) = cursor.next_hour() {
+                return Some(hour.map_or_else(
+                    |error| {
+                        Err(RolloverSetDecodeError::Decode {
+                            logical_stream_id,
+                            error,
+                        })
+                    },
+                    |hour| {
+                        Ok(RolloverWorldHour {
+                            logical_stream_id,
+                            hour,
+                        })
+                    },
+                ));
+            }
+            let cursor = self.cursors.pop_front().expect(
+                "front cursor remains present after exhausted borrow",
+            );
+            if let Err(error) = cursor.certify_complete() {
+                self.terminal = true;
+                return Some(Err(RolloverSetDecodeError::Certification {
+                    logical_stream_id,
+                    error: error.to_string(),
+                }));
+            }
+            self.completed_streams = self.completed_streams.saturating_add(1);
+        }
+    }
+}
+
+/// Admit an exact ordered logical-stream set. Missing/non-contiguous ids,
+/// absent CID1, digest mismatch, malformed first record, and empty input all
+/// fail before a single world hour can be returned.
+pub fn open_rollover_stream_set(
+    descriptor: RolloverSetDescriptor,
+    opts: OpenOptions,
+) -> Result<RolloverStreamSet, OpenError> {
+    let RolloverSetDescriptor {
+        ordered_streams,
+        transitions,
+    } = descriptor;
+    if ordered_streams.is_empty() {
+        return Err(OpenError::Certification(
+            "CID1 rollover stream set is empty".to_string(),
+        ));
+    }
+    let expected_transition_count = ordered_streams.len().checked_sub(1).ok_or_else(|| {
+        OpenError::Certification("CID1 rollover stream count underflow".to_string())
+    })?;
+    if transitions.len() != expected_transition_count {
+        return Err(OpenError::Certification(format!(
+            "CID1 rollover transition count {} does not join {} ordered streams",
+            transitions.len(),
+            ordered_streams.len()
+        )));
+    }
+
+    let mut identities = Vec::with_capacity(ordered_streams.len());
+    let mut certified_frontiers = Vec::with_capacity(ordered_streams.len());
+    for (index, stream) in ordered_streams.iter().enumerate() {
+        let expected_id = u64::try_from(index).map_err(|_| {
+            OpenError::Certification("CID1 rollover stream count exceeds u64".to_string())
+        })?;
+        if stream.logical_stream_id != expected_id {
+            return Err(OpenError::Certification(format!(
+                "CID1 rollover logical stream {} is not contiguous id {expected_id}",
+                stream.logical_stream_id
+            )));
+        }
+        if stream.expected_last_complete_sequence == u64::MAX
+            || stream.expected_campaign_id == [0; 32]
+            || stream.expected_cid1_payload_sha256 == [0; 32]
+            || stream.expected_file_sha256 == [0; 32]
+        {
+            return Err(OpenError::Certification(format!(
+                "CID1 rollover logical stream {expected_id} has an invalid durable receipt"
+            )));
+        }
+        let actual_file_sha256 = hash_stream_file(&stream.path)?;
+        if actual_file_sha256 != stream.expected_file_sha256 {
+            return Err(OpenError::Certification(format!(
+                "CID1 rollover logical stream {expected_id} whole-file hash mismatch"
+            )));
+        }
+        let identity = read_placement_authenticated_cid1(&stream.path)?;
+        if identity.campaign_id() != stream.expected_campaign_id
+            || identity.payload_sha256() != stream.expected_cid1_payload_sha256
+        {
+            return Err(OpenError::Certification(format!(
+                "CID1 rollover logical stream {expected_id} disagrees with its durable receipt"
+            )));
+        }
+        let actual_last_complete_sequence =
+            certify_rollover_member(&stream.path, opts.clone())?;
+        if actual_last_complete_sequence != stream.expected_last_complete_sequence {
+            return Err(OpenError::Certification(format!(
+                "CID1 rollover logical stream {expected_id} terminal sequence {actual_last_complete_sequence} disagrees with durable frontier {}",
+                stream.expected_last_complete_sequence
+            )));
+        }
+        identities.push(AdmittedRolloverIdentity {
+            logical_stream_id: expected_id,
+            identity,
+        });
+        certified_frontiers.push(actual_last_complete_sequence);
+    }
+
+    let mut previous_nonce = 0u64;
+    for (index, transition) in transitions.iter().enumerate() {
+        let current_id = u64::try_from(index).map_err(|_| {
+            OpenError::Certification("CID1 rollover transition count exceeds u64".to_string())
+        })?;
+        let proposed_id = current_id.checked_add(1).ok_or_else(|| {
+            OpenError::Certification("CID1 rollover transition id exhausted".to_string())
+        })?;
+        let current = &ordered_streams[index];
+        let proposed = &ordered_streams[index + 1];
+        transition.proposal().validate().map_err(|error| {
+            OpenError::Certification(format!(
+                "CID1 rollover transition {current_id}->{proposed_id} has invalid CRP1 semantics: {error}"
+            ))
+        })?;
+        if transition.current_logical_stream_id != current_id
+            || transition.proposed_logical_stream_id != proposed_id
+            || transition.last_admitted_h4cr_sequence != certified_frontiers[index]
+            || transition.last_admitted_h4cr_sequence != current.expected_last_complete_sequence
+            || transition.current_campaign_id != current.expected_campaign_id
+            || transition.proposed_campaign_id != proposed.expected_campaign_id
+            || transition.current_cid1_payload_sha256
+                != current.expected_cid1_payload_sha256
+            || transition.proposed_cid1_payload_sha256
+                != proposed.expected_cid1_payload_sha256
+        {
+            return Err(OpenError::Certification(format!(
+                "CID1 rollover transition {current_id}->{proposed_id} is not adjacent to its durable members"
+            )));
+        }
+        if transition.proposal_nonce <= previous_nonce {
+            return Err(OpenError::Certification(format!(
+                "CID1 rollover transition {current_id}->{proposed_id} proposal nonce is not strictly increasing"
+            )));
+        }
+        if transition.boundary_game_hour_raw != identities[index + 1].identity.game_hour_raw() {
+            return Err(OpenError::Certification(format!(
+                "CID1 rollover transition {current_id}->{proposed_id} boundary hour does not equal the next placement-authenticated CID1 observation"
+            )));
+        }
+        previous_nonce = transition.proposal_nonce;
+    }
+
+    let mut cursors = VecDeque::with_capacity(ordered_streams.len());
+    for stream in &ordered_streams {
+        cursors.push_back(open_stream_file_with_identity_mode(
+            &stream.path,
+            &opts,
+            StreamIdentityMode::IdentityV1,
+        )?);
+    }
+    Ok(RolloverStreamSet {
+        cursors,
+        identities,
+        transitions,
+        completed_streams: 0,
+        terminal: false,
+    })
+}
+
+/// Certify a sealed member before the set constructor exposes any cursor and
+/// recover the actual terminal H4CR sequence for the durable frontier join.
+fn certify_rollover_member(path: &Path, opts: OpenOptions) -> Result<u64, OpenError> {
+    let mut cursor = open_stream_file_with_identity_mode(
+        path,
+        &opts,
+        StreamIdentityMode::IdentityV1,
+    )?;
+    while let Some(hour) = cursor.next_hour() {
+        hour.map_err(|error| {
+            OpenError::Certification(format!(
+                "CID1 rollover member {} failed pre-admission decode: {error}",
+                path.display()
+            ))
+        })?;
+    }
+    let last_complete_sequence = cursor.strict_previous_sequence.ok_or_else(|| {
+        OpenError::Certification(format!(
+            "CID1 rollover member {} has no complete record frontier",
+            path.display()
+        ))
+    })?;
+    cursor.certify_complete().map_err(|error| {
+        OpenError::Certification(format!(
+            "CID1 rollover member {} failed complete-stream certification: {error}",
+            path.display()
+        ))
+    })?;
+    Ok(last_complete_sequence)
+}
+
+fn hash_stream_file(path: &Path) -> Result<[u8; 32], OpenError> {
+    let mut file = fs::File::open(path).map_err(OpenError::Io)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(OpenError::Io)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(digest.finalize())
+}
+
+fn read_placement_authenticated_cid1(path: &Path) -> Result<ValidatedCid1, OpenError> {
+    let mut file = fs::File::open(path).map_err(OpenError::Io)?;
+    let mut header_bytes = [0u8; COMPACT_RECORD_HEADER_LEN];
+    file.read_exact(&mut header_bytes).map_err(OpenError::Io)?;
+    let header = parse_compact_record_header(&header_bytes).map_err(|error| {
+        OpenError::Certification(format!("CID1 rollover first header is invalid: {error}"))
+    })?;
+    let mut payload = vec![0u8; header.payload_len];
+    file.read_exact(&mut payload).map_err(OpenError::Io)?;
+    let mut validator = StatefulStreamValidator::identity_v1();
+    let kind = validator.validate_record(&header, &payload).map_err(|error| {
+        OpenError::Certification(format!("CID1 rollover first record is invalid: {error}"))
+    })?;
+    if kind != AcceptedRecordKind::CampaignIdentity {
+        return Err(OpenError::Certification(
+            "CID1 rollover stream did not begin with campaign identity".to_string(),
+        ));
+    }
+    validator.identity().cloned().ok_or_else(|| {
+        OpenError::Certification("CID1 rollover validator retained no identity".to_string())
+    })
+}
 
 fn stream_validator(mode: StreamIdentityMode) -> StatefulStreamValidator {
     match mode {
@@ -813,6 +1182,7 @@ fn fold_compact_stream_file_identity_aware(
                     fold.record_malformed_domain_payload(
                         header.game_hour_raw,
                         header.domain_id,
+                        payload,
                         &reason,
                     );
                     off += record_len;
@@ -820,6 +1190,7 @@ fn fold_compact_stream_file_identity_aware(
                 }
             }
             fold.ingest_record(
+                header.sequence,
                 header.game_hour_raw,
                 header.domain_id,
                 header.record_type,
@@ -1611,12 +1982,14 @@ impl HourCursor {
                     self.fold.record_malformed_domain_payload(
                         header.game_hour_raw,
                         header.domain_id,
+                        payload,
                         &reason,
                     );
                 } else {
                     // The single production fold. PERF / probe records carry no
                     // folded state and are ignored inside `ingest_record`.
                     self.fold.ingest_record(
+                        header.sequence,
                         header.game_hour_raw,
                         header.domain_id,
                         header.record_type,

@@ -135,6 +135,17 @@ fn main() -> Result<()> {
         }
     }
     let capture_moments = capture_moments_from_args(&args)?;
+    let g2_pixel_control = value_after(&args, "--g2-pixel-control").map(PathBuf::from);
+    if g2_pixel_control.is_some()
+        && !capture_moments
+            .iter()
+            .any(|moment| moment == UI_PASS_CAPTURE_MOMENT)
+    {
+        return Err("--g2-pixel-control requires ui_pass in --capture-moment(s)".into());
+    }
+    if g2_pixel_control.is_some() && value_after(&args, "--exe").is_none() {
+        return Err("--g2-pixel-control requires suspended --exe launch; late attach and synthetic harness evidence are inadmissible".into());
+    }
     let shader_cache_arg = value_after(&args, "--shader-cache");
     let harness_bundle_control = value_after(&args, "--harness-bundle-control").map(PathBuf::from);
     if shader_cache_arg.is_some() && harness_bundle_control.is_some() {
@@ -212,6 +223,9 @@ fn main() -> Result<()> {
             cb0_sample_ms,
             arm_delay_ms,
         )?;
+    }
+    if let Some(g2_pixel_control) = g2_pixel_control.as_deref() {
+        merge_g2_pixel_control(&dll, g2_pixel_control)?;
     }
     if let Some(harness) = harness_arg {
         let exe = PathBuf::from(harness);
@@ -1180,6 +1194,61 @@ fn empty_harness_bundle_control_parts() -> ShaderCacheControlParts {
     )
 }
 
+fn merge_g2_pixel_control(dll: &Path, g2_path: &Path) -> Result<()> {
+    let module_dir = dll
+        .parent()
+        .ok_or("terrain capture DLL path has no parent directory")?;
+    let control_path = module_dir.join(CONTROL_FILE);
+    let mut control: Value = serde_json::from_slice(&fs::read(&control_path)?)?;
+    let g2: Value = serde_json::from_slice(&fs::read(g2_path)?)?;
+    let object = g2
+        .as_object()
+        .ok_or("G2 pixel control root must be an object")?;
+    let required = BTreeSet::from([
+        "schema",
+        "observation_id",
+        "authority_exe_sha256",
+        "launch_epoch_sha256",
+        "capture_receipt_sha256",
+        "effective_vfs_manifest_sha256",
+        "content_manifest_digest_sha256",
+        "settings_file_sha256",
+        "localisation_language",
+        "camera_payload_sha256",
+        "pov_country_or_global",
+        "expected_selected_hour",
+        "capture_context_path",
+    ]);
+    let actual = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    if actual != required {
+        return Err(format!(
+            "G2 pixel control fields drift: missing={:?}, extra={:?}",
+            required.difference(&actual).collect::<Vec<_>>(),
+            actual.difference(&required).collect::<Vec<_>>(),
+        )
+        .into());
+    }
+    if object.get("schema").and_then(Value::as_str)
+        != Some("hoi4-g2-engine-pixel-capture-control-v1")
+    {
+        return Err("G2 pixel control schema drift".into());
+    }
+    let root = control
+        .as_object_mut()
+        .ok_or("terrain capture control root must be an object")?;
+    if root.insert("g2_pixel_capture".to_string(), g2).is_some() {
+        return Err("terrain capture control already contains g2_pixel_capture".into());
+    }
+    fs::write(
+        control_path,
+        serde_json::to_vec_pretty(&control)?
+            .into_iter()
+            .chain(std::iter::once(b'\n'))
+            .collect::<Vec<_>>(),
+    )?;
+    Ok(())
+}
+
 fn harness_bundle_control_parts(bundle: &Path) -> Result<ShaderCacheControlParts> {
     let bundle_file = bundle.join("map_frame_bundle.json");
     let bytes = fs::read(&bundle_file)
@@ -1643,7 +1712,7 @@ fn json_escape(value: &str) -> String {
 fn print_help() {
     eprintln!(
         "terrain_capture_attach --pid <the game pid> --dll <terrain_capture.dll> [--direct-load-library] [--capture-out-dir <dir>] [--shader-cache <dir>] [--capture-moment terrain_active_pass|terrain_chunk_library|water_pass|rivers_pass|borders_pass|underwater_pass|trees_pass|restore_pass|mapname_pass|ui_pass] [--capture-moments terrain_active_pass,terrain_chunk_library,water_pass,rivers_pass,borders_pass,underwater_pass,trees_pass,restore_pass,mapname_pass,ui_pass] [--census] [--enable-map-frame-rounds] [--trees-close-mode frame-repeat] [--max-payload-writer-queue-bytes <bytes>] [--max-total-payload-bytes-per-session <bytes>] [--ui-max-states <count>] [--ui-cb-skip hazard|all|none] [--dwell-ms <ms, default 30000>]\n\
-         terrain_capture_attach --exe <hoi4.exe> --dll <terrain_capture.dll> [--capture-out-dir <dir>] [--working-dir <game dir>] [--args <quoted args>] [--shader-cache <dir>] [--capture-moment terrain_active_pass|terrain_chunk_library|water_pass|rivers_pass|borders_pass|underwater_pass|trees_pass|restore_pass|mapname_pass|ui_pass] [--capture-moments terrain_active_pass,terrain_chunk_library,water_pass,rivers_pass,borders_pass,underwater_pass,trees_pass,restore_pass,mapname_pass,ui_pass] [--census] [--enable-map-frame-rounds] [--trees-close-mode frame-repeat] [--max-payload-writer-queue-bytes <bytes>] [--max-total-payload-bytes-per-session <bytes>] [--ui-max-states <count>] [--ui-cb-skip hazard|all|none] [--pre-resume-timeout-ms <ms, default 30000>] [--dwell-ms <ms, default 30000>] [--settle-ms <ms, default 8000>]\n\
+         terrain_capture_attach --exe <hoi4.exe> --dll <terrain_capture.dll> [--capture-out-dir <dir>] [--working-dir <game dir>] [--args <quoted args>] [--shader-cache <dir>] [--capture-moment terrain_active_pass|terrain_chunk_library|water_pass|rivers_pass|borders_pass|underwater_pass|trees_pass|restore_pass|mapname_pass|ui_pass] [--capture-moments terrain_active_pass,terrain_chunk_library,water_pass,rivers_pass,borders_pass,underwater_pass,trees_pass,restore_pass,mapname_pass,ui_pass] [--g2-pixel-control <json; requires ui_pass and pre-launch context>] [--census] [--enable-map-frame-rounds] [--trees-close-mode frame-repeat] [--max-payload-writer-queue-bytes <bytes>] [--max-total-payload-bytes-per-session <bytes>] [--ui-max-states <count>] [--ui-cb-skip hazard|all|none] [--pre-resume-timeout-ms <ms, default 30000>] [--dwell-ms <ms, default 30000>] [--settle-ms <ms, default 8000>]\n\
          terrain_capture_attach --harness <capture_harness.exe> --dll <terrain_capture.dll> [--capture-out-dir <dir>] [--working-dir <harness dir>] [--args <quoted harness args>] [--harness-bundle-control <session capture dir>] [--accept-probe-before-resume] [--capture-moments terrain_active_pass,terrain_chunk_library,water_pass,rivers_pass,borders_pass,underwater_pass,trees_pass,restore_pass,mapname_pass,ui_pass] [--census] [--enable-map-frame-rounds] [--trees-close-mode frame-repeat] [--max-payload-writer-queue-bytes <bytes>] [--max-total-payload-bytes-per-session <bytes>] [--ui-max-states <count>] [--ui-cb-skip hazard|all|none] [--pre-resume-timeout-ms <ms, default 30000>] [--dwell-ms <ms, default 120000>] [--settle-ms <ms, default 8000>]\n\
          [--cb0-sample-ms <ms>] arms the persistent scene-CB0 sampler: once the map renderer is live it appends one 416-byte TerrainSceneCB0 snapshot at most every <ms> ms to cb0_samples.jsonl for the WHOLE session (survives moment completion, round completion and the byte-budget quiesce; byte-budget exempt; capped at 100000 samples). Absent => sampler fully off.\n\
          [--max-draws-per-pass <n>] operator escape hatch for the PER-FRAME map-frame draw cap (default 128 for map moments, higher for the chunk library). A pass now closes at every clean frame boundary, so this bounds a SINGLE frame's draws; raise it only if one genuine frame legitimately issues more than the default. Must be >= 1 (0 is rejected).\n\

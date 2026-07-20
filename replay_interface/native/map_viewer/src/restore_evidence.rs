@@ -1,8 +1,9 @@
 use crate::*;
 use serde::{Deserialize, Serialize};
+use snapshot::sha256::Sha256;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 const RESTORE_MAIN_SCENE: &str = "MainScene";
 const RESTORE_BLOOM: &str = "RestoreBloom";
@@ -16,6 +17,7 @@ const RESTORE_COLOR_CUBE_HEIGHT: u32 = 32;
 const RESTORE_COLOR_CUBE_BYTES: usize = 1024 * 32 * 4;
 const RESTORE_AVERAGE_LUMINANCE_WIDTH: u32 = 1;
 const RESTORE_AVERAGE_LUMINANCE_HEIGHT: u32 = 1;
+const RETAINED_RESTORE_SCHEMA: &str = "hoi4.restore-gate.retained-rdc.v1";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RestoreSceneEvidenceProbeReport {
@@ -101,15 +103,32 @@ pub fn load_restore_scene_bundle_session_dir(
     session_dir: &Path,
 ) -> Result<Option<RestoreSceneBundle>> {
     let bundle_path = session_dir.join(RESTORE_PASS_BUNDLE_FILE);
-    if !bundle_path.is_file() {
-        return Ok(None);
+    if bundle_path.is_file() {
+        return Ok(Some(load_restore_scene_bundle(&bundle_path)?));
     }
-    Ok(Some(load_restore_scene_bundle(&bundle_path)?))
+    let retained_manifest = session_dir.join("manifest.json");
+    if retained_manifest.is_file() {
+        let value: serde_json::Value = serde_json::from_slice(&fs::read(&retained_manifest)?)?;
+        if value.get("schema").and_then(serde_json::Value::as_str)
+            == Some(RETAINED_RESTORE_SCHEMA)
+        {
+            return Ok(Some(load_retained_restore_scene_bundle(
+                &retained_manifest,
+                &value,
+            )?));
+        }
+    }
+    Ok(None)
 }
 
 pub fn load_restore_scene_bundle(bundle_path: &Path) -> Result<RestoreSceneBundle> {
     let bundle_dir = bundle_path.parent().unwrap_or_else(|| Path::new("."));
-    let bundle: MapFrameRuntimeBundle = serde_json::from_slice(&fs::read(bundle_path)?)?;
+    let bytes = fs::read(bundle_path)?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    if value.get("schema").and_then(serde_json::Value::as_str) == Some(RETAINED_RESTORE_SCHEMA) {
+        return load_retained_restore_scene_bundle(bundle_path, &value);
+    }
+    let bundle: MapFrameRuntimeBundle = serde_json::from_slice(&bytes)?;
     if bundle.schema != MAP_FRAME_BUNDLE_SCHEMA {
         return Err(format!(
             "restore-pass bundle {} has schema {}, expected {}",
@@ -175,6 +194,355 @@ pub fn load_restore_scene_bundle(bundle_path: &Path) -> Result<RestoreSceneBundl
         posteffect_cb,
         average_luminance,
     })
+}
+
+fn load_retained_restore_scene_bundle(
+    manifest_path: &Path,
+    manifest: &serde_json::Value,
+) -> Result<RestoreSceneBundle> {
+    let bundle_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let source = manifest
+        .get("source_rdc")
+        .ok_or("retained restore manifest has no source_rdc identity")?;
+    let source_sha = retained_string(source, "sha256", "source RDC")?;
+    if !canonical_lower_sha256(source_sha)
+        || source.get("bytes").and_then(serde_json::Value::as_u64) == Some(0)
+        || source.get("bytes").and_then(serde_json::Value::as_u64).is_none()
+    {
+        return Err("retained restore source RDC identity is incomplete or non-canonical".into());
+    }
+    let inputs = manifest
+        .get("inputs")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("retained restore manifest has no inputs array")?;
+    if inputs.len() != 4 {
+        return Err(format!(
+            "retained restore manifest has {} input rows, expected the exact t0..t3 RestoreScene signature",
+            inputs.len()
+        )
+        .into());
+    }
+
+    // Admit the manifest only when all four reflected RestoreScene bindings are
+    // unique, exact-slot, hash-bound payloads. RenderDoc resource/view handles
+    // are deliberately ignored: they are capture-local and non-portable.
+    let main_scene = retained_input(inputs, RESTORE_MAIN_SCENE, 0)?;
+    validate_retained_texture(
+        main_scene,
+        RESTORE_MAIN_SCENE,
+        "R16G16B16A16_FLOAT",
+        1920,
+        1080,
+        16_588_800,
+    )?;
+    read_retained_payload(bundle_dir, main_scene, RESTORE_MAIN_SCENE)?;
+
+    let restore_bloom = retained_input(inputs, RESTORE_BLOOM, 1)?;
+    validate_retained_texture(
+        restore_bloom,
+        RESTORE_BLOOM,
+        "R16G16B16A16_FLOAT",
+        960,
+        540,
+        4_147_200,
+    )?;
+    read_retained_payload(bundle_dir, restore_bloom, RESTORE_BLOOM)?;
+
+    let color_cube_row = retained_input(inputs, RESTORE_COLOR_CUBE, 2)?;
+    validate_retained_texture(
+        color_cube_row,
+        RESTORE_COLOR_CUBE,
+        "B8G8R8A8_UNORM",
+        RESTORE_COLOR_CUBE_WIDTH,
+        RESTORE_COLOR_CUBE_HEIGHT,
+        RESTORE_COLOR_CUBE_BYTES,
+    )?;
+    let (_, color_cube_raw) =
+        read_retained_payload(bundle_dir, color_cube_row, RESTORE_COLOR_CUBE)?;
+    let color_cube_file = retained_string(color_cube_row, "file", RESTORE_COLOR_CUBE)?;
+    let color_cube = RestoreSceneColorCube {
+        slot: 2,
+        declared_name: RESTORE_COLOR_CUBE.to_string(),
+        file: color_cube_file.to_string(),
+        width: RESTORE_COLOR_CUBE_WIDTH,
+        height: RESTORE_COLOR_CUBE_HEIGHT,
+        // The retained exporter records the real alpha-bearing BGRA view.
+        dxgi_format: DXGI_FORMAT_B8G8R8A8_UNORM,
+        fnv1a64: None,
+        rgba8: bgra8_to_rgba8(&color_cube_raw),
+    };
+
+    let luminance_row = retained_input(inputs, RESTORE_AVERAGE_LUMINANCE, 3)?;
+    validate_retained_texture(
+        luminance_row,
+        RESTORE_AVERAGE_LUMINANCE,
+        "R16_FLOAT",
+        RESTORE_AVERAGE_LUMINANCE_WIDTH,
+        RESTORE_AVERAGE_LUMINANCE_HEIGHT,
+        2,
+    )?;
+    let (luminance_file, luminance_raw) =
+        read_retained_payload(bundle_dir, luminance_row, RESTORE_AVERAGE_LUMINANCE)?;
+    let average_luminance = RestoreSceneAverageLuminance {
+        slot: 3,
+        declared_name: RESTORE_AVERAGE_LUMINANCE.to_string(),
+        file: luminance_file,
+        width: 1,
+        height: 1,
+        dxgi_format: DXGI_FORMAT_R16_FLOAT,
+        value: f16_bits_to_f32(u16::from_le_bytes([luminance_raw[0], luminance_raw[1]])),
+        raw: luminance_raw,
+    };
+    if !average_luminance.value.is_finite() {
+        return Err("retained restore AverageLuminanceTexture is non-finite".into());
+    }
+
+    let blocks = manifest
+        .get("pixel_constant_blocks")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("retained restore manifest has no pixel_constant_blocks array")?;
+    let matching_blocks: Vec<_> = blocks
+        .iter()
+        .filter(|row| row.get("slot").and_then(serde_json::Value::as_u64) == Some(1))
+        .collect();
+    if matching_blocks.len() != 1 {
+        return Err(format!(
+            "retained restore manifest has {} PS slot 1 blocks, expected exactly one",
+            matching_blocks.len()
+        )
+        .into());
+    }
+    let block = matching_blocks[0];
+    if block.get("symbol").and_then(serde_json::Value::as_str) != Some("dx11_cb1")
+        || block
+            .get("byte_offset")
+            .and_then(serde_json::Value::as_u64)
+            != Some(0)
+        || block.get("bytes").and_then(serde_json::Value::as_u64)
+            != Some(RESTORE_POSTEFFECT_CB_BYTES as u64)
+    {
+        return Err(
+            "retained restore PS slot 1 block is not dx11_cb1 offset 0, exactly 80 bytes"
+                .into(),
+        );
+    }
+    let block_bytes = decode_lower_hex(retained_string(block, "hex", "PostEffectBase")?)?;
+    if block_bytes.len() != RESTORE_POSTEFFECT_CB_BYTES {
+        return Err("retained restore PS slot 1 hex payload is not exactly 80 bytes".into());
+    }
+    verify_retained_sha256(block, &block_bytes, "PostEffectBase")?;
+    let posteffect_cb = decode_restore_posteffect_uniforms(&block_bytes)?;
+    if !restore_uniforms_finite(&posteffect_cb) || !restore_uniforms_plausible(&posteffect_cb) {
+        return Err("retained restore PostEffectBase constants are not plausible".into());
+    }
+
+    let draw = manifest
+        .get("restore_draw")
+        .and_then(serde_json::Value::as_object)
+        .ok_or("retained restore manifest has no restore_draw object")?;
+    if draw.get("action_name").and_then(serde_json::Value::as_str)
+        != Some("ID3D11DeviceContext::Draw()")
+        || draw.get("chunk").and_then(serde_json::Value::as_u64) == Some(0)
+        || draw.get("chunk").and_then(serde_json::Value::as_u64).is_none()
+        || draw
+            .get("pixel_shader_resource")
+            .and_then(serde_json::Value::as_u64)
+            == Some(0)
+        || draw
+            .get("pixel_shader_resource")
+            .and_then(serde_json::Value::as_u64)
+            .is_none()
+    {
+        return Err("retained restore draw lacks an event-scoped Draw identity".into());
+    }
+    let draw_index = draw
+        .get("event")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or("retained restore draw event is missing or outside u32")?;
+
+    let output = manifest
+        .get("output")
+        .ok_or("retained restore manifest has no post-draw output")?;
+    if output.get("symbol").and_then(serde_json::Value::as_str) != Some("RestoreOutput") {
+        return Err("retained restore output symbol is not RestoreOutput".into());
+    }
+    validate_retained_texture(
+        output,
+        "RestoreOutput",
+        "R8G8B8A8_UNORM",
+        1920,
+        1080,
+        8_294_400,
+    )?;
+    read_retained_payload(bundle_dir, output, "RestoreOutput")?;
+
+    Ok(RestoreSceneBundle {
+        bundle_file: manifest_path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| manifest_path.display().to_string()),
+        draw_index,
+        draw_call: "Draw".to_string(),
+        color_cube,
+        posteffect_cb,
+        average_luminance,
+    })
+}
+
+fn retained_input<'a>(
+    inputs: &'a [serde_json::Value],
+    symbol: &str,
+    slot: u64,
+) -> Result<&'a serde_json::Value> {
+    let matching: Vec<_> = inputs
+        .iter()
+        .filter(|row| {
+            row.get("symbol").and_then(serde_json::Value::as_str) == Some(symbol)
+                && row.get("consumer_slot").and_then(serde_json::Value::as_u64) == Some(slot)
+        })
+        .collect();
+    if matching.len() != 1 {
+        return Err(format!(
+            "retained restore manifest has {} {symbol}@t{slot} rows, expected exactly one",
+            matching.len()
+        )
+        .into());
+    }
+    Ok(matching[0])
+}
+
+fn validate_retained_texture(
+    row: &serde_json::Value,
+    role: &str,
+    format: &str,
+    width: u32,
+    height: u32,
+    bytes: usize,
+) -> Result<()> {
+    let texture = row
+        .get("texture")
+        .ok_or_else(|| format!("retained restore {role} has no texture descriptor"))?;
+    let actual_format = texture
+        .get("format")
+        .and_then(|value| value.get("name"))
+        .and_then(serde_json::Value::as_str);
+    let descriptor = row
+        .get("descriptor")
+        .ok_or_else(|| format!("retained restore {role} has no view descriptor"))?;
+    let subresource = row
+        .get("subresource")
+        .ok_or_else(|| format!("retained restore {role} has no subresource descriptor"))?;
+    let exact = actual_format == Some(format)
+        && texture.get("width").and_then(serde_json::Value::as_u64) == Some(width.into())
+        && texture.get("height").and_then(serde_json::Value::as_u64) == Some(height.into())
+        && texture.get("depth").and_then(serde_json::Value::as_u64) == Some(1)
+        && texture.get("mips").and_then(serde_json::Value::as_u64) == Some(1)
+        && texture.get("array_size").and_then(serde_json::Value::as_u64) == Some(1)
+        && texture.get("samples").and_then(serde_json::Value::as_u64) == Some(1)
+        && texture.get("byte_size").and_then(serde_json::Value::as_u64) == Some(bytes as u64)
+        && row.get("bytes").and_then(serde_json::Value::as_u64) == Some(bytes as u64)
+        && descriptor
+            .get("format")
+            .and_then(|value| value.get("name"))
+            .and_then(serde_json::Value::as_str)
+            == Some(format)
+        && descriptor.get("first_mip").and_then(serde_json::Value::as_u64) == Some(0)
+        && descriptor.get("num_mips").and_then(serde_json::Value::as_u64) == Some(1)
+        && descriptor.get("first_slice").and_then(serde_json::Value::as_u64) == Some(0)
+        && descriptor.get("num_slices").and_then(serde_json::Value::as_u64) == Some(1)
+        && subresource.get("mip").and_then(serde_json::Value::as_u64) == Some(0)
+        && subresource.get("slice").and_then(serde_json::Value::as_u64) == Some(0)
+        && subresource.get("sample").and_then(serde_json::Value::as_u64) == Some(0);
+    if !exact {
+        return Err(format!(
+            "retained restore {role} descriptor does not match {width}x{height} {format}, {bytes} bytes, one mip/slice/sample"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn read_retained_payload(
+    bundle_dir: &Path,
+    row: &serde_json::Value,
+    role: &str,
+) -> Result<(String, Vec<u8>)> {
+    let file = retained_string(row, "file", role)?;
+    let relative = Path::new(file);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(format!("retained restore {role} payload path is not a safe relative path")
+            .into());
+    }
+    let bytes = fs::read(bundle_dir.join(relative))?;
+    let expected = row
+        .get("bytes")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| format!("retained restore {role} byte count is missing or invalid"))?;
+    if bytes.len() != expected {
+        return Err(format!(
+            "retained restore {role} payload has {} bytes, expected {expected}",
+            bytes.len()
+        )
+        .into());
+    }
+    verify_retained_sha256(row, &bytes, role)?;
+    Ok((file.to_string(), bytes))
+}
+
+fn retained_string<'a>(row: &'a serde_json::Value, key: &str, role: &str) -> Result<&'a str> {
+    row.get(key)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("retained restore {role} has no {key} string").into())
+}
+
+fn verify_retained_sha256(row: &serde_json::Value, bytes: &[u8], role: &str) -> Result<()> {
+    let expected = retained_string(row, "sha256", role)?;
+    if !canonical_lower_sha256(expected) {
+        return Err(format!("retained restore {role} has a non-canonical SHA-256").into());
+    }
+    let actual = Sha256::hex(bytes);
+    if actual != expected {
+        return Err(format!(
+            "retained restore {role} payload SHA-256 changed from {expected} to {actual}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn canonical_lower_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn decode_lower_hex(value: &str) -> Result<Vec<u8>> {
+    if value.len() % 2 != 0
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("retained restore constant payload is not canonical lowercase hex".into());
+    }
+    let digit = |byte: u8| -> u8 {
+        if byte.is_ascii_digit() {
+            byte - b'0'
+        } else {
+            byte - b'a' + 10
+        }
+    };
+    let mut out = Vec::with_capacity(value.len() / 2);
+    for pair in value.as_bytes().chunks_exact(2) {
+        out.push((digit(pair[0]) << 4) | digit(pair[1]));
+    }
+    Ok(out)
 }
 
 pub fn probe_restore_scene_evidence_session_dir(
@@ -651,6 +1019,16 @@ fn bgrx8_to_rgba8(raw: &[u8]) -> Vec<u8> {
     out
 }
 
+/// B8G8R8A8_UNORM texels to canonical RGBA8. Unlike BGRX, retained RenderDoc
+/// exports carry a defined alpha channel, so preserve it while swapping B/R.
+fn bgra8_to_rgba8(raw: &[u8]) -> Vec<u8> {
+    let mut out = raw.to_vec();
+    for texel in out.chunks_exact_mut(4) {
+        texel.swap(0, 2);
+    }
+    out
+}
+
 fn load_restore_average_luminance(
     bundle_dir: &Path,
     draw: &MapFrameDraw,
@@ -968,6 +1346,28 @@ mod tests {
         assert!((bundle.posteffect_cb.emissive_bloom_strength - 1.0).abs() < 0.000001);
         assert!((bundle.posteffect_cb.middle_grey - 0.55).abs() < 0.000001);
         assert!((bundle.posteffect_cb.lum_white2 - 1.0).abs() < 0.000001);
+    }
+
+    #[test]
+    fn retained_rdc_manifest_loader_decodes_hash_bound_restore_packet() {
+        let retained = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../re_evidence/rendering_laws/RESTORE_GATE_RETAINED/postfx_frame159341");
+        let bundle = load_restore_scene_bundle_session_dir(&retained)
+            .expect("load retained restore packet")
+            .expect("retained manifest is recognized");
+        assert_eq!(bundle.bundle_file, "manifest.json");
+        assert_eq!(bundle.draw_call, "Draw");
+        assert_eq!(bundle.draw_index, 11_720);
+        assert_eq!(bundle.color_cube.dxgi_format, DXGI_FORMAT_B8G8R8A8_UNORM);
+        assert_eq!(bundle.color_cube.rgba8.len(), RESTORE_COLOR_CUBE_BYTES);
+        assert!(bundle
+            .color_cube
+            .rgba8
+            .chunks_exact(4)
+            .all(|texel| texel[3] == 0x00));
+        assert_eq!(bundle.average_luminance.raw, [0x00, 0x38]);
+        assert!((bundle.average_luminance.value - 0.5).abs() < 0.001);
+        assert!((bundle.posteffect_cb.middle_grey - 0.55).abs() < 0.000001);
     }
 
     #[test]

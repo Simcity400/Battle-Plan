@@ -1,10 +1,12 @@
 # XUI10 — national-focus runtime state and presentation admission
 
-Status: **REPLAY_PRODUCTION_PROMOTION_READY**. Every
+Status: **D89_PRODUCTION_ROUTE_IMPLEMENTED; LIVE_ACTIVATION_FALSE**. Every
 A31 field recoverable from the current live roots, Ghidra, installed content, and
 retained focus captures now has an exact producer or final engine field, and
-the replay-owned presentation boundary passes its complete deterministic gate.
-Extractor implementation is outside this replay-only promotion result.
+the replay-owned presentation boundary has a complete deterministic gate. The
+exact20-bound owner/item producer, reserved d89 NFP1 codec, recorder fold,
+typed replay view, and exact XUI10 admission are now wired; scheduling remains
+false pending the authenticated live fixture and root central validation.
 
 ## Authority and scope
 
@@ -75,7 +77,10 @@ inconsistency. Legacy nullable current tokens remain compatibility leaves.
 
 ## Production boundary
 
-`game_ui::national_focus::admit_national_focus_presentation` accepts only a
+`game_ui::national_focus::admit_national_focus_presentation` preserves the
+legacy D12/D45 state contract. The production exact entrypoint,
+`game_ui::national_focus::admit_exact_national_focus_presentation`, additionally
+requires the hour-bound d89 typed view and accepts only a
 measured focus-tree identity, measured exact current/continuous sets, exact
 completed sequence and count, engine-evaluated available set, final visible
 sequence, pause, and conditionally measured progress days. It mechanically
@@ -97,10 +102,12 @@ enforces:
 - every node retains its exact optional FILE-authored overlay token; and
 - the underlying UI09 focus canvas independently admits.
 
-The resulting sequence assigns semantic `Completed`, `Current`, `Available`, or
+The resulting exact sequence assigns semantic `Completed`, `Current`, `Available`, or
 `Unavailable` state plus the exact FILE-resolved background and optional
 overlay sprites. It does not invent availability, progress fraction, marker
-visibility, draw position, or ordering.
+visibility, draw position, or ordering. D89 supplies the exact display percent,
+continuous/highlight/historical visibility, and measured joint-view country;
+missing or malformed d89 rejects rather than using legacy inference.
 
 ## Exact upstream producer contract
 
@@ -190,11 +197,12 @@ inference remain forbidden substitutes.
 
 ## Mechanical verification
 
-The replay-only verifier passes 157 mechanical checks. Its isolated Rust
-harness compiles the exact checked-in `national_focus.rs` and
-`research_canvas.rs` production modules with their unchanged test vectors:
-8/8 XUI10 admission tests and 8/8 UI09 canvas-admission tests pass. The actual
-`replay_core` typed-view roundtrip gate also passes 1/1.
+The replay-only verifier now freezes the d89 exact-admission route and requires
+9 XUI10 admission tests plus the 11 UI09 canvas/replay-adapter admission tests. The
+actual `replay_core` typed-view gate also covers d89 hour binding, ordering, and
+fail-closed rejection. This wave has not run those gates locally: the root
+agent owns the single centralized Rust validation run after all parallel edits
+have landed.
 
 The verifier independently parses all 81 frozen game-definition sources and
 reproduces the 10,888-node kind census, all 22 complete background families,

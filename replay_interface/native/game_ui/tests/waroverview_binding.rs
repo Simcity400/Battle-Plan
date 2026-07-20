@@ -122,6 +122,7 @@ fn summary(first: &str, second: &str, fc: i64, sc: i64) -> WarRelationSummary {
         second: second.to_string(),
         first_casualties: Some(fc),
         second_casualties: Some(sc),
+        residuals: Leaf::Absent,
     }
 }
 
@@ -174,6 +175,7 @@ fn war_overview_flips_at_change_hour() {
     assert_eq!(wars[0].war_name, Leaf::Absent);
     assert_eq!(wars[0].attacker_participants, Leaf::Absent);
     assert_eq!(wars[0].overall_progress_raw, Leaf::Absent);
+    assert_eq!(wars[0].residuals, Leaf::Absent);
 }
 
 /// BINDING GATE 2 — the belligerent set is POV-independent (global), while

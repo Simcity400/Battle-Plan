@@ -11,7 +11,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-pub const SCHEMA: &str = "hoi4.production-render-submit.v10";
+pub const SCHEMA: &str = "hoi4.production-render-submit.v11";
+pub const INCOMPATIBLE_SNOW_MUD_FADE_SCHEMA: &str = "hoi4.production-render-submit.v10";
 /// B10 semantic carried by an exact reflected `mapname` draw-local CB1.
 /// A slot/size match without this producer-stamped token is legacy evidence,
 /// not authenticated country-label pixel authority.
@@ -35,8 +36,12 @@ pub const A729_CAMERA_MAP_PICK_RVA: u32 = 0x00b4_4760;
 pub const A729_CAMERA_RENDER_VIEW_BYTES: usize = 0x1b4;
 pub const A729_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
-pub const SNOW_MUD_TEXTURE_SCHEMA: &str = "hoi4.a729.snow-mud-texture.v2";
-pub const SNOW_MUD_H2_READBACK_SCHEMA: &str = "hoi4.replay.snow-mud-h2-readback.v2";
+pub const SNOW_MUD_TEXTURE_SCHEMA: &str = "hoi4.a729.snow-mud-texture.v3";
+pub const SNOW_MUD_H2_READBACK_SCHEMA: &str = "hoi4.replay.snow-mud-h2-readback.v3";
+pub const SNOW_MUD_TEXTURE_SEMANTIC: &str = "SnowMudTexture";
+pub const SNOW_MUD_FADE_VARIABLE: &str =
+    "vFoWOpacity_FoWTime_SnowMudFade_MaxGameSpeed";
+pub const SNOW_MUD_FADE_COMPONENT_BYTE_OFFSET: u32 = 8;
 pub const SNOW_MUD_PRODUCER_FUNCTION_RVA: u32 = 0x0124_B710;
 pub const SNOW_MUD_UPLOAD_CALLSITE_RVA: u32 = 0x0124_BAA4;
 pub const SNOW_MUD_UPLOAD_TARGET_RVA: u32 = 0x0240_0E40;
@@ -219,6 +224,17 @@ pub struct SnowMudTexturePacket {
     /// the H observation over the exact candidate set/cutoff, not merely a
     /// coincident hour and QPC value.
     pub selected_present_sha256: String,
+    /// Exact binary32 value consumed as `SnowMudFade` by every selected-Present
+    /// static draw that samples `SnowMudTexture`. It is read from the
+    /// D3DReflect-authenticated constant-buffer member, never from semantic
+    /// weather state.
+    pub snow_mud_fade_f32_bits: u32,
+    /// Number of exact selected-submit draw consumers sealed into
+    /// `snow_mud_fade_consumer_set_sha256`.
+    pub snow_mud_fade_consumer_count: u32,
+    /// Canonical SHA-256 of the ordered producer-to-consumer join rows used to
+    /// derive `snow_mud_fade_f32_bits`.
+    pub snow_mud_fade_consumer_set_sha256: String,
     pub observation_sha256: String,
 }
 
@@ -269,6 +285,20 @@ impl SnowMudTexturePacket {
         if self.selected_present_sha256 != frame.selected_present.computed_sha256()? {
             return Err("SnowMudData selected-Present receipt SHA-256 mismatch".into());
         }
+        let selected_submit = frame
+            .submit(frame.selected_present.selected_candidate_id)
+            .ok_or("SnowMudData selected Present has no retained submit")?;
+        let fade = selected_present_snow_mud_fade_receipt(
+            selected_submit,
+            &self.selected_present_sha256,
+        )?;
+        if self.snow_mud_fade_f32_bits != fade.fade_f32_bits
+            || self.snow_mud_fade_consumer_count != fade.consumer_count
+            || self.snow_mud_fade_consumer_set_sha256 != fade.consumer_set_sha256
+        {
+            return Err("SnowMudData selected-Present fade consumer receipt mismatch".into());
+        }
+        validate_selected_present_snow_mud_sources(selected_submit, self)?;
         check_sha256(&self.observation_sha256, None)?;
         if self.observation_sha256 != self.computed_observation_sha256()? {
             return Err("SnowMudData observation SHA-256 mismatch".into());
@@ -338,6 +368,9 @@ pub struct SnowMudReplayReadbackReceipt {
     #[serde(with = "decimal_u64")]
     pub selected_qpc_ticks: u64,
     pub selected_present_sha256: String,
+    pub snow_mud_fade_f32_bits: u32,
+    pub snow_mud_fade_consumer_count: u32,
+    pub snow_mud_fade_consumer_set_sha256: String,
     pub observation_sha256: String,
     pub payload_sha256: String,
     pub readback_sha256: String,
@@ -348,9 +381,9 @@ pub struct SnowMudReplayReadbackReceipt {
     pub verified_row_count: u32,
     #[serde(with = "decimal_u64")]
     pub verified_tight_byte_count: u64,
-    /// Exact number of captured production-pass SnowMud SRV bindings replaced
-    /// with the immutable packet texture after readback succeeded. Zero is
-    /// never a consumer receipt: it would prove an unused allocation only.
+    /// Exact number of selected-submit SnowMud SRV bindings executed with an
+    /// immutable packet texture after readback succeeded. It must equal the H
+    /// consumer count; zero would prove only an unused allocation.
     pub replaced_binding_count: u32,
     pub receipt_sha256: String,
 }
@@ -377,6 +410,10 @@ impl SnowMudReplayReadbackReceipt {
             || self.selected_qpc_ticks != selected_present.selected_qpc_ticks
             || self.selected_present_sha256 != packet.selected_present_sha256
             || self.selected_present_sha256 != selected_present.computed_sha256()?
+            || self.snow_mud_fade_f32_bits != packet.snow_mud_fade_f32_bits
+            || self.snow_mud_fade_consumer_count != packet.snow_mud_fade_consumer_count
+            || self.snow_mud_fade_consumer_set_sha256
+                != packet.snow_mud_fade_consumer_set_sha256
             || self.observation_sha256 != packet.observation_sha256
             || self.payload_sha256 != packet.payload_sha256
             || self.readback_sha256 != packet.payload_sha256
@@ -391,11 +428,13 @@ impl SnowMudReplayReadbackReceipt {
             || self.verified_tight_byte_count
                 != u64::from(packet.row_pitch) * u64::from(packet.height)
             || self.replaced_binding_count == 0
+            || self.replaced_binding_count != packet.snow_mud_fade_consumer_count
         {
             return Err("SnowMudData H2 descriptor/coverage/consumer mismatch".into());
         }
         for sha256 in [
             &self.selected_present_sha256,
+            &self.snow_mud_fade_consumer_set_sha256,
             &self.observation_sha256,
             &self.payload_sha256,
             &self.readback_sha256,
@@ -1004,6 +1043,16 @@ pub enum StaticShaderResourceSource {
         /// Exact last writer of this render-graph resource at the read point.
         producer: RenderExecutionRef,
     },
+    /// Exact runtime SnowMudData producer packet selected for this Present.
+    /// The process-local D3D resource identity used for the join is discarded
+    /// before serialization; ordinal plus payload digest bind this edge to H.
+    SnowMudTexture {
+        #[serde(with = "decimal_u64")]
+        producer_ordinal: u64,
+        payload_sha256: String,
+        resource: TextureResourceDesc,
+        view: ShaderResourceViewDesc,
+    },
     PoliticalTexture {
         texture_kind: PoliticalTextureKind,
         target_binding_identity: String,
@@ -1312,6 +1361,282 @@ pub struct ConstantBufferBinding {
     pub raw_bytes: Vec<u8>,
     pub sha256: String,
     pub semantic_layout: String,
+}
+
+/// Portable selected-Present proof that every exact static draw sampling
+/// `SnowMudTexture` consumed one identical reflected `SnowMudFade` value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnowMudFadeReceipt {
+    pub fade_f32_bits: u32,
+    pub consumer_count: u32,
+    pub consumer_set_sha256: String,
+}
+
+#[derive(Serialize)]
+struct SnowMudFadeConsumerHashRow<'a> {
+    selected_present_sha256: &'a str,
+    operation_ordinal: u32,
+    draw_token: &'a str,
+    draw_payload_sha256: &'a str,
+    shader_source_payload_sha256: &'a str,
+    pixel_shader_sha256: &'a str,
+    texture_slot: u8,
+    constant_buffer_slot: u8,
+    constant_buffer_sha256: &'a str,
+    constant_buffer_layout_sha256: String,
+    variable_start_offset: u32,
+    fade_f32_bits: u32,
+}
+
+#[derive(Clone, Copy)]
+struct ReflectedVariableRange {
+    buffer_byte_count: u32,
+    start_offset: u32,
+    byte_count: u32,
+}
+
+fn parse_decimal_component<'a>(input: &'a str, delimiter: u8) -> Result<(u32, &'a str), String> {
+    let bytes = input.as_bytes();
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == delimiter)
+        .ok_or("reflected constant-buffer layout is truncated")?;
+    let digits = &input[..end];
+    if digits.is_empty()
+        || !digits.bytes().all(|byte| byte.is_ascii_digit())
+        || (digits.len() > 1 && digits.starts_with('0'))
+    {
+        return Err("reflected constant-buffer layout has a non-canonical decimal".into());
+    }
+    let value = digits
+        .parse::<u32>()
+        .map_err(|_| "reflected constant-buffer decimal exceeds u32")?;
+    Ok((value, &input[end + 1..]))
+}
+
+fn parse_length_prefixed_text(input: &str) -> Result<(&str, &str), String> {
+    let (length, rest) = parse_decimal_component(input, b':')?;
+    let length = usize::try_from(length).map_err(|_| "reflected text length exceeds usize")?;
+    let text = rest
+        .get(..length)
+        .ok_or("reflected length-prefixed text is truncated")?;
+    Ok((text, &rest[length..]))
+}
+
+/// Parse only the outer D3DReflect cbuffer grammar emitted by
+/// `production_render_submit_live::shader_reflection`. Nested type tokens are
+/// skipped by their exact length prefix, so member-name substring collisions
+/// cannot identify a variable.
+fn reflected_variable_range(
+    layout: &str,
+    wanted_name: &str,
+) -> Result<Option<ReflectedVariableRange>, String> {
+    let mut rest = layout
+        .strip_prefix("d3d11-cbuffer-v1[")
+        .ok_or("constant-buffer semantic layout is not d3d11-cbuffer-v1")?;
+    let (_buffer_name, next) = parse_length_prefixed_text(rest)?;
+    rest = next
+        .strip_prefix(';')
+        .ok_or("reflected constant-buffer descriptor is truncated")?;
+    let (_buffer_type, next) = parse_decimal_component(rest, b';')?;
+    let (buffer_byte_count, next) = parse_decimal_component(next, b';')?;
+    let header_end = next
+        .bytes()
+        .position(|byte| byte == b';' || byte == b']')
+        .ok_or("reflected constant-buffer flags are truncated")?;
+    let flags = &next[..header_end];
+    if flags.is_empty()
+        || !flags.bytes().all(|byte| byte.is_ascii_digit())
+        || (flags.len() > 1 && flags.starts_with('0'))
+    {
+        return Err("reflected constant-buffer flags are not canonical decimal".into());
+    }
+    let _buffer_flags = flags
+        .parse::<u32>()
+        .map_err(|_| "reflected constant-buffer flags exceed u32")?;
+    let mut rest = &next[header_end..];
+    if rest == "]" {
+        return Ok(None);
+    }
+    rest = &rest[1..];
+    let mut found = None;
+    loop {
+        if rest == "]" {
+            return Ok(found);
+        }
+        let (name, next) = parse_length_prefixed_text(rest)?;
+        rest = next
+            .strip_prefix(':')
+            .ok_or("reflected variable offset is truncated")?;
+        let (start_offset, next) = parse_decimal_component(rest, b':')?;
+        let (byte_count, next) = parse_decimal_component(next, b':')?;
+        let (_flags, next) = parse_decimal_component(next, b':')?;
+        let (_type_token, next) = parse_length_prefixed_text(next)?;
+        if name == wanted_name {
+            if found.is_some() {
+                return Err("reflected constant buffer repeats the SnowMudFade variable".into());
+            }
+            found = Some(ReflectedVariableRange {
+                buffer_byte_count,
+                start_offset,
+                byte_count,
+            });
+        }
+        rest = next
+            .strip_prefix(';')
+            .or_else(|| if next == "]" { Some(next) } else { None })
+            .ok_or("reflected constant-buffer variable separator is invalid")?;
+    }
+}
+
+/// Derive the exact selected-Present `SnowMudFade` value from the portable
+/// static program itself. Every draw that reflects and samples
+/// `SnowMudTexture` must carry the named reflected float4 and must agree on its
+/// `.z` bits. No gameplay-weather field or fixed cbuffer slot is consulted.
+pub fn selected_present_snow_mud_fade_receipt(
+    submit: &RenderSubmit,
+    selected_present_sha256: &str,
+) -> Result<SnowMudFadeReceipt, String> {
+    check_sha256(selected_present_sha256, None)?;
+    let mut rows = Vec::new();
+    let mut common_bits = None;
+    for program in &submit.ordered_static_map_programs {
+        for operation in &program.ordered_operations {
+            let StaticMapCommand::Draw { draw } = &operation.command else {
+                continue;
+            };
+            let mut snow_bindings = draw
+                .ordered_shader_resources
+                .iter()
+                .filter(|binding| binding.semantic_token == SNOW_MUD_TEXTURE_SEMANTIC);
+            let Some(snow_binding) = snow_bindings.next() else {
+                continue;
+            };
+            if snow_bindings.next().is_some() || snow_binding.stage != ShaderStage::Pixel {
+                return Err("selected SnowMud draw repeats or mis-stages SnowMudTexture".into());
+            }
+            let mut matching = Vec::new();
+            for binding in draw
+                .ordered_constant_buffers
+                .iter()
+                .filter(|binding| binding.stage_mask_u8 == 0b0000_0010)
+            {
+                let Some(variable) = reflected_variable_range(
+                    &binding.semantic_layout,
+                    SNOW_MUD_FADE_VARIABLE,
+                )? else {
+                    continue;
+                };
+                if binding.byte_offset != 0
+                    || binding.byte_count != variable.buffer_byte_count
+                    || binding.raw_bytes.len() != binding.byte_count as usize
+                    || variable.byte_count != 16
+                    || variable
+                        .start_offset
+                        .checked_add(SNOW_MUD_FADE_COMPONENT_BYTE_OFFSET + 4)
+                        .is_none_or(|end| end > binding.byte_count)
+                {
+                    return Err("selected SnowMud draw has an invalid reflected fade range".into());
+                }
+                let start = usize::try_from(
+                    variable.start_offset + SNOW_MUD_FADE_COMPONENT_BYTE_OFFSET,
+                )
+                .map_err(|_| "SnowMudFade offset exceeds usize")?;
+                let bits = u32::from_le_bytes(
+                    binding.raw_bytes[start..start + 4]
+                        .try_into()
+                        .expect("range checked"),
+                );
+                let value = f32::from_bits(bits);
+                if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                    return Err("selected SnowMudFade is not finite in [0,1]".into());
+                }
+                matching.push((binding, variable, bits));
+            }
+            if matching.len() != 1 {
+                return Err("selected SnowMud draw lacks one exact reflected fade consumer".into());
+            }
+            let (binding, variable, bits) = matching[0];
+            if common_bits.replace(bits).is_some_and(|prior| prior != bits) {
+                return Err("selected SnowMud draws disagree on SnowMudFade bits".into());
+            }
+            rows.push(SnowMudFadeConsumerHashRow {
+                selected_present_sha256,
+                operation_ordinal: operation.operation_ordinal,
+                draw_token: &draw.draw_token,
+                draw_payload_sha256: &draw.payload_sha256,
+                shader_source_payload_sha256: &draw.shader_program.source.payload_sha256,
+                pixel_shader_sha256: &draw.shader_program.compiled_pixel_shader.sha256,
+                texture_slot: snow_binding.slot,
+                constant_buffer_slot: binding.slot,
+                constant_buffer_sha256: &binding.sha256,
+                constant_buffer_layout_sha256: format!(
+                    "{:x}",
+                    Sha256::digest(binding.semantic_layout.as_bytes())
+                ),
+                variable_start_offset: variable.start_offset,
+                fade_f32_bits: bits,
+            });
+        }
+    }
+    let fade_f32_bits = common_bits
+        .ok_or("selected submit has no static SnowMudTexture fade consumer")?;
+    let consumer_count = u32::try_from(rows.len())
+        .map_err(|_| "SnowMudFade consumer count exceeds u32")?;
+    let consumer_set_sha256 = canonical_json_sha256(&rows)?;
+    Ok(SnowMudFadeReceipt {
+        fade_f32_bits,
+        consumer_count,
+        consumer_set_sha256,
+    })
+}
+
+fn validate_selected_present_snow_mud_sources(
+    submit: &RenderSubmit,
+    packet: &SnowMudTexturePacket,
+) -> Result<(), String> {
+    let mut joined = 0u32;
+    for program in &submit.ordered_static_map_programs {
+        for operation in &program.ordered_operations {
+            let StaticMapCommand::Draw { draw } = &operation.command else {
+                continue;
+            };
+            for binding in &draw.ordered_shader_resources {
+                match (&binding.semantic_token[..], &binding.source) {
+                    (
+                        SNOW_MUD_TEXTURE_SEMANTIC,
+                        StaticShaderResourceSource::SnowMudTexture {
+                            producer_ordinal,
+                            payload_sha256,
+                            resource,
+                            ..
+                        },
+                    ) if *producer_ordinal == packet.producer_ordinal
+                        && payload_sha256 == &packet.payload_sha256
+                        && resource.width == packet.width
+                        && resource.height == packet.height
+                        && resource.dxgi_format_u32 == 87
+                        && resource.sample_count == 1 =>
+                    {
+                        joined = joined
+                            .checked_add(1)
+                            .ok_or("SnowMudTexture source consumer count overflow")?;
+                    }
+                    (SNOW_MUD_TEXTURE_SEMANTIC, _) => {
+                        return Err("selected SnowMudTexture consumer is not joined to H".into())
+                    }
+                    (_, StaticShaderResourceSource::SnowMudTexture { .. }) => {
+                        return Err("SnowMudTexture H source has a foreign reflected semantic".into())
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    if joined == 0 || joined != packet.snow_mud_fade_consumer_count {
+        return Err("SnowMudTexture H source/fade consumer cardinality mismatch".into());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2403,6 +2728,11 @@ struct SchemaProbe {
 /// Shared schema gate: every explicit incompatible-version refusal must fire
 /// before any typed field error.
 fn check_schema(schema: &str) -> Result<(), String> {
+    if schema == INCOMPATIBLE_SNOW_MUD_FADE_SCHEMA {
+        return Err(format!(
+            "production render schema {schema} is incompatible with {SCHEMA}: its SnowMudData packet is not joined to the exact selected-Present reflected SnowMudFade consumers"
+        ));
+    }
     if schema == INCOMPATIBLE_WEATHER_CARRIER_SCHEMA {
         return Err(format!(
             "production render schema {schema} is incompatible with {SCHEMA}: it cannot preserve exact weather placement/content/visibility joins or the complete weather checkpoint hash fold"
@@ -2562,8 +2892,33 @@ impl ProductionRenderFrame {
         if self.presentation_qpc_frequency_hz == 0 {
             return Err("presentation QPC frequency is zero".into());
         }
-        if let Some(snow_mud) = &self.snow_mud_texture {
-            snow_mud.validate_against(self)?;
+        let has_snow_mud_source = self.submits.iter().any(|submit| {
+            submit
+                .ordered_static_map_programs
+                .iter()
+                .flat_map(|program| program.ordered_operations.iter())
+                .filter_map(|operation| match &operation.command {
+                    StaticMapCommand::Draw { draw } => Some(draw),
+                    StaticMapCommand::ClearColor { .. }
+                    | StaticMapCommand::ClearDepthStencil { .. } => None,
+                })
+                .flat_map(|draw| draw.ordered_shader_resources.iter())
+                .any(|binding| {
+                    matches!(
+                        &binding.source,
+                        StaticShaderResourceSource::SnowMudTexture { .. }
+                    )
+                })
+        });
+        match (&self.snow_mud_texture, has_snow_mud_source) {
+            (Some(snow_mud), true) => snow_mud.validate_against(self)?,
+            (None, false) => {}
+            (Some(_), false) => {
+                return Err("SnowMudData H packet has no selected-submit source edge".into())
+            }
+            (None, true) => {
+                return Err("selected-submit SnowMudTexture source has no H packet".into())
+            }
         }
         for submit in &self.submits {
             if last_submit.is_some_and(|v| submit.submit_index <= v) {
@@ -3616,7 +3971,6 @@ fn validate_weather_membership(
             || instance.position_ordinal != expected.1
             || instance.class != expected.2
             || instance.resolved_variant_token != expected.3
-            || instance.submitted_outputs.is_empty()
         {
             return Err("weather instance identity/order/output join is incomplete".into());
         }
@@ -3648,7 +4002,7 @@ fn validate_weather_membership(
 
     let mut previous_sequence = None;
     let mut previous_update = None;
-    let mut prior_entity_state = BTreeMap::new();
+    let mut prior_entity_state: BTreeMap<u64, (bool, u32)> = BTreeMap::new();
     for visibility in &weather.visibility_updates {
         check_sequence(
             visibility.sequence,
@@ -3680,31 +4034,29 @@ fn validate_weather_membership(
             .iter()
             .zip(expected_entities.iter())
         {
-            let expected_writes = match entity.role {
-                WeatherEntityRole::Primary => matches!(
-                    branch,
-                    WeatherCameraBranch::FarFade | WeatherCameraBranch::FarHidden
-                ),
-                WeatherEntityRole::Fading => true,
+            let (expected_active_write, expected_alpha_write) = match (entity.role, branch) {
+                (WeatherEntityRole::Primary, WeatherCameraBranch::FarFade) => (true, true),
+                (WeatherEntityRole::Primary, WeatherCameraBranch::FarHidden) => (true, false),
+                (WeatherEntityRole::Primary, _) => (false, false),
+                (WeatherEntityRole::Fading, WeatherCameraBranch::NearHidden)
+                | (WeatherEntityRole::Fading, WeatherCameraBranch::FarHidden) => (true, false),
+                (WeatherEntityRole::Fading, _) => (true, true),
             };
             if (entity.entity_instance_id, entity.role) != *expected
-                || entity.producer_wrote_active != expected_writes
-                || entity.producer_wrote_alpha != expected_writes
+                || entity.producer_wrote_active != expected_active_write
+                || entity.producer_wrote_alpha != expected_alpha_write
                 || entity.post_update_playback_rate_f32_bits != playback_bits
-                || (expected_writes
-                    && (entity.post_update_active != (alpha_bits != 0)
-                        || entity.post_update_alpha_f32_bits != alpha_bits))
+                || (expected_active_write && entity.post_update_active != (alpha_bits != 0))
+                || (expected_alpha_write && entity.post_update_alpha_f32_bits != alpha_bits)
             {
                 return Err("weather entity visibility/write-mask law mismatch".into());
             }
-            if !expected_writes
-                && prior_entity_state
-                    .get(&entity.entity_instance_id)
-                    .is_some_and(|prior: &(bool, u32)| {
-                        *prior != (entity.post_update_active, entity.post_update_alpha_f32_bits)
-                    })
-            {
-                return Err("weather producer changed an entity in a no-write branch".into());
+            if let Some(prior) = prior_entity_state.get(&entity.entity_instance_id) {
+                if (!expected_active_write && prior.0 != entity.post_update_active)
+                    || (!expected_alpha_write && prior.1 != entity.post_update_alpha_f32_bits)
+                {
+                    return Err("weather producer changed an entity field in a no-write branch".into());
+                }
             }
             prior_entity_state.insert(
                 entity.entity_instance_id,
@@ -4143,6 +4495,22 @@ fn validate_static_submit_sources(
                     return Err("political texture source identity/descriptor differs from selected submit payload".into());
                 }
             }
+            StaticShaderResourceSource::SnowMudTexture {
+                producer_ordinal,
+                payload_sha256,
+                resource,
+                ..
+            } => {
+                if *producer_ordinal == 0
+                    || resource.width != SNOW_MUD_TEXTURE_WIDTH
+                    || resource.height != SNOW_MUD_TEXTURE_HEIGHT
+                    || resource.dxgi_format_u32 != 87
+                    || resource.sample_count != 1
+                {
+                    return Err("SnowMudTexture source identity/descriptor is incomplete".into());
+                }
+                check_sha256(payload_sha256, None)?;
+            }
             StaticShaderResourceSource::TiledLightIndex {
                 writer_index,
                 payload_sha256,
@@ -4309,6 +4677,20 @@ fn validate_static_map_draw(draw: &StaticMapDraw) -> Result<(), String> {
                 view.validate()?;
                 view.validate_against(resource)?;
             }
+            StaticShaderResourceSource::SnowMudTexture {
+                producer_ordinal,
+                payload_sha256,
+                resource,
+                view,
+            } => {
+                if *producer_ordinal == 0 {
+                    return Err("SnowMudTexture source has zero producer ordinal".into());
+                }
+                check_sha256(payload_sha256, None)?;
+                validate_submit_payload_texture_resource(resource)?;
+                view.validate()?;
+                view.validate_against(resource)?;
+            }
             StaticShaderResourceSource::TiledLightIndex {
                 payload_sha256,
                 resource,
@@ -4358,7 +4740,8 @@ fn validate_static_draw_vfs_authority(
             StaticShaderResourceSource::PreparedTarget { resource, .. } => {
                 validate_texture_resource_vfs_authority(resource, &check)?;
             }
-            StaticShaderResourceSource::PoliticalTexture { resource, .. }
+            StaticShaderResourceSource::SnowMudTexture { resource, .. }
+            | StaticShaderResourceSource::PoliticalTexture { resource, .. }
             | StaticShaderResourceSource::TiledLightIndex { resource, .. }
             | StaticShaderResourceSource::TiledLightData { resource, .. } => {
                 validate_texture_resource_vfs_authority(resource, &check)?;
@@ -4449,6 +4832,7 @@ fn collect_static_draw_used_content(draw: &StaticMapDraw) -> Vec<UsedContentKey>
                 collect_resource(&mut out, resource);
             }
             StaticShaderResourceSource::PreparedTarget { resource, .. }
+            | StaticShaderResourceSource::SnowMudTexture { resource, .. }
             | StaticShaderResourceSource::PoliticalTexture { resource, .. }
             | StaticShaderResourceSource::TiledLightIndex { resource, .. }
             | StaticShaderResourceSource::TiledLightData { resource, .. } => {
@@ -5972,6 +6356,100 @@ mod tests {
             error.contains("no exact selected-submit static shader-resource consumer"),
             "{error}"
         );
+    }
+
+    fn snow_mud_fade_submit(bits: u32) -> RenderSubmit {
+        let mut frame = production_frame_with_m02();
+        let mut submit = frame.submits.remove(0);
+        let mut raw_bytes = vec![0u8; 256];
+        raw_bytes[248..252].copy_from_slice(&bits.to_le_bytes());
+        let layout = format!(
+            "d3d11-cbuffer-v1[14:SceneConstants;0;256;0;{}:{}:240:16:0:3:vec]",
+            SNOW_MUD_FADE_VARIABLE.len(),
+            SNOW_MUD_FADE_VARIABLE,
+        );
+        let texture = texture();
+        let mut shader = shader();
+        shader.source = content("gfx/fx/pdxmap.shader");
+        let draw = StaticMapDraw {
+            draw_token: "snow-mud-consumer".into(),
+            shader_program: shader,
+            ordered_shader_resources: vec![StaticShaderResourceBinding {
+                stage: ShaderStage::Pixel,
+                slot: 7,
+                semantic_token: SNOW_MUD_TEXTURE_SEMANTIC.into(),
+                source: StaticShaderResourceSource::UsedContent {
+                    content: texture.content,
+                    resource: texture.resource,
+                    view: texture.view,
+                },
+            }],
+            pipeline: pipeline(),
+            geometry: StaticGeometrySource::Exact {
+                geometry: entity_geometry(),
+            },
+            ordered_constant_buffers: vec![ConstantBufferBinding {
+                stage_mask_u8: 0b10,
+                slot: 0,
+                byte_offset: 0,
+                byte_count: 256,
+                sha256: hash(&raw_bytes),
+                raw_bytes,
+                semantic_layout: layout,
+            }],
+            output_state: output_state(),
+            payload_sha256: "d".repeat(64),
+        };
+        submit.ordered_static_map_programs = vec![StaticMapPassProgram {
+            program_ordinal: 0,
+            pass_token: format!("opaque-pass:{}", "e".repeat(64)),
+            ordered_content_keys: vec![],
+            ordered_operations: vec![StaticMapOperation {
+                operation_ordinal: 7,
+                payload_sha256: "f".repeat(64),
+                command: StaticMapCommand::Draw { draw },
+            }],
+            payload_sha256: "1".repeat(64),
+        }];
+        submit
+    }
+
+    #[test]
+    fn snow_mud_fade_receipt_is_reflection_bound_and_consumer_complete() {
+        let selected = "a".repeat(64);
+        let submit = snow_mud_fade_submit(0.25f32.to_bits());
+        let receipt = selected_present_snow_mud_fade_receipt(&submit, &selected).unwrap();
+        assert_eq!(receipt.fade_f32_bits, 0.25f32.to_bits());
+        assert_eq!(receipt.consumer_count, 1);
+        assert_eq!(receipt.consumer_set_sha256.len(), 64);
+
+        let mut missing = submit.clone();
+        let StaticMapCommand::Draw { draw } = &mut missing.ordered_static_map_programs[0]
+            .ordered_operations[0]
+            .command
+        else {
+            unreachable!()
+        };
+        draw.ordered_constant_buffers[0].semantic_layout =
+            "d3d11-cbuffer-v1[14:SceneConstants;0;256;0]".into();
+        assert!(selected_present_snow_mud_fade_receipt(&missing, &selected).is_err());
+
+        let mut disagree = submit;
+        let mut second = disagree.ordered_static_map_programs[0].ordered_operations[0].clone();
+        second.operation_ordinal = 8;
+        let StaticMapCommand::Draw { draw } = &mut second.command else {
+            unreachable!()
+        };
+        draw.ordered_constant_buffers[0].raw_bytes[248..252]
+            .copy_from_slice(&0.75f32.to_bits().to_le_bytes());
+        draw.ordered_constant_buffers[0].sha256 =
+            hash(&draw.ordered_constant_buffers[0].raw_bytes);
+        disagree.ordered_static_map_programs[0]
+            .ordered_operations
+            .push(second);
+        assert!(selected_present_snow_mud_fade_receipt(&disagree, &selected)
+            .unwrap_err()
+            .contains("disagree"));
     }
 
     #[test]
@@ -7793,6 +8271,9 @@ mod tests {
         let v9 = serde_json::json!({"schema": INCOMPATIBLE_WEATHER_CARRIER_SCHEMA});
         let error = ProductionRenderFrame::decode_value(&v9).unwrap_err();
         assert!(error.contains("weather placement/content/visibility"));
+        let v10 = serde_json::json!({"schema": INCOMPATIBLE_SNOW_MUD_FADE_SCHEMA});
+        let error = ProductionRenderFrame::decode_value(&v10).unwrap_err();
+        assert!(error.contains("reflected SnowMudFade consumers"));
         let unknown = serde_json::json!({"schema": "hoi4.production-render-submit.v99"});
         let error = ProductionRenderFrame::decode_value(&unknown).unwrap_err();
         assert!(error.contains("unsupported production render schema"));

@@ -44,6 +44,13 @@ references resolve before admission; and each result exactly matches its
 allocation's action, actor, beneficiary, target country, state IDs, and ship
 IDs.
 
+The conference identity is no longer an opaque producer string. Exact-a729
+stores a registered `CReferenceObject` key as two `u32` words at conference
+`+0x08`; word 0 selects the engine reference table and both words are compared
+before resolution. Replay transports the pair pointer-free and requires the
+canonical display identity `hoi4-ref:<object_type>:<object_id>`. The all-zero
+sentinel, a resolved process pointer, or a mismatched display id rejects.
+
 `action_kind` is the replay discriminator bound to the exact live controller
 slot and GUI control. `take_states` is also the documented game-script action
 type. Display ordinal and controller offset are separate laws: the authored GUI
@@ -86,12 +93,22 @@ authenticated intelligence probe contains exactly inactive peace state
 
 The read-only A40 contract remains frozen at
 `extractor/documents/dossiers/A40_XUI08_READONLY_INPUTS.json`, SHA-256
-`ee70e3a36022446d795c7992e9ae9d2ec930c34b1426b04f7e4563e621140d66`.
+`978139c87bc914e74af3d56f7d1b2cba8163fb7d4b460ad24c5afc9f2e4fa524`.
 It must supply the active selected/open designer state, engine-resolved display
 text and module availability, and the complete active peace graph. Without that
 authenticated carrier, active or selected surfaces reject. A27's admitted live
 design catalog and A25's producer-resolved localized text are also explicit
 inputs; none is synthesized by replay.
+
+Static identity RE is exhausted in
+`extractor/documents/dossiers/A40/H_PEACE_PORTABLE_IDENTITY_CLOSEOUT_20260720.md`.
+It closes the portable conference key and the claim/contest source-order
+payload, but proves that `CPeaceAction` is a value object without a registered
+id. The terminal-outcome xrefs also collapse to `0x140B6FF40`, a presentation
+formatter over already-aggregated summary collections with no result or
+allocation identity. Allocation identity across refresh and terminal result
+binding therefore remain live-transition inputs; active production emission
+stays disabled.
 
 ## Binary provenance
 
@@ -106,6 +123,7 @@ SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 | `0x141853780` | `20260717T110304Z-a40-peace-action-turn-producers-3a638690` | `evidence/func_141853780.decompile.c` | `c3c118f211c6053cad936fa3e39315dd1d60de3a40de7a0ca3a8f244e429da20` | `14445913ebd641dd6556c70955374d671b12c1a4fcef38cea009e52a8b28ae1c` |
 | `0x140E29E00` | `20260717T110304Z-a40-peace-action-turn-producers-3a638690` | `evidence/func_140e29e00.decompile.c` | `e01ccb6350eadc5158978685133dcc43166b244db5296a7ea65dbfd0689e68c4` | `14445913ebd641dd6556c70955374d671b12c1a4fcef38cea009e52a8b28ae1c` |
 | `0x140E29970` | `20260717T110304Z-a40-peace-action-turn-producers-3a638690` | `evidence/func_140e29970.decompile.c` | `dad2fae2dae3e8e3f828b392167a986efc570d699f048e1c10b2573dc2f9ab93` | `14445913ebd641dd6556c70955374d671b12c1a4fcef38cea009e52a8b28ae1c` |
+| `0x140B6FF40` | `20260720T050217Z-w4-a40-peace-terminal-result-functions-f9a925e6` | `evidence/func_140b6ff40.decompile.c` | `cc6ca57447e52c2ea27293c61229c8e506feaf2934be320de55dd7c8e43bd2c5` | `71357eb95ff347afab566b15113589580553b0b2316f6f877915d31436a2c7f8` |
 | `0x141DC3B90` | `20260717T110314Z-a40-designer-window-module-stat-producer-249a7729` | `evidence/func_141dc3b90.decompile.c` | `7204575302a7ff934cac6b6134fe5bb09c71f0d4cf553a6f3153ce6cd9101cb9` | `ac013804762b7a628217d731cbc6612047e8033fcbc8f699e7736e867f0a695b` |
 | `0x141DC38A0` | `20260717T110314Z-a40-designer-window-module-stat-producer-249a7729` | `evidence/func_141dc38a0.decompile.c` | `8bfbad6f84b4f2ad0c05cec48f9c6d7736e0f7728b10d6d5bd2e2deb8662f542` | `ac013804762b7a628217d731cbc6612047e8033fcbc8f699e7736e867f0a695b` |
 | `0x141769820` | `20260717T110352Z-a27-designer-grid-population-callers-9c115a8b` | `evidence/func_141769820.decompile.c` | `0096a93a24c4912b16de85d7ee579a27251b7288ff7452c63ca808fe65cdbc2c` | `e12cbbd037d94c33a81381b49021116dc1ca7af7325af9bbffe101acd5d82904` |
@@ -118,6 +136,10 @@ The remaining functions freeze conference identity/turn/score producers,
 designer source order, row identity, and module availability.
 
 ## Production verification
+
+The wave-4 `PeaceConferenceReference` admission change is pending the root
+agent's centralized Rust validation. The historical results below predate that
+change and are retained only as the prior baseline.
 
 - implementation SHA-256: `cf7ada95db21432232d80b178a9f7b717d4b5832e131ede124289cbdbf86fc29`
 - focused tests SHA-256: `ff40ce428474cc5ee9e0b7c1251626958016b13dde8217707509486f156573c9`

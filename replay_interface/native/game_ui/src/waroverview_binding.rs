@@ -8,10 +8,12 @@
 //!
 //! ## What is POPULATED
 //!
-//! * **Belligerent-pair casualties** — from `DiplomacyView::war_relations`
+//! * **Belligerent-pair casualties and H-B5 war residuals** — from
+//!   `DiplomacyView::war_relations`
 //!   (the live `diplomacy_live.war_relations` feed), each row is an ordered
-//!   `(first, second)` belligerent pair plus the two running casualty tallies.
-//!   These feed the war-participant rows' `casualties` textbox.
+//!   `(first, second)` belligerent pair plus the two running casualty tallies
+//!   and the exact threat/instigator/hostility tuple. These feed the
+//!   war-participant rows' `casualties` textbox and the read-only war detail.
 //! * **Exact war objects** — ordered attacker/defender sides, engine-resolved
 //!   war name, participant participation/breakdown/capitulation rows, and the
 //!   signed overall-progress raw value from `DiplomacyView::wars`.
@@ -32,15 +34,134 @@ use replay_core::{
 };
 use std::collections::BTreeSet;
 
+/// One exact a729 hostility-reason registry resolution. The registry token id
+/// is portable integer identity, never a process pointer. Unknown raw values
+/// and raw/spelling mismatches are not admitted as modded or guessed tokens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostilityReasonToken {
+    pub raw: i64,
+    pub registry_token_id: u32,
+    pub spelling: &'static str,
+}
+
+/// Resolve the complete hostility-reason table proved by the H-B5 exact-20
+/// token-xref receipt. This deliberately has no fallback for unknown values.
+pub const fn resolve_hostility_reason_token(raw: i64) -> Option<HostilityReasonToken> {
+    let (registry_token_id, spelling) = match raw {
+        0 => (0x298D, "war"),
+        1 => (0x30D1, "puppet"),
+        2 => (0x299A, "ally"),
+        3 => (0x381F, "asked_to_join"),
+        4 => (0x28DA, "guarantee"),
+        5 => (0x3820, "not_applicable"),
+        _ => return None,
+    };
+    Some(HostilityReasonToken {
+        raw,
+        registry_token_id,
+        spelling,
+    })
+}
+
+/// Complete, mechanically resolved H-B5 residual tuple. The tuple is admitted
+/// all-or-none so a replay cannot combine a measured raw discriminator with a
+/// missing or invented spelling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WarResidualSummary {
+    pub threat_fixed5_raw: i64,
+    pub threat_fixed_scale: i64,
+    pub first_was_instigator: bool,
+    pub hostility_reason_instigator: HostilityReasonToken,
+    pub hostility_reason_defender: HostilityReasonToken,
+}
+
+fn resolve_war_residuals(
+    threat_fixed5_raw: &Leaf<i64>,
+    threat_fixed_scale: &Leaf<i64>,
+    first_was_instigator: &Leaf<bool>,
+    hostility_reason_instigator_raw: &Leaf<i64>,
+    hostility_reason_instigator: &Leaf<String>,
+    hostility_reason_defender_raw: &Leaf<i64>,
+    hostility_reason_defender: &Leaf<String>,
+) -> Leaf<WarResidualSummary> {
+    if matches!(threat_fixed5_raw, Leaf::Absent)
+        && matches!(threat_fixed_scale, Leaf::Absent)
+        && matches!(first_was_instigator, Leaf::Absent)
+        && matches!(hostility_reason_instigator_raw, Leaf::Absent)
+        && matches!(hostility_reason_instigator, Leaf::Absent)
+        && matches!(hostility_reason_defender_raw, Leaf::Absent)
+        && matches!(hostility_reason_defender, Leaf::Absent)
+    {
+        return Leaf::Absent;
+    }
+
+    let (
+        Some(&threat_fixed5_raw),
+        Some(&threat_fixed_scale),
+        Some(&first_was_instigator),
+        Some(&instigator_raw),
+        Some(instigator_spelling),
+        Some(&defender_raw),
+        Some(defender_spelling),
+    ) = (
+        threat_fixed5_raw.measured(),
+        threat_fixed_scale.measured(),
+        first_was_instigator.measured(),
+        hostility_reason_instigator_raw.measured(),
+        hostility_reason_instigator.measured(),
+        hostility_reason_defender_raw.measured(),
+        hostility_reason_defender.measured(),
+    )
+    else {
+        return Leaf::Unobtained;
+    };
+
+    let Some(hostility_reason_instigator) = resolve_hostility_reason_token(instigator_raw) else {
+        return Leaf::Unobtained;
+    };
+    let Some(hostility_reason_defender) = resolve_hostility_reason_token(defender_raw) else {
+        return Leaf::Unobtained;
+    };
+    if threat_fixed_scale != 100_000
+        || instigator_spelling.as_str() != hostility_reason_instigator.spelling
+        || defender_spelling.as_str() != hostility_reason_defender.spelling
+    {
+        return Leaf::Unobtained;
+    }
+
+    Leaf::Measured(WarResidualSummary {
+        threat_fixed5_raw,
+        threat_fixed_scale,
+        first_was_instigator,
+        hostility_reason_instigator,
+        hostility_reason_defender,
+    })
+}
+
 /// One live belligerent-pair casualty row from `DiplomacyView::war_relations`.
 /// The pair identity requires both tags measured; each casualty tally is
 /// `Some` only when measured (fail-closed, never a fabricated `0`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WarRelationSummary {
     pub first: String,
     pub second: String,
     pub first_casualties: Option<i64>,
     pub second_casualties: Option<i64>,
+    /// Exact H-B5 tuple, absent for pre-v2 streams and unobtained while the
+    /// same-tick live activation gate remains closed or input is inconsistent.
+    pub residuals: Leaf<WarResidualSummary>,
+}
+
+impl Default for WarRelationSummary {
+    fn default() -> Self {
+        Self {
+            first: String::new(),
+            second: String::new(),
+            first_casualties: None,
+            second_casualties: None,
+            residuals: Leaf::Absent,
+        }
+    }
 }
 
 /// One exact participant row. Raw fixed-point values remain raw; rendering
@@ -79,6 +200,14 @@ pub struct WarObjectSummary {
     pub overall_progress_raw: Leaf<i64>,
     pub front: Leaf<String>,
     pub start_hour: Leaf<i64>,
+    pub first: Leaf<String>,
+    pub second: Leaf<String>,
+    pub first_tag_db_id: Leaf<i64>,
+    pub second_tag_db_id: Leaf<i64>,
+    pub start_date: Leaf<String>,
+    pub first_casualties: Leaf<i64>,
+    pub second_casualties: Leaf<i64>,
+    pub residuals: Leaf<WarResidualSummary>,
 }
 
 fn participant_summaries(
@@ -102,6 +231,22 @@ fn war_object(row: &WarObjectRow) -> WarObjectSummary {
         overall_progress_raw: row.overall_progress_raw.clone(),
         front: row.front.clone(),
         start_hour: row.start_hour.clone(),
+        first: row.first.clone(),
+        second: row.second.clone(),
+        first_tag_db_id: row.first_tag_db_id.clone(),
+        second_tag_db_id: row.second_tag_db_id.clone(),
+        start_date: row.start_date.clone(),
+        first_casualties: row.first_casualties.clone(),
+        second_casualties: row.second_casualties.clone(),
+        residuals: resolve_war_residuals(
+            &row.threat_fixed5_raw,
+            &row.threat_fixed_scale,
+            &row.first_was_instigator,
+            &row.hostility_reason_instigator_raw,
+            &row.hostility_reason_instigator,
+            &row.hostility_reason_defender_raw,
+            &row.hostility_reason_defender,
+        ),
     }
 }
 
@@ -161,6 +306,15 @@ fn war_relation_summaries(view: &DiplomacyView) -> Vec<WarRelationSummary> {
                 second,
                 first_casualties: r.first_casualties.measured().copied(),
                 second_casualties: r.second_casualties.measured().copied(),
+                residuals: resolve_war_residuals(
+                    &r.threat_fixed5_raw,
+                    &r.threat_fixed_scale,
+                    &r.first_was_instigator,
+                    &r.hostility_reason_instigator_raw,
+                    &r.hostility_reason_instigator,
+                    &r.hostility_reason_defender_raw,
+                    &r.hostility_reason_defender,
+                ),
             })
         })
         .collect()
@@ -273,6 +427,8 @@ mod tests {
             intel_levels: Leaf::Absent,
             intel_network_graphs: Leaf::Absent,
             subject_autonomy_current: Leaf::Absent,
+            agency_upgrade_controller_refresh: Leaf::Absent,
+            cipher_controller_refresh: Leaf::Absent,
             relation_flags: BTreeMap::new(),
         }
     }
@@ -307,6 +463,7 @@ mod tests {
                 second: "ENG".to_string(),
                 first_casualties: Some(1200),
                 second_casualties: Some(900),
+                residuals: Leaf::Absent,
             }]
         );
         assert_eq!(
@@ -345,5 +502,138 @@ mod tests {
         let s = war_relation_summaries(&view);
         assert_eq!(s[0].first_casualties, None);
         assert_eq!(s[0].second_casualties, None);
+    }
+
+    #[test]
+    fn exact_b5_residual_tuple_resolves_authenticated_tokens() {
+        let view = view_with(
+            ViewStatus::Present,
+            vec![],
+            Leaf::Measured(vec![WarRelationRow {
+                first: Leaf::Measured("GER".to_string()),
+                second: Leaf::Measured("ENG".to_string()),
+                first_casualties: Leaf::Measured(1200),
+                second_casualties: Leaf::Measured(900),
+                threat_fixed5_raw: Leaf::Measured(1_795_990),
+                threat_fixed_scale: Leaf::Measured(100_000),
+                first_was_instigator: Leaf::Measured(true),
+                hostility_reason_instigator_raw: Leaf::Measured(0),
+                hostility_reason_instigator: Leaf::Measured("war".to_string()),
+                hostility_reason_defender_raw: Leaf::Measured(5),
+                hostility_reason_defender: Leaf::Measured("not_applicable".to_string()),
+            }]),
+        );
+        let rows = war_relation_summaries(&view);
+        let Leaf::Measured(residuals) = &rows[0].residuals else {
+            panic!("exact H-B5 tuple was not admitted")
+        };
+        assert_eq!(residuals.threat_fixed5_raw, 1_795_990);
+        assert!(residuals.first_was_instigator);
+        assert_eq!(residuals.hostility_reason_instigator.registry_token_id, 0x298D);
+        assert_eq!(residuals.hostility_reason_defender.registry_token_id, 0x3820);
+    }
+
+    #[test]
+    fn d60_war_object_preserves_pair_identity_and_b5_tuple() {
+        let row = WarObjectRow {
+            key: "GER|ENG".to_string(),
+            attackers: Leaf::Absent,
+            defenders: Leaf::Absent,
+            war_name: Leaf::Absent,
+            front: Leaf::Absent,
+            start_hour: Leaf::Absent,
+            attacker_participants: Leaf::Absent,
+            defender_participants: Leaf::Absent,
+            overall_progress_raw: Leaf::Absent,
+            first: Leaf::Measured("GER".to_string()),
+            second: Leaf::Measured("ENG".to_string()),
+            first_tag_db_id: Leaf::Measured(47),
+            second_tag_db_id: Leaf::Measured(1),
+            start_date: Leaf::Measured("1939.9.1.12".to_string()),
+            first_casualties: Leaf::Measured(1_200),
+            second_casualties: Leaf::Measured(900),
+            threat_fixed5_raw: Leaf::Measured(2_000_000),
+            threat_fixed_scale: Leaf::Measured(100_000),
+            first_was_instigator: Leaf::Measured(true),
+            hostility_reason_instigator_raw: Leaf::Measured(4),
+            hostility_reason_instigator: Leaf::Measured("guarantee".to_string()),
+            hostility_reason_defender_raw: Leaf::Measured(2),
+            hostility_reason_defender: Leaf::Measured("ally".to_string()),
+            casualties_semantics: Leaf::Absent,
+            casualties_is_save_snapshot: Leaf::Absent,
+        };
+        let summary = war_object(&row);
+        assert_eq!(summary.first, Leaf::Measured("GER".to_string()));
+        assert_eq!(summary.second_tag_db_id, Leaf::Measured(1));
+        let Leaf::Measured(residuals) = summary.residuals else {
+            panic!("D60 H-B5 tuple was not admitted")
+        };
+        assert_eq!(residuals.threat_fixed5_raw, 2_000_000);
+        assert_eq!(residuals.hostility_reason_instigator.registry_token_id, 0x28DA);
+        assert_eq!(residuals.hostility_reason_defender.registry_token_id, 0x299A);
+    }
+
+    #[test]
+    fn b5_resolver_rejects_partial_mismatched_and_unknown_tokens() {
+        let raw = Leaf::Measured(3);
+        let asked = Leaf::Measured("asked_to_join".to_string());
+        let guarantee_raw = Leaf::Measured(4);
+        let guarantee = Leaf::Measured("guarantee".to_string());
+        assert!(matches!(
+            resolve_war_residuals(
+                &Leaf::Measured(1),
+                &Leaf::Measured(100_000),
+                &Leaf::Measured(false),
+                &raw,
+                &asked,
+                &guarantee_raw,
+                &guarantee,
+            ),
+            Leaf::Measured(_)
+        ));
+
+        for rejected in [
+            resolve_war_residuals(
+                &Leaf::Measured(1),
+                &Leaf::Measured(1),
+                &Leaf::Measured(false),
+                &raw,
+                &asked,
+                &guarantee_raw,
+                &guarantee,
+            ),
+            resolve_war_residuals(
+                &Leaf::Measured(1),
+                &Leaf::Measured(100_000),
+                &Leaf::Measured(false),
+                &raw,
+                &Leaf::Measured("guarantee".to_string()),
+                &guarantee_raw,
+                &guarantee,
+            ),
+            resolve_war_residuals(
+                &Leaf::Measured(1),
+                &Leaf::Measured(100_000),
+                &Leaf::Measured(false),
+                &Leaf::Measured(6),
+                &Leaf::Measured("modded_reason".to_string()),
+                &guarantee_raw,
+                &guarantee,
+            ),
+            resolve_war_residuals(
+                &Leaf::Measured(1),
+                &Leaf::Measured(100_000),
+                &Leaf::Measured(false),
+                &raw,
+                &asked,
+                &Leaf::Unobtained,
+                &Leaf::Unobtained,
+            ),
+        ] {
+            assert_eq!(rejected, Leaf::Unobtained);
+        }
+
+        assert_eq!(resolve_hostility_reason_token(6), None);
+        assert_eq!(resolve_hostility_reason_token(-1), None);
     }
 }

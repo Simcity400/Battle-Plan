@@ -6,6 +6,23 @@ Lane scope: opaque scripted/causal state for faithful replay or provenance badge
 This lane intentionally captures keys and raw values, not semantic
 mod-specific classifications.
 
+## A38 scripted-GUI residual acquisition
+
+The generic engine-materialized scripted-GUI residual is an independent d84
+carrier, not the unresolved d51 `scripted_gui_random` save bag described below.
+Its exact-20 static authority, typed carrier, recorder fold, replay view, and UI
+evaluator are implemented. The remaining empirical frame can be acquired with
+`../../scripts/Invoke-A38ScriptedGuiAcquisition.ps1`; the runner attaches to one
+exact-a729 process or launches `--continuelastsave`, retries the read-only
+manager scan, and applies `verify_a38_live_probe.py` to every candidate.
+
+An accepted raw capture is intentionally not d84 authority. The in-process
+producer must still compile every required engine result and cross the H4CT
+winner authorizer. `collector::AuthenticatedA38FrameSource` checks exact manager
+order, effective registry inventories, winner identities, and the exact
+prior-snapshot tombstone set before compact encoding. See
+`../../../documents/dossiers/A38_AUTONOMOUS_LIVE_ACQUISITION_20260720.md`.
+
 ## Production-ready slice
 
 Country script variables have a current-build validated live root:

@@ -3,6 +3,11 @@ use game_ui::design_catalog::{
     DisplayOrderSnapshot, FieldCompleteness,
 };
 use game_ui::readonly_design_peace::*;
+use replay_core::{
+    OrderedDesignIdentityExact, SelectedDesignerFamilyExact, SelectedDesignerIdentityExact,
+    SelectedDesignerIdentityExactView, SelectedDesignerOwnerExact, StableDesignIdentityExact,
+};
+use replay_core::world::ViewStatus;
 
 fn atom(id: &str, raw: &str) -> DisplayAtom {
     DisplayAtom {
@@ -91,7 +96,11 @@ fn designer(view: DesignerViewKind, id: &str) -> ReadOnlyDesignerSnapshot {
 fn peace() -> PeaceConferenceSnapshot {
     PeaceConferenceSnapshot::Active(ActivePeaceConferenceSnapshot {
         source_record_id: "peace:1".into(),
-        conference_id: "pc_1".into(),
+        conference_reference: PeaceConferenceReference {
+            object_type: 77,
+            object_id: 1,
+        },
+        conference_id: "hoi4-ref:77:1".into(),
         phase: "bid".into(),
         turn: 2,
         remaining_score_turns: 3,
@@ -189,6 +198,71 @@ fn designer_requires_inert_complete_state() {
     assert_eq!(
         admit_readonly_designer(&c, &d),
         Err(Xui08Rejection::Incomplete)
+    );
+}
+
+#[test]
+fn exact_d85_selection_joins_portable_catalog_without_token_fallback() {
+    let exact = SelectedDesignerIdentityExactView {
+        status: ViewStatus::Present,
+        selection: Some(SelectedDesignerIdentityExact {
+            schema_version: 1,
+            authority: "exact_a729_selected_designer_identity".into(),
+            elapsed_wall_ms: 9,
+            frame_hour: 17,
+            transition_sequence: 4,
+            executable_sha256: "87".repeat(32),
+            producer_manifest_sha256: "6d".repeat(32),
+            classifier_manifest_sha256: "76".repeat(32),
+            division_click_thunk_artifact_sha256: "85".repeat(32),
+            division_wrapper_artifact_sha256: "7d".repeat(32),
+            source_record_identity: "a40:fixture:4".into(),
+            owner: SelectedDesignerOwnerExact::TankDesignerMode1,
+            family: SelectedDesignerFamilyExact::Tank,
+            expected_ordered_design_count: 1,
+            ordered_designs: vec![OrderedDesignIdentityExact {
+                source_ordinal: 0,
+                object_type: 70,
+                stable_id: 41,
+            }],
+            selected_design: StableDesignIdentityExact {
+                object_type: 70,
+                stable_id: 41,
+            },
+            complete: true,
+        }),
+    };
+    let admitted = admit_exact_selected_designer_identity(
+        &catalog(DesignKind::TankVariant, "41:70"),
+        &exact,
+    )
+    .unwrap();
+    assert_eq!(admitted.view(), DesignerViewKind::Tank);
+    assert_eq!(admitted.selected().design_id, "41:70");
+    assert_eq!(admitted.transition_sequence(), 4);
+
+    let mut wrong = exact;
+    wrong.selection.as_mut().unwrap().family = SelectedDesignerFamilyExact::Plane;
+    assert_eq!(
+        admit_exact_selected_designer_identity(
+            &catalog(DesignKind::TankVariant, "41:70"),
+            &wrong,
+        ),
+        Err(Xui08Rejection::ExactSelectionFamilyMismatch)
+    );
+
+    let mut upgrade = wrong;
+    let selection = upgrade.selection.as_mut().unwrap();
+    selection.family = SelectedDesignerFamilyExact::VariantUpgrade;
+    selection.owner = SelectedDesignerOwnerExact::EquipmentUpgradeDesignerWindow;
+    assert_eq!(
+        admit_exact_selected_designer_identity(
+            &catalog(DesignKind::ShipVariant, "41:70"),
+            &upgrade,
+        )
+        .unwrap()
+        .view(),
+        DesignerViewKind::VariantUpgrade
     );
 }
 #[test]
@@ -306,8 +380,39 @@ fn admits_inactive_and_complete_active_peace_state() {
     .active());
     let admitted = admit_peace_conference(&peace()).unwrap();
     assert!(admitted.active());
-    assert_eq!(admitted.conference_id(), Some("pc_1"));
+    assert_eq!(admitted.conference_id(), Some("hoi4-ref:77:1"));
+    assert_eq!(
+        admitted.conference_reference(),
+        Some(PeaceConferenceReference {
+            object_type: 77,
+            object_id: 1,
+        })
+    );
     assert_eq!(admitted.render_model(), &peace());
+}
+#[test]
+fn peace_conference_identity_is_the_registered_engine_reference_not_a_pointer() {
+    let mut p = peace();
+    if let PeaceConferenceSnapshot::Active(v) = &mut p {
+        v.conference_id = "0x00000141deadbeef".into();
+    }
+    assert_eq!(
+        admit_peace_conference(&p),
+        Err(Xui08Rejection::InvalidPeaceIdentity)
+    );
+
+    let mut p = peace();
+    if let PeaceConferenceSnapshot::Active(v) = &mut p {
+        v.conference_reference = PeaceConferenceReference {
+            object_type: 0,
+            object_id: 0,
+        };
+        v.conference_id = v.conference_reference.portable_id();
+    }
+    assert_eq!(
+        admit_peace_conference(&p),
+        Err(Xui08Rejection::InvalidPeaceIdentity)
+    );
 }
 #[test]
 fn peace_participant_and_reference_sets_fail_closed() {

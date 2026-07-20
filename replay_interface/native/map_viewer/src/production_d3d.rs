@@ -33,6 +33,17 @@ pub struct ProductionD3dOmission {
     pub reason: String,
 }
 
+/// GPU proof accumulated by the capture-independent product executor while it
+/// binds H to every exact selected-submit SnowMudTexture consumer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnowMudD3dExecutionProof {
+    pub readback_sha256: String,
+    pub mapped_row_pitch: u32,
+    pub verified_row_count: u32,
+    pub verified_tight_byte_count: u64,
+    pub replaced_binding_count: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedProductionD3dFrame {
     pub content_manifest_sha256: String,
@@ -44,6 +55,7 @@ pub struct PreparedProductionD3dFrame {
     pub target: Option<ProductionMainSceneTargetDesc>,
     pub ordered_scene_constant_buffers: Vec<ConstantBufferBinding>,
     pub ordered_render_operations: Vec<RenderExecutionRef>,
+    pub snow_mud_texture: Option<replay_core::SnowMudTexturePacket>,
     pub political_textures: Vec<replay_core::PoliticalTexturePacket>,
     pub tiled_lights: Vec<replay_core::TiledLightSubmission>,
     pub ordered_static_used_content: Vec<UsedContentKey>,
@@ -403,6 +415,7 @@ pub fn prepare_production_d3d_frame(
             })
             .cloned()
             .collect(),
+        snow_mud_texture: frame.snow_mud_texture.clone(),
         political_textures: frame.political_textures.clone(),
         tiled_lights: frame.tiled_lights.clone(),
         ordered_static_used_content,

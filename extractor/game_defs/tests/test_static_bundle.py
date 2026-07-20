@@ -225,7 +225,7 @@ def _fixture(tmp_path: Path):
         _artifact(
             src,
             "gfx_icon_asset_manifest_static",
-            "gfx_icon_asset_manifest_static.static_artifact.v1",
+            "gfx_icon_asset_manifest_static.static_artifact.v2",
             {"sprites": {"GFX_ok": {}}},
         ),
         _artifact(

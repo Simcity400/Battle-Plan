@@ -3,7 +3,15 @@
 //! Static GUI definitions supply chrome only. Every row, order, selection,
 //! displayed number and lifecycle result below must be producer-resolved.
 
-use crate::design_catalog::{AdmittedDesignCatalog, DesignKind};
+use crate::design_catalog::{
+    admit_design_catalog, AdmittedDesignCatalog, DesignCatalogRejection, DesignKind,
+};
+use replay_core::world::ViewStatus;
+use replay_core::{
+    DesignCatalogJoinError, DesignRecord, SelectedDesignerFamilyExact,
+    SelectedDesignerIdentityExactView, SelectedDesignerOwnerExact, StableDesignIdentityExact,
+    WorldFrame,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -261,9 +269,32 @@ pub struct PeaceResultRow {
     pub outcome: String,
 }
 
+/// Pointer-free serialization of Clausewitz's registered object reference.
+///
+/// On exact-a729 the first word selects the reference table and the second
+/// word is the registered object id. The all-zero pair is the invalid
+/// sentinel. This is an engine identity; it must never be replaced with the
+/// resolved process pointer returned by the reference table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct PeaceConferenceReference {
+    pub object_type: u32,
+    pub object_id: u32,
+}
+
+impl PeaceConferenceReference {
+    pub fn valid(self) -> bool {
+        self.object_type != 0 || self.object_id != 0
+    }
+
+    pub fn portable_id(self) -> String {
+        format!("hoi4-ref:{}:{}", self.object_type, self.object_id)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActivePeaceConferenceSnapshot {
     pub source_record_id: String,
+    pub conference_reference: PeaceConferenceReference,
     pub conference_id: String,
     pub phase: String,
     pub turn: u32,
@@ -304,6 +335,9 @@ pub enum Xui08Rejection {
     InvalidResult,
     UnsupportedPeaceAction,
     UnknownReference,
+    ExactSelectionUnavailable,
+    ExactSelectionFamilyMismatch,
+    ExactSelectionOrderMismatch,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -326,6 +360,48 @@ impl AdmittedDesignerSnapshot {
     }
 }
 
+/// The d85-to-XUI08 identity join. This is intentionally smaller than a full
+/// designer render snapshot: d85 authorizes the active family, exact controller
+/// order, and selected row only. Names, stats, modules and costs still require
+/// their independently complete producer-resolved snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdmittedSelectedDesignerIdentity {
+    source_record_identity: String,
+    transition_sequence: u64,
+    view: DesignerViewKind,
+    owner: SelectedDesignerOwnerExact,
+    ordered: Vec<DesignRecord>,
+    selected_index: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CurrentSelectedDesignerAdmissionError {
+    PortableJoin(DesignCatalogJoinError),
+    Catalog(DesignCatalogRejection),
+    Selection(Xui08Rejection),
+}
+
+impl AdmittedSelectedDesignerIdentity {
+    pub fn source_record_identity(&self) -> &str {
+        &self.source_record_identity
+    }
+    pub fn transition_sequence(&self) -> u64 {
+        self.transition_sequence
+    }
+    pub fn view(&self) -> DesignerViewKind {
+        self.view
+    }
+    pub fn owner(&self) -> SelectedDesignerOwnerExact {
+        self.owner
+    }
+    pub fn ordered(&self) -> &[DesignRecord] {
+        &self.ordered
+    }
+    pub fn selected(&self) -> &DesignRecord {
+        &self.ordered[self.selected_index]
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdmittedPeaceConference {
     snapshot: PeaceConferenceSnapshot,
@@ -338,6 +414,12 @@ impl AdmittedPeaceConference {
         match &self.snapshot {
             PeaceConferenceSnapshot::Inactive { .. } => None,
             PeaceConferenceSnapshot::Active(value) => Some(&value.conference_id),
+        }
+    }
+    pub fn conference_reference(&self) -> Option<PeaceConferenceReference> {
+        match &self.snapshot {
+            PeaceConferenceSnapshot::Inactive { .. } => None,
+            PeaceConferenceSnapshot::Active(value) => Some(value.conference_reference),
         }
     }
     /// Immutable producer-resolved render model, including every ordered row.
@@ -369,6 +451,101 @@ fn expected_kind(view: DesignerViewKind) -> Option<DesignKind> {
             Some(DesignKind::EquipmentVariant)
         }
     }
+}
+
+fn exact_view_kind(family: SelectedDesignerFamilyExact) -> DesignerViewKind {
+    match family {
+        SelectedDesignerFamilyExact::Division => DesignerViewKind::Division,
+        SelectedDesignerFamilyExact::Equipment => DesignerViewKind::Equipment,
+        SelectedDesignerFamilyExact::Tank => DesignerViewKind::Tank,
+        SelectedDesignerFamilyExact::Plane => DesignerViewKind::Plane,
+        SelectedDesignerFamilyExact::Ship => DesignerViewKind::Ship,
+        SelectedDesignerFamilyExact::VariantUpgrade => DesignerViewKind::VariantUpgrade,
+    }
+}
+
+fn portable_design_id(identity: StableDesignIdentityExact) -> String {
+    format!("{}:{}", identity.stable_id, identity.object_type)
+}
+
+fn exact_family_accepts_kind(
+    family: SelectedDesignerFamilyExact,
+    kind: DesignKind,
+) -> bool {
+    match family {
+        SelectedDesignerFamilyExact::Division => kind == DesignKind::DivisionTemplate,
+        SelectedDesignerFamilyExact::Equipment => kind == DesignKind::EquipmentVariant,
+        SelectedDesignerFamilyExact::Tank => kind == DesignKind::TankVariant,
+        SelectedDesignerFamilyExact::Plane => kind == DesignKind::AircraftVariant,
+        SelectedDesignerFamilyExact::Ship => kind == DesignKind::ShipVariant,
+        SelectedDesignerFamilyExact::VariantUpgrade => matches!(
+            kind,
+            DesignKind::EquipmentVariant
+                | DesignKind::TankVariant
+                | DesignKind::AircraftVariant
+                | DesignKind::ShipVariant
+        ),
+    }
+}
+
+/// Admits only the already-validated replay-core d85 view and mechanically
+/// joins every stable identity to the portable catalog. No name, token, or
+/// authored ordering fallback is permitted.
+pub fn admit_exact_selected_designer_identity(
+    catalog: &AdmittedDesignCatalog,
+    exact: &SelectedDesignerIdentityExactView,
+) -> Result<AdmittedSelectedDesignerIdentity, Xui08Rejection> {
+    if exact.status != ViewStatus::Present {
+        return Err(Xui08Rejection::ExactSelectionUnavailable);
+    }
+    let selection = exact
+        .selection
+        .as_ref()
+        .ok_or(Xui08Rejection::ExactSelectionUnavailable)?;
+    let view = exact_view_kind(selection.family);
+    let mut ordered = Vec::with_capacity(selection.ordered_designs.len());
+    let mut selected_index = None;
+    for (index, identity) in selection.ordered_designs.iter().enumerate() {
+        let design_id = portable_design_id(StableDesignIdentityExact {
+            object_type: identity.object_type,
+            stable_id: identity.stable_id,
+        });
+        let row = catalog
+            .get(&design_id)
+            .ok_or(Xui08Rejection::ExactSelectionOrderMismatch)?;
+        if !exact_family_accepts_kind(selection.family, row.kind) {
+            return Err(Xui08Rejection::ExactSelectionFamilyMismatch);
+        }
+        if identity.object_type == selection.selected_design.object_type
+            && identity.stable_id == selection.selected_design.stable_id
+        {
+            selected_index = Some(index);
+        }
+        ordered.push(row.clone());
+    }
+    let selected_index = selected_index.ok_or(Xui08Rejection::ExactSelectionOrderMismatch)?;
+    Ok(AdmittedSelectedDesignerIdentity {
+        source_record_identity: selection.source_record_identity.clone(),
+        transition_sequence: selection.transition_sequence,
+        view,
+        owner: selection.owner,
+        ordered,
+        selected_index,
+    })
+}
+
+/// Production handoff from a replay frame. Both d59 catalog completeness and
+/// d85 exact selection authority must succeed in the same frame.
+pub fn admit_current_selected_designer_identity(
+    frame: &WorldFrame,
+) -> Result<AdmittedSelectedDesignerIdentity, CurrentSelectedDesignerAdmissionError> {
+    let current = frame
+        .current_design_catalog()
+        .map_err(CurrentSelectedDesignerAdmissionError::PortableJoin)?;
+    let catalog = admit_design_catalog(&current.records, &current.display_order)
+        .map_err(CurrentSelectedDesignerAdmissionError::Catalog)?;
+    admit_exact_selected_designer_identity(&catalog, frame.selected_designer_identity_exact())
+        .map_err(CurrentSelectedDesignerAdmissionError::Selection)
 }
 
 fn unique_nonempty(mut values: impl Iterator<Item = String>) -> bool {
@@ -546,6 +723,8 @@ pub fn admit_peace_conference(
         return Err(Xui08Rejection::Incomplete);
     }
     if !nonempty(&active.source_record_id)
+        || !active.conference_reference.valid()
+        || active.conference_id != active.conference_reference.portable_id()
         || !nonempty(&active.conference_id)
         || !nonempty(&active.phase)
         || !nonempty(&active.current_participant_id)

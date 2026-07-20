@@ -72,7 +72,8 @@ pub const MARKET_TRADE_RESOURCE_FLAG_MAX: u32 = 1 << 1;
 pub const MARKET_TRADE_RESOURCE_FLAGS_KNOWN: u32 =
     MARKET_TRADE_RESOURCE_FLAG_CURRENT | MARKET_TRADE_RESOURCE_FLAG_MAX;
 pub const MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC: &[u8; 4] = b"MTRD";
-pub const MARKET_TRADE_CLASSIC_DEAL_SCHEMA_VERSION: u16 = 1;
+pub const MARKET_TRADE_CLASSIC_DEAL_LEGACY_SCHEMA_VERSION: u16 = 1;
+pub const MARKET_TRADE_CLASSIC_DEAL_SCHEMA_VERSION: u16 = 2;
 pub const MARKET_TRADE_CLASSIC_DEAL_HEADER_LEN: usize = 32;
 pub const MARKET_TRADE_CLASSIC_DEAL_ROW_LEN: usize = 96;
 pub const MARKET_TRADE_CLASSIC_DEAL_DIRECTION_IMPORT: u32 = 1;
@@ -81,6 +82,11 @@ pub const MARKET_TRADE_CLASSIC_DEAL_ROUTE_LAND: u32 = 1;
 pub const MARKET_TRADE_CLASSIC_DEAL_ROUTE_SEA: u32 = 2;
 pub const MARKET_TRADE_CLASSIC_DEAL_ROUTE_LOCKED: u32 = 3;
 pub const MARKET_TRADE_CLASSIC_DEAL_FLAG_EXACT: u32 = 1;
+pub const MARKET_TRADE_CLASSIC_DEAL_STATUS_NO_TRADE_INFLUENCE: u32 = 1;
+pub const MARKET_TRADE_CLASSIC_DEAL_STATUS_NO_RESOURCES: u32 = 1 << 1;
+pub const MARKET_TRADE_CLASSIC_DEAL_STATUS_KNOWN: u32 =
+    MARKET_TRADE_CLASSIC_DEAL_STATUS_NO_TRADE_INFLUENCE
+        | MARKET_TRADE_CLASSIC_DEAL_STATUS_NO_RESOURCES;
 /// B1 exact per-country equipment-market stockpile snapshot. `MTS1` carries
 /// every country-owner witness, including measured-empty nested iterators.
 pub const MARKET_TRADE_STOCKPILE_TRAILER_MAGIC: &[u8; 4] = b"MTS1";
@@ -288,6 +294,10 @@ pub struct ClassicDealRow {
     pub direction: u32,
     pub route_kind: u32,
     pub flags: u32,
+    /// Exact route `+0xE8/+0xE9` state in MTRD v2. Legacy v1 rows retain
+    /// `None` so downstream code cannot mistake an absent observation for
+    /// two measured false values.
+    pub route_status_flags: Option<u32>,
     pub deal_id: u64,
     pub requested_raw: i64,
     pub delivered_raw: i64,
@@ -1734,7 +1744,11 @@ fn decode_classic_deal_trailer(
     let reserved1 = read_u32_le(trailer, 28);
     summary.classic_deal_rows = row_count;
     summary.classic_deal_country_count = country_count;
-    if version != MARKET_TRADE_CLASSIC_DEAL_SCHEMA_VERSION
+    if ![
+        MARKET_TRADE_CLASSIC_DEAL_LEGACY_SCHEMA_VERSION,
+        MARKET_TRADE_CLASSIC_DEAL_SCHEMA_VERSION,
+    ]
+    .contains(&version)
         || header_len != MARKET_TRADE_CLASSIC_DEAL_HEADER_LEN
         || row_len != MARKET_TRADE_CLASSIC_DEAL_ROW_LEN
         || reserved0 != 0
@@ -1782,6 +1796,11 @@ fn decode_classic_deal_trailer(
             direction: read_u32_le(trailer, cursor + 16),
             route_kind: read_u32_le(trailer, cursor + 20),
             flags: read_u32_le(trailer, cursor + 24),
+            route_status_flags: if version == MARKET_TRADE_CLASSIC_DEAL_SCHEMA_VERSION {
+                Some(read_u32_le(trailer, cursor + 28))
+            } else {
+                None
+            },
             deal_id: read_u64_le(trailer, cursor + 32),
             requested_raw: read_i64_le(trailer, cursor + 40),
             delivered_raw: read_i64_le(trailer, cursor + 48),
@@ -1792,7 +1811,7 @@ fn decode_classic_deal_trailer(
             convoys_assigned: read_i32_le(trailer, cursor + 84),
             convoys_required: read_i32_le(trailer, cursor + 88),
         };
-        let reserved_row0 = read_u32_le(trailer, cursor + 28);
+        let status_or_reserved = read_u32_le(trailer, cursor + 28);
         let reserved_row1 = read_i32_le(trailer, cursor + 92);
         cursor += row_len;
         if !witnesses.contains(&row.owner_tag_db_id)
@@ -1811,9 +1830,12 @@ fn decode_classic_deal_trailer(
             ]
             .contains(&row.route_kind)
             || row.flags != MARKET_TRADE_CLASSIC_DEAL_FLAG_EXACT
+            || (version == MARKET_TRADE_CLASSIC_DEAL_LEGACY_SCHEMA_VERSION
+                && status_or_reserved != 0)
+            || (version == MARKET_TRADE_CLASSIC_DEAL_SCHEMA_VERSION
+                && status_or_reserved & !MARKET_TRADE_CLASSIC_DEAL_STATUS_KNOWN != 0)
             || row.efficiency_raw < 0
             || row.efficiency_raw > MARKET_TRADE_SCALE_RAW as i64
-            || reserved_row0 != 0
             || reserved_row1 != 0
         {
             summary.parse_errors.push(format!(
@@ -1847,6 +1869,7 @@ fn decode_classic_deal_trailer(
             || a.direction == b.direction
             || a.resource_index != b.resource_index
             || a.route_kind != b.route_kind
+            || a.route_status_flags != b.route_status_flags
             || a.requested_raw != b.requested_raw
             || a.delivered_raw != b.delivered_raw
             || a.available_export_raw != b.available_export_raw
@@ -3756,7 +3779,11 @@ mod tests {
                 payload.extend_from_slice(&value.to_le_bytes());
             }
             payload.extend_from_slice(&MARKET_TRADE_CLASSIC_DEAL_FLAG_EXACT.to_le_bytes());
-            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(
+                &(MARKET_TRADE_CLASSIC_DEAL_STATUS_NO_TRADE_INFLUENCE
+                    | MARKET_TRADE_CLASSIC_DEAL_STATUS_NO_RESOURCES)
+                    .to_le_bytes(),
+            );
             payload.extend_from_slice(&deal_id.to_le_bytes());
             payload.extend_from_slice(&3_200_000i64.to_le_bytes());
             payload.extend_from_slice(
@@ -4981,11 +5008,59 @@ mod tests {
         assert!(decoded.classic_deal_trailer_present);
         assert_eq!(decoded.classic_deal_country_count, 3);
         assert_eq!(decoded.classic_deals.len(), 2);
+        assert!(decoded.classic_deals.iter().all(|row| {
+            row.route_status_flags
+                == Some(
+                    MARKET_TRADE_CLASSIC_DEAL_STATUS_NO_TRADE_INFLUENCE
+                        | MARKET_TRADE_CLASSIC_DEAL_STATUS_NO_RESOURCES,
+                )
+        }));
         assert!(decoded.classic_deal_country_witnesses.contains(&99));
         assert!(!decoded
             .classic_deals
             .iter()
             .any(|row| row.owner_tag_db_id == 99));
+    }
+
+    #[test]
+    fn x15_mtrd_v1_retains_route_flags_as_unavailable() {
+        let mut payload = complete_market_payload(1);
+        let trailer = payload.len();
+        append_test_mtrd(&mut payload, false);
+        payload[trailer + 4..trailer + 6]
+            .copy_from_slice(&MARKET_TRADE_CLASSIC_DEAL_LEGACY_SCHEMA_VERSION.to_le_bytes());
+        let first_row = trailer + MARKET_TRADE_CLASSIC_DEAL_HEADER_LEN + 3 * 4;
+        for row in [first_row, first_row + MARKET_TRADE_CLASSIC_DEAL_ROW_LEN] {
+            payload[row + 28..row + 32].copy_from_slice(&0u32.to_le_bytes());
+        }
+
+        let decoded = decode_payload(0, &payload);
+
+        assert!(
+            decoded.parse_errors.is_empty(),
+            "{:?}",
+            decoded.parse_errors
+        );
+        assert!(decoded
+            .classic_deals
+            .iter()
+            .all(|row| row.route_status_flags.is_none()));
+    }
+
+    #[test]
+    fn x15_mtrd_v2_rejects_unknown_route_status_bits() {
+        let mut payload = complete_market_payload(1);
+        let trailer = payload.len();
+        append_test_mtrd(&mut payload, false);
+        let first_row = trailer + MARKET_TRADE_CLASSIC_DEAL_HEADER_LEN + 3 * 4;
+        payload[first_row + 28..first_row + 32].copy_from_slice(&4u32.to_le_bytes());
+
+        let decoded = decode_payload(0, &payload);
+
+        assert!(decoded
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("MTRD row 0 has invalid shape")));
     }
 
     #[test]

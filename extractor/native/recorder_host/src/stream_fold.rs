@@ -1027,6 +1027,7 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
                     fold.record_malformed_domain_payload(
                         header.game_hour_raw,
                         header.domain_id,
+                        payload,
                         &reason,
                     );
                     off += record_len;
@@ -1044,6 +1045,7 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
             tracker.observe(&header, payload, processed + off as u64);
 
             fold.ingest_record(
+                header.sequence,
                 header.game_hour_raw,
                 header.domain_id,
                 header.record_type,

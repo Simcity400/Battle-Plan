@@ -418,18 +418,224 @@ def _direct_interface_files(layers) -> list[tuple[str, Path]]:
     ]
 
 
+def _direct_gui_files(layers) -> list[tuple[str, Path]]:
+    return [
+        (rel, path)
+        for rel, path in R.ordered_files(layers, "interface", (".gui",))
+        if Path(rel).parent.as_posix() == "interface"
+    ]
+
+
+# Semantic widget selectors are stable adapter inputs.  Sprite identities are
+# deliberately absent: those are data authored by the winning GUI layer and
+# must never become a compiled vanilla allowlist.
+_POWER_BALANCE_GUI_ROLES = (
+    ("panel_background", "interface/powerbalanceview.gui", ("powerbalanceview", "background"), "background", "authored"),
+    ("panel_artwork", "interface/powerbalanceview.gui", ("powerbalanceview", "bop_bg"), "iconType", "authored"),
+    ("decision_container_frame", "interface/powerbalanceview.gui", ("powerbalanceview", "decision_container", "Background"), "background", "authored"),
+    ("header_background", "interface/powerbalanceview.gui", ("powerbalanceview", "power_balance_header_bg"), "iconType", "authored"),
+    ("close_button", "interface/powerbalanceview.gui", ("powerbalanceview", "close"), "buttonType", "authored"),
+    ("decision_background", "interface/powerbalanceview.gui", ("powerbalanceview", "Background"), "background", "authored"),
+    ("balance_frame", "interface/powerbalanceview.gui", ("powerbalanceview", "power_balance_frame"), "iconType", "authored"),
+    ("balance_value", "interface/powerbalanceview.gui", ("powerbalanceview", "power_balance_value"), "iconType", "engine"),
+    ("position_marker", "interface/powerbalanceview.gui", ("powerbalanceview", "position_marker"), "iconType", "authored"),
+    ("range_indicator", "interface/powerbalanceview.gui", ("range_indicator",), "iconType", "authored"),
+    ("range_splitter", "interface/powerbalanceview.gui", ("range_bar",), "iconType", "authored"),
+    ("left_side_icon", "interface/powerbalanceview.gui", ("powerbalanceview", "left_power_icon"), "iconType", "engine"),
+    ("right_side_icon", "interface/powerbalanceview.gui", ("powerbalanceview", "right_power_icon"), "iconType", "engine"),
+    ("launcher_button", "interface/countrypoliticsview.gui", ("power_balance_button", "show_power_balance"), "buttonType", "authored"),
+    ("launcher_glow", "interface/countrypoliticsview.gui", ("power_balance_button", "show_power_balance_glow"), "iconType", "authored_animation"),
+    ("launcher_icon", "interface/countrypoliticsview.gui", ("power_balance_button", "power_balance_ICON"), "iconType", "engine"),
+)
+
+
+def _named_gui_elements(node: Node, ancestors: tuple[str, ...] = ()):
+    sibling_type_ordinals: dict[str, int] = {}
+    for element_type, value in node.entries:
+        if not isinstance(value, Node):
+            continue
+        name = scalar(value.get("name"))
+        next_ancestors = ancestors
+        if name:
+            folded_type = element_type.casefold()
+            type_ordinal = sibling_type_ordinals.get(folded_type, 0)
+            sibling_type_ordinals[folded_type] = type_ordinal + 1
+            path = (*ancestors, name)
+            yield path, element_type, value, ancestors, type_ordinal
+            next_ancestors = path
+        yield from _named_gui_elements(value, next_ancestors)
+
+
+def _gui_sprite_fields(node: Node) -> list[tuple[str, str]]:
+    rows = []
+    for key, value in node.entries:
+        if isinstance(value, Node) or not isinstance(value, str):
+            continue
+        folded = key.casefold()
+        if folded in {"spritetype", "quadtexturesprite"} or folded.endswith("spritetype"):
+            if value.strip():
+                rows.append((key, value))
+    return rows
+
+
+def _power_balance_gui_manifest(layers) -> dict[str, Any]:
+    effective = {rel.casefold(): (rel, path) for rel, path in _direct_gui_files(layers)}
+    parsed: dict[
+        str,
+        tuple[
+            str,
+            Path,
+            list[tuple[tuple[str, ...], str, Node, tuple[str, ...], int]],
+        ],
+    ] = {}
+    for _, rel, _, _, _ in _POWER_BALANCE_GUI_ROLES:
+        folded = rel.casefold()
+        if folded in parsed:
+            continue
+        selected = effective.get(folded)
+        if selected is None:
+            raise RuntimeError(f"effective GUI manifest is missing {rel}")
+        actual_rel, path = selected
+        try:
+            text = R.read_text(path)
+            validate_clausewitz_text(text, actual_rel)
+            root = parse(text)
+        except Exception as exc:
+            raise RuntimeError(f"failed to parse required GUI file {actual_rel}: {exc}") from exc
+        parsed[folded] = (actual_rel, path, list(_named_gui_elements(root)))
+
+    sources = {}
+    roles = {}
+    for role, rel, suffix, widget_type, binding_source in _POWER_BALANCE_GUI_ROLES:
+        actual_rel, path, elements = parsed[rel.casefold()]
+        matches = [
+            row for row in elements
+            if len(row[0]) >= len(suffix)
+            # GUI identifiers are authored lexical identities.  In the exact
+            # a729 file, direct siblings `background` and `Background` are two
+            # distinct widgets with different semantic roles.  Folding their
+            # names creates a false ambiguity and is not an engine-authored
+            # override rule.
+            and row[0][-len(suffix):] == suffix
+            and row[1].casefold() == widget_type.casefold()
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"effective GUI role {role} has {len(matches)} matches for "
+                f"{actual_rel}#{'/'.join(suffix)}"
+            )
+        hierarchy, element_type, node, parent_hierarchy, type_ordinal = matches[0]
+        sprite_fields = _gui_sprite_fields(node)
+        if binding_source in {"authored", "authored_animation"} and len(sprite_fields) != 1:
+            raise RuntimeError(
+                f"effective GUI role {role} requires exactly one authored sprite, "
+                f"found {len(sprite_fields)}"
+            )
+        if binding_source == "engine" and role != "launcher_icon" and sprite_fields:
+            raise RuntimeError(f"engine-selected GUI role {role} unexpectedly authors a sprite")
+        row = {
+            "source_file": actual_rel,
+            "source_layer": _source_label(layers, path),
+            "source_layer_kind": _source_layer_kind(layers, path),
+            "hierarchy_path": "/".join(hierarchy),
+            "parent_hierarchy_path": "/".join(parent_hierarchy),
+            "widget_type": element_type,
+            "widget_type_ordinal": type_ordinal,
+            "widget_name": hierarchy[-1],
+            "hierarchy_match": "exact_case_sensitive",
+            "binding_source": binding_source,
+            "authored_sprite_fields": [
+                {"field": field, "sprite_name": sprite}
+                for field, sprite in sprite_fields
+            ],
+        }
+        if binding_source in {"authored", "authored_animation"}:
+            row["sprite_name"] = sprite_fields[0][1]
+        roles[role] = row
+        if actual_rel not in sources:
+            payload = path.read_bytes()
+            sources[actual_rel] = {
+                "source_layer": _source_label(layers, path),
+                "source_layer_kind": _source_layer_kind(layers, path),
+                "bytes": len(payload),
+                "sha256": sha256_bytes(payload),
+            }
+    return {
+        "schema": "gfx_icon_asset_manifest_static.power_balance_gui_roles.v2",
+        "sources": dict(sorted(sources.items())),
+        "roles": dict(sorted(roles.items())),
+    }
+
+
 def _flag_files(layers) -> list[tuple[str, Path]]:
     return R.ordered_files(layers, "gfx/flags", (".dds", ".tga"))
 
 
-def _sprite_blocks(node: Node):
+def _renderable_blocks(node: Node):
+    """Yield every named drawable declared below ``spriteTypes``.
+
+    Clausewitz does not limit that container to the literal ``spriteType``
+    key.  In particular, the a729 power-balance file uses
+    ``progressBarType`` for all four value bars and
+    ``frameAnimatedSpriteType`` for the launcher glow.  Treating only the
+    plain key as an asset definition made those production sprites impossible
+    to bind to portable texture identities.
+    """
     for key, value in node.entries:
         if not isinstance(value, Node):
             continue
-        if key.lower() == "spritetype":
-            yield value
+        if key.lower() == "spritetypes":
+            for drawable_kind, block in value.entries:
+                if isinstance(block, Node) and scalar(block.get("name")):
+                    yield drawable_kind, block
         else:
-            yield from _sprite_blocks(value)
+            yield from _renderable_blocks(value)
+
+
+def _sprite_blocks(node: Node):
+    """Compatibility iterator used by focused parser tests and callers."""
+    for _kind, block in _renderable_blocks(node):
+        yield block
+
+
+def _texture_slot_rows(
+    block: Node,
+    layers,
+    asset_lookup: dict[str, tuple[str, Path]],
+) -> list[dict[str, Any]]:
+    rows = []
+    for key, raw_value in block.entries:
+        if not key.lower().startswith("texturefile"):
+            continue
+        raw_texture = scalar(raw_value)
+        if not raw_texture or not raw_texture.strip():
+            continue
+        texture = _normalise_texture_path(raw_texture)
+        raw_texture_redacted = _redact_raw_texture_path(raw_texture)
+        invalid_texture_ref = not texture
+        resolved_asset = _resolve_asset(layers, asset_lookup, texture)
+        asset_path = resolved_asset["path"] if resolved_asset else None
+        row = {
+            "slot": key,
+            "texturefile": texture,
+            "raw_texturefile": raw_texture_redacted
+            if (invalid_texture_ref or _is_absolute_texture_path(raw_texture))
+            else None,
+            "invalid_texturefile": invalid_texture_ref,
+            "resolved_texturefile": resolved_asset["resolved_relpath"]
+            if resolved_asset
+            else None,
+            "texture_layer": _source_label(layers, asset_path) if asset_path else None,
+            "texture_layer_kind": _source_layer_kind(layers, asset_path)
+            if asset_path
+            else None,
+            "texture_bytes": asset_path.stat().st_size if asset_path else None,
+            "texture_sha256": sha256_bytes(asset_path.read_bytes()) if asset_path else None,
+        }
+        if resolved_asset and resolved_asset["resolved_via"] != "exact":
+            row["resolved_via"] = resolved_asset["resolved_via"]
+        rows.append(row)
+    return rows
 
 
 def _normalise_texture_path(value: str | None) -> str | None:
@@ -557,6 +763,7 @@ def build_catalog(args: argparse.Namespace) -> dict[str, Any]:
     )
     warnings = []
     sprites: dict[str, dict[str, Any]] = {}
+    sprite_keys_by_casefold: dict[str, str] = {}
     collisions = []
     interface_files = _direct_interface_files(layers)
     allowlist = _load_missing_texture_allowlist(args.missing_texture_allowlist)
@@ -585,51 +792,78 @@ def build_catalog(args: argparse.Namespace) -> dict[str, Any]:
             warnings.append(msg)
             continue
         interface_files_parsed += 1
-        for block in _sprite_blocks(root):
+        for drawable_kind, block in _renderable_blocks(root):
             name = scalar(block.get("name"))
             if not name:
                 continue
+            texture_slots = _texture_slot_rows(block, layers, asset_lookup)
+            primary = texture_slots[0] if texture_slots else {}
             raw_texture = scalar(block.get("texturefile"))
-            texture = _normalise_texture_path(raw_texture)
-            raw_texture_redacted = _redact_raw_texture_path(raw_texture)
-            has_texture_ref = bool(raw_texture and raw_texture.strip())
-            invalid_texture_ref = bool(has_texture_ref and not texture)
-            resolved_asset = _resolve_asset(layers, asset_lookup, texture)
-            asset_path = resolved_asset["path"] if resolved_asset else None
-            asset_layer = _source_label(layers, asset_path) if asset_path else None
-            asset_layer_kind = _source_layer_kind(layers, asset_path) if asset_path else None
+            if raw_texture is None and texture_slots:
+                raw_texture = scalar(next(
+                    (value for key, value in block.entries
+                     if key.lower().startswith("texturefile")),
+                    None,
+                ))
+            texture = primary.get("texturefile")
+            raw_texture_redacted = primary.get("raw_texturefile")
+            invalid_texture_ref = bool(primary.get("invalid_texturefile"))
             raw_data = node_to_data(block)
             # An absolute-looking ref is ALWAYS redacted in the persisted raw
             # block, even when a game-relative path could be recovered from it
             # (containing "gfx/") — no personal/install path may reach the
             # packed catalog through any branch.
             raw_is_absolute = _is_absolute_texture_path(raw_texture)
-            if (invalid_texture_ref or raw_is_absolute) and isinstance(raw_data, dict):
-                raw_data["texturefile"] = raw_texture_redacted
+            if isinstance(raw_data, dict):
+                for raw_key in list(raw_data):
+                    if not raw_key.lower().startswith("texturefile"):
+                        continue
+                    raw_value = raw_data[raw_key]
+                    if isinstance(raw_value, str) and _is_absolute_texture_path(raw_value):
+                        raw_data[raw_key] = _redact_raw_texture_path(raw_value)
+                    elif isinstance(raw_value, list):
+                        raw_data[raw_key] = [
+                            _redact_raw_texture_path(value)
+                            if isinstance(value, str) and _is_absolute_texture_path(value)
+                            else value
+                            for value in raw_value
+                        ]
             row = {
                 "name": name,
+                "drawable_kind": drawable_kind,
                 "category": _classify(name, texture or raw_texture_redacted),
                 "texturefile": texture,
                 "raw_texturefile": raw_texture_redacted
                 if (invalid_texture_ref or raw_is_absolute)
                 else None,
                 "invalid_texturefile": invalid_texture_ref,
-                "resolved_texturefile": resolved_asset["resolved_relpath"] if resolved_asset else None,
-                "texture_layer": asset_layer,
-                "texture_layer_kind": asset_layer_kind,
-                "texture_bytes": asset_path.stat().st_size if asset_path else None,
-                "texture_sha256": sha256_bytes(asset_path.read_bytes()) if asset_path else None,
+                "resolved_texturefile": primary.get("resolved_texturefile"),
+                "texture_layer": primary.get("texture_layer"),
+                "texture_layer_kind": primary.get("texture_layer_kind"),
+                "texture_bytes": primary.get("texture_bytes"),
+                "texture_sha256": primary.get("texture_sha256"),
+                "texture_slots": texture_slots,
                 "frames": scalar(block.get("noOfFrames")),
                 "source_layer": _source_label(layers, path),
                 "source_layer_kind": _source_layer_kind(layers, path),
                 "source_file": rel,
                 "raw": raw_data,
             }
-            if resolved_asset and resolved_asset["resolved_via"] != "exact":
-                row["resolved_via"] = resolved_asset["resolved_via"]
-            if name in sprites and sprites[name]["source_file"] != rel:
-                collisions.append({"id": name, "first": sprites[name]["source_file"], "override": rel})
+            if primary.get("resolved_via"):
+                row["resolved_via"] = primary["resolved_via"]
+            folded_name = name.casefold()
+            prior_key = sprite_keys_by_casefold.get(folded_name)
+            if prior_key is not None:
+                prior = sprites.pop(prior_key)
+                collisions.append({
+                    "id": name,
+                    "first_id": prior_key,
+                    "first": prior["source_file"],
+                    "override": rel,
+                    "case_insensitive": prior_key != name,
+                })
             sprites[name] = row
+            sprite_keys_by_casefold[folded_name] = name
 
     flags = []
     for rel, path in _flag_files(layers):
@@ -649,23 +883,30 @@ def build_catalog(args: argparse.Namespace) -> dict[str, Any]:
     missing_textures = 0
     for row in sprites.values():
         by_category[row["category"]] = by_category.get(row["category"], 0) + 1
-        if row["texturefile"] and row["texture_sha256"]:
-            layer_kind = row.get("texture_layer_kind") or "unknown"
-            texture_resolution_by_kind[layer_kind] = texture_resolution_by_kind.get(layer_kind, 0) + 1
-            method = row.get("resolved_via") or "exact"
-            texture_resolution_by_method[method] = texture_resolution_by_method.get(method, 0) + 1
-        texture_identity = row["texturefile"] or row.get("raw_texturefile")
-        if (row["texturefile"] or row.get("invalid_texturefile")) and not row["texture_sha256"]:
+        for slot in row.get("texture_slots", []):
+            if slot["texturefile"] and slot["texture_sha256"]:
+                layer_kind = slot.get("texture_layer_kind") or "unknown"
+                texture_resolution_by_kind[layer_kind] = (
+                    texture_resolution_by_kind.get(layer_kind, 0) + 1
+                )
+                method = slot.get("resolved_via") or "exact"
+                texture_resolution_by_method[method] = (
+                    texture_resolution_by_method.get(method, 0) + 1
+                )
+            texture_identity = slot["texturefile"] or slot.get("raw_texturefile")
+            if not (slot["texturefile"] or slot.get("invalid_texturefile")) or slot["texture_sha256"]:
+                continue
             missing_textures += 1
             missing = {
                 "sprite": row["name"],
                 "texturefile": texture_identity,
+                "texture_slot": slot["slot"],
                 "source_file": row["source_file"],
                 "source_layer": row["source_layer"],
                 "category": row["category"],
             }
-            if row.get("invalid_texturefile"):
-                missing["raw_texturefile"] = row.get("raw_texturefile")
+            if slot.get("invalid_texturefile"):
+                missing["raw_texturefile"] = slot.get("raw_texturefile")
                 missing["invalid_texturefile"] = True
             allowlist_key = (row["name"], texture_identity, row["source_file"], row["source_layer"])
             reason = allowlist.get(allowlist_key)
@@ -680,12 +921,14 @@ def build_catalog(args: argparse.Namespace) -> dict[str, Any]:
         key=lambda item: (item[2], item[3], item[0], item[1]),
     )
 
+    power_balance_gui = _power_balance_gui_manifest(layers)
     catalog = {
-        "schema": "gfx_icon_asset_manifest_static.static_artifact.v1",
+        "schema": "gfx_icon_asset_manifest_static.static_artifact.v2",
         "artifact_kind": "deterministic_static_replay_enrichment",
         "scope": {
             "closed_rows": [
-                "interface/*.gfx SpriteType name -> texturefile path/hash",
+                "interface/*.gfx named spriteTypes drawable -> every texturefile slot path/hash",
+                "effective powerbalanceview/countrypoliticsview GUI semantic role -> authored or engine-selected sprite binding",
                 "gfx/flags file path/hash inventory for country flags",
             ],
             "not_closed_rows": [
@@ -696,6 +939,8 @@ def build_catalog(args: argparse.Namespace) -> dict[str, Any]:
         "join_keys": {
             "sprite_name": "sprites.<GFX_name>",
             "texture_path": "sprites.<GFX_name>.texturefile",
+            "texture_slots": "sprites.<GFX_name>.texture_slots[*].slot",
+            "power_balance_gui_role": "power_balance_gui.roles.<semantic_role>",
             "flag_path": "flags[*].relpath",
         },
         "layers": _gfx_layer_summary(layers),
@@ -737,6 +982,7 @@ def build_catalog(args: argparse.Namespace) -> dict[str, Any]:
             "flag_files": source_inventory(_flag_files(layers)),
         },
         "sprites": dict(sorted(sprites.items())),
+        "power_balance_gui": power_balance_gui,
         "flags": sorted(flags, key=lambda row: row["relpath"]),
         "allowed_missing_textures": sorted(
             allowed_missing_textures,
