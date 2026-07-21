@@ -43,8 +43,12 @@ design_catalog_context_live_lane = { path = "../lanes/design_catalog_context_liv
 hud_role_observer_live_lane = { path = "../lanes/hud_role_observer_live" }
 character_presentation_live_lane = { path = "../lanes/character_presentation_live", features = ["a729-fixture-hook"] }
 nuke_stockpile_live_lane = { path = "../lanes/nuke_stockpile_live" }
+country_army_upgrade_requests_live_lane = { path = "../lanes/country_army_upgrade_requests_live" }
 sunk_ship_history_live_lane = { path = "../lanes/sunk_ship_history_live" }
 decision_panel_live_lane = { path = "../lanes/decision_panel_live" }
+fow_visibility_live_lane = { package = "fow_visibility_live", path = "../lanes/fow_visibility_live" }
+spotted_units_live_lane = { package = "spotted_units_live", path = "../lanes/spotted_units_live" }
+supply_logistics_attrition_live_lane = { path = "../lanes/supply_logistics_attrition_live" }
 focus_research_decisions_depth_live = { path = "../lanes/focus_research_decisions_depth_live", features = ["a729-focus-fixture-hook"] }
 portable_render_stream = { path = "../../../portable_replay/native/render_stream" }
 serde = "1"

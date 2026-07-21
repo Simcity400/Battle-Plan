@@ -9,7 +9,8 @@
 use crate::{
     production_main_scene_desc_from_outputs,
     production_map_interpreter::{materialize_static_program, unsupported_reason},
-    validate_c03_camera_replay_binding, C03CameraReplayBinding, PreparedProductionMapFrame,
+    validate_c03_camera_replay_binding, C03CameraReplayBinding, ExactRailD80Binding,
+    PreparedProductionMapFrame,
     PreparedRuntimeDraw, ProductionMainSceneTargetDesc,
     ProductionMapResource, Result,
 };
@@ -17,6 +18,7 @@ use replay_core::{
     BufferSource, C07TreeRuntimeCarrier, ConstantBufferBinding, M03ArrowDraw, M03ArrowFrame,
     MapnameD80State, RenderExecutionRef, RenderTargetDesc, RenderTargetInitialSource, StaticGeometrySource, StaticMapCommand,
     StaticMapOperation, StaticMapPassProgram, StaticShaderResourceSource, UsedContentKey,
+    RailSupplyArrowFrame,
     ViewStatus,
 };
 use serde::{Deserialize, Serialize};
@@ -77,6 +79,8 @@ pub struct PreparedProductionD3dFrame {
     pub tiled_lights: Vec<replay_core::TiledLightSubmission>,
     pub ordered_static_used_content: Vec<UsedContentKey>,
     pub ordered_static_programs: Vec<StaticMapPassProgram>,
+    /// Exact D81 semantic binding to the retained D80 railroad operations.
+    pub rail_ribbon: Option<ExactRailD80Binding>,
     /// B10 compatibility/admission state of the selected submit's D80 mapname
     /// operations. Legacy draws are omitted before this frame can execute.
     pub mapname_d80_state: MapnameD80State,
@@ -93,6 +97,9 @@ pub struct PreparedProductionD3dFrame {
     pub m02_combat: Option<replay_core::M02CombatFrame>,
     pub authenticated_ui_pass: Option<replay_core::AuthenticatedUiPass>,
     pub m03_arrows: Option<M03ArrowFrame>,
+    /// Exact semantic join to retained static normal/see-through railway
+    /// supply-map draws. Execution remains in the ordinary static stream.
+    pub rail_supply_arrows: Option<RailSupplyArrowFrame>,
     pub omissions: Vec<ProductionD3dOmission>,
 }
 
@@ -265,6 +272,27 @@ pub fn prepare_production_d3d_frame(
             });
             continue;
         }
+        if frame.tree_runtime.is_none()
+            && program.ordered_operations.iter().any(|operation| {
+                matches!(
+                    &operation.command,
+                    StaticMapCommand::Draw { draw }
+                        if C07TreeRuntimeCarrier::is_retained_tree_shader_draw(draw)
+                )
+            })
+        {
+            omitted_static_ordinals.extend(
+                program
+                    .ordered_operations
+                    .iter()
+                    .map(|operation| operation.operation_ordinal),
+            );
+            omissions.push(ProductionD3dOmission {
+                pass: program.pass_token.clone(),
+                reason: "authenticated a729 tree shader program omitted because the selected submit has no C07 runtime visibility/model/LOD carrier".into(),
+            });
+            continue;
+        }
         if program_mapname_state == MapnameD80State::LegacyUnstamped {
             omitted_static_ordinals.extend(
                 program
@@ -285,6 +313,30 @@ pub fn prepare_production_d3d_frame(
                     if program_mapname_state == MapnameD80State::Authenticated {
                         return Err(format!(
                             "authenticated mapname program cannot be omitted during materialization: {reason}"
+                        )
+                        .into());
+                    }
+                    if frame.rail_ribbon.as_ref().is_some_and(|rail| {
+                        program.ordered_operations.iter().any(|operation| {
+                            rail.ordered_draws.iter().any(|binding| {
+                                binding.operation_ordinal == operation.operation_ordinal
+                            })
+                        })
+                    }) {
+                        return Err(format!(
+                            "authenticated D81/D80 railroad program cannot be omitted during materialization: {reason}"
+                        )
+                        .into());
+                    }
+                    if frame.rail_supply_arrows.as_ref().is_some_and(|rail| {
+                        program.ordered_operations.iter().any(|operation| {
+                            rail.ordered_draws.iter().any(|binding| {
+                                binding.operation_ordinal == operation.operation_ordinal
+                            })
+                        })
+                    }) {
+                        return Err(format!(
+                            "authenticated railway supply-map arrow program cannot be omitted during materialization: {reason}"
                         )
                         .into());
                     }
@@ -395,6 +447,21 @@ pub fn prepare_production_d3d_frame(
         }
         output_states.extend(m03.draws.iter().map(|draw| draw.draw.output_state.clone()));
     }
+    let rail_supply_arrows = if let Some(rail) = &frame.rail_supply_arrows {
+        rail.validate()
+            .map_err(|error| format!("invalid rail supply-arrow carrier: {error}"))?;
+        rail.validate_against_static_programs(&frame.ordered_static_map_programs)
+            .map_err(|error| format!("rail supply-arrow source join is invalid: {error}"))?;
+        rail.validate_against_static_programs(&ordered_static_programs)
+            .map_err(|error| {
+                format!(
+                    "authenticated railway supply-map arrow program cannot be partially omitted: {error}"
+                )
+            })?;
+        Some(rail.clone())
+    } else {
+        None
+    };
     output_states.extend(frame.ordered_runtime_draws.iter().map(|draw| match draw {
         PreparedRuntimeDraw::Particle { packet, .. } => packet.output_state.clone(),
         PreparedRuntimeDraw::Entity { submission, .. }
@@ -438,6 +505,7 @@ pub fn prepare_production_d3d_frame(
         tiled_lights: frame.tiled_lights.clone(),
         ordered_static_used_content,
         ordered_static_programs,
+        rail_ribbon: frame.rail_ribbon.clone(),
         mapname_d80_state,
         tree_runtime: frame.tree_runtime.clone(),
         tree_materialized_execution_sha256: None,
@@ -446,6 +514,7 @@ pub fn prepare_production_d3d_frame(
         m02_combat: frame.m02_combat.clone(),
         authenticated_ui_pass: frame.authenticated_ui_pass.clone(),
         m03_arrows,
+        rail_supply_arrows,
         omissions,
     };
     if let Some(carrier) = &frame.s1_shadow {
@@ -462,7 +531,71 @@ pub fn prepare_production_d3d_frame(
             )
         })
         .transpose()?;
+    validate_exact_rail_d80_execution(&prepared)?;
+    if let Some(rail) = &prepared.rail_supply_arrows {
+        rail.validate_against_static_programs(&prepared.ordered_static_programs)
+            .map_err(|error| format!("prepared rail supply-arrow join is invalid: {error}"))?;
+    }
     Ok(prepared)
+}
+
+fn validate_exact_rail_d80_execution(frame: &PreparedProductionD3dFrame) -> Result<()> {
+    let Some(binding) = &frame.rail_ribbon else {
+        return Ok(());
+    };
+    if binding.authority != "exact_a729_d81_d80_railroad_registration_join"
+        || binding.ordered_draws.is_empty()
+    {
+        return Err("D81/D80 railroad binding authority is incomplete".into());
+    }
+    let mut operations = BTreeMap::new();
+    for program in &frame.ordered_static_programs {
+        for operation in &program.ordered_operations {
+            operations.insert(operation.operation_ordinal, (program, operation));
+        }
+    }
+    for expected in &binding.ordered_draws {
+        let (program, operation) = operations
+            .get(&expected.operation_ordinal)
+            .copied()
+            .ok_or("D81/D80 railroad binding names an omitted static operation")?;
+        if program.program_ordinal != expected.program_ordinal {
+            return Err("D81/D80 railroad binding program ordinal drifted".into());
+        }
+        let StaticMapCommand::Draw { draw } = &operation.command else {
+            return Err("D81/D80 railroad binding names a non-draw operation".into());
+        };
+        let StaticGeometrySource::Exact { geometry } = &draw.geometry else {
+            return Err("D81/D80 railroad binding lost exact engine geometry".into());
+        };
+        let Some(vertex) = geometry.ordered_vertex_buffers.first() else {
+            return Err("D81/D80 railroad binding lost its vertex buffer".into());
+        };
+        let BufferSource::Inline { bytes, sha256 } = &vertex.source else {
+            return Err("D81/D80 railroad binding vertex source is no longer inline".into());
+        };
+        if draw.payload_sha256 != expected.draw_payload_sha256
+            || sha256 != &expected.vertex_payload_sha256
+            || u64::try_from(bytes.len()).ok() != Some(expected.vertex_byte_count)
+        {
+            return Err("D81/D80 railroad binding payload identity drifted".into());
+        }
+        let occurrences = frame
+            .ordered_render_operations
+            .iter()
+            .filter(|reference| {
+                matches!(
+                    reference,
+                    RenderExecutionRef::Static { operation_ordinal }
+                        if *operation_ordinal == expected.operation_ordinal
+                )
+            })
+            .count();
+        if occurrences != 1 {
+            return Err("D81/D80 railroad draw lacks one exact global interleave position".into());
+        }
+    }
+    Ok(())
 }
 
 pub fn execute_production_d3d_frame(
@@ -475,6 +608,11 @@ pub fn execute_production_d3d_frame(
         &frame.effective_vfs_manifest_sha256,
         "effective VFS manifest digest",
     )?;
+    validate_exact_rail_d80_execution(frame)?;
+    if let Some(rail) = &frame.rail_supply_arrows {
+        rail.validate_against_static_programs(&frame.ordered_static_programs)
+            .map_err(|error| format!("executable rail supply-arrow join is invalid: {error}"))?;
+    }
     let retained_mapname_state = frame.ordered_static_programs.iter().try_fold(
         MapnameD80State::Missing,
         |state, program| state.merge(program.mapname_d80_state()?),

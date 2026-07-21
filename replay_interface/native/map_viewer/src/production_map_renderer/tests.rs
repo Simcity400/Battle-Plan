@@ -130,6 +130,7 @@ fn unsupported_static_producer_transitively_omits_dependent_pass_chain() {
             program(1, "cascade.first", 20, first_dependent),
             program(2, "cascade.second", 30, second_dependent),
         ],
+        rail_ribbon: None,
         snow_mud_texture: None,
         tree_runtime: None,
         s1_shadow: None,
@@ -139,6 +140,7 @@ fn unsupported_static_producer_transitively_omits_dependent_pass_chain() {
         m02_combat: None,
         authenticated_ui_pass: None,
         m03_arrows: None,
+        rail_supply_arrows: None,
         o04_cities: None,
         o05_buildings: None,
         omitted_data_needs: Vec::new(),
@@ -359,6 +361,7 @@ fn opaque_static_draw(source: UsedContentKey) -> StaticMapDraw {
         draw_token: "test.mod_defined_opaque".into(),
         shader_program: ShaderProgram {
             source,
+            producer_registration_root_rva: None,
             effect_token: "test.opaque".into(),
             vertex_entry_token: "vs_main".into(),
             pixel_entry_token: "ps_main".into(),
@@ -526,6 +529,7 @@ fn frame_with_static_program(
             entity_animation_catalog_sha256: "4".repeat(64),
             recorded_input_variant: None,
             recorded_input_receipt_sha256: None,
+            recorded_input_observation: None,
             particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
         },
         update_index: 16_959_360,
@@ -558,6 +562,7 @@ fn frame_with_static_program(
             entity_presentations: Vec::new(),
             particle_packet_set_sha256: "5".repeat(64),
             entities: Vec::new(),
+            rail_construction_arrows: Vec::new(),
             ordered_draws: Vec::new(),
             ordered_render_operations: vec![RenderExecutionRef::Static { operation_ordinal }],
             direct_visuals: Vec::new(),
@@ -568,6 +573,7 @@ fn frame_with_static_program(
         }],
         m02_combat: None,
         m03_arrows: None,
+        rail_supply_arrows: None,
         o04_cities: None,
         o05_buildings: None,
         authenticated_ui_pass: None,
@@ -1047,6 +1053,7 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
             entity_animation_catalog_sha256: "4".repeat(64),
             recorded_input_variant: None,
             recorded_input_receipt_sha256: None,
+            recorded_input_observation: None,
             particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
         },
         update_index: 16_959_360,
@@ -1079,6 +1086,7 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
             entity_presentations: Vec::new(),
             particle_packet_set_sha256: "5".repeat(64),
             entities: Vec::new(),
+            rail_construction_arrows: Vec::new(),
             ordered_draws: Vec::new(),
             ordered_render_operations: Vec::new(),
             direct_visuals: Vec::new(),
@@ -1104,6 +1112,7 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
             ordered_draws: Vec::new(),
         }),
         m03_arrows: None,
+        rail_supply_arrows: None,
         o04_cities: None,
         o05_buildings: None,
         authenticated_ui_pass: None,
@@ -1252,6 +1261,7 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
             entity_animation_catalog_sha256: "4".repeat(64),
             recorded_input_variant: None,
             recorded_input_receipt_sha256: None,
+            recorded_input_observation: None,
             particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
         },
         update_index: 16_959_360,
@@ -1284,6 +1294,7 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
             entity_presentations: Vec::new(),
             particle_packet_set_sha256: "5".repeat(64),
             entities: Vec::new(),
+            rail_construction_arrows: Vec::new(),
             ordered_draws: Vec::new(),
             ordered_render_operations: vec![RenderExecutionRef::Static {
                 operation_ordinal: 7,
@@ -1296,6 +1307,7 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
         }],
         m02_combat: None,
         m03_arrows: None,
+        rail_supply_arrows: None,
         o04_cities: None,
         o05_buildings: None,
         authenticated_ui_pass: None,
@@ -2004,8 +2016,6 @@ fn retained_capture_interpreter_relocates_through_vfs_and_executes_in_d77_order(
     let indices = fs::read(capture_gpu.join("trees_frame_draw000_ia_index_buffer.bin")).unwrap();
     let vertex_shader =
         fs::read(capture_gpu.join("map_vertex_shader_02bd512fa7acd53f.bin")).unwrap();
-    let pixel_shader =
-        fs::read(capture_gpu.join("tree_pixel_shader_277b7b5e8964214f.bin")).unwrap();
     assert_eq!(vertices.len(), 168);
     assert_eq!(indices.len(), 6);
     assert_eq!(
@@ -2071,10 +2081,10 @@ fn retained_capture_interpreter_relocates_through_vfs_and_executes_in_d77_order(
 
     let mut draw = opaque_static_draw(shader_content);
     draw.draw_token = "retained.tree.draw000".into();
-    draw.shader_program.compiled_vertex_shader.bytecode = vertex_shader.clone();
-    draw.shader_program.compiled_vertex_shader.sha256 = Sha256::hex(&vertex_shader);
-    draw.shader_program.compiled_pixel_shader.bytecode = pixel_shader.clone();
-    draw.shader_program.compiled_pixel_shader.sha256 = Sha256::hex(&pixel_shader);
+    // This gate exercises relocatable captured geometry through the generic
+    // interpreter. Keep the synthetic shader pair from `opaque_static_draw`:
+    // using the retained C07 tree pair without its authenticated runtime
+    // visibility/model/LOD carrier must be omitted by production admission.
     draw.pipeline.index_format = IndexFormat::R16Uint;
     draw.pipeline.static_indices_u16 = vec![0, 1, 2];
     draw.geometry = StaticGeometrySource::InterpreterOutput {

@@ -4,7 +4,8 @@ Reads, straight from a running hoi4.exe, per-country scalar fields pinned on
 build 16022851 (cracked + validated read-only vs the content-matched
 USA_1936_02_07_06 melt; see re_scratch/_track1_offsets.draft.json):
 
-    original_capital          country_obj + 0x101C  i32   (state id; 0 => none)
+    capital                   country_obj + 0x1018  i32   (current state id; 0 => none)
+    original_capital          country_obj + 0x101C  i32   (historical state id; 0 => none)
     original_tag              country_obj + 0x130C  u16   tag-db-id (0 => None)
     reserved_dynamic_country  country_obj + 0x145D  u8    (1 => True; active dynamic country)
     templates_locked          country_obj + 0x01B4  u8    (1 => True)
@@ -71,6 +72,8 @@ def read_country_static(p, obj, tag_table=None):
     it, original_tag is returned as a raw id (original_tag_id) only.
     """
     out = {}
+    capital = _sentinel(lambda: p.i32(obj + OFF_CAPITAL))
+    out["capital"] = capital if (capital is not None and capital > 0) else None
     oc = _sentinel(lambda: p.i32(obj + OFF_ORIG_CAPITAL))
     out["original_capital"] = oc if (oc is not None and oc > 0) else None
     tl = _sentinel(lambda: p.u8(obj + OFF_TEMPLATES_LOCKED))

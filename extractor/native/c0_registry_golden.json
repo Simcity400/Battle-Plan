@@ -80,5 +80,10 @@
   {"id":89,"wire_name":"national_focus_presentation_live","internal_name":"national_focus_presentation_live","status":"Reserved","schedulable":false,"requires_data_record":true,"tags":[]},
   {"id":90,"wire_name":"convoy_transport_attack_live","internal_name":"convoy_transport_attack_live","status":"Reserved","schedulable":false,"requires_data_record":true,"tags":[]},
   {"id":91,"wire_name":"raid_instances_live","internal_name":"raid_instances_live","status":"Reserved","schedulable":false,"requires_data_record":true,"tags":[]},
+  {"id":92,"wire_name":"country_preferred_tactic_live","internal_name":"country_preferred_tactic_live","status":"ProductionComplete","schedulable":true,"requires_data_record":true,"tags":[]},
+  {"id":93,"wire_name":"country_army_upgrade_requests_live","internal_name":"country_army_upgrade_requests_live","status":"ProductionComplete","schedulable":true,"requires_data_record":true,"tags":[]},
+  {"id":94,"wire_name":"pov_province_visibility_live","internal_name":"pov_province_visibility_live","status":"ProductionComplete","schedulable":true,"requires_data_record":true,"tags":[]},
+  {"id":95,"wire_name":"pov_spotted_units_live","internal_name":"pov_spotted_units_live","status":"ProductionComplete","schedulable":true,"requires_data_record":true,"tags":[]},
+  {"id":96,"wire_name":"country_preferred_tactic_weight_live","internal_name":"country_preferred_tactic_weight_live","status":"ProductionComplete","schedulable":true,"requires_data_record":true,"tags":[]},
   {"id":1000,"wire_name":"frame","internal_name":"frame","status":"Infrastructure","schedulable":false,"requires_data_record":false,"tags":[]}
 ]

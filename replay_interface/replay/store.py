@@ -1213,7 +1213,12 @@ _EXTRA_FIELDS = (
 
 
 def _ingest_country_extra(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
-    """Fold country_extra.json per-country body onto countries.*.extra."""
+    """Fold country_extra.json onto its canonical country namespaces.
+
+    ``cores`` and ``claims`` are authoritative state memberships, not misc
+    metadata.  Keep them distinct under ``identity`` so save baselines and the
+    live compact carrier converge on the same replay paths.
+    """
     ce = bundle.get("country_extra")
     if not isinstance(ce, dict) or not isinstance(ce.get("countries"), dict):
         return
@@ -1222,6 +1227,14 @@ def _ingest_country_extra(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
             continue
         dst = _ensure_country(snap, tag)
         dst["extra"] = {k: c[k] for k in _EXTRA_FIELDS if k in c}
+        identity = dst.setdefault("identity", {})
+        for field in ("cores", "claims"):
+            value = c.get(field)
+            if isinstance(value, list) and all(
+                isinstance(state_id, int) and not isinstance(state_id, bool)
+                for state_id in value
+            ):
+                identity[field] = sorted(set(value))
 
 
 def _ingest_players(bundle: OracleBundle, snap: Dict[str, Any]) -> None:

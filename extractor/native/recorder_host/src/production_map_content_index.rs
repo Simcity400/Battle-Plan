@@ -666,6 +666,7 @@ mod tests {
         let bytecode_ps = b"mod-ps".to_vec();
         let shader_program = ShaderProgram {
             source: shader_content.clone(),
+            producer_registration_root_rva: None,
             effect_token: "mod_effect.custom_post".into(),
             vertex_entry_token: "ModVertex".into(),
             pixel_entry_token: "ModPixel".into(),
@@ -844,6 +845,7 @@ mod tests {
             entity_presentations: Vec::new(),
             particle_packet_set_sha256: "e".repeat(64),
             entities: Vec::new(),
+            rail_construction_arrows: Vec::new(),
             ordered_draws: Vec::new(),
             ordered_render_operations: (0..11)
                 .map(|operation_ordinal| RenderExecutionRef::Static { operation_ordinal })
@@ -880,6 +882,7 @@ mod tests {
                 entity_animation_catalog_sha256: "2".repeat(64),
                 recorded_input_variant: None,
                 recorded_input_receipt_sha256: None,
+                recorded_input_observation: None,
                 particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
             },
             update_index: 16_959_360,
@@ -900,6 +903,7 @@ mod tests {
             submits: vec![submit],
             m02_combat: None,
             m03_arrows: None,
+            rail_supply_arrows: None,
             o04_cities: None,
             o05_buildings: None,
             authenticated_ui_pass: None,

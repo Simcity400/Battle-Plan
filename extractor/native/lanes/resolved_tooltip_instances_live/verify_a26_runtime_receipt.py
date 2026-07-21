@@ -11,7 +11,7 @@ from pathlib import Path
 
 SCHEMA = "a26-same-present-runtime-receipt-v1"
 A729_SHA256 = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
-MANIFEST_SHA256 = "b1f2f0bc2afde8c970fd4e63dd9c969bde9744d146c4f23e9dddae4f00ba4c64"
+MANIFEST_SHA256 = "a23b63ccefc021eeced9a1a918588d3e2fbba07e5d1afb4d53f83cc7c1640177"
 REQUIRED_CASES = {
     "hidden_baseline_1920x1080": (1920, 1080, False),
     "capture_start_visible_1920x1080": (1920, 1080, True),

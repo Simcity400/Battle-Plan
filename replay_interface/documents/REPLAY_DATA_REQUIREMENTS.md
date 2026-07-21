@@ -297,16 +297,15 @@ Degrades to empty seas/skies.
 `world_fold.rs:3920`, D31) -- replay-side ingest pending. NAVAL task-force
 rows remain OPEN as specified above.
 
-**PLACEMENT GAP (C2 lane 2026-07-09):** the on-map air-wing placement
-(`map_viewer::unit_placement`) needs an on-map **airbase province** per wing.
-Today `WingUnitRow` exposes only `air_base` (an opaque id string like
-`"3000:1"`), `state_id`, and `strategic_region_id` — none is a clean province,
-so wing placement falls back to a FIT (the air-base **state**'s representative
-province). Add an explicit `air_base_province` (or make `air_base` resolvable
-to a province) to the per-hour air-wing row so wings anchor at their actual
-airbase locator instead of a state centroid. Divisions
-(`location_province`) and fleet task forces (`location_province`) already carry
-a clean on-map province and place FILE-derived; only air wings are FIT.
+**PLACEMENT CLOSED (A7/D34, 2026-07-21):** ground air wings now carry
+`air_base_province`, joined from the D32 `{air_base_id,type=65}` handle to the
+D34 exact `CAirBase+0x70 -> CProvince+0xA4` carrier. The collector also requires
+the typed `CProvince` vtable and its `+0xC0` back-reference to the same `CState`
+as `CAirBase+0x68`, so a neighboring/state-centroid province cannot be promoted
+as exact. Carrier/mobile pools are absent from the ground state table and stay
+null. `map_viewer::unit_placement` consumes this leaf before its legacy
+state-representative fallback. Divisions and fleet task forces continue to use
+their existing exact `location_province` leaves.
 
 ## 8b. Diplomatic pair-state, faction membership, capitals (MAP FURNITURE + WAR OVERLAYS)
 
@@ -413,17 +412,21 @@ unavailable badge / empty outliner section.
 > `countries.<tag>.scalars.*` and are now surfaced (`topbar_ratios()` /
 > `topbar_alerts()`).
 
-> ALERT SUB-COUNTS + FEED CAVEAT (U1 2026-07-09): the four `scalars.alerts.*`
-> AGGREGATE counts (initiative, decisions_available, intel, market_contracts) are
-> bound to the topbar alert badges by `game_ui::alerts` (`alerts_strip_from_frame`).
-> But the topbar shows TWO badges per category (decision available **and**
-> timeout; intel available **and** prepared/completed; **non-delivering** and
-> **delivering** contracts) plus prototype rewards, and the alerts.gui feed shows
-> N individual fired-alert icons — none of which a single aggregate count can fill.
-> Those SUB-counts + the fired-alert FEED stream (`{alert_type_key, target,
-> fire_time}` per POV per hour) are a NEW recording gap (EXTRACTION_NEEDS §A A18);
-> today they render fail-closed absent. Badge zero-suppression (hide when count=0)
-> is a FIT product convention in the binding, not a recorded/file law.
+> ALERT SUB-COUNTS + ACTIVE-FEED CAVEAT (U1, exact-a729 closure 2026-07-21):
+> `game_ui::alerts` binds the available exact badge sub-counts. The alerts.gui
+> feed is not a historical fired-alert stream: the engine retains a current
+> active snapshot in 0x52 type-indexed vectors. Each 0x468-byte record carries
+> `{raw_identity_0, raw_identity_1, raw_identity_2}` at
+> `+0x438/+0x440/+0x450` and display order at `+0x460`; it has no per-instance
+> fire-time field. D79 TBA1 schema 2 now records the bounded pointer-free active
+> snapshot with type, template, priority, dedup-family disposition, icon state,
+> exact `GFX_global_alert_icons` atlas frame, and display order. Country-bearing
+> families carry a registry-joined country
+> DB id; command-group and opaque-object targets are explicitly omitted. Fire
+> time is NOT_APPLICABLE_NO_ENGINE_FIELD and must not be inferred from order or
+> the separate per-type sound cooldown. Badge zero-suppression (hide when
+> count=0) remains a FIT product convention in the binding, not a recorded/file
+> law.
 
 Degrades to an unavailable badge per missing field (never a fabricated
 number). Deeper panel content (production lines, army lists — the
@@ -531,6 +534,19 @@ What the replay needs, per POV country, per hour:
   *from* is cheaper to record than the evaluated result, record that instead
   and tell us — the replay can apply engine rules replay-side given the
   inputs. Whichever representation is cheaper on your end wins.
+
+**Wave 6 exact-a729 status (2026-07-21):** D94/FOW1 now records the engine's
+complete current-selected-POV `u8[province_database_id]` vector and replay
+regenerates the A8 IntelMap with the exact 6x6 coverage/average/invert law.
+D95/SPU1 separately records complete land and task-force map-producer frames,
+preserving each pointer-free engine reference identity and raw graded intel
+byte. Land map counters admit at 250; task-force map icons admit at 150 and
+exact detail at 250. Air wings are explicitly unavailable because the complete
+score xref and a dedicated air-wing icon closure found no authoritative wing
+map-spotting producer. Do not infer wing visibility from province or air-region
+aggregates. Capturing every player-country POV still requires selecting/cycling
+those POVs in the live game; the exact producer itself owns only the current
+selected POV.
 
 **FoW render-law note (CAP4, 2026-07-09):** the terrain pass consumes a
 screen-space 1920x1080 BGRA8 `ShadowMap`; shader `.g/.b` are final FoW

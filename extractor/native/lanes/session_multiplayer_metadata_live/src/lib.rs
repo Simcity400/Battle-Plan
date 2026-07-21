@@ -22,10 +22,17 @@ pub const DOMAIN_FRAME: u16 = 1000;
 pub const FRAME_END_PAYLOAD_LEN: usize = 32;
 
 pub const PAYLOAD_MAGIC: [u8; 4] = *b"S57M";
-pub const PAYLOAD_VERSION: u16 = 1;
+pub const PAYLOAD_VERSION: u16 = 3;
+pub const SCALAR_PAYLOAD_VERSION: u16 = 2;
+pub const LEGACY_PAYLOAD_VERSION: u16 = 1;
 pub const PAYLOAD_HEADER_LEN: usize = 64;
 pub const PLAYER_COUNTRY_ROW_LEN: usize = 40;
 pub const SESSION_EVENT_ROW_LEN: usize = 64;
+pub const WORLD_TENSION_EXTENSION_MAGIC: [u8; 4] = *b"WT3X";
+pub const WORLD_TENSION_EXTENSION_VERSION: u16 = 1;
+pub const WORLD_TENSION_EXTENSION_HEADER_LEN: usize = 72;
+pub const WORLD_TENSION_COUNTRY_ROW_LEN: usize = 56;
+pub const WORLD_TENSION_LEDGER_ROW_LEN: usize = 40;
 
 pub const STATUS_WORKER_PANIC: u32 = 1 << 6;
 pub const STATUS_BRIDGE_UNAVAILABLE: u32 = 1 << 7;
@@ -62,6 +69,26 @@ pub const SOURCE_FLAG_KNOWN_MASK: u32 = SOURCE_FLAG_DLL_NATIVE
     | SOURCE_FLAG_NOTIFICATION_HOOK_VALIDATED
     | SOURCE_FLAG_SPEED_PAUSE_HOOK_VALIDATED
     | SOURCE_FLAG_PROOF_FIXTURE;
+
+/// Header offset 56 carries the signed world-tension scalar: fixed3 percent,
+/// equivalently fixed5 after normalization to a 0.0..=1.0 ratio.
+/// Absence is represented by `i64::MIN`; the schema/root bits must agree with
+/// the value so old reserved-zero bytes can never be promoted as a real 0%.
+pub const SCHEMA_FLAG_WORLD_TENSION_FIXED5: u32 = 1;
+pub const SCHEMA_FLAG_WORLD_TENSION_DETAILS: u32 = 1 << 1;
+pub const SCHEMA_FLAG_KNOWN_MASK: u32 =
+    SCHEMA_FLAG_WORLD_TENSION_FIXED5 | SCHEMA_FLAG_WORLD_TENSION_DETAILS;
+pub const ROOT_EVIDENCE_WORLD_TENSION: u32 = 1 << 5;
+pub const ROOT_EVIDENCE_WORLD_TENSION_DETAILS: u32 = 1 << 6;
+pub const WORLD_TENSION_FIXED5_ABSENT: i64 = i64::MIN;
+
+pub const WORLD_TENSION_COUNTRY_FLAG_POLICY_CAP_ENABLED: u32 = 1;
+pub const WORLD_TENSION_COUNTRY_FLAG_KNOWN_MASK: u32 =
+    WORLD_TENSION_COUNTRY_FLAG_POLICY_CAP_ENABLED;
+pub const WORLD_TENSION_DETAILS_FLAG_INCREASED: u32 = 1;
+pub const WORLD_TENSION_DETAILS_FLAG_KNOWN_MASK: u32 =
+    WORLD_TENSION_DETAILS_FLAG_INCREASED;
+pub const MAX_WORLD_TENSION_LEDGER_ROWS: u32 = 100_000;
 
 pub const PLAYER_FLAG_HOST: u32 = 1;
 pub const PLAYER_FLAG_HUMAN: u32 = 1 << 1;
@@ -168,6 +195,8 @@ pub struct SessionMetadataFrame {
     pub source_flags: u32,
     pub schema_flags: u32,
     pub root_evidence_mask: u32,
+    pub world_tension_fixed5: Option<i64>,
+    pub world_tension_details: Option<WorldTensionDetails>,
     pub player_country_rows: Vec<PlayerCountryRow>,
     pub event_rows: Vec<SessionEventRow>,
 }
@@ -180,6 +209,9 @@ pub struct PayloadSummary {
     pub player_country_rows: u32,
     pub event_rows: u32,
     pub string_bytes: u32,
+    pub world_tension_fixed5: Option<i64>,
+    pub world_tension_country_rows: u32,
+    pub world_tension_ledger_rows: u32,
     pub min_event_hour_raw: Option<i32>,
     pub max_event_hour_raw: Option<i32>,
     pub event_kind_counts: BTreeMap<u16, u64>,
@@ -237,6 +269,55 @@ impl StringTable {
     }
 }
 
+fn encode_world_tension_extension(details: &WorldTensionDetails) -> Vec<u8> {
+    let mut strings = StringTable::default();
+    let reason_refs = details
+        .ledger_rows
+        .iter()
+        .map(|row| strings.push(&row.reason))
+        .collect::<Vec<_>>();
+    let mut out = Vec::new();
+    out.extend_from_slice(&WORLD_TENSION_EXTENSION_MAGIC);
+    out.extend_from_slice(&WORLD_TENSION_EXTENSION_VERSION.to_le_bytes());
+    out.extend_from_slice(&(WORLD_TENSION_EXTENSION_HEADER_LEN as u16).to_le_bytes());
+    out.extend_from_slice(&(WORLD_TENSION_COUNTRY_ROW_LEN as u16).to_le_bytes());
+    out.extend_from_slice(&(WORLD_TENSION_LEDGER_ROW_LEN as u16).to_le_bytes());
+    out.extend_from_slice(&(details.country_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    out.extend_from_slice(&(details.ledger_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    out.extend_from_slice(&(strings.bytes.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    out.extend_from_slice(&(if details.increased { WORLD_TENSION_DETAILS_FLAG_INCREASED } else { 0 }).to_le_bytes());
+    out.extend_from_slice(&details.current_fixed5.to_le_bytes());
+    out.extend_from_slice(&details.prior_fixed5.to_le_bytes());
+    out.extend_from_slice(&details.monthly_decrease_fixed5.to_le_bytes());
+    out.extend_from_slice(&details.time_scale_fixed5.to_le_bytes());
+    out.extend_from_slice(&details.start_date_raw.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    debug_assert_eq!(out.len(), WORLD_TENSION_EXTENSION_HEADER_LEN);
+    for row in &details.country_rows {
+        out.extend_from_slice(&row.tag_db_id.to_le_bytes());
+        out.extend_from_slice(&row.flags.to_le_bytes());
+        out.extend_from_slice(&row.generated_threat_fixed.to_le_bytes());
+        out.extend_from_slice(&row.generate_wargoal_threshold_fixed5.to_le_bytes());
+        out.extend_from_slice(&row.join_faction_threshold_fixed5.to_le_bytes());
+        out.extend_from_slice(&row.lend_lease_threshold_fixed5.to_le_bytes());
+        out.extend_from_slice(&row.send_volunteers_threshold_fixed5.to_le_bytes());
+        out.extend_from_slice(&row.guarantee_threshold_fixed5.to_le_bytes());
+    }
+    for (row, reason) in details.ledger_rows.iter().zip(reason_refs) {
+        out.extend_from_slice(&row.source_tag_db_id.to_le_bytes());
+        out.extend_from_slice(&row.date_raw.to_le_bytes());
+        out.extend_from_slice(&row.current_threat_fixed.to_le_bytes());
+        out.extend_from_slice(&row.original_threat_fixed.to_le_bytes());
+        out.extend_from_slice(&reason.off.to_le_bytes());
+        out.extend_from_slice(&reason.len.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&row.source_sequence.to_le_bytes());
+    }
+    out.extend_from_slice(&strings.bytes);
+    out
+}
+
 pub fn encode_payload(frame: &SessionMetadataFrame) -> Vec<u8> {
     let mut strings = StringTable::default();
     let player_refs = frame
@@ -280,11 +361,33 @@ pub fn encode_payload(frame: &SessionMetadataFrame) -> Vec<u8> {
     out.extend_from_slice(&player_count.to_le_bytes());
     out.extend_from_slice(&event_count.to_le_bytes());
     out.extend_from_slice(&string_bytes.to_le_bytes());
-    out.extend_from_slice(&frame.schema_flags.to_le_bytes());
-    out.extend_from_slice(&frame.root_evidence_mask.to_le_bytes());
+    let schema_flags = frame.schema_flags
+        | if frame.world_tension_fixed5.is_some() {
+            SCHEMA_FLAG_WORLD_TENSION_FIXED5
+        } else {
+            0
+        }
+        | if frame.world_tension_details.is_some() {
+            SCHEMA_FLAG_WORLD_TENSION_DETAILS
+        } else {
+            0
+        };
+    out.extend_from_slice(&schema_flags.to_le_bytes());
+    let root_evidence_mask = frame.root_evidence_mask
+        | if frame.world_tension_details.is_some() {
+            ROOT_EVIDENCE_WORLD_TENSION_DETAILS
+        } else {
+            0
+        };
+    out.extend_from_slice(&root_evidence_mask.to_le_bytes());
     out.extend_from_slice(&min_event_hour.unwrap_or(frame.game_hour_raw).to_le_bytes());
     out.extend_from_slice(&max_event_hour.unwrap_or(frame.game_hour_raw).to_le_bytes());
-    out.extend_from_slice(&0u64.to_le_bytes());
+    out.extend_from_slice(
+        &frame
+            .world_tension_fixed5
+            .unwrap_or(WORLD_TENSION_FIXED5_ABSENT)
+            .to_le_bytes(),
+    );
     debug_assert_eq!(out.len(), PAYLOAD_HEADER_LEN);
 
     for (row, (player_name, country_tag)) in frame.player_country_rows.iter().zip(player_refs) {
@@ -319,7 +422,169 @@ pub fn encode_payload(frame: &SessionMetadataFrame) -> Vec<u8> {
         out.extend_from_slice(&0u32.to_le_bytes());
     }
     out.extend_from_slice(&strings.bytes);
+    if let Some(details) = &frame.world_tension_details {
+        out.extend_from_slice(&encode_world_tension_extension(details));
+    }
     out
+}
+
+pub fn decode_world_tension_details(payload: &[u8]) -> Result<Option<WorldTensionDetails>, String> {
+    if payload.len() < PAYLOAD_HEADER_LEN {
+        return Err("payload shorter than header".into());
+    }
+    let version = read_u16(payload, 4);
+    let schema_flags = read_u32(payload, 40);
+    if schema_flags & SCHEMA_FLAG_WORLD_TENSION_DETAILS == 0 {
+        return Ok(None);
+    }
+    if version != PAYLOAD_VERSION {
+        return Err("world-tension details require payload v3".into());
+    }
+    let player_count = read_u32(payload, 28) as usize;
+    let event_count = read_u32(payload, 32) as usize;
+    let base_string_bytes = read_u32(payload, 36) as usize;
+    let base_end = PAYLOAD_HEADER_LEN
+        .checked_add(player_count.checked_mul(PLAYER_COUNTRY_ROW_LEN).ok_or("player byte overflow")?)
+        .and_then(|v| v.checked_add(event_count.checked_mul(SESSION_EVENT_ROW_LEN)?))
+        .and_then(|v| v.checked_add(base_string_bytes))
+        .ok_or("base payload length overflow")?;
+    let ext = payload.get(base_end..).ok_or("world-tension extension offset out of bounds")?;
+    if ext.len() < WORLD_TENSION_EXTENSION_HEADER_LEN {
+        return Err("world-tension extension shorter than header".into());
+    }
+    if ext[0..4] != WORLD_TENSION_EXTENSION_MAGIC {
+        return Err("invalid world-tension extension magic".into());
+    }
+    if read_u16(ext, 4) != WORLD_TENSION_EXTENSION_VERSION
+        || read_u16(ext, 6) as usize != WORLD_TENSION_EXTENSION_HEADER_LEN
+        || read_u16(ext, 8) as usize != WORLD_TENSION_COUNTRY_ROW_LEN
+        || read_u16(ext, 10) as usize != WORLD_TENSION_LEDGER_ROW_LEN
+    {
+        return Err("unsupported world-tension extension layout".into());
+    }
+    let country_count = read_u32(ext, 12);
+    let ledger_count = read_u32(ext, 16);
+    let string_bytes = read_u32(ext, 20) as usize;
+    let flags = read_u32(ext, 24);
+    if country_count > MAX_TAG_DB_ID || ledger_count > MAX_WORLD_TENSION_LEDGER_ROWS {
+        return Err("world-tension extension row count exceeds bound".into());
+    }
+    if string_bytes > MAX_STRING_BLOB_BYTES || flags & !WORLD_TENSION_DETAILS_FLAG_KNOWN_MASK != 0 {
+        return Err("world-tension extension flags/string length invalid".into());
+    }
+    let country_bytes = (country_count as usize)
+        .checked_mul(WORLD_TENSION_COUNTRY_ROW_LEN)
+        .ok_or("world-tension country bytes overflow")?;
+    let ledger_bytes = (ledger_count as usize)
+        .checked_mul(WORLD_TENSION_LEDGER_ROW_LEN)
+        .ok_or("world-tension ledger bytes overflow")?;
+    let strings_start = WORLD_TENSION_EXTENSION_HEADER_LEN
+        .checked_add(country_bytes)
+        .and_then(|v| v.checked_add(ledger_bytes))
+        .ok_or("world-tension extension row layout overflow")?;
+    let expected_len = strings_start
+        .checked_add(string_bytes)
+        .ok_or("world-tension extension length overflow")?;
+    if expected_len != ext.len() {
+        return Err("world-tension extension length mismatch".into());
+    }
+    let current_fixed5 = read_i64(ext, 28);
+    let prior_fixed5 = read_i64(ext, 36);
+    let monthly_decrease_fixed5 = read_i64(ext, 44);
+    let time_scale_fixed5 = read_i64(ext, 52);
+    let start_date_raw = read_i32(ext, 60);
+    if read_u32(ext, 64) != 0 || read_u32(ext, 68) != 0 {
+        return Err("world-tension extension reserved bytes are non-zero".into());
+    }
+    if !(0..=100_000).contains(&current_fixed5)
+        || !(0..=100_000).contains(&prior_fixed5)
+    {
+        return Err("world-tension extension scalar outside exact bounds".into());
+    }
+    let increased = flags & WORLD_TENSION_DETAILS_FLAG_INCREASED != 0;
+    if increased != (prior_fixed5 < current_fixed5) {
+        return Err("world-tension increase flag disagrees with prior/current values".into());
+    }
+    let mut country_rows = Vec::with_capacity(country_count as usize);
+    let mut off = WORLD_TENSION_EXTENSION_HEADER_LEN;
+    let mut previous_tag = 0u32;
+    for _ in 0..country_count {
+        let row = &ext[off..off + WORLD_TENSION_COUNTRY_ROW_LEN];
+        let tag_db_id = read_u32(row, 0);
+        let row_flags = read_u32(row, 4);
+        let values = [
+            read_i64(row, 8), read_i64(row, 16), read_i64(row, 24),
+            read_i64(row, 32), read_i64(row, 40), read_i64(row, 48),
+        ];
+        if tag_db_id == 0 || tag_db_id > MAX_TAG_DB_ID || tag_db_id <= previous_tag {
+            return Err("world-tension country ids are invalid or non-canonical".into());
+        }
+        if row_flags & !WORLD_TENSION_COUNTRY_FLAG_KNOWN_MASK != 0
+            || !(0..=10_000_000).contains(&values[0])
+            || values[1..].iter().any(|v| !(0..=100_000).contains(v))
+        {
+            return Err("world-tension country row outside exact bounds".into());
+        }
+        previous_tag = tag_db_id;
+        country_rows.push(WorldTensionCountryRow {
+            tag_db_id,
+            flags: row_flags,
+            generated_threat_fixed: values[0],
+            generate_wargoal_threshold_fixed5: values[1],
+            join_faction_threshold_fixed5: values[2],
+            lend_lease_threshold_fixed5: values[3],
+            send_volunteers_threshold_fixed5: values[4],
+            guarantee_threshold_fixed5: values[5],
+        });
+        off += WORLD_TENSION_COUNTRY_ROW_LEN;
+    }
+    let strings = &ext[strings_start..];
+    let mut ledger_rows = Vec::with_capacity(ledger_count as usize);
+    for row_index in 0..ledger_count {
+        let row = &ext[off..off + WORLD_TENSION_LEDGER_ROW_LEN];
+        let source_tag_db_id = read_u32(row, 0);
+        let current_threat_fixed = read_i64(row, 8);
+        let original_threat_fixed = read_i64(row, 16);
+        let reason_ref = StringRef { off: read_u32(row, 24), len: read_u16(row, 28) };
+        let source_sequence = read_u64(row, 32);
+        if read_u16(row, 30) != 0
+            || source_tag_db_id == 0
+            || source_tag_db_id > MAX_TAG_DB_ID
+            || !(0..=10_000_000).contains(&current_threat_fixed)
+            || !(0..=10_000_000).contains(&original_threat_fixed)
+            || source_sequence != row_index as u64
+        {
+            return Err("world-tension ledger row outside exact bounds".into());
+        }
+        let start = reason_ref.off as usize;
+        let end = start.checked_add(reason_ref.len as usize).ok_or("reason overflow")?;
+        let reason_bytes = strings.get(start..end).ok_or("reason out of bounds")?;
+        if reason_bytes.contains(&0) {
+            return Err("world-tension reason contains NUL".into());
+        }
+        let reason = std::str::from_utf8(reason_bytes)
+            .map_err(|_| "world-tension reason is not utf-8")?
+            .to_string();
+        ledger_rows.push(WorldTensionLedgerRow {
+            source_tag_db_id,
+            date_raw: read_i32(row, 4),
+            current_threat_fixed,
+            original_threat_fixed,
+            reason,
+            source_sequence,
+        });
+        off += WORLD_TENSION_LEDGER_ROW_LEN;
+    }
+    Ok(Some(WorldTensionDetails {
+        current_fixed5,
+        prior_fixed5,
+        increased,
+        monthly_decrease_fixed5,
+        time_scale_fixed5,
+        start_date_raw,
+        country_rows,
+        ledger_rows,
+    }))
 }
 
 pub fn gate_payload(payload: &[u8]) -> PayloadGate {
@@ -340,8 +605,13 @@ pub fn gate_payload(payload: &[u8]) -> PayloadGate {
     let domain_id = read_u16(payload, 8);
     let player_row_len = read_u16(payload, 10) as usize;
     let event_row_len = read_u16(payload, 12) as usize;
-    if version != PAYLOAD_VERSION {
-        errors.push(format!("payload version {version} != {PAYLOAD_VERSION}"));
+    if version != PAYLOAD_VERSION
+        && version != SCALAR_PAYLOAD_VERSION
+        && version != LEGACY_PAYLOAD_VERSION
+    {
+        errors.push(format!(
+            "payload version {version} is not current {PAYLOAD_VERSION}, scalar {SCALAR_PAYLOAD_VERSION}, or legacy {LEGACY_PAYLOAD_VERSION}"
+        ));
     }
     if header_len != PAYLOAD_HEADER_LEN {
         errors.push(format!(
@@ -367,6 +637,10 @@ pub fn gate_payload(payload: &[u8]) -> PayloadGate {
     let root_evidence_mask = read_u32(payload, 44);
     summary.min_event_hour_raw = Some(read_i32(payload, 48));
     summary.max_event_hour_raw = Some(read_i32(payload, 52));
+    let world_tension_raw = read_i64(payload, 56);
+    summary.world_tension_fixed5 = (version >= SCALAR_PAYLOAD_VERSION
+        && world_tension_raw != WORLD_TENSION_FIXED5_ABSENT)
+        .then_some(world_tension_raw);
 
     if summary.status_flags & !STATUS_KNOWN_MASK != 0 {
         errors.push(format!(
@@ -389,8 +663,41 @@ pub fn gate_payload(payload: &[u8]) -> PayloadGate {
     if summary.string_bytes as usize > MAX_STRING_BLOB_BYTES {
         errors.push("string blob too large".to_string());
     }
-    if schema_flags != 0 {
-        errors.push(format!("unknown schema_flags 0x{schema_flags:X}"));
+    if schema_flags & !SCHEMA_FLAG_KNOWN_MASK != 0 {
+        errors.push(format!(
+            "unknown schema_flags 0x{:X}",
+            schema_flags & !SCHEMA_FLAG_KNOWN_MASK
+        ));
+    }
+    let tension_schema_present = schema_flags & SCHEMA_FLAG_WORLD_TENSION_FIXED5 != 0;
+    let details_schema_present = schema_flags & SCHEMA_FLAG_WORLD_TENSION_DETAILS != 0;
+    let tension_root_present = root_evidence_mask & ROOT_EVIDENCE_WORLD_TENSION != 0;
+    let details_root_present = root_evidence_mask & ROOT_EVIDENCE_WORLD_TENSION_DETAILS != 0;
+    if version == LEGACY_PAYLOAD_VERSION && (tension_schema_present || tension_root_present) {
+        errors.push("legacy payload claims v2 world-tension evidence".to_string());
+    }
+    if version != PAYLOAD_VERSION && (details_schema_present || details_root_present) {
+        errors.push("pre-v3 payload claims world-tension detail evidence".to_string());
+    }
+    if tension_root_present && summary.source_flags & SOURCE_FLAG_SESSION_ROOT_VALIDATED == 0 {
+        errors.push("world-tension root lacks validated session-root source".to_string());
+    }
+    if tension_schema_present != summary.world_tension_fixed5.is_some()
+        || tension_root_present != summary.world_tension_fixed5.is_some()
+    {
+        errors.push(
+            "world-tension value/schema/root evidence disagree".to_string(),
+        );
+    }
+    if details_schema_present != details_root_present || details_schema_present && !tension_schema_present {
+        errors.push("world-tension detail schema/root/scalar evidence disagree".to_string());
+    }
+    if summary.world_tension_fixed5.is_some_and(|value| {
+        !(compact_contract::build_profile::DOMAIN57_WORLD_TENSION_FIXED5_MIN
+            ..=compact_contract::build_profile::DOMAIN57_WORLD_TENSION_FIXED5_MAX)
+            .contains(&value)
+    }) {
+        errors.push("world-tension fixed5 value outside 0..=100000".to_string());
     }
     if root_evidence_mask == 0
         && (summary.source_flags & SOURCE_FLAG_PROOF_FIXTURE == 0)
@@ -441,7 +748,7 @@ pub fn gate_payload(payload: &[u8]) -> PayloadGate {
             errors,
         };
     };
-    let Some(expected_len) = strings_start.checked_add(summary.string_bytes as usize) else {
+    let Some(base_expected_len) = strings_start.checked_add(summary.string_bytes as usize) else {
         errors.push("payload total length overflow".to_string());
         return PayloadGate {
             ok: false,
@@ -449,9 +756,11 @@ pub fn gate_payload(payload: &[u8]) -> PayloadGate {
             errors,
         };
     };
-    if expected_len != payload.len() {
+    if payload.len() < base_expected_len
+        || (!details_schema_present && base_expected_len != payload.len())
+    {
         errors.push(format!(
-            "payload length {} != expected {expected_len}",
+            "payload length {} is incompatible with base length {base_expected_len}",
             payload.len()
         ));
         return PayloadGate {
@@ -460,7 +769,23 @@ pub fn gate_payload(payload: &[u8]) -> PayloadGate {
             errors,
         };
     }
-    let strings = &payload[strings_start..];
+    let strings = &payload[strings_start..base_expected_len];
+    match decode_world_tension_details(payload) {
+        Ok(Some(details)) => {
+            summary.world_tension_country_rows =
+                details.country_rows.len().min(u32::MAX as usize) as u32;
+            summary.world_tension_ledger_rows =
+                details.ledger_rows.len().min(u32::MAX as usize) as u32;
+            if summary.world_tension_fixed5 != Some(details.current_fixed5) {
+                errors.push("world-tension detail current value disagrees with header scalar".into());
+            }
+        }
+        Ok(None) if details_schema_present => {
+            errors.push("world-tension detail schema is present but trailer is absent".into());
+        }
+        Ok(None) => {}
+        Err(error) => errors.push(error),
+    }
     let mut off = header_len;
     for row_index in 0..summary.player_country_rows {
         let Some(row_end) = off.checked_add(player_row_len) else {
@@ -1058,6 +1383,8 @@ pub mod collector_module {
             source_flags,
             schema_flags: 0,
             root_evidence_mask: inputs.root_evidence_mask,
+            world_tension_fixed5: None,
+            world_tension_details: None,
             player_country_rows: inputs.player_country_rows,
             event_rows: inputs.event_rows,
         };
@@ -1080,6 +1407,13 @@ fn merge_payload_summary(total: &mut PayloadSummary, next: &PayloadSummary) {
         .saturating_add(next.player_country_rows);
     total.event_rows = total.event_rows.saturating_add(next.event_rows);
     total.string_bytes = total.string_bytes.saturating_add(next.string_bytes);
+    total.world_tension_fixed5 = next.world_tension_fixed5;
+    total.world_tension_country_rows = total
+        .world_tension_country_rows
+        .saturating_add(next.world_tension_country_rows);
+    total.world_tension_ledger_rows = total
+        .world_tension_ledger_rows
+        .saturating_add(next.world_tension_ledger_rows);
     total.min_event_hour_raw = match (total.min_event_hour_raw, next.min_event_hour_raw) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (None, Some(b)) => Some(b),
@@ -1143,8 +1477,49 @@ fn read_u32(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("u32 range"))
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldTensionCountryRow {
+    pub tag_db_id: u32,
+    pub flags: u32,
+    /// Exact `CWorldThreat+0x28` per-country aggregate, in the ledger's
+    /// fixed-point scale (0..=10_000_000).
+    pub generated_threat_fixed: i64,
+    pub generate_wargoal_threshold_fixed5: i64,
+    pub join_faction_threshold_fixed5: i64,
+    pub lend_lease_threshold_fixed5: i64,
+    pub send_volunteers_threshold_fixed5: i64,
+    pub guarantee_threshold_fixed5: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldTensionLedgerRow {
+    pub source_tag_db_id: u32,
+    pub date_raw: i32,
+    pub current_threat_fixed: i64,
+    pub original_threat_fixed: i64,
+    pub reason: String,
+    /// Stable ordinal in the manager's authenticated pointer-vector snapshot.
+    pub source_sequence: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldTensionDetails {
+    pub current_fixed5: i64,
+    pub prior_fixed5: i64,
+    pub increased: bool,
+    pub monthly_decrease_fixed5: i64,
+    pub time_scale_fixed5: i64,
+    pub start_date_raw: i32,
+    pub country_rows: Vec<WorldTensionCountryRow>,
+    pub ledger_rows: Vec<WorldTensionLedgerRow>,
+}
+
 fn read_u64(bytes: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("u64 range"))
+}
+
+fn read_i64(bytes: &[u8], offset: usize) -> i64 {
+    i64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("i64 range"))
 }
 
 fn read_i32(bytes: &[u8], offset: usize) -> i32 {
@@ -2007,7 +2382,9 @@ mod tests {
                 | SOURCE_FLAG_NOTIFICATION_HOOK_VALIDATED
                 | SOURCE_FLAG_PROOF_FIXTURE,
             schema_flags: 0,
-            root_evidence_mask: 0x1F,
+            root_evidence_mask: 0x1F | ROOT_EVIDENCE_WORLD_TENSION,
+            world_tension_fixed5: Some(42_000),
+            world_tension_details: None,
             player_country_rows: vec![
                 PlayerCountryRow {
                     player_key_hash: 0xA11C_E001,

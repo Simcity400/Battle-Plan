@@ -16,7 +16,7 @@ import time
 from typing import Any
 
 LANE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REPO_ROOT = os.path.abspath(os.path.join(LANE_DIR, "..", "..", ".."))
+REPO_ROOT = os.path.abspath(os.path.join(LANE_DIR, "..", "..", "..", ".."))
 MEMORY_READER = os.path.join(REPO_ROOT, "extractor", "memory_reader")
 sys.path.insert(0, MEMORY_READER)
 sys.path.insert(0, os.path.join(MEMORY_READER, "live_layers"))
@@ -42,6 +42,18 @@ LINE_COST = 0x28
 LINE_PRODUCED = 0x38
 LINE_CONSTRUCTION_SUB = 0x70
 LINE_TYPE_CONSTRUCTION = 59
+LINE_TYPE_RAILWAY_CONSTRUCTION = 4713
+RAILWAY_LINE_VTABLE_RVA = 0x2A15130
+RAILWAY_LINE_CREATED_DATE = 0x58
+RAILWAY_LINE_BASE_LEVEL = 0x70
+RAILWAY_LINE_TARGET_LEVEL = 0x74
+RAILWAY_LINE_COMPLETE_ALLOWED = 0x78
+RAILWAY_LINE_ROUTE_PTR = 0x80
+RAILWAY_LINE_ROUTE_CAP = 0x88
+RAILWAY_LINE_ROUTE_SIZE = 0x8C
+RAILWAY_LINE_CURRENT_SEGMENT = 0x98
+RAILWAY_LINE_REMAINING_HOURS = 0xA0
+MAX_RAILWAY_ROUTE_PROVINCES = 4096
 CONSTRUCTION_TEMPLATE_ID = 0x08
 CONSTRUCTION_TEMPLATE_DEF_PTR = 0x10
 MAX_CONSTRUCTION_TEMPLATE_ID = 10_000_000
@@ -111,6 +123,13 @@ def try_u32(p: Any, addr: int) -> int | None:
 def try_i32(p: Any, addr: int) -> int | None:
     try:
         return p.i32(addr)
+    except OSError:
+        return None
+
+
+def try_i64(p: Any, addr: int) -> int | None:
+    try:
+        return p.i64(addr)
     except OSError:
         return None
 
@@ -258,6 +277,12 @@ def read_construction_lines(p: Any, country_roots: list[dict[str, Any]]) -> list
                 template_def_raw = try_u64(p, sub_ptr + CONSTRUCTION_TEMPLATE_DEF_PTR)
                 if is_heap(template_def_raw):
                     template_def_ptr = template_def_raw
+            completion_raw = try_u32(p, line_ptr + RAILWAY_LINE_COMPLETE_ALLOWED)
+            if completion_raw is None:
+                continue
+            completion_raw &= 0xFF
+            if completion_raw > 1:
+                continue
             rows.append(
                 {
                     "tag_db_id": root["tag_db_id"],
@@ -276,6 +301,102 @@ def read_construction_lines(p: Any, country_roots: list[dict[str, Any]]) -> list
                 }
             )
             priority += 1
+    return rows
+
+
+def read_railway_construction_lines(
+    p: Any, country_roots: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Read exact a729 CRailwayProductionLine rows from the shared queue.
+
+    The object layout is independently pinned by the exact vtable at RVA
+    0x2A15130, the virtual serializer FUN_1419f0f20, the matching field
+    dispatcher FUN_1419f0a10, and the route consumer FUN_1419f02a0.  The
+    returned JSON contains no process pointers except the explicitly labelled
+    development-evidence addresses.
+    """
+    rows: list[dict[str, Any]] = []
+    railway_vtable = p.module_base + RAILWAY_LINE_VTABLE_RVA
+    for root in country_roots:
+        country_ptr = int(root["country_ptr"], 16)
+        manager = try_u64(p, country_ptr + OBJ_PROD_MANAGER)
+        if not is_heap(manager):
+            continue
+        begin = try_u64(p, manager + CONSTRUCTION_BEGIN)
+        cap = try_u32(p, manager + CONSTRUCTION_CAP)
+        size = try_u32(p, manager + CONSTRUCTION_SIZE)
+        if not is_heap(begin) or cap is None or size is None:
+            continue
+        if size > cap or cap > MAX_PRODUCTION_VECTOR_ENTRIES:
+            continue
+        raw = p.try_read(begin, size * CONSTRUCTION_STRIDE)
+        if len(raw) != size * CONSTRUCTION_STRIDE:
+            continue
+        for queue_index in range(size):
+            line_ptr = struct.unpack_from(
+                "<Q", raw, queue_index * CONSTRUCTION_STRIDE
+            )[0]
+            if not is_heap(line_ptr):
+                continue
+            if try_u64(p, line_ptr) != railway_vtable:
+                continue
+            if try_u32(p, line_ptr + LINE_TYPE) != LINE_TYPE_RAILWAY_CONSTRUCTION:
+                continue
+            route_ptr = try_u64(p, line_ptr + RAILWAY_LINE_ROUTE_PTR)
+            route_cap = try_u32(p, line_ptr + RAILWAY_LINE_ROUTE_CAP)
+            route_size = try_u32(p, line_ptr + RAILWAY_LINE_ROUTE_SIZE)
+            if route_cap is None or route_size is None or route_size > route_cap:
+                continue
+            if not (2 <= route_size <= MAX_RAILWAY_ROUTE_PROVINCES):
+                continue
+            if not is_heap(route_ptr):
+                continue
+            route_raw = p.try_read(route_ptr, route_size * 4)
+            if len(route_raw) != route_size * 4:
+                continue
+            route = list(struct.unpack(f"<{route_size}I", route_raw))
+            if any(province_id == 0 or province_id > 65535 for province_id in route):
+                continue
+            current_segment = try_i32(p, line_ptr + RAILWAY_LINE_CURRENT_SEGMENT)
+            remaining_hours = try_i64(p, line_ptr + RAILWAY_LINE_REMAINING_HOURS)
+            if current_segment is None or remaining_hours is None:
+                continue
+            if current_segment < -1 or current_segment >= route_size - 1:
+                continue
+            if remaining_hours < 0:
+                continue
+            rows.append(
+                {
+                    "tag_db_id": root["tag_db_id"],
+                    "tag": root["tag"],
+                    "line_id": try_u32(p, line_ptr + LINE_ID),
+                    "queue_index": queue_index,
+                    "active_factories": try_i32(p, line_ptr + LINE_ACTIVE_FACTORIES),
+                    "cost_raw": try_i32(p, line_ptr + LINE_COST),
+                    "produced_raw": try_i32(p, line_ptr + LINE_PRODUCED),
+                    "created_date_raw": try_u32(
+                        p, line_ptr + RAILWAY_LINE_CREATED_DATE
+                    ),
+                    "base_level": try_u32(
+                        p, line_ptr + RAILWAY_LINE_BASE_LEVEL
+                    ),
+                    "target_level": try_u32(
+                        p, line_ptr + RAILWAY_LINE_TARGET_LEVEL
+                    ),
+                    "complete_allowed": completion_raw,
+                    "route_province_ids": route,
+                    "current_segment_index": current_segment,
+                    "remaining_hours_raw": remaining_hours,
+                    "current_edge": (
+                        [route[current_segment], route[current_segment + 1]]
+                        if current_segment >= 0
+                        else None
+                    ),
+                    "country_ptr": root["country_ptr"],
+                    "manager_ptr": hex(manager),
+                    "line_ptr": hex(line_ptr),
+                }
+            )
     return rows
 
 
@@ -774,6 +895,7 @@ def main() -> int:
         fingerprint = p.fingerprint()
         country_roots, country_meta = read_country_roots(p, max_regions=args.max_regions)
         construction_lines = read_construction_lines(p, country_roots)
+        railway_construction_lines = read_railway_construction_lines(p, country_roots)
         topology: dict[str, Any] = {}
         target_candidates: dict[str, Any] = {
             "verdict": "not_attempted_topology_skipped",
@@ -818,6 +940,17 @@ def main() -> int:
                     "subobject_ptr": hex(LINE_CONSTRUCTION_SUB),
                     "template_id": hex(CONSTRUCTION_TEMPLATE_ID),
                     "template_def_ptr_candidate": hex(CONSTRUCTION_TEMPLATE_DEF_PTR),
+                },
+                "railway_construction_line": {
+                    "vtable_rva": hex(RAILWAY_LINE_VTABLE_RVA),
+                    "line_type_value": LINE_TYPE_RAILWAY_CONSTRUCTION,
+                    "route_ptr": hex(RAILWAY_LINE_ROUTE_PTR),
+                    "route_cap": hex(RAILWAY_LINE_ROUTE_CAP),
+                    "route_size": hex(RAILWAY_LINE_ROUTE_SIZE),
+                    "base_level": hex(RAILWAY_LINE_BASE_LEVEL),
+                    "target_level": hex(RAILWAY_LINE_TARGET_LEVEL),
+                    "current_segment_index": hex(RAILWAY_LINE_CURRENT_SEGMENT),
+                    "remaining_hours_raw": hex(RAILWAY_LINE_REMAINING_HOURS),
                 },
                 "building_health": {
                     "cbuilding_vtable_rva": hex(CBUILDING_VTABLE_RVA),
@@ -865,6 +998,13 @@ def main() -> int:
                 )[:128],
                 "sample_lines": construction_lines[:100],
             },
+            "railway_construction": {
+                "line_count": len(railway_construction_lines),
+                "tag_db_id_count": len(
+                    {line["tag_db_id"] for line in railway_construction_lines}
+                ),
+                "lines": railway_construction_lines,
+            },
             "topology": {
                 key: value
                 for key, value in topology.items()
@@ -886,6 +1026,7 @@ def main() -> int:
     print(json.dumps({
         "out": args.out,
         "construction_lines": len(construction_lines),
+        "railway_construction_lines": len(railway_construction_lines),
         "target_state_verdict": result["verdict"]["construction_target_state"],
         "healthy_level_verdict": result["verdict"]["healthy_level_0x42"],
         "duration_ms": result["duration_ms"],

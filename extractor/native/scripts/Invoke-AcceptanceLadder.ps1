@@ -223,7 +223,7 @@ function Save-LadderState {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
     $State.updated_utc = (Get-Date).ToUniversalTime().ToString("o")
-    $State | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $StateFile -Encoding UTF8
+    Write-AtomicJson -Path $StateFile -Value $State -Depth 12
 }
 
 function Get-RungByName {
@@ -660,7 +660,7 @@ function Invoke-LiveCapture {
             restored_after_capture = $false
             restored_mask = $null
         }
-        $affinityProof | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $affinityProofPath -Encoding UTF8
+        Write-AtomicJson -Path $affinityProofPath -Value $affinityProof -Depth 5
     }
 
     $acceptanceNonce = ""
@@ -684,7 +684,7 @@ function Invoke-LiveCapture {
             $restored = Set-ProcessAffinityFailClosed -ProcessId $pid -Mask $originalAffinity
             $affinityProof.restored_after_capture = $true
             $affinityProof.restored_mask = [int64]$restored
-            $affinityProof | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $affinityProofPath -Encoding UTF8
+            Write-AtomicJson -Path $affinityProofPath -Value $affinityProof -Depth 5
         }
     }
     return $RunDir

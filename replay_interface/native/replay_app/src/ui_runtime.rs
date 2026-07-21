@@ -91,6 +91,10 @@ pub struct SelectedPresentTypedConsumption {
     /// product-consumption count only; no province/node identity is inferred
     /// from the legacy supply-ratio surface.
     pub disrupted_supply_exact_row_count: Option<usize>,
+    /// Exact foreign-homebase pressure records admitted through the typed D44
+    /// view. This is diagnostic consumption only; it never reconstructs rows
+    /// from the legacy convoy-pressure wall.
+    pub foreign_homebase_exact_row_count: Option<usize>,
     /// Reciprocal operative assignments projected only from complete INGR v4
     /// membership. Legacy topology without operative membership stays local-
     /// unavailable instead of appearing as an empty assignment list.
@@ -634,6 +638,25 @@ impl ProductSelectedPresentRuntime {
                 }
             };
 
+        let foreign_homebase_exact_row_count = match world_frame.foreign_homebase_exact() {
+            view if view.status == replay_core::ViewStatus::Present => match &view.rows {
+                replay_core::Leaf::Measured(rows) => Some(rows.len()),
+                _ => {
+                    feature_local_unavailable.push(
+                        "FOREIGN_HOMEBASE:Present view omitted measured exact rows".into(),
+                    );
+                    None
+                }
+            },
+            view => {
+                feature_local_unavailable.push(format!(
+                    "FOREIGN_HOMEBASE:{:?}",
+                    view.status
+                ));
+                None
+            }
+        };
+
         let operative_network_assignment_count =
             match world_frame.diplomacy().operative_network_assignments() {
                 replay_core::Leaf::Measured(rows) => Some(rows.len()),
@@ -797,6 +820,7 @@ impl ProductSelectedPresentRuntime {
                 .then_some(self.special_project_breakthroughs.len()),
             resolved_tooltip_instance_count,
             disrupted_supply_exact_row_count,
+            foreign_homebase_exact_row_count,
             operative_network_assignment_count,
             delayed_event_lifecycle_count,
             delayed_event_lifecycle_complete,

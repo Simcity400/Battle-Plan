@@ -27,6 +27,7 @@ use windows_sys::Win32::System::Threading::GetCurrentProcess;
 pub const ABILITY_REFRESH_RVA: u32 = 0x01D0_72F0;
 pub const CONTEXT_INVALID_PROBE_RVA: u32 = 0x00B5_8CA0;
 pub const ACTIVE_COOLDOWN_PROBE_RVA: u32 = 0x006F_3370;
+pub const EFFECT_SCOPE_CASTER_RESOLVER_RVA: u32 = 0x0052_94F0;
 pub const AVAILABILITY_EVALUATOR_RVA: u32 = 0x006D_0DE0;
 pub const SPECIAL_CONTEXT_PROBE_RVA: u32 = 0x01D0_6480;
 pub const TOOLTIP_BUILDER_RVA: u32 = 0x01D0_49C0;
@@ -63,6 +64,12 @@ pub const FINAL_ROOTS_JOB_ID: &str =
 pub const FINAL_ROOTS_SHARD: &str = "shard-19";
 pub const FINAL_ROOTS_MANIFEST_SHA256: &str =
     "504e0fda71c6d0071683425e45edc7cc8b22734aaadfaf05f00769b11a70b021";
+pub const TERMINAL_ACTIVE_RECORD_JOB_ID: &str =
+    "20260721T100154Z-terminal-a36-active-record-minimal-autho-a78da095";
+pub const TERMINAL_ACTIVE_RECORD_SHARD: &str = "shard-08";
+pub const TERMINAL_ACTIVE_RECORD_MANIFEST_SHA256: &str =
+    "1847eb5ee55bb7358b20c8953f8d8b2969c81c306222ae6d7d08ff84922336d5";
+pub const TERMINAL_ACTIVE_RECORD_AUTHORITY_BOUND: bool = true;
 pub const EXACT_A729_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 pub const LIVE_TRANSITION_PROMOTION_BOUND: bool = false;
@@ -76,6 +83,9 @@ const CONTEXT_PROBE_SENTINEL: [u8; 16] = [
 ];
 const ACTIVE_PROBE_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57,
+];
+const EFFECT_SCOPE_CASTER_RESOLVER_SENTINEL: [u8; 16] = [
+    0x48, 0x83, 0xec, 0x28, 0x48, 0x83, 0xc1, 0x50, 0x83, 0x39, 0x00, 0x75, 0x06, 0x83, 0x79, 0x04,
 ];
 const AVAILABILITY_SENTINEL: [u8; 16] = [
     0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x18, 0x4c, 0x89, 0x48, 0x20, 0x48, 0x89, 0x50, 0x10, 0x48,
@@ -112,11 +122,13 @@ const MAX_TEXT_BYTES: usize = 4096;
 const MAX_TOTAL_FIELD_MARSHAL_LEADERS: usize = 65_536;
 const FM_STATE_STRIDE: usize = 0x68;
 const FM_LEADER_STATE_STRIDE: usize = 0x28;
-pub const HOOK_COUNT: usize = 9;
+const ACTIVE_RECORD_STRIDE: usize = 0x58;
+pub const HOOK_COUNT: usize = 10;
 
 type RefreshFn = unsafe extern "system" fn(usize);
 type ContextProbeFn = unsafe extern "system" fn(usize) -> u8;
 type ActiveProbeFn = unsafe extern "system" fn(usize, usize, usize, *mut u8, *mut i32) -> usize;
+type EffectScopeCasterResolverFn = unsafe extern "system" fn(usize) -> usize;
 type AvailabilityFn = unsafe extern "system" fn(usize, usize, usize, usize) -> usize;
 type SpecialContextFn = unsafe extern "system" fn(usize) -> u8;
 type TooltipFn = unsafe extern "system" fn(usize, usize, usize) -> usize;
@@ -127,6 +139,7 @@ type IconResolverFn = unsafe extern "system" fn(usize, usize) -> usize;
 static ORIGINAL_REFRESH: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_CONTEXT_PROBE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_ACTIVE_PROBE: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_EFFECT_SCOPE_CASTER_RESOLVER: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_AVAILABILITY: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_SPECIAL_CONTEXT: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_TOOLTIP: AtomicUsize = AtomicUsize::new(0);
@@ -144,6 +157,7 @@ static INSTALL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 thread_local! {
     static TRACE: RefCell<Option<OpenTrace>> = const { RefCell::new(None) };
+    static ACTIVE_PROBE_TRACE: RefCell<Option<OpenActiveProbeTrace>> = const { RefCell::new(None) };
     static TOOLTIP_TRACE: RefCell<Option<OpenTooltipTrace>> = const { RefCell::new(None) };
 }
 
@@ -197,8 +211,10 @@ pub enum ProbeEvent {
         active: bool,
         cooldown: bool,
         elapsed_since_activation_hours: i32,
+        record: ActiveRecordWitness,
     },
     Availability {
+        country_runtime: usize,
         definition_runtime: usize,
         scope_runtime: usize,
         available: bool,
@@ -212,6 +228,29 @@ struct OpenTrace {
     controller_runtime: usize,
     events: Vec<ProbeEvent>,
     nested_or_replaced: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OpenActiveProbeTrace {
+    country_runtime: usize,
+    definition_runtime: usize,
+    effect_scope_runtime: usize,
+    resolved_caster_runtime: Option<usize>,
+    duplicate_or_nested: bool,
+}
+
+/// Exact CCountry active-record identity consumed by `0x1406F3370`.
+/// Runtime addresses are diagnostic join keys and never enter ABL1/ABA2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActiveRecordWitness {
+    pub country_runtime: usize,
+    pub effect_scope_runtime: usize,
+    pub resolved_caster_runtime: usize,
+    pub effect_group_target_runtime: usize,
+    pub record_runtime: Option<usize>,
+    pub record_caster_runtime: Option<usize>,
+    pub record_group_target_runtime: Option<usize>,
+    pub record_pass_active: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -399,6 +438,7 @@ pub struct InstalledHookAddresses {
     pub refresh: usize,
     pub context_invalid_probe: usize,
     pub active_cooldown_probe: usize,
+    pub effect_scope_caster_resolver: usize,
     pub availability_evaluator: usize,
     pub special_context_probe: usize,
     pub tooltip_builder: usize,
@@ -649,9 +689,6 @@ fn materialize_abl1_frame(
         }
         let (active, activation_elapsed, cooldown_remaining, duration_remaining, cost, active_leaders) =
             materialize_state(controller, definition, observation)?;
-        if cost < 0 {
-            return Err("A36 effective command-power cost is negative".into());
-        }
         let activation_hour = if active {
             Some(frame_hour.checked_sub(u64::try_from(activation_elapsed)
                 .map_err(|_| "A36 active row has a negative activation elapsed value")?)
@@ -721,6 +758,29 @@ fn selected_context_runtime(controller: &ControllerObservation) -> Result<usize,
     .into_iter()
     .find(|value| *value != 0)
     .ok_or_else(|| "A36 selected context lacks an exact runtime identity".into())
+}
+
+fn selected_runtime_from_meta(meta: &ControllerMeta) -> Result<usize, String> {
+    [
+        meta.selected_leader,
+        meta.selected_army_group,
+        meta.selected_army,
+        meta.selected_other,
+    ]
+    .into_iter()
+    .find(|value| *value != 0)
+    .ok_or_else(|| "A36 selected controller has no exact runtime identity".into())
+}
+
+fn witness_targets_runtime(witness: &ActiveRecordWitness, expected: usize) -> bool {
+    expected != 0
+        && [
+            witness.resolved_caster_runtime,
+            witness.effect_group_target_runtime,
+            witness.record_caster_runtime.unwrap_or(0),
+            witness.record_group_target_runtime.unwrap_or(0),
+        ]
+        .contains(&expected)
 }
 
 fn validate_identity_catalog(catalog: &ExactA729PortableIdentityCatalog) -> Result<(), String> {
@@ -926,7 +986,7 @@ pub fn install_a729_ability_transition_hook() -> Result<InstalledHookAddresses, 
         .get_or_init(|| Mutex::new(()))
         .lock()
         .map_err(|_| "A36 hook install lock poisoned".to_string())?;
-    if !EXACT_A729_AUTHORITY_BOUND {
+    if !EXACT_A729_AUTHORITY_BOUND || !TERMINAL_ACTIVE_RECORD_AUTHORITY_BOUND {
         return Err("A36 exact-a729 static authority receipt is not bound".into());
     }
     if INSTALL_BROKEN.load(Ordering::Acquire) {
@@ -944,6 +1004,7 @@ pub fn install_a729_ability_transition_hook() -> Result<InstalledHookAddresses, 
         ("ability refresh", addresses.refresh, REFRESH_SENTINEL.as_slice()),
         ("context-invalid probe", addresses.context_invalid_probe, CONTEXT_PROBE_SENTINEL.as_slice()),
         ("active/cooldown probe", addresses.active_cooldown_probe, ACTIVE_PROBE_SENTINEL.as_slice()),
+        ("effect-scope caster resolver", addresses.effect_scope_caster_resolver, EFFECT_SCOPE_CASTER_RESOLVER_SENTINEL.as_slice()),
         ("availability evaluator", addresses.availability_evaluator, AVAILABILITY_SENTINEL.as_slice()),
         ("special-context probe", addresses.special_context_probe, SPECIAL_CONTEXT_SENTINEL.as_slice()),
         ("ability tooltip", addresses.tooltip_builder, TOOLTIP_SENTINEL.as_slice()),
@@ -969,6 +1030,7 @@ pub fn install_a729_ability_transition_hook() -> Result<InstalledHookAddresses, 
     }
     NEXT_SEQUENCE.store(1, Ordering::Release);
     TRACE.with(|trace| *trace.borrow_mut() = None);
+    ACTIVE_PROBE_TRACE.with(|trace| *trace.borrow_mut() = None);
     TOOLTIP_TRACE.with(|trace| *trace.borrow_mut() = None);
     MODULE_BASE.store(base, Ordering::Release);
     DRAINING.store(false, Ordering::Release);
@@ -1006,6 +1068,7 @@ fn hook_specs(addresses: InstalledHookAddresses) -> [HookSpec; HOOK_COUNT] {
     [
         (addresses.context_invalid_probe, hook_context_probe as *mut c_void, &ORIGINAL_CONTEXT_PROBE),
         (addresses.active_cooldown_probe, hook_active_probe as *mut c_void, &ORIGINAL_ACTIVE_PROBE),
+        (addresses.effect_scope_caster_resolver, hook_effect_scope_caster_resolver as *mut c_void, &ORIGINAL_EFFECT_SCOPE_CASTER_RESOLVER),
         (addresses.availability_evaluator, hook_availability as *mut c_void, &ORIGINAL_AVAILABILITY),
         (addresses.special_context_probe, hook_special_context as *mut c_void, &ORIGINAL_SPECIAL_CONTEXT),
         (addresses.string_append, hook_string_append as *mut c_void, &ORIGINAL_STRING_APPEND),
@@ -1078,6 +1141,7 @@ pub fn uninstall_a729_ability_transition_hook() -> Result<(), String> {
         ));
     }
     TRACE.with(|trace| *trace.borrow_mut() = None);
+    ACTIVE_PROBE_TRACE.with(|trace| *trace.borrow_mut() = None);
     TOOLTIP_TRACE.with(|trace| *trace.borrow_mut() = None);
     MODULE_BASE.store(0, Ordering::Release);
     INSTALLED.store(false, Ordering::Release);
@@ -1130,6 +1194,7 @@ fn installed_addresses(base: usize) -> InstalledHookAddresses {
         refresh: base + ABILITY_REFRESH_RVA as usize,
         context_invalid_probe: base + CONTEXT_INVALID_PROBE_RVA as usize,
         active_cooldown_probe: base + ACTIVE_COOLDOWN_PROBE_RVA as usize,
+        effect_scope_caster_resolver: base + EFFECT_SCOPE_CASTER_RESOLVER_RVA as usize,
         availability_evaluator: base + AVAILABILITY_EVALUATOR_RVA as usize,
         special_context_probe: base + SPECIAL_CONTEXT_PROBE_RVA as usize,
         tooltip_builder: base + TOOLTIP_BUILDER_RVA as usize,
@@ -1201,23 +1266,154 @@ unsafe extern "system" fn hook_active_probe(
     elapsed_out: *mut i32,
 ) -> usize {
     let callback = CallbackGuard::enter();
+    let nested = if callback.capture {
+        ACTIVE_PROBE_TRACE.with(|trace| {
+            let mut trace = trace.borrow_mut();
+            if let Some(open) = trace.as_mut() {
+                open.duplicate_or_nested = true;
+                true
+            } else {
+                *trace = Some(OpenActiveProbeTrace {
+                    country_runtime: runtime,
+                    definition_runtime: definition,
+                    effect_scope_runtime: scope,
+                    resolved_caster_runtime: None,
+                    duplicate_or_nested: false,
+                });
+                false
+            }
+        })
+    } else {
+        false
+    };
     let original: ActiveProbeFn = unsafe {
         mem::transmute(ORIGINAL_ACTIVE_PROBE.load(Ordering::Acquire))
     };
     let result = unsafe { original(runtime, definition, scope, cooldown_out, elapsed_out) };
-    if !callback.capture {
+    if !callback.capture || nested {
         return result;
     }
     let cooldown = read_local_u8(cooldown_out).is_some_and(|value| value != 0);
     let elapsed = read_local_i32(elapsed_out).unwrap_or(-1);
-    record_event(ProbeEvent::ActiveCooldown {
-        definition_runtime: definition,
-        scope_runtime: scope,
-        active: result as u8 != 0,
-        cooldown,
-        elapsed_since_activation_hours: elapsed,
-    });
+    let active = result as u8 != 0;
+    let trace = ACTIVE_PROBE_TRACE.with(|trace| trace.borrow_mut().take());
+    if let Some(record) = trace
+        .filter(|trace| {
+            !trace.duplicate_or_nested
+                && trace.country_runtime == runtime
+                && trace.definition_runtime == definition
+                && trace.effect_scope_runtime == scope
+        })
+        .and_then(|trace| exact_active_record_witness(trace, active, cooldown, elapsed).ok())
+    {
+        record_event(ProbeEvent::ActiveCooldown {
+            definition_runtime: definition,
+            scope_runtime: scope,
+            active,
+            cooldown,
+            elapsed_since_activation_hours: elapsed,
+            record,
+        });
+    }
     result
+}
+
+unsafe extern "system" fn hook_effect_scope_caster_resolver(scope: usize) -> usize {
+    let callback = CallbackGuard::enter();
+    let original: EffectScopeCasterResolverFn = unsafe {
+        mem::transmute(ORIGINAL_EFFECT_SCOPE_CASTER_RESOLVER.load(Ordering::Acquire))
+    };
+    let result = unsafe { original(scope) };
+    if callback.capture {
+        ACTIVE_PROBE_TRACE.with(|trace| {
+            let mut trace = trace.borrow_mut();
+            let Some(open) = trace.as_mut() else { return };
+            if open.effect_scope_runtime != scope {
+                open.duplicate_or_nested = true;
+            } else if let Some(prior) = open.resolved_caster_runtime {
+                if prior != result {
+                    open.duplicate_or_nested = true;
+                }
+            } else {
+                open.resolved_caster_runtime = Some(result);
+            }
+        });
+    }
+    result
+}
+
+fn exact_active_record_witness(
+    trace: OpenActiveProbeTrace,
+    active: bool,
+    cooldown: bool,
+    elapsed: i32,
+) -> Result<ActiveRecordWitness, String> {
+    let resolved_caster_runtime = trace
+        .resolved_caster_runtime
+        .ok_or_else(|| "active probe did not traverse its exact effect-scope caster resolver".to_string())?;
+    let effect_group_target_runtime = read_usize(
+        trace
+            .effect_scope_runtime
+            .checked_add(0x48)
+            .ok_or("active effect-scope group-target address overflow")?,
+    )?;
+    let target_type = read_i32(
+        trace
+            .definition_runtime
+            .checked_add(0x90)
+            .ok_or("ability target-type address overflow")?,
+    )?;
+    let header_address = trace
+        .country_runtime
+        .checked_add(0x15b8)
+        .ok_or("country active-record header address overflow")?;
+    let header = read_header(header_address)?;
+    validate_header(header, ACTIVE_RECORD_STRIDE, "country active ability")?;
+    let first = read_vector(header, ACTIVE_RECORD_STRIDE)?;
+    let second_header = read_header(header_address)?;
+    let second = read_vector(second_header, ACTIVE_RECORD_STRIDE)?;
+    if header != second_header || first != second {
+        return Err("country active-ability records changed during exact probe join".into());
+    }
+    let mut matches = first
+        .chunks_exact(ACTIVE_RECORD_STRIDE)
+        .enumerate()
+        .filter_map(|(index, record)| {
+            let record_definition = le_usize(record, 0).ok()?;
+            let record_caster = le_usize(record, 0x10).ok()?;
+            let record_group_target = le_usize(record, 0x20).ok()?;
+            let target_matches = target_type == 2
+                || (effect_group_target_runtime != 0
+                    && record_group_target == effect_group_target_runtime)
+                || (resolved_caster_runtime != 0 && record_caster == resolved_caster_runtime);
+            (record_definition == trace.definition_runtime && target_matches).then_some((
+                header.data + index * ACTIVE_RECORD_STRIDE,
+                record_caster,
+                record_group_target,
+                record[0x48] == 0,
+            ))
+        });
+    let matched = matches.next();
+    if matches.next().is_some() {
+        return Err("active probe matched multiple CCountry active-ability records".into());
+    }
+    if let Some((_, _, _, record_pass_active)) = matched {
+        if active != record_pass_active || cooldown == record_pass_active || elapsed < 0 {
+            return Err("active probe result disagrees with its exact CCountry record".into());
+        }
+    } else if active || cooldown || elapsed != -1 {
+        return Err("active probe result claims state without an exact CCountry record".into());
+    }
+    Ok(ActiveRecordWitness {
+        country_runtime: trace.country_runtime,
+        effect_scope_runtime: trace.effect_scope_runtime,
+        resolved_caster_runtime,
+        effect_group_target_runtime,
+        record_runtime: matched.map(|row| row.0),
+        record_caster_runtime: matched.map(|row| row.1),
+        record_group_target_runtime: matched.map(|row| row.2),
+        record_pass_active: matched.map(|row| row.3),
+    })
 }
 
 unsafe extern "system" fn hook_availability(
@@ -1233,6 +1429,7 @@ unsafe extern "system" fn hook_availability(
     let result = unsafe { original(runtime, definition, scope, resolved_text) };
     if callback.capture {
         record_event(ProbeEvent::Availability {
+            country_runtime: runtime,
             definition_runtime: definition,
             scope_runtime: scope,
             available: result as u8 != 0,
@@ -1685,13 +1882,18 @@ fn build_observation(trace: OpenTrace) -> Result<ControllerObservation, String> 
         if state_definitions != sources {
             return Err("field-marshal state records differ from source order".into());
         }
-        reconcile_field_marshal_active_probes(&mut field_marshal_leaves, &trace.events)?;
+        reconcile_field_marshal_active_probes(
+            &mut field_marshal_leaves,
+            &trace.events,
+            meta.selected_leader,
+        )?;
     } else if !state_definitions.is_empty() {
         return Err("ordinary refresh retained field-marshal state records".into());
     }
     let ordinary_leaves = if !meta.field_marshal_aggregate {
         reconcile_ordinary(
             trace.controller_runtime,
+            selected_runtime_from_meta(&meta)?,
             &sources,
             &definitions,
             &trace.events,
@@ -1734,6 +1936,7 @@ fn build_observation(trace: OpenTrace) -> Result<ControllerObservation, String> 
 fn reconcile_field_marshal_active_probes(
     states: &mut [FieldMarshalAbilityLeaf],
     events: &[ProbeEvent],
+    selected_leader_runtime: usize,
 ) -> Result<(), String> {
     let probes = events
         .iter()
@@ -1743,25 +1946,28 @@ fn reconcile_field_marshal_active_probes(
                 active,
                 cooldown,
                 elapsed_since_activation_hours,
+                record,
                 ..
             } => Some((
                 *definition_runtime,
                 *active,
                 *cooldown,
                 *elapsed_since_activation_hours,
+                *record,
             )),
             _ => None,
         })
         .collect::<Vec<_>>();
     let mut cursor = 0usize;
     for state in states {
-        let (definition, group_active, _group_cooldown, group_elapsed) = *probes
+        let (definition, group_active, _group_cooldown, group_elapsed, group_record) = *probes
             .get(cursor)
             .ok_or_else(|| "field-marshal state lacks its selected-scope active probe".to_string())?;
         cursor += 1;
         if definition != state.definition_runtime
             || group_active != state.group_already_active
             || (group_active && group_elapsed != state.group_activation_elapsed_hours)
+            || !witness_targets_runtime(&group_record, selected_leader_runtime)
         {
             return Err("field-marshal selected-scope probe disagrees with aggregate record".into());
         }
@@ -1772,7 +1978,7 @@ fn reconcile_field_marshal_active_probes(
             continue;
         }
         for leader in &mut state.leaders {
-            let (definition, active, cooldown, elapsed) = *probes
+            let (definition, active, cooldown, elapsed, record) = *probes
                 .get(cursor)
                 .ok_or_else(|| "field-marshal leader row lacks its ordered active probe".to_string())?;
             cursor += 1;
@@ -1781,6 +1987,7 @@ fn reconcile_field_marshal_active_probes(
             if definition != state.definition_runtime
                 || active != expected_active
                 || cooldown != expected_cooldown
+                || !witness_targets_runtime(&record, leader.leader_runtime)
             {
                 return Err("field-marshal leader state disagrees with ordered active probe".into());
             }
@@ -1795,6 +2002,7 @@ fn reconcile_field_marshal_active_probes(
 
 fn reconcile_ordinary(
     controller: usize,
+    selected_runtime: usize,
     sources: &[usize],
     definitions: &[DefinitionLeaves],
     events: &[ProbeEvent],
@@ -1806,12 +2014,14 @@ fn reconcile_ordinary(
             active,
             cooldown,
             elapsed_since_activation_hours,
+            record,
         } => Some((
             *definition_runtime,
             *scope_runtime,
             *active,
             *cooldown,
             *elapsed_since_activation_hours,
+            *record,
         )),
         _ => None,
     });
@@ -1851,20 +2061,21 @@ fn reconcile_ordinary(
     }
     let mut out = Vec::with_capacity(sources.len());
     for (definition, leaves) in sources.iter().zip(definitions) {
-        let (observed, scope, active, cooldown, elapsed) = active_events
+        let (observed, scope, active, cooldown, elapsed, record) = active_events
             .next()
             .ok_or_else(|| "ordinary row missing active/cooldown probe".to_string())?;
-        if observed != *definition {
+        if observed != *definition || !witness_targets_runtime(&record, selected_runtime) {
             return Err("ordinary active/cooldown probes differ from source order".into());
         }
         let matching_availability = events
             .iter()
             .filter_map(|event| match event {
                 ProbeEvent::Availability {
+                    country_runtime,
                     definition_runtime,
                     scope_runtime,
                     available,
-                } if definition_runtime == definition => Some((*scope_runtime, *available)),
+                } if definition_runtime == definition => Some((*country_runtime, *scope_runtime, *available)),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -1873,11 +2084,13 @@ fn reconcile_ordinary(
         }
         if matching_availability
             .first()
-            .is_some_and(|(availability_scope, _)| *availability_scope != scope)
+            .is_some_and(|(country, availability_scope, _)| {
+                *country != record.country_runtime || *availability_scope != scope
+            })
         {
             return Err("ordinary availability scope differs from active/cooldown scope".into());
         }
-        let availability = matching_availability.first().map(|(_, available)| *available);
+        let availability = matching_availability.first().map(|(_, _, available)| *available);
         let special = leaves.special_context_required.then_some(special_result).flatten();
         if !active && !cooldown && leaves.special_context_required && special.is_none() {
             return Err("ordinary inactive row lacks its required special-context leaf".into());
@@ -2269,6 +2482,11 @@ fn read_u32(address: usize) -> Result<u32, String> {
     le_u32(&bytes, 0)
 }
 
+fn read_i32(address: usize) -> Result<i32, String> {
+    let bytes = rpm(address, 4).ok_or_else(|| "i32 unreadable".to_string())?;
+    le_i32(&bytes, 0)
+}
+
 fn read_usize(address: usize) -> Result<usize, String> {
     let bytes = rpm(address, 8).ok_or_else(|| "pointer unreadable".to_string())?;
     le_usize(&bytes, 0)
@@ -2444,6 +2662,21 @@ mod tests {
         .expect("bind exact empty error accumulator");
         assert!(source.frame.rows[0].available);
         assert_eq!(source.frame.rows[0].disabled_reason, None);
+    }
+
+    #[test]
+    fn signed_effective_cost_is_preserved_without_an_invented_clamp() {
+        let mut tooltip = observation();
+        tooltip.effective_command_power_cost_fixed = Some(-125_000);
+        let source = JoinedExactA729AbilitySource::bind_from_exact_root_catalog(
+            900,
+            12,
+            &catalog(),
+            &controller(),
+            &[tooltip],
+        )
+        .expect("bind signed exact effective cost");
+        assert_eq!(source.frame.rows[0].cost_command_power_fixed, -125_000);
     }
 
     #[test]

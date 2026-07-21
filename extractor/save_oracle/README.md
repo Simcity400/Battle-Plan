@@ -93,7 +93,8 @@ message. Plaintext saves never need rakaly.
     "political_power": 247.37,
     "command_power":   182.36,
     "ruling_party":    "fascism",
-    "capital":         64,          // state id
+    "capital":         64,          // current/relocated state id
+    "original_capital": 64,         // historical state id; kept distinct
     "major":           true,
     "manpower_ratio":  262500,      // AVAILABLE manpower pool (not total — see notes)
     "fuel":            655000.0,

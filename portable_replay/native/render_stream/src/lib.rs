@@ -11,7 +11,11 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-pub const SCHEMA: &str = "hoi4.production-render-submit.v11";
+pub const SCHEMA: &str = "hoi4.production-render-submit.v12";
+pub const INCOMPATIBLE_RECORDED_INPUT_OBSERVATION_SCHEMA: &str =
+    "hoi4.production-render-submit.v11";
+pub const RECORDED_INPUT_VARIANT_AUTHORITY_MANIFEST_SHA256: &str =
+    "39b71a6fb75e53e31136e1909452b85106baf83addeb78da92901113cd98f0b0";
 pub const INCOMPATIBLE_SNOW_MUD_FADE_SCHEMA: &str = "hoi4.production-render-submit.v10";
 /// B10 semantic carried by an exact reflected `mapname` draw-local CB1.
 /// A slot/size match without this producer-stamped token is legacy evidence,
@@ -115,6 +119,19 @@ pub use m03_arrows::{
     M03_ARROW_SCHEMA, M03_STATIC_PROOF_SHA256,
 };
 
+mod rail_supply_arrows;
+pub use rail_supply_arrows::{
+    RailSupplyArrowDefinition, RailSupplyArrowDraw, RailSupplyArrowDrawMember,
+    RailSupplyArrowDrawMemberRef, RailSupplyArrowDrawPass, RailSupplyArrowDrawRef,
+    RailSupplyArrowFrame, RailSupplyArrowKey, RailSupplyArrowRow, RailSupplyColorRole,
+    RailSupplyConstructionMode, RailSupplyHighlightOverride, RailSupplyVisibility,
+    RAIL_SUPPLY_A729_EXECUTABLE_SHA256, RAIL_SUPPLY_ARROW_SCHEMA,
+    RAIL_SUPPLY_GRAPHICS_DEFINES_FILE_SHA256, RAIL_SUPPLY_GRAPHICS_DEFINES_PATH,
+    RAIL_SUPPLY_MAPARROWS_FILE_SHA256, RAIL_SUPPLY_MAPARROWS_PATH,
+    RAIL_SUPPLY_OWNER_MANIFEST_SHA256, RAIL_SUPPLY_PRODUCER_MANIFEST_SHA256,
+    RAIL_SUPPLY_SELECTOR_MANIFEST_SHA256,
+};
+
 mod o04_cities;
 pub use o04_cities::{
     O04CityFrame, O04CitySemantic, O04CitylightState, O04_A729_EXECUTABLE_SHA256, O04_CITY_SCHEMA,
@@ -184,6 +201,11 @@ pub struct ProductionRenderFrame {
     /// pass is independent of the swapchain UI-overlay M02 carrier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub m03_arrows: Option<M03ArrowFrame>,
+    /// Exact railway supply-map semantic rows joined to authenticated
+    /// `map_no_head` and `map_no_head_see_through` static draws. This is not
+    /// an M03 order/movement-arrow carrier and cannot be inferred from D48.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rail_supply_arrows: Option<RailSupplyArrowFrame>,
     /// Optional exact semantic join between O04 city-generator rows and the
     /// existing entity draws. It carries no duplicate draw payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -564,6 +586,10 @@ pub struct RenderAuthority {
     /// must never accept a caller-authored enum without its producer receipt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recorded_input_receipt_sha256: Option<String>,
+    /// Complete pointer-free producer receipt behind `recorded_input_variant`.
+    /// Replay recomputes it instead of trusting a caller-authored digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_input_observation: Option<RecordedInputObservationReceipt>,
     pub particle_runtime_mode: ParticleRuntimeMode,
 }
 
@@ -573,6 +599,114 @@ pub enum RecordedInputVariant {
     MouseKeyboard,
     Keyboard,
     Controller,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordedInputObservationReceipt {
+    pub executable_sha256: String,
+    pub process_id: u32,
+    #[serde(with = "decimal_u64")]
+    pub process_start_nonce: u64,
+    #[serde(with = "decimal_u64")]
+    pub hook_epoch_nonce: u64,
+    #[serde(with = "decimal_u64")]
+    pub observation_sequence: u64,
+    #[serde(with = "decimal_u64")]
+    pub prior_observation_qpc_ticks: u64,
+    #[serde(with = "decimal_u64")]
+    pub selected_present_qpc_ticks: u64,
+    #[serde(with = "decimal_u64")]
+    pub present_sample_started_qpc_ticks: u64,
+    #[serde(with = "decimal_u64")]
+    pub present_sample_completed_qpc_ticks: u64,
+    pub selected_present_receipt_sha256: String,
+    pub client_extent: [u32; 2],
+    pub prior_client_position: [i32; 2],
+    pub current_client_position: [i32; 2],
+    pub variant: RecordedInputVariant,
+    pub authority_manifest_sha256: String,
+    pub observation_receipt_sha256: String,
+}
+
+impl RecordedInputObservationReceipt {
+    pub fn computed_receipt_sha256(&self) -> Result<String, String> {
+        let variant = match self.variant {
+            RecordedInputVariant::MouseKeyboard => 1u8,
+            RecordedInputVariant::Keyboard => 2,
+            RecordedInputVariant::Controller => 3,
+        };
+        let mut hasher = Sha256::new();
+        hasher.update(b"hoi4.a729.recorded-input-variant-observation.v3\0");
+        hasher.update(self.executable_sha256.as_bytes());
+        hasher.update(self.process_id.to_le_bytes());
+        hasher.update(self.process_start_nonce.to_le_bytes());
+        hasher.update(self.hook_epoch_nonce.to_le_bytes());
+        hasher.update(self.observation_sequence.to_le_bytes());
+        hasher.update(self.prior_observation_qpc_ticks.to_le_bytes());
+        hasher.update(self.selected_present_qpc_ticks.to_le_bytes());
+        hasher.update(self.present_sample_started_qpc_ticks.to_le_bytes());
+        hasher.update(self.present_sample_completed_qpc_ticks.to_le_bytes());
+        hasher.update(self.selected_present_receipt_sha256.as_bytes());
+        for value in self.client_extent {
+            hasher.update(value.to_le_bytes());
+        }
+        for value in self
+            .prior_client_position
+            .into_iter()
+            .chain(self.current_client_position)
+        {
+            hasher.update(value.to_le_bytes());
+        }
+        hasher.update([variant]);
+        hasher.update(self.authority_manifest_sha256.as_bytes());
+        Ok(format!("{:x}", hasher.finalize()))
+    }
+
+    fn validate(&self, authority: &RenderAuthority) -> Result<(), String> {
+        for value in [
+            &self.executable_sha256,
+            &self.selected_present_receipt_sha256,
+            &self.authority_manifest_sha256,
+            &self.observation_receipt_sha256,
+        ] {
+            check_sha256(value, None)?;
+        }
+        let inside = |position: [i32; 2], extent: [u32; 2]| {
+            position[0] >= 0
+                && position[1] >= 0
+                && (position[0] as u32) < extent[0]
+                && (position[1] as u32) < extent[1]
+        };
+        if self.executable_sha256 != UI_A729_EXECUTABLE_SHA256
+            || self.authority_manifest_sha256
+                != RECORDED_INPUT_VARIANT_AUTHORITY_MANIFEST_SHA256
+            || self.process_id == 0
+            || self.process_id != authority.process_id
+            || self.process_start_nonce != authority.process_start_nonce
+            || self.hook_epoch_nonce != authority.hook_epoch_nonce
+            || self.observation_sequence == 0
+            || self.prior_observation_qpc_ticks == 0
+            || self.prior_observation_qpc_ticks >= self.selected_present_qpc_ticks
+            || self.selected_present_qpc_ticks > self.present_sample_started_qpc_ticks
+            || self.present_sample_started_qpc_ticks > self.present_sample_completed_qpc_ticks
+            || self.client_extent[0] == 0
+            || self.client_extent[1] == 0
+            || self.prior_client_position == self.current_client_position
+            || !inside(self.prior_client_position, self.client_extent)
+            || !inside(self.current_client_position, self.client_extent)
+            || authority.recorded_input_variant != Some(self.variant)
+            || authority.recorded_input_receipt_sha256.as_deref()
+                != Some(self.observation_receipt_sha256.as_str())
+            || self.computed_receipt_sha256()? != self.observation_receipt_sha256
+        {
+            return Err(
+                "production render recorded-input observation is unauthenticated or non-chronological"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -646,6 +780,12 @@ pub struct RenderSubmit {
     pub entity_presentations: Vec<EntityPresentationEvent>,
     pub particle_packet_set_sha256: String,
     pub entities: Vec<EntitySubmission>,
+    /// Pointer-free selected-Present snapshot of the exact a729
+    /// railway-construction arrow producer. Rows are joined to the ordinary
+    /// entity submissions by `entity_instance_id`; they do not carry a second
+    /// draw payload or authorize replay synthesis.
+    #[serde(default)]
+    pub rail_construction_arrows: Vec<RailConstructionArrowVisual>,
     /// Authoritative cross-family draw interleave for this submit. Particle
     /// bucket order and entity pass order remain local keys only; the renderer
     /// must execute this list and may not concatenate the family vectors.
@@ -1266,6 +1406,11 @@ pub struct ParticleContentIdentity {
 #[serde(deny_unknown_fields)]
 pub struct ShaderProgram {
     pub source: UsedContentKey,
+    /// Stable RVA of the authenticated engine registration root which
+    /// enclosed the successful program lookup. Older recordings omit it and
+    /// therefore cannot claim producer-specific semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_registration_root_rva: Option<u32>,
     pub effect_token: String,
     pub vertex_entry_token: String,
     pub pixel_entry_token: String,
@@ -2291,6 +2436,23 @@ pub struct EntityPresentationEvent {
     pub damage_state_u32: u32,
 }
 
+pub const RAIL_CONSTRUCTION_ARROW_PRODUCER_RVA: u32 = 0x0159_B650;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RailConstructionArrowVisual {
+    pub producer_rva: u32,
+    pub province_lo: u32,
+    pub province_hi: u32,
+    pub edge_type_u8: u8,
+    #[serde(with = "decimal_u64")]
+    pub entity_instance_id: u64,
+    /// Exact token already present in the joined entity submission's native
+    /// content selection. Direct-definition rows without this portable content
+    /// identity are rejected rather than assigned a guessed token.
+    pub entity_registration_token: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EntitySubmission {
@@ -2919,6 +3081,11 @@ struct SchemaProbe {
 /// Shared schema gate: every explicit incompatible-version refusal must fire
 /// before any typed field error.
 fn check_schema(schema: &str) -> Result<(), String> {
+    if schema == INCOMPATIBLE_RECORDED_INPUT_OBSERVATION_SCHEMA {
+        return Err(format!(
+            "production render schema {schema} is incompatible with {SCHEMA}: its recorded-input variant can carry only a digest and cannot preserve or replay-validate the immutable in-hook selected-Present observation chronology"
+        ));
+    }
     if schema == INCOMPATIBLE_SNOW_MUD_FADE_SCHEMA {
         return Err(format!(
             "production render schema {schema} is incompatible with {SCHEMA}: its SnowMudData packet is not joined to the exact selected-Present reflected SnowMudFade consumers"
@@ -3026,12 +3193,29 @@ impl ProductionRenderFrame {
         match (
             self.authority.recorded_input_variant,
             self.authority.recorded_input_receipt_sha256.as_deref(),
+            self.authority.recorded_input_observation.as_ref(),
         ) {
-            (Some(_), Some(receipt)) => check_sha256(receipt, None)?,
-            (None, None) => {}
+            (Some(_), Some(receipt), Some(observation)) => {
+                check_sha256(receipt, None)?;
+                observation.validate(&self.authority)?;
+                if observation.selected_present_qpc_ticks
+                    != self.selected_present.selected_qpc_ticks
+                    || observation.present_sample_completed_qpc_ticks
+                        > self.selected_present.selection_cutoff_qpc_ticks
+                    || observation.selected_present_receipt_sha256
+                        != self.selected_present.computed_sha256()?
+                {
+                    return Err(
+                        "production render recorded-input observation crosses selected-Present cutoff"
+                            .into(),
+                    );
+                }
+            }
+            (None, None, None) => {}
             _ => {
                 return Err(
-                    "production render recorded-input variant/receipt pair is incomplete".into(),
+                    "production render recorded-input variant/receipt/observation set is incomplete"
+                        .into(),
                 )
             }
         }
@@ -3240,6 +3424,7 @@ impl ProductionRenderFrame {
         if let Some(ui_pass) = &self.authenticated_ui_pass {
             if self.authority.recorded_input_variant.is_none()
                 || self.authority.recorded_input_receipt_sha256.is_none()
+                || self.authority.recorded_input_observation.is_none()
             {
                 return Err(
                     "selected-Present UI pass lacks authenticated recorded input variant receipt"
@@ -3261,6 +3446,14 @@ impl ProductionRenderFrame {
                     != self.selected_present.computed_sha256()?
                 || Some(ui_pass.recorded_input_receipt_sha256.as_str())
                     != self.authority.recorded_input_receipt_sha256.as_deref()
+                || self
+                    .authority
+                    .recorded_input_observation
+                    .as_ref()
+                    .map_or(true, |observation| {
+                        observation.selected_present_receipt_sha256
+                            != ui_pass.selected_present_receipt_sha256
+                    })
             {
                 return Err(
                     "selected-Present UI-pass frontier/selector/input receipt does not match production frame"
@@ -3420,6 +3613,58 @@ impl ProductionRenderFrame {
                 .any(|operation| matches!(operation, RenderExecutionRef::M03 { .. }))
         }) {
             return Err("unified render order references absent M03 carrier".into());
+        }
+        if let Some(rail) = &self.rail_supply_arrows {
+            rail.validate()?;
+            if rail.update_index != self.update_index
+                || rail.first_sequence != self.first_sequence
+                || rail.last_sequence != self.last_sequence
+            {
+                return Err(
+                    "rail supply-arrow update/sequence frontier does not match production frame"
+                        .into(),
+                );
+            }
+            for content in rail.used_content.iter().chain(&rail.draw_used_content) {
+                if content.effective_vfs_manifest_sha256
+                    != self.authority.effective_vfs_manifest_sha256
+                {
+                    return Err(
+                        "rail supply-arrow content authority differs from production frame".into(),
+                    );
+                }
+            }
+            let display_submit = self
+                .display_submit_index
+                .as_deref()
+                .and_then(|value| value.parse::<u64>().ok())
+                .and_then(|submit_index| self.submit(submit_index))
+                .ok_or("rail supply-arrow carrier has no authenticated display submit")?;
+            rail.validate_against_static_programs(&display_submit.ordered_static_map_programs)?;
+            let ordered_static = display_submit
+                .ordered_render_operations
+                .iter()
+                .filter_map(|reference| match reference {
+                    RenderExecutionRef::Static { operation_ordinal } => Some(*operation_ordinal),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let mut previous_position = None;
+            for reference in &rail.ordered_draws {
+                let position = ordered_static
+                    .iter()
+                    .position(|ordinal| *ordinal == reference.operation_ordinal)
+                    .ok_or(
+                        "rail supply-arrow draw lacks an authenticated static interleave position",
+                    )?;
+                if previous_position.is_some_and(|previous| previous >= position) {
+                    return Err(
+                        "rail supply-arrow draw order disagrees with authenticated static interleave"
+                            .into(),
+                    );
+                }
+                previous_position = Some(position);
+            }
         }
         if let Some(o04) = &self.o04_cities {
             o04.validate()?;
@@ -3928,6 +4173,41 @@ impl RenderSubmit {
             });
         }
 
+        let mut prior_rail_key = None;
+        let mut rail_entity_ids = BTreeSet::new();
+        for arrow in &self.rail_construction_arrows {
+            let key = (arrow.province_lo, arrow.province_hi);
+            if arrow.producer_rva != RAIL_CONSTRUCTION_ARROW_PRODUCER_RVA
+                || arrow.province_lo == 0
+                || arrow.province_lo >= arrow.province_hi
+                || !matches!(arrow.edge_type_u8, 2 | 3)
+                || arrow.entity_instance_id == 0
+                || arrow.entity_registration_token.is_empty()
+                || prior_rail_key.is_some_and(|prior| prior >= key)
+                || !rail_entity_ids.insert(arrow.entity_instance_id)
+            {
+                return Err(
+                    "rail construction-arrow visual rows are invalid, reordered, or duplicated"
+                        .into(),
+                );
+            }
+            let joined = self.entities.iter().filter(|entity| {
+                entity.entity_instance_id == arrow.entity_instance_id
+                    && entity
+                        .content_identity
+                        .native_selection
+                        .entity_registration_token
+                        == arrow.entity_registration_token
+            });
+            if joined.count() == 0 {
+                return Err(
+                    "rail construction-arrow visual has no exact entity submission/content join"
+                        .into(),
+                );
+            }
+            prior_rail_key = Some(key);
+        }
+
         let all_outputs: BTreeSet<_> = particle_outputs
             .iter()
             .chain(entity_outputs.iter())
@@ -4171,7 +4451,7 @@ fn validate_occupation_secondary_packet(
 /// about the same selected-submit tree-shadow operations or camera state.
 fn validate_optional_render_carrier_joins(submit: &RenderSubmit) -> Result<(), String> {
     if let (Some(camera), Some(shadow)) = (&submit.camera_carrier, &submit.s1_shadow) {
-        if !shadow.is_zero_fade()
+        if !shadow.is_inactive()
             && shadow.camera_y_f32_bits != Some(camera.current_eye_f32_bits[1])
         {
             return Err("C02 camera current-eye Y differs from active S1 camera Y".into());
@@ -4181,8 +4461,8 @@ fn validate_optional_render_carrier_joins(submit: &RenderSubmit) -> Result<(), S
     let (Some(trees), Some(shadow)) = (&submit.tree_runtime, &submit.s1_shadow) else {
         return Ok(());
     };
-    if shadow.is_zero_fade() {
-        return Err("C07 tree-shadow operations conflict with an S1 zero-fade skip".into());
+    if shadow.is_inactive() {
+        return Err("C07 tree-shadow operations conflict with an inactive S1 skip".into());
     }
     let retained_shadow = trees
         .ordered_passes
@@ -5912,7 +6192,8 @@ fn validate_submit_payload_texture_resource(resource: &TextureResourceDesc) -> R
 impl ShaderProgram {
     fn validate(&self) -> Result<(), String> {
         self.source.validate()?;
-        if self.effect_token.trim().is_empty()
+        if self.producer_registration_root_rva == Some(0)
+            || self.effect_token.trim().is_empty()
             || self.vertex_entry_token.trim().is_empty()
             || self.pixel_entry_token.trim().is_empty()
             || self
@@ -6685,6 +6966,7 @@ mod tests {
                 entity_animation_catalog_sha256: "4".repeat(64),
                 recorded_input_variant: None,
                 recorded_input_receipt_sha256: None,
+                recorded_input_observation: None,
                 particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
             },
             update_index: 16_959_360,
@@ -6717,6 +6999,7 @@ mod tests {
                 entity_presentations: vec![],
                 particle_packet_set_sha256: "5".repeat(64),
                 entities: vec![],
+                rail_construction_arrows: vec![],
                 ordered_draws: vec![],
                 ordered_render_operations: vec![RenderExecutionRef::M02 { output: reference }],
                 direct_visuals: vec![],
@@ -6727,6 +7010,7 @@ mod tests {
             }],
             m02_combat: Some(m02),
             m03_arrows: None,
+            rail_supply_arrows: None,
             o04_cities: None,
             o05_buildings: None,
             authenticated_ui_pass: None,
@@ -6765,6 +7049,7 @@ mod tests {
             entity_presentations: vec![],
             particle_packet_set_sha256: "6".repeat(64),
             entities: vec![],
+            rail_construction_arrows: vec![],
             ordered_draws: vec![],
             ordered_render_operations: vec![duplicate],
             direct_visuals: vec![],
@@ -6992,6 +7277,7 @@ mod tests {
         let ps = vec![5, 6, 7, 8];
         ShaderProgram {
             source: content("gfx/fx/particle.shader"),
+            producer_registration_root_rva: None,
             effect_token: "ParticleAdditive".into(),
             vertex_entry_token: "VertexSimpleParticle".into(),
             pixel_entry_token: "PixelSimpleParticle".into(),
@@ -7336,7 +7622,30 @@ mod tests {
     fn production_frame_with_exact_ui_pass() -> ProductionRenderFrame {
         let mut frame = production_frame_with_m02();
         frame.authority.recorded_input_variant = Some(RecordedInputVariant::MouseKeyboard);
-        frame.authority.recorded_input_receipt_sha256 = Some("9".repeat(64));
+        let mut input_observation = RecordedInputObservationReceipt {
+            executable_sha256: UI_A729_EXECUTABLE_SHA256.into(),
+            process_id: frame.authority.process_id,
+            process_start_nonce: frame.authority.process_start_nonce,
+            hook_epoch_nonce: frame.authority.hook_epoch_nonce,
+            observation_sequence: 1,
+            prior_observation_qpc_ticks: frame.selected_present.selected_qpc_ticks - 3,
+            selected_present_qpc_ticks: frame.selected_present.selected_qpc_ticks,
+            present_sample_started_qpc_ticks: frame.selected_present.selected_qpc_ticks + 1,
+            present_sample_completed_qpc_ticks: frame.selected_present.selected_qpc_ticks + 2,
+            selected_present_receipt_sha256: frame.selected_present.computed_sha256().unwrap(),
+            client_extent: [1920, 1080],
+            prior_client_position: [10, 20],
+            current_client_position: [11, 20],
+            variant: RecordedInputVariant::MouseKeyboard,
+            authority_manifest_sha256:
+                RECORDED_INPUT_VARIANT_AUTHORITY_MANIFEST_SHA256.into(),
+            observation_receipt_sha256: String::new(),
+        };
+        input_observation.observation_receipt_sha256 =
+            input_observation.computed_receipt_sha256().unwrap();
+        frame.authority.recorded_input_receipt_sha256 =
+            Some(input_observation.observation_receipt_sha256.clone());
+        frame.authority.recorded_input_observation = Some(input_observation);
         let m02 = frame.m02_combat.as_ref().unwrap();
         let m02_ref = m02.ordered_draws[0].clone();
         let target = m02
@@ -7903,10 +8212,28 @@ mod tests {
         let mut absent_input = production_frame_with_exact_ui_pass();
         absent_input.authority.recorded_input_variant = None;
         absent_input.authority.recorded_input_receipt_sha256 = None;
+        absent_input.authority.recorded_input_observation = None;
         assert!(absent_input
             .validate()
             .unwrap_err()
             .contains("recorded input variant"));
+
+        let mut backdated_input = production_frame_with_exact_ui_pass();
+        let observation = backdated_input
+            .authority
+            .recorded_input_observation
+            .as_mut()
+            .unwrap();
+        observation.present_sample_started_qpc_ticks =
+            observation.selected_present_qpc_ticks.saturating_sub(1);
+        observation.observation_receipt_sha256 =
+            observation.computed_receipt_sha256().unwrap();
+        backdated_input.authority.recorded_input_receipt_sha256 =
+            Some(observation.observation_receipt_sha256.clone());
+        assert!(backdated_input
+            .validate()
+            .unwrap_err()
+            .contains("non-chronological"));
 
         let mut wrong_mapmode_vfs = production_frame_with_exact_ui_pass();
         if let Some(ActiveMapmodeState {
@@ -8249,6 +8576,7 @@ mod tests {
                 entity_animation_catalog_sha256: "4".repeat(64),
                 recorded_input_variant: None,
                 recorded_input_receipt_sha256: None,
+                recorded_input_observation: None,
                 particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
             },
             update_index: 16_959_360,
@@ -8331,6 +8659,7 @@ mod tests {
                         palette_3200_bytes: palette,
                     },
                 }],
+                rail_construction_arrows: vec![],
                 ordered_draws: vec![
                     RenderOutputRef::Entity {
                         pass_ordinal: 1,
@@ -8352,6 +8681,7 @@ mod tests {
             }],
             m02_combat: None,
             m03_arrows: None,
+            rail_supply_arrows: None,
             o04_cities: None,
             o05_buildings: None,
             authenticated_ui_pass: None,
@@ -8761,6 +9091,9 @@ mod tests {
         let v10 = serde_json::json!({"schema": INCOMPATIBLE_SNOW_MUD_FADE_SCHEMA});
         let error = ProductionRenderFrame::decode_value(&v10).unwrap_err();
         assert!(error.contains("reflected SnowMudFade consumers"));
+        let v11 = serde_json::json!({"schema": INCOMPATIBLE_RECORDED_INPUT_OBSERVATION_SCHEMA});
+        let error = ProductionRenderFrame::decode_value(&v11).unwrap_err();
+        assert!(error.contains("recorded-input variant"));
         let unknown = serde_json::json!({"schema": "hoi4.production-render-submit.v99"});
         let error = ProductionRenderFrame::decode_value(&unknown).unwrap_err();
         assert!(error.contains("unsupported production render schema"));
@@ -8847,6 +9180,7 @@ mod tests {
                 entity_animation_catalog_sha256: "4".repeat(64),
                 recorded_input_variant: None,
                 recorded_input_receipt_sha256: None,
+                recorded_input_observation: None,
                 particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
             },
             update_index: 16_959_360,
@@ -8911,6 +9245,7 @@ mod tests {
                 entity_presentations: vec![],
                 light_lifecycle_events: vec![],
                 entities: vec![],
+                rail_construction_arrows: vec![],
                 ordered_draws: vec![RenderOutputRef::Particle {
                     effect_instance_id: 1,
                     bucket: 0,
@@ -8925,6 +9260,7 @@ mod tests {
             }],
             m02_combat: None,
             m03_arrows: None,
+            rail_supply_arrows: None,
             o04_cities: None,
             o05_buildings: None,
             authenticated_ui_pass: None,

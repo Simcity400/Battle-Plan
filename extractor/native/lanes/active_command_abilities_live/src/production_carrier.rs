@@ -164,9 +164,6 @@ pub fn validate_frame(frame: &ProductionAbilityFrame) -> Result<(), CarrierError
                 {
                     return invalid("ABA2 production row contains a nonportable identity");
                 }
-                if row.cost_command_power_fixed < 0 {
-                    return invalid("ABA2 production row has negative effective cost");
-                }
                 // The authenticated refresh resolves CAbility+0x2A8 for an
                 // active row. 0x140FF44E0 and 0x140FF5B20 construct that key as
                 // the final ordinary icon plus `_animated`; admitting an
@@ -462,6 +459,19 @@ mod tests {
             .rows[0]
             .icon = "GFX_ability_force_attack".into();
         assert!(encode_payload(&ordinary_icon).is_err());
+    }
+
+    #[test]
+    fn signed_effective_cost_round_trips_without_clamping() {
+        let mut signed = frame();
+        signed
+            .snapshot
+            .as_mut()
+            .expect("snapshot")
+            .rows[0]
+            .cost_command_power_fixed = -2_200_000;
+        let encoded = encode_payload(&signed).expect("encode signed effective cost");
+        assert_eq!(decode_payload(&encoded).expect("decode signed effective cost"), signed);
     }
 
     struct Fake;

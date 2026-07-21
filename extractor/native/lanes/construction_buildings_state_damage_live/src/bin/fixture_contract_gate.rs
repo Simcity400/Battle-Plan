@@ -69,6 +69,7 @@ fn main() -> Result<(), String> {
         observed_state_roots: get_u64(&fixture, "observed_state_roots").unwrap_or(1) as u32,
         observed_province_roots: get_u64(&fixture, "observed_province_roots").unwrap_or(1) as u32,
         construction_rows,
+        railway_construction_rows: None,
         building_rows,
         resource_rows,
     };

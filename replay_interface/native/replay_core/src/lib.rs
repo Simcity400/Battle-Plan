@@ -17,6 +17,7 @@ pub mod runtime_text;
 pub mod orders_group_manager;
 pub mod rollover_package_set;
 pub mod source;
+pub mod tactic_weight;
 pub mod world;
 
 pub use portable_content_manifest::{
@@ -54,7 +55,13 @@ pub use portable_render_stream::{
     ParticlePacket, ParticleRuntimeMode,
     PipelineDesc, PoliticalTextureFormat, PoliticalTextureKind, PoliticalTexturePacket,
     PreparedRenderTarget, PrimitiveTopology, ProductionRenderFrame, RasterizerDesc,
-    RecordedInputVariant, RenderAuthority, RenderCheckpoint, RenderExecutionRef, RenderOutputRef,
+    RailConstructionArrowVisual, RailSupplyArrowDefinition, RailSupplyArrowDraw,
+    RailSupplyArrowDrawMember, RailSupplyArrowDrawMemberRef, RailSupplyArrowDrawPass,
+    RailSupplyArrowDrawRef, RailSupplyArrowFrame, RailSupplyArrowKey, RailSupplyArrowRow,
+    RailSupplyColorRole, RailSupplyConstructionMode, RailSupplyHighlightOverride,
+    RailSupplyVisibility, RecordedInputObservationReceipt, RecordedInputVariant,
+    RenderAuthority, RenderCheckpoint,
+    RenderExecutionRef, RenderOutputRef,
     RenderOutputState, RenderSubmit, RenderTargetAttachmentView, RenderTargetBlendDesc,
     RenderTargetDesc, RenderTargetExactResource, RenderTargetInitialSource,
     RenderTargetInitialSubresource, RenderTargetResourceDesc, RenderTargetViewDesc,
@@ -98,6 +105,10 @@ pub use portable_render_stream::{
     S1_PARTITION_WRAP_EAST, S1_PARTITION_WRAP_WEST, S1_SCREEN_DXGI_FORMAT, S1_SHADOW_SCHEMA,
     S1_TARGET_BIND_FLAGS, S1_TARGET_MIP_LEVELS, SCHEMA as PRODUCTION_RENDER_SCHEMA,
     SNOW_MUD_H2_READBACK_SCHEMA, UI_A729_EXECUTABLE_SHA256, UI_PASS_SCHEMA,
+    RAIL_SUPPLY_A729_EXECUTABLE_SHA256, RAIL_SUPPLY_ARROW_SCHEMA,
+    RAIL_SUPPLY_GRAPHICS_DEFINES_FILE_SHA256, RAIL_SUPPLY_MAPARROWS_FILE_SHA256,
+    RAIL_SUPPLY_OWNER_MANIFEST_SHA256, RAIL_SUPPLY_PRODUCER_MANIFEST_SHA256,
+    RAIL_SUPPLY_SELECTOR_MANIFEST_SHA256,
 };
 
 pub use design_catalog::{
@@ -118,7 +129,11 @@ pub use intelligence_controller_companion::{
     IntelligenceControllerAuthorityExact, IntelligenceControllerCompanionExact,
     IntelligenceControllerCompanionError, IntelligenceSurfaceGateExact,
     IntelligenceSurfaceId, IntelligenceVisibilityExact,
+    OperativeAssignmentDiscriminatorExact, OperativeMissionProductExact,
+    OperativeMissionTargetKindExact,
+    OperativePortraitIdentityKindExact, OperativePortraitSpriteExact,
 };
+pub use tactic_weight::CountryPreferredTacticWeight;
 pub use orders_group_manager::{
     ArmyCohesionMode, ArmyExecutionMode, ArmyOrdersGroupManagerView,
     ArmyOrdersGroupScalarExact, ORDERS_GROUP_MANAGER_AUTHORITY,
@@ -148,7 +163,8 @@ pub use source::{
     RecordedCampaignIdentity, RecordedCampaignIdentityWitnesses, ReplaySource, SourceError,
 };
 pub use world::{
-    AceExactRow, AceLifecycleState, AceRosterExactView, ActiveRulerExactRow, AirCombatLossRow,
+    alert_icon_frame_for_type, AceExactRow, AceLifecycleState, AceRosterExactView, ActiveAlertRow,
+    ActiveRulerExactRow, AlertDedupIdentity, AirCombatLossRow,
     AirRegionCombatRow, AirRegionDamageRow, AirSuperiorityRow, AppointedAdvisorRow, BuildingStatus,
     ChannelCoverage, CharacterAceListContext, CharacterAcePortraitObservation,
     CharacterIdentityExactRow,
@@ -161,9 +177,16 @@ pub use world::{
     ConvoyRouteEndpointKindExact,
     ConvoyRouteProducerKindExact, ConvoyTransportAttackExactRow,
     ConvoyTransportAttackExactView, ConvoyVariantAmount, CountryCore, CountryDiplomacy,
+    ArmyUpgradeDeliveryExact, ArmyUpgradeGroupExact, ArmyUpgradePersistentIdExact,
+    ArmyUpgradeProducedExact, ArmyUpgradeRequestExact, CountryArmyUpgradeExact,
+    CountryArmyUpgradeExactView,
     CountryDisruptedSupplyExactRow, CountryDisruptedSupplyExactView, CountryIdentity,
+    CountryPreferredTactic,
+    ExactProvinceSupplyTooltipObservation, ExactProvinceSupplyTooltipView,
     CountryLeaderRoleExactRow, DelayedEventRow, DesignsView, DiplomacyView, DiplomaticPairState,
-    DivisionRow, DivisionTemplateRow, DivisionUnitRow, DoctrineCompletedRow, DoctrineProgressRow,
+    DivisionAttritionComponentsExact, DivisionAttritionExactRow, DivisionAttritionExactView,
+    DivisionRow, DivisionTemplateRow,
+    DivisionUnitRow, DoctrineCompletedRow, DoctrineProgressRow,
     DoctrineView, DynamicCollectionGroup, DynamicCollectionMaterializedSlot, DynamicCollectionRect,
     DynamicCollectionSourceItem, DynamicCollectionTraceRow, DynamicCollectionTraceView,
     DynamicModifierContinuityExact, DynamicModifierInstanceExact,
@@ -171,7 +194,8 @@ pub use world::{
     DynamicModifierTransitionExact, DynamicModifierTransitionKindExact,
     EndedCombatRow, EquipmentAmount, EquipmentProductionLineRow, EquipmentStock,
     EquipmentVariantRow, FiredEventOptionTextContextRow, FiredEventRow, FiredEventsView,
-    FleetUnitRow, FocusView, GarrisonReinforcementExactRow, HudSurfaceActivation,
+    FleetUnitRow, FocusView, ForeignHomebaseExactRow, ForeignHomebaseExactView,
+    ForeignHomebaseIdentityExact, GarrisonReinforcementExactRow, HudSurfaceActivation,
     HudSurfaceActivationKind, HudSurfaceActivationRoot, HudSurfaceActivationView, IntelLevelRow,
     IntelNetworkGraphRow, IntelNetworkNationalCoverage, IntelView,
     OperativeNetworkAssignment,
@@ -202,6 +226,7 @@ pub use world::{
     SpecialProjectBreakthroughExactView, SpecialProjectProgressExactRow,
     SpecialProjectProgressExactView,
     ProductionLicenseAgreementRow, ProductionLicenseVariantRow, ProductionLineRow,
+    RailwayConstructionActiveEdge, RailwayConstructionLineRow,
     ProductionView, ProvenanceView, ResolvedPowerBalanceTextRefsExact,
     ResolvedTooltipExactFrame, ResolvedTooltipExactView, ResolvedTooltipInstanceExact,
     ResolvedTooltipRectExact,
@@ -226,5 +251,5 @@ pub use world::{
     UnitLeaderExactRow, ViewStatus, WarObjectRow, WarParticipantOverviewRow,
     WarParticipationBreakdown, WarRelationRow, WeatherProvinceSnowView, WeatherRegionRow,
     WingUnitRow, WorldError, WorldFrame, WorldTimeline, WEATHER_PROVINCE_SNOW_MAX_RAW,
-    WEATHER_PROVINCE_SNOW_SCALE_RAW,
+    WEATHER_PROVINCE_SNOW_SCALE_RAW, FOREIGN_HOMEBASE_SCALE_RAW,
 };

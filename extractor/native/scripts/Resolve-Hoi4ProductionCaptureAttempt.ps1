@@ -42,6 +42,6 @@ $resolved=[ordered]@{}
 foreach($property in $marker.PSObject.Properties){$resolved[$property.Name]=$property.Value}
 $resolved.state='manually_resolved'; $resolved.resolution=$resolution; $resolved.resolved_utc=[DateTime]::UtcNow.ToString('o')
 $destination=Join-Path (Split-Path -Parent $MarkerPath) (([System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetFileNameWithoutExtension($MarkerPath)))+'.resolved.json')
-$resolved | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $destination -Encoding UTF8
+Write-AtomicJson -Path $destination -Value $resolved -Depth 12
 Move-Item -LiteralPath $MarkerPath -Destination ($destination+'.consumed')
 Write-Host "attempt resolved: $destination"

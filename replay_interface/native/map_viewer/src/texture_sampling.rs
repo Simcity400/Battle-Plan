@@ -34,11 +34,18 @@ pub(crate) fn terrain_sample_uv(
 ) -> (f32, f32) {
     let texels_per_tile = mip_texels / MAP_NUM_TILES as f32;
     let tile_scale = (texels_per_tile - 1.0) / texels_per_tile;
-    let u =
-        ((index_u + tile_repeat_x.fract() * tile_scale) / MAP_NUM_TILES as f32) + 0.5 / mip_texels;
-    let v =
-        ((index_v + tile_repeat_y.fract() * tile_scale) / MAP_NUM_TILES as f32) + 0.5 / mip_texels;
+    let u = ((index_u + hlsl_frac(tile_repeat_x) * tile_scale) / MAP_NUM_TILES as f32)
+        + 0.5 / mip_texels;
+    let v = ((index_v + hlsl_frac(tile_repeat_y) * tile_scale) / MAP_NUM_TILES as f32)
+        + 0.5 / mip_texels;
     (u, v)
+}
+
+/// HLSL `frac(x)` is `x - floor(x)`. Rust's `f32::fract()` instead preserves
+/// the sign for negative inputs, which selects the wrong atlas tile edge for
+/// wrapped terrain coordinates west/south of the canonical map copy.
+pub(crate) fn hlsl_frac(value: f32) -> f32 {
+    value - value.floor()
 }
 
 pub(crate) fn sample_uv_wrap_linear(image: &RgbxImage, u: f32, v: f32) -> u32 {
@@ -334,5 +341,17 @@ pub(crate) fn srgb_u8_to_linear_f32(value: u8) -> f32 {
         encoded / 12.92
     } else {
         ((encoded + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hlsl_frac_wraps_negative_terrain_coordinates() {
+        assert_eq!(hlsl_frac(3.25), 0.25);
+        assert_eq!(hlsl_frac(-0.25), 0.75);
+        assert_eq!(hlsl_frac(-1.0), 0.0);
     }
 }

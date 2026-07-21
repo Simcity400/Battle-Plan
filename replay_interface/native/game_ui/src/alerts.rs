@@ -4,8 +4,8 @@
 //! Population seam (Constraint 2: parses **no** recording bytes) mapping
 //! `replay_core`'s READ-ONLY [`TopbarAlerts`] view (requirements item 9b) onto
 //! the topbar alert-icon display state — the four count badges the topbar's
-//! `country_menu_window` alert area shows: initiative, decisions-available,
-//! intel, and market-contracts.
+//! `country_menu_window` alert area shows, including independently produced
+//! decision, intel, prototype, and market sub-counts.
 //!
 //! Like [`crate::binding`], it fabricates no value: a `Leaf` that is
 //! `Absent`/`Unobtained`, or a view whose status is not `Present`, renders the
@@ -41,13 +41,17 @@
 //!   items, intel prepared/completed ops, delivering (ongoing) contracts, and
 //!   prototype rewards. The view serves ONE count per category, so those
 //!   sub-badges are fail-closed absent here.
-//! - **The scrolling alert FEED is a recording-Absent stream (data gap).**
-//!   `alerts.gui`'s `global_alerticon_window` shows individual fired alerts over
-//!   time; no such stream exists in the recording schema, so
-//!   [`alert_feed_binding`] is fail-closed empty. Filed in EXTRACTION_NEEDS §A /
-//!   REPLAY_DATA_REQUIREMENTS (fired-alert stream).
+//! - **The scrolling alert FEED is a current active snapshot.** Exact-a729
+//!   closure proves that `global_alerticon_window` is backed by 0x52
+//!   type-indexed active-slot vectors. D79 carries the pointer-free slot rows;
+//!   [`alert_feed_from_frame`] exposes them while keeping command-group and
+//!   opaque identities explicitly omitted. Display order is never reinterpreted
+//!   as time: the engine slot has no fire-time field.
 
-use replay_core::{Leaf, TopbarAlerts, ViewStatus, WorldFrame};
+use replay_core::{
+    alert_icon_frame_for_type, ActiveAlertRow, AlertDedupIdentity, Leaf, TopbarAlerts, ViewStatus,
+    WorldFrame,
+};
 
 /// FILE — the alerts feed layout file (`global_alerticon_window`).
 pub const ALERTS_GUI: &str = "interface/alerts.gui";
@@ -70,20 +74,32 @@ pub enum AlertKind {
     Initiative,
     /// Decisions available to take (`decisionview_amount_to_take_items`).
     DecisionsAvailable,
+    /// Decisions nearing their exact engine timeout threshold.
+    DecisionsTimeout,
     /// Intel operations available (`intelview_ops_available_items`).
     Intel,
+    /// Intel operations prepared or completed.
+    IntelPreparedOrCompleted,
+    /// Unread special-project prototype rewards.
+    PrototypeRewards,
     /// Market contracts alert (`non_delivering_contract_amount`).
     MarketContracts,
+    /// Ongoing/delivering international-market contracts.
+    MarketContractsOngoing,
 }
 
 impl AlertKind {
     /// All four categories in the canonical display order (left→right in the
     /// topbar alert area).
-    pub const ALL: [AlertKind; 4] = [
+    pub const ALL: [AlertKind; 8] = [
         AlertKind::Initiative,
         AlertKind::DecisionsAvailable,
+        AlertKind::DecisionsTimeout,
         AlertKind::Intel,
+        AlertKind::IntelPreparedOrCompleted,
+        AlertKind::PrototypeRewards,
         AlertKind::MarketContracts,
+        AlertKind::MarketContractsOngoing,
     ];
 
     /// FILE — the `topbar.gui` `instantTextBoxType` element whose text this
@@ -94,8 +110,12 @@ impl AlertKind {
         match self {
             AlertKind::Initiative => "initiative_text",
             AlertKind::DecisionsAvailable => "decisionview_amount_to_take_items",
+            AlertKind::DecisionsTimeout => "decisionview_amount_timeout_items",
             AlertKind::Intel => "intelview_ops_available_items",
+            AlertKind::IntelPreparedOrCompleted => "intelview_ops_prepared_or_completed_items",
+            AlertKind::PrototypeRewards => "prototype_rewards_aquired",
             AlertKind::MarketContracts => "non_delivering_contract_amount",
+            AlertKind::MarketContractsOngoing => "ongoing_contract_amount",
         }
     }
 
@@ -104,8 +124,12 @@ impl AlertKind {
         match self {
             AlertKind::Initiative => &alerts.initiative,
             AlertKind::DecisionsAvailable => &alerts.decisions_available,
+            AlertKind::DecisionsTimeout => &alerts.decisions_timeout,
             AlertKind::Intel => &alerts.intel,
+            AlertKind::IntelPreparedOrCompleted => &alerts.intel_prepared_or_completed,
+            AlertKind::PrototypeRewards => &alerts.prototype_rewards,
             AlertKind::MarketContracts => &alerts.market_contracts,
+            AlertKind::MarketContractsOngoing => &alerts.market_contracts_ongoing,
         }
     }
 }
@@ -144,7 +168,7 @@ impl AlertsStripBinding {
         self.badges
             .iter()
             .find(|b| b.kind == kind)
-            .expect("AlertsStripBinding always carries all four AlertKind badges")
+            .expect("AlertsStripBinding always carries all eight AlertKind badges")
     }
 }
 
@@ -183,35 +207,155 @@ pub fn alerts_strip_from_frame(frame: &WorldFrame, pov_tag: &str) -> AlertsStrip
     } else {
         None
     };
-    let badges = AlertKind::ALL
+    let mut badges: Vec<_> = AlertKind::ALL
         .iter()
         .map(|&kind| badge_from(kind, alerts))
         .collect();
+    // The authenticated d87 decision-panel carrier is the exact producer
+    // result for the selected POV. Prefer it over the legacy scalar bag only
+    // when its owner tag joins this strip; a missing/mismatched carrier leaves
+    // the corresponding badge in its existing fail-closed state.
+    let exact_decisions = frame
+        .decision_panel_exact()
+        .panel
+        .as_ref()
+        .filter(|panel| {
+            frame.decision_panel_exact_status() == ViewStatus::Present
+                && panel.country_tag == pov_tag
+        });
+    if let Some(panel) = exact_decisions {
+        for (kind, count) in [
+            (AlertKind::DecisionsAvailable, panel.available_alert_count),
+            (AlertKind::DecisionsTimeout, panel.timeout_alert_count),
+        ] {
+            let badge = badges
+                .iter_mut()
+                .find(|badge| badge.kind == kind)
+                .expect("all decision alert kinds are present");
+            badge.count = Some(i64::from(count));
+            badge.badge_shown = count > 0;
+            badge.count_text = (count > 0).then(|| count.to_string());
+        }
+    }
     AlertsStripBinding {
         pov_tag: pov_tag.to_string(),
-        available: present,
+        available: present || exact_decisions.is_some(),
         badges,
     }
 }
 
-/// The scrolling alert / notification FEED (`alerts.gui` `global_alerticon_window`).
-///
-/// The recording carries **no** fired-alert stream, so this is fail-closed:
-/// `available: false`, no icons. The `.gui` layout for the feed is still
-/// FILE-cited (layout gate) — only the per-alert content is Absent. Data gap
-/// filed in EXTRACTION_NEEDS §A / REPLAY_DATA_REQUIREMENTS (fired-alert stream).
+/// One visible icon projected from an exact active-alert snapshot row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AlertFeedIconBinding {
+    pub alert_type: u16,
+    pub source_ordinal: u16,
+    pub priority: i32,
+    pub template_class: u32,
+    pub dedup_identity: AlertDedupIdentity,
+    pub country_target_db_id: Option<u32>,
+    /// Explicitly records that command-group identities were not serialized.
+    pub command_group_target_omitted: bool,
+    /// Exact frame within `GFX_global_alert_icons`.
+    pub icon_frame: u16,
+    pub display_order: i32,
+    pub sprite: &'static str,
+}
+
+/// The scrolling alert / notification FEED (`alerts.gui`
+/// `global_alerticon_window`). This is the current active snapshot, not a
+/// historical stream; the engine slot carries no fire-time field.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AlertFeedBinding {
-    /// Always `false`: no fired-alert stream in the recording schema.
     pub available: bool,
-    /// Always empty (recording-Absent). Each entry would be a resolved feed
-    /// icon sprite ([`ALERT_FEED_ICON_SPRITE`]).
-    pub icons: Vec<String>,
+    /// All current-active rows, including members which have not materialized
+    /// an icon. Command-group and opaque identities remain explicitly omitted.
+    pub rows: Vec<ActiveAlertRow>,
+    /// Icon-bearing rows in exact engine display order.
+    pub icons: Vec<AlertFeedIconBinding>,
 }
 
 /// The fail-closed absent alert feed (see [`AlertFeedBinding`]).
 pub fn alert_feed_binding() -> AlertFeedBinding {
     AlertFeedBinding::default()
+}
+
+/// Bind the exact pointer-free current-active snapshot for one POV. Any
+/// malformed family/order relation fails the whole surface closed.
+pub fn alert_feed_from_frame(frame: &WorldFrame, pov_tag: &str) -> AlertFeedBinding {
+    if frame.topbar_extras_status() != ViewStatus::Present {
+        return AlertFeedBinding::default();
+    }
+    let Some(alerts) = frame.topbar_alerts(pov_tag) else {
+        return AlertFeedBinding::default();
+    };
+    let Leaf::Measured(rows) = &alerts.active_feed else {
+        return AlertFeedBinding::default();
+    };
+
+    let mut previous = None;
+    for row in rows {
+        let family_valid = match row.dedup_identity {
+            AlertDedupIdentity::ZeroTuple => row.country_target_db_id.is_none(),
+            AlertDedupIdentity::CountryDbId => {
+                matches!(row.alert_type, 1 | 2 | 5 | 6 | 7 | 0x2d | 0x2e)
+                    && row.country_target_db_id.is_some()
+            }
+            AlertDedupIdentity::CommandGroupOmitted => {
+                matches!(row.alert_type, 3 | 4 | 0x2b) && row.country_target_db_id.is_none()
+            }
+            AlertDedupIdentity::OpaqueEngineObjectOmitted => {
+                matches!(row.alert_type, 0x16 | 0x3c) && row.country_target_db_id.is_none()
+            }
+        };
+        let canonical = match previous {
+            None => row.source_ordinal == 0,
+            Some((prior_type, prior_ordinal)) => {
+                (row.alert_type > prior_type && row.source_ordinal == 0)
+                    || (row.alert_type == prior_type
+                        && row.source_ordinal == prior_ordinal + 1)
+            }
+        };
+        if row.alert_type >= 0x52
+            || !family_valid
+            || !canonical
+            || row.icon_frame
+                != row.icon_present.then(|| {
+                    alert_icon_frame_for_type(row.alert_type)
+                        .expect("alert type range checked above")
+                })
+            || (row.icon_present && row.display_order < 0)
+            || (!row.icon_present && row.display_order != -1)
+        {
+            return AlertFeedBinding::default();
+        }
+        previous = Some((row.alert_type, row.source_ordinal));
+    }
+
+    let mut icons = rows
+        .iter()
+        .filter(|row| row.icon_present)
+        .map(|row| AlertFeedIconBinding {
+            alert_type: row.alert_type,
+            source_ordinal: row.source_ordinal,
+            priority: row.priority,
+            template_class: row.template_class,
+            dedup_identity: row.dedup_identity,
+            country_target_db_id: row.country_target_db_id,
+            command_group_target_omitted: matches!(
+                row.dedup_identity,
+                AlertDedupIdentity::CommandGroupOmitted
+            ),
+            icon_frame: row.icon_frame.expect("filtered icon-bearing row"),
+            display_order: row.display_order,
+            sprite: ALERT_FEED_ICON_SPRITE,
+        })
+        .collect::<Vec<_>>();
+    icons.sort_by_key(|icon| (icon.display_order, icon.alert_type, icon.source_ordinal));
+    AlertFeedBinding {
+        available: true,
+        rows: rows.clone(),
+        icons,
+    }
 }
 
 #[cfg(test)]
@@ -227,8 +371,13 @@ mod tests {
         TopbarAlerts {
             initiative: init,
             decisions_available: dec,
+            decisions_timeout: Leaf::Absent,
             intel,
+            intel_prepared_or_completed: Leaf::Absent,
+            prototype_rewards: Leaf::Absent,
             market_contracts: market,
+            market_contracts_ongoing: Leaf::Absent,
+            active_feed: Leaf::Absent,
         }
     }
 
@@ -286,7 +435,7 @@ mod tests {
             .iter()
             .map(|&k| badge_from(k, None))
             .collect();
-        assert_eq!(badges.len(), 4);
+        assert_eq!(badges.len(), 8);
         assert!(badges.iter().all(|b| b.count.is_none() && !b.badge_shown));
     }
 

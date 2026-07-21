@@ -102,9 +102,14 @@ fn progress(name: &str, pct: f64, eta: i64) -> ResearchProgressRow {
     }
 }
 
-fn a29_source_record_sha256(slot: i64, branch: u32, quartet: [i64; 4]) -> String {
+fn a29_source_record_sha256(slot: i64, branch: u32, quartet: [i64; 4]) -> (String, String, String) {
+    let candidate_set_sha256 = "ab".repeat(32);
+    let selected_present = format!(
+        "{{\"candidate_count\":1,\"candidate_set_sha256\":\"{candidate_set_sha256}\",\"selected_candidate_id\":\"7\",\"selected_ordinal\":0,\"selected_game_hour_raw\":43800024,\"selected_qpc_ticks\":\"4\",\"selection_cutoff_qpc_ticks\":\"5\"}}"
+    );
+    let selected_present_sha256 = snapshot::sha256::Sha256::hex(selected_present.as_bytes());
     let mut source_record = Vec::new();
-    source_record.extend_from_slice(b"the game:a729:a29-observed-producer:v1\0");
+    source_record.extend_from_slice(b"the game:a729:a29-observed-producer:selected-present:v3\0");
     source_record.extend_from_slice(
         b"870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
     );
@@ -114,21 +119,41 @@ fn a29_source_record_sha256(slot: i64, branch: u32, quartet: [i64; 4]) -> String
     source_record.extend_from_slice(
         b"3fbca6726f09499e6cf1961969ae4154b9c265f8e5c688f8d939d8397387cee2",
     );
+    source_record.extend_from_slice(
+        b"8d802c9eb2fe5e78ab52d7512d8d01dd5793b9c29fac8627c17fb6cafcc621ba",
+    );
+    source_record.extend_from_slice(
+        b"44169d40d8ccc979f2f78eb7be11e2e7995e28dc4f3c6feb9da48ae928257517",
+    );
+    source_record.extend_from_slice(&0x01BC_F384i64.to_le_bytes());
     source_record.extend_from_slice(&((slot + 1) as u64).to_le_bytes());
     source_record.extend_from_slice(&2u32.to_le_bytes());
     source_record.extend_from_slice(&3u64.to_le_bytes());
     source_record.extend_from_slice(&10_000_000u64.to_le_bytes());
     source_record.extend_from_slice(&43_800_024i32.to_le_bytes());
+    source_record.extend_from_slice(&(slot as u32).to_le_bytes());
     source_record.extend_from_slice(&((200 + slot) as u32).to_le_bytes());
     source_record.extend_from_slice(&branch.to_le_bytes());
     for raw in quartet {
         source_record.extend_from_slice(&raw.to_le_bytes());
     }
-    snapshot::sha256::Sha256::hex(&source_record)
+    source_record.extend_from_slice(&1u32.to_le_bytes());
+    source_record.extend_from_slice(&7u64.to_le_bytes());
+    source_record.extend_from_slice(&0u32.to_le_bytes());
+    source_record.extend_from_slice(&43_800_024i32.to_le_bytes());
+    source_record.extend_from_slice(&4u64.to_le_bytes());
+    source_record.extend_from_slice(&5u64.to_le_bytes());
+    source_record.extend_from_slice(candidate_set_sha256.as_bytes());
+    source_record.extend_from_slice(selected_present_sha256.as_bytes());
+    (
+        snapshot::sha256::Sha256::hex(&source_record),
+        candidate_set_sha256,
+        selected_present_sha256,
+    )
 }
 
 fn live(slot: i64, name: &str, pct: f64, eta: i64) -> ResearchLiveProgressRow {
-    let source_record_sha256 =
+    let (source_record_sha256, candidate_set_sha256, selected_present_sha256) =
         a29_source_record_sha256(slot, 2, [150_000, 300_000, 50_000, 200_000]);
     ResearchLiveProgressRow {
         slot_index: Leaf::Measured(slot),
@@ -160,7 +185,7 @@ fn live(slot: i64, name: &str, pct: f64, eta: i64) -> ResearchLiveProgressRow {
         ahead_of_time_reduction_years_raw: Leaf::Measured(50_000),
         ahead_of_time_reduced_penalty_raw: Leaf::Measured(200_000),
         ahead_of_time_provenance_authority: Leaf::Measured(
-            "a729_observed_research_ahead_producer_v1".into(),
+            "a729_observed_research_ahead_selected_present_v3".into(),
         ),
         ahead_of_time_provenance_executable_sha256: Leaf::Measured(
             "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad".into(),
@@ -177,7 +202,22 @@ fn live(slot: i64, name: &str, pct: f64, eta: i64) -> ResearchLiveProgressRow {
         ahead_of_time_provenance_sentinel_dump_sha256: Leaf::Measured(
             "3fbca6726f09499e6cf1961969ae4154b9c265f8e5c688f8d939d8397387cee2".into(),
         ),
+        ahead_of_time_provenance_action_gate_job_id: Leaf::Measured(
+            "20260721T075619Z-wave6-a29-active-ahead-ui-producer-ced43f28".into(),
+        ),
+        ahead_of_time_provenance_action_gate_manifest_sha256: Leaf::Measured(
+            "8d802c9eb2fe5e78ab52d7512d8d01dd5793b9c29fac8627c17fb6cafcc621ba".into(),
+        ),
+        ahead_of_time_provenance_action_gate_sentinel_job_id: Leaf::Measured(
+            "20260721T081803Z-wave6-a29-year-action-gate-sentinels-442109ac".into(),
+        ),
+        ahead_of_time_provenance_action_gate_sentinel_dump_sha256: Leaf::Measured(
+            "44169d40d8ccc979f2f78eb7be11e2e7995e28dc4f3c6feb9da48ae928257517".into(),
+        ),
         ahead_of_time_provenance_ui_year_producer_rva: Leaf::Measured(0x01BC_EA60),
+        ahead_of_time_provenance_ui_year_helper_rva: Leaf::Measured(0x00AB_EAA0),
+        ahead_of_time_provenance_ui_year_action_identity_compare_rva: Leaf::Measured(0x01BC_F326),
+        ahead_of_time_provenance_ui_year_helper_return_rva: Leaf::Measured(0x01BC_F384),
         ahead_of_time_provenance_effective_value_producer_rva: Leaf::Measured(0x00AB_E4C0),
         ahead_of_time_provenance_localization_consumer_rva: Leaf::Measured(0x0223_0F20),
         ahead_of_time_provenance_source_record_sha256: Leaf::Measured(source_record_sha256),
@@ -187,6 +227,18 @@ fn live(slot: i64, name: &str, pct: f64, eta: i64) -> ResearchLiveProgressRow {
         ahead_of_time_provenance_producer_game_hour_raw: Leaf::Measured(43_800_024),
         ahead_of_time_provenance_callback_qpc_ticks: Leaf::Measured(3),
         ahead_of_time_provenance_qpc_frequency_hz: Leaf::Measured(10_000_000),
+        ahead_of_time_provenance_selected_present_candidate_count: Leaf::Measured(1),
+        ahead_of_time_provenance_selected_present_candidate_set_sha256: Leaf::Measured(
+            candidate_set_sha256,
+        ),
+        ahead_of_time_provenance_selected_present_candidate_id: Leaf::Measured(7),
+        ahead_of_time_provenance_selected_present_ordinal: Leaf::Measured(0),
+        ahead_of_time_provenance_selected_present_game_hour_raw: Leaf::Measured(43_800_024),
+        ahead_of_time_provenance_selected_present_qpc_ticks: Leaf::Measured(4),
+        ahead_of_time_provenance_selected_present_cutoff_qpc_ticks: Leaf::Measured(5),
+        ahead_of_time_provenance_selected_present_receipt_sha256: Leaf::Measured(
+            selected_present_sha256,
+        ),
     }
 }
 
@@ -433,8 +485,10 @@ fn observed_no_penalty_branch_is_admitted_but_wrong_authority_rejects() {
     rows[0].ahead_of_time_penalty_raw = Leaf::Measured(0);
     rows[0].ahead_of_time_reduced_penalty_raw = Leaf::Measured(0);
     rows[0].ahead_of_time_provenance_localization_branch = Leaf::Measured(0);
+    let (source_record_sha256, _, _) =
+        a29_source_record_sha256(1, 0, [0, 0, 50_000, 0]);
     rows[0].ahead_of_time_provenance_source_record_sha256 =
-        Leaf::Measured(a29_source_record_sha256(1, 0, [0, 0, 50_000, 0]));
+        Leaf::Measured(source_record_sha256);
     let admitted = admit(
         &no_penalty,
         &technology,
@@ -470,6 +524,32 @@ fn observed_no_penalty_branch_is_admitted_but_wrong_authority_rejects() {
 }
 
 #[test]
+fn observed_ahead_receipt_cannot_be_transplanted_to_another_research_slot() {
+    let (technology, doctrine_canvas) = canvases();
+    let definitions = definitions();
+    let technology_order = vec!["tech_done".into(), "tech_a".into(), "tech_b".into()];
+    let doctrine_order = vec!["doctrine_a".into(), "doctrine_b".into()];
+    let mut transplanted = research();
+    let Leaf::Measured(rows) = &mut transplanted.in_progress_live else {
+        unreachable!()
+    };
+    // Keep the authenticated producer hash unchanged while moving its row.
+    // The v2 admission preimage binds slot 1, so slot 0 must fail closed.
+    rows[0].slot_index = Leaf::Measured(0);
+    assert_eq!(
+        admit(
+            &transplanted,
+            &technology,
+            &doctrine_canvas,
+            &technology_order,
+            &doctrine_order,
+            &definitions,
+        ),
+        Err(ResearchStateRejection::MissingAheadOfTimeInputs)
+    );
+}
+
+#[test]
 fn duplicate_live_slot_and_invalid_progress_fail_closed() {
     let (technology, doctrine_canvas) = canvases();
     let definitions = definitions();
@@ -479,7 +559,7 @@ fn duplicate_live_slot_and_invalid_progress_fail_closed() {
     let Leaf::Measured(rows) = &mut duplicate.in_progress_live else {
         unreachable!()
     };
-    rows[0].slot_index = Leaf::Measured(0);
+    rows[1] = rows[0].clone();
     assert_eq!(
         admit(
             &duplicate,

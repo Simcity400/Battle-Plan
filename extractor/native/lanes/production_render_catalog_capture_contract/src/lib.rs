@@ -122,6 +122,10 @@ pub struct RawShaderCompilerInvocation {
 pub struct RawProgramIdentity {
     pub observation_sequence: u64,
     pub shader_program_ptr: usize,
+    /// RVA of the authenticated engine registration producer which enclosed
+    /// the successful shader/effect lookup. This survives only as stable
+    /// provenance; the process-local program pointer is discarded later.
+    pub registration_root_rva: u32,
     pub source: RawVfsContentIdentity,
     pub effect_token: String,
     pub vertex_entry_token: String,

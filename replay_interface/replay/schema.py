@@ -24,6 +24,7 @@ from .wave4_schema import validate_wave4_snapshot
 
 SCHEMA_VERSION = "1"
 ACTIVE_ABILITY_EXECUTABLE_SHA256 = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+RAILWAY_CONSTRUCTION_EXECUTABLE_SHA256 = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
 ACTIVE_ABILITY_EXACT20_MANIFEST_SHA256 = "12768dfa9a8b47ceda4feae9cdc45b76811f602ecd557008aa936e95adf2db45"
 ACTIVE_ABILITY_REFRESH_DECOMPILE_SHA256 = "aa4eb90663e60c74b031d83b41c7a28a1867245611a05a6c9d4b1856ae0076f7"
 ACTIVE_ABILITY_AUTHORITY = 0xA7290036
@@ -133,7 +134,8 @@ DOMAINS = (
     "world_meta",            # LIVE scenario dates (world_extract_live.read_scenario_meta) ->
                              # world.scenario.{current_date_live,start_date_live} (M; the save
                              # "world" domain owns scenario, so these are DISTINCT _live keys).
-                             # world_tension is COMPUTED-not-stored -> NEVER folded.
+                             # Save data does not store the aggregate; the exact-a729 live
+                             # CWorldThreat retained fixed5 scalar is folded separately.
     "construction_orders",   # Legacy memory-reader umbrella for battle-plan orders +
                              # opinion-modifier decomposition; construction queue is now
                              # promoted through scheduled `production_live`. Remaining leaves
@@ -789,6 +791,9 @@ FIELD_SOURCES: Dict[str, str] = {
     # active_factories, cost, produced, priority}. The build target STATE/location is not
     # pinned yet -> never fabricated.
     "countries.*.production.construction_queue": "C/M",
+    "countries.*.production.construction_buildings_state_damage_live": "C",
+    "countries.*.production.construction_buildings_state_damage_live.railway_construction_lines": "C",
+    "countries.*.production.construction_buildings_state_damage_live.railway_construction_authority": "C",
     "countries.*.production.production_licenses": "C/M",
     "countries.*.production.production_license_variants": "C/M",
     "countries.*.production.production_license_agreements": "C/M/D",
@@ -1104,6 +1109,7 @@ FIELD_SOURCES: Dict[str, str] = {
     "world.tech_sharing_groups": "S",
     "world.power_balances": "S",
     "world.faction_influence": "S",
+    "world.world_tension": "M",
     "world.world_tension_inputs": "S",
     "world.saved_event_targets": "S",
     # --- map (§8) ---
@@ -2006,9 +2012,11 @@ class World:
     global script variables; ``flags`` = global flags (each ``{value, date}``);
     ``tech_sharing_groups`` = research-sharing groups; ``power_balances`` = balance-
     of-power tracks; ``faction_influence`` = per-faction initiative/contribution/
-    war-score internals; ``world_tension_inputs`` = the tension-scaling inputs (NOT
-    the aggregate tension value, which is not stored); ``saved_event_targets`` =
-    named saved scopes. null/empty-but-present until the parser feeds it.
+    war-score internals; ``world_tension`` = the exact live retained fixed5 ratio
+    normalized to 0.0..1.0; ``world_tension_inputs`` = save-side scaling inputs
+    retained for provenance, not a substitute for the live aggregate;
+    ``saved_event_targets`` = named saved scopes. null/empty-but-present until the
+    parser feeds it.
     """
     scenario: Optional[Dict[str, Any]] = None
     variables: Optional[Dict[str, Any]] = None
@@ -2016,6 +2024,7 @@ class World:
     tech_sharing_groups: List[Dict[str, Any]] = field(default_factory=list)
     power_balances: List[Dict[str, Any]] = field(default_factory=list)
     faction_influence: List[Dict[str, Any]] = field(default_factory=list)
+    world_tension: Optional[float] = None
     world_tension_inputs: Optional[Dict[str, Any]] = None
     saved_event_targets: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -4047,6 +4056,58 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                         f"country {tag!r}.production.construction_queue too many entries")
                 for i, line in enumerate(cq):
                     problems.extend(_validate_construction_line(tag, i, line))
+            railway_sidecar = prod.get("construction_buildings_state_damage_live")
+            if railway_sidecar is not None and not isinstance(railway_sidecar, dict):
+                problems.append(
+                    f"country {tag!r}.production.construction_buildings_state_damage_live not dict|null"
+                )
+            elif isinstance(railway_sidecar, dict) and (
+                "railway_construction_lines" in railway_sidecar
+                or "railway_construction_authority" in railway_sidecar
+            ):
+                railway_lines = railway_sidecar.get("railway_construction_lines")
+                authority = railway_sidecar.get("railway_construction_authority")
+                if railway_sidecar.get("source") != "C":
+                    problems.append(
+                        f"country {tag!r}.production railway RLC1 source is not C"
+                    )
+                expected_authority = {
+                    "schema": "RLC1",
+                    "binary": "hoi4.exe 1.19.2.0.a729",
+                    "executable_sha256": RAILWAY_CONSTRUCTION_EXECUTABLE_SHA256,
+                    "line_type": 4713,
+                    "vtable_rva": "0x02A15130",
+                    "fixed_point_divisor": 100000,
+                    "pause_state":
+                        "derived_from_current_edge_access_and_combat_not_stored_cooldown",
+                }
+                if authority != expected_authority:
+                    problems.append(
+                        f"country {tag!r}.production railway RLC1 authority mismatch"
+                    )
+                if not isinstance(railway_lines, list):
+                    problems.append(
+                        f"country {tag!r}.production railway_construction_lines not list"
+                    )
+                elif len(railway_lines) > 4096:
+                    problems.append(
+                        f"country {tag!r}.production railway_construction_lines too many entries"
+                    )
+                else:
+                    previous_key = None
+                    for index, line in enumerate(railway_lines):
+                        problems.extend(
+                            _validate_railway_construction_line(tag, index, line)
+                        )
+                        if isinstance(line, dict):
+                            key = (line.get("queue_index"), line.get("line_id"))
+                            if not all(isinstance(value, int) for value in key):
+                                continue
+                            if previous_key is not None and key <= previous_key:
+                                problems.append(
+                                    f"country {tag!r}.production railway_construction_lines not canonically ordered"
+                                )
+                            previous_key = key
             license_ids = prod.get("production_licenses")
             if license_ids is not None and not isinstance(license_ids, list):
                 problems.append(
@@ -5369,6 +5430,84 @@ def _validate_construction_line(
         problems.append(f"{prefix}.priority missing")
     elif not _valid_bounded_int(priority, minimum=0, maximum=4096):
         problems.append(f"{prefix}.priority not int in range")
+    return problems
+
+
+def _validate_railway_construction_line(
+    tag: str,
+    index: int,
+    line: Any,
+) -> List[str]:
+    prefix = (
+        f"country {tag!r}.production."
+        f"construction_buildings_state_damage_live.railway_construction_lines[{index}]"
+    )
+    if not isinstance(line, dict):
+        return [f"{prefix} not a dict"]
+    allowed = {
+        "line_id",
+        "queue_index",
+        "active_factories",
+        "cost_raw",
+        "produced_raw",
+        "created_date_raw",
+        "base_level",
+        "target_level",
+        "completion_flag",
+        "current_segment_index",
+        "remaining_hours_raw",
+        "remaining_hours",
+        "route_province_ids",
+    }
+    problems: List[str] = []
+    unknown = sorted(set(line) - allowed)
+    if unknown:
+        problems.append(f"{prefix} unknown/nonportable fields {unknown!r}")
+    integer_bounds = {
+        "line_id": (1, PRODUCTION_LINE_ID_MAX),
+        "queue_index": (0, 4095),
+        "active_factories": (0, PRODUCTION_FACTORY_COUNT_MAX),
+        "cost_raw": (0, 2_000_000_000),
+        "produced_raw": (0, 2_000_000_000),
+        "created_date_raw": (1, 100_000_000),
+        "base_level": (0, 1000),
+        "target_level": (0, 1000),
+        "remaining_hours_raw": (0, 9_223_372_036_854_775_807),
+    }
+    for field, (minimum, maximum) in integer_bounds.items():
+        if not _valid_bounded_int(line.get(field), minimum=minimum, maximum=maximum):
+            problems.append(f"{prefix}.{field} not exact int in range")
+    base = line.get("base_level")
+    target = line.get("target_level")
+    if isinstance(base, int) and isinstance(target, int) and target < base:
+        problems.append(f"{prefix}.target_level below base_level")
+    if not isinstance(line.get("completion_flag"), bool):
+        problems.append(f"{prefix}.completion_flag not bool")
+    route = line.get("route_province_ids")
+    if not isinstance(route, list) or not 2 <= len(route) <= 4096:
+        problems.append(f"{prefix}.route_province_ids invalid length/type")
+        route_len = None
+    else:
+        route_len = len(route)
+        if any(
+            not _valid_bounded_int(province_id, minimum=1, maximum=65_535)
+            for province_id in route
+        ):
+            problems.append(f"{prefix}.route_province_ids contains invalid id")
+    current = line.get("current_segment_index")
+    if (
+        route_len is None
+        or not _valid_bounded_int(current, minimum=-1, maximum=route_len - 2)
+    ):
+        problems.append(f"{prefix}.current_segment_index outside route")
+    remaining_raw = line.get("remaining_hours_raw")
+    remaining = line.get("remaining_hours")
+    if not _valid_nonnegative_measure(remaining):
+        problems.append(f"{prefix}.remaining_hours not finite nonnegative measure")
+    elif isinstance(remaining_raw, int) and not math.isclose(
+        float(remaining), remaining_raw / 100_000.0, rel_tol=0.0, abs_tol=1e-12
+    ):
+        problems.append(f"{prefix}.remaining_hours disagrees with fixed-5 raw")
     return problems
 
 

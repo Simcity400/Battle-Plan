@@ -3076,17 +3076,35 @@ pub(crate) fn terrain_mipmap_level_for_pixel_step(
     map_pow2_x: f32,
     map_pow2_y: f32,
 ) -> f32 {
-    let dx_x = (TERRAIN_TILE_FREQ * map_pow2_x * (map_w as f32 / map_h as f32) / map_w as f32)
-        * TEXELS_PER_TILE;
-    let dy_y = (TERRAIN_TILE_FREQ * map_pow2_y / map_h as f32) * TEXELS_PER_TILE;
-    let d = (dx_x * dx_x).max(dy_y * dy_y);
+    let dx_x =
+        TERRAIN_TILE_FREQ * map_pow2_x * (map_w as f32 / map_h as f32) / map_w as f32;
+    let dy_y = TERRAIN_TILE_FREQ * map_pow2_y / map_h as f32;
+    terrain_mipmap_level_from_tile_repeat_derivatives(
+        Vec2 { x: dx_x, y: 0.0 },
+        Vec2 { x: 0.0, y: dy_y },
+    )
+}
+
+/// Exact non-OpenGL `mipmapLevel` law from shipped
+/// `gfx/FX/standardfuncsgfx.fxh`: `0.5 * log2(max(dot(ddx(uv*T),ddx),
+/// dot(ddy(uv*T),ddy)))`. Keeping the vector form prevents a future rotated
+/// or perspective raster path from silently dropping cross-axis derivatives.
+pub(crate) fn terrain_mipmap_level_from_tile_repeat_derivatives(
+    tile_repeat_dx: Vec2,
+    tile_repeat_dy: Vec2,
+) -> f32 {
+    let dx_x = tile_repeat_dx.x * TEXELS_PER_TILE;
+    let dx_y = tile_repeat_dx.y * TEXELS_PER_TILE;
+    let dy_x = tile_repeat_dy.x * TEXELS_PER_TILE;
+    let dy_y = tile_repeat_dy.y * TEXELS_PER_TILE;
+    let d = (dx_x * dx_x + dx_y * dx_y).max(dy_x * dy_x + dy_y * dy_y);
     0.5 * d.log2()
 }
 
 pub(crate) fn terrain_blend_frac(uv_x: f32, uv_y: f32, map_w: usize, map_h: usize) -> (f32, f32) {
     (
-        (uv_x * map_w as f32 - 0.5).fract(),
-        (uv_y * map_h as f32 - 0.5).fract(),
+        hlsl_frac(uv_x * map_w as f32 - 0.5),
+        hlsl_frac(uv_y * map_h as f32 - 0.5),
     )
 }
 

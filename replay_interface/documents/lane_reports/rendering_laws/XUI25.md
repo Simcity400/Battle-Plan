@@ -10,11 +10,16 @@ scale bits, refresh rates, fullscreen/borderless mode, and a settings-file
 SHA-256. Fold/repack, replay ingest, and the typed world view validate and carry
 the exact object into `game_ui`. That portion is integrated.
 
-The Wave5 production callsite gap is closed. The injected collector samples
-the foreground the game client in the normal capture loop and joins an earlier QPC
-sample to a later selected-Present sample only when the same client extent's
-in-client pointer positions differ. The v2 materializer binds executable, process id,
-process-start nonce, hook epoch, both Present QPC values, current selection
+The Wave6 production chronology gap is closed. The injected collector samples
+the foreground the game client in the normal capture loop, while the exact Present
+detour captures the later foreground/client/cursor sample synchronously after
+the engine's swapchain `Present` returns. Both samples retain honest QPC
+intervals; collector finalization consumes the immutable in-hook sample and is
+forbidden from resampling or backdating it. Admission occurs only when the same
+client extent's in-client pointer positions differ and chronology is strictly
+`prior completed < PresentEnd <= in-hook sample start <= in-hook sample complete
+<= atomic cutoff`. The v3 materializer binds executable, process id,
+process-start nonce, hook epoch, the complete QPC chronology, current selection
 receipt, client extent and both positions to the frozen authority manifest.
 The receipt is bound into `InProcessRenderAdmission` before d77 authority and
 UI-pass assembly. Stationary, unfocused, keyboard-only and controller sessions
@@ -99,6 +104,7 @@ The current static closure is bound to these exact canonical-LF identities:
 | `0x142215160` | `20260717T100026Z-xui25-a32-borderless-shortcut-semantics-2310ee0e` | `C:/Users/Example/ghidra_agent_exports/20260717T100026Z-xui25-a32-borderless-shortcut-semantics-2310ee0e/evidence/func_142215160.decompile.c` | `3229001f4fe202ec2b585d27d4291a4faafd6f1d1a8bd16eef8922be21be3bff` | `eecccd5c70866fa4195d4779edac8b15608de6ee6620045e0f590e0f19992bdf` | Command-line modes map exactly to 0/1/2 and bind a resolution pair. |
 | `0x141378220` | `20260717T100026Z-xui25-a32-borderless-shortcut-semantics-2310ee0e` | `C:/Users/Example/ghidra_agent_exports/20260717T100026Z-xui25-a32-borderless-shortcut-semantics-2310ee0e/evidence/func_141378220.decompile.c` | `55487aa2ca348ee6c30a08f6b441ea73e24d2c4c6d2f4847c5e20a3c5f83680f` | `eecccd5c70866fa4195d4779edac8b15608de6ee6620045e0f590e0f19992bdf` | Shortcut names bind GUI actions/widgets, not traversal order. |
 | `0x140082cb0` | `20260717T095737Z-xui25-a32-display-scale-settings-anchors-6e55e24d` | `C:/Users/Example/ghidra_agent_exports/20260717T095737Z-xui25-a32-display-scale-settings-anchors-6e55e24d/string-xrefs.txt` | `91f793f0fb2dc86b58d3744965fceb6ee4e6c316462d60e85f09334d6bc7a4fa` | `cd33527ef2f8f5d73ac87272d13b3c6219927272875ffe379ec7f4e1f4f8f8fe` | One settings producer references gui_scale, min_gui, fullScreen, borderless and refreshRate. |
+| `0x1420b6530` | `20260721T064556Z-wave6-xui25-selected-present-boundary-575c1c37` | `evidence/func_1420b6530.decompile.c` | `9422f6a52bfe79ba118e0056785c6e12b774379e812ca3ed3b7fc483c8389ced` | `ea56f041a987ed080a6d8e5df94a76a7775aa988fc57779b782a54b00247291e` | Exact a729 renderer root invokes swapchain `Present`, handles the return code, and then returns; the production detour's post-original-call section is therefore the exact synchronous Present-return observation boundary. Unified-RE claim `claim_61feeceadd2ef01c1b0d`, job `20260721T065247Z-record-claim-1f1fe084`. |
 
 The large `0x140082cb0` export failed at jobs
 `20260717T100000Z-xui25-a32-engine-display-settings-loader-3ef64cf4` and
@@ -114,7 +120,8 @@ XUI25 therefore uses the next unused identifier, A32, and does not rewrite
 other agents' rows.
 
 **Implementation residual:** acquire one real foreground in-client pointer
-movement from a capture-loop sample to a later selected-Present boundary, and
+movement from a capture-loop sample to the later immutable in-hook
+selected-Present sample, and
 refreeze the manifest from that receipt. A32 launch-bound
 display/language identity remains integrated. Non-pointer traversal is
 explicitly unsupported, not inferred.

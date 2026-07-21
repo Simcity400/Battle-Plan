@@ -64,6 +64,7 @@ fn main() -> Result<(), String> {
                 created_date_raw: None,
             },
         ],
+        railway_construction_rows: None,
         building_rows: vec![
             BuildingRow {
                 scope: SCOPE_STATE,

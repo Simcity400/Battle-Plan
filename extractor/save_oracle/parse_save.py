@@ -348,6 +348,7 @@ def parse_countries_section(tz: Tokenizer, result: dict) -> None:
             "command_power": None,
             "ruling_party": None,
             "capital": None,
+            "original_capital": None,
             "major": False,
             "manpower_ratio": None,   # available manpower pool (NOT total)
             "fuel": None,
@@ -394,6 +395,8 @@ def _parse_country_block(tz: Tokenizer, snap: dict) -> None:
             snap["command_power"] = _to_float(val)
         elif key == "capital":
             snap["capital"] = _to_int(val)
+        elif key == "original_capital":
+            snap["original_capital"] = _to_int(val)
         elif key == "major":
             snap["major"] = (val == "yes")
         elif key == "num_ships":

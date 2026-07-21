@@ -111,8 +111,11 @@ pub enum OperativeAssignment {
     Idle,
     Mission {
         mission_id: String,
+        mission_action_id: String,
         target_country: Option<String>,
+        target_country_tag_db_id: u32,
         target_state: Option<u32>,
+        authored_subject_id: Option<String>,
     },
     Operation {
         operation_id: String,
@@ -658,18 +661,25 @@ pub fn admit_intelligence_ui(trace: &IntelligenceUiTrace) -> Result<AdmittedInte
             match &row.assignment {
                 OperativeAssignment::Mission {
                     mission_id,
+                    mission_action_id,
                     target_country,
+                    target_country_tag_db_id,
                     target_state,
+                    authored_subject_id,
                 } => {
                     nonempty(mission_id, "mission_id")?;
-                    if target_country.is_none() && target_state.is_none() {
-                        return Err(fail("mission target is absent"));
+                    nonempty(mission_action_id, "mission_action_id")?;
+                    if target_country.is_none() || *target_country_tag_db_id == 0 {
+                        return Err(fail("mission target country identity is absent"));
                     }
                     if let Some(country) = target_country {
                         nonempty(country, "mission target country")?;
                     }
                     if target_state == &Some(0) {
                         return Err(fail("mission target state is zero"));
+                    }
+                    if authored_subject_id.as_deref().is_some_and(str::is_empty) {
+                        return Err(fail("mission authored subject identity is empty"));
                     }
                 }
                 OperativeAssignment::Operation { operation_id } => {
@@ -1026,6 +1036,75 @@ pub fn admit_intelligence_ui_with_selected_present_companion<'a>(
         || operation_order != admitted.operation_order()
     {
         return Err(fail("operative or operation controller order companion mismatch"));
+    }
+    match &trace.operatives {
+        ProducerValue::Measured(rows) => {
+            if rows.rows.len() != admitted.operative_portraits().len() {
+                return Err(fail("operative portrait companion coverage mismatch"));
+            }
+            for (row, portrait) in rows.rows.iter().zip(admitted.operative_portraits()) {
+                if row.stable_item_id != portrait.stable_item_id
+                    || row.operative_id != portrait.operative_id.to_string()
+                    || row.portrait_sprite != portrait.identity
+                {
+                    return Err(fail("operative final portrait producer join mismatch"));
+                }
+            }
+        }
+        ProducerValue::Unobtained { .. } if !admitted.operative_portraits().is_empty() => {
+            return Err(fail("unobtained operatives carry final portrait rows"));
+        }
+        ProducerValue::Unobtained { .. } => {}
+    }
+    match &trace.operatives {
+        ProducerValue::Measured(rows) => {
+            let mission_products = admitted
+                .operative_mission_products()
+                .iter()
+                .map(|product| (product.stable_item_id.as_str(), product))
+                .collect::<BTreeMap<_, _>>();
+            let mut joined = 0usize;
+            for row in &rows.rows {
+                match &row.assignment {
+                    OperativeAssignment::Mission {
+                        mission_id,
+                        mission_action_id,
+                        target_country: _,
+                        target_country_tag_db_id,
+                        target_state,
+                        authored_subject_id,
+                    } => {
+                        let Some(product) = mission_products.get(row.stable_item_id.as_str())
+                        else {
+                            return Err(fail("mission assignment lacks exact product companion"));
+                        };
+                        if row.operative_id != product.operative_id.to_string()
+                            || mission_id != &product.authored_mission_localization_key
+                            || mission_action_id != &product.authored_action_localization_key
+                            || target_country_tag_db_id != &product.target_country_tag_db_id
+                            || target_state != &product.target_state_id
+                            || authored_subject_id != &product.authored_subject_id
+                        {
+                            return Err(fail("operative mission producer join mismatch"));
+                        }
+                        joined = joined.saturating_add(1);
+                    }
+                    _ if mission_products.contains_key(row.stable_item_id.as_str()) => {
+                        return Err(fail("non-mission operative carries mission product"));
+                    }
+                    _ => {}
+                }
+            }
+            if joined != mission_products.len() {
+                return Err(fail("operative mission product coverage mismatch"));
+            }
+        }
+        ProducerValue::Unobtained { .. }
+            if !admitted.operative_mission_products().is_empty() =>
+        {
+            return Err(fail("unobtained operatives carry mission product rows"));
+        }
+        ProducerValue::Unobtained { .. } => {}
     }
 
     let companion_gates = exact.visibility.iter().map(|gate| {

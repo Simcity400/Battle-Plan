@@ -1,0 +1,41 @@
+{
+  "schema": "hoi4.h_a37.d04_save_oracle.v1",
+  "status": "AUTHENTICATED_SAVE_HAS_BOP_ROWS_CURRENT_PLAYER_HAS_NO_SELECTED_ROW",
+  "source": {
+    "filename": "New D04 Save Deep War.hoi4",
+    "sha256": "c8488b05a3b87c718eeff979976537b79e867634d0b4dccb1eef6c5a45362735",
+    "save_date": "1944.2.11.18",
+    "player": "D04",
+    "binary_id": "hoi4.exe 1.19.2.0.a729",
+    "melt_tool": "rakaly 0.8.17 via extractor/save_oracle/parse_world.py",
+    "melted_world_sha256": "3bfa6491bcd2842f6243ba45dcd5fe79d5480d942904d549e72f34eb73f1bf45"
+  },
+  "power_balances": [
+    {"balance_id":"DEN_balance_of_power","value":-0.9,"left_side_id":"DEN_welfare_side","right_side_id":"DEN_warfare_side","trending_side_id":"DEN_welfare_side","countries":[]},
+    {"balance_id":"FIN_power_balance","value":1.0,"left_side_id":"FIN_bad_side","right_side_id":"FIN_good_side","trending_side_id":"FIN_good_side","countries":["FIN"]},
+    {"balance_id":"ETH_centralization_balance","value":-0.6,"left_side_id":"ETH_mesafint_side","right_side_id":"ETH_mekwanint_side","trending_side_id":"ETH_mekwanint_side","countries":[]},
+    {"balance_id":"PRC_communist_power_struggle","value":-0.305,"left_side_id":"PRC_bop_left_side","right_side_id":"PRC_bop_right_side","trending_side_id":"PRC_bop_right_side","countries":[]},
+    {"balance_id":"CZE_bop_army_readiness","value":-1.0,"left_side_id":"CZE_bop_army_readiness_left_side","right_side_id":"CZE_bop_army_readiness_right_side","trending_side_id":"CZE_bop_army_readiness_left_side","countries":["CZE"]},
+    {"balance_id":"SWI_centralization_bop","value":1.0,"left_side_id":"SWI_centralization_bop_council","right_side_id":"SWI_centralization_bop_canton","trending_side_id":"SWI_centralization_bop_canton","countries":["SWI"]},
+    {"balance_id":"ITA_power_balance","value":0.465,"left_side_id":"ITA_grand_council_side","right_side_id":"ITA_mussolini_side","trending_side_id":"ITA_grand_council_side","countries":["ITA"]},
+    {"balance_id":"DEN_occupation_balance","value":0.365,"left_side_id":"DEN_annexation_side","right_side_id":"DEN_autonomy_side","trending_side_id":"DEN_autonomy_side","countries":["DEN"]}
+  ],
+  "selector_consequence": {
+    "selected_country": "D04",
+    "matching_rows": 0,
+    "expected_selector_result": "engine null object",
+    "positive_live_materialization_possible_without_external_interaction": false,
+    "explanation": "The exact selector 0x140e424f0 returns only the first row whose country predicate accepts the current country. No retained balance names D04 in its countries list. The paused D04 surface therefore cannot produce a positive power-balance controller or decision-grid transition."
+  },
+  "trace_join": {
+    "job_id": "20260721T070109Z-trace-calls-8490392e",
+    "result_sha256": "707fc5931d7a366de7ad8a8a4419f01dde4c3c784fbdd1b66079922dca36c805",
+    "targets": ["0x141c4baa0", "0x141c4aa30"],
+    "duration_seconds": 6,
+    "hit_cap": 32,
+    "messages_count": 1,
+    "observed_calls": 0,
+    "cleanup": "clean",
+    "classification": "authenticated negative activation evidence only; never promotion evidence"
+  }
+}

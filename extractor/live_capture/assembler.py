@@ -308,8 +308,9 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
         captured_domains.append("country_misc")
 
     # --- country static identity scalars (live country_static_live) ->
-    # country.identity.{original_capital, original_tag, reserved_dynamic_country,
-    # templates_locked} (M, distinct live-only leaves). Every key the reader
+    # country.politics.capital_state plus country.identity.{original_capital,
+    # original_tag, reserved_dynamic_country, templates_locked} (M, distinct
+    # live-only leaves). Every key the reader
     # MEASURES is written through (incl. a measured None == "absent", e.g.
     # original_tag None for a non-dynamic country) so the measured value is
     # recorded. country.identity is a live-only home, so no save fold reads it. ---
@@ -319,6 +320,9 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
             if not schema.valid_tag(tag):
                 continue
             c = _ensure_country(snap, tag)
+            capital = rec.get("capital")
+            if isinstance(capital, int) and not isinstance(capital, bool) and capital > 0:
+                c["politics"]["capital_state"] = capital
             ident = c.get("identity")
             if not isinstance(ident, dict):
                 ident = {}

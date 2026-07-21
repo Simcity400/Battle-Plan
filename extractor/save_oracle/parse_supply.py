@@ -24,7 +24,8 @@ Per country it extracts (verified against a real 1.19 melt):
                                   override {node_province, levels={TAG:lvl}}.
   - ``disrupted_supply``        : list of {node_province, value} (active supply
                                   disruption per node) + ``disrupted_count``.
-  - ``foreign_homebase_nodes``  : list of {province, supply, penalty, source}
+  - ``foreign_homebase_nodes``  : list of {province, supply, start, penalty,
+                                  source, duration, hours, decay, base}
                                   (docking-rights / foreign basing supply).
   - loss ring-buffers (last ~30 days, as stored):
       ``lost_railways`` / ``lost_trains`` (int arrays) +
@@ -166,8 +167,23 @@ def _parse_disrupted(tz):
 
 
 def _parse_homebase_fields(tz):
-    """Read a ``{ supply penalty province add ... }`` block (LBRACE consumed)."""
-    rec = {"province": None, "supply": None, "penalty": None, "source": None}
+    """Read one exact serialized foreign-homebase value block.
+
+    The a729 serializer ``FUN_141200e10`` writes all nine fields.  Keep the
+    numeric lifecycle fields instead of reducing this to the four values used
+    by the original pressure-candidate probe.
+    """
+    rec = {
+        "province": None,
+        "supply": None,
+        "start": None,
+        "penalty": None,
+        "source": None,
+        "duration": None,
+        "hours": None,
+        "decay": None,
+        "base": None,
+    }
     for k, op in iter_block_entries(tz):
         if op is LBRACE:
             _skip_block_body(tz)
@@ -177,12 +193,22 @@ def _parse_homebase_fields(tz):
             continue
         if k == "supply":
             rec["supply"] = to_float(v)
+        elif k == "start":
+            rec["start"] = to_float(v)
         elif k == "penalty":
             rec["penalty"] = to_float(v)
         elif k == "province":
             rec["province"] = to_int(v)
         elif k == "add":
             rec["source"] = v
+        elif k == "duration":
+            rec["duration"] = to_float(v)
+        elif k == "hours":
+            rec["hours"] = to_float(v)
+        elif k == "decay":
+            rec["decay"] = to_float(v)
+        elif k == "base":
+            rec["base"] = (v == "yes")
     return rec
 
 

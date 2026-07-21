@@ -10,6 +10,7 @@ pub struct DecoderSummary {
     pub domain_id: u16,
     pub domain_name: &'static str,
     pub construction_rows: usize,
+    pub railway_construction_rows: usize,
     pub construction_rows_with_target_state: usize,
     pub target_state_unavailable_badged: bool,
     pub building_rows: usize,
@@ -40,6 +41,10 @@ pub fn summarize_frame(frame: &LaneFrame, gate: &GateReport) -> DecoderSummary {
         domain_id: DOMAIN_ID,
         domain_name: DOMAIN_NAME,
         construction_rows: frame.construction_rows.len(),
+        railway_construction_rows: frame
+            .railway_construction_rows
+            .as_ref()
+            .map_or(0, Vec::len),
         construction_rows_with_target_state: gate.construction_rows_with_target_state,
         target_state_unavailable_badged: frame.source_flags
             & SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE

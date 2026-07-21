@@ -97,14 +97,7 @@ if (-not [string]::IsNullOrWhiteSpace($PreparedProductModsetDir)) {
 
 function Write-DurableJson {
     param([Parameter(Mandatory=$true)][string]$Path,[Parameter(Mandatory=$true)]$Value)
-    $parent = Split-Path -Parent $Path
-    New-Item -ItemType Directory -Path $parent -Force | Out-Null
-    $temp = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
-    $utf8 = [System.Text.UTF8Encoding]::new($false)
-    [System.IO.File]::WriteAllText($temp, ($Value | ConvertTo-Json -Depth 12), $utf8)
-    $stream = [System.IO.File]::Open($temp,[System.IO.FileMode]::Open,[System.IO.FileAccess]::ReadWrite,[System.IO.FileShare]::None)
-    try { $stream.Flush($true) } finally { $stream.Dispose() }
-    Move-Item -LiteralPath $temp -Destination $Path -Force
+    Write-AtomicJson -Path $Path -Value $Value -Depth 12
 }
 
 function Update-AttemptMarker {
@@ -558,8 +551,8 @@ try {
         Start-Sleep -Milliseconds $SpeedMonitorMs
         $process.Refresh()
     }
-    [System.IO.File]::WriteAllText($stdoutLog,[string]$recorderStdoutTask.Result,[System.Text.UTF8Encoding]::new($false))
-    [System.IO.File]::WriteAllText($stderrLog,[string]$recorderStderrTask.Result,[System.Text.UTF8Encoding]::new($false))
+    Write-AtomicUtf8Text -Path $stdoutLog -Text ([string]$recorderStdoutTask.Result)
+    Write-AtomicUtf8Text -Path $stderrLog -Text ([string]$recorderStderrTask.Result)
     if ($process.ExitCode -ne 0) { throw "collector_record exited nonzero: $($process.ExitCode)" }
     Update-AttemptMarker $attemptMarkerPath $attemptMarker "child_exited" @{child_exit_code=$process.ExitCode; child_exited_utc=[DateTime]::UtcNow.ToString('o')}
     $monitorWriter.Flush(); $monitorWriter.Dispose(); $monitorWriter=$null
@@ -652,7 +645,7 @@ $validationReportPath = Join-Path $OutDir "production_validation_report.json"
 $sinkReconciliationReport = $null
 if ($AcceptanceMode -eq "production") {
     $validation = Test-ProductionCaptureArtifacts -RunDir $OutDir -RegistryPath $registryPath -SpeedProofPath (Join-Path $OutDir "speed5_proof.json") -StaticArtifactPaths $static -ExpectedStagedDll $stagedDll -CompactGateExe $compactGate -FoldCheckExe $foldCheck -ContainerVerifyExe $packReplay -PythonExe $PythonExe -StaticBundleScript $staticBundleScript -StaticBundleDir $StaticBundleDir -GameExePath $exePath -ModStatePath $ModStatePath -DlcStatePath $DlcStatePath -LoadOrderPath $LoadOrderPath -SourceInventoryPath $SourceInventoryPath -LiveResolutionReportPath $LiveResolutionReportPath -CapturePlanPath $planPath -SpeedRootGatePath $SpeedRootGatePath -CollectorControlPath $collectorControlPath -SpeedMonitorPath $speedLog -SpeedStreamVerifier $speedStreamVerifier -SpeedEvidenceTranscriptPath $SpeedEvidenceTranscriptPath -SpeedEvidenceNonceLedgerRoot $SpeedEvidenceNonceLedgerRoot -SpeedEvidenceVerifier $speedEvidenceVerifier -ExpectedSpeedEvidenceVerifierSha256 $expectedSpeedEvidenceVerifierSha -ExpectedSpeedEvidenceProbeSha256 $expectedSpeedEvidenceProbeSha -ExpectedSpeedStaticDisasmSha256 $SpeedStaticDisasmSha256 -ToolTimeoutSeconds $MaxFinalizeSeconds -CancellationGraceSeconds $CancellationGraceSeconds
-    $validation | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $validationReportPath -Encoding UTF8
+    Write-AtomicJson -Path $validationReportPath -Value $validation -Depth 8
     if (-not $validation.ok) { throw "production validation failed: $($validation.problems -join ', ')" }
     $sinkReconciliationReport = Join-Path $OutDir "sink_reconciliation_verification.json"
     $sinkGate = Invoke-IndependentCaptureGate -Name "verify_sink_reconciliation" -FilePath $PythonExe -Arguments @($sinkReconciliationVerifier,"--run-dir",$OutDir,"--expect","success","--out",$sinkReconciliationReport) -LogDir (Join-Path $OutDir "sink_reconciliation_logs") -TimeoutSeconds $MaxFinalizeSeconds -CancellationGraceSeconds $CancellationGraceSeconds

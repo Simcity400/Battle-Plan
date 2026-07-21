@@ -97,6 +97,7 @@ COUNTRY_POLITICS_IDEOLOGIES = frozenset((
     "neutrality",
 ))
 COUNTRY_POLITICS_PAYLOAD_KEYS = frozenset((
+    "capital_state",
     "popularities",
     "ruling_party",
     "leader",
@@ -118,6 +119,7 @@ COUNTRY_POLITICS_PAYLOAD_KEYS = frozenset((
     "appointed_advisor_ledgers",
 ))
 COUNTRY_POLITICS_LIVE_PAYLOAD_KEYS = frozenset((
+    "capital_state",
     "popularities",
     "ruling_party",
     "leader",
@@ -143,6 +145,7 @@ COUNTRY_POLITICS_RESIDUAL_PAYLOAD_KEYS = frozenset((
 COUNTRY_POLITICS_MAX_IDEAS = 400
 COUNTRY_POLITICS_MAX_LAWS = 32
 COUNTRY_POLITICS_MAX_TOKEN_LENGTH = 160
+COUNTRY_CAPITAL_STATE_ID_MAX = 65_535
 COUNTRY_LEADER_CHAR_ID_MAX = 10_000_000
 COUNTRY_LEADER_NAME_MAX_LENGTH = 256
 COUNTRY_LEADER_PAYLOAD_KEYS = frozenset((
@@ -3978,9 +3981,14 @@ def _validate_country_rows(countries: Dict[str, Any]) -> List[str]:
                 problems.append(f"collector frame country {tag!r}.identity not dict|null")
                 continue
             original_capital = identity.get("original_capital")
-            if original_capital is not None and not isinstance(original_capital, int):
+            if original_capital is not None and not _valid_bounded_int(
+                original_capital,
+                minimum=1,
+                maximum=COUNTRY_CAPITAL_STATE_ID_MAX,
+            ):
                 problems.append(
-                    f"collector frame country {tag!r}.identity.original_capital not int|null")
+                    f"collector frame country {tag!r}.identity.original_capital "
+                    "not int in range|null")
             tag_db_id = identity.get("tag_db_id")
             if tag_db_id is not None and not isinstance(tag_db_id, int):
                 problems.append(
@@ -4297,6 +4305,16 @@ def _validate_country_rows(countries: Dict[str, Any]) -> List[str]:
                 if not any(key in politics for key in COUNTRY_POLITICS_PAYLOAD_KEYS):
                     problems.append(
                         f"collector frame country {tag!r}.politics has no measured leaves")
+                capital_state = politics.get("capital_state")
+                if capital_state is not None and not _valid_bounded_int(
+                    capital_state,
+                    minimum=1,
+                    maximum=COUNTRY_CAPITAL_STATE_ID_MAX,
+                ):
+                    problems.append(
+                        f"collector frame country {tag!r}.politics.capital_state "
+                        "not int in range|null"
+                    )
                 popularities = politics.get("popularities")
                 if popularities is not None:
                     if not isinstance(popularities, dict):
@@ -5887,6 +5905,13 @@ def _fold_country_politics(
         if not isinstance(politics_payload, dict):
             continue
         clean: Dict[str, Any] = {}
+        capital_state = politics_payload.get("capital_state")
+        if _valid_bounded_int(
+            capital_state,
+            minimum=1,
+            maximum=COUNTRY_CAPITAL_STATE_ID_MAX,
+        ):
+            clean["capital_state"] = capital_state
         popularities = politics_payload.get("popularities")
         if isinstance(popularities, dict):
             clean_popularities: Dict[str, float] = {}

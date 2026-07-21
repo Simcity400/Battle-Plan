@@ -531,10 +531,16 @@ pub fn run(
             // Validate capture-independent production authority on every
             // displayed hour, even while a named pixel carrier is omitted.
             // This consumes neither a debug capture nor a blank fallback.
-            let production_plan = production_map.prepare_frame(
+            let production_plan = production_map.prepare_frame_with_rail(
                 world_frame
                     .as_deref()
                     .and_then(replay_core::WorldFrame::production_render),
+                world_frame
+                    .as_deref()
+                    .map(replay_core::WorldFrame::rail_replay),
+                world_frame
+                    .as_deref()
+                    .map(replay_core::WorldFrame::production_by_country),
             )?;
             // Product playback validates the complete typed D3D carrier even
             // when no authenticated pixel route is executable. This is a
@@ -983,6 +989,7 @@ mod product_production_d3d_tests {
             draw_token: "test.product_route.solid_red".into(),
             shader_program: ShaderProgram {
                 source,
+                producer_registration_root_rva: None,
                 effect_token: "test.solid_red".into(),
                 vertex_entry_token: "vs_main".into(),
                 pixel_entry_token: "ps_main".into(),
@@ -1144,6 +1151,7 @@ mod product_production_d3d_tests {
                 ordered_operations: vec![operation],
                 payload_sha256: "44".repeat(32),
             }],
+            rail_ribbon: None,
             mapname_d80_state: replay_core::MapnameD80State::Missing,
             tree_runtime: None,
             tree_materialized_execution_sha256: None,
@@ -1152,6 +1160,7 @@ mod product_production_d3d_tests {
             m02_combat: None,
             authenticated_ui_pass: None,
             m03_arrows: None,
+            rail_supply_arrows: None,
             omissions: Vec::new(),
         }
     }

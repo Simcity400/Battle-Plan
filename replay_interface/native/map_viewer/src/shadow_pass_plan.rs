@@ -10,7 +10,9 @@ use crate::light_depth_projection::{
     L03LightDepthProjection, L03LightDepthTarget, L03_LIGHT_DEPTH_DXGI_FORMAT,
     L03_LIGHT_DEPTH_HEIGHT, L03_LIGHT_DEPTH_MIP_LEVELS, L03_LIGHT_DEPTH_WIDTH,
 };
-use crate::shadow_law::{shadow_blur_constant_buffers, ShadowBlurConstantBuffers};
+use crate::shadow_law::{
+    shadow_blur_constant_buffers_from_factor, ShadowBlurConstantBuffers,
+};
 use crate::Result;
 use serde::{Deserialize, Serialize};
 
@@ -80,24 +82,24 @@ fn validate_screen_target(target: &ShadowScreenTarget, label: &str) -> Result<()
 
 /// Join an admitted L03 projection to the exact screen-shadow ping-pong chain.
 ///
-/// A zero-fade L03 result emits no S1 chain, matching all 68 retained W23
+/// An inactive L03 result emits no S1 chain, matching all 68 retained W23
 /// skips. An active result requires two distinct, descriptor-identical screen
 /// targets. The terrain-unlit producer writes the first target, horizontal blur
 /// writes the second, and vertical blur writes back to the first; that first
 /// target is therefore the resource consumed by main terrain and later passes.
 pub fn plan_s1_shadow_screen_chain(
     projection: &L03LightDepthProjection,
-    camera_y_f32_bits: Option<u32>,
+    blur_camera_factor_f32_bits: Option<u32>,
     producer_and_final_target: Option<ShadowScreenTarget>,
     blur_intermediate_target: Option<ShadowScreenTarget>,
 ) -> Result<Option<ShadowScreenChainPlan>> {
-    if projection.zero_fade_excluded {
+    if projection.inactive_excluded {
         if projection.selected_light.is_some()
             || projection.light_depth_target.is_some()
             || !projection.submissions.is_empty()
         {
             return Err(fail(
-                "S1 shadow chain blocked: zero-fade L03 projection contains active shadow work",
+                "S1 shadow chain blocked: inactive L03 projection contains active shadow work",
             ));
         }
         return Ok(None);
@@ -121,12 +123,9 @@ pub fn plan_s1_shadow_screen_chain(
             "S1 shadow chain blocked: active L03 light-depth descriptor is not admitted",
         ));
     }
-    let camera_y_bits = camera_y_f32_bits
-        .ok_or_else(|| fail("S1 shadow chain blocked: active frame camera_y bits are missing"))?;
-    let camera_y = f32::from_bits(camera_y_bits);
-    if !camera_y.is_finite() {
-        return Err(fail("S1 shadow chain blocked: active frame camera_y is not finite"));
-    }
+    let blur_camera_factor = f32::from_bits(blur_camera_factor_f32_bits.ok_or_else(|| {
+        fail("S1 shadow chain blocked: active frame blur camera factor is missing")
+    })?);
     let producer = producer_and_final_target.ok_or_else(|| {
         fail("S1 shadow chain blocked: producer/final screen target is missing")
     })?;
@@ -155,7 +154,11 @@ pub fn plan_s1_shadow_screen_chain(
     let ShadowBlurConstantBuffers {
         horizontal_f32_bits,
         vertical_f32_bits,
-    } = shadow_blur_constant_buffers(camera_y, producer.width, producer.height)?;
+    } = shadow_blur_constant_buffers_from_factor(
+        blur_camera_factor,
+        producer.width,
+        producer.height,
+    )?;
     let passes = vec![
         ShadowScreenPassPlan {
             kind: ShadowScreenPassKind::TerrainUnlitProducer,
@@ -200,7 +203,7 @@ mod tests {
                 dxgi_format: 41,
                 mip_levels: 1,
             }),
-            zero_fade_excluded: false,
+            inactive_excluded: false,
             excluded_particle_rows: 0,
             submissions: Vec::new(),
         }
@@ -221,7 +224,7 @@ mod tests {
     fn gate_s1_plan_preserves_exact_ping_pong_order() {
         let plan = plan_s1_shadow_screen_chain(
             &active_projection(),
-            Some(50.000_007_629_394_53f32.to_bits()),
+            Some((50.000_007_629_394_53f32 / 700.0).to_bits()),
             Some(screen_target("screen-a")),
             Some(screen_target("screen-b")),
         )
@@ -251,11 +254,11 @@ mod tests {
     }
 
     #[test]
-    fn gate_s1_plan_skips_exact_zero_fade_and_rejects_aliasing() {
+    fn gate_s1_plan_skips_exact_inactive_pass_and_rejects_aliasing() {
         let skipped = L03LightDepthProjection {
             selected_light: None,
             light_depth_target: None,
-            zero_fade_excluded: true,
+            inactive_excluded: true,
             excluded_particle_rows: 0,
             submissions: Vec::new(),
         };
@@ -264,7 +267,7 @@ mod tests {
             .is_none());
         assert!(plan_s1_shadow_screen_chain(
             &active_projection(),
-            Some(50.0f32.to_bits()),
+            Some((50.0f32 / 700.0).to_bits()),
             Some(screen_target("same")),
             Some(screen_target("same")),
         )

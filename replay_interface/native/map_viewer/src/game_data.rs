@@ -737,12 +737,9 @@ pub(crate) fn terrain_source_meta(
         index_to_texture_id: terrain_texture_map.clone(),
         terrain_index_counts,
         unmapped_index_counts,
-        implemented_parity_level: "base_lod_single_id_no_terrain_idmap".to_string(),
+        implemented_parity_level:
+            "terrain_idmap_four_id_atlas_mip_law_capture_gated_runtime_lighting".to_string(),
         generated_runtime_gaps: vec![
-            "TerrainIDMap packing/generation".to_string(),
-            "MAP_POW2_X/Y runtime values".to_string(),
-            "mipmapLevel GPU derivatives".to_string(),
-            "four-way terrain ID blending".to_string(),
             "SnowMudData runtime texture".to_string(),
             "LightIndexMap/LightDataMap runtime textures".to_string(),
             "ShadowMap runtime texture".to_string(),
@@ -1137,13 +1134,16 @@ pub(crate) fn parse_shader_float3_constant(text: &str, key: &str) -> Option<[f32
 
 pub(crate) fn generated_runtime_material_inputs() -> BTreeMap<String, GeneratedRuntimeInput> {
     let mut inputs = BTreeMap::new();
+    inputs.insert(
+        "terrain_id_map".to_string(),
+        GeneratedRuntimeInput {
+            shader_symbols: vec!["TerrainIDMap".to_string()],
+            consumers: vec!["gfx/FX/pdxmap.shader".to_string()],
+            status: "resolver_derived_capture_validated_input".to_string(),
+            reason: "TerrainIDMap RGBA packing is derived from resolver-read map/terrain.bmp plus common/terrain texture IDs and byte-validates against the bound captured resource; exact shader point/clamp sampling and four-ID material blending are implemented.".to_string(),
+        },
+    );
     for (name, symbols, consumers, reason) in [
-        (
-            "terrain_id_map",
-            &["TerrainIDMap"][..],
-            &["gfx/FX/pdxmap.shader"][..],
-            "Engine-packed terrain ID texture generation is not present in shipped source files.",
-        ),
         (
             "river_data",
             &["RiverData"][..],
@@ -1939,7 +1939,7 @@ set_cosmetic_tag = RAJ_UK\n";
     }
 
     #[test]
-    fn unmapped_terrain_indices_are_explicit_gaps() {
+    fn unmapped_terrain_indices_remain_explicit_after_terrain_law_promotion() {
         let terrain_indices = IndexImage {
             width: 3,
             height: 2,
@@ -1955,9 +1955,9 @@ set_cosmetic_tag = RAJ_UK\n";
         assert_eq!(meta.unmapped_index_counts.get(&99), Some(&1));
         assert_eq!(
             meta.implemented_parity_level,
-            "base_lod_single_id_no_terrain_idmap"
+            "terrain_idmap_four_id_atlas_mip_law_capture_gated_runtime_lighting"
         );
-        assert!(meta
+        assert!(!meta
             .generated_runtime_gaps
             .iter()
             .any(|gap| gap.contains("TerrainIDMap")));
@@ -1966,8 +1966,11 @@ set_cosmetic_tag = RAJ_UK\n";
     #[test]
     fn generated_shader_inputs_are_blocked_in_contract() {
         let inputs = generated_runtime_material_inputs();
+        assert_eq!(
+            inputs["terrain_id_map"].status,
+            "resolver_derived_capture_validated_input"
+        );
         for key in [
-            "terrain_id_map",
             "river_data",
             "gradient_border_channels",
             "water_refraction",

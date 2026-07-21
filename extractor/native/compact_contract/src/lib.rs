@@ -24,6 +24,10 @@ pub mod first_compact_ack;
 pub mod identity_control;
 pub mod national_focus_presentation;
 pub mod naval_history;
+pub mod preferred_tactic;
+pub mod pov_visibility;
+pub mod spotted_units;
+pub mod tactic_weight;
 pub mod rail_replay;
 pub mod raid_instances;
 pub mod record_header;
@@ -1478,6 +1482,71 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         true,
         &[],
     ),
+    // E25 (2026-07-21): exact CCountry+0x15D0 preferred-tactic definition,
+    // reduced to the authenticated database id and stable definition token.
+    // PTC1 is a complete pointer-free country snapshot with exact none
+    // semantics and embedded executable/static-evidence receipts.
+    domain(
+        92,
+        "country_preferred_tactic_live",
+        "country_preferred_tactic_live",
+        CompactDomainStatus::ProductionComplete,
+        true,
+        true,
+        &[],
+    ),
+    // E20 exact-a729 CCountry+0xF80 CArmyUpgradesStatus snapshot. AUR1
+    // authenticates the executable plus request/delivery/pool/CArmy evidence,
+    // uses CArmy persistent IDs as group identity, and preserves all fixed-5
+    // request, total, delivery-progress, and produced-amount integers.
+    domain(
+        93,
+        "country_army_upgrade_requests_live",
+        "country_army_upgrade_requests_live",
+        CompactDomainStatus::ProductionComplete,
+        true,
+        true,
+        &[],
+    ),
+    // G3 (2026-07-21): exact current-selected-POV province-intel vector.
+    // FOW1 preserves the complete raw u8 vector indexed by province database
+    // ID. Unit spotting remains a separate identity domain and is not
+    // fabricated from these graded province bytes.
+    domain(
+        94,
+        "pov_province_visibility_live",
+        "pov_province_visibility_live",
+        CompactDomainStatus::ProductionComplete,
+        true,
+        true,
+        &[],
+    ),
+    // G3 (2026-07-21): exact current-POV land and task-force map producer
+    // frames. SPU1 retains the engine's pointer-free CUnit reference pair and
+    // raw graded intel byte; air-wing spotting is deliberately not inferred.
+    domain(
+        95,
+        "pov_spotted_units_live",
+        "pov_spotted_units_live",
+        CompactDomainStatus::ProductionComplete,
+        true,
+        true,
+        &[],
+    ),
+    // E25 (2026-07-21): exact selected-tactic probability inputs. PTW1 joins
+    // the current-hour D18 roster and D92 selection snapshot, preserving the
+    // signed fixed-five country factor and per-country modifier accumulator
+    // result used by the land-combat weight consumer. Runtime pointers never
+    // enter the carrier; tactic database id plus token is portable identity.
+    domain(
+        96,
+        "country_preferred_tactic_weight_live",
+        "country_preferred_tactic_weight_live",
+        CompactDomainStatus::ProductionComplete,
+        true,
+        true,
+        &[],
+    ),
     domain(
         1000,
         "frame",
@@ -1662,7 +1731,8 @@ mod tests {
             1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32,
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
             55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76,
-            77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 1000,
+            77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96,
+            1000,
         ];
         for id in expected {
             assert!(

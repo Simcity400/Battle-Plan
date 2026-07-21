@@ -525,6 +525,56 @@ class TestValidator(unittest.TestCase):
     def test_d48_building_sidecars_validate(self):
         self.assertEqual(schema.validate_snapshot(self._d48_building_snapshot()), [])
 
+    def _d48_railway_snapshot(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        country = schema.empty_country()
+        country["production"]["construction_buildings_state_damage_live"] = {
+            "source": "C",
+            "railway_construction_authority": {
+                "schema": "RLC1",
+                "binary": "hoi4.exe 1.19.2.0.a729",
+                "executable_sha256": schema.RAILWAY_CONSTRUCTION_EXECUTABLE_SHA256,
+                "line_type": 4713,
+                "vtable_rva": "0x02A15130",
+                "fixed_point_divisor": 100000,
+                "pause_state":
+                    "derived_from_current_edge_access_and_combat_not_stored_cooldown",
+            },
+            "railway_construction_lines": [{
+                "line_id": 135764,
+                "queue_index": 1,
+                "active_factories": 15,
+                "cost_raw": 448000000,
+                "produced_raw": 231350000,
+                "created_date_raw": 60827637,
+                "base_level": 2,
+                "target_level": 3,
+                "completion_flag": False,
+                "current_segment_index": 3,
+                "remaining_hours_raw": 216650000,
+                "remaining_hours": 2166.5,
+                "route_province_ids": [
+                    9422, 11408, 9564, 3539, 11485, 9436, 3582, 9504, 3529,
+                ],
+            }],
+        }
+        snap["countries"] = {"GER": country}
+        return snap
+
+    def test_wave6_d48_rlc1_railway_sidecar_validates_exact_authority(self):
+        self.assertEqual(schema.validate_snapshot(self._d48_railway_snapshot()), [])
+
+    def test_wave6_d48_rlc1_rejects_torn_index_or_authority(self):
+        snap = self._d48_railway_snapshot()
+        sidecar = snap["countries"]["GER"]["production"][
+            "construction_buildings_state_damage_live"
+        ]
+        sidecar["railway_construction_authority"]["vtable_rva"] = "0x0"
+        sidecar["railway_construction_lines"][0]["current_segment_index"] = 8
+        problems = schema.validate_snapshot(snap)
+        self.assertTrue(any("RLC1 authority mismatch" in problem for problem in problems))
+        self.assertTrue(any("current_segment_index outside route" in problem for problem in problems))
+
     def test_d48_building_sidecars_reject_incoherent_or_invented_rows(self):
         snap = self._d48_building_snapshot()
         state_buildings = snap["states"]["42"][

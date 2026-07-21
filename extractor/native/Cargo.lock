@@ -118,6 +118,7 @@ dependencies = [
  "characters_leaders_cabinet_live",
  "compact_contract",
  "construction_buildings_state_damage_live",
+ "country_army_upgrade_requests_live_lane",
  "country_dynamic_modifiers_live_lane",
  "decision_panel_live_lane",
  "design_catalog_context_live_lane",
@@ -126,6 +127,7 @@ dependencies = [
  "dynamic_collection_trace_live_lane",
  "fired_event_popups_live_lane",
  "focus_research_decisions_depth_live",
+ "fow_visibility_live",
  "hub_motorization_live_lane",
  "hud_role_observer_live_lane",
  "land_combat_detail_events_live_lane",
@@ -146,7 +148,9 @@ dependencies = [
  "serde_json",
  "session_multiplayer_metadata_live",
  "sha2",
+ "spotted_units_live",
  "sunk_ship_history_live_lane",
+ "supply_logistics_attrition_live_lane",
 ]
 
 [[package]]
@@ -186,6 +190,10 @@ dependencies = [
  "serde_json",
  "snapshot",
 ]
+
+[[package]]
+name = "country_army_upgrade_requests_live_lane"
+version = "0.1.0"
 
 [[package]]
 name = "country_dynamic_modifiers_live_lane"
@@ -397,6 +405,15 @@ dependencies = [
  "replay_decoder",
  "serde_json",
  "snapshot",
+]
+
+[[package]]
+name = "fow_visibility_live"
+version = "0.1.0"
+dependencies = [
+ "compact_contract",
+ "minhook",
+ "windows-sys",
 ]
 
 [[package]]
@@ -745,12 +762,14 @@ dependencies = [
  "compact_contract",
  "compact_stream",
  "construction_buildings_state_damage_live",
+ "country_army_upgrade_requests_live_lane",
  "decision_panel_live_lane",
  "design_catalog_context_live_lane",
  "diplomacy_intel_operatives_live",
  "direct_frd_transitions_live",
  "dynamic_collection_trace_live_lane",
  "fired_event_popups_live_lane",
+ "fow_visibility_live",
  "hub_motorization_live_lane",
  "hud_role_observer_live_lane",
  "land_combat_detail_events_live_lane",
@@ -773,7 +792,9 @@ dependencies = [
  "session_multiplayer_metadata_live",
  "sha2",
  "snapshot",
+ "spotted_units_live",
  "sunk_ship_history_live_lane",
+ "supply_logistics_attrition_live_lane",
  "zip",
 ]
 
@@ -919,6 +940,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "spotted_units_live"
+version = "0.1.0"
+dependencies = [
+ "compact_contract",
+ "minhook",
+ "windows-sys",
+]
+
+[[package]]
 name = "sunk_ship_history_live_lane"
 version = "0.1.0"
 dependencies = [
@@ -933,8 +963,10 @@ name = "supply_logistics_attrition_live_lane"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
+ "minhook",
  "serde_json",
  "snapshot",
+ "windows-sys",
 ]
 
 [[package]]

@@ -3993,6 +3993,7 @@ mod tests {
                 content_identity_sha256,
                 shader_program: ShaderProgram {
                     source: content("gfx/fx/particle.shader", "3f".repeat(32)),
+                    producer_registration_root_rva: None,
                     effect_token: "ParticleAdditive".into(),
                     vertex_entry_token: "VertexSimpleParticle".into(),
                     pixel_entry_token: "PixelSimpleParticle".into(),
@@ -4203,6 +4204,7 @@ mod tests {
             Ok(RawProgramIdentity {
                 observation_sequence: draw.final_draw_sequence,
                 shader_program_ptr: draw.shader_program_ptr,
+                registration_root_rva: MAP_EFFECT_REGISTRATION_ROOT_RVA,
                 source: observed_vfs("gfx/fx/mod_particle.shader", 0x31),
                 effect_token: "mod_effect".into(),
                 vertex_entry_token: "VSMain".into(),
@@ -5161,6 +5163,7 @@ mod tests {
             program_identity: RawProgramIdentity {
                 observation_sequence: 7,
                 shader_program_ptr: 0x1000,
+                registration_root_rva: MAP_EFFECT_REGISTRATION_ROOT_RVA,
                 source: content.clone(),
                 effect_token: "engine-observed-effect".into(),
                 vertex_entry_token: "VS".into(),

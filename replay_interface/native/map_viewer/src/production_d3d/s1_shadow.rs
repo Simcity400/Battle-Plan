@@ -72,7 +72,7 @@ pub fn validate_s1_shadow_execution(
             }
             Ok(())
         }
-        _ => Err("prepared S1 zero-fade/execution seal nullability mismatch".into()),
+        _ => Err("prepared S1 inactive/execution seal nullability mismatch".into()),
     }
 }
 
@@ -88,18 +88,18 @@ fn build_plan(carrier: &S1ShadowCarrier) -> Result<Option<ShadowScreenChainPlan>
         .map(portable_screen_target);
     plan_s1_shadow_screen_chain(
         &projection,
-        carrier.camera_y_f32_bits,
+        Some(carrier.blur_camera_factor_f32_bits),
         producer,
         intermediate,
     )
 }
 
 fn portable_projection(carrier: &S1ShadowCarrier) -> Result<L03LightDepthProjection> {
-    if carrier.is_zero_fade() {
+    if carrier.is_inactive() {
         return Ok(L03LightDepthProjection {
             selected_light: None,
             light_depth_target: None,
-            zero_fade_excluded: true,
+            inactive_excluded: true,
             excluded_particle_rows: 0,
             submissions: Vec::new(),
         });
@@ -129,7 +129,7 @@ fn portable_projection(carrier: &S1ShadowCarrier) -> Result<L03LightDepthProject
             dxgi_format: light.dxgi_format_u32,
             mip_levels: light.mip_levels,
         }),
-        zero_fade_excluded: false,
+        inactive_excluded: false,
         excluded_particle_rows: 0,
         submissions,
     })
@@ -144,12 +144,36 @@ fn portable_submission(row: &S1LightDepthSubmission) -> Result<L03LightDepthSubm
         }
         S1ShadowPipeline::TreeShadow => L03ShadowPipeline::TreeShadow,
     };
-    let map_draw = |draw: replay_core::S1DrawArguments| L03DrawArguments {
-        index_count: draw.index_count,
-        start_index: draw.start_index,
-        base_vertex: draw.base_vertex,
-        instance_count: draw.instance_count,
-        start_instance: draw.start_instance,
+    let map_draw = |draw: replay_core::S1DrawArguments| match draw {
+        replay_core::S1DrawArguments::Draw {
+            vertex_count,
+            start_vertex,
+        } => L03DrawArguments::Draw {
+            vertex_count,
+            start_vertex,
+        },
+        replay_core::S1DrawArguments::DrawIndexed {
+            index_count,
+            start_index,
+            base_vertex,
+        } => L03DrawArguments::DrawIndexed {
+            index_count,
+            start_index,
+            base_vertex,
+        },
+        replay_core::S1DrawArguments::DrawIndexedInstanced {
+            index_count_per_instance,
+            instance_count,
+            start_index,
+            base_vertex,
+            start_instance,
+        } => L03DrawArguments::DrawIndexedInstanced {
+            index_count_per_instance,
+            instance_count,
+            start_index,
+            base_vertex,
+            start_instance,
+        },
     };
     Ok(match row {
         S1LightDepthSubmission::Pdxmesh {
@@ -168,6 +192,7 @@ fn portable_submission(row: &S1LightDepthSubmission) -> Result<L03LightDepthSubm
             partition_mask: *partition_mask,
             stable_typed_upstream_id: stable_typed_upstream_id.clone(),
             owner: match owner {
+                S1TypedOwner::GenericPdxmesh => L03TypedOwner::GenericPdxmesh,
                 S1TypedOwner::M01Unit => L03TypedOwner::M01Unit,
                 S1TypedOwner::O04City => L03TypedOwner::O04City,
                 S1TypedOwner::O05StaticFixed => L03TypedOwner::O05StaticFixed,
@@ -358,7 +383,7 @@ fn materialized_execution_sha256(
 }
 
 fn carrier_execution_chain(carrier: &S1ShadowCarrier) -> Result<Vec<&RenderExecutionRef>> {
-    if carrier.is_zero_fade() {
+    if carrier.is_inactive() {
         return Ok(Vec::new());
     }
     let mut chain = Vec::new();
@@ -418,14 +443,15 @@ mod tests {
         S1_L03_AUTHORITY_SHA256, S1_SHADOW_SCHEMA,
     };
 
-    fn zero_fade_carrier() -> S1ShadowCarrier {
+    fn inactive_carrier() -> S1ShadowCarrier {
         let mut carrier = S1ShadowCarrier {
             schema: S1_SHADOW_SCHEMA.into(),
             executable_sha256: S1_A729_EXECUTABLE_SHA256.into(),
             l02_authority_sha256: S1_L02_AUTHORITY_SHA256.into(),
             l03_authority_sha256: S1_L03_AUTHORITY_SHA256.into(),
             s1_chain_authority_sha256: S1_CHAIN_AUTHORITY_SHA256.into(),
-            shadow_fade_factor_f32_bits: 0.0f32.to_bits(),
+            shadow_pass_active: false,
+            blur_camera_factor_f32_bits: 0.0f32.to_bits(),
             selected_light: None,
             light_view_projection_f32_bits: None,
             shadow_map_texture_matrix_f32_bits: None,
@@ -447,8 +473,8 @@ mod tests {
     }
 
     #[test]
-    fn zero_fade_carrier_builds_an_exact_skip_plan() {
-        let carrier = zero_fade_carrier();
+    fn inactive_carrier_builds_an_exact_skip_plan() {
+        let carrier = inactive_carrier();
         assert!(build_plan(&carrier).unwrap().is_none());
         assert!(carrier_execution_chain(&carrier).unwrap().is_empty());
     }

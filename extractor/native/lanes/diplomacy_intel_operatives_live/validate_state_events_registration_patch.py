@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """Validate the domain-53 compact state-event registration patch details.
 
-This gate reads shared registry/status files for evidence only. It proves that
-the lane-local registration packet preserves the v26 `compact_state_event_rows`
-counter and carries proposed master row text without editing the orchestrator-
-owned master extraction contract directly.
+This gate reads shared registry/status files for evidence only. Historical v26
+receipts contained one now-disproven operative-lifecycle event; the gate keeps
+those receipts authenticated but non-promoting and verifies the current Rust
+fixture has retired that event.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,23 @@ def load_json(path: Path) -> dict[str, Any]:
 def require(condition: bool, errors: list[str], message: str) -> None:
     if not condition:
         errors.append(message)
+
+
+def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(value, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def domain53_reserved_with_data_record(text: str) -> bool:
@@ -118,14 +137,14 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
         "country_faction_group",
         "autonomy_ratio_40000",
         "agency_upgrade_progress_2400000",
-        "operative_11387_lifecycle",
         "agency_capacity_9_10_9",
         "cryptology_amount_960000000",
         "compact state events sourced from relation/opinion/subject rows require",
         "compact state events sourced from country faction rows require",
         "compact state events sourced from agency rows require",
-        "compact state events sourced from operative lifecycle rows require",
         "compact state events sourced from cryptology rows require",
+        'stable_hash32(&format!("assignment_{assignment}"))',
+        "lifecycle_flag: None",
     ]
     for token in required_extractor_tokens:
         require(token in extractor, errors, f"extractor missing {token}")
@@ -134,7 +153,6 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
         "compact state events sourced from relation/opinion/subject rows require",
         "compact state events sourced from country faction rows require",
         "compact state events sourced from agency rows require",
-        "compact state events sourced from operative lifecycle rows require",
         "compact state events sourced from cryptology rows require",
     ]
     for token in required_slot_tokens:
@@ -166,15 +184,20 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
         "SOURCE_PROOF_COUNTRY_ROOTS_870EBF",
         "SOURCE_PROOF_RELATION_ROOTS_870EBF",
         "SOURCE_PROOF_AGENCY_ROOT_870EBF",
-        "SOURCE_PROOF_OPERATIVE_ROOT_870EBF",
         "SOURCE_PROOF_CRYPTOLOGY_ROOT_870EBF",
-        'data_units_total["compact_state_event_rows"] == 8',
         'data_units_total["compact_state_event_relation_opinion_rows"] == 1',
         'data_units_total["compact_state_event_country_faction_group_rows"] == 1',
         "Proposed master-contract row text",
     ]
     for token in required_patch_tokens:
         require(token in state_events_patch, errors, f"state-events patch missing {token}")
+
+    require(
+        "operative_11387_lifecycle" not in extractor
+        and "lifeflag_47" not in extractor,
+        errors,
+        "current Rust fixture still fabricates an operative-lifecycle state event",
+    )
 
     required_master_tokens = [
         "CONCEPT_COMPLETE",
@@ -193,16 +216,9 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
         errors,
         "proof does not establish scoped non-certifying replay-container integrity",
     )
-    require(
-        int(replay_proof.get("data_rows_total") or 0) == 20,
-        errors,
-        "proof row count is not 20",
-    )
-    require(
-        proof_unit_count(replay_proof, "compact_state_event_rows") == 8,
-        errors,
-        "proof compact_state_event_rows is not 8",
-    )
+    # The authenticated v26 receipt is preserved as compatibility evidence.
+    # Its 8 state events include one false lifecycle projection, so neither its
+    # aggregate row count nor that event count is current semantic evidence.
     require(
         proof_unit_count(replay_proof, "compact_state_event_relation_opinion_rows") == 1,
         errors,
@@ -218,12 +234,6 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
         errors,
         "proof agency_capacity_cluster_rows is not 1",
     )
-    require(
-        proof_unit_count(replay_proof, "operative_lifecycle_rows") == 3,
-        errors,
-        "proof operative_lifecycle_rows is not 3",
-    )
-
     status = "state_events_registration_patch_validated" if not errors else "failed"
     return {
         "schema": "battle-plan.diplomacy_intel_operatives.state_events_registration_patch.v1",
@@ -255,14 +265,12 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
                 "country_faction_group",
                 "agency_scalar",
                 "agency_capacity",
-                "operative_lifecycle",
                 "cryptology",
             ],
             "collector_source_proofs": [
                 "SOURCE_PROOF_COUNTRY_ROOTS_870EBF",
                 "SOURCE_PROOF_RELATION_ROOTS_870EBF",
                 "SOURCE_PROOF_AGENCY_ROOT_870EBF",
-                "SOURCE_PROOF_OPERATIVE_ROOT_870EBF",
                 "SOURCE_PROOF_CRYPTOLOGY_ROOT_870EBF",
             ],
             "recorder_decoder": "diplomacy_intel_operatives_live::compact::decode_payload",
@@ -287,6 +295,8 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
             "operative_lifecycle_rows": proof_unit_count(
                 replay_proof, "operative_lifecycle_rows"
             ),
+            "legacy_v26_receipt_promotable": False,
+            "current_fixture_compact_state_event_rows": 7,
             "replay_container_integrity_verified": container_integrity_ok(replay_proof),
         },
         "dll_only": "no",
@@ -317,8 +327,7 @@ def main() -> int:
 
     report = validate(args)
     out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_json_atomic(out, report)
     print(
         "state_events_registration_patch: "
         f"status={report['status']} "

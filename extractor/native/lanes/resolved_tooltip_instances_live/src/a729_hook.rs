@@ -24,6 +24,7 @@ use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 pub const TOOLTIP_CONTROLLER_RVA: u32 = 0x002A_4080;
 pub const TOOLTIP_EXTENT_ACCESSOR_RVA: u32 = 0x0228_F100;
+pub const TOOLTIP_FINAL_TEXT_SETTER_RVA: u32 = 0x0228_EE80;
 const TEXTBOX_VTABLE_RVA: usize = 0x02B2_B418;
 const CONTROLLER_TOOLTIP_OWNER_OFFSET: usize = 0x4E8;
 const CONTROLLER_POSITION_OFFSET: usize = 0x4E0;
@@ -33,9 +34,10 @@ const HOVER_CONTEXT_OBJECT_OFFSET: usize = 0x140;
 const VIEWPORT_WIDTH_OFFSET: usize = 0x180;
 const VIEWPORT_HEIGHT_OFFSET: usize = 0x184;
 const TEXTBOX_AUTHORED_NAME_OFFSET: usize = 0x98;
-const TEXTBOX_GRAPHICS_CHILD_OFFSET: usize = 0x88;
-const GRAPHICS_CHILD_LAYOUT_OBJECT_OFFSET: usize = 0xC8;
-const LAYOUT_OBJECT_FINAL_TEXT_OFFSET: usize = 0x188;
+// ToolTip CTextBox at +0x130 before the controller computes and commits the
+// final rectangle. Read that proved producer field instead of walking through
+// the renderer child/layout implementation.
+const TEXTBOX_FINAL_TEXT_OFFSET: usize = 0x130;
 const CGUI_TYPE_OFFSET: usize = 0x60;
 const CGUI_TYPE_NAME_OFFSET: usize = 0x28;
 const GUI_VISIBLE_FLAGS_OFFSET: usize = 0x75;
@@ -47,11 +49,14 @@ const CONTROLLER_SENTINEL: [u8; 16] = [
 const EXTENT_SENTINEL: [u8; 16] = [
     0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0x89, 0x88, 0x00, 0x00, 0x00, 0x48, 0x8B, 0xDA,
 ];
+const FINAL_TEXT_SETTER_SENTINEL: [u8; 16] = [
+    0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7C, 0x24, 0x18, 0x4C,
+];
 
 /// Exact-a729 function-evidence manifest produced by the current 20-shard
 /// broker for the controller/layout closure.
 pub const PRODUCER_MANIFEST_SHA256: [u8; 32] =
-    hex32(b"b1f2f0bc2afde8c970fd4e63dd9c969bde9744d146c4f23e9dddae4f00ba4c64");
+    hex32(b"a23b63ccefc021eeced9a1a918588d3e2fbba07e5d1afb4d53f83cc7c1640177");
 
 type ControllerFn = unsafe extern "system" fn(usize, u8);
 type ExtentFn = unsafe extern "system" fn(usize, *mut i32) -> *mut i32;
@@ -128,8 +133,14 @@ impl A729ResolvedTooltipHookOwner {
         }
         let target = base + TOOLTIP_CONTROLLER_RVA as usize;
         let extent = base + TOOLTIP_EXTENT_ACCESSOR_RVA as usize;
+        let final_text_setter = base + TOOLTIP_FINAL_TEXT_SETTER_RVA as usize;
         verify_sentinel(target, &CONTROLLER_SENTINEL, "tooltip controller")?;
         verify_sentinel(extent, &EXTENT_SENTINEL, "tooltip extent accessor")?;
+        verify_sentinel(
+            final_text_setter,
+            &FINAL_TEXT_SETTER_SENTINEL,
+            "tooltip final-text setter",
+        )?;
         let epoch = INSTALL_EPOCH
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                 value.checked_add(1)
@@ -537,14 +548,12 @@ fn snapshot_values(controller: usize) -> Result<SnapshotResult, String> {
     if extent[0] <= 0 || extent[1] <= 0 || viewport[0] <= 0 || viewport[1] <= 0 {
         return Err("tooltip extent or viewport is nonpositive".into());
     }
-    let graphics_child = read_usize(owner + TEXTBOX_GRAPHICS_CHILD_OFFSET)
-        .ok_or_else(|| "tooltip graphics child unreadable".to_string())?;
-    let layout = read_usize(graphics_child + GRAPHICS_CHILD_LAYOUT_OBJECT_OFFSET)
-        .ok_or_else(|| "tooltip layout object unreadable".to_string())?;
-    let final_resolved_text = read_engine_string(layout + LAYOUT_OBJECT_FINAL_TEXT_OFFSET)
+    let final_resolved_text = read_engine_string(owner + TEXTBOX_FINAL_TEXT_OFFSET)
         .and_then(|bytes| String::from_utf8(bytes).ok())
         .filter(|text| !text.is_empty())
-        .ok_or_else(|| "visible tooltip final post-layout text unreadable or empty".to_string())?;
+        .ok_or_else(|| {
+            "visible tooltip CTextBox final post-layout text unreadable or empty".to_string()
+        })?;
     let hovered_element_authored_name = hovered_type_name(controller)
         .ok_or_else(|| "tooltip hovered authored CGuiType name unreadable".to_string())?;
     Ok(SnapshotResult::Visible {

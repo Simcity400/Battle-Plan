@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 pub const EVIDENCE_OUT_DIR_ENV: &str = "BATTLE_PLAN_A25_GUI_BRIDGE_EVIDENCE_OUT_DIR";
 pub const GUI_LIST_CONSUMER_RVA: usize = 0x0222_8C20;
 pub const INSTANT_TEXT_RENDER_RVA: usize = 0x022D_8350;
+pub const UNITS_STACK_UPDATE_RVA: usize = 0x018F_FE60;
+pub const GENERIC_SPRITE_RENDER_RVA: usize = 0x022E_95C0;
 pub const PRODUCT_PROMOTION_ENABLED: bool = false;
 
 const GUI_LIST_CONSUMER_SENTINEL: [u8; 16] = [
@@ -25,13 +27,25 @@ const INSTANT_TEXT_RENDER_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20,
     0x57,
 ];
+const UNITS_STACK_UPDATE_SENTINEL: [u8; 16] = [
+    0x44, 0x88, 0x4C, 0x24, 0x20, 0x44, 0x88, 0x44, 0x24, 0x18, 0x55, 0x53, 0x41, 0x55, 0x41,
+    0x56,
+];
+const GENERIC_SPRITE_RENDER_SENTINEL: [u8; 16] = [
+    0x48, 0x8B, 0xC4, 0x48, 0x89, 0x68, 0x18, 0x56, 0x57, 0x41, 0x56, 0x48, 0x81, 0xEC, 0xB0,
+    0x00,
+];
 const MAX_LIST_NODES: usize = 1_048_576;
 const MAX_CAPTURED_NODES_PER_PRESENT: usize = 262_144;
 const MAX_LISTS_PER_PRESENT: usize = 16_384;
 const MAX_DRAWS_PER_OWNER_RUN: usize = 65_536;
+const MAX_COUNTER_OWNER_PATHS: usize = 65_536;
+const MAX_GRAPHICAL_ANCESTRY_DEPTH: usize = 64;
 
 static ORIGINAL_GUI_LIST_CONSUMER: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_INSTANT_TEXT_RENDER: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_UNITS_STACK_UPDATE: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_GENERIC_SPRITE_RENDER: AtomicUsize = AtomicUsize::new(0);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 static CALLBACKS_OPEN: AtomicBool = AtomicBool::new(false);
 static IN_FLIGHT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
@@ -39,6 +53,7 @@ static NEXT_LIST_INVOCATION: AtomicU64 = AtomicU64::new(1);
 static NEXT_DIAGNOSTIC_DRAW_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static STATE: OnceLock<Mutex<BridgeState>> = OnceLock::new();
 static TARGETS: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
+static COUNTER_OWNER_PATHS: OnceLock<Mutex<BTreeMap<usize, CounterOwnerPath>>> = OnceLock::new();
 
 thread_local! {
     static LIST_STACK: RefCell<Vec<ActiveListTls>> = const { RefCell::new(Vec::new()) };
@@ -47,6 +62,9 @@ thread_local! {
 
 type GuiListConsumerFn = unsafe extern "system" fn(usize, usize);
 type InstantTextRenderFn = unsafe extern "system" fn(usize, usize, usize, usize);
+type UnitsStackUpdateFn = unsafe extern "system" fn(usize, usize, u8, u8);
+type GenericSpriteRenderFn =
+    unsafe extern "system" fn(usize, usize, usize, usize, u32, u32, usize);
 
 struct CallbackFlight;
 
@@ -92,11 +110,22 @@ struct ActiveOwnerRun {
     render_context_ptr: usize,
     start_qpc_ticks: u64,
     owner: Option<DiagnosticOwnerJoin>,
+    counter_owner: Option<DiagnosticCounterOwnerJoin>,
     transform_f32_bits: Option<[u32; 16]>,
     object_rect_candidate_i32: Option<[i32; 4]>,
     object_clip_candidate_i32: Option<[i32; 4]>,
     draws: Vec<DiagnosticDrawFingerprint>,
     capture_failure_count: u32,
+}
+
+#[derive(Clone)]
+struct CounterOwnerPath {
+    owner: usize,
+    gui_root: usize,
+    wrapper: usize,
+    paint_root: usize,
+    grid_container: usize,
+    owner_kind: i32,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -110,6 +139,7 @@ struct DiagnosticGuiNode {
     render_vslot_50_target_ptr_hex: String,
     render_vslot_50_target_rva_hex: Option<String>,
     exact_instant_text_dispatch: bool,
+    exact_generic_sprite_dispatch: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -146,6 +176,19 @@ struct DiagnosticOwnerJoin {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(deny_unknown_fields)]
+struct DiagnosticCounterOwnerJoin {
+    owner_ptr_hex: String,
+    gui_root_ptr_hex: String,
+    wrapper_ptr_hex: String,
+    paint_root_ptr_hex: String,
+    grid_container_ptr_hex: String,
+    owner_kind: i32,
+    graphical_ancestry_edges: u32,
+    path_validation: &'static str,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(deny_unknown_fields)]
 struct DiagnosticOwnerRun {
     list_invocation_ordinal: String,
     node_ordinal: u32,
@@ -156,6 +199,7 @@ struct DiagnosticOwnerRun {
     begin_qpc_ticks: String,
     end_qpc_ticks: String,
     owner: Option<DiagnosticOwnerJoin>,
+    counter_owner: Option<DiagnosticCounterOwnerJoin>,
     transform_f32_bits: Option<[u32; 16]>,
     object_rect_candidate_i32: Option<[i32; 4]>,
     object_clip_candidate_i32: Option<[i32; 4]>,
@@ -254,6 +298,12 @@ struct DiagnosticPresentCapture {
     instant_text_render_job_id: &'static str,
     instant_text_render_manifest_sha256: &'static str,
     instant_text_render_decompile_sha256: &'static str,
+    units_stack_update_rva_hex: &'static str,
+    generic_sprite_render_rva_hex: &'static str,
+    updater_generic_hook_job_id: &'static str,
+    updater_generic_hook_manifest_sha256: &'static str,
+    hook_sentinel_job_id: &'static str,
+    hook_sentinel_artifact_sha256: &'static str,
     production_promotion_enabled: bool,
     process_start_nonce: String,
     hook_epoch_nonce: String,
@@ -270,6 +320,84 @@ struct DiagnosticPresentCapture {
     rejected_draw_count: u64,
     queue_overflow_count: u64,
     receipt_body_sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PointerFreeCap6Receipt {
+    schema: &'static str,
+    body: PointerFreeCap6ReceiptBody,
+    body_sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PointerFreeCap6ReceiptBody {
+    authority_executable_sha256: &'static str,
+    units_stack_update_rva_hex: &'static str,
+    generic_sprite_render_rva_hex: &'static str,
+    gui_list_consumer_rva_hex: &'static str,
+    units_stack_update_job_id: &'static str,
+    units_stack_update_manifest_sha256: &'static str,
+    hook_sentinel_job_id: &'static str,
+    hook_sentinel_artifact_sha256: &'static str,
+    owner_path_live_receipt_job_id: &'static str,
+    owner_path_live_receipt_sha256: &'static str,
+    common_draw_live_receipt_job_id: &'static str,
+    common_draw_live_receipt_sha256: &'static str,
+    candidate_submit_index: String,
+    candidate_frame_sequence: String,
+    game_hour_raw: i32,
+    present_global_order: u32,
+    present_qpc_ticks: String,
+    qpc_frequency_hz: String,
+    counter_owner_count: u32,
+    generic_owner_run_count: u32,
+    final_draw_count: u32,
+    selected_target_descriptor_sha256: Option<String>,
+    selected_present_sealable: bool,
+    generic_owner_runs: Vec<PointerFreeCap6OwnerRun>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PointerFreeCap6OwnerRun {
+    list_invocation_ordinal: String,
+    node_ordinal: u32,
+    present_owner_ordinal: u32,
+    owner_kind: i32,
+    graphical_ancestry_edges: u32,
+    exact_generic_sprite_dispatch: bool,
+    begin_qpc_ticks: String,
+    end_qpc_ticks: String,
+    draws: Vec<PointerFreeCap6Draw>,
+    capture_failure_count: u32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PointerFreeCap6Draw {
+    diagnostic_sequence: String,
+    capture_sequence: String,
+    qpc_ticks: String,
+    producer_rva_hex: String,
+    draw_kind: &'static str,
+    draw_arguments_i64: [i64; 5],
+    shader_bytecode_sha256: Vec<String>,
+    payload_bindings: Vec<PointerFreeCap6PayloadBinding>,
+    target: Option<RenderTargetDesc>,
+    target_descriptor_sha256: Option<String>,
+    capture_complete: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PointerFreeCap6PayloadBinding {
+    class: &'static str,
+    stage: Option<&'static str>,
+    slot: u32,
+    payload_sha256: Option<String>,
+    descriptor_sha256: Option<String>,
 }
 
 pub(super) fn install(module_base: usize) -> Result<(), String> {
@@ -291,6 +419,12 @@ pub(super) fn install(module_base: usize) -> Result<(), String> {
     let text_target = module_base
         .checked_add(INSTANT_TEXT_RENDER_RVA)
         .ok_or("A25 instant-text render address overflowed")?;
+    let stack_update_target = module_base
+        .checked_add(UNITS_STACK_UPDATE_RVA)
+        .ok_or("A25 units-stack update address overflowed")?;
+    let generic_sprite_target = module_base
+        .checked_add(GENERIC_SPRITE_RENDER_RVA)
+        .ok_or("A25 generic-sprite render address overflowed")?;
     verify_sentinel(
         list_target,
         &GUI_LIST_CONSUMER_SENTINEL,
@@ -301,7 +435,17 @@ pub(super) fn install(module_base: usize) -> Result<(), String> {
         &INSTANT_TEXT_RENDER_SENTINEL,
         "A25 instant-text render",
     )?;
-    let specs: [HookSpec; 2] = [
+    verify_sentinel(
+        stack_update_target,
+        &UNITS_STACK_UPDATE_SENTINEL,
+        "A25 units-stack update",
+    )?;
+    verify_sentinel(
+        generic_sprite_target,
+        &GENERIC_SPRITE_RENDER_SENTINEL,
+        "A25 generic-sprite render",
+    )?;
+    let specs: [HookSpec; 4] = [
         (
             list_target,
             hook_gui_list_consumer as *mut c_void,
@@ -311,6 +455,16 @@ pub(super) fn install(module_base: usize) -> Result<(), String> {
             text_target,
             hook_instant_text_render as *mut c_void,
             &ORIGINAL_INSTANT_TEXT_RENDER,
+        ),
+        (
+            stack_update_target,
+            hook_units_stack_update as *mut c_void,
+            &ORIGINAL_UNITS_STACK_UPDATE,
+        ),
+        (
+            generic_sprite_target,
+            hook_generic_sprite_render as *mut c_void,
+            &ORIGINAL_GENERIC_SPRITE_RENDER,
         ),
     ];
     {
@@ -324,6 +478,11 @@ pub(super) fn install(module_base: usize) -> Result<(), String> {
             ..BridgeState::default()
         };
     }
+    COUNTER_OWNER_PATHS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .map_err(|_| "A25 counter-owner path state poisoned")?
+        .clear();
     let targets = create_and_enable_hooks(&specs, "A25 evidence-only GUI bridge")?;
     *TARGETS
         .get_or_init(|| Mutex::new(Vec::new()))
@@ -345,7 +504,7 @@ pub(super) fn uninstall() -> Result<(), String> {
         .get()
         .and_then(|state| state.lock().ok().map(|state| state.module_base))
         .unwrap_or(0);
-    let specs: [HookSpec; 2] = [
+    let specs: [HookSpec; 4] = [
         (
             base.saturating_add(GUI_LIST_CONSUMER_RVA),
             hook_gui_list_consumer as *mut c_void,
@@ -355,6 +514,16 @@ pub(super) fn uninstall() -> Result<(), String> {
             base.saturating_add(INSTANT_TEXT_RENDER_RVA),
             hook_instant_text_render as *mut c_void,
             &ORIGINAL_INSTANT_TEXT_RENDER,
+        ),
+        (
+            base.saturating_add(UNITS_STACK_UPDATE_RVA),
+            hook_units_stack_update as *mut c_void,
+            &ORIGINAL_UNITS_STACK_UPDATE,
+        ),
+        (
+            base.saturating_add(GENERIC_SPRITE_RENDER_RVA),
+            hook_generic_sprite_render as *mut c_void,
+            &ORIGINAL_GENERIC_SPRITE_RENDER,
         ),
     ];
     let created = TARGETS
@@ -379,6 +548,12 @@ pub(super) fn uninstall() -> Result<(), String> {
             .lock()
             .map_err(|_| "A25 GUI bridge state poisoned")? = BridgeState::default();
     }
+    if let Some(paths) = COUNTER_OWNER_PATHS.get() {
+        paths
+            .lock()
+            .map_err(|_| "A25 counter-owner path state poisoned")?
+            .clear();
+    }
     LIST_STACK.with(|stack| stack.borrow_mut().clear());
     ACTIVE_OWNER_RUN.with(|run| *run.borrow_mut() = None);
     Ok(())
@@ -387,6 +562,8 @@ pub(super) fn uninstall() -> Result<(), String> {
 pub(super) fn owns_original_slot(original: &'static AtomicUsize) -> bool {
     std::ptr::eq(original, &ORIGINAL_GUI_LIST_CONSUMER)
         || std::ptr::eq(original, &ORIGINAL_INSTANT_TEXT_RENDER)
+        || std::ptr::eq(original, &ORIGINAL_UNITS_STACK_UPDATE)
+        || std::ptr::eq(original, &ORIGINAL_GENERIC_SPRITE_RENDER)
 }
 
 pub(super) fn begin_teardown() {
@@ -582,6 +759,7 @@ unsafe extern "system" fn hook_instant_text_render(
         render_context_ptr: render_context,
         start_qpc_ticks: query_performance_counter().unwrap_or(0),
         owner,
+        counter_owner: None,
         transform_f32_bits: read_u32x16(transform),
         object_rect_candidate_i32: read_object_rect_candidate(layout_object),
         object_clip_candidate_i32: read_i32x4(layout_object.saturating_add(0x158)),
@@ -590,6 +768,130 @@ unsafe extern "system" fn hook_instant_text_render(
     };
     ACTIVE_OWNER_RUN.with(|run| *run.borrow_mut() = Some(active));
     unsafe { original(layout_object, graphics, render_context, transform) };
+    finish_owner_run(query_performance_counter().unwrap_or(0));
+}
+
+unsafe extern "system" fn hook_units_stack_update(
+    stack: usize,
+    selected_unit: usize,
+    flag_3: u8,
+    flag_4: u8,
+) {
+    let _callback = CallbackFlight::enter();
+    let original_address = ORIGINAL_UNITS_STACK_UPDATE.load(Ordering::Acquire);
+    if original_address == 0 {
+        return;
+    }
+    let original: UnitsStackUpdateFn = unsafe { mem::transmute(original_address) };
+    unsafe { original(stack, selected_unit, flag_3, flag_4) };
+    if CALLBACKS_OPEN.load(Ordering::Acquire) {
+        capture_counter_owner_paths(stack);
+    }
+}
+
+unsafe extern "system" fn hook_generic_sprite_render(
+    layout_object: usize,
+    graphics: usize,
+    render_context: usize,
+    transform: usize,
+    argument_5: u32,
+    argument_6: u32,
+    argument_7: usize,
+) {
+    let _callback = CallbackFlight::enter();
+    let original_address = ORIGINAL_GENERIC_SPRITE_RENDER.load(Ordering::Acquire);
+    if original_address == 0 {
+        return;
+    }
+    let original: GenericSpriteRenderFn = unsafe { mem::transmute(original_address) };
+    if !CALLBACKS_OPEN.load(Ordering::Acquire) {
+        unsafe {
+            original(
+                layout_object,
+                graphics,
+                render_context,
+                transform,
+                argument_5,
+                argument_6,
+                argument_7,
+            )
+        };
+        return;
+    }
+    let matched = LIST_STACK.with(|stack| {
+        stack.borrow().last().and_then(|active| {
+            active
+                .nodes
+                .iter()
+                .find(|node| {
+                    node.graphical_node_ptr == layout_object
+                        && node.exact_generic_sprite_dispatch
+                })
+                .cloned()
+                .map(|node| (active.invocation_ordinal, node.node_ordinal))
+        })
+    });
+    let owner_path = resolve_counter_owner_path(layout_object);
+    let Some(((list_invocation_ordinal, node_ordinal), (owner_path, ancestry_edges))) =
+        matched.zip(owner_path)
+    else {
+        unsafe {
+            original(
+                layout_object,
+                graphics,
+                render_context,
+                transform,
+                argument_5,
+                argument_6,
+                argument_7,
+            )
+        };
+        return;
+    };
+    if ACTIVE_OWNER_RUN.with(|run| run.borrow().is_some()) {
+        reject_owner_run();
+        poison_active_owner_run();
+        unsafe {
+            original(
+                layout_object,
+                graphics,
+                render_context,
+                transform,
+                argument_5,
+                argument_6,
+                argument_7,
+            )
+        };
+        return;
+    }
+    let active = ActiveOwnerRun {
+        list_invocation_ordinal,
+        node_ordinal,
+        thread_id: unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() },
+        layout_object_ptr: layout_object,
+        graphics_ptr: graphics,
+        render_context_ptr: render_context,
+        start_qpc_ticks: query_performance_counter().unwrap_or(0),
+        owner: None,
+        counter_owner: Some(diagnostic_counter_owner(owner_path, ancestry_edges)),
+        transform_f32_bits: read_u32x16(transform),
+        object_rect_candidate_i32: read_object_rect_candidate(layout_object),
+        object_clip_candidate_i32: read_i32x4(layout_object.saturating_add(0x158)),
+        draws: Vec::new(),
+        capture_failure_count: 0,
+    };
+    ACTIVE_OWNER_RUN.with(|run| *run.borrow_mut() = Some(active));
+    unsafe {
+        original(
+            layout_object,
+            graphics,
+            render_context,
+            transform,
+            argument_5,
+            argument_6,
+            argument_7,
+        )
+    };
     finish_owner_run(query_performance_counter().unwrap_or(0));
 }
 
@@ -731,6 +1033,15 @@ pub(super) fn seal_present(
             "8c1ed3ff735f3ed4d33a9beaa7f4961054897ec7682adec64d1e4f9c75c7d2ff",
         instant_text_render_decompile_sha256:
             "52a3e1eac235b4961f6c9ae53b0911cdbef67c7be540861488f82c6bdffac4d3",
+        units_stack_update_rva_hex: "0x018ffe60",
+        generic_sprite_render_rva_hex: "0x022e95c0",
+        updater_generic_hook_job_id:
+            "20260721T095716Z-wave6-cap6-a25-updater-generic-hook-abi-890bb2f4",
+        updater_generic_hook_manifest_sha256:
+            "41e59a4ae0ed9531ae92c06ca08ab543b8040c015bb64b62ef8aabdb2c1a9f9f",
+        hook_sentinel_job_id: "20260721T095228Z-wave6-cap6-a25-hook-sentinels-ae1a60f2",
+        hook_sentinel_artifact_sha256:
+            "de0e56dbfa8f1a17807ef86af58f828a525d85c0bb6d12856ff8729513f647fc",
         production_promotion_enabled: PRODUCT_PROMOTION_ENABLED,
         process_start_nonce: process_start_nonce.to_string(),
         hook_epoch_nonce: hook_epoch_nonce.to_string(),
@@ -752,7 +1063,141 @@ pub(super) fn seal_present(
     let path = output_dir.join(format!(
         "a25-gui-owner-run-p{present_global_order}-qpc{present_qpc_ticks}.json"
     ));
-    persist_create_new_or_equal(&path, &capture)
+    persist_create_new_or_equal(&path, &capture)?;
+    let cap6 = pointer_free_cap6_receipt(&capture)?;
+    if cap6.body.generic_owner_runs.is_empty() {
+        return Ok(());
+    }
+    let cap6_path = output_dir.join(format!(
+        "cap6-counter-draw-p{present_global_order}-qpc{present_qpc_ticks}.json"
+    ));
+    persist_create_new_or_equal(&cap6_path, &cap6)
+}
+
+fn pointer_free_cap6_receipt(
+    capture: &DiagnosticPresentCapture,
+) -> Result<PointerFreeCap6Receipt, String> {
+    let mut owner_ordinals = BTreeMap::<String, u32>::new();
+    let mut generic_owner_runs = Vec::new();
+    for list in &capture.lists {
+        for run in &list.owner_runs {
+            let Some(counter_owner) = &run.counter_owner else {
+                continue;
+            };
+            let next_ordinal = owner_ordinals.len() as u32;
+            let present_owner_ordinal = *owner_ordinals
+                .entry(counter_owner.owner_ptr_hex.clone())
+                .or_insert(next_ordinal);
+            let exact_generic_sprite_dispatch = list.nodes.iter().any(|node| {
+                node.node_ordinal == run.node_ordinal && node.exact_generic_sprite_dispatch
+            });
+            let draws = run
+                .draws
+                .iter()
+                .map(|draw| PointerFreeCap6Draw {
+                    diagnostic_sequence: draw.diagnostic_sequence.clone(),
+                    capture_sequence: draw.capture_sequence.clone(),
+                    qpc_ticks: draw.qpc_ticks.clone(),
+                    producer_rva_hex: draw.producer_rva_hex.clone(),
+                    draw_kind: draw.draw_kind,
+                    draw_arguments_i64: draw.draw_arguments_i64,
+                    shader_bytecode_sha256: draw
+                        .shaders
+                        .iter()
+                        .filter_map(|shader| shader.bytecode_sha256.clone())
+                        .collect(),
+                    payload_bindings: draw
+                        .payload_bindings
+                        .iter()
+                        .map(|binding| PointerFreeCap6PayloadBinding {
+                            class: binding.class,
+                            stage: binding.stage,
+                            slot: binding.slot,
+                            payload_sha256: binding.payload_sha256.clone(),
+                            descriptor_sha256: binding.descriptor_sha256.clone(),
+                        })
+                        .collect(),
+                    target: draw.target.clone(),
+                    target_descriptor_sha256: draw.target_descriptor_sha256.clone(),
+                    capture_complete: draw.capture_complete,
+                })
+                .collect();
+            generic_owner_runs.push(PointerFreeCap6OwnerRun {
+                list_invocation_ordinal: run.list_invocation_ordinal.clone(),
+                node_ordinal: run.node_ordinal,
+                present_owner_ordinal,
+                owner_kind: counter_owner.owner_kind,
+                graphical_ancestry_edges: counter_owner.graphical_ancestry_edges,
+                exact_generic_sprite_dispatch,
+                begin_qpc_ticks: run.begin_qpc_ticks.clone(),
+                end_qpc_ticks: run.end_qpc_ticks.clone(),
+                draws,
+                capture_failure_count: run.capture_failure_count,
+            });
+        }
+    }
+    let target_descriptors = generic_owner_runs
+        .iter()
+        .flat_map(|run| run.draws.iter())
+        .filter_map(|draw| draw.target_descriptor_sha256.clone())
+        .collect::<BTreeSet<_>>();
+    let selected_target_descriptor_sha256 = if target_descriptors.len() == 1 {
+        target_descriptors.iter().next().cloned()
+    } else {
+        None
+    };
+    let final_draw_count = generic_owner_runs
+        .iter()
+        .map(|run| run.draws.len() as u32)
+        .sum();
+    let selected_present_sealable = !generic_owner_runs.is_empty()
+        && selected_target_descriptor_sha256.is_some()
+        && generic_owner_runs.iter().all(|run| {
+            run.exact_generic_sprite_dispatch
+                && run.capture_failure_count == 0
+                && !run.draws.is_empty()
+                && run
+                    .draws
+                    .iter()
+                    .all(|draw| draw.capture_complete && draw.target_descriptor_sha256.is_some())
+        });
+    let body = PointerFreeCap6ReceiptBody {
+        authority_executable_sha256: A729_EXECUTABLE_SHA256,
+        units_stack_update_rva_hex: "0x018ffe60",
+        generic_sprite_render_rva_hex: "0x022e95c0",
+        gui_list_consumer_rva_hex: "0x02228c20",
+        units_stack_update_job_id:
+            "20260721T095716Z-wave6-cap6-a25-updater-generic-hook-abi-890bb2f4",
+        units_stack_update_manifest_sha256:
+            "41e59a4ae0ed9531ae92c06ca08ab543b8040c015bb64b62ef8aabdb2c1a9f9f",
+        hook_sentinel_job_id: "20260721T095228Z-wave6-cap6-a25-hook-sentinels-ae1a60f2",
+        hook_sentinel_artifact_sha256:
+            "de0e56dbfa8f1a17807ef86af58f828a525d85c0bb6d12856ff8729513f647fc",
+        owner_path_live_receipt_job_id: "20260721T093120Z-trace-calls-473d223a",
+        owner_path_live_receipt_sha256:
+            "724d1aabafc7b22a08dcce78c06a3e4eb98f4da9115717f829c3769d74340d89",
+        common_draw_live_receipt_job_id: "20260721T094647Z-trace-calls-4b74a232",
+        common_draw_live_receipt_sha256:
+            "643fdf05c0424a80873d7e843a00b56811a7a9d597b8eb88209d19b6d7fa1bcf",
+        candidate_submit_index: capture.candidate_submit_index.clone(),
+        candidate_frame_sequence: capture.candidate_frame_sequence.clone(),
+        game_hour_raw: capture.game_hour_raw,
+        present_global_order: capture.present_global_order,
+        present_qpc_ticks: capture.present_qpc_ticks.clone(),
+        qpc_frequency_hz: capture.qpc_frequency_hz.clone(),
+        counter_owner_count: owner_ordinals.len() as u32,
+        generic_owner_run_count: generic_owner_runs.len() as u32,
+        final_draw_count,
+        selected_target_descriptor_sha256,
+        selected_present_sealable,
+        generic_owner_runs,
+    };
+    let body_sha256 = sha256_json(&body)?;
+    Ok(PointerFreeCap6Receipt {
+        schema: "hoi4.cap6.counter-final-d3d-pointer-free.v1",
+        body,
+        body_sha256,
+    })
 }
 
 fn capture_nodes(list: usize) -> Option<(u32, Vec<DiagnosticGuiNode>, bool)> {
@@ -764,6 +1209,7 @@ fn capture_nodes(list: usize) -> Option<(u32, Vec<DiagnosticGuiNode>, bool)> {
     }
     let base = MODULE_BASE.load(Ordering::Acquire);
     let text_target = base.checked_add(INSTANT_TEXT_RENDER_RVA)?;
+    let generic_sprite_target = base.checked_add(GENERIC_SPRITE_RENDER_RVA)?;
     let retained = count.min(MAX_CAPTURED_NODES_PER_PRESENT);
     let mut nodes = Vec::with_capacity(retained);
     for ordinal in 0..retained {
@@ -782,9 +1228,134 @@ fn capture_nodes(list: usize) -> Option<(u32, Vec<DiagnosticGuiNode>, bool)> {
             render_vslot_50_target_ptr_hex: pointer_hex(render_target),
             render_vslot_50_target_rva_hex: render_rva,
             exact_instant_text_dispatch: render_target == text_target,
+            exact_generic_sprite_dispatch: render_target == generic_sprite_target,
         });
     }
     Some((count as u32, nodes, retained != count))
+}
+
+fn capture_counter_owner_paths(stack: usize) {
+    const MAX_ACTIVE_COUNTERS_PER_GRID: usize = 4096;
+    let Some(grid) = stack.checked_add(0x88).and_then(read_usize) else {
+        return;
+    };
+    let Some(grid_container) = grid.checked_add(0x140).and_then(read_usize) else {
+        return;
+    };
+    let Some(owner_data) = grid.checked_add(0x1A0).and_then(read_usize) else {
+        return;
+    };
+    let Some(owner_count) = grid.checked_add(0x1AC).and_then(read_i32) else {
+        return;
+    };
+    let Ok(owner_count) = usize::try_from(owner_count) else {
+        return;
+    };
+    if owner_count > MAX_ACTIVE_COUNTERS_PER_GRID || (owner_count != 0 && owner_data == 0) {
+        return;
+    }
+    let base = MODULE_BASE.load(Ordering::Acquire);
+    let counter_vtable_a = base.saturating_add(0x029F_F890);
+    let counter_vtable_b = base.saturating_add(0x029F_F930);
+    let mut observed = Vec::with_capacity(owner_count);
+    for index in 0..owner_count {
+        let Some(owner) = index
+            .checked_mul(8)
+            .and_then(|offset| owner_data.checked_add(offset))
+            .and_then(read_usize)
+        else {
+            return;
+        };
+        let Some(owner_vtable) = read_usize(owner) else {
+            continue;
+        };
+        if owner_vtable != counter_vtable_a && owner_vtable != counter_vtable_b {
+            continue;
+        }
+        let Some(gui_root) = owner.checked_add(0x10).and_then(read_usize) else {
+            continue;
+        };
+        let Some(wrapper) = gui_root.checked_add(0x15F0).and_then(read_usize) else {
+            continue;
+        };
+        let Some(paint_root) = gui_root.checked_add(0x15F8).and_then(read_usize) else {
+            continue;
+        };
+        let wrapper_parent = wrapper.checked_add(0x118).and_then(read_usize);
+        let paint_root_parent = paint_root.checked_add(0x118).and_then(read_usize);
+        if wrapper_parent != Some(grid_container) || paint_root_parent != Some(wrapper) {
+            continue;
+        }
+        let Some(owner_kind) = owner.checked_add(0x180).and_then(read_i32) else {
+            continue;
+        };
+        observed.push(CounterOwnerPath {
+            owner,
+            gui_root,
+            wrapper,
+            paint_root,
+            grid_container,
+            owner_kind,
+        });
+    }
+    let Some(mut paths) = COUNTER_OWNER_PATHS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .ok()
+    else {
+        return;
+    };
+    if paths.len().saturating_add(observed.len()) > MAX_COUNTER_OWNER_PATHS {
+        paths.clear();
+    }
+    for path in observed {
+        paths.insert(path.paint_root, path);
+    }
+}
+
+fn resolve_counter_owner_path(layout_object: usize) -> Option<(CounterOwnerPath, u32)> {
+    let paths = COUNTER_OWNER_PATHS.get()?.lock().ok()?;
+    let mut graphical = layout_object;
+    for edge_count in 0..=MAX_GRAPHICAL_ANCESTRY_DEPTH {
+        if let Some(path) = paths.get(&graphical) {
+            let path = path.clone();
+            if validate_counter_owner_path(&path) {
+                return Some((path, edge_count as u32));
+            }
+            return None;
+        }
+        let parent = graphical.checked_add(0x118).and_then(read_usize)?;
+        if parent == 0 || parent == graphical {
+            return None;
+        }
+        graphical = parent;
+    }
+    None
+}
+
+fn validate_counter_owner_path(path: &CounterOwnerPath) -> bool {
+    path.owner.checked_add(0x10).and_then(read_usize) == Some(path.gui_root)
+        && path.gui_root.checked_add(0x15F0).and_then(read_usize) == Some(path.wrapper)
+        && path.gui_root.checked_add(0x15F8).and_then(read_usize) == Some(path.paint_root)
+        && path.wrapper.checked_add(0x118).and_then(read_usize) == Some(path.grid_container)
+        && path.paint_root.checked_add(0x118).and_then(read_usize) == Some(path.wrapper)
+        && path.owner.checked_add(0x180).and_then(read_i32) == Some(path.owner_kind)
+}
+
+fn diagnostic_counter_owner(
+    path: CounterOwnerPath,
+    graphical_ancestry_edges: u32,
+) -> DiagnosticCounterOwnerJoin {
+    DiagnosticCounterOwnerJoin {
+        owner_ptr_hex: pointer_hex(path.owner),
+        gui_root_ptr_hex: pointer_hex(path.gui_root),
+        wrapper_ptr_hex: pointer_hex(path.wrapper),
+        paint_root_ptr_hex: pointer_hex(path.paint_root),
+        grid_container_ptr_hex: pointer_hex(path.grid_container),
+        owner_kind: path.owner_kind,
+        graphical_ancestry_edges,
+        path_validation: "owner+0x10->root;root+0x15f0->wrapper;root+0x15f8->paint_root;parent+0x118",
+    }
 }
 
 fn diagnostic_owner(
@@ -831,7 +1402,13 @@ fn finish_owner_run(end_qpc_ticks: u64) {
     let owner_ptr = active
         .owner
         .as_ref()
-        .and_then(|owner| parse_pointer_hex(&owner.owner_ptr_hex));
+        .and_then(|owner| parse_pointer_hex(&owner.owner_ptr_hex))
+        .or_else(|| {
+            active
+                .counter_owner
+                .as_ref()
+                .and_then(|owner| parse_pointer_hex(&owner.owner_ptr_hex))
+        });
     let candidates = DiagnosticEngineTokenCandidates {
         graphical_node_ptr_decimal: active.layout_object_ptr.to_string(),
         layout_object_ptr_decimal: active.layout_object_ptr.to_string(),
@@ -856,6 +1433,7 @@ fn finish_owner_run(end_qpc_ticks: u64) {
         begin_qpc_ticks: active.start_qpc_ticks.to_string(),
         end_qpc_ticks: end_qpc_ticks.to_string(),
         owner: active.owner,
+        counter_owner: active.counter_owner,
         transform_f32_bits: active.transform_f32_bits,
         object_rect_candidate_i32: active.object_rect_candidate_i32,
         object_clip_candidate_i32: active.object_clip_candidate_i32,
@@ -1136,15 +1714,16 @@ fn regrade_owner_runs(list: &DiagnosticGuiList) -> Vec<DiagnosticOwnerRunRegrade
                 .iter()
                 .filter_map(|draw| draw.target_descriptor_sha256.as_deref())
                 .collect::<BTreeSet<_>>();
-            let exact_vslot_dispatch =
-                node.is_some_and(|node| node.exact_instant_text_dispatch);
+            let exact_vslot_dispatch = node.is_some_and(|node| {
+                node.exact_instant_text_dispatch || node.exact_generic_sprite_dispatch
+            });
             let list_and_owner_thread_match = run.thread_id == list.thread_id;
             let list_and_owner_graphics_match = run.graphics_ptr_hex == list.graphics_ptr_hex;
             let layout_equals_graphical_node = node.is_some_and(|node| {
                 node.graphical_node_ptr_hex == run.layout_object_ptr_hex
             });
-            let registered_owner_resolved = run.owner.is_some();
-            let registered_owner_path_candidate_present = run.owner.as_ref().is_some_and(|owner| {
+            let registered_owner_resolved = run.owner.is_some() || run.counter_owner.is_some();
+            let text_owner_path_present = run.owner.as_ref().is_some_and(|owner| {
                 let source_valid = match owner.source_kind.as_str() {
                     "authored_token" => !owner.source_value.trim().is_empty(),
                     "setter_caller_rva" => u32::from_str_radix(
@@ -1161,6 +1740,14 @@ fn regrade_owner_runs(list: &DiagnosticGuiList) -> Vec<DiagnosticOwnerRunRegrade
                     && owner.selected_final_text_sha256.len() == 64
                     && owner.selected_final_text_digest_valid
             });
+            let counter_owner_path_present = run.counter_owner.as_ref().is_some_and(|owner| {
+                owner.owner_kind >= 0
+                    && owner.graphical_ancestry_edges <= MAX_GRAPHICAL_ANCESTRY_DEPTH as u32
+                    && owner.path_validation
+                        == "owner+0x10->root;root+0x15f0->wrapper;root+0x15f8->paint_root;parent+0x118"
+            });
+            let registered_owner_path_candidate_present =
+                text_owner_path_present || counter_owner_path_present;
             let diagnostic_token_candidate_present =
                 run.engine_token_candidates.present_scoped_candidate_sha256.len() == 64
                     && run.engine_token_candidates.authority_status
@@ -1219,6 +1806,15 @@ fn regrade_owner_runs(list: &DiagnosticGuiList) -> Vec<DiagnosticOwnerRunRegrade
                 hasher.update(owner.selected_final_text_hex.as_bytes());
                 hasher.update([u8::from(owner.selected_final_text_digest_valid)]);
             }
+            if let Some(owner) = &run.counter_owner {
+                hasher.update(owner.owner_ptr_hex.as_bytes());
+                hasher.update(owner.gui_root_ptr_hex.as_bytes());
+                hasher.update(owner.wrapper_ptr_hex.as_bytes());
+                hasher.update(owner.paint_root_ptr_hex.as_bytes());
+                hasher.update(owner.grid_container_ptr_hex.as_bytes());
+                hasher.update(owner.owner_kind.to_le_bytes());
+                hasher.update(owner.graphical_ancestry_edges.to_le_bytes());
+            }
             for draw in &run.draws {
                 hasher.update(draw.raw_d3d_fingerprint_sha256.as_bytes());
             }
@@ -1239,6 +1835,11 @@ fn regrade_owner_runs(list: &DiagnosticGuiList) -> Vec<DiagnosticOwnerRunRegrade
                 owner_path_token.update(owner.element_id.as_bytes());
                 owner_path_token.update(owner.source_kind.as_bytes());
                 owner_path_token.update(owner.source_value.as_bytes());
+            }
+            if let Some(owner) = &run.counter_owner {
+                owner_path_token.update(owner.owner_ptr_hex.as_bytes());
+                owner_path_token.update(owner.owner_kind.to_le_bytes());
+                owner_path_token.update(owner.graphical_ancestry_edges.to_le_bytes());
             }
             DiagnosticOwnerRunRegrade {
                 list_invocation_ordinal: list.list_invocation_ordinal.clone(),
@@ -1573,31 +2174,70 @@ fn sha256_json(value: &impl Serialize) -> Result<String, String> {
 
 fn persist_create_new_or_equal(
     path: &Path,
-    capture: &DiagnosticPresentCapture,
+    capture: &impl Serialize,
 ) -> Result<(), String> {
     use std::io::Write;
     let mut bytes = serde_json::to_vec_pretty(capture).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-    {
-        Ok(mut file) => {
-            file.write_all(&bytes).map_err(|error| error.to_string())?;
-            file.sync_all().map_err(|error| error.to_string())?;
+    if path.exists() {
+        if std::fs::read(path).map_err(|error| error.to_string())? == bytes {
+            return Ok(());
         }
+        return Err(format!(
+            "A25 GUI diagnostic path already exists with different bytes: {}",
+            path.display()
+        ));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("A25 GUI diagnostic path has no parent: {}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("A25 GUI diagnostic path has no file name: {}", path.display()))?;
+    let mut temporary = None;
+    for attempt in 0..16u32 {
+        let candidate = parent.join(format!(
+            ".{file_name}.tmp-{}-{}-{attempt}",
+            std::process::id(),
+            query_performance_counter().unwrap_or(0)
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(mut file) => {
+                file.write_all(&bytes).map_err(|error| error.to_string())?;
+                file.sync_all().map_err(|error| error.to_string())?;
+                temporary = Some(candidate);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    let temporary = temporary.ok_or("A25 GUI diagnostic temporary-name space exhausted")?;
+    match std::fs::rename(&temporary, path) {
+        Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            if std::fs::read(path).map_err(|error| error.to_string())? != bytes {
-                return Err(format!(
-                    "A25 GUI diagnostic path already exists with different bytes: {}",
+            let removal = std::fs::remove_file(&temporary);
+            if std::fs::read(path).map_err(|read_error| read_error.to_string())? == bytes {
+                removal.map_err(|remove_error| remove_error.to_string())?;
+                Ok(())
+            } else {
+                let _ = removal;
+                Err(format!(
+                    "A25 GUI diagnostic path raced with different bytes: {}",
                     path.display()
-                ));
+                ))
             }
         }
-        Err(error) => return Err(error.to_string()),
+        Err(error) => {
+            let _ = std::fs::remove_file(&temporary);
+            Err(error.to_string())
+        }
     }
-    Ok(())
 }
 
 fn reject_list() {

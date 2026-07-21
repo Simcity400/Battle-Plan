@@ -28,8 +28,10 @@ prefixed widget names. The title uses XUI06-admitted resolved display text, neve
 the internal technology token. UI09 retains ownership of rectangles, order,
 pan, clip, and pixel canvas admission.
 
-The exact observed-producer authority is
-`a729_observed_research_ahead_producer_v1`. Its branch 0 is a no-display
+The exact observed-producer authority is the slot-bound
+`a729_observed_research_ahead_producer_v2`. Its source-record preimage binds
+the research-slot ordinal as well as the technology definition, so a valid
+producer receipt cannot be transplanted to another slot. Its branch 0 is a no-display
 receipt: when exact days ahead is zero, the producer writes penalty zero and
 emits no substitutions; the UI emits `NO_RESEARCH_PENALTY`. The portable row
 then carries years `0`, penalty `0`, reduced penalty `0`, and the observed

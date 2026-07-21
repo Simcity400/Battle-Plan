@@ -1535,6 +1535,7 @@ mod tests {
             entity_presentations: Vec::new(),
             particle_packet_set_sha256: "0".repeat(64),
             entities: Vec::new(),
+            rail_construction_arrows: Vec::new(),
             ordered_draws: Vec::new(),
             ordered_render_operations: Vec::new(),
             direct_visuals: Vec::new(),

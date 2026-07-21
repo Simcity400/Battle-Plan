@@ -542,12 +542,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_state_events_without_matching_source_proof() {
+    fn rejects_legacy_lifecycle_event_without_matching_source_proof() {
+        // Decoder compatibility for historical v20 payloads is intentional.
+        // This row must never be confused with current producer evidence.
         let mut snapshot = gap_badged_snapshot();
         snapshot.operatives.clear();
-        snapshot
-            .state_events
-            .retain(|row| row.source_kind == STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE);
+        snapshot.state_events.clear();
+        snapshot.state_events.push(StateEventRow {
+            owner_tag_db_id: 1,
+            target_tag_db_id: None,
+            event_kind: STATE_EVENT_KIND_OBSERVED,
+            source_kind: STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE,
+            object_hash: stable_hash32("legacy_operative_lifecycle"),
+            value_hash: stable_hash32("legacy_allocator_capacity_47"),
+            value_raw: 47,
+        });
 
         let report = admit_slot_payload(
             snapshot,
@@ -651,8 +660,8 @@ mod tests {
                 skill: Some(2),
                 experience_raw: Some(40_000),
                 name_hash: 0xCCCC,
-                state_hash: 0xDDDD,
-                lifecycle_flag: Some(47),
+                state_hash: stable_hash32("assignment_3"),
+                lifecycle_flag: None,
             }],
             cryptology: vec![CryptologyRow {
                 owner_tag_db_id: 1,
@@ -722,15 +731,6 @@ mod tests {
                     object_hash: stable_hash32("agency_upgrade_progress_raw"),
                     value_hash: stable_hash32("agency_upgrade_progress_75000"),
                     value_raw: 75_000,
-                },
-                StateEventRow {
-                    owner_tag_db_id: 1,
-                    target_tag_db_id: None,
-                    event_kind: STATE_EVENT_KIND_OBSERVED,
-                    source_kind: STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE,
-                    object_hash: stable_hash32("operative_10_lifecycle"),
-                    value_hash: stable_hash32("lifeflag_47"),
-                    value_raw: 47,
                 },
                 StateEventRow {
                     owner_tag_db_id: 2,

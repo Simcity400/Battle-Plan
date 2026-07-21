@@ -481,6 +481,7 @@ impl RawShaderBytecodeReflectionObservation {
 pub struct RawProgramRegistrationObservation {
     pub observation_sequence: u64,
     pub shader_program_ptr: usize,
+    pub registration_root_rva: u32,
     pub source_open_sequence: u64,
     pub effect_token: String,
     pub vertex_entry_token: String,
@@ -497,6 +498,7 @@ pub fn materialize_program_identity(
     source_open.validate()?;
     if registration.observation_sequence == 0
         || registration.shader_program_ptr == 0
+        || registration.registration_root_rva == 0
         || registration.source_open_sequence != source_open.observation_sequence
         || registration.effect_token.trim().is_empty()
         || registration.vertex_entry_token.trim().is_empty()
@@ -519,6 +521,7 @@ pub fn materialize_program_identity(
     Ok(RawProgramIdentity {
         observation_sequence: registration.observation_sequence,
         shader_program_ptr: registration.shader_program_ptr,
+        registration_root_rva: registration.registration_root_rva,
         source: source_open.content.clone(),
         effect_token: registration.effect_token.clone(),
         vertex_entry_token: registration.vertex_entry_token.clone(),
@@ -1294,6 +1297,7 @@ mod tests {
         let mut program = RawProgramIdentity {
             observation_sequence: 5,
             shader_program_ptr: 0x900,
+            registration_root_rva: 1,
             source: RawVfsContentIdentity {
                 logical_path: "opaque/modded/path".into(),
                 winning_layer_ordinal: 0,
@@ -1431,6 +1435,7 @@ mod tests {
         let registration = RawProgramRegistrationObservation {
             observation_sequence: 20,
             shader_program_ptr: 0x900,
+            registration_root_rva: 1,
             source_open_sequence: 10,
             effect_token: "observed_effect".into(),
             vertex_entry_token: "VertexMain".into(),

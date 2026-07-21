@@ -136,7 +136,7 @@ fn production_close_zoom_law_plan() -> Vec<ProductionCloseZoomLawPlan> {
             module: "rail_files",
             status: ExecutionBlocked,
             blockers: vec![
-                "D81 now admits exact reciprocal CRailwayGfx anchors/levels and complete supply-hub visual fields into WorldFrame::rail_replay; the production ribbon geometry, railroad.shader pipeline, hub placement, and selected-Present interleave consumer remain unwired, and centroid polylines are forbidden",
+                "D81 reciprocal CRailwayGfx state now joins authenticated railroad-registration D80 draws; exact engine-built ribbon bytes, railroad.shader pipeline, and selected-Present interleave execute without CPU retessellation. Supply-hub GUI draw/placement attribution remains unjoined, and centroid polylines are forbidden",
             ],
         },
         ProductionCloseZoomLawPlan {

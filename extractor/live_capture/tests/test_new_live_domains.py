@@ -1,7 +1,8 @@
 """Offline fold tests for the WAVE live-extraction domains added in the
 backlog-closing pass:
 
-  * country_static   -> countries.*.identity.{original_capital, original_tag,
+  * country_static   -> countries.*.politics.capital_state plus
+                        countries.*.identity.{original_capital, original_tag,
                         reserved_dynamic_country, templates_locked}
   * country_variables -> countries.*.script_variables
   * state_fields     -> states.*.{resources, dynamic_modifier, extra_shared_slots}
@@ -56,10 +57,10 @@ class TestCountryStaticFold(unittest.TestCase):
         res = {
             "country_static": _ok("country_static", {
                 "countries": {
-                    "USA": {"original_capital": 361, "original_tag": None,
+                    "USA": {"capital": 362, "original_capital": 361, "original_tag": None,
                             "reserved_dynamic_country": False,
                             "templates_locked": False},
-                    "D01": {"original_capital": 41, "original_tag": "SPR",
+                    "D01": {"capital": 175, "original_capital": 41, "original_tag": "SPR",
                             "reserved_dynamic_country": True,
                             "templates_locked": True},
                 },
@@ -71,6 +72,7 @@ class TestCountryStaticFold(unittest.TestCase):
     def test_static_identity_folds(self):
         snap = self._snap()
         ident = snap["countries"]["USA"]["identity"]
+        self.assertEqual(snap["countries"]["USA"]["politics"]["capital_state"], 362)
         self.assertEqual(ident["original_capital"], 361)
         self.assertIsNone(ident["original_tag"])               # measured absent -> None
         self.assertFalse(ident["reserved_dynamic_country"])
@@ -89,7 +91,7 @@ class TestCountryStaticFold(unittest.TestCase):
         # a country the static plug did NOT measure keeps identity null (no fabrication)
         res = {
             "country_static": _ok("country_static", {"countries": {
-                "USA": {"original_capital": 361, "original_tag": None,
+                "USA": {"capital": 361, "original_capital": 361, "original_tag": None,
                         "reserved_dynamic_country": False, "templates_locked": False}},
                 "count": 1}),
             "country_scalars": _ok("country_scalars", {"countries": {

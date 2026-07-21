@@ -3185,8 +3185,9 @@ class TestCollectorFrames(unittest.TestCase):
                 "POR": {
                     "present": True,
                     "collector_object": "0x1000",
-                    "identity": {"tag_db_id": 47},
+                    "identity": {"tag_db_id": 47, "original_capital": 111},
                     "politics": {
+                        "capital_state": 112,
                         "popularities": {
                             "democratic": 72.5,
                             "communism": 0.0,
@@ -3243,6 +3244,10 @@ class TestCollectorFrames(unittest.TestCase):
             ["clock", "country_identity", "politics_live"],
         )
         politics = snap["countries"]["POR"]["politics"]
+        self.assertEqual(politics["capital_state"], 112)
+        self.assertEqual(
+            snap["countries"]["POR"]["identity"]["original_capital"], 111
+        )
         self.assertEqual(politics["ruling_party"], "neutrality")
         leader = snap["countries"]["POR"]["commanders"]["leader"]
         self.assertEqual(leader["char_id"], 371)
@@ -3337,8 +3342,9 @@ class TestCollectorFrames(unittest.TestCase):
                 "POR": {
                     "present": True,
                     "collector_object": "0x1000",
-                    "identity": {"tag_db_id": 47},
+                    "identity": {"tag_db_id": 47, "original_capital": 0},
                     "politics": {
+                        "capital_state": 0,
                         "popularities": {"bad": 1.0, "democratic": float("inf")},
                         "ruling_party": "bad",
                         "leader": {
@@ -3374,6 +3380,8 @@ class TestCollectorFrames(unittest.TestCase):
         problems = validate_collector_frame(frame)
 
         for needle in (
+            "original_capital",
+            "capital_state",
             "popularities key",
             "popularities.democratic",
             "ruling_party",

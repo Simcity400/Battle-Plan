@@ -5,11 +5,12 @@
 //! Paths are data carried by `UsedContentKey`; this module has no vanilla asset
 //! catalog, fallback path, or capture-bundle constructor.
 
-use crate::{GameFileResolver, Result};
+use crate::{bind_exact_rail_d80_draws, ExactRailD80Binding, GameFileResolver, Result};
 use replay_core::{
     AuthenticatedCameraCarrier, AuthenticatedUiPass, BufferSource, ConstantBufferBinding, ContentManifest, EntitySubmission,
     C07TreeRuntimeCarrier, HudCommandExecution, M02CombatFrame,
     M03ArrowFrame, O04CityFrame, O05BuildingFrame, ParticlePacket, PoliticalTexturePacket, ProductionRenderFrame,
+    RailSupplyArrowFrame,
     RenderExecutionRef, RenderOutputRef, RenderSubmit, RequiredContentKind, StaticGeometrySource, StaticMapCommand,
     StaticMapPassProgram, StaticShaderResourceSource, TiledLightSubmission, UiPassOperation,
     UsedContentKey, ValidatedContentAdmission, S1ShadowCarrier,
@@ -210,6 +211,10 @@ pub struct PreparedProductionMapFrame {
     /// An empty vector is authoritative unavailability, never permission to
     /// synthesize pipeline state from vanilla paths or retained captures.
     pub ordered_static_map_programs: Vec<StaticMapPassProgram>,
+    /// D81 semantics joined to engine-built D80 railroad draws through the
+    /// authenticated a729 registration producer. `None` never authorizes
+    /// reconstructed centroid ribbons or shader-name inference.
+    pub rail_ribbon: Option<ExactRailD80Binding>,
     /// Exact selected-Present runtime SnowMudData packet consumed by static
     /// bindings carrying `StaticShaderResourceSource::SnowMudTexture`.
     pub snow_mud_texture: Option<replay_core::SnowMudTexturePacket>,
@@ -234,6 +239,9 @@ pub struct PreparedProductionMapFrame {
     /// independently of map-dimension admission for execution before Present.
     pub authenticated_ui_pass: Option<AuthenticatedUiPass>,
     pub m03_arrows: Option<M03ArrowFrame>,
+    /// Separate exact supply-map railway carrier. Its draw payloads remain in
+    /// `ordered_static_map_programs` and execute through the static path.
+    pub rail_supply_arrows: Option<RailSupplyArrowFrame>,
     pub o04_cities: Option<O04CityFrame>,
     pub o05_buildings: Option<O05BuildingFrame>,
     pub omitted_data_needs: Vec<ProductionMapDataNeed>,
@@ -327,6 +335,15 @@ impl ProductionMapRenderer {
         &mut self,
         production_render: Option<&ProductionRenderFrame>,
     ) -> Result<PreparedProductionMapFrame> {
+        self.prepare_frame_with_rail(production_render, None, None)
+    }
+
+    pub fn prepare_frame_with_rail(
+        &mut self,
+        production_render: Option<&ProductionRenderFrame>,
+        rail_replay: Option<&replay_core::RailReplayView>,
+        production_by_country: Option<&BTreeMap<String, replay_core::ProductionView>>,
+    ) -> Result<PreparedProductionMapFrame> {
         self.resources.clear();
         let mut omitted_data_needs = Vec::new();
         let (
@@ -345,6 +362,7 @@ impl ProductionMapRenderer {
             m02_combat,
             authenticated_ui_pass,
             m03_arrows,
+            rail_supply_arrows,
             o04_cities,
             o05_buildings,
         ) = match production_render {
@@ -372,6 +390,7 @@ impl ProductionMapRenderer {
                     None,
                     None,
                     None,
+                    None,
                 )
             }
             Some(frame) => {
@@ -391,6 +410,9 @@ impl ProductionMapRenderer {
                 }
                 if let Some(m03) = &frame.m03_arrows {
                     self.validate_m03_content(m03)?;
+                }
+                if let Some(rail) = &frame.rail_supply_arrows {
+                    self.validate_rail_supply_content(rail)?;
                 }
                 if let Some(o04) = &frame.o04_cities {
                     self.validate_o04_content(frame, o04)?;
@@ -415,6 +437,7 @@ impl ProductionMapRenderer {
                         frame.m02_combat.clone(),
                         frame.authenticated_ui_pass.clone(),
                         frame.m03_arrows.clone(),
+                        frame.rail_supply_arrows.clone(),
                         frame.o04_cities.clone(),
                         frame.o05_buildings.clone(),
                     ),
@@ -455,6 +478,7 @@ impl ProductionMapRenderer {
                             frame.m02_combat.clone(),
                             frame.authenticated_ui_pass.clone(),
                             frame.m03_arrows.clone(),
+                            frame.rail_supply_arrows.clone(),
                             frame.o04_cities.clone(),
                             frame.o05_buildings.clone(),
                         )
@@ -462,6 +486,35 @@ impl ProductionMapRenderer {
                 }
             }
         };
+
+        let selected_rail_submit = production_render
+            .map(selected_submit)
+            .transpose()?
+            .flatten();
+        let rail_ribbon = rail_replay
+            .map(|view| {
+                bind_exact_rail_d80_draws(
+                    view,
+                    production_by_country,
+                    selected_rail_submit
+                        .map(|submit| submit.rail_construction_arrows.as_slice())
+                        .unwrap_or(&[]),
+                    selected_rail_submit
+                        .map(|submit| submit.entities.as_slice())
+                        .unwrap_or(&[]),
+                    &ordered_static_map_programs,
+                    &ordered_render_operations,
+                )
+            })
+            .transpose()?
+            .flatten();
+        if rail_ribbon.is_none() {
+            omitted_data_needs.push(ProductionMapDataNeed {
+                packet: "D81/D80".into(),
+                feature: "exact railroad ribbon draw".into(),
+                reason: "no D81 carrier was joined to an authenticated railroad-registration D80 draw; centroid tessellation, shader-name inference, and guessed interleave are forbidden".into(),
+            });
+        }
 
         if m02_combat.is_none() {
             omitted_data_needs.push(ProductionMapDataNeed {
@@ -495,6 +548,13 @@ impl ProductionMapRenderer {
                         .into(),
             });
         }
+        if rail_supply_arrows.is_none() {
+            omitted_data_needs.push(ProductionMapDataNeed {
+                packet: "D81/rail-supply-map".into(),
+                feature: "railway supply-map damage/cooldown arrows".into(),
+                reason: "portable production frame has no authenticated rail supply-map carrier joined to exact normal and see-through static draws; M03 and construction-pause state are not substitutes".into(),
+            });
+        }
         if o04_cities.is_none() {
             omitted_data_needs.push(ProductionMapDataNeed {
                 packet: "O04".into(),
@@ -521,6 +581,7 @@ impl ProductionMapRenderer {
             c03_camera_replay,
             ordered_scene_constant_buffers,
             ordered_static_map_programs,
+            rail_ribbon,
             snow_mud_texture,
             tree_runtime,
             s1_shadow,
@@ -531,6 +592,7 @@ impl ProductionMapRenderer {
             m02_combat,
             authenticated_ui_pass,
             m03_arrows,
+            rail_supply_arrows,
             o04_cities,
             o05_buildings,
             omitted_data_needs,
@@ -706,6 +768,19 @@ impl ProductionMapRenderer {
                 )
                 .into());
             }
+            self.resolver.read_admitted_used_content(content)?;
+        }
+        Ok(())
+    }
+
+    fn validate_rail_supply_content(&self, frame: &RailSupplyArrowFrame) -> Result<()> {
+        frame
+            .validate()
+            .map_err(|error| format!("invalid rail supply-arrow carrier: {error}"))?;
+        for content in &frame.used_content {
+            self.resolver.read_admitted_used_content(content)?;
+        }
+        for content in &frame.draw_used_content {
             self.resolver.read_admitted_used_content(content)?;
         }
         Ok(())

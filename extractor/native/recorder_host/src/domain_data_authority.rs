@@ -19,6 +19,11 @@ use hub_motorization_live_lane as hub62;
 use hud_role_observer_live_lane as hud79;
 use land_combat_detail_events_live_lane as land_detail55;
 use compact_contract::national_focus_presentation as focus89;
+use compact_contract::preferred_tactic as preferred92;
+use compact_contract::pov_visibility as visibility94;
+use compact_contract::spotted_units as spotted95;
+use compact_contract::tactic_weight as weight96;
+use country_army_upgrade_requests_live_lane as army_upgrades93;
 use naval_combat_live_lane as naval4950;
 use naval_missions_status_live_lane as naval56;
 use nuke_stockpile_live_lane as nuke83;
@@ -27,13 +32,14 @@ use resolved_tooltip_instances_live_lane as tooltip72;
 use session_multiplayer_metadata_live as session57;
 use scripted_state_flags_variables_live_lane::scripted_gui_runtime_compact as scripted84;
 use sunk_ship_history_live_lane as sunk86;
+use supply_logistics_attrition_live_lane as supply44;
 
 use crate::campaign_identity::SessionHeaderIdentityObservation;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const A29_PRODUCER_AUTHORITY: &str =
-    "a729_observed_research_ahead_producer_v1";
+    "a729_observed_research_ahead_selected_present_v3";
 pub(crate) const A29_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 pub(crate) const A29_EXACT_ROOT_JOB_ID: &str =
@@ -45,8 +51,19 @@ pub(crate) const A29_SENTINEL_JOB_ID: &str =
 pub(crate) const A29_SENTINEL_DUMP_SHA256: &str =
     "3fbca6726f09499e6cf1961969ae4154b9c265f8e5c688f8d939d8397387cee2";
 pub(crate) const A29_UI_YEAR_PRODUCER_RVA: u64 = 0x01BC_EA60;
+pub(crate) const A29_UI_YEAR_HELPER_RVA: u64 = 0x00AB_EAA0;
+pub(crate) const A29_UI_YEAR_ACTION_IDENTITY_COMPARE_RVA: u64 = 0x01BC_F326;
+pub(crate) const A29_UI_YEAR_HELPER_RETURN_RVA: u64 = 0x01BC_F384;
 pub(crate) const A29_EFFECTIVE_VALUE_PRODUCER_RVA: u64 = 0x00AB_E4C0;
 pub(crate) const A29_LOCALIZATION_CONSUMER_RVA: u64 = 0x0223_0F20;
+pub(crate) const A29_ACTION_GATE_JOB_ID: &str =
+    "20260721T075619Z-wave6-a29-active-ahead-ui-producer-ced43f28";
+pub(crate) const A29_ACTION_GATE_MANIFEST_SHA256: &str =
+    "8d802c9eb2fe5e78ab52d7512d8d01dd5793b9c29fac8627c17fb6cafcc621ba";
+pub(crate) const A29_ACTION_GATE_SENTINEL_JOB_ID: &str =
+    "20260721T081803Z-wave6-a29-year-action-gate-sentinels-442109ac";
+pub(crate) const A29_ACTION_GATE_SENTINEL_DUMP_SHA256: &str =
+    "44169d40d8ccc979f2f78eb7be11e2e7995e28dc4f3c6feb9da48ae928257517";
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn a29_expected_source_record_sha256(
@@ -55,25 +72,48 @@ pub(crate) fn a29_expected_source_record_sha256(
     callback_qpc_ticks: u64,
     qpc_frequency_hz: u64,
     producer_game_hour_raw: i32,
+    research_slot_index: u32,
     technology_definition_index_raw: u32,
     branch: u32,
     quartet: (i64, i64, i64, i64),
+    candidate_count: u32,
+    selected_candidate_id: u64,
+    selected_ordinal: u32,
+    selected_game_hour_raw: i32,
+    selected_qpc_ticks: u64,
+    selection_cutoff_qpc_ticks: u64,
+    candidate_set_sha256: &[u8; 32],
+    selected_present_receipt_sha256: &[u8; 32],
 ) -> [u8; 32] {
     let mut canonical = Vec::with_capacity(512);
-    canonical.extend_from_slice(b"the game:a729:a29-observed-producer:v1\0");
+    canonical.extend_from_slice(b"the game:a729:a29-observed-producer:selected-present:v3\0");
     canonical.extend_from_slice(A29_EXECUTABLE_SHA256.as_bytes());
     canonical.extend_from_slice(A29_EXACT_ROOT_MANIFEST_SHA256.as_bytes());
     canonical.extend_from_slice(A29_SENTINEL_DUMP_SHA256.as_bytes());
+    canonical.extend_from_slice(A29_ACTION_GATE_MANIFEST_SHA256.as_bytes());
+    canonical.extend_from_slice(A29_ACTION_GATE_SENTINEL_DUMP_SHA256.as_bytes());
+    canonical.extend_from_slice(&A29_UI_YEAR_HELPER_RETURN_RVA.to_le_bytes());
     canonical.extend_from_slice(&callback_sequence.to_le_bytes());
     canonical.extend_from_slice(&callback_thread_id.to_le_bytes());
     canonical.extend_from_slice(&callback_qpc_ticks.to_le_bytes());
     canonical.extend_from_slice(&qpc_frequency_hz.to_le_bytes());
     canonical.extend_from_slice(&producer_game_hour_raw.to_le_bytes());
+    canonical.extend_from_slice(&research_slot_index.to_le_bytes());
     canonical.extend_from_slice(&technology_definition_index_raw.to_le_bytes());
     canonical.extend_from_slice(&branch.to_le_bytes());
     for value in [quartet.0, quartet.1, quartet.2, quartet.3] {
         canonical.extend_from_slice(&value.to_le_bytes());
     }
+    canonical.extend_from_slice(&candidate_count.to_le_bytes());
+    canonical.extend_from_slice(&selected_candidate_id.to_le_bytes());
+    canonical.extend_from_slice(&selected_ordinal.to_le_bytes());
+    canonical.extend_from_slice(&selected_game_hour_raw.to_le_bytes());
+    canonical.extend_from_slice(&selected_qpc_ticks.to_le_bytes());
+    canonical.extend_from_slice(&selection_cutoff_qpc_ticks.to_le_bytes());
+    canonical.extend_from_slice(snapshot::sha256::to_hex(candidate_set_sha256).as_bytes());
+    canonical.extend_from_slice(
+        snapshot::sha256::to_hex(selected_present_receipt_sha256).as_bytes(),
+    );
     let digest = Sha256::digest(canonical);
     let mut output = [0u8; 32];
     output.copy_from_slice(&digest);
@@ -84,7 +124,7 @@ pub const SUPPORTED_DOMAIN_DATA_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
     36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 60, 61,
     62, 63, 64, 65, 66, 67, 68, 69, 70, 72, 75, 78, 79, 81, 82, 83, 84, 85, 86, 87, 88, 89,
-    90,
+    90, 91, 92, 93, 94, 95, 96,
 ];
 
 pub const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 =
@@ -374,6 +414,9 @@ pub const COMPACT_TECH_SHARING_GROUP_MAX_MEMBER_TAG_DB_ID: u32 = 2_048;
 pub const COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE: u16 = compact_contract::naval_history::DOMAIN_ID;
 pub const COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE: u16 = compact_contract::rail_replay::DOMAIN_ID;
 pub const COMPACT_DOMAIN_RAID_INSTANCES_LIVE: u16 = compact_contract::raid_instances::DOMAIN_ID;
+pub const COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_LIVE: u16 = preferred92::DOMAIN_ID;
+pub const COMPACT_DOMAIN_COUNTRY_ARMY_UPGRADE_REQUESTS_LIVE: u16 = army_upgrades93::DOMAIN_ID;
+pub const COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_WEIGHT_LIVE: u16 = weight96::DOMAIN_ID;
 
 pub const COMPACT_SUPPLY_LOGISTICS_HEADER_LEN: usize = 48;
 pub const COMPACT_SUPPLY_LOGISTICS_ROW_LEN: usize = 40;
@@ -1052,6 +1095,149 @@ fn decode_compact_country_identity_data_payload(
         "country_cosmetic_absent_rows",
         cosmetic_absent_rows,
     );
+    if cursor < payload.len() {
+        let parsed = (|| -> Result<(usize, usize, usize, usize, usize, usize), String> {
+            const HEADER_LEN: usize = 40;
+            if payload.len().saturating_sub(cursor) < HEADER_LEN
+                || &payload[cursor..cursor + 4] != b"CIM1"
+                || read_u16_le(payload, cursor + 4) != 1
+                || read_u16_le(payload, cursor + 6) as usize != HEADER_LEN
+                || read_u32_le(payload, cursor + 36) != 0
+            {
+                return Err("CIM1 header is invalid".into());
+            }
+            let claims_status = read_u32_le(payload, cursor + 8);
+            let cores_status = read_u32_le(payload, cursor + 12);
+            let major_status = read_u32_le(payload, cursor + 16);
+            let states = read_u32_le(payload, cursor + 20) as usize;
+            let expected_claims = read_u32_le(payload, cursor + 24) as usize;
+            let expected_cores = read_u32_le(payload, cursor + 28) as usize;
+            let majors = read_u32_le(payload, cursor + 32) as usize;
+            let claims_available = !compact_contract::compact_status_is_failure(claims_status);
+            let cores_available = !compact_contract::compact_status_is_failure(cores_status);
+            let major_available = !compact_contract::compact_status_is_failure(major_status);
+            if states > 100_000
+                || expected_claims > 1_000_000
+                || expected_cores > 1_000_000
+                || majors > seen_tag_ids.len()
+                || (!claims_available && expected_claims != 0)
+                || (!cores_available && expected_cores != 0)
+                || (!claims_available && !cores_available && states != 0)
+                || (!major_available && majors != 0)
+                || (major_available && majors != seen_tag_ids.len())
+            {
+                return Err("CIM1 status/count contract is invalid".into());
+            }
+            let mut at = cursor + HEADER_LEN;
+            let mut claim_total = 0usize;
+            let mut core_total = 0usize;
+            let mut previous_state = 0u32;
+            for state_index in 0..states {
+                if payload.len().saturating_sub(at) < 12 {
+                    return Err(format!("CIM1 state row {state_index} is truncated"));
+                }
+                let state_id = read_u32_le(payload, at);
+                let claim_count = read_u32_le(payload, at + 4) as usize;
+                let core_count = read_u32_le(payload, at + 8) as usize;
+                at += 12;
+                if state_id == 0 || (state_index != 0 && state_id <= previous_state) {
+                    return Err(format!("CIM1 state row {state_index} is not strictly ordered"));
+                }
+                previous_state = state_id;
+                if (!claims_available && claim_count != 0)
+                    || (!cores_available && core_count != 0)
+                {
+                    return Err(format!("CIM1 unavailable state row {state_id} carries members"));
+                }
+                let member_bytes = claim_count
+                    .checked_add(core_count)
+                    .and_then(|count| count.checked_mul(4))
+                    .ok_or_else(|| "CIM1 state member size overflow".to_string())?;
+                if payload.len().saturating_sub(at) < member_bytes {
+                    return Err(format!("CIM1 state row {state_id} members are truncated"));
+                }
+                let mut previous_tag = 0u32;
+                for member_index in 0..claim_count {
+                    let tag = read_u32_le(payload, at);
+                    at += 4;
+                    if tag == 0
+                        || (member_index != 0 && tag <= previous_tag)
+                        || !seen_tag_ids.contains(&tag)
+                    {
+                        return Err(format!("CIM1 state {state_id} claim member is invalid"));
+                    }
+                    previous_tag = tag;
+                    claim_total += 1;
+                }
+                previous_tag = 0;
+                for member_index in 0..core_count {
+                    let tag = read_u32_le(payload, at);
+                    at += 4;
+                    if tag == 0
+                        || (member_index != 0 && tag <= previous_tag)
+                        || !seen_tag_ids.contains(&tag)
+                    {
+                        return Err(format!("CIM1 state {state_id} core member is invalid"));
+                    }
+                    previous_tag = tag;
+                    core_total += 1;
+                }
+            }
+            if claim_total != expected_claims || core_total != expected_cores {
+                return Err("CIM1 membership totals do not match header".into());
+            }
+            let mut major_true = 0usize;
+            let mut major_ids = BTreeSet::new();
+            let mut previous_major = 0u32;
+            for major_index in 0..majors {
+                if payload.len().saturating_sub(at) < 8 {
+                    return Err(format!("CIM1 major row {major_index} is truncated"));
+                }
+                let tag = read_u32_le(payload, at);
+                let marker = payload[at + 4];
+                if tag == 0
+                    || (major_index != 0 && tag <= previous_major)
+                    || marker > 1
+                    || payload[at + 5..at + 8] != [0, 0, 0]
+                    || !seen_tag_ids.contains(&tag)
+                {
+                    return Err(format!("CIM1 major row {major_index} is invalid"));
+                }
+                previous_major = tag;
+                major_ids.insert(tag);
+                major_true += usize::from(marker != 0);
+                at += 8;
+            }
+            if major_available && major_ids != seen_tag_ids {
+                return Err("CIM1 major roster is incomplete".into());
+            }
+            if at != payload.len() {
+                return Err(format!("CIM1 has {} trailing byte(s)", payload.len() - at));
+            }
+            Ok((states, claim_total, core_total, majors, major_true, at))
+        })();
+        match parsed {
+            Ok((states, claims, cores, majors, major_true, consumed)) => {
+                add_compact_domain_data_unit(summary, 18, "country_membership_state_rows", states);
+                add_compact_domain_data_unit(summary, 18, "country_claim_memberships", claims);
+                add_compact_domain_data_unit(summary, 18, "country_core_memberships", cores);
+                add_compact_domain_data_unit(summary, 18, "country_dynamic_major_rows", majors);
+                add_compact_domain_data_unit(
+                    summary,
+                    18,
+                    "country_dynamic_major_true_rows",
+                    major_true,
+                );
+                cursor = consumed;
+            }
+            Err(error) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: country_identity data {error}"
+                ));
+                return;
+            }
+        }
+    }
     if cursor != payload.len() {
         summary.parse_errors.push(format!(
             "offset {offset}: country_identity data payload has {} trailing byte(s) after {row_count} row(s)",
@@ -2496,7 +2682,7 @@ fn decode_compact_tech_data_payload(
                 ));
                 return;
             }
-            if cursor.saturating_add(72) > payload.len() {
+            if cursor.saturating_add(176) > payload.len() {
                 summary.parse_errors.push(format!(
                     "offset {offset}: tech active row {row_index} A29 provenance is truncated"
                 ));
@@ -2510,6 +2696,17 @@ fn decode_compact_tech_data_payload(
             let callback_qpc_ticks = read_u64_le(payload, cursor + 24);
             let qpc_frequency_hz = read_u64_le(payload, cursor + 32);
             let source_sha = &payload[cursor + 40..cursor + 72];
+            let ui_action_gate_return_rva = read_u32_le(payload, cursor + 72);
+            let candidate_count = read_u32_le(payload, cursor + 76);
+            let selected_ordinal = read_u32_le(payload, cursor + 80);
+            let selected_game_hour_raw = read_i32_le(payload, cursor + 84);
+            let selected_candidate_id = read_u64_le(payload, cursor + 88);
+            let selected_qpc_ticks = read_u64_le(payload, cursor + 96);
+            let selection_cutoff_qpc_ticks = read_u64_le(payload, cursor + 104);
+            let candidate_set_sha256: [u8; 32] =
+                payload[cursor + 112..cursor + 144].try_into().unwrap();
+            let selected_present_receipt_sha256: [u8; 32] =
+                payload[cursor + 144..cursor + 176].try_into().unwrap();
             let expected_source_sha = ahead_quartet.map(|quartet| {
                 a29_expected_source_record_sha256(
                     callback_sequence,
@@ -2517,12 +2714,32 @@ fn decode_compact_tech_data_payload(
                     callback_qpc_ticks,
                     qpc_frequency_hz,
                     producer_game_hour_raw,
+                    slot_index,
                     tech_def_index_raw,
                     branch,
                     quartet,
+                    candidate_count,
+                    selected_candidate_id,
+                    selected_ordinal,
+                    selected_game_hour_raw,
+                    selected_qpc_ticks,
+                    selection_cutoff_qpc_ticks,
+                    &candidate_set_sha256,
+                    &selected_present_receipt_sha256,
                 )
             });
-            if authority != 1
+            let computed_selected_present_sha256 = portable_render_stream::SelectedPresentReceipt::sealed(
+                candidate_count,
+                snapshot::sha256::to_hex(&candidate_set_sha256),
+                selected_candidate_id,
+                selected_ordinal,
+                selected_game_hour_raw,
+                selected_qpc_ticks,
+                selection_cutoff_qpc_ticks,
+            )
+            .computed_sha256()
+            .ok();
+            if authority != 3
                 || !matches!(branch, 0 | 1 | 2)
                 || match (branch, ahead_quartet) {
                     (0, Some((years, penalty, reduction, reduced_penalty))) => {
@@ -2539,6 +2756,16 @@ fn decode_compact_tech_data_payload(
                 || producer_game_hour_raw <= 0
                 || callback_qpc_ticks == 0
                 || qpc_frequency_hz == 0
+                || ui_action_gate_return_rva != A29_UI_YEAR_HELPER_RETURN_RVA as u32
+                || candidate_count == 0
+                || selected_ordinal >= candidate_count
+                || selected_game_hour_raw != producer_game_hour_raw
+                || callback_qpc_ticks > selected_qpc_ticks
+                || selection_cutoff_qpc_ticks < selected_qpc_ticks
+                || candidate_set_sha256.iter().all(|byte| *byte == 0)
+                || selected_present_receipt_sha256.iter().all(|byte| *byte == 0)
+                || computed_selected_present_sha256.as_deref()
+                    != Some(snapshot::sha256::to_hex(&selected_present_receipt_sha256).as_str())
                 || source_sha.iter().all(|byte| *byte == 0)
                 || expected_source_sha
                     .is_none_or(|expected| source_sha != expected.as_slice())
@@ -2547,7 +2774,7 @@ fn decode_compact_tech_data_payload(
                     "offset {offset}: tech active row {row_index} A29 provenance is invalid"
                 ));
             }
-            cursor += 72;
+            cursor += 176;
             add_compact_domain_data_unit(summary, 13, "observed_ahead_provenance_rows", 1);
         } else if flags & (1 << 3) != 0 {
             summary.parse_errors.push(format!(
@@ -7302,6 +7529,7 @@ fn decode_compact_construction_buildings_state_damage_live_data_payload(
     let row_count = decoded
         .summary
         .construction_rows
+        .saturating_add(decoded.summary.railway_construction_rows)
         .saturating_add(decoded.summary.building_rows)
         .saturating_add(decoded.summary.resource_rows);
     if let Some(domain) = summary
@@ -7319,6 +7547,12 @@ fn decode_compact_construction_buildings_state_damage_live_data_payload(
         COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE,
         "construction_queue_rows",
         decoded.summary.construction_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE,
+        "railway_construction_rows",
+        decoded.summary.railway_construction_rows,
     );
     add_compact_domain_data_unit(
         summary,
@@ -12173,6 +12407,181 @@ fn decode_compact_raid_instances_data_payload(
     );
 }
 
+fn decode_compact_country_preferred_tactic_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    if payload.len() >= 20 {
+        add_decoder_status(summary, read_u32_le(payload, 16));
+    }
+    let decoded = match preferred92::decode_payload(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_preferred_tactic PTC1 payload invalid: {error}"
+            ));
+            return;
+        }
+    };
+    let selected = decoded
+        .rows
+        .iter()
+        .filter(|row| row.tactic_database_id > 0)
+        .count();
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_LIVE)
+    {
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(decoded.rows.len() as u64);
+        domain.status_flags_or |= decoded.status_flags;
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_LIVE,
+        "country_preferred_tactic_rows",
+        decoded.rows.len(),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_LIVE,
+        "country_preferred_tactic_selected_rows",
+        selected,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_LIVE,
+        "country_preferred_tactic_none_rows",
+        decoded.rows.len().saturating_sub(selected),
+    );
+}
+
+fn decode_compact_country_preferred_tactic_weight_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    if payload.len() >= 20 {
+        add_decoder_status(summary, read_u32_le(payload, 16));
+    }
+    let decoded = match weight96::decode_payload(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_preferred_tactic_weight PTW1 payload invalid: {error}"
+            ));
+            return;
+        }
+    };
+    let accumulator_entries = decoded
+        .rows
+        .iter()
+        .filter(|row| row.accumulator_entry_present)
+        .count();
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_WEIGHT_LIVE)
+    {
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(decoded.rows.len() as u64);
+        domain.status_flags_or |= decoded.status_flags;
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_WEIGHT_LIVE,
+        "country_preferred_tactic_weight_observed_country_count",
+        decoded.observed_country_count as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_WEIGHT_LIVE,
+        "country_preferred_tactic_weight_selected_rows",
+        decoded.rows.len(),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_WEIGHT_LIVE,
+        "country_preferred_tactic_weight_override_rows",
+        accumulator_entries,
+    );
+}
+
+fn decode_compact_country_army_upgrade_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    let decoded = match army_upgrades93::decode_payload(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_army_upgrade_requests AUR1 payload invalid: {error:?}"
+            ));
+            return;
+        }
+    };
+    let (countries, groups, requests, deliveries, produced) = decoded.snapshot.as_ref().map_or(
+        (0usize, 0usize, 0usize, 0usize, 0usize),
+        |snapshot| {
+            let groups = snapshot
+                .countries
+                .iter()
+                .map(|country| country.groups.len())
+                .sum::<usize>();
+            let requests = snapshot
+                .countries
+                .iter()
+                .flat_map(|country| &country.groups)
+                .map(|group| group.requests.len())
+                .sum::<usize>();
+            let deliveries = snapshot
+                .countries
+                .iter()
+                .flat_map(|country| &country.groups)
+                .map(|group| group.deliveries.len())
+                .sum::<usize>();
+            let produced = snapshot
+                .countries
+                .iter()
+                .flat_map(|country| &country.groups)
+                .flat_map(|group| &group.deliveries)
+                .map(|delivery| delivery.produced.len())
+                .sum::<usize>();
+            (
+                snapshot.countries.len(),
+                groups,
+                requests,
+                deliveries,
+                produced,
+            )
+        },
+    );
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_COUNTRY_ARMY_UPGRADE_REQUESTS_LIVE)
+    {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(countries as u64);
+        domain.status_flags_or |= decoded.status_flags;
+    }
+    for (name, count) in [
+        ("country_army_upgrade_countries", countries),
+        ("country_army_upgrade_groups", groups),
+        ("country_army_upgrade_requests", requests),
+        ("country_army_upgrade_deliveries", deliveries),
+        ("country_army_upgrade_produced_rows", produced),
+    ] {
+        add_compact_domain_data_unit(
+            summary,
+            COMPACT_DOMAIN_COUNTRY_ARMY_UPGRADE_REQUESTS_LIVE,
+            name,
+            count,
+        );
+    }
+}
+
 fn decode_compact_rail_replay_state_data_payload(
     offset: usize,
     payload: &[u8],
@@ -12833,9 +13242,9 @@ fn decode_compact_supply_logistics_attrition_data_payload(
     }
     let expected_len = COMPACT_SUPPLY_LOGISTICS_HEADER_LEN
         .saturating_add(row_count.saturating_mul(COMPACT_SUPPLY_LOGISTICS_ROW_LEN));
-    if payload.len() != expected_len {
+    if payload.len() < expected_len {
         summary.parse_errors.push(format!(
-            "offset {offset}: supply logistics data payload is {} byte(s), expected {expected_len}",
+            "offset {offset}: supply logistics data payload is {} byte(s), expected at least {expected_len}",
             payload.len()
         ));
         return;
@@ -13277,14 +13686,11 @@ fn decode_compact_supply_logistics_attrition_data_payload(
                 }
                 if flags & COMPACT_SUPPLY_ROW_FLAG_ATTRITION_WALL != 0 {
                     has_attrition_wall = true;
-                    validate_supply_logistics_badge(
-                        offset,
-                        summary,
-                        row_index,
-                        "attrition",
-                        value_a_raw,
-                        COMPACT_SUPPLY_BADGE_ATTRITION_RUNTIME_COMPUTED,
-                    );
+                    if value_a_raw != COMPACT_SUPPLY_BADGE_ATTRITION_RUNTIME_COMPUTED {
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: supply logistics attrition badge row {row_index} has unsupported code {value_a_raw}"
+                        ));
+                    }
                 }
                 if flags & COMPACT_SUPPLY_ROW_FLAG_MOTORIZATION_WALL != 0 {
                     has_motorization_wall = true;
@@ -13334,6 +13740,344 @@ fn decode_compact_supply_logistics_attrition_data_payload(
             other => summary.parse_errors.push(format!(
                 "offset {offset}: supply logistics row {row_index} has unknown row_kind {other}"
             )),
+        }
+    }
+
+    // Additive D44 trailer chain: optional FHB1, optional ATR1, optional ARC1,
+    // optional PST1.
+    // PST1 is last because its strict codec owns EOF.
+    let mut extension_cursor = expected_len;
+    if payload.len().saturating_sub(extension_cursor) >= 4
+        && read_u32_le(payload, extension_cursor) == u32::from_le_bytes(*b"FHB1")
+    {
+        if payload.len().saturating_sub(extension_cursor) < 16 {
+            summary.parse_errors.push(format!("offset {offset}: truncated supply FHB1 header"));
+            return;
+        }
+        let row_count = read_u32_le(payload, extension_cursor + 8) as usize;
+        if read_u32_le(payload, extension_cursor + 4) != 1
+            || read_u32_le(payload, extension_cursor + 12) != 0
+        {
+            summary.parse_errors.push(format!("offset {offset}: invalid supply FHB1 header"));
+            return;
+        }
+        extension_cursor += 16;
+        if row_count > payload.len().saturating_sub(extension_cursor) / 80 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: supply FHB1 row_count exceeds payload byte budget"
+            ));
+            return;
+        }
+        let mut previous_key: Option<(u32, u32, String, u32)> = None;
+        for row_index in 0..row_count {
+            if payload.len().saturating_sub(extension_cursor) < 80 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: truncated supply FHB1 row {row_index}"
+                ));
+                return;
+            }
+            let owner_tag_db_id = read_u32_le(payload, extension_cursor);
+            let province_id = read_u32_le(payload, extension_cursor + 4);
+            let occurrence = read_u32_le(payload, extension_cursor + 8);
+            let flags = read_u32_le(payload, extension_cursor + 12);
+            let supply_raw = read_i64_le(payload, extension_cursor + 16);
+            let start_raw = read_i64_le(payload, extension_cursor + 24);
+            let penalty_raw = read_i64_le(payload, extension_cursor + 32);
+            let added_penalty_raw = read_i64_le(payload, extension_cursor + 40);
+            let duration_raw = read_i64_le(payload, extension_cursor + 48);
+            let hours_raw = read_i64_le(payload, extension_cursor + 56);
+            let decay_raw = read_i64_le(payload, extension_cursor + 64);
+            let base_raw = payload[extension_cursor + 72];
+            if payload[extension_cursor + 73..extension_cursor + 76]
+                .iter()
+                .any(|byte| *byte != 0)
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: supply FHB1 row {row_index} has nonzero reserved bytes"
+                ));
+                return;
+            }
+            let source_len = read_u32_le(payload, extension_cursor + 76) as usize;
+            if owner_tag_db_id == 0
+                || owner_tag_db_id > COMPACT_SUPPLY_MAX_TAG_DB_ID
+                || province_id == 0
+                || province_id > COMPACT_SUPPLY_MAX_PROVINCE_ID
+                || flags & !1 != 0
+                || base_raw > 1
+                || source_len > 4_096
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: supply FHB1 row {row_index} identity/flags/base/source length invalid"
+                ));
+                return;
+            }
+            let source_start = match extension_cursor.checked_add(80) {
+                Some(cursor) => cursor,
+                None => {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply FHB1 row {row_index} offset overflow"
+                    ));
+                    return;
+                }
+            };
+            let source_end = match source_start
+                .checked_add(source_len)
+            {
+                Some(cursor) if cursor <= payload.len() => cursor,
+                _ => {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: invalid supply FHB1 source length at row {row_index}"
+                    ));
+                    return;
+                }
+            };
+            let source = match std::str::from_utf8(&payload[source_start..source_end]) {
+                Ok(source) => source.to_owned(),
+                Err(_) => {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply FHB1 row {row_index} source is not utf8"
+                    ));
+                    return;
+                }
+            };
+            let deleted = flags & 1 != 0;
+            if deleted
+                && (!delta_data
+                    || supply_raw != 0
+                    || start_raw != 0
+                    || penalty_raw != 0
+                    || added_penalty_raw != 0
+                    || duration_raw != 0
+                    || hours_raw != 0
+                    || decay_raw != 0
+                    || base_raw != 0)
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: supply FHB1 row {row_index} has invalid tombstone"
+                ));
+                return;
+            }
+            let key = (owner_tag_db_id, province_id, source, occurrence);
+            if previous_key
+                .as_ref()
+                .is_some_and(|previous| previous >= &key)
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: supply FHB1 row {row_index} is duplicate or not canonical"
+                ));
+                return;
+            }
+            if !delta_data {
+                let expected_occurrence = match previous_key.as_ref() {
+                    Some(previous)
+                        if previous.0 == key.0
+                            && previous.1 == key.1
+                            && previous.2 == key.2 =>
+                    {
+                        match previous.3.checked_add(1) {
+                            Some(value) => value,
+                            None => {
+                                summary.parse_errors.push(format!(
+                                    "offset {offset}: supply FHB1 row {row_index} occurrence overflow"
+                                ));
+                                return;
+                            }
+                        }
+                    }
+                    _ => 0,
+                };
+                if occurrence != expected_occurrence {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply FHB1 row {row_index} occurrence {occurrence} != canonical {expected_occurrence}"
+                    ));
+                    return;
+                }
+            }
+            previous_key = Some(key);
+            extension_cursor = source_end;
+        }
+    }
+
+    let mut atr_rows = 0usize;
+    if payload.len().saturating_sub(extension_cursor) >= 4
+        && read_u32_le(payload, extension_cursor) == u32::from_le_bytes(*b"ATR1")
+    {
+        if payload.len().saturating_sub(extension_cursor) < 16 {
+            summary.parse_errors.push(format!("offset {offset}: truncated supply ATR1 header"));
+            return;
+        }
+        atr_rows = read_u32_le(payload, extension_cursor + 8) as usize;
+        if read_u32_le(payload, extension_cursor + 4) != 1
+            || read_u32_le(payload, extension_cursor + 12) != 0
+        {
+            summary.parse_errors.push(format!("offset {offset}: invalid supply ATR1 header"));
+            return;
+        }
+        extension_cursor += 16;
+        let mut prior_id = None;
+        for row_index in 0..atr_rows {
+            if payload.len().saturating_sub(extension_cursor) < 64 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: truncated supply ATR1 row {row_index}"
+                ));
+                return;
+            }
+            let division_id = read_u32_le(payload, extension_cursor);
+            let province_id = read_u32_le(payload, extension_cursor + 4);
+            let owner_tag_db_id = read_u32_le(payload, extension_cursor + 8);
+            let flags = read_u32_le(payload, extension_cursor + 12);
+            let total_raw = read_i64_le(payload, extension_cursor + 16);
+            let threshold_raw = read_i64_le(payload, extension_cursor + 24);
+            let base_raw = read_i64_le(payload, extension_cursor + 32);
+            let modifier_raw = read_i64_le(payload, extension_cursor + 40);
+            let reserved0 = read_i64_le(payload, extension_cursor + 48);
+            let reserved1 = read_i64_le(payload, extension_cursor + 56);
+            extension_cursor += 64;
+            const DELETED: u32 = 1;
+            const OWNER: u32 = 1 << 1;
+            const TOTAL: u32 = 1 << 2;
+            const THRESHOLD: u32 = 1 << 3;
+            const BADGE: u32 = 1 << 4;
+            const ACTIVE: u32 = 1 << 5;
+            const REASONS_TRANSIENT: u32 = 1 << 6;
+            const KNOWN: u32 = DELETED | OWNER | TOTAL | THRESHOLD | BADGE | ACTIVE | REASONS_TRANSIENT;
+            if division_id == 0
+                || division_id > COMPACT_SUPPLY_MAX_DIVISION_ID
+                || prior_id.is_some_and(|prior| prior >= division_id)
+                || flags & !KNOWN != 0
+                || reserved0 != 0
+                || reserved1 != 0
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: supply ATR1 row {row_index} identity/flags invalid"
+                ));
+                continue;
+            }
+            prior_id = Some(division_id);
+            if flags & DELETED != 0 {
+                if !delta_data
+                    || flags != DELETED
+                    || province_id != 0
+                    || owner_tag_db_id != 0
+                    || total_raw != 0
+                    || threshold_raw != 0
+                    || base_raw != 0
+                    || modifier_raw != 0
+                {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply ATR1 tombstone row {row_index} invalid"
+                    ));
+                }
+                continue;
+            }
+            if province_id == 0
+                || province_id > COMPACT_SUPPLY_MAX_PROVINCE_ID
+                || owner_tag_db_id == 0
+                || owner_tag_db_id > COMPACT_SUPPLY_MAX_TAG_DB_ID
+                || flags & (OWNER | TOTAL | REASONS_TRANSIENT)
+                    != (OWNER | TOTAL | REASONS_TRANSIENT)
+                || (flags & THRESHOLD != 0) != (flags & BADGE != 0)
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: supply ATR1 live row {row_index} identity/exactness invalid"
+                ));
+                continue;
+            }
+            if flags & THRESHOLD != 0 {
+                let expected = (i128::from(100_000i64) + i128::from(modifier_raw))
+                    .max(0)
+                    .checked_mul(i128::from(base_raw))
+                    .map(|value| value / i128::from(100_000i64));
+                if expected != Some(i128::from(threshold_raw))
+                    || (flags & ACTIVE != 0) != (total_raw > threshold_raw)
+                {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply ATR1 row {row_index} fails exact badge law"
+                    ));
+                }
+            } else if flags & ACTIVE != 0
+                || threshold_raw != 0
+                || base_raw != 0
+                || modifier_raw != 0
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: supply ATR1 row {row_index} has partial badge law"
+                ));
+            }
+        }
+        if !delta_data && atr_rows != observed_division_roots {
+            summary.parse_errors.push(format!(
+                "offset {offset}: supply ATR1 rows {atr_rows} != observed division roots {observed_division_roots}"
+            ));
+        }
+    }
+    add_compact_domain_data_unit(summary, 44, "supply_division_attrition_i64_rows", atr_rows);
+
+    if payload.len().saturating_sub(extension_cursor) >= 4
+        && read_u32_le(payload, extension_cursor)
+            == supply44::ATTRITION_COMPONENT_TRAILER_MAGIC
+    {
+        match supply44::decode_attrition_component_trailer_prefix(&payload[extension_cursor..]) {
+            Ok((batch, consumed)) => {
+                extension_cursor = match extension_cursor.checked_add(consumed) {
+                    Some(cursor) => cursor,
+                    None => {
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: supply ARC1 end offset overflow"
+                        ));
+                        return;
+                    }
+                };
+                if batch.dropped_rows == 0 {
+                    if batch.rows.len() != observed_division_roots as usize
+                        || batch.rows.iter().any(|row| {
+                            row.flags == supply44::ATTRITION_COMPONENT_FLAG_DELETED
+                        })
+                    {
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: supply ARC1 is not a complete live current-frame division roster"
+                        ));
+                        return;
+                    }
+                    add_compact_domain_data_unit(
+                        summary,
+                        44,
+                        "supply_division_attrition_component_rows",
+                        batch.rows.len(),
+                    );
+                }
+            }
+            Err(error) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: invalid supply ARC1 trailer: {error:?}"
+                ));
+                return;
+            }
+        }
+    }
+
+    if extension_cursor < payload.len() {
+        if payload.len().saturating_sub(extension_cursor) < 4
+            || read_u32_le(payload, extension_cursor) != supply44::TRAILER_MAGIC
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: unknown/truncated supply trailer at byte {extension_cursor}"
+            ));
+            return;
+        }
+        match supply44::decode_trailer(&payload[extension_cursor..]) {
+            Ok(batch) => add_compact_domain_data_unit(
+                summary,
+                44,
+                "supply_exact_tooltip_observation_rows",
+                batch.rows.len(),
+            ),
+            Err(error) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: invalid supply PST1 trailer: {error:?}"
+                ));
+                return;
+            }
         }
     }
 
@@ -15160,6 +15904,83 @@ fn valid_compact_land_combat_province_id(value: u32) -> bool {
     value > 0 && value <= COMPACT_LAND_COMBAT_MAX_PROVINCE_ID
 }
 
+fn decode_compact_pov_visibility_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    let decoded = match visibility94::PovVisibilitySnapshot::decode(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: POV province visibility FOW1 payload invalid: {error}"
+            ));
+            return;
+        }
+    };
+    if let Some(domain) = summary.per_domain.get_mut(&visibility94::DOMAIN_ID) {
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(decoded.province_levels.len() as u64);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        visibility94::DOMAIN_ID,
+        "pov_province_visibility_slots",
+        decoded.province_levels.len(),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        visibility94::DOMAIN_ID,
+        "pov_province_visibility_complete_frames",
+        1,
+    );
+}
+
+fn decode_compact_pov_spotted_units_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    let decoded = match spotted95::SpottedUnitsSnapshot::decode(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: POV spotted-units SPU1 payload invalid: {error}"
+            ));
+            return;
+        }
+    };
+    let row_count = decoded.land.len().saturating_add(decoded.taskforces.len());
+    if let Some(domain) = summary.per_domain.get_mut(&spotted95::DOMAIN_ID) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        spotted95::DOMAIN_ID,
+        "pov_spotted_land_rows",
+        decoded.land.len(),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        spotted95::DOMAIN_ID,
+        "pov_spotted_taskforce_rows",
+        decoded.taskforces.len(),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        spotted95::DOMAIN_ID,
+        "pov_spotted_land_complete_frames",
+        usize::from(decoded.land_frame_sequence.is_some()),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        spotted95::DOMAIN_ID,
+        "pov_spotted_taskforce_complete_frames",
+        usize::from(decoded.taskforce_frame_sequence.is_some()),
+    );
+}
+
 pub fn read_u16_le(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
 }
@@ -15463,6 +16284,25 @@ pub fn summarize_domain_data_payload(
         COMPACT_DOMAIN_RAID_INSTANCES_LIVE => {
             decode_compact_raid_instances_data_payload(offset, payload, &mut summary)
         }
+        COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_LIVE => {
+            decode_compact_country_preferred_tactic_data_payload(offset, payload, &mut summary)
+        }
+        COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_WEIGHT_LIVE => {
+            decode_compact_country_preferred_tactic_weight_data_payload(
+                offset,
+                payload,
+                &mut summary,
+            )
+        }
+        COMPACT_DOMAIN_COUNTRY_ARMY_UPGRADE_REQUESTS_LIVE => {
+            decode_compact_country_army_upgrade_data_payload(offset, payload, &mut summary)
+        }
+        visibility94::DOMAIN_ID => {
+            decode_compact_pov_visibility_data_payload(offset, payload, &mut summary)
+        }
+        spotted95::DOMAIN_ID => {
+            decode_compact_pov_spotted_units_data_payload(offset, payload, &mut summary)
+        }
         other => summary.parse_errors.push(format!(
             "offset {offset}: unsupported domain data payload for domain {other}"
         )),
@@ -15534,6 +16374,12 @@ pub fn collect_static_join_tokens(
         }
         COMPACT_DOMAIN_AIR_VARIANT_ARCHETYPES => collect_air_archetype_tokens(payload),
         COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE => collect_domain47_advisor_tokens(payload),
+        COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_LIVE => {
+            collect_country_preferred_tactic_tokens(payload)
+        }
+        COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_WEIGHT_LIVE => {
+            collect_country_preferred_tactic_weight_tokens(payload)
+        }
         _ => Ok(Vec::new()),
     }
     .map_err(|error| DomainDataError {
@@ -15541,6 +16387,36 @@ pub fn collect_static_join_tokens(
         partial_authority: authority,
     })?;
     Ok(rows.into_iter().collect())
+}
+
+fn collect_country_preferred_tactic_tokens(
+    payload: &[u8],
+) -> Result<Vec<StaticJoinToken>, String> {
+    let decoded = preferred92::decode_payload(payload)?;
+    Ok(decoded
+        .rows
+        .into_iter()
+        .filter_map(|row| {
+            row.tactic_id.map(|token| StaticJoinToken {
+                kind: "localisation",
+                token,
+            })
+        })
+        .collect())
+}
+
+fn collect_country_preferred_tactic_weight_tokens(
+    payload: &[u8],
+) -> Result<Vec<StaticJoinToken>, String> {
+    let decoded = weight96::decode_payload(payload)?;
+    Ok(decoded
+        .rows
+        .into_iter()
+        .map(|row| StaticJoinToken {
+            kind: "localisation",
+            token: row.tactic_id,
+        })
+        .collect())
 }
 
 fn collect_politics_advisor_tokens(payload: &[u8]) -> Result<Vec<StaticJoinToken>, String> {
@@ -15761,23 +16637,57 @@ mod tests {
         for raw in [150_000i64, 300_000, 50_000, 200_000] {
             payload.extend_from_slice(&raw.to_le_bytes());
         }
-        push_u32(&mut payload, 1); // exact observed-producer authority
+        push_u32(&mut payload, 3); // action-gated selected-Present authority
         push_u32(&mut payload, 2); // reduced localization branch
         payload.extend_from_slice(&1u64.to_le_bytes()); // callback sequence
         push_u32(&mut payload, 2); // callback thread id
         payload.extend_from_slice(&43_800_024i32.to_le_bytes());
         payload.extend_from_slice(&3u64.to_le_bytes()); // callback QPC
         payload.extend_from_slice(&10_000_000u64.to_le_bytes()); // QPC frequency
+        let candidate_set_sha256 = [0xabu8; 32];
+        let selected_present = portable_render_stream::SelectedPresentReceipt::sealed(
+            1,
+            snapshot::sha256::to_hex(&candidate_set_sha256),
+            7,
+            0,
+            43_800_024,
+            4,
+            5,
+        );
+        let selected_present_hex = selected_present.computed_sha256().unwrap();
+        let mut selected_present_receipt_sha256 = [0u8; 32];
+        for (index, byte) in selected_present_receipt_sha256.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&selected_present_hex[index * 2..index * 2 + 2], 16)
+                .unwrap();
+        }
         payload.extend_from_slice(&a29_expected_source_record_sha256(
             1,
             2,
             3,
             10_000_000,
             43_800_024,
+            1,
             717,
             2,
             (150_000, 300_000, 50_000, 200_000),
+            1,
+            7,
+            0,
+            43_800_024,
+            4,
+            5,
+            &candidate_set_sha256,
+            &selected_present_receipt_sha256,
         ));
+        payload.extend_from_slice(&(A29_UI_YEAR_HELPER_RETURN_RVA as u32).to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&43_800_024i32.to_le_bytes());
+        payload.extend_from_slice(&7u64.to_le_bytes());
+        payload.extend_from_slice(&4u64.to_le_bytes());
+        payload.extend_from_slice(&5u64.to_le_bytes());
+        payload.extend_from_slice(&candidate_set_sha256);
+        payload.extend_from_slice(&selected_present_receipt_sha256);
 
         let mut summary = DomainDataDecodeSummary {
             domain_id: 13,

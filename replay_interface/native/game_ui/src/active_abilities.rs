@@ -268,7 +268,7 @@ fn admit_row(
             "{prefix}.icon disagrees with the exact active/ordinary definition icon"
         )));
     }
-    if cost_command_power_fixed < 0 || cost_command_power_scale <= 0 {
+    if cost_command_power_scale <= 0 {
         return Err(ActiveAbilityRejection(format!(
             "{prefix}.cost_command_power fixed-point value is invalid"
         )));
@@ -465,6 +465,16 @@ mod tests {
         assert_eq!(admitted.cost_command_power_scale, 100_000);
         assert_eq!(admitted.tooltip, "Force Attack");
         assert_eq!(admitted.disabled_reason, "Already active");
+    }
+
+    #[test]
+    fn signed_effective_cost_is_admitted_without_clamping() {
+        let defs = BTreeMap::from([("force_attack".into(), definition())]);
+        let mut signed = row();
+        signed.cost_command_power_fixed = -2_200_000;
+        let admitted = admit_row(&signed, 0, &defs).expect("signed exact effective cost");
+        assert_eq!(admitted.cost_command_power_fixed, -2_200_000);
+        assert_eq!(admitted.cost_command_power_scale, 100_000);
     }
 
     #[test]

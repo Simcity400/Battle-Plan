@@ -24,7 +24,8 @@
 use crate::hud::{OutlinerBinding, OutlinerRowBinding};
 use crate::loc::Localisation;
 use crate::topbar::{
-    flag_candidates_for_size, month_name_english, FactoryCounts, FlagSizeFolder, TopbarBinding,
+    flag_candidates_for_size, format_percent, month_name_english, FactoryCounts, FlagSizeFolder,
+    TopbarBinding,
 };
 use replay_core::world::FactionRosterStatus;
 use replay_core::{
@@ -91,8 +92,18 @@ fn apply_scalars(binding: &mut TopbarBinding, scalars: &TopbarScalars) {
     // additionally requires the D18 identity and exact NUK1 sidecar.
     binding.nukes = None;
     binding.fuel = raw_f64(&scalars.fuel_current);
-    binding.world_tension_percent = raw_f64(&scalars.world_tension);
+    // The engine getter is fixed3 percent (0..=100000 => 0.000..=100.000%),
+    // carried as the equivalent fixed5 ratio 0.0..=1.0. This scalar therefore
+    // has a proven percent projection rather than the generic raw fallback.
+    binding.world_tension_percent = scalars
+        .world_tension
+        .measured()
+        .map(|value| format_percent(*value as f32));
     binding.world_tension = scalars.world_tension.measured().map(|v| *v as f32);
+    binding.world_tension_fixed5 = scalars
+        .world_tension
+        .measured()
+        .map(|value| (*value * 100_000.0).round() as i64);
     binding.supply = raw_f64(&scalars.supply_value);
     binding.convoys = raw_f64(&scalars.convoys);
     binding.supply_ratio = measured_ratio(&scalars.supply_ratio);
@@ -179,6 +190,40 @@ fn apply_ratios(binding: &mut TopbarBinding, ratios: &TopbarRatios) {
     binding.fuel_ratio = measured_ratio(&ratios.fuel_ratio);
 }
 
+fn alert_text(leaf: &Leaf<i64>) -> Option<String> {
+    match leaf {
+        Leaf::Measured(value) if *value > 0 => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+/// Bind every independently measured a729 topbar alert badge. The exact
+/// controller producers hide both text and background at zero.
+fn apply_alerts(binding: &mut TopbarBinding, alerts: &replay_core::TopbarAlerts) {
+    binding.initiative = alert_text(&alerts.initiative);
+    binding.decision_available_items = alert_text(&alerts.decisions_available);
+    binding.decision_timeout_items = alert_text(&alerts.decisions_timeout);
+    binding.intel_available = alert_text(&alerts.intel);
+    binding.intel_prepared_or_completed = alert_text(&alerts.intel_prepared_or_completed);
+    binding.prototype_rewards = alert_text(&alerts.prototype_rewards);
+    binding.non_delivering_contracts = alert_text(&alerts.market_contracts);
+    binding.ongoing_contracts = alert_text(&alerts.market_contracts_ongoing);
+}
+
+fn apply_exact_decision_alerts(binding: &mut TopbarBinding, frame: &WorldFrame, pov_tag: &str) {
+    let view = frame.decision_panel_exact();
+    if view.status != ViewStatus::Present {
+        return;
+    }
+    let Some(panel) = view.panel.as_ref().filter(|panel| panel.country_tag == pov_tag) else {
+        return;
+    };
+    binding.decision_available_items =
+        (panel.available_alert_count > 0).then(|| panel.available_alert_count.to_string());
+    binding.decision_timeout_items =
+        (panel.timeout_alert_count > 0).then(|| panel.timeout_alert_count.to_string());
+}
+
 /// Fill the flag/ideology identity fields from a [`CountryIdentity`] view.
 /// `ruling_ideology`/`cosmetic_tag` that are absent/unobtained stay `None`, so
 /// flag selection falls back exactly as the shipped inventory dictates.
@@ -222,9 +267,26 @@ pub fn topbar_binding_from_frame(frame: &WorldFrame, pov_tag: &str) -> TopbarBin
         if let Some(ratios) = frame.topbar_ratios(pov_tag) {
             apply_ratios(&mut binding, ratios);
         }
+        if let Some(alerts) = frame.topbar_alerts(pov_tag) {
+            apply_alerts(&mut binding, alerts);
+        }
     }
 
+    // d87 is independently authority- and SelectedPresent-joined.
+    apply_exact_decision_alerts(&mut binding, frame, pov_tag);
+
     binding
+}
+
+/// Exact D57 WT3X tooltip/popup population seam. This deliberately returns
+/// one complete optional binding: a partial ledger, unresolved D18 identity,
+/// missing policy threshold, or missing decay input keeps both consumers
+/// closed instead of mixing authenticated and fabricated fields.
+pub fn world_tension_consumers_from_frame(
+    frame: &WorldFrame,
+    pov_tag: &str,
+) -> Option<crate::world_tension::WorldTensionConsumerBinding> {
+    crate::world_tension::binding_from_frame(frame, pov_tag)
 }
 
 /// The LAB4 ideology-resolved country **display-name** localisation key
@@ -866,6 +928,9 @@ mod tests {
                 Some(i) => Leaf::Measured(i.to_string()),
                 None => Leaf::Unobtained,
             },
+            cores: Leaf::Unobtained,
+            claims: Leaf::Unobtained,
+            preferred_tactic: Leaf::Unobtained,
         }
     }
 

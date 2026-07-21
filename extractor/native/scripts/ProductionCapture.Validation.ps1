@@ -61,6 +61,40 @@ $script:RequiredFrameTimeFields = @("count", "avg", "p50", "p95", "p99", "max")
 $script:RequiredSinkWriteFields = @("count", "avg", "p50", "p95", "p99", "max")
 $script:RequiredClockSkewFields = @("wall_elapsed_us", "mono_elapsed_us", "drift_us", "wall_monotonic_ok")
 
+function Write-AtomicUtf8Text {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text
+    )
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $parent = Split-Path -Parent $fullPath
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    $temp = Join-Path $parent (".{0}.{1}.tmp" -f [System.IO.Path]::GetFileName($fullPath), [guid]::NewGuid().ToString("N"))
+    try {
+        [System.IO.File]::WriteAllText($temp, $Text, [System.Text.UTF8Encoding]::new($false))
+        $stream = [System.IO.File]::Open($temp, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        try { $stream.Flush($true) } finally { $stream.Dispose() }
+        if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
+            [System.IO.File]::Replace($temp, $fullPath, $null, $true)
+        } else {
+            [System.IO.File]::Move($temp, $fullPath)
+        }
+    } finally {
+        if (Test-Path -LiteralPath $temp -PathType Leaf) { Remove-Item -LiteralPath $temp -Force }
+    }
+}
+
+function Write-AtomicJson {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)]$Value,
+        [ValidateRange(1, 100)][int]$Depth = 12
+    )
+    Write-AtomicUtf8Text -Path $Path -Text ($Value | ConvertTo-Json -Depth $Depth)
+}
+
 function Get-ObjectProperty {
     param($Object, [Parameter(Mandatory = $true)][string]$Name)
     if ($null -eq $Object) { return $null }
@@ -146,8 +180,8 @@ function Invoke-IndependentCaptureGate {
             }
         }
         if ($process.HasExited) {
-            [System.IO.File]::WriteAllText($stdout,[string]$stdoutTask.Result,[System.Text.UTF8Encoding]::new($false))
-            [System.IO.File]::WriteAllText($stderr,[string]$stderrTask.Result,[System.Text.UTF8Encoding]::new($false))
+            Write-AtomicUtf8Text -Path $stdout -Text ([string]$stdoutTask.Result)
+            Write-AtomicUtf8Text -Path $stderr -Text ([string]$stderrTask.Result)
         }
         $process.Refresh()
         $exitCode = if ($process.HasExited) { $process.ExitCode } else { $null }

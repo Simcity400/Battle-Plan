@@ -21,6 +21,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
+fn fow_error(message: impl Into<String>) -> Box<dyn std::error::Error> {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message.into()).into()
+}
+
 pub const FOW_SHADER_SOURCE: &str = "gfx/FX/fow.fxh";
 pub const PDXMAP_SHADER_SOURCE: &str = "gfx/FX/pdxmap.shader";
 
@@ -33,8 +37,141 @@ pub const FOW_NOISE_TILING: f32 = 0.01;
 pub const FOW_NOISE_SPEED: f32 = 0.015;
 
 pub const SHADOW_MAP_DXGI_FORMAT: u32 = 87;
+/// Exact a729 `CUpdateTextureThreaded` coverage edge for the A8 IntelMap.
+pub const INTEL_MAP_PROVINCE_COVERAGE_EDGE: usize = 6;
+pub const INTEL_MAP_MAX_PROVINCE_SAMPLES: usize =
+    INTEL_MAP_PROVINCE_COVERAGE_EDGE * INTEL_MAP_PROVINCE_COVERAGE_EDGE;
 pub const WAVE1_CAP4_FOW_ON_SHADOWMAP_FNV1A64: &str = "35fa63fe96ea5217";
 pub const WAVE1_CAP4_FOW_OFF_SHADOWMAP_FNV1A64: &str = "4929cd2b85441701";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExactUnitDisclosure {
+    Hidden,
+    Detected,
+    MapVisible,
+    ExactDetails,
+}
+
+/// Exact a729 land/rail unit disclosure tiers. The land map producer admits
+/// counters only at 250, while lower nonzero bytes remain detection/intel
+/// state and must not produce a map counter.
+pub fn exact_a729_land_unit_disclosure(raw_intel: u8) -> ExactUnitDisclosure {
+    match raw_intel {
+        0 => ExactUnitDisclosure::Hidden,
+        250..=u8::MAX => ExactUnitDisclosure::ExactDetails,
+        _ => ExactUnitDisclosure::Detected,
+    }
+}
+
+/// Exact a729 task-force map-icon disclosure. 150 admits the map producer;
+/// 250 admits exact detail. Values 1..149 are detected but not map-visible.
+pub fn exact_a729_taskforce_disclosure(raw_intel: u8) -> ExactUnitDisclosure {
+    match raw_intel {
+        0 => ExactUnitDisclosure::Hidden,
+        250..=u8::MAX => ExactUnitDisclosure::ExactDetails,
+        150..=249 => ExactUnitDisclosure::MapVisible,
+        _ => ExactUnitDisclosure::Detected,
+    }
+}
+
+/// Rebuild one a729 A8 IntelMap texel from the engine's province-id coverage
+/// cells and an admitted complete current-POV visibility vector.
+///
+/// Each coverage sample contributes 255 for an invalid/non-land province or
+/// while FOW is disabled. Otherwise it contributes the exact engine byte at
+/// the province database ID. The stored A8 byte is the bitwise inverse of the
+/// approximation and must not consume a stale or partial visibility vector.
+pub fn exact_a729_intel_map_texel(
+    province_ids: &[u16],
+    province_is_eligible_land: &[bool],
+    province_visibility: &[u8],
+    fow_enabled: bool,
+) -> Result<u8> {
+    if province_ids.is_empty() || province_ids.len() > INTEL_MAP_MAX_PROVINCE_SAMPLES {
+        return Err(fow_error(format!(
+            "IntelMap coverage sample count must be 1..={INTEL_MAP_MAX_PROVINCE_SAMPLES}"
+        )));
+    }
+    if province_is_eligible_land.len() != province_visibility.len() {
+        return Err(fow_error(
+            "IntelMap province eligibility/visibility vector length mismatch",
+        ));
+    }
+    let mut sum = 0u32;
+    for &province_id in province_ids {
+        let index = usize::from(province_id);
+        let sample = if !fow_enabled
+            || index >= province_visibility.len()
+            || !province_is_eligible_land[index]
+        {
+            u8::MAX
+        } else {
+            province_visibility[index]
+        };
+        sum += u32::from(sample);
+    }
+    let average = sum / u32::try_from(province_ids.len())
+        .map_err(|_| fow_error("IntelMap coverage count overflow"))?;
+    Ok(!(average as u8))
+}
+
+/// Build the complete a729 A8 IntelMap from the province-id map raster.
+///
+/// The output extent is the positive map extent divided by six in each axis;
+/// remainder source pixels are not represented, matching the engine staging
+/// allocation and threaded rasterizer.
+pub fn exact_a729_intel_map(
+    province_id_raster: &[u16],
+    map_width: usize,
+    map_height: usize,
+    province_is_eligible_land: &[bool],
+    province_visibility: &[u8],
+    fow_enabled: bool,
+) -> Result<(usize, usize, Vec<u8>)> {
+    if map_width == 0
+        || map_height == 0
+        || province_id_raster.len()
+            != map_width
+                .checked_mul(map_height)
+                .ok_or_else(|| fow_error("province-id raster extent overflow"))?
+    {
+        return Err(fow_error("province-id raster extent/length mismatch"));
+    }
+    let width = map_width / INTEL_MAP_PROVINCE_COVERAGE_EDGE;
+    let height = map_height / INTEL_MAP_PROVINCE_COVERAGE_EDGE;
+    if width == 0 || height == 0 {
+        return Err(fow_error(
+            "province-id raster is smaller than one IntelMap coverage cell",
+        ));
+    }
+    let mut out = Vec::with_capacity(
+        width
+            .checked_mul(height)
+            .ok_or_else(|| fow_error("IntelMap output extent overflow"))?,
+    );
+    let mut coverage = [0u16; INTEL_MAP_MAX_PROVINCE_SAMPLES];
+    for texel_y in 0..height {
+        for texel_x in 0..width {
+            let mut cursor = 0usize;
+            let source_y = texel_y * INTEL_MAP_PROVINCE_COVERAGE_EDGE;
+            let source_x = texel_x * INTEL_MAP_PROVINCE_COVERAGE_EDGE;
+            for dy in 0..INTEL_MAP_PROVINCE_COVERAGE_EDGE {
+                let row = (source_y + dy) * map_width + source_x;
+                for dx in 0..INTEL_MAP_PROVINCE_COVERAGE_EDGE {
+                    coverage[cursor] = province_id_raster[row + dx];
+                    cursor += 1;
+                }
+            }
+            out.push(exact_a729_intel_map_texel(
+                &coverage[..cursor],
+                province_is_eligible_land,
+                province_visibility,
+                fow_enabled,
+            )?);
+        }
+    }
+    Ok((width, height, out))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FowFogFactors {

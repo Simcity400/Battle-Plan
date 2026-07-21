@@ -43,8 +43,8 @@ The target live implementation must supply, for every admitted frame:
 ## Ghidra report tuple
 
 - Function address: `0x1402A4080`
-- Job ID: `20260720T131321Z-wave5-a26-controller-layout-retry-3f25f602`
-- Ghidra evidence-manifest SHA-256: `b1f2f0bc2afde8c970fd4e63dd9c969bde9744d146c4f23e9dddae4f00ba4c64`
+- Job ID: `20260721T065804Z-wave6-xui05-a26-authority-controller-blo-4f0e1e91`
+- Ghidra evidence-manifest SHA-256: `a23b63ccefc021eeced9a1a918588d3e2fbba07e5d1afb4d53f83cc7c1640177`
 - Full evidence and live-matrix contract:
   `extractor/documents/dossiers/A26_WAVE5_FINAL_BLOB_ENGINEERING_20260720.md`
 

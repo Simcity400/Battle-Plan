@@ -40,6 +40,16 @@ pub const COUNTRY_OCCUPATION_STATUS_GARRISON_TEMPLATE_OFF: usize = 0x78;
 pub const COUNTRY_OCCUPATION_STATUS_WINDOW_LEN: usize =
     COUNTRY_OCCUPATION_STATUS_DEFAULT_LAW_OFF + 8;
 pub const COUNTRY_COLLABORATION_STATUS_VTABLE_RVA: usize = 0x29A5D58;
+pub const COUNTRY_COLLABORATION_DATA_VTABLE_RVA: usize = 0x29A5D08;
+pub const COUNTRY_COLLABORATION_STATUS_ROWS_OFF: usize = 0x28;
+pub const COUNTRY_COLLABORATION_STATUS_ROW_COUNT_OFF: usize = 0x34;
+pub const COUNTRY_COLLABORATION_STATUS_OWNER_OFF: usize = 0x40;
+pub const COUNTRY_COLLABORATION_STATUS_INCOMING_OFF: usize = 0x48;
+pub const COUNTRY_COLLABORATION_STATUS_INCOMING_COUNT_OFF: usize = 0x54;
+pub const COUNTRY_COLLABORATION_DATA_TARGET_OFF: usize = 0x08;
+pub const COUNTRY_COLLABORATION_DATA_PROGRESS_OFF: usize = 0x10;
+pub const COUNTRY_COLLABORATION_DATA_LEN: usize = 0x18;
+pub const MAX_COLLABORATION_RELATIONS_PER_COUNTRY: u32 = 1024;
 pub const OCCUPATION_LAW_VTABLE_RVA: usize = 0x2928218;
 pub const OCCUPATION_LAW_NAME_OFF: usize = 0x10;
 pub const PDX_STRING_WINDOW_LEN: usize = 0x20;
@@ -170,6 +180,14 @@ pub struct CountryOccupationStatus {
     pub garrison_template_id: u32,
 }
 
+/// Complete, pointer-free collaboration relation set for one hourly read.
+/// Any malformed container, row, owner join, or reciprocal target join makes
+/// the whole extension unavailable; a complete zero-row set is authoritative.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CountryCollaborationRelations {
+    pub extension: compact::CollaborationExtension,
+}
+
 /// One validated CStateGarrisonData row, keyed by the state it garrisons.
 /// Rows are only accepted after vtable + parent back-ref + validated-state
 /// join checks; conflicting duplicates for one state are dropped fail-closed.
@@ -257,6 +275,32 @@ impl CompactOccupationResistanceComplianceTracker {
             rows,
         );
         frame.payload = compact::encode_payload_with_alert(&frame.header, &frame.rows, alert);
+        frame
+    }
+
+    pub fn encode_frame_with_alert_and_collaboration(
+        &mut self,
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        observed_state_rows: u32,
+        garrison_anomaly_rows: u32,
+        rows: &[compact::OccupationStateRow],
+        alert: &compact::GarrisonAlertExtension,
+        collaboration: &compact::CollaborationExtension,
+    ) -> EncodedFrame {
+        let mut frame = self.encode_frame(
+            elapsed_wall_ms,
+            status_flags,
+            observed_state_rows,
+            garrison_anomaly_rows,
+            rows,
+        );
+        frame.payload = compact::encode_payload_with_alert_and_collaboration(
+            &frame.header,
+            &frame.rows,
+            alert,
+            collaboration,
+        );
         frame
     }
 
@@ -544,6 +588,125 @@ pub fn read_country_occupation_status<M: OccupationMemory>(
     }
 
     Ok((by_tag, summary))
+}
+
+pub fn read_country_collaboration_relations<M: OccupationMemory>(
+    mem: &M,
+    countries: &BTreeMap<u32, CountryOccupationStatus>,
+) -> CountryCollaborationRelations {
+    let relation_vtable = mem.module_base() + COUNTRY_COLLABORATION_DATA_VTABLE_RVA as u64;
+    let mut rows = Vec::new();
+    let mut anomaly_rows = 0u32;
+    let mut seen = BTreeSet::new();
+
+    for (&owner_tag_db_id, country) in countries {
+        let status_ptr = country.collaboration_status_ptr;
+        if !is_heap_ptr(status_ptr) {
+            anomaly_rows = anomaly_rows.saturating_add(1);
+            continue;
+        }
+        let status = match mem.read_bytes(status_ptr, 0x58) {
+            Ok(status) => status,
+            Err(_) => {
+                anomaly_rows = anomaly_rows.saturating_add(1);
+                continue;
+            }
+        };
+        let row_array = u64_from(&status, COUNTRY_COLLABORATION_STATUS_ROWS_OFF);
+        let row_count = u32_from(&status, COUNTRY_COLLABORATION_STATUS_ROW_COUNT_OFF);
+        let owner_ptr = u64_from(&status, COUNTRY_COLLABORATION_STATUS_OWNER_OFF);
+        if owner_ptr != country.country_ptr
+            || row_count > MAX_COLLABORATION_RELATIONS_PER_COUNTRY
+            || (row_count != 0 && !is_heap_ptr(row_array))
+        {
+            anomaly_rows = anomaly_rows.saturating_add(1);
+            continue;
+        }
+        let pointers = if row_count == 0 {
+            Vec::new()
+        } else {
+            match mem.read_bytes(row_array, row_count as usize * 8) {
+                Ok(pointers) => pointers,
+                Err(_) => {
+                    anomaly_rows = anomaly_rows.saturating_add(1);
+                    continue;
+                }
+            }
+        };
+        for index in 0..row_count as usize {
+            let relation_ptr = u64_from(&pointers, index * 8);
+            let relation = if is_heap_ptr(relation_ptr) {
+                mem.read_bytes(relation_ptr, COUNTRY_COLLABORATION_DATA_LEN)
+                    .ok()
+            } else {
+                None
+            };
+            let Some(relation) = relation else {
+                anomaly_rows = anomaly_rows.saturating_add(1);
+                continue;
+            };
+            let target_tag_db_id =
+                u32_from(&relation, COUNTRY_COLLABORATION_DATA_TARGET_OFF);
+            let progress_raw = i64_from(&relation, COUNTRY_COLLABORATION_DATA_PROGRESS_OFF);
+            let target = countries.get(&target_tag_db_id);
+            let reciprocal = target.and_then(|target| {
+                let target_status = mem.read_bytes(target.collaboration_status_ptr, 0x58).ok()?;
+                let incoming = u64_from(&target_status, COUNTRY_COLLABORATION_STATUS_INCOMING_OFF);
+                let incoming_count =
+                    u32_from(&target_status, COUNTRY_COLLABORATION_STATUS_INCOMING_COUNT_OFF);
+                if incoming_count > MAX_COLLABORATION_RELATIONS_PER_COUNTRY
+                    || (incoming_count != 0 && !is_heap_ptr(incoming))
+                {
+                    return None;
+                }
+                let ids = if incoming_count == 0 {
+                    Vec::new()
+                } else {
+                    mem.read_bytes(incoming, incoming_count as usize * 4).ok()?
+                };
+                Some(
+                    (0..incoming_count as usize)
+                        .any(|incoming_index| u32_from(&ids, incoming_index * 4) == owner_tag_db_id),
+                )
+            });
+            if u64_from(&relation, 0) != relation_vtable
+                || target_tag_db_id == 0
+                || target_tag_db_id > MAX_TAG_DB_ID
+                || target_tag_db_id == owner_tag_db_id
+                || target.is_none()
+                || reciprocal != Some(true)
+                || !(0..=compact::FIXED_SCALE_RAW as i64).contains(&progress_raw)
+                || !seen.insert((owner_tag_db_id, target_tag_db_id))
+            {
+                anomaly_rows = anomaly_rows.saturating_add(1);
+                continue;
+            }
+            rows.push(compact::CollaborationRelationRow {
+                owner_tag_db_id,
+                target_tag_db_id,
+                progress_raw,
+            });
+        }
+    }
+
+    rows.sort();
+    let complete = !countries.is_empty() && anomaly_rows == 0;
+    CountryCollaborationRelations {
+        extension: compact::CollaborationExtension {
+            flags: if complete {
+                compact::COLLABORATION_FLAG_COMPLETE
+            } else {
+                compact::COLLABORATION_FLAG_SOURCE_UNAVAILABLE
+            },
+            observed_country_rows: if complete {
+                countries.len().min(u32::MAX as usize) as u32
+            } else {
+                0
+            },
+            anomaly_rows,
+            rows: if complete { rows } else { Vec::new() },
+        },
+    }
 }
 
 pub fn extract_rows_from_state_roots<M: OccupationMemory>(
@@ -1316,6 +1479,106 @@ mod tests {
                 .get("occupation_garrison_template_rows"),
             Some(&1)
         );
+    }
+
+    #[test]
+    fn collaboration_reader_requires_reciprocal_owner_target_join() {
+        const OWNER: u64 = 0x2200000A000;
+        const TARGET: u64 = 0x2200000B000;
+        const OWNER_STATUS: u64 = 0x2200000C000;
+        const TARGET_STATUS: u64 = 0x2200000D000;
+        const RELATION_POINTERS: u64 = 0x2200000E000;
+        const RELATION: u64 = 0x2200000F000;
+        const INCOMING_IDS: u64 = 0x22000010000;
+
+        let mut mem = FakeMemory::default();
+        mem.write_zeroes(OWNER_STATUS, 0x58);
+        mem.write_zeroes(TARGET_STATUS, 0x58);
+        mem.write_zeroes(RELATION_POINTERS, 8);
+        mem.write_zeroes(RELATION, COUNTRY_COLLABORATION_DATA_LEN);
+        mem.write_zeroes(INCOMING_IDS, 4);
+
+        mem.write_u64(
+            OWNER_STATUS + COUNTRY_COLLABORATION_STATUS_ROWS_OFF as u64,
+            RELATION_POINTERS,
+        );
+        mem.write_u32(
+            OWNER_STATUS + COUNTRY_COLLABORATION_STATUS_ROW_COUNT_OFF as u64,
+            1,
+        );
+        mem.write_u64(
+            OWNER_STATUS + COUNTRY_COLLABORATION_STATUS_OWNER_OFF as u64,
+            OWNER,
+        );
+        mem.write_u64(RELATION_POINTERS, RELATION);
+        mem.write_u64(
+            RELATION,
+            MODULE_BASE + COUNTRY_COLLABORATION_DATA_VTABLE_RVA as u64,
+        );
+        mem.write_u32(
+            RELATION + COUNTRY_COLLABORATION_DATA_TARGET_OFF as u64,
+            1,
+        );
+        mem.write_i64(
+            RELATION + COUNTRY_COLLABORATION_DATA_PROGRESS_OFF as u64,
+            30_000,
+        );
+
+        mem.write_u64(
+            TARGET_STATUS + COUNTRY_COLLABORATION_STATUS_OWNER_OFF as u64,
+            TARGET,
+        );
+        mem.write_u64(
+            TARGET_STATUS + COUNTRY_COLLABORATION_STATUS_INCOMING_OFF as u64,
+            INCOMING_IDS,
+        );
+        mem.write_u32(
+            TARGET_STATUS + COUNTRY_COLLABORATION_STATUS_INCOMING_COUNT_OFF as u64,
+            1,
+        );
+        mem.write_u32(INCOMING_IDS, 24);
+
+        let countries = BTreeMap::from([
+            (
+                1,
+                CountryOccupationStatus {
+                    country_ptr: TARGET,
+                    collaboration_status_ptr: TARGET_STATUS,
+                    ..CountryOccupationStatus::default()
+                },
+            ),
+            (
+                24,
+                CountryOccupationStatus {
+                    country_ptr: OWNER,
+                    collaboration_status_ptr: OWNER_STATUS,
+                    ..CountryOccupationStatus::default()
+                },
+            ),
+        ]);
+
+        let complete = read_country_collaboration_relations(&mem, &countries).extension;
+        assert_eq!(complete.flags, compact::COLLABORATION_FLAG_COMPLETE);
+        assert_eq!(complete.observed_country_rows, 2);
+        assert_eq!(complete.anomaly_rows, 0);
+        assert_eq!(
+            complete.rows,
+            vec![compact::CollaborationRelationRow {
+                owner_tag_db_id: 24,
+                target_tag_db_id: 1,
+                progress_raw: 30_000,
+            }]
+        );
+
+        mem.write_u32(INCOMING_IDS, 0);
+        let unavailable = read_country_collaboration_relations(&mem, &countries).extension;
+        assert_eq!(
+            unavailable.flags,
+            compact::COLLABORATION_FLAG_SOURCE_UNAVAILABLE
+        );
+        assert_eq!(unavailable.observed_country_rows, 0);
+        assert_eq!(unavailable.anomaly_rows, 1);
+        assert!(unavailable.rows.is_empty());
     }
 
     #[test]

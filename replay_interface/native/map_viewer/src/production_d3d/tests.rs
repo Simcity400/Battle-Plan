@@ -58,6 +58,7 @@ impl ProductionD3dExecutionBridge for TraceBridge {
 fn empty_frame() -> PreparedProductionMapFrame {
     PreparedProductionMapFrame {
         ordered_static_map_programs: Vec::new(),
+        rail_ribbon: None,
         snow_mud_texture: None,
         tree_runtime: None,
         s1_shadow: None,
@@ -75,6 +76,7 @@ fn empty_frame() -> PreparedProductionMapFrame {
         m02_combat: None,
         authenticated_ui_pass: None,
         m03_arrows: None,
+        rail_supply_arrows: None,
         o04_cities: None,
         o05_buildings: None,
         omitted_data_needs: Vec::new(),
@@ -125,6 +127,7 @@ fn prepared_static_frame(operations: Vec<StaticMapOperation>) -> PreparedProduct
             ordered_operations: operations,
             payload_sha256: "33".repeat(32),
         }],
+        rail_ribbon: None,
         mapname_d80_state: replay_core::MapnameD80State::Missing,
         tree_runtime: None,
         tree_materialized_execution_sha256: None,
@@ -138,6 +141,7 @@ fn prepared_static_frame(operations: Vec<StaticMapOperation>) -> PreparedProduct
         m02_combat: None,
         authenticated_ui_pass: None,
         m03_arrows: None,
+        rail_supply_arrows: None,
         omissions: Vec::new(),
     }
 }
@@ -532,6 +536,7 @@ fn fixture_static_draw() -> replay_core::StaticMapDraw {
                 payload_sha256: "77".repeat(32),
                 payload_bytes: 1,
             },
+            producer_registration_root_rva: None,
             effect_token: "test.fixture".into(),
             vertex_entry_token: "vs_main".into(),
             pixel_entry_token: "ps_main".into(),
@@ -847,6 +852,7 @@ float4 ps_main() : SV_Target { return float4(1.0, 0.0, 0.0, 1.0); }
         draw_token: "test.portable.solid_red".into(),
         shader_program: ShaderProgram {
             source,
+            producer_registration_root_rva: None,
             effect_token: "test.solid_red".into(),
             vertex_entry_token: "vs_main".into(),
             pixel_entry_token: "ps_main".into(),
@@ -1001,6 +1007,7 @@ float4 ps_main() : SV_Target { return float4(1.0, 0.0, 0.0, 1.0); }
             }],
             payload_sha256: "66".repeat(32),
         }],
+        rail_ribbon: None,
         mapname_d80_state: replay_core::MapnameD80State::Missing,
         tree_runtime: None,
         tree_materialized_execution_sha256: None,
@@ -1016,6 +1023,7 @@ float4 ps_main() : SV_Target { return float4(1.0, 0.0, 0.0, 1.0); }
         m02_combat: None,
         authenticated_ui_pass: None,
         m03_arrows: None,
+        rail_supply_arrows: None,
         omissions: Vec::new(),
     };
     let receipt = {

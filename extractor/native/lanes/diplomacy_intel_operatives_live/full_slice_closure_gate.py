@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -60,6 +62,23 @@ def status(report: dict[str, Any], *path: str) -> Any:
             return None
         value = value.get(key)
     return value
+
+
+def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(value, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def container_integrity_ok(replay_proof: dict[str, Any]) -> bool:
@@ -99,12 +118,6 @@ def replay_data_unit_count(replay_proof: dict[str, Any], unit_name: str) -> int:
     if not isinstance(data_units, dict):
         return 0
     return int(data_units.get(unit_name) or 0)
-
-
-def compact_operative_lifecycle_ok(replay_proof: dict[str, Any]) -> bool:
-    return compact_state_ok(replay_proof) and replay_data_unit_count(
-        replay_proof, "operative_lifecycle_rows"
-    ) > 0
 
 
 def compact_agency_capacity_cluster_ok(replay_proof: dict[str, Any]) -> bool:
@@ -310,15 +323,6 @@ def build_surface_report(
 
     operative_status = status(intel, "operatives", "status")
     operative_ok = operative_status == "validated"
-    operative_lifecycle_status = status(operative_lifecycle or {}, "status")
-    operative_lifecycle_groups_ok = (
-        operative_lifecycle_status == "operative_lifecycle_groups_validated"
-    )
-    operative_lifecycle_compact_ok = compact_operative_lifecycle_ok(replay_proof)
-    operative_lifecycle_registration_ok = (
-        status(operative_lifecycle_registration or {}, "status")
-        == "operative_lifecycle_registration_patch_validated"
-    )
     agency_capacity_registration_ok = (
         status(agency_capacity_registration or {}, "status")
         == "agency_capacity_registration_patch_validated"
@@ -334,83 +338,31 @@ def build_surface_report(
             "surface": "operatives",
             "status": "validated_slice" if operative_ok else "blocked",
             "validated_slice": (
-                "active operative identity, owner, detected state, skill, and XP"
-                + (
-                    "; COperativeLeader lifecycle flag cohorts validated at identity+0x110"
-                    if operative_lifecycle_groups_ok
-                    else ""
-                )
-                + (
-                    "; compact operative lifecycle rows verified"
-                    if operative_lifecycle_compact_ok
-                    else ""
-                )
+                "active operative identity, owner, detected state, skill, XP, "
+                "authored portrait string, and numeric assignment discriminator"
                 if operative_ok
                 else None
             ),
             "missing_extractable_fields": [
-                "operative mission assignment",
-                "operation assignment link",
-                "traits",
-                "nationalities",
-                "portrait/gfx token",
-                (
-                    "semantic names for lifeflag 31/63 cohorts and recruitable operative pool"
-                    if operative_lifecycle_groups_ok
-                    else "recruitable operative pool"
-                ),
-                (
-                    "captured_by and positive captured fixture; lifeflag 63 is only a validated cohort"
-                    if operative_lifecycle_groups_ok
-                    else "captured_by and positive captured fixture"
-                ),
-                "operative lifecycle event records",
+                "remaining non-mission assignment product semantics",
+                "recruitable operative pool",
+                "captured_by and positive captured fixture",
             ],
             "blocker": {
-                "id": "operative_full_lifecycle",
-                "status": "schema_and_fixture_gap",
+                "id": "operative_remaining_semantic_joins",
+                "status": "producer_join_and_fixture_gap",
                 "reason": (
-                    (
-                        "active roster fields and compact lifecycle flag rows are "
-                        "validated, but current live proof does not carry full "
-                        "save-oracle operative lifecycle"
-                    )
-                    if operative_lifecycle_compact_ok
-                    else (
-                        "active roster fields are validated, but the compact schema "
-                        "and current live proof do not carry full save-oracle "
-                        "operative lifecycle"
-                    )
-                    + (
-                        "; lifecycle flag cohorts are rooted but not semantically named"
-                        if operative_lifecycle_groups_ok
-                        else ""
-                    )
+                    "identity+0x110 was retired as portrait-string capacity; "
+                    "remaining closure is limited to producer joins and positive fixtures"
                 ),
-                "narrowed_by": (
-                    {
-                        "probe": status(operative_lifecycle or {}, "probe"),
-                        "status": operative_lifecycle_status,
-                        "identity_classdesc_rva": "0x293F790",
-                        "lifeflag_offset": "0x110",
-                        "owner_valid_COperativeLeader_lifeflag_counts": status(
-                            operative_lifecycle or {},
-                            "summary",
-                            "owner_valid_COperativeLeader_lifeflag_counts",
-                        ),
-                        "warm_validated": status(
-                            operative_lifecycle or {}, "summary", "warm_validated"
-                        ),
-                        "compact_operative_lifecycle_rows": replay_data_unit_count(
-                            replay_proof, "operative_lifecycle_rows"
-                        ),
-                        "compact_container_integrity_verified": container_integrity_ok(
-                            replay_proof
-                        ),
-                    }
-                    if operative_lifecycle_groups_ok or operative_lifecycle_compact_ok
-                    else None
-                ),
+                "narrowed_by": {
+                    "portrait_gfx_offset": "identity+0xF8",
+                    "final_portrait_producer_join": "FUN_141E21710 -> FUN_140B37430",
+                    "assignment_discriminator_offset": "identity+0x1078",
+                    "assignment_3_product_join": "eight exact authored mission/action identities",
+                    "disproven_offset": "identity+0x110",
+                    "disproven_actual_role": "portrait MSVC string capacity",
+                },
             },
         }
     )
@@ -527,16 +479,6 @@ def build_surface_report(
             "validated_slice": (
                 "lane-local H4CR domain-data state record and .battleplan verification"
                 + (
-                    " with compact operative lifecycle rows"
-                    if compact_operative_lifecycle_ok(replay_proof)
-                    else ""
-                )
-                + (
-                    "; exact shared registration details validated for operative lifecycle rows"
-                    if operative_lifecycle_registration_ok
-                    else ""
-                )
-                + (
                     "; exact shared registration details validated for raw agency capacity rows"
                     if agency_capacity_registration_ok
                     else ""
@@ -562,9 +504,10 @@ def build_surface_report(
             "missing_extractable_fields": [
                 "shared DLL collector registration",
                 "shared Rust recorder decode registration",
+                "authenticated seven-surface intelligence visibility producer",
                 "speed-five/current-equivalent hourly proof",
                 "event records for wars, diplomacy queue actions, operations, "
-                "operative lifecycle, spy networks, and agency changes",
+                "operative assignment/capture changes, spy networks, and agency changes",
             ],
             "blocker": {
                 "id": "production_compact_event_stream",
@@ -592,7 +535,6 @@ def build_surface_report(
                                     "country_faction_group",
                                     "agency_scalar",
                                     "agency_capacity",
-                                    "operative_lifecycle",
                                     "cryptology",
                                 ],
                                 "relation_opinion_counter": replay_data_unit_count(
@@ -645,38 +587,6 @@ def build_surface_report(
                                 ),
                             }
                             if state_events_registration_ok
-                            else None
-                        ),
-                        (
-                            {
-                                "proof": status(
-                                    operative_lifecycle_registration or {}, "schema"
-                                ),
-                                "status": status(
-                                    operative_lifecycle_registration or {}, "status"
-                                ),
-                                "required_counter": status(
-                                    operative_lifecycle_registration or {},
-                                    "validated_registration_details",
-                                    "required_counter",
-                                ),
-                                "recorder_decoder": status(
-                                    operative_lifecycle_registration or {},
-                                    "validated_registration_details",
-                                    "recorder_decoder",
-                                ),
-                                "collector_lifecycle_source_offset": status(
-                                    operative_lifecycle_registration or {},
-                                    "validated_registration_details",
-                                    "collector_lifecycle_source_offset",
-                                ),
-                                "proof_counter": status(
-                                    operative_lifecycle_registration or {},
-                                    "proof_counters",
-                                    "operative_lifecycle_rows",
-                                ),
-                            }
-                            if operative_lifecycle_registration_ok
                             else None
                         ),
                         (
@@ -762,6 +672,11 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         if args.state_events_registration_proof
         else {}
     )
+    # Do not allow the superseded lifecycle probe/registration receipt to
+    # re-enter any semantic branch below. Their artifacts remain historical
+    # evidence of the false interpretation, not promotion inputs.
+    operative_lifecycle = {}
+    operative_lifecycle_registration = {}
 
     proof_builds = {
         "diplomacy": process_sha(diplomacy),
@@ -837,7 +752,7 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "compact_event_state_records narrowed: compact validated-state "
                 "event rows are implemented and Rust/.battleplan verified for "
                 "relation flag, subject autonomy, agency scalar, agency capacity, "
-                "operative lifecycle, and cryptology observations; war lifecycle, "
+                "and cryptology observations; war lifecycle, "
                 "diplomacy queue, running operation, spy-network, and shared "
                 "speed-five event streams remain blocked"
             )
@@ -862,32 +777,6 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             if compact_agency_capacity_cluster_ok(replay_proof)
             and status(agency_capacity, "status") == "legacy_assignment_rejected"
             else (
-                "shared_integrated_compact_event_state_records narrowed: exact "
-                "registration patch details for compact operative lifecycle rows "
-                "are validated, including collector identity+0x110 source, "
-                "domain-53 reserved registry state, generic Rust decoder merge, "
-                "and operative_lifecycle_rows counter preservation"
-            )
-            if status(operative_lifecycle_registration, "status")
-            == "operative_lifecycle_registration_patch_validated"
-            else (
-                "operative_full_lifecycle narrowed: compact operative "
-                "lifecycle/identity rows are implemented and Rust/.battleplan "
-                "verified for lifeflag 47/31/63 cohorts; semantic names, "
-                "mission links, traits, nationalities, portraits, and captured "
-                "fixtures remain blocked"
-            )
-            if compact_operative_lifecycle_ok(replay_proof)
-            and status(operative_lifecycle, "status")
-            == "operative_lifecycle_groups_validated"
-            else (
-                "operative_full_lifecycle narrowed: current COperativeLeader "
-                "identity root and lifeflag cohorts at identity+0x110 are "
-                "validated and warm-stable, with semantics still fixture-gated"
-            )
-            if status(operative_lifecycle, "status")
-            == "operative_lifecycle_groups_validated"
-            else (
                 "operation_detail narrowed: current COperation heap-hit set is "
                 "rejected as running operation state because COperationsDatabase+0x60 "
                 "contains the full 38-entry definition table matching the prior "
@@ -904,8 +793,8 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             else (
                 "full domain 53 residual scope is now executable-gated: accepted "
                 "slices are separated from blocked war lifecycle, diplomacy queues, "
-                "intel map, operations, operatives lifecycle, spy networks, agency "
-                "full state, and compact event/integration records"
+                "intel map, operations, operative action/capture semantics, spy "
+                "networks, agency full state, and compact event/integration records"
             )
         ),
         "expected_sha256": EXPECTED_SHA256,
@@ -981,10 +870,7 @@ def main(argv: list[str] | None = None) -> int:
 
     report, code = build_report(args)
     out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open("w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2, sort_keys=True)
-        f.write("\n")
+    write_json_atomic(out, report)
     print(
         "full_slice_closure_gate: "
         f"status={report['completion_status']} blockers={len(report['blockers'])} out={out}"

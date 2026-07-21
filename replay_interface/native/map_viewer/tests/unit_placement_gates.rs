@@ -20,7 +20,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use map_viewer::{
-    place_frame_inputs, AnchorProvenance, AnchorProvinceSource, DivisionPlacementInput,
+    place_frame_inputs, wing_placement_input_from_world_row, AnchorProvenance,
+    AnchorProvinceSource, DivisionPlacementInput,
     FleetPlacementInput, GameFileResolver, PlacementStatus, ProvinceAnchorTable, UnitPlacement,
     UnitPlacementSet, WingPlacementInput,
 };
@@ -97,14 +98,7 @@ fn fleet_input(row: &FleetUnitRow) -> FleetPlacementInput {
     }
 }
 fn wing_input(row: &WingUnitRow) -> WingPlacementInput {
-    WingPlacementInput {
-        uid: row.wing_uid.clone(),
-        owner: leaf_string(&row.owner),
-        state_id: leaf_u32(&row.state_id),
-        // WingUnitRow carries no on-map province in today's schema (gap filed);
-        // the state_id drives the FIT air-base-state anchor.
-        location_province: None,
-    }
+    wing_placement_input_from_world_row(row)
 }
 
 fn placement_of(

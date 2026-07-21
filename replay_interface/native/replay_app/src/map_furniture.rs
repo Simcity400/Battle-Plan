@@ -6,10 +6,13 @@
 //! fail-closed until the remaining draw-time residuals are captured/decompiled.
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
+
 use map_viewer::{
     compute_furniture_markers, furniture_layer_from_resolver, FurnitureLawInputs, FurnitureLayer,
     FurnitureMarker, GameFileResolver, VpIconDefines,
 };
+use replay_core::{CountryDiplomacy, Leaf, WorldFrame};
 
 use crate::Result;
 
@@ -39,9 +42,54 @@ impl ReplayFurnitureLayer {
             vp_icon_defines: Some(layer.vp_icon_defines),
         }
     }
+
+    /// Build replay-hour furniture from the engine-current capital carrier.
+    ///
+    /// Exact a729 consumers resolve `CCountry+0x1018` for map focus, display
+    /// coordinates, and capital-relative ordering. The history-file capital
+    /// supplied in `inputs` is therefore intentionally replaced, never used
+    /// as a fallback. A missing current carrier omits the capital marker.
+    pub fn from_world_frame(frame: &WorldFrame, inputs: &FurnitureLawInputs<'_>) -> Self {
+        let capital_states = replay_current_capital_states(frame);
+        let replay_inputs = FurnitureLawInputs {
+            province_ids: inputs.province_ids,
+            width: inputs.width,
+            height: inputs.height,
+            province_to_state: inputs.province_to_state,
+            state_owners: inputs.state_owners,
+            state_victory_points: inputs.state_victory_points,
+            capital_states: &capital_states,
+            localisation: inputs.localisation,
+            vp_icon_defines: inputs.vp_icon_defines,
+        };
+        Self::from_law_inputs(inputs.width, inputs.height, &replay_inputs)
+    }
 }
 
-pub fn load_replay_furniture_layer(
+/// Selected-hour current capitals for map/UI consumers.
+///
+/// `identity.original_capital` is deliberately absent from this projection:
+/// it is historical provenance, while the engine's map/UI consumers resolve
+/// the relocated/current capital. Unobtained/absent/zero values fail closed.
+pub fn replay_current_capital_states(frame: &WorldFrame) -> BTreeMap<String, u32> {
+    measured_current_capital_states(&frame.diplomacy().countries)
+}
+
+fn measured_current_capital_states(
+    countries: &BTreeMap<String, CountryDiplomacy>,
+) -> BTreeMap<String, u32> {
+    countries
+        .iter()
+        .filter_map(|(tag, country)| match &country.capital_state {
+            Leaf::Measured(state_id) if *state_id > 0 => Some((tag.clone(), *state_id)),
+            Leaf::Measured(_) | Leaf::Absent | Leaf::Unobtained => None,
+        })
+        .collect()
+}
+
+/// Static game-file reference layer only. Scrubbed replay frames must use
+/// [`ReplayFurnitureLayer::from_world_frame`] so relocations are not lost.
+pub fn load_static_reference_furniture_layer(
     resolver: &GameFileResolver,
     language: &str,
 ) -> Result<ReplayFurnitureLayer> {
@@ -105,6 +153,58 @@ mod tests {
                 },
             ),
             map_viewer::VP_STRIP_COLOR_ENEMY_RED
+        );
+    }
+
+    #[test]
+    fn world_frame_current_capital_replaces_static_history_capital() {
+        // The typed WorldFrame construction is covered by replay_core's
+        // fx_capital_moves gate. This bridge gate proves the typed measured
+        // current leaf replaces the history-file input at the marker law.
+        let province_ids = vec![100, 100, 200, 200];
+        let province_to_state = BTreeMap::from([(100, 5), (200, 6)]);
+        let state_owners = BTreeMap::from([
+            (5, "FRA".to_string()),
+            (6, "FRA".to_string()),
+        ]);
+        let state_victory_points = BTreeMap::from([
+            (5, BTreeMap::from([(100, 10)])),
+            (6, BTreeMap::from([(200, 8)])),
+        ]);
+        let history_capitals = BTreeMap::from([("FRA".to_string(), 5)]);
+        let current_capitals = measured_current_capital_states(&BTreeMap::from([(
+            "FRA".to_string(),
+            CountryDiplomacy {
+                faction_name: Leaf::Unobtained,
+                faction_is_leader: Leaf::Unobtained,
+                capital_state: Leaf::Measured(6),
+                is_major: Leaf::Unobtained,
+            },
+        )]));
+        let localisation = BTreeMap::new();
+        let history_inputs = FurnitureLawInputs {
+            province_ids: &province_ids,
+            width: 4,
+            height: 1,
+            province_to_state: &province_to_state,
+            state_owners: &state_owners,
+            state_victory_points: &state_victory_points,
+            capital_states: &history_capitals,
+            localisation: &localisation,
+            vp_icon_defines: None,
+        };
+        let current_inputs = FurnitureLawInputs {
+            capital_states: &current_capitals,
+            ..history_inputs
+        };
+
+        let markers = compute_furniture_markers(&current_inputs);
+        assert_eq!(
+            markers
+                .iter()
+                .find(|marker| marker.kind == FurnitureMarkerKind::Capital)
+                .map(|marker| marker.state_id),
+            Some(6)
         );
     }
 }

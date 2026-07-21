@@ -185,7 +185,7 @@ function Invoke-SizeProjection {
     if ($OutFile.Length -eq 0) {
         $OutFile = Join-Path $RunDir "full_game_size_projection.json"
     }
-    $projection | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $OutFile -Encoding UTF8
+    Write-AtomicJson -Path $OutFile -Value $projection -Depth 8
 
     Write-Host "full-game size projection ($($projection.model)):"
     Write-Host ("  capture: {0:N0} decoded bytes over {1} game hours" -f $projection.inputs.decoded_bytes, $projection.inputs.game_hours_advanced)

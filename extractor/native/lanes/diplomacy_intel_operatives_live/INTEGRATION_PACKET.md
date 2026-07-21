@@ -36,12 +36,12 @@ Integrate only the current validated domain 53 slice:
 - relation opinions, relation flags, subjects/autonomy;
 - agency scalar rows and raw agency capacity cluster rows
   `agency+0xE4/+0xF0/+0xF4`;
-- active operative identity/detected/skill/XP rows plus rooted numeric
-  lifecycle flags;
+- active operative identity/detected/skill/XP rows plus the rooted numeric
+  assignment discriminator encoded as `assignment_N`;
 - cryptology target rows;
 - compact validated-state observations for relation flag, relation opinion,
   subject autonomy, country faction group, agency scalar, raw agency capacity,
-  operative lifecycle, and cryptology.
+  and cryptology. Do not emit an operative-lifecycle observation.
 
 Keep these out of the shared fold and replay schema until separately proven:
 
@@ -50,7 +50,9 @@ Keep these out of the shared fold and replay schema until separately proven:
 - spy-network graph and intel-map percentages;
 - incoming/outgoing diplomacy action queues;
 - operative traits, nationality, portrait/gfx token, mission, operation
-  assignment, recruitable pool, and captured/captured_by semantics;
+  assignment, recruitable pool, and captured/captured_by semantics. The first
+  three now have exact same-selected-Present evidence in companion v3, but stay
+  out until the shared fold consumes that authenticated receipt;
 - final semantic names for agency capacity values `+0xE4/+0xF0/+0xF4`;
 - any full event stream beyond validated-state observations.
 
@@ -457,12 +459,13 @@ fn decode_compact_diplomacy_intel_operatives_live_data_payload(
 }
 ```
 
-Expected lane-local v26 fixture counters after decode:
+Expected current fixture counters after central validation/refreeze (the old
+v26 receipt with 20/3/8 is authenticated compatibility evidence only):
 
-- `diplomacy_intel_rows = 20`
+- `diplomacy_intel_rows = 19`
 - `agency_capacity_cluster_rows = 1`
-- `operative_lifecycle_rows = 3`
-- `compact_state_event_rows = 8`
+- `operative_lifecycle_rows = 0`
+- `compact_state_event_rows = 7`
 - `compact_state_event_relation_opinion_rows = 1`
 - `compact_state_event_country_faction_group_rows = 1`
 
@@ -570,7 +573,7 @@ Recommended overlay locations:
       "domain53_extra": {
         "agency_scalars": {"defense_raw": 600000, "upgrade_progress_raw": 2400000, "name_hash": 123, "icon_hash": 456},
         "agency_capacity_cluster": {"value_0xe4": 9, "value_0xf0": 10, "value_0xf4": 9, "proof_hash": 51966},
-        "operative_lifecycle_rows": [{"op_id": 11387, "detected": false, "skill": 2, "experience_raw": 71372000, "lifecycle_flag": 47, "state_hash": 221}],
+        "operative_assignment_encoding": "assignment_N; exact numeric discriminator only",
         "state_events": []
       }
     }
@@ -638,7 +641,7 @@ Domain 53 live diplomacy/intel extras are optional collector-fed overlays under
 `countries.*.diplomacy.domain53_extra`, `countries.*.intel.domain53_extra`, and
 `diplomacy_world.domain53_extra`. They preserve validated raw/hashy values that
 do not yet match the documented save-shaped schema: relation flag kind ids, raw
-agency capacity offsets `+0xE4/+0xF0/+0xF4`, operative lifecycle numeric flags,
+agency capacity offsets `+0xE4/+0xF0/+0xF4`, operative assignment hashes,
 state-event observation hashes, and war tag-pair/casualty rows without war
 grouping/start-date. These extras are present only when the collector provenance
 includes `diplomacy_intel_operatives_live`. They do not populate operations,
@@ -667,7 +670,7 @@ Checklist row deltas:
 | Subjects/autonomy | Puppet/subject relation, autonomy progress, overlord, subject levels. | `PRODUCTION_INTEGRATED` | Domain 53 preserves the legacy `CSubjectRelation` row and carries the complete authenticated `CCurrentAutonomyStatus` set through AUST, fold, typed replay, and both-side country-panel projection. | Closed by exact owner/extent/producer authority, signed-score/adjacency direction, gap invalidation, and pointer-free key/state admission; live matrix optional. |
 | War lifecycle | War ids/names, attacker/defender groups, start/end, participants, casualties. | `ROOT_DISCOVERY_OPEN` | Domain 53 shared registration may preserve validated tag-pair/casualty rows, but war grouping/name/start-date scalar remains unvalidated and badged. | War grouping/name/date closure or exact blocker. |
 | Intel agency | Agency scalars, upgrades, cryptology, capacity, recruitment. | `SHARED_INTEGRATION_PENDING` | Domain 53 shared registration preserves validated agency/cryptology scalars plus raw capacity cluster rows `agency+0xE4/+0xF0/+0xF4` without semantic relabeling. | Semantic fixtures for exact capacity labels, upgrades, recruitment, and full cryptology state. |
-| Operatives | Operative identity, owner, skill/XP, detected state, lifecycle flags. | `SHARED_INTEGRATION_PENDING` | Domain 53 shared registration preserves active operative identity/stat rows and numeric lifecycle flag cohorts. | Mission/captured/pool/nationality/portrait/trait/operation-assignment closure. |
+| Operatives | Operative identity, owner, skill/XP, detected state, assignment, traits, nationalities, portrait. | `SHARED_INTEGRATION_PENDING` | Domain 53 preserves active identity/stat rows and exact numeric assignment hashes; same-selected-Present trait/nationality/final-portrait evidence and assignment-3 authored mission products are available for the integration seam. The former lifecycle cohorts were allocator capacities and are retired. | Remaining assignment-family semantics, captured/pool fixtures, and production fold closure. |
 | Operations | Running operation, target, stage/progress, participants, outcome. | `FIXTURE_BLOCKED` | Domain 53 registration does not accept operation-detail rows; resisted anchors stay out of replay operation state. | Same-tick running-operation fixture and shared rows, or exact rejection. |
 | Spy networks/intel map | Network strength, coverage, intel percentages, target states/countries. | `FIXTURE_BLOCKED` | Domain 53 registration does not accept spy-network graph or unresisted intel-map percentage rows. | Same-tick intel-map/spy-network fixture and shared rows. |
 | Diplomacy action queues | Incoming/outgoing diplomatic actions and timed requests. | `FIXTURE_BLOCKED` | Domain 53 registration does not accept a pending-action queue root. | Live fixture and compact event rows. |

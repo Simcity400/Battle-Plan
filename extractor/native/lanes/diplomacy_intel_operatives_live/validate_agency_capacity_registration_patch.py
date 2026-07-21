@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,23 @@ def load_json(path: Path) -> dict[str, Any]:
 def require(condition: bool, errors: list[str], message: str) -> None:
     if not condition:
         errors.append(message)
+
+
+def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(value, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def domain53_reserved_with_data_record(text: str) -> bool:
@@ -183,11 +202,10 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
         errors,
         "proof intel_agency_rows is not 1",
     )
-    require(
-        proof_unit_count(replay_proof, "operative_lifecycle_rows") == 3,
-        errors,
-        "proof operative_lifecycle_rows is not 3",
-    )
+    # The v22 receipt predates retirement of the false operative-lifecycle
+    # interpretation.  Its unrelated agency-capacity row remains usable because
+    # it is independently typed and counted; the lifecycle counter is reported
+    # below for provenance only and is never a gate requirement.
 
     status = "agency_capacity_registration_patch_validated" if not errors else "failed"
     return {
@@ -246,6 +264,7 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
             "operative_lifecycle_rows": proof_unit_count(
                 replay_proof, "operative_lifecycle_rows"
             ),
+            "legacy_operative_lifecycle_counter_promotable": False,
             "replay_container_integrity_verified": container_integrity_ok(replay_proof),
         },
         "dll_only": "no",
@@ -275,8 +294,7 @@ def main() -> int:
 
     report = validate(args)
     out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_json_atomic(out, report)
     print(
         "agency_capacity_registration_patch: "
         f"status={report['status']} "

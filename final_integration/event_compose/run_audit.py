@@ -1250,8 +1250,11 @@ def main() -> int:
     payload = {
         "schema": "hoi4-rendering-laws-final-event-compose-audit-v1",
         "authority": {
-            "workspace": str(ROOT),
-            "production_root": str(AUTHORITY),
+            # The authority is the checkout containing this receipt. Keep the
+            # serialized identity relocatable instead of leaking the producer's
+            # workstation root into downstream manifests.
+            "workspace": ".",
+            "production_root": ".",
             "production_head": subprocess.check_output(["git", "-C", str(AUTHORITY), "rev-parse", "HEAD"], text=True).strip(),
             "source_sha256": {name: sha256(path) for name, path in production_source_paths().items()},
             "central_validation": central_runner_authority(),

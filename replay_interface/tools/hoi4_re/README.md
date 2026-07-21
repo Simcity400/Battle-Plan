@@ -90,6 +90,42 @@ refuses an executable SHA mismatch. `trace_calls` is different: Frida
 `Interceptor` is hook-based observational instrumentation. It is capped at 32
 symbols, 30 seconds, and 64 hits per target, holds an exclusive machine lease,
 has no force override, and treats cleanup failure as a tainted session.
+Each call-entry row also records a guarded `this`-receiver vtable pointer and
+module-relative vtable RVA when `RCX` is a readable C++ object. This lets agents
+separate shared thunks by exact runtime type without exposing arbitrary memory
+reads or treating the trace as promotion authority.
+`trace_calls` accepts an optional `receiver_vtable_rvas` object keyed by a
+requested symbol ID; each value is a bounded list of exact module-relative
+vtable RVAs. Nonmatching calls are ignored before the per-target hit cap, which
+keeps a frequent shared thunk from starving the exact owner type under study.
+An optional `receiver_qword_offsets` object can capture at most 32 aligned
+receiver fields per symbol (bounded to the first 64 KiB), including a guarded
+pointee-vtable RVA. This is intended for statically proved object layouts such
+as owner-to-runtime-root joins; the configured offsets are retained in the job
+request and the trace remains discovery-only.
+`receiver_pointee_qword_offsets` follows at most eight explicitly named owner
+fields and reads at most 64 aligned qwords from each pointee. The request is
+globally capped at 4,096 qwords, allowing bounded owner-to-runtime-object graph
+joins without enabling arbitrary unretained process-memory scans.
+`receiver_pointer_chains` follows at most eight explicitly named pointer chains,
+with no more than four aligned dereferences per chain, then reads at most 64
+selected qwords from the final object. The requested steps and guarded results
+are retained, and chain qword reads have their own 4,096-qword trace budget.
+`skip_hits` can retain a later bounded call window for a requested symbol. It
+is applied after receiver-type filtering and before the existing hit cap, so a
+stable traversal order does not limit observation to the first objects in a
+large exact-type pool.
+If Frida cannot instrument one registered target, the trace now retains a
+`target_error` row for that symbol and continues attaching the remaining
+bounded targets instead of losing the rest of a multi-symbol census.
+For statically proved container ABIs, `argument_pointer_arrays` can capture a
+bounded pointer array rooted at `RCX`, `RDX`, `R8`, or `R9`, together with exact
+item vtables, selected aligned item qwords, and selected vtable-slot targets.
+Item qword reads are separately capped at 8,192 qwords per trace request. Array reads are capped at 4,096
+items each and 8,192 items for the whole trace request, and every register,
+offset, count bound, and requested slot is retained in the durable job request.
+`start_index` permits a later bounded window when a proved container exceeds
+the per-array cap; emitted item indexes remain indexes in the original array.
 
 Do not launch or attach to HOI4 merely to smoke-test this server. Live jobs need
 explicit task authorization and an already-running matching process.

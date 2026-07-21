@@ -24,6 +24,8 @@ members = [
     "lanes/event_timeline_change_log_live",
     "lanes/direct_frd_transitions_live",
     "lanes/focus_research_decisions_depth_live",
+    "lanes/fow_visibility_live",
+    "lanes/spotted_units_live",
     "lanes/land_combat_detail_events_live",
     "lanes/market_trade_live",
     "lanes/army_battleplans_depth_live",
@@ -47,6 +49,7 @@ members = [
     "lanes/weather_live",
     "lanes/character_presentation_live",
     "lanes/nuke_stockpile_live",
+    "lanes/country_army_upgrade_requests_live",
     "lanes/sunk_ship_history_live",
     "lanes/decision_panel_live",
 ]

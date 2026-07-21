@@ -46,8 +46,12 @@ The live proof module validates this root chain on build
   `COccupationLaw*` and a `CStateGarrisonData*` at the same entry offset. The
   law key is the `CStateGarrisonData + 0x50 -> CState` join; the law value is
   the `COccupationLaw` id string at `+0x10`.
-- `CCountryCollaborationData` vtable `module+0x29A5D08` is reachable from the
-  collaboration-status graph, but its target semantics are not yet classified
+- `CCountryCollaborationStatus + 0x28/+0x34` is the bounded relation-pointer
+  array/count; `+0x40` is the owning `CCountry*`; `+0x48/+0x54` is the
+  reciprocal incoming-owner tag-id array/count.
+- `CCountryCollaborationData` vtable `module+0x29A5D08`; `+0x08` is the target
+  country tag-db id and `+0x10` is signed i64 fixed-x100000 collaboration
+  progress, clamped to `[0, 100000]` by the exact add/set producers.
 
 The state/province join keys intentionally match the existing `map_control` and
 `state_detail` production lanes: `state_id`, `province_id`, owner tag-db id, and
@@ -78,26 +82,20 @@ Rejected/narrowed current-build candidates:
   independent manpower vector. Keep manpower/equipment/suppression/request
   detail badged unavailable until a same-hour or one-variable controlled
   fixture proves a distinct vector/root layout.
-- Collaboration/GIE detail remains unwired, with the current targeted live
-  candidates rejected for this fixture. The v23 occupation oracle reports
-  `countries.<TAG>.collaboration` empty for every country. The save melt has
-  `101` `government_in_exile_tag` rows, but all `101/101` classify as asset
-  scope (`20` leader, `58` ship, `3` deployment, `20` air wing), not country
-  occupation/collaboration payload. The same melt has `8` country-scope
-  GIE rows for `FRA`, `LUX`, `BEL`, `HOL`, `POL`, `YUG`, `NOR`, and `PHI`;
-  the targeted live graph over those countries plus hosts `ENG` and `USA`
-  resolved `10/10` collaboration-status roots, found `1`
-  `CCountryCollaborationData` hit and `16` scalar/tag hits, and rejected all
-  candidate scopes because none contained the expected host plus target country
-  tag or unique legitimacy raw.
+- Collaboration is closed independently of government-in-exile state. Exact
+  a729 producers, serializer, and UI consumer prove its owner/target/progress
+  law; paused D04 exposes the sole live relation `NOR(24) -> GER(1) = 30000`,
+  matching save value `0.3` with zero graph anomalies. Historical GIE probes
+  below remain useful negative evidence: asset-scope `government_in_exile_tag`
+  fields and country GIE legitimacy must not be substituted for collaboration.
 
 ## Compact schema
 
 `collector_module.rs` is the lane-owned collector-side Rust module. It contains
 the build gate, exact current-build offsets, `OccupationMemory` read trait,
 state/country occupation extraction, fail-closed row badges, compact payload
-encoding, and a baseline/delta tracker. It is intentionally not registered in
-shared collector entrypoints while another lane owns the integration slot.
+encoding, and a baseline/delta tracker. Domain 52 is registered in the shared
+collector and recorder path.
 
 `domain52_compact.rs` defines the lane-local compact payload for domain id `52`.
 `domain52_gate.rs` is a lane-local Rust decoder gate for either the raw domain
@@ -144,34 +142,33 @@ in the current closure section below.
 The decoder gate fails closed if a row marks garrison signals unavailable while
 carrying nonzero garrison scalar values.
 
-Validated but not yet encoded as detailed payload: `CCountry + 0xFD8` gives the
-collaboration-status root. Current country-level GIE fixture rows
-(`hosting_our_government_in_exile`, `legitimacy`, `exile_army_leaders`) are
-blocked on a controlled fixture because the targeted v23 live scalar/tag hits
-do not satisfy the host/country/unique-legitimacy contract.
+The sequential `COL1` trailer carries the complete pointer-free collaboration
+set after `GAR1`: owner tag-db id, target tag-db id, and signed i64
+fixed-x100000 progress. A complete zero-row set is authoritative only after at
+least one country root was observed with zero anomalies. Any malformed root,
+relation, reciprocal join, duplicate, or out-of-range scalar marks the entire
+extension unavailable. The recorder resolves numeric ids through the captured
+country identity map and writes canonical
+`countries.<OWNER>.collaboration.collaboration.<TARGET>.value`; unavailable
+state becomes `collaboration: null`, not an invented empty set. Country-level
+GIE fields remain a separate scope and are not inferred from `COL1`.
 
-## Registration-only patch plan
+## Production registration
 
-Shared entrypoints were intentionally left untouched. The merge-ready integration
-hook, after the orchestrator grants the slot, is:
-
-1. Add `RAW_OCCUPATION_RESISTANCE_COMPLIANCE_DOMAIN` and
-   `COMPACT_DOMAIN_OCCUPATION_RESISTANCE_COMPLIANCE = 52` in
-   `extractor/native/collector/src/lib.rs`.
-2. Register `collector_module.rs` as the collector implementation and pass it
-   the collector's process-memory reader plus the existing cached
-   `CProvince -> CState` topology when available.
-3. Register the `CompactOccupationResistanceComplianceTracker` from
-   `collector_module.rs`, keyed by `state_id`, so the first frame emits a full
-   baseline and later frames emit deltas.
-4. Add recorder-host domain id/name mapping for `52` and use the decoder
-   checks in `domain52_compact.rs`.
-5. Run the compact extraction gate with scheduled domains
-   `map_control`, `state_detail`, and `occupation_resistance_compliance_live`;
-   acceptance requires ordered compact records, `.battleplan` packing, zero
-   skipped hours, and no source/partial/worker failures.
+Domain 52 is scheduled in the shared collector and decoded by the recorder
+host. `CompactOccupationResistanceComplianceTracker` owns its state baseline
+and produces the sequential occupation rows, `GAR1`, and `COL1` payload. The
+central validation owner must still require ordered compact records,
+`.battleplan` packing, zero skipped hours, and no source/partial/worker
+failures before promotion; lane subagents do not run independent builds.
 
 ## Latest proof
+
+The collaboration/GIE blocker statements in the historical run summaries
+below describe pre-D04 probes and are superseded for collaboration by
+`extractor/re_evidence/E15_COLLABORATION/E15_EXACT_CLOSEOUT_20260721.md`.
+They remain valid only as negative evidence against conflating GIE asset fields
+or legitimacy with collaboration progress.
 
 `extractor/native/runs/occupation_resistance_compliance_live_870ebf_20260701_v23_garrison_child_roots`
 adds the residual-resolution pass against a fresh autosave snapshot:

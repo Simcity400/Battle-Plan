@@ -7,7 +7,7 @@
       "target_directory": ".cargo-target"
     },
     "production_head": "7b90ff945a596e05fa8700672bc97b5871e86f6e",
-    "production_root": "",
+    "production_root": ".",
     "source_sha256": {
       "d3d11_device.rs": "ae8078647efedd2f4cd04f5f4fdcae384ea4bc550f4b70cdaf64df8f7c7e53c5",
       "frame_bundle.rs": "418c871d9a67591a4fd94b9435a6f51a49321374203ceebb99ff349bae7ebd52",
@@ -24,7 +24,7 @@
       "shadow_law.rs": "6669d1dd0acbf20cf834c42181f11ae80be656c83723f8a23dd7bc8429253d4d",
       "terrain_lod_law.rs": "e850cb5bd650384b44782bf94681db3024019cdfd0428de74f34ba40e92c8b16"
     },
-    "workspace": ""
+    "workspace": "."
   },
   "files": [
     {

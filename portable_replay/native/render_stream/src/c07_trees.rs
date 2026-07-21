@@ -11,8 +11,9 @@
 //! selected frame carrier itself continues to omit 95,275 global cells.
 
 use crate::{
-    BufferSource, DrawCommand, IndexFormat, RenderExecutionRef, RenderSubmit, StaticGeometrySource,
-    StaticMapCommand, StaticMapDraw,
+    BufferSource, DrawCommand, IndexFormat, RenderExecutionRef, RenderSubmit, S1DrawArguments,
+    S1LightDepthSubmission, S1ShadowPipeline, StaticGeometrySource, StaticMapCommand,
+    StaticMapDraw, StaticShaderResourceSource, S1_PARTITION_PRIMARY,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -238,6 +239,57 @@ struct ExpectedDraw {
     mesh_ib_bytes: u32,
     mesh_ib_sha256: &'static str,
 }
+
+#[derive(Clone, Copy)]
+struct ExpectedS1TreeAsset {
+    selected_lod_index: u32,
+    selected_mesh: &'static str,
+    selected_material: &'static str,
+    material_textures: &'static [(&'static str, &'static str); 3],
+}
+
+const PALMS_BLEND_MESH: &str = "gfx/models/mapitems/trees/palms_blend.mesh";
+const FOREST_DUNGE_BLEND_MESH: &str =
+    "gfx/models/mapitems/trees/forest_dunge_blend.mesh";
+const FOREST_DUNGE_MESH: &str = "gfx/models/mapitems/trees/forest_dunge.mesh";
+const PALMS_BLEND_LOD1_MATERIAL: &str =
+    "lodettShape|PdxMeshAdvancedSnow|palmblad_diffuse.dds|palmblad_normal.dds|palmblad_specular.dds";
+const FOREST_DUNGE_BLEND_LOD1_MATERIAL: &str =
+    "polySurfaceShape874|PdxMeshAdvancedSnow|pinetree_diffuse.dds|pinetree_normal.dds|nospec.dds";
+const FOREST_DUNGE_BLEND_LOD2_MATERIAL: &str =
+    "polySurfaceShape875|PdxMeshAdvancedSnow|pinetree_diffuse.dds|pinetree_normal.dds|nospec.dds";
+const FOREST_DUNGE_LOD1_MATERIAL: &str =
+    "polySurfaceShape874|PdxMeshAdvancedSnow|pinetree_diffuse.dds|pinetree_normal.dds|nospec.dds";
+const FOREST_DUNGE_LOD2_MATERIAL: &str =
+    "polySurfaceShape875|PdxMeshAdvancedSnow|pinetree_diffuse.dds|pinetree_normal.dds|nospec.dds";
+const PALM_MATERIAL_TEXTURES: [(&str, &str); 3] = [
+    (
+        "gfx/models/mapitems/trees/palmblad_diffuse.dds",
+        "01f93979fbd087a230bc3cb7c26c83ced43938730ba2e3bef9cb9f4656297293",
+    ),
+    (
+        "gfx/models/mapitems/trees/palmblad_normal.dds",
+        "101e9e9d16df5886c534b2ebc557b209dd85a7533721bdc5da4e165c247039ac",
+    ),
+    (
+        "gfx/models/mapitems/trees/palmblad_specular.dds",
+        "14f89b99427a6327b4e47d1806e9588c6a06128cf07cb95fef01bf8d8b20ec63",
+    ),
+];
+const FOREST_MATERIAL_TEXTURES: [(&str, &str); 3] = [
+    (
+        "gfx/models/mapitems/trees/pinetree_diffuse.dds",
+        "706d3c27456d2cd06689ae410c3f7776a883b5ab2792529bf90f789614b31088",
+    ),
+    (
+        "gfx/models/mapitems/trees/pinetree_normal.dds",
+        "2465ef94e116514590a66efb1ab259f34e2e6ea64e0c2f28d9976043a9d56e7e",
+    ),
+    (
+        "gfx/models/nospec.dds",
+        "d1cfb5c6ed8e1fb23919710dbf504a535e00c63e75c55da0bd0725560e6fb354",
+    ),
+];
 
 const EXPECTED_LIBRARY_BUCKETS: [ExpectedLibraryBucket; C07_TREE_CONTENT_LIBRARY_BUCKETS] = [
     ExpectedLibraryBucket {
@@ -1075,6 +1127,43 @@ const EXPECTED_PASSES: [(C07TreePassKind, &str, &str); C07_TREE_RETAINED_PASSES]
     ),
 ];
 
+fn expected_s1_tree_asset(bucket_id: u16) -> Option<ExpectedS1TreeAsset> {
+    let asset = match bucket_id {
+        634 => ExpectedS1TreeAsset {
+            selected_lod_index: 1,
+            selected_mesh: PALMS_BLEND_MESH,
+            selected_material: PALMS_BLEND_LOD1_MATERIAL,
+            material_textures: &PALM_MATERIAL_TEXTURES,
+        },
+        1145 => ExpectedS1TreeAsset {
+            selected_lod_index: 1,
+            selected_mesh: FOREST_DUNGE_BLEND_MESH,
+            selected_material: FOREST_DUNGE_BLEND_LOD1_MATERIAL,
+            material_textures: &FOREST_MATERIAL_TEXTURES,
+        },
+        1144 | 1146 | 1166 | 1167 | 1168 => ExpectedS1TreeAsset {
+            selected_lod_index: 2,
+            selected_mesh: FOREST_DUNGE_BLEND_MESH,
+            selected_material: FOREST_DUNGE_BLEND_LOD2_MATERIAL,
+            material_textures: &FOREST_MATERIAL_TEXTURES,
+        },
+        1401 => ExpectedS1TreeAsset {
+            selected_lod_index: 1,
+            selected_mesh: FOREST_DUNGE_MESH,
+            selected_material: FOREST_DUNGE_LOD1_MATERIAL,
+            material_textures: &FOREST_MATERIAL_TEXTURES,
+        },
+        1400 | 1402 | 1422 | 1423 | 1424 => ExpectedS1TreeAsset {
+            selected_lod_index: 2,
+            selected_mesh: FOREST_DUNGE_MESH,
+            selected_material: FOREST_DUNGE_LOD2_MATERIAL,
+            material_textures: &FOREST_MATERIAL_TEXTURES,
+        },
+        _ => return None,
+    };
+    Some(asset)
+}
+
 impl C07TreeContentLibrary {
     /// Construct the only admitted retained-corpus content library. This does
     /// not create a frame carrier or choose visibility/model/LOD state.
@@ -1530,6 +1619,106 @@ impl C07TreeContentSelection {
 }
 
 impl C07TreeRuntimeCarrier {
+    /// True only for the three byte-exact retained a729 tree shader pairs.
+    /// Consumers use this to suppress tree programs when no authenticated
+    /// runtime carrier is present; a shader match alone never creates one.
+    pub fn is_retained_tree_shader_draw(draw: &StaticMapDraw) -> bool {
+        EXPECTED_PASSES.iter().any(|(_, vertex, pixel)| {
+            draw.shader_program.compiled_vertex_shader.sha256 == *vertex
+                && draw.shader_program.compiled_pixel_shader.sha256 == *pixel
+        })
+    }
+
+    /// Recover the retained frame36669 carrier from one already-authenticated
+    /// selected-submit static operation stream.
+    ///
+    /// This is the production producer/consumer attachment boundary. The d80
+    /// catalog has already discarded every D3D/process pointer and retained
+    /// byte-exact shader, target, mesh, index, and instance-buffer identities.
+    /// We attach a carrier only when every one of the 39 retained tree draws
+    /// has exactly one match in that same submit. A different or incomplete
+    /// tree scope returns `None`; ambiguity is rejected instead of choosing a
+    /// first/last draw or reconstructing visibility from camera/installed content.
+    pub fn from_authenticated_submit_retained_frame36669(
+        submit: &RenderSubmit,
+    ) -> Result<Option<Self>, String> {
+        if submit.ordered_static_map_programs.is_empty()
+            || submit.ordered_render_operations.is_empty()
+        {
+            return Ok(None);
+        }
+
+        let mut static_draws = BTreeMap::<u32, &StaticMapDraw>::new();
+        for program in &submit.ordered_static_map_programs {
+            for operation in &program.ordered_operations {
+                if let StaticMapCommand::Draw { draw } = &operation.command {
+                    if static_draws
+                        .insert(operation.operation_ordinal, draw)
+                        .is_some()
+                    {
+                        return Err(
+                            "C07 tree discovery sees duplicate static operation ordinal".into(),
+                        );
+                    }
+                }
+            }
+        }
+
+        let mut ordered_operation_ordinals =
+            [[0u32; C07_TREE_RETAINED_BUCKETS]; C07_TREE_RETAINED_PASSES];
+        for (pass_index, expected_pass) in EXPECTED_PASSES.iter().copied().enumerate() {
+            let pass_draw_count = static_draws
+                .values()
+                .filter(|draw| {
+                    draw.shader_program.compiled_vertex_shader.sha256 == expected_pass.1
+                        && draw.shader_program.compiled_pixel_shader.sha256 == expected_pass.2
+                })
+                .count();
+            if pass_draw_count != C07_TREE_RETAINED_BUCKETS {
+                return Ok(None);
+            }
+            for (draw_index, expected_draw) in EXPECTED_DRAW_ORDER.iter().copied().enumerate() {
+                let bucket = &EXPECTED_BUCKETS[draw_index];
+                let bucket = C07TreeBucketCarrier {
+                    bucket_id: bucket.bucket_id,
+                    palette_index: bucket.palette,
+                    chunk_x: bucket.chunk_x,
+                    chunk_z: bucket.chunk_z,
+                    producer_create_ordinal: draw_index as u8,
+                    record_count: bucket.records,
+                    instance_bytes: bucket.bytes,
+                    instance_payload_sha256: bucket.instance_sha256.into(),
+                };
+                let matches = static_draws
+                    .iter()
+                    .filter_map(|(operation_ordinal, draw)| {
+                        validate_draw(draw, &bucket, &expected_draw, expected_pass)
+                            .is_ok()
+                            .then_some(*operation_ordinal)
+                    })
+                    .collect::<Vec<_>>();
+                match matches.as_slice() {
+                    [operation_ordinal] => {
+                        ordered_operation_ordinals[pass_index][draw_index] = *operation_ordinal;
+                    }
+                    [] => return Ok(None),
+                    _ => {
+                        return Err(format!(
+                            "C07 tree discovery is ambiguous for retained pass {pass_index} draw {draw_index}"
+                        ));
+                    }
+                }
+            }
+        }
+
+        let carrier = Self::retained_frame36669(ordered_operation_ordinals)?;
+        carrier.validate_against_submit(
+            submit,
+            C07TreeCoverageRequirement::RetainedVisibleSubset,
+        )?;
+        Ok(Some(carrier))
+    }
+
     /// Build the only currently authenticated carrier shape. Operation
     /// ordinals come from the selected submit; every other identity is frozen
     /// by the retained frame36669 contract and revalidated during admission.
@@ -1662,6 +1851,12 @@ impl C07TreeRuntimeCarrier {
             .map(|bucket| (bucket.bucket_id, bucket))
             .collect::<BTreeMap<_, _>>();
         let mut referenced_operations = BTreeSet::new();
+        let tree_shader_operations = static_draws
+            .iter()
+            .filter_map(|(operation_ordinal, draw)| {
+                Self::is_retained_tree_shader_draw(draw).then_some(*operation_ordinal)
+            })
+            .collect::<BTreeSet<_>>();
 
         for (pass, expected_pass) in self.ordered_passes.iter().zip(EXPECTED_PASSES) {
             let mut previous_execution_position = None;
@@ -1689,6 +1884,12 @@ impl C07TreeRuntimeCarrier {
                 validate_draw(draw, bucket, &expected_draw, expected_pass)?;
             }
         }
+        if tree_shader_operations != referenced_operations {
+            return Err(
+                "C07 tree carrier does not cover the complete selected-submit tree shader operation set"
+                    .into(),
+            );
+        }
         Ok(())
     }
 
@@ -1702,6 +1903,87 @@ impl C07TreeRuntimeCarrier {
         self.validate_against_submit(submit, C07TreeCoverageRequirement::RetainedVisibleSubset)?;
         library.validate_runtime_bucket_membership_trusted(self)?;
         C07TreeContentSelection::from_validated_subset(library, self)
+    }
+
+    /// Materialize the retained C07 shadow pass as exact typed S1 tree
+    /// casters. This is intentionally limited to the authenticated primary
+    /// partition represented by frame36669; wrap partitions require their own
+    /// observed draw set and are never cloned from these rows.
+    ///
+    /// `source_row_ordinal` is the exact 65,536-entry producer bucket index,
+    /// not the retained draw position. Mesh/LOD/material selection is frozen
+    /// from the shipped mesh objects and admitted only after the containing
+    /// d80 draw has passed the existing byte-exact VB/IB/instance validation.
+    pub fn s1_primary_shadow_submissions_against_submit(
+        &self,
+        submit: &RenderSubmit,
+    ) -> Result<Vec<S1LightDepthSubmission>, String> {
+        self.validate_against_submit(
+            submit,
+            C07TreeCoverageRequirement::RetainedVisibleSubset,
+        )?;
+
+        let shadow_pass = self
+            .ordered_passes
+            .iter()
+            .find(|pass| pass.pass == C07TreePassKind::Shadow)
+            .ok_or("C07 retained carrier has no shadow pass")?;
+        let static_draws = submit
+            .ordered_static_map_programs
+            .iter()
+            .flat_map(|program| program.ordered_operations.iter())
+            .filter_map(|operation| match &operation.command {
+                StaticMapCommand::Draw { draw } => Some((operation.operation_ordinal, draw)),
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        let mut source_rows = BTreeSet::new();
+        let mut submissions = Vec::with_capacity(shadow_pass.ordered_draws.len());
+        for draw_ref in &shadow_pass.ordered_draws {
+            if !source_rows.insert(u32::from(draw_ref.bucket_id)) {
+                return Err("C07 S1 tree source repeats a producer bucket row".into());
+            }
+            let asset = expected_s1_tree_asset(draw_ref.bucket_id)
+                .ok_or("C07 S1 tree source has no authenticated asset/LOD mapping")?;
+            let draw = static_draws
+                .get(&draw_ref.operation_ordinal)
+                .copied()
+                .ok_or("C07 S1 tree source operation is absent from the submit")?;
+            validate_s1_tree_material(draw, asset)?;
+            let StaticGeometrySource::Exact { geometry } = &draw.geometry else {
+                return Err("C07 S1 tree source does not carry exact geometry".into());
+            };
+            let DrawCommand::DrawIndexedInstanced {
+                index_count_per_instance,
+                instance_count,
+                start_index,
+                base_vertex,
+                start_instance,
+            } = &geometry.draw
+            else {
+                return Err("C07 S1 tree source is not indexed-instanced".into());
+            };
+            submissions.push(S1LightDepthSubmission::Tree {
+                partition_mask: S1_PARTITION_PRIMARY,
+                source_row_ordinal: u32::from(draw_ref.bucket_id),
+                selected_lod_index: asset.selected_lod_index,
+                selected_mesh: asset.selected_mesh.into(),
+                selected_material: asset.selected_material.into(),
+                pipeline: S1ShadowPipeline::TreeShadow,
+                draw: S1DrawArguments::DrawIndexedInstanced {
+                    index_count_per_instance: *index_count_per_instance,
+                    start_index: *start_index,
+                    base_vertex: *base_vertex,
+                    instance_count: *instance_count,
+                    start_instance: *start_instance,
+                },
+                execution: RenderExecutionRef::Static {
+                    operation_ordinal: draw_ref.operation_ordinal,
+                },
+            });
+        }
+        Ok(submissions)
     }
 
     fn validate_contract(&self, requirement: C07TreeCoverageRequirement) -> Result<(), String> {
@@ -1892,6 +2174,31 @@ fn source_matches(source: &BufferSource, expected_bytes: u32, expected_sha256: &
         } => *byte_count == u64::from(expected_bytes) && range_sha256 == expected_sha256,
         BufferSource::ParticleInstanceRecords => false,
     }
+}
+
+fn validate_s1_tree_material(
+    draw: &StaticMapDraw,
+    asset: ExpectedS1TreeAsset,
+) -> Result<(), String> {
+    for (expected_path, expected_sha256) in asset.material_textures {
+        let matches = draw
+            .ordered_shader_resources
+            .iter()
+            .filter(|binding| match &binding.source {
+                StaticShaderResourceSource::UsedContent { content, .. } => {
+                    content.normalized_game_relative_path == *expected_path
+                        && content.payload_sha256 == *expected_sha256
+                }
+                _ => false,
+            })
+            .count();
+        if matches != 1 {
+            return Err(format!(
+                "C07 S1 tree material does not uniquely bind {expected_path} at its admitted hash"
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

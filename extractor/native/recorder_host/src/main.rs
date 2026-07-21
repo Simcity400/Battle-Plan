@@ -19019,7 +19019,7 @@ mod tests {
             .get(&COMPACT_DOMAIN_DIPLOMACY_INTEL_OPERATIVES_LIVE)
             .unwrap();
         assert_eq!(domain.data_record_count, 1);
-        assert_eq!(domain.data_rows_total, 18);
+        assert_eq!(domain.data_rows_total, 17);
         assert_eq!(
             domain
                 .data_units_total
@@ -19032,7 +19032,7 @@ mod tests {
                 .data_units_total
                 .get("operative_lifecycle_rows")
                 .copied(),
-            Some(3)
+            Some(0)
         );
         assert!(!summary
             .unfolded_domain_data
@@ -19432,6 +19432,7 @@ mod tests {
                 repair_levels_remaining: Some(0),
                 created_date_raw: Some(60_827_043),
             }],
+            railway_construction_rows: None,
             building_rows: vec![domain48::BuildingRow {
                 scope: domain48::SCOPE_STATE,
                 location_id: 42,
@@ -19548,6 +19549,7 @@ mod tests {
             observed_state_roots: 1,
             observed_province_roots: 1,
             construction_rows: Vec::new(),
+            railway_construction_rows: None,
             building_rows: Vec::new(),
             resource_rows: Vec::new(),
         };
@@ -19627,6 +19629,7 @@ mod tests {
             observed_state_roots: 1,
             observed_province_roots: 1,
             construction_rows: Vec::new(),
+            railway_construction_rows: None,
             building_rows: Vec::new(),
             resource_rows: Vec::new(),
         };
@@ -22960,6 +22963,7 @@ mod tests {
                 observed_state_roots: 1,
                 observed_province_roots: 1,
                 construction_rows,
+                railway_construction_rows: None,
                 building_rows,
                 resource_rows,
             }
@@ -23253,6 +23257,7 @@ mod tests {
                 observed_state_roots: 1,
                 observed_province_roots: 1,
                 construction_rows,
+                railway_construction_rows: None,
                 building_rows,
                 resource_rows,
             }
@@ -23468,6 +23473,7 @@ mod tests {
                 observed_state_roots: 1,
                 observed_province_roots: 1,
                 construction_rows,
+                railway_construction_rows: None,
                 building_rows,
                 resource_rows,
             }

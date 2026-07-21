@@ -1231,9 +1231,10 @@ def _f_country_static():
 
 
 def _r_country_static(ctx: CaptureContext, read_country_static) -> Dict[str, Any]:
-    """LIVE per-country STATIC scalars -> country.identity.{original_capital,
-    original_tag, reserved_dynamic_country, templates_locked} (M; distinct
-    live-only leaves). Reuses the resolved bridge's country_object pointer (no
+    """LIVE per-country STATIC scalars -> country.politics.capital_state plus
+    country.identity.{original_capital, original_tag, reserved_dynamic_country,
+    templates_locked} (M; distinct live-only leaves). Reuses the resolved
+    bridge's country_object pointer (no
     re-scan): for each tag, obj = bridge.country_object(tag_db_id); the reader
     reads object-relative offsets (cracked + validated 140/140 vs the
     content-matched melt). original_tag's tag-db-id is resolved -> TAG via the
@@ -1253,6 +1254,7 @@ def _r_country_static(ctx: CaptureContext, read_country_static) -> Dict[str, Any
             continue
         rec = read_country_static(p, obj, tag_table=ctx.tag_table)
         countries[tag] = {
+            "capital": rec.get("capital"),
             "original_capital": rec.get("original_capital"),
             "original_tag": rec.get("original_tag"),
             "reserved_dynamic_country": rec.get("reserved_dynamic_country"),
@@ -4591,9 +4593,10 @@ def default_registry() -> List[ReaderPlug]:
         # MEASURED 0. Reuses ctx.proc.
         ReaderPlug("state_vp", _f_state_vp, _r_state_vp),
         ReaderPlug("country_misc", _f_country_misc, _r_country_misc),
-        # LIVE per-country STATIC scalars -> country.identity.{original_capital,
-        # original_tag, reserved_dynamic_country, templates_locked} (M; distinct
-        # live-only leaves). Reuses the resolved bridge's country_object pointer.
+        # LIVE per-country STATIC scalars -> country.politics.capital_state plus
+        # country.identity.{original_capital, original_tag,
+        # reserved_dynamic_country, templates_locked} (M; distinct live-only
+        # leaves). Reuses the resolved bridge's country_object pointer.
         ReaderPlug("country_static", _f_country_static, _r_country_static),
         # LIVE per-country SCRIPT-VARIABLES bag -> country.script_variables (M; the
         # mass closure for the nation scripted-GUI overlays). Reuses the bridge;

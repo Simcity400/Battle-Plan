@@ -143,7 +143,7 @@ mod tests {
         let summary = decode_domain53_record(0, &record);
 
         assert_eq!(summary.record_count, 1);
-        assert_eq!(summary.data_rows_total, 18);
+        assert_eq!(summary.data_rows_total, 17);
         assert_eq!(
             summary
                 .data_units_total
@@ -156,7 +156,7 @@ mod tests {
                 .data_units_total
                 .get("compact_state_event_rows")
                 .copied(),
-            Some(8)
+            Some(7)
         );
         assert_eq!(
             summary

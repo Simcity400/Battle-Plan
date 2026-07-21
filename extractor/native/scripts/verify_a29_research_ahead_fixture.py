@@ -15,7 +15,7 @@ import zipfile
 EXPECTED_EXECUTABLE_SHA256 = (
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
 )
-EXPECTED_AUTHORITY = "a729_observed_research_ahead_producer_v1"
+EXPECTED_AUTHORITY = "a729_observed_research_ahead_producer_v2"
 EXPECTED_ROOT_JOB_ID = "20260720T124311Z-w5-a29-effective-producer-roots-e50d79d0"
 EXPECTED_ROOT_MANIFEST_SHA256 = (
     "82884a9a122f95298d5068bdb68590806346c2c1ac274ca3b56889bb0e5abcc2"
@@ -229,8 +229,10 @@ def decimal_matches_raw(value, raw):
     return decimal.is_finite() and decimal * EXPECTED_FIXED_SCALE == raw
 
 
-def expected_source_record_sha256(provenance, tech_def_index_raw, raw_values):
-    canonical = bytearray(b"the game:a729:a29-observed-producer:v1\0")
+def expected_source_record_sha256(
+    provenance, research_slot_index, tech_def_index_raw, raw_values
+):
+    canonical = bytearray(b"the game:a729:a29-observed-producer:v2\0")
     canonical.extend(EXPECTED_EXECUTABLE_SHA256.encode("ascii"))
     canonical.extend(EXPECTED_ROOT_MANIFEST_SHA256.encode("ascii"))
     canonical.extend(EXPECTED_SENTINEL_DUMP_SHA256.encode("ascii"))
@@ -239,6 +241,7 @@ def expected_source_record_sha256(provenance, tech_def_index_raw, raw_values):
     canonical.extend(struct.pack("<Q", provenance["callback_qpc_ticks"]))
     canonical.extend(struct.pack("<Q", provenance["qpc_frequency_hz"]))
     canonical.extend(struct.pack("<i", provenance["producer_game_hour_raw"]))
+    canonical.extend(struct.pack("<I", research_slot_index))
     canonical.extend(struct.pack("<I", tech_def_index_raw))
     canonical.extend(struct.pack("<I", provenance["localization_branch"]))
     for field, _ in VALUE_FIELDS:
@@ -246,7 +249,9 @@ def expected_source_record_sha256(provenance, tech_def_index_raw, raw_values):
     return hashlib.sha256(canonical).hexdigest()
 
 
-def validate_provenance(provenance, snapshot, tech_def_index_raw, raw_values):
+def validate_provenance(
+    provenance, snapshot, research_slot_index, tech_def_index_raw, raw_values
+):
     if not isinstance(provenance, dict):
         raise ValueError("ahead_of_time_provenance is absent or not an object")
     exact_text = {
@@ -283,7 +288,7 @@ def validate_provenance(provenance, snapshot, tech_def_index_raw, raw_values):
     if not nonzero_lower_hex_sha256(source_sha):
         raise ValueError("A29 source-record SHA-256 is absent, non-lowerhex, or zero")
     if source_sha != expected_source_record_sha256(
-        provenance, tech_def_index_raw, raw_values
+        provenance, research_slot_index, tech_def_index_raw, raw_values
     ):
         raise ValueError("A29 source-record SHA-256 does not bind the portable producer row")
     snapshot_hour = snapshot.get("game_hour_raw")
@@ -335,6 +340,7 @@ def validate_a29_row(row, snapshot):
     provenance = validate_provenance(
         row.get("ahead_of_time_provenance"),
         snapshot,
+        slot_index,
         tech_def_index_raw,
         raw_values,
     )

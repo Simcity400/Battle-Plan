@@ -1265,6 +1265,7 @@ mod tests {
         let registration = RawProgramRegistrationObservation {
             observation_sequence: 10,
             shader_program_ptr: 0x100,
+            registration_root_rva: crate::MAP_EFFECT_REGISTRATION_ROOT_RVA,
             source_open_sequence: 1,
             effect_token: "observed-effect".into(),
             vertex_entry_token: "VS".into(),
@@ -1556,6 +1557,7 @@ mod tests {
             program_identity: RawProgramIdentity {
                 observation_sequence: 7,
                 shader_program_ptr: 0x100,
+                registration_root_rva: crate::MAP_EFFECT_REGISTRATION_ROOT_RVA,
                 source: content(),
                 effect_token: "observed-effect".into(),
                 vertex_entry_token: "VS".into(),

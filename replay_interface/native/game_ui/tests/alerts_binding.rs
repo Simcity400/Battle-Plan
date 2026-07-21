@@ -35,12 +35,16 @@ fn fixture(name: &str) -> WorldTimeline {
 }
 
 // --- generator formulas (transcribed from fx_topbar_scalars_sweep) ---
-fn expected_count(kind: AlertKind, tick: i64) -> i64 {
+fn expected_count(kind: AlertKind, tick: i64) -> Option<i64> {
     match kind {
-        AlertKind::Initiative => tick % 3,
-        AlertKind::DecisionsAvailable => tick % 4,
-        AlertKind::Intel => tick % 2,
-        AlertKind::MarketContracts => tick % 5,
+        AlertKind::Initiative => Some(tick % 3),
+        AlertKind::DecisionsAvailable => Some(tick % 4),
+        AlertKind::Intel => Some(tick % 2),
+        AlertKind::MarketContracts => Some(tick % 5),
+        AlertKind::DecisionsTimeout
+        | AlertKind::IntelPreparedOrCompleted
+        | AlertKind::PrototypeRewards
+        | AlertKind::MarketContractsOngoing => None,
     }
 }
 
@@ -59,26 +63,22 @@ fn alert_counts_render_generator_values_per_pov() {
         for tag in ["GER", "ENG", "SOV"] {
             let strip = alerts_strip_from_frame(&frame, tag);
             assert!(strip.available, "{tag} extras view present @t{t}");
-            assert_eq!(strip.badges.len(), 4, "{tag} four badges @t{t}");
+            assert_eq!(strip.badges.len(), 8, "{tag} eight badges @t{t}");
 
             for kind in AlertKind::ALL {
                 let exp = expected_count(kind, t);
                 let badge = strip.badge(kind);
-                assert_eq!(badge.count, Some(exp), "{tag} {:?} count @t{t}", kind);
+                assert_eq!(badge.count, exp, "{tag} {:?} count @t{t}", kind);
                 assert_eq!(
                     badge.badge_shown,
-                    exp > 0,
-                    "{tag} {:?} badge_shown @t{t} (count {exp})",
-                    kind
+                    exp.is_some_and(|count| count > 0),
+                    "{tag} {:?} badge_shown @t{t} (count {:?})",
+                    kind,
+                    exp
                 );
                 assert_eq!(
                     badge.count_text.as_deref(),
-                    if exp > 0 {
-                        Some(format!("{exp}"))
-                    } else {
-                        None
-                    }
-                    .as_deref(),
+                    exp.filter(|count| *count > 0).map(|count| count.to_string()).as_deref(),
                     "{tag} {:?} count_text @t{t}",
                     kind
                 );
@@ -115,8 +115,8 @@ fn market_contracts_probe_endpoint_is_exact() {
     assert!(
         s0.badges
             .iter()
-            .all(|b| b.count == Some(0) && !b.badge_shown),
-        "t=0 all badges measured-zero and suppressed"
+            .all(|b| b.count.is_none_or(|count| count == 0) && !b.badge_shown),
+        "t=0 all measured badges are zero and all badges are suppressed"
     );
 }
 
@@ -129,7 +129,7 @@ fn absent_pov_renders_fail_closed_strip() {
     let frame = tl.frame(tl.first_hour()).unwrap();
     let strip = alerts_strip_from_frame(&frame, "USA"); // not in the fixture
     assert_eq!(strip.pov_tag, "USA");
-    assert_eq!(strip.badges.len(), 4);
+    assert_eq!(strip.badges.len(), 8);
     for badge in &strip.badges {
         assert_eq!(badge.count, None, "{:?} fail-closed None", badge.kind);
         assert!(!badge.badge_shown);

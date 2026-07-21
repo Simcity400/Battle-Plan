@@ -8,6 +8,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use map_viewer::GameFileResolver;
 use serde::Serialize;
@@ -25,6 +26,7 @@ use crate::{Result, TimelineMode};
 /// so every pixel is map content and dumps diff cleanly.
 const DUMP_WIDTH: u32 = 1408;
 const DUMP_HEIGHT: u32 = 512;
+static IMMUTABLE_PUBLISH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Machine-readable product-render observation consumed by the close-zoom
 /// golden/pixel gate.  The execution receipt and BGRA pixels are bound in the
@@ -138,7 +140,10 @@ fn write_production_pixel_gate_receipt(
     let path = production_pixel_gate_receipt_path(out);
     let mut bytes = serde_json::to_vec_pretty(receipt)?;
     bytes.push(b'\n');
-    std::fs::write(&path, bytes)?;
+    // The BMP is published first.  The receipt is the authority/completion
+    // marker, so expose it only after its complete durable bytes exist and
+    // never replace a prior receipt with different content.
+    write_create_new_or_equal(&path, &bytes, "production pixel-gate receipt")?;
     Ok(path)
 }
 
@@ -210,27 +215,74 @@ fn write_occupation_secondary_h2_evidence(
 }
 
 fn write_create_new_or_equal(path: &Path, bytes: &[u8], label: &str) -> Result<()> {
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-    {
-        Ok(mut file) => {
-            file.write_all(bytes)?;
-            file.sync_all()?;
+    if path.exists() {
+        if std::fs::read(path)? == bytes {
+            return Ok(());
         }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            if std::fs::read(path)? != bytes {
-                return Err(format!(
-                    "{label} path already exists with different bytes: {}",
-                    path.display()
-                )
-                .into());
-            }
-        }
-        Err(error) => return Err(error.into()),
+        return Err(format!(
+            "{label} path already exists with different bytes: {}",
+            path.display()
+        )
+        .into());
     }
-    Ok(())
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{label} path has no parent: {}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("{label} path has no file name: {}", path.display()))?
+        .to_string_lossy();
+    let (temporary, mut file) = (0..64)
+        .find_map(|_| {
+            let counter = IMMUTABLE_PUBLISH_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let candidate = parent.join(format!(
+                ".{file_name}.{}.{}.tmp",
+                std::process::id(),
+                counter
+            ));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(file) => Some(Ok((candidate, file))),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .transpose()?
+        .ok_or_else(|| format!("could not allocate atomic {label} staging file"))?;
+
+    let staged = (|| -> Result<()> {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    drop(file);
+    let result = staged.and_then(|()| {
+        match std::fs::hard_link(&temporary, path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if std::fs::read(path)? == bytes {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "{label} path was concurrently published with different bytes: {}",
+                        path.display()
+                    )
+                    .into())
+                }
+            }
+            Err(error) => Err(format!(
+                "atomically publish {label} {}: {error}",
+                path.display()
+            )
+            .into()),
+        }
+    });
+    let _ = std::fs::remove_file(&temporary);
+    result
 }
 
 /// Render `hour` (default: the timeline's first hour) and write a 32-bit BMP.
@@ -608,7 +660,12 @@ fn dump_production_recording_frame(
         &content_admission,
         content_manifest,
     )?;
-    let production_plan = production_map.prepare_frame(Some(production_render))?;
+    let production_plan = production_map
+        .prepare_frame_with_rail(
+            Some(production_render),
+            Some(frame.rail_replay()),
+            Some(frame.production_by_country()),
+        )?;
     let prepared =
         map_viewer::prepare_production_d3d_frame(&production_plan, production_map.resources())?;
     for message in production_optional_omission_messages(&production_plan, &prepared) {
@@ -956,17 +1013,30 @@ fn write_bmp(path: &Path, width: u32, height: u32, pixels: &[u8]) -> Result<()> 
     for y in (0..height as usize).rev() {
         out.extend_from_slice(&pixels[y * row_bytes..(y + 1) * row_bytes]);
     }
-    let mut file =
-        std::fs::File::create(path).map_err(|err| format!("create {}: {err}", path.display()))?;
-    file.write_all(&out)
-        .map_err(|err| format!("write {}: {err}", path.display()))?;
-    Ok(())
+    write_create_new_or_equal(path, &out, "headless BGRA BMP")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use snapshot::{pack, PackEntry, PackIdentity};
+
+    #[test]
+    fn immutable_authority_publication_is_atomic_idempotent_and_no_replace() {
+        let root = std::env::temp_dir().join(format!(
+            "battle-plan-g2-publish-{}-{}",
+            std::process::id(),
+            IMMUTABLE_PUBLISH_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("receipt.json");
+        write_create_new_or_equal(&path, b"complete receipt bytes\n", "test receipt").unwrap();
+        write_create_new_or_equal(&path, b"complete receipt bytes\n", "test receipt").unwrap();
+        assert!(write_create_new_or_equal(&path, b"different\n", "test receipt").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"complete receipt bytes\n");
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn packed_political_keying_recording() -> std::path::PathBuf {
         let mut states = serde_json::Map::new();
@@ -1137,6 +1207,7 @@ mod tests {
             c03_camera_replay: None,
             ordered_scene_constant_buffers: Vec::new(),
             ordered_static_map_programs: Vec::new(),
+            rail_ribbon: None,
             snow_mud_texture: None,
             tree_runtime: None,
             s1_shadow: None,
@@ -1147,6 +1218,7 @@ mod tests {
             m02_combat: None,
             authenticated_ui_pass: None,
             m03_arrows: None,
+            rail_supply_arrows: None,
             o04_cities: None,
             o05_buildings: None,
             omitted_data_needs: vec![map_viewer::ProductionMapDataNeed {
@@ -1168,6 +1240,7 @@ mod tests {
             tiled_lights: Vec::new(),
             ordered_static_used_content: Vec::new(),
             ordered_static_programs: Vec::new(),
+            rail_ribbon: None,
             mapname_d80_state: replay_core::MapnameD80State::Missing,
             tree_runtime: None,
             tree_materialized_execution_sha256: None,
@@ -1176,6 +1249,7 @@ mod tests {
             m02_combat: None,
             authenticated_ui_pass: None,
             m03_arrows: None,
+            rail_supply_arrows: None,
             omissions: vec![map_viewer::ProductionD3dOmission {
                 pass: "optional-pass".into(),
                 reason: "unsupported optional interpreter".into(),

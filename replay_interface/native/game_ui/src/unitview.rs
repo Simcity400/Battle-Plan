@@ -497,6 +497,7 @@ mod tests {
             move_target_province: Leaf::Absent,
             move_progress: Leaf::Absent,
             in_combat: Leaf::Absent,
+            attrition: Leaf::Absent,
             equipment: Leaf::Absent,
         };
         let view = land_unit_view_from_row(&row, true);
@@ -527,6 +528,7 @@ mod tests {
             move_target_province: Leaf::Measured(2000),
             move_progress: Leaf::Measured(0.5),
             in_combat: Leaf::Measured(false),
+            attrition: Leaf::Absent,
             equipment: Leaf::Measured(Vec::new()),
         };
         let view = land_unit_view_from_row(&row, true);
@@ -614,6 +616,7 @@ mod tests {
             mission_kind: Leaf::Measured("air_superiority".to_string()),
             strategic_region_id: Leaf::Measured(301),
             air_base: Leaf::Measured("3000:1".to_string()),
+            air_base_province: Leaf::Measured(2500),
             state_id: Leaf::Measured(30),
             plane_definition: Leaf::Absent,
             effective_planes: Leaf::Measured(90),

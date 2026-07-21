@@ -18,6 +18,12 @@ pub const GARRISON_ALERT_FLAG_SOURCE_UNAVAILABLE: u32 = 1;
 pub const GARRISON_ALERT_FLAG_PREDICATE_RETURNED: u32 = 1 << 1;
 pub const GARRISON_ALERT_FLAG_MISSING_MANPOWER: u32 = 1 << 2;
 pub const GARRISON_ALERT_FLAG_COMPLETE: u32 = 1 << 3;
+pub const COLLABORATION_MAGIC: [u8; 4] = *b"COL1";
+pub const COLLABORATION_SCHEMA_VERSION: u16 = 1;
+pub const COLLABORATION_HEADER_LEN: usize = 32;
+pub const COLLABORATION_ROW_LEN: usize = 16;
+pub const COLLABORATION_FLAG_SOURCE_UNAVAILABLE: u32 = 1;
+pub const COLLABORATION_FLAG_COMPLETE: u32 = 1 << 1;
 
 pub const ROW_FLAG_OWNER: u32 = 1;
 pub const ROW_FLAG_CONTROLLER: u32 = 1 << 1;
@@ -101,6 +107,22 @@ pub struct GarrisonAlertExtension {
     pub equipment: Vec<GarrisonAlertEquipmentRow>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CollaborationRelationRow {
+    pub owner_tag_db_id: u32,
+    pub target_tag_db_id: u32,
+    /// Exact CFixedPoint value stored by CCountryCollaborationData+0x10.
+    pub progress_raw: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CollaborationExtension {
+    pub flags: u32,
+    pub observed_country_rows: u32,
+    pub anomaly_rows: u32,
+    pub rows: Vec<CollaborationRelationRow>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Domain44GateSummary {
     pub status_flags_or: u32,
@@ -172,6 +194,40 @@ pub fn encode_payload_with_alert(
         payload.extend_from_slice(&row.archetype_id.to_le_bytes());
         payload.extend_from_slice(&row.whole_units.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
+    }
+    payload
+}
+
+pub fn encode_payload_with_alert_and_collaboration(
+    header: &OccupationHeader,
+    rows: &[OccupationStateRow],
+    alert: &GarrisonAlertExtension,
+    collaboration: &CollaborationExtension,
+) -> Vec<u8> {
+    let mut payload = encode_payload_with_alert(header, rows, alert);
+    payload.reserve(
+        COLLABORATION_HEADER_LEN.saturating_add(
+            collaboration
+                .rows
+                .len()
+                .saturating_mul(COLLABORATION_ROW_LEN),
+        ),
+    );
+    payload.extend_from_slice(&COLLABORATION_MAGIC);
+    payload.extend_from_slice(&COLLABORATION_SCHEMA_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(COLLABORATION_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&collaboration.flags.to_le_bytes());
+    payload.extend_from_slice(
+        &(collaboration.rows.len().min(u32::MAX as usize) as u32).to_le_bytes(),
+    );
+    payload.extend_from_slice(&collaboration.observed_country_rows.to_le_bytes());
+    payload.extend_from_slice(&collaboration.anomaly_rows.to_le_bytes());
+    payload.extend_from_slice(&FIXED_SCALE_RAW.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    for row in &collaboration.rows {
+        payload.extend_from_slice(&row.owner_tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.target_tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.progress_raw.to_le_bytes());
     }
     payload
 }
@@ -512,7 +568,18 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
         }
     }
     if payload.len() > base_len {
-        decode_garrison_alert_extension(offset, payload, base_len, &mut summary);
+        if let Some(consumed) =
+            decode_garrison_alert_extension(offset, payload, base_len, &mut summary)
+        {
+            let collaboration_start = base_len.saturating_add(consumed);
+            if payload.len() > collaboration_start {
+                decode_collaboration_extension(
+                    offset,
+                    &payload[collaboration_start..],
+                    &mut summary,
+                );
+            }
+        }
     }
     if decoded_occupied != occupied_state_rows {
         summary.parse_errors.push(format!(
@@ -547,12 +614,12 @@ fn decode_garrison_alert_extension(
     payload: &[u8],
     base_len: usize,
     summary: &mut Domain44GateSummary,
-) {
+) -> Option<usize> {
     if payload.len() < base_len.saturating_add(GARRISON_ALERT_HEADER_LEN) {
         summary.parse_errors.push(format!(
             "offset {offset}: occupation GAR1 trailer is truncated"
         ));
-        return;
+        return None;
     }
     let trailer = &payload[base_len..];
     if trailer.get(0..4) != Some(&GARRISON_ALERT_MAGIC)
@@ -564,7 +631,7 @@ fn decode_garrison_alert_extension(
         summary.parse_errors.push(format!(
             "offset {offset}: occupation GAR1 trailer magic/schema/header is invalid"
         ));
-        return;
+        return None;
     }
     let controller_tag_db_id = read_u32_le(trailer, 12);
     let flags = read_u32_le(trailer, 16);
@@ -574,12 +641,12 @@ fn decode_garrison_alert_extension(
     let reserved = read_u32_le(trailer, 36);
     let expected_len = GARRISON_ALERT_HEADER_LEN
         .saturating_add(equipment_count.saturating_mul(GARRISON_ALERT_ROW_LEN));
-    if trailer.len() != expected_len {
+    if trailer.len() < expected_len {
         summary.parse_errors.push(format!(
             "offset {offset}: occupation GAR1 trailer is {} byte(s), expected {expected_len}",
             trailer.len()
         ));
-        return;
+        return None;
     }
     let allowed_flags = GARRISON_ALERT_FLAG_SOURCE_UNAVAILABLE
         | GARRISON_ALERT_FLAG_PREDICATE_RETURNED
@@ -606,7 +673,7 @@ fn decode_garrison_alert_extension(
         summary.parse_errors.push(format!(
             "offset {offset}: occupation GAR1 header invariants are invalid"
         ));
-        return;
+        return None;
     }
     let mut seen = BTreeSet::new();
     for index in 0..equipment_count {
@@ -629,6 +696,85 @@ fn decode_garrison_alert_extension(
         summary,
         "occupation_garrison_alert_equipment_rows",
         equipment_count,
+    );
+    Some(expected_len)
+}
+
+fn decode_collaboration_extension(
+    offset: usize,
+    trailer: &[u8],
+    summary: &mut Domain44GateSummary,
+) {
+    if trailer.len() < COLLABORATION_HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: occupation COL1 trailer is truncated"
+        ));
+        return;
+    }
+    if trailer.get(0..4) != Some(&COLLABORATION_MAGIC)
+        || u16::from_le_bytes(trailer[4..6].try_into().unwrap())
+            != COLLABORATION_SCHEMA_VERSION
+        || u16::from_le_bytes(trailer[6..8].try_into().unwrap()) as usize
+            != COLLABORATION_HEADER_LEN
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: occupation COL1 trailer magic/schema/header is invalid"
+        ));
+        return;
+    }
+    let flags = read_u32_le(trailer, 8);
+    let row_count = read_u32_le(trailer, 12) as usize;
+    let observed_country_rows = read_u32_le(trailer, 16);
+    let anomaly_rows = read_u32_le(trailer, 20);
+    let divisor = read_u32_le(trailer, 24);
+    let reserved = read_u32_le(trailer, 28);
+    let expected_len = COLLABORATION_HEADER_LEN
+        .saturating_add(row_count.saturating_mul(COLLABORATION_ROW_LEN));
+    let unavailable = flags & COLLABORATION_FLAG_SOURCE_UNAVAILABLE != 0;
+    let complete = flags & COLLABORATION_FLAG_COMPLETE != 0;
+    if trailer.len() != expected_len
+        || flags & !(COLLABORATION_FLAG_SOURCE_UNAVAILABLE | COLLABORATION_FLAG_COMPLETE) != 0
+        || unavailable == complete
+        || divisor != FIXED_SCALE_RAW
+        || reserved != 0
+        || (unavailable && (row_count != 0 || observed_country_rows != 0))
+        || (complete && observed_country_rows == 0)
+        || (complete && anomaly_rows != 0)
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: occupation COL1 header invariants are invalid"
+        ));
+        return;
+    }
+    let mut seen = BTreeSet::new();
+    for index in 0..row_count {
+        let cursor = COLLABORATION_HEADER_LEN + index * COLLABORATION_ROW_LEN;
+        let owner = read_u32_le(trailer, cursor);
+        let target = read_u32_le(trailer, cursor + 4);
+        let progress_raw = i64::from_le_bytes(trailer[cursor + 8..cursor + 16].try_into().unwrap());
+        if owner == 0
+            || owner > MAX_TAG_DB_ID
+            || target == 0
+            || target > MAX_TAG_DB_ID
+            || owner == target
+            || !(0..=FIXED_SCALE_RAW as i64).contains(&progress_raw)
+            || !seen.insert((owner, target))
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: occupation COL1 row {index} is invalid"
+            ));
+        }
+    }
+    add_unit(summary, "collaboration_relation_rows", row_count);
+    add_unit(
+        summary,
+        "collaboration_observed_country_rows",
+        observed_country_rows as usize,
+    );
+    add_unit(
+        summary,
+        "collaboration_anomaly_rows",
+        anomaly_rows as usize,
     );
 }
 
@@ -1056,5 +1202,122 @@ mod tests {
             .parse_errors
             .iter()
             .any(|error| error.contains("occupied_state_rows 0 != decoded 1")));
+    }
+
+    #[test]
+    fn collaboration_complete_set_accepts_exact_relation_and_measured_empty() {
+        let header = OccupationHeader {
+            elapsed_wall_ms: 0,
+            status_flags: 0,
+            changed_rows: 0,
+            observed_state_rows: 1,
+            occupied_state_rows: 0,
+            wall_badge_rows: 0,
+            law_token_rows: 0,
+            garrison_template_rows: 0,
+            garrison_scalar_rows: 0,
+            garrison_anomaly_rows: 0,
+        };
+        let alert = GarrisonAlertExtension {
+            game_hour_raw: 1,
+            controller_tag_db_id: 0,
+            flags: GARRISON_ALERT_FLAG_SOURCE_UNAVAILABLE,
+            missing_manpower: 0,
+            equipment: Vec::new(),
+        };
+        let payload = encode_payload_with_alert_and_collaboration(
+            &header,
+            &[],
+            &alert,
+            &CollaborationExtension {
+                flags: COLLABORATION_FLAG_COMPLETE,
+                observed_country_rows: 436,
+                anomaly_rows: 0,
+                rows: vec![CollaborationRelationRow {
+                    owner_tag_db_id: 24,
+                    target_tag_db_id: 1,
+                    progress_raw: 30_000,
+                }],
+            },
+        );
+        let summary = decode_payload(0, &payload);
+        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert_eq!(summary.data_units_total["collaboration_relation_rows"], 1);
+        assert_eq!(
+            summary.data_units_total["collaboration_observed_country_rows"],
+            436
+        );
+
+        let mut self_relation = payload.clone();
+        let target_offset =
+            HEADER_LEN + GARRISON_ALERT_HEADER_LEN + COLLABORATION_HEADER_LEN + 4;
+        self_relation[target_offset..target_offset + 4]
+            .copy_from_slice(&24u32.to_le_bytes());
+        let self_summary = decode_payload(0, &self_relation);
+        assert!(self_summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("COL1 row 0 is invalid")));
+
+        let empty = encode_payload_with_alert_and_collaboration(
+            &header,
+            &[],
+            &alert,
+            &CollaborationExtension {
+                flags: COLLABORATION_FLAG_COMPLETE,
+                observed_country_rows: 436,
+                anomaly_rows: 0,
+                rows: Vec::new(),
+            },
+        );
+        let empty_summary = decode_payload(0, &empty);
+        assert!(
+            empty_summary.parse_errors.is_empty(),
+            "{:?}",
+            empty_summary.parse_errors
+        );
+        assert_eq!(
+            empty_summary.data_units_total["collaboration_relation_rows"],
+            0
+        );
+    }
+
+    #[test]
+    fn collaboration_rejects_unproven_empty_set() {
+        let header = OccupationHeader {
+            elapsed_wall_ms: 0,
+            status_flags: 0,
+            changed_rows: 0,
+            observed_state_rows: 0,
+            occupied_state_rows: 0,
+            wall_badge_rows: 0,
+            law_token_rows: 0,
+            garrison_template_rows: 0,
+            garrison_scalar_rows: 0,
+            garrison_anomaly_rows: 0,
+        };
+        let alert = GarrisonAlertExtension {
+            game_hour_raw: 1,
+            controller_tag_db_id: 0,
+            flags: GARRISON_ALERT_FLAG_SOURCE_UNAVAILABLE,
+            missing_manpower: 0,
+            equipment: Vec::new(),
+        };
+        let payload = encode_payload_with_alert_and_collaboration(
+            &header,
+            &[],
+            &alert,
+            &CollaborationExtension {
+                flags: COLLABORATION_FLAG_COMPLETE,
+                observed_country_rows: 0,
+                anomaly_rows: 0,
+                rows: Vec::new(),
+            },
+        );
+        let summary = decode_payload(0, &payload);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("COL1 header invariants")));
     }
 }

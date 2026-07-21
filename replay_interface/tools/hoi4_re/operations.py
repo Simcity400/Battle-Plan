@@ -397,6 +397,12 @@ class Broker:
             self.registry, self.config.workspace, inputs["build_id"], inputs["symbol_ids"],
             inputs.get("duration_s", 10.0), inputs.get("max_hits", 8),
             self.config.runtime_lease, job_dir / "partial_trace.json",
+            inputs.get("receiver_vtable_rvas"),
+            inputs.get("receiver_qword_offsets"),
+            inputs.get("argument_pointer_arrays"),
+            inputs.get("receiver_pointee_qword_offsets"),
+            inputs.get("receiver_pointer_chains"),
+            inputs.get("skip_hits"),
         )
 
     def _emulate_function(self, inputs: dict[str, Any], _job_id: str, _job_dir: Path) -> dict[str, Any]:

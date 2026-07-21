@@ -42,6 +42,7 @@ static CAPTURE_EXPECTED: AtomicBool = AtomicBool::new(false);
 static CAPTURED: AtomicBool = AtomicBool::new(false);
 static IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static LAST_ATTEMPTED_PRESENT: AtomicU32 = AtomicU32::new(u32::MAX);
+static PUBLISH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn configure_expected(expected: bool) -> Result<(), String> {
     if EXPECTATION_CONFIGURED.swap(true, Ordering::AcqRel) {
@@ -64,15 +65,60 @@ fn hash(bytes: &[u8]) -> String {
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|error| format!("G2 refuses to overwrite {}: {error}", path.display()))?;
-    file.write_all(bytes)
-        .map_err(|error| format!("write G2 artifact {} failed: {error}", path.display()))?;
-    file.sync_all()
-        .map_err(|error| format!("sync G2 artifact {} failed: {error}", path.display()))
+    if path.exists() {
+        return Err(format!("G2 refuses to overwrite {}", path.display()));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("G2 artifact has no parent: {}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("G2 artifact has no file name: {}", path.display()))?
+        .to_string_lossy();
+    let (temporary, mut file) = (0..64)
+        .find_map(|_| {
+            let counter = PUBLISH_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let candidate = parent.join(format!(
+                ".{file_name}.{}.{}.tmp",
+                std::process::id(),
+                counter
+            ));
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(file) => Some(Ok((candidate, file))),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => Some(Err(format!(
+                    "create G2 staging artifact {} failed: {error}",
+                    candidate.display()
+                ))),
+            }
+        })
+        .transpose()?
+        .ok_or("could not allocate a unique G2 staging artifact")?;
+
+    let staged = (|| -> Result<(), String> {
+        file.write_all(bytes).map_err(|error| {
+            format!("write G2 staging artifact {} failed: {error}", temporary.display())
+        })?;
+        file.sync_all().map_err(|error| {
+            format!("sync G2 staging artifact {} failed: {error}", temporary.display())
+        })?;
+        Ok(())
+    })();
+    drop(file);
+    let result = staged.and_then(|()| {
+        fs::hard_link(&temporary, path).map_err(|error| {
+            format!(
+                "atomically publish G2 artifact {} failed: {error}",
+                path.display()
+            )
+        })
+    });
+    let _ = fs::remove_file(&temporary);
+    result
 }
 
 fn top_down_bgra_bmp(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, String> {
@@ -370,6 +416,26 @@ pub(super) fn capture_after_post_process() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_dir(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "hoi4-g2-{label}-{}-{}",
+            std::process::id(),
+            PUBLISH_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    #[test]
+    fn immutable_artifact_publication_is_complete_and_no_replace() {
+        let root = test_dir("atomic-publish");
+        fs::create_dir(&root).unwrap();
+        let path = root.join("authority.json");
+        write_new(&path, b"complete authority bytes\n").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"complete authority bytes\n");
+        assert!(write_new(&path, b"different\n").is_err());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn bmp_is_top_down_bgra32() {

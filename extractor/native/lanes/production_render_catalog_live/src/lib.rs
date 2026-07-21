@@ -228,7 +228,7 @@ pub fn portable_render_authority(
 
 pub const RECORDED_INPUT_VARIANT_PRODUCTION_ENABLED: bool = true;
 pub const RECORDED_INPUT_VARIANT_AUTHORITY_MANIFEST_SHA256: Option<&str> =
-    Some("fe58b55280e9080a3933e53c626c8dc3b5988d70e2f3970f9e10ac0f3b56045e");
+    Some("39b71a6fb75e53e31136e1909452b85106baf83addeb78da92901113cd98f0b0");
 pub const A729_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 
@@ -246,6 +246,8 @@ pub struct RawRecordedPointerInputObservation {
     pub observation_sequence: u64,
     pub prior_observation_qpc_ticks: u64,
     pub selected_present_qpc_ticks: u64,
+    pub present_sample_started_qpc_ticks: u64,
+    pub present_sample_completed_qpc_ticks: u64,
     pub selected_present_receipt_sha256: String,
     pub client_extent: [u32; 2],
     pub prior_client_position: [i32; 2],
@@ -261,6 +263,8 @@ pub struct AuthenticatedRecordedInputVariant {
     pub observation_sequence: u64,
     pub prior_observation_qpc_ticks: u64,
     pub selected_present_qpc_ticks: u64,
+    pub present_sample_started_qpc_ticks: u64,
+    pub present_sample_completed_qpc_ticks: u64,
     pub selected_present_receipt_sha256: String,
     pub client_extent: [u32; 2],
     pub prior_client_position: [i32; 2],
@@ -278,7 +282,7 @@ impl AuthenticatedRecordedInputVariant {
             RecordedInputVariant::Controller => 3,
         };
         let mut hasher = Sha256::new();
-        hasher.update(b"hoi4.a729.recorded-input-variant-observation.v2\0");
+        hasher.update(b"hoi4.a729.recorded-input-variant-observation.v3\0");
         hasher.update(self.executable_sha256.as_bytes());
         hasher.update(self.process_id.to_le_bytes());
         hasher.update(self.process_start_nonce.to_le_bytes());
@@ -286,6 +290,8 @@ impl AuthenticatedRecordedInputVariant {
         hasher.update(self.observation_sequence.to_le_bytes());
         hasher.update(self.prior_observation_qpc_ticks.to_le_bytes());
         hasher.update(self.selected_present_qpc_ticks.to_le_bytes());
+        hasher.update(self.present_sample_started_qpc_ticks.to_le_bytes());
+        hasher.update(self.present_sample_completed_qpc_ticks.to_le_bytes());
         hasher.update(self.selected_present_receipt_sha256.as_bytes());
         for value in self.client_extent {
             hasher.update(value.to_le_bytes());
@@ -316,6 +322,9 @@ impl AuthenticatedRecordedInputVariant {
             || self.observation_sequence == 0
             || self.prior_observation_qpc_ticks == 0
             || self.selected_present_qpc_ticks <= self.prior_observation_qpc_ticks
+            || self.present_sample_started_qpc_ticks < self.selected_present_qpc_ticks
+            || self.present_sample_completed_qpc_ticks
+                < self.present_sample_started_qpc_ticks
             || self.client_extent[0] == 0
             || self.client_extent[1] == 0
             || self.prior_client_position == self.current_client_position
@@ -375,6 +384,10 @@ pub fn authenticate_recorded_pointer_input(
         || observation.prior_observation_qpc_ticks == 0
         || observation.selected_present_qpc_ticks
             <= observation.prior_observation_qpc_ticks
+        || observation.present_sample_started_qpc_ticks
+            < observation.selected_present_qpc_ticks
+        || observation.present_sample_completed_qpc_ticks
+            < observation.present_sample_started_qpc_ticks
         || observation.client_extent[0] == 0
         || observation.client_extent[1] == 0
         || observation.prior_client_position == observation.current_client_position
@@ -396,6 +409,8 @@ pub fn authenticate_recorded_pointer_input(
         observation_sequence: observation.observation_sequence,
         prior_observation_qpc_ticks: observation.prior_observation_qpc_ticks,
         selected_present_qpc_ticks: observation.selected_present_qpc_ticks,
+        present_sample_started_qpc_ticks: observation.present_sample_started_qpc_ticks,
+        present_sample_completed_qpc_ticks: observation.present_sample_completed_qpc_ticks,
         selected_present_receipt_sha256: observation.selected_present_receipt_sha256,
         client_extent: observation.client_extent,
         prior_client_position: observation.prior_client_position,
@@ -465,6 +480,28 @@ pub fn portable_render_authority_with_input(
         recorded_input_variant: recorded_input.map(|receipt| receipt.variant),
         recorded_input_receipt_sha256: recorded_input
             .map(|receipt| receipt.observation_receipt_sha256.clone()),
+        recorded_input_observation: recorded_input.map(|receipt| {
+            RecordedInputObservationReceipt {
+                executable_sha256: receipt.executable_sha256.clone(),
+                process_id: receipt.process_id,
+                process_start_nonce: receipt.process_start_nonce,
+                hook_epoch_nonce: receipt.hook_epoch_nonce,
+                observation_sequence: receipt.observation_sequence,
+                prior_observation_qpc_ticks: receipt.prior_observation_qpc_ticks,
+                selected_present_qpc_ticks: receipt.selected_present_qpc_ticks,
+                present_sample_started_qpc_ticks: receipt.present_sample_started_qpc_ticks,
+                present_sample_completed_qpc_ticks: receipt.present_sample_completed_qpc_ticks,
+                selected_present_receipt_sha256: receipt
+                    .selected_present_receipt_sha256
+                    .clone(),
+                client_extent: receipt.client_extent,
+                prior_client_position: receipt.prior_client_position,
+                current_client_position: receipt.current_client_position,
+                variant: receipt.variant,
+                authority_manifest_sha256: receipt.authority_manifest_sha256.clone(),
+                observation_receipt_sha256: receipt.observation_receipt_sha256.clone(),
+            }
+        }),
         particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
     })
 }
@@ -1127,6 +1164,7 @@ impl<'a, V: AdmittedVfsPayloads> Builder<'a, V> {
             .collect::<Result<Vec<_>, CatalogBuildError>>()?;
         Ok(ShaderProgram {
             source: self.content.resolve(&program.source)?,
+            producer_registration_root_rva: Some(program.registration_root_rva),
             effect_token: program.effect_token.clone(),
             vertex_entry_token: program.vertex_entry_token.clone(),
             pixel_entry_token: program.pixel_entry_token.clone(),
@@ -2812,6 +2850,8 @@ mod static_identity_tests {
             observation_sequence: 44,
             prior_observation_qpc_ticks: 100,
             selected_present_qpc_ticks: 200,
+            present_sample_started_qpc_ticks: 210,
+            present_sample_completed_qpc_ticks: 220,
             selected_present_receipt_sha256: "a".repeat(64),
             client_extent: [1920, 1080],
             prior_client_position: [10, 20],
@@ -2835,12 +2875,13 @@ mod static_identity_tests {
 
     #[test]
     fn stationary_outside_or_reordered_pointer_observations_reject() {
-        for mutation in 0..3 {
+        for mutation in 0..4 {
             let mut observation = pointer_observation();
             match mutation {
                 0 => observation.current_client_position = observation.prior_client_position,
                 1 => observation.current_client_position = [1920, 20],
-                _ => observation.selected_present_qpc_ticks = 100,
+                2 => observation.selected_present_qpc_ticks = 100,
+                _ => observation.present_sample_started_qpc_ticks = 199,
             }
             assert!(authenticate_recorded_pointer_input(observation).is_err());
         }

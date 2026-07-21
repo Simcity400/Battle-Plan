@@ -20,6 +20,7 @@ READ-ONLY: PROCESS_VM_READ|PROCESS_QUERY_INFORMATION only.
 import json
 import os
 import sys
+import uuid
 import time
 from collections import Counter, defaultdict
 
@@ -48,6 +49,22 @@ ANCHORS = [
     (292, 16.0, False),
 ]
 CLEAR_RIDS = [20, 129, 160, 292]
+
+
+def _publish_json_atomic(path, value):
+    """Durably publish JSON without exposing a truncated result to readers."""
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    temp_path = os.path.join(parent, ".%s.%s.tmp" % (os.path.basename(path), uuid.uuid4().hex))
+    try:
+        with open(temp_path, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(value, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
 RAIN_RID = 31
 
 
@@ -283,5 +300,5 @@ if __name__ == "__main__":
            "anchor_objs": {str(r): "0x%X" % id2obj[r] for r in present},
            "temp_matches": [{"off": "0x%X" % m[0], "enc": m[1], "reads": m[2],
                              "maxerr": m[3]} for m in matches[:50]]}
-    json.dump(out, open(os.path.join(_HERE, "_region_obj_result.json"), "w"), indent=2)
+    _publish_json_atomic(os.path.join(_HERE, "_region_obj_result.json"), out)
     print("wrote _region_obj_result.json")

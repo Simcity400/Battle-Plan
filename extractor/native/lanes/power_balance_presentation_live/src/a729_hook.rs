@@ -8,10 +8,14 @@
 
 use crate::{
     encode_payload, normalize_a729_controller_state, A729ControllerStateObservation, CarrierError,
-    NormalizedControllerState, PowerBalancePresentationFrame,
+    normalize_engine_range_indicator_frame, ChangeCadence, DecisionAvailability, DecisionInput,
+    NormalizedControllerState, PowerBalanceInput, PowerBalancePresentationFrame, ResolvedTextRefs,
+    SelectedPresentStamp, TrendInput,
     A729_CONTROLLER_EXACT20_AUTHORITY_BOUND,
     A729_CONTROLLER_EXACT20_MANIFEST_SHA256, A729_CONTROLLER_OBSERVER_ACTIVATED,
 };
+use crate::a729_decision_grid::DecisionGridMaterialization;
+use std::collections::BTreeSet;
 
 /// Independent authority receipt for the country-politics launcher and
 /// power-balance panel lifecycle.  It supplements (and does not replace) the
@@ -50,6 +54,17 @@ pub const RECORD_TRENDING_SIDE_OFFSET: usize = 0x28;
 pub const RECORD_CURRENT_VALUE_OFFSET: usize = 0x30;
 pub const RECORD_SELECTED_RANGE_OFFSET: usize = 0xb0;
 pub const GET_CHANGE_RVA: u32 = 0x00e4_1430;
+/// Fresh exact-a729 semantic-leaf export used by the raw-to-PBP2 materializer.
+/// This receipt covers the final range geometry/frame writer, splitter writer,
+/// effective icon resolver, change formatter, modifier-description formatter,
+/// exact change sum, and country-politics launcher publisher.
+pub const A729_SEMANTIC_LEAF_JOB_ID: &str =
+    "20260721T065201Z-wave6-a37-semantic-leaf-producers-85cdcc4c";
+pub const A729_SEMANTIC_LEAF_SHARD: &str = "shard-03";
+pub const A729_SEMANTIC_LEAF_MANIFEST_SHA256: [u8; 32] = [
+    0x6d, 0x53, 0xa5, 0xde, 0xea, 0xb2, 0xdb, 0x5d, 0x6e, 0x28, 0xbc, 0x88, 0xc4, 0xc6, 0xc8, 0xe6,
+    0x30, 0x11, 0xa6, 0xf2, 0x36, 0xce, 0xb8, 0xb7, 0xfd, 0xaa, 0xc1, 0x80, 0x92, 0x28, 0x65, 0x77,
+];
 /// Instruction-aligned receipt bytes through `PUSH R13`.
 pub const POST_REFRESH_ENTRY_SENTINEL: [u8; 17] = [
     0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x18, 0x88, 0x50, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41,
@@ -93,6 +108,122 @@ pub struct AuthenticatedA729PostRefreshObservation {
     pub full_refresh: bool,
     pub range_refresh: bool,
     pub controller_state: NormalizedControllerState,
+}
+
+/// Exact runtime-text joins retained from A25. The pointer fields exist only
+/// to prove that the context came from the controller widget in this callback;
+/// only `context_id` is copied into PBP2.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct A729ObservedTextRef {
+    pub widget_ptr: usize,
+    pub textbox_owner_ptr: usize,
+    pub context_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct A729ObservedTrend {
+    pub cadence: ChangeCadence,
+    pub magnitude: f64,
+    pub resolved_text: A729ObservedTextRef,
+}
+
+/// Pointer/ordinal-to-portable range identity proof. Exact a729 does not expose
+/// a stable token at `range+0x10` (that field is the upper fixed-point bound),
+/// so the only admitted route is selected-pointer equality in the record's
+/// stored range vector followed by a unique effective-VFS catalog reverse join.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct A729RangeIdentityWitness {
+    pub range_vector_ptr: usize,
+    pub range_count: u32,
+    pub selected_range_ordinal: u32,
+    pub selected_range_ptr: usize,
+    pub balance_id: String,
+    pub range_id: String,
+    pub effective_catalog_sha256: String,
+}
+
+/// One decision presenter after the exact `0x141c4aa30` publisher returns.
+/// The materializer requires a bijection with the finalized grid rather than
+/// trusting pool order or replay-sorting the two publisher routes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct A729ObservedDecision {
+    pub presenter_ptr: usize,
+    pub definition_ptr: usize,
+    pub source_record_ptr: usize,
+    pub decision_id: String,
+    pub decision_id_token_object_ptr: usize,
+    pub availability: DecisionAvailability,
+    pub resolved_name: A729ObservedTextRef,
+    pub cost: Option<A729ObservedTextRef>,
+    pub timer: Option<A729ObservedTextRef>,
+    pub target_tag_ref: Option<String>,
+}
+
+/// Raw, pointer-bearing semantic snapshot produced at the post-original
+/// `0x141c4baa0` boundary. It is deliberately not encodable. Every pointer is
+/// consumed by [`materialize_receipted_semantics`] and erased before PBP2.
+#[derive(Clone, Debug, PartialEq)]
+pub struct A729SemanticBoundaryObservation {
+    pub executable_sha256: [u8; 32],
+    pub controller_manifest_sha256: [u8; 32],
+    pub semantic_leaf_manifest_sha256: [u8; 32],
+    pub callback_sequence: u64,
+    pub current_thread_id: u32,
+    pub view_ptr: usize,
+    pub selected_record_ptr: usize,
+    pub balance_definition_ptr: usize,
+    pub left_side_definition_ptr: usize,
+    pub right_side_definition_ptr: usize,
+    pub trending_side_definition_ptr: usize,
+    pub selected_range_definition_ptr: usize,
+    pub materialization_qpc_ticks: u64,
+    pub country_tag: String,
+    pub balance_id: String,
+    pub balance_id_token_object_ptr: usize,
+    pub left_side_id: String,
+    pub left_side_id_token_object_ptr: usize,
+    pub right_side_id: String,
+    pub right_side_id_token_object_ptr: usize,
+    pub trending_side_id: String,
+    pub trending_side_id_token_object_ptr: usize,
+    pub active_range_identity: A729RangeIdentityWitness,
+    pub effective_left_icon: String,
+    pub effective_right_icon: String,
+    pub left_icon_widget_ptr: usize,
+    pub right_icon_widget_ptr: usize,
+    pub launcher_selected_record_ptr: usize,
+    pub launcher_visible: bool,
+    pub launcher_percentage: A729ObservedTextRef,
+    pub launcher_levels: A729ObservedTextRef,
+    pub launcher_icon_sprite: String,
+    pub launcher_icon_widget_ptr: usize,
+    pub launcher_glow_visible: bool,
+    pub engine_range_indicator_frame: u32,
+    pub range_indicator_widget_ptr: usize,
+    pub range_indicator_top_left: [i32; 2],
+    pub trend: Option<A729ObservedTrend>,
+    pub modifier_description: A729ObservedTextRef,
+    pub balance_name: A729ObservedTextRef,
+    pub left_side_name: A729ObservedTextRef,
+    pub right_side_name: A729ObservedTextRef,
+    pub active_range_name: A729ObservedTextRef,
+    pub balance_tooltip: A729ObservedTextRef,
+    pub active_range_tooltip: A729ObservedTextRef,
+    pub decision_grid: DecisionGridMaterialization,
+    /// Exact finalized grid child pointers in the same order as
+    /// `decision_grid.slots`. These are erased after the presenter bijection.
+    pub finalized_decision_presenter_ptrs: Vec<usize>,
+    pub decisions: Vec<A729ObservedDecision>,
+}
+
+/// Recorder-owned metadata unavailable at the controller callback itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct A729SemanticFrameEnvelope {
+    pub elapsed_wall_ms: u64,
+    pub status_flags: u32,
+    pub frame_hour: u64,
+    pub selected_present: SelectedPresentStamp,
+    pub completeness_record_identity: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -227,6 +358,309 @@ pub fn validate_receipted_sample(
         range_refresh: sample.range_refresh_raw != 0,
         controller_state,
     })
+}
+
+fn semantic_error(message: impl Into<String>) -> HookAdmissionError {
+    HookAdmissionError::Materialization(message.into())
+}
+
+fn is_lower_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value.bytes().any(|byte| byte != b'0')
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn validate_observed_text_ref(
+    value: &A729ObservedTextRef,
+    label: &str,
+) -> Result<String, HookAdmissionError> {
+    if value.widget_ptr == 0
+        || value.textbox_owner_ptr == 0
+        || value.context_id.trim().is_empty()
+        || value.context_id.chars().any(char::is_control)
+    {
+        return Err(semantic_error(format!(
+            "A37 {label} lacks an exact A25 owner/context join"
+        )));
+    }
+    Ok(value.context_id.clone())
+}
+
+/// Convert one exact pointer-bearing callback observation into the sole
+/// pointer-free PBP2 frame. This is the semantic materializer: it consumes the
+/// controller/leaf receipts, proves every cross-object join, validates the
+/// finalized decision-grid bijection, and only then erases process addresses.
+///
+/// A pre-authored [`PowerBalancePresentationFrame`] is intentionally not an
+/// input. Missing range identity, A25 text, icon, decision, or Present custody
+/// returns an error; there is no save/game-file/default fallback.
+pub fn materialize_receipted_semantics(
+    sample: &A729PostRefreshHookSample,
+    semantic: &A729SemanticBoundaryObservation,
+    envelope: &A729SemanticFrameEnvelope,
+) -> Result<PowerBalancePresentationFrame, HookAdmissionError> {
+    let authenticated = validate_receipted_sample(sample)?;
+    if semantic.executable_sha256 != BATTLE_PLAN_A729_EXECUTABLE_SHA256
+        || semantic.controller_manifest_sha256 != A729_CONTROLLER_EXACT20_MANIFEST_SHA256
+        || semantic.semantic_leaf_manifest_sha256 != A729_SEMANTIC_LEAF_MANIFEST_SHA256
+    {
+        return Err(HookAdmissionError::ManifestMismatch);
+    }
+    if semantic.callback_sequence == 0
+        || semantic.current_thread_id != sample.current_thread_id
+        || semantic.view_ptr != sample.view_ptr
+        || semantic.selected_record_ptr != sample.selected_record_ptr
+        || semantic.selected_range_definition_ptr != sample.selected_range_ptr
+        || semantic.materialization_qpc_ticks != sample.materialization_qpc_ticks
+        || semantic.balance_definition_ptr == 0
+        || semantic.left_side_definition_ptr == 0
+        || semantic.right_side_definition_ptr == 0
+        || semantic.trending_side_definition_ptr == 0
+        || semantic.left_side_definition_ptr == semantic.right_side_definition_ptr
+        || semantic.balance_id_token_object_ptr
+            != semantic.balance_definition_ptr.checked_add(0x10).unwrap_or(0)
+        || semantic.left_side_id_token_object_ptr
+            != semantic.left_side_definition_ptr.checked_add(0x10).unwrap_or(0)
+        || semantic.right_side_id_token_object_ptr
+            != semantic.right_side_definition_ptr.checked_add(0x10).unwrap_or(0)
+        || semantic.trending_side_id_token_object_ptr
+            != semantic
+                .trending_side_definition_ptr
+                .checked_add(0x10)
+                .unwrap_or(0)
+    {
+        return Err(HookAdmissionError::FrameJoinMismatch);
+    }
+    if semantic.left_side_id != sample.controller_state.left_side_id
+        || semantic.right_side_id != sample.controller_state.right_side_id
+        || semantic.trending_side_id != sample.controller_state.trending_side_id
+        || semantic.engine_range_indicator_frame
+            != sample.controller_state.engine_range_indicator_frame
+    {
+        return Err(HookAdmissionError::FrameJoinMismatch);
+    }
+    let expected_active_definition = if sample.controller_state.current_value_raw < 0 {
+        semantic.left_side_definition_ptr
+    } else {
+        semantic.right_side_definition_ptr
+    };
+    let observed_active_id = if expected_active_definition == semantic.left_side_definition_ptr {
+        semantic.left_side_id.as_str()
+    } else {
+        semantic.right_side_id.as_str()
+    };
+    if observed_active_id != authenticated.controller_state.active_side_id
+        || (semantic.trending_side_definition_ptr != semantic.left_side_definition_ptr
+            && semantic.trending_side_definition_ptr != semantic.right_side_definition_ptr)
+        || semantic.left_icon_widget_ptr == 0
+        || semantic.right_icon_widget_ptr == 0
+        || semantic.left_icon_widget_ptr == semantic.right_icon_widget_ptr
+        || semantic.range_indicator_widget_ptr == 0
+        || semantic.effective_left_icon.trim().is_empty()
+        || semantic.effective_right_icon.trim().is_empty()
+        || semantic.balance_id.trim().is_empty()
+    {
+        return Err(HookAdmissionError::FrameJoinMismatch);
+    }
+    let range_identity = &semantic.active_range_identity;
+    if range_identity.range_vector_ptr == 0
+        || range_identity.range_count == 0
+        || range_identity.selected_range_ordinal >= range_identity.range_count
+        || range_identity.selected_range_ptr != semantic.selected_range_definition_ptr
+        || range_identity.balance_id != semantic.balance_id
+        || range_identity.range_id.trim().is_empty()
+        || !is_lower_sha256(&range_identity.effective_catalog_sha256)
+    {
+        return Err(semantic_error(
+            "A37 active range lacks the exact ordinal/effective-catalog identity join",
+        ));
+    }
+    if semantic.launcher_selected_record_ptr != semantic.selected_record_ptr
+        || !semantic.launcher_visible
+        || semantic.launcher_icon_widget_ptr == 0
+        || semantic.launcher_icon_sprite.trim().is_empty()
+        || semantic.launcher_icon_sprite
+            != if sample.controller_state.current_value_raw < 0 {
+                semantic.effective_left_icon.as_str()
+            } else {
+                semantic.effective_right_icon.as_str()
+            }
+    {
+        return Err(HookAdmissionError::FrameJoinMismatch);
+    }
+    if envelope.status_flags != 0
+        || envelope.frame_hour != envelope.selected_present.frame_hour
+        || envelope.selected_present.qpc_frequency_hz != sample.qpc_frequency_hz
+        || semantic.materialization_qpc_ticks
+            > envelope.selected_present.selected_present_qpc_ticks
+        || envelope.completeness_record_identity.trim().is_empty()
+    {
+        return Err(HookAdmissionError::FrameJoinMismatch);
+    }
+
+    let range_indicator_frame =
+        normalize_engine_range_indicator_frame(semantic.engine_range_indicator_frame)
+            .map_err(HookAdmissionError::Carrier)?;
+    if range_indicator_frame != authenticated.controller_state.range_indicator_frame {
+        return Err(HookAdmissionError::FrameJoinMismatch);
+    }
+
+    let trend = match (&semantic.trend, sample.controller_state.change_raw.cmp(&0)) {
+        (None, std::cmp::Ordering::Equal) => None,
+        (Some(observed), std::cmp::Ordering::Less | std::cmp::Ordering::Greater)
+            if observed.magnitude.is_finite() && observed.magnitude > 0.0 =>
+        {
+            Some(TrendInput {
+                cadence: observed.cadence,
+                magnitude: observed.magnitude,
+                resolved_text_ref: validate_observed_text_ref(
+                    &observed.resolved_text,
+                    "change text",
+                )?,
+            })
+        }
+        _ => {
+            return Err(semantic_error(
+                "A37 resolved trend does not match the exact signed change",
+            ))
+        }
+    };
+
+    if semantic.finalized_decision_presenter_ptrs.len() != semantic.decision_grid.slots.len()
+        || semantic.decisions.len() != semantic.decision_grid.slots.len()
+        || semantic.decision_grid.ordered_decision_ids.len()
+            != semantic.decision_grid.slots.len()
+    {
+        return Err(semantic_error(
+            "A37 finalized decision grid/presenter/semantic counts differ",
+        ));
+    }
+    let mut presenter_ptrs = BTreeSet::new();
+    let mut definition_ptrs = BTreeSet::new();
+    let mut decision_ids = BTreeSet::new();
+    let mut decisions = Vec::with_capacity(semantic.decisions.len());
+    for (((presenter_ptr, slot), ordered_id), observed) in semantic
+        .finalized_decision_presenter_ptrs
+        .iter()
+        .zip(&semantic.decision_grid.slots)
+        .zip(&semantic.decision_grid.ordered_decision_ids)
+        .zip(&semantic.decisions)
+    {
+        if *presenter_ptr == 0
+            || *presenter_ptr != observed.presenter_ptr
+            || observed.definition_ptr == 0
+            || observed.source_record_ptr == 0
+            || observed.decision_id_token_object_ptr
+                != observed.definition_ptr.checked_add(0x120).unwrap_or(0)
+            || slot.bound_decision_id != *ordered_id
+            || observed.decision_id != *ordered_id
+            || !presenter_ptrs.insert(*presenter_ptr)
+            || !definition_ptrs.insert(observed.definition_ptr)
+            || !decision_ids.insert(observed.decision_id.as_str())
+        {
+            return Err(semantic_error(
+                "A37 decision presenter/definition/grid bijection failed",
+            ));
+        }
+        decisions.push(DecisionInput {
+            decision_id: observed.decision_id.clone(),
+            source_record_id: format!(
+                "a729:{}:{}",
+                semantic.balance_id, slot.slot_id
+            ),
+            availability: observed.availability.clone(),
+            resolved_name_text_ref: validate_observed_text_ref(
+                &observed.resolved_name,
+                "decision name",
+            )?,
+            cost_text_ref: observed
+                .cost
+                .as_ref()
+                .map(|value| validate_observed_text_ref(value, "decision cost"))
+                .transpose()?,
+            timer_text_ref: observed
+                .timer
+                .as_ref()
+                .map(|value| validate_observed_text_ref(value, "decision timer"))
+                .transpose()?,
+            target_tag_ref: observed.target_tag_ref.clone(),
+        });
+    }
+
+    let balance = PowerBalanceInput {
+        source_record_id: format!(
+            "a729:{}:{}:selected-ordinal-0",
+            semantic.country_tag, semantic.balance_id
+        ),
+        country_tag: semantic.country_tag.clone(),
+        balance_id: semantic.balance_id.clone(),
+        display_ordinal: 0,
+        active_side_id: authenticated.controller_state.active_side_id,
+        trending_side_id: semantic.trending_side_id.clone(),
+        active_range_id: range_identity.range_id.clone(),
+        effective_left_icon: semantic.effective_left_icon.clone(),
+        effective_right_icon: semantic.effective_right_icon.clone(),
+        launcher_visible: true,
+        launcher_percentage_text_ref: Some(validate_observed_text_ref(
+            &semantic.launcher_percentage,
+            "launcher percentage",
+        )?),
+        launcher_levels_text_ref: Some(validate_observed_text_ref(
+            &semantic.launcher_levels,
+            "launcher levels",
+        )?),
+        launcher_icon_sprite: Some(semantic.launcher_icon_sprite.clone()),
+        launcher_glow_visible: semantic.launcher_glow_visible,
+        panel_open: true,
+        bar_state: authenticated.controller_state.bar_state,
+        range_indicator_frame,
+        range_indicator_top_left: semantic.range_indicator_top_left,
+        trend,
+        power_balance_modifier_desc_text_ref: validate_observed_text_ref(
+            &semantic.modifier_description,
+            "modifier description",
+        )?,
+        decisions_complete: true,
+        decisions,
+        resolved_text_refs: ResolvedTextRefs {
+            balance_name: validate_observed_text_ref(&semantic.balance_name, "balance name")?,
+            left_side_name: validate_observed_text_ref(
+                &semantic.left_side_name,
+                "left side name",
+            )?,
+            right_side_name: validate_observed_text_ref(
+                &semantic.right_side_name,
+                "right side name",
+            )?,
+            active_range_name: validate_observed_text_ref(
+                &semantic.active_range_name,
+                "active range name",
+            )?,
+            balance_tooltip: validate_observed_text_ref(
+                &semantic.balance_tooltip,
+                "balance tooltip",
+            )?,
+            active_range_tooltip: validate_observed_text_ref(
+                &semantic.active_range_tooltip,
+                "active range tooltip",
+            )?,
+        },
+    };
+    let frame = PowerBalancePresentationFrame {
+        elapsed_wall_ms: envelope.elapsed_wall_ms,
+        status_flags: 0,
+        frame_hour: envelope.frame_hour,
+        materialization_qpc_ticks: semantic.materialization_qpc_ticks,
+        selected_present: envelope.selected_present.clone(),
+        producer_manifest_sha256: A729_CONTROLLER_EXACT20_MANIFEST_SHA256,
+        completeness_record_identity: envelope.completeness_record_identity.clone(),
+        expected_balance_count: 1,
+        balances: vec![balance],
+    };
+    crate::validate_frame(&frame).map_err(HookAdmissionError::Carrier)?;
+    Ok(frame)
 }
 
 fn validate_panel_authority(
@@ -386,39 +820,26 @@ pub fn admit_live_sample(
     validate_receipted_sample(sample)
 }
 
-/// Inert source scaffold for the original-call-then-observe detour wrapper.
-/// The materializer is never invoked while activation is false. Once enabled,
-/// its complete pointer-free frame must agree mechanically with the normalized
-/// controller leaves before the sole PBP2 encoder is reached.
-pub fn encode_live_post_refresh<F>(
+/// Encode only the raw exact-epoch semantic observation. Live admission stays
+/// inert until the fixture latch is promoted; there is no callback capable of
+/// manufacturing a caller-authored final frame.
+pub fn encode_live_post_refresh(
     sample: &A729PostRefreshHookSample,
-    materialize: F,
-) -> Result<Vec<u8>, HookAdmissionError>
-where
-    F: FnOnce(
-        &AuthenticatedA729PostRefreshObservation,
-    ) -> Result<PowerBalancePresentationFrame, String>,
-{
-    let authenticated = admit_live_sample(sample)?;
-    let frame = materialize(&authenticated).map_err(HookAdmissionError::Materialization)?;
-    if frame.producer_manifest_sha256 != A729_CONTROLLER_EXACT20_MANIFEST_SHA256
-        || frame.balances.len() != 1
-        || frame.materialization_qpc_ticks != sample.materialization_qpc_ticks
-        || frame.selected_present.qpc_frequency_hz != sample.qpc_frequency_hz
-        || frame.materialization_qpc_ticks > frame.selected_present.selected_present_qpc_ticks
-    {
-        return Err(HookAdmissionError::FrameJoinMismatch);
-    }
-    let balance = &frame.balances[0];
-    if balance.active_side_id != authenticated.controller_state.active_side_id
-        || balance.trending_side_id != authenticated.controller_state.trending_side_id
-        || balance.bar_state != authenticated.controller_state.bar_state
-        || balance.range_indicator_frame
-            != authenticated.controller_state.range_indicator_frame
-    {
-        return Err(HookAdmissionError::FrameJoinMismatch);
-    }
-    encode_payload(&frame).map_err(HookAdmissionError::Carrier)
+    semantic: &A729SemanticBoundaryObservation,
+    envelope: &A729SemanticFrameEnvelope,
+) -> Result<Vec<u8>, HookAdmissionError> {
+    after_live_admission(sample, || {
+        let frame = materialize_receipted_semantics(sample, semantic, envelope)?;
+        encode_payload(&frame).map_err(HookAdmissionError::Carrier)
+    })
+}
+
+fn after_live_admission<T>(
+    sample: &A729PostRefreshHookSample,
+    materialize: impl FnOnce() -> Result<T, HookAdmissionError>,
+) -> Result<T, HookAdmissionError> {
+    admit_live_sample(sample)?;
+    materialize()
 }
 
 // The production/evidence owner is Windows-only. Keeping the portable guards
@@ -427,7 +848,7 @@ where
 #[cfg(windows)]
 mod installed_owner {
     use super::*;
-    use crate::{validate_frame, ExactPowerBalancePresentationSource, SelectedPresentStamp};
+    use crate::{validate_frame, ExactPowerBalancePresentationSource};
     use core::ffi::c_void;
     use minhook::{MH_STATUS, MinHook};
     use std::collections::BTreeMap;
@@ -751,11 +1172,14 @@ mod installed_owner {
         Ok(InstalledHookAddress { post_refresh: target })
     }
 
-    /// Join an owner-materialized pointer-free frame to the exact callback and
-    /// selected Present. This does not change either activation latch.
-    pub fn seal_receipted_frame(
+    /// Materialize and seal raw exact-epoch semantics against the latest hook
+    /// callback and selected Present. Callers cannot supply an already-built
+    /// PBP2 frame; every portable field is constructed by the receipt guard.
+    /// This does not change either activation latch.
+    pub fn seal_receipted_semantics(
         sample: &A729PostRefreshHookSample,
-        frame: PowerBalancePresentationFrame,
+        semantic: A729SemanticBoundaryObservation,
+        envelope: A729SemanticFrameEnvelope,
     ) -> Result<Vec<u8>, HookAdmissionError> {
         if !A729_CONTROLLER_OBSERVER_ACTIVATED
             || !A729_PANEL_VISIBILITY_OBSERVER_ACTIVATED
@@ -763,23 +1187,8 @@ mod installed_owner {
         {
             return Err(HookAdmissionError::Inactive);
         }
-        let authenticated = validate_receipted_sample(sample)?;
+        let frame = materialize_receipted_semantics(sample, &semantic, &envelope)?;
         validate_frame(&frame).map_err(HookAdmissionError::Carrier)?;
-        if frame.materialization_qpc_ticks != sample.materialization_qpc_ticks
-            || frame.selected_present.qpc_frequency_hz != sample.qpc_frequency_hz
-            || frame.balances.len() != 1
-        {
-            return Err(HookAdmissionError::FrameJoinMismatch);
-        }
-        let balance = &frame.balances[0];
-        if !balance.panel_open
-            || balance.active_side_id != authenticated.controller_state.active_side_id
-            || balance.trending_side_id != authenticated.controller_state.trending_side_id
-            || balance.bar_state != authenticated.controller_state.bar_state
-            || balance.range_indicator_frame != authenticated.controller_state.range_indicator_frame
-        {
-            return Err(HookAdmissionError::FrameJoinMismatch);
-        }
         let mut state = state()
             .lock()
             .map_err(|_| HookAdmissionError::Materialization("A37 hook state mutex poisoned".into()))?;
@@ -787,7 +1196,8 @@ mod installed_owner {
             state.rejected_frames = state.rejected_frames.saturating_add(1);
             return Err(HookAdmissionError::FrameJoinMismatch);
         };
-        if boundary.current_thread_id != sample.current_thread_id
+        if boundary.sequence != semantic.callback_sequence
+            || boundary.current_thread_id != sample.current_thread_id
             || boundary.view_ptr != sample.view_ptr
             || boundary.selected_record_ptr != sample.selected_record_ptr
             || boundary.selected_range_ptr != sample.selected_range_ptr
@@ -864,7 +1274,7 @@ mod installed_owner {
 #[cfg(windows)]
 pub use installed_owner::{
     diagnostics, install_a729_power_balance_hook, latest_raw_controller_evidence,
-    seal_receipted_frame,
+    seal_receipted_semantics,
     uninstall_a729_power_balance_hook, A729PowerBalanceHookSource, HookDiagnostics,
     InstalledHookAddress, PostRefreshBoundaryReceipt, RawControllerEvidence,
 };
@@ -962,7 +1372,9 @@ mod tests {
     fn live_admission_remains_inert() {
         assert_eq!(admit_live_sample(&sample()), Err(HookAdmissionError::Inactive));
         assert_eq!(
-            encode_live_post_refresh(&sample(), |_| panic!("inactive hook must not materialize")),
+            after_live_admission::<()>(&sample(), || {
+                panic!("inactive hook must not materialize")
+            }),
             Err(HookAdmissionError::Inactive)
         );
     }

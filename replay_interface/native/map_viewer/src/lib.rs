@@ -200,7 +200,9 @@ pub use d3d11_replay::{
 };
 pub use fow_law::{
     analyze_fow_capture_pair, analyze_wave1_cap4_fow_pair, pdxmap_fow_effective_alpha,
-    shadow_map_bgra8_unorm_sample, FowCapturePairReport, FowChannelDiffCounts, FowFogFactors,
+    shadow_map_bgra8_unorm_sample, exact_a729_intel_map, exact_a729_intel_map_texel,
+    exact_a729_land_unit_disclosure, exact_a729_taskforce_disclosure, ExactUnitDisclosure,
+    FowCapturePairReport, FowChannelDiffCounts, FowFogFactors,
     FowPairDrawDiffReport, FowParityStats, FowShadowMapReport, ShadowMapFogSample, FOW_COLOR_MAX,
     FOW_COLOR_MIN, FOW_NOISE_SPEED, FOW_NOISE_TILING, FOW_SHADER_SOURCE, FOW_TRANSPARENCY_MAX,
     FOW_TRANSPARENCY_MIN, PDXMAP_SHADER_SOURCE, SHADOW_MAP_DXGI_FORMAT,
@@ -431,17 +433,22 @@ pub use production_map_target::{
     ProductionMainSceneTargetDesc,
 };
 pub use rail_files::{
-    compute_province_centroids, cubic_bezier, exact_rail_segments_from_replay,
+    bind_exact_rail_construction_arrows, bind_exact_rail_d80_draws,
+    compute_province_centroids, cubic_bezier,
+    exact_rail_segments_from_replay,
     parse_rail_geometry_defines, prepare_exact_rail_replay_carrier, rail_control_handle_len,
     rail_file_derived_layer_from_resolver, rail_geometry_defines_from_resolver, rail_level_v_band,
     rail_max_level_from_resolver, rail_polylines, rail_render_law, rail_ribbon_edges,
     railway_alpha_draws, railway_alpha_step,
     supply_hub_markers, ProvinceCentroid, RailFileDerivedLayer, RailFileDerivedStats,
-    ExactRailHubVisualState, ExactRailReplayCarrier, ExactRailResourceIdentity, ExactRailSegment,
+    ExactRailConstructionArrowBinding, ExactRailConstructionArrowEntityDrawBinding,
+    ExactRailD80Binding, ExactRailD80DrawBinding, ExactRailHubVisualState,
+    ExactRailReplayCarrier, ExactRailResourceIdentity, ExactRailSegment,
     RailGeometryDefines, RailLawRow, RailPolyline, SupplyHubMarker,
     DEFINES_SOURCE as RAIL_DEFINES_SOURCE, DEFINITION_CSV_SOURCE as RAIL_DEFINITION_CSV_SOURCE,
     GRAPHICS_DEFINES_SOURCE as RAIL_GRAPHICS_DEFINES_SOURCE, MAP_HEIGHT as RAIL_MAP_HEIGHT,
     MAP_WIDTH as RAIL_MAP_WIDTH, PROVINCES_BMP_SOURCE as RAIL_PROVINCES_BMP_SOURCE, RAIL_LEVEL_MAX,
+    A729_RAILROAD_EFFECT_REGISTRATION_ROOT_RVA, A729_RAILROAD_VERTEX_STRIDE_BYTES,
     RAIL_MAX_LEVEL_DEFINE, RAIL_SHADER_EFFECT, RAIL_SHADER_SOURCE, RAIL_TEXTURE_DAMAGED_SOURCE,
     RAIL_TEXTURE_SOURCE, RAILWAY_ALPHA_DRAW_THRESHOLD, RAILWAY_ALPHA_INITIAL,
     SUPPLY_GFX_SOURCE, SUPPLY_HUB_ICON_FRAMES, SUPPLY_HUB_ICON_SPRITE,
@@ -476,7 +483,8 @@ pub use shader_meta::PoliticalSceneCb0;
 pub use shadow_law::{
     build_shadow_frame, calculate_shadow, compose_shadow_map_texture_matrix,
     fit_shadow_map_matrices, get_shadow_scaled, pcf_tap_offsets, select_shadow_light,
-    shadow_blur_3tap, shadow_blur_constant_buffers, shadow_fade_factor,
+    shadow_blur_3tap, shadow_blur_constant_buffers, shadow_blur_constant_buffers_from_factor,
+    shadow_fade_factor,
     shadow_gated_by_daynight, terrain_shadow_term, SelectedShadowLight,
     ShadowBlurConstantBuffers, ShadowFrameInput, ShadowFrameMatrices, ShadowLightKind, ShadowMat4,
     DRAW_SHADOWS_CUTOFF, DRAW_SHADOWS_FADE_LENGTH, LIGHT_SHADOW_DIRECTION, PCF_BIAS,
@@ -506,11 +514,13 @@ pub use combat_indicator_assets::{
     COMBAT_INDICATOR_NAVAL_LEADER_MODULE_GFX_SOURCE,
 };
 pub use shader_compile::{
-    build_stage_hlsl, effect_file_from_resolver, parse_dxbc_reflection, parse_effect_file,
-    scan_effect_files_from_resolver, DxbcCbuffer, DxbcCbufferVar, DxbcReflection, DxbcResource,
-    DxbcSignatureParam, EffectDef, EffectElement, EffectFile, EffectParseScan, EffectSampler,
-    EffectStage, ShaderCompileComparison, ShaderStage, DX11_PLATFORM_HEADER, MAP_EFFECT_CANDIDATES,
-    MAP_EFFECT_COMPILE_ONLY, SHADER_FX_DIR,
+    build_stage_hlsl, derive_a729_engine_map_shader_constants, effect_file_from_resolver,
+    engine_map_shader_defines, parse_dxbc_reflection, parse_effect_file,
+    scan_effect_files_from_resolver, vanilla_engine_shader_defines, DxbcCbuffer, DxbcCbufferVar,
+    DxbcReflection, DxbcResource, DxbcSignatureParam, EffectDef, EffectElement, EffectFile,
+    EffectParseScan, EffectSampler, EffectStage, EngineMapShaderConstants, ShaderCompileComparison,
+    ShaderStage, DX11_PLATFORM_HEADER, MAP_EFFECT_CANDIDATES, MAP_EFFECT_COMPILE_ONLY,
+    SHADER_FX_DIR,
 };
 #[cfg(windows)]
 pub use shader_compile::{
@@ -610,8 +620,9 @@ pub use unit_counter_assets::{
 };
 pub use unit_placement::{
     place_division, place_divisions, place_fleet, place_fleets, place_frame_inputs, place_wing,
-    place_wings, AnchorProvenance, AnchorProvinceSource, DivisionPlacementInput,
-    FleetPlacementInput, PlacementStatus, ProvinceAnchor, ProvinceAnchorTable, UnitKind,
+    place_wings, wing_placement_input_from_world_row, AnchorProvenance, AnchorProvinceSource,
+    DivisionPlacementInput, FleetPlacementInput, PlacementStatus, ProvinceAnchor,
+    ProvinceAnchorTable, UnitKind,
     UnitPlacement, UnitPlacementSet, WingPlacementInput, WorldAnchor, UNIT_PLACEMENT_MAP_PLANE_X,
     UNIT_PLACEMENT_MAP_PLANE_Z, UNIT_STACK_BASE_SLOT_KIND,
 };

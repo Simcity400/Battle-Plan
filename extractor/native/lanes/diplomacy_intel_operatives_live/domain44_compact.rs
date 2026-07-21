@@ -5657,8 +5657,8 @@ mod tests {
                 | STATUS_INTEL_MAP_RESISTED
                 | STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED
         );
-        assert_eq!(summary.data_rows_total, 19);
-        assert_eq!(summary.data_changed_rows_total, 19);
+        assert_eq!(summary.data_rows_total, 18);
+        assert_eq!(summary.data_changed_rows_total, 18);
         assert_eq!(
             summary.data_units_total.get("relation_flag_rows").copied(),
             Some(1)
@@ -5682,14 +5682,14 @@ mod tests {
                 .data_units_total
                 .get("operative_lifecycle_rows")
                 .copied(),
-            Some(1)
+            Some(0)
         );
         assert_eq!(
             summary
                 .data_units_total
                 .get("compact_state_event_rows")
                 .copied(),
-            Some(8)
+            Some(7)
         );
         assert_eq!(
             summary
@@ -5734,6 +5734,8 @@ mod tests {
             + ROW_AGENCY_CAPACITY_CLUSTER_LEN;
         let mut malformed = payload;
         malformed[operative_offset + 2..operative_offset + 4].copy_from_slice(&0u16.to_le_bytes());
+        malformed[operative_offset + 36..operative_offset + 40]
+            .copy_from_slice(&1u32.to_le_bytes());
 
         let summary = decode_payload(0, &malformed);
 
@@ -6887,8 +6889,8 @@ mod tests {
                 skill: Some(2),
                 experience_raw: Some(71_372_000),
                 name_hash: stable_hash64("Johann Hein"),
-                state_hash: stable_hash32("lifeflag_47"),
-                lifecycle_flag: Some(47),
+                state_hash: stable_hash32("assignment_3"),
+                lifecycle_flag: None,
             }],
             cryptology: vec![CryptologyRow {
                 owner_tag_db_id: 1,
@@ -6958,15 +6960,6 @@ mod tests {
                     object_hash: stable_hash32("agency_upgrade_progress_raw"),
                     value_hash: stable_hash32("agency_upgrade_progress_2400000"),
                     value_raw: 2_400_000,
-                },
-                StateEventRow {
-                    owner_tag_db_id: 1,
-                    target_tag_db_id: None,
-                    event_kind: STATE_EVENT_KIND_OBSERVED,
-                    source_kind: STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE,
-                    object_hash: stable_hash32("operative_11387_lifecycle"),
-                    value_hash: stable_hash32("lifeflag_47"),
-                    value_raw: 47,
                 },
                 StateEventRow {
                     owner_tag_db_id: 2,

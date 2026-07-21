@@ -1,6 +1,7 @@
 use crate::{
     encode_lane_frame, gate_lane_frame, read_country_construction_queue_with_target_lookup,
-    read_province_building_rows, read_state_building_rows, read_state_resource_rows,
+    read_country_railway_construction_queue, read_province_building_rows,
+    read_state_building_rows, read_state_resource_rows,
     CountryConstructionRoot, GateReport, LaneFrame, LaneMemory, ProvinceRoot, StateRoot,
     TargetStateLookup, SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE, SOURCE_FLAG_DLL_NATIVE,
     SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE, SOURCE_FLAG_SHARED_COUNTRY_ROOTS,
@@ -61,11 +62,13 @@ pub struct CompactCollectorOutput {
 pub fn collect_domain48_frame<M: LaneMemory>(mem: &M, roots: CollectorRoots) -> CollectorOutput {
     let mut stats = CollectorStats::default();
     let mut construction_rows = Vec::new();
+    let mut railway_construction_rows = Vec::new();
     let mut building_rows = Vec::new();
     let mut resource_rows = Vec::new();
 
     let target_lookup = TargetStateLookup::new(&roots.state_roots, &roots.province_roots);
     for root in &roots.country_roots {
+        let mut country_failed = false;
         match read_country_construction_queue_with_target_lookup(mem, root.clone(), &target_lookup)
         {
             Some(mut read) => {
@@ -86,9 +89,25 @@ pub fn collect_domain48_frame<M: LaneMemory>(mem: &M, roots: CollectorRoots) -> 
                     .saturating_add(read.construction_skip_stats.invalid_progress_rows);
                 construction_rows.append(&mut read.rows);
             }
-            None => stats.failed_country_roots = stats.failed_country_roots.saturating_add(1),
+            None => country_failed = true,
+        }
+        match read_country_railway_construction_queue(mem, roots.module_base, root.clone()) {
+            Some(mut read) => {
+                // Reuse the existing D48 partial cause: a rejected railway row
+                // is an uncertain construction-queue omission and must not be
+                // allowed to clear prior fold state.
+                stats.skipped_construction_rows = stats
+                    .skipped_construction_rows
+                    .saturating_add(read.skipped_rows);
+                railway_construction_rows.append(&mut read.rows);
+            }
+            None => country_failed = true,
+        }
+        if country_failed {
+            stats.failed_country_roots = stats.failed_country_roots.saturating_add(1);
         }
     }
+    railway_construction_rows.sort_by_key(|row| (row.tag_db_id, row.queue_index, row.line_id));
 
     for root in &roots.state_roots {
         match read_state_building_rows(mem, roots.module_base, *root) {
@@ -165,6 +184,7 @@ pub fn collect_domain48_frame<M: LaneMemory>(mem: &M, roots: CollectorRoots) -> 
         observed_state_roots: roots.state_roots.len().min(u32::MAX as usize) as u32,
         observed_province_roots: roots.province_roots.len().min(u32::MAX as usize) as u32,
         construction_rows,
+        railway_construction_rows: Some(railway_construction_rows),
         building_rows,
         resource_rows,
     };

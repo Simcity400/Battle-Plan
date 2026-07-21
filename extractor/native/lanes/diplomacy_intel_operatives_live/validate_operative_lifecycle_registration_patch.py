@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Validate the domain-53 operative lifecycle registration patch details.
+"""Verify retirement of the disproven domain-53 operative-lifecycle patch.
 
-This gate intentionally reads shared registry files but does not edit them. It
-proves that the lane-local registration packet carries the v20
-`operative_lifecycle_rows` counter through the exact generic recorder hook.
+Exact-a729 producer RE proved that ``identity+0x110`` is the capacity word of
+the MSVC portrait/icon string at ``identity+0xf8``.  Historical v20 receipts
+remain readable compatibility evidence, but they must never promote that
+allocator capacity as a gameplay lifecycle value.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import re
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -33,19 +35,21 @@ def require(condition: bool, errors: list[str], message: str) -> None:
         errors.append(message)
 
 
-def domain53_reserved_with_data_record(text: str) -> bool:
-    pattern = re.compile(
-        r"domain\(\s*53,\s*"
-        r'"diplomacy_intel_operatives_live",\s*'
-        r'"diplomacy_intel_operatives_live",\s*'
-        r"CompactDomainStatus::Reserved,\s*"
-        r"false,\s*"
-        r"true,\s*"
-        r"&\[\],\s*"
-        r"\)",
-        re.MULTILINE,
+def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
     )
-    return bool(pattern.search(text))
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(value, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def proof_unit_count(proof: dict[str, Any], name: str) -> int:
@@ -55,156 +59,96 @@ def proof_unit_count(proof: dict[str, Any], name: str) -> int:
     return int(units.get(name) or 0)
 
 
-def container_integrity_ok(proof: dict[str, Any]) -> bool:
-    return (
-        proof.get("container_integrity_verified") is True
-        and proof.get("stream_entry_byte_identity_verified") is True
-        and proof.get("production_certifying") is False
-        and proof.get("source_capture_verified") is False
-        and not proof.get("parse_errors")
-    )
-
-
 def validate(args: argparse.Namespace) -> dict[str, Any]:
     errors: list[str] = []
+    # Retain every historical CLI input so existing aggregate invocations do
+    # not break, but only the current production/schema sources and old receipt
+    # are semantically relevant to this retirement gate.
+    for name in (
+        "collector_registry",
+        "recorder_registry",
+        "registration_packet",
+        "lifecycle_patch",
+        "lane_lib",
+    ):
+        read_text(Path(getattr(args, name)))
 
-    collector_registry = read_text(Path(args.collector_registry))
-    recorder_registry = read_text(Path(args.recorder_registry))
-    registration_packet = read_text(Path(args.registration_packet))
-    lifecycle_patch = read_text(Path(args.lifecycle_patch))
     compact_schema = read_text(Path(args.compact_schema))
     extractor = read_text(Path(args.extractor))
-    lane_lib = read_text(Path(args.lane_lib))
     proof = load_json(Path(args.replay_proof))
 
     require(
-        domain53_reserved_with_data_record(collector_registry),
+        "pub lifecycle_flag: Option<u32>" in compact_schema,
         errors,
-        "collector registry does not reserve domain 53 with requires_data_record=true",
+        "backward decoder no longer carries the optional legacy field",
     )
-    require(
-        domain53_reserved_with_data_record(recorder_registry),
-        errors,
-        "recorder registry does not reserve domain 53 with requires_data_record=true",
-    )
-    require(
-        "pub mod compact;" in lane_lib,
-        errors,
-        "lane lib does not export compact decoder module",
-    )
-    require(
-        "pub mod extractor;" in lane_lib,
-        errors,
-        "lane lib does not export extractor module",
-    )
-
     require(
         "OPERATIVE_FLAG_LIFECYCLE_PRESENT" in compact_schema,
         errors,
-        "compact schema lacks operative lifecycle presence flag",
+        "backward decoder no longer recognizes legacy v20 payloads",
     )
     require(
-        "pub lifecycle_flag: Option<u32>" in compact_schema,
+        "DOMAIN53_OPERATIVE_LIFECYCLE_FLAG" not in extractor,
         errors,
-        "compact schema lacks OperativeRow.lifecycle_flag",
+        "production extractor still references the disproven lifecycle offset",
     )
     require(
-        '"operative_lifecycle_rows"' in compact_schema,
+        "read_u32(identity + 0x110)" not in extractor,
         errors,
-        "compact decoder does not report operative_lifecycle_rows",
+        "production extractor still reads portrait-string capacity as lifecycle",
     )
     require(
-        "lifecycle_flag without present flag" in compact_schema,
+        "lifecycle_flag: None" in extractor,
         errors,
-        "compact validator does not reject lifecycle values without presence flag",
-    )
-    for flag in ("Some(47)", "Some(31)", "Some(63)"):
-        require(flag in extractor, errors, f"extractor proof fixture lacks lifecycle {flag}")
-
-    required_packet_tokens = [
-        "COMPACT_DOMAIN_DIPLOMACY_INTEL_OPERATIVES_LIVE: u16 = 53",
-        "decode_compact_diplomacy_intel_operatives_live_data_payload",
-        "diplomacy_intel_operatives_live::compact::decode_payload",
-        "for (name, count) in lane_summary.data_units_total",
-        "operative_lifecycle_rows",
-    ]
-    for token in required_packet_tokens:
-        require(token in registration_packet, errors, f"registration packet missing {token}")
-
-    required_patch_tokens = [
-        "Backlog item narrowed: `shared_integrated_compact_event_state_records`",
-        "read_u32(identity + 0x110)",
-        "SOURCE_PROOF_OPERATIVE_ROOT_870EBF",
-        "Do not name lifecycle flags `31` or `63`",
-        'data_units_total["operative_lifecycle_rows"] == 3',
-    ]
-    for token in required_patch_tokens:
-        require(token in lifecycle_patch, errors, f"lifecycle registration patch missing {token}")
-
-    require(int(proof.get("domain_id") or 0) == DOMAIN_ID, errors, "proof domain_id is not 53")
-    require(
-        container_integrity_ok(proof),
-        errors,
-        "proof does not establish scoped non-certifying replay-container integrity",
-    )
-    require(int(proof.get("data_rows_total") or 0) == 11, errors, "proof row count is not 11")
-    require(
-        proof_unit_count(proof, "operative_rows") == 3,
-        errors,
-        "proof operative_rows is not 3",
+        "current operative rows are not explicitly lifecycle-free",
     )
     require(
-        proof_unit_count(proof, "operative_lifecycle_rows") == 3,
+        'stable_hash32(&format!("assignment_{assignment}"))' in extractor,
         errors,
-        "proof operative_lifecycle_rows is not 3",
+        "current operative rows do not use the exact assignment discriminator",
+    )
+    require(
+        "operative_11387_lifecycle" not in extractor
+        and "lifeflag_47" not in extractor
+        and "Some(47)" not in extractor
+        and "Some(31)" not in extractor
+        and "Some(63)" not in extractor,
+        errors,
+        "current Rust fixtures still fabricate allocator capacities as lifecycle",
+    )
+    require(
+        int(proof.get("domain_id") or 0) == DOMAIN_ID,
+        errors,
+        "legacy receipt domain_id is not 53",
     )
 
-    status = "operative_lifecycle_registration_patch_validated" if not errors else "failed"
+    legacy_count = proof_unit_count(proof, "operative_lifecycle_rows")
+    status = (
+        "operative_lifecycle_false_semantic_retirement_verified"
+        if not errors
+        else "failed"
+    )
     return {
-        "schema": "battle-plan.diplomacy_intel_operatives.operative_lifecycle_registration_patch.v1",
+        "schema": "battle-plan.diplomacy_intel_operatives.operative_lifecycle_retirement.v2",
         "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "lane": LANE,
         "domain_id": DOMAIN_ID,
-        "completion_status": "COMPLETE" if not errors else "NOT COMPLETE",
+        "completion_status": "RETIRED" if not errors else "NOT COMPLETE",
         "status": status,
         "backlog_reduced": "yes" if not errors else "no",
         "exact_backlog_item_removed_or_narrowed": (
-            "shared_integrated_compact_event_state_records narrowed: exact "
-            "shared registration patch details for compact operative lifecycle "
-            "rows are validated; shared DLL/Rust entrypoints still await the "
-            "orchestrator-owned slot"
+            "operative lifecycle at identity+0x110 retired as false semantic; "
+            "legacy payload decode remains compatibility-only"
             if not errors
             else "none"
         ),
-        "validated_registration_details": {
-            "collector_registry_domain53_reserved": domain53_reserved_with_data_record(
-                collector_registry
-            ),
-            "recorder_registry_domain53_reserved": domain53_reserved_with_data_record(
-                recorder_registry
-            ),
-            "collector_lifecycle_source_offset": "identity+0x110",
-            "collector_owner_filter_offset": "identity+0x118",
-            "collector_source_proof": "SOURCE_PROOF_OPERATIVE_ROOT_870EBF",
-            "recorder_decoder": "diplomacy_intel_operatives_live::compact::decode_payload",
-            "recorder_counter_merge": "lane_summary.data_units_total",
-            "required_counter": "operative_lifecycle_rows",
+        "retirement": {
+            "disproven_offset": "identity+0x110",
+            "actual_role": "capacity word for MSVC string at identity+0xf8",
+            "replacement_current_semantic": "numeric assignment discriminator at leader+0x1080",
+            "legacy_receipt_operative_lifecycle_rows": legacy_count,
+            "legacy_receipt_promotable": False,
         },
-        "proof_counters": {
-            "data_rows_total": int(proof.get("data_rows_total") or 0),
-            "operative_rows": proof_unit_count(proof, "operative_rows"),
-            "operative_lifecycle_rows": proof_unit_count(
-                proof, "operative_lifecycle_rows"
-            ),
-            "replay_container_integrity_verified": container_integrity_ok(proof),
-        },
-        "dll_only": "no",
-        "compact_stream": "yes, lane-local synthetic v20 integrity proof",
-        "rust_decoded": "yes, lane-local decoder; shared hook plan validated",
-        "replay_container_integrity_verified": container_integrity_ok(proof),
-        "speed_five_current_equivalent_hourly_or_lower": "no",
-        "zero_skipped_hours": "not claimed; synthetic single-hour stream only",
-        "partial_source_worker_bridge_failures": "no in lane-local proof; shared run not executed",
         "errors": errors,
     }
 
@@ -224,15 +168,19 @@ def main() -> int:
 
     report = validate(args)
     out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_json_atomic(out, report)
     print(
-        "operative_lifecycle_registration_patch: "
+        "operative_lifecycle_retirement: "
         f"status={report['status']} "
-        f"counter={report['proof_counters']['operative_lifecycle_rows']} "
+        f"legacy_counter={report['retirement']['legacy_receipt_operative_lifecycle_rows']} "
         f"out={out}"
     )
-    return 0 if report["status"] == "operative_lifecycle_registration_patch_validated" else 2
+    return (
+        0
+        if report["status"]
+        == "operative_lifecycle_false_semantic_retirement_verified"
+        else 2
+    )
 
 
 if __name__ == "__main__":

@@ -16,14 +16,22 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
+use windows_sys::Win32::System::Diagnostics::Debug::{
+    ReadProcessMemory, RtlCaptureStackBackTrace,
+};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThreadId};
 
 pub const UI_YEAR_PRODUCER_RVA: usize = 0x01BC_EA60;
+pub const UI_YEAR_HELPER_RVA: usize = 0x00AB_EAA0;
 pub const EFFECTIVE_VALUE_PRODUCER_RVA: usize = 0x00AB_E4C0;
 pub const LOCALIZATION_SUBSTITUTION_CONSUMER_RVA: usize = 0x0223_0F20;
+pub const UI_YEAR_ACTION_NAME_MATERIALIZATION_RVA: usize = 0x01BC_F2D3;
+pub const UI_YEAR_ACTION_RESOLVER_CALL_RVA: usize = 0x01BC_F2E5;
+pub const UI_YEAR_ACTION_IDENTITY_COMPARE_RVA: usize = 0x01BC_F326;
+pub const UI_YEAR_HELPER_CALL_RVA: usize = 0x01BC_F37F;
+pub const UI_YEAR_HELPER_RETURN_RVA: usize = 0x01BC_F384;
 pub const REDUCED_KEY_RVA: usize = 0x0292_DD80;
 pub const UNREDUCED_KEY_RVA: usize = 0x0292_DDA0;
 pub const VALUE_NAME_RVA: usize = 0x0272_4F3C;
@@ -39,12 +47,28 @@ pub const SENTINEL_JOB_ID: &str =
     "20260720T130641Z-w5-a29-hook-sentinels-and-substitution-i-9016d012";
 pub const SENTINEL_DUMP_SHA256: &str =
     "3fbca6726f09499e6cf1961969ae4154b9c265f8e5c688f8d939d8397387cee2";
+pub const ACTION_GATE_JOB_ID: &str =
+    "20260721T075619Z-wave6-a29-active-ahead-ui-producer-ced43f28";
+pub const ACTION_GATE_MANIFEST_SHA256: &str =
+    "8d802c9eb2fe5e78ab52d7512d8d01dd5793b9c29fac8627c17fb6cafcc621ba";
+pub const ACTION_GATE_DECOMPILE_SHA256: &str =
+    "2b5cd331bfc2e329cc603a5fa38b213b3a4ee61c1aeb0c46bb81b92787f88e3d";
+pub const ACTION_GATE_INSTRUCTIONS_SHA256: &str =
+    "456f5dc85c264d8ca72974fe51dd55294dc4b53971abfd1683508650c128c9f3";
+pub const ACTION_GATE_SENTINEL_JOB_ID: &str =
+    "20260721T081803Z-wave6-a29-year-action-gate-sentinels-442109ac";
+pub const ACTION_GATE_SENTINEL_DUMP_SHA256: &str =
+    "44169d40d8ccc979f2f78eb7be11e2e7995e28dc4f3c6feb9da48ae928257517";
 pub const EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 
 const UI_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x10, 0x4c, 0x89, 0x44, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54,
     0x41,
+];
+const UI_YEAR_HELPER_SENTINEL: [u8; 16] = [
+    0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x41, 0x56, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d,
+    0x3e,
 ];
 const PRODUCER_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20,
@@ -70,11 +94,14 @@ const MAX_QUEUE: usize = 4096;
 const QUIESCE_TIMEOUT: Duration = Duration::from_secs(30);
 
 type UiProducerFn = unsafe extern "system" fn(usize, usize, usize) -> usize;
+type UiYearHelperFn =
+    unsafe extern "system" fn(usize, *mut i64, usize, i64, i64) -> *mut i64;
 type EffectiveProducerFn =
     unsafe extern "system" fn(usize, *mut i64, usize, usize, i64, i64) -> *mut i64;
 type LocalizationFn = unsafe extern "system" fn(usize, usize, usize, u32) -> usize;
 
 static ORIGINAL_UI: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_UI_YEAR_HELPER: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_PRODUCER: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_FORMATTER: AtomicUsize = AtomicUsize::new(0);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
@@ -85,21 +112,38 @@ static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 static QUEUE: OnceLock<Mutex<VecDeque<RawResearchAheadObservation>>> = OnceLock::new();
+static SEALED_QUEUE: OnceLock<Mutex<VecDeque<SelectedPresentResearchAheadObservation>>> =
+    OnceLock::new();
 static FATAL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 thread_local! {
     static UI_CONTEXT: RefCell<Option<UiContext>> = const { RefCell::new(None) };
+    static UI_YEAR_CONTEXT: RefCell<Option<UiYearContext>> = const { RefCell::new(None) };
     static PRODUCER_CONTEXT: RefCell<Option<ProducerContext>> = const { RefCell::new(None) };
 }
 
 #[derive(Clone, Copy, Debug)]
 struct UiContext {
     technology_address: usize,
+    field_address: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct UiYearContext {
+    technology_address: usize,
+    field_address: usize,
+    template_address: usize,
+    output_penalty_address: usize,
+    localized_output_address: usize,
+    applied_reduction_years_raw: i64,
+    baseline_reduction_years_raw: i64,
+    invalid_reason: Option<&'static str>,
 }
 
 #[derive(Clone, Debug)]
 struct ProducerContext {
     technology_address: usize,
+    ui_action_field_address: usize,
     template_address: usize,
     date_record_address: usize,
     applied_reduction_years_raw: i64,
@@ -125,6 +169,8 @@ pub struct RawResearchAheadObservation {
     pub qpc_frequency_hz: u64,
     pub game_hour_raw: i32,
     pub technology_address: usize,
+    pub ui_action_field_address: usize,
+    pub ui_action_gate_return_rva: u32,
     pub technology_template_address: usize,
     pub technology_definition_index_raw: u32,
     pub applied_reduction_years_raw: i64,
@@ -136,9 +182,37 @@ pub struct RawResearchAheadObservation {
     pub localization_branch: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectedPresentStamp {
+    pub candidate_count: u32,
+    pub candidate_set_sha256: String,
+    pub selected_candidate_id: u64,
+    pub selected_ordinal: u32,
+    pub selected_game_hour_raw: i32,
+    pub selected_qpc_ticks: u64,
+    pub selection_cutoff_qpc_ticks: u64,
+    pub qpc_frequency_hz: u64,
+    /// Canonical portable-render-stream `SelectedPresentReceipt` digest.
+    pub selected_present_receipt_sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectedPresentResearchAheadObservation {
+    pub observation: RawResearchAheadObservation,
+    pub candidate_count: u32,
+    pub candidate_set_sha256: String,
+    pub selected_candidate_id: u64,
+    pub selected_ordinal: u32,
+    pub selected_game_hour_raw: i32,
+    pub selected_qpc_ticks: u64,
+    pub selection_cutoff_qpc_ticks: u64,
+    pub selected_present_receipt_sha256: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InstalledAddresses {
     pub ui_year_producer: usize,
+    pub ui_year_helper: usize,
     pub effective_value_producer: usize,
     pub localization_substitution_consumer: usize,
 }
@@ -160,6 +234,10 @@ fn queue() -> &'static Mutex<VecDeque<RawResearchAheadObservation>> {
     QUEUE.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
+fn sealed_queue() -> &'static Mutex<VecDeque<SelectedPresentResearchAheadObservation>> {
+    SEALED_QUEUE.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
 fn fatal() -> &'static Mutex<Option<String>> {
     FATAL.get_or_init(|| Mutex::new(None))
 }
@@ -172,12 +250,83 @@ pub fn installed() -> bool {
     gate_open()
 }
 
-pub fn drain() -> Result<Vec<RawResearchAheadObservation>, String> {
+pub fn drain() -> Result<Vec<SelectedPresentResearchAheadObservation>, String> {
     if let Some(reason) = fatal().lock().map_err(|_| "A29 fatal mutex poisoned")?.clone() {
         return Err(reason);
     }
-    let mut queue = queue().lock().map_err(|_| "A29 queue mutex poisoned")?;
+    let mut queue = sealed_queue()
+        .lock()
+        .map_err(|_| "A29 selected-Present queue mutex poisoned")?;
     Ok(queue.drain(..).collect())
+}
+
+/// Bind only producer observations which were complete before the selected
+/// presentation. Rows after that presentation remain pending for a later
+/// frame; stale earlier-hour rows are discarded without ever becoming
+/// authority.
+pub fn seal_selected_present(stamp: SelectedPresentStamp) -> Result<u32, String> {
+    if stamp.candidate_count == 0
+        || stamp.selected_ordinal >= stamp.candidate_count
+        || stamp.selected_game_hour_raw <= 0
+        || stamp.selected_qpc_ticks == 0
+        || stamp.selection_cutoff_qpc_ticks < stamp.selected_qpc_ticks
+        || stamp.qpc_frequency_hz == 0
+        || !is_sha256(&stamp.candidate_set_sha256)
+        || !is_sha256(&stamp.selected_present_receipt_sha256)
+    {
+        return Err("A29 selected-Present stamp is incomplete".into());
+    }
+    if let Some(reason) = fatal().lock().map_err(|_| "A29 fatal mutex poisoned")?.clone() {
+        return Err(reason);
+    }
+    let mut raw = queue().lock().map_err(|_| "A29 queue mutex poisoned")?;
+    let mut sealed = sealed_queue()
+        .lock()
+        .map_err(|_| "A29 selected-Present queue mutex poisoned")?;
+    let mut retained = VecDeque::with_capacity(raw.len());
+    let mut sealed_count = 0u32;
+    while let Some(observation) = raw.pop_front() {
+        if observation.callback_qpc_ticks > stamp.selected_qpc_ticks {
+            retained.push_back(observation);
+            continue;
+        }
+        if observation.game_hour_raw < stamp.selected_game_hour_raw {
+            continue;
+        }
+        if observation.game_hour_raw != stamp.selected_game_hour_raw
+            || observation.qpc_frequency_hz != stamp.qpc_frequency_hz
+            || observation.ui_action_gate_return_rva != UI_YEAR_HELPER_RETURN_RVA as u32
+        {
+            let reason = "A29 producer and selected-Present identities are not causally joinable";
+            drop(sealed);
+            drop(raw);
+            poison(reason);
+            return Err(reason.into());
+        }
+        if sealed.len() >= MAX_QUEUE {
+            let reason = "A29 selected-Present observation queue overflowed";
+            drop(sealed);
+            drop(raw);
+            poison(reason);
+            return Err(reason.into());
+        }
+        sealed.push_back(SelectedPresentResearchAheadObservation {
+            observation,
+            candidate_count: stamp.candidate_count,
+            candidate_set_sha256: stamp.candidate_set_sha256.clone(),
+            selected_candidate_id: stamp.selected_candidate_id,
+            selected_ordinal: stamp.selected_ordinal,
+            selected_game_hour_raw: stamp.selected_game_hour_raw,
+            selected_qpc_ticks: stamp.selected_qpc_ticks,
+            selection_cutoff_qpc_ticks: stamp.selection_cutoff_qpc_ticks,
+            selected_present_receipt_sha256: stamp.selected_present_receipt_sha256.clone(),
+        });
+        sealed_count = sealed_count
+            .checked_add(1)
+            .ok_or("A29 selected-Present sealed count overflowed")?;
+    }
+    *raw = retained;
+    Ok(sealed_count)
 }
 
 pub fn install() -> Result<InstalledAddresses, String> {
@@ -195,6 +344,11 @@ pub fn install() -> Result<InstalledAddresses, String> {
     let resolved = addresses(base);
     for (target, sentinel, label) in [
         (resolved.ui_year_producer, &UI_SENTINEL[..], "UI year producer"),
+        (
+            resolved.ui_year_helper,
+            &UI_YEAR_HELPER_SENTINEL[..],
+            "UI year action helper",
+        ),
         (
             resolved.effective_value_producer,
             &PRODUCER_SENTINEL[..],
@@ -216,6 +370,11 @@ pub fn install() -> Result<InstalledAddresses, String> {
             resolved.ui_year_producer,
             hook_ui_producer as *mut c_void,
             &ORIGINAL_UI,
+        ),
+        (
+            resolved.ui_year_helper,
+            hook_ui_year_helper as *mut c_void,
+            &ORIGINAL_UI_YEAR_HELPER,
         ),
         (
             resolved.effective_value_producer,
@@ -248,6 +407,10 @@ pub fn install() -> Result<InstalledAddresses, String> {
         }
     }
     queue().lock().map_err(|_| "A29 queue mutex poisoned")?.clear();
+    sealed_queue()
+        .lock()
+        .map_err(|_| "A29 selected-Present queue mutex poisoned")?
+        .clear();
     *fatal().lock().map_err(|_| "A29 fatal mutex poisoned")? = None;
     INSTALLED.store(true, Ordering::Release);
     Ok(resolved)
@@ -272,6 +435,7 @@ pub fn uninstall() -> Result<(), String> {
     }
     remove_targets(resolved)?;
     ORIGINAL_UI.store(0, Ordering::Release);
+    ORIGINAL_UI_YEAR_HELPER.store(0, Ordering::Release);
     ORIGINAL_PRODUCER.store(0, Ordering::Release);
     ORIGINAL_FORMATTER.store(0, Ordering::Release);
     MODULE_BASE.store(0, Ordering::Release);
@@ -300,6 +464,7 @@ fn rollback_install(
     });
     if rollback.is_ok() {
         ORIGINAL_UI.store(0, Ordering::Release);
+        ORIGINAL_UI_YEAR_HELPER.store(0, Ordering::Release);
         ORIGINAL_PRODUCER.store(0, Ordering::Release);
         ORIGINAL_FORMATTER.store(0, Ordering::Release);
         MODULE_BASE.store(0, Ordering::Release);
@@ -345,14 +510,16 @@ fn remove_targets(resolved: InstalledAddresses) -> Result<(), String> {
 fn addresses(base: usize) -> InstalledAddresses {
     InstalledAddresses {
         ui_year_producer: base + UI_YEAR_PRODUCER_RVA,
+        ui_year_helper: base + UI_YEAR_HELPER_RVA,
         effective_value_producer: base + EFFECTIVE_VALUE_PRODUCER_RVA,
         localization_substitution_consumer: base + LOCALIZATION_SUBSTITUTION_CONSUMER_RVA,
     }
 }
 
-fn targets(value: InstalledAddresses) -> [usize; 3] {
+fn targets(value: InstalledAddresses) -> [usize; 4] {
     [
         value.ui_year_producer,
+        value.ui_year_helper,
         value.effective_value_producer,
         value.localization_substitution_consumer,
     ]
@@ -376,10 +543,79 @@ unsafe extern "system" fn hook_ui_producer(view: usize, field: usize, output: us
     let previous = UI_CONTEXT.with(|slot| {
         slot.replace(Some(UiContext {
             technology_address,
+            field_address: field,
         }))
     });
     let result = unsafe { original(view, field, output) };
     UI_CONTEXT.with(|slot| {
+        slot.replace(previous);
+    });
+    result
+}
+
+unsafe extern "system" fn hook_ui_year_helper(
+    template: usize,
+    output_penalty: *mut i64,
+    localized_output: usize,
+    applied_reduction: i64,
+    baseline_reduction: i64,
+) -> *mut i64 {
+    let _guard = CallbackGuard::enter();
+    let original = ORIGINAL_UI_YEAR_HELPER.load(Ordering::Acquire);
+    if original == 0 {
+        return output_penalty;
+    }
+    let original: UiYearHelperFn = unsafe { mem::transmute(original) };
+    let ui = UI_CONTEXT.with(|slot| *slot.borrow());
+    let exact_return = immediate_game_return_rva() == Some(UI_YEAR_HELPER_RETURN_RVA as u32);
+    let context = ui.and_then(|ui| {
+        if !exact_return {
+            return None;
+        }
+        let invalid_reason = if ui.technology_address == 0
+            || ui.field_address == 0
+            || template == 0
+            || output_penalty.is_null()
+            || localized_output == 0
+        {
+            Some("A29 year action helper lacks its exact UI identity/output context")
+        } else {
+            let observed_template = ui
+                .technology_address
+                .checked_add(TECHNOLOGY_TEMPLATE_OFFSET)
+                .and_then(read_process_value::<usize>);
+            let observed_reduction = ui
+                .technology_address
+                .checked_add(TECHNOLOGY_REDUCTION_OFFSET)
+                .and_then(read_process_value::<i64>);
+            if observed_template != Some(template) || observed_reduction != Some(applied_reduction) {
+                Some("A29 year action helper arguments differ from the selected active technology")
+            } else {
+                None
+            }
+        };
+        Some(UiYearContext {
+            technology_address: ui.technology_address,
+            field_address: ui.field_address,
+            template_address: template,
+            output_penalty_address: output_penalty as usize,
+            localized_output_address: localized_output,
+            applied_reduction_years_raw: applied_reduction,
+            baseline_reduction_years_raw: baseline_reduction,
+            invalid_reason,
+        })
+    });
+    let previous = UI_YEAR_CONTEXT.with(|slot| slot.replace(context));
+    let result = unsafe {
+        original(
+            template,
+            output_penalty,
+            localized_output,
+            applied_reduction,
+            baseline_reduction,
+        )
+    };
+    UI_YEAR_CONTEXT.with(|slot| {
         slot.replace(previous);
     });
     result
@@ -399,23 +635,39 @@ unsafe extern "system" fn hook_effective_producer(
         return output_penalty;
     }
     let original: EffectiveProducerFn = unsafe { mem::transmute(original) };
-    let ui = UI_CONTEXT.with(|slot| *slot.borrow());
+    let Some(ui) = UI_YEAR_CONTEXT.with(|slot| *slot.borrow()) else {
+        return unsafe {
+            original(
+                template,
+                output_penalty,
+                date_record,
+                localized_output,
+                applied_reduction,
+                baseline_reduction,
+            )
+        };
+    };
     let mut context = ProducerContext {
-        technology_address: ui.map(|value| value.technology_address).unwrap_or(0),
+        technology_address: ui.technology_address,
+        ui_action_field_address: ui.field_address,
         template_address: template,
         date_record_address: date_record,
         applied_reduction_years_raw: applied_reduction,
         baseline_reduction_years_raw: baseline_reduction,
         observed: None,
-        invalid_reason: None,
+        invalid_reason: ui.invalid_reason,
     };
-    if context.technology_address == 0
-        || template == 0
+    if template == 0
         || date_record == 0
         || output_penalty.is_null()
         || localized_output == 0
+        || ui.template_address != template
+        || ui.output_penalty_address != output_penalty as usize
+        || ui.localized_output_address != localized_output
+        || ui.applied_reduction_years_raw != applied_reduction
+        || ui.baseline_reduction_years_raw != baseline_reduction
     {
-        context.invalid_reason = Some("A29 producer lacks its exact UI identity/output context");
+        context.invalid_reason = Some("A29 effective producer differs from the exact year action helper transaction");
     } else {
         let observed_template = context
             .technology_address
@@ -606,6 +858,8 @@ fn publish_completed(context: ProducerContext, output_penalty: *mut i64) {
         qpc_frequency_hz: frequency,
         game_hour_raw: game_hour_raw.expect("checked above"),
         technology_address: context.technology_address,
+        ui_action_field_address: context.ui_action_field_address,
+        ui_action_gate_return_rva: UI_YEAR_HELPER_RETURN_RVA as u32,
         technology_template_address: context.template_address,
         technology_definition_index_raw: definition_index.expect("checked above"),
         applied_reduction_years_raw: context.applied_reduction_years_raw,
@@ -651,6 +905,27 @@ fn qpc_now() -> Option<(u64, u64)> {
     } else {
         Some((ticks as u64, frequency as u64))
     }
+}
+
+fn immediate_game_return_rva() -> Option<u32> {
+    let base = MODULE_BASE.load(Ordering::Acquire);
+    let pe_offset = read_process_value::<u32>(base.checked_add(0x3c)?)? as usize;
+    let image_size = read_process_value::<u32>(base.checked_add(pe_offset)?.checked_add(0x50)?)?
+        as usize;
+    let mut stack = [ptr::null_mut::<c_void>(); 8];
+    let count = unsafe {
+        RtlCaptureStackBackTrace(0, stack.len() as u32, stack.as_mut_ptr(), ptr::null_mut())
+    } as usize;
+    let end = base.checked_add(image_size)?;
+    stack[..count]
+        .iter()
+        .map(|address| *address as usize)
+        .find(|address| *address >= base && *address < end)
+        .and_then(|address| u32::try_from(address - base).ok())
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn verify_sentinel(address: usize, expected: &[u8], label: &str) -> Result<(), String> {

@@ -82,6 +82,8 @@ def checked_relative(relative: str) -> Path:
     path = ROOT / relative
     if not path.resolve().is_relative_to(ROOT.resolve()):
         raise SystemExit(f"refusing unsafe manifest path: {relative}")
+    if path.resolve() == MANIFEST.resolve():
+        raise SystemExit("refusing self-referential manifest input: manifest.json")
     if not path.is_file():
         raise SystemExit(f"current audit reference is missing: {relative}")
     return path

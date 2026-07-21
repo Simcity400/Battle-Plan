@@ -34,6 +34,7 @@ pub struct ExactVfsOpenEvidence {
 pub struct ExactProgramAuthorityEvidence {
     pub path_join_sequence: u64,
     pub shader_program_ptr: usize,
+    pub registration_root_rva: u32,
     pub effect_token: String,
     pub ordered_defines: Vec<RawShaderDefine>,
     pub source_open: ExactVfsOpenEvidence,
@@ -528,9 +529,13 @@ impl<'a, V: AdmittedAuthorityPayloads> ProductionAuthorityObservationProducer<'a
         evidence
             .pixel_reflection
             .validate_against_creation(&evidence.pixel_creation)?;
+        if !crate::is_authenticated_map_registration_root(evidence.registration_root_rva) {
+            return Err("program authority names an unauthenticated registration root".into());
+        }
         let registration = RawProgramRegistrationObservation {
             observation_sequence: capture_sequence,
             shader_program_ptr: evidence.shader_program_ptr,
+            registration_root_rva: evidence.registration_root_rva,
             source_open_sequence: source_open.observation_sequence,
             effect_token: evidence.effect_token.clone(),
             vertex_entry_token: evidence.vertex_reflection.entry_token.clone(),
@@ -1471,6 +1476,7 @@ mod tests {
         ExactProgramAuthorityEvidence {
             path_join_sequence: 1,
             shader_program_ptr: 0x100,
+            registration_root_rva: crate::MAP_EFFECT_REGISTRATION_ROOT_RVA,
             effect_token: "exact-effect".into(),
             ordered_defines: Vec::new(),
             source_open: ExactVfsOpenEvidence {

@@ -50,11 +50,8 @@
 //!   A15 (needs a max-organisation datum).
 //! * **Badges (A15)** — the on-map badge slots are supply / orders / dig-in /
 //!   training / attrition / active-ability (`interface/mapicons.gui`, A15). Of
-//!   these, `DivisionUnitRow` serves ONLY the orders signal (`moving`) and the
-//!   combat signal (`in_combat`); supply / dig-in / training(experience) /
-//!   attrition / active-ability are NOT surfaced by the view at all
-//!   ([`ServedBadge::NotSurfaced`], a recording-side gap filed in A15). Absence
-//!   is honest: a not-served badge is badge-absent, never defaulted on/off.
+//!   these, `DivisionUnitRow` serves orders (`moving`), combat (`in_combat`),
+//!   training(experience) / active-ability remain recording-side gaps.
 
 use replay_core::{DivisionUnitRow, FleetUnitRow, Leaf, ViewStatus, WingUnitRow, WorldFrame};
 use std::collections::BTreeSet;
@@ -157,9 +154,8 @@ impl ServedBadge {
     }
 }
 
-/// The A15 badge slot set for one counter. Only `orders` and `combat` are
-/// served by `DivisionUnitRow`; the remainder are structurally `NotSurfaced`
-/// (recording-side gaps, filed under A15) and so always badge-absent.
+/// The A15 badge slot set for one counter. `orders`, `combat`, and exact-a729
+/// attrition are served by `DivisionUnitRow`; remaining gaps stay fail-closed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CounterBadges {
     /// Orders badge, from the division `moving` leaf: `Measured(true)` = has a
@@ -177,8 +173,8 @@ pub struct CounterBadges {
     /// Training badge (A15) — `NotSurfaced`: division `experience` is not in
     /// `DivisionUnitRow`.
     pub training: ServedBadge,
-    /// Attrition-active badge (A15) — `NotSurfaced`: no attrition signal in the
-    /// view.
+    /// Attrition-active badge (A15), derived from the exact-a729 ATR1 carrier
+    /// when the current frame authenticates that source.
     pub attrition: ServedBadge,
     /// Active-ability badge (A15) — `NotSurfaced`: no per-unit active-ability
     /// signal in the view.
@@ -328,6 +324,11 @@ pub fn land_counter_content(row: &DivisionUnitRow) -> CounterContent {
         None => (None, NatoKeySource::LandRoleUnavailable),
     };
     let strength = measured_f64(&row.strength);
+    let attrition_badge = match &row.attrition {
+        Leaf::Measured(attrition) => ServedBadge::from_bool_leaf(&attrition.badge_active),
+        Leaf::Unobtained => ServedBadge::AbsentThisHour,
+        Leaf::Absent => ServedBadge::NotSurfaced,
+    };
     CounterContent {
         uid: row.div_uid.clone(),
         domain: CounterDomain::Land,
@@ -351,7 +352,7 @@ pub fn land_counter_content(row: &DivisionUnitRow) -> CounterContent {
             low_supply: ServedBadge::NotSurfaced,
             dig_in: ServedBadge::NotSurfaced,
             training: ServedBadge::NotSurfaced,
-            attrition: ServedBadge::NotSurfaced,
+            attrition: attrition_badge,
             active_ability: ServedBadge::NotSurfaced,
         },
     }
@@ -529,6 +530,7 @@ mod tests {
             move_target_province: Leaf::Absent,
             move_progress: Leaf::Measured(0.0),
             in_combat: Leaf::Measured(false),
+            attrition: Leaf::Absent,
             equipment: Leaf::Measured(vec![]),
         }
     }

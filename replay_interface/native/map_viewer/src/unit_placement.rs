@@ -265,15 +265,30 @@ pub struct FleetPlacementInput {
     pub location_province: Option<u32>,
 }
 
-/// Minimal air-wing input (adapt from `replay_core::WingUnitRow`). `state_id`
-/// drives the FIT air-base-state anchor; `location_province` is honored first
-/// when a future recording supplies an airbase province.
+/// Minimal air-wing input (adapt from `replay_core::WingUnitRow`). The exact
+/// recorded air-base province is honored first. `state_id` is retained only
+/// for legacy recordings that predate the A7 D34 placement carrier.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WingPlacementInput {
     pub uid: String,
     pub owner: Option<String>,
     pub state_id: Option<u32>,
     pub location_province: Option<u32>,
+}
+
+/// Production replay adapter for the A7 air-base placement carrier.
+///
+/// `Leaf::Unobtained` and `Leaf::Absent` both remain `None`; no state centroid
+/// or neighboring province is relabeled as exact recording data here.
+pub fn wing_placement_input_from_world_row(
+    row: &replay_core::WingUnitRow,
+) -> WingPlacementInput {
+    WingPlacementInput {
+        uid: row.wing_uid.clone(),
+        owner: row.owner.measured().cloned(),
+        state_id: row.state_id.measured().copied(),
+        location_province: row.air_base_province.measured().copied(),
+    }
 }
 
 /// A whole hour's placement set (the per-frame product).
@@ -356,8 +371,8 @@ pub fn place_fleet(input: &FleetPlacementInput, table: &ProvinceAnchorTable) -> 
     )
 }
 
-/// Place one air wing. Resolution order: recording `location_province` (FILE,
-/// future airbase province) → air-base **state** representative province (FIT,
+/// Place one air wing. Resolution order: exact recorded air-base province
+/// from A7/D34 → air-base **state** representative province (legacy FIT,
 /// via `state_anchor_provinces`) → unplaceable.
 pub fn place_wing(
     input: &WingPlacementInput,
@@ -653,7 +668,7 @@ mod tests {
             uid: "800:1".into(),
             owner: Some("ENG".into()),
             state_id: Some(30),
-            location_province: Some(3000), // future airbase province wins
+            location_province: Some(3000), // exact A7 air-base province wins
         };
         let p = place_wing(&w, &table, &state_anchor);
         assert_eq!(p.anchor_province, Some(3000));
@@ -661,6 +676,31 @@ mod tests {
             p.anchor_province_source,
             AnchorProvinceSource::LocationProvince
         );
+    }
+
+    #[test]
+    fn world_wing_adapter_carries_exact_air_base_province() {
+        use replay_core::{Leaf, WingUnitRow};
+
+        let row = WingUnitRow {
+            wing_uid: "800:69".into(),
+            owner: Leaf::Measured("ENG".into()),
+            name: Leaf::Absent,
+            plane_count: Leaf::Measured(100),
+            experience: Leaf::Absent,
+            manpower: Leaf::Absent,
+            mission_kind: Leaf::Absent,
+            strategic_region_id: Leaf::Measured(68),
+            air_base: Leaf::Measured("39:65".into()),
+            air_base_province: Leaf::Measured(6508),
+            state_id: Leaf::Measured(193),
+            plane_definition: Leaf::Absent,
+            effective_planes: Leaf::Absent,
+            equipment: Leaf::Absent,
+        };
+        let input = wing_placement_input_from_world_row(&row);
+        assert_eq!(input.location_province, Some(6508));
+        assert_eq!(input.state_id, Some(193));
     }
 
     #[test]

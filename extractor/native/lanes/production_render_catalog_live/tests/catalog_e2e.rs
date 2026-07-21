@@ -597,6 +597,7 @@ fn capture(manifest: &ContentManifest) -> RawRenderCatalogCapture {
             .map(|sequence| RawProgramIdentity {
                 observation_sequence: sequence,
                 shader_program_ptr: 100,
+                registration_root_rva: 1,
                 source: shader.clone(),
                 effect_token: "PdxMeshParticle".into(),
                 vertex_entry_token: "VertexMain".into(),

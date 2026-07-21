@@ -124,6 +124,12 @@ struct ObservedState {
 #[derive(Debug, Default)]
 struct HookState {
     next_sequence: u64,
+    /// Set when an atomic drain has already exposed the current hook-owned
+    /// state as the recorder's sequence-zero hourly baseline before the first
+    /// mutation.  Without this latch the first later callback would emit a
+    /// second sequence-zero pre-mutation baseline, which the cumulative fold
+    /// must (correctly) reject as an ambiguous history restart.
+    clean_baseline_drained: bool,
     pending_baseline: Option<SpeedPauseBaseline>,
     pending: VecDeque<SpeedPauseTransition>,
     callback_count: u64,
@@ -389,6 +395,7 @@ pub fn drain_with_baseline() -> Result<SpeedPauseDrain, String> {
             std::thread::yield_now();
             continue;
         }
+        let (baseline, transitions) = take_pending_evidence(&mut state);
         return Ok(SpeedPauseDrain {
             current: SpeedPauseObservedState {
                 game_hour_raw: current.game_hour_raw,
@@ -396,11 +403,22 @@ pub fn drain_with_baseline() -> Result<SpeedPauseDrain, String> {
                 paused: current.paused,
                 tick_progress_f32_bits: current.tick_progress_f32_bits,
             },
-            baseline: state.pending_baseline.take(),
-            transitions: state.pending.drain(..).collect(),
+            baseline,
+            transitions,
         });
     }
     Err("X12 callbacks did not quiesce for an atomic D57 drain".into())
+}
+
+fn take_pending_evidence(
+    state: &mut HookState,
+) -> (Option<SpeedPauseBaseline>, Vec<SpeedPauseTransition>) {
+    let baseline = state.pending_baseline.take();
+    let transitions: Vec<_> = state.pending.drain(..).collect();
+    if state.next_sequence == 0 && baseline.is_none() && transitions.is_empty() {
+        state.clean_baseline_drained = true;
+    }
+    (baseline, transitions)
 }
 
 pub fn diagnostics() -> HookDiagnostics {
@@ -537,7 +555,7 @@ fn publish_change(
         state.current_error = Some("X12 transition sequence overflow".into());
         return;
     };
-    if state.next_sequence == 0 {
+    if state.next_sequence == 0 && !state.clean_baseline_drained {
         state.pending_baseline = Some(SpeedPauseBaseline {
             game_hour_raw: before.game_hour_raw,
             speed_raw: before.speed_raw,
@@ -664,5 +682,48 @@ impl CallbackFlight {
 impl Drop for CallbackFlight {
     fn drop(&mut self) {
         CALLBACKS_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_drain_commits_the_recorder_owned_sequence_zero_baseline() {
+        let mut state = HookState::fresh();
+        let (baseline, transitions) = take_pending_evidence(&mut state);
+
+        assert!(baseline.is_none());
+        assert!(transitions.is_empty());
+        assert!(state.clean_baseline_drained);
+        assert_eq!(state.next_sequence, 0);
+    }
+
+    #[test]
+    fn mutation_before_first_drain_retains_the_hook_owned_baseline() {
+        let mut state = HookState::fresh();
+        state.next_sequence = 1;
+        state.pending_baseline = Some(SpeedPauseBaseline {
+            game_hour_raw: 10,
+            speed_raw: 2,
+            paused: false,
+            tick_progress_f32_bits: 0x3e80_0000,
+            thread_id: 7,
+        });
+        state.pending.push_back(SpeedPauseTransition {
+            sequence: 1,
+            kind: TransitionKind::Speed,
+            game_hour_raw: 10,
+            speed_raw: 3,
+            paused: false,
+            tick_progress_f32_bits: 0x3e80_0000,
+            thread_id: 7,
+        });
+
+        let (baseline, transitions) = take_pending_evidence(&mut state);
+        assert!(baseline.is_some());
+        assert_eq!(transitions.len(), 1);
+        assert!(!state.clean_baseline_drained);
     }
 }

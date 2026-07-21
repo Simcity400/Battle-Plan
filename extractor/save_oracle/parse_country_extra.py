@@ -386,6 +386,7 @@ def _parse_country_block(tz):
         "script_flags": {}, "_script_flags_present": False,
         "strategic_navy": None, "_strategic_navy_present": False,
         "convoys_destroyed": None, "accidents_score": None,
+        "preferred_tactic": None,
         "cosmetic_tag": None, "pride_of_the_fleet": None,
         "collaboration_present": False,
     }
@@ -454,6 +455,8 @@ def _parse_country_block(tz):
             rec["accidents_score"] = to_float(v)
         elif key == "cosmetic_tag":
             rec["cosmetic_tag"] = v
+        elif key == "preferred_tactic":
+            rec["preferred_tactic"] = to_int(v)
     return rec
 
 
@@ -505,6 +508,7 @@ def build(text, source, was_melted):
             "convoys_destroyed": rec["convoys_destroyed"],
             "accidents_score": rec["accidents_score"],
             "cosmetic_tag": rec["cosmetic_tag"],
+            "preferred_tactic": rec["preferred_tactic"],
             "pride_of_the_fleet": rec["pride_of_the_fleet"],
             "collaboration_present": rec["collaboration_present"],
         }

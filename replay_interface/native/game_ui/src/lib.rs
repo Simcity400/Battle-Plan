@@ -33,6 +33,7 @@ pub mod national_focus;
 pub mod occupation_binding;
 pub mod paradox_text;
 pub mod politics_tooltips;
+pub mod preferred_tactic;
 pub mod png;
 pub mod power_balance;
 pub mod power_balance_assets;
@@ -57,6 +58,7 @@ pub mod waroverview_binding;
 pub mod widget_layout;
 pub mod widget_visual_state;
 pub mod window_manager_law;
+pub mod world_tension;
 
 use std::fmt;
 use std::io;

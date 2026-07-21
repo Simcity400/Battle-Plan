@@ -17,7 +17,7 @@ fn exact_root(selected: &portable_render_stream::SelectedPresentReceipt) -> Valu
         "selected_present_ordinal": 0,
         "selected_present_qpc_ticks": 100,
         "selected_present_receipt_sha256": selected.computed_sha256().unwrap(),
-        "producer_manifest_sha256": "b1f2f0bc2afde8c970fd4e63dd9c969bde9744d146c4f23e9dddae4f00ba4c64",
+        "producer_manifest_sha256": "a23b63ccefc021eeced9a1a918588d3e2fbba07e5d1afb4d53f83cc7c1640177",
         "completeness_record_identity": "a26:selected-present=7:observation=3",
         "expected_instance_count": 1,
         "instances": [{

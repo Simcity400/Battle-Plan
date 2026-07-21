@@ -20,6 +20,7 @@ pub mod scientist_source_report;
 pub mod static_bundle_gate;
 pub mod stitching;
 pub mod stream_fold;
+mod tactic_weight_fold;
 pub mod transport_status;
 pub mod windows_control_pipe;
 pub mod world_fold;
