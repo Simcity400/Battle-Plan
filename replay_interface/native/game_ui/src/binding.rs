@@ -928,23 +928,34 @@ mod tests {
         let view = replay_core::NukeStockpileExactView {
             status: ViewStatus::Present,
             stockpile: Some(replay_core::NukeStockpileExact {
-                schema_version: 1,
+                schema_version: 2,
                 authority: "exact_a729_nuke_stockpile".into(),
                 executable_sha256: "e".into(),
-                receipt_sha256: "r".into(),
-                data_artifact_sha256: "d".into(),
+                producer_consumer_manifest_sha256: "p".into(),
+                container_constructor_manifest_sha256: "c".into(),
+                cnuke_vtable_artifact_sha256: "v".into(),
                 elapsed_wall_ms: 1,
                 frame_hour: 900,
                 source_sequence: 1,
                 countries: vec![replay_core::NukeStockpileCountryExact {
                     tag_db_id: 23,
+                    container_capacity: 2,
                     nukes_total: 2,
                     nukes_ready_total: 9,
-                    nukes: vec![replay_core::NukeStockpileEntryExact {
-                        amount_raw: 250_000_000,
-                        amount: 2,
-                        nukes_ready: 9,
-                    }],
+                    nukes: vec![
+                        replay_core::NukeStockpileEntryExact {
+                            nuke_type_raw: 0,
+                            amount_raw: 250_000_000,
+                            amount: 2,
+                            nukes_ready: 9,
+                        },
+                        replay_core::NukeStockpileEntryExact {
+                            nuke_type_raw: 1,
+                            amount_raw: 0,
+                            amount: 0,
+                            nukes_ready: 0,
+                        },
+                    ],
                 }],
             }),
         };

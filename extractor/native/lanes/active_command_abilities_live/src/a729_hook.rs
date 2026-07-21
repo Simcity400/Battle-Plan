@@ -16,6 +16,8 @@ use std::mem;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::thread;
+use std::time::{Duration, Instant};
 use windows_sys::Win32::System::Diagnostics::Debug::{
     ReadProcessMemory, RtlCaptureStackBackTrace,
 };
@@ -47,6 +49,22 @@ pub const EXACT_A729_AUTHORITY_JOB_ID: &str =
 pub const EXACT_A729_AUTHORITY_SHARD: &str = "shard-19";
 pub const EXACT_A729_AUTHORITY_MANIFEST_SHA256: &str =
     "12768dfa9a8b47ceda4feae9cdc45b76811f602ecd557008aa936e95adf2db45";
+/// Follow-up receipts which authenticate the corrected tooltip/timer laws and
+/// the final selected-context root census used by this observer.  The original
+/// exact20 receipt remains the complete hook-site census; these receipts are
+/// additive authority and must travel with every live evidence receipt.
+pub const FINAL_STATIC_AUDIT_JOB_ID: &str =
+    "20260720T102325Z-w5-a36-final-tooltip-timer-audit-dc624c9b";
+pub const FINAL_STATIC_AUDIT_SHARD: &str = "shard-06";
+pub const FINAL_STATIC_AUDIT_MANIFEST_SHA256: &str =
+    "6e3ce8c70d50d98256083b4a054d681b1302e373f1c299dba72ff0fd8406d386";
+pub const FINAL_ROOTS_JOB_ID: &str =
+    "20260720T134743Z-wave5-a36-selected-context-final-roots-f5a32492";
+pub const FINAL_ROOTS_SHARD: &str = "shard-19";
+pub const FINAL_ROOTS_MANIFEST_SHA256: &str =
+    "504e0fda71c6d0071683425e45edc7cc8b22734aaadfaf05f00769b11a70b021";
+pub const EXACT_A729_EXECUTABLE_SHA256: &str =
+    "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 pub const LIVE_TRANSITION_PROMOTION_BOUND: bool = false;
 pub const COMPACT_DOMAIN_SCHEDULED: bool = false;
 
@@ -89,10 +107,12 @@ const ICON_RESOLVER_CALLSITE_SENTINEL: [u8; 16] = [
 
 const MAX_ROWS: usize = 4096;
 const MAX_OBSERVATIONS: usize = 128;
-const MAX_TEXT_OBSERVATIONS: usize = MAX_ROWS;
-const MAX_TEXT_BYTES: usize = 1 << 20;
+const MAX_TEXT_OBSERVATIONS: usize = 256;
+const MAX_TEXT_BYTES: usize = 4096;
+const MAX_TOTAL_FIELD_MARSHAL_LEADERS: usize = 65_536;
 const FM_STATE_STRIDE: usize = 0x68;
 const FM_LEADER_STATE_STRIDE: usize = 0x28;
+pub const HOOK_COUNT: usize = 9;
 
 type RefreshFn = unsafe extern "system" fn(usize);
 type ContextProbeFn = unsafe extern "system" fn(usize) -> u8;
@@ -116,6 +136,8 @@ static ORIGINAL_ICON_RESOLVER: AtomicUsize = AtomicUsize::new(0);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 static INSTALL_BROKEN: AtomicBool = AtomicBool::new(false);
+static DRAINING: AtomicBool = AtomicBool::new(false);
+static ACTIVE_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static STATE: OnceLock<Mutex<ObserverState>> = OnceLock::new();
 static INSTALL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -123,6 +145,25 @@ static INSTALL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 thread_local! {
     static TRACE: RefCell<Option<OpenTrace>> = const { RefCell::new(None) };
     static TOOLTIP_TRACE: RefCell<Option<OpenTooltipTrace>> = const { RefCell::new(None) };
+}
+
+struct CallbackGuard {
+    capture: bool,
+}
+
+impl CallbackGuard {
+    fn enter() -> Self {
+        ACTIVE_CALLBACKS.fetch_add(1, Ordering::AcqRel);
+        Self {
+            capture: !DRAINING.load(Ordering::Acquire),
+        }
+    }
+}
+
+impl Drop for CallbackGuard {
+    fn drop(&mut self) {
+        ACTIVE_CALLBACKS.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -276,8 +317,13 @@ pub struct FieldMarshalLeaderLeaf {
     /// 4 leader-unavailable.
     pub state_code: u8,
     pub remaining_hours: i32,
+    /// Exact elapsed value returned by the same ordered 0x1406F3370 call
+    /// which produced this leader state. The 0x28 aggregate row does not
+    /// retain it for indefinite abilities, so the observer joins it by the
+    /// engine's leader iteration order before pointer erasure.
+    pub activation_elapsed_hours: i32,
     pub command_power_cost_fixed: i64,
-    pub daily_command_power_cost_fixed: i64,
+    pub activation_command_power_cost_fixed: i64,
     pub will_activate: bool,
 }
 
@@ -295,9 +341,9 @@ pub struct FieldMarshalAbilityLeaf {
     pub minimum_cooldown_remaining_hours: i32,
     pub group_activation_elapsed_hours: i32,
     pub allocated_command_power_cost_fixed: i64,
+    pub allocated_activation_command_power_cost_fixed: i64,
     pub allocated_daily_command_power_cost_fixed: i64,
-    pub allocated_effect_value_fixed: i64,
-    pub affected_division_count: u32,
+    pub allocated_affected_division_count: u32,
     pub group_already_active: bool,
 }
 
@@ -383,6 +429,35 @@ pub fn observations() -> Vec<ControllerObservation> {
         .and_then(|state| state.lock().ok())
         .map(|state| state.observations.iter().cloned().collect())
         .unwrap_or_default()
+}
+
+/// Re-authenticates the process-local controller identity at the collector
+/// root-catalog boundary. The hook observation remains the sole state/text
+/// producer, but a later root join may not reuse it after selection, source
+/// order, aggregate membership, or row ownership has changed.
+pub fn observation_identity_still_current(
+    observation: &ControllerObservation,
+) -> Result<(), String> {
+    let (meta, source_bytes, _state_bytes, leader_bytes, row_widget_bytes) =
+        stable_snapshot(observation.controller_runtime)?;
+    let source = pointer_rows(&source_bytes)?;
+    let leaders = pointer_rows(&leader_bytes)?;
+    let row_owners = pointer_rows(&row_widget_bytes)?;
+    if meta.context_mode != observation.context_mode
+        || meta.selected_root != observation.selected_root_runtime
+        || meta.selected_leader != observation.selected_leader_runtime
+        || meta.selected_army != observation.selected_army_runtime
+        || meta.selected_army_group != observation.selected_army_group_runtime
+        || meta.selected_other != observation.selected_other_runtime
+        || meta.field_marshal_aggregate != observation.field_marshal_aggregate
+        || source != observation.source_definition_runtime
+        || leaders != observation.aggregate_leader_runtime
+        || row_owners != observation.row_owner_runtime
+        || meta.row_widgets.count != observation.row_widget_count
+    {
+        return Err("A36 retained refresh identity changed before exact-root join".into());
+    }
+    Ok(())
 }
 
 pub fn take_observations() -> Vec<ControllerObservation> {
@@ -538,17 +613,39 @@ fn materialize_abl1_frame(
         }
         let observation = matches[0];
         if observation.sequence <= controller.sequence
-            || tooltip_sequences.last().is_some_and(|prior| observation.sequence <= *prior)
             || observation.final_tooltip.is_empty()
-            || observation.accumulator_callsite_seen != !observation.disabled_reason.is_empty()
+            || !observation.accumulator_callsite_seen
         {
-            return Err("A36 tooltip/disabled-reason availability law disagrees".into());
+            return Err("A36 tooltip/disabled-reason transaction is incomplete".into());
         }
+        // 0x141D06052 is unconditional: it appends the evaluated error
+        // accumulator even when that accumulator has length zero. Therefore
+        // callsite presence authenticates the observation, while the exact
+        // captured length (not callsite presence) is the availability leaf.
+        let has_disabled_reason = !observation.disabled_reason.is_empty();
         let definition = &controller.definitions[ordinal];
         let presentation = &controller.definition_presentations[ordinal];
         if definition.definition_runtime != controller.source_definition_runtime[ordinal]
             || presentation.definition_runtime != definition.definition_runtime {
             return Err("A36 definition leaves/presentation/source identity disagree".into());
+        }
+        if !controller.field_marshal_aggregate {
+            let ordinary = controller
+                .ordinary_leaves
+                .iter()
+                .find(|row| row.definition_runtime == definition.definition_runtime)
+                .ok_or_else(|| {
+                    "A36 ordinary definition lacks its exact state record".to_string()
+                })?;
+            if (ordinary.state == OrdinaryAbilityState::Available && has_disabled_reason)
+                || (ordinary.state == OrdinaryAbilityState::Unavailable
+                    && !has_disabled_reason)
+            {
+                return Err(
+                    "A36 evaluated ordinary availability disagrees with the exact accumulator"
+                        .into(),
+                );
+            }
         }
         let (active, activation_elapsed, cooldown_remaining, duration_remaining, cost, active_leaders) =
             materialize_state(controller, definition, observation)?;
@@ -571,7 +668,7 @@ fn materialize_abl1_frame(
         }
         rows.push(crate::AbilityRow {
             ability_id: presentation.ability_id.clone(),
-            available: !observation.accumulator_callsite_seen,
+            available: !has_disabled_reason,
             active,
             activation_hour,
             cooldown_total: cooldown_total(definition.cooldown_hours)?,
@@ -584,7 +681,7 @@ fn materialize_abl1_frame(
             display_order: ordinal as u32,
             icon: presentation.resolved_icon.clone(),
             tooltip: observation.final_tooltip.clone(),
-            disabled_reason: observation.accumulator_callsite_seen
+            disabled_reason: has_disabled_reason
                 .then(|| observation.disabled_reason.clone()),
             affected_division_ids: affected_division_ids.into_iter()
                 .map(|id| format!("division:{id}"))
@@ -641,12 +738,15 @@ fn validate_identity_catalog(catalog: &ExactA729PortableIdentityCatalog) -> Resu
             return Err("A36 exact root catalog carries an invalid or duplicate context identity".into());
         }
     }
-    let mut division_ids = BTreeSet::new();
     for (leader_runtime, divisions) in &catalog.division_ids_by_leader_runtime {
+        let mut division_ids = BTreeSet::new();
         if *leader_runtime == 0
             || divisions.iter().any(|division| *division == 0 || !division_ids.insert(*division))
         {
-            return Err("A36 exact division catalog carries a null or duplicate identity".into());
+            return Err(
+                "A36 exact division catalog carries a null or duplicate identity for one leader"
+                    .into(),
+            );
         }
     }
     Ok(())
@@ -734,22 +834,57 @@ fn materialize_state(
         let state = controller.field_marshal_leaves.iter()
             .find(|row| row.definition_runtime == definition.definition_runtime)
             .ok_or_else(|| "A36 field-marshal definition lacks its exact state record".to_string())?;
-        let active = state.group_already_active;
-        let cooldown_remaining = if !active && state.cooldown_count != 0 {
+        // The refresh paints the aggregate row active either when the
+        // selected field-marshal scope is itself active (+0x64), or when all
+        // candidate subordinate leaders are active (+0x24 == +0x30, nonzero).
+        let all_candidates_active = state.candidate_leader_count != 0
+            && state.active_count == state.candidate_leader_count;
+        let active = state.group_already_active || all_candidates_active;
+        let cooldown_remaining = if !active
+            && state.available_count == 0
+            && state.cooldown_count != 0
+        {
             remaining_timer(state.minimum_cooldown_remaining_hours)?
         } else { crate::TimerValue::NotStarted };
         let duration_remaining = if active {
             if definition.duration_hours == -1 { crate::TimerValue::Indefinite }
-            else { remaining_timer(state.minimum_active_remaining_hours)? }
+            else if state.group_already_active {
+                let remaining = i64::from(definition.duration_hours)
+                    .checked_sub(i64::from(state.group_activation_elapsed_hours))
+                    .ok_or_else(|| "A36 aggregate duration remaining calculation overflowed".to_string())?;
+                remaining_timer(i32::try_from(remaining.max(0))
+                    .map_err(|_| "A36 aggregate duration remaining exceeds i32")?)?
+            } else {
+                remaining_timer(state.minimum_active_remaining_hours)?
+            }
         } else { crate::TimerValue::NotStarted };
-        let active_leaders = state.leaders.iter()
-            .filter(|leader| leader.state_code == 1)
-            .map(|leader| leader.leader_runtime)
-            .collect::<Vec<_>>();
+        let (activation_elapsed, active_leaders) = if state.group_already_active {
+            if controller.selected_leader_runtime == 0 {
+                return Err("A36 active field-marshal scope has no selected leader identity".into());
+            }
+            (
+                state.group_activation_elapsed_hours,
+                vec![controller.selected_leader_runtime],
+            )
+        } else if all_candidates_active {
+            let leaders = state.leaders.iter()
+                .filter(|leader| leader.state_code == 1)
+                .collect::<Vec<_>>();
+            let elapsed = leaders.iter()
+                .map(|leader| leader.activation_elapsed_hours)
+                .max()
+                .ok_or_else(|| "A36 active field-marshal row has no active leader elapsed leaf".to_string())?;
+            (
+                elapsed,
+                leaders.into_iter().map(|leader| leader.leader_runtime).collect(),
+            )
+        } else {
+            (state.group_activation_elapsed_hours, Vec::new())
+        };
         if active && active_leaders.is_empty() {
             return Err("A36 active field-marshal row has no active leader membership".into());
         }
-        Ok((active, state.group_activation_elapsed_hours, cooldown_remaining,
+        Ok((active, activation_elapsed, cooldown_remaining,
             duration_remaining, state.allocated_command_power_cost_fixed, active_leaders))
     } else {
         let state = controller.ordinary_leaves.iter()
@@ -798,7 +933,7 @@ pub fn install_a729_ability_transition_hook() -> Result<InstalledHookAddresses, 
         return Err("A36 prior hook rollback was incomplete; process restart required".into());
     }
     if INSTALLED.load(Ordering::Acquire) {
-        return Ok(installed_addresses(MODULE_BASE.load(Ordering::Acquire)));
+        return Err("A36 observer is already installed by another evidence owner".into());
     }
     let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
     if base == 0 {
@@ -825,19 +960,19 @@ pub fn install_a729_ability_transition_hook() -> Result<InstalledHookAddresses, 
     ] {
         verify_sentinel(label, address, sentinel)?;
     }
-    STATE.get_or_init(|| Mutex::new(ObserverState::default()));
+    {
+        let mut state = STATE
+            .get_or_init(|| Mutex::new(ObserverState::default()))
+            .lock()
+            .map_err(|_| "A36 observer state lock poisoned".to_string())?;
+        *state = ObserverState::default();
+    }
+    NEXT_SEQUENCE.store(1, Ordering::Release);
+    TRACE.with(|trace| *trace.borrow_mut() = None);
+    TOOLTIP_TRACE.with(|trace| *trace.borrow_mut() = None);
     MODULE_BASE.store(base, Ordering::Release);
-    let specs = [
-        (addresses.context_invalid_probe, hook_context_probe as *mut c_void, &ORIGINAL_CONTEXT_PROBE),
-        (addresses.active_cooldown_probe, hook_active_probe as *mut c_void, &ORIGINAL_ACTIVE_PROBE),
-        (addresses.availability_evaluator, hook_availability as *mut c_void, &ORIGINAL_AVAILABILITY),
-        (addresses.special_context_probe, hook_special_context as *mut c_void, &ORIGINAL_SPECIAL_CONTEXT),
-        (addresses.string_append, hook_string_append as *mut c_void, &ORIGINAL_STRING_APPEND),
-        (addresses.effective_command_power_cost, hook_effective_cost as *mut c_void, &ORIGINAL_EFFECTIVE_COST),
-        (addresses.icon_resolver, hook_icon_resolver as *mut c_void, &ORIGINAL_ICON_RESOLVER),
-        (addresses.tooltip_builder, hook_tooltip as *mut c_void, &ORIGINAL_TOOLTIP),
-        (addresses.refresh, hook_refresh as *mut c_void, &ORIGINAL_REFRESH),
-    ];
+    DRAINING.store(false, Ordering::Release);
+    let specs = hook_specs(addresses);
     let mut created = 0usize;
     for &(target, detour, original_slot) in &specs {
         match unsafe { MinHook::create_hook(target as *mut c_void, detour) } {
@@ -865,26 +1000,124 @@ pub fn install_a729_ability_transition_hook() -> Result<InstalledHookAddresses, 
     Ok(addresses)
 }
 
+type HookSpec = (usize, *mut c_void, &'static AtomicUsize);
+
+fn hook_specs(addresses: InstalledHookAddresses) -> [HookSpec; HOOK_COUNT] {
+    [
+        (addresses.context_invalid_probe, hook_context_probe as *mut c_void, &ORIGINAL_CONTEXT_PROBE),
+        (addresses.active_cooldown_probe, hook_active_probe as *mut c_void, &ORIGINAL_ACTIVE_PROBE),
+        (addresses.availability_evaluator, hook_availability as *mut c_void, &ORIGINAL_AVAILABILITY),
+        (addresses.special_context_probe, hook_special_context as *mut c_void, &ORIGINAL_SPECIAL_CONTEXT),
+        (addresses.string_append, hook_string_append as *mut c_void, &ORIGINAL_STRING_APPEND),
+        (addresses.effective_command_power_cost, hook_effective_cost as *mut c_void, &ORIGINAL_EFFECTIVE_COST),
+        (addresses.icon_resolver, hook_icon_resolver as *mut c_void, &ORIGINAL_ICON_RESOLVER),
+        (addresses.tooltip_builder, hook_tooltip as *mut c_void, &ORIGINAL_TOOLTIP),
+        (addresses.refresh, hook_refresh as *mut c_void, &ORIGINAL_REFRESH),
+    ]
+}
+
+/// Stops capture, disables every detour, waits for in-flight callbacks to
+/// leave the observer, and only then removes the trampolines. A failure leaves
+/// the lane draining and marks the process unusable for a second install; the
+/// owner must retain the DLL and require a process restart.
+pub fn uninstall_a729_ability_transition_hook() -> Result<(), String> {
+    let _install_guard = INSTALL_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "A36 hook install lock poisoned".to_string())?;
+    if INSTALL_BROKEN.load(Ordering::Acquire) {
+        return Err("A36 hook lifecycle is broken; process restart required".into());
+    }
+    if !INSTALLED.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let base = MODULE_BASE.load(Ordering::Acquire);
+    if base == 0 {
+        INSTALL_BROKEN.store(true, Ordering::Release);
+        DRAINING.store(true, Ordering::Release);
+        return Err("A36 installed hook has no module base; process restart required".into());
+    }
+    DRAINING.store(true, Ordering::Release);
+    let specs = hook_specs(installed_addresses(base));
+    let mut disable_failures = Vec::new();
+    for (target, _, _) in specs.iter().rev() {
+        if let Err(status) = unsafe { MinHook::disable_hook(*target as *mut c_void) } {
+            disable_failures.push(format!("0x{target:X}: {status}"));
+        }
+    }
+    if !disable_failures.is_empty() {
+        INSTALL_BROKEN.store(true, Ordering::Release);
+        return Err(format!(
+            "A36 hook disable was incomplete at {}; process restart required",
+            disable_failures.join(", ")
+        ));
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 {
+        if Instant::now() >= deadline {
+            INSTALL_BROKEN.store(true, Ordering::Release);
+            return Err(format!(
+                "A36 hook callbacks did not quiesce ({} active); process restart required",
+                ACTIVE_CALLBACKS.load(Ordering::Acquire)
+            ));
+        }
+        thread::yield_now();
+    }
+    let mut remove_failures = Vec::new();
+    for (target, _, original) in specs.iter().rev() {
+        match unsafe { MinHook::remove_hook(*target as *mut c_void) } {
+            Ok(()) => original.store(0, Ordering::Release),
+            Err(status) => remove_failures.push(format!("0x{target:X}: {status}")),
+        }
+    }
+    if !remove_failures.is_empty() {
+        INSTALL_BROKEN.store(true, Ordering::Release);
+        return Err(format!(
+            "A36 hook removal was incomplete at {}; process restart required",
+            remove_failures.join(", ")
+        ));
+    }
+    TRACE.with(|trace| *trace.borrow_mut() = None);
+    TOOLTIP_TRACE.with(|trace| *trace.borrow_mut() = None);
+    MODULE_BASE.store(0, Ordering::Release);
+    INSTALLED.store(false, Ordering::Release);
+    DRAINING.store(false, Ordering::Release);
+    Ok(())
+}
+
 fn rollback(
-    specs: &[(usize, *mut c_void, &AtomicUsize)],
+    specs: &[HookSpec],
     created: usize,
     enabled: usize,
 ) -> String {
+    DRAINING.store(true, Ordering::Release);
     let mut failures = Vec::new();
-    for (index, (target, _, original)) in specs.iter().take(created).enumerate().rev() {
-        if index < enabled {
-            if let Err(status) = unsafe { MinHook::disable_hook(*target as *mut c_void) } {
-                failures.push(format!("0x{target:X} disable: {status}"));
-                continue;
-            }
+    for (target, _, _) in specs.iter().take(enabled).rev() {
+        if let Err(status) = unsafe { MinHook::disable_hook(*target as *mut c_void) } {
+            failures.push(format!("0x{target:X} disable: {status}"));
         }
-        match unsafe { MinHook::remove_hook(*target as *mut c_void) } {
-            Ok(()) => original.store(0, Ordering::Release),
-            Err(status) => failures.push(format!("0x{target:X}: {status}")),
+    }
+    if failures.is_empty() {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        let remaining = ACTIVE_CALLBACKS.load(Ordering::Acquire);
+        if remaining != 0 {
+            failures.push(format!("{remaining} callback(s) did not quiesce"));
+        }
+    }
+    if failures.is_empty() {
+        for (target, _, original) in specs.iter().take(created).rev() {
+            match unsafe { MinHook::remove_hook(*target as *mut c_void) } {
+                Ok(()) => original.store(0, Ordering::Release),
+                Err(status) => failures.push(format!("0x{target:X}: {status}")),
+            }
         }
     }
     if failures.is_empty() {
         MODULE_BASE.store(0, Ordering::Release);
+        DRAINING.store(false, Ordering::Release);
         String::new()
     } else {
         INSTALL_BROKEN.store(true, Ordering::Release);
@@ -907,6 +1140,15 @@ fn installed_addresses(base: usize) -> InstalledHookAddresses {
 }
 
 unsafe extern "system" fn hook_refresh(controller: usize) {
+    let callback = CallbackGuard::enter();
+    if !callback.capture {
+        let original = ORIGINAL_REFRESH.load(Ordering::Acquire);
+        if original != 0 {
+            let original: RefreshFn = unsafe { mem::transmute(original) };
+            unsafe { original(controller) };
+        }
+        return;
+    }
     let nested = TRACE.with(|trace| {
         let mut trace = trace.borrow_mut();
         if let Some(open) = trace.as_mut() {
@@ -940,11 +1182,14 @@ unsafe extern "system" fn hook_refresh(controller: usize) {
 }
 
 unsafe extern "system" fn hook_context_probe(context: usize) -> u8 {
+    let callback = CallbackGuard::enter();
     let original: ContextProbeFn = unsafe {
         mem::transmute(ORIGINAL_CONTEXT_PROBE.load(Ordering::Acquire))
     };
     let result = unsafe { original(context) };
-    record_event(ProbeEvent::ContextInvalid { invalid: result != 0 });
+    if callback.capture {
+        record_event(ProbeEvent::ContextInvalid { invalid: result != 0 });
+    }
     result
 }
 
@@ -955,10 +1200,14 @@ unsafe extern "system" fn hook_active_probe(
     cooldown_out: *mut u8,
     elapsed_out: *mut i32,
 ) -> usize {
+    let callback = CallbackGuard::enter();
     let original: ActiveProbeFn = unsafe {
         mem::transmute(ORIGINAL_ACTIVE_PROBE.load(Ordering::Acquire))
     };
     let result = unsafe { original(runtime, definition, scope, cooldown_out, elapsed_out) };
+    if !callback.capture {
+        return result;
+    }
     let cooldown = read_local_u8(cooldown_out).is_some_and(|value| value != 0);
     let elapsed = read_local_i32(elapsed_out).unwrap_or(-1);
     record_event(ProbeEvent::ActiveCooldown {
@@ -977,36 +1226,43 @@ unsafe extern "system" fn hook_availability(
     scope: usize,
     resolved_text: usize,
 ) -> usize {
+    let callback = CallbackGuard::enter();
     let original: AvailabilityFn = unsafe {
         mem::transmute(ORIGINAL_AVAILABILITY.load(Ordering::Acquire))
     };
     let result = unsafe { original(runtime, definition, scope, resolved_text) };
-    record_event(ProbeEvent::Availability {
-        definition_runtime: definition,
-        scope_runtime: scope,
-        available: result as u8 != 0,
-    });
+    if callback.capture {
+        record_event(ProbeEvent::Availability {
+            definition_runtime: definition,
+            scope_runtime: scope,
+            available: result as u8 != 0,
+        });
+    }
     result
 }
 
 unsafe extern "system" fn hook_special_context(controller: usize) -> u8 {
+    let callback = CallbackGuard::enter();
     let original: SpecialContextFn = unsafe {
         mem::transmute(ORIGINAL_SPECIAL_CONTEXT.load(Ordering::Acquire))
     };
     let result = unsafe { original(controller) };
-    record_event(ProbeEvent::SpecialContext {
-        controller_runtime: controller,
-        allowed: result != 0,
-    });
+    if callback.capture {
+        record_event(ProbeEvent::SpecialContext {
+            controller_runtime: controller,
+            allowed: result != 0,
+        });
+    }
     result
 }
 
 unsafe extern "system" fn hook_icon_resolver(registry: usize, icon_string: usize) -> usize {
+    let callback = CallbackGuard::enter();
     let original: IconResolverFn = unsafe {
         mem::transmute(ORIGINAL_ICON_RESOLVER.load(Ordering::Acquire))
     };
     let result = unsafe { original(registry, icon_string) };
-    if immediate_game_return_rva() == Some(ICON_RESOLVER_RETURN_RVA) {
+    if callback.capture && immediate_game_return_rva() == Some(ICON_RESOLVER_RETURN_RVA) {
         let icon = read_engine_string(icon_string)
             .and_then(|bytes| String::from_utf8(bytes).ok())
             .unwrap_or_default();
@@ -1023,11 +1279,12 @@ unsafe extern "system" fn hook_effective_cost(
     cost_out: *mut i64,
     scope: usize,
 ) -> usize {
+    let callback = CallbackGuard::enter();
     let original: EffectiveCostFn = unsafe {
         mem::transmute(ORIGINAL_EFFECTIVE_COST.load(Ordering::Acquire))
     };
     let result = unsafe { original(definition, cost_out, scope) };
-    if immediate_game_return_rva() == Some(EFFECTIVE_COST_RETURN_RVA) {
+    if callback.capture && immediate_game_return_rva() == Some(EFFECTIVE_COST_RETURN_RVA) {
         let value = rpm(cost_out as usize, 8).and_then(|bytes| le_i64(&bytes, 0).ok());
         TOOLTIP_TRACE.with(|trace| {
             let mut trace = trace.borrow_mut();
@@ -1052,6 +1309,16 @@ unsafe extern "system" fn hook_tooltip(
     hovered_widget: usize,
     tooltip_output: usize,
 ) -> usize {
+    let callback = CallbackGuard::enter();
+    if !callback.capture {
+        let original = ORIGINAL_TOOLTIP.load(Ordering::Acquire);
+        return if original == 0 {
+            0
+        } else {
+            let original: TooltipFn = unsafe { mem::transmute(original) };
+            unsafe { original(callback_owner, hovered_widget, tooltip_output) }
+        };
+    }
     let identity = read_tooltip_identity(callback_owner, hovered_widget, tooltip_output).ok();
     let identity_present = identity.is_some();
     let nested = TOOLTIP_TRACE.with(|trace| {
@@ -1102,7 +1369,9 @@ unsafe extern "system" fn hook_string_append(
     source: usize,
     length: usize,
 ) -> usize {
-    let tooltip_open = TOOLTIP_TRACE.with(|trace| trace.borrow().is_some());
+    let callback = CallbackGuard::enter();
+    let tooltip_open =
+        callback.capture && TOOLTIP_TRACE.with(|trace| trace.borrow().is_some());
     if tooltip_open && immediate_game_return_rva() == Some(DISABLED_REASON_APPEND_RETURN_RVA) {
         TOOLTIP_TRACE.with(|trace| {
             let mut trace = trace.borrow_mut();
@@ -1110,14 +1379,19 @@ unsafe extern "system" fn hook_string_append(
                 return;
             };
             open.accumulator_callsite_seen = true;
-            if destination != open.identity.tooltip_output_runtime
-                || length == 0
-                || length > MAX_TEXT_BYTES
-            {
+            if destination != open.identity.tooltip_output_runtime || length > MAX_TEXT_BYTES {
                 open.duplicate_accumulator_append = true;
                 return;
             }
-            let Some(bytes) = rpm(source, length) else {
+            // The exact call is unconditional. A zero-length source is the
+            // engine's measured available result, and must be retained as an
+            // authenticated empty accumulator rather than rejected as a
+            // missing disabled-reason observation.
+            let bytes = if length == 0 {
+                Vec::new()
+            } else if let Some(bytes) = rpm(source, length) {
+                bytes
+            } else {
                 open.duplicate_accumulator_append = true;
                 return;
             };
@@ -1402,7 +1676,7 @@ fn build_observation(trace: OpenTrace) -> Result<ControllerObservation, String> 
             resolved_icon: icon.clone(),
         });
     }
-    let field_marshal_leaves = parse_field_marshal_states(&state_bytes)?;
+    let mut field_marshal_leaves = parse_field_marshal_states(&state_bytes)?;
     let state_definitions = field_marshal_leaves
         .iter()
         .map(|row| row.definition_runtime)
@@ -1411,6 +1685,7 @@ fn build_observation(trace: OpenTrace) -> Result<ControllerObservation, String> 
         if state_definitions != sources {
             return Err("field-marshal state records differ from source order".into());
         }
+        reconcile_field_marshal_active_probes(&mut field_marshal_leaves, &trace.events)?;
     } else if !state_definitions.is_empty() {
         return Err("ordinary refresh retained field-marshal state records".into());
     }
@@ -1454,6 +1729,68 @@ fn build_observation(trace: OpenTrace) -> Result<ControllerObservation, String> 
         measured_empty,
         probe_events: trace.events,
     })
+}
+
+fn reconcile_field_marshal_active_probes(
+    states: &mut [FieldMarshalAbilityLeaf],
+    events: &[ProbeEvent],
+) -> Result<(), String> {
+    let probes = events
+        .iter()
+        .filter_map(|event| match event {
+            ProbeEvent::ActiveCooldown {
+                definition_runtime,
+                active,
+                cooldown,
+                elapsed_since_activation_hours,
+                ..
+            } => Some((
+                *definition_runtime,
+                *active,
+                *cooldown,
+                *elapsed_since_activation_hours,
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut cursor = 0usize;
+    for state in states {
+        let (definition, group_active, _group_cooldown, group_elapsed) = *probes
+            .get(cursor)
+            .ok_or_else(|| "field-marshal state lacks its selected-scope active probe".to_string())?;
+        cursor += 1;
+        if definition != state.definition_runtime
+            || group_active != state.group_already_active
+            || (group_active && group_elapsed != state.group_activation_elapsed_hours)
+        {
+            return Err("field-marshal selected-scope probe disagrees with aggregate record".into());
+        }
+        if state.group_already_active {
+            if !state.leaders.is_empty() {
+                return Err("active field-marshal scope unexpectedly retained subordinate rows".into());
+            }
+            continue;
+        }
+        for leader in &mut state.leaders {
+            let (definition, active, cooldown, elapsed) = *probes
+                .get(cursor)
+                .ok_or_else(|| "field-marshal leader row lacks its ordered active probe".to_string())?;
+            cursor += 1;
+            let expected_active = leader.state_code == 1;
+            let expected_cooldown = leader.state_code == 2;
+            if definition != state.definition_runtime
+                || active != expected_active
+                || cooldown != expected_cooldown
+            {
+                return Err("field-marshal leader state disagrees with ordered active probe".into());
+            }
+            leader.activation_elapsed_hours = elapsed;
+        }
+    }
+    if cursor != probes.len() {
+        return Err("field-marshal refresh emitted extra active probes".into());
+    }
+    Ok(())
 }
 
 fn reconcile_ordinary(
@@ -1674,6 +2011,7 @@ fn valid_portable_token(value: &str) -> bool {
 
 fn parse_field_marshal_states(bytes: &[u8]) -> Result<Vec<FieldMarshalAbilityLeaf>, String> {
     let mut out = Vec::new();
+    let mut total_leader_count = 0usize;
     for record in bytes.chunks_exact(FM_STATE_STRIDE) {
         let definition = le_usize(record, 0)?;
         let leader_data = le_usize(record, 8)?;
@@ -1685,6 +2023,12 @@ fn parse_field_marshal_states(bytes: &[u8]) -> Result<Vec<FieldMarshalAbilityLea
             || (leader_count != 0 && leader_data == 0)
         {
             return Err("invalid field-marshal state identity/vector".into());
+        }
+        total_leader_count = total_leader_count
+            .checked_add(leader_count)
+            .ok_or_else(|| "field-marshal aggregate leader count overflowed".to_string())?;
+        if total_leader_count > MAX_TOTAL_FIELD_MARSHAL_LEADERS {
+            return Err("field-marshal aggregate leader count exceeds bound".into());
         }
         let leader_bytes = if leader_count == 0 {
             Vec::new()
@@ -1713,8 +2057,9 @@ fn parse_field_marshal_states(bytes: &[u8]) -> Result<Vec<FieldMarshalAbilityLea
                 leader_runtime,
                 state_code,
                 remaining_hours: le_i32(row, 0x0c)?,
+                activation_elapsed_hours: -1,
                 command_power_cost_fixed: le_i64(row, 0x10)?,
-                daily_command_power_cost_fixed: le_i64(row, 0x18)?,
+                activation_command_power_cost_fixed: le_i64(row, 0x18)?,
                 will_activate: *row.get(0x20).ok_or("field-marshal allocation leaf missing")? != 0,
             });
         }
@@ -1731,9 +2076,9 @@ fn parse_field_marshal_states(bytes: &[u8]) -> Result<Vec<FieldMarshalAbilityLea
             minimum_cooldown_remaining_hours: le_i32(record, 0x3c)?,
             group_activation_elapsed_hours: le_i32(record, 0x40)?,
             allocated_command_power_cost_fixed: le_i64(record, 0x48)?,
-            allocated_daily_command_power_cost_fixed: le_i64(record, 0x50)?,
-            allocated_effect_value_fixed: le_i64(record, 0x58)?,
-            affected_division_count: le_u32(record, 0x60)?,
+            allocated_activation_command_power_cost_fixed: le_i64(record, 0x50)?,
+            allocated_daily_command_power_cost_fixed: le_i64(record, 0x58)?,
+            allocated_affected_division_count: le_u32(record, 0x60)?,
             group_already_active: *record.get(0x64).ok_or("field-marshal group-active leaf missing")? != 0,
         });
     }
@@ -1745,10 +2090,118 @@ fn retain(observation: ControllerObservation) {
         return;
     };
     state.completed_refreshes = state.completed_refreshes.saturating_add(1);
+    let replace_last = state
+        .observations
+        .back()
+        .is_some_and(|prior| {
+            same_retention_state(prior, &observation)
+                && !state
+                    .disabled_reasons
+                    .iter()
+                    .any(|tooltip| tooltip.controller_sequence == prior.sequence)
+        });
+    if replace_last {
+        state.observations.pop_back();
+        state.observations.push_back(observation);
+        return;
+    }
     if state.observations.len() >= MAX_OBSERVATIONS {
-        state.observations.pop_front();
+        let removable = state.observations.iter().position(|candidate| {
+            !state
+                .disabled_reasons
+                .iter()
+                .any(|tooltip| tooltip.controller_sequence == candidate.sequence)
+        });
+        if let Some(index) = removable {
+            state.observations.remove(index);
+        } else {
+            state.rejected_refreshes = state.rejected_refreshes.saturating_add(1);
+            return;
+        }
     }
     state.observations.push_back(observation);
+}
+
+fn same_retention_state(
+    left: &ControllerObservation,
+    right: &ControllerObservation,
+) -> bool {
+    left.controller_runtime == right.controller_runtime
+        && left.context_mode == right.context_mode
+        && left.selected_root_runtime == right.selected_root_runtime
+        && left.selected_leader_runtime == right.selected_leader_runtime
+        && left.selected_army_runtime == right.selected_army_runtime
+        && left.selected_army_group_runtime == right.selected_army_group_runtime
+        && left.selected_other_runtime == right.selected_other_runtime
+        && left.field_marshal_aggregate == right.field_marshal_aggregate
+        && left.aggregate_leader_runtime == right.aggregate_leader_runtime
+        && left.source_definition_runtime == right.source_definition_runtime
+        && left.row_owner_runtime == right.row_owner_runtime
+        && left.measured_empty == right.measured_empty
+        && left
+            .ordinary_leaves
+            .iter()
+            .map(|row| {
+                (
+                    row.definition_runtime,
+                    row.scope_runtime,
+                    row.state,
+                    row.availability_evaluated,
+                    row.special_context_allowed,
+                )
+            })
+            .eq(right.ordinary_leaves.iter().map(|row| {
+                (
+                    row.definition_runtime,
+                    row.scope_runtime,
+                    row.state,
+                    row.availability_evaluated,
+                    row.special_context_allowed,
+                )
+            }))
+        && left
+            .field_marshal_leaves
+            .iter()
+            .map(field_marshal_retention_key)
+            .eq(right
+                .field_marshal_leaves
+                .iter()
+                .map(field_marshal_retention_key))
+}
+
+fn field_marshal_retention_key(
+    row: &FieldMarshalAbilityLeaf,
+) -> (
+    usize,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    bool,
+    Vec<(usize, u8, bool)>,
+) {
+    (
+        row.definition_runtime,
+        row.available_count,
+        row.active_count,
+        row.cooldown_count,
+        row.allocated_count,
+        row.candidate_leader_count,
+        row.definition_allowed_leader_count,
+        row.group_already_active,
+        row.leaders
+            .iter()
+            .map(|leader| {
+                (
+                    leader.leader_runtime,
+                    leader.state_code,
+                    leader.will_activate,
+                )
+            })
+            .collect(),
+    )
 }
 
 fn retain_disabled_reason(observation: DisabledReasonObservation) {
@@ -1757,7 +2210,12 @@ fn retain_disabled_reason(observation: DisabledReasonObservation) {
     };
     state.completed_tooltips = state.completed_tooltips.saturating_add(1);
     if state.disabled_reasons.len() >= MAX_TEXT_OBSERVATIONS {
-        state.disabled_reasons.pop_front();
+        // Never silently orphan an earlier controller/tooltip transaction.
+        // The fixture regrader rejects any nonzero rejection counter, so a
+        // saturated evidence buffer is explicit and cannot be promoted as a
+        // complete four-card capture.
+        state.rejected_tooltips = state.rejected_tooltips.saturating_add(1);
+        return;
     }
     state.disabled_reasons.push_back(observation);
 }
@@ -1964,6 +2422,130 @@ mod tests {
         };
         crate::production_carrier::validate_frame(&production)
             .expect("joined frame is admissible to the dormant ABA2 carrier");
+    }
+
+    #[test]
+    fn unconditional_empty_accumulator_materializes_available_row() {
+        let mut available = controller();
+        available.ordinary_leaves[0].state = OrdinaryAbilityState::Available;
+        available.ordinary_leaves[0].availability_evaluated = Some(true);
+        let mut tooltip = observation();
+        tooltip.final_tooltip = "Force Attack".into();
+        tooltip.disabled_reason.clear();
+        tooltip.accumulator_callsite_seen = true;
+
+        let source = JoinedExactA729AbilitySource::bind_from_exact_root_catalog(
+            900,
+            12,
+            &catalog(),
+            &available,
+            &[tooltip],
+        )
+        .expect("bind exact empty error accumulator");
+        assert!(source.frame.rows[0].available);
+        assert_eq!(source.frame.rows[0].disabled_reason, None);
+    }
+
+    #[test]
+    fn ordinary_accumulator_must_agree_with_evaluated_availability_state() {
+        let mut available = controller();
+        available.ordinary_leaves[0].state = OrdinaryAbilityState::Available;
+        available.ordinary_leaves[0].availability_evaluated = Some(true);
+        let mut tooltip = observation();
+        tooltip.disabled_reason = "Cannot activate".into();
+        assert!(JoinedExactA729AbilitySource::bind_from_exact_root_catalog(
+            900,
+            12,
+            &catalog(),
+            &available,
+            &[tooltip],
+        )
+        .is_err());
+
+        let mut unavailable = controller();
+        unavailable.ordinary_leaves[0].state = OrdinaryAbilityState::Unavailable;
+        unavailable.ordinary_leaves[0].availability_evaluated = Some(false);
+        let mut empty = observation();
+        empty.disabled_reason.clear();
+        assert!(JoinedExactA729AbilitySource::bind_from_exact_root_catalog(
+            900,
+            12,
+            &catalog(),
+            &unavailable,
+            &[empty],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn division_identity_uniqueness_is_per_leader_membership() {
+        let mut exact = catalog();
+        exact
+            .division_ids_by_leader_runtime
+            .insert(0x7ff6_2000_0200, vec![7, 8]);
+        validate_identity_catalog(&exact)
+            .expect("a descendant division may appear in field-marshal and leader memberships");
+
+        exact
+            .division_ids_by_leader_runtime
+            .insert(0x7ff6_2000_0200, vec![7, 7]);
+        assert!(validate_identity_catalog(&exact).is_err());
+    }
+
+    #[test]
+    fn retention_coalesces_timer_ticks_but_not_lifecycle_transitions() {
+        let before = controller();
+        let mut later_same_state = before.clone();
+        later_same_state.sequence += 1;
+        later_same_state.ordinary_leaves[0].activation_elapsed_hours = 12;
+        assert!(same_retention_state(&before, &later_same_state));
+
+        later_same_state.ordinary_leaves[0].state = OrdinaryAbilityState::Active;
+        assert!(!same_retention_state(&before, &later_same_state));
+    }
+
+    #[test]
+    fn field_marshal_all_candidates_active_uses_ordered_elapsed_and_minimum_remaining() {
+        let mut controller = controller();
+        controller.field_marshal_aggregate = true;
+        controller.ordinary_leaves.clear();
+        controller.field_marshal_leaves = vec![FieldMarshalAbilityLeaf {
+            definition_runtime: controller.definitions[0].definition_runtime,
+            leaders: vec![FieldMarshalLeaderLeaf {
+                leader_runtime: 0x7ff6_2000_0100,
+                state_code: 1,
+                remaining_hours: 158,
+                activation_elapsed_hours: 10,
+                command_power_cost_fixed: 125_000,
+                activation_command_power_cost_fixed: 125_000,
+                will_activate: false,
+            }],
+            available_count: 0,
+            active_count: 1,
+            cooldown_count: 0,
+            allocated_count: 0,
+            candidate_leader_count: 1,
+            definition_allowed_leader_count: 1,
+            minimum_active_remaining_hours: 158,
+            minimum_cooldown_remaining_hours: i32::MAX,
+            group_activation_elapsed_hours: 0,
+            allocated_command_power_cost_fixed: 0,
+            allocated_activation_command_power_cost_fixed: 0,
+            allocated_daily_command_power_cost_fixed: 0,
+            allocated_affected_division_count: 0,
+            group_already_active: false,
+        }];
+        let (active, elapsed, cooldown, duration, _, leaders) = materialize_state(
+            &controller,
+            &controller.definitions[0],
+            &observation(),
+        )
+        .expect("materialize exact all-leaders-active aggregate");
+        assert!(active);
+        assert_eq!(elapsed, 10);
+        assert_eq!(cooldown, crate::TimerValue::NotStarted);
+        assert_eq!(duration, crate::TimerValue::Hours(158));
+        assert_eq!(leaders, vec![0x7ff6_2000_0100]);
     }
 
     #[test]

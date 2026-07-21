@@ -218,6 +218,32 @@ fn duplicate_exact_variant_is_rejected() {
 }
 
 #[test]
+fn mechanically_narrow_product_contract_selects_only_its_exact_key() {
+    let admitted = key(1920, 1080, 1.0, "l_english", InputVariant::MouseKeyboard);
+    let contract = ExactKeyVariantContract::admit(admitted.clone()).unwrap();
+    assert_eq!(contract.select(&admitted), Ok(&admitted));
+
+    let mut unsupported = admitted;
+    unsupported.localisation_language = "l_french".into();
+    assert_eq!(
+        contract.select(&unsupported),
+        Err(VariantRejection::UnsupportedExactVariant(unsupported))
+    );
+    assert_eq!(
+        ExactKeyVariantContract::admit(key(
+            1920,
+            1080,
+            1.0,
+            "l_english",
+            InputVariant::Controller,
+        )),
+        Err(VariantRejection::UnsupportedInputVariant(
+            InputVariant::Controller
+        ))
+    );
+}
+
+#[test]
 fn display_mode_and_min_gui_are_exact_key_dimensions() {
     let admitted = key(1920, 1080, 1.0, "l_english", InputVariant::MouseKeyboard);
     let catalog = VariantCatalog::admit(vec![envelope(admitted.clone())]).unwrap();

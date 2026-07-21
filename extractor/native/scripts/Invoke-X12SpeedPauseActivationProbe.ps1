@@ -9,16 +9,21 @@ param(
     [int] $SampleMilliseconds = 250,
     [string[]] $EarlyLaunchArgument = @('--continuelastsave'),
     [string] $VisibleActionEvidence,
+    [switch] $ManualActions,
     [string] $Python = 'python'
 )
 
 $ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
 $expectedExeSha256 = '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad'
 
-foreach ($path in @($RecorderExe, $Hoi4Exe, $PdxUserDir, $CollectorDll)) {
-    if (-not (Test-Path -LiteralPath $path)) {
-        throw "Required path does not exist: $path"
+foreach ($path in @($RecorderExe, $Hoi4Exe, $CollectorDll)) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "Required file does not exist: $path"
     }
+}
+if (-not (Test-Path -LiteralPath $PdxUserDir -PathType Container)) {
+    throw "Required PDX user directory does not exist: $PdxUserDir"
 }
 if ($DurationSeconds -lt 60) {
     throw 'DurationSeconds must be at least 60.'
@@ -59,17 +64,60 @@ foreach ($value in $EarlyLaunchArgument) {
     $arguments += @('--early-launch-arg', $value)
 }
 
-Write-Host 'X12 probe instructions:'
-Write-Host '  1. Wait until the loaded game is responsive and at least one D57 hour can establish the baseline.'
-Write-Host '  2. Within one engine hour, make two distinct speed changes.'
-Write-Host '  3. In that same hour: pause, change speed while paused, then resume.'
-Write-Host '  4. Let the game advance to the next engine hour so the hook queue is drained into D57.'
-Write-Host 'The probe will remain non-production even if its machine gate passes.'
+$actionWorker = $null
+$actionReceipt = Join-Path $resolvedOut 'x12_authenticated_action_attempt.json'
+if ($ManualActions) {
+    Write-Host 'X12 manual fixture instructions:'
+    Write-Host '  1. Within one engine hour, pause the game.'
+    Write-Host '  2. While paused, make two distinct speed changes.'
+    Write-Host '  3. Resume and let the game advance to the next engine hour.'
+    Write-Host 'The exact in-process mutation history is evidence; operator intent is not.'
+} else {
+    $actionScript = Join-Path $PSScriptRoot 'Invoke-X12AuthenticatedActionSequence.ps1'
+    if (-not (Test-Path -LiteralPath $actionScript -PathType Leaf)) {
+        throw "X12 authenticated action driver is missing: $actionScript"
+    }
+    $existingExact = @(
+        Get-Process -Name the game -ErrorAction SilentlyContinue |
+            Where-Object {
+                try {
+                    [IO.Path]::GetFullPath($_.MainModule.FileName) -ieq
+                        [IO.Path]::GetFullPath($resolvedHoi4)
+                } catch {
+                    $false
+                }
+            }
+    )
+    if ($existingExact.Count -ne 0) {
+        throw 'Automated X12 early-launch requires no pre-existing exact-a729 the game process.'
+    }
+    $notBefore = [DateTime]::UtcNow.ToFileTimeUtc()
+    $actionStdout = Join-Path $resolvedOut 'x12_action_driver.stdout.log'
+    $actionStderr = Join-Path $resolvedOut 'x12_action_driver.stderr.log'
+    $quotedActionScript = '"' + $actionScript.Replace('"', '\"') + '"'
+    $quotedHoi4 = '"' + $resolvedHoi4.Replace('"', '\"') + '"'
+    $quotedReceipt = '"' + $actionReceipt.Replace('"', '\"') + '"'
+    $actionArguments = @(
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', $quotedActionScript,
+        '-Hoi4Exe', $quotedHoi4,
+        '-ReceiptPath', $quotedReceipt,
+        '-NotBeforeFileTimeUtc', $notBefore,
+        '-TimeoutSeconds', ([Math]::Min(3600, [Math]::Max(60, $DurationSeconds - 5)))
+    )
+    $actionWorker = Start-Process -FilePath 'powershell.exe' `
+        -ArgumentList $actionArguments `
+        -PassThru `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $actionStdout `
+        -RedirectStandardError $actionStderr
+}
 
 $prior = [System.Environment]::GetEnvironmentVariable(
     'BATTLE_PLAN_ENABLE_X12_SPEED_PAUSE_HOOK',
     [System.EnvironmentVariableTarget]::Process
 )
+$recorderFailure = $null
 try {
     # Early-launch creates the suspended game as a child, so this process-level
     # variable is inherited by hoi4.exe and remains visible inside the injected
@@ -83,12 +131,32 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "collector_record exited with code $LASTEXITCODE"
     }
+} catch {
+    $recorderFailure = $_
 } finally {
     [System.Environment]::SetEnvironmentVariable(
         'BATTLE_PLAN_ENABLE_X12_SPEED_PAUSE_HOOK',
         $prior,
         [System.EnvironmentVariableTarget]::Process
     )
+}
+if ($null -ne $recorderFailure) {
+    if ($null -ne $actionWorker -and -not $actionWorker.HasExited) {
+        Stop-Process -Id $actionWorker.Id -Force -ErrorAction SilentlyContinue
+    }
+    throw $recorderFailure
+}
+
+if ($null -ne $actionWorker) {
+    if (-not $actionWorker.WaitForExit(30000)) {
+        Stop-Process -Id $actionWorker.Id -Force -ErrorAction SilentlyContinue
+        throw 'X12 action driver did not finish after the recorder returned.'
+    }
+    if ($actionWorker.ExitCode -ne 0 -or
+        -not (Test-Path -LiteralPath $actionReceipt -PathType Leaf)) {
+        throw "X12 authenticated action driver failed; inspect $resolvedOut"
+    }
+    $VisibleActionEvidence = $actionReceipt
 }
 
 $verifier = Join-Path $PSScriptRoot 'verify_x12_speed_pause_activation.py'
@@ -115,4 +183,4 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "X12 machine candidate retained: $report"
-Write-Host 'Production activation remains disabled pending human semantic review of visible action evidence.'
+Write-Host 'The machine receipt is sufficient for X12 promotion; any action-attempt receipt is diagnostic only.'

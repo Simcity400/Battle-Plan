@@ -89,10 +89,10 @@ producer lands, the gate slots into the sequence named in the last column.
 
 | Gate | Missing producer / tool (why live play cannot close it today) | Source citation | Re-enters at |
 |---|---|---|---|
-| F6 rung 1 (synthetic-fault) | Injected-fault harness that provokes a real fault and records attempt-linked `synthetic_fault_proof` | `Invoke-AcceptanceLadder.ps1` `Get-RungBoundProducerOwed`; `MASTER_EXTRACTION_CONTRACT.md` F6 | Seq 1, launch 1.2 |
+| F6 rung 1 (synthetic-fault) | **SUPERSEDED 2026-07-20 — producer and independent proof regrade are wired.** The Safe launcher owns a fresh nonce-bound synthetic-fault mode and the ladder refuses an unbound or non-verifying proof. Only the owner-gated live launch remains. | `Invoke-AcceptanceLadder.ps1` `Get-RungBoundProducerOwed`; `MASTER_EXTRACTION_CONTRACT.md` F6 | Seq 1, launch 1.2 (live acceptance only) |
 | F6 rung 2 (paused-short-proof) | **SUPERSEDED 2026-07-20 — producer, fold, extractor, and independent prover are wired.** `Start-Hoi4ProductionCaptureSafe.ps1` launches the nonce-bound paused mode, extracts only index-authorized replay snapshots, and requires `verify_f6_pause_proof.py` to join a known D57 pause with a same-snapshot non-D57 `compact_status_failure`. The resolved attempt marker retains the hash-bound proof receipt. Only the live launch remains. | `Start-Hoi4ProductionCaptureSafe.ps1`; `extract_f6_replay_snapshots.py`; `verify_f6_pause_proof.py` | Seq 1, launch 1.3 (live acceptance only) |
-| F6 graded rungs 3–6 | Ladder↔`Start-Hoi4ProductionCaptureSafe.ps1` wiring with the evidence-pin set (Hoi4Pid, sealed D57 transcript sha/nonce/ledger/probe/static-disasm hashes, static bundle + mod/dlc/load-order + live-resolution report) | same; `Start-Hoi4ProductionCaptureSafe.ps1` param block | Seq 1 launches 1.4–1.6, Seq 2 |
-| F6 rung 5 constraint | **Affinity application is unwired**: `Get-CpuAffinityMask` computes mask 63 and is self-tested, but the mask is never applied to any live process (game or recorder) — the machinery is unreachable until a producer is wired | `Invoke-AcceptanceLadder.ps1:328-351,452-490` (self-test only) | Seq 1, launch 1.6 |
+| F6 graded rungs 3–6 | **SUPERSEDED 2026-07-20 — the evidence-pin set, Safe-launcher handoff, distinct-attempt checks, and in-process regrade are wired.** Rung 6 now forces a request of at least 21,600 seconds, requires both wall and monotonic elapsed telemetry to cover the complete window, and publishes a manifest/plan-bound soak receipt. Only the ordered live observations remain. | same; `Start-Hoi4ProductionCaptureSafe.ps1` param block | Seq 1 launches 1.4–1.6, Seq 2 (live acceptance only) |
+| F6 rung 5 constraint | **SUPERSEDED 2026-07-20 — live affinity application/readback/restore is wired.** The ladder applies the six-core mask to the pinned game process before capture, binds PID and creation FILETIME to the capture plan, and revalidates the retained proof. | `Invoke-AcceptanceLadder.ps1` `Set-ProcessAffinityFailClosed` / `Test-LadderAffinityProof` | Seq 1, launch 1.6 (live acceptance only) |
 | A1 hub motorization LEVEL (d62) | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** d62 schema v2 carries exact inner actor/level attribution; the narrower node-membership-only citation is stale | `RE_REMAINING.md` A1; `production_promotion/contract.json` A1 packet | future soak (live grading only) |
 | A2 focus-paused bit (d45) | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** exact `CNationalFocusProgress+0xB0` pause state is wired and verified; the fail-closed-badge citation is stale | `RE_REMAINING.md` A2; `production_promotion/contract.json` A2/A12 packet | future soak (live grading only) |
 | A12 decision targets/cooldowns (d45) | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** exact target union and both cooldown vectors are wired and verified; the excluded-slice citation is stale | `RE_REMAINING.md` A12; `production_promotion/contract.json` A2/A12 packet | future soak (live grading only) |
@@ -101,11 +101,11 @@ producer lands, the gate slots into the sequence named in the last column.
 | A14 construction repair (d48) | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** exact line `+0x78` repair counter, building `+0x48` partial health, reason enum 0..5, and typed location pass the joint matrix; the health-rows-only citation is stale | `RE_REMAINING.md` A14; `production_promotion/contract.json` A14 packet | future soak (live grading only) |
 | A22 air-loss 24-channel (d61) | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** schema v2 carries all 24 field/label/divisor mappings; the six-channel citation is stale | `RE_REMAINING.md` A22; `production_promotion/contract.json` A22 packet | future soak (live grading only) |
 | A15 MP chat/hotjoin/tag-switch (d57) | **SUPERSEDED 2026-07-19 — producer landed, promotion-ready:** the recorder fold now projects the four promoted A15 kinds (`Hotjoin`/`TagSwitch`/`Chat`/`SystemMessage`) under `_r2_session_multiplayer_metadata_live` (replay-boundary patch COMPLETED / PRODUCTION ADMITTED), and the `--expect-text` chat-oracle probe exists (`probe_870ebf_session_event_roots.py`, `PROBE_RUNSHEET.md`); the reject/ignore and "neither built" citations are stale. The live MP oracle run itself remains Seq 5's job | `RE_REMAINING.md` A15; `production_promotion/contract.json` A15 packet; `archive/PRODUCTION_REPLAY_HANDOFF_PATCH_PLAN.md` | Seq 5 (live grading only) |
-| CID1 all arms (L0, S1–S4, D1–D2, M1–M3) | (a) ~~identity probe~~ **DONE** — the owner-runnable read-only identity probe (`collect_campaign_identity_evidence.py` + `verify_campaign_identity_evidence.py`, seed@`+0x720`/id@`+0x728`, melt-pin equality) is merged; (b) STILL OWED: the collector **CID1 sequence-0/CFA1 producer barrier is unapplied** — the active path is Legacy, so no capture can emit the hash-bound first CID1 record the pair standard requires (this is the remaining blocker for S/D/M arms; L0 needs only the probe + the melt values). Note: applying the CID1 producer is an activation-gated collector change, deferred | `CAMPAIGN_IDENTITY_DESIGN.md` §Validation plan + Open items; `MASTER_EXTRACTION_CONTRACT.md` P3; probe at `extractor/native/scripts/*campaign_identity*` | Seq 1 (L0), 3 (S/D), 5 (M) |
+| CID1 all arms (L0, S1–S4, D1–D2, M1–M3) | **STATIC PRODUCT ROUTE DONE; LIVE EVIDENCE OWED.** The owner-runnable read-only identity probe is merged. The collector sequence-0/CFA1 barrier, CRP1/CRA1/new-CID1/second-CFA1 rollover, recorder durable logical-stream store, ordered package-set publication, and replay selection are composed. The four independent duplex/rollover activation latches remain false, so an owner-authorized evidence build/run is still required for S/D/M and rollover lifecycle receipts; L0 needs only the probe + melt values. | `CAMPAIGN_IDENTITY_DESIGN.md` §Validation plan; `CAMPAIGN_ROLLOVER_TRANSACTION_CORRECTIONS_20260720.md`; probe at `extractor/native/scripts/*campaign_identity*` | Seq 1 (L0), 3 (S/D), 5 (M) |
 | D57 criterion 4 (emission comparison) | A harness comparing the collector's **explicit opt-in** d57 emission against the raw words on the same transitions ("no coercion and no accepted out-of-range value") — no such comparison tool is named in-tree | `I1_D57_SPEED_EVIDENCE.md:322-334` (criterion 4) | Seq 1, launch 1.1 |
 | P4 stitching live driver | Production recorder has **no call site** for pre-fold segmentation / per-segment folds / durable append tickets / atomic stitched publication | `PRODUCT_SESSION_SEMANTICS.md` §4 | Seq 3 |
 | P1 packaging/graceful-quit | `collector_record --auto-attach` and the resident supervisor **exist** (see Seq 4); what is missing is the packaging/tray UI with graceful quit — the supervisor currently "runs until the process is terminated" (design §9, outside that lane) | `recorder_host/src/main.rs:832-922`; `AUTO_ATTACH_DESIGN.md` §9 | Seq 4 |
-| P2 duplex activation | `AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED = false` (explicit product kill switch; permit constructor fails) + no collector H4CT/CID1 client | `recorder_host/src/auto_attach/duplex_worker.rs:35-50`; `PRODUCT_SESSION_SEMANTICS.md` §5 | Seq 4 |
+| P2 duplex activation | Recorder and collector H4CT/CID1 clients are composed, but `AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED`, `DUPLEX_CONTROL_CLIENT_ENABLED`, and both rollover live-evidence latches remain false; permit construction/capability negotiation therefore fail closed | `recorder_host/src/auto_attach/duplex_worker.rs`; `collector/src/duplex_client.rs`; `PRODUCT_SESSION_SEMANTICS.md` §5 | Seq 4 |
 | Idle-cost measurement harness | A self-timing harness that runs each 30-minute no-game window and records snapshot count / CPU / wakeups / private bytes / WMI reconnects itself — so the owner starts it and walks away instead of hand-timing the windows (six of them: three per machine) | `AUTO_ATTACH_DESIGN.md` §10 Idle-cost gate (bounds defined; harness unnamed) | Seq 4, 5 |
 
 ---
@@ -115,7 +115,7 @@ producer lands, the gate slots into the sequence named in the last column.
 | # | Sequence | the game launches | Gates served (once owed producers land) | Machine | Est. owner time |
 |---|---|---|---|---|---|
 | 1 | Speed evidence + short-proof rungs | **6** (1.1 D57+L0; 1.2–1.6 rungs 1–5) | D57/A3 raw transcript + opt-in emission comparison; CID1 **L0**; F6 rungs 1–5; S9 static bundle (rides rung 3's capture) | Main PC | ~2–2.5 h attended (graded launches 1.4–1.6 each repeat the D57 transcript for their own PID) |
-| 2 | Six-hour soak + in-capture fixture harvest | **1** (+ post-run script, no launch) | F6 rung 6; combined speed-5 proof; FullGame size projection (separate script); **A16** (in-capture transition); passive A8, A9, A20 (+A5/A6/A7 opportunistic) | Main PC | ~30 min active (incl. this launch's D57 transcript) + ~6 h unattended |
+| 2 | Six-hour soak + in-capture fixture harvest | **1** (+ post-run script, no launch) | F6 rung 6; combined speed-5 proof; FullGame size projection (separate script); passive A8, A9, A20 (+A5/A6/A7 and optional A16 regression opportunistic) | Main PC | ~30 min active (incl. this launch's D57 transcript) + ~6 h unattended |
 | 3 | Campaign-identity save/reload/relaunch matrix | **2** (3.1 in-process arms; 3.2 relaunch arm) | CID1 **S1, S2, S4, D1, D2** (launch 3.1), **S3** (launch 3.2); P4 stitching seam evidence | Main PC | ~60 min attended |
 | 4 | Auto-attach live matrix + idle-cost | **~12 short launches** + **3 no-game idle windows** (30 min each) | **P1** §10 live-Windows matrix, main-PC arms (incl. non-default Steam drive, Known-Folder/OneDrive Documents, access-denied/different-session) + main-PC idle-cost (3 windows); **P2** duplex liveness (blocked on activation) | Main PC | ~2.5–3 h spread + 3×30 min unattended |
 | 5 | **BLOCKED on 2nd machine + 2nd player** | **15 launches across 2 machines** (MP 3: M1 host+client, M2 reuses that session, M3 one rehost launch; + the 12-launch weaker-PC matrix) + **3 no-game idle windows (weaker PC)** | **A15** (producer landed 2026-07-19 — see register; live oracle run here); CID1 **M1, M2, M3** (recorder on BOTH machines); auto-attach **complete weaker-PC matrix** (~12 launches — `AUTO_ATTACH_DESIGN.md` §10 requires the full matrix on both machines) + weaker-PC idle-cost (3 windows, no game running, **not** during MP) | Main + 2nd PC | ~half a day, two operators |
@@ -272,11 +272,11 @@ each capture's admission pins. Budget ~10–15 min per Safe-launcher rung.
 
 | Launch | Rung | Game state during capture | Rung-specific proof / notes |
 |---|---|---|---|
-| 1.2 | `synthetic-fault` | any | Manifest `synthetic_fault_proof.{fault_injected,fault_observed,per_domain_degrade_applied,framing_intact}` all boolean `true`. **OWED: injected-fault harness.** As a Safe-launcher rung, this launch still requires its own PID-bound sealed D57 transcript and current pins. |
+| 1.2 | `synthetic-fault` | any | The Safe launcher records a fresh non-production acceptance nonce and the independent `verify_f6_synthetic_fault_proof.py` regrade must prove injected, observed, per-domain degrade, intact framing, and exact plan/attempt binding. The remaining action is the live rung and retained receipt. |
 | 1.3 | `paused-short-proof` | **paused** | **First: this launch's own sealed D57 transcript.** The launcher generates a fresh nonce, records `acceptance_test_observation` as non-production, extracts index-authorized folded snapshots from the retained replay, and requires `verify_f6_pause_proof.py` to prove D57 `pause.state=known/is_paused=true` plus a same-snapshot non-D57 `compact_status_failure` joined to the manifest's SOURCE_UNAVAILABLE domains. The proof rejects a hand-authored manifest `pause_proof`. **Remaining action: run this live rung and retain the resolved attempt receipt.** |
-| 1.4 | `speed5-short-proof` | advancing, **speed 5** | **First: this launch's own sealed D57 transcript** (see note above). Validator `ok:true`; **frame criterion = `frame_time_us.max < 100000` µs** (see §Fixed facts); zero skipped + zero coalesced hours. S9 rides this capture: the Safe path resolves live mod/DLC/load order, rebuilds all seven artifacts, finalizes token inventory **`unknown=0`**, and the exact bundle must survive pre-injection AND pre-publication revalidation (`MASTER_EXTRACTION_CONTRACT.md` S9, S6). **OWED: ladder↔Safe-launcher pin wiring.** |
-| 1.5 | `five-minute-full-roster` | advancing, speed 5 | **First: this launch's own sealed D57 transcript.** Same validator gates over 5 min full roster. **OWED: same pin wiring.** |
-| 1.6 | `weak-pc-six-core` | advancing, speed 5 | **First: this launch's own sealed D57 transcript.** Same gates under a 6-core constraint — but **the constraint mechanism itself is OWED**: mask 63 is computed and self-tested only, never applied to any process (`Invoke-AcceptanceLadder.ps1:328-351,452-490`). Do not claim the tool constrains cores today; which process (game vs recorder) gets the mask is also undefined (OPEN QUESTION). |
+| 1.4 | `speed5-short-proof` | advancing, **speed 5** | **First: this launch's own sealed D57 transcript** (see note above). Validator `ok:true`; **frame criterion = `frame_time_us.max < 100000` µs** (see §Fixed facts); zero skipped + zero coalesced hours. S9 rides this capture: the Safe path resolves live mod/DLC/load order, rebuilds all seven artifacts, finalizes token inventory **`unknown=0`**, and the exact bundle must survive pre-injection AND pre-publication revalidation (`MASTER_EXTRACTION_CONTRACT.md` S9, S6). Ladder pins are forwarded structurally to the Safe launcher. |
+| 1.5 | `five-minute-full-roster` | advancing, speed 5 | **First: this launch's own sealed D57 transcript.** Same validator gates over 5 min full roster through the bound Safe-launcher path. |
+| 1.6 | `weak-pc-six-core` | advancing, speed 5 | **First: this launch's own sealed D57 transcript.** Same gates under a 6-core game-process constraint. Pins must state `AffinityTarget=game`; the ladder applies mask 63, verifies the applied mask, retains an affinity receipt, and restores the original mask in `finally`. Recorder targeting is rejected rather than guessed. |
 
 Every graded verdict comes from the in-process authoritative validator
 (`Get-ArtifactGateVerdict` → `Test-ProductionCaptureArtifacts`), schema
@@ -294,8 +294,8 @@ Every graded verdict comes from the in-process authoritative validator
 
 ## Sequence 2 — Six-hour soak + in-capture fixture harvest (main PC, 1 launch)
 
-**Serves:** F6 rung 6 · combined speed-5 proof · FullGame size projection · A16 (in-capture) ·
-passive A8/A9/A20 (+A5/A6/A7 opportunistic).
+**Serves:** F6 rung 6 · combined speed-5 proof · FullGame size projection ·
+passive A8/A9/A20 (+A5/A6/A7 and optional A16 regression opportunistic).
 **Est. owner time:** ~30 min active (including this launch's own D57 transcript), then ~6 h
 unattended.
 
@@ -322,15 +322,15 @@ produce **nothing gradable**; they re-enter a future soak after their readers la
    must equal this launch's PID — `Start-Hoi4ProductionCaptureSafe.ps1:141`; see the Sequence-1
    per-launch-transcript note): fresh nonce → `init` → speeds 1..5 → `pause-cycle` → `seal` →
    verify.
-3. Start the **six-hour-soak** rung (`FullGame` capture mode; the launcher carries
-   `-AcknowledgeLongRun`). **Wait until the tooling confirms it is recording** (the capture is the
-   thing that must witness the transitions — anything done before recording starts is lost;
-   `MASTER_EXTRACTION_CONTRACT.md` A16 requires comparing the relation value **before/after** the
-   change, so both sides must be inside the capture window).
-4. **A16 — subject autonomy change, inside the capture.** With recording confirmed and the game
-   advancing, perform a subject autonomy change at your leisure (push a puppet's autonomy level up
-   or down, or free a subject). No timing, no counting — one ordinary in-game action whenever
-   convenient; the hourly capture brackets it.
+3. Put the product-selected deployment-profile file in the rung pins as
+   `DeploymentProfilePath`, then start the **six-hour-soak** rung (`FullGame` capture mode). The ladder's actual Safe-launcher
+   route explicitly supplies at least `-DurationSeconds 21600` and `-MinGameHours 48`; values below
+   either minimum are rejected. **Wait until the tooling confirms it is recording** before relying
+   on the run for any optional in-capture observation.
+4. **Optional A16 regression only.** If extra empirical coverage is desired, change one subject's
+   autonomy after recording begins. This does not gate production. The post-run variance verifier
+   grades authenticated `subject_autonomy_current_rows` state/score observations; a change in the
+   legacy `CSubjectRelation+0x60` row alone is insufficient.
 5. Optional (A9 assist): order a fleet into a contested sea zone so a naval engagement begins and
    ends within the window (see OPEN QUESTION on naval-combat guarantee).
 6. Set **speed 5** and walk away for the full window. The 1944 war produces naval missions/combat
@@ -349,10 +349,10 @@ produce **nothing gradable**; they re-enter a future soak after their readers la
 
 | Gate | Acceptance criterion (citation) | PASS |
 |---|---|---|
-| **F6 rung 6** six-hour-soak | Ladder rung `six-hour-soak`; Production Gate | In-process validator `ok:true` (max frame < 100,000 µs; zero skipped + zero coalesced hours; hourly met), bound to this rung's run_dir; predecessors 1–5 re-verified. **OWED: pin wiring (register).** |
+| **F6 rung 6** six-hour-soak | Ladder rung `six-hour-soak`; Production Gate | In-process validator `ok:true` (max frame < 100,000 µs; zero skipped + zero coalesced hours; hourly met), bound to this rung's run_dir; predecessors 1–5 re-verified. `six_hour_soak_acceptance_receipt.json` must bind the selected deployment-profile leaf/hash and exact plan/manifest hashes, a >=21,600-second request, >=21,600,000,000 µs wall and monotonic observations, and positive retained resource/stream measurements. |
 | **Combined speed-5 proof** | `MASTER_EXTRACTION_CONTRACT.md` §Done means; Production Gate | Soak PASS completes the combined proof rungs 3–5 began. |
 | **FullGame size projection** | `MASTER_EXTRACTION_CONTRACT.md` F6 (final ladder item); `Get-FullGameSizeProjection.ps1` | The explicit script run above emits `full_game_size_projection.json` with a bounded projection. |
-| **A16** autonomy change (d53; also closes B9) | `MASTER_EXTRACTION_CONTRACT.md` A16 ("exercise a real autonomy change and compare the relation value before/after") | Paired before/after `CSubjectRelation+0x60` rows inside the capture differ across the transition. Whether a fold/validation gate *asserts* that inequality is **unverified** — see OPEN QUESTION on fixture variance assertion. |
+| **A16 optional regression** (d53) | `H_A16_LIVE_MATRIX_GATE_20260720.json`; `verify_acceptance_fixture_variance.py` schema v2 | Two consecutive clean complete AUST observations contain the same subject whose current state or signed score changes. The verifier independently requires exact u32/i64 widths, checked score/bounds ratio arithmetic, base keys, and distinct state identities; an unavailable observation breaks continuity. Legacy relation-only variance is rejected. This row is informational and does not gate promotion. |
 | **A8** naval missions (d56) | `MASTER_EXTRACTION_CONTRACT.md` A8 | Passive: fleets on mission populate d56 mission enum/home base/repair/retreat/route. |
 | **A9** naval combat lifecycle-end (d49–50) | `MASTER_EXTRACTION_CONTRACT.md` A9 | Requires a naval battle that **ends** in-window (see OPEN QUESTION). |
 | **A20** weather drift (d24) | `MASTER_EXTRACTION_CONTRACT.md` A20 | Passive: 6 h of advancing weather drifts region phenomenon flags. |
@@ -374,10 +374,10 @@ block on them.
 **Serves:** CID1 S1, S2, S4, D1, D2 (launch 3.1) · S3 (launch 3.2) · P4 stitching seam evidence.
 **Est. owner time:** ~60 minutes attended.
 
-**Every arm here is currently OWED-blocked twice over** (see register): no identity probe exists,
-and the collector's CID1 producer barrier is unapplied (active path = Legacy), so no capture can
-yet emit the identity-bearing stream the pair standard demands. The steps below are the acceptance
-plan for when both land.
+**Every arm here remains owner-run evidence** (see register). The identity probe and complete
+CID1/rollover product route are present, but the independent recorder, collector, and rollover
+promotion latches remain false. The steps below are the acceptance plan for an explicitly
+authorized evidence build; no normal product build may mint `Known` authority before it passes.
 
 ### What one arm actually requires (the pair standard — not just two pointer reads)
 
@@ -408,7 +408,7 @@ production-reader activation, not a build-profile fallback, and its manifests mi
 
 ### Launch 3.1 — in-process arms (S1, S2, S4, D1, D2)
 
-1. Launch HOI4. Start the launch's one **acceptance-only opt-in** CID1-emitting capture (OWED).
+1. Launch HOI4. Start the launch's one **acceptance-only opt-in** CID1-emitting evidence capture.
    Load the D04 save.
 2. **S1** — save, then reload that exact save (same process). Expected: pair/digest **equal**;
    lower/equal hour may only begin a new segment; no uncertain frame assigned to the old identity.
@@ -514,7 +514,7 @@ place this runbook still contains clock-bound operator work — flagged, not hid
 |---|---|---|
 | Live-Windows matrix (main-PC arms) | Every arm: zero missing candidate closures, zero duplicate attachments, zero shared DLL/control paths, zero discarded bytes; verified replay or explicit failed artifact per attempt; timestamps retained for observation/injection/heartbeat/first-baseline/terminal | Journal + artifacts satisfy all five invariants per arm |
 | Idle-cost | Bounds above | Counts within bound; CPU/memory deltas recorded (acceptance also needs the weaker-PC numbers — Sequence 5) |
-| P2 duplex liveness | `PRODUCT_SESSION_SEMANTICS.md` §5 | **Blocked**: activation constant false + no collector H4CT/CID1 client (register). Do not expect an owner pass. |
+| P2 duplex liveness | `PRODUCT_SESSION_SEMANTICS.md` §5 | **Blocked only on owner-authorized live evidence/promotion:** the paired client/server and CID1 lifecycle are composed, while all activation latches remain false. |
 
 ### Activation implications
 
@@ -629,7 +629,8 @@ speculatively):**
 - **F6** — after rungs 1–6 pass (Sequences 1–2) with their owed producers wired.
 - **S9** — Sequence 1, launch 1.4.
 - **A3, D10** — Sequence 1 (all four criteria).
-- **A16 (+B9), A8, A9, A20** — Sequence 2, for the fields an asserting gate actually graded.
+- **A8, A9, A20** — Sequence 2, for the fields an asserting gate actually graded. A16/B9 are
+  already production-closed; any Sequence-2 AUST observation is optional regression evidence.
 - **A1, A2, A12, A4, A21, A14, A22, A15** — *(updated 2026-07-19)* all eight register producers
   have landed promotion-ready (`RE_REMAINING.md`; `production_promotion/contract.json`; A15
   replay-boundary patch COMPLETED / PRODUCTION ADMITTED), so these now close in the soak/MP
@@ -654,20 +655,15 @@ captures for the offline oracle — kept on the radar, not scheduled here.
 1. **D04 save availability.** Docs cite the D04 1944.2.11.18 *melt* but no loadable `.hoi4` path.
    Does the owner have the save to load, or must a comparable late-war paused save be produced
    first? (CID1 L0's exact seed/UUID equality only holds against *that* save's melt values.)
-2. **weak-pc-six-core affinity target.** When the affinity application is wired (register), which
-   process gets mask 63 — hoi4.exe (changing game pacing) or the recorder? The ladder does not say.
-3. **Player input during a graded rung.** Sequence 2 performs the A16 action during the graded
-   soak. Docs are silent on whether player input during a graded rung can affect the
-   zero-skipped/coalesced-hours grade. Confirm it is permitted.
-4. **Naval-combat guarantee (A9/A8).** A9 needs a naval battle that *ends* in-window; a passive
+2. **Naval-combat guarantee (A9/A8).** A9 needs a naval battle that *ends* in-window; a passive
    soak may not produce one. Is steering a fleet into combat an acceptable owner step, or does A9
    need a dedicated scripted naval fixture save?
-5. **Emission-comparison harness shape (D57 criterion 4).** The dossier requires comparing the
+3. **Emission-comparison harness shape (D57 criterion 4).** The dossier requires comparing the
    opt-in emission with the raw words but names no tool; is this a new verifier mode over the
    opt-in capture's stream + the sealed transcript, or a live side-by-side probe?
-6. **Fixture variance assertion (unverified).** It has **not been verified** whether the existing
+4. **Fixture variance assertion (unverified).** It has **not been verified** whether the existing
    fold/validation gates *assert* the required variance for the Sequence-2 harvest fixtures
-   (A16 before/after inequality, A8 mission semantics, A9 lifecycle-end, A20 drift) over a soak
+   (A8 mission semantics, A9 lifecycle-end, A20 drift) over a soak
    stream, or merely record it. If no asserting consumer exists, capture alone would not close
    those gates (memory: signal-must-reach-consumer). This is a verification task against the
    fold/validation gates, not an established claim either way — resolve it before grading the

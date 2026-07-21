@@ -35,14 +35,21 @@ replace all pointers with stable definition ids, and commit only a complete
 single-country/single-hour epoch. Missing or unstable leaves reject the whole
 frame.
 
+Wave5 additionally proved the frame-order boundary: `0x14137A180` and
+`0x1413762F0` both call `0x14137A780` first and `0x14137A600` second. The
+observer now delays candidate materialization until the same-view detail return
+so its completion QPC includes exact display-percent and joint-detail leaves.
+See `A31_FRAME_ORDER_AND_FIXTURE_MATRIX_20260720.md`.
+
 No production source was activated in this pass. The fresh discovery export is
 job `20260720T011842Z-wave3-h-a31-live-focus-vector-owner-prod-5e55b0d8`,
 manifest SHA-256
 `bd47df5b3578db6164f643c376fc70339f38b7339044e468c3d56c0fe3b82b69`.
-It proves the route. The consolidated exact20 authority is now complete as job
-`20260720T020812Z-w3-a31-focus-owner-93fbbf62` on `shard-17`, with 10/10 exact
-requested roots and manifest SHA-256
-`303351ed65468aa7655b904998819c96ca1c325f906b5a3bf32c4f18decc7969`.
+It proves the route. The current consolidated exact20 authority is job
+`20260720T104531Z-w5-a31-consolidated-owner-frame-order-pr-79b1ba63` on
+`shard-03`, with 13/13 exact requested roots and manifest SHA-256
+`b319dd1b721ed6a13e47088b7def034111f9882631080bffbf049fbb79265a2f`.
+It supersedes the ten-root Wave3 receipt in the portable NFP1 header.
 This closes the static receipt only. Source activation remains false until an
 authenticated complete pointer-free fixture proves the observer output;
 central validation remains required after that activation change.

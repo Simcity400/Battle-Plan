@@ -23,10 +23,10 @@ pub const EARLY_DIAGNOSTIC_LIVENESS_SCHEMA: &str = "extractor.early-render-diagn
 pub const EARLY_DIAGNOSTIC_STAGE_MASK_FULL: u64 = 0x3ff;
 pub const EARLY_DIAGNOSTIC_STAGE_MASK_COM: u64 = 0x01;
 pub const G2_CAPTURE_INTENT_SCHEMA: &str = "hoi4-g2-recorder-capture-intent-v1";
-pub const G2_ENGINE_WITNESS_SCHEMA: &str = "hoi4-g2-engine-pixel-witness-v1";
+pub const G2_ENGINE_WITNESS_SCHEMA: &str = "hoi4-g2-engine-pixel-witness-v2";
 pub const G2_ENGINE_BMP_FILE: &str = "g2_engine_map_boundary.bmp";
 pub const G2_ENGINE_WITNESS_FILE: &str = "g2_engine_pixel_witness.json";
-const G2_ENGINE_STATUS: &str = "AUTHENTICATED_PRE_FIRST_UI_DRAW_MAP_READBACK";
+const G2_ENGINE_STATUS: &str = "AUTHENTICATED_POST_PROCESS_END_MAP_READBACK";
 const G2_RENDER_BOUNDARY: &str = "post_authenticated_map_bgra8_no_selected_present_writers";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,14 +158,16 @@ impl G2CaptureIntent {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct G2UiBoundaryWitness {
-    active_backbuffer_resource: String,
-    pixel_shader_pointer: String,
-    vertex_shader_pointer: String,
-    both_shaders_from_current_swapchain_creation_cache: bool,
-    first_ui_draw_call: String,
-    first_ui_draw_count: u32,
-    first_ui_draw_executed: bool,
+struct G2PostProcessBoundaryWitness {
+    producer_rva: u32,
+    immediate_context_pointer: String,
+    registered_backbuffer_view_pointer: String,
+    registered_backbuffer_resource_pointer: String,
+    registration_sequence: u64,
+    recreate_generation: u64,
+    exact_swapchain_backbuffer_registration: bool,
+    post_process_original_returned: bool,
+    readback_inserted_before_post_process_hook_return: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -196,8 +198,7 @@ struct G2EngineWitness {
     engine_bgra_sha256: String,
     pixel_byte_len: usize,
     capture_context_sha256: String,
-    ui_boundary_authentication: G2UiBoundaryWitness,
-    unreceipted_pixel_writers: u32,
+    post_process_boundary_authentication: G2PostProcessBoundaryWitness,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -216,7 +217,7 @@ fn valid_g2_pointer(value: &str) -> bool {
         return false;
     };
     !digits.is_empty()
-        && digits != "0"
+        && digits.bytes().any(|byte| byte != b'0')
         && digits
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte))
@@ -312,23 +313,21 @@ pub fn validate_g2_capture_artifacts(
         || witness.source_sample_count != 1
         || witness.engine_bmp_file != G2_ENGINE_BMP_FILE
         || witness.capture_context_sha256 != intent.capture_context_sha256
-        || witness.unreceipted_pixel_writers != 0
     {
         return Err("G2 witness differs from recorder-owned launch/capture authority".into());
     }
-    let boundary = &witness.ui_boundary_authentication;
-    if !boundary.both_shaders_from_current_swapchain_creation_cache
-        || boundary.first_ui_draw_executed
-        || boundary.first_ui_draw_count == 0
-        || !matches!(
-            boundary.first_ui_draw_call.as_str(),
-            "Draw" | "DrawIndexed" | "DrawInstanced" | "DrawIndexedInstanced"
-        )
-        || !valid_g2_pointer(&boundary.active_backbuffer_resource)
-        || !valid_g2_pointer(&boundary.pixel_shader_pointer)
-        || !valid_g2_pointer(&boundary.vertex_shader_pointer)
+    let boundary = &witness.post_process_boundary_authentication;
+    if boundary.producer_rva != production_render_submit_live_lane::POST_PROCESS_RENDER_ROOT_RVA
+        || !valid_g2_pointer(&boundary.immediate_context_pointer)
+        || !valid_g2_pointer(&boundary.registered_backbuffer_view_pointer)
+        || !valid_g2_pointer(&boundary.registered_backbuffer_resource_pointer)
+        || boundary.registration_sequence == 0
+        || boundary.recreate_generation == 0
+        || !boundary.exact_swapchain_backbuffer_registration
+        || !boundary.post_process_original_returned
+        || !boundary.readback_inserted_before_post_process_hook_return
     {
-        return Err("G2 witness has invalid pre-first-UI boundary authentication".into());
+        return Err("G2 witness has invalid exact post-process boundary authentication".into());
     }
     if bmp.len() < 54
         || &bmp[..2] != b"BM"
@@ -419,30 +418,9 @@ pub fn seal_g2_capture_artifacts(
 }
 
 pub fn staged_hook_count_for_group_mask(mask: u64) -> Result<u32, String> {
-    if mask == 0
-        || mask & !EARLY_DIAGNOSTIC_STAGE_MASK_FULL != 0
-        || mask & EARLY_DIAGNOSTIC_STAGE_MASK_COM == 0
-    {
-        return Err(
-            "diagnostic staged-hook mask must be within 0x01..=0x3ff and include COM (0x01)".into(),
-        );
-    }
-    let groups = [
-        (0x01, 23u32),
-        (0x02, 2),
-        (0x04, 3),
-        (0x08, 8),
-        (0x10, 8),
-        (0x20, 7),
-        (0x40, 2),
-        (0x80, 3),
-        (0x100, 7),
-        (0x200, 3),
-    ];
-    Ok(groups
-        .into_iter()
-        .filter_map(|(bit, count)| (mask & bit != 0).then_some(count))
-        .sum())
+    compact_contract::early_render_control::staged_hook_count_for_group_mask(mask).ok_or_else(
+        || "diagnostic staged-hook mask must be within 0x01..=0x3ff and include COM (0x01)".into(),
+    )
 }
 
 fn valid_windows_environment_key(key: &str) -> bool {
@@ -3596,6 +3574,13 @@ mod tests {
     }
 
     #[test]
+    fn g2_pointer_rejects_zero_with_leading_zeroes() {
+        assert!(!valid_g2_pointer("0x0"));
+        assert!(!valid_g2_pointer("0x00"));
+        assert!(valid_g2_pointer("0x000A"));
+    }
+
+    #[test]
     fn recorder_g2_artifact_admission_recomputes_authority_and_bmp_bytes() {
         let root = temp_root("g2_artifacts");
         let output = root.join("g2_engine");
@@ -3690,16 +3675,17 @@ mod tests {
             "engine_bgra_sha256": hash(&pixels),
             "pixel_byte_len": pixels.len(),
             "capture_context_sha256": intent.capture_context_sha256,
-            "ui_boundary_authentication": {
-                "active_backbuffer_resource": "0x1000",
-                "pixel_shader_pointer": "0x2000",
-                "vertex_shader_pointer": "0x3000",
-                "both_shaders_from_current_swapchain_creation_cache": true,
-                "first_ui_draw_call": "DrawIndexed",
-                "first_ui_draw_count": 3,
-                "first_ui_draw_executed": false
-            },
-            "unreceipted_pixel_writers": 0
+            "post_process_boundary_authentication": {
+                "producer_rva": production_render_submit_live_lane::POST_PROCESS_RENDER_ROOT_RVA,
+                "immediate_context_pointer": "0x1000",
+                "registered_backbuffer_view_pointer": "0x2000",
+                "registered_backbuffer_resource_pointer": "0x3000",
+                "registration_sequence": 4,
+                "recreate_generation": 1,
+                "exact_swapchain_backbuffer_registration": true,
+                "post_process_original_returned": true,
+                "readback_inserted_before_post_process_hook_return": true
+            }
         });
         fs::write(
             output.join(G2_ENGINE_WITNESS_FILE),

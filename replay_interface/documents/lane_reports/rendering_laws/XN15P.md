@@ -27,7 +27,7 @@ The verifier passes **50/50** checks with nine record types, eleven production g
 
 Metadata stores u64/i64 values as decimal text and floats as raw IEEE-754 bit strings, avoiding JSON/JavaScript precision loss and decimal float roundtrips. Large exact payloads are content-addressed blobs with raw-byte size and SHA-256 checks. Only identity or deterministic lossless zstd storage is admitted.
 
-Particle record and transform blobs are size-checked against the live count and strides. Skinning palettes are exactly 3,200 bytes. Tiled lights retain raw grid constants, the full 16,384-byte index payload and full 2,048-byte data payload plus semantic slot joins. Weather retains the fixed-point region value, signed absolute game-hour expiry, nullable code-zero token, all ordered position resolutions, primary/fading identities and ordered effect identities without class fallback.
+Particle record and transform blobs are size-checked against the live count and strides. Skinning palettes are exactly 3,200 bytes. Tiled lights retain raw grid constants, the full 16,384-byte index payload and full 2,048-byte data payload plus semantic slot joins. Weather retains the fixed-point region value, signed absolute game-hour expiry, nullable code-zero token, all ordered position resolutions, primary/fading identities and ordered effect identities with the exact big-nonempty-otherwise-small selected-vector branch and no further class substitution.
 
 Semantic events remain in strict `sequence_u64` order. Render submits preserve submit/pass/draw/packet order. Stable ids are never process pointers or capture-local RenderDoc ResourceIds. A chunk is admitted only after its blobs and canonical metadata are complete and hashed; a partial tail is rejected.
 
@@ -37,7 +37,7 @@ Cold seek loads the nearest valid checkpoint and replays forward. It must equal 
 
 The extractor emits records and blobs only after observed engine operations succeed. The container performs lossless serialization, content hashing, indexing, atomic chunk commit and checkpoint publication. Replay ingest verifies build/catalog/schema identities and complete sequence ranges before reconstructing state. The renderer consumes captured packet, palette and tiled-light bytes without particle simulation, light-animation evaluation, weather reroll or visual substitution.
 
-Promotion requires roundtrip, corruption, lifecycle/order, effective-VFS resolution, cold-seek, packet-size/hash, per-pass palette, complete tiled-light, code-zero weather, no-fallback and measured-storage tests. Retention may terminate an exact recording session but may not silently thin render submits inside one.
+Promotion requires roundtrip, corruption, lifecycle/order, effective-VFS resolution, cold-seek, packet-size/hash, per-pass palette, complete tiled-light, code-zero weather, exact selected-vector/empty-vector and measured-storage tests. Retention may terminate an exact recording session but may not silently thin render submits inside one.
 
 ## Provenance disposition
 

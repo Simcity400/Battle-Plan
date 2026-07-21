@@ -1,17 +1,19 @@
 # XUI15 — country resource-trade state
 
-Status: **PROVEN / END-TO-END PRODUCTION INTEGRATED**
+Status: **PROVEN / SEMANTIC PRODUCTION ROUTE ACTIVE / PIXEL ACTIVATION GATED**
 
 This packet is `XUI15`, not canonical archive-mount packet `UI15`. The Wave 4 producer integration updates the extractor carrier/fold and this program-status row without changing canonical archive-mount packet `UI15`.
 
 ## Promotion result
 
-The replay owns a typed country trade screen over `replay_core::TradeView` and the shipped `countrytradeview.gui`. It admits and renders exact measured state without simulating trade, substituting equipment-market contracts, sorting controller rows, or converting absent data to zero.
+The replay owns a typed country trade screen over `replay_core::TradeView` and the shipped `countrytradeview.gui`. The replay app now consumes that typed presentation on every selected-POV refresh. The authored canvas remains product-gated until the recording authenticates that the country-trade window was open and identifies its semantic GUI root; no always-on or inferred panel is painted.
 
 Implemented replay behavior:
 
 - complete resource pools require all seven positions in exact order: oil, aluminium, rubber, tungsten, steel, chromium, coal;
 - resource and deal arrays require contiguous zero-based `visible_order`; a wrong order rejects the whole section;
+- resource rows require the exact a729 integer display semantics, including oil current/maximum and non-oil balance/need/type agreement;
+- deal IDs are unique and positive in replay, packed identity is checked in the fold, and each world deal must have exactly one agreeing importer/exporter half;
 - controller values remain independent: balance, produced, imported, exported, special-project use, production-line use, ordinary need, and oil current/maximum need;
 - classic deals preserve ID, partner, direction, resource, requested and delivered amounts, available export, civilian-factory cost, per-resource factory cost, convoy counts, route kind and efficiency;
 - complete-only replay totals cover imported, exported, requested, delivered, civilian factories, assigned convoys and required convoys;
@@ -20,14 +22,21 @@ Implemented replay behavior:
 - domain-absent, domain-unavailable, country-absent, incomplete witness, missing row, arithmetic overflow and missing producer leaves have distinct fail-closed outcomes;
 - `resources_info_entry` and `country_trade_entry` are instantiated from the shipped GUI, populated in recorded order and rendered through the production compositor;
 - missing resource/deal sections render explicit unavailable messages rather than empty tables.
+- every X15 trailer is current-hour full replacement; a missing family clears instead of projecting an older trade screen.
 
 ## Producer boundary
 
 The current carrier supplies structurally complete six-pool `MTRF v2`, controller rows through `MTRR`, factory headers through `MTRH`, and classic deals through `MTRD v2`. Classic resource deals remain distinct from D43 equipment-market purchase contracts.
 
-`MTRD v2` now carries the exact route `+0xE8` no-influence byte and route `+0xE9` no-resources byte in the former per-row reserved word. The collector admits only raw byte values zero or one, reciprocal halves must agree, the fold emits measured booleans, and the existing typed replay/UI path consumes them. `MTRD v1` remains accepted for old recordings but projects neither field, so absence cannot silently become false.
+`MTRD v2` now carries the exact route `+0xE8` no-influence byte and route `+0xE9` no-resources byte in the former per-row reserved word. The collector admits only raw byte values zero or one, reciprocal halves must agree, the fold emits measured booleans, and the existing typed replay/UI path consumes them. `MTRD v1` remains accepted for old recordings but projects neither field, so absence cannot silently become false. Because the schema version belongs to the single world trailer, replay and the portable schema now reject any complete snapshot that mixes v1 and v2 rows across otherwise valid reciprocal deals.
 
-## Mechanical verification
+## Wave 5 hardening
+
+Fresh exact-a729 Ghidra job `20260720T140456Z-wave5-x15-d43-classic-resource-trade-rea-fccf30e0` exported 18 relevant functions on `shard-10` under manifest SHA-256 `562b1f247c21d25099501d7cea93023d0c38cf5e6f2028a4b622f4abbd0ac077`. Every fresh function artifact hash matched the frozen X15 authority, so the binary laws did not drift.
+
+The remaining production audit fixed torn six-pool reads, stale current-hour trailer retention, descriptor alias/order acceptance, packed deal-identity acceptance, fail-open replay row/value/reciprocal validation, and the dormant selected-POV semantic consumer. The final adversarial pass also preserved explicit `complete=false` as a measured witness while withholding dependent values, poisoned all derived pool values when pool validation fails, enforced signed-32-bit factory header values in both replay implementations, and made the MTRD v1/v2 selection world-atomic. `XUI15` is no longer classified as producer-authority blocked; only authenticated window activation/root binding blocks its pixel canvas.
+
+## Historical mechanical verification
 
 The Wave 4 MTRD v2 change adds static carrier, compatibility, reciprocal-parity, fold, and projection tests. Root-owned centralized validation is required before the hashes and historical pass counts below are re-frozen; this agent did not run Cargo, tests, verifiers, compilers, or formatters.
 
@@ -44,7 +53,7 @@ Two consecutive complete passes succeeded:
 
 Cleanup removed only the two XUI15 Cargo targets and replay Python bytecode caches. Exact reclaimed logical bytes: `6,854,565,535`. All four paths were verified absent afterward. Source, proof PNGs, manifests, Ghidra exports, RenderDoc captures and shared evidence were preserved.
 
-## Frozen hashes
+## Historical frozen hashes
 
 - `game_ui/src/trade_state.rs`: `1c53fc58bfa89fefbc716dbe11072ac52cbda28afaa04414b189812f64f33be6`
 - `game_ui/tests/xui15_trade_state.rs`: `f835f4226c08cc449af1fe92654de9ece85a1fb630e5e7ac4df8c501fd208cbf`
@@ -61,7 +70,7 @@ Cleanup removed only the two XUI15 Cargo targets and replay Python bytecode cach
 
 Authority: `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 
-No repeat Ghidra operation was necessary; replay consumed the frozen X15 evidence. The full provenance ledger remains in `extractor/documents/dossiers/X15_RESOURCE_TRADE_INPUTS.json`.
+A fresh 18-function re-audit matched the frozen artifacts byte-for-byte at the decompile-artifact hash level. The full provenance ledger and fresh job receipt remain in `extractor/documents/dossiers/X15_RESOURCE_TRADE_INPUTS.json`.
 
 | Function | Job ID | Artifact path | Manifest hash |
 |---|---|---|---|
@@ -70,4 +79,4 @@ No repeat Ghidra operation was necessary; replay consumed the frozen X15 evidenc
 | `0x141CA5C60` | `20260717T102907Z-x15-classic-route-and-header-value-produ-c7885736` | `evidence/func_141ca5c60.decompile.c` | `f255d6515f654915c315680215049580f1cecc9d40b1e621114c8a69e5bf72bb` |
 | `0x1415ED1C0` | `20260717T102907Z-x15-classic-route-and-header-value-produ-c7885736` | `evidence/func_1415ed1c0.decompile.c` | `f255d6515f654915c315680215049580f1cecc9d40b1e621114c8a69e5bf72bb` |
 
-No adversarial review or capture request was created.
+No human-input request is required for the semantic carrier or replay route. Pixel promotion still requires a future authenticated trade-window activation and semantic-root carrier; it is an evidence/capture task, not permission to infer activation.

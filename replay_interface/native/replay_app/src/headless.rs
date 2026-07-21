@@ -31,6 +31,64 @@ const DUMP_HEIGHT: u32 = 512;
 /// same record so a pixel hash can never be promoted from a different ordered
 /// D3D execution.  This receipt is an observation, not engine parity authority.
 #[derive(Debug, Serialize)]
+struct ProductionG2CaptureBinding {
+    selected_game_id: String,
+    selected_index_path: String,
+    selected_index_sha256: String,
+    schema: &'static str,
+    witness_path: String,
+    witness_sha256: String,
+    witness_bytes: u64,
+    bmp_path: String,
+    bmp_sha256: String,
+    bmp_bytes: u64,
+    capture_content_manifest_digest_sha256: String,
+    replay_content_manifest_digest_sha256: String,
+}
+
+impl From<&replay_core::PackagedG2EngineCapture> for ProductionG2CaptureBinding {
+    fn from(capture: &replay_core::PackagedG2EngineCapture) -> Self {
+        Self {
+            selected_game_id: capture.selected_game_id.clone(),
+            selected_index_path: capture.selected_index_path.clone(),
+            selected_index_sha256: capture.selected_index_sha256.clone(),
+            schema: "hoi4-g2-packaged-engine-capture-v1",
+            witness_path: capture.witness_path.clone(),
+            witness_sha256: capture.witness_sha256.clone(),
+            witness_bytes: capture.witness_bytes,
+            bmp_path: capture.bmp_path.clone(),
+            bmp_sha256: capture.bmp_sha256.clone(),
+            bmp_bytes: capture.bmp_bytes,
+            capture_content_manifest_digest_sha256: capture
+                .capture_content_manifest_digest_sha256
+                .clone(),
+            replay_content_manifest_digest_sha256: capture
+                .replay_content_manifest_digest_sha256
+                .clone(),
+        }
+    }
+}
+
+/// Typed companion consumption bound to the same headless pixel-gate receipt
+/// as the authenticated selected-Present operation frontier. These values do
+/// not authorize extra drawing: the UI pass remains the sole pixel owner.
+#[derive(Debug, Serialize)]
+struct ProductionSelectedPresentCompanionReceipt {
+    decision_panel_item_count: Option<usize>,
+    power_balance_item_count: Option<usize>,
+    intelligence_panel_count: Option<usize>,
+    intelligence_unavailable_reason: Option<String>,
+    agency_upgrade_count: Option<usize>,
+    cipher_target_count: Option<usize>,
+    trade_license_count: Option<usize>,
+    occupation_state_count: Option<usize>,
+    occupation_unavailable_reason: Option<String>,
+    battleplan_order_count: Option<usize>,
+    battleplan_selected_order_present: Option<bool>,
+    remaining: crate::ui_runtime::SelectedPresentTypedConsumption,
+}
+
+#[derive(Debug, Serialize)]
 struct ProductionPixelGateReceipt {
     schema: &'static str,
     render_boundary: &'static str,
@@ -53,11 +111,18 @@ struct ProductionPixelGateReceipt {
     map_operations: usize,
     selected_present_operations: usize,
     selected_present_m02_draws: usize,
+    /// The G2 parity route suppresses selected-Present writers and therefore
+    /// omits this key, preserving the exact v4 G2 receipt schema. Ordinary
+    /// selected-Present dumps carry it as an additive typed-consumption
+    /// extension of the same product observation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected_present_typed_companions: Option<ProductionSelectedPresentCompanionReceipt>,
     map_presented: bool,
     selected_present_executed: bool,
     receipt_sha256: Option<String>,
     bgra_sha256: String,
     pixel_byte_len: usize,
+    g2_engine_capture: Option<ProductionG2CaptureBinding>,
 }
 
 fn production_pixel_gate_receipt_path(out: &Path) -> PathBuf {
@@ -111,6 +176,61 @@ fn write_snow_mud_h2_receipt(
         Err(error) => return Err(error.into()),
     }
     Ok(path)
+}
+
+fn occupation_secondary_h2_receipt_path(out: &Path) -> PathBuf {
+    let mut path = out.as_os_str().to_os_string();
+    path.push(".occupation-secondary-h2-receipt.json");
+    PathBuf::from(path)
+}
+
+fn occupation_secondary_h2_payload_path(out: &Path) -> PathBuf {
+    let mut path = out.as_os_str().to_os_string();
+    path.push(".occupation-secondary-h2.tight-bgra8");
+    PathBuf::from(path)
+}
+
+fn write_occupation_secondary_h2_evidence(
+    out: &Path,
+    receipt: &replay_core::OccupationSecondaryReplayReadbackReceipt,
+    tight_readback_bytes: &[u8],
+) -> Result<(PathBuf, PathBuf)> {
+    if tight_readback_bytes.len() as u64 != receipt.verified_tight_byte_count
+        || format!("{:x}", Sha256::digest(tight_readback_bytes)) != receipt.readback_sha256
+    {
+        return Err("occupation secondary H2 sidecar bytes differ from the receipt".into());
+    }
+    let receipt_path = occupation_secondary_h2_receipt_path(out);
+    let payload_path = occupation_secondary_h2_payload_path(out);
+    let mut receipt_bytes = serde_json::to_vec_pretty(receipt)?;
+    receipt_bytes.push(b'\n');
+    write_create_new_or_equal(&payload_path, tight_readback_bytes, "occupation H2 payload")?;
+    write_create_new_or_equal(&receipt_path, &receipt_bytes, "occupation H2 receipt")?;
+    Ok((receipt_path, payload_path))
+}
+
+fn write_create_new_or_equal(path: &Path, bytes: &[u8], label: &str) -> Result<()> {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => {
+            file.write_all(bytes)?;
+            file.sync_all()?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if std::fs::read(path)? != bytes {
+                return Err(format!(
+                    "{label} path already exists with different bytes: {}",
+                    path.display()
+                )
+                .into());
+            }
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
 }
 
 /// Render `hour` (default: the timeline's first hour) and write a 32-bit BMP.
@@ -438,6 +558,7 @@ fn dump_production_recording_frame(
     let content_manifest = provider
         .content_manifest()
         .ok_or("portable playback has no admitted content manifest after binding")?;
+    let admitted_g2_capture = provider.g2_engine_capture().map(ProductionG2CaptureBinding::from);
     let hours = provider.hours();
     let selected_hour = match (hour, nth_hour) {
         (Some(hour), None) => resolve_dump_hour(hours, DumpHourRequest::Canonical(hour))?,
@@ -496,7 +617,13 @@ fn dump_production_recording_frame(
     let gfx = Gfx::create_offscreen(output_width, output_height)?;
     gfx.clear_target([0.0, 0.0, 0.0, 1.0])?;
     let has_map_route = prepared.target.is_some() && !prepared.ordered_render_operations.is_empty();
-    let (map_operations, map_receipt, map_presented, snow_mud_proof) = if has_map_route {
+    let (
+        map_operations,
+        map_receipt,
+        map_presented,
+        snow_mud_proof,
+        occupation_secondary_proof,
+    ) = if has_map_route {
         let mut runtime = crate::app::ProductProductionD3dRuntime::default();
         let outcome =
             runtime.execute_with_snow_mud_h2(
@@ -510,9 +637,10 @@ fn dump_production_recording_frame(
             outcome.receipt_sha256,
             outcome.presented_to_app_target,
             outcome.snow_mud_proof,
+            outcome.occupation_secondary_proof,
         )
     } else {
-        (0, "none".into(), false, None)
+        (0, "none".into(), false, None, None)
     };
     let snow_mud_h2_receipt = match (
         production_render.snow_mud_texture.as_ref(),
@@ -525,7 +653,10 @@ fn dump_production_recording_frame(
                 &production_render.selected_present,
                 proof,
             )?;
-            crate::render::persist_snow_mud_h2_receipt(&receipt)?;
+            crate::render::persist_snow_mud_h2_receipt(
+                &receipt,
+                &proof.tight_readback_bytes,
+            )?;
             Some(receipt)
         }
         (Some(_), None) => {
@@ -535,41 +666,116 @@ fn dump_production_recording_frame(
             return Err("production SnowMudData product H2 proof has no H packet".into())
         }
     };
+    let mut occupation_packets = production_render
+        .submits
+        .iter()
+        .flat_map(|submit| submit.political_textures.iter())
+        .filter(|packet| {
+            packet.kind == replay_core::PoliticalTextureKind::Secondary
+                && packet.target_binding_identity
+                    == replay_core::OCCUPATION_SECONDARY_TARGET_BINDING
+        });
+    let occupation_packet = occupation_packets.next();
+    if occupation_packets.next().is_some() {
+        return Err("production recording has repeated occupation secondary packets".into());
+    }
+    let occupation_secondary_h2_receipt =
+        match (occupation_packet, occupation_secondary_proof.as_ref()) {
+            (None, None) => None,
+            (Some(packet), Some(proof)) => {
+                let receipt = crate::render::seal_product_occupation_secondary_h2_receipt(
+                    packet,
+                    &production_render.selected_present,
+                    proof,
+                )?;
+                crate::render::persist_occupation_secondary_h2_receipt(
+                    &receipt,
+                    &proof.tight_readback_bytes,
+                )?;
+                Some(receipt)
+            }
+            (Some(_), None) => {
+                return Err(
+                    "production occupation secondary packet produced no product H2 proof".into(),
+                )
+            }
+            (None, Some(_)) => {
+                return Err(
+                    "production occupation secondary H2 proof has no portable packet".into(),
+                )
+            }
+        };
 
     let mut selected_present_operations = 0usize;
     let mut selected_present_m02_draws = 0usize;
+    let mut selected_present_typed_companions = None;
     let mut selected_present_executed = false;
-    if let Some(pass) = prepared.authenticated_ui_pass.as_ref() {
-        let mut runtime = crate::ui_runtime::ProductSelectedPresentRuntime::new(
-            &gfx,
-            &game_resolver,
-            &content_admission,
-            pass,
-        )?;
-        let runtime_text = match frame.runtime_text()? {
-            replay_core::Leaf::Measured(catalog) => Some(catalog),
-            replay_core::Leaf::Absent | replay_core::Leaf::Unobtained => None,
-        };
-        match runtime.execute(
-            &gfx,
-            &game_resolver,
-            &prepared,
-            frame.as_ref(),
-            None,
-            runtime_text.as_ref(),
-        )? {
-            crate::ui_runtime::SelectedPresentUiOutcome::Executed {
-                operation_count,
-                m02_draw_count,
-            } => {
-                selected_present_operations = operation_count;
-                selected_present_m02_draws = m02_draw_count;
-                selected_present_executed = true;
-            }
-            crate::ui_runtime::SelectedPresentUiOutcome::Omitted(reason) => {
-                eprintln!(
-                    "replay_app: production dump feature omitted [SELECTED_PRESENT_UI] {reason}"
-                );
+    if admitted_g2_capture.is_none() {
+        if let Some(pass) = prepared.authenticated_ui_pass.as_ref() {
+            let mut runtime =
+                crate::ui_runtime::ProductSelectedPresentRuntime::new_with_decision_catalog_bytes(
+                    &gfx,
+                    &game_resolver,
+                    &content_admission,
+                    pass,
+                    provider.decision_catalog().map(|catalog| catalog.bytes()),
+                )?;
+            let runtime_text = match frame.runtime_text()? {
+                replay_core::Leaf::Measured(catalog) => Some(catalog),
+                replay_core::Leaf::Absent | replay_core::Leaf::Unobtained => None,
+            };
+            match runtime.execute(
+                &gfx,
+                &game_resolver,
+                &prepared,
+                frame.as_ref(),
+                None,
+                runtime_text.as_ref(),
+                crate::ui_runtime::ArmyBattleplanUiSupplementalInputs::default(),
+                crate::ui_runtime::IntelligenceUiSupplementalInputs::default(),
+                crate::ui_runtime::OccupationUiSupplementalInputs::default(),
+            )? {
+                crate::ui_runtime::SelectedPresentUiOutcome::Executed {
+                    operation_count,
+                    m02_draw_count,
+                    decision_panel_item_count,
+                    power_balance_item_count,
+                    intelligence_panel_count,
+                    intelligence_unavailable_reason,
+                    agency_upgrade_count,
+                    cipher_target_count,
+                    trade_license_count,
+                    occupation_state_count,
+                    occupation_unavailable_reason,
+                    battleplan_order_count,
+                    battleplan_selected_order_present,
+                    typed_consumption,
+                } => {
+                    selected_present_operations = operation_count;
+                    selected_present_m02_draws = m02_draw_count;
+                    selected_present_typed_companions = Some(
+                        ProductionSelectedPresentCompanionReceipt {
+                            decision_panel_item_count,
+                            power_balance_item_count,
+                            intelligence_panel_count,
+                            intelligence_unavailable_reason,
+                            agency_upgrade_count,
+                            cipher_target_count,
+                            trade_license_count,
+                            occupation_state_count,
+                            occupation_unavailable_reason,
+                            battleplan_order_count,
+                            battleplan_selected_order_present,
+                            remaining: typed_consumption,
+                        },
+                    );
+                    selected_present_executed = true;
+                }
+                crate::ui_runtime::SelectedPresentUiOutcome::Omitted(reason) => {
+                    eprintln!(
+                        "replay_app: production dump feature omitted [SELECTED_PRESENT_UI] {reason}"
+                    );
+                }
             }
         }
     }
@@ -589,8 +795,19 @@ fn dump_production_recording_frame(
         .as_ref()
         .map(|receipt| write_snow_mud_h2_receipt(out, receipt))
         .transpose()?;
+    let occupation_secondary_h2_paths = occupation_secondary_h2_receipt
+        .as_ref()
+        .zip(occupation_secondary_proof.as_ref())
+        .map(|(receipt, proof)| {
+            write_occupation_secondary_h2_evidence(
+                out,
+                receipt,
+                &proof.tight_readback_bytes,
+            )
+        })
+        .transpose()?;
     let pixel_gate_receipt = ProductionPixelGateReceipt {
-        schema: "battle-plan-production-pixel-gate-receipt-v3",
+        schema: "battle-plan-production-pixel-gate-receipt-v4",
         render_boundary: "post_authenticated_map_bgra8_no_selected_present_writers",
         authority_exe_sha256: content_manifest.source_game.executable_sha256.clone(),
         recording_sha256,
@@ -616,11 +833,13 @@ fn dump_production_recording_frame(
         map_operations,
         selected_present_operations,
         selected_present_m02_draws,
+        selected_present_typed_companions,
         map_presented,
         selected_present_executed,
         receipt_sha256: (map_receipt != "none").then(|| map_receipt.clone()),
         bgra_sha256: pixel_sha256.clone(),
         pixel_byte_len: pixels.len(),
+        g2_engine_capture: admitted_g2_capture,
     };
     let pixel_gate_receipt_path =
         write_production_pixel_gate_receipt(out, &pixel_gate_receipt)?;
@@ -640,6 +859,13 @@ fn dump_production_recording_frame(
         println!(
             "wrote product SnowMudData H2 immutable-upload/readback receipt: {}",
             path.display()
+        );
+    }
+    if let Some((receipt_path, payload_path)) = occupation_secondary_h2_paths {
+        println!(
+            "wrote product occupation secondary H2 receipt {} and raw readback {}",
+            receipt_path.display(),
+            payload_path.display()
         );
     }
     Ok(())
@@ -922,6 +1148,7 @@ mod tests {
             authenticated_ui_pass: None,
             m03_arrows: None,
             o04_cities: None,
+            o05_buildings: None,
             omitted_data_needs: vec![map_viewer::ProductionMapDataNeed {
                 packet: "M02".into(),
                 feature: "combat indicators".into(),
@@ -978,6 +1205,10 @@ mod tests {
                 persistent_content: None,
                 exact_resource: None,
             },
+            selected_present_receipt_sha256: "00".repeat(32),
+            producer_selection_receipt_sha256: "00".repeat(32),
+            source_frontier_sha256: "00".repeat(32),
+            recorded_input_receipt_sha256: "00".repeat(32),
             active_mapmode_state: None,
             ui_pass_operations: Vec::new(),
             pass_identity_sha256: "00".repeat(32),
@@ -990,11 +1221,14 @@ mod tests {
     }
 
     #[test]
-    fn headless_source_executes_selected_present_before_exact_target_readback() {
+    fn headless_source_suppresses_selected_present_for_admitted_g2_and_orders_non_g2_ui() {
         let source = include_str!("headless.rs");
         let production = &source[source
             .find("fn dump_production_recording_frame(")
             .expect("production recording dump function")..];
+        let g2_guard = production
+            .find("if admitted_g2_capture.is_none()")
+            .expect("admitted G2 selected-Present suppression guard");
         let selected_start = production
             .find("ProductSelectedPresentRuntime::new")
             .expect("headless selected-Present runtime");
@@ -1005,7 +1239,8 @@ mod tests {
         let readback = production
             .find("let pixels = gfx.read_target()?")
             .expect("headless exact target readback");
-        assert!(execute < readback);
+        assert!(g2_guard < selected_start && execute < readback);
+        assert!(production.contains("g2_engine_capture: admitted_g2_capture"));
         let forbidden_legacy_omission = ["interactive Present", "-stage surface"].concat();
         assert!(!production.contains(&forbidden_legacy_omission));
         assert!(production.contains("selected_present_m02_draws"));

@@ -16,7 +16,12 @@ pub const DOMAIN_NAVAL_COMBAT_LIFECYCLE_NAME: &str = "naval_combat_lifecycle_liv
 pub const DOMAIN_NAVAL_COMBAT_MEMBERS: u16 = 50;
 pub const DOMAIN_NAVAL_COMBAT_MEMBERS_NAME: &str = "naval_combat_members_live";
 
-pub const SCHEMA_VERSION: u16 = 1;
+/// Version 2 changes the two positioning cells from rounded milli-units to the
+/// exact signed fixed-point x100000 values stored at CNavalCombatant+0x138.
+/// The row length is unchanged: both exact values fit in the existing i32
+/// cells because the producer is admitted only in the closed [0, 100000]
+/// interval.
+pub const SCHEMA_VERSION: u16 = 2;
 pub const PAYLOAD_HEADER_LEN: usize = 28;
 pub const LIFECYCLE_ROW_LEN: usize = 72;
 pub const MEMBER_ROW_LEN: usize = 88;
@@ -88,9 +93,34 @@ pub const MAX_LOCATION_ID: u32 = 1_000_000;
 pub const MAX_REGION_ID: u32 = 100_000;
 pub const MAX_DESIGNED_STRENGTH_RAW: u32 = 1_000_000_000;
 pub const MAX_FIXED_POINT_RAW: u32 = 1_000_000_000;
+pub const MAX_POSITIONING_RAW: i32 = 100_000;
 pub const MAX_SUNK_CONVOYS: u32 = 1_000_000;
 pub const MAX_OOB_ID: u32 = 4_000_000;
 pub const CSHIP_TYPE_TAG: u32 = 51;
+
+///
+/// The legacy wire field and presence flag retain their `state_bitmask`
+/// spelling for schema compatibility. The value is an enum, not a bit set.
+pub const FEX_STATE_UNINITIALIZED: u32 = 0;
+pub const FEX_STATE_WAITING: u32 = 1;
+pub const FEX_STATE_FIGHTING: u32 = 2;
+pub const FEX_STATE_ON_THE_WAY: u32 = 4;
+pub const FEX_STATE_ESCAPING: u32 = 8;
+pub const FEX_STATE_RUN_AWAY: u32 = 0x10;
+pub const FEX_STATE_SUNK: u32 = 0x20;
+
+pub fn fex_state_name(raw: u32) -> Option<&'static str> {
+    match raw {
+        FEX_STATE_UNINITIALIZED => Some("FEX_STATE_UNINITIALIZED"),
+        FEX_STATE_WAITING => Some("FEX_STATE_WAITING"),
+        FEX_STATE_FIGHTING => Some("FEX_STATE_FIGHTING"),
+        FEX_STATE_ON_THE_WAY => Some("FEX_STATE_ON_THE_WAY"),
+        FEX_STATE_ESCAPING => Some("FEX_STATE_ESCAPING"),
+        FEX_STATE_RUN_AWAY => Some("FEX_STATE_RUN_AWAY"),
+        FEX_STATE_SUNK => Some("FEX_STATE_SUNK"),
+        _ => None,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CombatSide {
@@ -132,8 +162,10 @@ pub struct LifecycleRow {
     pub region_id: Option<u32>,
     pub attacker_member_count: Option<u32>,
     pub defender_member_count: Option<u32>,
-    pub attacker_positioning_milli: Option<i32>,
-    pub defender_positioning_milli: Option<i32>,
+    /// Exact signed fixed-point x100000 `CNavalCombatant+0x138` producer output.
+    pub attacker_positioning_raw: Option<i32>,
+    /// Exact signed fixed-point x100000 `CNavalCombatant+0x138` producer output.
+    pub defender_positioning_raw: Option<i32>,
     /// Exact signed fixed-point x100000 `CNavalCombatant+0x150` producer output.
     pub attacker_anti_air_raw: Option<i64>,
     /// Exact signed fixed-point x100000 `CNavalCombatant+0x150` producer output.
@@ -248,8 +280,8 @@ struct DecodedLifecycleRow {
     region_id: u32,
     attacker_member_count: u32,
     defender_member_count: u32,
-    attacker_positioning_milli: i32,
-    defender_positioning_milli: i32,
+    attacker_positioning_raw: i32,
+    defender_positioning_raw: i32,
     attacker_anti_air_raw: i64,
     defender_anti_air_raw: i64,
     reserved_tail: u64,
@@ -312,10 +344,10 @@ pub fn encode_lifecycle_payload(
         if row.defender_member_count.is_some() {
             flags |= LIFECYCLE_DEFENDER_COUNT_PRESENT;
         }
-        if row.attacker_positioning_milli.is_some() {
+        if row.attacker_positioning_raw.is_some() {
             flags |= LIFECYCLE_ATTACKER_POSITIONING_PRESENT;
         }
-        if row.defender_positioning_milli.is_some() {
+        if row.defender_positioning_raw.is_some() {
             flags |= LIFECYCLE_DEFENDER_POSITIONING_PRESENT;
         }
         if row.attacker_anti_air_raw.is_some() {
@@ -332,8 +364,8 @@ pub fn encode_lifecycle_payload(
         push_u32(&mut payload, row.region_id.unwrap_or(0));
         push_u32(&mut payload, row.attacker_member_count.unwrap_or(0));
         push_u32(&mut payload, row.defender_member_count.unwrap_or(0));
-        push_i32(&mut payload, row.attacker_positioning_milli.unwrap_or(0));
-        push_i32(&mut payload, row.defender_positioning_milli.unwrap_or(0));
+        push_i32(&mut payload, row.attacker_positioning_raw.unwrap_or(0));
+        push_i32(&mut payload, row.defender_positioning_raw.unwrap_or(0));
         push_i64(&mut payload, row.attacker_anti_air_raw.unwrap_or(0));
         push_i64(&mut payload, row.defender_anti_air_raw.unwrap_or(0));
         push_u64(&mut payload, 0);
@@ -484,10 +516,10 @@ pub fn decode_lifecycle_rows(payload: &[u8]) -> Result<(u32, Vec<LifecycleRow>),
                 .then_some(row.attacker_member_count),
             defender_member_count: (row.flags & LIFECYCLE_DEFENDER_COUNT_PRESENT != 0)
                 .then_some(row.defender_member_count),
-            attacker_positioning_milli: (row.flags & LIFECYCLE_ATTACKER_POSITIONING_PRESENT != 0)
-                .then_some(row.attacker_positioning_milli),
-            defender_positioning_milli: (row.flags & LIFECYCLE_DEFENDER_POSITIONING_PRESENT != 0)
-                .then_some(row.defender_positioning_milli),
+            attacker_positioning_raw: (row.flags & LIFECYCLE_ATTACKER_POSITIONING_PRESENT != 0)
+                .then_some(row.attacker_positioning_raw),
+            defender_positioning_raw: (row.flags & LIFECYCLE_DEFENDER_POSITIONING_PRESENT != 0)
+                .then_some(row.defender_positioning_raw),
             attacker_anti_air_raw: (row.flags & LIFECYCLE_ATTACKER_ANTI_AIR_PRESENT != 0)
                 .then_some(row.attacker_anti_air_raw),
             defender_anti_air_raw: (row.flags & LIFECYCLE_DEFENDER_ANTI_AIR_PRESENT != 0)
@@ -708,10 +740,11 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
     let mut lifecycle_keys = BTreeSet::new();
     let mut seen_lifecycle_keys = BTreeSet::new();
     let mut retired_lifecycle_keys = BTreeSet::new();
-    let mut active_members: BTreeMap<(u32, u64, u32, u32, u32), CombatSide> = BTreeMap::new();
+    let mut active_members: BTreeMap<(u32, u64, u32, u32), CombatSide> = BTreeMap::new();
     let mut retired_member_keys = BTreeSet::new();
     let mut non_convoy_member_count = 0u64;
     let mut validated_non_convoy_member_count = 0u64;
+    let mut terminal_sunk_unjoined_member_count = 0u64;
 
     for record in records {
         match last_sequence {
@@ -907,6 +940,19 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
                                     record.offset, row.combat_id, row.generation
                                 ));
                             }
+                            let exact_side_scalar_flags =
+                                LIFECYCLE_ATTACKER_POSITIONING_PRESENT
+                                    | LIFECYCLE_DEFENDER_POSITIONING_PRESENT
+                                    | LIFECYCLE_ATTACKER_ANTI_AIR_PRESENT
+                                    | LIFECYCLE_DEFENDER_ANTI_AIR_PRESENT;
+                            if !parent_deleted
+                                && row.flags & exact_side_scalar_flags != exact_side_scalar_flags
+                            {
+                                errors.push(format!(
+                                    "offset {}: lifecycle row {row_index} combat {}:{} lacks a complete exact +0x138/+0x150 side scalar set",
+                                    record.offset, row.combat_id, row.generation
+                                ));
+                            }
                             if row.flags & LIFECYCLE_LOCATION_PRESENT != 0 {
                                 summary.lifecycle_location_row_count =
                                     summary.lifecycle_location_row_count.saturating_add(1);
@@ -1003,18 +1049,16 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
                                 row.combat_id,
                                 row.generation,
                                 row.side,
-                                row.group_index,
-                                row.member_index,
+                                row.battle_slot_index_raw,
                             );
                             if !frame_member_keys.insert(membership_key) {
                                 errors.push(format!(
-                                    "offset {}: duplicate/ambiguous domain 50 membership for combat {}:{} side {} group {} member {}",
+                                    "offset {}: duplicate/ambiguous domain 50 membership for combat {}:{} side {} battle slot {}",
                                     record.offset,
                                     row.combat_id,
                                     row.generation,
                                     row.side,
-                                    row.group_index,
-                                    row.member_index
+                                    row.battle_slot_index_raw
                                 ));
                             }
                             let is_convoy = row.flags & MEMBER_IS_CONVOY != 0;
@@ -1023,21 +1067,39 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
                                     summary.convoy_member_count.saturating_add(1);
                             } else {
                                 non_convoy_member_count = non_convoy_member_count.saturating_add(1);
+                                let terminal_sunk = row.flags & MEMBER_STATE_BITMASK_PRESENT != 0
+                                    && row.state_bitmask == FEX_STATE_SUNK;
                                 if row.flags & MEMBER_SHIP_INSTANCE_PRESENT == 0 {
                                     errors.push(format!(
                                         "offset {}: non-convoy member row {row_index} combat {}:{} lacks ship-instance identity",
                                         record.offset, row.combat_id, row.generation
                                     ));
                                 }
-                                if row.flags & MEMBER_CSHIP_JOIN_VALIDATED == 0 {
+                                if row.flags & MEMBER_CSHIP_JOIN_VALIDATED == 0 && !terminal_sunk {
                                     errors.push(format!(
-                                        "offset {}: non-convoy member row {row_index} combat {}:{} lacks a validated CShip join",
+                                        "offset {}: non-terminal non-convoy member row {row_index} combat {}:{} lacks a validated CShip join",
                                         record.offset, row.combat_id, row.generation
                                     ));
                                 }
                                 if row.flags & MEMBER_CSHIP_JOIN_VALIDATED != 0 {
                                     validated_non_convoy_member_count =
                                         validated_non_convoy_member_count.saturating_add(1);
+                                } else if terminal_sunk {
+                                    terminal_sunk_unjoined_member_count =
+                                        terminal_sunk_unjoined_member_count.saturating_add(1);
+                                    let cship_derived = MEMBER_TASK_FORCE_PRESENT
+                                        | MEMBER_FLEET_PRESENT
+                                        | MEMBER_STRENGTH_PRESENT
+                                        | MEMBER_ORGANISATION_PRESENT
+                                        | MEMBER_EXPERIENCE_PRESENT
+                                        | MEMBER_SUNK_CONVOYS_PRESENT;
+                                    if row.flags & cship_derived != 0 {
+                                        errors.push(format!(
+                                            "offset {}: terminal sunk member row {row_index} lacks a live CShip join but carries CShip-derived fields 0x{:08x}",
+                                            record.offset,
+                                            row.flags & cship_derived
+                                        ));
+                                    }
                                 }
                                 if !is_deleted
                                     && row.flags & MEMBER_SHIP_INSTANCE_PRESENT != 0
@@ -1054,26 +1116,24 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
                                     summary.member_deleted_row_count.saturating_add(1);
                                 if active_members.remove(&membership_key).is_none() {
                                     errors.push(format!(
-                                        "offset {}: deleted domain 50 membership combat {}:{} side {} group {} member {} was not previously active",
+                                        "offset {}: deleted domain 50 membership combat {}:{} side {} battle slot {} was not previously active",
                                         record.offset,
                                         row.combat_id,
                                         row.generation,
                                         row.side,
-                                        row.group_index,
-                                        row.member_index
+                                        row.battle_slot_index_raw
                                     ));
                                 }
                                 retired_member_keys.insert(membership_key);
                             } else if let Some(side) = CombatSide::from_wire_id(row.side) {
                                 if retired_member_keys.contains(&membership_key) {
                                     errors.push(format!(
-                                        "offset {}: domain 50 membership combat {}:{} side {} group {} member {} attempts same-generation resurrection",
+                                        "offset {}: domain 50 membership combat {}:{} side {} battle slot {} attempts same-generation resurrection",
                                         record.offset,
                                         row.combat_id,
                                         row.generation,
                                         row.side,
-                                        row.group_index,
-                                        row.member_index
+                                        row.battle_slot_index_raw
                                     ));
                                 } else {
                                     active_members.insert(membership_key, side);
@@ -1237,7 +1297,7 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
                     }
                     let stale_child_count = active_members
                         .keys()
-                        .filter(|(member_combat_id, member_generation, _, _, _)| {
+                        .filter(|(member_combat_id, member_generation, _, _)| {
                             *member_combat_id == combat_id && *member_generation == generation
                         })
                         .count();
@@ -1286,7 +1346,7 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
         .values()
         .fold(0u32, |acc, domain| acc | domain.status_flags_or);
     let mut member_sides: BTreeMap<(u32, u64), BTreeSet<CombatSide>> = BTreeMap::new();
-    for ((combat_id, generation, _, _, _), side) in &active_members {
+    for ((combat_id, generation, _, _), side) in &active_members {
         member_sides
             .entry((*combat_id, *generation))
             .or_default()
@@ -1334,10 +1394,13 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
             ));
         }
     }
-    if non_convoy_member_count > 0 && validated_non_convoy_member_count != non_convoy_member_count {
+    if non_convoy_member_count > 0
+        && validated_non_convoy_member_count + terminal_sunk_unjoined_member_count
+            != non_convoy_member_count
+    {
         errors.push(format!(
-            "only {} of {non_convoy_member_count} non-convoy members have validated CShip joins",
-            validated_non_convoy_member_count
+            "only {} validated-live plus {} terminal-sunk non-convoy members account for {non_convoy_member_count} non-convoy rows",
+            validated_non_convoy_member_count, terminal_sunk_unjoined_member_count
         ));
     }
     if summary.cship_validated_member_count > 0
@@ -1662,8 +1725,8 @@ fn decode_lifecycle_payload(
             region_id: read_u32(payload, cursor + 28),
             attacker_member_count: read_u32(payload, cursor + 32),
             defender_member_count: read_u32(payload, cursor + 36),
-            attacker_positioning_milli: read_i32(payload, cursor + 40),
-            defender_positioning_milli: read_i32(payload, cursor + 44),
+            attacker_positioning_raw: read_i32(payload, cursor + 40),
+            defender_positioning_raw: read_i32(payload, cursor + 44),
             attacker_anti_air_raw: read_i64(payload, cursor + 48),
             defender_anti_air_raw: read_i64(payload, cursor + 56),
             reserved_tail: read_u64(payload, cursor + 64),
@@ -1854,17 +1917,33 @@ fn validate_decoded_lifecycle_row(
         ));
     }
     if row.flags & LIFECYCLE_ATTACKER_POSITIONING_PRESENT == 0
-        && row.attacker_positioning_milli != 0
+        && row.attacker_positioning_raw != 0
     {
         errors.push(format!(
             "offset {offset}: lifecycle row {row_index} has attacker positioning without flag"
         ));
     }
     if row.flags & LIFECYCLE_DEFENDER_POSITIONING_PRESENT == 0
-        && row.defender_positioning_milli != 0
+        && row.defender_positioning_raw != 0
     {
         errors.push(format!(
             "offset {offset}: lifecycle row {row_index} has defender positioning without flag"
+        ));
+    }
+    if row.flags & LIFECYCLE_ATTACKER_POSITIONING_PRESENT != 0
+        && !(0..=MAX_POSITIONING_RAW).contains(&row.attacker_positioning_raw)
+    {
+        errors.push(format!(
+            "offset {offset}: lifecycle row {row_index} attacker positioning raw {} is outside 0..={MAX_POSITIONING_RAW}",
+            row.attacker_positioning_raw
+        ));
+    }
+    if row.flags & LIFECYCLE_DEFENDER_POSITIONING_PRESENT != 0
+        && !(0..=MAX_POSITIONING_RAW).contains(&row.defender_positioning_raw)
+    {
+        errors.push(format!(
+            "offset {offset}: lifecycle row {row_index} defender positioning raw {} is outside 0..={MAX_POSITIONING_RAW}",
+            row.defender_positioning_raw
         ));
     }
     if row.flags & LIFECYCLE_ATTACKER_ANTI_AIR_PRESENT == 0 && row.attacker_anti_air_raw != 0 {
@@ -1982,9 +2061,26 @@ fn validate_decoded_member_row(
             "offset {offset}: member row {row_index} non-convoy ship lacks ship-instance identity"
         ));
     }
-    if !is_convoy && row.flags & MEMBER_CSHIP_JOIN_VALIDATED == 0 {
+    let terminal_sunk = row.flags & MEMBER_STATE_BITMASK_PRESENT != 0
+        && row.state_bitmask == FEX_STATE_SUNK;
+    if !is_convoy && row.flags & MEMBER_CSHIP_JOIN_VALIDATED == 0 && !terminal_sunk {
         errors.push(format!(
-            "offset {offset}: member row {row_index} non-convoy ship lacks CShip validation"
+            "offset {offset}: member row {row_index} non-terminal non-convoy ship lacks CShip validation"
+        ));
+    }
+    let cship_derived = MEMBER_TASK_FORCE_PRESENT
+        | MEMBER_FLEET_PRESENT
+        | MEMBER_STRENGTH_PRESENT
+        | MEMBER_ORGANISATION_PRESENT
+        | MEMBER_EXPERIENCE_PRESENT
+        | MEMBER_SUNK_CONVOYS_PRESENT;
+    if !is_convoy
+        && row.flags & MEMBER_CSHIP_JOIN_VALIDATED == 0
+        && row.flags & cship_derived != 0
+    {
+        errors.push(format!(
+            "offset {offset}: member row {row_index} without a live CShip join carries CShip-derived flags 0x{:08x}",
+            row.flags & cship_derived
         ));
     }
     let convoy_forbidden = MEMBER_CSHIP_JOIN_VALIDATED
@@ -2027,6 +2123,14 @@ fn validate_decoded_member_row(
     if row.flags & MEMBER_STATE_BITMASK_PRESENT == 0 && row.state_bitmask != 0 {
         errors.push(format!(
             "offset {offset}: member row {row_index} has state bitmask without flag"
+        ));
+    }
+    if row.flags & MEMBER_STATE_BITMASK_PRESENT != 0
+        && fex_state_name(row.state_bitmask).is_none()
+    {
+        errors.push(format!(
+            "offset {offset}: member row {row_index} has unknown CFEX state enum 0x{:x}",
+            row.state_bitmask
         ));
     }
     if row.flags & MEMBER_ENGAGEMENT_WEIGHT_PRESENT == 0 && row.engagement_weight_raw != 0 {
@@ -2139,6 +2243,17 @@ fn validate_lifecycle_row(row: &LifecycleRow) -> Result<(), String> {
             return Err("invalid lifecycle region_id".to_string());
         }
     }
+    for positioning in [
+        row.attacker_positioning_raw,
+        row.defender_positioning_raw,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !(0..=MAX_POSITIONING_RAW).contains(&positioning) {
+            return Err("invalid lifecycle positioning_raw".to_string());
+        }
+    }
     Ok(())
 }
 
@@ -2175,14 +2290,33 @@ fn validate_member_row(row: &MemberRow) -> Result<(), String> {
         if row.ship_instance_id.is_none() {
             return Err("non-convoy ship member requires ship-instance identity".to_string());
         }
-        if !row.cship_join_validated {
-            return Err("non-convoy ship member requires CShip join validation".to_string());
+        let terminal_sunk = row.state_bitmask == Some(FEX_STATE_SUNK);
+        if !row.cship_join_validated && !terminal_sunk {
+            return Err(
+                "non-terminal non-convoy ship member requires CShip join validation".to_string(),
+            );
+        }
+        if !row.cship_join_validated
+            && (row.task_force_id.is_some()
+                || row.fleet_id.is_some()
+                || row.strength_raw.is_some()
+                || row.organisation_raw.is_some()
+                || row.experience_raw.is_some()
+                || row.sunk_convoys.is_some())
+        {
+            return Err(
+                "terminal sunk member without a live CShip join carries CShip-derived fields"
+                    .to_string(),
+            );
         }
     }
     if let Some(owner) = row.owner_tag_db_id {
         if owner > MAX_OWNER_TAG_DB_ID {
             return Err("invalid owner_tag_db_id".to_string());
         }
+    }
+    if row.state_bitmask.is_some_and(|raw| fex_state_name(raw).is_none()) {
+        return Err("invalid CFEX member state enum".to_string());
     }
     if let Some(task_force_id) = row.task_force_id {
         if task_force_id == 0 || task_force_id > MAX_OOB_ID {
@@ -2430,8 +2564,8 @@ mod tests {
             region_id: Some(18),
             attacker_member_count: Some(1),
             defender_member_count: Some(1),
-            attacker_positioning_milli: Some(812),
-            defender_positioning_milli: Some(765),
+            attacker_positioning_raw: Some(81_200),
+            defender_positioning_raw: Some(76_500),
             attacker_anti_air_raw: Some(123_000),
             defender_anti_air_raw: Some(98_000),
         }
@@ -3256,11 +3390,30 @@ mod tests {
         assert!(result
             .errors
             .iter()
-            .any(|error| error.contains("non-convoy ship lacks CShip validation")));
+            .any(|error| error.contains("non-terminal non-convoy ship lacks CShip validation")));
         assert!(result
             .errors
             .iter()
-            .any(|error| error.contains("only 1 of 2 non-convoy members")));
+            .any(|error| error.contains("only 1 validated-live plus 0 terminal-sunk")));
+    }
+
+    #[test]
+    fn terminal_sunk_member_can_outlive_its_cship_join_without_fabricated_telemetry() {
+        let mut sunk = ship_member(7, CombatSide::Defender, 0, 1002);
+        sunk.state_bitmask = Some(FEX_STATE_SUNK);
+        sunk.cship_join_validated = false;
+        sunk.task_force_id = None;
+        sunk.fleet_id = None;
+        sunk.strength_raw = None;
+        sunk.organisation_raw = None;
+        sunk.experience_raw = None;
+        sunk.sunk_convoys = None;
+        let result = gate_stream(&closed_frame(
+            STATUS_DELTA_DATA,
+            &[lifecycle_row(7)],
+            &[ship_member(7, CombatSide::Attacker, 0, 1001), sunk],
+        ));
+        assert!(result.ok, "{:?}", result.errors);
     }
 
     #[test]
@@ -3500,8 +3653,8 @@ mod tests {
             region_id: None,
             attacker_member_count: Some(1),
             defender_member_count: Some(1),
-            attacker_positioning_milli: None,
-            defender_positioning_milli: None,
+            attacker_positioning_raw: None,
+            defender_positioning_raw: None,
             attacker_anti_air_raw: None,
             defender_anti_air_raw: None,
         }];

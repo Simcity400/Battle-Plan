@@ -9,13 +9,15 @@ const READY_MAGIC: &[u8; 4] = b"ERDY";
 const FIRST_MAGIC: &[u8; 4] = b"EFD3";
 const COMMIT_MAGIC: &[u8; 4] = b"ECMT";
 const LAUNCH_BIND_MAGIC: &[u8; 4] = b"ELBD";
+const LAUNCH_BIND_V2_MAGIC: &[u8; 4] = b"ELB2";
 const DIAGNOSTIC_LIVENESS_REQUEST_MAGIC: &[u8; 4] = b"EDRQ";
 const DIAGNOSTIC_LIVENESS_RESPONSE_MAGIC: &[u8; 4] = b"EDRP";
 const DIAGNOSTIC_END_MAGIC: &[u8; 4] = b"EDND";
 const G2_CAPTURE_ARM_MAGIC: &[u8; 4] = b"EG2A";
 pub const EARLY_HOOK_COMPLETENESS_MASK: u16 = 0x03ff;
 pub const EARLY_STAGED_HOOK_GENERATION: u64 = 1;
-pub const EARLY_STAGED_HOOK_COUNT: u32 = 66;
+pub const EARLY_STAGED_HOOK_GROUP_COUNTS: [u32; 10] = [23, 2, 3, 8, 8, 7, 2, 3, 7, 3];
+pub const EARLY_STAGED_HOOK_COUNT: u32 = 23 + 2 + 3 + 8 + 8 + 7 + 2 + 3 + 7 + 3;
 pub const EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK: u64 = 0x3ff;
 pub const EARLY_DIAGNOSTIC_MIN_HOLD_MS: u64 = 210_000;
 pub const EARLY_DIAGNOSTIC_END_RECORDER_CANCEL: u16 = 1;
@@ -24,9 +26,8 @@ pub fn staged_hook_count_for_group_mask(group_mask: u64) -> Option<u32> {
     if group_mask & !EARLY_STAGED_HOOK_PRODUCTION_GROUP_MASK != 0 || group_mask & 1 == 0 {
         return None;
     }
-    let group_counts = [23u32, 2, 3, 8, 8, 7, 2, 3, 7, 3];
     Some(
-        group_counts
+        EARLY_STAGED_HOOK_GROUP_COUNTS
             .into_iter()
             .enumerate()
             .filter_map(|(bit, count)| (group_mask & (1u64 << bit) != 0).then_some(count))
@@ -102,6 +103,28 @@ pub struct EarlyRenderLaunchBindV1 {
     pub content_manifest_chunk_count: u32,
     pub executable_sha256: [u8; 32],
     pub collector_sha256: [u8; 32],
+}
+
+/// Versioned successor to [`EarlyRenderLaunchBindV1`]. The recorder knows
+/// whether G2 was requested while the primary thread is still suspended; this
+/// bit lets the collector configure exact pre-arm monitoring before hooks are
+/// installed instead of taxing every ordinary production capture forever.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EarlyRenderLaunchBindV2 {
+    pub process_id: u32,
+    pub process_start_nonce: u64,
+    pub timeout_ms: u32,
+    pub launch_manifest_sha256: [u8; 32],
+    pub effective_vfs_manifest_sha256: [u8; 32],
+    pub effective_vfs_index_sha256: [u8; 32],
+    pub effective_vfs_index_row_count: u32,
+    pub effective_vfs_index_chunk_count: u32,
+    pub content_manifest_bytes_sha256: [u8; 32],
+    pub content_manifest_byte_count: u64,
+    pub content_manifest_chunk_count: u32,
+    pub executable_sha256: [u8; 32],
+    pub collector_sha256: [u8; 32],
+    pub g2_capture_expected: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -889,6 +912,92 @@ pub fn decode_early_render_launch_bind(
     Ok(value)
 }
 
+pub fn encode_early_render_launch_bind_v2(
+    value: &EarlyRenderLaunchBindV2,
+) -> Result<Vec<u8>, EarlyRenderCodecError> {
+    if value.process_id == 0
+        || value.process_start_nonce == 0
+        || !(1..=120_000).contains(&value.timeout_ms)
+        || value.effective_vfs_index_row_count == 0
+        || value.effective_vfs_index_chunk_count == 0
+        || value.effective_vfs_index_chunk_count > value.effective_vfs_index_row_count
+        || value.content_manifest_byte_count == 0
+        || value.content_manifest_chunk_count == 0
+        || [
+            &value.launch_manifest_sha256,
+            &value.effective_vfs_manifest_sha256,
+            &value.effective_vfs_index_sha256,
+            &value.content_manifest_bytes_sha256,
+            &value.executable_sha256,
+            &value.collector_sha256,
+        ]
+        .into_iter()
+        .any(|hash| !nonzero_hash(hash))
+    {
+        return Err(EarlyRenderCodecError::InvalidField);
+    }
+    let mut out = Vec::with_capacity(235);
+    header(&mut out, LAUNCH_BIND_V2_MAGIC);
+    out.extend_from_slice(&value.process_id.to_le_bytes());
+    out.extend_from_slice(&value.process_start_nonce.to_le_bytes());
+    out.extend_from_slice(&value.timeout_ms.to_le_bytes());
+    out.extend_from_slice(&value.launch_manifest_sha256);
+    out.extend_from_slice(&value.effective_vfs_manifest_sha256);
+    out.extend_from_slice(&value.effective_vfs_index_sha256);
+    out.extend_from_slice(&value.effective_vfs_index_row_count.to_le_bytes());
+    out.extend_from_slice(&value.effective_vfs_index_chunk_count.to_le_bytes());
+    out.extend_from_slice(&value.content_manifest_bytes_sha256);
+    out.extend_from_slice(&value.content_manifest_byte_count.to_le_bytes());
+    out.extend_from_slice(&value.content_manifest_chunk_count.to_le_bytes());
+    out.extend_from_slice(&value.executable_sha256);
+    out.extend_from_slice(&value.collector_sha256);
+    out.push(u8::from(value.g2_capture_expected));
+    Ok(out)
+}
+
+pub fn decode_early_render_launch_bind_v2(
+    bytes: &[u8],
+) -> Result<EarlyRenderLaunchBindV2, EarlyRenderCodecError> {
+    let mut at = validate_header(bytes, LAUNCH_BIND_V2_MAGIC, 235)?;
+    let process_id = u32_at(bytes, &mut at)?;
+    let process_start_nonce = u64_at(bytes, &mut at)?;
+    let timeout_ms = u32_at(bytes, &mut at)?;
+    let launch_manifest_sha256 = hash_at(bytes, &mut at)?;
+    let effective_vfs_manifest_sha256 = hash_at(bytes, &mut at)?;
+    let effective_vfs_index_sha256 = hash_at(bytes, &mut at)?;
+    let effective_vfs_index_row_count = u32_at(bytes, &mut at)?;
+    let effective_vfs_index_chunk_count = u32_at(bytes, &mut at)?;
+    let content_manifest_bytes_sha256 = hash_at(bytes, &mut at)?;
+    let content_manifest_byte_count = u64_at(bytes, &mut at)?;
+    let content_manifest_chunk_count = u32_at(bytes, &mut at)?;
+    let executable_sha256 = hash_at(bytes, &mut at)?;
+    let collector_sha256 = hash_at(bytes, &mut at)?;
+    let g2_capture_expected = match bytes.get(at).copied() {
+        Some(0) => false,
+        Some(1) => true,
+        Some(_) => return Err(EarlyRenderCodecError::InvalidField),
+        None => return Err(EarlyRenderCodecError::Length),
+    };
+    let value = EarlyRenderLaunchBindV2 {
+        process_id,
+        process_start_nonce,
+        timeout_ms,
+        launch_manifest_sha256,
+        effective_vfs_manifest_sha256,
+        effective_vfs_index_sha256,
+        effective_vfs_index_row_count,
+        effective_vfs_index_chunk_count,
+        content_manifest_bytes_sha256,
+        content_manifest_byte_count,
+        content_manifest_chunk_count,
+        executable_sha256,
+        collector_sha256,
+        g2_capture_expected,
+    };
+    encode_early_render_launch_bind_v2(&value)?;
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1097,6 +1206,42 @@ mod tests {
             decode_early_render_launch_bind(&encode_early_render_launch_bind(&bind).unwrap())
                 .unwrap(),
             bind
+        );
+        let bind_v2 = EarlyRenderLaunchBindV2 {
+            process_id: bind.process_id,
+            process_start_nonce: bind.process_start_nonce,
+            timeout_ms: bind.timeout_ms,
+            launch_manifest_sha256: bind.launch_manifest_sha256,
+            effective_vfs_manifest_sha256: bind.effective_vfs_manifest_sha256,
+            effective_vfs_index_sha256: bind.effective_vfs_index_sha256,
+            effective_vfs_index_row_count: bind.effective_vfs_index_row_count,
+            effective_vfs_index_chunk_count: bind.effective_vfs_index_chunk_count,
+            content_manifest_bytes_sha256: bind.content_manifest_bytes_sha256,
+            content_manifest_byte_count: bind.content_manifest_byte_count,
+            content_manifest_chunk_count: bind.content_manifest_chunk_count,
+            executable_sha256: bind.executable_sha256,
+            collector_sha256: bind.collector_sha256,
+            g2_capture_expected: true,
+        };
+        let bind_v1_bytes = encode_early_render_launch_bind(&bind).unwrap();
+        let bind_v2_bytes = encode_early_render_launch_bind_v2(&bind_v2).unwrap();
+        assert_eq!(
+            decode_early_render_launch_bind_v2(&bind_v2_bytes).unwrap(),
+            bind_v2
+        );
+        assert_eq!(
+            decode_early_render_launch_bind_v2(&bind_v1_bytes),
+            Err(EarlyRenderCodecError::Length)
+        );
+        assert_eq!(
+            decode_early_render_launch_bind(&bind_v2_bytes),
+            Err(EarlyRenderCodecError::Length)
+        );
+        let mut noncanonical_bool = bind_v2_bytes;
+        *noncanonical_bool.last_mut().unwrap() = 2;
+        assert_eq!(
+            decode_early_render_launch_bind_v2(&noncanonical_bool),
+            Err(EarlyRenderCodecError::InvalidField)
         );
         let mut invalid = bind.clone();
         invalid.timeout_ms = 0;

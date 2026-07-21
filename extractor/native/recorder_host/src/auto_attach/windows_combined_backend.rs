@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use crate::control_transport::{
     claim_session_capability, ControlCancellation, ControlCapabilities, ControlDeadline,
-    ControlError, ControlPeerIdentity, DeadlineControlChannel, DeadlineControlIo, EndpointRole,
-    ValidatedSessionCapability,
+    ControlError, ControlPeerIdentity, DeadlineControlChannel, DeadlineControlInputReadiness,
+    DeadlineControlIo, EndpointRole, ValidatedSessionCapability,
 };
 use crate::windows_control_pipe::RestrictiveSecurityPolicy;
 
@@ -130,6 +130,14 @@ extern "system" {
         len: Dword,
         transferred: *mut Dword,
         overlapped: *mut Overlapped,
+    ) -> Bool;
+    fn PeekNamedPipe(
+        pipe: Handle,
+        buffer: *mut c_void,
+        buffer_len: Dword,
+        bytes_read: *mut Dword,
+        total_bytes_available: *mut Dword,
+        bytes_left_in_message: *mut Dword,
     ) -> Bool;
     fn OpenProcess(access: Dword, inherit: Bool, pid: Dword) -> Handle;
     fn GetProcessTimes(
@@ -986,6 +994,21 @@ impl WindowsCombinedDataReader {
         &self.cancellation
     }
 
+    /// Copy, but do not consume, the currently queued H4CR prefix and report
+    /// the total queued byte count. This is used only by the pre-CID1 router so
+    /// a partial data record cannot starve a complete CIF1 on H4CT.
+    pub fn peek_available_prefix(
+        &self,
+        prefix: &mut [u8],
+    ) -> Result<(usize, usize), WindowsCombinedBackendError> {
+        if self.cancellation.is_cancelled() {
+            return Err(WindowsCombinedBackendError::Cancelled);
+        }
+        self.data
+            .peek_available_prefix(prefix)
+            .map_err(WindowsCombinedBackendError::from)
+    }
+
     pub fn read_exact_until(
         &mut self,
         bytes: &mut [u8],
@@ -1204,6 +1227,10 @@ impl WindowsDataIo {
         self.pipe.recv_exact(bytes, deadline, None)
     }
 
+    fn peek_available_prefix(&self, prefix: &mut [u8]) -> io::Result<(usize, usize)> {
+        self.pipe.peek_available_prefix(prefix)
+    }
+
 
     pub fn recv_exact_cancellable(&mut self, bytes: &mut [u8]) -> io::Result<()> {
         self.pipe.recv_exact_cancellable(bytes)
@@ -1219,6 +1246,12 @@ impl WindowsControlIo {
         Self {
             pipe: WindowsOverlappedPipe::new(handle, peer, cancellation),
         }
+    }
+}
+
+impl DeadlineControlInputReadiness for WindowsControlIo {
+    fn input_bytes_available(&self) -> io::Result<usize> {
+        self.pipe.peek_available_prefix(&mut []).map(|(_, total)| total)
     }
 }
 
@@ -1259,6 +1292,49 @@ impl WindowsOverlappedPipe {
             peer_process,
             shared_cancellation,
         }
+    }
+
+    fn peek_available_prefix(&self, prefix: &mut [u8]) -> io::Result<(usize, usize)> {
+        if self.shared_cancellation.is_cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "combined pipe startup probe cancelled",
+            ));
+        }
+        let handle = self
+            .handle
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "pipe handle closed"))?;
+        let prefix_len = Dword::try_from(prefix.len()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "pipe peek prefix is too large")
+        })?;
+        let mut copied = 0u32;
+        let mut available = 0u32;
+        let buffer = if prefix.is_empty() {
+            ptr::null_mut()
+        } else {
+            prefix.as_mut_ptr().cast::<c_void>()
+        };
+        if unsafe {
+            PeekNamedPipe(
+                handle.raw(),
+                buffer,
+                prefix_len,
+                &mut copied,
+                &mut available,
+                ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if self.shared_cancellation.is_cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "combined pipe startup probe cancelled after completion",
+            ));
+        }
+        Ok((copied as usize, available as usize))
     }
 
     fn recv_exact(

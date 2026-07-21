@@ -20,7 +20,10 @@ use crate::render::{
 };
 use crate::timeline::{build_provider, OwnerProvider};
 use crate::transport::Transport;
-use crate::ui_runtime::{ProductSelectedPresentRuntime, SelectedPresentUiOutcome};
+use crate::ui_runtime::{
+    ArmyBattleplanUiSupplementalInputs, IntelligenceUiSupplementalInputs,
+    OccupationUiSupplementalInputs, ProductSelectedPresentRuntime, SelectedPresentUiOutcome,
+};
 use crate::win32::{MouseButton, Window, WindowEvent};
 use crate::{Result, TimelineMode};
 
@@ -59,6 +62,8 @@ pub(crate) struct ProductProductionD3dOutcome {
     pub(crate) presented_to_app_target: bool,
     pub(crate) receipt_sha256: String,
     pub(crate) snow_mud_proof: Option<map_viewer::SnowMudD3dExecutionProof>,
+    pub(crate) occupation_secondary_proof:
+        Option<map_viewer::OccupationSecondaryD3dExecutionProof>,
 }
 
 impl ProductProductionD3dRuntime {
@@ -139,6 +144,8 @@ impl ProductProductionD3dRuntime {
         )?;
         let receipt = map_viewer::execute_production_d3d_frame(frame, &mut executor)?;
         let snow_mud_proof = executor.snow_mud_execution_proof().cloned();
+        let occupation_secondary_proof =
+            executor.occupation_secondary_execution_proof().cloned();
         Ok(ProductProductionD3dOutcome {
             executed_operations: receipt.ordered_draws.len(),
             executed_draw_tokens: receipt
@@ -149,6 +156,7 @@ impl ProductProductionD3dRuntime {
             presented_to_app_target,
             receipt_sha256: receipt.deterministic_sha256,
             snow_mud_proof,
+            occupation_secondary_proof,
         })
     }
 }
@@ -192,6 +200,9 @@ fn frame_has_app_presentation(frame: &map_viewer::PreparedProductionD3dFrame) ->
                     &submission.output_state
                 }
                 map_viewer::PreparedRuntimeDraw::O04City { submission, .. } => {
+                    &submission.output_state
+                }
+                map_viewer::PreparedRuntimeDraw::O05Building { submission, .. } => {
                     &submission.output_state
                 }
             };
@@ -706,12 +717,15 @@ pub fn run(
                     .as_ref()
                     .is_none_or(|runtime| !runtime.is_for_pass(pass))
                 {
-                    product_selected_present_ui = Some(ProductSelectedPresentRuntime::new(
-                        &gfx,
-                        &game_resolver,
-                        &content_admission,
-                        pass,
-                    )?);
+                    product_selected_present_ui = Some(
+                        ProductSelectedPresentRuntime::new_with_decision_catalog_bytes(
+                            &gfx,
+                            &game_resolver,
+                            &content_admission,
+                            pass,
+                            provider.decision_catalog().map(|catalog| catalog.bytes()),
+                        )?,
+                    );
                 }
                 let runtime_text = match world_frame.as_deref() {
                     Some(frame) => match frame.runtime_text()? {
@@ -732,18 +746,33 @@ pub fn run(
                             .ok_or("selected-Present UI has no current world frame")?,
                         pov.active_pov(),
                         runtime_text.as_ref(),
+                        ArmyBattleplanUiSupplementalInputs::default(),
+                        IntelligenceUiSupplementalInputs::default(),
+                        OccupationUiSupplementalInputs::default(),
                     )? {
                     SelectedPresentUiOutcome::Executed {
                         operation_count,
                         m02_draw_count,
+                        decision_panel_item_count,
+                        power_balance_item_count,
+                        intelligence_panel_count,
+                        intelligence_unavailable_reason,
+                        agency_upgrade_count,
+                        cipher_target_count,
+                        trade_license_count,
+                        occupation_state_count,
+                        occupation_unavailable_reason,
+                        battleplan_order_count,
+                        battleplan_selected_order_present,
+                        typed_consumption,
                     } => {
                         selected_present_executed = true;
                         let identity = format!(
-                            "SELECTED_PRESENT_UI\0executed\0{operation_count}\0{m02_draw_count}"
+                            "SELECTED_PRESENT_UI\0executed\0{operation_count}\0{m02_draw_count}\0{decision_panel_item_count:?}\0{power_balance_item_count:?}\0{intelligence_panel_count:?}\0{intelligence_unavailable_reason:?}\0{agency_upgrade_count:?}\0{cipher_target_count:?}\0{trade_license_count:?}\0{occupation_state_count:?}\0{occupation_unavailable_reason:?}\0{battleplan_order_count:?}\0{battleplan_selected_order_present:?}\0{typed_consumption:?}"
                         );
                         if reported_production_data_needs.insert(identity) {
                             eprintln!(
-                                "replay_app: production selected-Present UI executed {operation_count} exact operations including {m02_draw_count} M02 draws"
+                                "replay_app: production selected-Present UI executed {operation_count} exact operations including {m02_draw_count} M02 draws; same-Present typed companions A34={decision_panel_item_count:?}, A37={power_balance_item_count:?}, XUI14={intelligence_panel_count:?}, XUI14_unavailable={intelligence_unavailable_reason:?}, A30_agency={agency_upgrade_count:?}, A30_cipher={cipher_target_count:?}, X3_licences={trade_license_count:?}, XUI16={occupation_state_count:?}, XUI16_unavailable={occupation_unavailable_reason:?}, d54_orders={battleplan_order_count:?}, d54_selected_order={battleplan_selected_order_present:?}, remaining={typed_consumption:?}"
                             );
                         }
                     }

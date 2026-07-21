@@ -7,7 +7,8 @@ success from aggregate row counters in ``native_session_manifest.json``.
 
 It asserts the four observations called out by LIVE_ACCEPTANCE_RUNBOOK:
 
-* A16: the same subject relation changes autonomy state and/or ratio;
+* A16: the same authenticated current-status row changes autonomy state and/or
+  signed score;
 * A8: every observed naval mission enum has the exact a729 name;
 * A9: a naval combat present in a clean snapshot later disappears in a clean
   snapshot (a lifecycle end, not a SOURCE_UNAVAILABLE hour);
@@ -28,7 +29,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SCHEMA = "battle-plan.acceptance_fixture_variance.v1"
+SCHEMA = "battle-plan.acceptance_fixture_variance.v2"
 SNAPSHOT_RE = re.compile(r"^(\d{12})\.snapshot\.json$")
 MISSION_NAMES = (
     "HOLD",
@@ -52,6 +53,9 @@ WEATHER_VALUE_KEYS = (
     "phenomenon_active",
     "sandstorm",
 )
+I64_MIN = -(1 << 63)
+I64_MAX = (1 << 63) - 1
+U32_MAX = (1 << 32) - 1
 
 
 class VerifyError(RuntimeError):
@@ -71,6 +75,26 @@ def strict_int(value: Any, label: str, minimum: int | None = None) -> int:
         raise VerifyError(f"{label} must be an integer")
     if minimum is not None and value < minimum:
         raise VerifyError(f"{label} must be >= {minimum}")
+    return value
+
+
+def strict_i64(value: Any, label: str) -> int:
+    value = strict_int(value, label)
+    if not I64_MIN <= value <= I64_MAX:
+        raise VerifyError(f"{label} must fit signed 64-bit")
+    return value
+
+
+def strict_u32(value: Any, label: str, minimum: int = 0) -> int:
+    value = strict_int(value, label, minimum)
+    if value > U32_MAX:
+        raise VerifyError(f"{label} must fit unsigned 32-bit")
+    return value
+
+
+def checked_i64(value: int, label: str) -> int:
+    if not I64_MIN <= value <= I64_MAX:
+        raise VerifyError(f"{label} overflows signed 64-bit")
     return value
 
 
@@ -146,38 +170,132 @@ def evidence_ref(snapshot_row: dict[str, Any]) -> dict[str, Any]:
 
 
 def grade_a16(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    seen: dict[tuple[int, int], tuple[dict[str, Any], tuple[int, int]]] = {}
+    previous: dict[tuple[int, int], tuple[dict[str, Any], tuple[int, int]]] = {}
     for snap in rows:
         if not domain_clean(snap["value"], (53,)):
+            previous.clear()
             continue
-        subject_rows = json_path(
-            snap["value"], "diplomacy_world", "domain53_extra", "subject_autonomy_rows"
+        status = json_path(
+            snap["value"],
+            "diplomacy_world",
+            "domain53_extra",
+            "subject_autonomy_current_status",
         )
-        if subject_rows is None:
+        current_rows = json_path(
+            snap["value"],
+            "diplomacy_world",
+            "domain53_extra",
+            "subject_autonomy_current_rows",
+        )
+        if status in (None, "unavailable"):
+            if current_rows is not None:
+                raise VerifyError("A16 unavailable current status must not carry rows")
+            previous.clear()
             continue
-        if not isinstance(subject_rows, list):
+        if status == "measured_empty":
+            if current_rows != []:
+                raise VerifyError("A16 measured-empty current status must carry an empty row array")
+            previous.clear()
+            continue
+        if status != "measured_nonempty":
+            raise VerifyError(f"A16 current-status witness is invalid: {status!r}")
+        if not isinstance(current_rows, list) or not current_rows:
+            raise VerifyError("A16 measured-nonempty current status must carry a nonempty row array")
+
+        base_rows = json_path(
+            snap["value"],
+            "diplomacy_world",
+            "domain53_extra",
+            "subject_autonomy_rows",
+        )
+        if not isinstance(base_rows, list):
             raise VerifyError("A16 subject_autonomy_rows must be an array")
-        for index, row in enumerate(subject_rows):
+        base_keys: set[tuple[int, int]] = set()
+        for index, row in enumerate(base_rows):
             if not isinstance(row, dict):
-                raise VerifyError("A16 subject row must be an object")
-            overlord = strict_int(row.get("overlord_tag_db_id"), f"A16 row {index} overlord", 0)
-            subject = strict_int(row.get("subject_tag_db_id"), f"A16 row {index} subject", 0)
-            state_hash = strict_int(row.get("autonomy_state_hash"), f"A16 row {index} state", 1)
-            ratio = strict_int(row.get("autonomy_ratio_raw"), f"A16 row {index} ratio", 0)
-            if ratio > 100_000:
-                raise VerifyError(f"A16 autonomy_ratio_raw out of range: {ratio}")
+                raise VerifyError("A16 base subject row must be an object")
+            overlord = strict_u32(
+                row.get("overlord_tag_db_id"), f"A16 base row {index} overlord", 1
+            )
+            subject = strict_u32(
+                row.get("subject_tag_db_id"), f"A16 base row {index} subject", 1
+            )
             key = (overlord, subject)
-            state = (state_hash, ratio)
-            if key in seen and seen[key][1] != state:
-                before_snap, before_state = seen[key]
-                return {
+            if overlord == subject or key in base_keys:
+                raise VerifyError(f"A16 base subject identity is invalid or duplicated: {key}")
+            base_keys.add(key)
+
+        current: dict[tuple[int, int], tuple[dict[str, Any], tuple[int, int]]] = {}
+        transition: dict[str, Any] | None = None
+        for index, row in enumerate(current_rows):
+            if not isinstance(row, dict):
+                raise VerifyError("A16 current-status row must be an object")
+            overlord = strict_u32(row.get("overlord_tag_db_id"), f"A16 row {index} overlord", 1)
+            subject = strict_u32(row.get("subject_tag_db_id"), f"A16 row {index} subject", 1)
+            state_hash = strict_u32(row.get("current_state_hash"), f"A16 row {index} state", 1)
+            previous_state = row.get("previous_state_hash")
+            next_state = row.get("next_state_hash")
+            if previous_state is not None:
+                previous_state = strict_u32(
+                    previous_state, f"A16 row {index} previous state", 1
+                )
+            if next_state is not None:
+                next_state = strict_u32(next_state, f"A16 row {index} next state", 1)
+            if (
+                state_hash in (previous_state, next_state)
+                or (previous_state is not None and previous_state == next_state)
+            ):
+                raise VerifyError(f"A16 row {index} state identities are not distinct")
+            score = strict_i64(row.get("current_score_raw"), f"A16 row {index} score")
+            lower = strict_i64(row.get("lower_score_raw"), f"A16 row {index} lower")
+            upper = strict_i64(row.get("upper_score_raw"), f"A16 row {index} upper")
+            ratio = strict_int(row.get("ratio_raw"), f"A16 row {index} ratio", 0)
+            if lower >= upper:
+                raise VerifyError(f"A16 score bounds are not increasing: {lower}..{upper}")
+            if ratio > 100_000:
+                raise VerifyError(f"A16 ratio_raw out of range: {ratio}")
+            forward = max(checked_i64(score - lower, "A16 score-lower"), 0)
+            remaining = max(checked_i64(upper - score, "A16 upper-score"), 0)
+            denominator = checked_i64(forward + remaining, "A16 ratio denominator")
+            scaled = checked_i64(forward * 100_000, "A16 ratio numerator")
+            if denominator <= 0 or scaled // denominator != ratio:
+                raise VerifyError("A16 ratio_raw disagrees with the exact current-score law")
+            date_raw = strict_u32(
+                row.get("last_modified_date_raw"),
+                f"A16 row {index} last-modified date",
+            )
+            date = row.get("last_modified_date")
+            if date is not None and (not isinstance(date, str) or not date or date_raw == 0):
+                raise VerifyError(f"A16 row {index} last-modified date is invalid")
+            if row.get("direction") not in (
+                None,
+                "toward_previous",
+                "stable",
+                "toward_next",
+            ):
+                raise VerifyError(f"A16 row {index} direction is invalid")
+            key = (overlord, subject)
+            if overlord == subject or key in current:
+                raise VerifyError(f"A16 current-status identity is invalid or duplicated: {key}")
+            state = (state_hash, score)
+            current[key] = (snap, state)
+            if transition is None and key in previous and previous[key][1] != state:
+                before_snap, before_state = previous[key]
+                transition = {
                     "passed": True,
                     "relation": {"overlord_tag_db_id": overlord, "subject_tag_db_id": subject},
-                    "before": {**evidence_ref(before_snap), "autonomy_state_hash": before_state[0], "autonomy_ratio_raw": before_state[1]},
-                    "after": {**evidence_ref(snap), "autonomy_state_hash": state_hash, "autonomy_ratio_raw": ratio},
+                    "before": {**evidence_ref(before_snap), "current_state_hash": before_state[0], "current_score_raw": before_state[1]},
+                    "after": {**evidence_ref(snap), "current_state_hash": state_hash, "current_score_raw": score},
                 }
-            seen.setdefault(key, (snap, state))
-    return {"passed": False, "problem": "no same-relation autonomy state/ratio change observed"}
+        if base_keys != set(current):
+            raise VerifyError("A16 current-status keys do not match the base subject family")
+        if transition is not None:
+            return transition
+        previous = current
+    return {
+        "passed": False,
+        "problem": "no same-relation authenticated current-state/current-score change observed",
+    }
 
 
 def grade_a8(rows: list[dict[str, Any]]) -> dict[str, Any]:

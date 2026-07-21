@@ -17,6 +17,21 @@
 - Agent/subagent concurrency limits are unrelated to Ghidra shard count.
 - Current details: `replay_interface/tools/ghidra/CURRENT_AUTHORITY.md`.
 
+## Unified agent-native RE tooling
+
+- Use the `hoi4_re` MCP facade for shared build/symbol lookup, patch migration,
+  registered live-memory observations, bounded Frida call traces, constrained
+  Unicorn emulation, and save/memory correlation. Start with `re_status`.
+- The facade does not replace the current Ghidra authority. Continue to call
+  `ghidra_status` before exact-a729 Ghidra exports and follow every rule above.
+- New-build analysis runs only in isolated writable projects under the facade's
+  machine-local state root. Never repoint or open a current authority shard
+  read-write for diffing.
+- `observe_runtime` is read-only. `trace_calls` is hook-based instrumentation;
+  use it only when live work is in scope, and never treat a trace or diff match
+  as automatic promotion evidence.
+- Operating guide: `replay_interface/tools/hoi4_re/README.md`.
+
 ## Rust builds and tests
 
 - This policy covers `extractor/native`, `replay_interface/native`, and their `portable_replay` dependencies.

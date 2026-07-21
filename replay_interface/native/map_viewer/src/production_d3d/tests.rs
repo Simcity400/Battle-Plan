@@ -76,6 +76,7 @@ fn empty_frame() -> PreparedProductionMapFrame {
         authenticated_ui_pass: None,
         m03_arrows: None,
         o04_cities: None,
+        o05_buildings: None,
         omitted_data_needs: Vec::new(),
     }
 }

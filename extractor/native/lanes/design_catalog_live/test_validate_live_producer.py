@@ -71,7 +71,13 @@ def fixture():
     }
     snapshot = {
         "schema": SCHEMA,
-        "authority": {"program": "hoi4.exe 1.19.2.0.a729", "program_sha256": PROGRAM_SHA256},
+        "authority": {
+            "program": "hoi4.exe 1.19.2.0.a729",
+            "program_sha256": PROGRAM_SHA256,
+            "current_date_raw": 43_800_899,
+            "capture_hour_index": 900,
+            "coherence": "double_read_all_roots_fields_and_membership",
+        },
         "full_replacement": True,
         "completeness": {"membership": True, "owner": True, "definitions": True, "lifecycle": True, "ui_occurrences": True},
         "variants": [_variant(1, "GER", 0, "0x1000"), _variant(2, "ITA", 1, "0x2000", occurrence=False)],

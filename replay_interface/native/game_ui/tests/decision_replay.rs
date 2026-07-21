@@ -48,6 +48,26 @@ fn valid_snapshot() -> DecisionPanelSnapshot {
         producer_complete: true,
         frame_hour: 100,
         country_tag: "GER".into(),
+        decision_catalog_sha256: catalog().source_sha256,
+        grid: DecisionGridState {
+            clip_left: 0,
+            clip_top: 0,
+            clip_right: 502,
+            clip_bottom: 600,
+            content_origin_x: 0,
+            content_origin_y: 0,
+            content_extent_width: 502,
+            content_extent_height: 123,
+            scroll_min: 0,
+            scroll_max: 0,
+            scroll_target: 0,
+            scroll_current: 0,
+        },
+        children: vec![
+            DecisionPanelChild { presentation_index: 0, kind: DecisionPanelChildKind::Decision, decision_row_index: Some(0), identity: "plain".into(), name_text: Some("War Propaganda".into()), secondary_text: None, expanded: None, x: 0, y: 0, width: 502, height: 41 },
+            DecisionPanelChild { presentation_index: 1, kind: DecisionPanelChildKind::Decision, decision_row_index: Some(1), identity: "mission".into(), name_text: Some("Mission".into()), secondary_text: Some("\u{11}H24 days\u{11}!".into()), expanded: None, x: 0, y: 41, width: 502, height: 41 },
+            DecisionPanelChild { presentation_index: 2, kind: DecisionPanelChildKind::Decision, decision_row_index: Some(2), identity: "targeted".into(), name_text: Some("Targeted".into()), secondary_text: Some("\u{11}H30 days\u{11}!".into()), expanded: None, x: 0, y: 82, width: 502, height: 41 },
+        ],
         available_alert_count: 1,
         timeout_alert_count: 1,
         rows: vec![
@@ -125,6 +145,72 @@ fn complete_snapshot_binds_exact_order_alerts_and_presentation() {
         binding.cards[1].timer_text.as_deref(),
         Some("\u{11}H24 days\u{11}!")
     );
+}
+
+#[test]
+fn heterogeneous_panel_materializes_structural_and_decision_items_in_exact_order() {
+    let mut snapshot = valid_snapshot();
+    for (offset, child) in snapshot.children.iter_mut().enumerate() {
+        child.presentation_index = u32::try_from(offset + 3).unwrap();
+        child.y += 111;
+    }
+    for row in &mut snapshot.rows {
+        row.presentation_index += 3;
+    }
+    snapshot.grid.content_extent_height += 111;
+    snapshot.children.splice(
+        0..0,
+        [
+            DecisionPanelChild {
+                presentation_index: 0,
+                kind: DecisionPanelChildKind::Category,
+                decision_row_index: None,
+                identity: "political".into(),
+                name_text: Some("Political Actions".into()),
+                secondary_text: Some("Exact category description".into()),
+                expanded: Some(true),
+                x: 0,
+                y: 0,
+                width: 502,
+                height: 58,
+            },
+            DecisionPanelChild {
+                presentation_index: 1,
+                kind: DecisionPanelChildKind::FixedHeader,
+                decision_row_index: None,
+                identity: "event_header".into(),
+                name_text: Some("Events".into()),
+                secondary_text: None,
+                expanded: None,
+                x: 0,
+                y: 58,
+                width: 502,
+                height: 20,
+            },
+            DecisionPanelChild {
+                presentation_index: 2,
+                kind: DecisionPanelChildKind::Event,
+                decision_row_index: None,
+                identity: "event_42".into(),
+                name_text: Some("An exact event".into()),
+                secondary_text: Some("3 days".into()),
+                expanded: None,
+                x: 0,
+                y: 78,
+                width: 502,
+                height: 33,
+            },
+        ],
+    );
+
+    let binding = bind_decision_panel(&catalog(), &snapshot).unwrap();
+    assert_eq!(binding.items.len(), 6);
+    assert!(matches!(&binding.items[0], DecisionPanelItem::Category(_)));
+    assert!(matches!(&binding.items[1], DecisionPanelItem::FixedHeader { .. }));
+    assert!(matches!(&binding.items[2], DecisionPanelItem::Event(_)));
+    assert!(matches!(&binding.items[3], DecisionPanelItem::Decision { .. }));
+    assert_eq!(binding.cards.len(), 3);
+    assert_eq!(binding.grid.content_extent_height, 234);
 }
 
 #[test]

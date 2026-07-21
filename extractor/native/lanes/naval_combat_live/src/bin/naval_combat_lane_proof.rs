@@ -53,7 +53,7 @@ fn main() {
 
     let fixture = fixture();
     let mut updated_fixture = fixture.clone();
-    updated_fixture.lifecycle.attacker_positioning_milli = Some(835);
+    updated_fixture.lifecycle.attacker_positioning_raw = Some(83_500);
     updated_fixture.members[0].engagement_weight_raw = Some(1_250);
     let cships = [cship(1001)];
     let start =
@@ -219,8 +219,10 @@ struct LifecycleInput {
     region_id: Option<u32>,
     attacker_member_count: u32,
     defender_member_count: u32,
-    attacker_positioning_milli: Option<i32>,
-    defender_positioning_milli: Option<i32>,
+    attacker_positioning_raw: Option<i32>,
+    defender_positioning_raw: Option<i32>,
+    attacker_anti_air_raw: Option<i64>,
+    defender_anti_air_raw: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -515,8 +517,10 @@ impl FixtureSnapshotInput {
                 region_id: self.lifecycle.region_id,
                 attacker_member_count: self.lifecycle.attacker_member_count,
                 defender_member_count: self.lifecycle.defender_member_count,
-                attacker_positioning_milli: self.lifecycle.attacker_positioning_milli,
-                defender_positioning_milli: self.lifecycle.defender_positioning_milli,
+                attacker_positioning_raw: self.lifecycle.attacker_positioning_raw,
+                defender_positioning_raw: self.lifecycle.defender_positioning_raw,
+                attacker_anti_air_raw: self.lifecycle.attacker_anti_air_raw,
+                defender_anti_air_raw: self.lifecycle.defender_anti_air_raw,
             },
             members: self
                 .members
@@ -697,8 +701,10 @@ fn fixture() -> ValidatedCombatSnapshot {
             region_id: Some(18),
             attacker_member_count: 1,
             defender_member_count: 1,
-            attacker_positioning_milli: Some(812),
-            defender_positioning_milli: Some(765),
+            attacker_positioning_raw: Some(81_200),
+            defender_positioning_raw: Some(76_500),
+            attacker_anti_air_raw: Some(123_000),
+            defender_anti_air_raw: Some(98_000),
         },
         members: vec![
             MemberBridgeRow {

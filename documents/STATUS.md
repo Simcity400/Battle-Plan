@@ -18,7 +18,9 @@ as a typed blocker, never a silent approximation.
   combat, intel, supply, event-hook residuals). 71 domains registered
   (`extractor/native/domain_registry.json` is code-authoritative).
 - A production promotion tuple (A1/A2/A4/A12/A14/A15/A21/A22/B8-X6) plus
-  A27/A32/A35 are frozen promotion-ready.
+  A27/A35 has frozen promotion evidence. A32's display/language carrier is
+  integrated, but its input-family authority is disabled and unbound, so A32
+  and XUI25 currently reject fail-closed rather than qualify for promotion.
 - **Not closed:** the product pillars P1–P5 (auto-attach, duplex control,
   campaign identity, stitching, hardening) are offline-green with activation
   deliberately OFF — the active path is still Legacy. No live speed-5

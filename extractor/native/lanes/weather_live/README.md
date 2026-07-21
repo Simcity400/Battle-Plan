@@ -56,13 +56,26 @@ Key residual evidence:
 
 ## A20 retained temporal gate
 
+The current exact20 semantic and production-wiring closeout is
+`../../../documents/dossiers/A20_WEATHER_TEMPORAL_CLOSEOUT_20260720.json`.
+It supersedes the airborne-priority arrays in the content-addressed historical
+XN14A/XN14C v1 evidence without rewriting those frozen artifacts; the adjacent
+replay authority is
+`../../../../replay_interface/re_evidence/rendering_laws/XN14C/A20_PRIORITY_SUPERSESSION_20260720.json`.
+In particular,
+`SWeatherPerRegion+0x78` is a compatibility activity diagnostic, not a
+weather-kind enum; weather kind comes only from the named flags. The exact
+`0x14166ec50` consumer order is rain-light, rain-heavy, snow, blizzard,
+sandstorm.
+
 The retained A20 candidate is Zstandard storage, not raw H4CR. The production
 gate is therefore the `weather_temporal_drift_gate` binary target in the
 `weather_live_lane` package; it uses the same strict
 raw/Zstandard file-boundary codec as the recorder and replay decoder. It hashes
 the encoded and decoded streams, rejects torn H4CR headers, enforces exact
 sequence and weather-hour continuity, validates every region and province row,
-and emits the pointer-free JSON receipt on stdout.
+authenticates named weather-kind transitions and due-only expiry refreshes, and
+emits the pointer-free JSON receipt on stdout.
 
 Only the primary agent runs the retained evidence test, through the centralized
 runner:
@@ -74,7 +87,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File extractor\native\scripts
 The exact retained contract is 423 weather records / 423 unique hours,
 `60794379..60794801`, 422 consecutive pairs, zero duplicate or nonconsecutive
 hours, one full baseline plus 422 deltas, 305 reconstructed region ids, and
-13,414 reconstructed province ids. The evidence test also pins the 17,484,345
+13,414 reconstructed province ids (`0..13413`, including engine-array
+completeness row zero). The evidence test also pins the 17,484,345
 encoded bytes and SHA-256
 `25c020ba7f423759c945311f56fd78ecf27f7581835fbada13ffb1f542e986ee`
 to the 1,488,548,730 decoded bytes and SHA-256

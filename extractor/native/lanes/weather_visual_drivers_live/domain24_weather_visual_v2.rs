@@ -12,7 +12,7 @@ pub const FIXED_SCALE_RAW: u32 = 100_000;
 
 pub const EXPECTED_REGION_ROWS: usize = 305;
 pub const MAX_REGION_ID: u32 = 304;
-pub const MAX_PHENOMENON: u32 = 16;
+pub const MAX_RAW_ACTIVITY_CANDIDATE: u32 = 16;
 pub const MAX_TEMPERATURE_RAW: i32 = 10_000_000;
 pub const MAX_TEMP_CHANGE_RAW: i32 = 10_000_000;
 pub const MAX_PRECIP_RAW: i32 = 100_000_000;
@@ -28,7 +28,7 @@ pub const WEATHER_REGION_STRIDE: usize = 0x160;
 pub const WEATHER_PROVINCE_STRIDE: usize = 0x180;
 pub const WEATHER_REGION_ID_OFF: usize = 0x08;
 pub const WEATHER_PROVINCE_ID_OFF: usize = 0x08;
-pub const WEATHER_REGION_PHENOM_ENUM_OFF: usize = 0x78;
+pub const WEATHER_REGION_RAW_ACTIVITY_OFF: usize = 0x78;
 pub const WEATHER_REGION_INTENSITY_OFF: usize = 0x5D;
 pub const WEATHER_REGION_ACTIVE_MODS_OFF: usize = 0x30;
 pub const WEATHER_REGION_TEMPERATURE_OFF: usize = 0x138;
@@ -333,7 +333,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> WeatherVisualGateSummary
         let flags = read_u32_le(payload, cursor + 4);
         let temperature_raw = read_i32_le(payload, cursor + 8);
         let phenomenon = read_u32_le(payload, cursor + 12);
-        let _next_weather_change_raw = read_u32_le(payload, cursor + 16);
+        let next_weather_change_raw = read_u32_le(payload, cursor + 16);
         let active_modifier_count = read_u32_le(payload, cursor + 20);
         let intensity = read_u32_le(payload, cursor + 24);
         let row_reserved = read_u32_le(payload, cursor + 28);
@@ -345,6 +345,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> WeatherVisualGateSummary
             flags,
             temperature_raw,
             phenomenon,
+            next_weather_change_raw,
             active_modifier_count,
             intensity,
             row_reserved,
@@ -397,6 +398,7 @@ fn validate_region_row(
     flags: u32,
     temperature_raw: i32,
     phenomenon: u32,
+    next_weather_change_raw: u32,
     active_modifier_count: u32,
     intensity: u32,
     row_reserved: u32,
@@ -418,6 +420,21 @@ fn validate_region_row(
             "offset {offset}: weather region row {row_index} has unknown flags {flags}"
         ));
     }
+    let named_weather_count = [
+        REGION_FLAG_RAIN_LIGHT,
+        REGION_FLAG_RAIN_HEAVY,
+        REGION_FLAG_SNOW,
+        REGION_FLAG_BLIZZARD,
+        REGION_FLAG_SANDSTORM,
+    ]
+    .into_iter()
+    .filter(|flag| flags & *flag != 0)
+    .count();
+    if named_weather_count > 1 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather region row {row_index} overlaps mutually-exclusive named weather flags"
+        ));
+    }
     let active_flag = (flags & REGION_FLAG_ACTIVE_SIGNAL) != 0;
     let phenomenon_flag = (flags & REGION_FLAG_PHENOMENON_ACTIVE) != 0;
     if active_flag != phenomenon_flag {
@@ -429,17 +446,22 @@ fn validate_region_row(
         *computed_active_regions = computed_active_regions.saturating_add(1);
         if !active_flag {
             summary.parse_errors.push(format!(
-                "offset {offset}: weather region row {row_index} has active phenomenon without active flag"
+                "offset {offset}: weather region row {row_index} has nonzero raw +0x78 activity candidate without active flag"
             ));
         }
     } else if active_flag {
         summary.parse_errors.push(format!(
-            "offset {offset}: weather region row {row_index} has active flag without phenomenon"
+            "offset {offset}: weather region row {row_index} has active flag without raw +0x78 activity candidate"
         ));
     }
-    if phenomenon > MAX_PHENOMENON {
+    if phenomenon > MAX_RAW_ACTIVITY_CANDIDATE {
         summary.parse_errors.push(format!(
-            "offset {offset}: weather region row {row_index} has invalid phenomenon {phenomenon}"
+            "offset {offset}: weather region row {row_index} has invalid raw +0x78 activity candidate {phenomenon}"
+        ));
+    }
+    if next_weather_change_raw > i32::MAX as u32 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather region row {row_index} has invalid signed transition expiry {next_weather_change_raw}"
         ));
     }
     if !(-MAX_TEMPERATURE_RAW..=MAX_TEMPERATURE_RAW).contains(&temperature_raw) {

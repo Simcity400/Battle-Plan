@@ -37,11 +37,28 @@ pub struct ProductionD3dOmission {
 /// binds H to every exact selected-submit SnowMudTexture consumer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnowMudD3dExecutionProof {
+    /// Exact tight BGRA8 bytes copied from the mapped replay staging texture.
+    /// This is retained only in explicit H2 evidence mode; a hash alone cannot
+    /// serve as the raw replay-consumer observation required by G3.
+    pub tight_readback_bytes: Vec<u8>,
     pub readback_sha256: String,
     pub mapped_row_pitch: u32,
     pub verified_row_count: u32,
     pub verified_tight_byte_count: u64,
     pub replaced_binding_count: u32,
+}
+
+/// Product-native proof that the exact occupation secondary packet was
+/// uploaded, read back byte-for-byte, and bound to both reflected consumers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OccupationSecondaryD3dExecutionProof {
+    pub tight_readback_bytes: Vec<u8>,
+    pub readback_sha256: String,
+    pub mapped_row_pitch: u32,
+    pub verified_row_count: u32,
+    pub verified_tight_byte_count: u64,
+    pub terrain_t6_binding_count: u32,
+    pub water_t3_binding_count: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -381,7 +398,8 @@ pub fn prepare_production_d3d_frame(
     output_states.extend(frame.ordered_runtime_draws.iter().map(|draw| match draw {
         PreparedRuntimeDraw::Particle { packet, .. } => packet.output_state.clone(),
         PreparedRuntimeDraw::Entity { submission, .. }
-        | PreparedRuntimeDraw::O04City { submission, .. } => submission.output_state.clone(),
+        | PreparedRuntimeDraw::O04City { submission, .. }
+        | PreparedRuntimeDraw::O05Building { submission, .. } => submission.output_state.clone(),
     }));
     let target = production_main_scene_desc_from_outputs(output_states.iter())?;
     if let Some(tree_runtime) = &frame.tree_runtime {
@@ -525,11 +543,7 @@ pub fn execute_production_d3d_frame(
         for draw in &frame.ordered_runtime_draws {
             bridge.execute_runtime_draw(ordinal, &frame.ordered_scene_constant_buffers, draw)?;
             collect_runtime_draw_content(draw, &mut used);
-            let pass = if matches!(draw, PreparedRuntimeDraw::O04City { .. }) {
-                "o04_city"
-            } else {
-                "runtime_submit"
-            };
+            let pass = runtime_draw_pass(draw);
             ordered_draws.push(ProductionD3dExecutedDraw {
                 global_ordinal: ordinal,
                 pass: pass.into(),
@@ -568,7 +582,8 @@ pub fn execute_production_d3d_frame(
         for draw in &frame.ordered_runtime_draws {
             let (PreparedRuntimeDraw::Particle { ordered_draw, .. }
             | PreparedRuntimeDraw::Entity { ordered_draw, .. }
-            | PreparedRuntimeDraw::O04City { ordered_draw, .. }) = draw;
+            | PreparedRuntimeDraw::O04City { ordered_draw, .. }
+            | PreparedRuntimeDraw::O05Building { ordered_draw, .. }) = draw;
             if runtime_draws.insert(ordered_draw, draw).is_some() {
                 return Err("runtime draws repeat an ordered-draw reference".into());
             }
@@ -612,11 +627,7 @@ pub fn execute_production_d3d_frame(
                         draw,
                     )?;
                     collect_runtime_draw_content(draw, &mut used);
-                    let pass = if matches!(draw, PreparedRuntimeDraw::O04City { .. }) {
-                        "o04_city"
-                    } else {
-                        "runtime_submit"
-                    };
+                    let pass = runtime_draw_pass(draw);
                     ordered_draws.push(ProductionD3dExecutedDraw {
                         global_ordinal: ordinal,
                         pass: pass.into(),
@@ -1128,7 +1139,8 @@ fn collect_runtime_draw_content(
             );
         }
         PreparedRuntimeDraw::Entity { submission, .. }
-        | PreparedRuntimeDraw::O04City { submission, .. } => {
+        | PreparedRuntimeDraw::O04City { submission, .. }
+        | PreparedRuntimeDraw::O05Building { submission, .. } => {
             collect_runtime_parts(
                 &submission.shader_program.source,
                 &submission.ordered_texture_bindings,
@@ -1228,8 +1240,19 @@ fn runtime_draw_token(draw: &PreparedRuntimeDraw) -> String {
     match draw {
         PreparedRuntimeDraw::Particle { ordered_draw, .. }
         | PreparedRuntimeDraw::Entity { ordered_draw, .. }
-        | PreparedRuntimeDraw::O04City { ordered_draw, .. } => {
+        | PreparedRuntimeDraw::O04City { ordered_draw, .. }
+        | PreparedRuntimeDraw::O05Building { ordered_draw, .. } => {
             serde_json::to_string(ordered_draw).expect("RenderOutputRef serialization cannot fail")
+        }
+    }
+}
+
+fn runtime_draw_pass(draw: &PreparedRuntimeDraw) -> &'static str {
+    match draw {
+        PreparedRuntimeDraw::O04City { .. } => "o04_city",
+        PreparedRuntimeDraw::O05Building { .. } => "o05_building",
+        PreparedRuntimeDraw::Particle { .. } | PreparedRuntimeDraw::Entity { .. } => {
+            "runtime_submit"
         }
     }
 }

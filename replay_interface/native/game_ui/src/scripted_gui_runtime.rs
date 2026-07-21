@@ -755,9 +755,15 @@ impl ScriptedGuiRuntimeState {
     pub fn from_view(view: &ScriptedGuiView, country_tag: &str) -> Self {
         Self {
             country_tag: country_tag.to_string(),
-            country_variables: measured_map(view.by_country.get(country_tag)),
+            country_variables: measured_fixed5_or_projection(
+                view.by_country_raw_fixed5.get(country_tag),
+                view.by_country.get(country_tag),
+            ),
             country_flags: measured_set(view.country_flags.get(country_tag)),
-            world_variables: measured_leaf_map(&view.world_variables),
+            world_variables: measured_fixed5_or_projection(
+                Some(&view.world_variables_raw_fixed5),
+                Some(&view.world_variables),
+            ),
             world_flags: measured_leaf_set(&view.world_flags),
         }
     }
@@ -802,16 +808,36 @@ fn measured_map(leaf: Option<&Leaf<BTreeMap<String, f64>>>) -> Option<BTreeMap<S
     }
 }
 
-fn measured_set(leaf: Option<&Leaf<Vec<String>>>) -> Option<BTreeSet<String>> {
-    match leaf {
-        Some(Leaf::Measured(value)) => Some(value.iter().cloned().collect()),
-        _ => None,
+fn measured_fixed5_or_projection(
+    raw: Option<&Leaf<BTreeMap<String, i64>>>,
+    projected: Option<&Leaf<BTreeMap<String, f64>>>,
+) -> Option<BTreeMap<String, f64>> {
+    match raw {
+        Some(Leaf::Measured(values)) => {
+            let Some(Leaf::Measured(projected)) = projected else {
+                return None;
+            };
+            let projection_matches = values.len() == projected.len()
+                && values.iter().all(|(key, value)| {
+                    projected
+                        .get(key)
+                        .is_some_and(|projected| *projected == *value as f64 / 100_000.0)
+                });
+            projection_matches.then(|| {
+                values
+                    .iter()
+                    .map(|(key, value)| (key.clone(), *value as f64 / 100_000.0))
+                    .collect()
+            })
+        }
+        Some(Leaf::Unobtained) => None,
+        Some(Leaf::Absent) | None => measured_map(projected),
     }
 }
 
-fn measured_leaf_map(leaf: &Leaf<BTreeMap<String, f64>>) -> Option<BTreeMap<String, f64>> {
+fn measured_set(leaf: Option<&Leaf<Vec<String>>>) -> Option<BTreeSet<String>> {
     match leaf {
-        Leaf::Measured(value) => Some(value.clone()),
+        Some(Leaf::Measured(value)) => Some(value.iter().cloned().collect()),
         _ => None,
     }
 }

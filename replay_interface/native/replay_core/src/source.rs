@@ -59,6 +59,25 @@ pub struct RecordedCampaignIdentityWitnesses {
     pub modset_identity: Option<String>,
 }
 
+/// Recorder-packaged effective decision catalog admitted by an exact
+/// recorder-manifest -> replay-index -> container-manifest -> payload join.
+///
+/// The bytes are immutable and pointer-free. Replay consumers never reopen a
+/// developer output path or an installed game tree to obtain this artifact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackagedDecisionCatalog {
+    path: String,
+    sha256: String,
+    content_manifest_digest_sha256: String,
+    bytes: Arc<[u8]>,
+}
+
+impl PackagedDecisionCatalog {
+    pub fn bytes(&self) -> &[u8] {
+        self.bytes.as_ref()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RecorderDisplayVariant {
@@ -155,12 +174,17 @@ pub trait ReplaySource: Send + Sync {
     fn campaign_identity(&self) -> Option<&RecordedCampaignIdentity> {
         None
     }
-    /// Strictly admitted recorder-owned pre-first-UI engine capture, when the
+    /// Strictly admitted recorder-owned post-process-end engine capture, when the
     /// selected game index declares the dedicated two-entry G2 package.
     fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
         None
     }
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
+        None
+    }
+    /// Exact effective decision catalog authenticated through the portable
+    /// package's recorder, index, content-manifest, and entry hashes.
+    fn decision_catalog(&self) -> Option<&PackagedDecisionCatalog> {
         None
     }
     /// Exact source-byte and decoder identity for an explicitly prefolded
@@ -273,6 +297,7 @@ pub fn open_prefolded_replay(
         store: None,
         recorder_binding: None,
         design_catalog: None,
+        decision_catalog: None,
         prefold_receipt: None,
         g2_engine_capture: None,
     }))
@@ -442,7 +467,9 @@ fn open_store_impl(
     }
 
     let hours: Vec<i64> = files_by_hour.keys().copied().collect();
-    let design_catalog = read_portable_design_catalog(&store, &game_id)?;
+    let design_catalog = read_portable_design_catalog(&store, &game_id, &hours)?;
+    let decision_catalog =
+        read_packaged_decision_catalog(&store, &game_id, metadata.recorder_manifest.as_ref())?;
     Ok(Box::new(StoreSource {
         store,
         game_id,
@@ -451,6 +478,7 @@ fn open_store_impl(
         warnings,
         recorder_binding: metadata.binding,
         design_catalog,
+        decision_catalog,
         g2_engine_capture: metadata.g2_engine_capture,
     }))
 }
@@ -523,7 +551,13 @@ fn open_compact_stream_with_decoder(
     }
     validate_prefolded_container_identity(container, certified.replay())?;
 
-    let design_catalog = read_portable_design_catalog(&store, &game_id)?;
+    let design_catalog = read_portable_design_catalog(
+        &store,
+        &game_id,
+        certified.replay().index().hours(),
+    )?;
+    let decision_catalog =
+        read_packaged_decision_catalog(&store, &game_id, metadata.recorder_manifest.as_ref())?;
     let prefold_receipt = Some(certified.receipt().clone());
     Ok(Box::new(PrefoldedSource {
         replay: certified.into_replay(),
@@ -531,6 +565,7 @@ fn open_compact_stream_with_decoder(
         store: Some(store),
         recorder_binding: metadata.binding,
         design_catalog,
+        decision_catalog,
         prefold_receipt,
         g2_engine_capture: metadata.g2_engine_capture,
     }))
@@ -668,7 +703,14 @@ fn open_compact_stream_with_spooled_decoder(
         &first,
     )?;
 
-    let design_catalog = read_portable_design_catalog(&store, &game_id)?;
+    let spool_hours = spool
+        .entries()
+        .iter()
+        .map(|entry| entry.hour_index())
+        .collect::<Vec<_>>();
+    let design_catalog = read_portable_design_catalog(&store, &game_id, &spool_hours)?;
+    let decision_catalog =
+        read_packaged_decision_catalog(&store, &game_id, metadata.recorder_manifest.as_ref())?;
     Ok(Box::new(SpooledPrefoldedSource {
         spool,
         snapshot_dir: certified_snapshot_dir,
@@ -677,6 +719,7 @@ fn open_compact_stream_with_spooled_decoder(
         store,
         recorder_binding: metadata.binding,
         design_catalog,
+        decision_catalog,
         prefold_receipt,
         g2_engine_capture: metadata.g2_engine_capture,
     }))
@@ -826,6 +869,7 @@ fn validate_snapshot_container_identity(
 fn read_portable_design_catalog(
     store: &Store,
     game_id: &str,
+    hours: &[i64],
 ) -> Result<Option<Arc<crate::design_catalog::PortableDesignCatalog>>, SourceError> {
     let bytes = store
         .read_game_file_bytes(game_id, crate::design_catalog::PORTABLE_ARTIFACT_PATH)
@@ -838,12 +882,224 @@ fn read_portable_design_catalog(
     bytes
         .map(|bytes| {
             crate::design_catalog::PortableDesignCatalog::decode_a27_live_json(&bytes)
+                .and_then(|catalog| {
+                    catalog.validate_replay_hours(hours)?;
+                    Ok(catalog)
+                })
                 .map(Arc::new)
                 .map_err(|error| {
                     SourceError::Open(format!("invalid A27 design catalog artifact: {error}"))
                 })
         })
         .transpose()
+}
+
+const DECISION_CATALOG_NAME: &str = "decisions_static_definitions";
+const DECISION_CATALOG_PATH: &str =
+    "static/decisions_static_definitions/decision_definitions_catalog.json";
+
+fn lower_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Admit A34's immutable effective decision catalog without any machine-local
+/// fallback. A usable artifact must be named identically by all four package
+/// authorities:
+///
+/// 1. recorder_manifest.replay_packaging.static_artifacts;
+/// 2. the selected game's authenticated index static-artifact roster;
+/// 3. the portable content-manifest digest sealed into the recorder row; and
+/// 4. the container manifest entry whose verified bytes are exposed by Store.
+///
+/// Legacy packages that predate the content-manifest digest field leave A34
+/// explicitly unavailable. Contradictory declarations are corruption and
+/// reject the open.
+fn read_packaged_decision_catalog(
+    store: &Store,
+    game_id: &str,
+    recorder_manifest: Option<&Map<String, Value>>,
+) -> Result<Option<PackagedDecisionCatalog>, SourceError> {
+    let recorder_rows = recorder_manifest
+        .and_then(|manifest| manifest.get("replay_packaging"))
+        .and_then(|packaging| packaging.get("static_artifacts"))
+        .and_then(Value::as_array);
+    let recorder_matches: Vec<&Value> = recorder_rows
+        .into_iter()
+        .flatten()
+        .filter(|row| row.get("name").and_then(Value::as_str) == Some(DECISION_CATALOG_NAME))
+        .collect();
+    if recorder_matches.len() > 1 {
+        return Err(SourceError::Open(
+            "recorder manifest declares the A34 decision catalog more than once".into(),
+        ));
+    }
+
+    let index_bytes = store
+        .read_game_file_bytes(game_id, "index.json")
+        .map_err(|error| {
+            SourceError::Open(format!(
+                "read authenticated index for A34 decision catalog join: {error}"
+            ))
+        })?
+        .ok_or_else(|| {
+            SourceError::Open(
+                "selected game index disappeared during A34 decision catalog join".into(),
+            )
+        })?;
+    let index = snapshot::parse_json_strict(&index_bytes).map_err(|error| {
+        SourceError::Open(format!(
+            "strict parse selected game index for A34 decision catalog join: {error}"
+        ))
+    })?;
+    let index_matches: Vec<&Value> = index
+        .get("static_artifacts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|row| row.get("name").and_then(Value::as_str) == Some(DECISION_CATALOG_NAME))
+        .collect();
+    if index_matches.len() > 1 {
+        return Err(SourceError::Open(
+            "selected game index declares the A34 decision catalog more than once".into(),
+        ));
+    }
+    let Some(index_row) = index_matches.first().copied() else {
+        if recorder_matches.is_empty() {
+            return Ok(None);
+        }
+        return Err(SourceError::Open(
+            "recorder manifest declares A34 decision catalog but index roster omits it".into(),
+        ));
+    };
+    if index_row.get("present").and_then(Value::as_bool) != Some(true) {
+        if recorder_matches.is_empty() {
+            return Ok(None);
+        }
+        return Err(SourceError::Open(
+            "recorder manifest declares A34 decision catalog but index records it absent".into(),
+        ));
+    }
+    // Snapshot-only and legacy directory stores may have an unauthenticated
+    // index roster but no recorder manifest at all. They remain playable with
+    // XUI19 unavailable; there is no recorder claim to contradict.
+    if recorder_manifest.is_none() {
+        return Ok(None);
+    }
+    let recorder_row = recorder_matches.first().copied().ok_or_else(|| {
+        SourceError::Open(
+            "index records A34 decision catalog present but recorder manifest omits it".into(),
+        )
+    })?;
+
+    let recorder_path = recorder_row.get("path").and_then(Value::as_str);
+    let recorder_sha = recorder_row.get("sha256").and_then(Value::as_str);
+    let recorder_len = recorder_row.get("bytes").and_then(Value::as_u64);
+    let recorder_content_digest = recorder_row
+        .get("content_manifest_digest_sha256")
+        .and_then(Value::as_str);
+    // The field was introduced with the production A34 package join. Old
+    // packages remain playable, but this feature is unavailable rather than
+    // consulting a local generated catalog.
+    let Some(recorder_content_digest) = recorder_content_digest else {
+        return Ok(None);
+    };
+    if recorder_path != Some(DECISION_CATALOG_PATH)
+        || recorder_sha.is_none_or(|value| !lower_sha256(value))
+        || recorder_len.is_none()
+        || !lower_sha256(recorder_content_digest)
+    {
+        return Err(SourceError::Open(
+            "recorder manifest A34 decision catalog identity is invalid".into(),
+        ));
+    }
+    let recorder_sha = recorder_sha.expect("validated recorder A34 sha");
+    let recorder_len = recorder_len.expect("validated recorder A34 length");
+
+    let index_path = index_row.get("path").and_then(Value::as_str);
+    let index_sha = index_row.get("sha256").and_then(Value::as_str);
+    let index_len = index_row.get("bytes").and_then(Value::as_u64);
+    if index_row.get("role").and_then(Value::as_str) != Some("static_artifact")
+        || index_path != Some(DECISION_CATALOG_PATH)
+        || index_sha != Some(recorder_sha)
+        || index_len != Some(recorder_len)
+    {
+        return Err(SourceError::Open(
+            "index A34 decision catalog identity disagrees with recorder manifest".into(),
+        ));
+    }
+
+    let container = store.container().ok_or_else(|| {
+        SourceError::Open(
+            "A34 decision catalog requires a portable container content-manifest authority"
+                .into(),
+        )
+    })?;
+    let content_digest = container
+        .content_manifest()
+        .and_then(|manifest| manifest.manifest_digest_sha256.as_deref())
+        .ok_or_else(|| {
+            SourceError::Open(
+                "A34 decision catalog is present but portable content manifest is absent or unfinalized"
+                    .into(),
+            )
+        })?;
+    if content_digest != recorder_content_digest {
+        return Err(SourceError::Open(
+            "A34 decision catalog recorder row is not bound to the selected content manifest"
+                .into(),
+        ));
+    }
+
+    let container_path = format!("payload/{game_id}/{DECISION_CATALOG_PATH}");
+    let entries: Vec<_> = container
+        .entries_by_role("static_artifact")
+        .into_iter()
+        .filter(|entry| entry.path == container_path)
+        .collect();
+    let entry = match entries.as_slice() {
+        [entry] => entry,
+        [] => {
+            return Err(SourceError::Open(
+                "A34 decision catalog index row has no matching container-manifest entry".into(),
+            ))
+        }
+        _ => {
+            return Err(SourceError::Open(
+                "A34 decision catalog has duplicate container-manifest entries".into(),
+            ))
+        }
+    };
+    if entry.sha256 != recorder_sha || entry.bytes != recorder_len {
+        return Err(SourceError::Open(
+            "A34 decision catalog container entry disagrees with recorder/index hashes".into(),
+        ));
+    }
+
+    let bytes = store
+        .read_game_file_bytes(game_id, DECISION_CATALOG_PATH)
+        .map_err(|error| {
+            SourceError::Open(format!(
+                "read verified A34 decision catalog payload: {error}"
+            ))
+        })?
+        .ok_or_else(|| SourceError::Open("verified A34 decision catalog payload is absent".into()))?;
+    let actual_sha =
+        snapshot::sha256::to_hex(&snapshot::sha256::Sha256::digest(bytes.as_slice()));
+    if bytes.len() as u64 != recorder_len || actual_sha != recorder_sha {
+        return Err(SourceError::Open(
+            "verified A34 decision catalog bytes disagree with package authorities".into(),
+        ));
+    }
+
+    Ok(Some(PackagedDecisionCatalog {
+        path: DECISION_CATALOG_PATH.into(),
+        sha256: actual_sha,
+        content_manifest_digest_sha256: content_digest.into(),
+        bytes: Arc::from(bytes),
+    }))
 }
 
 fn validate_index_schema_version(version: Option<&Value>) -> Result<(), SourceError> {
@@ -1892,6 +2148,7 @@ struct StoreSource {
     warnings: Vec<String>,
     recorder_binding: Option<RecorderSessionBinding>,
     design_catalog: Option<Arc<crate::design_catalog::PortableDesignCatalog>>,
+    decision_catalog: Option<PackagedDecisionCatalog>,
     g2_engine_capture: Option<crate::g2_engine_capture::PackagedG2EngineCapture>,
 }
 
@@ -1903,6 +2160,7 @@ struct SpooledPrefoldedSource {
     store: Store,
     recorder_binding: Option<RecorderSessionBinding>,
     design_catalog: Option<Arc<crate::design_catalog::PortableDesignCatalog>>,
+    decision_catalog: Option<PackagedDecisionCatalog>,
     prefold_receipt: snapshot::PrefoldSourceReceipt,
     g2_engine_capture: Option<crate::g2_engine_capture::PackagedG2EngineCapture>,
 }
@@ -1916,6 +2174,7 @@ struct PrefoldedSource {
     store: Option<Store>,
     recorder_binding: Option<RecorderSessionBinding>,
     design_catalog: Option<Arc<crate::design_catalog::PortableDesignCatalog>>,
+    decision_catalog: Option<PackagedDecisionCatalog>,
     prefold_receipt: Option<snapshot::PrefoldSourceReceipt>,
     g2_engine_capture: Option<crate::g2_engine_capture::PackagedG2EngineCapture>,
 }
@@ -1949,6 +2208,10 @@ impl ReplaySource for SpooledPrefoldedSource {
 
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
         self.design_catalog.as_ref()
+    }
+
+    fn decision_catalog(&self) -> Option<&PackagedDecisionCatalog> {
+        self.decision_catalog.as_ref()
     }
 
     fn prefold_receipt(&self) -> Option<&snapshot::PrefoldSourceReceipt> {
@@ -2031,6 +2294,10 @@ impl ReplaySource for PrefoldedSource {
         self.design_catalog.as_ref()
     }
 
+    fn decision_catalog(&self) -> Option<&PackagedDecisionCatalog> {
+        self.decision_catalog.as_ref()
+    }
+
     fn prefold_receipt(&self) -> Option<&snapshot::PrefoldSourceReceipt> {
         self.prefold_receipt.as_ref()
     }
@@ -2102,6 +2369,9 @@ impl ReplaySource for StoreSource {
     }
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
         self.design_catalog.as_ref()
+    }
+    fn decision_catalog(&self) -> Option<&PackagedDecisionCatalog> {
+        self.decision_catalog.as_ref()
     }
     fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
         let file = self.files_by_hour.get(&hour_index).ok_or_else(|| {
@@ -3265,7 +3535,8 @@ mod tests {
             ),
             "snapshot/bin/pack_replay.rs" => matches!(
                 line,
-                "use std::fs;"
+                "use std::fs::{self, OpenOptions};"
+                    | "use std::io::{Read, Seek, SeekFrom, Write};"
                     | "use std::path::{Path, PathBuf};"
                     | "(Some(a), Some(b), Some(c)) => (PathBuf::from(a), b.clone(), PathBuf::from(c)),"
                     | "let gdir = root.join(&game);"
@@ -3275,8 +3546,24 @@ mod tests {
                     | "let bytes = match fs::read(&p) {"
                     | "let tpath = gdir.join(\"timeline.json\");"
                     | "if let Ok(tb) = fs::read(&tpath) {"
-                    | "if let Err(e) = fs::write(&tmp, &container) {"
-                    | "if let Err(e) = fs::rename(&tmp, &out) {"
+                    | "fs::create_dir_all(parent)"
+                    | "let canonical_parent = fs::canonicalize(parent.unwrap_or_else(|| Path::new(\".\")))"
+                    | "let anchored_out = canonical_parent.join(file_name);"
+                    | "let published = fs::read(&anchored_out)"
+                    // Output-only atomic publication helpers. `out` is the
+                    // caller-selected destination; the temporary child is
+                    // created with create_new beneath its canonicalized
+                    // parent and is never used to select replay input.
+                    | "fn create_unique_temp(out: &Path) -> Result<(PathBuf, fs::File), String> {"
+                    | "let parent = out.parent().unwrap_or_else(|| Path::new(\".\"));"
+                    | "let temp = parent.join(format!(\".{name}.pack-tmp-{nonce}.{attempt}\"));"
+                    | "match OpenOptions::new()"
+                    | ".open(&temp)"
+                    | "match fs::symlink_metadata(out) {"
+                    | "use std::os::windows::fs::MetadataExt;"
+                    | "let cleanup = fs::remove_file(&temp);"
+                    | "fs::File::open(out.parent().unwrap_or_else(|| Path::new(\".\")))?.sync_all()"
+                    | "fs::rename(temp, out)"
                     | "let gdir = Path::new(root).join(game);"
                     | "let orig = gdir.join(&s.file);"
                     | "let orig_bytes = match fs::read(&orig) {"

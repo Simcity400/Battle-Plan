@@ -1,9 +1,12 @@
 # A27 live design catalog
 
-A27 is promotion-ready for `hoi4.exe 1.19.2.0.a729`. The production reader
-captures the complete live catalog directly from process memory; the save is
-loaded only after the native snapshot is frozen and is used solely as a
-same-tick acceptance oracle.
+A27's exact **single-hour census** is proven for
+`hoi4.exe 1.19.2.0.a729`. The temporal production path is now implemented but
+awaits root central validation and H-A27 live evidence. During capture the
+recorder owns one hidden repeated-census worker. Every accepted hour is a
+whole-sweep-sealed full replacement; packaging derives exact stable-ID upserts
+and absence-only tombstones and rejects any gap against the compact replay
+spine. The save remains a same-tick acceptance oracle only.
 
 ## Frozen result
 
@@ -19,7 +22,8 @@ same-tick acceptance oracle.
 - The live engine strings are UTF-8. The save JSON contains 31 variant names
   and 59 template names decoded as Latin-1; the acceptance gate repairs only
   that oracle-side encoding for semantic comparison and records the counts.
-- Independent promotion gate: 12/12 checks passed, zero blockers.
+- Independent single-hour census gate: 12/12 checks passed, zero blockers. This
+  does not prove create/edit/rename/obsolete/delete history.
 
 Primary evidence:
 
@@ -33,7 +37,9 @@ Primary evidence:
 ## Production surface
 
 - `live_a729_acceptance.py`: exact process-memory producer and frozen-snapshot
-  re-verifier.
+  re-verifier. A live capture re-reads the date, country/tag roots, every
+  membership vector, every definition/lifecycle field, and both full heap
+  censuses before admitting the snapshot.
 - `a729_layout.py`: pinned layout and binary identity constants.
 - `a729_memory_reader.py`: compatibility entry point delegating to the live
   producer. The old save-built `SparseMemory`/`FixturePredicates` path has been
@@ -46,11 +52,45 @@ Country template vectors supply template ownership/order; A/B vectors are
 joined as optional UI membership/order occurrences. Raw pointers are retained
 only as same-snapshot identity and never become replay-stable IDs.
 
-Run the frozen gates:
+The portable v3 artifact preserves the complete native payload after removing
+process-local relocation fields. Its smaller replay/UI record projection is not
+the complete native definition. D78 display order may join only when its
+`frame_hour` has an authenticated A27 census.
+
+## Temporal production path
+
+- `capture_timeline.py` repeats the exact coherent reader and seals monotonic
+  hour/sequence observations. Every admitted hour also requires a later
+  byte-identical same-hour census. Every recheck digest is retained and must
+  equal that hour's canonical snapshot digest; a changed same-hour census is
+  fatal because it cannot be bound to a D78 transition without an in-process
+  hook.
+- The recorder starts that worker before live capture. Attached targets seal a
+  baseline before pipe/hook exposure; suspended early-launch targets seal it
+  after resume but before collector COMMIT. The recorder stops the worker after
+  the pipe closes, requires exact compact-spine coverage, and packages portable
+  v3 deltas.
+- Upserts retain full pointer-free native rows. Tombstones exist only when a
+  stable identity is absent from the next coherent full replacement.
+- Replay reconstructs only an explicitly captured hour; missing-hour and
+  cross-hour D78 joins reject.
+- `Invoke-A27TimelineCapture.ps1` plus `regrade_timeline.py` is the independent
+  owner-runnable H-A27 evidence route.
+
+The examined creation and designer-refresh routes are not a universal lifecycle
+root. H-A27 therefore asks only for an external machine observation after root
+validation. If the external sweep cannot seal every advancing hour, that
+machine failure proves the remaining in-process boundary; no human semantic
+interpretation is permitted.
+
+The retained frozen snapshot predates the whole-sweep coherence receipt and is
+historical evidence only. Production admission now rejects it until a new live
+capture supplies `current_date_raw`, `capture_hour_index`, and the double-read
+coherence seal. After re-capture, run the gates with the new snapshot:
 
 ```powershell
-python extractor/native/lanes/design_catalog_live/live_a729_acceptance.py --snapshot-in extractor/native/lanes/design_catalog_live/proofs/a27_live_same_tick_v2/snapshot.json --snapshot-out extractor/native/lanes/design_catalog_live/proofs/a27_live_same_tick_v2/snapshot.json --report-out extractor/native/lanes/design_catalog_live/proofs/a27_live_same_tick_v2/report.json --oracle C:\tmp\a27_current_same_tick\designs.json
-python extractor/native/lanes/design_catalog_live/validate_live_producer.py --snapshot extractor/native/lanes/design_catalog_live/proofs/a27_live_same_tick_v2/snapshot.json --oracle C:\tmp\a27_current_same_tick\designs.json
+python extractor/native/lanes/design_catalog_live/live_a729_acceptance.py --snapshot-out C:\tmp\a27_current_same_tick\snapshot.json --report-out C:\tmp\a27_current_same_tick\report.json --oracle C:\tmp\a27_current_same_tick\designs.json
+python extractor/native/lanes/design_catalog_live/validate_live_producer.py --snapshot C:\tmp\a27_current_same_tick\snapshot.json --oracle C:\tmp\a27_current_same_tick\designs.json
 python -m pytest extractor/native/lanes/design_catalog_live/test_validate_live_producer.py extractor/native/lanes/design_catalog_live/test_a729_memory_reader.py -q
 ```
 

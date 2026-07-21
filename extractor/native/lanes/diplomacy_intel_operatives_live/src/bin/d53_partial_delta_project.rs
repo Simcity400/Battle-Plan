@@ -154,6 +154,8 @@ fn reduced_snapshot(
         faction_roster_complete: src.faction_roster_complete,
         subject_autonomy_statuses: src.subject_autonomy_statuses.clone(),
         subject_autonomy_status_complete: src.subject_autonomy_status_complete,
+        operation_tokens: src.operation_tokens.clone(),
+        operation_tokens_complete: src.operation_tokens_complete,
         ..Default::default()
     };
     diff(&cur.countries, &base.countries, &mut s.countries, |r| {

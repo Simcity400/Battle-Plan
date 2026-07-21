@@ -55,6 +55,7 @@ COUNTRY_VTABLE_RVA = 0x27D0E90
 GS_COUNTRY_TABLE = 0x310
 GS_COUNTRY_COUNT = 0x31C
 GS_CURRENT_DATE = 0x468
+DATE_EPOCH_CONST = 43_799_999
 MAX_COUNTRIES = 2048
 MAX_VECTOR = 100_000
 HEAP_LO = 0x10000000000
@@ -467,6 +468,10 @@ def capture(p) -> dict:
     game_state = p.u64(p.module_base + CGAMESTATE_RVA)
     if not _heap(game_state):
         raise RuntimeError("CGameState root is invalid")
+    current_date_raw = p.u32(game_state + GS_CURRENT_DATE)
+    capture_hour_index = current_date_raw - DATE_EPOCH_CONST
+    if capture_hour_index < 0:
+        raise RuntimeError("CGameState date is outside the portable replay epoch")
     table = p.u64(game_state + GS_COUNTRY_TABLE)
     count = p.u32(game_state + GS_COUNTRY_COUNT)
     if not _heap(table) or not (1 <= count <= MAX_COUNTRIES):
@@ -494,6 +499,8 @@ def capture(p) -> dict:
     occurrences: dict[int, list[dict]] = {pointer: [] for _, pointer in variant_catalog}
     first_ui_discovery: dict[int, int] = {}
     template_sources: dict[int, dict] = {}
+    source_vectors: dict[tuple[int, str], list[int]] = {}
+    template_vectors: dict[int, list[int]] = {}
     ui_discovery_ordinal = 0
     for registry_index, tag, country in countries:
         manager = p.u64(country + COUNTRY_PROD_MANAGER)
@@ -503,7 +510,9 @@ def capture(p) -> dict:
             ("A", MANAGER_LIST_A_DATA, MANAGER_LIST_A_COUNT),
             ("B", MANAGER_LIST_B_DATA, MANAGER_LIST_B_COUNT),
         ):
-            for ordinal, ptr in enumerate(_stable_vector(p, manager, data_off, count_off, f"{tag}/{source_list}")):
+            source_vector = _stable_vector(p, manager, data_off, count_off, f"{tag}/{source_list}")
+            source_vectors[(registry_index, source_list)] = source_vector
+            for ordinal, ptr in enumerate(source_vector):
                 if (
                     not _heap(ptr)
                     or p.u64(ptr) != p.module_base + VARIANT_VTABLE_RVA
@@ -525,9 +534,11 @@ def capture(p) -> dict:
                     first_ui_discovery[ptr] = ui_discovery_ordinal
                     ui_discovery_ordinal += 1
 
-        for ordinal, ptr in enumerate(
-            _stable_vector(p, country, COUNTRY_TEMPLATES_DATA, COUNTRY_TEMPLATES_COUNT, f"{tag}/templates")
-        ):
+        template_vector = _stable_vector(
+            p, country, COUNTRY_TEMPLATES_DATA, COUNTRY_TEMPLATES_COUNT, f"{tag}/templates"
+        )
+        template_vectors[registry_index] = template_vector
+        for ordinal, ptr in enumerate(template_vector):
             if (
                 not _heap(ptr)
                 or p.u64(ptr) != p.module_base + TEMPLATE_VTABLE_RVA
@@ -590,6 +601,65 @@ def capture(p) -> dict:
                 "definition": definition,
             }
         )
+
+    # A stable vector header alone does not make a multi-second heap sweep one
+    # coherent observation. Re-read every membership root and every exact
+    # semantic field after the first projection, then repeat both vtable
+    # censuses. Any create/edit/rename/obsolete/delete or owner/order mutation
+    # during the sweep rejects the entire capture.
+    if p.u32(game_state + GS_CURRENT_DATE) != current_date_raw:
+        raise RuntimeError("A27 catalog crossed a game-hour boundary")
+    if tags != _tag_map(p):
+        raise RuntimeError("country tag table changed during A27 capture")
+    if (table, count) != (
+        p.u64(game_state + GS_COUNTRY_TABLE),
+        p.u32(game_state + GS_COUNTRY_COUNT),
+    ):
+        raise RuntimeError("country registry header changed during A27 capture")
+    if p.read(table, count * 8) != raw:
+        raise RuntimeError("country registry rows changed during A27 capture")
+    for registry_index, tag, country in countries:
+        manager = p.u64(country + COUNTRY_PROD_MANAGER)
+        if not _heap(manager):
+            raise RuntimeError(f"{tag}: production manager changed during A27 capture")
+        for source_list, data_off, count_off in (
+            ("A", MANAGER_LIST_A_DATA, MANAGER_LIST_A_COUNT),
+            ("B", MANAGER_LIST_B_DATA, MANAGER_LIST_B_COUNT),
+        ):
+            if _stable_vector(
+                p, manager, data_off, count_off, f"{tag}/{source_list}/seal"
+            ) != source_vectors[(registry_index, source_list)]:
+                raise RuntimeError(f"{tag}/{source_list}: membership/order changed during A27 capture")
+        if _stable_vector(
+            p,
+            country,
+            COUNTRY_TEMPLATES_DATA,
+            COUNTRY_TEMPLATES_COUNT,
+            f"{tag}/templates/seal",
+        ) != template_vectors[registry_index]:
+            raise RuntimeError(f"{tag}/templates: membership/order changed during A27 capture")
+    for row, (design_id, ptr) in zip(variants, variant_catalog, strict=True):
+        if (
+            _resolve_tag(tags, p.u32(ptr + VARIANT_CREATOR)) != row["creator_tag"]
+            or (
+                None
+                if p.u32(ptr + VARIANT_ORIGIN) == 0
+                else _resolve_tag(tags, p.u32(ptr + VARIANT_ORIGIN))
+            )
+            != row["origin_override_tag"]
+            or bool(p.u8(ptr + VARIANT_OBSOLETE)) != row["obsolete"]
+            or _variant_definition(p, ptr, design_id) != row["definition"]
+        ):
+            raise RuntimeError(f"variant {design_id}: definition/lifecycle changed during A27 capture")
+    for row, (design_id, ptr) in zip(templates, template_catalog, strict=True):
+        if _template_definition(p, ptr, design_id) != row["definition"]:
+            raise RuntimeError(f"template {design_id}: definition/lifecycle changed during A27 capture")
+    if _catalog_objects(p, VARIANT_VTABLE_RVA, TYPE_VARIANT, "equipment variants/seal") != variant_catalog:
+        raise RuntimeError("equipment-variant heap membership changed during A27 capture")
+    if _catalog_objects(p, TEMPLATE_VTABLE_RVA, TYPE_TEMPLATE, "division templates/seal") != template_catalog:
+        raise RuntimeError("division-template heap membership changed during A27 capture")
+    if p.u32(game_state + GS_CURRENT_DATE) != current_date_raw:
+        raise RuntimeError("A27 catalog crossed a game-hour boundary while sealing")
     return {
         "schema": "extractor.a27.live_heap_catalog.a729.v2",
         "authority": {
@@ -598,7 +668,9 @@ def capture(p) -> dict:
             "pid": p.pid,
             "module_base": _hx(p.module_base),
             "game_state": _hx(game_state),
-            "current_date_raw": p.u32(game_state + GS_CURRENT_DATE),
+            "current_date_raw": current_date_raw,
+            "capture_hour_index": capture_hour_index,
+            "coherence": "double_read_all_roots_fields_and_membership",
         },
         "full_replacement": True,
         "completeness": {

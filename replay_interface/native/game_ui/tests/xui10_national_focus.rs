@@ -11,7 +11,7 @@ use game_ui::research_canvas::{
 };
 use replay_core::{
     FocusView, Leaf, NationalFocusPresentationExact, NationalFocusPresentationExactView,
-    NationalFocusPresentationItemExact, ViewStatus,
+    NationalFocusPresentationItemExact, NationalFocusSelectedPresentExact, ViewStatus,
 };
 
 fn ids() -> Vec<String> {
@@ -115,19 +115,27 @@ fn exact() -> NationalFocusPresentationExactView {
     NationalFocusPresentationExactView {
         status: ViewStatus::Present,
         presentation: Some(NationalFocusPresentationExact {
-            schema_version: 1,
+            schema_version: 2,
             authority: "exact_a729_national_focus_view_items".into(),
             executable_sha256:
                 "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
                     .into(),
             function_manifest_sha256:
-                "303351ed65468aa7655b904998819c96ca1c325f906b5a3bf32c4f18decc7969"
+                "b319dd1b721ed6a13e47088b7def034111f9882631080bffbf049fbb79265a2f"
                     .into(),
             job_receipt_sha256:
-                "c6c3fb002bc05f1e092d7eb9b436aa720ca2cf19ad08f055747216dfa5871b4f"
+                "b1c9d8c0678956f17bea2e7f9e06e7ff4baf31254c11b3c983a9a5ca9ae2d04b"
                     .into(),
             elapsed_wall_ms: 3,
             frame_hour: 900,
+            materialization_qpc_ticks: 90,
+            selected_present: NationalFocusSelectedPresentExact {
+                frame_hour: 900,
+                selected_present_global_order: 7,
+                selected_present_qpc_ticks: 100,
+                qpc_frequency_hz: 10_000_000,
+                selected_present_receipt_sha256: "ab".repeat(32),
+            },
             source_sequence: 11,
             producer_complete: true,
             country_tag: "GER".into(),

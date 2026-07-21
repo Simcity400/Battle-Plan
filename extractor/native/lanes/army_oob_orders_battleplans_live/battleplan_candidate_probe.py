@@ -54,18 +54,18 @@ class OrderRef:
 
 GEOMETRY_CANDIDATES = [
     {
-        "name": "old_type2_province_vector_plus_0x70",
+        "name": "type1_type2_type3_path_vector_plus_0x70",
         "begin_off": 0x70,
-        "size_off": 0x78,
+        "size_off": 0x7C,
         "kind": "geometry",
         "field_type": "vec<u32>",
         "applies_to": [1, 2, 3],
-        "source": "memory_reader/construction_orders_offsets.draft.json type-2 provinces @+0x70/+0x78",
+        "source": "exact a729 vector helpers: data @+0x70, capacity @+0x78, live count @+0x7C",
     },
     {
         "name": "old_type3_secondary_vector_plus_0xC0",
         "begin_off": 0xC0,
-        "size_off": 0xC8,
+        "size_off": 0xCC,
         "kind": "geometry",
         "field_type": "vec<u32>",
         "applies_to": [3],
@@ -250,7 +250,7 @@ def validate_type5_positive_control(p: Any, orders: list[OrderRef]) -> dict[str,
         "status": status,
         "candidate": {
             "begin_offset": "+0xE0",
-            "size_offset": "+0xE8",
+            "size_offset": "+0xEC",
             "field_type": "vec<u32>",
         },
         "tested_rows": len(type5),

@@ -19,7 +19,7 @@ pub const GLYPH_VERTEX_BYTES: usize = GLYPH_VERTEX_STRIDE * GLYPH_VERTEX_COUNT;
 pub const A729_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 pub const OWNER_GLYPH_RE_MANIFEST_SHA256: &str =
-    "bf69324665fd7a9381a906a59985787eb9913c1449e42606b103ea576c4a5286";
+    "0d08554c66e82e188e3dec267bb9c03a2f0718aa71c3c648fc4aedf29ed27edf";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CaptureHealth {
@@ -120,6 +120,17 @@ pub struct OwnerScopedGlyphCapture {
     pub element_id: String,
     pub source: RuntimeTextSourceIdentity,
     pub selected_final_text_sha256: String,
+    /// Pointer-free token assigned by the same GUI owner resolver that emits
+    /// `GuiPaintCommandIdentity.engine_instance_token`.
+    pub gui_engine_instance_token: u64,
+    /// Exact selected-Present UI operation ordinal for this owner scope.
+    pub paint_ordinal: u32,
+    /// Absolute selected-UI-target rectangle `[left, top, right, bottom]`
+    /// observed at the same owner-render entry.
+    pub destination_rect: [i32; 4],
+    /// Absolute selected-UI-target scissor, if enabled for this owner draw.
+    pub ui_clip: Option<[i32; 4]>,
+    /// Owner-relative runtime-layout clip consumed by d76 replay.
     pub clip: Option<[i32; 4]>,
     pub glyph_decision_count: u32,
     pub inline_icon_decision_count: u32,
@@ -133,6 +144,10 @@ pub struct OwnerScopedGlyphCapture {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdmittedOwnerGlyphCapture {
     pub layout: RuntimeTextLayout,
+    pub gui_engine_instance_token: u64,
+    pub paint_ordinal: u32,
+    pub destination_rect: [i32; 4],
+    pub ui_clip: Option<[i32; 4]>,
     /// Exact assets that the selected-Present command must bind by authenticated
     /// content index. The RTI1 row stores only their stable identities.
     pub fonts: Vec<FontAssetReceipt>,
@@ -212,7 +227,14 @@ impl OwnerGlyphCaptureAdmission {
         if capture.health != CaptureHealth::default() {
             return Err("owner-glyph capture contains loss or hook failures".into());
         }
+        if capture.gui_engine_instance_token == 0 {
+            return Err("owner-glyph capture has no GUI engine-instance token".into());
+        }
         validate_clip(capture.clip)?;
+        validate_absolute_rect(capture.destination_rect, "owner destination")?;
+        if let Some(rect) = capture.ui_clip {
+            validate_absolute_rect(rect, "owner UI clip")?;
+        }
 
         let next = self
             .next_ordinal_by_epoch
@@ -274,6 +296,7 @@ impl OwnerGlyphCaptureAdmission {
                 ));
             }
             glyphs.push(GlyphRun {
+                run_ordinal: glyph.run_ordinal,
                 font: glyph.font_identity.clone(),
                 glyph_id: glyph.glyph_id,
                 x: glyph.owner_relative_x,
@@ -301,6 +324,7 @@ impl OwnerGlyphCaptureAdmission {
                 .checked_add(icon.baseline)
                 .ok_or_else(|| "inline-icon y/baseline overflow".to_string())?;
             inline_icons.push(InlineIconRun {
+                run_ordinal: icon.run_ordinal,
                 sprite: icon.sprite_identity.clone(),
                 frame: icon.frame,
                 x: icon.owner_relative_x,
@@ -319,10 +343,21 @@ impl OwnerGlyphCaptureAdmission {
                 glyphs,
                 inline_icons,
             },
+            gui_engine_instance_token: capture.gui_engine_instance_token,
+            paint_ordinal: capture.paint_ordinal,
+            destination_rect: capture.destination_rect,
+            ui_clip: capture.ui_clip,
             fonts: capture.fonts,
             icon_assets: capture.icon_assets,
         })
     }
+}
+
+fn validate_absolute_rect(rect: [i32; 4], label: &str) -> Result<(), String> {
+    if rect[2] <= rect[0] || rect[3] <= rect[1] {
+        return Err(format!("owner-glyph {label} has a non-positive extent"));
+    }
+    Ok(())
 }
 
 fn validate_authority(authority: &OwnerGlyphCaptureAuthority) -> Result<(), String> {
@@ -516,6 +551,10 @@ mod tests {
             element_id: row.element_id.clone(),
             source: row.source.clone(),
             selected_final_text_sha256: hex_sha256(&row.final_text_bytes),
+            gui_engine_instance_token: 7,
+            paint_ordinal: 0,
+            destination_rect: [100, 200, 132, 216],
+            ui_clip: Some([100, 200, 132, 216]),
             clip: Some([0, 0, 32, 16]),
             glyph_decision_count: 1,
             inline_icon_decision_count: 0,

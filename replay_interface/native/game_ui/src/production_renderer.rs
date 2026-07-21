@@ -13,9 +13,13 @@ use crate::binding::{
 use crate::compose::UiAssetCache;
 use crate::dds::RgbaImage;
 use crate::gfx::SpriteRegistry;
-use crate::hud::{compose_authenticated_hud, HudBinding, HudSpriteStats, MinimapBinding};
+use crate::hud::{
+    compose_authenticated_hud, HudBinding, HudSpriteStats, MinimapBinding, TooltipBinding,
+};
 use crate::loc::Localisation;
-use crate::variant_admission::{DisplayMode, DisplayVariantKey, InputVariant, PixelExtent};
+use crate::variant_admission::{
+    DisplayMode, DisplayVariantKey, ExactKeyVariantContract, InputVariant, PixelExtent,
+};
 use crate::{GameUiError, Result};
 use replay_core::{MapmodeProvenance, RecordedInputVariant, ValidatedContentAdmission, WorldFrame};
 use std::collections::BTreeSet;
@@ -29,6 +33,20 @@ pub const PRODUCTION_UI_MIN_GUI: PixelExtent = PixelExtent {
 };
 pub const PRODUCTION_UI_GUI_SCALE_BITS: u32 = 0x3f80_0000;
 pub const PRODUCTION_UI_LANGUAGE: &str = "l_english";
+
+pub fn production_ui_variant_key() -> DisplayVariantKey {
+    DisplayVariantKey {
+        physical_viewport: PixelExtent {
+            width: PRODUCTION_UI_WIDTH as u32,
+            height: PRODUCTION_UI_HEIGHT as u32,
+        },
+        min_gui: PRODUCTION_UI_MIN_GUI,
+        gui_scale_f32_bits: PRODUCTION_UI_GUI_SCALE_BITS,
+        display_mode: DisplayMode::BorderlessFullscreen,
+        localisation_language: PRODUCTION_UI_LANGUAGE.to_string(),
+        input_variant: InputVariant::MouseKeyboard,
+    }
+}
 
 const PRODUCT_HUD_SURFACES: &[(&str, &str, &str)] = &[
     ("topbar", "topbar", crate::topbar::TOPBAR_GUI),
@@ -149,6 +167,10 @@ pub const REQUIRED_AUTHORED_HUD_SOURCES: &[&str] = &[
 /// Only packets with an actual replay-app composition/input route are listed.
 /// Promotion-ready semantic/canvas laws remain internal when product surface
 /// activation or semantic root authority is absent.
+///
+/// The historical public name denotes route eligibility, not proof that every
+/// extractor-side authority producer is active. In particular, XUI25 still
+/// rejects until d77 carries its authenticated same-launch input-family receipt.
 pub const PROMOTED_XUI_PACKETS: &[&str] = &["XUI24", "XUI25"];
 
 /// XUI27 is the post-XUI26 producer-role extension that makes the four core
@@ -171,6 +193,10 @@ pub const OMITTED_PIXEL_CANVAS_ROUTES: &[(&str, &str)] = &[
     (
         "XUI13",
         "authenticated designer surface activation and semantic GUI-root binding; canonical A27 catalog packaging and d78 display order are admitted",
+    ),
+    (
+        "XUI15",
+        "authenticated country-trade window activation and semantic countrytradeview root binding; the exact d43 carrier and selected-POV typed presentation are production-routed",
     ),
 ];
 
@@ -196,7 +222,7 @@ pub const OMITTED_AUTHORITY_BLOCKED_PACKETS: &[(&str, &str)] = &[
     ),
     (
         "XUI05",
-        "resolved tooltip rectangles and ordered evaluated rows",
+        "d72 is reserved pending authenticated same-Present live-matrix evidence; the TTI2 final-blob consumer is wired but unschedulable",
     ),
     (
         "XUI06",
@@ -213,10 +239,6 @@ pub const OMITTED_AUTHORITY_BLOCKED_PACKETS: &[(&str, &str)] = &[
         "authenticated d71 countryproductionlineview item_grid materialized slot rectangles, clip, and scroll state",
     ),
     ("XUI14", "intelligence and operative producer inputs"),
-    (
-        "XUI15",
-        "complete trade-state and route-flag producer inputs",
-    ),
     (
         "XUI16",
         "runtime text and authenticated collection ordering",
@@ -264,6 +286,58 @@ pub struct ProductionUiReport {
 pub struct ProductionUiOutput {
     pub image: RgbaImage,
     pub report: ProductionUiReport,
+}
+
+/// Convert the authenticated d72 TTI2 carrier into the one global the game
+/// tooltip binding. Domain absence, measured-empty, POV mismatch, and display
+/// mismatch all deliberately produce no shell.
+pub fn tooltip_binding_from_frame(
+    frame: &WorldFrame,
+    pov_tag: Option<&str>,
+    viewport_width: usize,
+    viewport_height: usize,
+) -> Option<TooltipBinding> {
+    tooltip_binding_from_exact_view(
+        frame.resolved_tooltip_exact(),
+        pov_tag,
+        viewport_width,
+        viewport_height,
+    )
+}
+
+pub fn tooltip_binding_from_exact_view(
+    view: &replay_core::ResolvedTooltipExactView,
+    pov_tag: Option<&str>,
+    viewport_width: usize,
+    viewport_height: usize,
+) -> Option<TooltipBinding> {
+    if view.status != replay_core::ViewStatus::Present {
+        return None;
+    }
+    let exact = view.frame.as_ref()?;
+    let [instance] = exact.instances.as_slice() else {
+        return None;
+    };
+    let pov_matches = match pov_tag {
+        Some(tag) => {
+            instance.pov_country_or_global == tag
+                || instance.pov_country_or_global == "global"
+        }
+        None => instance.pov_country_or_global == "global",
+    };
+    if !pov_matches
+        || usize::try_from(instance.viewport_width_px).ok() != Some(viewport_width)
+        || usize::try_from(instance.viewport_height_px).ok() != Some(viewport_height)
+    {
+        return None;
+    }
+    Some(TooltipBinding {
+        x: instance.screen_rect.x,
+        y: instance.screen_rect.y,
+        width: usize::try_from(instance.screen_rect.width).ok()?,
+        height: usize::try_from(instance.screen_rect.height).ok()?,
+        text: instance.final_resolved_text.clone(),
+    })
 }
 
 pub struct ProductionUiRenderer {
@@ -326,6 +400,36 @@ impl ProductionUiRenderer {
 
     pub fn registry(&self) -> &SpriteRegistry {
         &self.registry
+    }
+
+    /// Admit the exact XUI16 occupation/garrison panel model for production
+    /// playback. The panel is not part of the always-on HUD compositor, but
+    /// its product route still requires every authored source consumed by the
+    /// binding to belong to the replay's effective content manifest.
+    pub fn admit_xui16_surface(
+        &self,
+        request: crate::occupation_binding::OccupationProductionSurfaceRequest<'_>,
+    ) -> std::result::Result<
+        crate::occupation_binding::AdmittedOccupationSurface,
+        ProductionUiRejection,
+    > {
+        for source in [
+            crate::occupation_binding::COUNTRY_OCCUPATION_GUI,
+            crate::occupation_binding::GARRISON_LOG_GUI,
+            crate::occupation_binding::COUNTRY_STATE_GUI,
+            crate::occupation_binding::OCCUPATION_LAWS_SOURCE,
+        ] {
+            self.content_admission
+                .require_used_content(source)
+                .map_err(ProductionUiRejection::Asset)?;
+        }
+        crate::occupation_binding::admit_occupation_surface_from_world(request).map_err(
+            |rejection| {
+                ProductionUiRejection::IncompleteComposition(format!(
+                    "XUI16 occupation surface rejected: {rejection:?}"
+                ))
+            },
+        )
     }
 
     /// Compose the always-on, proven replay HUD.  Country-dependent content is
@@ -397,18 +501,14 @@ impl ProductionUiRenderer {
             .map_err(|_| {
                 ProductionUiRejection::MissingDisplayVariantCarrier("invalid exact key")
             })?;
-        let admitted = key.physical_viewport
-            == (PixelExtent {
-                width: PRODUCTION_UI_WIDTH as u32,
-                height: PRODUCTION_UI_HEIGHT as u32,
-            })
-            && key.min_gui == PRODUCTION_UI_MIN_GUI
-            && key.gui_scale_f32_bits == PRODUCTION_UI_GUI_SCALE_BITS
-            && key.display_mode == DisplayMode::BorderlessFullscreen
-            && key.localisation_language == PRODUCTION_UI_LANGUAGE;
-        if !admitted {
-            return Err(ProductionUiRejection::UnsupportedExactDisplayVariant(key));
-        }
+        let contract = ExactKeyVariantContract::admit(production_ui_variant_key()).map_err(|_| {
+            ProductionUiRejection::MissingDisplayVariantCarrier(
+                "invalid product exact-key contract",
+            )
+        })?;
+        contract
+            .select(&key)
+            .map_err(|_| ProductionUiRejection::UnsupportedExactDisplayVariant(key.clone()))?;
 
         let mut binding = HudBinding {
             minimap: MinimapBinding::default(),
@@ -430,9 +530,11 @@ impl ProductionUiRenderer {
                 &clock_binding_from_frame(frame, playback_speed_step, &self.localisation),
             );
         }
-        // XUI05 lacks its authenticated instance carrier: no tooltip shell or
-        // placeholder is composed.
-        binding.tooltip = None;
+        // The d72 scheduler remains reserved pending its live matrix, but the
+        // consumer is complete and fail-closed: only a selected-Present-joined
+        // TTI2 exact blob for this POV and physical viewport reaches the HUD.
+        binding.tooltip =
+            tooltip_binding_from_frame(frame, pov_tag, viewport_width, viewport_height);
 
         // A poisoned lock only means a previous compose panicked after fully
         // inserted cache entries; the cache itself stays coherent.
@@ -592,9 +694,9 @@ mod tests {
             .map(|(packet, _)| *packet)
             .collect::<std::collections::BTreeSet<_>>();
         assert!(promoted.is_disjoint(&omitted_canvas));
-        assert_eq!(omitted_canvas.len(), 3);
+        assert_eq!(omitted_canvas.len(), 4);
         assert_eq!(promoted, ["XUI24", "XUI25"].into_iter().collect());
-        assert_eq!(omitted.len(), 21);
+        assert_eq!(omitted.len(), 20);
         assert_eq!(PROMOTED_EXTENSION_PACKETS, ["XUI27"]);
         assert!(OMITTED_EXTENSION_PACKETS.is_empty());
         assert!(OMITTED_AUTHORITY_BLOCKED_PACKETS

@@ -171,6 +171,14 @@ class TestSourceMap(unittest.TestCase):
         self.assertEqual(contract["identity_rule"], "land_combat:<combat_id>:<generation>")
         self.assertIn("attacker_divisions", contract["nullable_side_fields"])
         self.assertEqual(schema.source_of("combats.0.combat_id"), "M*")
+        self.assertEqual(
+            schema.source_of("combats.0.modifiers.save_combat_handle"), "S"
+        )
+        self.assertEqual(schema.source_of("combats.0.modifiers.day"), "S")
+        self.assertEqual(schema.source_of("combats.0.modifiers.duration"), "S")
+        self.assertEqual(
+            schema.source_of("combats.0.modifiers.save_air_owner_join_complete"), "S"
+        )
 
     def test_unknown_returns_none(self):
         self.assertIsNone(schema.source_of("countries.GER.nonsense.field"))
@@ -184,6 +192,10 @@ class TestSourceMap(unittest.TestCase):
             "countries.GER.special_project_programs.0.program_id": "C",
             "runtime_text.contexts.0.final_text.sha256": "C",
             "diplomacy_world.domain53_extra.operation_instance_rows.0.status": "C",
+            "_r2_sunk_ship_history_live.events.0.ship_name": "C",
+            "_r2_decision_panel_live.children.0.identity": "C",
+            "_r2_scripted_gui_runtime_live.manager_order.0.gui_id": "C",
+            "countries.ENG.extra.scripted_gui_runtime.panel.visible.value": "C",
             "_r2_national_focus_presentation_live.items.0.focus_id": "C",
             "_r2_character_presentation_live.trait_trees.0.nodes.0.state": "C",
             "order_of_battle.extra.naval_missions_status_live.task_forces.0.activity_key": "C/D",
@@ -291,6 +303,156 @@ class TestEmptySkeletons(unittest.TestCase):
 
 
 class TestValidator(unittest.TestCase):
+    def _a6_disrupted_supply_snapshot(self):
+        snap = schema.empty_snapshot("a6", "1940.9.10.13")
+        country = schema.empty_country()
+        country["_r2_tag_db_id"] = 47
+        snap["countries"] = {"GER": country}
+        snap["tag_db_id_index"] = {"resolved": True, "key": "tag"}
+        snap["measured_countries"] = {
+            "known": True, "count": 1, "tags": ["GER"], "tag_db_ids": [47],
+        }
+        snap["supply"] = {
+            "source": "M",
+            "confidence": "division_province_proxy",
+            "by_province": {
+                "7081": {"disrupted_supply": [{
+                    "owner": "GER", "owner_tag_db_id": 47, "node_type": 3,
+                    "value": 0.04017, "value_raw": 4017, "exact": True,
+                    "source": "CCountrySupplySystem.disrupted_supply",
+                }],
+            },
+            },
+            "r2_logistics_attrition": {
+                "country_disrupted_supply_available": True,
+                "country_disrupted_supply_rows": 1,
+                "country_disrupted_supply_ordering":
+                    "owner_tag_db_id_then_province_id_then_node_type",
+                "country_disrupted_supply_authority": {
+                    "schema_version": 1,
+                    "authority": "exact_a729_bounded_owner_robin_hood",
+                    "executable_sha256":
+                        "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+                    "function_manifest_sha256":
+                        "3833350a60768765d3a56b80c49be49ed5e3d188a4b1810698c006bf1cb34061",
+                    "complete_roster_validation": True,
+                    "scale_raw": 100_000,
+                },
+            },
+        }
+        return snap
+
+    def test_a6_disrupted_supply_exact_contract_and_fail_closed_mutations(self):
+        snap = self._a6_disrupted_supply_snapshot()
+        self.assertEqual(schema.validate_snapshot(snap), [])
+
+        wrong_owner = copy.deepcopy(snap)
+        wrong_owner["supply"]["by_province"]["7081"]["disrupted_supply"][0][
+            "owner_tag_db_id"
+        ] = 48
+        self.assertTrue(any(
+            "owner does not join current D18" in problem
+            for problem in schema.validate_snapshot(wrong_owner)
+        ))
+
+        wrong_count = copy.deepcopy(snap)
+        wrong_count["supply"]["r2_logistics_attrition"][
+            "country_disrupted_supply_rows"
+        ] = 2
+        self.assertTrue(any(
+            "row count" in problem
+            for problem in schema.validate_snapshot(wrong_count)
+        ))
+
+        stale_d18 = copy.deepcopy(snap)
+        stale_d18["measured_countries"]["known"] = False
+        self.assertTrue(any(
+            "current resolved D18" in problem
+            for problem in schema.validate_snapshot(stale_d18)
+        ))
+
+    def test_a6_disrupted_supply_proven_empty_is_distinct_from_unavailable(self):
+        snap = self._a6_disrupted_supply_snapshot()
+        snap["supply"]["by_province"] = {}
+        snap["supply"]["r2_logistics_attrition"][
+            "country_disrupted_supply_rows"
+        ] = 0
+        self.assertEqual(schema.validate_snapshot(snap), [])
+
+        snap["supply"]["r2_logistics_attrition"].update({
+            "country_disrupted_supply_available": False,
+            "country_disrupted_supply_rows": None,
+            "country_disrupted_supply_ordering": None,
+            "country_disrupted_supply_authority": None,
+        })
+        self.assertEqual(schema.validate_snapshot(snap), [])
+
+    def _a5_air_ace_snapshot(self):
+        snap = schema.empty_snapshot("a5", "1940.9.10.13")
+        country = schema.empty_country()
+        country["_r2_tag_db_id"] = 47
+        country["extra"] = {"_r2_air_ace_roster_live": {
+            "schema_version": 1,
+            "authority": "exact_a729_cace_owner_roster",
+            "executable_sha256":
+                "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+            "function_manifest_sha256":
+                "f85162e5b2a531962e1080fb3add1867f4522a2aba7811d013a9f43c8e708720",
+            "carrier_version": 2,
+            "owner_tag_db_id": 47,
+            "observed_country_rows": 1,
+            "observed_ace_rows": 1,
+            "owner_row_count": 1,
+            "ordering": "country_ace_index_then_ace_id",
+            "complete_roster_validation": True,
+            "aces": [{
+                "owner_tag_db_id": 47,
+                "ace_id": 900,
+                "country_ace_index": 0,
+                "source_mask": 115,
+                "name": "Max",
+                "surname": "Mustermann",
+                "callsign": "Falke",
+                "alive": True,
+                "handled": False,
+                "kill_type_raw": 0,
+                "lifecycle": "alive",
+                "wing_id": 700,
+                "killer_ace_id": None,
+                "killer_country_tag_db_id": None,
+            }],
+        }}
+        snap["countries"] = {"GER": country}
+        snap["tag_db_id_index"] = {"resolved": True, "key": "tag"}
+        snap["measured_countries"] = {
+            "known": True, "count": 1, "tags": ["GER"], "tag_db_ids": [47],
+        }
+        return snap
+
+    def test_a5_air_ace_authority_and_measured_empty_contract(self):
+        snap = self._a5_air_ace_snapshot()
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        sidecar = snap["countries"]["GER"]["extra"]["_r2_air_ace_roster_live"]
+        sidecar["observed_ace_rows"] = 0
+        sidecar["owner_row_count"] = 0
+        sidecar["aces"] = []
+        self.assertEqual(schema.validate_snapshot(snap), [])
+
+    def test_a5_air_ace_rejects_owner_source_and_count_tampering(self):
+        for field, value in (
+            ("owner_tag_db_id", 48),
+            ("observed_ace_rows", 2),
+            ("authority", "fabricated"),
+        ):
+            snap = self._a5_air_ace_snapshot()
+            snap["countries"]["GER"]["extra"]["_r2_air_ace_roster_live"][field] = value
+            self.assertTrue(schema.validate_snapshot(snap))
+        snap = self._a5_air_ace_snapshot()
+        snap["countries"]["GER"]["extra"]["_r2_air_ace_roster_live"]["aces"][0][
+            "source_mask"
+        ] = 1
+        self.assertTrue(schema.validate_snapshot(snap))
+
     def _x9_breakthrough_snapshot(self):
         snap = schema.empty_snapshot("g1", "1940.9.10.13")
         country = schema.empty_country()
@@ -564,6 +726,20 @@ class TestValidator(unittest.TestCase):
             }],
             "factories": {"total": 25, "used": 11, "available": 14},
         }
+        snap["countries"]["SWE"] = schema.empty_country()
+        snap["countries"]["SWE"]["economy"]["resource_trade"] = {
+            "deals_complete": True,
+            "deals": [{
+                "deal_id": 41, "counterpart": "GER", "direction": "export",
+                "resource": "oil", "requested": 8.0, "delivered": 6.0,
+                "available_export": 12.0, "civilian_factories": 1,
+                "factory_cost_per_resource": 0.125,
+                "convoys": {"assigned": 2, "required": 3},
+                "route_kind": "sea", "delivery_efficiency": 0.75,
+                "no_trade_influence": False, "no_resources": False,
+                "visible_order": 0,
+            }],
+        }
         return snap
 
     def test_xui15_trade_contract_validates(self):
@@ -599,6 +775,51 @@ class TestValidator(unittest.TestCase):
             "exact seven-resource order", ".no_resources", "used complete without exactly seven",
         ):
             self.assertTrue(any(token in problem for problem in probs), (token, probs))
+
+    def test_xui15_deal_requires_exact_reciprocal_half(self):
+        snap = self._trade_snapshot()
+        snap["countries"]["SWE"]["economy"]["resource_trade"]["deals"] = []
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(
+            any("exactly two reciprocal halves" in problem for problem in probs),
+            probs,
+        )
+
+    def test_xui15_mtrd_route_status_schema_is_world_atomic(self):
+        snap = self._trade_snapshot()
+        export = snap["countries"]["SWE"]["economy"]["resource_trade"]["deals"][0]
+        del export["no_trade_influence"]
+        del export["no_resources"]
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("reciprocal halves disagree" in problem for problem in probs), probs)
+
+        snap = self._trade_snapshot()
+        legacy_pair = copy.deepcopy(
+            snap["countries"]["GER"]["economy"]["resource_trade"]["deals"][0]
+        )
+        legacy_pair["deal_id"] = 42
+        legacy_pair["visible_order"] = 1
+        legacy_pair["counterpart"] = "SOV"
+        del legacy_pair["no_trade_influence"]
+        del legacy_pair["no_resources"]
+        snap["countries"]["GER"]["economy"]["resource_trade"]["deals"].append(legacy_pair)
+        snap["countries"]["SOV"] = schema.empty_country()
+        reciprocal = copy.deepcopy(legacy_pair)
+        reciprocal["counterpart"] = "GER"
+        reciprocal["direction"] = "export"
+        reciprocal["visible_order"] = 0
+        snap["countries"]["SOV"]["economy"]["resource_trade"] = {
+            "deals_complete": True,
+            "deals": [reciprocal],
+        }
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("mixes legacy MTRD v1" in problem for problem in probs), probs)
+
+    def test_xui15_factory_header_rejects_non_i32_values(self):
+        snap = self._trade_snapshot()
+        snap["countries"]["GER"]["economy"]["resource_trade"]["factories"]["used"] = 2 ** 31
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("factories.used" in problem and "not i32" in problem for problem in probs), probs)
 
     def test_hour_index_mismatch_flagged(self):
         snap = schema.empty_snapshot("g1", "1940.9.10.13")
@@ -843,6 +1064,7 @@ class TestValidator(unittest.TestCase):
         snap["order_of_battle"]["extra"] = {
             "army_battleplans_depth_live": {
                 "known": True,
+                "orders": [],
                 "orders_group_manager": {
                     "known": True,
                     "complete": True,
@@ -865,6 +1087,7 @@ class TestValidator(unittest.TestCase):
         snap["order_of_battle"]["extra"] = {
             "army_battleplans_depth_live": {
                 "known": True,
+                "orders": [],
                 "orders_group_manager": {
                     "known": True,
                     "complete": True,
@@ -899,6 +1122,25 @@ class TestValidator(unittest.TestCase):
         probs = schema.validate_snapshot(snap)
         self.assertTrue(any("armies should be empty" in problem for problem in probs), probs)
 
+    def test_unavailable_battleplan_domain_rejects_stale_orders(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["order_of_battle"]["extra"] = {
+            "army_battleplans_depth_live": {
+                "known": False,
+                "orders": [{"army_id": 17}],
+                "orders_group_manager": {
+                    "known": False,
+                    "complete": False,
+                    "source": None,
+                    "registered_entry_count": None,
+                    "army_group_count": None,
+                    "armies": [],
+                },
+            },
+        }
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("orders should be empty" in problem for problem in probs), probs)
+
     def test_event_validator(self):
         good = schema.make_event("focus_completed", subject="GER", key="X", to="X",
                                  source="D", confidence="interval")
@@ -912,6 +1154,83 @@ class TestWave4ExactSchema(unittest.TestCase):
 
     def _base(self):
         return schema.empty_snapshot("wave4", "1936.1.1.0")
+
+    def _b4_candidate_snapshot(self):
+        snap = self._base()
+        ger = schema.empty_country()
+        eng = schema.empty_country()
+        ger["_r2_tag_db_id"] = 4
+        eng["_r2_tag_db_id"] = 9
+        snap["countries"] = {"GER": ger, "ENG": eng}
+        snap["measured_countries"] = {
+            "known": True,
+            "count": 2,
+            "tags": ["GER", "ENG"],
+            "tag_db_ids": [4, 9],
+        }
+        snap["_r2_sunk_convoy_history_live_candidate"] = {
+            "schema_version": 3,
+            "authority": "static_exact20_evidence_candidate",
+            "production_activation_authorized": False,
+            "frame_hour": snap["hour_index"],
+            "source_sequence": 2,
+            "executable_sha256": self.EXECUTABLE,
+            "owner_serializer_manifest_sha256":
+                "2fd64c0a861d38e252fe262d52e62cbb4a5efa7f94ee7ab374c33e8ac368827e",
+            "owner_serializer_artifact_sha256":
+                "bc679b4a175e75253a1fea1bfde625ccf8594ec06c562699aeaac75b9eaddf3a",
+            "row_mutation_manifest_sha256":
+                "b36682b2f942e7e4e7c8ae9dbfc05e2b52ee46dcf388fc9ad6e1fee24fdb802e",
+            "row_serializer_artifact_sha256":
+                "005235886a2d847b111df481ae948395828ec999e3cebe39612d36d364fefe98",
+            "mutation_artifact_sha256":
+                "2fa2e8a326081f82735b3824dc8b693130605a956964a170f1b5538e4ac1ef14",
+            "live_fixture_receipt_sha256": "0" * 64,
+            "owner_root": "CGameState+0x5A8",
+            "capacity_count_word": "CGameState+0x5B0",
+            "row_vtable_rva": "0x295D008",
+            "row_extent": 0x18,
+            "observed_rows": 1,
+            "iterator_rows": 1,
+            "row_count": 1,
+            "ordering": "engine_first_seen_aggregate_identity",
+            "d18_identity_complete": True,
+            "rows": [{
+                "source_ordinal": 0,
+                "month": 10,
+                "convoys": 2,
+                "killer_country_tag_db_id": 4,
+                "owner_tag_db_id": 9,
+                "killer_country": "GER",
+                "owner": "ENG",
+            }],
+        }
+        snap["_r2_sunk_convoy_history_live"] = None
+        snap["world_events"]["sunk_convoys"] = None
+        snap["world_events"]["sunk_convoys_ordering"] = None
+        snap["world_events"]["sunk_convoys_route_attribution"] = None
+        return snap
+
+    def test_b4_candidate_requires_current_frame_unique_d18_and_stays_dormant(self):
+        snap = self._b4_candidate_snapshot()
+        self.assertEqual(schema.validate_wave4_snapshot(snap), [])
+
+        stale = copy.deepcopy(snap)
+        stale["measured_countries"]["known"] = False
+        self.assertTrue(any(
+            "sunk_convoy_history_live_candidate" in problem
+            for problem in schema.validate_wave4_snapshot(stale)
+        ))
+
+        duplicate = copy.deepcopy(snap)
+        duplicate["countries"]["ENG"]["_r2_tag_db_id"] = 4
+        duplicate["_r2_sunk_convoy_history_live_candidate"]["rows"][0][
+            "owner_tag_db_id"
+        ] = 4
+        self.assertTrue(any(
+            "D18 join invalid" in problem
+            for problem in schema.validate_wave4_snapshot(duplicate)
+        ))
 
     def _project_authority(self, owner_rows, breakthrough_rows, walked):
         return {
@@ -950,24 +1269,38 @@ class TestWave4ExactSchema(unittest.TestCase):
             "nuke_stockpile_tag_db_id": 17,
             "nukes_total": 1,
             "nukes_ready_total": 2,
-            "nukes": [{"amount": 1, "nukes_ready": 2}],
+            "nukes": [
+                {"amount": 1, "nukes_ready": 2},
+                {"amount": 0, "nukes_ready": 0},
+            ],
         }
         snap["countries"]["GER"] = country
         snap["_r2_nuke_stockpile_live"] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "authority": "exact_a729_nuke_stockpile",
             "executable_sha256": self.EXECUTABLE,
-            "receipt_sha256": "3befb21facb2fdd5724602b2a72655ade23995b8270521aeecbe5eddeed34301",
-            "data_artifact_sha256": "20f780f52303e5c59868fcce8ee09258d4dc997bf5d3aadbdec3a3c00ce509bf",
+            "producer_consumer_manifest_sha256": "0968ed85cd6103149ebd51415d6b64d1959bb05d1aff4cbfce9d31e437a6995c",
+            "container_constructor_manifest_sha256": "233962bab3a8ca79150977f1f7e77312d1bbd262e89e582d1c01caaf01a89032",
+            "cnuke_vtable_artifact_sha256": "cfd9d9e4088b4998398e579a5ebee222534868bad8a4529240b370faf467adbb",
             "elapsed_wall_ms": 5,
             "frame_hour": snap["hour_index"],
             "source_sequence": 1,
             "countries": [{
-                "tag_db_id": 17, "nukes_total": 1, "nukes_ready_total": 2,
-                "nukes": [{"amount_raw": 100_000_000, "amount": 1, "nukes_ready": 2}],
+                "tag_db_id": 17, "container_capacity": 2,
+                "nukes_total": 1, "nukes_ready_total": 2,
+                "nukes": [
+                    {"nuke_type_raw": 0, "amount_raw": 100_000_000, "amount": 1, "nukes_ready": 2},
+                    {"nuke_type_raw": 1, "amount_raw": 0, "amount": 0, "nukes_ready": 0},
+                ],
             }],
         }
         self.assertEqual(schema.validate_snapshot(snap), [])
+        wrong_capacity = copy.deepcopy(snap)
+        wrong_capacity["_r2_nuke_stockpile_live"]["countries"][0]["container_capacity"] = 1
+        self.assertTrue(any("container_capacity" in p for p in schema.validate_snapshot(wrong_capacity)))
+        wrong_type = copy.deepcopy(snap)
+        wrong_type["_r2_nuke_stockpile_live"]["countries"][0]["nukes"][1]["nuke_type_raw"] = 0
+        self.assertTrue(any("type order" in p for p in schema.validate_snapshot(wrong_type)))
         snap["countries"]["GER"]["extra"]["nukes_total"] = 2
         self.assertTrue(any("canonical country projection" in p for p in schema.validate_snapshot(snap)))
 
@@ -978,7 +1311,7 @@ class TestWave4ExactSchema(unittest.TestCase):
             "tag_db_ids": [], "tags": [], "note": "measured empty",
         }
         snap["_r2_dynamic_modifier_lifecycle_live"] = {
-            "schema_version": 2,
+            "schema_version": 3,
             "authority": "exact_a729_dynamic_modifier_instance",
             "source_binary_sha256": self.EXECUTABLE,
             "static_authority_receipt_sha256": "bdbac3cb1158c971b408586611d6aba618ecfe85b5265e3b9e8c2c0bf545e415",
@@ -1001,6 +1334,34 @@ class TestWave4ExactSchema(unittest.TestCase):
         }]
         self.assertEqual(schema.validate_snapshot(snap), [])
         snap["countries"]["GER"]["dynamic_modifier_instances"][0]["remaining_days"] = None
+        self.assertTrue(any("current instance projection" in p for p in schema.validate_snapshot(snap)))
+
+    def test_a18_v3_synchronous_removal_stays_absent_from_current_set(self):
+        snap = self._base()
+        country = schema.empty_country()
+        country["dynamic_modifier_instances"] = []
+        snap["countries"]["GER"] = country
+        snap["measured_countries"] = {
+            "known": True, "source": "country_identity", "count": 1,
+            "tag_db_ids": [17], "tags": ["GER"], "note": "current roster",
+        }
+        snap["_r2_dynamic_modifier_lifecycle_live"] = {
+            "schema_version": 3, "authority": "exact_a729_dynamic_modifier_instance",
+            "source_binary_sha256": self.EXECUTABLE,
+            "static_authority_receipt_sha256": "bdbac3cb1158c971b408586611d6aba618ecfe85b5265e3b9e8c2c0bf545e415",
+            "elapsed_wall_ms": 1, "frame_hour": snap["hour_index"],
+            "continuity": "continuous", "transitions": [{
+                "owner_tag_db_id": 17, "owner_tag": "GER", "modifier": "timed_modifier",
+                "kind": "removed", "previous_remaining_days": 0,
+                "current_remaining_days": None,
+                "expiry_classification": "removed_after_observed_zero",
+            }],
+        }
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        snap["countries"]["GER"]["dynamic_modifier_instances"] = [{
+            "source_ordinal": 0, "modifier": "timed_modifier", "enabled": True,
+            "values_raw": [], "value_scale": 100_000, "remaining_days": 0,
+        }]
         self.assertTrue(any("current instance projection" in p for p in schema.validate_snapshot(snap)))
 
     def test_a20_project_progress_bounds_and_owner_join(self):
@@ -1055,7 +1416,7 @@ class TestWave4ExactSchema(unittest.TestCase):
                 "final_text": {"bytes_hex": "", "utf8": "", "sha256": empty_hash},
                 "variables": {}, "data_functions": {}, "dynamic_colors": {},
                 "layout": {"mode": "authored_reproducible"},
-                "producer": {"setter_entry_rva": 0x1732DAD0, "setter_caller_rva": None,
+                "producer": {"setter_entry_rva": 0x022B59E0, "setter_caller_rva": None,
                              "formatter_entry_rva": None, "identity_source": "authored_widget_registration"},
             }],
         }
@@ -1063,6 +1424,52 @@ class TestWave4ExactSchema(unittest.TestCase):
         snap["special_projects"]["_r2_breakthroughs"][0]["specialization"] = None
         snap["special_projects"]["_r2_breakthroughs"][0]["_r2_specialization_authority"] = None
         self.assertTrue(any("project_authority" in p for p in schema.validate_snapshot(snap)))
+
+    def test_a25_captured_runtime_mixed_order_and_exact_authority(self):
+        snap = self._base()
+        final_bytes = b"A\x13command_power"
+        snap["runtime_text"] = {
+            "schema": "hoi4-runtime-text-v1", "state": "measured",
+            "contexts_complete": True, "contexts": [{
+                "context_id": "ability:cost", "frame_hour": snap["hour_index"],
+                "pov_country_or_global": "global", "view_id": "ability_tooltip",
+                "element_id": "daily_cost", "source": {
+                    "kind": "authored_token", "identity": "ABILITY_TOOLTIP_DAILY_COST",
+                },
+                "final_text": {
+                    "bytes_hex": final_bytes.hex(),
+                    "utf8": final_bytes.decode("utf-8"),
+                    "sha256": hashlib.sha256(final_bytes).hexdigest(),
+                },
+                "variables": {}, "data_functions": {}, "dynamic_colors": {},
+                "layout": {
+                    "mode": "captured_runtime", "clip": [0, 0, 200, 24],
+                    "glyphs": [{
+                        "run_ordinal": 0, "font": "hoi_16mbs", "glyph_id": 65,
+                        "x": 0, "y": 0, "rgba": [255, 255, 255, 255],
+                    }],
+                    "inline_icons": [{
+                        "run_ordinal": 1, "sprite": "GFX_command_power", "frame": 0,
+                        "x": 12, "y": 0, "baseline": 0, "advance": 20,
+                    }],
+                },
+                "producer": {
+                    "setter_entry_rva": 0x022B59E0, "setter_caller_rva": None,
+                    "formatter_entry_rva": 0x02232AB0,
+                    "identity_source": "authored_widget_registration",
+                },
+            }],
+        }
+        self.assertEqual(schema.validate_snapshot(snap), [])
+
+        snap["runtime_text"]["contexts"][0]["layout"]["inline_icons"][0]["run_ordinal"] = 0
+        self.assertTrue(any("mixed glyph/icon run order" in p for p in schema.validate_snapshot(snap)))
+        snap["runtime_text"]["contexts"][0]["layout"]["inline_icons"][0]["run_ordinal"] = 1
+        snap["runtime_text"]["contexts"][0]["layout"]["clip"] = [0, 0, 0, 24]
+        self.assertTrue(any("layout.clip invalid" in p for p in schema.validate_snapshot(snap)))
+        snap["runtime_text"]["contexts"][0]["layout"]["clip"] = [0, 0, 200, 24]
+        snap["runtime_text"]["contexts"][0]["producer"]["setter_entry_rva"] = 0x1732DAD0
+        self.assertTrue(any("producer exact authority invalid" in p for p in schema.validate_snapshot(snap)))
 
     def test_a30_exact_intel_level_and_d18_swap(self):
         snap = self._base()
@@ -1080,6 +1487,107 @@ class TestWave4ExactSchema(unittest.TestCase):
         snap["diplomacy_world"]["domain53_extra"]["intel_level_rows"][0]["target_tag_db_id"] = 17
         self.assertTrue(any("intel level" in p for p in schema.validate_snapshot(snap)))
 
+    def test_a33_sunk_ship_v2_empty_sequence_and_tail(self):
+        snap = self._base()
+        snap["_r2_sunk_ship_history_live"] = {
+            "schema_version": 2, "authority": "exact_a729_sunk_ship_writer",
+            "executable_sha256": self.EXECUTABLE,
+            "function_manifest_sha256": "466880cc290e8961dab48c8323346d9d862089d85bbe0f4ba285b924cc959c82",
+            "data_artifact_sha256": "5e0ed3e76724032f3e2f4cc5bcc9e5c38347ed862e0489821be8b7bbdd45ca21",
+            "writer_sentinel_artifact_sha256": "dccd61e7573317458980fc0796fcba2ba945a434fbacbf3303a588c620307a4a",
+            "all_writer_routes_manifest_sha256": "d02f0f1aaf2369db9dc9529062f5e8f59f3f6f751fb9e4c0ab81d47dea1e1de0",
+            "csunk_ship_vtable_artifact_sha256": "61140fad7a24c150b60935580374129321719555bb5a4e1db88bd2bcd296937e",
+            "csunk_ship_virtuals_manifest_sha256": "755a0011376d06bbd38456a2bb009236d99f4481a9b076789d9d57729c5673fd",
+            "attacker_getters_manifest_sha256": "946eff0fb077863ce2dc1f1607ac2c0b9fcfee8f3377662ff14315101c30cbd6",
+            "elapsed_wall_ms": 1, "frame_hour": snap["hour_index"],
+            "source_sequence": 1, "producer_complete": True, "events": [],
+        }
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        snap["_r2_sunk_ship_history_live"]["source_sequence"] = 2
+        self.assertTrue(any("history tail" in p for p in schema.validate_snapshot(snap)))
+
+        history = snap["_r2_sunk_ship_history_live"]
+        history["source_sequence"] = 2
+        history["events"] = [{
+            "event_sequence": 2, "combat_id": 9, "combat_generation": 3,
+            "victim_country_id_raw": 2, "attacker_country_id_raw": 101,
+            "ui_source_country_id_raw": 1, "sink_date_raw": snap["hour_index"],
+            "victim_member_battle_slot_index": 4,
+            "killed": True, "assisted_kill": False,
+            "victim_ship_reference_raw": [7, 8],
+            "damage_source_reference_raw": [0, 0],
+            "task_force_id_raw": 0, "terminal_context_raw": [12, 13],
+            "cause_record_flag": False,
+            "ship_name": "HMS Exact", "ship_class_name": "Destroyer",
+            "attribution_source_name": "",
+            "attribution_source_class_name": "",
+        }]
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        history["events"][0]["victim_ship_reference_raw"] = [0, 0]
+        self.assertTrue(any("writer event" in p for p in schema.validate_snapshot(snap)))
+
+    def test_a34_decision_panel_v2_receipt_metadata_and_empty_bijection(self):
+        snap = self._base()
+        snap["_r2_decision_panel_live"] = {
+            "schema_version": 2, "authority": "exact_a729_decision_panel",
+            "executable_sha256": self.EXECUTABLE,
+            "function_manifest_sha256": "712233abfbd1352f0c84ede6267a99f4de8f5406cabfd20d76046a094b5fec0a",
+            "data_artifact_sha256": "ccca7fbfe0378821f22ed82d1a371a58ea12c24a9601fd3dd36d97bef093f0ea",
+            "country_view_owner_tag_manifest_sha256":
+                "a31b9fa4d886d509ceceef46819b6048331ef65065c2f07a8cc086e0868dd07a",
+            "elapsed_wall_ms": 1, "frame_hour": snap["hour_index"], "source_sequence": 1,
+            "producer_complete": True, "country_tag": "ENG",
+            "decision_catalog_sha256": "c" * 64, "materialization_qpc_ticks": 90,
+            "selected_present": {
+                "frame_hour": snap["hour_index"], "selected_present_ordinal": 0,
+                "selected_present_qpc_ticks": 100, "qpc_frequency_hz": 10_000_000,
+                "selected_present_receipt_sha256": "d" * 64,
+            },
+            "grid": {
+                "clip_left": 0, "clip_top": 0, "clip_right": 502, "clip_bottom": 600,
+                "content_origin_x": 0, "content_origin_y": 0,
+                "content_extent_width": 502, "content_extent_height": 0,
+                "scroll_min": 0, "scroll_max": 0, "scroll_target": 0, "scroll_current": 0,
+            },
+            "children": [], "available_alert_count": 0, "timeout_alert_count": 0,
+            "rows": [],
+        }
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        snap["_r2_decision_panel_live"]["materialization_qpc_ticks"] = 101
+        self.assertTrue(any("receipt metadata" in p for p in schema.validate_snapshot(snap)))
+        panel = snap["_r2_decision_panel_live"]
+        panel["materialization_qpc_ticks"] = 90
+        panel["grid"]["content_extent_height"] = 58
+        panel["children"] = [{
+            "presentation_index": 0, "kind": "category", "decision_row_index": None,
+            "identity": "political", "name_text": "Political Actions",
+            "secondary_text": "Exact category description", "expanded": True,
+            "x": 0, "y": 0, "width": 502, "height": 58,
+        }]
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        panel["children"][0]["expanded"] = None
+        self.assertTrue(any("heterogeneous child" in p for p in schema.validate_snapshot(snap)))
+
+    def test_a38_committed_empty_authority_and_ordered_tombstones(self):
+        snap = self._base()
+        snap["_r2_scripted_gui_runtime_live"] = {
+            "schema_version": 1, "authority": "exact20_a38_engine_materialized",
+            "elapsed_wall_ms": 1, "frame_hour": snap["hour_index"],
+            "producer_record_identity": "a38:committed-empty",
+            "executable_sha256": self.EXECUTABLE,
+            "ui14_engine_vfs_sha256": "4" * 64,
+            "static_authority_job_id": "20260720T020812Z-w3-a38-controller-owner-41ee5208",
+            "static_authority_receipt_sha256": "7d0a36b1822faf85a949d628a79bc4a09f95dc9c9aa3ed4aecb715b72b0a9082",
+            "producer_manifest_sha256": "6" * 64,
+            "manager_order": [],
+            "tombstones": [{"country_tag": "USA", "gui_id": "usa_congress"}],
+        }
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        snap["_r2_scripted_gui_runtime_live"]["tombstones"].append(
+            {"country_tag": "USA", "gui_id": "usa_congress"}
+        )
+        self.assertTrue(any("ordered tombstone" in p for p in schema.validate_snapshot(snap)))
+
     def test_a31_a39_exact_headers_and_runtime_reason_join(self):
         snap = self._base()
         country = schema.empty_country(); country["_r2_tag_db_id"] = 17
@@ -1087,9 +1595,16 @@ class TestWave4ExactSchema(unittest.TestCase):
         snap["_r2_national_focus_presentation_live"] = {
             "schema_version": 2, "authority": "exact_a729_national_focus_view_items",
             "executable_sha256": self.EXECUTABLE,
-            "function_manifest_sha256": "303351ed65468aa7655b904998819c96ca1c325f906b5a3bf32c4f18decc7969",
-            "job_receipt_sha256": "c6c3fb002bc05f1e092d7eb9b436aa720ca2cf19ad08f055747216dfa5871b4f",
-            "elapsed_wall_ms": 1, "frame_hour": snap["hour_index"], "source_sequence": 9,
+            "function_manifest_sha256": "b319dd1b721ed6a13e47088b7def034111f9882631080bffbf049fbb79265a2f",
+            "job_receipt_sha256": "b1c9d8c0678956f17bea2e7f9e06e7ff4baf31254c11b3c983a9a5ca9ae2d04b",
+            "elapsed_wall_ms": 1, "frame_hour": snap["hour_index"],
+            "materialization_qpc_ticks": 90,
+            "selected_present": {
+                "frame_hour": snap["hour_index"], "selected_present_global_order": 7,
+                "selected_present_qpc_ticks": 100, "qpc_frequency_hz": 10_000_000,
+                "selected_present_receipt_sha256": "d" * 64,
+            },
+            "source_sequence": 9,
             "producer_complete": True, "country_tag": "GER", "view_id": "nationalfocusview:GER",
             "producer_record_identity": f"a729:a31:{snap['hour_index']}:GER:9",
             "expected_visible_item_count": 0, "items": [],
@@ -1102,6 +1617,7 @@ class TestWave4ExactSchema(unittest.TestCase):
             "ace_bind_sort_manifest_sha256": "ea545ce9457982590bd42741d1f573a7874594b7c3f836bf290ae8a276f83396",
             "ace_modifier_setter_artifact_sha256": "3b49c9eb735a03fc711f7322b74a5b86ad64b25ffdbcaa73a390b64a2edfd552",
             "ace_modifier_formatter_manifest_sha256": "79fd3a1e1b9eafb09566b2721260936c8430acffcf0ba408cc866c6292ac8f0b",
+            "ace_selected_context_manifest_sha256": "b593bfc287648ac2bdced54567db5241f2acfe4032f8aed2a77632e29b468c5c",
         }
         empty_hash = hashlib.sha256(b"").hexdigest()
         snap["runtime_text"] = {
@@ -1116,14 +1632,14 @@ class TestWave4ExactSchema(unittest.TestCase):
                 "variables": {}, "data_functions": {}, "dynamic_colors": {},
                 "layout": {"mode": "authored_reproducible"},
                 "producer": {
-                    "setter_entry_rva": 0x1732DAD0, "setter_caller_rva": None,
+                    "setter_entry_rva": 0x022B59E0, "setter_caller_rva": None,
                     "formatter_entry_rva": None,
                     "identity_source": "authored_widget_registration",
                 },
             }],
         }
         snap["_r2_character_presentation_live"] = {
-            "schema_version": 2, "authority": "exact_a729_character_presentation",
+            "schema_version": 3, "authority": "exact_a729_character_presentation",
             "executable_sha256": self.EXECUTABLE, **character_hashes,
             "elapsed_wall_ms": 1, "frame_hour": snap["hour_index"],
             "completeness_record_identity": "a39:complete", "source_sequence": 1,
@@ -1134,13 +1650,21 @@ class TestWave4ExactSchema(unittest.TestCase):
                     "state_raw": 0, "state": "blocked", "progress_raw": None,
                     "reason_context_id": "a39:trait:reason",
                 }],
+            }, {
+                "owner_tag_db_id": 17, "unit_leader_id": 33,
+                "tree_root_offset": 0x130, "nodes": [],
             }],
+            "ace_context": {"kind": "plane_type_mask", "owner_tag_db_id": None,
+                            "wing_id": None, "plane_type_mask_raw": 0x400},
             "ace_portraits": [],
         }
         self.assertEqual(schema.validate_snapshot(snap), [])
         snap["_r2_national_focus_presentation_live"]["expected_visible_item_count"] = 1
         self.assertTrue(any("completeness" in p for p in schema.validate_snapshot(snap)))
         snap["_r2_national_focus_presentation_live"]["expected_visible_item_count"] = 0
+        snap["_r2_national_focus_presentation_live"]["materialization_qpc_ticks"] = 101
+        self.assertTrue(any("receipt metadata" in p for p in schema.validate_snapshot(snap)))
+        snap["_r2_national_focus_presentation_live"]["materialization_qpc_ticks"] = 90
         snap["runtime_text"]["contexts"][0]["pov_country_or_global"] = "ENG"
         self.assertTrue(any("runtime-text join" in p for p in schema.validate_snapshot(snap)))
 
@@ -1175,7 +1699,8 @@ class TestWave4ExactSchema(unittest.TestCase):
         for region_id in range(305):
             regions[str(region_id)] = {
                 "region_id": region_id, "temperature": 0.0, "temperature_raw": 0,
-                "phenomenon": 0, "next_weather_change_raw": 0,
+                "phenomenon": 0, "weather_kind": "no_phenomenon",
+                "next_weather_change_raw": 0,
                 "active_modifier_count": 0, "intensity": 0,
                 "rain_light": False, "rain_heavy": False, "snow": False,
                 "blizzard": False, "arctic_water": False, "active_signal": False,
@@ -1187,6 +1712,14 @@ class TestWave4ExactSchema(unittest.TestCase):
             "scale_raw": 100_000, "regions": regions, "provinces": {},
         }
         self.assertEqual(schema.validate_snapshot(snap), [])
+        snap["map"]["_r2_weather_live"]["regions"]["42"]["weather_kind"] = "rain_heavy"
+        self.assertTrue(any("exact region row" in p for p in schema.validate_snapshot(snap)))
+        snap["map"]["_r2_weather_live"]["regions"]["42"]["weather_kind"] = "no_phenomenon"
+        snap["map"]["_r2_weather_live"]["regions"]["42"]["rain_light"] = True
+        snap["map"]["_r2_weather_live"]["regions"]["42"]["rain_heavy"] = True
+        self.assertTrue(any("exact region row" in p for p in schema.validate_snapshot(snap)))
+        snap["map"]["_r2_weather_live"]["regions"]["42"]["rain_light"] = False
+        snap["map"]["_r2_weather_live"]["regions"]["42"]["rain_heavy"] = False
         snap["map"]["_r2_weather_live"]["observed_region_rows"] = 304
         self.assertTrue(any("completeness counts" in p for p in schema.validate_snapshot(snap)))
 

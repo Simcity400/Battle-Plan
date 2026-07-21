@@ -52,7 +52,12 @@
     { "name": "order_type", "offset": "+0x30", "width": 4 },
     { "name": "army_backref", "offset": "+0x38", "width": 8 },
     { "name": "path_begin", "offset": "+0x70", "width": 8 },
-    { "name": "path_size", "offset": "+0x78", "width": 4 },
+    { "name": "path_capacity", "offset": "+0x78", "width": 4 },
+    { "name": "path_size", "offset": "+0x7C", "width": 4 },
+    { "name": "paradrop_target_province", "offset": "+0xB8", "width": 4 },
+    { "name": "type5_states_begin", "offset": "+0xE0", "width": 8 },
+    { "name": "type5_states_capacity", "offset": "+0xE8", "width": 4 },
+    { "name": "type5_states_size", "offset": "+0xEC", "width": 4 },
     { "name": "assigned_begin", "offset": "+0x210", "width": 8 },
     { "name": "assigned_size", "offset": "+0x21C", "width": 4 },
     { "name": "engine_order_instance_id", "offset": "+0x244", "width": 4 },
@@ -63,10 +68,6 @@
       "phases_in_order": ["baseline", "redraw", "delete"],
       "identity": ["army_id", "engine_order_instance_id", "generation"],
       "receipt": "baseline/redraw retain identity and change the ordered path; delete is the same-identity tombstone"
-    },
-    "type4_discriminator": {
-      "phases_in_order": ["created"],
-      "receipt": "live type-4 raw candidates, including +0x70/+0x78, plus raw same-boundary save order; no geometry role is preselected"
     },
     "membership_lifecycle": {
       "phases_in_order": ["baseline", "assign", "remove"],
@@ -90,9 +91,15 @@
   },
   "activation": {
     "same_instance_type2_redraw_delete": false,
-    "type4_geometry": false,
     "complete_membership_equality_lifecycle": false,
     "empty_inactive_manager_root": false,
-    "law": "The observer always emits false. A reviewed evidence decision and separate production source edit are required for activation."
+    "law": "The observer always emits false for the optional lifecycle-acceptance fixtures. Type-1 and type-4 geometry and manager execution/cohesion semantics are statically closed and production-wired; they are no longer fixture activations."
+  },
+  "statically_closed_semantics": {
+    "type1_geometry": "ordered +0x70 data with live count +0x7C; +0x78 is capacity only",
+    "type4_geometry": "source is the first +0x70 province; target is u32 +0xB8; the pointer-free carrier is exactly [source,target]",
+    "execution_mode": "COrdersGroup+0x1A4: 0 careful, 1 balanced, 2 aggressive",
+    "cohesion_mode": "COrdersGroup+0x1A8: 0 flexible, 1 balanced, 2 rigid, 3 immobile",
+    "legacy_per_order_stance_aggressiveness": "retired schema placeholders; canonical wire values remain unknown and are never promoted as per-order observations"
   }
 }

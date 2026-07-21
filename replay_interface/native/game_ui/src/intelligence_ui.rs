@@ -15,6 +15,11 @@ use replay_core::agency_upgrade_controller::{
 use replay_core::cipher_controller::{
     admit_cipher_controller_refresh, CipherControllerRefreshExact,
 };
+use replay_core::intelligence_controller_companion::{
+    admit_intelligence_controller_companion, IntelligenceControllerCompanionExact,
+    IntelligenceSurfaceId, IntelligenceVisibilityExact,
+};
+use replay_core::SelectedPresentReceipt;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const FIXED_ONE: i64 = 100_000;
@@ -199,6 +204,12 @@ pub struct IntelLevelUiRow {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntelNetworkStateStrengthUiRow {
+    pub state_id: u32,
+    pub strength_fixed: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntelNetworkUiRow {
     pub stable_item_id: String,
     pub network_id: String,
@@ -206,7 +217,9 @@ pub struct IntelNetworkUiRow {
     pub target_country: String,
     pub operative_ids: Vec<String>,
     pub state_ids: Vec<u32>,
-    pub strength_fixed: i64,
+    /// Exact state-qualified INGR v4 strengths. There is no authenticated
+    /// single network-level strength scalar in A11.
+    pub state_strengths: Vec<IntelNetworkStateStrengthUiRow>,
     pub national_coverage_fixed: i64,
 }
 
@@ -780,7 +793,6 @@ pub fn admit_intelligence_ui(trace: &IntelligenceUiTrace) -> Result<AdmittedInte
             nonempty(&row.network_id, "network_id")?;
             owner(&row.owner_country, &trace.owner_country, "network")?;
             nonempty(&row.target_country, "network target")?;
-            fixed(row.strength_fixed, "network strength")?;
             fixed(row.national_coverage_fixed, "network coverage")?;
             unique_nonempty(&row.operative_ids, "network operative ids")?;
             if row
@@ -810,6 +822,20 @@ pub fn admit_intelligence_ui(trace: &IntelligenceUiTrace) -> Result<AdmittedInte
             }
             if !row.state_ids.windows(2).all(|w| w[0] < w[1]) {
                 return Err(fail("network state ids must be sorted unique"));
+            }
+            if row.state_strengths.len() != row.state_ids.len()
+                || !row
+                    .state_strengths
+                    .iter()
+                    .zip(&row.state_ids)
+                    .all(|(strength, state_id)| {
+                        strength.state_id == *state_id
+                            && (0..=FIXED_ONE).contains(&strength.strength_fixed)
+                    })
+            {
+                return Err(fail(
+                    "network state strengths must exactly match sorted state ids",
+                ));
             }
         }
     }
@@ -966,6 +992,68 @@ fn validate_family<T: StableItem>(
             Ok(())
         }
     }
+}
+
+/// Production XUI14 admission. The replay-facing semantic trace is accepted
+/// only when its operative/operation controller order and all seven visibility
+/// gates are joined to the same authenticated selected Present. The older
+/// `admit_intelligence_ui` entry point remains useful for isolated schema tests;
+/// production composition must call this companion-gated entry point.
+pub fn admit_intelligence_ui_with_selected_present_companion<'a>(
+    trace: &'a IntelligenceUiTrace,
+    companion: &IntelligenceControllerCompanionExact,
+    selected_present: &SelectedPresentReceipt,
+) -> Result<AdmittedIntelligenceUi<'a>> {
+    let admitted = admit_intelligence_controller_companion(companion, selected_present)
+        .map_err(|error| fail(&error.message))?;
+    let exact = admitted.companion();
+    if trace.frame_hour != exact.frame_hour
+        || trace.owner_country != exact.owner
+        || trace.producer_record_identity != exact.producer_record_identity
+    {
+        return Err(fail("selected-Present companion semantic identity mismatch"));
+    }
+
+    let operative_order = match &trace.operatives {
+        ProducerValue::Measured(rows) => rows.collection.ordered_item_ids.as_slice(),
+        ProducerValue::Unobtained { .. } => &[],
+    };
+    let operation_order = match &trace.operations {
+        ProducerValue::Measured(rows) => rows.collection.ordered_item_ids.as_slice(),
+        ProducerValue::Unobtained { .. } => &[],
+    };
+    if operative_order != admitted.operative_order()
+        || operation_order != admitted.operation_order()
+    {
+        return Err(fail("operative or operation controller order companion mismatch"));
+    }
+
+    let companion_gates = exact.visibility.iter().map(|gate| {
+        let surface = match gate.surface {
+            IntelligenceSurfaceId::Agency => IntelligenceSurface::Agency,
+            IntelligenceSurfaceId::Upgrades => IntelligenceSurface::Upgrades,
+            IntelligenceSurfaceId::Operatives => IntelligenceSurface::Operatives,
+            IntelligenceSurfaceId::Operations => IntelligenceSurface::Operations,
+            IntelligenceSurfaceId::Ciphers => IntelligenceSurface::Ciphers,
+            IntelligenceSurfaceId::IntelLedger => IntelligenceSurface::IntelLedger,
+            IntelligenceSurfaceId::Networks => IntelligenceSurface::Networks,
+        };
+        let disposition = match gate.disposition {
+            IntelligenceVisibilityExact::Visible => VisibilityDisposition::Visible,
+            IntelligenceVisibilityExact::Hidden => VisibilityDisposition::Hidden,
+            IntelligenceVisibilityExact::Unavailable => VisibilityDisposition::Unavailable,
+        };
+        (surface, (disposition, gate.reason.as_deref()))
+    }).collect::<BTreeMap<_,_>>();
+    for gate in &trace.visibility {
+        let Some((disposition, reason)) = companion_gates.get(&gate.surface).copied() else {
+            return Err(fail("selected-Present companion visibility surface missing"));
+        };
+        if gate.disposition != disposition || gate.reason.as_deref() != reason {
+            return Err(fail("selected-Present companion visibility gate mismatch"));
+        }
+    }
+    admit_intelligence_ui(trace)
 }
 
 fn validate_network_summary(

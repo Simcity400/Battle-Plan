@@ -1,0 +1,104 @@
+{
+  "schema": "hoi4.a31.frame_order_fixture_matrix.v1",
+  "date": "2026-07-20",
+  "lane": "H-A31",
+  "status": "STATIC_RE_AND_TRANSPORT_CUSTODY_COMPLETE_LIVE_PAIR_ABSENT_D89_DISABLED",
+  "binary_identity": {
+    "binary_id": "hoi4.exe 1.19.2.0.a729",
+    "image_base": "0x140000000",
+    "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+  },
+  "frame_order_authority": {
+    "job_id": "20260720T103726Z-w5-a31-exact-frame-order-boundary-a49db01b",
+    "executing_shard": "shard-03",
+    "function_manifest_sha256": "c3c2a38805153497ad3298893a1b101582aa0651604a742e78214108b7820745",
+    "job_json_sha256": "58ec9118271f47d517ed1b29cb3c900dccc4e0f60e553bbb9bbd47e3de4d082b",
+    "requested_roots_resolved": "3/3",
+    "caller_0x14137a180_decompile_sha256": "ad32507288d515bf7735666d4d01cc635a2993e1b574d1481b4f097a2f60e38b",
+    "caller_0x1413762f0_decompile_sha256": "7bc1ff401c76518f2860c547abfed7d41b31aa79184a174afc7c7734f350a084",
+    "detail_refresh_0x14137a600_decompile_sha256": "458ae468aa356b2f0212261b93346de4e16f2d9fcc8793215e3d2f93389415ae",
+    "detail_refresh_0x14137a600_exact_abi": "void(longlong view)",
+    "detail_refresh_0x14137a600_instructions_sha256": "983cdac02fa4ed5422fa9dff55dce9bfdd8e377bd642f271b3799f1351261293"
+  },
+  "detail_refresh_sentinel": {
+    "job_id": "20260720T102614Z-w5-a31-detail-refresh-entry-sentinel-7f8e06ea",
+    "executing_shard": "shard-03",
+    "artifact_sha256": "31966be8db16e8aaf55465e901b6d0e8b704f8ecf0af0b83371fc540bc69723b",
+    "bytes": "48 89 5c 24 08 48 89 6c 24 10 48 89 74 24 18 48"
+  },
+  "portable_consolidated_authority": {
+    "job_id": "20260720T104531Z-w5-a31-consolidated-owner-frame-order-pr-79b1ba63",
+    "executing_shard": "shard-03",
+    "function_manifest_sha256": "b319dd1b721ed6a13e47088b7def034111f9882631080bffbf049fbb79265a2f",
+    "job_json_sha256": "b1c9d8c0678956f17bea2e7f9e06e7ff4baf31254c11b3c983a9a5ca9ae2d04b",
+    "requested_roots_resolved": "13/13",
+    "binding": "NFP1 function_manifest_sha256 and job_receipt_sha256"
+  },
+  "final_reaudit": {
+    "job_id": "20260720T134711Z-wave5-a31-owner-item-frame-order-selecte-7a69968f",
+    "executing_shard": "shard-18",
+    "function_manifest_sha256": "b319dd1b721ed6a13e47088b7def034111f9882631080bffbf049fbb79265a2f",
+    "requested_roots_resolved": "13/13",
+    "display_percent_boundary": "ESI copied to EDX at internal callsite 0x141bb636e; 0x141bb5df0 returns void",
+    "joint_country_negative_finding": "0x141bb5a70 is continuous-focus detail update, not a joint-country identity resolver"
+  },
+  "inline_instrumentation_authority": {
+    "job_id": "20260720T213713Z-w5final-a31-exact-display-joint-instrume-56d3fc12",
+    "executing_shard": "shard-05",
+    "function_manifest_sha256": "76cb5caf7dc418b5fbe79dac037440ccb3cecd34140ee9019ad33c96950e0273",
+    "job_json_sha256": "5c0dcd6032b2aa747ed02bec309c9c41d0697e445b46b86b91f9fb4132f5059a",
+    "requested_roots_resolved": "3/3",
+    "display_callsite": "0x141bb636e byte-gated rel32 relay; captures ESI and replays the displaced five bytes",
+    "joint_country_callsite": "0x141379e5f byte-gated direct-call relay; joins R8 DB-id pointer to the enclosing item TLS slot",
+    "display_instructions_sha256": "c17b5fa8874eb26703de7f9d05a6806441ba7db71ae4e1251b299c3a1e8a2c1f",
+    "joint_owner_instructions_sha256": "8969cef7e9a21f838c9afb80f10236d01dc514c9007e47184f39f5c7f2039f55"
+  },
+  "proven_order": [
+    "0x14137a780 item-state refresh",
+    "0x14137a600 national/joint detail refresh",
+    "selected Present cutoff"
+  ],
+  "implementation": {
+    "dynamic_return_action": "mark one pending authenticated view",
+    "detail_return_action": "consume only the same pending view and materialize after transient leaves",
+    "completion_qpc_boundary": "after paired detail refresh",
+    "selected_present_bracket": "same QPC frequency and arm <= paired completion <= selected Present",
+    "hook_counter_scope": "reset at arm; each receipt is transaction-local",
+    "seal_witness_rule": "reject before writing unless all six entry-hook families plus display-callsite and joint-boundary witnesses are present and vector-publish count agrees with the candidate Boolean",
+    "stable_publish_rule": "stable receipt requires same_epoch_vector_publish_seen=true",
+    "transition_publish_rule": "transition may omit same-epoch publish only after exact view/item vtable authentication and stable opening/closing vector identity",
+    "unpaired_detail_refresh": "ignored",
+    "receipt_requires_detail_refresh_hook": true,
+    "pair_regrader": "tools/verify_a31_fixture_matrix.py",
+    "nfp1_schema_version": 2,
+    "selected_present_custody": "paired completion QPC plus global order/QPC/frequency and canonical portable SelectedPresentReceipt SHA-256",
+    "replay_join": "canonical digest must recompute against production_render.selected_present",
+    "harness_exports": [
+      "battle-plan_a31_install_fixture_owner",
+      "battle-plan_a31_arm_fixture_epoch",
+      "battle-plan_a31_seal_fixture_epoch",
+      "battle-plan_a31_capture_result_len",
+      "battle-plan_a31_copy_capture_result",
+      "battle-plan_a31_uninstall_fixture_owner",
+      "battle-plan_a31_fixture_command_json"
+    ],
+    "owner_runner": "extractor/native/scripts/Invoke-A31NationalFocusFixturePair.ps1"
+  },
+  "retained_evidence_census": {
+    "nfp1_records_found": 0,
+    "a31_acquisition_receipts_found": 0,
+    "stable_transition_pair_found": false
+  },
+  "activation": {
+    "production_scheduling_enabled": false,
+    "live_fixture_accepted": false,
+    "production_activation_authorized": false,
+    "compact_domain_89_scheduled": false,
+    "human_input_required": "Run the owner-runnable exact-a729 capture and perform the focus-panel interactions needed to produce one complete stable receipt plus one later receipt with a discriminating final state or transient presentation leaf. Instrumentation and all three regrades are automated."
+  },
+  "validation": {
+    "subagent_builds_or_tests_run": false,
+    "central_validation_required": true,
+    "live_fixture_run": false
+  }
+}

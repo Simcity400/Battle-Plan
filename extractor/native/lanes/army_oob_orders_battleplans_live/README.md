@@ -1,11 +1,14 @@
 # army_oob_orders_battleplans_live lane
 > Active lane note: this README is the only active lane-local documentation. Historical plans, proof reports, blocker notes, and registration packets for this lane are archived under ../../../documents/archive/native_lanes/army_oob_orders_battleplans_live/. Current extraction completion status lives in ../../../documents/MASTER_EXTRACTION_CONTRACT.md.
 
-> 2026-07-19 residual RE correction: Type 5 is area defense, exact
-> `+0x70/+0x78` geometry is admitted only for authenticated type-2 line/type-3
-> invasion rows, and execution/activation is exact at `order+0x248`. See the
-> integrated domain-54 source and
-> `../army_battleplans_depth_live/A729_BATTLEPLAN_RE_REPORT.md`.
+> **Wave-5 X1/X8 final authority (2026-07-20):** Type 1 is ordered `+0x70`
+> data with live count `+0x7C`; type 4 is exactly
+> `[first +0x70 source, u32 +0xB8 target]`; type 5 uses `+0xE0` data with
+> live count `+0xEC`. `+0x78/+0xE8` are capacities. Manager execution and
+> cohesion modes are semantically typed, the legacy per-order
+> stance/aggressiveness placeholders are retired, and no human-input RE gate
+> remains. See
+> `../army_battleplans_depth_live/X1_X8_TYPE1_TYPE4_SCALAR_RE_20260720.json`.
 
 > 2026-07-20 manager/scalar closeout: exact registered-reference table code
 > closes the complete army manager, and exact command writers close the u32
@@ -505,17 +508,20 @@ Not completed by this lane-local slice:
   table probe validates a partial theatre vector covering `73/100` theatre
   roots, but v3 shows that plain table coverage is not stable/complete
   (`49/101` best theatre run in the later frame);
-- line/invasion geometry beyond the exact type-2/type-3 path slice, plus type-4
-  paradrop geometry. `order+0x70/+0x78` is validated for type 2 and type 3 and
-  has a lane-local domain-54 compact child-table proof. `order+0xC0/+0xC8` is
-  rejected as the type-3 primary path vector. Redraw/delete lifecycle and type-4
-  promotion still require the minimal controlled discriminator fixture;
+- unknown/modded order-type geometry only. Exact a729 consumers now prove the
+  complete type-1 route at `order+0x70` with live count `+0x7C`, and type-4
+  paradrop endpoints as `[first +0x70 element, u32 +0xB8]`. `+0x78` is vector
+  capacity, not count. `order+0xC0/+0xC8` remains rejected as the type-3 primary
+  path vector. Redraw/delete and type-4 captures are optional corroboration, not
+  activation gates;
 - plan-value/power runtime caches. Active/execution state is exact at
   `order+0x248`; `order+0x150` is a rejected execution candidate for current
   build `870ebf` and must not be retried;
-- order-row stance/aggressiveness live fields remain separate and unknown.
-  They must not be inferred from the now-exact army-level execution, cohesion,
-  or leader-proximity values;
+- the legacy order-row stance/aggressiveness wire slots remain canonical
+  `unknown` because the schema premise was false: there are no corresponding
+  per-order producers. The actual controls are exact manager-level
+  `COrdersGroup+0x1A4` execution and `+0x1A8` cohesion values, exposed as typed
+  replay/UI enums;
 - UI-level semantic reconstruction of front lines from order geometry.
 
 ## Production integration
@@ -534,15 +540,11 @@ The shared integration slot was granted on 2026-07-20. The production path now:
 5. Add theatre rows as direct-root `kind = 5` inside domain 54 only after the
    shared recorder slot is granted; until then, keep the proof as lane-local
    evidence and do not mutate `oob_command` row widths.
-6. Keep type-4 geometry and same-instance redraw/delete admission behind the
-   activation-false carrier in `D54_EXACT_FIXTURE_CARRIER_CONTRACT.json`.
-   `d54_exact_fixture_observer.py` requires the current 60/88 D54 wire and raw
-   identity/order receipts. Type-4 promotion additionally requires its raw
-   geometry candidates and a same-paused save order; it does not preselect a
-   geometry vector. The current save/live proof already validates
-   `order+0x70/+0x78` for exact type-2/type-3 rows and rejects
-   `order+0xC0/+0xC8` as the type-3 primary path vector. Active/execution state
-   is already exact at `order+0x248` and is not part of the remaining fixture.
+6. Keep the D54 fixture carrier activation-false. It may preserve optional
+   redraw/delete, membership, and paradrop corroboration, but it cannot alter
+   production semantics. Exact a729 evidence already authenticates type-1
+   `+0x70/+0x7C`, type-4 `[first +0x70, +0xB8]`, current `+0x244` identity, and
+   active/execution state at `+0x248`.
 7. Preserve the existing join boundary with division lane: this lane may consume
    `(owner_tag_db_id, div_id, div_type/body identity, CArmy parent)` but must not
    emit division movement/scalar state.

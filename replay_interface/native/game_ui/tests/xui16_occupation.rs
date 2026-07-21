@@ -3,13 +3,16 @@ use game_ui::dynamic_collection::{
     CollectionItemTrace, CollectionTraceAuthority, DynamicCollectionTrace,
 };
 use game_ui::occupation_binding::{
-    admit_occupation_surface, apply_occupation_state_to_compose_options, fnv1a32,
+    admit_occupation_surface, admit_occupation_surface_from_world,
+    apply_occupation_state_to_compose_options, fnv1a32,
     occupation_map_mode_inputs, GarrisonActivityRow, GarrisonEquipmentLossRow,
-    GarrisonEquipmentRow, GarrisonTemplateDefinition, OccupationAlertRow, OccupationLawDefinition,
+    GarrisonEquipmentRow, GarrisonShortageEquipmentRow, GarrisonTemplateDefinition,
+    OccupationAlertRow, OccupationLawDefinition, OccupationProductionSurfaceRequest,
     OccupationRejection, OccupationSurfaceRequest, OccupationVisibleText,
 };
-use replay_core::{Leaf, OccupationEquipmentExactRow, OccupationRow};
+use replay_core::{open_recording, Leaf, OccupationEquipmentExactRow, OccupationRow, WorldTimeline};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 fn trace(ids: &[&str]) -> DynamicCollectionTrace {
     DynamicCollectionTrace {
@@ -46,8 +49,8 @@ fn occupation() -> OccupationRow {
         resistance_speed: Leaf::Measured(0.025),
         compliance: Leaf::Measured(65.0),
         compliance_speed: Leaf::Measured(-0.012),
-        occupier_tag: Leaf::Measured("47".into()),
-        occupied_country_tag: Leaf::Measured("180".into()),
+        occupier_tag: Leaf::Measured("GER".into()),
+        occupied_country_tag: Leaf::Measured("FRA".into()),
         operational_status: Leaf::Absent,
         occupation_law: Leaf::Unobtained,
         occupation_law_token_id: Leaf::Measured(304_778_569),
@@ -119,21 +122,23 @@ fn exact_state_log_alert_and_equipment_inputs_are_admitted_in_trace_order() {
     )]);
     let activities = vec![GarrisonActivityRow {
         stable_id: "activity:1".into(),
+        controller_tag: "GER".into(),
         date_text: "1 May, 1944".into(),
         location_text: "Angola".into(),
         state_id: 891,
-        occupied_country_tag: "180".into(),
+        occupied_country_tag: "FRA".into(),
         attack_blocked: false,
         lost_manpower: 20,
         lost_equipment: 15,
     }];
     let equipment_losses = vec![GarrisonEquipmentLossRow {
-        stable_id: "loss:12:4".into(),
+        stable_id: "equipment:12:4".into(),
         equipment_id: 12,
         equipment_type: 4,
         equipment_token: "infantry_equipment_1".into(),
         display_name: "Infantry Equipment I".into(),
         amount_lost: 15.0,
+        contributing_activity_ids: vec!["activity:1".into()],
     }];
     let alerts = vec![OccupationAlertRow {
         stable_id: "alert:GER:not_enough_garrison".into(),
@@ -145,17 +150,15 @@ fn exact_state_log_alert_and_equipment_inputs_are_admitted_in_trace_order() {
         equipment_fixed_point_divisor: 100_000,
         visible_order: 0,
         missing_manpower: 4200,
-        missing_equipment: vec![GarrisonEquipmentRow {
-            equipment_id: 12,
-            equipment_type: 4,
-            equipment_token: "infantry_equipment_1".into(),
-            amount: 125.0,
+        missing_equipment: vec![GarrisonShortageEquipmentRow {
+            archetype_id: 12,
+            whole_amount: 125,
         }],
         resolved_text: "Garrison reinforcement required".into(),
     }];
     let state_trace = trace(&["state:891"]);
     let activity_trace = trace(&["activity:1"]);
-    let loss_trace = trace(&["loss:12:4"]);
+    let loss_trace = trace(&["equipment:12:4"]);
 
     let admitted = admit_occupation_surface(OccupationSurfaceRequest {
         source_record_id: "record:42",
@@ -298,4 +301,116 @@ fn incomplete_equipment_or_history_fails_closed() {
         alerts_complete: true,
     });
     assert_eq!(result, Err(OccupationRejection::IncompleteProducer));
+}
+
+#[test]
+fn production_owner_fixture_crosses_typed_history_alert_and_xui16_constructor() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/xui16_production_owner");
+    let timeline = WorldTimeline::open(
+        open_recording(&fixture)
+            .unwrap_or_else(|error| panic!("open XUI16 production-owner fixture: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("load XUI16 production-owner fixture: {error}"));
+    assert_eq!(timeline.hours(), &[42]);
+    let frame = timeline.frame(42).expect("XUI16 owner frame");
+
+    let text = BTreeMap::from([(
+        891,
+        OccupationVisibleText {
+            state_name: "Angola".into(),
+            occupied_country_name: "France".into(),
+            resistance_text: "22.3%".into(),
+            resistance_speed_text: "+0.025".into(),
+            compliance_text: "65.0%".into(),
+            compliance_speed_text: "-0.012".into(),
+            garrison_manpower_need_text: "14.0K".into(),
+            garrison_required_text: "2.50".into(),
+        },
+    )]);
+    let laws = BTreeMap::from([(
+        304_778_569,
+        OccupationLawDefinition {
+            token: "local_police_force_garrison".into(),
+            display_name: "Local Police Force".into(),
+            icon_frame: 11,
+            gui_order: 0,
+        },
+    )]);
+    let templates = BTreeMap::from([(
+        4183,
+        GarrisonTemplateDefinition {
+            template_id: 4183,
+            display_name: "Cavalry Garrison".into(),
+            icon_sprite: "GFX_unit_cavalry_icon_medium".into(),
+        },
+    )]);
+    let activity_id = "GER|1942.8.15.1|891|0";
+    let second_activity_id = "GER|1942.8.15.2|891|1";
+    let loss_id = "equipment:438:70";
+    let state_trace = trace(&["state:891"]);
+    let activity_trace = trace(&[activity_id, second_activity_id]);
+    let loss_trace = trace(&[loss_id]);
+    let location_text = BTreeMap::from([
+        (activity_id.into(), "Angola".into()),
+        (second_activity_id.into(), "Angola".into()),
+    ]);
+    let equipment_names =
+        BTreeMap::from([((438, 70), "Support Equipment".into())]);
+    let alert_text =
+        BTreeMap::from([("GER".into(), "Garrison reinforcement required".into())]);
+    let alert_order = BTreeMap::from([("GER".into(), 0)]);
+
+    let admitted = admit_occupation_surface_from_world(OccupationProductionSurfaceRequest {
+        source_record_id: "xui16-owner-fixture:42",
+        frame: &frame,
+        visible_text_by_state: &text,
+        law_definitions_by_hash: &laws,
+        garrison_templates: &templates,
+        equipment_by_state: &BTreeMap::new(),
+        equipment_complete: false,
+        occupation_collection: &state_trace,
+        activity_collection: &activity_trace,
+        equipment_loss_collection: &loss_trace,
+        activity_location_text: &location_text,
+        equipment_display_names: &equipment_names,
+        alert_resolved_text: &alert_text,
+        alert_visible_order: &alert_order,
+    })
+    .expect("typed production-owner fixture must admit");
+
+    assert_eq!(admitted.states()[0].state_id, 891);
+    assert_eq!(admitted.activities()[0].stable_id, activity_id);
+    assert_eq!(admitted.activities()[0].lost_equipment, 1);
+    assert_eq!(admitted.activities()[1].stable_id, second_activity_id);
+    assert_eq!(admitted.activities()[1].lost_equipment, 2);
+    assert_eq!(admitted.equipment_losses()[0].stable_id, loss_id);
+    assert_eq!(admitted.equipment_losses()[0].amount_lost, 3.0);
+    assert_eq!(
+        admitted.equipment_losses()[0].contributing_activity_ids,
+        [activity_id.to_owned(), second_activity_id.to_owned()]
+    );
+    assert_eq!(admitted.alerts()[0].controller_tag, "GER");
+    assert_eq!(admitted.alerts()[0].missing_manpower, 4_200);
+    assert_eq!(admitted.alerts()[0].missing_equipment[0].whole_amount, 125);
+
+    let mut wrong_hour_activity_trace = trace(&[activity_id, second_activity_id]);
+    wrong_hour_activity_trace.frame_hour = 41;
+    let rejected = admit_occupation_surface_from_world(OccupationProductionSurfaceRequest {
+        source_record_id: "xui16-owner-fixture:wrong-hour",
+        frame: &frame,
+        visible_text_by_state: &text,
+        law_definitions_by_hash: &laws,
+        garrison_templates: &templates,
+        equipment_by_state: &BTreeMap::new(),
+        equipment_complete: false,
+        occupation_collection: &state_trace,
+        activity_collection: &wrong_hour_activity_trace,
+        equipment_loss_collection: &loss_trace,
+        activity_location_text: &location_text,
+        equipment_display_names: &equipment_names,
+        alert_resolved_text: &alert_text,
+        alert_visible_order: &alert_order,
+    });
+    assert_eq!(rejected, Err(OccupationRejection::InvalidCollectionTrace));
 }

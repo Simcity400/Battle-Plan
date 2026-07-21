@@ -96,7 +96,7 @@ def province_visual_flags(
 
 def encode_region_row(body: bytes) -> tuple[bytes, dict[str, Any]]:
     region_id = w.u32(body, w.REGION_ID_OFF)
-    phenomenon = w.u32(body, w.REGION_PHENOM_ENUM_OFF)
+    phenomenon = w.u32(body, w.REGION_RAW_ACTIVITY_OFF)
     front_vec = w.vec_from_body(body, w.REGION_ACTIVE_FRONT_POSITIONS_OFF)
     entity_vec = w.vec_from_body(body, w.REGION_ACTIVE_EFFECT_ENTITIES_OFF)
     active_mods = w.vec_from_body(body, w.REGION_ACTIVE_MODS_OFF)

@@ -54,7 +54,8 @@ pub fn production_main_scene_desc(
         |draw| match draw {
             PreparedRuntimeDraw::Particle { packet, .. } => &packet.output_state,
             PreparedRuntimeDraw::Entity { submission, .. }
-            | PreparedRuntimeDraw::O04City { submission, .. } => &submission.output_state,
+            | PreparedRuntimeDraw::O04City { submission, .. }
+            | PreparedRuntimeDraw::O05Building { submission, .. } => &submission.output_state,
         },
     ))
 }

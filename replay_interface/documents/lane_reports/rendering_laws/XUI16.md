@@ -1,8 +1,8 @@
 # XUI16 - occupation, resistance/compliance, garrison and alerts/logs
 
-**Status: PROVEN - PROMOTION-READY, FAIL CLOSED**
+**Status: PRODUCTION WIRED AND CENTRALLY VALIDATED - LIVE ACTIVATION PENDING**
 
-XUI16 has a production replay boundary for occupation state values, occupation-law identity, garrison assignment/equipment, resistance-attack history, the controller-country-global garrison alert, shared map-mode inputs, authenticated row order and visible presentation. Missing or incomplete producer data rejects the surface; the replay layer does not invent empty equipment, log or alert rows, thresholds, text, sort order, law identities or garrison values.
+XUI16 now has a real production constructor for occupation state values, occupation-law identity, garrison assignment/equipment, resistance-attack history, and the controller-country-global garrison alert. Domain 52 carries the exact current-hour alert result in a backward-compatible `GAR1` trailer; predicate-only success is retained as measured inactive/empty, while active membership is admitted only from the complete detail call. Recorder folding and typed replay preserve explicit source-unavailable state. Missing or incomplete producer data rejects the surface.
 
 ## Proven replay law
 
@@ -10,6 +10,9 @@ XUI16 has a production replay boundary for occupation state values, occupation-l
 - State admission requires exact measured resistance/compliance and speeds, occupier/occupied tags, recognized FNV law encoding and matching static law definition, garrison template, nonnegative manpower/requirement, unit-interval strength and a complete per-state equipment set.
 - The save producer retains ordered current equipment, need/reinforcement rows and resistance-attack history. Equipment `(id,type)` joins the equipment-variant catalog; measured-empty collections remain distinct from absence. Sparse omitted attack manpower is exact zero (`sum([])`), not an incomplete row.
 - `alert_not_enough_garrison` is a HIGH country-global alert registered in slot `0x3f`. Its predicate returns false on a strictly positive aggregate manpower deficit or any positive whole-equipment deficit after exact signed fixed-point division by `100000`; it is not a per-state row and state garrison ratios cannot synthesize its membership.
+- Alert equipment children use the engine's final `CEquipmentArchetype+0x418` identity and positive whole-unit deficit. They are not save equipment variants. The producer country pointer must join exactly one validated d52 country row before it can cross the wire.
+- `ProductionUiRenderer::admit_xui16_surface` is the product callsite. It first requires `countryoccupationview.gui`, `garrisonlogview.gui`, `countrystateview.gui`, and `occupation_laws.txt` from the replay's effective content admission, then delegates to `admit_occupation_surface_from_world`. That typed constructor builds activity, aggregate equipment-tab, and alert rows from `WorldFrame`; callers can provide A25/A28 text and layout authority but cannot fabricate semantic rows.
+- The callsite requires all three A28 collection traces to name the exact `WorldFrame` hour. Every activity keeps its controller owner and must match the same-state d52 occupier/occupied pair. Its loss children have contiguous source ordinals and an exact integral sum equal to the activity aggregate; the separate equipment tab is then aggregated exactly by `(equipment_id,equipment_type)` and retains every contributing activity identity. An active alert controller must own at least one same-hour d52 occupation row.
 - Dynamic materialization/order is consumed from A28/XUI03 and runtime visible strings from A25. XUI16 does not duplicate or infer either producer.
 - The shared occupation map mode parses the shipped noninitialized color and five resistance plus five compliance color stops. Sampling is linear between the two closest authored stops; an exact duplicate threshold selects the later authored stop.
 - The compose seam binds shipped names for state name, selected-law text/icon, garrison requirement text and strength bar without renderer-side numeric clamping.
@@ -22,15 +25,9 @@ The production parser was run over the 51,196,609-character `SPR_1942_melted.txt
 
 Shipped `common/alerts.txt` defines `alert_not_enough_garrison` as `HIGH`; four `alerts_l_english.yml` keys define its instant/warning and aggregate missing-manpower/equipment text. Binary export proves the country-global registry slot and predicate/detail law: positive manpower shortages emit `alert_not_enough_garrison_delayed`; positive whole-equipment children emit `alert_not_enough_garrison_delayed_equipment`; the instant builder uses `alert_not_enough_garrison_instant` and appends `ALERT_RIGHTCLICK`. This closes the former per-state alert contract without RenderDoc or additional save data.
 
-## Mechanical verification
+## Mechanical verification state
 
-- Deterministic evidence builder executed twice with identical contract, census and findings hashes.
-- `replay_core` focused integration test: 1/1 passed.
-- `game_ui` XUI16 tests: 2/2 passed, including complete admission and incomplete-producer rejection.
-- Save parser/development-oracle tests: 2/2 passed, including sparse-zero and measured-empty rows.
-- Replay store occupation suite: 27 passed plus five intentionally skipped real-output tests (32 total discovered).
-- `map_viewer` occupation-map-mode test: 1/1 passed.
-- Verifier checks executable authority, seven shipped-file hashes, law census, required GUI tokens, map stops, replay source gates, A35/A28/A25 separation and zero implementation residuals.
+The committed `xui16_production_owner` replay fixture crosses typed current equipment, complete activity/equipment history, an active owner-joined alert and the typed constructor used by the production renderer. Unit fixtures also cover GAR1 active and predicate-only measured-empty fold/replay semantics plus wrong-owner rejection. The primary agent's centralized Final/All validation passed after the shared wave. One authenticated active live activation must show a same-hour predicate/detail observation crossing d52 and the recorder fold without a completeness poison; `Invoke-A35OccupationGarrisonFixture.ps1` and `verify_a35_live_fixture.py` own that acquisition and independently join its same-date save oracle.
 
 ## Binary provenance
 
@@ -45,4 +42,4 @@ Shipped `common/alerts.txt` defines `alert_not_enough_garrison` as `HIGH`; four 
 
 Representative Ghidra infrastructure diagnostics are frozen in A35: jobs `20260717T112613Z-a35-occupation-garrison-alert-anchors-v3-0c6812ad` and `20260717T112710Z-a35-occupation-garrison-alert-anchors-v4-95fc63c0`, artifact `identity.console.log`, hashes `d6c383d89399baf4d132cf773cbc8376691c31d14571360bdff552a6b031b7dc` and `78a9e6aa466932949abc9a3f0eec94a991905421d928d10341d29cba2feefa0e`; both failed before function resolution because the worker project lacked `hoi4.exe`. They are infrastructure evidence, not binary findings.
 
-**Implementation residuals: none in the replay-owned XUI16 boundary. A35 equipment/history and the country-global alert law are promotion-ready. Exact shared inputs still consumed from separate owners are A28 collection materialization/order and A25 runtime text. No new capture or human data extraction is required.**
+**Implementation residual: one authenticated active live activation evidence receipt. No additional reverse-engineering law is known to be missing. D52 was extended; d92 was not allocated. Exact shared inputs remain A28 collection materialization/order and A25 runtime text.**

@@ -13,7 +13,7 @@ pub mod a729_hook;
 
 pub const DOMAIN_ID: u16 = 82;
 pub const DOMAIN_NAME: &str = "character_presentation_live";
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 pub const AUTHORITY_EXACT_A729_CHARACTER_PRESENTATION: u32 = 1;
 pub const MAGIC: u32 = u32::from_le_bytes(*b"CPR1");
 pub const MAX_TRAIT_TREES: usize = 8_192;
@@ -39,6 +39,8 @@ pub const ACE_MODIFIER_SETTER_ARTIFACT_SHA256: [u8; 32] =
     hex32(b"3b49c9eb735a03fc711f7322b74a5b86ad64b25ffdbcaa73a390b64a2edfd552");
 pub const ACE_MODIFIER_FORMATTER_MANIFEST_SHA256: [u8; 32] =
     hex32(b"79fd3a1e1b9eafb09566b2721260936c8430acffcf0ba408cc866c6292ac8f0b");
+pub const ACE_SELECTED_CONTEXT_MANIFEST_SHA256: [u8; 32] =
+    hex32(b"b593bfc287648ac2bdced54567db5241f2acfe4032f8aed2a77632e29b468c5c");
 
 const fn hex32(input: &[u8; 64]) -> [u8; 32] {
     const fn nibble(value: u8) -> u8 {
@@ -143,10 +145,24 @@ pub struct AcePortraitObservation {
     pub modifier_text: String,
 }
 
+/// Exact input used by `0x14201D470` before it orders ace rows. A selected
+/// wing and a plane-type mask are mutually exclusive producer routes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AceListContext {
+    SelectedWing {
+        owner_tag_db_id: u32,
+        wing_id: u32,
+    },
+    PlaneTypeMask {
+        mask_raw: u32,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CharacterPresentationSnapshot {
     pub source_sequence: u64,
     pub trait_trees: Vec<TraitTreeObservation>,
+    pub ace_context: AceListContext,
     pub ace_portraits: Vec<AcePortraitObservation>,
 }
 
@@ -201,10 +217,21 @@ pub fn validate_snapshot(snapshot: &CharacterPresentationSnapshot) -> Result<(),
     if snapshot.source_sequence == 0 {
         return invalid("source sequence is zero");
     }
+    if snapshot.trait_trees.len() != 2 {
+        return invalid("exact selected-leader snapshot must contain both trait tree roots");
+    }
     if snapshot.trait_trees.len() > MAX_TRAIT_TREES
         || snapshot.ace_portraits.len() > MAX_ACE_PORTRAITS
     {
         return invalid("character presentation row count exceeds bound");
+    }
+    match &snapshot.ace_context {
+        AceListContext::SelectedWing {
+            owner_tag_db_id,
+            wing_id,
+        } if *owner_tag_db_id != 0 && *wing_id != 0 => {}
+        AceListContext::PlaneTypeMask { mask_raw } if *mask_raw != 0 => {}
+        _ => return invalid("ace list context contains a zero identity or mask"),
     }
     let total_nodes = snapshot
         .trait_trees
@@ -216,10 +243,19 @@ pub fn validate_snapshot(snapshot: &CharacterPresentationSnapshot) -> Result<(),
     }
     let mut tree_keys = BTreeSet::new();
     let mut reason_context_ids = BTreeSet::new();
+    let expected_trait_identity = (
+        snapshot.trait_trees[0].owner_tag_db_id,
+        snapshot.trait_trees[0].unit_leader_id,
+    );
+    let mut observed_roots = BTreeSet::new();
     for tree in &snapshot.trait_trees {
         if tree.owner_tag_db_id == 0 || tree.unit_leader_id == 0 {
             return invalid("trait tree contains zero owner or leader identity");
         }
+        if (tree.owner_tag_db_id, tree.unit_leader_id) != expected_trait_identity {
+            return invalid("trait tree roots do not describe one selected leader");
+        }
+        observed_roots.insert(tree.root);
         if !tree_keys.insert((tree.owner_tag_db_id, tree.unit_leader_id, tree.root)) {
             return invalid("duplicate trait tree identity");
         }
@@ -236,6 +272,14 @@ pub fn validate_snapshot(snapshot: &CharacterPresentationSnapshot) -> Result<(),
                 return invalid("duplicate trait token within tree");
             }
         }
+    }
+    if observed_roots
+        != BTreeSet::from([
+            TraitTreeRoot::ControllerOffset120,
+            TraitTreeRoot::ControllerOffset130,
+        ])
+    {
+        return invalid("exact selected-leader snapshot is missing a trait tree root");
     }
     let mut ace_keys = BTreeSet::new();
     let mut ordinals: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
@@ -261,6 +305,19 @@ pub fn validate_snapshot(snapshot: &CharacterPresentationSnapshot) -> Result<(),
             .entry(ace.owner_tag_db_id)
             .or_default()
             .push(ace.visible_ordinal);
+    }
+    let ace_owners = snapshot
+        .ace_portraits
+        .iter()
+        .map(|ace| ace.owner_tag_db_id)
+        .collect::<BTreeSet<_>>();
+    if ace_owners.len() > 1 {
+        return invalid("ace presentation rows span multiple active owners");
+    }
+    if let AceListContext::SelectedWing { owner_tag_db_id, .. } = &snapshot.ace_context {
+        if ace_owners.iter().any(|owner| owner != owner_tag_db_id) {
+            return invalid("selected-wing context owner contradicts ace rows");
+        }
     }
     for mut values in ordinals.into_values() {
         values.sort_unstable();
@@ -319,6 +376,7 @@ pub fn encode_payload(frame: &CharacterPresentationFrame) -> Result<Vec<u8>, Car
         ACE_BIND_SORT_MANIFEST_SHA256,
         ACE_MODIFIER_SETTER_ARTIFACT_SHA256,
         ACE_MODIFIER_FORMATTER_MANIFEST_SHA256,
+        ACE_SELECTED_CONTEXT_MANIFEST_SHA256,
     ] {
         out.extend_from_slice(&hash);
     }
@@ -329,6 +387,23 @@ pub fn encode_payload(frame: &CharacterPresentationFrame) -> Result<Vec<u8>, Car
         return Ok(out);
     };
     u64v(&mut out, snapshot.source_sequence);
+    match &snapshot.ace_context {
+        AceListContext::SelectedWing {
+            owner_tag_db_id,
+            wing_id,
+        } => {
+            out.push(1);
+            out.extend_from_slice(&[0; 3]);
+            u32v(&mut out, *owner_tag_db_id);
+            u32v(&mut out, *wing_id);
+        }
+        AceListContext::PlaneTypeMask { mask_raw } => {
+            out.push(2);
+            out.extend_from_slice(&[0; 3]);
+            u32v(&mut out, *mask_raw);
+            u32v(&mut out, 0);
+        }
+    }
     u32v(&mut out, snapshot.trait_trees.len() as u32);
     u32v(&mut out, snapshot.ace_portraits.len() as u32);
     for tree in &snapshot.trait_trees {
@@ -379,6 +454,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<CharacterPresentationFrame, Carr
         ACE_BIND_SORT_MANIFEST_SHA256,
         ACE_MODIFIER_SETTER_ARTIFACT_SHA256,
         ACE_MODIFIER_FORMATTER_MANIFEST_SHA256,
+        ACE_SELECTED_CONTEXT_MANIFEST_SHA256,
     ] {
         if reader.bytes(32)? != expected {
             return invalid("CPR1 executable or producer manifest mismatch");
@@ -391,6 +467,22 @@ pub fn decode_payload(payload: &[u8]) -> Result<CharacterPresentationFrame, Carr
     }
     let snapshot = if has_snapshot {
         let source_sequence = reader.u64()?;
+        let context_kind = reader.u8()?;
+        if reader.bytes(3)? != [0, 0, 0] {
+            return invalid("CPR1 ace context reserved bytes are nonzero");
+        }
+        let context_a = reader.u32()?;
+        let context_b = reader.u32()?;
+        let ace_context = match (context_kind, context_a, context_b) {
+            (1, owner_tag_db_id, wing_id) if owner_tag_db_id != 0 && wing_id != 0 => {
+                AceListContext::SelectedWing {
+                    owner_tag_db_id,
+                    wing_id,
+                }
+            }
+            (2, mask_raw, 0) if mask_raw != 0 => AceListContext::PlaneTypeMask { mask_raw },
+            _ => return invalid("CPR1 ace context is invalid"),
+        };
         let tree_count = reader.u32()? as usize;
         let ace_count = reader.u32()? as usize;
         if tree_count > MAX_TRAIT_TREES || ace_count > MAX_ACE_PORTRAITS {
@@ -457,6 +549,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<CharacterPresentationFrame, Carr
         Some(CharacterPresentationSnapshot {
             source_sequence,
             trait_trees,
+            ace_context,
             ace_portraits,
         })
     } else {
@@ -590,6 +683,7 @@ mod tests {
             completeness_record_identity: "xui17:a729:refresh:9".into(),
             snapshot: Some(CharacterPresentationSnapshot {
                 source_sequence: 9,
+                ace_context: AceListContext::PlaneTypeMask { mask_raw: 0x400 },
                 trait_trees: vec![TraitTreeObservation {
                     owner_tag_db_id: 1,
                     unit_leader_id: 7,
@@ -608,6 +702,11 @@ mod tests {
                             reason_context_id: None,
                         },
                     ],
+                }, TraitTreeObservation {
+                    owner_tag_db_id: 1,
+                    unit_leader_id: 7,
+                    root: TraitTreeRoot::ControllerOffset130,
+                    nodes: Vec::new(),
                 }],
                 ace_portraits: vec![AcePortraitObservation {
                     owner_tag_db_id: 1,
@@ -690,10 +789,19 @@ mod tests {
     #[test]
     fn one_a25_reason_context_cannot_bind_multiple_trait_nodes() {
         let mut duplicate = frame();
-        let mut second = duplicate.snapshot.as_ref().unwrap().trait_trees[0].clone();
-        second.root = TraitTreeRoot::ControllerOffset130;
-        second.nodes.truncate(1);
-        duplicate.snapshot.as_mut().unwrap().trait_trees.push(second);
+        let repeated = duplicate.snapshot.as_ref().unwrap().trait_trees[0].nodes[0].clone();
+        duplicate.snapshot.as_mut().unwrap().trait_trees[1].nodes.push(repeated);
         assert!(encode_payload(&duplicate).is_err());
+    }
+
+    #[test]
+    fn exact_selected_leader_requires_both_roots_with_one_identity() {
+        let mut missing_root = frame();
+        missing_root.snapshot.as_mut().unwrap().trait_trees.pop();
+        assert!(encode_payload(&missing_root).is_err());
+
+        let mut mixed_leaders = frame();
+        mixed_leaders.snapshot.as_mut().unwrap().trait_trees[1].unit_leader_id = 8;
+        assert!(encode_payload(&mixed_leaders).is_err());
     }
 }

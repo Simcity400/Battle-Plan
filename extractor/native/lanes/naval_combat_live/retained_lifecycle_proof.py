@@ -129,12 +129,23 @@ def member_rows(payload: memoryview):
         if cursor + 88 > len(payload):
             raise ValueError("truncated domain-50 row")
         parent = (u32(payload, cursor), u64(payload, cursor + 4))
+        side = u32(payload, cursor + 16)
+        group_index = u32(payload, cursor + 20)
+        member_index = u32(payload, cursor + 24)
+        battle_slot_index = u32(payload, cursor + 44)
+        # Portable identity is the save-persisted CFEXMember unique_id at
+        # +0x120, not the mutable group/member container coordinates.
         key = parent + (
-            u32(payload, cursor + 16),
-            u32(payload, cursor + 20),
-            u32(payload, cursor + 24),
+            side,
+            battle_slot_index,
         )
-        yield key, u32(payload, cursor + 12), u32(payload, cursor + 32)
+        yield (
+            key,
+            u32(payload, cursor + 12),
+            u32(payload, cursor + 32),
+            (group_index, member_index),
+            u32(payload, cursor + 48),
+        )
         cursor += 88
 
 
@@ -154,7 +165,9 @@ def payload_status(domain: int, payload: memoryview) -> int:
 def analyze(data: bytes) -> dict[str, object]:
     hours, total_records = records_by_hour(data)
     active_combats: set[tuple[int, int]] = set()
-    active_members: dict[tuple[int, int, int, int, int], int] = {}
+    active_members: dict[tuple[int, int, int, int], int] = {}
+    active_member_coordinates: dict[tuple[int, int, int, int], tuple[int, int]] = {}
+    retired_members: set[tuple[int, int, int, int]] = set()
     last_combat_hour_by_ship: dict[int, int] = {}
     combat_removal_hour_by_ship: dict[int, int] = {}
     counters: collections.Counter[str] = collections.Counter()
@@ -203,12 +216,18 @@ def analyze(data: bytes) -> dict[str, object]:
                 active_combats.add(combat)
 
         members = member_rows(domains[DOMAIN_MEMBERS]) if naval_pair_admissible else ()
-        for key, flags, row_ship_id in members:
+        for key, flags, row_ship_id, source_coordinates, state_raw in members:
             parent = key[:2]
             if flags & MEMBER_DELETED:
                 counters["member_removals"] += 1
                 old_ship_id = active_members.pop(key, 0)
+                active_member_coordinates.pop(key, None)
                 ship_id = row_ship_id or old_ship_id
+                if key in retired_members:
+                    raise ValueError(
+                        f"duplicate domain-50 tombstone for retired identity {key}"
+                    )
+                retired_members.add(key)
                 if ship_id:
                     combat_removal_hour_by_ship[ship_id] = game_hour
                 if parent in ended:
@@ -219,7 +238,28 @@ def analyze(data: bytes) -> dict[str, object]:
                     counters["member_removals_with_same_frame_ship_delete"] += 1
             else:
                 is_join = key not in active_members
+                if state_raw == 0x20:
+                    counters["observed_terminal_sunk_state_rows"] += 1
+                if key in retired_members:
+                    raise ValueError(
+                        f"same-generation domain-50 identity resurrection {key}"
+                    )
+                previous_ship_id = active_members.get(key)
+                if (
+                    previous_ship_id is not None
+                    and previous_ship_id != 0
+                    and row_ship_id != 0
+                    and previous_ship_id != row_ship_id
+                ):
+                    raise ValueError(
+                        f"stable domain-50 identity {key} changed ship "
+                        f"{previous_ship_id}->{row_ship_id}"
+                    )
+                prior_coordinates = active_member_coordinates.get(key)
+                if prior_coordinates is not None and prior_coordinates != source_coordinates:
+                    counters["member_source_coordinate_updates"] += 1
                 active_members[key] = row_ship_id
+                active_member_coordinates[key] = source_coordinates
                 if row_ship_id:
                     last_combat_hour_by_ship[row_ship_id] = game_hour
                 if is_join:
@@ -288,6 +328,17 @@ def analyze(data: bytes) -> dict[str, object]:
             "member_removals_with_same_frame_ship_delete": counters[
                 "member_removals_with_same_frame_ship_delete"
             ],
+            "member_source_coordinate_updates": counters[
+                "member_source_coordinate_updates"
+            ],
+            "observed_terminal_sunk_state_rows": counters[
+                "observed_terminal_sunk_state_rows"
+            ],
+            "identity": "(combat_id,generation,side,battle_slot_unique_id)",
+            "source_coordinates": (
+                "group_index/member_index are diagnostic and may change "
+                "without a leave/join transition"
+            ),
             "active_members_at_stream_end": len(active_members),
             "parentless_active_members_at_stream_end": sum(
                 key[:2] not in active_combats for key in active_members
@@ -336,7 +387,7 @@ def main() -> None:
     stored = args.stream.read_bytes()
     decoded, compression = load_stream(args.stream)
     result = {
-        "schema": "naval_combat_retained_lifecycle_proof_v1",
+        "schema": "naval_combat_retained_lifecycle_proof_v2",
         "source_stream": str(args.stream).replace("\\", "/"),
         "stream_storage": compression,
         "stored_bytes": len(stored),

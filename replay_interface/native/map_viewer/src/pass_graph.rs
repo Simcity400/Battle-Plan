@@ -85,12 +85,21 @@ pub enum ProductionMapPassStatus {
 }
 
 /// Production disposition of each close-zoom law module.  A source-level law
-/// is not a draw authorization: `PixelEvidenceBlocked` means the exact input
-/// seam exists, but no authenticated engine/replay pixel pair is pinned to the
-/// execution receipt yet.  `InputBlocked` means an exact runtime carrier is
-/// still absent.  Neither state may enable a draw.
+/// is not a draw authorization. `SelectedScopeWired` means an authenticated,
+/// explicitly bounded retained scope is already carried and executed, without
+/// authorizing any wider scope. `ExecutionBlocked` means an exact runtime
+/// carrier is admitted but its production geometry/pipeline/interleave
+/// consumer is absent. `CarrierWiredDataBlocked` means the exact carrier and
+/// executor exist but the current replay frame may legitimately omit the
+/// authenticated observation. `PixelEvidenceBlocked` means the exact input and
+/// execution seam exists, but a requested authenticated engine/replay pixel
+/// golden is not pinned yet. `InputBlocked` means the exact runtime carrier is
+/// still absent. Blocked states may not enable a draw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProductionCloseZoomLawStatus {
+    SelectedScopeWired,
+    ExecutionBlocked,
+    CarrierWiredDataBlocked,
     InputBlocked,
     PixelEvidenceBlocked,
 }
@@ -103,14 +112,17 @@ pub struct ProductionCloseZoomLawPlan {
 }
 
 fn production_close_zoom_law_plan() -> Vec<ProductionCloseZoomLawPlan> {
-    use ProductionCloseZoomLawStatus::{InputBlocked, PixelEvidenceBlocked};
+    use ProductionCloseZoomLawStatus::{
+        CarrierWiredDataBlocked, ExecutionBlocked, InputBlocked, PixelEvidenceBlocked,
+        SelectedScopeWired,
+    };
 
     vec![
         ProductionCloseZoomLawPlan {
             module: "shadow_law",
-            status: InputBlocked,
+            status: CarrierWiredDataBlocked,
             blockers: vec![
-                "S1 authenticated per-frame shadow target producer/last-write chain is absent; law constants alone do not authorize caster selection, ordering, mutable transforms, blur ownership, or pixels",
+                "L02/L03/W23 and S1 authenticate the selected-light matrices, ordered typed casters, target ownership, blur chain, and production executor; newly recorded frames remain data-blocked when that carrier is absent, while optional event-scoped intermediate pixel readbacks remain a regression golden",
             ],
         },
         ProductionCloseZoomLawPlan {
@@ -122,9 +134,9 @@ fn production_close_zoom_law_plan() -> Vec<ProductionCloseZoomLawPlan> {
         },
         ProductionCloseZoomLawPlan {
             module: "rail_files",
-            status: InputBlocked,
+            status: ExecutionBlocked,
             blockers: vec![
-                "the replay has no ordered CRailwayGfx province/level pairs, active byte, or supply-hub sprite frame; centroid polylines are approximate and forbidden in production",
+                "D81 now admits exact reciprocal CRailwayGfx anchors/levels and complete supply-hub visual fields into WorldFrame::rail_replay; the production ribbon geometry, railroad.shader pipeline, hub placement, and selected-Present interleave consumer remain unwired, and centroid polylines are forbidden",
             ],
         },
         ProductionCloseZoomLawPlan {
@@ -136,9 +148,9 @@ fn production_close_zoom_law_plan() -> Vec<ProductionCloseZoomLawPlan> {
         },
         ProductionCloseZoomLawPlan {
             module: "tree_instance_synthesis",
-            status: InputBlocked,
+            status: SelectedScopeWired,
             blockers: vec![
-                "the retained 4,781-cell scope has an exact pointer-free 13-buffer/three-pass visible model/LOD carrier and executes through authenticated static operations; complete-pool synthesis remains blocked on the other 95,275 nonzero cells, and collapsing batches to one mesh draw is forbidden",
+                "the retained 4,781-cell selected scope has an exact pointer-free 13-buffer/three-pass visible model/LOD carrier and executes through authenticated static operations; the wider library authenticates 11,365 cells only as immutable content, while complete-pool selection remains blocked on 260 buckets/87,691 cells and collapsing batches is forbidden",
             ],
         },
         ProductionCloseZoomLawPlan {
@@ -739,6 +751,27 @@ mod tests {
                 "camera_interp_law",
                 "snow_mud_feed",
             ]
+        );
+        assert_eq!(
+            graph
+                .close_zoom_law("shadow_law")
+                .expect("shadow disposition")
+                .status,
+            ProductionCloseZoomLawStatus::CarrierWiredDataBlocked
+        );
+        assert_eq!(
+            graph
+                .close_zoom_law("rail_files")
+                .expect("rail disposition")
+                .status,
+            ProductionCloseZoomLawStatus::ExecutionBlocked
+        );
+        assert_eq!(
+            graph
+                .close_zoom_law("tree_instance_synthesis")
+                .expect("tree disposition")
+                .status,
+            ProductionCloseZoomLawStatus::SelectedScopeWired
         );
         assert_eq!(
             graph

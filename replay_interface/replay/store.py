@@ -582,6 +582,18 @@ def _ingest_intel(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
             intel["recruitable_operatives"] = c["recruitable_operatives"]
         if isinstance(c.get("operations"), dict):
             intel["operations"] = c["operations"]
+        operation_tokens = c.get("operation_tokens")
+        if isinstance(operation_tokens, dict):
+            owned = operation_tokens.get("owned")
+            if isinstance(owned, dict):
+                # The save's outer intel_source tuple is a process-local
+                # serializer reference, not portable identity.  Keep only the
+                # exact operation-token -> target-tag membership set.
+                intel["operation_tokens"] = {
+                    token: list(targets)
+                    for token, targets in owned.items()
+                    if isinstance(token, str) and isinstance(targets, list)
+                }
         if isinstance(c.get("cryptology"), dict):
             intel["decryption"] = c["cryptology"]
         if peace is not None:
@@ -596,6 +608,67 @@ def _id_pair_str(cid: Any) -> Optional[str]:
     if isinstance(cid, list):
         return ":".join(str(x) for x in cid)
     return str(cid) if cid is not None else None
+
+
+def _id_pair_id(cid: Any) -> Optional[int]:
+    """Return the numeric id component of an engine ``[id, type]`` handle.
+
+    ``Combat.combat_id`` and the canonical participant arrays are integer
+    fields.  The save oracle deliberately retains complete Clausewitz handles,
+    so the store must project the first word instead of leaking an ``id:type``
+    string (or a two-element list) into those typed replay leaves.
+    """
+    value = cid[0] if isinstance(cid, list) and cid else cid
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _id_pair_ids(handles: Any) -> List[int]:
+    if not isinstance(handles, list):
+        return []
+    return [ident for handle in handles if (ident := _id_pair_id(handle)) is not None]
+
+
+def _air_wing_handle_owners(snap: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    """Build an ambiguity-safe save-handle -> owner map for active air combat."""
+    full: Dict[str, Optional[str]] = {}
+    oob = snap.get("order_of_battle")
+    wings = oob.get("air_wings") if isinstance(oob, dict) else None
+    if not isinstance(wings, list):
+        return full
+    for wing in wings:
+        if not isinstance(wing, dict) or wing.get("id") is None:
+            continue
+        key = str(wing["id"])
+        candidate_owner = wing.get("owner")
+        owner = candidate_owner if schema.valid_tag(candidate_owner) else None
+        # A duplicate full handle is not a unique identity even if both rows
+        # happen to carry the same owner.
+        full[key] = owner if key not in full else None
+    return full
+
+
+def _combat_handle_owners(
+    handles: List[Any], owners_by_handle: Dict[str, Optional[str]]
+) -> tuple[List[str], bool]:
+    owners: set[str] = set()
+    complete = bool(handles)
+    for handle in handles:
+        full_key = (
+            f"{handle[0]}:{handle[1]}"
+            if isinstance(handle, list)
+            and len(handle) == 2
+            and all(
+                isinstance(word, int) and not isinstance(word, bool)
+                for word in handle
+            )
+            else None
+        )
+        owner = owners_by_handle.get(full_key) if full_key is not None else None
+        if owner is None:
+            complete = False
+        else:
+            owners.add(owner)
+    return sorted(owners), complete
 
 
 def _ingest_market(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
@@ -885,19 +958,53 @@ def _ingest_combats(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
     if not isinstance(cb, dict) or not isinstance(cb.get("combats"), list):
         return
     out = []
+    air_wing_owners = _air_wing_handle_owners(snap)
     for c in cb["combats"]:
         if not isinstance(c, dict):
             continue
+        attacker = c.get("attacker") if isinstance(c.get("attacker"), dict) else {}
+        defender = c.get("defender") if isinstance(c.get("defender"), dict) else {}
+        attacker_handles = (
+            attacker.get("units") if isinstance(attacker.get("units"), list) else []
+        )
+        defender_handles = (
+            defender.get("units") if isinstance(defender.get("units"), list) else []
+        )
+        attacker_owners, attacker_owner_complete = _combat_handle_owners(
+            attacker_handles, air_wing_owners
+        )
+        defender_owners, defender_owner_complete = _combat_handle_owners(
+            defender_handles, air_wing_owners
+        )
+        combat_handle = c.get("combat_id")
         rec = {
-            "combat_id": _id_pair_str(c.get("combat_id")),
+            "combat_id": _id_pair_id(combat_handle),
             "kind": c.get("kind"),
             "location_province": c.get("location"),
-            "attackers": (c.get("attacker") or {}).get("units") or [],
-            "defenders": (c.get("defender") or {}).get("units") or [],
+            "attackers": _id_pair_ids(attacker_handles),
+            "defenders": _id_pair_ids(defender_handles),
             "combat_width": None,
             "terrain": c.get("terrain"),
-            "progress": (c.get("attacker") or {}).get("progress"),
-            "modifiers": {"day": c.get("day"), "duration": c.get("duration")},
+            "progress": attacker.get("progress"),
+            # Preserve the complete save handles alongside the schema's
+            # pointer-free integer projections.  This is especially important
+            # for H-AIR: an eventual active-air fixture must retain the engine
+            # object type words so opposing wing handles are not silently
+            # collapsed into division-looking ids.
+            "modifiers": {
+                "day": c.get("day"),
+                "duration": c.get("duration"),
+                "save_combat_handle": combat_handle,
+                "save_attacker_unit_handles": attacker_handles,
+                "save_defender_unit_handles": defender_handles,
+                "save_attacker_owners": attacker_owners if c.get("kind") == "air" else None,
+                "save_defender_owners": defender_owners if c.get("kind") == "air" else None,
+                "save_air_owner_join_complete": (
+                    attacker_owner_complete and defender_owner_complete
+                    if c.get("kind") == "air"
+                    else None
+                ),
+            },
         }
         out.append(rec)
     snap["combats"] = out

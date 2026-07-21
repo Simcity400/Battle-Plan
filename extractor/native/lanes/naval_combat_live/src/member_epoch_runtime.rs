@@ -24,7 +24,9 @@ pub struct MemberEpochBinding {
     pub member_address: usize,
     pub combat_id: u32,
     pub combat_generation: u64,
-    /// Exact D50 `CFEXMember+0xD0` value from the validated outer member.
+    /// Exact D50 `CFEXMember+0x120` save-persisted `unique_id` from the
+    /// validated outer member. It is assigned from the combat-owned monotonic
+    /// used as identity.
     pub battle_slot_index_raw: u32,
 }
 

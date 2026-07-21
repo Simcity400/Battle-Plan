@@ -82,6 +82,7 @@ pub const EVENT_FLAG_KNOWN_MASK: u32 = EVENT_FLAG_DIRECT_CAPTURE
     | EVENT_FLAG_TEXT_PRESENT
     | EVENT_FLAG_TRANSITION_HOOK;
 
+pub const EVENT_SOURCE_X12_PRE_MUTATION_BASELINE: u32 = 0x1200;
 pub const EVENT_SOURCE_X12_SPEED_SETTER: u32 = 0x1201;
 pub const EVENT_SOURCE_X12_PAUSE_TOGGLE: u32 = 0x1202;
 pub const EVENT_SOURCE_X12_PAUSE_FORCED: u32 = 0x1203;
@@ -502,6 +503,7 @@ pub fn gate_payload(payload: &[u8]) -> PayloadGate {
     let mut observed_min_event_hour_raw = None;
     let mut observed_max_event_hour_raw = None;
     let mut previous_x12_sequence = None;
+    let mut saw_x12_baseline = false;
     for row_index in 0..summary.event_rows {
         let Some(row_end) = off.checked_add(event_row_len) else {
             errors.push(format!("event row {row_index}: row offset overflow"));
@@ -559,6 +561,11 @@ pub fn gate_payload(payload: &[u8]) -> PayloadGate {
             *summary.event_kind_counts.entry(kind as u16).or_insert(0) += 1;
             if flags & EVENT_FLAG_TRANSITION_HOOK != 0 {
                 let expected_source = match kind {
+                    SessionEventKind::GameSpeed
+                        if event_source_id == EVENT_SOURCE_X12_PRE_MUTATION_BASELINE =>
+                    {
+                        Some(EVENT_SOURCE_X12_PRE_MUTATION_BASELINE)
+                    }
                     SessionEventKind::GameSpeed => Some(EVENT_SOURCE_X12_SPEED_SETTER),
                     SessionEventKind::Pause => match event_source_id {
                         EVENT_SOURCE_X12_PAUSE_TOGGLE | EVENT_SOURCE_X12_PAUSE_FORCED => {
@@ -577,7 +584,13 @@ pub fn gate_payload(payload: &[u8]) -> PayloadGate {
                     && actor_name_value.as_deref().unwrap_or("").is_empty()
                     && text_value.as_deref().unwrap_or("").is_empty()
                     && tag_db_id == 0
-                    && command_sequence > 0
+                    && if event_source_id == EVENT_SOURCE_X12_PRE_MUTATION_BASELINE {
+                        command_sequence == 0
+                            && !saw_x12_baseline
+                            && previous_x12_sequence.is_none()
+                    } else {
+                        command_sequence > 0
+                    }
                     && event_hour_raw <= summary.game_hour_raw
                     && expected_source == Some(event_source_id)
                     && tick.is_finite()
@@ -593,14 +606,19 @@ pub fn gate_payload(payload: &[u8]) -> PayloadGate {
                         "event row {row_index}: malformed X12 transition-hook row"
                     ));
                 }
-                if let Some(previous) = previous_x12_sequence {
+                if event_source_id == EVENT_SOURCE_X12_PRE_MUTATION_BASELINE {
+                    saw_x12_baseline = true;
+                    previous_x12_sequence = Some(0);
+                } else if let Some(previous) = previous_x12_sequence {
                     if command_sequence != previous + 1 {
                         errors.push(format!(
                             "event row {row_index}: X12 sequence {command_sequence} does not follow {previous}"
                         ));
                     }
+                    previous_x12_sequence = Some(command_sequence);
+                } else {
+                    previous_x12_sequence = Some(command_sequence);
                 }
-                previous_x12_sequence = Some(command_sequence);
             }
             match kind {
                 SessionEventKind::GameSpeed if !(0..=4).contains(&value_i32) => {
@@ -1890,6 +1908,54 @@ mod tests {
         let gate = gate_payload(&encode_payload(&frame));
         assert!(!gate.ok);
         assert!(gate.errors.iter().any(|error| error.contains("does not follow")));
+    }
+
+    #[test]
+    fn gate_x12_accepts_one_pre_mutation_baseline_before_sequence_one() {
+        let mut frame = sample_frame();
+        frame.source_flags |= SOURCE_FLAG_SPEED_PAUSE_HOOK_VALIDATED;
+        let frame_hour = frame.game_hour_raw;
+        frame.event_rows.extend([
+            SessionEventRow {
+                kind: SessionEventKind::GameSpeed,
+                flags: EVENT_FLAG_DIRECT_CAPTURE | EVENT_FLAG_TRANSITION_HOOK,
+                actor_key_hash: 7,
+                actor_name: String::new(),
+                text: String::new(),
+                tag_db_id: 0,
+                value_i32: 2,
+                related_value_i32: 0,
+                command_sequence: 0,
+                event_hour_raw: frame_hour,
+                event_source_id: EVENT_SOURCE_X12_PRE_MUTATION_BASELINE,
+                event_state: 0x3E00_0000,
+            },
+            SessionEventRow {
+                kind: SessionEventKind::GameSpeed,
+                flags: EVENT_FLAG_DIRECT_CAPTURE | EVENT_FLAG_TRANSITION_HOOK,
+                actor_key_hash: 7,
+                actor_name: String::new(),
+                text: String::new(),
+                tag_db_id: 0,
+                value_i32: 3,
+                related_value_i32: 0,
+                command_sequence: 1,
+                event_hour_raw: frame_hour,
+                event_source_id: EVENT_SOURCE_X12_SPEED_SETTER,
+                event_state: 0x3E80_0000,
+            },
+        ]);
+        let gate = gate_payload(&encode_payload(&frame));
+        assert!(gate.ok, "{:?}", gate.errors);
+
+        let baseline_index = frame.event_rows.len() - 2;
+        frame.event_rows[baseline_index].command_sequence = 1;
+        let gate = gate_payload(&encode_payload(&frame));
+        assert!(!gate.ok);
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("malformed X12")));
     }
 
     #[test]

@@ -327,7 +327,9 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.economy.fuel.gain": "C",
     "countries.*.economy.fuel.cost": "C",
     "countries.*.economy.gross_ic_by_equipment": "S/D",
-    "countries.*.economy.market_stockpile": "S",
+    "countries.*.economy.market_stockpile": "C/S",
+    "countries.*.economy.market_stockpile_complete": "C",
+    "countries.*.r2_market_trade_live": "C",
     "countries.*.economy.market_automation": "S",
     "countries.*.economy.logistics": "S",            # supply.json (§3.1)
     # --- country extras + player name (Tier-1 EXTRACT, §3.11/§3.12) ---
@@ -342,8 +344,16 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.military.manpower.deployed": "S/D",
     "countries.*.military.xp.army": "S",
     "countries.*.military.equipment_stockpile": "S",
-    "countries.*.military.convoys": "S",
+    "countries.*.military.convoys": "S/M",
     "countries.*.military.convoys_count": "M",       # live country-obj stockpile count
+    "countries.*.military.convoys_complete": "M",
+    "countries.*.military.convoys_owned_raw": "M",
+    "countries.*.military.convoys_assigned": "M",
+    "countries.*.military.convoys_available": "M",
+    "countries.*.military.convoys_cache_valid": "M",
+    "countries.*.military.convoy_priority_reservations": "M",
+    "countries.*.military.convoy_priority_reservations_complete": "M",
+    "countries.*._r2_country_convoys_live": "C",
     "countries.*.military.ships_by_hull": "S/D",
     "countries.*.military.casualties.killed": "S/D",
     "countries.*.military.casualties.captured": "S/D",
@@ -486,10 +496,36 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.research.in_progress_live.*.progress_basis": "D",
     "countries.*.research.in_progress_live.*.progress_unavailable_reason": "D",
     "countries.*.research.in_progress_live.*.eta_unavailable_reason": "D",
-    "countries.*.research.in_progress_live.*.ahead_of_time_years": "C/M",
-    "countries.*.research.in_progress_live.*.ahead_of_time_penalty_pct": "C/M",
-    "countries.*.research.in_progress_live.*.ahead_of_time_reduction_years": "C/M",
-    "countries.*.research.in_progress_live.*.ahead_of_time_reduced_penalty_pct": "C/M",
+    "countries.*.research.in_progress_live.*.ahead_of_time_years": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_penalty_pct": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_reduction_years": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_reduced_penalty_pct": "C",
+    # A29 exact-a729 observed-localization carrier. The four display values are
+    # admitted only as a complete raw fixed-5 quartet with same-hour,
+    # pointer-free producer provenance; base-factor/save reconstruction is not
+    # an authority for these leaves.
+    "countries.*.research.in_progress_live.*.ahead_of_time_fixed_scale": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_years_raw": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_penalty_raw": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_reduction_years_raw": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_reduced_penalty_raw": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_provenance": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_provenance.authority": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_provenance.executable_sha256": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_provenance.exact_root_job_id": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_provenance.exact_root_manifest_sha256": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_provenance.sentinel_job_id": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_provenance.sentinel_dump_sha256": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_provenance.ui_year_producer_rva": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_provenance.effective_value_producer_rva": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_provenance.localization_consumer_rva": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_provenance.localization_branch": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_provenance.callback_sequence": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_provenance.callback_thread_id": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_provenance.producer_game_hour_raw": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_provenance.callback_qpc_ticks": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_provenance.qpc_frequency_hz": "C",
+    "countries.*.research.in_progress_live.*.ahead_of_time_provenance.source_record_sha256": "C",
     "countries.*.research.research_slots": "C/M/S",
     "countries.*.research.original_research_slots": "S",
     "countries.*.research.research_bonuses": "S",
@@ -544,7 +580,9 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.diplomacy.faction_group": "C/M",
     # equipment market / lend-lease (parse_market). Trade contracts attached to
     # both parties under diplomacy.lend_lease; canonical world list in §7b.
-    "countries.*.diplomacy.lend_lease": "S",
+    "countries.*.diplomacy.lend_lease": "S/M/D",
+    "countries.*.diplomacy.lend_lease.*.equipment_purchase_relation_complete": "M/D",
+    "countries.*.diplomacy.lend_lease.*.equipment_purchase_relation": "M/D",
     "countries.*.diplomacy.expeditionary": "S",
     "countries.*.diplomacy.volunteers": "S",
     "countries.*.diplomacy.attaches": "S",
@@ -594,6 +632,7 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.intel.operative_skill_xp": "M",
     "countries.*.intel.recruitable_operatives": "S",
     "countries.*.intel.operations": "S",
+    "countries.*.intel.operation_tokens": "S",
     "countries.*.intel.decryption": "S",
     "countries.*.intel.peace_conference": "S",
     "countries.*.intel.intel_networks": "S",
@@ -750,6 +789,10 @@ FIELD_SOURCES: Dict[str, str] = {
     # active_factories, cost, produced, priority}. The build target STATE/location is not
     # pinned yet -> never fabricated.
     "countries.*.production.construction_queue": "C/M",
+    "countries.*.production.production_licenses": "C/M",
+    "countries.*.production.production_license_variants": "C/M",
+    "countries.*.production.production_license_agreements": "C/M/D",
+    "countries.*.production.production_license_agreements_complete": "C/M/D",
     # --- top-level designs (§11, from designs.json + live designs_live.py) ---
     # division_templates is now LIVE-first (designs_live, M) with the save as the
     # backstop; equipment_variants remains save-only until the live variant crack
@@ -931,6 +974,17 @@ FIELD_SOURCES: Dict[str, str] = {
     "divisions.*.has_officer": "S",
     # --- combat (§7) ---
     "combats.*": "M*",
+    # Save-oracle active combat transport. The first-word convenience ids
+    # remain under the broad mixed-source combat contract; these lossless
+    # handle/owner leaves are explicitly save-derived.
+    "combats.*.modifiers.day": "S",
+    "combats.*.modifiers.duration": "S",
+    "combats.*.modifiers.save_combat_handle": "S",
+    "combats.*.modifiers.save_attacker_unit_handles": "S",
+    "combats.*.modifiers.save_defender_unit_handles": "S",
+    "combats.*.modifiers.save_attacker_owners": "S",
+    "combats.*.modifiers.save_defender_owners": "S",
+    "combats.*.modifiers.save_air_owner_join_complete": "S",
     "ended_combats.*": "M",
     # --- world-scoped trade contracts (§7b, from market.json) ---
     "diplomacy_world.trade_contracts": "S",
@@ -946,6 +1000,10 @@ FIELD_SOURCES: Dict[str, str] = {
     "naval_air.region_control": "M",
     "naval_air.air_superiority": "M",
     "supply.by_province": "M",
+    "supply.by_province.*.disrupted_supply": "C",
+    "supply.by_province.*.disrupted_supply.*": "C",
+    "supply.r2_logistics_attrition": "C",
+    "supply.r2_logistics_attrition.*": "C",
     # LIVE supply solver INPUTS (supply_inputs, M). DISTINCTLY-NAMED + SEPARATELY-BADGED from
     # the division-province proxy above: per-province efficiency/fulfilment + draw/demand are
     # the PERSISTENT solver inputs that ARE stored, NOT the exact per-province "supply
@@ -1020,11 +1078,17 @@ FIELD_SOURCES: Dict[str, str] = {
     "raids.counters": "S",
     "raids.targets": "S",
     "raids.countries": "S",
+    "raids.country_statuses": "C",
+    "raids.instances": "C",
+    "raids.instances_complete": "C",
+    "raids.ordering": "C",
     "world_events.fired_events": "C/S",
     "world_events.fired_events_complete": "C",
     "world_events.pending_events": "S",
     "world_events.threat": "S",
-    "world_events.sunk_convoys": "S",
+    "world_events.sunk_convoys": "C/S",
+    "_r2_sunk_convoy_history_live_candidate": "C",
+    "_r2_sunk_convoy_history_live": "C",
     "world_events.convoy_losses_by_killer": "S",
     "world_events.convoy_losses_by_owner": "S",
     "world.scenario": "S",
@@ -1061,17 +1125,40 @@ FIELD_SOURCES: Dict[str, str] = {
     "_r2_nuke_stockpile_live": "C",
     "countries.*.dynamic_modifier_instances": "C",
     "_r2_dynamic_modifier_lifecycle_live": "C",
+    "_r2_delayed_event_lifecycle_live": "C",
+    "_r2_occupation_garrison_alert_live": "C",
+    "_r2_resolved_tooltip_instances_live": "C",
+    "_r2_power_balance_presentation_live": "C",
     "special_projects.project_progress": "C",
     "countries.*.special_project_programs": "C",
     "runtime_text": "C",
     "diplomacy_world.domain53_extra.operation_instance_rows": "C",
     "diplomacy_world.domain53_extra.intel_level_rows": "C",
     "diplomacy_world.domain53_extra.intel_network_graph_rows": "C",
+    "diplomacy_world.domain53_extra.operation_token_memberships": "C",
     "diplomacy_world.domain53_extra.agency_upgrade_controller_refresh": "C",
     "diplomacy_world.domain53_extra.cipher_controller_refresh": "C",
+    "_r2_sunk_ship_history_live": "C",
+    "_r2_decision_panel_live": "C",
+    "_r2_scripted_gui_runtime_live": "C",
+    "countries.*.extra.scripted_gui_runtime": "C",
     "_r2_national_focus_presentation_live": "C",
     "_r2_character_presentation_live": "C",
+    "_r2_selected_designer_identity_live": "C",
+    "_r2_active_command_abilities_live": "C",
+    "_r2_hud_surface_activation_live": "C",
     "order_of_battle.extra.naval_missions_status_live": "C/D",
+    "order_of_battle.fleets.*.task_forces.*.mission_details": "S",
+    "order_of_battle.fleets.*.task_forces.*.path": "S",
+    "order_of_battle.fleets.*.task_forces.*.movement_progress": "S",
+    "order_of_battle.fleets.*.task_forces.*.repair_mode": "S",
+    "order_of_battle.fleets.*.task_forces.*.repair_split": "S",
+    "order_of_battle.fleets.*.task_forces.*.repair_target": "S",
+    "order_of_battle.fleets.*.task_forces.*.repair_parent": "S",
+    "order_of_battle.fleets.*.task_forces.*.repair_child": "S",
+    "order_of_battle.fleets.*.task_forces.*.repair_last_mission": "S",
+    "order_of_battle.fleets.*.task_forces.*.detached_activity": "S",
+    "order_of_battle.fleets.*.task_forces.*.retreat": "S",
     "combats.*.land_combat_detail_events_live": "C",
     "combats.*.land_combat_detail_events_live.*.current_loss_observations": "C",
     "combats.*.land_combat_detail_events_live.*.width_observations": "C",
@@ -1225,11 +1312,17 @@ class Military:
     xp: Dict[str, Any] = field(default_factory=_none_dict)
     equipment_stockpile: List[Dict[str, Any]] = field(default_factory=list)
     convoys: List[Dict[str, Any]] = field(default_factory=list)
-    # LIVE convoy STOCKPILE count (country_obj +0x1280, M). Distinct from the
-    # save-side `convoys` LIST (per-equipment rows): this is the single integer
-    # total the country object caches. null until a live read folds it; a measured
-    # 0 is a real "no convoys". See economy_offsets.draft.json `convoys`.
+    # Exact B2 live producer: CCountry+0x1200 embeds CConvoys; its
+    # CEquipmentVariantPool bank is carried with explicit completeness and
+    # fixed-5 raw values. The legacy +0x1280 scalar is not the producer.
     convoys_count: Optional[int] = None
+    convoys_complete: Optional[bool] = None
+    convoys_owned_raw: Optional[int] = None
+    convoys_assigned: Optional[int] = None
+    convoys_available: Optional[int] = None
+    convoys_cache_valid: Optional[bool] = None
+    convoy_priority_reservations_complete: Optional[bool] = None
+    convoy_priority_reservations: Optional[List[Dict[str, int]]] = None
     ships_by_hull: Optional[Dict[str, Any]] = None
     casualties: Dict[str, Any] = field(default_factory=_none_dict)
     command_power: Optional[float] = None
@@ -1361,6 +1454,12 @@ class Production:
     # The build target STATE/location is not pinned yet -> never fabricated.
     # null-but-present until a live read folds it.
     construction_queue: Optional[List[Dict[str, Any]]] = None
+    # X3: PLIC v2 exact manager-vector observations and the fail-closed
+    # cross-domain join to D53 CLicenceProductionAccessRelation lifecycle.
+    production_licenses: Optional[List[str]] = None
+    production_license_variants: Optional[List[Dict[str, Any]]] = None
+    production_license_agreements: Optional[List[Dict[str, Any]]] = None
+    production_license_agreements_complete: Optional[bool] = None
 
 
 @dataclass
@@ -1452,6 +1551,11 @@ class Intel:
     intel_networks: List[Dict[str, Any]] = field(default_factory=list)
     # operations = {priority, running[], finished[]}
     operations: Optional[Dict[str, Any]] = None
+    # Persistent operation-token ownership from the save-backed E14 family:
+    # {authored_operation_token: [target_country_tag, ...]}.  The dictionary is
+    # supplied by the exact modset-bound static catalog; raw intel_source
+    # pool/id/discriminant serializer handles are intentionally excluded.
+    operation_tokens: Optional[Dict[str, List[str]]] = None
     # decryption = cryptology {targets[], intel_source}
     decryption: Optional[Dict[str, Any]] = None
     peace_conference: Optional[Dict[str, Any]] = None
@@ -1803,6 +1907,7 @@ class Supply:
     by_province: Optional[Dict[str, Any]] = None
     source: Optional[str] = None        # "M" when a live read filled it, else null
     confidence: Optional[str] = None    # e.g. "division_province_proxy"
+    r2_logistics_attrition: Optional[Dict[str, Any]] = None
     # LIVE supply solver INPUTS (supply_inputs, M). DISTINCTLY-NAMED + SEPARATELY-BADGED from
     # the division-province proxy above: per-province efficiency/fulfilment + draw/demand are
     # the PERSISTENT solver inputs (NOT the exact per-province "supply available" number,
@@ -1864,6 +1969,10 @@ class Raids:
     counters: Optional[Dict[str, Any]] = None
     targets: List[Dict[str, Any]] = field(default_factory=list)
     countries: List[Dict[str, Any]] = field(default_factory=list)
+    country_statuses: Optional[List[Dict[str, Any]]] = None
+    instances: Optional[List[Dict[str, Any]]] = None
+    instances_complete: bool = False
+    ordering: Optional[str] = None
 
 
 @dataclass
@@ -2617,6 +2726,11 @@ def _validate_orders_group_manager(oob: Dict[str, Any]) -> List[str]:
     domain_known = domain.get("known")
     if type(domain_known) is not bool:
         problems.append(f"{ctx}.known should be bool")
+    orders = domain.get("orders")
+    if not isinstance(orders, list):
+        problems.append(f"{ctx}.orders should be a list")
+    elif domain_known is False and orders:
+        problems.append(f"{ctx}.orders should be empty when the domain is unavailable")
 
     manager = domain.get("orders_group_manager")
     if manager is None:
@@ -2700,6 +2814,392 @@ def _validate_orders_group_manager(oob: Dict[str, Any]) -> List[str]:
     return problems
 
 
+def _validate_country_disrupted_supply(snap: Dict[str, Any]) -> List[str]:
+    problems: List[str] = []
+    supply = snap.get("supply")
+    if not isinstance(supply, dict):
+        return problems
+    meta = supply.get("r2_logistics_attrition")
+    if meta is None:
+        return problems
+    if not isinstance(meta, dict):
+        return ["supply.r2_logistics_attrition should be dict|null"]
+
+    available = meta.get("country_disrupted_supply_available")
+    if not isinstance(available, bool):
+        problems.append(
+            "supply.r2_logistics_attrition.country_disrupted_supply_available "
+            "should be bool"
+        )
+        return problems
+    count = meta.get("country_disrupted_supply_rows")
+    ordering = meta.get("country_disrupted_supply_ordering")
+    authority = meta.get("country_disrupted_supply_authority")
+    if not available:
+        if count is not None or ordering is not None or authority is not None:
+            problems.append(
+                "supply.r2_logistics_attrition unavailable exact source must "
+                "carry null count/order/authority"
+            )
+        return problems
+
+    if type(count) is not int or count < 0:
+        problems.append(
+            "supply.r2_logistics_attrition.country_disrupted_supply_rows "
+            "should be a nonnegative int"
+        )
+        return problems
+    if ordering != "owner_tag_db_id_then_province_id_then_node_type":
+        problems.append(
+            "supply.r2_logistics_attrition.country_disrupted_supply_ordering "
+            "is not canonical"
+        )
+    expected_authority = {
+        "schema_version": 1,
+        "authority": "exact_a729_bounded_owner_robin_hood",
+        "executable_sha256":
+            "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+        "function_manifest_sha256":
+            "3833350a60768765d3a56b80c49be49ed5e3d188a4b1810698c006bf1cb34061",
+        "complete_roster_validation": True,
+        "scale_raw": 100_000,
+    }
+    if not isinstance(authority, dict):
+        problems.append(
+            "supply.r2_logistics_attrition.country_disrupted_supply_authority "
+            "should be dict"
+        )
+    else:
+        for key, expected in expected_authority.items():
+            if authority.get(key) != expected:
+                problems.append(
+                    "supply.r2_logistics_attrition."
+                    f"country_disrupted_supply_authority.{key} "
+                    f"{authority.get(key)!r} != {expected!r}"
+                )
+
+    tag_index = snap.get("tag_db_id_index")
+    measured = snap.get("measured_countries")
+    if not (
+        isinstance(tag_index, dict)
+        and tag_index.get("resolved") is True
+        and isinstance(measured, dict)
+        and measured.get("known") is True
+    ):
+        problems.append(
+            "supply exact disrupted rows require current resolved D18 identity"
+        )
+    countries = snap.get("countries")
+    if not isinstance(countries, dict):
+        problems.append("supply exact disrupted rows require countries D18 map")
+        return problems
+    by_province = supply.get("by_province")
+    if not isinstance(by_province, dict):
+        problems.append(
+            "supply.by_province should be dict when exact disrupted source is available"
+        )
+        return problems
+
+    observed = 0
+    identities = set()
+    for province_key, province in by_province.items():
+        try:
+            province_id = int(province_key)
+        except (TypeError, ValueError):
+            problems.append(
+                f"supply.by_province key {province_key!r} not numeric"
+            )
+            continue
+        if str(province_id) != province_key or not 1 <= province_id <= 13_413:
+            problems.append(
+                f"supply.by_province key {province_key!r} not canonical province id"
+            )
+        if not isinstance(province, dict):
+            problems.append(
+                f"supply.by_province.{province_key} should be dict"
+            )
+            continue
+        rows = province.get("disrupted_supply")
+        if rows is None:
+            continue
+        if not isinstance(rows, list):
+            problems.append(
+                f"supply.by_province.{province_key}.disrupted_supply should be list"
+            )
+            continue
+        previous_order = None
+        for index, row in enumerate(rows):
+            path = (
+                f"supply.by_province.{province_key}."
+                f"disrupted_supply[{index}]"
+            )
+            if not isinstance(row, dict):
+                problems.append(f"{path} should be dict")
+                continue
+            owner = row.get("owner")
+            owner_id = row.get("owner_tag_db_id")
+            node_type = row.get("node_type")
+            value_raw = row.get("value_raw")
+            value = row.get("value")
+            identity_valid = (
+                isinstance(owner, str)
+                and type(owner_id) is int
+                and 1 <= owner_id <= 2_048
+                and type(node_type) is int
+                and 0 <= node_type <= 0xFFFF_FFFF
+                and type(value_raw) is int
+                and 0 <= value_raw <= 100_000
+            )
+            if not identity_valid:
+                problems.append(f"{path} has invalid identity/raw value")
+                continue
+            country = countries.get(owner)
+            if not (
+                isinstance(country, dict)
+                and country.get("_r2_tag_db_id") == owner_id
+            ):
+                problems.append(f"{path} owner does not join current D18 id")
+            if (
+                row.get("exact") is not True
+                or row.get("source")
+                    != "CCountrySupplySystem.disrupted_supply"
+                or not _is_finite_number(value)
+                or abs(value - value_raw / 100_000) > 1e-12
+            ):
+                problems.append(f"{path} has invalid exact source/scale")
+            order = (owner_id, node_type)
+            if previous_order is not None and previous_order >= order:
+                problems.append(
+                    f"{path} not in strict owner_tag_db_id/node_type order"
+                )
+            previous_order = order
+            identity = (owner_id, province_id, node_type)
+            if identity in identities:
+                problems.append(f"{path} duplicates composite identity")
+            identities.add(identity)
+            observed += 1
+    if observed != count:
+        problems.append(
+            "supply exact disrupted row count "
+            f"{observed} != witnessed {count}"
+        )
+    return problems
+
+
+def _validate_air_ace_rosters(snap: Dict[str, Any]) -> List[str]:
+    problems: List[str] = []
+    countries = snap.get("countries")
+    if not isinstance(countries, dict):
+        return problems
+    sidecars = {}
+    for tag, country in countries.items():
+        if not isinstance(country, dict):
+            continue
+        extra = country.get("extra")
+        if isinstance(extra, dict) and "_r2_air_ace_roster_live" in extra:
+            sidecars[tag] = extra["_r2_air_ace_roster_live"]
+    if not sidecars:
+        return problems
+
+    measured = snap.get("measured_countries")
+    tag_index = snap.get("tag_db_id_index")
+    if not (
+        isinstance(measured, dict)
+        and measured.get("known") is True
+        and isinstance(tag_index, dict)
+        and tag_index.get("resolved") is True
+    ):
+        return ["air ace rosters require a complete current D18 identity map"]
+    tags = measured.get("tags")
+    tag_db_ids = measured.get("tag_db_ids")
+    count = measured.get("count")
+    if (
+        type(count) is not int
+        or count < 0
+        or not isinstance(tags, list)
+        or not isinstance(tag_db_ids, list)
+        or len(tags) != count
+        or len(tag_db_ids) != count
+    ):
+        return ["air ace rosters require exact measured D18 roster arrays"]
+    d18 = {}
+    for tag, tag_db_id in zip(tags, tag_db_ids):
+        if (
+            not isinstance(tag, str)
+            or type(tag_db_id) is not int
+            or not 1 <= tag_db_id <= 4_096
+            or tag in d18
+            or tag_db_id in d18.values()
+            or not isinstance(countries.get(tag), dict)
+            or countries[tag].get("_r2_tag_db_id") != tag_db_id
+        ):
+            return ["air ace rosters do not join the current D18 roster"]
+        d18[tag] = tag_db_id
+    if set(sidecars) != set(d18):
+        problems.append("air ace sidecars do not cover every measured D18 owner")
+
+    authority = {
+        "schema_version": 1,
+        "authority": "exact_a729_cace_owner_roster",
+        "executable_sha256":
+            "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+        "function_manifest_sha256":
+            "f85162e5b2a531962e1080fb3add1867f4522a2aba7811d013a9f43c8e708720",
+        "ordering": "country_ace_index_then_ace_id",
+        "complete_roster_validation": True,
+    }
+    receipt = None
+    total_rows = 0
+    current_ids = set(d18.values())
+    for tag, sidecar in sidecars.items():
+        path = f"countries.{tag}.extra._r2_air_ace_roster_live"
+        if not isinstance(sidecar, dict):
+            problems.append(f"{path} should be dict")
+            continue
+        for key, expected in authority.items():
+            if sidecar.get(key) != expected:
+                problems.append(f"{path}.{key} has invalid exact authority")
+        version = sidecar.get("carrier_version")
+        owner_id = sidecar.get("owner_tag_db_id")
+        observed_countries = sidecar.get("observed_country_rows")
+        observed_aces = sidecar.get("observed_ace_rows")
+        rows = sidecar.get("aces")
+        if (
+            type(version) is not int
+            or version not in (1, 2)
+            or owner_id != d18.get(tag)
+            or type(observed_countries) is not int
+            or observed_countries != count
+            or type(observed_aces) is not int
+            or not 0 <= observed_aces <= 0xFFFF_FFFF
+            or not isinstance(rows, list)
+        ):
+            problems.append(f"{path} has invalid owner/version/count receipt")
+            continue
+        if (
+            type(sidecar.get("owner_row_count")) is not int
+            or sidecar.get("owner_row_count") != len(rows)
+        ):
+            problems.append(f"{path}.owner_row_count disagrees with rows")
+        if (
+            "wing_assignment_blocked" in sidecar
+            and type(sidecar.get("wing_assignment_blocked")) is not bool
+        ):
+            problems.append(f"{path}.wing_assignment_blocked should be bool")
+        candidate = (version, observed_countries, observed_aces)
+        if receipt is not None and candidate != receipt:
+            problems.append(f"{path} disagrees with the global ACE1 receipt")
+        receipt = candidate
+        total_rows += len(rows)
+        seen_aces = set()
+        seen_wings = set()
+        for ordinal, row in enumerate(rows):
+            rpath = f"{path}.aces[{ordinal}]"
+            if not isinstance(row, dict):
+                problems.append(f"{rpath} should be dict")
+                continue
+            ace_id = row.get("ace_id")
+            index = row.get("country_ace_index")
+            source = row.get("source_mask")
+            wing_id = row.get("wing_id")
+            alive = row.get("alive")
+            handled = row.get("handled")
+            kill_type = row.get("kill_type_raw")
+            killer_ace = row.get("killer_ace_id")
+            killer_country = row.get("killer_country_tag_db_id")
+            if (
+                row.get("owner_tag_db_id") != owner_id
+                or type(ace_id) is not int
+                or not 1 <= ace_id <= 0x7FFF_FFFF
+                or ace_id in seen_aces
+                or type(index) is not int
+                or index != ordinal
+                or type(source) is not int
+                or source & ~0x7F
+                or source & 0x03 != 0x03
+                or source & 0x20 == 0
+            ):
+                problems.append(f"{rpath} has invalid owner/ace/order/source identity")
+                continue
+            seen_aces.add(ace_id)
+            if wing_id is not None:
+                if (
+                    type(wing_id) is not int
+                    or not 1 <= wing_id <= 0x7FFF_FFFF
+                    or wing_id in seen_wings
+                ):
+                    problems.append(f"{rpath}.wing_id has invalid exact assignment")
+                seen_wings.add(wing_id)
+            if (
+                (wing_id is not None) != bool(source & 0x10)
+                or (sidecar.get("wing_assignment_blocked") is True)
+                    != bool(source & 0x08)
+            ):
+                problems.append(f"{rpath} wing assignment source disagrees with receipt")
+            if type(alive) is not bool:
+                problems.append(f"{rpath}.alive should be bool")
+            if version == 1:
+                lifecycle_valid = (
+                    handled is None
+                    and kill_type is None
+                    and source & 0x40 == 0
+                )
+            else:
+                lifecycle_valid = (
+                    type(handled) is bool
+                    and type(kill_type) is int
+                    and 0 <= kill_type <= 0xFFFF_FFFF
+                    and source & 0x60 == 0x60
+                    and not (alive is True and handled is True)
+                    and not (alive is True and kill_type != 0)
+                )
+            if not lifecycle_valid:
+                problems.append(f"{rpath} has invalid carrier-version lifecycle tuple")
+            expected_lifecycle = (
+                None if version == 1 else
+                "alive" if alive is True else
+                "dead_handled" if handled is True else
+                "dead_unhandled"
+            )
+            if row.get("lifecycle") != expected_lifecycle:
+                problems.append(f"{rpath}.lifecycle disagrees with raw tuple")
+            if (
+                killer_ace is not None
+                and (
+                    type(killer_ace) is not int
+                    or not 1 <= killer_ace <= 0x7FFF_FFFF
+                )
+            ):
+                problems.append(f"{rpath}.killer_ace_id has invalid exact range")
+            if (
+                killer_country is not None
+                and (
+                    type(killer_country) is not int
+                    or not 1 <= killer_country <= 4_096
+                )
+            ):
+                problems.append(f"{rpath}.killer_country_tag_db_id has invalid exact range")
+            if (
+                alive is True
+                and (killer_ace not in (None, 0) or killer_country not in (None, 0))
+            ):
+                problems.append(f"{rpath} carries death-only identity while living")
+            if killer_country not in (None, 0) and killer_country not in current_ids:
+                problems.append(f"{rpath}.killer_country_tag_db_id misses current D18")
+            for field in ("name", "surname", "callsign"):
+                value = row.get(field)
+                if (
+                    not isinstance(value, str)
+                    or not value
+                    or len(value.encode("utf-8")) > 288
+                    or any(ord(char) < 32 or ord(char) == 127 for char in value)
+                ):
+                    problems.append(f"{rpath}.{field} has invalid exact text")
+    if receipt is not None and receipt[2] != total_rows:
+        problems.append("air ace global observed row count disagrees with owner rows")
+    return problems
+
+
 def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
     problems: List[str] = []
 
@@ -2736,6 +3236,8 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
     problems.extend(_validate_d48_building_sidecars(snap))
     problems.extend(_validate_delayed_events(snap))
     problems.extend(validate_wave4_snapshot(snap))
+    problems.extend(_validate_country_disrupted_supply(snap))
+    problems.extend(_validate_air_ace_rosters(snap))
 
     # Legacy schema-v1 snapshots may lack this late-added terminal carrier;
     # replay_core exposes that as DomainAbsent. New snapshots always include it.
@@ -3078,9 +3580,13 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                                 f"{path}.visible_order {row.get('visible_order')!r} != {i}")
                         for key in ("balance", "produced", "imported", "exported",
                                     "special_project", "production_line", "needed"):
-                            if not _is_finite_number(row.get(key)):
+                            value = row.get(key)
+                            if (not _is_finite_number(value)
+                                    or not float(value).is_integer()
+                                    or value < -(2 ** 31)
+                                    or value > 2 ** 31 - 1):
                                 problems.append(
-                                    f"{path}.{key} {row.get(key)!r} not finite number")
+                                    f"{path}.{key} {value!r} not exact i32 display value")
                         for key in ("needed_current", "needed_max"):
                             value = row.get(key)
                             if value is not None and not _is_finite_number(value):
@@ -3088,12 +3594,33 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                                     f"{path}.{key} {value!r} not finite number|null")
                         if row.get("resource") == "oil":
                             for key in ("needed_current", "needed_max"):
-                                if not _is_finite_number(row.get(key)):
+                                value = row.get(key)
+                                if (not _is_finite_number(value)
+                                        or not float(value).is_integer()
+                                        or value < -(2 ** 31)
+                                        or value > 2 ** 31 - 1):
                                     problems.append(
-                                        f"{path}.{key} {row.get(key)!r} not finite oil value")
-                        if not isinstance(row.get("needed_type"), str):
+                                        f"{path}.{key} {value!r} not exact oil i32 value")
+                            if (row.get("needed_type") != "current_max"
+                                    or row.get("needed") != row.get("needed_current")):
+                                problems.append(
+                                    f"{path} oil needed/current/type semantics invalid")
+                        else:
+                            balance = row.get("balance")
+                            expected_needed_type = (
+                                ("deficit" if balance < 0 else "surplus")
+                                if _is_finite_number(balance) else None
+                            )
+                            if (row.get("needed_current") is not None
+                                    or row.get("needed_max") is not None
+                                    or row.get("needed") != balance
+                                    or row.get("needed_type") != expected_needed_type):
+                                problems.append(
+                                    f"{path} non-oil needed/balance/type semantics invalid")
+                        if row.get("needed_type") not in (
+                                "surplus", "deficit", "current_max"):
                             problems.append(
-                                f"{path}.needed_type {row.get('needed_type')!r} not str")
+                                f"{path}.needed_type {row.get('needed_type')!r} invalid")
                     if resource_trade.get("resource_rows_complete") is True:
                         observed = [
                             row.get("resource") if isinstance(row, dict) else None
@@ -3106,6 +3633,7 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
 
                 deals = resource_trade.get("deals")
                 if isinstance(deals, list):
+                    seen_deal_ids = set()
                     for i, row in enumerate(deals):
                         path = (f"country {tag!r}.economy.resource_trade."
                                 f"deals[{i}]")
@@ -3115,12 +3643,18 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                         if row.get("visible_order") != i:
                             problems.append(
                                 f"{path}.visible_order {row.get('visible_order')!r} != {i}")
-                        if not isinstance(row.get("deal_id"), int):
+                        if type(row.get("deal_id")) is not int or row.get("deal_id") <= 0:
                             problems.append(
-                                f"{path}.deal_id {row.get('deal_id')!r} not int")
-                        if not isinstance(row.get("counterpart"), str):
+                                f"{path}.deal_id {row.get('deal_id')!r} not positive int")
+                        elif row.get("deal_id") in seen_deal_ids:
                             problems.append(
-                                f"{path}.counterpart {row.get('counterpart')!r} not str")
+                                f"{path}.deal_id {row.get('deal_id')!r} duplicated in country")
+                        else:
+                            seen_deal_ids.add(row.get("deal_id"))
+                        if (not isinstance(row.get("counterpart"), str)
+                                or not row.get("counterpart").strip()):
+                            problems.append(
+                                f"{path}.counterpart {row.get('counterpart')!r} not non-empty str")
                         if row.get("direction") not in ("import", "export"):
                             problems.append(
                                 f"{path}.direction {row.get('direction')!r} not import/export")
@@ -3135,24 +3669,45 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                             if not _is_finite_number(row.get(key)):
                                 problems.append(
                                     f"{path}.{key} {row.get(key)!r} not finite number")
-                        if not isinstance(row.get("civilian_factories"), int):
+                        for key in ("requested", "available_export"):
+                            value = row.get(key)
+                            if (_is_finite_number(value)
+                                    and not float(value).is_integer()):
+                                problems.append(
+                                    f"{path}.{key} {value!r} not exact whole-unit value")
+                        efficiency = row.get("delivery_efficiency")
+                        if (_is_finite_number(efficiency)
+                                and not 0 <= efficiency <= 1):
+                            problems.append(
+                                f"{path}.delivery_efficiency {efficiency!r} outside [0,1]")
+                        if (type(row.get("civilian_factories")) is not int
+                                or not -(2 ** 31) <= row.get("civilian_factories") <= 2 ** 31 - 1):
                             problems.append(
                                 f"{path}.civilian_factories "
-                                f"{row.get('civilian_factories')!r} not int")
+                                f"{row.get('civilian_factories')!r} not i32")
                         for key in ("no_trade_influence", "no_resources"):
                             value = row.get(key)
-                            if value is not None and not isinstance(value, bool):
+                            if key in row and type(value) is not bool:
                                 problems.append(
-                                    f"{path}.{key} {value!r} not bool|null")
+                                    f"{path}.{key} {value!r} not exact bool")
+                        flag_presence = (
+                            "no_trade_influence" in row,
+                            "no_resources" in row,
+                        )
+                        if flag_presence not in ((False, False), (True, True)):
+                            problems.append(
+                                f"{path} route-status flags are not an atomic v1/v2 pair")
                         convoys = row.get("convoys")
                         if not isinstance(convoys, dict):
                             problems.append(f"{path}.convoys {convoys!r} not dict")
                         else:
                             for key in ("assigned", "required"):
-                                if not isinstance(convoys.get(key), int):
+                                value = convoys.get(key)
+                                if (type(value) is not int
+                                        or not -(2 ** 31) <= value <= 2 ** 31 - 1):
                                     problems.append(
                                         f"{path}.convoys.{key} "
-                                        f"{convoys.get(key)!r} not int")
+                                        f"{value!r} not i32")
 
                 factories = resource_trade.get("factories")
                 if factories is not None and not isinstance(factories, dict):
@@ -3162,10 +3717,12 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                 elif isinstance(factories, dict):
                     for key in ("total", "used", "available"):
                         value = factories.get(key)
-                        if value is not None and not isinstance(value, int):
+                        if (value is not None
+                                and (type(value) is not int
+                                     or not -(2 ** 31) <= value <= 2 ** 31 - 1)):
                             problems.append(
                                 f"country {tag!r}.economy.resource_trade."
-                                f"factories.{key} {value!r} not int|null")
+                                f"factories.{key} {value!r} not i32|null")
 
             fuel = econ.get("fuel")
             if fuel is not None and not isinstance(fuel, dict):
@@ -3196,9 +3753,124 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
         mil = c.get("military")
         if isinstance(mil, dict):
             cc = mil.get("convoys_count")
-            if cc is not None and not isinstance(cc, int):
+            if cc is not None and (not isinstance(cc, int) or isinstance(cc, bool)):
                 problems.append(
                     f"country {tag!r}.military.convoys_count {cc!r} not int|null")
+            convoy_complete = mil.get("convoys_complete")
+            if convoy_complete is not None:
+                receipt = c.get("_r2_country_convoys_live")
+                exact_receipt = (
+                    isinstance(receipt, dict)
+                    and receipt.get("source")
+                    == "CCountry+0x1200/CConvoys+0x10/CEquipmentVariantPool+0x20"
+                    and receipt.get("scale_raw") == 100000
+                    and receipt.get("classifier") == "convoy_1"
+                    and receipt.get("owned_producer_decompile_sha256")
+                    == "1528fe7a1c414a3a2838bc1d39e32883667993eb0f6bf5fd8e5f8467ddf0744b"
+                    and receipt.get("classifier_producer_decompile_sha256")
+                    == "29cd517d6bae4203b20e3885c6ece3df678b79759d927d9bd6c0ec24188e33c4"
+                    and receipt.get("static_catalog_artifact_sha256")
+                    == "6c70728acebaddb8c04f330f4c01de6d007c6038e51973be34a3f6e3a06e3112"
+                    and receipt.get("confidence") == "validated_exact"
+                    and receipt.get("complete") is convoy_complete
+                )
+                if not isinstance(convoy_complete, bool) or not exact_receipt:
+                    problems.append(
+                        f"country {tag!r}.military convoy bank lacks an exact B2 receipt")
+                elif not convoy_complete:
+                    forbidden = {
+                        "convoys_owned_raw",
+                        "convoys_count",
+                        "convoys_assigned",
+                        "convoys_available",
+                        "convoys_cache_valid",
+                        "convoys",
+                        "convoy_priority_reservations",
+                    }
+                    if (
+                        receipt.get("variant_count") != 0
+                        or receipt.get("reservations_complete") is not False
+                        or any(key in mil for key in forbidden)
+                    ):
+                        problems.append(
+                            f"country {tag!r}.military unreadable convoy bank carries data")
+                elif convoy_complete:
+                    owned_raw = mil.get("convoys_owned_raw")
+                    assigned = mil.get("convoys_assigned")
+                    available = mil.get("convoys_available")
+                    variants = mil.get("convoys")
+                    values_are_ints = all(
+                        isinstance(value, int) and not isinstance(value, bool)
+                        for value in (owned_raw, cc, assigned, available)
+                    )
+                    rows_are_exact = isinstance(variants, list)
+                    sum_raw = 0
+                    seen_ids = set()
+                    if rows_are_exact:
+                        for row in variants:
+                            if not isinstance(row, dict):
+                                rows_are_exact = False
+                                break
+                            equip_id = row.get("equip_id")
+                            amount_raw = row.get("amount_raw")
+                            amount = row.get("amount")
+                            if (
+                                row.get("archetype") != "convoy_1"
+                                or row.get("equip_type") != 70
+                                or not isinstance(equip_id, int)
+                                or isinstance(equip_id, bool)
+                                or equip_id <= 0
+                                or equip_id >= (1 << 24)
+                                or equip_id in seen_ids
+                                or not isinstance(amount_raw, int)
+                                or isinstance(amount_raw, bool)
+                                or amount_raw < 0
+                                or not isinstance(amount, (int, float))
+                                or isinstance(amount, bool)
+                                or float(amount) != amount_raw / 100000.0
+                            ):
+                                rows_are_exact = False
+                                break
+                            seen_ids.add(equip_id)
+                            sum_raw = min(
+                                sum_raw + amount_raw, 0x53E2_D620_FB40)
+                    totals_are_exact = (
+                        values_are_ints
+                        and rows_are_exact
+                        and receipt.get("variant_count") == len(variants)
+                        and sum_raw == owned_raw
+                        and cc == owned_raw // 100000
+                        and 0 <= assigned <= cc
+                        and available == cc - assigned
+                        and receipt.get("reservations_complete")
+                        is mil.get("convoy_priority_reservations_complete")
+                    )
+                    reservations_complete = mil.get(
+                        "convoy_priority_reservations_complete")
+                    reservations = mil.get("convoy_priority_reservations")
+                    if reservations_complete is True:
+                        totals_are_exact = totals_are_exact and isinstance(
+                            reservations, list)
+                        if isinstance(reservations, list):
+                            totals_are_exact = totals_are_exact and all(
+                                isinstance(row, dict)
+                                and isinstance(row.get("priority"), int)
+                                and not isinstance(row.get("priority"), bool)
+                                and isinstance(row.get("count"), int)
+                                and not isinstance(row.get("count"), bool)
+                                and 0 <= row["count"] <= cc
+                                for row in reservations
+                            )
+                    elif reservations_complete is False:
+                        totals_are_exact = (
+                            totals_are_exact
+                            and "convoy_priority_reservations" not in mil
+                        )
+                    else:
+                        totals_are_exact = False
+                    if not totals_are_exact:
+                        problems.append(
+                            f"country {tag!r}.military convoy bank fails exact B2 total/classifier law")
         # newly-wired LIVE leaves (tech_live / commanders_live): list|null shape.
         rsh = c.get("research")
         if isinstance(rsh, dict):
@@ -3269,6 +3941,34 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             if osx is not None and not isinstance(osx, dict):
                 problems.append(
                     f"country {tag!r}.intel.operative_skill_xp {osx!r} not dict|null")
+            operation_tokens = intl.get("operation_tokens")
+            if operation_tokens is not None and not isinstance(operation_tokens, dict):
+                problems.append(
+                    f"country {tag!r}.intel.operation_tokens {operation_tokens!r} "
+                    "not dict|null")
+            elif isinstance(operation_tokens, dict):
+                if len(operation_tokens) > 4096:
+                    problems.append(
+                        f"country {tag!r}.intel.operation_tokens too many token families")
+                for token, targets in operation_tokens.items():
+                    if not isinstance(token, str) or not token or len(token) > 512:
+                        problems.append(
+                            f"country {tag!r}.intel.operation_tokens key {token!r} invalid")
+                        continue
+                    if not isinstance(targets, list):
+                        problems.append(
+                            f"country {tag!r}.intel.operation_tokens[{token!r}] "
+                            "not a list")
+                        continue
+                    if len(targets) > 4096 or len(set(targets)) != len(targets):
+                        problems.append(
+                            f"country {tag!r}.intel.operation_tokens[{token!r}] "
+                            "has duplicate or excessive targets")
+                    for target in targets:
+                        if not valid_tag(target):
+                            problems.append(
+                                f"country {tag!r}.intel.operation_tokens[{token!r}] "
+                                f"target {target!r} is not a valid tag")
         # newly-wired LIVE focus leaf: current_continuous str|null (focus_live, M).
         fcs = c.get("focus")
         if isinstance(fcs, dict):
@@ -3347,10 +4047,244 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                         f"country {tag!r}.production.construction_queue too many entries")
                 for i, line in enumerate(cq):
                     problems.extend(_validate_construction_line(tag, i, line))
+            license_ids = prod.get("production_licenses")
+            if license_ids is not None and not isinstance(license_ids, list):
+                problems.append(
+                    f"country {tag!r}.production.production_licenses not list|null")
+            elif isinstance(license_ids, list):
+                if len(license_ids) > 4096:
+                    problems.append(
+                        f"country {tag!r}.production.production_licenses invalid count")
+                seen_license_ids = set()
+                for variant_id in license_ids:
+                    if not _valid_positive_int_key(
+                        variant_id, max_value=PRODUCTION_VARIANT_ID_MAX
+                    ):
+                        problems.append(
+                            f"country {tag!r}.production.production_licenses entry "
+                            f"{variant_id!r} not valid positive id")
+                    elif variant_id in seen_license_ids:
+                        problems.append(
+                            f"country {tag!r}.production.production_licenses entry "
+                            f"{variant_id!r} duplicated")
+                    else:
+                        seen_license_ids.add(variant_id)
+            license_variants = prod.get("production_license_variants")
+            if license_variants is not None and not isinstance(license_variants, list):
+                problems.append(
+                    f"country {tag!r}.production.production_license_variants not list|null")
+            elif isinstance(license_variants, list):
+                seen_variant_ids = set()
+                for index, row in enumerate(license_variants):
+                    path = (f"country {tag!r}.production."
+                            f"production_license_variants[{index}]")
+                    if not isinstance(row, dict):
+                        problems.append(f"{path} not dict")
+                        continue
+                    variant_id = row.get("variant_id")
+                    creator = row.get("creator_tag_db_id")
+                    origin = row.get("origin_tag_db_id")
+                    if not _valid_bounded_int(
+                        variant_id, minimum=1, maximum=PRODUCTION_VARIANT_ID_MAX
+                    ) or variant_id in seen_variant_ids:
+                        problems.append(f"{path}.variant_id invalid/duplicate")
+                    else:
+                        seen_variant_ids.add(variant_id)
+                    if row.get("visible_order") != index:
+                        problems.append(f"{path}.visible_order not exact vector ordinal")
+                    if not _valid_bounded_int(creator, minimum=1, maximum=2 ** 31 - 1):
+                        problems.append(f"{path}.creator_tag_db_id invalid")
+                    if not _valid_bounded_int(origin, minimum=0, maximum=2 ** 31 - 1):
+                        problems.append(f"{path}.origin_tag_db_id invalid")
+                if isinstance(license_ids, list) and [str(row.get("variant_id")) for row in license_variants if isinstance(row, dict)] != license_ids:
+                    problems.append(
+                        f"country {tag!r}.production PLIC v2 ids/order do not match production_licenses")
+            agreements_complete = prod.get("production_license_agreements_complete")
+            agreements = prod.get("production_license_agreements")
+            if agreements_complete is not None and not isinstance(agreements_complete, bool):
+                problems.append(
+                    f"country {tag!r}.production.production_license_agreements_complete not bool|null")
+            if agreements is not None and not isinstance(agreements, list):
+                problems.append(
+                    f"country {tag!r}.production.production_license_agreements not list|null")
+            if agreements_complete is True and not isinstance(agreements, list):
+                problems.append(
+                    f"country {tag!r}.production complete licence agreements lack rows")
+            if agreements_complete is False and agreements is not None:
+                problems.append(
+                    f"country {tag!r}.production incomplete licence agreements must be null")
+            if isinstance(agreements, list):
+                if agreements_complete is not True:
+                    problems.append(
+                        f"country {tag!r}.production licence agreement rows lack true completeness witness")
+                seen_agreement_ids = set()
+                previous_order = -1
+                ordered_variants = []
+                for index, agreement in enumerate(agreements):
+                    path = (f"country {tag!r}.production."
+                            f"production_license_agreements[{index}]")
+                    if not isinstance(agreement, dict):
+                        problems.append(f"{path} not dict")
+                        continue
+                    first = agreement.get("relation_first_tag_db_id")
+                    second = agreement.get("relation_second_tag_db_id")
+                    owner = agreement.get("owner_tag_db_id")
+                    partner = agreement.get("partner_tag_db_id")
+                    start = agreement.get("start_date_raw")
+                    order = agreement.get("visible_order")
+                    agreement_id = agreement.get("agreement_id")
+                    if not all(_valid_bounded_int(value, minimum=1, maximum=2 ** 31 - 1)
+                               for value in (first, second, owner, partner, start)):
+                        problems.append(f"{path} has invalid identity/lifecycle integers")
+                        continue
+                    if owner == partner or {owner, partner} != {first, second}:
+                        problems.append(f"{path} owner/partner do not join relation pair")
+                    expected_id = f"licence:{first}:{second}:{start}"
+                    if agreement_id != expected_id or agreement_id in seen_agreement_ids:
+                        problems.append(f"{path}.agreement_id invalid/duplicate")
+                    else:
+                        seen_agreement_ids.add(agreement_id)
+                    if not isinstance(order, int) or isinstance(order, bool) or order <= previous_order:
+                        problems.append(f"{path}.visible_order is not strictly increasing")
+                    else:
+                        previous_order = order
+                    for key in ("owner", "partner", "relation_first", "relation_second", "start_date"):
+                        value = agreement.get(key)
+                        if not isinstance(value, str) or not value:
+                            problems.append(f"{path}.{key} not nonempty string")
+                    if agreement.get("source") != "PLIC_v2_plus_D53_CLicenceProductionAccessRelation":
+                        problems.append(f"{path}.source not exact X3 authority")
+                    end_raw = agreement.get("end_date_raw")
+                    end_date = agreement.get("end_date")
+                    if (end_raw is None) != (end_date is None):
+                        problems.append(f"{path} end lifecycle raw/display mismatch")
+                    elif end_raw is not None and (
+                        not _valid_bounded_int(end_raw, minimum=start, maximum=2 ** 31 - 1)
+                        or not isinstance(end_date, str)
+                        or not end_date
+                    ):
+                        problems.append(f"{path} end lifecycle invalid")
+                    variants = agreement.get("variants")
+                    if not isinstance(variants, list) or not variants:
+                        problems.append(f"{path}.variants not nonempty list")
+                        continue
+                    agreement_orders = []
+                    for variant in variants:
+                        if not isinstance(variant, dict):
+                            problems.append(f"{path}.variants entry not dict")
+                            continue
+                        variant_id = variant.get("variant_id")
+                        variant_order = variant.get("visible_order")
+                        source = variant.get("source_tag_db_id")
+                        creator = variant.get("creator_tag_db_id")
+                        origin = variant.get("origin_tag_db_id")
+                        if not _valid_bounded_int(
+                            variant_id, minimum=1, maximum=PRODUCTION_VARIANT_ID_MAX
+                        ):
+                            problems.append(f"{path}.variants variant_id invalid")
+                        if not _valid_bounded_int(
+                            variant_order, minimum=0, maximum=4095
+                        ):
+                            problems.append(f"{path}.variants visible_order invalid")
+                        else:
+                            agreement_orders.append(variant_order)
+                        if not _valid_bounded_int(creator, minimum=1, maximum=2 ** 31 - 1):
+                            problems.append(f"{path}.variants creator_tag_db_id invalid")
+                        if not _valid_bounded_int(origin, minimum=0, maximum=2 ** 31 - 1):
+                            problems.append(f"{path}.variants origin_tag_db_id invalid")
+                        expected_source = origin if _valid_bounded_int(
+                            origin, minimum=1, maximum=2 ** 31 - 1
+                        ) else creator
+                        if source != expected_source or source != partner:
+                            problems.append(f"{path}.variants source does not join partner")
+                        ordered_variants.append((variant_order, str(variant_id)))
+                    if agreement_orders and order != min(agreement_orders):
+                        problems.append(f"{path}.visible_order not first PLIC variant ordinal")
+                valid_orders = [item[0] for item in ordered_variants
+                                if isinstance(item[0], int) and not isinstance(item[0], bool)]
+                if sorted(valid_orders) != list(range(len(ordered_variants))):
+                    problems.append(
+                        f"country {tag!r}.production agreement variant order not exact contiguous PLIC order")
+                ordered_variants.sort(key=lambda item: item[0]
+                                      if isinstance(item[0], int) and not isinstance(item[0], bool)
+                                      else -1)
+                flattened_variant_ids = [item[1] for item in ordered_variants]
+                if isinstance(license_ids, list) and flattened_variant_ids != license_ids:
+                    problems.append(
+                        f"country {tag!r}.production agreement variants do not preserve PLIC order")
         # newly-wired LIVE diplomacy leaves (diplomacy_live, M): at_war list|null whose
         # elements are TAG strings; casualties int|null; faction_group int|null.
         dip = c.get("diplomacy")
         if isinstance(dip, dict):
+            lend_lease = dip.get("lend_lease")
+            if lend_lease is not None and not isinstance(lend_lease, list):
+                problems.append(
+                    f"country {tag!r}.diplomacy.lend_lease not list|null")
+            elif isinstance(lend_lease, list):
+                previous_mtll_order = -1
+                seen_mtll_contracts = set()
+                for index, contract in enumerate(lend_lease):
+                    if not isinstance(contract, dict):
+                        problems.append(
+                            f"country {tag!r}.diplomacy.lend_lease[{index}] not dict")
+                        continue
+                    if contract.get("r2_market_trade_projection") is not True:
+                        continue
+                    path = f"country {tag!r}.diplomacy.lend_lease[{index}]"
+                    contract_id = contract.get("contract_id")
+                    order = contract.get("visible_order")
+                    complete = contract.get("equipment_purchase_relation_complete")
+                    relation = contract.get("equipment_purchase_relation")
+                    if not isinstance(contract_id, str) or not contract_id or contract_id in seen_mtll_contracts:
+                        problems.append(f"{path}.contract_id invalid/duplicate")
+                    else:
+                        seen_mtll_contracts.add(contract_id)
+                    if not _valid_bounded_int(order, minimum=0, maximum=2 ** 31 - 1) or order <= previous_mtll_order:
+                        problems.append(f"{path}.visible_order not exact increasing D43 order")
+                    else:
+                        previous_mtll_order = order
+                    if not isinstance(complete, bool):
+                        problems.append(f"{path}.equipment_purchase_relation_complete not bool")
+                    if complete is False and relation is not None:
+                        problems.append(f"{path} incomplete equipment relation must be null")
+                    if complete is True and not isinstance(relation, dict):
+                        problems.append(f"{path} complete equipment relation lacks object")
+                        continue
+                    if not isinstance(relation, dict):
+                        continue
+                    seller_id = relation.get("seller_tag_db_id")
+                    buyer_id = relation.get("buyer_tag_db_id")
+                    first = relation.get("relation_first_tag_db_id")
+                    second = relation.get("relation_second_tag_db_id")
+                    start = relation.get("start_date_raw")
+                    if not all(_valid_bounded_int(value, minimum=1, maximum=2 ** 31 - 1)
+                               for value in (seller_id, buyer_id, first, second, start)):
+                        problems.append(f"{path} equipment relation identity/lifecycle invalid")
+                        continue
+                    if seller_id == buyer_id or {seller_id, buyer_id} != {first, second}:
+                        problems.append(f"{path} D43 seller/buyer do not join D53 relation pair")
+                    if relation.get("agreement_id") != f"equipment_purchase:{first}:{second}:{start}":
+                        problems.append(f"{path} equipment relation agreement_id invalid")
+                    for key in ("seller", "buyer", "relation_first", "relation_second", "start_date"):
+                        if not isinstance(relation.get(key), str) or not relation.get(key):
+                            problems.append(f"{path}.equipment_purchase_relation.{key} invalid")
+                    if relation.get("source") != "D43_MTLL_plus_D53_CEquipmentPurchaseRelation":
+                        problems.append(f"{path} equipment relation source invalid")
+                    direction = contract.get("direction")
+                    counterpart = contract.get("counterpart")
+                    if not ((direction == "outgoing" and counterpart == relation.get("buyer"))
+                            or (direction == "incoming" and counterpart == relation.get("seller"))):
+                        problems.append(f"{path} direction/counterpart does not match D43 roles")
+                    end_raw = relation.get("end_date_raw")
+                    end_date = relation.get("end_date")
+                    if (end_raw is None) != (end_date is None):
+                        problems.append(f"{path} equipment relation end lifecycle mismatch")
+                    elif end_raw is not None and (
+                        not _valid_bounded_int(end_raw, minimum=start, maximum=2 ** 31 - 1)
+                        or not isinstance(end_date, str)
+                        or not end_date
+                    ):
+                        problems.append(f"{path} equipment relation end lifecycle invalid")
             aw = dip.get("at_war")
             if aw is not None and not isinstance(aw, list):
                 problems.append(
@@ -3616,8 +4550,9 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                     not 40 <= nested_bytes <= 16 * 1024 * 1024):
                 problems.append(f"{prefix}.carrier.nested_payload_bytes invalid")
             for key in ("elapsed_wall_ms", "frame_hour"):
-                if type(carrier.get(key)) is not int or carrier.get(key) < 0:
-                    problems.append(f"{prefix}.carrier.{key} not nonnegative int")
+                if (type(carrier.get(key)) is not int
+                        or not 0 <= carrier.get(key) <= (1 << 64) - 1):
+                    problems.append(f"{prefix}.carrier.{key} not u64")
             if carrier.get("frame_hour") != expected_hour:
                 problems.append(f"{prefix}.carrier.frame_hour does not match snapshot hour")
             exact_snapshot = {
@@ -3638,6 +4573,13 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                 problems.append(f"{prefix} carrier/snapshot frame_hour mismatch")
             portable = lambda value: (isinstance(value, str) and 0 < len(value) <= 4096 and
                 all(ch.isascii() and (ch.isalnum() or ch in "_.-:/@") for ch in value))
+            def bounded_utf8(value, maximum, *, nonempty=False):
+                if not isinstance(value, str) or (nonempty and not value):
+                    return False
+                try:
+                    return len(value.encode("utf-8")) <= maximum
+                except UnicodeEncodeError:
+                    return False
             context_kind = ability_snapshot.get("selected_context_kind")
             context_codes = {"army_leader": 1, "field_marshal": 2, "army_group": 3, "army": 4}
             context_code = context_codes.get(context_kind)
@@ -3687,15 +4629,16 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                 reason, activation_hour = row.get("disabled_reason"), row.get("activation_hour")
                 if type(available) is not bool or type(active) is not bool:
                     problems.append(f"{row_prefix}.available/active not bool")
-                if not isinstance(reason, str) or len(reason) > 4096 or available == bool(reason):
+                if not bounded_utf8(reason, 4096) or available == bool(reason):
                     problems.append(f"{row_prefix}.disabled_reason availability mismatch")
-                if (type(activation_hour) is not int or
+                if (type(activation_hour) is not int
+                        or not -(1 << 63) <= activation_hour < (1 << 63) or
                         (active and (not expected_hour_valid or
                                      not 0 <= activation_hour <= expected_hour)) or
                         (not active and activation_hour != -1)):
                     problems.append(f"{row_prefix}.activation_hour activity mismatch")
                 if (type(row.get("cost_command_power_fixed")) is not int or
-                        row.get("cost_command_power_fixed") < 0 or
+                        not 0 <= row.get("cost_command_power_fixed") < (1 << 63) or
                         row.get("cost_command_power_scale") != ACTIVE_ABILITY_FIXED_SCALE):
                     problems.append(f"{row_prefix}.cost_command_power fixed-point value invalid")
                 def timer(value):
@@ -3704,7 +4647,7 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                     kind, hours = value.get("kind"), value.get("hours")
                     if kind in ("not_started", "indefinite") and hours is None:
                         return kind, None
-                    if kind == "hours" and type(hours) is int and hours >= 0:
+                    if kind == "hours" and type(hours) is int and 0 <= hours <= 0xFFFFFFFF:
                         return kind, hours
                     return None
                 cooldown_total, cooldown_remaining = timer(row.get("cooldown_total")), timer(row.get("cooldown_remaining"))
@@ -3721,9 +4664,10 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                     if (active and duration_remaining[0] == "not_started") or (not active and duration_remaining[0] != "not_started"):
                         problems.append(f"{row_prefix} duration timer disagrees with activity")
                 tooltip, affected = row.get("tooltip"), row.get("affected_division_ids")
-                if not isinstance(tooltip, str) or not tooltip or len(tooltip) > 4096:
+                if not bounded_utf8(tooltip, 4096, nonempty=True):
                     problems.append(f"{row_prefix}.tooltip not bounded nonempty str")
-                if (not isinstance(affected, list) or any(not portable(identity) for identity in affected)
+                if (not isinstance(affected, list) or len(affected) > 4096
+                        or any(not portable(identity) for identity in affected)
                         or len(set(affected)) != len(affected)):
                     problems.append(f"{row_prefix}.affected_division_ids not unique portable list")
 
@@ -3919,6 +4863,57 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             v = wx.get(k)
             if v is not None and not isinstance(v, dict):
                 problems.append(f"weather.{k} {v!r} not dict|null")
+
+    # XUI15 MTRD is a world-atomic reciprocal route snapshot. Every measured
+    # deal id must occur exactly once on the exporter and once on the importer;
+    # only owner/counterpart, direction and visible order may differ.
+    trade_halves = {}
+    trade_route_status_schemas = set()
+    countries = snap.get("countries")
+    if isinstance(countries, dict):
+        for owner, country in countries.items():
+            trade = (
+                country.get("economy", {}).get("resource_trade")
+                if isinstance(country, dict)
+                and isinstance(country.get("economy"), dict)
+                else None
+            )
+            if not isinstance(trade, dict) or trade.get("deals_complete") is not True:
+                continue
+            deals = trade.get("deals")
+            if not isinstance(deals, list):
+                continue
+            for row in deals:
+                if isinstance(row, dict) and type(row.get("deal_id")) is int:
+                    trade_halves.setdefault(row["deal_id"], []).append((owner, row))
+                    flag_presence = (
+                        "no_trade_influence" in row,
+                        "no_resources" in row,
+                    )
+                    if flag_presence in ((False, False), (True, True)):
+                        trade_route_status_schemas.add(flag_presence)
+    reciprocal_fields = (
+        "deal_id", "resource", "requested", "delivered", "available_export",
+        "civilian_factories", "factory_cost_per_resource", "convoys",
+        "route_kind", "delivery_efficiency", "no_trade_influence", "no_resources",
+    )
+    for deal_id, pair in trade_halves.items():
+        path = f"countries.*.economy.resource_trade.deals deal_id {deal_id}"
+        if len(pair) != 2:
+            problems.append(f"{path} does not have exactly two reciprocal halves")
+            continue
+        (owner_a, row_a), (owner_b, row_b) = pair
+        if (row_a.get("counterpart") != owner_b
+                or row_b.get("counterpart") != owner_a
+                or {row_a.get("direction"), row_b.get("direction")}
+                != {"import", "export"}
+                or any(row_a.get(field) != row_b.get(field)
+                       for field in reciprocal_fields)):
+            problems.append(f"{path} reciprocal halves disagree")
+    if len(trade_route_status_schemas) > 1:
+        problems.append(
+            "countries.*.economy.resource_trade.deals mixes legacy MTRD v1 "
+            "and exact MTRD v2 route-status rows")
 
     # Events: type/confidence/source from the enums.
     for i, ev in enumerate(snap.get("events") or []):

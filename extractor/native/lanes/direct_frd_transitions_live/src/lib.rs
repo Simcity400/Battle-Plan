@@ -1,6 +1,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
-//! Pointer-free carrier and row codec for a future D45 schema-v5 trailer.
+//! Pointer-free carrier and row codec for the D45 schema-v5 direct-transition
+//! trailer.
 //!
 //! This crate does not define a new compact domain. Its Windows a729 adapter is
 //! compiled but refuses installation while the live invocation gate is false;
@@ -8,10 +9,11 @@
 //! capture-local opaque instance ID before publication. Raw pointers, pointer
 //! hashes, and absolute virtual addresses have no fields in this wire format.
 //!
-//! The six a729 roots are statically authoritative under the exact-20 receipt
-//! bound below. That receipt proves root identity and static contracts only; it
-//! is not a live invocation receipt. Direct events therefore remain inactive
-//! and non-authoritative for production replay until the lifecycle gate closes.
+//! The original six a729 roots and the X10 direct invocation roots are
+//! statically authoritative under the exact-20 receipts bound below. Those
+//! receipts prove root identity and static contracts only; they are not live
+//! invocation receipts. Direct events therefore remain inactive and
+//! non-authoritative for production replay until the lifecycle gate closes.
 
 use std::fmt;
 
@@ -34,15 +36,36 @@ pub const AUTHORITY_EXACT20_READY_SHARD_COUNT: usize = 20;
 pub const AUTHORITY_EXACT20_MANIFEST_SHA256: &str =
     "a9855541571204160bc4ac78dcf6f1dbdfa112496234e84540406a71c37d2fb3";
 pub const AUTHORITY_EXACT20_ROOT_COUNT: usize = 6;
+pub const X10_AUTHORITY_JOB: &str =
+    "20260720T140344Z-x10-generic-on-action-and-bridges-root-o-a2a0ea16";
+pub const X10_AUTHORITY_MANIFEST_SHA256: &str =
+    "8012d37ac03a47187bc2744e509acac0dbec1e6a7a91ffd20d45d58903e0e3da";
+pub const X10_TERMINAL_AUTHORITY_JOB: &str =
+    "20260720T135537Z-x10-direct-and-decision-terminal-mutator-e7b8e477";
+pub const X10_TERMINAL_AUTHORITY_MANIFEST_SHA256: &str =
+    "213944e845d02896efd26314003a7880384e9d1eddf4a2b799d4449632da8227";
+pub const X10_CLUSTER_EXHAUSTION_AUTHORITY_JOB: &str =
+    "20260720T214321Z-w5-x10-on-action-cluster-and-bridges-fin-3733bf4e";
+pub const X10_CLUSTER_EXHAUSTION_MANIFEST_SHA256: &str =
+    "d94eae0f339ee53f6ce69ecc921925519f48138da756ebef353304e31a8d9603";
 
 pub const D45_V5_SCHEMA_VERSION: u16 = 5;
 pub const D45_V5_DIRECT_EVENT_TRAILER_MAGIC: [u8; 4] = *b"D45E";
-pub const D45_V5_DIRECT_EVENT_TRAILER_VERSION: u16 = 1;
-pub const D45_V5_DIRECT_EVENT_TRAILER_HEADER_LEN: usize = 16;
-pub const D45_V5_DIRECT_EVENT_ROW_LEN: usize = 96;
+pub const D45_V5_DIRECT_EVENT_TRAILER_VERSION: u16 = 3;
+pub const D45_V5_DIRECT_EVENT_TRAILER_HEADER_LEN: usize = 56;
+pub const D45_V5_DIRECT_EVENT_ROW_LEN: usize = 120;
 pub const DEFAULT_MAX_PENDING_ROWS: usize = 4096;
 
 pub const D45_V5_DIRECT_EVENT_TRAILER_FLAG_POINTERS_ERASED: u16 = 1;
+pub const D45_V5_DIRECT_EVENT_TRAILER_FLAG_PRODUCER_COMPLETE: u16 = 1 << 1;
+pub const D45_V5_DIRECT_EVENT_TRAILER_FLAG_STATIC_AUTHORITY_BOUND: u16 = 1 << 2;
+pub const D45_V5_DIRECT_EVENT_TRAILER_FLAG_EVIDENCE_FIXTURE: u16 = 1 << 3;
+pub const D45_V5_DIRECT_EVENT_TRAILER_KNOWN_FLAGS: u16 =
+    D45_V5_DIRECT_EVENT_TRAILER_FLAG_POINTERS_ERASED
+        | D45_V5_DIRECT_EVENT_TRAILER_FLAG_PRODUCER_COMPLETE
+        | D45_V5_DIRECT_EVENT_TRAILER_FLAG_STATIC_AUTHORITY_BOUND
+        | D45_V5_DIRECT_EVENT_TRAILER_FLAG_EVIDENCE_FIXTURE;
+pub const D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK: u64 = (1 << 12) - 1;
 
 pub const ROOT_RVA_FOCUS_COMPLETED_A729: u32 = 0x002c_ef60;
 pub const ROOT_RVA_RESEARCH_COMPLETED_A729: u32 = 0x00ec_e360;
@@ -50,6 +73,13 @@ pub const ROOT_RVA_ORDINARY_DECISION_TAKEN_A729: u32 = 0x0072_8bc0;
 pub const ROOT_RVA_TARGETED_DECISION_TAKEN_A729: u32 = 0x0072_8ce0;
 pub const ROOT_RVA_TIMED_DECISION_ACTIVATED_A729: u32 = 0x0072_8fb0;
 pub const ROOT_RVA_DECISION_LIFECYCLE_CORRELATION_A729: u32 = 0x0072_3060;
+pub const ROOT_RVA_ON_ACTION_INVOKED_A729: u32 = 0x00a6_aae0;
+pub const ROOT_RVA_DECISION_CANCEL_EFFECT_A729: u32 = 0x0071_b350;
+pub const ROOT_RVA_DECISION_REMOVE_EFFECT_A729: u32 = 0x0071_b590;
+pub const ROOT_RVA_DECISION_TIMEOUT_EFFECT_A729: u32 = 0x0071_c490;
+pub const ROOT_RVA_TARGETED_DECISION_CANCEL_EFFECT_A729: u32 = 0x0071_b7d0;
+pub const ROOT_RVA_TARGETED_DECISION_REMOVE_EFFECT_A729: u32 = 0x0071_be10;
+pub const ROOT_RVA_TARGETED_DECISION_TIMEOUT_EFFECT_A729: u32 = 0x0071_c130;
 
 /// The exact-20 root set includes the five narrow direct-event roots and the
 /// broader decision-lifecycle correlation boundary. The sixth root is not a
@@ -63,7 +93,8 @@ pub const AUTHORITY_EXACT20_ROOT_RVAS_A729: [u32; AUTHORITY_EXACT20_ROOT_COUNT] 
     ROOT_RVA_DECISION_LIFECYCLE_CORRELATION_A729,
 ];
 
-/// The five narrow transition boundaries retained by the a729 static RE lane.
+/// The five legacy post-return boundaries plus seven X10 entry boundaries
+/// retained by the a729 static RE lane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum DirectEventKind {
@@ -72,6 +103,13 @@ pub enum DirectEventKind {
     OrdinaryDecisionTaken = 3,
     TargetedDecisionTaken = 4,
     TimedDecisionActivated = 5,
+    OnActionInvoked = 6,
+    DecisionCancelEffectInvoked = 7,
+    DecisionRemoveEffectInvoked = 8,
+    DecisionTimeoutEffectInvoked = 9,
+    TargetedDecisionCancelEffectInvoked = 10,
+    TargetedDecisionRemoveEffectInvoked = 11,
+    TargetedDecisionTimeoutEffectInvoked = 12,
 }
 
 impl DirectEventKind {
@@ -82,7 +120,71 @@ impl DirectEventKind {
             Self::OrdinaryDecisionTaken => ROOT_RVA_ORDINARY_DECISION_TAKEN_A729,
             Self::TargetedDecisionTaken => ROOT_RVA_TARGETED_DECISION_TAKEN_A729,
             Self::TimedDecisionActivated => ROOT_RVA_TIMED_DECISION_ACTIVATED_A729,
+            Self::OnActionInvoked => ROOT_RVA_ON_ACTION_INVOKED_A729,
+            Self::DecisionCancelEffectInvoked => ROOT_RVA_DECISION_CANCEL_EFFECT_A729,
+            Self::DecisionRemoveEffectInvoked => ROOT_RVA_DECISION_REMOVE_EFFECT_A729,
+            Self::DecisionTimeoutEffectInvoked => ROOT_RVA_DECISION_TIMEOUT_EFFECT_A729,
+            Self::TargetedDecisionCancelEffectInvoked => {
+                ROOT_RVA_TARGETED_DECISION_CANCEL_EFFECT_A729
+            }
+            Self::TargetedDecisionRemoveEffectInvoked => {
+                ROOT_RVA_TARGETED_DECISION_REMOVE_EFFECT_A729
+            }
+            Self::TargetedDecisionTimeoutEffectInvoked => {
+                ROOT_RVA_TARGETED_DECISION_TIMEOUT_EFFECT_A729
+            }
         }
+    }
+
+    pub const fn is_entry_observation(self) -> bool {
+        matches!(
+            self,
+            Self::OnActionInvoked
+                | Self::DecisionCancelEffectInvoked
+                | Self::DecisionRemoveEffectInvoked
+                | Self::DecisionTimeoutEffectInvoked
+                | Self::TargetedDecisionCancelEffectInvoked
+                | Self::TargetedDecisionRemoveEffectInvoked
+                | Self::TargetedDecisionTimeoutEffectInvoked
+        )
+    }
+
+    pub const fn requires_target_argument(self) -> bool {
+        matches!(
+            self,
+            Self::TargetedDecisionTaken
+                | Self::TargetedDecisionCancelEffectInvoked
+                | Self::TargetedDecisionRemoveEffectInvoked
+                | Self::TargetedDecisionTimeoutEffectInvoked
+        )
+    }
+
+    pub const fn root_mask_bit(self) -> u64 {
+        1 << ((self as u32) - 1)
+    }
+
+    pub const fn requires_owner_key(self) -> bool {
+        matches!(
+            self,
+            Self::FocusCompleted
+                | Self::OrdinaryDecisionTaken
+                | Self::TargetedDecisionTaken
+                | Self::TimedDecisionActivated
+                | Self::DecisionCancelEffectInvoked
+                | Self::DecisionRemoveEffectInvoked
+                | Self::DecisionTimeoutEffectInvoked
+                | Self::TargetedDecisionCancelEffectInvoked
+                | Self::TargetedDecisionRemoveEffectInvoked
+                | Self::TargetedDecisionTimeoutEffectInvoked
+        )
+    }
+
+    pub const fn requires_subject_token_hash(self) -> bool {
+        !matches!(self, Self::ResearchCompleted)
+    }
+
+    pub const fn requires_subject_key(self) -> bool {
+        matches!(self, Self::ResearchCompleted)
     }
 
     fn from_wire(value: u32) -> Result<Self, CarrierError> {
@@ -92,6 +194,13 @@ impl DirectEventKind {
             3 => Ok(Self::OrdinaryDecisionTaken),
             4 => Ok(Self::TargetedDecisionTaken),
             5 => Ok(Self::TimedDecisionActivated),
+            6 => Ok(Self::OnActionInvoked),
+            7 => Ok(Self::DecisionCancelEffectInvoked),
+            8 => Ok(Self::DecisionRemoveEffectInvoked),
+            9 => Ok(Self::DecisionTimeoutEffectInvoked),
+            10 => Ok(Self::TargetedDecisionCancelEffectInvoked),
+            11 => Ok(Self::TargetedDecisionRemoveEffectInvoked),
+            12 => Ok(Self::TargetedDecisionTimeoutEffectInvoked),
             _ => Err(CarrierError::InvalidKind(value)),
         }
     }
@@ -159,7 +268,7 @@ pub struct DirectEventStateSummary {
     pub remaining_raw: i32,
 }
 
-/// Pointer-free 96-byte row suitable for a D45 schema-v5 payload trailer.
+/// Pointer-free 120-byte row suitable for a D45 schema-v5 payload trailer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirectEventRow {
     pub sequence: u64,
@@ -171,6 +280,18 @@ pub struct DirectEventRow {
     pub owner_instance_id: OpaqueInstanceId,
     pub subject_instance_id: OpaqueInstanceId,
     pub argument_instance_id: OpaqueInstanceId,
+    /// Stable engine owner key where the exact ABI exposes one (for example a
+    /// country tag database id). Zero means the root has no proved portable
+    /// owner-key decode.
+    pub owner_key: u64,
+    /// FNV-1a-64 of the exact authored subject token. Zero means the subject
+    /// token layout is not proved for this root. This is never computed from a
+    /// pointer or address.
+    pub subject_token_hash: u64,
+    /// Exact stable engine key when the subject has no proved authored-token
+    /// layout. Currently this is `CTechnology+0x08` for research completion.
+    /// It is never synthesized from the capture-local opaque instance id.
+    pub subject_key: u64,
     /// Exact adapter-defined scalar/flag bits observed on entry.
     pub input_bits: u64,
     /// Exact adapter-defined scalar/flag bits observed on return.
@@ -193,10 +314,17 @@ impl DirectEventRow {
         if !self.subject_instance_id.is_present() {
             return Err(CarrierError::MissingSubjectInstanceId);
         }
-        if self.kind == DirectEventKind::TargetedDecisionTaken
-            && !self.argument_instance_id.is_present()
-        {
+        if self.kind.requires_target_argument() && !self.argument_instance_id.is_present() {
             return Err(CarrierError::MissingTargetArgumentInstanceId);
+        }
+        if self.kind.requires_owner_key() && self.owner_key == 0 {
+            return Err(CarrierError::MissingPortableOwnerKey);
+        }
+        if self.kind.requires_subject_token_hash() && self.subject_token_hash == 0 {
+            return Err(CarrierError::MissingPortableSubjectTokenHash);
+        }
+        if self.kind.requires_subject_key() && self.subject_key == 0 {
+            return Err(CarrierError::MissingPortableSubjectKey);
         }
         let expected_rva = self.kind.expected_root_rva_a729();
         if self.root_rva != expected_rva {
@@ -206,8 +334,23 @@ impl DirectEventRow {
                 actual: self.root_rva,
             });
         }
-        if self.before == self.after && self.input_bits == self.return_bits {
-            return Err(CarrierError::NoObservedMutation);
+        if self.kind.is_entry_observation() {
+            if self.return_bits != 0
+                || self.before != DirectEventStateSummary::default()
+                || self.after.state_bits != 1 << 1
+                || self.after.progress_raw != 0
+                || self.after.remaining_raw != 0
+            {
+                return Err(CarrierError::InvalidInvocationObservation);
+            }
+        } else if self.return_bits != 1
+            || self.after.state_bits != (self.before.state_bits | 1 << 63)
+            || self.after.progress_raw != self.before.progress_raw
+            || self.after.remaining_raw != self.before.remaining_raw
+        {
+            // These roots prove that the invocation returned. They do not
+            // claim that an arbitrary object was safely re-read after return.
+            return Err(CarrierError::InvalidReturnObservation);
         }
         Ok(())
     }
@@ -223,6 +366,9 @@ pub struct UnsequencedDirectEventRow {
     pub owner_instance_id: OpaqueInstanceId,
     pub subject_instance_id: OpaqueInstanceId,
     pub argument_instance_id: OpaqueInstanceId,
+    pub owner_key: u64,
+    pub subject_token_hash: u64,
+    pub subject_key: u64,
     pub input_bits: u64,
     pub return_bits: u64,
     pub before: DirectEventStateSummary,
@@ -240,6 +386,71 @@ pub struct DirectEventCarrier {
     max_pending_rows: usize,
     pending: Vec<DirectEventRow>,
     poisoned: bool,
+}
+
+/// One loss-free drain from one installed hook epoch. Empty drains are
+/// authoritative: `sequence_cursor` names the next row that would be emitted,
+/// so consumers can distinguish measured-empty from a missed drain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectEventBatch {
+    pub hook_epoch: u64,
+    pub drain_sequence: u64,
+    pub installed_root_mask: u64,
+    /// Cumulative mask of event kinds observed in this hook epoch. Unlike the
+    /// installed-root mask, this is a live witness and may legitimately be
+    /// zero in a measured-empty baseline drain.
+    pub observed_kind_mask: u64,
+    pub sequence_cursor: u64,
+    pub producer_complete: bool,
+    pub evidence_fixture: bool,
+    pub rows: Vec<DirectEventRow>,
+}
+
+impl DirectEventBatch {
+    pub fn validate(&self) -> Result<(), CarrierError> {
+        if self.hook_epoch == 0 {
+            return Err(CarrierError::ZeroHookEpoch);
+        }
+        if self.drain_sequence == 0 {
+            return Err(CarrierError::ZeroDrainSequence);
+        }
+        if self.installed_root_mask != D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK {
+            return Err(CarrierError::IncompleteInstalledRootMask(self.installed_root_mask));
+        }
+        if self.observed_kind_mask & !D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK != 0
+            || self
+                .rows
+                .iter()
+                .any(|row| self.observed_kind_mask & row.kind.root_mask_bit() == 0)
+        {
+            return Err(CarrierError::InvalidObservedKindMask(self.observed_kind_mask));
+        }
+        if self.sequence_cursor == 0 {
+            return Err(CarrierError::ZeroSequence);
+        }
+        if !self.producer_complete {
+            return Err(CarrierError::ProducerIncomplete);
+        }
+        let expected_first = self
+            .rows
+            .first()
+            .map(|row| row.sequence)
+            .unwrap_or(self.sequence_cursor);
+        validate_sequence(&self.rows, expected_first)?;
+        let expected_cursor = self
+            .rows
+            .last()
+            .map(|row| row.sequence.checked_add(1).ok_or(CarrierError::SequenceSpaceExhausted))
+            .transpose()?
+            .unwrap_or(self.sequence_cursor);
+        if expected_cursor != self.sequence_cursor {
+            return Err(CarrierError::SequenceCursorMismatch {
+                expected: expected_cursor,
+                actual: self.sequence_cursor,
+            });
+        }
+        Ok(())
+    }
 }
 
 impl Default for DirectEventCarrier {
@@ -305,6 +516,9 @@ impl DirectEventCarrier {
             owner_instance_id: input.owner_instance_id,
             subject_instance_id: input.subject_instance_id,
             argument_instance_id: input.argument_instance_id,
+            owner_key: input.owner_key,
+            subject_token_hash: input.subject_token_hash,
+            subject_key: input.subject_key,
             input_bits: input.input_bits,
             return_bits: input.return_bits,
             before: input.before,
@@ -321,6 +535,10 @@ impl DirectEventCarrier {
 
     pub fn pending_rows(&self) -> &[DirectEventRow] {
         &self.pending
+    }
+
+    pub fn next_sequence(&self) -> u64 {
+        self.next_sequence
     }
 
     pub fn is_poisoned(&self) -> bool {
@@ -355,6 +573,12 @@ pub enum CarrierError {
     InvalidTrailerHeaderLength(u16),
     InvalidTrailerRowLength(u16),
     InvalidTrailerFlags(u16),
+    ZeroHookEpoch,
+    ZeroDrainSequence,
+    ProducerIncomplete,
+    IncompleteInstalledRootMask(u64),
+    InvalidObservedKindMask(u64),
+    SequenceCursorMismatch { expected: u64, actual: u64 },
     TrailerLengthOverflow,
     TrailerLengthMismatch { expected: usize, actual: usize },
     InvalidKind(u32),
@@ -362,6 +586,9 @@ pub enum CarrierError {
     MissingOwnerInstanceId,
     MissingSubjectInstanceId,
     MissingTargetArgumentInstanceId,
+    MissingPortableOwnerKey,
+    MissingPortableSubjectTokenHash,
+    MissingPortableSubjectKey,
     ZeroSequence,
     ZeroThreadId,
     RootRvaMismatch {
@@ -369,7 +596,8 @@ pub enum CarrierError {
         expected: u32,
         actual: u32,
     },
-    NoObservedMutation,
+    InvalidInvocationObservation,
+    InvalidReturnObservation,
     UnexpectedInitialSequence { expected: u64, actual: u64 },
     SequenceDiscontinuity { previous: u64, actual: u64 },
     SequenceSpaceExhausted,
@@ -398,10 +626,13 @@ pub fn encode_row(row: &DirectEventRow) -> Result<[u8; D45_V5_DIRECT_EVENT_ROW_L
     bytes[24..32].copy_from_slice(&row.owner_instance_id.get().to_le_bytes());
     bytes[32..40].copy_from_slice(&row.subject_instance_id.get().to_le_bytes());
     bytes[40..48].copy_from_slice(&row.argument_instance_id.get().to_le_bytes());
-    bytes[48..56].copy_from_slice(&row.input_bits.to_le_bytes());
-    bytes[56..64].copy_from_slice(&row.return_bits.to_le_bytes());
-    encode_summary(row.before, &mut bytes[64..80]);
-    encode_summary(row.after, &mut bytes[80..96]);
+    bytes[48..56].copy_from_slice(&row.owner_key.to_le_bytes());
+    bytes[56..64].copy_from_slice(&row.subject_token_hash.to_le_bytes());
+    bytes[64..72].copy_from_slice(&row.subject_key.to_le_bytes());
+    bytes[72..80].copy_from_slice(&row.input_bits.to_le_bytes());
+    bytes[80..88].copy_from_slice(&row.return_bits.to_le_bytes());
+    encode_summary(row.before, &mut bytes[88..104]);
+    encode_summary(row.after, &mut bytes[104..120]);
     Ok(bytes)
 }
 
@@ -421,10 +652,13 @@ pub fn decode_row(bytes: &[u8]) -> Result<DirectEventRow, CarrierError> {
         owner_instance_id: OpaqueInstanceId(read_u64(bytes, 24)),
         subject_instance_id: OpaqueInstanceId(read_u64(bytes, 32)),
         argument_instance_id: OpaqueInstanceId(read_u64(bytes, 40)),
-        input_bits: read_u64(bytes, 48),
-        return_bits: read_u64(bytes, 56),
-        before: decode_summary(bytes, 64),
-        after: decode_summary(bytes, 80),
+        owner_key: read_u64(bytes, 48),
+        subject_token_hash: read_u64(bytes, 56),
+        subject_key: read_u64(bytes, 64),
+        input_bits: read_u64(bytes, 72),
+        return_bits: read_u64(bytes, 80),
+        before: decode_summary(bytes, 88),
+        after: decode_summary(bytes, 104),
     };
     row.validate()?;
     Ok(row)
@@ -433,8 +667,29 @@ pub fn decode_row(bytes: &[u8]) -> Result<DirectEventRow, CarrierError> {
 /// Encodes only the future D45-v5 trailer; the caller owns the FRD2 header and
 /// all pre-existing row families.
 pub fn encode_trailer(rows: &[DirectEventRow]) -> Result<Vec<u8>, CarrierError> {
+    let sequence_cursor = rows
+        .last()
+        .map(|row| row.sequence.checked_add(1).ok_or(CarrierError::SequenceSpaceExhausted))
+        .transpose()?
+        .unwrap_or(1);
+    encode_authoritative_trailer(&DirectEventBatch {
+        hook_epoch: 1,
+        drain_sequence: 1,
+        installed_root_mask: D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK,
+        observed_kind_mask: rows
+            .iter()
+            .fold(0, |mask, row| mask | row.kind.root_mask_bit()),
+        sequence_cursor,
+        producer_complete: true,
+        evidence_fixture: false,
+        rows: rows.to_vec(),
+    })
+}
+
+pub fn encode_authoritative_trailer(batch: &DirectEventBatch) -> Result<Vec<u8>, CarrierError> {
+    batch.validate()?;
+    let rows = &batch.rows;
     let row_count = u32::try_from(rows.len()).map_err(|_| CarrierError::TrailerLengthOverflow)?;
-    validate_sequence(rows, rows.first().map(|row| row.sequence).unwrap_or(1))?;
     let row_bytes = rows
         .len()
         .checked_mul(D45_V5_DIRECT_EVENT_ROW_LEN)
@@ -447,10 +702,19 @@ pub fn encode_trailer(rows: &[DirectEventRow]) -> Result<Vec<u8>, CarrierError> 
     trailer.extend_from_slice(&D45_V5_DIRECT_EVENT_TRAILER_VERSION.to_le_bytes());
     trailer.extend_from_slice(&(D45_V5_DIRECT_EVENT_TRAILER_HEADER_LEN as u16).to_le_bytes());
     trailer.extend_from_slice(&(D45_V5_DIRECT_EVENT_ROW_LEN as u16).to_le_bytes());
-    trailer.extend_from_slice(
-        &D45_V5_DIRECT_EVENT_TRAILER_FLAG_POINTERS_ERASED.to_le_bytes(),
-    );
+    let mut flags = D45_V5_DIRECT_EVENT_TRAILER_FLAG_POINTERS_ERASED
+        | D45_V5_DIRECT_EVENT_TRAILER_FLAG_PRODUCER_COMPLETE
+        | D45_V5_DIRECT_EVENT_TRAILER_FLAG_STATIC_AUTHORITY_BOUND;
+    if batch.evidence_fixture {
+        flags |= D45_V5_DIRECT_EVENT_TRAILER_FLAG_EVIDENCE_FIXTURE;
+    }
+    trailer.extend_from_slice(&flags.to_le_bytes());
     trailer.extend_from_slice(&row_count.to_le_bytes());
+    trailer.extend_from_slice(&batch.hook_epoch.to_le_bytes());
+    trailer.extend_from_slice(&batch.installed_root_mask.to_le_bytes());
+    trailer.extend_from_slice(&batch.sequence_cursor.to_le_bytes());
+    trailer.extend_from_slice(&batch.drain_sequence.to_le_bytes());
+    trailer.extend_from_slice(&batch.observed_kind_mask.to_le_bytes());
     for row in rows {
         trailer.extend_from_slice(&encode_row(row)?);
     }
@@ -462,6 +726,13 @@ pub fn decode_trailer(
     trailer: &[u8],
     expected_first_sequence: u64,
 ) -> Result<Vec<DirectEventRow>, CarrierError> {
+    Ok(decode_authoritative_trailer(trailer, expected_first_sequence)?.rows)
+}
+
+pub fn decode_authoritative_trailer(
+    trailer: &[u8],
+    expected_first_sequence: u64,
+) -> Result<DirectEventBatch, CarrierError> {
     if expected_first_sequence == 0 {
         return Err(CarrierError::ZeroSequence);
     }
@@ -487,10 +758,19 @@ pub fn decode_trailer(
         return Err(CarrierError::InvalidTrailerRowLength(row_len));
     }
     let flags = read_u16(trailer, 10);
-    if flags != D45_V5_DIRECT_EVENT_TRAILER_FLAG_POINTERS_ERASED {
+    if flags & !D45_V5_DIRECT_EVENT_TRAILER_KNOWN_FLAGS != 0
+        || flags & D45_V5_DIRECT_EVENT_TRAILER_FLAG_POINTERS_ERASED == 0
+        || flags & D45_V5_DIRECT_EVENT_TRAILER_FLAG_PRODUCER_COMPLETE == 0
+        || flags & D45_V5_DIRECT_EVENT_TRAILER_FLAG_STATIC_AUTHORITY_BOUND == 0
+    {
         return Err(CarrierError::InvalidTrailerFlags(flags));
     }
     let row_count = read_u32(trailer, 12) as usize;
+    let hook_epoch = read_u64(trailer, 16);
+    let installed_root_mask = read_u64(trailer, 24);
+    let sequence_cursor = read_u64(trailer, 32);
+    let drain_sequence = read_u64(trailer, 40);
+    let observed_kind_mask = read_u64(trailer, 48);
     let expected_len = row_count
         .checked_mul(D45_V5_DIRECT_EVENT_ROW_LEN)
         .and_then(|bytes| bytes.checked_add(D45_V5_DIRECT_EVENT_TRAILER_HEADER_LEN))
@@ -509,8 +789,31 @@ pub fn decode_trailer(
         )?);
         cursor += D45_V5_DIRECT_EVENT_ROW_LEN;
     }
-    validate_sequence(&rows, expected_first_sequence)?;
-    Ok(rows)
+    if let Some(first) = rows.first() {
+        if first.sequence != expected_first_sequence {
+            return Err(CarrierError::UnexpectedInitialSequence {
+                expected: expected_first_sequence,
+                actual: first.sequence,
+            });
+        }
+    } else if sequence_cursor != expected_first_sequence {
+        return Err(CarrierError::SequenceCursorMismatch {
+            expected: expected_first_sequence,
+            actual: sequence_cursor,
+        });
+    }
+    let batch = DirectEventBatch {
+        hook_epoch,
+        drain_sequence,
+        installed_root_mask,
+        observed_kind_mask,
+        sequence_cursor,
+        producer_complete: true,
+        evidence_fixture: flags & D45_V5_DIRECT_EVENT_TRAILER_FLAG_EVIDENCE_FIXTURE != 0,
+        rows,
+    };
+    batch.validate()?;
+    Ok(batch)
 }
 
 fn validate_sequence(rows: &[DirectEventRow], expected_first: u64) -> Result<(), CarrierError> {
@@ -584,19 +887,22 @@ mod tests {
             owner_instance_id: owner,
             subject_instance_id: subject,
             argument_instance_id: argument,
+            owner_key: if kind.requires_owner_key() { 1 } else { 0 },
+            subject_token_hash: if kind.requires_subject_token_hash() { 1 } else { 0 },
+            subject_key: if kind.requires_subject_key() { 1 } else { 0 },
             input_bits: 0,
             return_bits: 1,
             before: DirectEventStateSummary::default(),
             after: DirectEventStateSummary {
-                state_bits: 1,
-                progress_raw: 10,
-                remaining_raw: 9,
+                state_bits: 1 << 63,
+                progress_raw: 0,
+                remaining_raw: 0,
             },
         }
     }
 
     #[test]
-    fn all_five_kinds_share_one_pointer_free_sequence() {
+    fn legacy_five_kinds_share_one_pointer_free_sequence() {
         let mut carrier = DirectEventCarrier::new();
         let owner = carrier.allocate_instance_id().unwrap();
         let subject = carrier.allocate_instance_id().unwrap();
@@ -640,6 +946,53 @@ mod tests {
         assert!(!LIVE_INVOCATION_AUTHORITY);
         assert!(!PRODUCTION_AUTHORITY);
         assert!(!PRODUCTION_ACTIVATION);
+    }
+
+    #[test]
+    fn x10_entry_kinds_are_pointer_free_and_phase_distinct() {
+        let mut carrier = DirectEventCarrier::new();
+        let owner = carrier.allocate_instance_id().unwrap();
+        let subject = carrier.allocate_instance_id().unwrap();
+        let target = carrier.allocate_instance_id().unwrap();
+        let kinds = [
+            DirectEventKind::OnActionInvoked,
+            DirectEventKind::DecisionCancelEffectInvoked,
+            DirectEventKind::DecisionRemoveEffectInvoked,
+            DirectEventKind::DecisionTimeoutEffectInvoked,
+            DirectEventKind::TargetedDecisionCancelEffectInvoked,
+            DirectEventKind::TargetedDecisionRemoveEffectInvoked,
+            DirectEventKind::TargetedDecisionTimeoutEffectInvoked,
+        ];
+        for kind in kinds {
+            let mut row = input(
+                kind,
+                owner,
+                subject,
+                if kind.requires_target_argument() {
+                    target
+                } else {
+                    OpaqueInstanceId::NONE
+                },
+            );
+            row.owner_key = 1;
+            row.subject_token_hash = 0x9e37_79b9_7f4a_7c15;
+            row.return_bits = 0;
+            row.after = DirectEventStateSummary {
+                state_bits: 1 << 1,
+                ..DirectEventStateSummary::default()
+            };
+            carrier.capture(row).unwrap();
+        }
+        let decoded = decode_trailer(&carrier.drain_trailer().unwrap(), 1).unwrap();
+        assert_eq!(
+            decoded.iter().map(|row| row.kind).collect::<Vec<_>>(),
+            kinds.to_vec()
+        );
+        assert!(decoded.iter().all(|row| row.kind.is_entry_observation()));
+        assert!(decoded.iter().all(|row| row.return_bits == 0));
+        assert!(decoded
+            .iter()
+            .all(|row| row.subject_token_hash == 0x9e37_79b9_7f4a_7c15));
     }
 
     #[test]
@@ -740,11 +1093,14 @@ mod tests {
             owner_instance_id: owner,
             subject_instance_id: subject,
             argument_instance_id: OpaqueInstanceId::NONE,
+            owner_key: 1,
+            subject_token_hash: 1,
+            subject_key: 0,
             input_bits: 0,
             return_bits: 1,
             before: DirectEventStateSummary::default(),
             after: DirectEventStateSummary {
-                state_bits: 1,
+                state_bits: 1 << 63,
                 ..DirectEventStateSummary::default()
             },
         };

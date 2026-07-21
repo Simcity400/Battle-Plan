@@ -25,6 +25,7 @@ pub mod identity_control;
 pub mod national_focus_presentation;
 pub mod naval_history;
 pub mod rail_replay;
+pub mod raid_instances;
 pub mod record_header;
 pub mod record_semantics;
 pub mod sink_failure;
@@ -120,17 +121,17 @@ pub const COMPACT_EXPECTED_PARTIAL_TOLERANCES: &[CompactExpectedPartialTolerance
     CompactExpectedPartialTolerance {
         domain_id: 26,
         tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
-        reason: "division_equipment: transient live-mutation row skips (observed 0.025% of roots), skip-counted; sparse fold retains prior equipment for skipped divisions",
+        reason: "division_equipment: only a sampled-root shortfall is tolerated; counts are serialized but omitted division identities are not, so the sparse patch aligns the retained accumulator and the domain/hour remains unknown",
     },
     CompactExpectedPartialTolerance {
         domain_id: 27,
         tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
-        reason: "army_orders: unsupported/validation-failed order-target rows skip-counted (documented fixture-blocked scope)",
+        reason: "army_orders: only invalid army-root identity or an unreadable army-order walk is tolerated; the collector freezes identity/generation state, and the domain/hour remains unknown because omitted order identities are not serialized",
     },
     CompactExpectedPartialTolerance {
         domain_id: 28,
         tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
-        reason: "oob_command: invalid root/task-force rows skip-counted (documented fixture-blocked scope)",
+        reason: "oob_command: only invalid army-root or naval task-force-root rows are tolerated; the collector freezes additions/deletes/linkage changes, and the domain/hour remains unknown because omitted command identities are not serialized",
     },
     CompactExpectedPartialTolerance {
         domain_id: 41,
@@ -165,12 +166,12 @@ pub const COMPACT_EXPECTED_PARTIAL_TOLERANCES: &[CompactExpectedPartialTolerance
     CompactExpectedPartialTolerance {
         domain_id: 54,
         tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
-        reason: "army_battleplans_depth_live: documented fixture-blocked scopes (redraw/toggle lifecycle, activation/execution, stance) fail closed per-row",
+        reason: "army_battleplans_depth_live: inherited d27/d28 partials or counted non-exact/linkage/identity/active/path omissions are diagnostic only; no omitted-order identity list exists, so the domain/hour remains unknown",
     },
     CompactExpectedPartialTolerance {
         domain_id: 65,
         tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
-        reason: "special_project_programs_live: CProgram facilities reachable from >1 country's CProgramStatus records (aliased stale category records) cannot be owner-attributed without a validated CProgram owner-tag offset; they are dropped fail-closed and counted (dropped_ambiguous), so the owner-joined set is intentionally incomplete when any ambiguity is present",
+        reason: "special_project_programs_live: any torn/invalid rooted walk or disagreement between the duplicated serialized CProgram owner/province fields makes the current owner-joined set incomplete; the fold keeps the leaf unknown rather than fabricating deletion or persistence",
     },
 ];
 
@@ -915,7 +916,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         54,
         "army_battleplans_depth_live",
         "army_battleplans_depth_live",
-        CompactDomainStatus::ValidatedSliceOpenGaps,
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -1047,15 +1048,12 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
     // to 3 records, stride 0x160, each record's own vtable == mb+0x295AC88) ->
     // record+0x20 vector<CProgram*> begin, record+0x28 packed u64 (low32=count,
     // high32=capacity). Per CProgram (vtable mb+0x295AC30): program_id (+0x0C),
-    // province (+0x174), unread_prototype_rewards (+0x178). D04 discovery
-    // validation (agent D6): 26/26 facilities exact vs melt (unread + province
-    // both unique full-population offsets). FAIL-CLOSED owner attribution: a
-    // CProgram pointer reachable from >1 country's records (stale category
-    // records aliasing another country's vector) is DROPPED as ambiguous (no
-    // production owner oracle exists), yielding the 21 single-owner facilities;
-    // the 5 ambiguous facilities are badged/counted. Distinct from the committed
-    // d41 projects_live flat (non-owner-joined) facility list, which is left
-    // byte-identical.
+    // duplicated serialized owner (+0x18/+0x170), duplicated province
+    // (+0x1C/+0x174), and unread_prototype_rewards (+0x178). The row is
+    // admitted only when both duplicated pairs agree inside two equal coherent
+    // object snapshots and the owner exists in the validated country table.
+    // Stale cross-country traversal aliases therefore emit once under the
+    // object's intrinsic owner. Distinct from committed d41 projects_live.
     domain(
         65,
         "special_project_programs_live",
@@ -1173,13 +1171,16 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
     // is CGameState+0x5A8 (pointer vector; count +0x5B4), whose 0x18-byte
     // CSunkConvoyInfo rows store month/count/killer/owner at +0x08..+0x14.
     // This is a full persistent history snapshot and is intentionally distinct
-    // from d49 active naval combats and CShip cumulative counters.
+    // from d49 active naval combats and CShip cumulative counters. Static law
+    // and the fail-closed SCH1/v3 integration are complete, but the paused
+    // raw/save/production equality receipt is not. Keep it reserved and
+    // unscheduled until that receipt is reviewed and its lane latch is flipped.
     domain(
         70,
         "sunk_convoy_history_live",
         "sunk_convoy_history_live",
-        CompactDomainStatus::ValidatedSlice,
-        true,
+        CompactDomainStatus::Reserved,
+        false,
         true,
         &[],
     ),
@@ -1196,17 +1197,17 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         true,
         &[],
     ),
-    // A26/XUI05 (2026-07-17): exact resolved tooltip rectangles and ordered,
-    // engine-evaluated rows from the signature-gated a729 generic tooltip
-    // controller, shared A25 final-setter/destructor observers, and exact
-    // post-layout extent accessor. The d72 carrier, live hook, collector seam,
-    // and world fold are implemented; RenderDoc/OCR remain validation evidence.
+    // A26/XUI05 (2026-07-20): the owner-runnable hook and TTI2 carrier preserve
+    // exact final post-layout text plus controller-owned geometry and bind the
+    // observation to a selected Present. Keep reserved and unscheduled until
+    // the authenticated live matrix proves hidden/visible lifecycle, capture-
+    // start-visible behavior, geometry variants, and same-Present equality.
     domain(
         72,
         "resolved_tooltip_instances_live",
         "resolved_tooltip_instances_live",
-        CompactDomainStatus::ValidatedSlice,
-        true,
+        CompactDomainStatus::Reserved,
+        false,
         true,
         &[],
     ),
@@ -1246,8 +1247,8 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         75,
         "fired_event_popups_live",
         "fired_event_popups_live",
-        CompactDomainStatus::ValidatedSlice,
-        true,
+        CompactDomainStatus::Reserved,
+        false,
         true,
         &[],
     ),
@@ -1355,8 +1356,8 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         83,
         "nuke_stockpile_live",
         "nuke_stockpile_live",
-        CompactDomainStatus::ValidatedSlice,
-        true,
+        CompactDomainStatus::Reserved,
+        false,
         true,
         &[],
     ),
@@ -1458,6 +1459,20 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         90,
         "convoy_transport_attack_live",
         "convoy_transport_attack_live",
+        CompactDomainStatus::Reserved,
+        false,
+        true,
+        &[],
+    ),
+    // B7 (2026-07-20): exact CRaidSystem parent/child snapshot rooted at
+    // CGameState+0x3F0. RID1 preserves the inline CCountryRaidStatus order,
+    // each +0x18 child-vector order, the unique type-84 reference identity,
+    // dummy parent and lifecycle scalars. Keep reserved until the retained
+    // D04 440-parent/167-child same-hour memory/save receipt is accepted.
+    domain(
+        91,
+        "raid_instances_live",
+        "raid_instances_live",
         CompactDomainStatus::Reserved,
         false,
         true,
@@ -1647,7 +1662,7 @@ mod tests {
             1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32,
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
             55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76,
-            77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 1000,
+            77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 1000,
         ];
         for id in expected {
             assert!(
@@ -1839,11 +1854,7 @@ mod tests {
             "domain 69 (tech_sharing_groups_live) is a validated slice \
              with explicit open gaps"
         );
-        assert!(
-            profile_ids.contains(&70),
-            "domain 70 (sunk_convoy_history_live) is a production-ready validated slice"
-        );
-        for excluded in [1, 18, 58, 59, 71, 73, 74, 76, 77, 90, 1000] {
+        for excluded in [1, 18, 58, 59, 70, 71, 73, 74, 76, 77, 90, 1000] {
             assert!(
                 !profile_ids.contains(&excluded),
                 "domain {excluded} must stay out of the production profile"

@@ -140,6 +140,7 @@ fn unsupported_static_producer_transitively_omits_dependent_pass_chain() {
         authenticated_ui_pass: None,
         m03_arrows: None,
         o04_cities: None,
+        o05_buildings: None,
         omitted_data_needs: Vec::new(),
     };
     let prepared = crate::prepare_production_d3d_frame(&frame, &BTreeMap::new()).unwrap();
@@ -524,6 +525,7 @@ fn frame_with_static_program(
             effect_catalog_sha256: "3".repeat(64),
             entity_animation_catalog_sha256: "4".repeat(64),
             recorded_input_variant: None,
+            recorded_input_receipt_sha256: None,
             particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
         },
         update_index: 16_959_360,
@@ -567,6 +569,7 @@ fn frame_with_static_program(
         m02_combat: None,
         m03_arrows: None,
         o04_cities: None,
+        o05_buildings: None,
         authenticated_ui_pass: None,
         checkpoint: RenderCheckpoint {
             last_sequence: 20,
@@ -1043,6 +1046,7 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
             effect_catalog_sha256: "3".repeat(64),
             entity_animation_catalog_sha256: "4".repeat(64),
             recorded_input_variant: None,
+            recorded_input_receipt_sha256: None,
             particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
         },
         update_index: 16_959_360,
@@ -1101,6 +1105,7 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
         }),
         m03_arrows: None,
         o04_cities: None,
+        o05_buildings: None,
         authenticated_ui_pass: None,
         checkpoint: RenderCheckpoint {
             last_sequence: 20,
@@ -1246,6 +1251,7 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
             effect_catalog_sha256: "3".repeat(64),
             entity_animation_catalog_sha256: "4".repeat(64),
             recorded_input_variant: None,
+            recorded_input_receipt_sha256: None,
             particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
         },
         update_index: 16_959_360,
@@ -1291,6 +1297,7 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
         m02_combat: None,
         m03_arrows: None,
         o04_cities: None,
+        o05_buildings: None,
         authenticated_ui_pass: None,
         checkpoint: RenderCheckpoint {
             last_sequence: 20,

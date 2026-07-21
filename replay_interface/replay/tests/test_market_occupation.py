@@ -169,14 +169,14 @@ class TestSchemaPresence(unittest.TestCase):
             self.assertIn(t, schema.EVENT_TYPES)
 
     def test_field_sources(self):
-        self.assertEqual(schema.source_of("countries.GER.diplomacy.lend_lease"), "S")
-        self.assertEqual(schema.source_of("countries.GER.economy.market_stockpile"), "S")
+        self.assertEqual(schema.source_of("countries.GER.diplomacy.lend_lease"), "S/M/D")
+        self.assertEqual(schema.source_of("countries.GER.economy.market_stockpile"), "C/S")
         self.assertEqual(schema.source_of("states.5.occupation_law"), "S")
         self.assertEqual(schema.source_of("states.5.occupation.garrison_equipment"), "S")
         self.assertEqual(schema.source_of("occupation_history"), "S")
         self.assertEqual(schema.source_of("diplomacy_world.trade_contracts"), "S")
         # dynamic tag resolves too
-        self.assertEqual(schema.source_of("countries.D05.diplomacy.lend_lease"), "S")
+        self.assertEqual(schema.source_of("countries.D05.diplomacy.lend_lease"), "S/M/D")
 
     def test_naval_air_supply_first_class(self):
         s = schema.empty_snapshot("g", "1940.1.1.0")

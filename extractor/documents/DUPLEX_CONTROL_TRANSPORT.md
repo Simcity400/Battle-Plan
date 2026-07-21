@@ -2,8 +2,9 @@
 
 **Lane:** `w12d-duplex-transport`
 
-**Status:** offline H4CT/Windows-adapter and explicit-mode CFA1/durability contracts are
-focused-green; product composition and every live acceptance gate remain disabled/open.
+**Status:** H4CT/Windows adapters, explicit-mode CFA1/durability, collector/recorder lifecycle,
+filesystem rollover, and replay selection are composed; every activation latch and live acceptance
+gate remains disabled/open.
 
 **Hard laws:** fail closed on every uncertainty; never fabricate liveness or rollover; a control
 message can never cause injection or a second DLL load.
@@ -23,9 +24,9 @@ framed control traffic. H4CR remains the canonical data artifact.
 This transport was prerequisite 0 for campaign rollover, Stage-B handshake, and heartbeat proof.
 The offline prerequisite now exists, including a combined listener-before-injection authority,
 overlapped Windows adapters, a real paired H4CR/H4CT server backend, and a recorder-main seam that
-commits the one permitted injection before bounded accept/bind. That does not make it an active
-consumer path: the collector has no H4CT/CID1 client, the product permit is therefore unmintable,
-and activation remains false.
+commits the one permitted injection before bounded accept/bind. The collector H4CT/CID1 client and
+two-barrier rollover consumer now exist as the paired side, but all duplex/rollover activation
+latches remain false, so product permits are still unmintable.
 
 ## 1. Choice and rejected alternatives
 
@@ -242,10 +243,11 @@ authentication, then sends message 14; a natural pipe-open failure cannot satisf
 The write arm permits one or more complete commits and fails the next whole topology attempt, then
 sends message 15 with exact committed bytes and consecutive last-complete/first-failed sequences.
 The recorder durably publishes a portable pointer-free pre-injection plan bound to the exact
-game-executable and collector-DLL leaf names and hashes plus
+game-executable, recorder-executable, and collector-DLL leaf names and hashes plus
 `extractor.authenticated-sink-failure.v2`, publishes no replay, and exits nonzero. The independent
 `verify_sink_reconciliation.py` regrader requires exact plan/receipt authorization, identity,
-topology, progress, and non-publication equality.
+topology, progress, and non-publication equality; the owner wrapper separately verifies that the
+plan's recorder digest is the exact executable path it selected before launch.
 
 ### Ordering, replay, and parsing
 
@@ -650,11 +652,13 @@ Implemented now:
   and durable write → flush → sync receipt ordering. Focused results are CFA1 3/3,
   identity-control 10/10, and duplex-session 16/16.
 
-Not implemented/composed for production: the collector H4CT/CID1 client and sequence-0/CFA1
-barrier, production filesystem durable sink adapter, replacement of the old stdout proof path,
-rollover/Stage-B lifecycle, or live game tests. The paired Windows server and recorder-main
-one-shot-injection composition seam are compiled, but `AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED`
-remains false and the product permit cannot be minted.
+The collector H4CT/CID1 client, sequence-0/CFA1 barrier, recorder filesystem rollover store,
+single heartbeat/rollover router, ordered logical-stream/package publication, and replay selector
+are now composed in the product owners. They remain deliberately dormant:
+`AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED`, `DUPLEX_CONTROL_CLIENT_ENABLED`, and both independent
+rollover live-lifecycle evidence latches are false, so product permits/capability negotiation fail
+closed. Live game lifecycle tests and owner promotion are still owed; this static composition does
+not waive them or activate Stage B.
 
 ## 7. Self-refutation
 
@@ -675,11 +679,11 @@ remains false and the product permit cannot be minted.
    or failing never authorizes injection. A malicious pre-connector is blocked by
    `FILE_FLAG_FIRST_PIPE_INSTANCE`, the per-attempt secret, DACL, and PID/FILETIME checks; any
    remaining uncertainty fails the attempt.
-4. **Could rollover still mix A and B?** Yes, if a consumer sends `RolloverAck` before it has
-   drained and durably rotated the H4CR sink. Therefore the ack constructor must remain private to
-   `durable_stream_ready`, and the `[O]` integration gate must fault-inject at every drain/close/
-   create/ack boundary. This primitive provides ordering; it cannot prove the consumer's durable
-   action.
+4. **Could rollover still mix A and B?** The product consumer now routes the proposal through the
+   private filesystem store: it drains through the exact frontier, performs a write-through seal,
+   opens the next candidate, and only then sends CRA1; the second CFA1 is bound to the exact synced
+   CID1 before sequence one is released. The live `[O]` gate must still fault-inject every
+   drain/close/create/ack boundary before the dormant latches can be promoted.
 5. **Could a heartbeat or header prefix fabricate production?** A heartbeat proves only a fresh
    challenge response. It cannot enter Recording. Only the recorder's opaque proof that a complete
    H4CR record passed framing and session/baseline validation supplies first-frame proof. A magic

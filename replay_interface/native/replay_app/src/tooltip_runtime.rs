@@ -1,67 +1,97 @@
-//! Product boundary for extractor-resolved tooltip instances.
+//! Product boundary for the authenticated A26/d72 final-tooltip blob.
+//!
+//! d72 remains reserved until the live same-Present matrix is complete. This
+//! adapter intentionally contains no row reconstruction, localisation, OCR, or
+//! geometry inference; it exposes the already validated replay-core view to the
+//! production HUD binding.
 
-use game_ui::tooltip_compositor::{
-    compose_tooltip, ResolvedPlacement, ScreenRect, TooltipDrawCommand, TooltipPayload,
-};
-use game_ui::{GameUiError, Result};
+use game_ui::hud::TooltipBinding;
+use game_ui::production_renderer::tooltip_binding_from_exact_view;
+use replay_core::ResolvedTooltipExactView;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResolvedTooltipInstance {
-    pub placement: Option<ResolvedPlacement>,
-    pub payload: Option<TooltipPayload>,
-}
-
-pub fn compose_resolved_instance(
-    instance: &ResolvedTooltipInstance,
-    viewport: ScreenRect,
-) -> Result<Vec<TooltipDrawCommand>> {
-    let placement = instance.placement.as_ref().ok_or_else(|| {
-        GameUiError::missing("XUI05 DATA_BLOCKED: resolved tooltip screen rectangle")
-    })?;
-    let payload = instance.payload.as_ref().ok_or_else(|| {
-        GameUiError::missing("XUI05 DATA_BLOCKED: ordered resolved tooltip content rows")
-    })?;
-    compose_tooltip(placement, viewport, payload)
+pub fn binding_from_exact_view(
+    view: &ResolvedTooltipExactView,
+    pov_tag: Option<&str>,
+    viewport_width: usize,
+    viewport_height: usize,
+) -> Option<TooltipBinding> {
+    tooltip_binding_from_exact_view(view, pov_tag, viewport_width, viewport_height)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use game_ui::tooltip_compositor::{PlacementEvidence, TooltipOwner};
+    use replay_core::{
+        ResolvedTooltipExactFrame, ResolvedTooltipInstanceExact, ResolvedTooltipRectExact,
+        ViewStatus,
+    };
 
-    #[test]
-    fn missing_upstream_leaf_fails_closed() {
-        let error = compose_resolved_instance(
-            &ResolvedTooltipInstance {
-                placement: None,
-                payload: None,
-            },
-            ScreenRect::new(0, 0, 1920, 1080),
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("DATA_BLOCKED"));
+    fn present(instances: Vec<ResolvedTooltipInstanceExact>) -> ResolvedTooltipExactView {
+        ResolvedTooltipExactView {
+            status: ViewStatus::Present,
+            frame: Some(ResolvedTooltipExactFrame {
+                frame_hour: 1,
+                selected_present_candidate_id: 9,
+                selected_present_ordinal: 0,
+                selected_present_qpc_ticks: 100,
+                selected_present_receipt_sha256: "b7".repeat(32),
+                producer_manifest_sha256: "a6".repeat(32),
+                completeness_record_identity: "a729.tooltip.instances[1]".into(),
+                instances,
+            }),
+        }
     }
 
     #[test]
-    fn complete_exact_instance_reaches_product_compositor() {
-        let result = compose_resolved_instance(
-            &ResolvedTooltipInstance {
-                placement: Some(ResolvedPlacement {
-                    screen_rect: ScreenRect::new(10, 20, 300, 100),
-                    evidence: PlacementEvidence::ExtractedEngineRect {
-                        producer_record: "tooltip_instances[0]".into(),
-                    },
-                }),
-                payload: Some(TooltipPayload {
-                    owner: TooltipOwner {
-                        element_path: "topbar/political_power".into(),
-                        repeat_index: 0,
-                    },
-                    rows: vec![],
-                }),
+    fn measured_empty_emits_no_tooltip_shell() {
+        assert!(binding_from_exact_view(&present(Vec::new()), Some("GER"), 1920, 1080).is_none());
+    }
+
+    #[test]
+    fn exact_blob_and_geometry_reach_hud_binding_without_row_inference() {
+        let view = present(vec![ResolvedTooltipInstanceExact {
+            frame_hour: 1,
+            pov_country_or_global: "GER".into(),
+            hovered_element_authored_name: "technology_slot".into(),
+            tooltip_owner_authored_name: "ToolTip".into(),
+            repeat_index: 0,
+            screen_rect: ResolvedTooltipRectExact {
+                x: 10,
+                y: 20,
+                width: 300,
+                height: 100,
             },
-            ScreenRect::new(0, 0, 1920, 1080),
-        );
-        assert!(result.is_ok());
+            viewport_width_px: 1920,
+            viewport_height_px: 1080,
+            producer_record_identity: "controller:1".into(),
+            final_resolved_text: "Exact first line\nExact second line".into(),
+        }]);
+        let binding =
+            binding_from_exact_view(&view, Some("GER"), 1920, 1080).expect("exact tooltip");
+        assert_eq!((binding.x, binding.y, binding.width, binding.height), (10, 20, 300, 100));
+        assert_eq!(binding.text, "Exact first line\nExact second line");
+    }
+
+    #[test]
+    fn viewport_or_pov_mismatch_fails_closed() {
+        let view = present(vec![ResolvedTooltipInstanceExact {
+            frame_hour: 1,
+            pov_country_or_global: "GER".into(),
+            hovered_element_authored_name: "technology_slot".into(),
+            tooltip_owner_authored_name: "ToolTip".into(),
+            repeat_index: 0,
+            screen_rect: ResolvedTooltipRectExact {
+                x: 10,
+                y: 20,
+                width: 300,
+                height: 100,
+            },
+            viewport_width_px: 1920,
+            viewport_height_px: 1080,
+            producer_record_identity: "controller:1".into(),
+            final_resolved_text: "Exact".into(),
+        }]);
+        assert!(binding_from_exact_view(&view, Some("FRA"), 1920, 1080).is_none());
+        assert!(binding_from_exact_view(&view, Some("GER"), 2560, 1440).is_none());
     }
 }

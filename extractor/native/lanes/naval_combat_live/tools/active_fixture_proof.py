@@ -219,8 +219,18 @@ def build_fixture_json(
                     "region_id": region_id,
                     "attacker_member_count": int(attacker.get("member_count") or 0),
                     "defender_member_count": int(defender.get("member_count") or 0),
-                    "attacker_positioning_milli": milli(attacker.get("positioning")),
-                    "defender_positioning_milli": milli(defender.get("positioning")),
+                    "attacker_positioning_raw": optional_i32(
+                        attacker.get("positioning_raw")
+                    ),
+                    "defender_positioning_raw": optional_i32(
+                        defender.get("positioning_raw")
+                    ),
+                    "attacker_anti_air_raw": optional_i64(
+                        attacker.get("anti_air_raw")
+                    ),
+                    "defender_anti_air_raw": optional_i64(
+                        defender.get("anti_air_raw")
+                    ),
                 },
                 "members": [member_fixture_row(row) for row in rows],
             }
@@ -350,13 +360,13 @@ def optional_i32(value: Any) -> Optional[int]:
     return parsed
 
 
-def milli(value: Any) -> Optional[int]:
-    if value is None:
+def optional_i64(value: Any) -> Optional[int]:
+    parsed = optional_int(value)
+    if parsed is None:
         return None
-    try:
-        return int(round(float(value) * 1000.0))
-    except (TypeError, ValueError):
-        return None
+    if parsed >= 2**63:
+        parsed -= 2**64
+    return parsed
 
 
 def run_rust_fixture_proof(fixture_json: Path, rust_out_dir: Path) -> Dict[str, Any]:

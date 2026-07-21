@@ -46,7 +46,7 @@ REGION_ACCUMULATOR_OFF = 0x28
 REGION_ACTIVE_MODS_OFF = 0x30
 REGION_ACTIVE_FRONT_POSITIONS_OFF = 0x58
 REGION_ACTIVE_EFFECT_ENTITIES_OFF = 0x70
-REGION_PHENOM_ENUM_OFF = 0x78
+REGION_RAW_ACTIVITY_OFF = 0x78
 REGION_INTENSITY_OFF = 0x5D
 REGION_RAIN_LIGHT_OFF = 0x108
 REGION_RAIN_HEAVY_OFF = 0x110
@@ -192,7 +192,7 @@ def validate_region_rows(proc: wm.Process, base: int, module_base: int) -> tuple
         if region_id != idx:
             errors.append(f"region {idx} id {region_id} != index")
 
-        phenomenon = u32(body, REGION_PHENOM_ENUM_OFF)
+        phenomenon = u32(body, REGION_RAW_ACTIVITY_OFF)
         phen_counts = counters["phenomenon_counts"]
         phen_counts[str(phenomenon)] = int(phen_counts.get(str(phenomenon), 0)) + 1
 
@@ -589,7 +589,7 @@ def main() -> int:
             "SWeatherPerRegion_active_modifiers_off": hx(REGION_ACTIVE_MODS_OFF),
             "SWeatherPerRegion_active_front_positions_off": hx(REGION_ACTIVE_FRONT_POSITIONS_OFF),
             "SWeatherPerRegion_weather_effect_entities_off": hx(REGION_ACTIVE_EFFECT_ENTITIES_OFF),
-            "SWeatherPerRegion_phenomenon_off": hx(REGION_PHENOM_ENUM_OFF),
+            "SWeatherPerRegion_raw_activity_candidate_off": hx(REGION_RAW_ACTIVITY_OFF),
             "SWeatherPerRegion_sandstorm_flag_off": hx(REGION_SANDSTORM_OFF),
             "SWeatherPerRegion_accumulator_candidate_off": hx(REGION_ACCUMULATOR_OFF),
             "SWeatherPerRegion_temperature_off": hx(REGION_TEMPERATURE_OFF),

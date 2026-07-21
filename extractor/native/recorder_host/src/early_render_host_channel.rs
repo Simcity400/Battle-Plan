@@ -33,9 +33,9 @@ use compact_contract::early_render_control::{
     decode_early_diagnostic_liveness_response, decode_early_first_game_d3d,
     decode_early_hook_ready, encode_early_commit_capture_receipt, encode_early_diagnostic_end,
     encode_early_diagnostic_liveness_request, encode_early_g2_capture_arm,
-    encode_early_render_launch_bind,
+    encode_early_render_launch_bind_v2,
     EarlyCommitCaptureReceiptV1, EarlyDiagnosticEndV1, EarlyDiagnosticLivenessRequestV1,
-    EarlyG2CaptureArmV1, EarlyRenderLaunchBindV1, EARLY_DIAGNOSTIC_END_RECORDER_CANCEL,
+    EarlyG2CaptureArmV1, EarlyRenderLaunchBindV2, EARLY_DIAGNOSTIC_END_RECORDER_CANCEL,
     EARLY_HOOK_COMPLETENESS_MASK,
 };
 use compact_contract::early_render_runtime_dlc::decode_early_render_runtime_dlc_roster;
@@ -224,6 +224,7 @@ pub struct PreparedEarlyRenderHostChannel {
     effective_vfs: EffectiveVfs,
     runtime_dlc_launch: PortableLaunchBinding,
     runtime_dlc_descriptors: Vec<AuthenticatedDlcDescriptor>,
+    g2_capture_expected: bool,
     launch_bind_sha256: Option<[u8; 32]>,
     timeout_ms: u32,
 }
@@ -242,6 +243,7 @@ impl PreparedEarlyRenderHostChannel {
         effective_vfs: EffectiveVfs,
         runtime_dlc_launch: PortableLaunchBinding,
         runtime_dlc_descriptors: Vec<AuthenticatedDlcDescriptor>,
+        g2_capture_expected: bool,
         timeout_ms: u32,
     ) -> Result<Self, String> {
         if timeout_ms == 0 || timeout_ms > 120_000 {
@@ -314,6 +316,7 @@ impl PreparedEarlyRenderHostChannel {
             effective_vfs,
             runtime_dlc_launch,
             runtime_dlc_descriptors,
+            g2_capture_expected,
             launch_bind_sha256: None,
             timeout_ms,
         })
@@ -367,7 +370,7 @@ impl PreparedEarlyRenderHostChannel {
         channel
             .admit_decoded_hello_capabilities(required, observed)
             .map_err(|error| format!("admit early H4CT capabilities: {error}"))?;
-        let bind = encode_early_render_launch_bind(&EarlyRenderLaunchBindV1 {
+        let bind = encode_early_render_launch_bind_v2(&EarlyRenderLaunchBindV2 {
             process_id: self.expectation.pid,
             process_start_nonce: self.expectation.creation_filetime,
             timeout_ms: self.timeout_ms,
@@ -386,6 +389,7 @@ impl PreparedEarlyRenderHostChannel {
             executable_sha256: decode_hex_32(&self.manifest.executable_sha256)
                 .map_err(|error| format!("early executable digest: {error}"))?,
             collector_sha256: self.expectation.dll_sha256,
+            g2_capture_expected: self.g2_capture_expected,
         })
         .map_err(|error| format!("encode early H4CT BIND: {error:?}"))?;
         channel
@@ -1580,6 +1584,7 @@ mod tests {
                 required_settings: Default::default(),
             },
             runtime_dlc_descriptors: Vec::new(),
+            g2_capture_expected: false,
             launch_bind_sha256: Some(launch_bind_sha256),
             timeout_ms: 1000,
         };

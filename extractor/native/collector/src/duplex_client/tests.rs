@@ -28,10 +28,10 @@ use compact_contract::early_render_control::{
     decode_early_diagnostic_liveness_response, decode_early_first_game_d3d,
     encode_early_commit_capture_receipt, encode_early_diagnostic_end,
     encode_early_g2_capture_arm,
-    encode_early_diagnostic_liveness_request, encode_early_render_launch_bind,
+    encode_early_diagnostic_liveness_request, encode_early_render_launch_bind_v2,
     EarlyCommitCaptureReceiptV1, EarlyDiagnosticEndV1, EarlyDiagnosticLivenessRequestV1,
     EarlyDiagnosticLivenessResponseV1, EarlyFirstGameD3dV1, EarlyHookReadyV1,
-    EarlyG2CaptureArmV1, EarlyRenderLaunchBindV1, EARLY_DIAGNOSTIC_END_RECORDER_CANCEL,
+    EarlyG2CaptureArmV1, EarlyRenderLaunchBindV2, EARLY_DIAGNOSTIC_END_RECORDER_CANCEL,
     EARLY_DIAGNOSTIC_MIN_HOLD_MS,
     EARLY_HOOK_COMPLETENESS_MASK, EARLY_STAGED_HOOK_COUNT, EARLY_STAGED_HOOK_GENERATION,
 };
@@ -291,7 +291,7 @@ fn manifest_envelope_bytes(effective_vfs_manifest_sha256: [u8; 32]) -> Vec<u8> {
 fn early_launch_bind_rejects_foreign_process_nonce_before_ready() {
     let clock = FakeClock::at(0);
     let (session, session_id) = fresh_session();
-    let wire = EarlyRenderLaunchBindV1 {
+    let wire = EarlyRenderLaunchBindV2 {
         process_id: TEST_PID,
         process_start_nonce: identity().creation_filetime.wrapping_add(1),
         timeout_ms: 30_000,
@@ -305,12 +305,13 @@ fn early_launch_bind_rejects_foreign_process_nonce_before_ready() {
         content_manifest_chunk_count: 1,
         executable_sha256: [3; 32],
         collector_sha256: [0xab; 32],
+        g2_capture_expected: false,
     };
     let inbound = recorder_frame(
         session_id,
         0,
         MessageKind::EarlyRenderLaunchBind,
-        &encode_early_render_launch_bind(&wire).unwrap(),
+        &encode_early_render_launch_bind_v2(&wire).unwrap(),
     );
     let permit = early_render_duplex_product_permit();
     let transport = FakeTransport::new(clock.clone(), inbound);
@@ -341,7 +342,7 @@ fn early_vfs_index_rejects_foreign_bind_digest_before_ready() {
         Sha256::digest(canonical_early_render_vfs_index_bytes(&rows).unwrap()).into();
     let manifest_bytes = manifest_envelope_bytes([2; 32]);
     let manifest_sha256: [u8; 32] = Sha256::digest(&manifest_bytes).into();
-    let bind = EarlyRenderLaunchBindV1 {
+    let bind = EarlyRenderLaunchBindV2 {
         process_id: TEST_PID,
         process_start_nonce: identity().creation_filetime,
         timeout_ms: 30_000,
@@ -355,8 +356,9 @@ fn early_vfs_index_rejects_foreign_bind_digest_before_ready() {
         content_manifest_chunk_count: 1,
         executable_sha256: [3; 32],
         collector_sha256: [0xab; 32],
+        g2_capture_expected: false,
     };
-    let bind_payload = encode_early_render_launch_bind(&bind).unwrap();
+    let bind_payload = encode_early_render_launch_bind_v2(&bind).unwrap();
     let launch_bind_sha256: [u8; 32] = Sha256::digest(&bind_payload).into();
     let manifest_chunk = EarlyRenderContentManifestChunkV1 {
         process_id: bind.process_id,
@@ -453,7 +455,7 @@ fn early_transaction_authenticates_g2_arm_immediately_before_commit() {
         Sha256::digest(canonical_early_render_vfs_index_bytes(&rows).unwrap()).into();
     let manifest_bytes = manifest_envelope_bytes([2; 32]);
     let manifest_sha256: [u8; 32] = Sha256::digest(&manifest_bytes).into();
-    let bind = EarlyRenderLaunchBindV1 {
+    let bind = EarlyRenderLaunchBindV2 {
         process_id: TEST_PID,
         process_start_nonce: identity().creation_filetime,
         timeout_ms: 17_000,
@@ -467,6 +469,7 @@ fn early_transaction_authenticates_g2_arm_immediately_before_commit() {
         content_manifest_chunk_count: 1,
         executable_sha256: [3; 32],
         collector_sha256: [0xab; 32],
+        g2_capture_expected: true,
     };
     let commit = EarlyCommitCaptureReceiptV1 {
         process_id: TEST_PID,
@@ -494,7 +497,7 @@ fn early_transaction_authenticates_g2_arm_immediately_before_commit() {
         capture_context_path: "C:\\capture\\context.json".into(),
         output_directory: "C:\\capture\\g2_engine".into(),
     };
-    let bind_payload = encode_early_render_launch_bind(&bind).unwrap();
+    let bind_payload = encode_early_render_launch_bind_v2(&bind).unwrap();
     let launch_bind_sha256: [u8; 32] = Sha256::digest(&bind_payload).into();
     let manifest_chunk = EarlyRenderContentManifestChunkV1 {
         process_id: bind.process_id,
@@ -642,6 +645,7 @@ fn early_transaction_authenticates_g2_arm_immediately_before_commit() {
         .unwrap();
     let observed = client.receive_early_render_launch_bind(deadline).unwrap();
     assert_eq!(observed.timeout_ms, bind.timeout_ms);
+    assert!(observed.g2_capture_expected);
     let manifest = client
         .receive_early_render_content_manifest(&permit, &observed, deadline)
         .unwrap();
@@ -772,6 +776,101 @@ fn early_transaction_authenticates_g2_arm_immediately_before_commit() {
     );
 }
 
+#[test]
+fn early_commit_rejects_missing_g2_arm_when_launch_bind_expected_capture() {
+    let clock = FakeClock::at(0);
+    let (session, session_id) = fresh_session();
+    let mut binding = diagnostic_binding(session_id);
+    binding.g2_capture_expected = true;
+    let commit = EarlyCommitCaptureReceiptV1 {
+        process_id: binding.process_id,
+        process_start_nonce: binding.process_start_nonce,
+        hook_epoch_nonce: 9,
+        receipt_sha256: [6; 32],
+    };
+    let inbound = recorder_frame(
+        session_id,
+        0,
+        MessageKind::EarlyRenderCommitReceipt,
+        &encode_early_commit_capture_receipt(&commit).unwrap(),
+    );
+    let transport = FakeTransport::new(clock.clone(), inbound);
+    let mut client = CollectorControlClient::new_inner(
+        transport,
+        clock.clone(),
+        session,
+        identity(),
+        DuplexClientPolicy::DEFAULT,
+        Some(binding),
+        ControlCapabilities::early_render_duplex_v1(),
+    );
+    client.phase = ClientPhase::Attached;
+    client.early_render_first_game_d3d_sent = true;
+    client.early_render_runtime_dlc_sent = true;
+    assert!(matches!(
+        client.receive_early_render_commit(9, far_deadline(&clock)),
+        Err(ClientError::EarlyRenderBinding)
+    ));
+    assert_eq!(client.phase(), ClientPhase::Failed);
+}
+
+#[test]
+fn early_commit_rejects_g2_arm_when_launch_bind_did_not_expect_capture() {
+    let clock = FakeClock::at(0);
+    let (session, session_id) = fresh_session();
+    let binding = diagnostic_binding(session_id);
+    let arm = EarlyG2CaptureArmV1 {
+        process_id: binding.process_id,
+        process_start_nonce: binding.process_start_nonce,
+        hook_epoch_nonce: 9,
+        launch_manifest_sha256: binding.launch_manifest_sha256,
+        launch_epoch_sha256: [7; 32],
+        capture_receipt_sha256: [6; 32],
+        authority_exe_sha256: binding.executable_sha256,
+        effective_vfs_manifest_sha256: binding.effective_vfs_manifest_sha256,
+        content_manifest_digest_sha256: [8; 32],
+        settings_file_sha256: [9; 32],
+        camera_payload_sha256: [10; 32],
+        capture_context_sha256: [11; 32],
+        expected_selected_hour: 123,
+        observation_id: "unexpected-g2-arm".into(),
+        localisation_language: "english".into(),
+        pov_country_or_global: "global".into(),
+        capture_context_path: "C:\\capture\\context.json".into(),
+        output_directory: "C:\\capture\\g2_engine".into(),
+    };
+    let mut inbound = recorder_frame(
+        session_id,
+        0,
+        MessageKind::EarlyRenderG2CaptureArm,
+        &encode_early_g2_capture_arm(&arm).unwrap(),
+    );
+    inbound.extend(recorder_frame(
+        session_id,
+        1,
+        MessageKind::EarlyRenderCommitReceipt,
+        &[],
+    ));
+    let transport = FakeTransport::new(clock.clone(), inbound);
+    let mut client = CollectorControlClient::new_inner(
+        transport,
+        clock.clone(),
+        session,
+        identity(),
+        DuplexClientPolicy::DEFAULT,
+        Some(binding),
+        ControlCapabilities::early_render_duplex_v1(),
+    );
+    client.phase = ClientPhase::Attached;
+    client.early_render_first_game_d3d_sent = true;
+    client.early_render_runtime_dlc_sent = true;
+    assert!(matches!(
+        client.receive_early_render_commit(9, far_deadline(&clock)),
+        Err(ClientError::EarlyRenderBinding)
+    ));
+    assert_eq!(client.phase(), ClientPhase::Failed);
+}
+
 fn diagnostic_binding(session_id: SessionId) -> EarlyRenderControlBinding {
     EarlyRenderControlBinding {
         process_id: TEST_PID,
@@ -789,6 +888,7 @@ fn diagnostic_binding(session_id: SessionId) -> EarlyRenderControlBinding {
         launch_bind_sha256: [5; 32],
         executable_sha256: [6; 32],
         collector_sha256: [0xab; 32],
+        g2_capture_expected: false,
     }
 }
 

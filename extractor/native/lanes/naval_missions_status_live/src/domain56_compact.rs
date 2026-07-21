@@ -36,8 +36,6 @@ pub const MAX_MISSION_ENUM: u32 = 9;
 /// Exact persisted `detached_activity` enum: 0 none, 1 repairing,
 /// 2 moving_to_refit, 3 refitting, 4 reinforcing.
 pub const MAX_MISSION_STATE: u32 = 4;
-pub const MAX_RETREAT_STATE: u32 = 256;
-pub const MAX_REPAIR_PROGRESS_MILLI: u32 = 1_000;
 pub const MAX_SUNK_CONVOYS: u32 = 1_000_000;
 pub const MAX_NAVAL_SUPREMACY_ROWS: usize = 20_000;
 pub const NAVAL_SUPREMACY_FIXED_SCALE_RAW: u32 = 100_000;
@@ -88,6 +86,21 @@ pub const KNOWN_ROW_FLAGS: u32 = FLAG_HAS_MISSION
     | FLAG_FIXTURE_REQUIRED
     | FLAG_ACTIVE_BATTLE_FIXTURE_REQUIRED
     | FLAG_FIELD_REJECTED;
+/// Schema-v1 positions retained for fixed-width decoding, but forbidden in
+/// production. Static a729 RE proved that these values have no D56 scalar
+/// producer, and route attribution belongs to the pre-collapse naval-combat
+/// carrier. Accepting any of these bits would turn reserved columns into an
+/// unauthenticated extension point.
+pub const RETIRED_ROW_FLAGS: u32 = FLAG_HAS_REPAIR_PROGRESS
+    | FLAG_HAS_RETREAT_STATE
+    | FLAG_HAS_CONVOY_ROUTE_CONTEXT
+    | FLAG_FIXTURE_REQUIRED
+    | FLAG_ACTIVE_BATTLE_FIXTURE_REQUIRED
+    | FLAG_FIELD_REJECTED;
+pub const RETIRED_SOURCE_STATUS_MASK: u32 = STATUS_MISSION_FIXTURE_REQUIRED
+    | STATUS_HOME_BASE_FIXTURE_REQUIRED
+    | STATUS_REPAIR_RETREAT_FIXTURE_REQUIRED
+    | STATUS_CONVOY_CONTEXT_FIXTURE_REQUIRED;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NavalMissionStatusHeader {
@@ -209,6 +222,17 @@ pub fn decode_status_payload(
         errors.push(format!(
             "offset {offset}: changed_rows {} exceeds row_count {row_count}",
             header.changed_rows
+        ));
+    }
+    if header.fixture_required_rows != 0 {
+        errors.push(format!(
+            "offset {offset}: retired fixture_required_rows must be zero"
+        ));
+    }
+    if header.status_flags & RETIRED_SOURCE_STATUS_MASK != 0 {
+        errors.push(format!(
+            "offset {offset}: domain 56 header uses retired fixture status bits 0x{:X}",
+            header.status_flags & RETIRED_SOURCE_STATUS_MASK
         ));
     }
     if header.validated_location_rows > row_count as u32
@@ -513,6 +537,17 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain56GateSummary {
     if changed_rows > row_count {
         summary.parse_errors.push(format!(
             "offset {offset}: changed_rows {changed_rows} exceeds row_count {row_count}"
+        ));
+    }
+    if fixture_required_rows != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: retired fixture_required_rows must be zero"
+        ));
+    }
+    if status_flags & RETIRED_SOURCE_STATUS_MASK != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: domain 56 header uses retired fixture status bits 0x{:X}",
+            status_flags & RETIRED_SOURCE_STATUS_MASK
         ));
     }
     if validated_location_rows > row_count
@@ -884,6 +919,12 @@ fn validate_row(row: &NavalMissionStatusRow, index: usize) -> Result<(), String>
             row.flags & !KNOWN_ROW_FLAGS
         ));
     }
+    if row.flags & RETIRED_ROW_FLAGS != 0 {
+        return Err(format!(
+            "row {index} uses retired/unproven flags 0x{:X}",
+            row.flags & RETIRED_ROW_FLAGS
+        ));
+    }
     // Mission enum 0 is a VALID value (the "hold/do-nothing" mission; the melt
     // oracle carries all 7 distinct values 0,1,2,3,4,8,9). Presence is carried
     // solely by FLAG_HAS_MISSION, so 0-when-present must NOT be rejected.
@@ -931,20 +972,8 @@ fn validate_row(row: &NavalMissionStatusRow, index: usize) -> Result<(), String>
         "repair_base_province_id",
         index,
     )?;
-    validate_optional_max(
-        row.flags & FLAG_HAS_REPAIR_PROGRESS != 0,
-        row.repair_progress_milli,
-        MAX_REPAIR_PROGRESS_MILLI,
-        "repair_progress_milli",
-        index,
-    )?;
-    validate_optional_max(
-        row.flags & FLAG_HAS_RETREAT_STATE != 0,
-        row.retreat_state,
-        MAX_RETREAT_STATE,
-        "retreat_state",
-        index,
-    )?;
+    validate_optional_max(false, row.repair_progress_milli, 0, "repair_progress_milli", index)?;
+    validate_optional_max(false, row.retreat_state, 0, "retreat_state", index)?;
     validate_optional_max(
         row.flags & FLAG_HAS_SUNK_CONVOY_COUNT != 0,
         row.sunk_convoys,
@@ -953,9 +982,9 @@ fn validate_row(row: &NavalMissionStatusRow, index: usize) -> Result<(), String>
         index,
     )?;
     validate_optional_max(
-        row.flags & FLAG_HAS_CONVOY_ROUTE_CONTEXT != 0,
+        false,
         row.convoy_route_context_id,
-        u32::MAX,
+        0,
         "convoy_route_context_id",
         index,
     )?;
@@ -966,6 +995,12 @@ fn validate_row(row: &NavalMissionStatusRow, index: usize) -> Result<(), String>
         return Err(format!(
             "row {index} source_status has unknown bits 0x{:X}",
             row.source_status & !KNOWN_SOURCE_STATUS_MASK
+        ));
+    }
+    if row.source_status & RETIRED_SOURCE_STATUS_MASK != 0 {
+        return Err(format!(
+            "row {index} uses retired fixture status bits 0x{:X}",
+            row.source_status & RETIRED_SOURCE_STATUS_MASK
         ));
     }
     Ok(())
@@ -1221,25 +1256,18 @@ mod tests {
                     | FLAG_HAS_REGION
                     | FLAG_VALIDATED_DIRECT
                     | FLAG_DERIVED_REGION
-                    | FLAG_FIXTURE_REQUIRED
                     | FLAG_HAS_SUNK_CONVOY_COUNT,
                 location_province_id: 12389,
                 strategic_region_id: 31,
                 sunk_convoys: 2,
-                source_status: STATUS_MISSION_FIXTURE_REQUIRED
-                    | STATUS_HOME_BASE_FIXTURE_REQUIRED
-                    | STATUS_REPAIR_RETREAT_FIXTURE_REQUIRED,
                 ..NavalMissionStatusRow::default()
             },
             NavalMissionStatusRow {
                 task_force_id: 618,
                 fleet_id: 615,
                 owner_tag_db_id: 47,
-                flags: FLAG_HAS_LOCATION
-                    | FLAG_VALIDATED_DIRECT
-                    | FLAG_ACTIVE_BATTLE_FIXTURE_REQUIRED,
+                flags: FLAG_HAS_LOCATION | FLAG_VALIDATED_DIRECT,
                 location_province_id: 12390,
-                source_status: STATUS_CONVOY_CONTEXT_FIXTURE_REQUIRED,
                 ..NavalMissionStatusRow::default()
             },
         ]
@@ -1363,19 +1391,17 @@ mod tests {
     }
 
     #[test]
-    fn encodes_and_decodes_badged_domain56_payload() {
+    fn encodes_and_decodes_production_domain56_payload() {
         let rows = sample_rows();
         let payload = encode_payload(
             &NavalMissionStatusHeader {
                 elapsed_wall_ms: 42,
                 changed_rows: 2,
-                status_flags: STATUS_DELTA_DATA
-                    | STATUS_MISSION_FIXTURE_REQUIRED
-                    | STATUS_HOME_BASE_FIXTURE_REQUIRED,
+                status_flags: STATUS_DELTA_DATA,
                 observed_task_forces: 2,
                 validated_location_rows: 2,
                 derived_region_rows: 1,
-                fixture_required_rows: 2,
+                fixture_required_rows: 0,
                 convoy_sunk_count_rows: 1,
             },
             &rows,
@@ -1400,6 +1426,35 @@ mod tests {
     }
 
     #[test]
+    fn decoder_rejects_retired_d56_semantic_slots() {
+        let row = sample_rows().remove(0);
+        let mut payload = encode_payload(
+            &NavalMissionStatusHeader {
+                changed_rows: 1,
+                observed_task_forces: 1,
+                validated_location_rows: 1,
+                derived_region_rows: 1,
+                convoy_sunk_count_rows: 1,
+                ..NavalMissionStatusHeader::default()
+            },
+            &[row],
+        );
+        // The production encoder is deliberately fail-closed and cannot mint
+        // a retired semantic slot. Corrupt an otherwise valid wire payload to
+        // exercise the decoder boundary independently.
+        let flags_offset = HEADER_LEN + 12;
+        let flags = read_u32(&payload, flags_offset) | FLAG_HAS_REPAIR_PROGRESS;
+        payload[flags_offset..flags_offset + 4].copy_from_slice(&flags.to_le_bytes());
+        let repair_progress_offset = HEADER_LEN + 40;
+        payload[repair_progress_offset..repair_progress_offset + 4]
+            .copy_from_slice(&500u32.to_le_bytes());
+        let errors = decode_status_payload(0, &payload).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("uses retired/unproven flags")));
+    }
+
+    #[test]
     fn compact_stream_gate_passes_for_domain56_data() {
         let rows = sample_rows();
         let payload = encode_payload(
@@ -1410,7 +1465,7 @@ mod tests {
                 observed_task_forces: 2,
                 validated_location_rows: 2,
                 derived_region_rows: 1,
-                fixture_required_rows: 2,
+                fixture_required_rows: 0,
                 convoy_sunk_count_rows: 1,
             },
             &rows,
@@ -2025,14 +2080,17 @@ mod tests {
     }
 
     #[test]
-    fn compact_stream_gate_keeps_lane_fixture_badges_nonfatal() {
+    fn compact_stream_gate_rejects_retired_lane_fixture_badges() {
         let fixture_bits = STATUS_MISSION_FIXTURE_REQUIRED
             | STATUS_HOME_BASE_FIXTURE_REQUIRED
             | STATUS_REPAIR_RETREAT_FIXTURE_REQUIRED
             | STATUS_CONVOY_CONTEXT_FIXTURE_REQUIRED;
         let summary = gate_stream(&stream_with_status_origins(fixture_bits, 0, 0));
-        assert!(summary.gate_passed(), "{summary:?}");
-        assert_eq!(summary.failure_status_flags_or, 0);
+        assert!(!summary.gate_passed(), "{summary:?}");
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("retired fixture status bits")));
     }
 
     #[test]
@@ -2063,7 +2121,7 @@ mod tests {
                 observed_task_forces: 2,
                 validated_location_rows: 2,
                 derived_region_rows: 1,
-                fixture_required_rows: 2,
+                fixture_required_rows: 0,
                 convoy_sunk_count_rows: 1,
                 ..NavalMissionStatusHeader::default()
             },
@@ -2087,7 +2145,7 @@ mod tests {
                 observed_task_forces: 2,
                 validated_location_rows: 2,
                 derived_region_rows: 1,
-                fixture_required_rows: 2,
+                fixture_required_rows: 0,
                 convoy_sunk_count_rows: 1,
                 ..NavalMissionStatusHeader::default()
             },
@@ -2133,7 +2191,7 @@ mod tests {
                 observed_task_forces: 2,
                 validated_location_rows: 2,
                 derived_region_rows: 1,
-                fixture_required_rows: 2,
+                fixture_required_rows: 0,
                 convoy_sunk_count_rows: 1,
                 ..NavalMissionStatusHeader::default()
             },
@@ -2154,7 +2212,7 @@ mod tests {
                 changed_rows: 1,
                 observed_task_forces: 1,
                 validated_location_rows: 1,
-                fixture_required_rows: 1,
+                fixture_required_rows: 0,
                 ..NavalMissionStatusHeader::default()
             },
             &[row],

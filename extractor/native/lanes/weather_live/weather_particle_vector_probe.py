@@ -42,7 +42,7 @@ WEATHER_REGION_COUNT = 305
 REGION_ID_OFF = 0x08
 REGION_ACTIVE_FRONT_POSITIONS_OFF = 0x58
 REGION_ACTIVE_EFFECT_ENTITIES_OFF = 0x70
-REGION_PHENOM_ENUM_OFF = 0x78
+REGION_RAW_ACTIVITY_OFF = 0x78
 PROVINCE_ID_OFF = 0x08
 PROVINCE_LOCAL_FRONT_POSITIONS_OFF = 0x58
 PROVINCE_LOCAL_EFFECT_ENTITIES_OFF = 0x70
@@ -441,7 +441,7 @@ def read_weather_vectors(proc: wm.Process, module_base: int) -> tuple[dict[str, 
         body = region_data[idx * WEATHER_REGION_STRIDE : (idx + 1) * WEATHER_REGION_STRIDE]
         vtable = u64(body, 0)
         rid = u32(body, REGION_ID_OFF)
-        phen = u32(body, REGION_PHENOM_ENUM_OFF)
+        phen = u32(body, REGION_RAW_ACTIVITY_OFF)
         if vtable != module_base + WEATHER_REGION_VTABLE_RVA:
             errors.append(f"region {idx} vtable mismatch")
             continue

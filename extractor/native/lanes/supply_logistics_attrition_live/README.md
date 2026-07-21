@@ -4,9 +4,11 @@
 
 Lane-local production stack for current-build supply/logistics/attrition capture.
 
-This lane is intentionally isolated from shared collector and recorder entrypoints. It packages
-the live roots that are already safe for the DLL collector to read and keeps computed walls
-explicitly badged:
+This lane mirrors the shared collector/recorder wire and is retained as an
+offline proof decoder. The production path is the shared d44 collector, fold,
+portable snapshot, and typed replay admission. It packages the live roots that
+are safe for the DLL collector to read and keeps computed walls explicitly
+badged:
 
 - supply hubs, naval supply hubs, railways, and state infrastructure from live building vectors;
 - division supply proxy rows from live division bodies;
@@ -16,8 +18,10 @@ explicitly badged:
   `CSupplySystem -> CCountrySupplySystem` ownership vector;
 - exact per-province supply tooltip value as a computed/transient wall;
 - attrition flag/reason as a runtime-computed wall until a field or function path is pinned.
-- hub motorization settings, terminal convoy-route attribution, and the remaining unsafe CSupplySystem
-  province-input siblings as explicit wall/rejection badges until production roots are pinned.
+- hub motorization settings, richer convoy-logistics pressure, and the remaining
+  unsafe CSupplySystem province-input siblings as explicit wall/rejection badges
+  until production roots are pinned. Terminal convoy-loss route attribution is
+  a separate A7/d90 contract and is never inferred from d44.
 
 Production integration uses the shared compact health/status field in the 48-byte payload header.
 Lane-specific wall/rejection state is carried by five legacy-required `computed_badge` rows, plus
@@ -51,8 +55,12 @@ For `hoi4.exe` SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5
   `CCountry* @ +0x78`. Production kind-5 extraction uses this bounded root,
   validates the indexed country identity plus all three constructor owner links, and reads the exact
   `disrupted_supply` robin-hood table at object `+0x88`. The node-setting map,
-  motorization level, foreign-homebase semantics, and terminal convoy-route join
-  remain fixture-gated.
+  motorization level, and foreign-homebase semantics remain fixture-gated.
+  Current read-only authority is the 20-shard exact-a729 broker export
+  `20260720T131712Z-wave5-a6-d44-current-authority-robinhood-a8bb00ba`,
+  manifest SHA-256
+  `3833350a60768765d3a56b80c49be49ed5e3d188a4b1810698c006bf1cb34061`.
+  Shard count is operational capacity, not semantic provenance.
 
 The previous Python logistics readers are still correctly build-gated to
 `16022851eaa571728aa3a0b5fd5f990a56da57e2249a4c1b9cfb30336f59b120` and must not be used
@@ -102,7 +110,13 @@ against the current `870ebf` process without rediscovery.
   packing proof for the domain 44 payload.
 - `../../../documents/archive/native_lanes/supply_logistics_attrition_live/REGISTRATION_PATCH_PLAN.md`: exact minimal collector/recorder registration patch plan.
 
-## Proof Commands
+## Historical Evidence Commands
+
+The block below records how the retained artifacts were acquired; it is not the
+current Rust validation procedure. Do not invoke its direct `rustc`/`cargo`
+commands. The primary agent runs Rust validation centrally through
+`extractor/native/scripts/Invoke-CentralRustValidation.ps1`; subagents perform
+static edits only.
 
 ```powershell
 python extractor\native\lanes\supply_logistics_attrition_live\live_probe.py --pid 45880 --out-dir extractor\native\runs\supply_logistics_attrition_live_870ebf_20260701_v3
@@ -127,10 +141,11 @@ cargo run --manifest-path extractor\native\lanes\supply_logistics_attrition_live
 cargo run --manifest-path extractor\native\snapshot\Cargo.toml --bin pack_replay -- verify extractor\native\runs\supply_logistics_attrition_live_pressure_replay_pack_870ebf_20260701_v1\native_session.battleplan
 ```
 
-Current gate coverage is eight tests: valid decode, header counter/missing badge rejection,
-invalid division values, inconsistent supply-deficit/fuel-presence rejection,
-province/division contract-flag rejection, malformed badge row rejection, and CSupply
-input-row plus pressure-candidate validation/rejection.
+Gate coverage includes valid kind-5 exact rows, proven-empty availability,
+composite tombstones, missing-source rejection, header counter checks, malformed
+badges, invalid division values, CSupply inputs, and pressure-candidate
+validation/rejection. Rust validation is run only through the repository's
+central validation script by the primary agent.
 
 Current lane-local live proof:
 
@@ -271,5 +286,6 @@ with zero parse errors, packed into `.battleplan`, and verified by `pack_replay`
 
 See `../../../documents/archive/native_lanes/supply_logistics_attrition_live/REGISTRATION_PATCH_PLAN.md` and `../../../documents/archive/native_lanes/supply_logistics_attrition_live/CSUPPLY_ROOT_HARDENING_PATCH.md`. The shared registry
 already has domain `44`; the CSupply row kind is registered and decodable, but the shared
-collector must replace in-frame vtable discovery with the direct `CGameState+0x3D8` root and
-then rerun speed-five/current-equivalent hourly proof.
+collector now uses the direct `CGameState+0x3D8` root. Promotion of exact
+`disrupted_supply` is guarded independently from the still-open tooltip,
+attrition-reason, motorization, and richer convoy-pressure surfaces.

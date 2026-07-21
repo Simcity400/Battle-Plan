@@ -6,7 +6,7 @@
     "id": 89,
     "name": "national_focus_presentation_live",
     "magic": "NFP1",
-    "schema_version": 1,
+    "schema_version": 2,
     "status": "reserved",
     "schedulable": false
   },
@@ -14,11 +14,11 @@
     "binary_id": "hoi4.exe 1.19.2.0.a729",
     "image_base": "0x140000000",
     "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
-    "exact20_job_id": "20260720T020812Z-w3-a31-focus-owner-93fbbf62",
-    "exact20_job_json_sha256": "c6c3fb002bc05f1e092d7eb9b436aa720ca2cf19ad08f055747216dfa5871b4f",
-    "exact20_function_manifest_sha256": "303351ed65468aa7655b904998819c96ca1c325f906b5a3bf32c4f18decc7969",
-    "seed_resolution": "10/10 exact requested entries",
-    "executing_shard": "shard-17"
+    "exact20_job_id": "20260720T104531Z-w5-a31-consolidated-owner-frame-order-pr-79b1ba63",
+    "exact20_job_json_sha256": "b1c9d8c0678956f17bea2e7f9e06e7ff4baf31254c11b3c983a9a5ca9ae2d04b",
+    "exact20_function_manifest_sha256": "b319dd1b721ed6a13e47088b7def034111f9882631080bffbf049fbb79265a2f",
+    "seed_resolution": "13/13 exact requested entries",
+    "executing_shard": "shard-03"
   },
   "pointer_free_identity": {
     "view_id": "nationalfocusview:<country_tag>",
@@ -34,15 +34,19 @@
   "producer": {
     "module": "extractor/native/lanes/focus_research_decisions_depth_live/src/a729_focus_item_producer.rs",
     "acquisition_module": "extractor/native/lanes/focus_research_decisions_depth_live/src/a729_focus_item_hook.rs",
+    "inline_instrumentation_module": "extractor/native/lanes/focus_research_decisions_depth_live/src/a729_focus_item_inline.rs",
     "owner_runner": "collector::A31FixtureAcquisitionOwner",
+    "interactive_owner_runner": "extractor/native/scripts/Invoke-A31NationalFocusFixturePair.ps1",
     "evidence_regrader": "extractor/native/lanes/focus_research_decisions_depth_live/tools/verify_a31_acquisition_receipt.py",
+    "fixture_pair_regrader": "extractor/native/lanes/focus_research_decisions_depth_live/tools/verify_a31_fixture_matrix.py",
     "owner_authentication": "CNationalFocusView primary vtable 0x14299d680",
     "item_authentication": "primary vtable 0x14299dd40 and secondary vtable 0x14299dde0",
-    "atomicity": "opening header and pointer array equal closing header and pointer array; rebuild, dynamic refresh, and transient epoch all complete",
+    "atomicity": "opening header and pointer array equal closing header and pointer array; exact view/item vtables and definitions authenticate retained vectors; same-view 0x14137a780 dynamic then 0x14137a600 detail/transient refresh completes; stable fixture separately requires same-epoch publication",
     "transient_requirements": [
-      "exact display percent from 0x141bb5df0",
+      "exact display percent from ESI at 0x141bb636e",
       "highlight state from 0x141377430",
-      "measured hidden or positive country from the joint-view helper"
+      "measured hidden at 0x141379a50 entry or positive country DB id at 0x141379e5f",
+      "each promotion-fixture receipt must witness at least one exact positive 0x141379e5f call; hidden defaults do not increment that witness"
     ]
   },
   "transport_and_consumers": {
@@ -56,7 +60,7 @@
     "production_scheduling_enabled": false,
     "live_fixture_accepted": false,
     "reason": "No authenticated complete stable frame plus discriminating transition fixture exists.",
-    "required_fixture": "one exact-a729 complete focus-view frame and one transition changing at least one final item-state or transient presentation leaf"
+    "required_fixture": "one exact-a729 complete focus-view frame and one transition changing at least one final item-state or transient presentation leaf; both must expose at least one positive joint-country item"
   },
   "validation": {
     "subagent_builds_or_tests_run": false,

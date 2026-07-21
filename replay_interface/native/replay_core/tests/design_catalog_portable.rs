@@ -27,38 +27,70 @@ fn temp_file(tag: &str) -> PathBuf {
 fn catalog() -> Vec<u8> {
     serde_json::to_vec(&json!({
         "schema": A27_LIVE_CATALOG_SCHEMA,
+        "authority": {
+            "program": "hoi4.exe 1.19.2.0.a729",
+            "program_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+            "current_date_raw": 43_800_899,
+            "capture_hour_index": 900,
+            "coherence": "double_read_all_roots_fields_and_membership"
+        },
         "full_replacement": true,
         "completeness": {
             "definitions": true, "lifecycle": true, "membership": true,
             "owner": true, "ui_occurrences": true
         },
+        "country_count": 1,
+        "countries": [{"registry_index": 0, "tag": "GER"}],
         "division_templates": [{
-            "catalog_scan_ordinal": 0, "definition": {"name": "Infantry"},
+            "catalog_scan_ordinal": 0, "country_vector_ordinal": 0,
+            "definition": {
+                "name": "Infantry", "name_utf8_hex": "496e66616e747279",
+                "regiment_grid_columns": 5, "regiment_grid_rows": 5,
+                "regiment_pointer_count": 0, "regiment_placeholder_ordinals": [],
+                "regiments": [], "support_pointer_count": 0,
+                "support_placeholder_ordinals": [], "support": [],
+                "regimental_support_pointer_count": 0,
+                "regimental_support_placeholder_ordinals": [],
+                "regimental_support": [], "priority": 0,
+                "lock_regime_snapshot_raw": 0, "is_locked": false,
+                "obsolete": false
+            },
             "definition_complete": true, "id": 8, "obsolete": false,
-            "owner_tag": "GER", "type": 52
+            "owner_tag": "GER", "source_country_registry_index": 0,
+            "source_country_tag": "GER", "type": 52
         }],
         "variants": [
             {
-                "catalog_scan_ordinal": 0,
+                "catalog_scan_ordinal": 0, "creator_tag": "GER",
                 "definition": {
                     "archetype_token": "light_tank_chassis_1",
+                    "archetype_token_utf8_hex": "6c696768745f74616e6b5f636861737369735f31",
                     "cached_stats": [], "cached_stats_complete": true,
-                    "display_name": "Seven", "modules": [], "modules_complete": true,
-                    "upgrades": [], "upgrades_complete": true, "variant_name": null
+                    "display_name": "Seven", "display_name_utf8_hex": "536576656e",
+                    "equipment_token_raw": 71, "modules": [], "modules_complete": true,
+                    "upgrades": [], "upgrades_complete": true, "variant_name": null,
+                    "variant_name_utf8_hex": ""
                 },
-                "definition_complete": true, "id": 7, "obsolete": false,
-                "owner_tag": "GER", "type": 70
+                "definition_complete": true, "first_ui_discovery_ordinal": null,
+                "id": 7, "obsolete": false, "origin_override_tag": null,
+                "owner_tag": "GER", "selected_country_tag": "GER",
+                "source_occurrences": [], "type": 70
             },
             {
-                "catalog_scan_ordinal": 1,
+                "catalog_scan_ordinal": 1, "creator_tag": "GER",
                 "definition": {
                     "archetype_token": "light_tank_chassis_1",
+                    "archetype_token_utf8_hex": "6c696768745f74616e6b5f636861737369735f31",
                     "cached_stats": [], "cached_stats_complete": true,
-                    "display_name": "Fifty Five", "modules": [], "modules_complete": true,
-                    "upgrades": [], "upgrades_complete": true, "variant_name": null
+                    "display_name": "Fifty Five", "display_name_utf8_hex": "46696674792046697665",
+                    "equipment_token_raw": 71, "modules": [], "modules_complete": true,
+                    "upgrades": [], "upgrades_complete": true, "variant_name": null,
+                    "variant_name_utf8_hex": ""
                 },
-                "definition_complete": true, "id": 55, "obsolete": true,
-                "owner_tag": "GER", "type": 70
+                "definition_complete": true, "first_ui_discovery_ordinal": null,
+                "id": 55, "obsolete": true, "origin_override_tag": null,
+                "owner_tag": "GER", "selected_country_tag": "GER",
+                "source_occurrences": [], "type": 70
             }
         ]
     }))
@@ -151,4 +183,16 @@ fn portable_artifact_and_d78_join_fail_closed() {
     write_replay(&partial, &[7], serde_json::to_vec(&value).unwrap());
     assert!(open_recording(&partial).is_err());
     fs::remove_file(partial).unwrap();
+
+    let wrong_hour = temp_file("design_catalog_wrong_hour");
+    let mut value: serde_json::Value = serde_json::from_slice(&catalog()).unwrap();
+    value["authority"]["current_date_raw"] = 43_800_900_u64.into();
+    value["authority"]["capture_hour_index"] = 901_u64.into();
+    write_replay(
+        &wrong_hour,
+        &[7],
+        serde_json::to_vec(&value).unwrap(),
+    );
+    assert!(open_recording(&wrong_hour).is_err());
+    fs::remove_file(wrong_hour).unwrap();
 }

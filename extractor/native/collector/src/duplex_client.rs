@@ -77,7 +77,7 @@ use compact_contract::early_render_content_manifest::{
 use compact_contract::early_render_control::{
     canonical_early_diagnostic_liveness_response_binding_bytes,
     decode_early_commit_capture_receipt, decode_early_diagnostic_end,
-    decode_early_diagnostic_liveness_request, decode_early_render_launch_bind,
+    decode_early_diagnostic_liveness_request, decode_early_render_launch_bind_v2,
     decode_early_g2_capture_arm, encode_early_diagnostic_liveness_response,
     encode_early_first_game_d3d,
     encode_early_hook_ready, EarlyCommitCaptureReceiptV1, EarlyDiagnosticLivenessResponseV1,
@@ -160,6 +160,7 @@ pub struct EarlyRenderControlBinding {
     pub launch_bind_sha256: [u8; 32],
     pub executable_sha256: [u8; 32],
     pub collector_sha256: [u8; 32],
+    pub g2_capture_expected: bool,
 }
 
 /// Collector-side end receipt for the non-promotable staged-hook diagnostic.
@@ -977,7 +978,7 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
         if frame.kind != MessageKind::EarlyRenderLaunchBind {
             return self.fail(ClientError::Unsupported(frame.kind));
         }
-        let wire = decode_early_render_launch_bind(&frame.payload)?;
+        let wire = decode_early_render_launch_bind_v2(&frame.payload)?;
         if wire.process_id != self.identity.pid
             || wire.process_start_nonce != self.identity.creation_filetime
             || wire.collector_sha256 != self.identity.dll_sha256
@@ -1000,6 +1001,7 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
             launch_bind_sha256: Sha256::digest(&frame.payload).into(),
             executable_sha256: wire.executable_sha256,
             collector_sha256: wire.collector_sha256,
+            g2_capture_expected: wire.g2_capture_expected,
         };
         self.early_render_binding = Some(binding.clone());
         Ok(binding)
@@ -1453,6 +1455,13 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
         } else {
             None
         };
+        if self
+            .early_render_binding
+            .as_ref()
+            .is_none_or(|binding| binding.g2_capture_expected != g2_arm.is_some())
+        {
+            return self.fail(ClientError::EarlyRenderBinding);
+        }
         if frame.kind != MessageKind::EarlyRenderCommitReceipt {
             return self.fail(ClientError::Unsupported(frame.kind));
         }

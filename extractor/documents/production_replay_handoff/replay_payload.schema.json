@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "hoi4.extractor.production_replay_handoff.payload.v2",
-  "title": "Promoted extractor replay surfaces and externally gated Wave 4 handoffs",
+  "title": "Promoted extractor replay surfaces and externally gated Wave 5 handoffs",
   "description": "Target replay projection for the frozen A1/A2/A4/A12/A14/A15/A21/A22/B8-X6 batch plus the fail-closed A38/d84 handoff shape. A38 remains unavailable until its authenticated live-producer gate is admitted. Other snapshot fields are intentionally allowed.",
   "x-hoi4-cross-field-validators": [
     "d48_partial_health_aggregate",

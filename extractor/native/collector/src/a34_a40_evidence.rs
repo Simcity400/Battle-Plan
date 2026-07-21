@@ -1,12 +1,17 @@
-//! Owner-runnable evidence acquisition for reserved A34/d87 and A40/d85.
+//! Owner-runnable evidence acquisition for reserved A34/d87, A36/d88, and
+//! A40/d85.
 //!
 //! These owners are deliberately absent from the production scheduler. They
-//! install the exact sentinel-gated hooks, destructively drain lane-owned
-//! pointer-free payloads, frame them as ordinary H4CR domain data on request,
-//! and uninstall only after all detour callbacks have quiesced.
+//! install the exact sentinel-gated hooks and uninstall only after all detour
+//! callbacks have quiesced. A34/A40 destructively drain pointer-free payloads
+//! and frame them as ordinary H4CR domain data on request. A36 instead retains
+//! authenticated raw transactions plus hashes of the pointer-free ABL1 frames
+//! constructed from collector-owned same-frame roots; it never schedules d88.
 
 use design_catalog_context_live_lane::selected_designer_identity as designer;
+use design_catalog_context_live_lane::a40_peace_evidence as peace;
 use decision_panel_live_lane as panel;
+use active_command_abilities_live_lane::a729_hook as abilities;
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,6 +126,262 @@ pub struct A40SelectedDesignerEvidenceOwner {
     installed: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct A40PeaceEvidenceInstallReceipt {
+    pub lane: &'static str,
+    pub exact_executable_sha256: &'static str,
+    pub static_producer_consumer_manifest_sha256: &'static str,
+    pub hook_sentinel_artifact_sha256: &'static str,
+    pub installed_hook_count: u32,
+    pub production_carrier_enabled: bool,
+}
+
+/// Evidence-only owner for the raw active-conference lifecycle trace.
+///
+/// Unlike d85 this observer has no compact domain: until the authentic trace
+/// proves an immutable allocation/result identity, raw process-local pointers
+/// and memory blocks may only leave the hook as a diagnostic receipt.
+pub struct A40PeaceEvidenceOwner {
+    install_receipt: A40PeaceEvidenceInstallReceipt,
+    installed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct A36ActiveAbilityInstallReceipt {
+    pub lane: &'static str,
+    pub exact_executable_sha256: &'static str,
+    pub ghidra_job_id: &'static str,
+    pub ghidra_shard: &'static str,
+    pub ghidra_manifest_sha256: &'static str,
+    pub final_static_audit_job_id: &'static str,
+    pub final_static_audit_shard: &'static str,
+    pub final_static_audit_manifest_sha256: &'static str,
+    pub final_roots_job_id: &'static str,
+    pub final_roots_shard: &'static str,
+    pub final_roots_manifest_sha256: &'static str,
+    pub installed_hook_count: u32,
+    pub installed_hook_rvas: [u32; abilities::HOOK_COUNT],
+    pub production_activation_authorized: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct A36ActiveAbilityDrain {
+    pub observations: Vec<abilities::ControllerObservation>,
+    pub disabled_reasons: Vec<abilities::DisabledReasonObservation>,
+    pub diagnostics: abilities::HookDiagnostics,
+    pub callbacks_quiesced: bool,
+    pub uninstalled_hook_count: u32,
+    pub portable_joins: Vec<A36PortableJoinReceipt>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct A36PortableJoinReceipt {
+    pub controller_sequence: u64,
+    pub catalog_epoch: u64,
+    pub frame_hour: u64,
+    pub elapsed_wall_ms: u64,
+    pub selected_context_runtime: usize,
+    pub country_tag: String,
+    pub context_kind: active_command_abilities_live_lane::SelectedContextKind,
+    pub stable_context_id: u64,
+    pub division_ids_by_leader_runtime: Vec<(usize, Vec<u32>)>,
+    pub abl1_len: u64,
+    pub abl1_sha256: String,
+    pub row_count: u32,
+}
+
+/// Evidence-only owner for A36 selected-context ability refresh and tooltip
+/// transactions. The raw receipt deliberately retains process-local runtime
+/// identities so the fixture regrader can prove producer joins. It hashes the
+/// ABL1 built by the real pointer-erasing source constructor, but can never
+/// publish ABL1/ABA2 or authorize compact scheduling.
+pub struct A36ActiveAbilityEvidenceOwner {
+    install_receipt: A36ActiveAbilityInstallReceipt,
+    installed: bool,
+    portable_joins: Vec<A36PortableJoinReceipt>,
+}
+
+impl A36ActiveAbilityEvidenceOwner {
+    pub fn install() -> Result<Self, String> {
+        abilities::install_a729_ability_transition_hook()?;
+        Ok(Self {
+            install_receipt: A36ActiveAbilityInstallReceipt {
+                lane: "A36_ACTIVE_ABILITY_DIAGNOSTIC",
+                exact_executable_sha256: abilities::EXACT_A729_EXECUTABLE_SHA256,
+                ghidra_job_id: abilities::EXACT_A729_AUTHORITY_JOB_ID,
+                ghidra_shard: abilities::EXACT_A729_AUTHORITY_SHARD,
+                ghidra_manifest_sha256: abilities::EXACT_A729_AUTHORITY_MANIFEST_SHA256,
+                final_static_audit_job_id: abilities::FINAL_STATIC_AUDIT_JOB_ID,
+                final_static_audit_shard: abilities::FINAL_STATIC_AUDIT_SHARD,
+                final_static_audit_manifest_sha256:
+                    abilities::FINAL_STATIC_AUDIT_MANIFEST_SHA256,
+                final_roots_job_id: abilities::FINAL_ROOTS_JOB_ID,
+                final_roots_shard: abilities::FINAL_ROOTS_SHARD,
+                final_roots_manifest_sha256: abilities::FINAL_ROOTS_MANIFEST_SHA256,
+                installed_hook_count: abilities::HOOK_COUNT as u32,
+                installed_hook_rvas: [
+                    abilities::CONTEXT_INVALID_PROBE_RVA,
+                    abilities::ACTIVE_COOLDOWN_PROBE_RVA,
+                    abilities::AVAILABILITY_EVALUATOR_RVA,
+                    abilities::SPECIAL_CONTEXT_PROBE_RVA,
+                    abilities::STRING_APPEND_RVA,
+                    abilities::EFFECTIVE_COMMAND_POWER_COST_RVA,
+                    abilities::ICON_RESOLVER_RVA,
+                    abilities::TOOLTIP_BUILDER_RVA,
+                    abilities::ABILITY_REFRESH_RVA,
+                ],
+                // Evidence acquisition never self-authorizes product
+                // scheduling, even after a future independent gate promotion.
+                production_activation_authorized: false,
+            },
+            installed: true,
+            portable_joins: Vec::new(),
+        })
+    }
+
+    pub fn install_receipt(&self) -> &A36ActiveAbilityInstallReceipt {
+        &self.install_receipt
+    }
+
+    pub fn retain_portable_join(
+        &mut self,
+        frame_hour: u64,
+        elapsed_wall_ms: u64,
+        catalog: &abilities::ExactA729PortableIdentityCatalog,
+        controller: &abilities::ControllerObservation,
+        tooltips: &[abilities::DisabledReasonObservation],
+    ) -> Result<(), String> {
+        if !self.installed {
+            return Err("A36 portable join attempted after owner teardown".into());
+        }
+        if self
+            .portable_joins
+            .iter()
+            .any(|receipt| receipt.controller_sequence == controller.sequence)
+        {
+            return Ok(());
+        }
+        let source = abilities::JoinedExactA729AbilitySource::bind_from_exact_root_catalog(
+            frame_hour,
+            elapsed_wall_ms,
+            catalog,
+            controller,
+            tooltips,
+        )?;
+        let frame = active_command_abilities_live_lane::ExactA729AbilityControllerSource::collect_frame(
+            &source,
+            frame_hour,
+        )?;
+        let abl1 = active_command_abilities_live_lane::encode_payload(&frame)
+            .map_err(|error| format!("A36 evidence ABL1 encode failed: {error:?}"))?;
+        let selected_context_runtime = [
+            controller.selected_leader_runtime,
+            controller.selected_army_group_runtime,
+            controller.selected_army_runtime,
+            controller.selected_other_runtime,
+        ]
+        .into_iter()
+        .find(|runtime| *runtime != 0)
+        .ok_or("A36 portable join has no selected runtime")?;
+        let context = catalog
+            .contexts_by_runtime
+            .get(&selected_context_runtime)
+            .ok_or("A36 portable join lost selected context identity")?;
+        let mut divisions = catalog
+            .division_ids_by_leader_runtime
+            .iter()
+            .map(|(runtime, ids)| (*runtime, ids.clone()))
+            .collect::<Vec<_>>();
+        divisions.sort_by_key(|(runtime, _)| *runtime);
+        self.portable_joins.push(A36PortableJoinReceipt {
+            controller_sequence: controller.sequence,
+            catalog_epoch: catalog.epoch,
+            frame_hour,
+            elapsed_wall_ms,
+            selected_context_runtime,
+            country_tag: context.country_tag.clone(),
+            context_kind: context.kind,
+            stable_context_id: context.stable_id,
+            division_ids_by_leader_runtime: divisions,
+            abl1_len: abl1.len().try_into().map_err(|_| "A36 ABL1 length exceeds u64")?,
+            abl1_sha256: format!("{:x}", Sha256::digest(&abl1)),
+            row_count: frame.rows.len().try_into().map_err(|_| "A36 row count exceeds u32")?,
+        });
+        self.portable_joins
+            .sort_by_key(|receipt| receipt.controller_sequence);
+        Ok(())
+    }
+
+    pub fn seal_drain_and_uninstall(&mut self) -> Result<A36ActiveAbilityDrain, String> {
+        if !self.installed {
+            return Err("A36 active-ability evidence owner is already uninstalled".into());
+        }
+        abilities::uninstall_a729_ability_transition_hook()?;
+        self.installed = false;
+        Ok(A36ActiveAbilityDrain {
+            diagnostics: abilities::diagnostics(),
+            observations: abilities::take_observations(),
+            disabled_reasons: abilities::take_disabled_reason_observations(),
+            callbacks_quiesced: true,
+            uninstalled_hook_count: abilities::HOOK_COUNT as u32,
+            portable_joins: std::mem::take(&mut self.portable_joins),
+        })
+    }
+}
+
+impl Drop for A36ActiveAbilityEvidenceOwner {
+    fn drop(&mut self) {
+        if self.installed {
+            let _ = abilities::uninstall_a729_ability_transition_hook();
+            self.installed = false;
+        }
+    }
+}
+
+impl A40PeaceEvidenceOwner {
+    pub fn install() -> Result<Self, String> {
+        peace::install_for_evidence()?;
+        Ok(Self {
+            install_receipt: A40PeaceEvidenceInstallReceipt {
+                lane: "A40_PEACE_LIFECYCLE_DIAGNOSTIC",
+                exact_executable_sha256: peace::EXACT_A729_EXECUTABLE_SHA256,
+                static_producer_consumer_manifest_sha256:
+                    peace::STATIC_PRODUCER_CONSUMER_MANIFEST_SHA256,
+                hook_sentinel_artifact_sha256: peace::HOOK_SENTINEL_ARTIFACT_SHA256,
+                installed_hook_count: 4,
+                production_carrier_enabled: false,
+            },
+            installed: true,
+        })
+    }
+
+    pub fn install_receipt(&self) -> &A40PeaceEvidenceInstallReceipt {
+        &self.install_receipt
+    }
+
+    pub fn diagnostics(&self) -> peace::HookDiagnostics {
+        peace::diagnostics()
+    }
+
+    pub fn seal_drain_and_uninstall(&mut self) -> Result<peace::HookDrain, String> {
+        if !self.installed {
+            return Err("A40 peace evidence owner is already uninstalled".into());
+        }
+        let drain = peace::seal_drain_and_uninstall()?;
+        self.installed = false;
+        Ok(drain)
+    }
+}
+
+impl Drop for A40PeaceEvidenceOwner {
+    fn drop(&mut self) {
+        if self.installed {
+            let _ = peace::seal_drain_and_uninstall();
+            self.installed = false;
+        }
+    }
+}
+
 impl A40SelectedDesignerEvidenceOwner {
     pub fn install() -> Result<Self, String> {
         // d78 owns exact controller order and remains independently installed;
@@ -138,8 +399,12 @@ impl A40SelectedDesignerEvidenceOwner {
                     hex(&designer::CLASSIFIER_MANIFEST_SHA256),
                     hex(&designer::DIVISION_CLICK_THUNK_ARTIFACT_SHA256),
                     hex(&designer::DIVISION_WRAPPER_ARTIFACT_SHA256),
+                    designer::a729_hook::EQUIPMENT_AUTODESIGN_SUCCESS_MANIFEST_SHA256
+                        .to_string(),
+                    designer::a729_hook::EQUIPMENT_AUTODESIGN_SUCCESS_SENTINEL_ARTIFACT_SHA256
+                        .to_string(),
                 ],
-                installed_hook_count: 4,
+                installed_hook_count: 5,
                 production_scheduling_enabled: designer::PRODUCTION_ACTIVATION,
             },
             installed: true,
@@ -198,6 +463,15 @@ impl A40SelectedDesignerEvidenceOwner {
     }
 }
 
+impl Drop for A40SelectedDesignerEvidenceOwner {
+    fn drop(&mut self) {
+        if self.installed {
+            let _ = designer::a729_hook::uninstall_fixture_hooks();
+            self.installed = false;
+        }
+    }
+}
+
 /// Opaque one-shot A34 join ticket. The public witness rows contain only
 /// hook-observed identity/presentation facts; callers cannot replace them.
 pub struct A34DecisionPanelResolutionTicket {
@@ -213,6 +487,10 @@ impl A34DecisionPanelResolutionTicket {
         self.receipt.source_sequence()
     }
 
+    pub fn active_country_tag_db_id(&self) -> u32 {
+        self.receipt.active_country_tag_db_id()
+    }
+
     pub fn rows(&self) -> &[panel::a729_hook::HookRowWitness] {
         self.receipt.rows()
     }
@@ -222,6 +500,83 @@ pub struct A34DecisionPanelEvidenceOwner {
     generation: Option<u64>,
     install_receipt: EvidenceInstallReceipt,
     installed: bool,
+}
+
+/// Complete owner-runnable A34 evidence transaction result. All three
+/// receipts are retained so an external harness can prove that hook
+/// installation, the one-shot DPN1 drain, and quiescent teardown belonged to
+/// the same invocation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct A34DecisionPanelEvidenceTransaction {
+    pub install: EvidenceInstallReceipt,
+    pub record: ReservedDomainEvidenceRecord,
+    pub uninstall: EvidenceUninstallReceipt,
+}
+
+/// Run the complete A34 evidence lifecycle around one real engine UI update.
+///
+/// `drive_ui_update` is the only environment-owned action: it must cause the
+/// already-installed hooks to observe one complete country-decision view
+/// materialization and return the selected-Present stamp captured afterward.
+/// `resolve` receives the hook-minted one-shot ticket and may only supply the
+/// pointer-free semantic supplement; family, identity, order, geometry, text,
+/// alert membership, and receipt chronology remain hook-owned.
+///
+/// Every failure attempts quiescent uninstall before returning. The production
+/// scheduling and fixture-acceptance latches remain untouched.
+pub fn run_a34_decision_panel_evidence_transaction<Drive, Resolve>(
+    frame_hour: u64,
+    elapsed_wall_ms: u64,
+    drive_ui_update: Drive,
+    resolve: Resolve,
+) -> Result<A34DecisionPanelEvidenceTransaction, String>
+where
+    Drive: FnOnce() -> Result<panel::SelectedPresentStamp, String>,
+    Resolve: FnOnce(
+        &A34DecisionPanelResolutionTicket,
+    ) -> Result<panel::a729_hook::ResolvedDecisionPanelSupplement, String>,
+{
+    let mut owner = A34DecisionPanelEvidenceOwner::install()?;
+    let install = owner.install_receipt().clone();
+    let transaction = (|| {
+        owner.arm(frame_hour)?;
+        let selected_present = drive_ui_update()?;
+        if selected_present.frame_hour != frame_hour {
+            return Err("A34 evidence driver returned a different frame hour".into());
+        }
+        let ticket = owner.seal(selected_present)?;
+        let supplement = resolve(&ticket)?;
+        owner.resolve_and_drain(ticket, supplement, elapsed_wall_ms)
+    })();
+    match transaction {
+        Ok(record) => {
+            let uninstall = owner.uninstall()?;
+            Ok(A34DecisionPanelEvidenceTransaction {
+                install,
+                record,
+                uninstall,
+            })
+        }
+        Err(primary) => {
+            let abort_error = if owner.generation.is_some() {
+                owner.abort(&primary).err()
+            } else {
+                None
+            };
+            let primary = match abort_error {
+                Some(abort) => {
+                    format!("{primary}; A34 evidence epoch abort also failed: {abort}")
+                }
+                None => primary,
+            };
+            match owner.uninstall() {
+                Ok(_) => Err(primary),
+                Err(cleanup) => Err(format!(
+                    "{primary}; A34 evidence teardown after failure also failed: {cleanup}"
+                )),
+            }
+        }
+    }
 }
 
 impl A34DecisionPanelEvidenceOwner {
@@ -236,8 +591,9 @@ impl A34DecisionPanelEvidenceOwner {
                 authority_receipt_sha256s: vec![
                     hex(&panel::EXACT20_FUNCTION_MANIFEST_SHA256),
                     hex(&panel::EXACT20_DATA_ARTIFACT_SHA256),
+                    hex(&panel::COUNTRY_VIEW_OWNER_TAG_MANIFEST_SHA256),
                 ],
-                installed_hook_count: 10,
+                installed_hook_count: 12,
                 production_scheduling_enabled: panel::PRODUCTION_SCHEDULING_ENABLED
                     && panel::LIVE_FIXTURE_ACCEPTED,
             },
@@ -261,7 +617,7 @@ impl A34DecisionPanelEvidenceOwner {
         Ok(generation)
     }
 
-    pub fn seal(&mut self) -> Result<A34DecisionPanelResolutionTicket, String> {
+    pub fn abort(&mut self, reason: &str) -> Result<(), String> {
         if !self.installed {
             return Err("A34 evidence owner is uninstalled".into());
         }
@@ -269,7 +625,24 @@ impl A34DecisionPanelEvidenceOwner {
             .generation
             .take()
             .ok_or("A34 evidence owner has no armed epoch")?;
-        panel::a729_hook::seal_capture_epoch(generation)?;
+        panel::a729_hook::abort_capture_epoch(generation, reason)
+    }
+
+    pub fn seal(
+        &mut self,
+        selected_present: panel::SelectedPresentStamp,
+    ) -> Result<A34DecisionPanelResolutionTicket, String> {
+        if !self.installed {
+            return Err("A34 evidence owner is uninstalled".into());
+        }
+        let generation = self
+            .generation
+            .take()
+            .ok_or("A34 evidence owner has no armed epoch")?;
+        panel::a729_hook::seal_capture_epoch_at_selected_present(
+            generation,
+            selected_present,
+        )?;
         Ok(A34DecisionPanelResolutionTicket {
             receipt: panel::a729_hook::take_materialization_receipt()?,
         })

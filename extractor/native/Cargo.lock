@@ -6,6 +6,7 @@ version = 4
 name = "active_command_abilities_live_lane"
 version = "0.1.0"
 dependencies = [
+ "compact_contract",
  "minhook",
  "windows-sys",
 ]
@@ -251,6 +252,7 @@ version = "0.1.0"
 dependencies = [
  "minhook",
  "runtime_text_inputs_live_lane",
+ "serde",
  "windows-sys",
 ]
 
@@ -289,6 +291,7 @@ version = "0.1.0"
 dependencies = [
  "compact_contract",
  "minhook",
+ "portable_render_stream",
  "serde",
  "serde_json",
  "sha2",
@@ -319,7 +322,9 @@ dependencies = [
 name = "dynamic_collection_trace_live_lane"
 version = "0.1.0"
 dependencies = [
+ "minhook",
  "sha2",
+ "windows-sys",
 ]
 
 [[package]]
@@ -356,6 +361,11 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 [[package]]
 name = "fired_event_popups_live_lane"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+]
 
 [[package]]
 name = "flate2"
@@ -560,6 +570,8 @@ name = "occupation_resistance_compliance_live_lane"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
+ "minhook",
+ "windows-sys",
 ]
 
 [[package]]
@@ -598,6 +610,8 @@ name = "politics_tooltip_inputs_live_lane"
 version = "0.1.0"
 dependencies = [
  "minhook",
+ "serde",
+ "serde_json",
  "windows-sys",
 ]
 
@@ -648,6 +662,10 @@ dependencies = [
 [[package]]
 name = "power_balance_presentation_live_lane"
 version = "0.1.0"
+dependencies = [
+ "minhook",
+ "windows-sys",
+]
 
 [[package]]
 name = "proc-macro2"
@@ -775,7 +793,6 @@ name = "resolved_tooltip_instances_live_lane"
 version = "0.1.0"
 dependencies = [
  "minhook",
- "runtime_text_inputs_live_lane",
  "windows-sys",
 ]
 
@@ -804,6 +821,9 @@ name = "scripted_state_flags_variables_live_lane"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
+ "minhook",
+ "runtime_text_inputs_live_lane",
+ "windows-sys",
 ]
 
 [[package]]
@@ -902,6 +922,7 @@ dependencies = [
 name = "sunk_ship_history_live_lane"
 version = "0.1.0"
 dependencies = [
+ "compact_contract",
  "minhook",
  "naval_combat_live_lane",
  "windows-sys",

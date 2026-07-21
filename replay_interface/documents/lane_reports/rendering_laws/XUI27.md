@@ -9,11 +9,13 @@ self-determinism into engine pixel parity.
 
 ## Current product result
 
-The current normal product route still admits only XUI24, XUI25, and XUI27's
-four authenticated HUD roots: `topbar`, `mini_map_interface`,
+The current normal product route has code paths only for XUI24, XUI25, and
+XUI27's four authenticated HUD roots: `topbar`, `mini_map_interface`,
 `MapmodesInterface_Ingame`, and `theatre_selection_window`. Twenty-four
 historical packets are omitted from product pixels. That fail-closed subset is
-useful, but it is not a complete the game UI.
+useful, but it is not a complete the game UI. XUI25's route is not currently
+admissible in real recorder output: the production input-family observer and
+collector bind are inactive, so d77 lacks the required input receipt.
 
 The current installed-file probe parses 162 GFX files / 25,379 sprites and 453
 GUI files / 9,153 windows / 27,123 elements with zero parser failures. The HUD

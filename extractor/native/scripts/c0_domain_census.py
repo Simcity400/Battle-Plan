@@ -104,7 +104,7 @@ ROSTER = {
     "country_dynamic_modifiers_live": (67, True),
     "session_header_live": (68, True),
     "tech_sharing_groups_live": (69, True),
-    "sunk_convoy_history_live": (70, True),
+    "sunk_convoy_history_live": (70, False),
     "dynamic_collection_trace_live": (71, False),
     "resolved_tooltip_instances_live": (72, True),
     "politics_tooltip_inputs_live": (73, False),

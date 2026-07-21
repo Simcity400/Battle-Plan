@@ -10,6 +10,14 @@ pub const FIXED_SCALE_RAW: u32 = 100_000;
 pub const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
 pub const STATUS_PARTIAL_DATA: u32 = 1 << 9;
 pub const STATUS_DELTA_DATA: u32 = 1 << 10;
+pub const GARRISON_ALERT_MAGIC: [u8; 4] = *b"GAR1";
+pub const GARRISON_ALERT_SCHEMA_VERSION: u16 = 1;
+pub const GARRISON_ALERT_HEADER_LEN: usize = 40;
+pub const GARRISON_ALERT_ROW_LEN: usize = 16;
+pub const GARRISON_ALERT_FLAG_SOURCE_UNAVAILABLE: u32 = 1;
+pub const GARRISON_ALERT_FLAG_PREDICATE_RETURNED: u32 = 1 << 1;
+pub const GARRISON_ALERT_FLAG_MISSING_MANPOWER: u32 = 1 << 2;
+pub const GARRISON_ALERT_FLAG_COMPLETE: u32 = 1 << 3;
 
 pub const ROW_FLAG_OWNER: u32 = 1;
 pub const ROW_FLAG_CONTROLLER: u32 = 1 << 1;
@@ -76,6 +84,23 @@ pub struct OccupationStateRow {
     pub flags: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GarrisonAlertEquipmentRow {
+    /// Stable numeric `CEquipmentArchetype+0x418` identity.
+    pub archetype_id: u32,
+    /// Positive whole-unit deficit after the producer's exact /100000 law.
+    pub whole_units: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GarrisonAlertExtension {
+    pub game_hour_raw: i32,
+    pub controller_tag_db_id: u32,
+    pub flags: u32,
+    pub missing_manpower: i64,
+    pub equipment: Vec<GarrisonAlertEquipmentRow>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Domain44GateSummary {
     pub status_flags_or: u32,
@@ -121,6 +146,36 @@ pub fn encode_payload(header: &OccupationHeader, rows: &[OccupationStateRow]) ->
     payload
 }
 
+pub fn encode_payload_with_alert(
+    header: &OccupationHeader,
+    rows: &[OccupationStateRow],
+    alert: &GarrisonAlertExtension,
+) -> Vec<u8> {
+    let mut payload = encode_payload(header, rows);
+    payload.reserve(
+        GARRISON_ALERT_HEADER_LEN
+            .saturating_add(alert.equipment.len().saturating_mul(GARRISON_ALERT_ROW_LEN)),
+    );
+    payload.extend_from_slice(&GARRISON_ALERT_MAGIC);
+    payload.extend_from_slice(&GARRISON_ALERT_SCHEMA_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(GARRISON_ALERT_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&alert.game_hour_raw.to_le_bytes());
+    payload.extend_from_slice(&alert.controller_tag_db_id.to_le_bytes());
+    payload.extend_from_slice(&alert.flags.to_le_bytes());
+    payload.extend_from_slice(&alert.missing_manpower.to_le_bytes());
+    payload.extend_from_slice(
+        &(alert.equipment.len().min(u32::MAX as usize) as u32).to_le_bytes(),
+    );
+    payload.extend_from_slice(&FIXED_SCALE_RAW.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    for row in &alert.equipment {
+        payload.extend_from_slice(&row.archetype_id.to_le_bytes());
+        payload.extend_from_slice(&row.whole_units.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+    }
+    payload
+}
+
 pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
     let mut summary = Domain44GateSummary::default();
     if payload.len() < HEADER_LEN {
@@ -149,10 +204,10 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
             "offset {offset}: occupation fixed scale {scale_raw} != {FIXED_SCALE_RAW}"
         ));
     }
-    let expected_len = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
-    if payload.len() != expected_len {
+    let base_len = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
+    if payload.len() < base_len {
         summary.parse_errors.push(format!(
-            "offset {offset}: occupation data payload is {} byte(s), expected {expected_len}",
+            "offset {offset}: occupation data payload is {} byte(s), expected at least {base_len}",
             payload.len()
         ));
         return summary;
@@ -456,6 +511,9 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
             ));
         }
     }
+    if payload.len() > base_len {
+        decode_garrison_alert_extension(offset, payload, base_len, &mut summary);
+    }
     if decoded_occupied != occupied_state_rows {
         summary.parse_errors.push(format!(
             "offset {offset}: occupation occupied_state_rows {occupied_state_rows} != decoded {decoded_occupied}"
@@ -482,6 +540,96 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
         ));
     }
     summary
+}
+
+fn decode_garrison_alert_extension(
+    offset: usize,
+    payload: &[u8],
+    base_len: usize,
+    summary: &mut Domain44GateSummary,
+) {
+    if payload.len() < base_len.saturating_add(GARRISON_ALERT_HEADER_LEN) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: occupation GAR1 trailer is truncated"
+        ));
+        return;
+    }
+    let trailer = &payload[base_len..];
+    if trailer.get(0..4) != Some(&GARRISON_ALERT_MAGIC)
+        || u16::from_le_bytes(trailer[4..6].try_into().unwrap())
+            != GARRISON_ALERT_SCHEMA_VERSION
+        || u16::from_le_bytes(trailer[6..8].try_into().unwrap()) as usize
+            != GARRISON_ALERT_HEADER_LEN
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: occupation GAR1 trailer magic/schema/header is invalid"
+        ));
+        return;
+    }
+    let controller_tag_db_id = read_u32_le(trailer, 12);
+    let flags = read_u32_le(trailer, 16);
+    let missing_manpower = i64::from_le_bytes(trailer[20..28].try_into().unwrap());
+    let equipment_count = read_u32_le(trailer, 28) as usize;
+    let divisor = read_u32_le(trailer, 32);
+    let reserved = read_u32_le(trailer, 36);
+    let expected_len = GARRISON_ALERT_HEADER_LEN
+        .saturating_add(equipment_count.saturating_mul(GARRISON_ALERT_ROW_LEN));
+    if trailer.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: occupation GAR1 trailer is {} byte(s), expected {expected_len}",
+            trailer.len()
+        ));
+        return;
+    }
+    let allowed_flags = GARRISON_ALERT_FLAG_SOURCE_UNAVAILABLE
+        | GARRISON_ALERT_FLAG_PREDICATE_RETURNED
+        | GARRISON_ALERT_FLAG_MISSING_MANPOWER
+        | GARRISON_ALERT_FLAG_COMPLETE;
+    let unavailable = flags & GARRISON_ALERT_FLAG_SOURCE_UNAVAILABLE != 0;
+    let complete = flags & GARRISON_ALERT_FLAG_COMPLETE != 0;
+    let predicate_returned = flags & GARRISON_ALERT_FLAG_PREDICATE_RETURNED != 0;
+    if flags & !allowed_flags != 0
+        || divisor != FIXED_SCALE_RAW
+        || reserved != 0
+        || unavailable == complete
+        || (unavailable
+            && (controller_tag_db_id != 0
+                || missing_manpower != 0
+                || equipment_count != 0
+                || predicate_returned))
+        || (complete
+            && (controller_tag_db_id == 0 || controller_tag_db_id > MAX_TAG_DB_ID))
+        || (flags & GARRISON_ALERT_FLAG_MISSING_MANPOWER != 0) != (missing_manpower > 0)
+        || missing_manpower < 0
+        || (complete && predicate_returned == (missing_manpower > 0 || equipment_count != 0))
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: occupation GAR1 header invariants are invalid"
+        ));
+        return;
+    }
+    let mut seen = BTreeSet::new();
+    for index in 0..equipment_count {
+        let cursor = GARRISON_ALERT_HEADER_LEN + index * GARRISON_ALERT_ROW_LEN;
+        let archetype_id = read_u32_le(trailer, cursor);
+        let whole_units = i64::from_le_bytes(trailer[cursor + 4..cursor + 12].try_into().unwrap());
+        let row_reserved = read_u32_le(trailer, cursor + 12);
+        if archetype_id == 0
+            || whole_units <= 0
+            || row_reserved != 0
+            || !seen.insert(archetype_id)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: occupation GAR1 equipment row {index} is invalid"
+            ));
+        }
+    }
+    add_unit(summary, "occupation_garrison_alert_rows", usize::from(complete));
+    add_unit(
+        summary,
+        "occupation_garrison_alert_equipment_rows",
+        equipment_count,
+    );
 }
 
 fn validate_tag_field(

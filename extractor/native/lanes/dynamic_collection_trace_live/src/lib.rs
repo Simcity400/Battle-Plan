@@ -1,9 +1,17 @@
 //! A28/XUI03 exact dynamic-collection controller trace carrier (reserved d71).
 //!
 //! This module owns the complete non-address producer contract. It deliberately
-//! has no screen/layout fallback: a future a729 controller hook must implement
-//! [`ExactControllerTraceSource`] before d71 can become schedulable.
+//! has no screen/layout fallback. Receipt-bound equipment observations and the
+//! exact-a729 family hooks below can supply same-transition traces, but d71
+//! remains unschedulable until the retained zero-gap fixture set is complete.
 
+pub mod a729_controller_observation;
+#[cfg(windows)]
+pub mod a729_facility_smooth_list_hook;
+#[cfg(windows)]
+pub mod a729_named_overlap_hook;
+#[cfg(windows)]
+pub mod a729_technology_badge_grid_hook;
 pub mod a729_technology_canvas;
 
 use std::collections::BTreeSet;
@@ -12,8 +20,9 @@ pub const DOMAIN_ID: u16 = 71;
 pub const DOMAIN_NAME: &str = "dynamic_collection_trace_live";
 pub const SCHEMA_VERSION: u32 = 1;
 pub const AUTHORITY_EXACT_A729_CONTROLLER: u32 = 1;
-/// Static root/owner/accepted-order authority only. This receipt does not
-/// implement `ExactControllerTraceSource` and does not schedule d71.
+/// Static root/owner/accepted-order authority only. This older direct-root
+/// receipt does not schedule d71; owner-harness admission is pinned separately
+/// in `a729_controller_observation`.
 pub const A28_STATIC_ROOT_ORDER_AUTHORITY_BOUND: bool = true;
 pub const A28_DIRECT_ROOT_JOB_ID: &str =
     "20260720T021840Z-w3-a28-direct-retry-5065e703";

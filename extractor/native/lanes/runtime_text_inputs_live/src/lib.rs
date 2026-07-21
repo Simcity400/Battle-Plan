@@ -13,7 +13,7 @@ pub mod owner_glyph_capture;
 
 pub const DOMAIN_ID: u16 = 76;
 pub const DOMAIN_NAME: &str = "runtime_text_inputs_live";
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 pub const AUTHORITY_EXACT_A729_RUNTIME_TEXT_HOOKS: u32 = 1;
 pub const MAGIC: u32 = u32::from_le_bytes(*b"RTI1");
 pub const HEADER_LEN: usize = 144;
@@ -24,6 +24,8 @@ pub const MAX_TEXT_BYTES: usize = 1 << 20;
 pub const TEXT_SETTER_RVA: u32 = 0x022B_59E0;
 pub const TEXTBOX_REGISTRATION_RVA: u32 = 0x0224_5570;
 pub const TEXTBOX_DESTRUCTOR_RVA: u32 = 0x0228_EC70;
+/// Generic GUI sprite/image setter shared by A25 observers.
+pub const SPRITE_SETTER_RVA: u32 = 0x0229_A780;
 pub const FORMATTER_RVA: u32 = 0x0223_2AB0;
 
 /// SHA-256 of the Ghidra function-evidence manifest containing the final setter.
@@ -77,6 +79,8 @@ pub enum RuntimeTextLayout {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GlyphRun {
+    /// Exact position in the mixed ordinary-glyph/inline-icon decision stream.
+    pub run_ordinal: u32,
     pub font: String,
     pub glyph_id: u32,
     pub x: i32,
@@ -86,6 +90,8 @@ pub struct GlyphRun {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InlineIconRun {
+    /// Exact position in the mixed ordinary-glyph/inline-icon decision stream.
+    pub run_ordinal: u32,
     pub sprite: String,
     pub frame: u32,
     pub x: i32,
@@ -237,10 +243,14 @@ pub fn validate_frame(frame: &RuntimeTextFrame) -> Result<(), CarrierError> {
                 }
             }
             RuntimeTextLayout::CapturedRuntime {
-                clip: _,
+                clip,
                 glyphs,
                 inline_icons,
             } => {
+                if glyphs.len() > MAX_ROWS || inline_icons.len() > MAX_ROWS {
+                    return invalid("captured layout run count exceeds bound");
+                }
+                validate_captured_clip(*clip)?;
                 if !row.final_text_bytes.is_empty() && glyphs.is_empty() && inline_icons.is_empty()
                 {
                     return invalid("captured layout has no runs for non-empty text");
@@ -250,8 +260,28 @@ pub fn validate_frame(frame: &RuntimeTextFrame) -> Result<(), CarrierError> {
                 }
                 for icon in inline_icons {
                     nonempty(&icon.sprite, "inline icon sprite")?;
+                    if icon.advance <= 0
+                        || icon.x.checked_add(icon.advance).is_none()
+                        || icon.y.checked_add(icon.baseline).is_none()
+                    {
+                        return invalid("inline icon coordinate/extent is invalid");
+                    }
                 }
+                validate_mixed_run_ordinals(glyphs, inline_icons)?;
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_captured_clip(clip: Option<[i32; 4]>) -> Result<(), CarrierError> {
+    if let Some([x, y, width, height]) = clip {
+        if width <= 0
+            || height <= 0
+            || x.checked_add(width).is_none()
+            || y.checked_add(height).is_none()
+        {
+            return invalid("captured layout clip coordinate/extent is invalid");
         }
     }
     Ok(())
@@ -405,6 +435,7 @@ pub fn project_replay_runtime_text(
                     "mode": "captured_runtime",
                     "clip": clip,
                     "glyphs": glyphs.iter().map(|glyph| serde_json::json!({
+                        "run_ordinal": glyph.run_ordinal,
                         "font": glyph.font,
                         "glyph_id": glyph.glyph_id,
                         "x": glyph.x,
@@ -412,6 +443,7 @@ pub fn project_replay_runtime_text(
                         "rgba": glyph.rgba,
                     })).collect::<Vec<_>>(),
                     "inline_icons": inline_icons.iter().map(|icon| serde_json::json!({
+                        "run_ordinal": icon.run_ordinal,
                         "sprite": icon.sprite,
                         "frame": icon.frame,
                         "x": icon.x,
@@ -483,6 +515,7 @@ fn encode_layout(out: &mut Vec<u8>, layout: &RuntimeTextLayout) -> Result<(), Ca
             u32v(out, glyphs.len() as u32);
             u32v(out, inline_icons.len() as u32);
             for glyph in glyphs {
+                u32v(out, glyph.run_ordinal);
                 string(out, &glyph.font)?;
                 u32v(out, glyph.glyph_id);
                 i32v(out, glyph.x);
@@ -490,6 +523,7 @@ fn encode_layout(out: &mut Vec<u8>, layout: &RuntimeTextLayout) -> Result<(), Ca
                 out.extend_from_slice(&glyph.rgba);
             }
             for icon in inline_icons {
+                u32v(out, icon.run_ordinal);
                 string(out, &icon.sprite)?;
                 u32v(out, icon.frame);
                 i32v(out, icon.x);
@@ -519,6 +553,7 @@ fn decode_layout(r: &mut Reader<'_>) -> Result<RuntimeTextLayout, CarrierError> 
             let mut glyphs = Vec::with_capacity(glyph_count);
             for _ in 0..glyph_count {
                 glyphs.push(GlyphRun {
+                    run_ordinal: r.u32()?,
                     font: r.string()?,
                     glyph_id: r.u32()?,
                     x: r.i32()?,
@@ -529,6 +564,7 @@ fn decode_layout(r: &mut Reader<'_>) -> Result<RuntimeTextLayout, CarrierError> 
             let mut inline_icons = Vec::with_capacity(icon_count);
             for _ in 0..icon_count {
                 inline_icons.push(InlineIconRun {
+                    run_ordinal: r.u32()?,
                     sprite: r.string()?,
                     frame: r.u32()?,
                     x: r.i32()?,
@@ -545,6 +581,24 @@ fn decode_layout(r: &mut Reader<'_>) -> Result<RuntimeTextLayout, CarrierError> 
         }
         _ => invalid("layout mode invalid"),
     }
+}
+
+fn validate_mixed_run_ordinals(
+    glyphs: &[GlyphRun],
+    inline_icons: &[InlineIconRun],
+) -> Result<(), CarrierError> {
+    let mut ordinals = glyphs
+        .iter()
+        .map(|run| run.run_ordinal)
+        .chain(inline_icons.iter().map(|run| run.run_ordinal))
+        .collect::<Vec<_>>();
+    ordinals.sort_unstable();
+    for (expected, actual) in ordinals.into_iter().enumerate() {
+        if actual as usize != expected {
+            return invalid("captured mixed glyph/icon run order is duplicate or incomplete");
+        }
+    }
+    Ok(())
 }
 
 fn nonempty(value: &str, label: &str) -> Result<(), CarrierError> {
@@ -734,6 +788,7 @@ mod tests {
             clip: None,
             glyphs: Vec::new(),
             inline_icons: vec![InlineIconRun {
+                run_ordinal: 0,
                 sprite: "GFX_pol_power".into(),
                 frame: 0,
                 x: 0,
@@ -743,6 +798,29 @@ mod tests {
             }],
         };
         validate_frame(&frame).unwrap();
+
+        if let RuntimeTextLayout::CapturedRuntime { inline_icons, .. } =
+            &mut frame.rows[0].layout
+        {
+            inline_icons[0].run_ordinal = 1;
+        }
+        assert!(validate_frame(&frame).is_err());
+        if let RuntimeTextLayout::CapturedRuntime {
+            clip, inline_icons, ..
+        } = &mut frame.rows[0].layout
+        {
+            inline_icons[0].run_ordinal = 0;
+            *clip = Some([0, 0, 0, 12]);
+        }
+        assert!(validate_frame(&frame).is_err());
+        if let RuntimeTextLayout::CapturedRuntime {
+            clip, inline_icons, ..
+        } = &mut frame.rows[0].layout
+        {
+            *clip = None;
+            inline_icons[0].x = i32::MAX;
+        }
+        assert!(validate_frame(&frame).is_err());
     }
 
     #[test]
@@ -751,6 +829,7 @@ mod tests {
         input.layout = RuntimeTextLayout::CapturedRuntime {
             clip: Some([1, 2, 30, 40]),
             glyphs: vec![GlyphRun {
+                run_ordinal: 0,
                 font: "hoi_16mbs".into(),
                 glyph_id: 52,
                 x: 3,
@@ -758,6 +837,7 @@ mod tests {
                 rgba: [5, 6, 7, 8],
             }],
             inline_icons: vec![InlineIconRun {
+                run_ordinal: 1,
                 sprite: "GFX_pol_power".into(),
                 frame: 1,
                 x: 9,
@@ -787,8 +867,16 @@ mod tests {
             52
         );
         assert_eq!(
+            projected["contexts"][0]["layout"]["glyphs"][0]["run_ordinal"],
+            0
+        );
+        assert_eq!(
             projected["contexts"][0]["layout"]["inline_icons"][0]["advance"],
             12
+        );
+        assert_eq!(
+            projected["contexts"][0]["layout"]["inline_icons"][0]["run_ordinal"],
+            1
         );
 
         let mut caller_frame = frame;

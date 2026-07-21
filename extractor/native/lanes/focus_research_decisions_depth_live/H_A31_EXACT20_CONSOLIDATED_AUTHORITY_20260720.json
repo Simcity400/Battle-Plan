@@ -1,0 +1,38 @@
+{
+  "schema": "hoi4.a31.exact20_consolidated_authority.v1",
+  "date": "2026-07-20",
+  "lane": "H-A31",
+  "status": "STATIC_AUTHORITY_COMPLETE_ACTIVATION_FALSE",
+  "binary_identity": {
+    "binary_id": "hoi4.exe 1.19.2.0.a729",
+    "image_base": "0x140000000",
+    "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+  },
+  "job": {
+    "job_id": "20260720T104531Z-w5-a31-consolidated-owner-frame-order-pr-79b1ba63",
+    "executing_shard": "shard-03",
+    "function_manifest_sha256": "b319dd1b721ed6a13e47088b7def034111f9882631080bffbf049fbb79265a2f",
+    "job_json_sha256": "b1c9d8c0678956f17bea2e7f9e06e7ff4baf31254c11b3c983a9a5ca9ae2d04b",
+    "requested_roots_resolved": "13/13",
+    "depth": 1,
+    "pcode": true,
+    "requested_addresses": [
+      "0x14136aec0", "0x141371b70", "0x14136f750", "0x14136a5c0",
+      "0x14137a780", "0x14137a600", "0x14137a180", "0x1413762f0",
+      "0x141379a50", "0x1413778f0", "0x141377430", "0x141bb5df0",
+      "0x141bb6720"
+    ]
+  },
+  "portable_binding": {
+    "codec": "compact_contract::national_focus_presentation",
+    "function_manifest_sha256_field": "b319dd1b721ed6a13e47088b7def034111f9882631080bffbf049fbb79265a2f",
+    "job_receipt_sha256_field": "b1c9d8c0678956f17bea2e7f9e06e7ff4baf31254c11b3c983a9a5ca9ae2d04b",
+    "supersedes_manifest_sha256": "303351ed65468aa7655b904998819c96ca1c325f906b5a3bf32c4f18decc7969",
+    "reason": "The earlier ten-root receipt did not explicitly include detail refresh 0x14137a600 or the two callers proving item-state-before-detail frame order."
+  },
+  "activation": {
+    "production_scheduling_enabled": false,
+    "live_fixture_accepted": false,
+    "required_external_evidence": "one authenticated stable receipt and one later discriminating transition receipt"
+  }
+}

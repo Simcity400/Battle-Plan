@@ -103,7 +103,10 @@ OFF_SIDE_COUNTRY_SIZE = 0x74
 # Advisory forward route: side child object that may hold CFEXGroup pointers.
 OFF_SIDE_FORWARD_CHILD = 0x20
 OFF_SIDE_LEADER = 0x110
-OFF_SIDE_POSITIONING = 0x288
+# Exact producer outputs written by FUN_14160BE90. The former +0x288 f32
+# diagnostic is not the persisted positioning authority.
+OFF_SIDE_POSITIONING_RAW = 0x138
+OFF_SIDE_ANTI_AIR_RAW = 0x150
 
 # body+0x38 -> CProvince (vtable-checked); CProvince+0xA4 u32 = province id.
 # VALIDATED 4/4 against the same-tick D04 save (locations 6434/2804/1032/8819)
@@ -168,6 +171,13 @@ def safe_u64(proc: winmem.Process, addr: int) -> Optional[int]:
         return proc.u64(addr)
     except OSError:
         return None
+
+
+def safe_i64(proc: winmem.Process, addr: int) -> Optional[int]:
+    raw = safe_u64(proc, addr)
+    if raw is None:
+        return None
+    return raw - (1 << 64) if raw >= (1 << 63) else raw
 
 
 def safe_f32(proc: winmem.Process, addr: int) -> Optional[float]:
@@ -689,7 +699,16 @@ class NavalCombatFixtureProbe:
                 errors.append("bad_group_%d" % group_index)
 
         leader_present = is_heap(safe_u64(self.proc, side + OFF_SIDE_LEADER))
-        positioning = safe_f32(self.proc, side + OFF_SIDE_POSITIONING)
+        positioning_first = safe_i64(self.proc, side + OFF_SIDE_POSITIONING_RAW)
+        positioning_second = safe_i64(self.proc, side + OFF_SIDE_POSITIONING_RAW)
+        anti_air_first = safe_i64(self.proc, side + OFF_SIDE_ANTI_AIR_RAW)
+        anti_air_second = safe_i64(self.proc, side + OFF_SIDE_ANTI_AIR_RAW)
+        if positioning_first is None or positioning_first != positioning_second:
+            errors.append("positioning_raw_unreadable_or_unstable")
+        elif not 0 <= positioning_first <= 100_000:
+            errors.append("positioning_raw_out_of_range")
+        if anti_air_first is None or anti_air_first != anti_air_second:
+            errors.append("anti_air_raw_unreadable_or_unstable")
         return {
             "status": "valid" if not errors else "invalid",
             "country_tag_db_ids_candidate_unvalidated": countries,
@@ -698,7 +717,8 @@ class NavalCombatFixtureProbe:
             "member_count": member_count,
             "null_slot_count": null_slot_count,
             "leader_present": leader_present,
-            "positioning": positioning,
+            "positioning_raw": positioning_first,
+            "anti_air_raw": anti_air_first,
             "groups": group_rows,
             "errors": errors,
         }

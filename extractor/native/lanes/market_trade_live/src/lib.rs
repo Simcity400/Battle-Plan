@@ -773,18 +773,19 @@ pub fn market_trade_residual_badges() -> Vec<MarketTradeResidualBadge> {
             status_label: "source_blocked",
             evidence_mask: RESIDUAL_EVIDENCE_SAVE_ORACLE
                 | RESIDUAL_EVIDENCE_COVERAGE_AUDIT
+                | RESIDUAL_EVIDENCE_CURRENT_COMPACT_SCHEMA
                 | RESIDUAL_EVIDENCE_CURRENT_ROOT_PROOF
                 | RESIDUAL_EVIDENCE_NO_HOT_LOOP_ROOT,
-            current_support: RESIDUAL_SUPPORT_NONE,
-            current_compact_evidence: "domain 43 v1 emits live purchase contracts only and has no per-country market_stockpile, price_levels, subsidies, or automation rows",
-            source_evidence: "market_stockpile_root_probe v2 found no current RTTI vtable for CMarketStockpile/CEquipmentMarketStatus/CMarketRequestAutomation; stockpile_save_compare v4 rejects CCountry+0x1230 against a same-tick 1943.11.9.17 save oracle",
-            fail_closed_badge: "sellable market stockpile and automation flags remain omitted; CCountry+0x1230 is rejected as the market_stockpile root and a different equipment_market root must be pinned",
+            current_support: RESIDUAL_SUPPORT_PARTIAL,
+            current_compact_evidence: "MTS1 carries the exact per-country owner census, complete nested type-70 variant order, raw amounts, and measured-empty owner witnesses through the recorder fold and typed replay; the production route remains source-blocked until the fresh live root-validation fixture passes",
+            source_evidence: "exact a729 static RE proves CCountry+0xFB8 -> CEquipmentMarketStatus+0x00 -> CMarketStockpile+0x38/CEquipmentVariantPool+0x20, owner echo +0x20, vtable 0x1427330A0, and serializer 0x140FFDB00; CCountry+0x1230 remains rejected",
+            fail_closed_badge: "MTS1 is admitted only with complete owner and nested-iterator witnesses, canonical ranges/order, type 70, and nonnegative amounts; until the live owner-chain fixture validates, absence remains unavailable and no stockpile is fabricated",
             proposed_record_kind: RESIDUAL_RECORD_KIND_MARKET_STOCKPILE,
             proposed_record: "market_stockpile",
             owner_boundary: RESIDUAL_OWNER_MARKET_TRADE,
             owner_label: "market_trade_live",
-            root_status: RESIDUAL_ROOT_REJECTED_CANDIDATE,
-            proof_status: RESIDUAL_PROOF_LIVE_870EBF,
+            root_status: RESIDUAL_ROOT_UNVALIDATED,
+            proof_status: RESIDUAL_PROOF_STATIC_ORACLE,
         },
         MarketTradeResidualBadge {
             gap_id: 7,
@@ -796,9 +797,9 @@ pub fn market_trade_residual_badges() -> Vec<MarketTradeResidualBadge> {
                 | RESIDUAL_EVIDENCE_CURRENT_ROOT_PROOF
                 | RESIDUAL_EVIDENCE_D04_DYNAMIC_TAG_PROOF,
             current_support: RESIDUAL_SUPPORT_VALIDATED_SLICE,
-            current_compact_evidence: "MTRF emits the D04-validated exported-resource slice from CCountryResources+0x5B0; produced/imported/used/to_export/base_export remain omitted",
-            source_evidence: "CCountry+0x11F8 CCountryResources with exported pool +0x5B0 matched the D04 melt 56/56 nonzero countries and 392/392 exported fields; sibling pools failed current-PID value validation",
-            fail_closed_badge: "only exported rows are emitted, only with nonzero resources and a valid MTRF trailer; unvalidated resource-flow pools stay absent",
+            current_compact_evidence: "MTRF v2 emits all six exact seven-resource pools (produced, imported, exported, used, to_export, base_export) with a complete country witness; the fold rejects incomplete or mixed-version pool sets",
+            source_evidence: "CCountry+0x11F8 owns CCountryResources; exact pools are +0x28 produced, +0x188 imported, +0x238 used, +0x450 to_export, +0x500 base_export, and +0x5B0 exported in oil/aluminium/rubber/tungsten/steel/chromium/coal order",
+            fail_closed_badge: "MTRF v2 requires exactly six unique flow kinds for every witnessed country and the full seven-resource mask; legacy v1 remains an exported-only compatibility slice and never promotes complete=true",
             proposed_record_kind: RESIDUAL_RECORD_KIND_COUNTRY_RESOURCE_FLOW,
             proposed_record: "country_resource_flow",
             owner_boundary: RESIDUAL_OWNER_MARKET_TRADE,
@@ -809,16 +810,16 @@ pub fn market_trade_residual_badges() -> Vec<MarketTradeResidualBadge> {
         MarketTradeResidualBadge {
             gap_id: 8,
             name: "license_production_contract_detail",
-            status: RESIDUAL_STATUS_SOURCE_BLOCKED,
-            status_label: "source_blocked",
+            status: RESIDUAL_STATUS_VALIDATED_SLICE,
+            status_label: "validated_slice",
             evidence_mask: RESIDUAL_EVIDENCE_DIPLOMACY_LANE_ROOTS
                 | RESIDUAL_EVIDENCE_CURRENT_ROOT_PROOF
                 | RESIDUAL_EVIDENCE_OWNER_BOUNDARY
                 | RESIDUAL_EVIDENCE_NO_HOT_LOOP_ROOT,
-            current_support: RESIDUAL_SUPPORT_OWNED_ELSEWHERE,
-            current_compact_evidence: "diplomacy domain 53 pins CLicenceProductionAccessRelation as a relation flag, but domain 43 has no licensed-equipment/factory-cost/detail records",
-            source_evidence: "license_vector_candidate_probe v1 rejects CCountry+0x1070/+0x10A0: 15 hits all reference one shared CLicensedProductionConsumer object with no nested license/status/equipment children",
-            fail_closed_badge: "license relation context may be joined from diplomacy, but license production detail remains omitted until a different market/economy-owned root or active license fixture is validated",
+            current_support: RESIDUAL_SUPPORT_PARTIAL,
+            current_compact_evidence: "PLIC v2 carries exact ordered licensed variants plus creator/origin identity; the fold joins them by exact country pair to D53 CLicenceProductionAccessRelation first/second/start/end lifecycle with an explicit completeness witness",
+            source_evidence: "CCountry+0xF68 -> manager+0x198/+0x1A0/+0x1A4 is the exact ordered type-70 CEquipmentVariant pointer vector; variant +0x0C/+0x1C/+0x20 supplies id/creator/optional origin. The rejected shared CCountry+0x1070/+0x10A0 CLicensedProductionConsumer table remains rejected",
+            fail_closed_badge: "legacy PLIC v1, torn vectors, stale/partial D11 or D53, missing lifecycle, and unmatched/ambiguous pairs emit complete=false and null agreements; per-contract royalty/factory-cost rates remain omitted because no exact authoritative field was proven",
             proposed_record_kind: RESIDUAL_RECORD_KIND_LICENSE_PRODUCTION,
             proposed_record: "license_production",
             owner_boundary: RESIDUAL_OWNER_MARKET_TRADE,
@@ -829,14 +830,14 @@ pub fn market_trade_residual_badges() -> Vec<MarketTradeResidualBadge> {
         MarketTradeResidualBadge {
             gap_id: 9,
             name: "market_access_diplomatic_context",
-            status: RESIDUAL_STATUS_OWNED_ELSEWHERE_CONTEXT,
-            status_label: "owned_elsewhere_context",
+            status: RESIDUAL_STATUS_VALIDATED_SLICE,
+            status_label: "validated_slice",
             evidence_mask: RESIDUAL_EVIDENCE_DIPLOMACY_LANE_ROOTS
                 | RESIDUAL_EVIDENCE_OWNER_BOUNDARY,
-            current_support: RESIDUAL_SUPPORT_OWNED_ELSEWHERE,
-            current_compact_evidence: "market_trade_live should join relation context by tag pair; it should not duplicate diplomacy relation-flag roots",
+            current_support: RESIDUAL_SUPPORT_VALIDATED_SLICE,
+            current_compact_evidence: "every current D43 MTLL purchase contract carries its exact global contract order and a fail-closed D53 CEquipmentPurchaseRelation pair/start/end context join; D53 direction is preserved independently from D43 seller/buyer roles",
             source_evidence: "diplomacy_intel_operatives_live pins CMarketAccessRightsRelation and CEquipmentPurchaseRelation current-build relation flags",
-            fail_closed_badge: "market access/equipment-purchase relation context is consumed from diplomacy domain 53 until a shared join is registered",
+            fail_closed_badge: "missing/partial D53, malformed lifecycle, or unmatched/ambiguous pair leaves equipment_purchase_relation_complete=false and the relation null without suppressing the independently measured D43 contract; no duplicate relation scan is scheduled in d43",
             proposed_record_kind: RESIDUAL_RECORD_KIND_DIPLOMATIC_TRADE_CONTEXT,
             proposed_record: "diplomatic_trade_context_join",
             owner_boundary: RESIDUAL_OWNER_DIPLOMACY_INTEL,
@@ -879,18 +880,26 @@ pub fn residual_badge_rows(
             current_domain_id: match badge.name {
                 "purchase_contract_dynamic_tag_buyer_identity"
                 | "omitted_candidate_classification"
+                | "purchase_contract_delivery_route_progress"
                 | "purchase_contract_price_detail"
+                | "purchase_contract_speed_completed"
+                | "market_stockpile_sellable_equipment"
                 | "lend_lease_market_contract_mapping"
                 | "country_resource_import_export_flows" => DOMAIN_ID as u32,
                 "market_access_diplomatic_context" => 53,
-                "license_production_contract_detail" => 53,
+                "license_production_contract_detail" => 11,
                 _ => 0,
             },
             proposed_record_kind: badge.proposed_record_kind,
             current_row_len: match badge.name {
                 "purchase_contract_dynamic_tag_buyer_identity"
-                | "omitted_candidate_classification"
-                | "purchase_contract_price_detail" => MARKET_TRADE_ROW_LEN as u32,
+                | "omitted_candidate_classification" => MARKET_TRADE_ROW_LEN as u32,
+                "purchase_contract_delivery_route_progress"
+                | "purchase_contract_price_detail"
+                | "purchase_contract_speed_completed" => MARKET_TRADE_DETAIL_ROW_LEN as u32,
+                "market_stockpile_sellable_equipment" => {
+                    MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN as u32
+                }
                 "lend_lease_market_contract_mapping" => MARKET_TRADE_LEND_LEASE_ROW_LEN as u32,
                 "country_resource_import_export_flows" => MARKET_TRADE_RESOURCE_FLOW_ROW_LEN as u32,
                 _ => 0,
@@ -4084,9 +4093,9 @@ mod tests {
         assert_eq!(decoded.row_count, 1);
         assert!(decoded.residual_trailer_present);
         assert_eq!(decoded.residual_badge_rows as usize, badges.len());
-        assert_eq!(decoded.residual_source_blocked_rows, 2);
+        assert_eq!(decoded.residual_source_blocked_rows, 1);
         assert_eq!(decoded.residual_schema_blocked_rows, 0);
-        assert_eq!(decoded.residual_owned_elsewhere_rows, 1);
+        assert_eq!(decoded.residual_owned_elsewhere_rows, 0);
         assert_eq!(decoded.residual_shared_patch_blocked_rows, 0);
         assert_eq!(decoded.residual_badges, badges);
     }
@@ -4123,9 +4132,9 @@ mod tests {
             .any(|badge| badge.name == "country_resource_import_export_flows"
                 && badge.status == RESIDUAL_STATUS_VALIDATED_SLICE
                 && badge.current_support == RESIDUAL_SUPPORT_VALIDATED_SLICE));
-        assert!(badges
-            .iter()
-            .any(|badge| badge.status == RESIDUAL_STATUS_OWNED_ELSEWHERE_CONTEXT));
+        assert!(badges.iter().any(|badge| badge.name == "market_access_diplomatic_context"
+            && badge.status == RESIDUAL_STATUS_VALIDATED_SLICE
+            && badge.current_support == RESIDUAL_SUPPORT_VALIDATED_SLICE));
         assert!(badges
             .iter()
             .all(|badge| badge.evidence_mask != 0 && badge.proposed_record_kind != 0));
@@ -4166,7 +4175,7 @@ mod tests {
         assert!(gate.ok, "{:?}", gate.problems);
         assert_eq!(gate.summary.residual_badge_records, 1);
         assert_eq!(gate.summary.residual_badge_rows_total, badges.len() as u64);
-        assert_eq!(gate.summary.residual_source_blocked_rows_total, 2);
+        assert_eq!(gate.summary.residual_source_blocked_rows_total, 1);
     }
 
     #[test]

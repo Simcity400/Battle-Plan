@@ -40,10 +40,10 @@
     "use": "Discovery evidence only. It is not a consolidated exact-ten promotion receipt."
   },
   "exact20_authority": {
-    "job_id": "20260720T020812Z-w3-a31-focus-owner-93fbbf62",
-    "shard_id": "shard-17",
-    "function_manifest_sha256": "303351ed65468aa7655b904998819c96ca1c325f906b5a3bf32c4f18decc7969",
-    "seed_resolution": "10/10 exact requested entries",
+    "job_id": "20260720T104531Z-w5-a31-consolidated-owner-frame-order-pr-79b1ba63",
+    "shard_id": "shard-03",
+    "function_manifest_sha256": "b319dd1b721ed6a13e47088b7def034111f9882631080bffbf049fbb79265a2f",
+    "seed_resolution": "13/13 exact requested entries",
     "static_authority": true,
     "source_activation": false,
     "activation_requirement": "authenticated complete pointer-free fixture"
@@ -126,7 +126,7 @@
     }
   },
   "observer_contract": {
-    "base_vector_boundary": "Capture RCX at 0x14136f750 entry and sample after return, or capture RSI at 0x141371d1c. Validate the view vtable and use a fail-closed opening/header/items/closing double-read.",
+    "base_vector_boundary": "The stable fixture captures RCX at 0x14136f750 and samples after return. Ordinary transitions may retain the published vector only when exact view/item vtables, definition joins, and opening/header/items/closing double-read all authenticate.",
     "dynamic_boundary": "Use 0x14137a780 completion for a full state refresh and retain per-item 0x141379a50/0x1413778f0 observations for the same view, country, thread, and frame hour.",
     "transient_joins": [
       "Join highlight events by authenticated item pointer, then replace the pointer with focus_definition+0x18 id before serialization.",
@@ -143,12 +143,19 @@
     "reason": "The consolidated exact20 receipt resolves all ten requested entries exactly and is bound by manifest and job-receipt SHA-256. No discovery-only hash is used for activation."
   },
   "promotion_gate": {
-    "current_exact20_job_id": "20260720T020812Z-w3-a31-focus-owner-93fbbf62",
-    "current_exact20_function_manifest_sha256": "303351ed65468aa7655b904998819c96ca1c325f906b5a3bf32c4f18decc7969",
-    "current_exact20_job_json_sha256": "c6c3fb002bc05f1e092d7eb9b436aa720ca2cf19ad08f055747216dfa5871b4f",
-    "exact_requested_membership": "10/10",
+    "current_exact20_job_id": "20260720T104531Z-w5-a31-consolidated-owner-frame-order-pr-79b1ba63",
+    "current_exact20_function_manifest_sha256": "b319dd1b721ed6a13e47088b7def034111f9882631080bffbf049fbb79265a2f",
+    "current_exact20_job_json_sha256": "b1c9d8c0678956f17bea2e7f9e06e7ff4baf31254c11b3c983a9a5ca9ae2d04b",
+    "exact_requested_membership": "13/13",
     "next_request": null,
     "promotion_authorized": false
+  },
+  "wave5_frame_order_closeout": {
+    "job_id": "20260720T103726Z-w5-a31-exact-frame-order-boundary-a49db01b",
+    "function_manifest_sha256": "c3c2a38805153497ad3298893a1b101582aa0651604a742e78214108b7820745",
+    "detail_refresh": "0x14137a600",
+    "law": "Exact frame callers invoke item-state refresh 0x14137a780 before detail/transient refresh 0x14137a600; materialize only after the paired same-view detail return.",
+    "fixture_pair_regrader": "tools/verify_a31_fixture_matrix.py"
   },
   "human_input_boundary": {
     "current_state": "STATIC_AND_AGENT_IMPLEMENTATION_COMPLETE_PENDING_ROOT_VALIDATION_AND_RUNTIME_FIXTURE",

@@ -1,105 +1,167 @@
 {
-  "schema": "hoi4.extractor.production_promotion.v1",
-  "scope": "A1/A2/A4/A12/A14/A15/A21/A22/B8-X6 extractor batch",
-  "status": "PROMOTION_READY",
-  "scope_zero_residuals": true,
-  "global_extractor_completion": false,
-  "residuals": [],
   "binary": {
-    "program": "hoi4.exe 1.19.2.0.a729",
     "image_base": "0x140000000",
+    "program": "hoi4.exe 1.19.2.0.a729",
     "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
   },
+  "central_rust_validation": {
+    "output_sha256": "d968506164f5eeaa084215219183d9c51e1fcc71790f2e61a9bcba2b5e9f8383",
+    "path": "replay_interface/re_evidence/rendering_laws/M01/runtime_admission/central_validation_attestation.json",
+    "result": "PASS_FINAL_ALL",
+    "sha256": "6df83ef524d87107b83324f249d8bbb88dd503caeaed695b6ecbc9822dd44c58"
+  },
+  "fail_closed": true,
+  "global_extractor_completion": false,
+  "mechanical_gate": {
+    "attestation": "replay_interface/re_evidence/rendering_laws/M01/runtime_admission/central_validation_attestation.json",
+    "authority": "root-owned central Final/All validation attestation; no packet-local Cargo execution",
+    "cargo_check_packages": [
+      "compact_contract",
+      "collector",
+      "recorder_host",
+      "hub_motorization_live_lane",
+      "focus_research_decisions_depth_live",
+      "construction_buildings_state_damage_live",
+      "session_multiplayer_metadata_live",
+      "air_loss_stats_live_lane"
+    ],
+    "frozen_test_counts": {
+      "air_loss_filter": "7/7",
+      "building_registry": "9/9",
+      "collector_compact_frd": "3/3",
+      "focus_research_decisions_depth_live": "33/33",
+      "recorder_frd": "8/8",
+      "session_multiplayer_metadata_live": "27/27",
+      "sunk_convoy": "2/2"
+    }
+  },
+  "notes": "This freezes only the listed extractor batch. Other backlog rows remain governed by RE_REMAINING.md.",
   "packets": [
     {
-      "ids": ["A1"],
+      "ids": [
+        "A1"
+      ],
+      "integration": "extractor/native/lanes/hub_motorization_live/INTEGRATION_PACKET.md",
+      "integration_sha256": "6640bee7c82167665f633bdeeeeb8d1efe59d63936c94ff13b8813cefd4902ea",
       "law": "Exact per-country supply-node motorization actor/key/level attribution; engine levels 0/1/2 only.",
       "report": "extractor/native/lanes/hub_motorization_live/A1_RE_REPORT.md",
-      "report_sha256": "6cd1e2716089e5a8530f87a153d23d7c99c41f540d8bcf726e8a74ea6fe976de",
-      "integration": "extractor/native/lanes/hub_motorization_live/INTEGRATION_PACKET.md",
-      "integration_sha256": "5bb0675b9c36df1162e405893043315874598868bbbd17c342fa94fa1c52f497"
+      "report_sha256": "c83692dea52d5fa0e3810144206d505bf19c9fa03faabd4bdb08c4a8b481ee35"
     },
     {
-      "ids": ["A2", "A12"],
+      "evidence": "extractor/native/lanes/focus_research_decisions_depth_live/A2_A12_RE_EVIDENCE.json",
+      "evidence_sha256": "de314d03465b7aaa717b121aa110a827ed5a7eb0207699e35915b6c4d21e6992",
+      "ids": [
+        "A2",
+        "A12"
+      ],
       "law": "Exact focus paused bit plus decision taken/re-enable/remove, cooldown, targeted-timed numeric target, and lifecycle layouts.",
       "report": "extractor/native/lanes/focus_research_decisions_depth_live/A2_A12_RE_REPORT.md",
-      "report_sha256": "e949bd7753dd4719091f333351d743d5a2803d2f5919dcd9ee850e48dda07296",
-      "evidence": "extractor/native/lanes/focus_research_decisions_depth_live/A2_A12_RE_EVIDENCE.json",
-      "evidence_sha256": "de3cd86ec3b206f6cc9b665530966620b9970c4abb24b1b8e77745df07e76ebd"
+      "report_sha256": "9963329631a096ae595c94de0544b8e51f323259e094cfd42fecc53c34b764fe"
     },
     {
-      "ids": ["A4", "A21"],
+      "ids": [
+        "A4",
+        "A21"
+      ],
       "law": "Exact air-region loss causes, country attribution, damage entries, and sunk-convoy history; disproven persistent pair/reinforcement fields remain absent.",
       "report": "extractor/native/lanes/air_combat_losses_live/A4_A21_PROMOTION_REPORT.md",
-      "report_sha256": "b9c0c205c6d85902f1156b610830b9157879f36166192863832e13c9c20ecf7a"
+      "report_sha256": "962159d461bd63b9ac993f99d7f69b8010f42296236f0367d11c7ee57984ba8a"
     },
     {
-      "ids": ["A14"],
+      "evidence": "extractor/native/lanes/construction_buildings_state_damage_live/A14_RE_EVIDENCE.json",
+      "evidence_sha256": "a6b23f1b31255a7e78608bd2cb7305cd71538761b9d756c4c14ab82736c21185",
+      "ids": [
+        "A14"
+      ],
       "law": "Exact construction repair/location, building damage reason, partial-health, and fail-closed state semantics.",
       "report": "extractor/native/lanes/construction_buildings_state_damage_live/A14_RE_REPORT.md",
-      "report_sha256": "243c2e1e059caab9deba67cf0c6fc2e57e595d6dcb74aa9b3fb2fef4eb542468",
-      "evidence": "extractor/native/lanes/construction_buildings_state_damage_live/A14_RE_EVIDENCE.json",
-      "evidence_sha256": "7a5d06a01799b3d267be53409718acfcfec629ce38c2ec097878397e17d8e534"
+      "report_sha256": "89d8854d226c4de4b3918d51351c754aa40369085eeea45b16cd61f32702fffc"
     },
     {
-      "ids": ["A15"],
+      "ids": [
+        "A15"
+      ],
+      "integration": "extractor/native/lanes/session_multiplayer_metadata_live/INTEGRATION_PACKET.md",
+      "integration_sha256": "1e43fee802fa77865ea0a6cb723f1b6171312b1f8d0a6b15e9b2fac72e9c407f",
       "law": "Exact player vector, human/country rows, chat actor classification, join/leave, hotjoin, and tag-control metadata.",
       "report": "extractor/native/lanes/session_multiplayer_metadata_live/A15_RE_REPORT.md",
-      "report_sha256": "c45426d72fe986b4d1a28e3fa2ef5323ae50cfc4bb771febf3285b4970f50b21",
-      "integration": "extractor/native/lanes/session_multiplayer_metadata_live/INTEGRATION_PACKET.md",
-      "integration_sha256": "1e43fee802fa77865ea0a6cb723f1b6171312b1f8d0a6b15e9b2fac72e9c407f"
+      "report_sha256": "594abde60d89cc1de4268871f412f2e6536892e0f6f4bbc8e6a95efdafe63e52"
     },
     {
-      "ids": ["A22"],
+      "ids": [
+        "A22"
+      ],
+      "integration": "extractor/native/lanes/air_loss_stats_live/INTEGRATION_PACKET.md",
+      "integration_sha256": "bd7100d91b7e974eb76afed484b2e3f12ca32f2ba2a9faaf425c548833603b4e",
       "law": "Exact 24-channel cumulative air-loss schema and ordered channel table.",
       "report": "extractor/native/lanes/air_loss_stats_live/A22_FULL_CHANNEL_CLOSEOUT.md",
-      "report_sha256": "9d254403d98b93141de43f2d2d51437f7a62a90122e40a8613f83ccc4e85ea03",
-      "integration": "extractor/native/lanes/air_loss_stats_live/INTEGRATION_PACKET.md",
-      "integration_sha256": "e30b0788831344d3245875040f9d468adfcb1a93dcd1143cab32e3aba3a096d6"
+      "report_sha256": "aaf4f8dae1486d0726d723383a57f4554a68a9c98ed33f5fa8e8f9e35a58075a"
     },
     {
-      "ids": ["B8", "X6"],
+      "evidence": "extractor/native/lanes/construction_buildings_state_damage_live/B8_X6_BUILDING_REGISTRY_PROOF.json",
+      "evidence_sha256": "c2a2174b5266e8d63d3d802fc9c95972b67d2ad5a3593bc6f50fd3744057eda7",
+      "ids": [
+        "B8",
+        "X6"
+      ],
       "law": "Exact runtime building-id/token registry: 55 definitions, 43 observed joins, 12 independently absent, zero ambiguity or mismatch.",
       "report": "extractor/native/lanes/construction_buildings_state_damage_live/B8_X6_BUILDING_REGISTRY_RE.md",
-      "report_sha256": "66d02c4ad498c8e4347320354467117faafe369c35d3e7dd0b1e3576970f0f6d",
-      "evidence": "extractor/native/lanes/construction_buildings_state_damage_live/B8_X6_BUILDING_REGISTRY_PROOF.json",
-      "evidence_sha256": "ee4f39937318ffb670414be9ef4aebb3d92282b6672e670460702d45ad0272b6"
+      "report_sha256": "b795608df46240eb77cd83428492a258548db30760a8ed7a3335fa44ecf20937"
     }
   ],
   "production_surfaces": [
-    {"path": "extractor/native/domain_registry.json", "role": "schedulable domain roster and status", "sha256": "9eea857e0fff74b0790bdec01bb6e20a71069e51d44cb1f155439ddbe4b4539e"},
-    {"path": "extractor/native/compact_contract/src/build_profile.rs", "role": "pinned RVAs, layouts, and build gates", "sha256": "7b1af4082f6923fd1490b04f7dd46685d529caa4d200ff45443896ad51574899"},
-    {"path": "extractor/native/compact_contract/src/building_registry.rs", "role": "verified building-id/token registry", "sha256": "47ebc0c3a029a068825d614a3046c24d99372abbb8cf57f255a56505f2a3cad0"},
-    {"path": "extractor/native/compact_contract/src/lib.rs", "role": "compact schema and fail-closed interpretation", "sha256": "c5bed97a9be5f0e4d0076103c77dcd3553d4be1e56cbce444c7b3b6d732e5d08"},
-    {"path": "extractor/native/collector/src/lib.rs", "role": "live read and compact emission", "sha256": "092299d6abd4b9b9dbd79529b6529a37ed67220816085b1f11e46e2736196589"},
-    {"path": "extractor/native/recorder_host/src/domain_data_authority.rs", "role": "domain admission and authority accounting", "sha256": "4497ee64eb3177ce1e23b59d5f1f0dfacf4dfc06a99cebde02fc49225ea1706c"},
-    {"path": "extractor/native/recorder_host/src/world_fold.rs", "role": "authoritative replay world folds", "sha256": "e179da52a185500f8e9869842e722be4b84b1edd9f08e001cb176deda40a7c45"},
-    {"path": "extractor/native/recorder_host/src/main.rs", "role": "recorder gate and production composition", "sha256": "1076609e90f17729517a9f011ec452b718bcf7b1376ebba9945591f69b5f62f6"}
+    {
+      "path": "extractor/native/domain_registry.json",
+      "role": "schedulable domain roster and status",
+      "sha256": "df229f7c2d25b295fec28fe7c9458d9f73469433ca7d6860027a6e77f22a5603"
+    },
+    {
+      "path": "extractor/native/compact_contract/src/build_profile.rs",
+      "role": "pinned RVAs, layouts, and build gates",
+      "sha256": "502a63005f033008ce0d8b4f75ab0402aeb3bec538fb07b9348b63e3df88fa17"
+    },
+    {
+      "path": "extractor/native/compact_contract/src/building_registry.rs",
+      "role": "verified building-id/token registry",
+      "sha256": "77271f7cd09d346b02e0a0af80490cd5a23cd84b181f8bf069c3db7e1dc76928"
+    },
+    {
+      "path": "extractor/native/compact_contract/src/lib.rs",
+      "role": "compact schema and fail-closed interpretation",
+      "sha256": "733168fb93f8c7a5f77d6eec05269c138f65aa912e2b88dfecbb3aea364311ad"
+    },
+    {
+      "path": "extractor/native/collector/src/lib.rs",
+      "role": "live read and compact emission",
+      "sha256": "cb305667ed34bb0f59e719e0e18b1ee1833da0d84f7f86acaceb3c74a70439c2"
+    },
+    {
+      "path": "extractor/native/recorder_host/src/domain_data_authority.rs",
+      "role": "domain admission and authority accounting",
+      "sha256": "00ff6b3e98176c798374d882d96a1615053a269a46a33f6d2c86e94108cca647"
+    },
+    {
+      "path": "extractor/native/recorder_host/src/world_fold.rs",
+      "role": "authoritative replay world folds",
+      "sha256": "4100cbc55af54fcd5e3a1e334b889ab9c7d5dffca0738d95a11236f2259594ab"
+    },
+    {
+      "path": "extractor/native/recorder_host/src/main.rs",
+      "role": "recorder gate and production composition",
+      "sha256": "02703ba80b0a7f162699a3b630f05d5ea6259b45d5da56423483a1bb3ca44f42"
+    }
   ],
+  "residuals": [],
+  "schema": "hoi4.extractor.production_promotion.v2",
+  "scope": "A1/A2/A4/A12/A14/A15/A21/A22/B8-X6 extractor batch",
+  "scope_zero_residuals": true,
+  "status": "PROMOTION_READY",
   "xn07_crosscheck": {
     "report": "replay_interface/documents/lane_reports/rendering_laws/XN07.md",
-    "report_sha256": "0dc2291f9096a73246ac12dca459318ae3fc73ce00b0c685281130589ac9e36e",
+    "report_sha256": "fa8553c881e88f5c7042e3152e0627d74db4b75947755f37c06632a6571be2c9",
     "verification": "replay_interface/re_evidence/rendering_laws/XN07/verification_result.json",
-    "verification_sha256": "66990a92bd9b66e778f387070a7f467e3d926a4030d36cd80bd1aac975b9efc9",
+    "verification_sha256": "74595e68e8fbe61cb89d7c39200117c39e8d12470fa8c66363ad34b272b0957d",
     "verifier": "replay_interface/re_evidence/rendering_laws/XN07/verify_xn07.py",
-    "verifier_sha256": "b831ef8758461f217d304d3c81b5493e00d947b35e4fe89c225e912ef23c944f"
-  },
-  "mechanical_gate": {
-    "cargo_check_packages": [
-      "compact_contract", "collector", "recorder_host", "hub_motorization_live_lane",
-      "focus_research_decisions_depth_live", "construction_buildings_state_damage_live",
-      "session_multiplayer_metadata_live", "air_loss_stats_live_lane"
-    ],
-    "frozen_test_counts": {
-      "focus_research_decisions_depth_live": "33/33",
-      "session_multiplayer_metadata_live": "27/27",
-      "collector_compact_frd": "3/3",
-      "recorder_frd": "8/8",
-      "sunk_convoy": "2/2",
-      "air_loss_filter": "7/7",
-      "building_registry": "9/9"
-    }
-  },
-  "fail_closed": true,
-  "notes": "This freezes only the listed extractor batch. Other backlog rows remain governed by RE_REMAINING.md."
+    "verifier_sha256": "88f6f7d737bb70b71a60d5c412797deed93a0058b2c092a21d499e50442ff997"
+  }
 }

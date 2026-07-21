@@ -22,6 +22,8 @@ pub const ORDER_OFF_PATH_BEGIN: u64 =
     compact_contract::build_profile::DOMAIN54_ORDER_OFF_PATH_BEGIN as u64;
 pub const ORDER_OFF_PATH_SIZE: u64 =
     compact_contract::build_profile::DOMAIN54_ORDER_OFF_PATH_SIZE as u64;
+pub const ORDER_OFF_PARADROP_TARGET: u64 =
+    compact_contract::build_profile::DOMAIN54_ORDER_OFF_PARADROP_TARGET as u64;
 pub const ORDER_OFF_TYPE5_STATES_BEGIN: u64 =
     compact_contract::build_profile::DOMAIN54_ORDER_OFF_TYPE5_STATES_BEGIN as u64;
 pub const ORDER_OFF_TYPE5_STATES_SIZE: u64 =
@@ -367,15 +369,13 @@ pub fn read_non_type5_path_provinces<M: BattleplansDepthMemory>(
     if order_type == ORDER_TYPE_AREA_DEFENSE {
         return (Vec::new(), STATUS_EXACT);
     }
-    // The retained a729 save/live join authenticates +0x70/+0x78 only for
-    // line orders (type 2) and invasion routes (type 3). Type 1 movement and
-    // type 4 paradrop use the same object storage but do not have a retained
-    // geometry case, so they remain fail-closed rather than inheriting the
-    // broad historical "all non-type-5" claim.
-    if !matches!(order_type, ORDER_TYPE_LINE | ORDER_TYPE_INVASION) {
+    if !matches!(
+        order_type,
+        ORDER_TYPE_MOVE | ORDER_TYPE_LINE | ORDER_TYPE_INVASION | ORDER_TYPE_PARADROP
+    ) {
         return (Vec::new(), STATUS_UNSUPPORTED);
     }
-    read_u32_vector(
+    let path = match read_u32_vector(
         mem,
         order_ptr,
         ORDER_OFF_PATH_BEGIN,
@@ -383,9 +383,30 @@ pub fn read_non_type5_path_provinces<M: BattleplansDepthMemory>(
         MAX_CHILD_ROWS,
         MAX_INLINE_CHILD_ROWS,
         MAX_PROVINCE_ID,
-    )
-    .map(|(values, _)| (values, STATUS_EXACT))
-    .unwrap_or_else(|status| (Vec::new(), status))
+    ) {
+        Ok((values, _)) if !values.is_empty() => values,
+        Ok(_) => return (Vec::new(), STATUS_FIXTURE_REQUIRED),
+        Err(status) => return (Vec::new(), status),
+    };
+    if order_type != ORDER_TYPE_PARADROP {
+        return (path, STATUS_EXACT);
+    }
+
+    // a729 paradrop geometry has a split representation. The execution and
+    // can-execute consumers use the first +0x70 entry as source and +0xB8 as
+    // target. Carry exactly that semantic pair on the pointer-free path table;
+    // do not expose unused tail storage as route geometry.
+    let source = path[0];
+    let Some(target_address) = order_ptr.checked_add(ORDER_OFF_PARADROP_TARGET) else {
+        return (Vec::new(), STATUS_VALIDATION_FAILED);
+    };
+    let Some(target) = mem.read_u32(target_address) else {
+        return (Vec::new(), STATUS_VALIDATION_FAILED);
+    };
+    if target == 0 || target > MAX_PROVINCE_ID || target == source {
+        return (Vec::new(), STATUS_VALIDATION_FAILED);
+    }
+    (vec![source, target], STATUS_EXACT)
 }
 
 pub fn extract_validated_depth_subset(source: &[RawOrderObservation]) -> DepthExtraction {
@@ -436,9 +457,13 @@ pub fn extract_validated_depth_subset(source: &[RawOrderObservation]) -> DepthEx
             if row.order_type == ORDER_TYPE_AREA_DEFENSE {
                 out.type5_exact_rows = out.type5_exact_rows.saturating_add(1);
                 (STATUS_EXACT, STATUS_EXACT, Vec::new())
-            } else if matches!(row.order_type, ORDER_TYPE_LINE | ORDER_TYPE_INVASION)
+            } else if matches!(
+                row.order_type,
+                ORDER_TYPE_MOVE | ORDER_TYPE_LINE | ORDER_TYPE_INVASION | ORDER_TYPE_PARADROP
+            )
                 && row.geometry_status == STATUS_EXACT
                 && !row.path_provinces.is_empty()
+                && (row.order_type != ORDER_TYPE_PARADROP || row.path_provinces.len() == 2)
             {
                 out.non_type5_exact_path_rows = out.non_type5_exact_path_rows.saturating_add(1);
                 out.path_geometry_rows = out
@@ -965,9 +990,17 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
             declared_targets = declared_targets.saturating_add(child_count);
         }
         if has_path {
-            if !matches!(order_type, ORDER_TYPE_LINE | ORDER_TYPE_INVASION) {
+            if !matches!(
+                order_type,
+                ORDER_TYPE_MOVE | ORDER_TYPE_LINE | ORDER_TYPE_INVASION | ORDER_TYPE_PARADROP
+            ) {
                 summary.parse_errors.push(format!(
                     "offset {offset}: unsupported order type {order_type} row {row_index} has path geometry"
+                ));
+            }
+            if order_type == ORDER_TYPE_PARADROP && child_count != 2 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: paradrop row {row_index} does not carry exactly source and target"
                 ));
             }
             if child_count == 0 || child_first.saturating_add(child_count) > path_count {
@@ -1500,13 +1533,11 @@ mod tests {
     }
 
     #[test]
-    fn path_geometry_is_fail_closed_for_unproven_order_types() {
+    fn path_geometry_is_fail_closed_for_unknown_order_types() {
         let mem = TestMemory::default();
-        for order_type in [ORDER_TYPE_MOVE, ORDER_TYPE_PARADROP, 99] {
-            let (path, status) = read_non_type5_path_provinces(&mem, 0x3000, order_type);
-            assert!(path.is_empty());
-            assert_eq!(status, STATUS_UNSUPPORTED);
-        }
+        let (path, status) = read_non_type5_path_provinces(&mem, 0x3000, 99);
+        assert!(path.is_empty());
+        assert_eq!(status, STATUS_UNSUPPORTED);
         let (path, status) =
             read_non_type5_path_provinces(&mem, 0x3000, ORDER_TYPE_AREA_DEFENSE);
         assert!(path.is_empty());
@@ -1514,11 +1545,29 @@ mod tests {
     }
 
     #[test]
-    fn prepared_unproven_order_geometry_cannot_bypass_type_dispatch() {
+    fn prepared_type1_and_type4_geometry_is_exact() {
+        let movement = exact_order(10, 0, ORDER_TYPE_MOVE, Vec::new(), vec![101, 102]);
+        let paradrop = exact_order(
+            10,
+            1,
+            ORDER_TYPE_PARADROP,
+            Vec::new(),
+            vec![201, 202],
+        );
+        let record = collect_and_encode_depth_record(&[movement, paradrop], 10, 0, 1, 2);
+        assert_eq!(record.emitted_rows, 2);
+        assert_eq!(record.extraction.non_type5_exact_path_rows, 2);
+        assert_eq!(record.extraction.path_geometry_rows, 4);
+        let decoded = decode_depth_payload(0, &record.payload);
+        assert_eq!(decoded.parse_errors, Vec::<String>::new());
+    }
+
+    #[test]
+    fn prepared_unknown_order_geometry_cannot_bypass_type_dispatch() {
         let input = exact_order(
             10,
             0,
-            ORDER_TYPE_PARADROP,
+            99,
             Vec::new(),
             vec![101, 102],
         );
@@ -1530,7 +1579,7 @@ mod tests {
     }
 
     #[test]
-    fn decoder_rejects_path_geometry_for_unproven_order_type() {
+    fn decoder_rejects_path_geometry_for_unknown_order_type() {
         let input = exact_order(
             10,
             0,
@@ -1540,12 +1589,38 @@ mod tests {
         );
         let mut record = collect_and_encode_depth_record(&[input], 10, 0, 1, 1);
         record.payload[HEADER_LEN + 20..HEADER_LEN + 24]
-            .copy_from_slice(&(ORDER_TYPE_PARADROP as u32).to_le_bytes());
+            .copy_from_slice(&99u32.to_le_bytes());
         let decoded = decode_depth_payload(0, &record.payload);
         assert!(decoded
             .parse_errors
             .iter()
-            .any(|error| error.contains("unsupported order type 4")));
+            .any(|error| error.contains("unsupported order type 99")));
+    }
+
+    #[test]
+    fn memory_helper_reads_type1_route_and_type4_source_target() {
+        let path_begin = 0x4000;
+        let mut mem = path_vector_test_memory(
+            path_begin,
+            2,
+            Some(
+                [101u32, 102]
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes)
+                    .collect(),
+            ),
+        );
+        let (movement, movement_status) =
+            read_non_type5_path_provinces(&mem, 0x3000, ORDER_TYPE_MOVE);
+        assert_eq!(movement, vec![101, 102]);
+        assert_eq!(movement_status, STATUS_EXACT);
+
+        mem.u32s
+            .insert(0x3000 + ORDER_OFF_PARADROP_TARGET, 303);
+        let (paradrop, paradrop_status) =
+            read_non_type5_path_provinces(&mem, 0x3000, ORDER_TYPE_PARADROP);
+        assert_eq!(paradrop, vec![101, 303]);
+        assert_eq!(paradrop_status, STATUS_EXACT);
     }
 
     fn path_vector_test_memory(begin: u64, size: u32, bytes: Option<Vec<u8>>) -> TestMemory {

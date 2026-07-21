@@ -16,6 +16,11 @@ Covers, per the bucket-(c) ledger:
                     countered_by, picture, the attacker/defender bonus rows.
   aces            : common/aces/*  `modifiers={ <id>={ type chance effect{} } }`.
   operations      : common/operations/*  -> icon, cost/risk/network req fields.
+  operation_tokens: common/operation_tokens/* -> the persistent infiltration-token
+                    dictionary (name/description/icons, intel lane and exact gain).
+  synchronized_dynamic_tokens: common/synchronized_dynamic_tokens/* -> the
+                    engine's modset-bound numeric-token spelling registry. This
+                    is dictionary input only, never a second world-state source.
   opinion_mods    : common/opinion_modifiers/*  `opinion_modifiers={ <id>={...} }`.
   equipment_modules: common/units/equipment/modules/*
                     `equipment_modules={ <id>={ category abbreviation add_stats{} } }`.
@@ -199,6 +204,25 @@ def _operation(iid, n, rel):
             "fields": fields, "source_file": rel}
 
 
+def _operation_token(iid, n, rel):
+    """One authored operation-token definition.
+
+    Country save state stores only the token id and target-country membership.
+    These fields are the modset-bound dictionary needed to render that identity;
+    scripted effects and availability remain owned by the operation definitions.
+    """
+    return {
+        "id": iid,
+        "name": _scalar(n.get("name")),
+        "desc": _scalar(n.get("desc")),
+        "icon": _scalar(n.get("icon")),
+        "text_icon": _scalar(n.get("text_icon")),
+        "intel_source": _scalar(n.get("intel_source")),
+        "intel_gain": n.get("intel_gain"),
+        "source_file": rel,
+    }
+
+
 def _opinion(iid, n, rel):
     return {"id": iid, "value": n.get("value"),
             "fields": {k: _plain(v) for k, v in n.entries if k and k.lower() != "value"},
@@ -364,6 +388,42 @@ def _parse_ideas(layers, collisions):
     return out
 
 
+def _parse_synchronized_dynamic_tokens(layers, collisions):
+    """Return the effective ordered dynamic-token spelling registry.
+
+    Files in this directory are anonymous scalar lists rather than keyed
+    Clausewitz blocks.  Duplicate spellings are one identity; their first and
+    last effective sources are retained so a mod collision is auditable.
+    """
+    out: dict[str, dict] = {}
+    ordinal = 0
+    for rel, abspath in _ordered_files(layers, "common/synchronized_dynamic_tokens"):
+        try:
+            root = R.parse_file(abspath)
+        except Exception as e:
+            print(f"[catalogs] WARN synchronized tokens {rel}: {e}", file=sys.stderr)
+            continue
+        for key, value in root.entries:
+            if key or not isinstance(value, str) or not value:
+                continue
+            if value in out:
+                collisions.append({
+                    "id": value,
+                    "first": out[value]["source_file"],
+                    "override": rel,
+                })
+                out[value]["last_source_file"] = rel
+                continue
+            out[value] = {
+                "id": value,
+                "ordinal": ordinal,
+                "source_file": rel,
+                "last_source_file": rel,
+            }
+            ordinal += 1
+    return out
+
+
 def parse_catalogs(layers) -> dict:
     catalogs = {}
     coll = {}
@@ -372,6 +432,7 @@ def parse_catalogs(layers) -> dict:
         ("leader_traits", "common/unit_leader", "leader_traits", _trait),
         ("aces", "common/aces", "modifiers", _ace),
         ("operations", "common/operations", None, _operation),
+        ("operation_tokens", "common/operation_tokens", None, _operation_token),
         ("opinion_modifiers", "common/opinion_modifiers", "opinion_modifiers", _opinion),
         ("equipment_modules", "common/units/equipment/modules", "equipment_modules", _module),
         ("state_categories", "common/state_category", "state_categories", _state_cat),
@@ -453,6 +514,12 @@ def parse_catalogs(layers) -> dict:
     ci = []
     catalogs["ideas"] = _parse_ideas(layers, ci)
     coll["ideas"] = ci
+
+    ct = []
+    catalogs["synchronized_dynamic_tokens"] = (
+        _parse_synchronized_dynamic_tokens(layers, ct)
+    )
+    coll["synchronized_dynamic_tokens"] = ct
 
     meta = {name: {"count": len(tbl),
                    "collisions": len(coll.get(name, []))}

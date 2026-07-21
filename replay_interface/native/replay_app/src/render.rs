@@ -23,8 +23,9 @@ use map_viewer::{
     RESTORE_PASS_BUNDLE_FILE,
 };
 use replay_core::{
-    PoliticalTextureFormat, PoliticalTextureKind, ProductionRenderFrame, RenderSubmit,
-    SnowMudReplayReadbackReceipt, SnowMudTexturePacket, StaticMapCommand,
+    OccupationSecondaryReplayReadbackReceipt, PoliticalTextureFormat, PoliticalTextureKind,
+    ProductionRenderFrame, RenderSubmit, SnowMudReplayReadbackReceipt, SnowMudTexturePacket,
+    StaticMapCommand,
     StaticShaderResourceSource, TiledLightSubmission, ViewStatus, WeatherProvinceSnowView,
     WorldFrame,
 };
@@ -1066,10 +1067,11 @@ impl CapturedPassLayer {
         let h2_receipt = seal_snow_mud_h2_receipt(
             packet,
             &render_frame.selected_present,
-            readback,
+            &readback,
             replacements,
         )?;
-        let h2_receipt_path = persist_snow_mud_h2_receipt(&h2_receipt)?;
+        let h2_receipt_path =
+            persist_snow_mud_h2_receipt(&h2_receipt, &readback.tight_readback_bytes)?;
         self.political_cb0.snow_mud_fade = Some(fade);
         self.last_snow_mud_h2_receipt = Some(h2_receipt.clone());
         self.mark_dirty();
@@ -2245,6 +2247,7 @@ unsafe fn create_immutable_texture_with_pitch(
 /// staging resource and compare every tight source row byte-for-byte. D3D11
 /// may pad the mapped row pitch; padding is deliberately excluded.
 struct SnowMudTextureReadbackProof {
+    tight_readback_bytes: Vec<u8>,
     readback_sha256: String,
     mapped_row_pitch: u32,
     verified_row_count: u32,
@@ -2300,6 +2303,7 @@ unsafe fn verify_immutable_texture_readback(
                 .ok_or("SnowMudData mapped byte length overflow")?,
         );
         let mut readback_hasher = Sha256::new();
+        let mut tight_readback_bytes = Vec::with_capacity(packet.bytes.len());
         for row in 0..packet.height as usize {
             let source_start = row * source_pitch;
             let mapped_start = row * mapped_pitch;
@@ -2311,10 +2315,13 @@ unsafe fn verify_immutable_texture_readback(
                 )
                 .into());
             }
-            readback_hasher.update(&mapped_bytes[mapped_start..mapped_start + source_pitch]);
+            let tight_row = &mapped_bytes[mapped_start..mapped_start + source_pitch];
+            readback_hasher.update(tight_row);
+            tight_readback_bytes.extend_from_slice(tight_row);
         }
         let readback_sha256 = format!("{:x}", readback_hasher.finalize());
         Ok(SnowMudTextureReadbackProof {
+            tight_readback_bytes,
             readback_sha256,
             mapped_row_pitch: mapped.RowPitch,
             verified_row_count: packet.height,
@@ -2328,7 +2335,7 @@ unsafe fn verify_immutable_texture_readback(
 fn seal_snow_mud_h2_receipt(
     packet: &SnowMudTexturePacket,
     selected_present: &replay_core::SelectedPresentReceipt,
-    readback: SnowMudTextureReadbackProof,
+    readback: &SnowMudTextureReadbackProof,
     replaced_binding_count: usize,
 ) -> Result<SnowMudReplayReadbackReceipt> {
     let replaced_binding_count = u32::try_from(replaced_binding_count)
@@ -2350,7 +2357,7 @@ fn seal_snow_mud_h2_receipt(
             .clone(),
         observation_sha256: packet.observation_sha256.clone(),
         payload_sha256: packet.payload_sha256.clone(),
-        readback_sha256: readback.readback_sha256,
+        readback_sha256: readback.readback_sha256.clone(),
         width: packet.width,
         height: packet.height,
         source_row_pitch: packet.row_pitch,
@@ -2373,15 +2380,17 @@ pub(crate) fn seal_product_snow_mud_h2_receipt(
     selected_present: &replay_core::SelectedPresentReceipt,
     proof: &map_viewer::SnowMudD3dExecutionProof,
 ) -> Result<SnowMudReplayReadbackReceipt> {
+    let readback = SnowMudTextureReadbackProof {
+        tight_readback_bytes: proof.tight_readback_bytes.clone(),
+        readback_sha256: proof.readback_sha256.clone(),
+        mapped_row_pitch: proof.mapped_row_pitch,
+        verified_row_count: proof.verified_row_count,
+        verified_tight_byte_count: proof.verified_tight_byte_count,
+    };
     seal_snow_mud_h2_receipt(
         packet,
         selected_present,
-        SnowMudTextureReadbackProof {
-            readback_sha256: proof.readback_sha256.clone(),
-            mapped_row_pitch: proof.mapped_row_pitch,
-            verified_row_count: proof.verified_row_count,
-            verified_tight_byte_count: proof.verified_tight_byte_count,
-        },
+        &readback,
         proof.replaced_binding_count as usize,
     )
 }
@@ -2391,6 +2400,7 @@ pub(crate) fn seal_product_snow_mud_h2_receipt(
 /// scrubbing cannot silently overwrite an earlier member of the H/H2 pair.
 pub(crate) fn persist_snow_mud_h2_receipt(
     receipt: &SnowMudReplayReadbackReceipt,
+    tight_readback_bytes: &[u8],
 ) -> Result<Option<PathBuf>> {
     let Some(directory) = std::env::var_os("REPLAY_SNOW_MUD_H2_RECEIPT_DIR") else {
         return Ok(None);
@@ -2400,25 +2410,103 @@ pub(crate) fn persist_snow_mud_h2_receipt(
     }
     let directory = PathBuf::from(directory);
     std::fs::create_dir_all(&directory)?;
-    let path = directory.join(format!(
-        "snow-mud-h2-p{}-{}.json",
+    if tight_readback_bytes.len() as u64 != receipt.verified_tight_byte_count
+        || format!("{:x}", Sha256::digest(tight_readback_bytes)) != receipt.readback_sha256
+    {
+        return Err("SnowMudData H2 raw readback bytes differ from the sealed receipt".into());
+    }
+    let stem = format!(
+        "snow-mud-h2-p{}-{}",
         receipt.producer_ordinal, receipt.observation_sha256
-    ));
+    );
+    let path = directory.join(format!("{stem}.json"));
+    let payload_path = directory.join(format!("{stem}.tight-bgra8"));
     let mut bytes = serde_json::to_vec_pretty(receipt)?;
     bytes.push(b'\n');
+    persist_create_new_or_equal(&payload_path, tight_readback_bytes, "raw readback payload")?;
+    persist_create_new_or_equal(&path, &bytes, "receipt")?;
+    Ok(Some(path))
+}
+
+pub(crate) fn seal_product_occupation_secondary_h2_receipt(
+    packet: &replay_core::PoliticalTexturePacket,
+    selected_present: &replay_core::SelectedPresentReceipt,
+    proof: &map_viewer::OccupationSecondaryD3dExecutionProof,
+) -> Result<OccupationSecondaryReplayReadbackReceipt> {
+    let mut receipt = OccupationSecondaryReplayReadbackReceipt {
+        schema: replay_core::OCCUPATION_SECONDARY_H2_READBACK_SCHEMA.into(),
+        target_binding_identity: packet.target_binding_identity.clone(),
+        upload_order: packet.upload_order,
+        selected_present_sha256: selected_present.computed_sha256()?,
+        payload_sha256: packet.sha256.clone(),
+        readback_sha256: proof.readback_sha256.clone(),
+        width: packet.width,
+        height: packet.height,
+        source_row_pitch: packet.row_pitch,
+        mapped_row_pitch: proof.mapped_row_pitch,
+        verified_row_count: proof.verified_row_count,
+        verified_tight_byte_count: proof.verified_tight_byte_count,
+        terrain_t6_binding_count: proof.terrain_t6_binding_count,
+        water_t3_binding_count: proof.water_t3_binding_count,
+        receipt_sha256: String::new(),
+    };
+    receipt.receipt_sha256 = receipt.computed_receipt_sha256()?;
+    receipt.validate_against(packet, selected_present)?;
+    Ok(receipt)
+}
+
+/// Optional create-new evidence sink for the replay half of the occupation
+/// H/H2 transaction. It never supplies bytes back to rendering.
+pub(crate) fn persist_occupation_secondary_h2_receipt(
+    receipt: &OccupationSecondaryReplayReadbackReceipt,
+    tight_readback_bytes: &[u8],
+) -> Result<Option<PathBuf>> {
+    let Some(directory) = std::env::var_os("REPLAY_OCCUPATION_H2_RECEIPT_DIR") else {
+        return Ok(None);
+    };
+    if directory.is_empty() {
+        return Err("REPLAY_OCCUPATION_H2_RECEIPT_DIR is empty".into());
+    }
+    let directory = PathBuf::from(directory);
+    std::fs::create_dir_all(&directory)?;
+    if tight_readback_bytes.len() as u64 != receipt.verified_tight_byte_count
+        || format!("{:x}", Sha256::digest(tight_readback_bytes)) != receipt.readback_sha256
+    {
+        return Err(
+            "occupation secondary H2 raw readback bytes differ from the sealed receipt".into(),
+        );
+    }
+    let stem = format!(
+        "occupation-secondary-h2-u{}-{}",
+        receipt.upload_order, receipt.payload_sha256
+    );
+    let path = directory.join(format!("{stem}.json"));
+    let payload_path = directory.join(format!("{stem}.tight-bgra8"));
+    let mut bytes = serde_json::to_vec_pretty(receipt)?;
+    bytes.push(b'\n');
+    persist_create_new_or_equal(
+        &payload_path,
+        tight_readback_bytes,
+        "occupation raw readback payload",
+    )?;
+    persist_create_new_or_equal(&path, &bytes, "occupation receipt")?;
+    Ok(Some(path))
+}
+
+fn persist_create_new_or_equal(path: &Path, bytes: &[u8], label: &str) -> Result<()> {
     match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&path)
+        .open(path)
     {
         Ok(mut file) => {
-            file.write_all(&bytes)?;
+            file.write_all(bytes)?;
             file.sync_all()?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            if std::fs::read(&path)? != bytes {
+            if std::fs::read(path)? != bytes {
                 return Err(format!(
-                    "SnowMudData H2 receipt path already exists with different bytes: {}",
+                    "SnowMudData H2 {label} path already exists with different bytes: {}",
                     path.display()
                 )
                 .into());
@@ -2426,7 +2514,7 @@ pub(crate) fn persist_snow_mud_h2_receipt(
         }
         Err(error) => return Err(error.into()),
     }
-    Ok(Some(path))
+    Ok(())
 }
 
 unsafe fn create_linear_clamp_sampler(gfx: &Gfx) -> Result<ComPtr<ID3D11SamplerState>> {
@@ -3700,6 +3788,7 @@ POSTEFFECT_TOTAL_MAX_SNOW = 0.05,
             bytes: vec![1, 2, 3, 4],
             sha256: "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a"
                 .into(),
+            occupation_observation: None,
         });
         let err = require_secondary_political_texture(Some(&submit))
             .expect_err("an unconsumed packet must not authenticate occupation stripes");
@@ -3789,6 +3878,7 @@ POSTEFFECT_TOTAL_MAX_SNOW = 0.05,
                 effect_catalog_sha256: "3".repeat(64),
                 entity_animation_catalog_sha256: "4".repeat(64),
                 recorded_input_variant: None,
+                recorded_input_receipt_sha256: None,
                 particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
             },
             update_index: 16_959_360,
@@ -3810,6 +3900,7 @@ POSTEFFECT_TOTAL_MAX_SNOW = 0.05,
             m02_combat: None,
             m03_arrows: None,
             o04_cities: None,
+            o05_buildings: None,
             authenticated_ui_pass: None,
             checkpoint: empty_render_checkpoint(20, 16_959_360),
         };

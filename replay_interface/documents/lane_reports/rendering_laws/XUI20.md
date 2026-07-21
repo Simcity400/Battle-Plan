@@ -3,6 +3,17 @@
 Date: 2026-07-18  
 Disposition: **REPLAY-OWNED SURFACES PROMOTION READY; EXTERNAL EXTRACTOR INPUTS FAIL CLOSED**
 
+## X2 combat-panel closure (2026-07-20)
+
+Land-combat side leaders and effective displayed modifiers now come from the
+game-driven `0x1415C9860` materialization scope. Nested `0x14129E190` leader
+selection and `0x1415BBF00` modifier appends are carried pointer-free through
+D55 v8. Replay admission requires source
+`authenticated_a729_combatview_materializer_1415c9860`, a positive capture
+sequence, exact/exact-none leader semantics, and pinned engine modifier order.
+A panel not refreshed during capture remains
+`unavailable_panel_not_observed`; side-flag reconstruction is forbidden.
+
 ## Replay promotion result
 
 The replay layer now consumes and independently admits every exact XUI20 family carried
@@ -12,7 +23,8 @@ by typed recording data:
   lifecycle leaves, ordered participant events, both complete side rows, tactics,
   counts, damage, loss status, and attribution;
 - active naval identity/generation, location/region, side counts and positioning,
-  task-force ids, exact side-country sets, and the complete ordered member roster;
+  task-force ids, exact side-country sets, the complete ordered member roster,
+  and fail-closed SHP1-v2 terminal sunk-ship history admission;
 - air wing loss history, exact count/equipment arithmetic, air-region aggregate rows,
   every typed damage-cause row, and sunk-convoy history;
 - D60 pair history and legacy relation casualties without treating either as a complete
@@ -40,7 +52,8 @@ These are not replay implementation gaps. The consumers and explicit admission s
 are ready, but production cannot admit the affected surface until the extractor emits:
 
 1. the terminal land-record owning-vector join for the exact `0x448` result/loss row;
-2. sunk-ship victim/owner/killer identity and terminal naval-combat epoch join;
+2. one authentic measured-empty-ledger naval-sink activation receipt for the
+   already integrated three-wrapper SHP1-v2 producer;
 3. the scheduled W1A/W1B war-object payload already modeled by replay;
 4. W1C participant division count, participant IC, ordered live wargoals, and terminal
    `war_result`;
@@ -71,6 +84,8 @@ Binary authority: `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256
 | equipment-loss materializer | `0x1416debe0`, `0x1416de940` | `20260717T141644Z-xui20-a33-land-equipment-loss-consumer-v-4fb27f64` | `C:\Users\Example\ghidra_agent_exports\20260717T141644Z-xui20-a33-land-equipment-loss-consumer-v-4fb27f64\evidence\func_1416debe0.decompile.c`; `func_1416de940.decompile.c` | `ab60615d5497a1bba0b0d10ba7957df89817409a3bf268cda5f38accc6f1f663` |
 | separate log-family vectors | `0x140cd0fc0` | `20260717T140941Z-xui20-a33-orders-group-logs-vtable-funct-ad528abc` | `C:\Users\Example\ghidra_agent_exports\20260717T140941Z-xui20-a33-orders-group-logs-vtable-funct-ad528abc\evidence\func_140cd0fc0.decompile.c` | `16468e2e726703d855ebff14fb65a8eb8a6d5dc98177c4c4ce4c240f76bf5730` |
 | sunk ship layout | `0x140c1f090`, `0x140c1ebc0` | `20260717T140953Z-xui20-a33-sunk-ship-vtable-functions-v1-72ed4c05` | `C:\Users\Example\ghidra_agent_exports\20260717T140953Z-xui20-a33-sunk-ship-vtable-functions-v1-72ed4c05\evidence\func_140c1f090.decompile.c`; `func_140c1ebc0.decompile.c` | `755a0011376d06bbd38456a2bb009236d99f4481a9b076789d9d57729c5673fd` |
+| sunk ship date producer and item consumer | `0x140c1e960`, `0x141bddef0` | `20260720T102819Z-w5-a33-terminal-sink-chain-core2-e794ec80` | `<local-path>`; `func_141bddef0.decompile.c` | `466880cc290e8961dab48c8323346d9d862089d85bbe0f4ba285b924cc959c82` |
+| all global post-append writer routes | `0x1401d2c90`, `0x1401d2d10`, `0x1401d2da0`; excluded temporary `0x140c23290` | `20260720T111238Z-w5-a33-all-sunk-record-producer-routes-c6e0fa81` | `<local-path>` | `d02f0f1aaf2369db9dc9529062f5e8f59f3f6f751fb9e4c0ab81d47dea1e1de0` |
 | sunk convoy layout | `0x140e9e850` | `20260717T141001Z-xui20-a33-sunk-convoy-vtable-functions-v-8177d138` | `C:\Users\Example\ghidra_agent_exports\20260717T141001Z-xui20-a33-sunk-convoy-vtable-functions-v-8177d138\evidence\func_140e9e850.decompile.c` | `4a9ca0aeda1700055809fee1b827f4ad7379108208cba6c4fdeeddeb00dbdab3` |
 | exact air-region storage/selection | `0x141950340`, `0x14194f590` | `20260716T225947Z-d42-airregionstatistics-enum-and-damagee-adfdde5a` | `C:\Users\Example\ghidra_agent_exports\20260716T225947Z-d42-airregionstatistics-enum-and-damagee-adfdde5a\evidence\func_141950340.decompile.c`; `func_14194f590.decompile.c` | `9e085a96163dfea76f644978faafe552bc7301e4bc064aa0aadd63b93320969b` |
 | war identity and ordered sides | `0x14189cad0`, `0x141894d40`, `0x1419734f0`, `0x140d27bb0`, `0x141896700` | `20260717T141700Z-xui20-a33-war-overview-producer-chain-v1-690225df` | `C:\Users\Example\ghidra_agent_exports\20260717T141700Z-xui20-a33-war-overview-producer-chain-v1-690225df\evidence\func_14189cad0.decompile.c`; `func_141894d40.decompile.c`; `func_1419734f0.decompile.c`; `func_140d27bb0.decompile.c`; `func_141896700.decompile.c` | `75b6a514fa19a43a6b2fd5806419b5a22aa86bf620da0c3780ad76df130861b8` |

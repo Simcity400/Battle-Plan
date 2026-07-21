@@ -220,6 +220,23 @@ direct-hook-unavailable badge. This lane-local proof derivation retains its
 pause/target badges because its older base compact inputs do not carry those
 new exact fields; it must not be mistaken for the production producer path.
 
+## 2026-07-20 A31 national-focus presentation acquisition
+
+Reserved compact domain 89 has a complete pointer-free NFP1 codec, collector
+owner, recorder fold, typed replay view, and exact XUI10 admission route.
+`A31_FRAME_ORDER_AND_FIXTURE_MATRIX_20260720.md` is the current acquisition
+authority: exact frame callers update item state through `0x14137A780` before
+the national/joint detail refresh at `0x14137A600`, so the evidence owner now
+materializes only after that same-view pair. Use
+`tools/verify_a31_acquisition_receipt.py` for each receipt and
+`tools/verify_a31_fixture_matrix.py` for the stable/transition pair.
+The final display and joint-country leaves are installed by the owner itself;
+run the complete interactive pair through
+`../../scripts/Invoke-A31NationalFocusFixturePair.ps1`.
+
+No retained authenticated pair exists. Domain 89 remains reserved and
+unscheduled; neither live-fixture nor production activation is enabled.
+
 The direct-hook candidate census additionally rejects the remaining named
 sources as effect validation, metrics formatting, static registration, or GUI
 consumption. No callback RVA is guessed or promoted. A future direct-hook

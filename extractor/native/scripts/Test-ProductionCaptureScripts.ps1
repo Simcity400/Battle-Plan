@@ -56,10 +56,15 @@ try {
         "Get-FullGameSizeProjection.ps1",
         "Invoke-AcceptanceLadder.ps1",
         "Invoke-F6PausedShortProof.ps1",
+        "Invoke-X12SpeedPauseActivationProbe.ps1",
+        "Invoke-X12AuthenticatedActionSequence.ps1",
         "Test-ProductionCaptureScripts.ps1",
         # The ladder reuses the launcher; a syntax break there breaks the ladder.
         "Start-Hoi4ProductionCaptureSafe.ps1",
-        "Start-Hoi4ProductionSpeed5Capture.ps1"
+        "Start-Hoi4ProductionSpeed5Capture.ps1",
+        "Start-Hoi4EarlyLaunchCaptureSafe.ps1",
+        "Invoke-PrepareSelectedProductModset.ps1",
+        "Invoke-A33SunkShipActivationProbe.ps1"
     )
     foreach ($name in $syntaxTargets) {
         $problems = @(Test-ScriptSyntax -Path (Join-Path $scriptDir $name))
@@ -175,13 +180,56 @@ try {
         $driverText.Contains('$captureManifest.session_id -cne $SessionId') -and
         $driverText.Contains('$captureManifest.capture_id -cne $CaptureId')
     )
+    $a33RunnerText=Get-Content -LiteralPath (Join-Path $scriptDir 'Invoke-A33SunkShipActivationProbe.ps1') -Raw
+    Assert-Case 'A33 launcher uses authoritative continue-save argv' (
+        $a33RunnerText.Contains("@('--continuelastsave', '--gdpr-compliant')") -and
+        $a33RunnerText.IndexOf("'--continuelastsave'") -lt $a33RunnerText.IndexOf("'--gdpr-compliant'") -and
+        $a33RunnerText.Contains('must contain --continuelastsave exactly once') -and
+        $a33RunnerText.Contains('must contain --gdpr-compliant exactly once')
+    )
+    Assert-Case 'A33 runner pins exact a729 and rejects ambiguous launch state' (
+        $a33RunnerText.Contains('870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad') -and
+        $a33RunnerText.Contains('OutDir must be absent or empty') -and
+        $a33RunnerText.Contains('Refusing a second game instance')
+    )
+    Assert-Case 'A33 runner restores continue pointer and independently verifies DLL' (
+        $a33RunnerText.Contains('WriteAllBytes($continueGamePath, $continueGamePriorBytes)') -and
+        $a33RunnerText.Contains('--collector-dll $resolvedCollector')
+    )
+    $a33VerifierText=Get-Content -LiteralPath (Join-Path $nativeRoot 'lanes\sunk_ship_history_live\tools\verify_activation_probe.py') -Raw
+    Assert-Case 'A33 verifier binds all writer-route and sentinel authority' (
+        $a33VerifierText.Contains('dccd61e7573317458980fc0796fcba2ba945a434fbacbf3303a588c620307a4a') -and
+        $a33VerifierText.Contains('d02f0f1aaf2369db9dc9529062f5e8f59f3f6f751fb9e4c0ab81d47dea1e1de0') -and
+        $a33VerifierText.Contains('authority v2 field set mismatch')
+    )
+    Assert-Case 'A33 verifier enforces exact schedule and unsigned pointer-free fields' (
+        $a33VerifierText.Contains('capture manifest does not have the exact D49/D50-only schedule') -and
+        $a33VerifierText.Contains('unsigned_int(word, 0xFFFFFFFF)') -and
+        $a33VerifierText.Contains('v2 field set mismatch')
+    )
     $f6OwnerText=Get-Content -LiteralPath (Join-Path $scriptDir 'Invoke-F6PausedShortProof.ps1') -Raw
-    Assert-Case 'F6 owner wrapper is acknowledgement-only and delegates exact live rung' (
-        $f6OwnerText.Contains('[Parameter(Mandatory=$true)][switch]$ConfirmPausedVisible') -and
+    Assert-Case 'F6 owner wrapper treats acknowledgement as optional and delegates exact live rung' (
+        $f6OwnerText.Contains('[switch]$ConfirmPausedVisible') -and
+        -not $f6OwnerText.Contains('[Parameter(Mandatory=$true)][switch]$ConfirmPausedVisible') -and
         $f6OwnerText.Contains('"-Rung", "paused-short-proof"') -and
         $f6OwnerText.Contains('"-Live"') -and
         $f6OwnerText.Contains('"-PinsFile"') -and
         -not $f6OwnerText.Contains('admissible_for_production = $true')
+    )
+    $x12OwnerText=Get-Content -LiteralPath (Join-Path $scriptDir 'Invoke-X12SpeedPauseActivationProbe.ps1') -Raw
+    $x12ActionText=Get-Content -LiteralPath (Join-Path $scriptDir 'Invoke-X12AuthenticatedActionSequence.ps1') -Raw
+    Assert-Case 'X12 owner starts autonomous exact-process action driver and replay regrade' (
+        $x12OwnerText.Contains('Invoke-X12AuthenticatedActionSequence.ps1') -and
+        $x12OwnerText.Contains('verify_x12_speed_pause_activation.py') -and
+        $x12OwnerText.Contains('BATTLE_PLAN_ENABLE_X12_SPEED_PAUSE_HOOK') -and
+        $x12OwnerText.Contains('--scheduled-domains-exact')
+    )
+    Assert-Case 'X12 action attempt binds exact process/window and never writes game memory' (
+        $x12ActionText.Contains('870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad') -and
+        $x12ActionText.Contains('GetWindowThreadProcessId') -and
+        $x12ActionText.Contains('ReadProcessMemory') -and
+        $x12ActionText.Contains('PostMessageW') -and
+        -not $x12ActionText.Contains('WriteProcessMemory')
     )
     Assert-Case 'speed root v2 gate passed exclusively to recorder' ($driverText.Contains('"--domain57-game-speed-gate-v2", $SpeedRootGatePath') -and -not $driverText.Contains('"--speed-root-gate"'))
     Assert-Case 'raw transcript file hash passed separately to recorder' ($driverText.Contains('"--domain57-game-speed-transcript-file-sha256", $SpeedEvidenceTranscriptFileSha256'))

@@ -1,0 +1,78 @@
+{
+  "schema": "a23-a7-wave5-production-closeout-v1",
+  "status": "STATIC_RE_AND_PRODUCTION_ENGINEERING_CLOSED_LIVE_STATE_RECEIPTS_PENDING",
+  "binary": {
+    "id": "hoi4.exe 1.19.2.0.a729",
+    "image_base": "0x140000000",
+    "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+  },
+  "ghidra": {
+    "job_id": "20260720T125311Z-w5-a23-a7-owner-route-production-closeou-b01b10dc",
+    "shard": "shard-18",
+    "manifest_sha256": "53a9a621442fec2faddf6bf4c6068c140e3e44d7f90ccb58fc4add07a8c8b9c4",
+    "roots": [
+      "0x14142F750",
+      "0x1419F1580",
+      "0x141431350",
+      "0x1419F22D0",
+      "0x141961DD0",
+      "0x1401CAE90",
+      "0x14220A3D0",
+      "0x1422083E0"
+    ]
+  },
+  "a23": {
+    "owner_fields": ["CProgram+0x18", "CProgram+0x170"],
+    "province_fields": ["CProgram+0x1C", "CProgram+0x174"],
+    "production_law": "two equal coherent object snapshots; duplicated owner and province equality; owner present in validated country table; repeated pointer conflicts poison the frame",
+    "traversal_owner_used": false,
+    "aliased_pointer_emission": "emit once under intrinsic duplicated owner",
+    "wire_schema_changed": false,
+    "fixture_probe": "extractor/native/project_progress_live_lane/tools/program_owner_probe.py",
+    "fixture_verifier": "extractor/native/project_progress_live_lane/tools/verify_program_owner_receipt.py",
+    "fixture_wrapper": "extractor/native/scripts/Invoke-A23ProgramOwnerFixture.ps1",
+    "live_receipt_present": false
+  },
+  "a7": {
+    "domain_id": 90,
+    "carrier": "CTA1/CTA2",
+    "join_key": "CFEXMember+0xD0 full EntityHandle equals generic-reference route key",
+    "evidence_environment": "BATTLE_PLAN_ENABLE_H_CONVOY_EVIDENCE_HOOK=1",
+    "evidence_snapshot_marker": "zero control-pair hash; rejected by production publisher",
+    "requires_prepublished_nonzero_member_and_route_custody": true,
+    "production_control_pair_pinned": false,
+    "production_activation_latch": false,
+    "fixture_verifier": "extractor/re_evidence/A6_A7_SUPPLY_CONVOY/verify_h_convoy_fixture.py",
+    "fixture_raw_role_cross_join": "registers -> member -> d49/d50 epoch; member client -> generic-registry slot -> concrete route object -> serializer endpoints; D70 raw vectors -> CTA2 mutation",
+    "route_source_custody": {
+      "manifest": "extractor/re_evidence/A6_A7_SUPPLY_CONVOY/H_CONVOY_ROUTE_SOURCE_CLOSEOUT_20260720.json",
+      "decisive_job_id": "20260720T064512Z-w4-h-convoy-reference-key-order-final-81329482",
+      "job_json_sha256": "d250fba6a57797d62f71043a26f64a683f43a76a3932d9446835b488aa95485b",
+      "semantic_request_sha256": "8e82ffc4ef2ff943caf237fb9ac0a75df19699f9af912f015df148c5da9ddd6a",
+      "artifact_manifest_sha256": "13ba6fc30850be81559f49cdab3569fde866ce06ec29789ffb5307874b09df31",
+      "resolver_decompile_sha256": "6ded7904dfb3b892721972f2a53adcdb72ddac8d9d8f85af94764903a3023fef",
+      "lookup_decompile_sha256": "86f8ae2455f65c246487ed38d02ce6af8163be9ec882b45a8279c31fc740944b"
+    },
+    "fixture_wrapper": "extractor/native/scripts/Invoke-HConvoyFixtureVerification.ps1",
+    "live_receipt_present": false
+  },
+  "remaining_external_actions": [
+    {
+      "id": "A23-D65-OWNER-EQUALITY",
+      "action": "one paused exact-a729 process and projects.json from the same raw hour",
+      "interpretation_required": false
+    },
+    {
+      "id": "H-CONVOY-CONTROL-PAIR",
+      "action": "one shared-baseline positive convoy loss arm and one no-loss control hour",
+      "interpretation_required": false
+    }
+  ],
+  "subagent_validation": {
+    "builds": false,
+    "tests": false,
+    "verifiers": false,
+    "formatters": false,
+    "game_launch": false
+  }
+}

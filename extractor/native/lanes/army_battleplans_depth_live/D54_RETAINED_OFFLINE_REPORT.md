@@ -1,6 +1,7 @@
 # D54 retained offline evidence inventory
 
-Status: **retained corpus narrowed; no remaining fixture retired**.
+Status: **retained corpus exhausted; all former reverse-engineering fixtures
+retired by exact a729 producer/consumer evidence**.
 
 Machine-readable inventory: `D54_RETAINED_OFFLINE_INVENTORY.json`
 Reproducer: `d54_retained_inventory.py`
@@ -42,11 +43,12 @@ legacy surrogate key `(army_id, generation, slot)` and 768 tombstones that have
 a prior live row under that surrogate key. This mechanically proves that the
 legacy delta corpus contains path mutation and deletion behavior.
 
-It does **not** prove the requested same-instance lifecycle. The 52/64 wire has
-no `order+0x244` instance ID, so pointer/slot reuse cannot be excluded. No
-retained record uses the current identity-bearing 60/88 wire. The fixture is
-therefore narrowed to one current-wire baseline, redraw, and deletion sequence;
-the existence of redraw and tombstone behavior no longer needs rediscovery.
+The 52/64 wire cannot by itself prove same-instance lifecycle because it has no
+`order+0x244` instance ID. That retained limitation is no longer an RE blocker:
+the exact a729 assignment/removal, serializer/loader, and order-identity chains
+prove the current identity-bearing law, and the production owner fixture covers
+in-place update, generation split, and identity-bearing tombstones. A new live
+sequence is optional behavioral corroboration only.
 
 ### Type-4 discrimination
 
@@ -55,17 +57,20 @@ orders in all three melted saves. The only substantive save is
 `SOV_1946_05_19_09_melted.hoi4` (SHA-256
 `7e2d7650fc3eb6d4f1442bad98e2c3fb79fdbe43b2bf32027a74b029233f77ee`):
 343 armies, 384 orders, and type counts 1/2/3/5 = 44/181/51/108. A type-4
-paradrop must still be created and captured at one authenticated live/save
-boundary.
+fixture is therefore absent from retained captures. Exact a729 consumers
+`order+0x70` element as source and `u32 order+0xB8` as destination; the
+serializer/loader preserve both fields. Production now carries exactly that
+pair. No human-created paradrop is required to determine the geometry.
 
 ### Membership equality and lifecycle
 
 The SOV save contains 3,514 scheduled-member references, but the retained D54
 stream wire predates assigned-division child IDs. Consequently there is no
 possible exact set-equality join between retained live rows and save membership,
-and no retained assignment/removal lifecycle. This is a schema absence, not a
-parser gap. The remaining fixture needs current 60/88 D54 rows and a same-paused
-save before/after one membership transition.
+and no retained assignment/removal lifecycle. This is a retained-schema
+absence, not a parser gap. Exact a729 mutation roots and the current pointer-free
+carrier now close the production law; a before/after live capture is optional
+acceptance evidence, not missing RE.
 
 ### Empty/inactive manager coverage
 
@@ -76,20 +81,18 @@ and production now emits the pointer-free `OGS1` census including zero-order
 armies. See
 `../army_oob_orders_battleplans_live/ORDERS_MANAGER_SCALARS_RE_20260720.md`.
 
-## Exact remaining human boundary
+## Human-input disposition after evidence exhaustion
 
-1. In one paused session, capture a type-2 order on the current D54 wire at
-   baseline, after extending/shortening it, and after deletion. The same army ID
-   and `+0x244` instance ID must span baseline/redraw, the ordered path must
-   change within one generation, and the old identity must tombstone on delete.
-2. Create one type-4 paradrop and capture its raw live geometry plus a melt made
-   at that same paused boundary. Promote geometry only on exact live/save
-   agreement; otherwise keep type 4 unsupported.
-3. At one paused boundary, capture the exact assigned-division ID set for one
-   order and the matching save scheduled-member set; then repeat after one
-   assignment and one removal.
+No human input remains for X1/X8 reverse engineering or production semantics.
+The formerly requested redraw/delete, paradrop, and membership transitions are
+retained as optional acceptance rows only. They cannot activate or change the
+already authenticated production law. See
+`X1_X8_TYPE1_TYPE4_SCALAR_RE_20260720.json` and
+`X1_X8_PRODUCTION_CLOSEOUT_20260720.json`.
+
 The 510.6 GB compressed logical corpus is an explicit non-human, machine-load
 deferment rather than a reverse-engineering fixture. Its sampled records all use
 the legacy precursor schema, so it cannot supply the missing `+0x244`, assigned
 IDs, or exact active fields; a future idle-time full sweep may only discover
-additional legacy type occurrences or surrogate lifecycle candidates.
+additional legacy type occurrences or surrogate lifecycle candidates and is not
+a production-promotion prerequisite.

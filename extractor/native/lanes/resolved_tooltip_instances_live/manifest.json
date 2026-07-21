@@ -1,4 +1,6 @@
 {
+  "status": "STALE_NOT_PROMOTION_AUTHORITY",
+  "disposition": "This manifest pins pre-TTI2 inputs and is retained only as historical provenance. Wave5 integration and automation now live outside this stale hash set; do not refresh or promote until H-A26 and root central validation pass.",
   "artifact_manifest_sha256": "89897f3ac71c7cf8c81c4238bbeabfcb81146efefbc3363f568109323844df2a",
   "files": [
     {

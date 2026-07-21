@@ -33,6 +33,10 @@ Key paths (verified against a real 1.19 melt + adversarial Codex pass):
                                               target_state } } ... }
           phases = { "phase_a" "phase_b" ... } resources } ... } }
 
+  countries.<TAG>.tokens = {
+      intel_source = { country pool id discriminant }
+      tokens = { <operation_token> = { "TARGET_TAG" ... } ... } }
+
   peace_conference = { ... }                  (TOP-LEVEL; empty in this save)
 
 REALITY NOTES:
@@ -47,6 +51,10 @@ REALITY NOTES:
     separate large graph structure; parse_diplo already summarizes operative
     coverage, so this module does not re-walk them.
   - ``captured``/``captured_by`` are rare; supported generically on operatives.
+  - ``tokens.tokens`` is persistent operation-token ownership, not a generic
+    engine token dictionary.  The outer ``intel_source`` is retained only as
+    an oracle validation reference; portable replay uses the exact
+    owner/token/target membership and the modset-bound static dictionary.
 
 stdlib only. Reuses the shared tokenizer via ``deep_common`` (read-only).
 """
@@ -334,6 +342,33 @@ def _parse_operations(tz, rec):
             rec["operations_priority"] = to_int(v)
 
 
+def _parse_operation_tokens(tz, rec):
+    """Parse the country-owned operation-token target sets.
+
+    The raw ``intel_source`` tuple is serializer/reference identity.  It is
+    useful for proving that the block belongs to this country, but is not a
+    portable replay identity and is therefore kept separate from ``owned``.
+    """
+    for k, op in iter_block_entries(tz):
+        if op is not LBRACE:
+            continue
+        if k == "intel_source":
+            rec["operation_token_source"] = collect_block(tz)
+        elif k == "tokens":
+            for token, token_op in iter_block_entries(tz):
+                if token_op is not LBRACE or not token:
+                    continue
+                targets = []
+                seen = set()
+                for target in read_scalar_list(tz):
+                    if target not in seen:
+                        seen.add(target)
+                        targets.append(target)
+                rec["operation_tokens"][token] = targets
+        else:
+            _skip_block_body(tz)
+
+
 # ---------------------------------------------------------------------------
 # per-country walk
 # ---------------------------------------------------------------------------
@@ -348,6 +383,7 @@ def _new_country_rec():
         "operatives": [], "recruitable_operatives": [],
         "operations_running": [], "operations_finished": [],
         "operations_priority": None,
+        "operation_tokens": {}, "operation_token_source": None,
     }
 
 
@@ -362,13 +398,17 @@ def _parse_one_country(tz, tag, by_tag):
             elif k == "operations":
                 _parse_operations(tz, rec)
                 has_intel = True
+            elif k == "tokens":
+                _parse_operation_tokens(tz, rec)
+                has_intel = True
             else:
                 _skip_block_body(tz)
         # scalars ignored
     # keep only countries that actually have an agency or operations of substance
     if (has_intel and (rec["agency_name"] or rec["operatives"]
                        or rec["operations_running"]
-                       or rec["cryptology"]["targets"])):
+                       or rec["cryptology"]["targets"]
+                       or rec["operation_tokens"])):
         by_tag[tag] = rec
 
 
@@ -420,6 +460,10 @@ def build(text, source, was_melted):
     total_captured = 0
     agencies_named = 0
     op_assign_total = op_assign_resolved = 0
+    operation_token_owner_count = 0
+    operation_token_membership_count = 0
+    operation_token_source_mismatch_count = 0
+    operation_token_source_shape_rejected_count = 0
 
     countries = {}
     for tag, rec in sorted(by_tag.items()):
@@ -433,6 +477,22 @@ def build(text, source, was_melted):
         total_decrypting += sum(
             1 for t in rec["cryptology"]["targets"] if t["decryption"])
         total_captured += sum(1 for o in rec["operatives"] if o["captured"])
+
+        operation_tokens = {
+            token: list(targets)
+            for token, targets in sorted(rec["operation_tokens"].items())
+        }
+        if operation_tokens:
+            operation_token_owner_count += 1
+            operation_token_membership_count += sum(
+                len(targets) for targets in operation_tokens.values())
+        source_ref = rec["operation_token_source"]
+        if source_ref is not None:
+            if source_ref.get("country") != tag:
+                operation_token_source_mismatch_count += 1
+            if any(source_ref.get(key) != expected for key, expected in (
+                    ("pool", "1"), ("id", "1"), ("discriminant", "0"))):
+                operation_token_source_shape_rejected_count += 1
 
         # cross-ref: do running-operation operative ids resolve to an operative?
         own_op_ids = {o["op_id"] for o in rec["operatives"] if o["op_id"]}
@@ -463,12 +523,17 @@ def build(text, source, was_melted):
                 "running": rec["operations_running"],
                 "finished": rec["operations_finished"],
             },
+            "operation_tokens": {
+                "owned": operation_tokens,
+            },
             "counts": {
                 "operatives": n_ops,
                 "recruitable": len(rec["recruitable_operatives"]),
                 "running_operations": len(rec["operations_running"]),
                 "finished_operations": len(rec["operations_finished"]),
                 "cryptology_targets": len(rec["cryptology"]["targets"]),
+                "operation_token_memberships": sum(
+                    len(targets) for targets in operation_tokens.values()),
             },
         }
 
@@ -491,6 +556,11 @@ def build(text, source, was_melted):
                 "cryptology": "cryptology.targets[].amount = accumulated "
                 "decryption points vs that target; decryption=true flags an "
                 "actively-decrypted target.",
+                "operation_tokens": "countries.<TAG>.tokens.tokens is the "
+                "persistent owner/token/target operation-token set. The raw "
+                "intel_source {country,pool,id,discriminant} tuple is an "
+                "owner-reference validation field and is deliberately not "
+                "projected into replay identity.",
                 "peace_conference": "top-level peace_conference is empty in this "
                 "save (no active conference).",
                 "portraits": "operative.gfx is a GFX sprite NAME, not image "
@@ -509,6 +579,12 @@ def build(text, source, was_melted):
                 "targets_being_decrypted": total_decrypting,
                 "operation_slots_total": op_assign_total,
                 "operation_slots_operative_resolved": op_assign_resolved,
+                "operation_token_owners": operation_token_owner_count,
+                "operation_token_memberships": operation_token_membership_count,
+                "operation_token_source_mismatches":
+                    operation_token_source_mismatch_count,
+                "operation_token_source_shape_rejections":
+                    operation_token_source_shape_rejected_count,
             },
         },
         "countries": countries,
@@ -531,6 +607,10 @@ def build(text, source, was_melted):
     lines.append(f"op slots      : {st['operation_slots_operative_resolved']}/"
                  f"{st['operation_slots_total']} operative ids resolved to an "
                  f"own operative")
+    lines.append(f"op tokens     : {st['operation_token_memberships']} memberships "
+                 f"across {st['operation_token_owners']} owners; "
+                 f"source mismatches={st['operation_token_source_mismatches']} "
+                 f"shape rejects={st['operation_token_source_shape_rejections']}")
     lines.append(f"peace conf    : active={peace.get('active')}")
     if ger:
         c = ger

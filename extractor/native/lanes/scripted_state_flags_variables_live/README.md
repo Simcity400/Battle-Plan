@@ -15,12 +15,32 @@ evaluator are implemented. The remaining empirical frame can be acquired with
 `../../scripts/Invoke-A38ScriptedGuiAcquisition.ps1`; the runner attaches to one
 exact-a729 process or launches `--continuelastsave`, retries the read-only
 manager scan, and applies `verify_a38_live_probe.py` to every candidate.
+Pass `-OwnerFixtureMatrix` to retain all attempts and require the same-process
+stable-nonempty, committed-empty, unavailable, and prior-to-current removal
+matrix through `verify_a38_owner_fixture.py`; single-capture mode remains
+diagnostic convenience only.
 
 An accepted raw capture is intentionally not d84 authority. The in-process
 producer must still compile every required engine result and cross the H4CT
 winner authorizer. `collector::AuthenticatedA38FrameSource` checks exact manager
-order, effective registry inventories, winner identities, and the exact
-prior-snapshot tombstone set before compact encoding. See
+order, effective registry inventories, winner identities, and tombstones
+derived from an opaque previously committed manager receipt before compact
+encoding. The dormant exact-a729 producer now hooks exact owner
+the sole shared A25 setter detour, and joins images through the shared generic
+sprite-setter observer. It seals a pointer-free current-manager/materialized-
+value receipt only after the owner returns, with a strictly increasing
+same-process producer sequence. The collector regrades that receipt against
+H4CT winners/registry coverage before d84 encoding; arbitrary caller-supplied
+current order is not accepted. Production activation remains compile-time
+false pending the live fixture matrix. Supplemental exact-a729 lifecycle evidence
+proves the rebuild temporarily zeroes the manager before repopulation, so a
+header-only zero is unavailable. The diagnostic probe admits raw measured-empty
+only when manager generation `+0x68` is stable and non-sentinel around the
+complete snapshot; portable publication still requires the in-process
+authorizer. The `+0xA50` rows cache resolved element/property names, not final
+property values; exact text/image/frame/layout values must be observed at
+synchronized widget consumer
+boundaries or remain unavailable. See
 `../../../documents/dossiers/A38_AUTONOMOUS_LIVE_ACQUISITION_20260720.md`.
 
 ## Production-ready slice
@@ -179,7 +199,8 @@ It supports:
 - raw fixed-point script variables;
 - named flags when key/value/date are known;
 - token-only flags when only the live engine token is known;
-- opaque delayed-event/scripted-GUI rows once roots are pinned.
+- legacy opaque delayed-event/scripted-GUI badge kinds for decoding older d51
+  evidence; the A13 production carrier never emits those families.
 
 Fail-closed compact status bits reserved lane-locally:
 
@@ -206,8 +227,9 @@ rustc --edition=2021 --test $source -o $tests
 & $tests --nocapture
 ```
 
-The lane-local unresolved delayed-event and scripted-GUI bits remain badges;
-the shared framing parser does not reinterpret those domain-51 status flags.
+The lane-local unresolved delayed-event and scripted-GUI bits remain legacy
+decode badges; the shared framing parser does not reinterpret those domain-51
+status flags. The A13-only production carrier requests neither family.
 Certification duration is explicit and inclusive: `--min-game-hours N` means
 the raw stream must contain `N + 1` consecutive healthy closed hours. The gate
 accepts unrelated canonical domains in the complete collector stream, but
@@ -244,8 +266,7 @@ hours, and keeps delayed-event/scripted-GUI unresolved-root badges out of
 partial/source failure. The replay proof packs the stream into
 `native_session.battleplan` and verifies that the embedded
 `collector_compact_stream` bytes match the source stream. The shared
-collector/recorder registration slot is wired for live proof; remaining
-completion claims must stay scoped to the validated slice.
+collector/recorder registration slot is wired for live proof.
 
 Shared live proof artifact:
 `extractor/native/runs/domain51_shared_live_20260701T163828/native_session_manifest.json`.
@@ -264,10 +285,10 @@ verify` accepted the resulting `native_session.battleplan`. The companion
 scope-container audit found exactly the manifest's world/country/state
 flag/variable bags plus `countries.*.delayed_event` and
 `countries.*.scripted_gui_random`; there are no additional manifest-listed
-province/unit/character/combat script flag or variable containers for this lane
-to chase. Whole-concept scripted-state completion remains `NOT COMPLETE`:
-delayed-event and scripted-GUI/open-state roots are exact positive-fixture
-blockers and must stay fail-closed opaque badge rows until those fixtures exist.
+province/unit/character/combat script flag or variable containers for A13 to
+chase. The old whole-concept classification bundled unrelated lifecycle and
+UI-materialization work into d51. Current ownership assigns those to d64/A19
+and d84/A38, so they are not A13 completion blockers.
 
 Delayed-event blocker proof:
 `extractor/native/runs/scripted_state_flags_variables_live_870ebf_20260701_delayed_event_blocker_v1/delayed_event_fixture_audit.json`.
@@ -291,44 +312,39 @@ raw save shapes needed for future validation:
   `months`, `originator`, and `scope`
 - `countries.<id>.scripted_gui_random`
 
-Until a fixture satisfies those contracts, delayed-event and scripted-GUI roots
-must remain opaque fail-closed badge rows only. These unresolved roots must not
-set `STATUS_PARTIAL_DATA` or `STATUS_SOURCE_UNAVAILABLE` for the validated
-country/global/state variable and flag subset.
+These contracts remain historical evidence for the separate d64/A19 and d84/A38
+owners. A13 neither emits their rows nor uses their absence to set
+`STATUS_PARTIAL_DATA` or `STATUS_SOURCE_UNAVAILABLE` on the validated
+country/global/state variable and flag snapshot.
 
-## Explicit non-claims
+## Current production disposition
 
-These are not production decoded by this lane yet:
+A13/d51 now owns and production-decodes the complete current global, country,
+and state variable/flag snapshot:
 
-- country flags: `CCountry + 0x230 -> CFlagManager` payload, date, value, and
-  most names are validated for current `870ebf`; two observed rows remain
-  token-only because their token dictionary text pointers failed read.
-- global variables/flags: current `870ebf` roots are pinned at
-  `CGameState + 0x980 -> CVariables` and `CGameState + 0x258 -> CFlagManager`;
-  shared DLL/Rust integration emits the validated slice.
-- state flags/variables: current `870ebf` roots are pinned at
-  `CState + 0x7F8 -> CVariables` and `CState + 0x540 -> CFlagManager`; shared
-  DLL/Rust integration emits token/date/value rows, and unresolved names remain
-  token-only/badged until a dictionary pass.
-- delayed events: `saved_event_target` is rejected as a validation proxy, and
-  the current save oracle has no non-empty `countries.*.delayed_event` fixture;
-  keep `STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED` fail-closed.
-- scripted GUI open state: save/audit rows establish why it matters for causal
-  replay, but no live production root is pinned here.
+- variables retain exact signed fixed5 `i64` values;
+- flags retain exact nonzero engine token, DateHour, and `u32` value;
+- a flag name is used only when authenticated; otherwise numeric token identity
+  remains available and no text is guessed. The current in-process collector
+  does not perform a dictionary-text join, so current production flags are
+  intentionally token-only;
+- independently acquired variable and flag rosters must agree exactly and every
+  scope must be measured or measured-empty;
+- the entire family is rejected if acquisition crosses the frame's engine-hour
+  boundary or any root/header/row/object identity tears;
+- compact rows are canonicalized by semantic identity, the recorder applies
+  exact baseline/delta/tombstone lifecycle, and replay exposes global, country,
+  and state exact values and flag states.
 
-## Integration patch plan
+Delayed-event lifecycle is d64/A19. Engine-materialized scripted-GUI runtime
+state is d84/A38. They are intentionally excluded from the A13 carrier and are
+not A13 production blockers. Other scope kinds positively observed in the
+engine scope resolver remain unavailable rather than being aliased to one of
+the three supported scopes.
 
-1. Keep domain id `51` as `scripted_state_flags_variables_live` in the registry.
-   Promote it from reserved/non-schedulable to active/schedulable only through
-   the orchestrator-owned registration slot.
-2. In the collector scheduled-hour path, iterate the existing validated country
-   identity rows and call the lane extractor on each `CCountry` object.
-3. Add global and state scope reads from the validated roots, then wrap the
-   domain-51 payload in the H4CR stream shape proven by
-   `scripted_state_domain51_stream.rs`.
-4. Add the recorder decode gate by moving or including `scripted_state_compact.rs`
-   and `scripted_state_domain51_gate.rs`, then add only the domain-51 decoder
-   dispatch/registration hook in shared recorder code.
-5. Promote country, global, and state roots from the lane-local proof artifacts;
-   keep delayed events and scripted GUI state fail-closed until separate proof
-   artifacts validate exact roots and zero guessed data.
+Current exact-20 static evidence, production wiring, capture contract, and
+human-input disposition are recorded in
+`../../../documents/dossiers/A13_SCRIPTED_STATE_PRODUCTION_CLOSEOUT_20260720.md`.
+The machine-readable capture contract is
+`../../../documents/dossiers/A13_RUNTIME_CAPTURE_CONTRACT_20260720.json`, with
+offline grader `verify_a13_runtime_capture.py`.

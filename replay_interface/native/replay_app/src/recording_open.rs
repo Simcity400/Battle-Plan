@@ -13,9 +13,9 @@ use std::sync::Arc;
 
 use replay_core::{
     CertifiedPrefoldSpoolDecoder, CertifiedPrefoldSpoolRequest, ContentManifest,
-    PortableDesignCatalog, PrefoldDecodeError, PrefoldSourceReceipt, PrefoldStreamIdentityMode,
-    PrefoldedSpool, PrefoldedSpoolEntry, RawFrame, RecordedCampaignIdentity, ReplaySource,
-    SourceError,
+    PackagedDecisionCatalog, PackagedG2EngineCapture, PortableDesignCatalog, PrefoldDecodeError,
+    PrefoldSourceReceipt, PrefoldStreamIdentityMode, PrefoldedSpool, PrefoldedSpoolEntry,
+    RawFrame, RecordedCampaignIdentity, ReplaySource, SourceError,
 };
 
 static PRODUCTION_DECODER: ProductionPrefoldWorker = ProductionPrefoldWorker;
@@ -391,8 +391,14 @@ impl ReplaySource for ProductReplaySource {
     fn campaign_identity(&self) -> Option<&RecordedCampaignIdentity> {
         self.inner.campaign_identity()
     }
+    fn g2_engine_capture(&self) -> Option<&PackagedG2EngineCapture> {
+        self.inner.g2_engine_capture()
+    }
     fn design_catalog(&self) -> Option<&Arc<PortableDesignCatalog>> {
         self.inner.design_catalog()
+    }
+    fn decision_catalog(&self) -> Option<&PackagedDecisionCatalog> {
+        self.inner.decision_catalog()
     }
     fn prefold_receipt(&self) -> Option<&PrefoldSourceReceipt> {
         self.inner.prefold_receipt()

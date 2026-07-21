@@ -3,13 +3,27 @@
 
 from __future__ import annotations
 
-import hashlib
+import argparse
 import json
+import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[3]
 HERE = Path(__file__).resolve().parent
+DOCUMENTS = HERE.parent
+if str(DOCUMENTS) not in sys.path:
+    sys.path.insert(0, str(DOCUMENTS))
+
+from production_seal_common import (  # noqa: E402
+    atomic_write_json,
+    canonical_sha256,
+    central_binding,
+    repo_sha256,
+    verify_central_attestation,
+    write_or_check_json,
+)
+
 D48_PARTIAL_HEALTH_PER_LEVEL = 10_000_000
 D48_U32_MAX = (1 << 32) - 1
 D48_U64_MAX = (1 << 64) - 1
@@ -18,10 +32,11 @@ A38_STATIC_AUTHORITY_JOB_ID = "20260720T020812Z-w3-a38-controller-owner-41ee5208
 A38_STATIC_AUTHORITY_RECEIPT_SHA256 = "7d0a36b1822faf85a949d628a79bc4a09f95dc9c9aa3ed4aecb715b72b0a9082"
 A38_MAX_GUI_ROWS = 65_536
 A38_MAX_RESULTS_PER_MAP = 131_072
+HELPER_REL = "extractor/documents/production_seal_common.py"
 
 
 def sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return repo_sha256(path)
 
 
 def load_json(rel: str) -> dict:
@@ -294,15 +309,90 @@ def validate_a38_handoff_snapshot(snapshot: object) -> tuple[str, ...]:
     return tuple(problems)
 
 
+def refresh_contract_bindings(contract: dict) -> None:
+    if (
+        contract.get("schema") not in {
+            "hoi4.extractor.production_replay_handoff.v2",
+            "hoi4.extractor.production_replay_handoff.v3",
+        }
+        or contract.get("status") != "PRODUCTION_ADMITTED"
+        or contract.get("production_admission") is not True
+    ):
+        raise AssertionError("refusing to refresh a non-admitted or foreign handoff contract")
+    upstream = contract.get("upstream_promotion_tuple", {})
+    expected_upstream_paths = {
+        "contract": "extractor/documents/production_promotion/contract.json",
+        "verifier": "extractor/documents/production_promotion/verify_promotion.py",
+        "verification": "extractor/documents/production_promotion/verification.json",
+        "manifest": "extractor/documents/production_promotion/manifest.json",
+    }
+    if any(upstream.get(key) != value for key, value in expected_upstream_paths.items()):
+        raise AssertionError("refusing to refresh an unexpected upstream promotion tuple")
+    for key, relative in expected_upstream_paths.items():
+        upstream[f"{key}_sha256"] = sha256(ROOT / relative)
+    promotion_verification = load_json(upstream["verification"])
+    passed = promotion_verification.get("checks_passed")
+    if promotion_verification.get("status") != "PASS" or type(passed) is not int or passed <= 0:
+        raise AssertionError("refusing to bind a non-passing upstream promotion result")
+    upstream["verification_result"] = f"PASS {passed}/{passed}"
+
+    pending = contract.get("implemented_pending_surfaces", [])
+    if len(pending) != 1 or pending[0].get("packets") != ["A38", "XUI22"]:
+        raise AssertionError("refusing to refresh an unexpected pending handoff set")
+    for relative in pending[0]["frozen_sources"]:
+        pending[0]["frozen_sources"][relative] = sha256(ROOT / relative)
+    bounded = contract["bounded_integration"]
+    for path_key, hash_key in (
+        ("source_file", "source_sha256"),
+        ("test_file", "test_sha256"),
+        ("recorder_main", "recorder_main_sha256"),
+    ):
+        bounded[hash_key] = sha256(ROOT / bounded[path_key])
+    bounded["domain_data_authority_sha256"] = sha256(
+        ROOT / "extractor/native/recorder_host/src/domain_data_authority.rs"
+    )
+    contract["schema"] = "hoi4.extractor.production_replay_handoff.v3"
+    contract["wave5_schema_extension"] = contract.pop(
+        "wave4_schema_extension",
+        "A38/XUI22/d84 implemented but not production-activated",
+    )
+    contract["central_rust_validation"] = central_binding(ROOT)
+    contract["test_matrix"]["provenance"] = (
+        "current Wave 5 source freeze; complete Rust validation is authenticated by the bound "
+        "root-owned central Final/All attestation"
+    )
+    contract["admission_gate"].pop("wave4_central_rust_validation", None)
+    contract["admission_gate"]["wave5_central_rust_validation"] = (
+        "bound PASS Final/All attestation required before refreeze"
+    )
+    atomic_write_json(HERE / "handoff_contract.json", contract)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--refresh-bindings",
+        action="store_true",
+        help="guardedly refresh current source bindings and deterministic outputs",
+    )
+    mode.add_argument("--check", action="store_true", help="verify without writing (the default)")
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
     checks: list[dict[str, str]] = []
     contract_rel = "extractor/documents/production_replay_handoff/handoff_contract.json"
     schema_rel = "extractor/documents/production_replay_handoff/replay_payload.schema.json"
     verifier_rel = "extractor/documents/production_replay_handoff/verify_handoff.py"
     contract = load_json(contract_rel)
+    if args.refresh_bindings:
+        refresh_contract_bindings(contract)
+        contract = load_json(contract_rel)
     schema = load_json(schema_rel)
 
-    require(contract["schema"] == "hoi4.extractor.production_replay_handoff.v2", "handoff contract schema", checks)
+    require(contract["schema"] == "hoi4.extractor.production_replay_handoff.v3", "handoff contract schema", checks)
     require(contract["status"] == "PRODUCTION_ADMITTED", "handoff status", checks)
     require(contract["production_admission"] is True, "production admission", checks)
     require(contract["no_new_binary_claims"] is True, "no new binary claims", checks)
@@ -311,8 +401,11 @@ def main() -> None:
     require(contract["bounded_integration"]["collector_change"] is False, "collector change prohibited", checks)
     require(contract["bounded_integration"]["compact_schema_change"] is False, "compact schema change prohibited", checks)
     require(contract["bounded_integration"]["binary_research"] is False, "binary research prohibited", checks)
+    central_hash = verify_central_attestation(
+        ROOT, contract["central_rust_validation"], checks, require
+    )
     pending = contract["implemented_pending_surfaces"]
-    require(len(pending) == 1, "one Wave 4 externally gated handoff", checks)
+    require(len(pending) == 1, "one Wave 5 externally gated handoff", checks)
     a38_pending = pending[0]
     require(a38_pending["packets"] == ["A38", "XUI22"] and a38_pending["domain_id"] == 84, "A38/XUI22 d84 handoff identity", checks)
     require(a38_pending["implementation"] == "COMPLETE_FAIL_CLOSED", "A38 implementation is fail closed", checks)
@@ -322,15 +415,13 @@ def main() -> None:
 
     upstream = contract["upstream_promotion_tuple"]
     expected_upstream = {
-        "contract": "433b0bd9d8d4574c809b5dabe47a7a74a9a0f9960b0f336d3f9c01b2c7252efa",
-        "verifier": "8fe28d9d6dd3c49ea5750c22d1d26e8bfd66273cae37a4c61f479371f070902b",
-        "verification": "9b7a119501ea2e5ea742999303dfd52eb9144813624535dafe87bcc0bb3b1218",
-        "manifest": "7446b76b2faf5a9e04426e07f20c87d60e8568efbd412f717e3249e74788efcc"
+        key: upstream[f"{key}_sha256"]
+        for key in ("contract", "verifier", "verification", "manifest")
     }
     frozen: dict[str, str] = {}
     for key, expected in expected_upstream.items():
         rel = upstream[key]
-        require(upstream[f"{key}_sha256"] == expected, f"declared upstream {key} hash", checks)
+        require(canonical_sha256(expected), f"declared upstream {key} canonical hash", checks)
         actual = sha256(ROOT / rel)
         require(actual == expected, f"frozen upstream {key} hash", checks)
         frozen[rel] = actual
@@ -342,7 +433,13 @@ def main() -> None:
     require(promotion["scope_zero_residuals"] is True, "upstream batch zero residuals", checks)
     require(promotion["global_extractor_completion"] is False, "upstream not global completion", checks)
     require(promotion_verification["status"] == "PASS", "upstream verification pass", checks)
-    require(promotion_verification["checks_passed"] == 106, "upstream verification 106/106", checks)
+    upstream_passed = promotion_verification["checks_passed"]
+    upstream_result = f"PASS {upstream_passed}/{upstream_passed}"
+    require(
+        upstream_passed == 121 and upstream.get("verification_result") == upstream_result,
+        "upstream verification 121/121",
+        checks,
+    )
     require(promotion_manifest["status"] == "PASS", "upstream manifest pass", checks)
     for key in ("contract", "verifier", "verification"):
         require(promotion_manifest["files"][upstream[key]] == expected_upstream[key], f"upstream manifest binds {key}", checks)
@@ -595,11 +692,11 @@ def main() -> None:
         require(token in carrier_source, f"A38 carrier token {token}", checks)
     for token in ("DOMAIN_ID: u16 = 84", 'u32::from_le_bytes(*b"SGR1")', "validate_envelope", "encode_source_unavailable", "decode_payload"):
         require(token in compact_source, f"A38 compact token {token}", checks)
-    for token in ("AuthenticatedA38FrameSource", "collect_and_encode_scripted_gui_runtime", "authenticate_runtime_frame", "authenticated_manager_order"):
+    for token in ("AuthenticatedA38FrameSource", "collect_and_encode_scripted_gui_runtime", "authenticate_runtime_frame", "AuthenticatedA38CurrentManagerSnapshot"):
         require(token in collector_source, f"A38 collector token {token}", checks)
     for token in (
         "scripted_gui_runtime_authority", "unknown or missing authority fields", "manager order does not exactly cover folded d84 rows",
-        "frame hour differs from the canonical replay index", "d84 rows omitted their authority envelope",
+        "frame hour differs from the canonical replay index", "snapshot scripted-GUI runtime payload omitted its exact d84 authority envelope",
         "tombstone_keys", "A38_STATIC_AUTHORITY_RECEIPT_SHA256",
     ):
         require(token in replay_world_source, f"A38 replay typed-consumer token {token}", checks)
@@ -620,29 +717,31 @@ def main() -> None:
 
     for rel in (contract_rel, schema_rel, verifier_rel):
         frozen[rel] = sha256(ROOT / rel)
+    frozen[contract["central_rust_validation"]["path"]] = central_hash
+    frozen[HELPER_REL] = sha256(ROOT / HELPER_REL)
     verification = {
-        "schema": "hoi4.extractor.production_replay_handoff.verification.v2",
+        "schema": "hoi4.extractor.production_replay_handoff.verification.v3",
         "status": "PASS",
         "production_admission": True,
-        "reason": "all seven promoted replay surface groups pass static handoff admission; A38/d84 is schema-wired fail-closed and remains externally gated from production activation; Rust validation is owned by the repository central gate",
-        "rust_validation": "EXTERNAL_CENTRAL_GATE_REQUIRED",
-        "upstream": "PASS 106/106",
+        "reason": "all seven promoted replay surface groups pass static handoff admission; A38/d84 is schema-wired fail-closed and remains externally gated from production activation; complete Rust validation is authenticated by the bound repository central Final/All attestation",
+        "rust_validation": contract["central_rust_validation"],
+        "upstream": upstream_result,
         "checks_passed": len(checks),
         "checks": checks,
         "frozen_inputs": dict(sorted(frozen.items()))
     }
     verification_path = HERE / "verification.json"
-    verification_path.write_text(json.dumps(verification, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_or_check_json(verification_path, verification, refresh=args.refresh_bindings)
     manifest_files = dict(frozen)
     manifest_files["extractor/documents/production_replay_handoff/verification.json"] = sha256(verification_path)
     manifest = {
-        "schema": "hoi4.extractor.production_replay_handoff.manifest.v2",
+        "schema": "hoi4.extractor.production_replay_handoff.manifest.v3",
         "status": "PASS",
         "production_admission": True,
-        "upstream": "PASS 106/106",
+        "upstream": upstream_result,
         "files": dict(sorted(manifest_files.items()))
     }
-    (HERE / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_or_check_json(HERE / "manifest.json", manifest, refresh=args.refresh_bindings)
     print(f"PASS {len(checks)}/{len(checks)}; production_admission=true")
 
 

@@ -133,7 +133,7 @@ def build_stream_from_proof(
         "compact_stream_bytes": len(stream),
         "dll_only": False,
         "production_position": (
-            "Lane-local compact materialization of save/live validated order+0x70/+0x78 path rows. "
+            "Lane-local compact materialization of save/live validated order+0x70 data with live count +0x7C. "
             "Shared DLL hot-loop feed and redraw lifecycle semantics remain open."
         ),
     }

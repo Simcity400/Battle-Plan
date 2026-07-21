@@ -11,7 +11,7 @@ pub mod a729_decision_grid;
 
 pub const DOMAIN_ID: u16 = 74;
 pub const DOMAIN_NAME: &str = "power_balance_presentation_live";
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 pub const AUTHORITY_EXACT_A729_POWER_BALANCE_CONTROLLER: u32 = 1;
 /// Static exact-20 authority receipt for the observer ABI. This does not
 /// activate live collection by itself.
@@ -28,8 +28,12 @@ pub const A729_CONTROLLER_EXACT20_MANIFEST_SHA256: [u8; 32] = [
 /// one-based frame normalization, and replay parity together. The portable
 /// codec may be exercised directly while live collection remains disabled.
 pub const A729_CONTROLLER_OBSERVER_ACTIVATED: bool = false;
+/// Separate scheduler latch. Evidence capture may install the real hook while
+/// this remains false; production d74 emission requires both latches plus a
+/// schedulable registry descriptor.
+pub const PRODUCTION_SCHEDULING_ENABLED: bool = false;
 pub const MAGIC: u32 = u32::from_le_bytes(*b"PBP2");
-pub const HEADER_LEN: usize = 76;
+pub const HEADER_LEN: usize = 128;
 pub const MAX_BALANCES: usize = 4_096;
 pub const MAX_DECISIONS_PER_BALANCE: usize = 131_072;
 pub const MAX_STRING_BYTES: usize = 65_536;
@@ -147,6 +151,19 @@ pub struct DecisionInput {
     pub target_tag_ref: Option<String>,
 }
 
+/// Pointer-free custody stamp for the production render frame which owns the
+/// panel pixels. PBP2 remains the typed companion to those pixels.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectedPresentStamp {
+    pub frame_hour: u64,
+    pub selected_present_candidate_id: u64,
+    pub selected_present_ordinal: u32,
+    pub selected_present_qpc_ticks: u64,
+    pub selected_present_cutoff_qpc_ticks: u64,
+    pub qpc_frequency_hz: u64,
+    pub selected_present_receipt_sha256: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PowerBalanceInput {
     pub source_record_id: String,
@@ -170,6 +187,8 @@ pub struct PowerBalanceInput {
     pub launcher_levels_text_ref: Option<String>,
     pub launcher_icon_sprite: Option<String>,
     pub launcher_glow_visible: bool,
+    /// Exact controller open byte joined to the GUI root visible bit.
+    pub panel_open: bool,
     pub bar_state: BarState,
     pub range_indicator_frame: u32,
     pub range_indicator_top_left: [i32; 2],
@@ -188,6 +207,10 @@ pub struct PowerBalancePresentationFrame {
     pub elapsed_wall_ms: u64,
     pub status_flags: u32,
     pub frame_hour: u64,
+    /// Sampled after terminal controller/grid materialization and before the
+    /// selected Present which owns this typed companion.
+    pub materialization_qpc_ticks: u64,
+    pub selected_present: SelectedPresentStamp,
     pub producer_manifest_sha256: [u8; 32],
     pub completeness_record_identity: String,
     pub expected_balance_count: u32,
@@ -206,6 +229,8 @@ pub enum CarrierError {
 pub trait ExactPowerBalancePresentationSource {
     fn is_exact_a729_power_balance_source(&self) -> bool;
     fn producer_manifest_sha256(&self) -> [u8; 32];
+    fn materialization_qpc_ticks(&self, frame_hour: u64) -> Result<u64, String>;
+    fn selected_present(&self, frame_hour: u64) -> Result<SelectedPresentStamp, String>;
     fn completeness_record_identity(&self, frame_hour: u64) -> Result<String, String>;
     fn expected_balance_count(&self, frame_hour: u64) -> Result<u32, String>;
     fn collect_frame(&self, frame_hour: u64) -> Result<Vec<PowerBalanceInput>, String>;
@@ -287,6 +312,7 @@ pub fn collect_and_encode<S: ExactPowerBalancePresentationSource>(
     let producer_manifest_sha256 = source.producer_manifest_sha256();
     if !A729_CONTROLLER_EXACT20_AUTHORITY_BOUND
         || !A729_CONTROLLER_OBSERVER_ACTIVATED
+        || !PRODUCTION_SCHEDULING_ENABLED
         || !source.is_exact_a729_power_balance_source()
         || producer_manifest_sha256 != A729_CONTROLLER_EXACT20_MANIFEST_SHA256
     {
@@ -296,6 +322,12 @@ pub fn collect_and_encode<S: ExactPowerBalancePresentationSource>(
         elapsed_wall_ms,
         status_flags,
         frame_hour,
+        materialization_qpc_ticks: source
+            .materialization_qpc_ticks(frame_hour)
+            .map_err(CarrierError::Source)?,
+        selected_present: source
+            .selected_present(frame_hour)
+            .map_err(CarrierError::Source)?,
         producer_manifest_sha256,
         completeness_record_identity: source
             .completeness_record_identity(frame_hour)
@@ -312,6 +344,29 @@ pub fn collect_and_encode<S: ExactPowerBalancePresentationSource>(
 pub fn validate_frame(frame: &PowerBalancePresentationFrame) -> Result<(), CarrierError> {
     if frame.producer_manifest_sha256 != A729_CONTROLLER_EXACT20_MANIFEST_SHA256 {
         return invalid("producer manifest hash does not match bound exact20 receipt");
+    }
+    if frame.status_flags != 0 {
+        return if frame.materialization_qpc_ticks == 0
+            && frame.expected_balance_count == 0
+            && frame.balances.is_empty()
+            && frame.completeness_record_identity.starts_with("unavailable:")
+        {
+            Ok(())
+        } else {
+            invalid("unavailable frame carries measured presentation state")
+        };
+    }
+    let selected = &frame.selected_present;
+    if selected.frame_hour != frame.frame_hour
+        || selected.selected_present_candidate_id == 0
+        || frame.materialization_qpc_ticks == 0
+        || selected.selected_present_qpc_ticks == 0
+        || selected.selected_present_cutoff_qpc_ticks < selected.selected_present_qpc_ticks
+        || frame.materialization_qpc_ticks > selected.selected_present_qpc_ticks
+        || selected.qpc_frequency_hz == 0
+        || !lower_sha256(&selected.selected_present_receipt_sha256)
+    {
+        return invalid("materialization/selected-Present custody is incomplete");
     }
     validate_nonempty(
         &frame.completeness_record_identity,
@@ -352,7 +407,7 @@ pub fn validate_frame(frame: &PowerBalancePresentationFrame) -> Result<(), Carri
         if !keys.insert((balance.country_tag.as_str(), balance.balance_id.as_str())) {
             return invalid("duplicate country/balance identity");
         }
-        if balance.display_ordinal != 0 || !balance.launcher_visible {
+        if balance.display_ordinal != 0 || !balance.launcher_visible || !balance.panel_open {
             return invalid("row is not the visible first matching balance");
         }
         validate_optional_required(
@@ -407,6 +462,35 @@ pub fn validate_frame(frame: &PowerBalancePresentationFrame) -> Result<(), Carri
     Ok(())
 }
 
+pub fn encode_unavailable(
+    frame_hour: u64,
+    elapsed_wall_ms: u64,
+    status_flags: u32,
+) -> Result<Vec<u8>, CarrierError> {
+    if status_flags == 0 {
+        return invalid("unavailable frame requires a nonzero status");
+    }
+    encode_payload(&PowerBalancePresentationFrame {
+        elapsed_wall_ms,
+        status_flags,
+        frame_hour,
+        materialization_qpc_ticks: 0,
+        selected_present: SelectedPresentStamp {
+            frame_hour,
+            selected_present_candidate_id: 0,
+            selected_present_ordinal: 0,
+            selected_present_qpc_ticks: 0,
+            selected_present_cutoff_qpc_ticks: 0,
+            qpc_frequency_hz: 0,
+            selected_present_receipt_sha256: String::new(),
+        },
+        producer_manifest_sha256: A729_CONTROLLER_EXACT20_MANIFEST_SHA256,
+        completeness_record_identity: format!("unavailable:{frame_hour}"),
+        expected_balance_count: 0,
+        balances: Vec::new(),
+    })
+}
+
 pub fn encode_payload(frame: &PowerBalancePresentationFrame) -> Result<Vec<u8>, CarrierError> {
     validate_frame(frame)?;
     let mut out = Vec::new();
@@ -416,11 +500,31 @@ pub fn encode_payload(frame: &PowerBalancePresentationFrame) -> Result<Vec<u8>, 
     put_u32(&mut out, frame.status_flags);
     put_u64(&mut out, frame.elapsed_wall_ms);
     put_u64(&mut out, frame.frame_hour);
+    put_u64(&mut out, frame.materialization_qpc_ticks);
+    put_u64(&mut out, frame.selected_present.frame_hour);
+    put_u64(
+        &mut out,
+        frame.selected_present.selected_present_candidate_id,
+    );
+    put_u32(&mut out, frame.selected_present.selected_present_ordinal);
+    put_u64(
+        &mut out,
+        frame.selected_present.selected_present_qpc_ticks,
+    );
+    put_u64(
+        &mut out,
+        frame.selected_present.selected_present_cutoff_qpc_ticks,
+    );
+    put_u64(&mut out, frame.selected_present.qpc_frequency_hz);
     out.extend_from_slice(&frame.producer_manifest_sha256);
     put_u32(&mut out, frame.expected_balance_count);
     put_u32(&mut out, frame.balances.len() as u32);
     put_u32(&mut out, HEADER_LEN as u32);
     put_string(&mut out, &frame.completeness_record_identity)?;
+    put_string(
+        &mut out,
+        &frame.selected_present.selected_present_receipt_sha256,
+    )?;
     for balance in &frame.balances {
         put_string(&mut out, &balance.source_record_id)?;
         put_string(&mut out, &balance.country_tag)?;
@@ -436,6 +540,7 @@ pub fn encode_payload(frame: &PowerBalancePresentationFrame) -> Result<Vec<u8>, 
         put_optional_string(&mut out, balance.launcher_levels_text_ref.as_deref())?;
         put_optional_string(&mut out, balance.launcher_icon_sprite.as_deref())?;
         put_u32(&mut out, u32::from(balance.launcher_glow_visible));
+        put_u32(&mut out, u32::from(balance.panel_open));
         put_u32(&mut out, balance.bar_state.code());
         put_u32(&mut out, balance.range_indicator_frame);
         put_i32(&mut out, balance.range_indicator_top_left[0]);
@@ -480,6 +585,13 @@ pub fn decode_payload(payload: &[u8]) -> Result<PowerBalancePresentationFrame, C
     let status_flags = reader.u32()?;
     let elapsed_wall_ms = reader.u64()?;
     let frame_hour = reader.u64()?;
+    let materialization_qpc_ticks = reader.u64()?;
+    let selected_present_frame_hour = reader.u64()?;
+    let selected_present_candidate_id = reader.u64()?;
+    let selected_present_ordinal = reader.u32()?;
+    let selected_present_qpc_ticks = reader.u64()?;
+    let selected_present_cutoff_qpc_ticks = reader.u64()?;
+    let qpc_frequency_hz = reader.u64()?;
     let producer_manifest_sha256 = reader.array32()?;
     let expected_balance_count = reader.u32()?;
     let balance_count = reader.u32()? as usize;
@@ -487,6 +599,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<PowerBalancePresentationFrame, C
         return invalid("header/count invalid");
     }
     let completeness_record_identity = reader.string()?;
+    let selected_present_receipt_sha256 = reader.string()?;
     let mut balances = Vec::with_capacity(balance_count);
     for _ in 0..balance_count {
         let source_record_id = reader.string()?;
@@ -503,6 +616,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<PowerBalancePresentationFrame, C
         let launcher_levels_text_ref = reader.optional_string()?;
         let launcher_icon_sprite = reader.optional_string()?;
         let launcher_glow_visible = reader.bool()?;
+        let panel_open = reader.bool()?;
         let bar_state = BarState::from_code(reader.u32()?)?;
         let range_indicator_frame = reader.u32()?;
         let range_indicator_top_left = [reader.i32()?, reader.i32()?];
@@ -549,6 +663,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<PowerBalancePresentationFrame, C
             launcher_levels_text_ref,
             launcher_icon_sprite,
             launcher_glow_visible,
+            panel_open,
             bar_state,
             range_indicator_frame,
             range_indicator_top_left,
@@ -566,6 +681,16 @@ pub fn decode_payload(payload: &[u8]) -> Result<PowerBalancePresentationFrame, C
         elapsed_wall_ms,
         status_flags,
         frame_hour,
+        materialization_qpc_ticks,
+        selected_present: SelectedPresentStamp {
+            frame_hour: selected_present_frame_hour,
+            selected_present_candidate_id,
+            selected_present_ordinal,
+            selected_present_qpc_ticks,
+            selected_present_cutoff_qpc_ticks,
+            qpc_frequency_hz,
+            selected_present_receipt_sha256,
+        },
         producer_manifest_sha256,
         completeness_record_identity,
         expected_balance_count,
@@ -581,6 +706,14 @@ fn validate_country_tag(tag: &str) -> Result<(), CarrierError> {
     } else {
         invalid("country tag is not a stable uppercase tag")
     }
+}
+
+fn lower_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value.bytes().any(|byte| byte != b'0')
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn validate_text_refs(refs: &ResolvedTextRefs) -> Result<(), CarrierError> {
@@ -770,6 +903,18 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
 
+    fn selected(frame_hour: u64) -> SelectedPresentStamp {
+        SelectedPresentStamp {
+            frame_hour,
+            selected_present_candidate_id: 1,
+            selected_present_ordinal: 0,
+            selected_present_qpc_ticks: 100,
+            selected_present_cutoff_qpc_ticks: 100,
+            qpc_frequency_hz: 10_000_000,
+            selected_present_receipt_sha256: "ab".repeat(32),
+        }
+    }
+
     fn balance() -> PowerBalanceInput {
         PowerBalanceInput {
             source_record_id: "d73:42:ITA:ITA_power_balance".into(),
@@ -786,6 +931,7 @@ mod tests {
             launcher_levels_text_ref: Some("a25:42:bop:launcher_levels".into()),
             launcher_icon_sprite: Some("GFX_bop_ITA_grand_council_side".into()),
             launcher_glow_visible: true,
+            panel_open: true,
             bar_state: BarState::MovingLeft,
             range_indicator_frame: 0,
             range_indicator_top_left: [198, 101],
@@ -821,6 +967,8 @@ mod tests {
             elapsed_wall_ms: 7,
             status_flags: 0,
             frame_hour: 42,
+            materialization_qpc_ticks: 90,
+            selected_present: selected(42),
             producer_manifest_sha256: A729_CONTROLLER_EXACT20_MANIFEST_SHA256,
             completeness_record_identity: "d74-complete:42".into(),
             expected_balance_count: 1,
@@ -842,6 +990,8 @@ mod tests {
             elapsed_wall_ms: 8,
             status_flags: 0,
             frame_hour: 43,
+            materialization_qpc_ticks: 90,
+            selected_present: selected(43),
             producer_manifest_sha256: A729_CONTROLLER_EXACT20_MANIFEST_SHA256,
             completeness_record_identity: "d74-complete:43:empty".into(),
             expected_balance_count: 0,
@@ -957,6 +1107,12 @@ mod tests {
         }
         fn producer_manifest_sha256(&self) -> [u8; 32] {
             A729_CONTROLLER_EXACT20_MANIFEST_SHA256
+        }
+        fn materialization_qpc_ticks(&self, _: u64) -> Result<u64, String> {
+            Ok(90)
+        }
+        fn selected_present(&self, frame_hour: u64) -> Result<SelectedPresentStamp, String> {
+            Ok(selected(frame_hour))
         }
         fn completeness_record_identity(&self, frame_hour: u64) -> Result<String, String> {
             Ok(format!("complete:{frame_hour}"))

@@ -335,7 +335,10 @@ fn materialized_execution_sha256(
                 let mut matches = frame.ordered_runtime_draws.iter().filter(|draw| match draw {
                     PreparedRuntimeDraw::Particle { ordered_draw, .. }
                     | PreparedRuntimeDraw::Entity { ordered_draw, .. }
-                    | PreparedRuntimeDraw::O04City { ordered_draw, .. } => ordered_draw == output,
+                    | PreparedRuntimeDraw::O04City { ordered_draw, .. }
+                    | PreparedRuntimeDraw::O05Building { ordered_draw, .. } => {
+                        ordered_draw == output
+                    }
                 });
                 let draw = matches
                     .next()

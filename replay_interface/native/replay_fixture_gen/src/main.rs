@@ -970,9 +970,45 @@ fn fx_naval_air_activity(seed: u64) -> Scenario {
             });
             snap["order_of_battle"]["fleets"] = json!([
                 {"id": 500, "owner": "ENG", "name": "Home Fleet", "leader": 44, "task_forces": [
-                    {"id": "501:1", "name": "Channel Patrol", "location_province": 3000, "owner": "ENG", "mission": "patrol", "ship_count": 8 + tick as i64, "dominant_hull_class": "capital"}
+                    {"id": "501:1", "name": "Channel Patrol", "location_province": 3000, "owner": "ENG", "mission": 1, "ship_count": 8 + tick as i64, "dominant_hull_class": "capital"}
                 ]}
             ]);
+            snap["order_of_battle"]["extra"] = json!({
+                "naval_missions_status_live": {
+                    "source": "C",
+                    "confidence": "validated_slice",
+                    "projection": "R2 order_of_battle.extra annotation",
+                    "task_force_existence_owner_domain": "oob_command_live",
+                    "ship_existence_owner_domain": "ships",
+                    "task_force_count": 1,
+                    "fixture_required_rows": 0,
+                    "oob_command_join_checked": true,
+                    "oob_command_orphan_rows": 0,
+                    "task_forces": [{
+                        "task_force_id": 501,
+                        "fleet_id": 500,
+                        "owner": "ENG",
+                        "owner_tag": "ENG",
+                        "owner_tag_db_id": 3,
+                        "location_province_id": 3000,
+                        "location_province": 3000,
+                        "strategic_region_id": 301,
+                        "ship_count": 8 + tick as i64,
+                        "dominant_hull_class": "capital",
+                        "mission_enum": 1,
+                        "mission_name": "PATROL",
+                        "mission_state": 0,
+                        "detached_activity": "none",
+                        "activity_key": null,
+                        "active_combat_epochs": null,
+                        "combat_membership_authority": null,
+                        "home_base_province_id": 3000,
+                        "repair_base_province_id": null,
+                        "sunk_convoys": 0,
+                        "oob_command_task_force_seen": true
+                    }]
+                }
+            });
             snap["order_of_battle"]["ships"] = json!([
                 {"instance_id": 7000, "definition": "battleship_1936", "category": "capital", "strength_hp": 100.0 - tick as f64, "organisation": 0.7}
             ]);
@@ -1312,10 +1348,16 @@ fn fx_country_management(seed: u64) -> Scenario {
                 "finished": []
             });
             // --- trade ---
-            ger["economy"]["resources"]["produced"] =
-                json!({"steel": 40.0 + tick as f64, "oil": 5.0, "tungsten": 2.0});
-            ger["economy"]["resources"]["exported"] = json!({"steel": 5.0});
-            ger["economy"]["resources"]["to_export"] = json!({"steel": 3.0});
+            ger["economy"]["resources"] = json!({
+                "complete": true,
+                "produced": {"oil": 5.0, "aluminium": 0.0, "rubber": 0.0, "tungsten": 2.0, "steel": 40.0 + tick as f64, "chromium": 0.0, "coal": 0.0},
+                "imported": {"oil": 0.0, "aluminium": 0.0, "rubber": 0.0, "tungsten": 0.0, "steel": 0.0, "chromium": 0.0, "coal": 0.0},
+                "used": {"oil": 3.0, "aluminium": 0.0, "rubber": 0.0, "tungsten": 1.0, "steel": 12.0, "chromium": 0.0, "coal": 0.0},
+                "exported": {"oil": 0.0, "aluminium": 0.0, "rubber": 0.0, "tungsten": 0.0, "steel": 5.0, "chromium": 0.0, "coal": 0.0},
+                "to_export": {"oil": 0.0, "aluminium": 0.0, "rubber": 0.0, "tungsten": 0.0, "steel": 3.0, "chromium": 0.0, "coal": 0.0},
+                "base_export": {"oil": 0.0, "aluminium": 0.0, "rubber": 0.0, "tungsten": 0.0, "steel": 8.0, "chromium": 0.0, "coal": 0.0},
+                "available_derived": {"oil": 2.0, "aluminium": 0.0, "rubber": 0.0, "tungsten": 1.0, "steel": 23.0 + tick as f64, "chromium": 0.0, "coal": 0.0}
+            });
             ger["diplomacy"]["lend_lease"] = json!([
                 {"contract_id": "10:2", "direction": "incoming", "counterpart": "SOV", "seller": "SOV", "buyer": "GER", "convoys": {"assigned": 4 + t, "total": 10}, "completed": false}
             ]);
@@ -1486,7 +1528,7 @@ fn fx_power_balance_combat(seed: u64) -> Scenario {
     let s = scenario(
         seed,
         "fx_power_balance_combat",
-        "BBA power-balance slider, naval/air combat detail, convoy losses, and raid priorities evolve.",
+        "BBA power-balance slider, naval/air combat detail, convoy-loss aggregates, and raid priorities evolve.",
         &["requirements:14", "plan:FXSTREAMS:power_balance_combat"],
         &["clock", "country_identity", "world_meta", "naval_air", "order_of_battle", "events", "raids"],
         &["By Blood Alone", "Man the Guns"],
@@ -1502,9 +1544,8 @@ fn fx_power_balance_combat(seed: u64) -> Scenario {
             snap["air_combats"] = json!([
                 {"air_combat_id": 8500, "strategic_region": 301, "attacker": "ENG", "defender": "GER", "attacker_planes": 100 - t, "defender_planes": 60}
             ]);
-            snap["world_events"]["sunk_convoys"] = json!([
-                {"month": 100 + t, "convoys": 2 + t, "killer_country": "GER", "owner": "ENG"}
-            ]);
+            // B4 history is absent until a fixture carries the exact authority
+            // sidecar; the independently recorded owner aggregate remains valid.
             snap["world_events"]["convoy_losses_by_owner"] = json!({"ENG": 10 + t});
             snap["raids"]["countries"] = json!([{"tag": "ENG", "priority": 2}]);
             snap["raids"]["counters"] =
@@ -1542,15 +1583,8 @@ fn fx_scripted_gui_vars(seed: u64) -> Scenario {
             snap["countries"]["USA"] = country("USA", false, "democratic", 361, 25.0);
             snap["countries"]["USA"]["extra"]["_r2_script_variables"] =
                 json!({"congress_support": 50.0 - t * 2.0, "war_readiness^0": 1.0});
-            snap["countries"]["GER"]["extra"]["scripted_gui_runtime"] = json!({
-                "GER_inner_circle_ui": {
-                    "visible": true,
-                    "enabled": true,
-                    "triggers": {"member_1_visible": tick >= 2},
-                    "properties": {"member_1": {"image": "GFX_inner_circle_member_1"}},
-                    "effect_enabled": {"member_1_click": tick >= 4}
-                }
-            });
+            // Runtime materialization is a separate exact d84 contract. This
+            // D51 variable/flag fixture deliberately carries no runtime rows.
             snap["world"]["variables"] = json!({"global_tension_mod": t, "campaign_phase^1": 3.0});
             snap["world"]["flags"] = json!({
                 "war_escalation_started": {"value": tick >= 6, "date": "1936.1.1.0"}
@@ -1958,7 +1992,7 @@ fn base_snapshot(
             "fired_events": [],
             "pending_events": [],
             "threat": [],
-            "sunk_convoys": [],
+            // Exact B4 history is optional and absent from the base fixture.
             "convoy_losses_by_killer": null,
             "convoy_losses_by_owner": null
         },
@@ -2006,12 +2040,9 @@ fn country(tag: &str, human: bool, party: &str, capital: i64, pp: f64) -> Value 
         "economy": {
             "factories": {"civ": 10, "mil": 5, "dockyard": 2, "under_construction": 0},
             "construction_queue": [],
-            "resources": {
-                "produced": {"steel": 10.0, "oil": 1.0, "aluminium": 0.0, "tungsten": 0.0, "chromium": 0.0, "rubber": 0.0, "coal": 0.0},
-                "exported": {},
-                "to_export": {},
-                "available_derived": {}
-            },
+            // X15 pools are an atomic exact family; scenarios that exercise
+            // them replace this object with all six canonical maps.
+            "resources": {},
             "fuel": {"current": 500.0, "max": 2000.0, "gain": 0.0, "cost": 0.0},
             "gross_ic_by_equipment": null,
             "logistics": null,

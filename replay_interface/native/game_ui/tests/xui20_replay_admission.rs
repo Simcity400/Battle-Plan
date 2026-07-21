@@ -34,6 +34,14 @@ fn side() -> LandCombatSideDetail {
         width_status: Leaf::Measured("unavailable_pending_x2_control".into()),
         width_observations: Leaf::Absent,
         current_loss_observations: Leaf::Absent,
+        leader_id: Leaf::Absent,
+        leader_status: Leaf::Measured("unavailable_panel_not_observed".into()),
+        effective_displayed_modifiers: Leaf::Absent,
+        effective_displayed_modifiers_status: Leaf::Measured(
+            "unavailable_panel_not_observed".into(),
+        ),
+        panel_capture_sequence: Leaf::Absent,
+        panel_observation_source: Leaf::Absent,
         counts_incomplete: Leaf::Measured(false),
         reserve_division_ids: Leaf::Measured(vec![30]),
         reserve_members_status: Leaf::Measured("exact".into()),
@@ -61,7 +69,8 @@ fn land() -> LandCombatPanel {
         defender: Leaf::Measured(side()),
         attacker_leader: Leaf::Absent,
         defender_leader: Leaf::Absent,
-        displayed_modifiers: Leaf::Absent,
+        attacker_displayed_modifiers: Leaf::Absent,
+        defender_displayed_modifiers: Leaf::Absent,
     }
 }
 
@@ -152,7 +161,9 @@ fn naval() -> NavalCombatRow {
         progress: Leaf::Absent,
         attacker_member_count: Leaf::Measured(1),
         defender_member_count: Leaf::Measured(1),
+        attacker_positioning_raw: Leaf::Measured(75_000),
         attacker_positioning: Leaf::Measured(0.75),
+        defender_positioning_raw: Leaf::Measured(65_000),
         defender_positioning: Leaf::Measured(0.65),
         attacker_anti_air_raw: Leaf::Measured(123_000),
         attacker_anti_air: Leaf::Measured(1.23),
@@ -224,17 +235,25 @@ fn exact_binding() -> Xui20CombatDetailLosses {
         sunk_convoys: Leaf::Measured(Vec::new()),
         convoy_terminal: Leaf::Unobtained,
         sunk_ships: Leaf::Measured(vec![SunkShipEventExact {
-            event_sequence: 1,
+            event_sequence: 2,
             combat_id: 9,
             combat_generation: 2,
-            victim_country_identity_raw: [2, 101],
-            killer_country_id_raw: 1,
+            victim_country_id_raw: 2,
+            attacker_country_id_raw: 101,
+            ui_source_country_id_raw: 1,
             sink_date_raw: 44,
             victim_member_battle_slot_index: 1,
             killed: true,
             assisted_kill: false,
+            victim_ship_reference_raw: [7, 8],
+            damage_source_reference_raw: [9, 10],
+            task_force_id_raw: 11,
+            terminal_context_raw: [12, 13],
+            cause_record_flag: false,
             ship_name: "HMS Exact".into(),
             ship_class_name: "Destroyer".into(),
+            attribution_source_name: "KMS Exact".into(),
+            attribution_source_class_name: "Cruiser".into(),
         }]),
         wars: Leaf::Measured(vec![war()]),
         war_relations: Leaf::Measured(Vec::new()),
@@ -420,6 +439,30 @@ fn naval_member_order_counts_and_country_sets_are_exact() {
     assert!(matches!(
         admit_xui20_replay(&binding).naval_active,
         Xui20SurfaceState::ExternalInputRequired { .. }
+    ));
+}
+
+#[test]
+fn naval_side_fixed_point_pairs_are_complete_and_exact() {
+    let mut binding = exact_binding();
+    binding.naval[0].attacker_anti_air_raw = Leaf::Unobtained;
+    assert!(matches!(
+        admit_xui20_replay(&binding).naval_active,
+        Xui20SurfaceState::ExternalInputRequired { .. }
+    ));
+
+    let mut binding = exact_binding();
+    binding.naval[0].attacker_positioning = Leaf::Measured(0.750_01);
+    assert!(matches!(
+        admit_xui20_replay(&binding).naval_active,
+        Xui20SurfaceState::Rejected { .. }
+    ));
+
+    let mut binding = exact_binding();
+    binding.naval[0].defender_anti_air = Leaf::Measured(0.99);
+    assert!(matches!(
+        admit_xui20_replay(&binding).naval_active,
+        Xui20SurfaceState::Rejected { .. }
     ));
 }
 

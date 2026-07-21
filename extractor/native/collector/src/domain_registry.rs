@@ -212,20 +212,14 @@ mod tests {
     }
 
     #[test]
-    fn a17_nuke_stockpile_transport_is_scheduled_from_exact_source() {
+    fn a17_nuke_stockpile_transport_is_reserved_until_live_acceptance() {
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
             assigned_descriptor_by_name("nuke_stockpile_live").map(|d| d.id),
             Some(83)
         );
-        assert_eq!(
-            registry.id_for_scheduled_name("nuke_stockpile_live"),
-            Some(83)
-        );
-        assert_eq!(
-            registry.by_id(83).map(|d| d.status),
-            Some(CompactDomainStatus::ValidatedSlice)
-        );
+        assert_eq!(registry.id_for_scheduled_name("nuke_stockpile_live"), None);
+        assert!(registry.by_id(83).is_none());
     }
 
     #[test]
@@ -261,6 +255,16 @@ mod tests {
             Some(90)
         );
         assert!(registry.by_id(90).is_none());
+    }
+
+    #[test]
+    fn b7_raid_instances_is_assigned_but_not_scheduled_before_live_acceptance() {
+        let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
+        assert_eq!(
+            assigned_descriptor_by_name("raid_instances_live").map(|d| d.id),
+            Some(91)
+        );
+        assert!(registry.by_id(91).is_none());
     }
 
     #[test]

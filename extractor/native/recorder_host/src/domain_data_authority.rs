@@ -29,7 +29,56 @@ use scripted_state_flags_variables_live_lane::scripted_gui_runtime_compact as sc
 use sunk_ship_history_live_lane as sunk86;
 
 use crate::campaign_identity::SessionHeaderIdentityObservation;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+
+pub(crate) const A29_PRODUCER_AUTHORITY: &str =
+    "a729_observed_research_ahead_producer_v1";
+pub(crate) const A29_EXECUTABLE_SHA256: &str =
+    "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
+pub(crate) const A29_EXACT_ROOT_JOB_ID: &str =
+    "20260720T124311Z-w5-a29-effective-producer-roots-e50d79d0";
+pub(crate) const A29_EXACT_ROOT_MANIFEST_SHA256: &str =
+    "82884a9a122f95298d5068bdb68590806346c2c1ac274ca3b56889bb0e5abcc2";
+pub(crate) const A29_SENTINEL_JOB_ID: &str =
+    "20260720T130641Z-w5-a29-hook-sentinels-and-substitution-i-9016d012";
+pub(crate) const A29_SENTINEL_DUMP_SHA256: &str =
+    "3fbca6726f09499e6cf1961969ae4154b9c265f8e5c688f8d939d8397387cee2";
+pub(crate) const A29_UI_YEAR_PRODUCER_RVA: u64 = 0x01BC_EA60;
+pub(crate) const A29_EFFECTIVE_VALUE_PRODUCER_RVA: u64 = 0x00AB_E4C0;
+pub(crate) const A29_LOCALIZATION_CONSUMER_RVA: u64 = 0x0223_0F20;
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn a29_expected_source_record_sha256(
+    callback_sequence: u64,
+    callback_thread_id: u32,
+    callback_qpc_ticks: u64,
+    qpc_frequency_hz: u64,
+    producer_game_hour_raw: i32,
+    technology_definition_index_raw: u32,
+    branch: u32,
+    quartet: (i64, i64, i64, i64),
+) -> [u8; 32] {
+    let mut canonical = Vec::with_capacity(512);
+    canonical.extend_from_slice(b"the game:a729:a29-observed-producer:v1\0");
+    canonical.extend_from_slice(A29_EXECUTABLE_SHA256.as_bytes());
+    canonical.extend_from_slice(A29_EXACT_ROOT_MANIFEST_SHA256.as_bytes());
+    canonical.extend_from_slice(A29_SENTINEL_DUMP_SHA256.as_bytes());
+    canonical.extend_from_slice(&callback_sequence.to_le_bytes());
+    canonical.extend_from_slice(&callback_thread_id.to_le_bytes());
+    canonical.extend_from_slice(&callback_qpc_ticks.to_le_bytes());
+    canonical.extend_from_slice(&qpc_frequency_hz.to_le_bytes());
+    canonical.extend_from_slice(&producer_game_hour_raw.to_le_bytes());
+    canonical.extend_from_slice(&technology_definition_index_raw.to_le_bytes());
+    canonical.extend_from_slice(&branch.to_le_bytes());
+    for value in [quartet.0, quartet.1, quartet.2, quartet.3] {
+        canonical.extend_from_slice(&value.to_le_bytes());
+    }
+    let digest = Sha256::digest(canonical);
+    let mut output = [0u8; 32];
+    output.copy_from_slice(&digest);
+    output
+}
 
 pub const SUPPORTED_DOMAIN_DATA_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
@@ -324,6 +373,7 @@ pub const COMPACT_TECH_SHARING_GROUP_MAX_MEMBERS: usize = 512;
 pub const COMPACT_TECH_SHARING_GROUP_MAX_MEMBER_TAG_DB_ID: u32 = 2_048;
 pub const COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE: u16 = compact_contract::naval_history::DOMAIN_ID;
 pub const COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE: u16 = compact_contract::rail_replay::DOMAIN_ID;
+pub const COMPACT_DOMAIN_RAID_INSTANCES_LIVE: u16 = compact_contract::raid_instances::DOMAIN_ID;
 
 pub const COMPACT_SUPPLY_LOGISTICS_HEADER_LEN: usize = 48;
 pub const COMPACT_SUPPLY_LOGISTICS_ROW_LEN: usize = 40;
@@ -617,7 +667,7 @@ pub const COMPACT_MAP_MAX_TAG_DB_ID: u32 = 1024;
 pub const COMPACT_MAP_MAX_RESOURCE_AMOUNT_RAW: i32 = 100_000_000;
 pub const COMPACT_MAP_MAX_BUILDING_LEVEL: u32 = 1_000;
 pub const COMPACT_WEATHER_MAX_REGION_ID: u32 = 304;
-pub const COMPACT_WEATHER_MAX_PHENOMENON: u32 = 16;
+pub const COMPACT_WEATHER_MAX_RAW_ACTIVITY_CANDIDATE: u32 = 16;
 pub const COMPACT_WEATHER_MAX_TEMPERATURE_RAW: i32 = 10_000_000;
 pub const COMPACT_WEATHER_MAX_TEMP_CHANGE_RAW: i32 = 10_000_000;
 pub const COMPACT_WEATHER_MAX_PRECIP_RAW: i32 = 100_000_000;
@@ -1156,8 +1206,8 @@ fn decode_compact_production_data_payload(
         cursor += 32;
     }
     // Parse the strict additive D11 trailer chain (`PLIC`, X4-P1 `PVJ1`,
-    // X4-P2 `PFR1`, exact-priority `PPR1`, XUI12 `PLS1`/`PEF1`, and
-    // completeness witnesses).
+    // X4-P2 `PFR1`, exact-priority `PPR1`, XUI12 `PLS1`/`PEF1`, X4-P5
+    // `PMI1`, completeness witnesses, and B2 `PCV1`).
     if cursor != payload.len() {
         decode_compact_production_trailers(
             offset,
@@ -1186,7 +1236,9 @@ fn decode_compact_production_trailers(
     let mut ppr_seen = false;
     let mut pls_seen = false;
     let mut pef_seen = false;
+    let mut pmi_seen = false;
     let mut pcp_seen = false;
+    let mut pcv_seen = false;
     while trailer_offset < payload.len() {
         let Some(magic) = payload.get(trailer_offset..trailer_offset.saturating_add(4)) else {
             summary.parse_errors.push(format!(
@@ -1278,6 +1330,21 @@ fn decode_compact_production_trailers(
                 base_lines,
                 summary,
             )
+        } else if magic == b"PMI1" {
+            if pmi_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production has duplicate PMI1 trailer"
+                ));
+                return;
+            }
+            pmi_seen = true;
+            decode_compact_production_mio_join_trailer(
+                offset,
+                payload,
+                trailer_offset,
+                base_lines,
+                summary,
+            )
         } else if magic == b"PCP1" {
             if pcp_seen {
                 summary.parse_errors.push(format!(
@@ -1295,6 +1362,21 @@ fn decode_compact_production_trailers(
                 base_lines,
                 summary,
             )
+        } else if magic == b"PCV1" {
+            if pcv_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: production has duplicate PCV1 trailer"
+                ));
+                return;
+            }
+            pcv_seen = true;
+            decode_compact_country_convoy_trailer(
+                offset,
+                payload,
+                trailer_offset,
+                country_count,
+                summary,
+            )
         } else {
             summary.parse_errors.push(format!(
                 "offset {offset}: production trailing bytes are not a known D11 trailer"
@@ -1304,6 +1386,245 @@ fn decode_compact_production_trailers(
         let Some(next) = next else { return };
         trailer_offset = next;
     }
+}
+
+fn decode_compact_production_mio_join_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    base_lines: &BTreeSet<(u32, u32, i32)>,
+    summary: &mut DomainDataDecodeSummary,
+) -> Option<usize> {
+    const HEADER_LEN: usize = 20;
+    const ROW_LEN: usize = 16;
+    let trailer = payload.get(trailer_offset..)?;
+    if trailer.len() < HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PMI1 trailer is truncated before its header"
+        ));
+        return None;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let segment_len = read_u32_le(trailer, 8) as usize;
+    let row_count = read_u32_le(trailer, 12) as usize;
+    let reserved = read_u32_le(trailer, 16);
+    let expected = HEADER_LEN.checked_add(row_count.checked_mul(ROW_LEN)?)?;
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || trailer.len() < segment_len
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PMI1 header/count/length is invalid"
+        ));
+        return None;
+    }
+    let mut seen = BTreeSet::new();
+    for row_index in 0..row_count {
+        let cursor = HEADER_LEN + row_index * ROW_LEN;
+        let key = (
+            read_u32_le(trailer, cursor),
+            read_u32_le(trailer, cursor + 4),
+            read_i32_le(trailer, cursor + 8),
+        );
+        let _mio_id = read_u32_le(trailer, cursor + 12);
+        if key.0 == 0 || (key.1 != 1 && key.1 != 2) || !base_lines.contains(&key) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PMI1 row {row_index} references an invalid or absent production line"
+            ));
+        }
+        if !seen.insert(key) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PMI1 row {row_index} duplicates line key {:?}",
+                key
+            ));
+        }
+    }
+    if &seen != base_lines {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PMI1 rows are not a bijection over the {} base production lines",
+            base_lines.len()
+        ));
+    }
+    add_compact_domain_data_unit(summary, 11, "production_mio_join_rows", row_count);
+    Some(trailer_offset + segment_len)
+}
+
+fn decode_compact_country_convoy_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    base_country_count: usize,
+    summary: &mut DomainDataDecodeSummary,
+) -> Option<usize> {
+    const HEADER_LEN: usize = 28;
+    const COUNTRY_ROW_LEN: usize = 40;
+    const VARIANT_ROW_LEN: usize = 16;
+    const RESERVATION_ROW_LEN: usize = 8;
+    const KNOWN_FLAGS: u32 = 0b1_1111;
+    const SCALE: i64 = 100_000;
+    const OWNED_RAW_CAP: i64 = 0x53E2_D620_FB40;
+    let trailer = payload.get(trailer_offset..)?;
+    if trailer.len() < HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PCV1 trailer is truncated before its header"
+        ));
+        return None;
+    }
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let segment_len = read_u32_le(trailer, 8) as usize;
+    let country_count = read_u32_le(trailer, 12) as usize;
+    let variant_count = read_u32_le(trailer, 16) as usize;
+    let reservation_count = read_u32_le(trailer, 20) as usize;
+    let reserved = read_u32_le(trailer, 24);
+    let expected = HEADER_LEN
+        .checked_add(country_count.checked_mul(COUNTRY_ROW_LEN)?)?
+        .checked_add(variant_count.checked_mul(VARIANT_ROW_LEN)?)?
+        .checked_add(reservation_count.checked_mul(RESERVATION_ROW_LEN)?)?;
+    if version != 1
+        || header_len != HEADER_LEN
+        || segment_len != expected
+        || reserved != 0
+        || country_count < base_country_count
+        || trailer.len() < segment_len
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PCV1 header/count/length is invalid"
+        ));
+        return None;
+    }
+    let country_base = HEADER_LEN;
+    let variant_base = country_base + country_count * COUNTRY_ROW_LEN;
+    let reservation_base = variant_base + variant_count * VARIANT_ROW_LEN;
+    let mut variants = Vec::with_capacity(variant_count);
+    for row_index in 0..variant_count {
+        let cursor = variant_base + row_index * VARIANT_ROW_LEN;
+        let variant_id = read_u32_le(trailer, cursor);
+        let equip_type = read_u32_le(trailer, cursor + 4);
+        let amount_raw = read_i64_le(trailer, cursor + 8);
+        if variant_id == 0 || variant_id >= (1 << 24) || equip_type != 70 || amount_raw < 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PCV1 variant row {row_index} has invalid id/type/amount"
+            ));
+        }
+        variants.push((variant_id, amount_raw));
+    }
+    let mut reservations = Vec::with_capacity(reservation_count);
+    for row_index in 0..reservation_count {
+        let cursor = reservation_base + row_index * RESERVATION_ROW_LEN;
+        let priority = read_i32_le(trailer, cursor);
+        let count = read_i32_le(trailer, cursor + 4);
+        if count < 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PCV1 reservation row {row_index} has negative count"
+            ));
+        }
+        reservations.push((priority, count));
+    }
+
+    let mut tags = BTreeSet::new();
+    let mut expected_variant_start = 0usize;
+    let mut expected_reservation_start = 0usize;
+    for row_index in 0..country_count {
+        let cursor = country_base + row_index * COUNTRY_ROW_LEN;
+        let tag_db_id = read_u32_le(trailer, cursor);
+        let flags = read_u32_le(trailer, cursor + 4);
+        let owned_raw = read_i64_le(trailer, cursor + 8);
+        let assigned = read_i32_le(trailer, cursor + 16);
+        let available = read_i32_le(trailer, cursor + 20);
+        let variant_start = read_u32_le(trailer, cursor + 24) as usize;
+        let variant_len = read_u32_le(trailer, cursor + 28) as usize;
+        let reservation_start = read_u32_le(trailer, cursor + 32) as usize;
+        let reservation_len = read_u32_le(trailer, cursor + 36) as usize;
+        let variant_end = variant_start.checked_add(variant_len);
+        let reservation_end = reservation_start.checked_add(reservation_len);
+        if tag_db_id == 0 || !tags.insert(tag_db_id) || flags & !KNOWN_FLAGS != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PCV1 country row {row_index} has invalid tag/flags"
+            ));
+        }
+        if variant_start != expected_variant_start
+            || reservation_start != expected_reservation_start
+            || variant_end.is_none_or(|end| end > variant_count)
+            || reservation_end.is_none_or(|end| end > reservation_count)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PCV1 country row {row_index} has noncanonical ranges"
+            ));
+            return None;
+        }
+        expected_variant_start += variant_len;
+        expected_reservation_start += reservation_len;
+        let complete = flags & 1 != 0;
+        let reservations_complete = flags & (1 << 1) != 0;
+        let cache_valid = flags & (1 << 2) != 0;
+        let cache_verified = flags & (1 << 3) != 0;
+        let classifier_exact = flags & (1 << 4) != 0;
+        if !complete {
+            if flags != 0
+                || owned_raw != 0
+                || assigned != 0
+                || available != 0
+                || variant_len != 0
+                || reservation_len != 0
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: PCV1 unreadable country row {row_index} carries data"
+                ));
+            }
+            continue;
+        }
+        if !classifier_exact
+            || cache_valid != cache_verified
+            || (!reservations_complete && reservation_len != 0)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PCV1 country row {row_index} has inconsistent witnesses"
+            ));
+        }
+        let Some(variant_end) = variant_end else { return None };
+        let Some(reservation_end) = reservation_end else {
+            return None;
+        };
+        let mut seen_variants = BTreeSet::new();
+        let sum_raw = variants[variant_start..variant_end]
+            .iter()
+            .try_fold(0i64, |sum, (variant_id, amount_raw)| {
+                if !seen_variants.insert(*variant_id) {
+                    return None;
+                }
+                Some(sum.saturating_add(*amount_raw).min(OWNED_RAW_CAP))
+            });
+        if sum_raw != Some(owned_raw)
+            || assigned < 0
+            || i64::from(assigned) > owned_raw / SCALE
+            || i64::from(available) != owned_raw / SCALE - i64::from(assigned)
+            || reservations[reservation_start..reservation_end]
+                .iter()
+                .any(|(_, count)| *count < 0 || i64::from(*count) > owned_raw / SCALE)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: PCV1 country row {row_index} fails the exact total law"
+            ));
+        }
+    }
+    if expected_variant_start != variant_count || expected_reservation_start != reservation_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: PCV1 country ranges do not cover all rows"
+        ));
+    }
+    add_compact_domain_data_unit(summary, 11, "country_convoy_rows", country_count);
+    add_compact_domain_data_unit(summary, 11, "country_convoy_variant_rows", variant_count);
+    add_compact_domain_data_unit(
+        summary,
+        11,
+        "country_convoy_reservation_rows",
+        reservation_count,
+    );
+    Some(trailer_offset + segment_len)
 }
 
 fn decode_compact_production_completeness_trailer(
@@ -2096,7 +2417,7 @@ fn decode_compact_tech_data_payload(
         let tag_db_id = read_u32_le(payload, cursor);
         let slot_index = read_u32_le(payload, cursor + 4);
         let _tech_handle_raw = read_u32_le(payload, cursor + 8);
-        let _tech_def_index_raw = read_u32_le(payload, cursor + 12);
+        let tech_def_index_raw = read_u32_le(payload, cursor + 12);
         let _progress_raw = read_u32_le(payload, cursor + 16);
         let flags = read_u32_le(payload, cursor + 20);
         let live_progress_raw = read_i64_le(payload, cursor + 24);
@@ -2111,7 +2432,7 @@ fn decode_compact_tech_data_payload(
                 "offset {offset}: tech active row {row_index} has invalid slot_index {slot_index}"
             ));
         }
-        if flags & !0b1111 != 0 {
+        if flags & !0b1_1111 != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: tech active row {row_index} has unknown flags {flags}"
             ));
@@ -2144,6 +2465,7 @@ fn decode_compact_tech_data_payload(
                 }
             }
         }
+        let mut ahead_quartet = None;
         if flags & (1 << 3) != 0 {
             if cursor.saturating_add(32) > payload.len() {
                 summary.parse_errors.push(format!(
@@ -2155,6 +2477,7 @@ fn decode_compact_tech_data_payload(
             let penalty_raw = read_i64_le(payload, cursor + 8);
             let reduction_raw = read_i64_le(payload, cursor + 16);
             let reduced_penalty_raw = read_i64_le(payload, cursor + 24);
+            ahead_quartet = Some((years_raw, penalty_raw, reduction_raw, reduced_penalty_raw));
             if [years_raw, penalty_raw, reduction_raw, reduced_penalty_raw]
                 .iter()
                 .any(|value| !(0..=10_000_000_000i64).contains(value))
@@ -2165,6 +2488,71 @@ fn decode_compact_tech_data_payload(
             }
             cursor += 32;
             add_compact_domain_data_unit(summary, 13, "effective_ahead_rows", 1);
+        }
+        if flags & (1 << 4) != 0 {
+            if flags & (1 << 3) == 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: tech active row {row_index} has A29 provenance without an ahead quartet"
+                ));
+                return;
+            }
+            if cursor.saturating_add(72) > payload.len() {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: tech active row {row_index} A29 provenance is truncated"
+                ));
+                return;
+            }
+            let authority = read_u32_le(payload, cursor);
+            let branch = read_u32_le(payload, cursor + 4);
+            let callback_sequence = read_u64_le(payload, cursor + 8);
+            let callback_thread_id = read_u32_le(payload, cursor + 16);
+            let producer_game_hour_raw = read_i32_le(payload, cursor + 20);
+            let callback_qpc_ticks = read_u64_le(payload, cursor + 24);
+            let qpc_frequency_hz = read_u64_le(payload, cursor + 32);
+            let source_sha = &payload[cursor + 40..cursor + 72];
+            let expected_source_sha = ahead_quartet.map(|quartet| {
+                a29_expected_source_record_sha256(
+                    callback_sequence,
+                    callback_thread_id,
+                    callback_qpc_ticks,
+                    qpc_frequency_hz,
+                    producer_game_hour_raw,
+                    tech_def_index_raw,
+                    branch,
+                    quartet,
+                )
+            });
+            if authority != 1
+                || !matches!(branch, 0 | 1 | 2)
+                || match (branch, ahead_quartet) {
+                    (0, Some((years, penalty, reduction, reduced_penalty))) => {
+                        years != 0 || penalty != 0 || reduction < 0 || reduced_penalty != 0
+                    }
+                    (1, Some((_, penalty, reduction, reduced_penalty))) => {
+                        reduction != 0 || reduced_penalty != penalty
+                    }
+                    (2, Some((_, _, reduction, _))) => reduction <= 0,
+                    _ => true,
+                }
+                || callback_sequence == 0
+                || callback_thread_id == 0
+                || producer_game_hour_raw <= 0
+                || callback_qpc_ticks == 0
+                || qpc_frequency_hz == 0
+                || source_sha.iter().all(|byte| *byte == 0)
+                || expected_source_sha
+                    .is_none_or(|expected| source_sha != expected.as_slice())
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: tech active row {row_index} A29 provenance is invalid"
+                ));
+            }
+            cursor += 72;
+            add_compact_domain_data_unit(summary, 13, "observed_ahead_provenance_rows", 1);
+        } else if flags & (1 << 3) != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech active row {row_index} has an unauthenticated ahead quartet"
+            ));
         }
     }
     if cursor != payload.len() {
@@ -7376,11 +7764,11 @@ fn decode_compact_resolved_tooltip_instances_live_data_payload(
     };
     add_decoder_status(summary, frame.status_flags);
     let instance_count = frame.instances.len();
-    let row_count = frame
+    let final_blob_count = frame
         .instances
         .iter()
-        .map(|instance| instance.rows.len())
-        .sum::<usize>();
+        .filter(|instance| !instance.final_resolved_text.is_empty())
+        .count();
     if let Some(domain) = summary.per_domain.get_mut(&tooltip72::DOMAIN_ID) {
         domain.status_flags_or |= frame.status_flags;
         domain.data_rows_total = domain.data_rows_total.saturating_add(instance_count as u64);
@@ -7397,8 +7785,8 @@ fn decode_compact_resolved_tooltip_instances_live_data_payload(
     add_compact_domain_data_unit(
         summary,
         tooltip72::DOMAIN_ID,
-        "resolved_tooltip_rows",
-        row_count,
+        "resolved_tooltip_final_blobs",
+        final_blob_count,
     );
 }
 
@@ -11744,6 +12132,47 @@ fn decode_compact_sunk_convoy_history_data_payload(
     );
 }
 
+fn decode_compact_raid_instances_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    if payload.len() >= 16 {
+        add_decoder_status(summary, read_u32_le(payload, 12));
+    }
+    let decoded = match compact_contract::raid_instances::decode_payload(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: raid_instances RID1 payload invalid: {error}"
+            ));
+            return;
+        }
+    };
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_RAID_INSTANCES_LIVE)
+    {
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(decoded.parents.len() as u64)
+            .saturating_add(decoded.children.len() as u64);
+        domain.status_flags_or |= decoded.status_flags;
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_RAID_INSTANCES_LIVE,
+        "raid_parent_rows",
+        decoded.parents.len(),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_RAID_INSTANCES_LIVE,
+        "raid_instance_rows",
+        decoded.children.len(),
+    );
+}
+
 fn decode_compact_rail_replay_state_data_payload(
     offset: usize,
     payload: &[u8],
@@ -12441,6 +12870,8 @@ fn decode_compact_supply_logistics_attrition_data_payload(
     let mut decoded_badge_rows = 0usize;
     let mut decoded_csupply_input_rows = 0usize;
     let mut decoded_country_disrupted_supply_rows = 0usize;
+    let mut decoded_country_disrupted_supply_live_rows = 0usize;
+    let mut decoded_country_disrupted_supply_tombstones = 0usize;
     let mut seen_provinces = BTreeSet::new();
     let mut seen_divisions = BTreeSet::new();
     let mut seen_csupply_input_provinces = BTreeSet::new();
@@ -12764,6 +13195,8 @@ fn decode_compact_supply_logistics_attrition_data_payload(
                     ));
                 }
                 if deleted_id.is_some() {
+                    decoded_country_disrupted_supply_tombstones =
+                        decoded_country_disrupted_supply_tombstones.saturating_add(1);
                     if flags != 0
                         || value_a_raw != 0
                         || value_b_raw != 0
@@ -12777,6 +13210,8 @@ fn decode_compact_supply_logistics_attrition_data_payload(
                     }
                     continue;
                 }
+                decoded_country_disrupted_supply_live_rows =
+                    decoded_country_disrupted_supply_live_rows.saturating_add(1);
                 if flags != COMPACT_SUPPLY_ROW_FLAG_COUNTRY_DISRUPTED_SUPPLY_EXACT {
                     summary.parse_errors.push(format!(
                         "offset {offset}: supply logistics disrupted row {row_index} has invalid flags {flags:#x}"
@@ -12948,7 +13383,7 @@ fn decode_compact_supply_logistics_attrition_data_payload(
                 ));
             }
         }
-        if decoded_country_disrupted_supply_rows > 0
+        if decoded_country_disrupted_supply_live_rows > 0
             && !has_country_disrupted_source_available
         {
             summary.parse_errors.push(format!(
@@ -12979,7 +13414,13 @@ fn decode_compact_supply_logistics_attrition_data_payload(
         summary,
         44,
         "supply_country_disrupted_supply_rows",
-        decoded_country_disrupted_supply_rows,
+        decoded_country_disrupted_supply_live_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        44,
+        "supply_country_disrupted_supply_tombstones",
+        decoded_country_disrupted_supply_tombstones,
     );
     add_compact_domain_data_unit(
         summary,
@@ -14415,7 +14856,7 @@ fn decode_compact_weather_data_payload(
         let flags = read_u32_le(payload, cursor + 4);
         let temperature_raw = read_i32_le(payload, cursor + 8);
         let phenomenon = read_u32_le(payload, cursor + 12);
-        let _next_weather_change_raw = read_u32_le(payload, cursor + 16);
+        let next_weather_change_raw = read_u32_le(payload, cursor + 16);
         let active_modifier_count = read_u32_le(payload, cursor + 20);
         let intensity = read_u32_le(payload, cursor + 24);
         let row_reserved = read_u32_le(payload, cursor + 28);
@@ -14434,6 +14875,21 @@ fn decode_compact_weather_data_payload(
                 "offset {offset}: weather row {row_index} has unknown flags {flags}"
             ));
         }
+        let named_weather_count = [
+            COMPACT_WEATHER_REGION_FLAG_RAIN_LIGHT,
+            COMPACT_WEATHER_REGION_FLAG_RAIN_HEAVY,
+            COMPACT_WEATHER_REGION_FLAG_SNOW,
+            COMPACT_WEATHER_REGION_FLAG_BLIZZARD,
+            COMPACT_WEATHER_REGION_FLAG_SANDSTORM,
+        ]
+        .into_iter()
+        .filter(|flag| flags & *flag != 0)
+        .count();
+        if named_weather_count > 1 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather row {row_index} overlaps mutually-exclusive named weather flags"
+            ));
+        }
         let active_flag = (flags & (1 << 5)) != 0;
         let phenomenon_flag = (flags & (1 << 6)) != 0;
         if active_flag != phenomenon_flag {
@@ -14445,17 +14901,22 @@ fn decode_compact_weather_data_payload(
             computed_active_regions = computed_active_regions.saturating_add(1);
             if !active_flag {
                 summary.parse_errors.push(format!(
-                    "offset {offset}: weather row {row_index} has active phenomenon without active flag"
+                    "offset {offset}: weather row {row_index} has nonzero raw +0x78 activity candidate without active flag"
                 ));
             }
         } else if active_flag {
             summary.parse_errors.push(format!(
-                "offset {offset}: weather row {row_index} has active flag without phenomenon"
+                "offset {offset}: weather row {row_index} has active flag without raw +0x78 activity candidate"
             ));
         }
-        if phenomenon > COMPACT_WEATHER_MAX_PHENOMENON {
+        if phenomenon > COMPACT_WEATHER_MAX_RAW_ACTIVITY_CANDIDATE {
             summary.parse_errors.push(format!(
-                "offset {offset}: weather row {row_index} has invalid phenomenon {phenomenon}"
+                "offset {offset}: weather row {row_index} has invalid raw +0x78 activity candidate {phenomenon}"
+            ));
+        }
+        if next_weather_change_raw > i32::MAX as u32 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather row {row_index} has invalid signed transition expiry {next_weather_change_raw}"
             ));
         }
         if !(-COMPACT_WEATHER_MAX_TEMPERATURE_RAW..=COMPACT_WEATHER_MAX_TEMPERATURE_RAW)
@@ -14999,6 +15460,9 @@ pub fn summarize_domain_data_payload(
                 &mut summary,
             )
         }
+        COMPACT_DOMAIN_RAID_INSTANCES_LIVE => {
+            decode_compact_raid_instances_data_payload(offset, payload, &mut summary)
+        }
         other => summary.parse_errors.push(format!(
             "offset {offset}: unsupported domain data payload for domain {other}"
         )),
@@ -15288,7 +15752,7 @@ mod tests {
         for value in [47, 0b111, 17, 3] {
             push_u32(&mut payload, value);
         }
-        for value in [47, 1, 717, 717, 250, 0b1111] {
+        for value in [47, 1, 717, 717, 250, 0b1_1111] {
             push_u32(&mut payload, value);
         }
         payload.extend_from_slice(&125_000i64.to_le_bytes());
@@ -15297,6 +15761,23 @@ mod tests {
         for raw in [150_000i64, 300_000, 50_000, 200_000] {
             payload.extend_from_slice(&raw.to_le_bytes());
         }
+        push_u32(&mut payload, 1); // exact observed-producer authority
+        push_u32(&mut payload, 2); // reduced localization branch
+        payload.extend_from_slice(&1u64.to_le_bytes()); // callback sequence
+        push_u32(&mut payload, 2); // callback thread id
+        payload.extend_from_slice(&43_800_024i32.to_le_bytes());
+        payload.extend_from_slice(&3u64.to_le_bytes()); // callback QPC
+        payload.extend_from_slice(&10_000_000u64.to_le_bytes()); // QPC frequency
+        payload.extend_from_slice(&a29_expected_source_record_sha256(
+            1,
+            2,
+            3,
+            10_000_000,
+            43_800_024,
+            717,
+            2,
+            (150_000, 300_000, 50_000, 200_000),
+        ));
 
         let mut summary = DomainDataDecodeSummary {
             domain_id: 13,
@@ -15313,6 +15794,26 @@ mod tests {
             summary.per_domain[&13].data_units_total["effective_ahead_rows"],
             1
         );
+        assert_eq!(
+            summary.per_domain[&13].data_units_total["observed_ahead_provenance_rows"],
+            1
+        );
+
+        let mut corrupted = payload.clone();
+        let last = corrupted.last_mut().expect("A29 source hash byte");
+        *last ^= 1;
+        let mut corrupted_summary = DomainDataDecodeSummary {
+            domain_id: 13,
+            ..Default::default()
+        };
+        corrupted_summary
+            .per_domain
+            .insert(13, DomainDataCounts::default());
+        decode_compact_tech_data_payload(0, &corrupted, &mut corrupted_summary);
+        assert!(corrupted_summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("A29 provenance is invalid")));
     }
 
     #[test]
@@ -15435,6 +15936,98 @@ mod tests {
             .parse_errors
             .iter()
             .any(|error| error.contains("marks stockpile unreadable")));
+    }
+
+    #[test]
+    fn b2_authority_accepts_pmi1_pcp1_pcv1_chain_and_rejects_forged_total() {
+        fn payload(available: i32) -> Vec<u8> {
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&0u64.to_le_bytes());
+            for value in [1u32, 1, 0, COMPACT_PRODUCTION_SCALE_RAW, 0, 1, 0, 0] {
+                payload.extend_from_slice(&value.to_le_bytes());
+            }
+            // One military production line at key (47, 1, 349).
+            payload.extend_from_slice(&47u32.to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.extend_from_slice(&349i32.to_le_bytes());
+            payload.extend_from_slice(&2i32.to_le_bytes());
+            payload.extend_from_slice(&0i32.to_le_bytes());
+            payload.extend_from_slice(&0i32.to_le_bytes());
+            payload.extend_from_slice(&0i32.to_le_bytes());
+            payload.extend_from_slice(&0i32.to_le_bytes());
+            // Exact optional-MIO join (zero is the proven-null CID).
+            payload.extend_from_slice(b"PMI1");
+            payload.extend_from_slice(&1u16.to_le_bytes());
+            payload.extend_from_slice(&20u16.to_le_bytes());
+            payload.extend_from_slice(&36u32.to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&47u32.to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.extend_from_slice(&349i32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            // Production-vector completeness.
+            payload.extend_from_slice(b"PCP1");
+            payload.extend_from_slice(&1u16.to_le_bytes());
+            payload.extend_from_slice(&20u16.to_le_bytes());
+            payload.extend_from_slice(&28u32.to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&47u32.to_le_bytes());
+            payload.extend_from_slice(&(1u32 << 1).to_le_bytes());
+            // One complete B2 country, variant, and reservation.
+            payload.extend_from_slice(b"PCV1");
+            payload.extend_from_slice(&1u16.to_le_bytes());
+            payload.extend_from_slice(&28u16.to_le_bytes());
+            payload.extend_from_slice(&92u32.to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&47u32.to_le_bytes());
+            payload.extend_from_slice(&0b1_1111u32.to_le_bytes());
+            payload.extend_from_slice(&36_900_000i64.to_le_bytes());
+            payload.extend_from_slice(&21i32.to_le_bytes());
+            payload.extend_from_slice(&available.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.extend_from_slice(&7316u32.to_le_bytes());
+            payload.extend_from_slice(&70u32.to_le_bytes());
+            payload.extend_from_slice(&36_900_000i64.to_le_bytes());
+            payload.extend_from_slice(&10i32.to_le_bytes());
+            payload.extend_from_slice(&21i32.to_le_bytes());
+            payload
+        }
+
+        let mut summary = DomainDataDecodeSummary {
+            domain_id: 11,
+            ..Default::default()
+        };
+        summary.per_domain.insert(11, DomainDataCounts::default());
+        decode_compact_production_data_payload(0, &payload(348), &mut summary);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let units = &summary.per_domain[&11].data_units_total;
+        assert_eq!(units["production_mio_join_rows"], 1);
+        assert_eq!(units["country_convoy_rows"], 1);
+        assert_eq!(units["country_convoy_variant_rows"], 1);
+        assert_eq!(units["country_convoy_reservation_rows"], 1);
+
+        let mut rejected = DomainDataDecodeSummary {
+            domain_id: 11,
+            ..Default::default()
+        };
+        rejected.per_domain.insert(11, DomainDataCounts::default());
+        decode_compact_production_data_payload(0, &payload(347), &mut rejected);
+        assert!(rejected
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("fails the exact total law")));
     }
 
     #[test]
@@ -15745,7 +16338,9 @@ mod tests {
                 owner_tag_db_id: 4,
             },
         ];
-        let payload = compact_contract::naval_history::encode_payload(&rows, 0, 0, 2).unwrap();
+        let payload =
+            compact_contract::naval_history::encode_exact_payload(&rows, 0, 16_959_360, 2, 0, 2)
+                .unwrap();
         let authority = summarize_domain_data_payload(
             COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE,
             &payload,

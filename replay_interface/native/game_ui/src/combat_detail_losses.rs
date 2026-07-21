@@ -33,11 +33,10 @@ pub struct LandCombatPanel {
     pub participant_events: Leaf<Vec<CombatParticipantEvent>>,
     pub attacker: Leaf<LandCombatSideDetail>,
     pub defender: Leaf<LandCombatSideDetail>,
-    /// No authenticated leader carrier exists in d21/d55.
-    pub attacker_leader: Leaf<i64>,
-    pub defender_leader: Leaf<i64>,
-    /// Effective displayed modifier stack is not present in the producer.
-    pub displayed_modifiers: Leaf<Vec<String>>,
+    pub attacker_leader: Leaf<Option<i64>>,
+    pub defender_leader: Leaf<Option<i64>>,
+    pub attacker_displayed_modifiers: Leaf<Vec<String>>,
+    pub defender_displayed_modifiers: Leaf<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -118,6 +117,29 @@ fn invalid(reason: impl Into<String>) -> GateFailure {
 
 fn required<'a, T>(leaf: &'a Leaf<T>, field: &str) -> Result<&'a T, GateFailure> {
     leaf.measured().ok_or_else(|| external(field))
+}
+
+fn require_unobtained<T>(leaf: &Leaf<T>, field: &str) -> Result<(), GateFailure> {
+    match leaf {
+        Leaf::Unobtained => Ok(()),
+        Leaf::Absent => Err(external(field)),
+        Leaf::Measured(_) => Err(invalid(format!(
+            "{field} must be explicitly unobtained for this member kind"
+        ))),
+    }
+}
+
+fn exact_fex_state_name(raw: i64) -> Option<&'static str> {
+    match raw {
+        0 => Some("FEX_STATE_UNINITIALIZED"),
+        1 => Some("FEX_STATE_WAITING"),
+        2 => Some("FEX_STATE_FIGHTING"),
+        4 => Some("FEX_STATE_ON_THE_WAY"),
+        8 => Some("FEX_STATE_ESCAPING"),
+        0x10 => Some("FEX_STATE_RUN_AWAY"),
+        0x20 => Some("FEX_STATE_SUNK"),
+        _ => None,
+    }
 }
 
 fn state(count: usize, result: Result<(), GateFailure>) -> Xui20SurfaceState {
@@ -435,6 +457,98 @@ fn validate_land_side(side: &LandCombatSideDetail, prefix: &str) -> Result<(), G
         }
         _ => return Err(invalid(format!("{prefix}.width_status is unknown"))),
     }
+    let leader_status = required(&side.leader_status, &format!("{prefix}.leader_status"))?;
+    match leader_status.as_str() {
+        "exact" => match required(&side.leader_id, &format!("{prefix}.leader_id"))? {
+            Some(id) if *id > 0 => {}
+            _ => return Err(invalid(format!("{prefix}.leader_id is not an exact positive id"))),
+        },
+        "exact_none" => {
+            if required(&side.leader_id, &format!("{prefix}.leader_id"))?.is_some() {
+                return Err(invalid(format!("{prefix}.leader_id conflicts with exact_none")));
+            }
+        }
+        "unavailable_panel_not_observed" => {
+            if side.leader_id.measured().is_some() {
+                return Err(invalid(format!(
+                    "{prefix}.leader_id conflicts with unavailable panel status"
+                )));
+            }
+        }
+        _ => return Err(invalid(format!("{prefix}.leader_status is unknown"))),
+    }
+    let modifier_status = required(
+        &side.effective_displayed_modifiers_status,
+        &format!("{prefix}.effective_displayed_modifiers_status"),
+    )?;
+    match modifier_status.as_str() {
+        "exact" => {
+            if !matches!(leader_status.as_str(), "exact" | "exact_none") {
+                return Err(invalid(format!(
+                    "{prefix} panel leader/modifier authority is split"
+                )));
+            }
+            let modifiers = required(
+                &side.effective_displayed_modifiers,
+                &format!("{prefix}.effective_displayed_modifiers"),
+            )?;
+            const ORDER: [&str; 10] = [
+                "BORDER_CONFLICT_MODIFIER",
+                "BM_AIR_SUPPORT",
+                "BM_ENEMY_AIR_SUPERIORITY",
+                "BM_FORT_MODIFIER",
+                "BM_SHORE_BOMBARD",
+                "BM_RAILWAY_GUN_BOMBARD",
+                "BM_STACKING",
+                "BM_MULTIPLE_DIRECTIONS",
+                "BM_DECRYPTION",
+                "BM_ACTIVE_CODE_CRACKING_BONUSES",
+            ];
+            let mut next_rank = 0usize;
+            for token in modifiers {
+                let Some(rank) = ORDER.iter().position(|candidate| *candidate == token) else {
+                    return Err(invalid(format!(
+                        "{prefix}.effective_displayed_modifiers has unknown token"
+                    )));
+                };
+                if rank < next_rank {
+                    return Err(invalid(format!(
+                        "{prefix}.effective_displayed_modifiers is duplicate or out of engine order"
+                    )));
+                }
+                next_rank = rank + 1;
+            }
+            if *required(
+                &side.panel_capture_sequence,
+                &format!("{prefix}.panel_capture_sequence"),
+            )? == 0
+                || required(
+                    &side.panel_observation_source,
+                    &format!("{prefix}.panel_observation_source"),
+                )? != "authenticated_a729_combatview_materializer_1415c9860"
+            {
+                return Err(invalid(format!(
+                    "{prefix} panel observation lacks exact sequence/source authority"
+                )));
+            }
+        }
+        "unavailable_panel_not_observed" => {
+            if leader_status != "unavailable_panel_not_observed"
+                || side.effective_displayed_modifiers.measured().is_some()
+                || side.panel_capture_sequence.measured().is_some()
+                || side.panel_observation_source.measured().is_some()
+            {
+                return Err(invalid(format!(
+                    "{prefix} unavailable panel status conflicts with measured panel data"
+                )));
+            }
+        }
+        _ => {
+            return Err(invalid(format!(
+                "{prefix}.effective_displayed_modifiers_status is unknown"
+            )))
+        }
+    }
     required(
         &side.counts_incomplete,
         &format!("{prefix}.counts_incomplete"),
@@ -641,12 +755,47 @@ fn validate_naval(rows: &[NavalCombatRow]) -> Result<(), GateFailure> {
             &row.defender_member_count,
             &format!("{prefix}.defender_member_count"),
         )? as usize;
-        for (leaf, field) in [
-            (&row.attacker_positioning, "attacker_positioning"),
-            (&row.defender_positioning, "defender_positioning"),
+        for (raw_leaf, value_leaf, side) in [
+            (
+                &row.attacker_positioning_raw,
+                &row.attacker_positioning,
+                "attacker",
+            ),
+            (
+                &row.defender_positioning_raw,
+                &row.defender_positioning,
+                "defender",
+            ),
         ] {
-            if !required(leaf, &format!("{prefix}.{field}"))?.is_finite() {
-                return Err(invalid(format!("{prefix}.{field} is invalid")));
+            let raw = *required(raw_leaf, &format!("{prefix}.{side}_positioning_raw"))?;
+            let value = *required(value_leaf, &format!("{prefix}.{side}_positioning"))?;
+            if !(0..=100_000).contains(&raw)
+                || !value.is_finite()
+                || (value - raw as f64 / 100_000.0).abs() > 1e-9
+            {
+                return Err(invalid(format!(
+                    "{prefix}.{side}_positioning exact raw/normalized pair is invalid"
+                )));
+            }
+        }
+        for (raw_leaf, value_leaf, side) in [
+            (
+                &row.attacker_anti_air_raw,
+                &row.attacker_anti_air,
+                "attacker",
+            ),
+            (
+                &row.defender_anti_air_raw,
+                &row.defender_anti_air,
+                "defender",
+            ),
+        ] {
+            let raw = *required(raw_leaf, &format!("{prefix}.{side}_anti_air_raw"))?;
+            let value = *required(value_leaf, &format!("{prefix}.{side}_anti_air"))?;
+            if !value.is_finite() || (value - raw as f64 / 100_000.0).abs() > 1e-9 {
+                return Err(invalid(format!(
+                    "{prefix}.{side}_anti_air exact raw/normalized pair is invalid"
+                )));
             }
         }
         required(
@@ -666,7 +815,7 @@ fn validate_naval(rows: &[NavalCombatRow]) -> Result<(), GateFailure> {
             &format!("{prefix}.defender_country_tag_db_ids"),
         )?;
         let members = required(&row.members, &format!("{prefix}.members"))?;
-        let mut previous: Option<(&str, i64, i64)> = None;
+        let mut previous: Option<(&str, i64)> = None;
         let mut measured_attackers = Vec::new();
         let mut measured_defenders = Vec::new();
         for (member_index, member) in members.iter().enumerate() {
@@ -680,40 +829,113 @@ fn validate_naval(rows: &[NavalCombatRow]) -> Result<(), GateFailure> {
             if group < 0 || ordinal < 0 {
                 return Err(invalid(format!("{mp} has a negative source ordinal")));
             }
-            if let Some(prior) = previous {
-                if (side.as_str(), group, ordinal) <= prior {
-                    return Err(invalid(format!("{mp} is not in exact source order")));
-                }
-            }
-            previous = Some((side, group, ordinal));
-            required(&member.is_convoy, &format!("{mp}.is_convoy"))?;
-            required(&member.ship_instance_id, &format!("{mp}.ship_instance_id"))?;
-            required(
+            let is_convoy = *required(&member.is_convoy, &format!("{mp}.is_convoy"))?;
+            let cship_join_validated = *required(
                 &member.cship_join_validated,
                 &format!("{mp}.cship_join_validated"),
             )?;
             let owner = *required(&member.owner_tag_db_id, &format!("{mp}.owner_tag_db_id"))?;
-            required(&member.task_force_id, &format!("{mp}.task_force_id"))?;
-            required(&member.fleet_id, &format!("{mp}.fleet_id"))?;
-            if *required(
+            if owner < 0 {
+                return Err(invalid(format!("{mp}.owner_tag_db_id is negative")));
+            }
+            let battle_slot = *required(
                 &member.battle_slot_index,
                 &format!("{mp}.battle_slot_index"),
-            )? < 0
-            {
+            )?;
+            if battle_slot < 0 {
                 return Err(invalid(format!("{mp}.battle_slot_index is negative")));
             }
-            required(&member.state_bitmask, &format!("{mp}.state_bitmask"))?;
-            for (leaf, field) in [
-                (&member.strength, "strength"),
-                (&member.organisation, "organisation"),
-            ] {
-                let value = *required(leaf, &format!("{mp}.{field}"))?;
-                if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-                    return Err(invalid(format!("{mp}.{field} is outside 0..1")));
+            if let Some(prior) = previous {
+                if (side.as_str(), battle_slot) <= prior {
+                    return Err(invalid(format!(
+                        "{mp} is not in exact side/battle-slot identity order"
+                    )));
                 }
             }
-            if *required(&member.sunk_convoys, &format!("{mp}.sunk_convoys"))? < 0 {
-                return Err(invalid(format!("{mp}.sunk_convoys is negative")));
+            previous = Some((side, battle_slot));
+            let state_bitmask =
+                *required(&member.state_bitmask, &format!("{mp}.state_bitmask"))?;
+            let state_raw = *required(&member.state_raw, &format!("{mp}.state_raw"))?;
+            let state_name = required(&member.state_name, &format!("{mp}.state_name"))?;
+            let Some(expected_state_name) = exact_fex_state_name(state_raw) else {
+                return Err(invalid(format!("{mp}.state_raw is not an exact CFEX state")));
+            };
+            if state_bitmask != state_raw || state_name.as_str() != expected_state_name {
+                return Err(invalid(format!(
+                    "{mp} exact CFEX state raw/name pair is inconsistent"
+                )));
+            }
+
+            if is_convoy {
+                if cship_join_validated {
+                    return Err(invalid(format!(
+                        "{mp} convoy member cannot carry a live CShip join"
+                    )));
+                }
+                for (leaf, field) in [
+                    (&member.ship_instance_id, "ship_instance_id"),
+                    (&member.task_force_id, "task_force_id"),
+                    (&member.fleet_id, "fleet_id"),
+                    (&member.sunk_convoys, "sunk_convoys"),
+                ] {
+                    require_unobtained(leaf, &format!("{mp}.{field}"))?;
+                }
+                for (leaf, field) in [
+                    (&member.strength, "strength"),
+                    (&member.organisation, "organisation"),
+                ] {
+                    require_unobtained(leaf, &format!("{mp}.{field}"))?;
+                }
+            } else {
+                let ship_instance_id = *required(
+                    &member.ship_instance_id,
+                    &format!("{mp}.ship_instance_id"),
+                )?;
+                if ship_instance_id <= 0 {
+                    return Err(invalid(format!("{mp}.ship_instance_id is not positive")));
+                }
+                let terminal_sunk = state_raw == 0x20;
+                if !cship_join_validated && !terminal_sunk {
+                    return Err(invalid(format!(
+                        "{mp} non-terminal ship lacks its required live CShip join"
+                    )));
+                }
+                if cship_join_validated {
+                    for (leaf, field) in [
+                        (&member.task_force_id, "task_force_id"),
+                        (&member.fleet_id, "fleet_id"),
+                    ] {
+                        if *required(leaf, &format!("{mp}.{field}"))? <= 0 {
+                            return Err(invalid(format!("{mp}.{field} is not positive")));
+                        }
+                    }
+                    for (leaf, field) in [
+                        (&member.strength, "strength"),
+                        (&member.organisation, "organisation"),
+                    ] {
+                        let value = *required(leaf, &format!("{mp}.{field}"))?;
+                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                            return Err(invalid(format!("{mp}.{field} is outside 0..1")));
+                        }
+                    }
+                    if *required(&member.sunk_convoys, &format!("{mp}.sunk_convoys"))? < 0 {
+                        return Err(invalid(format!("{mp}.sunk_convoys is negative")));
+                    }
+                } else {
+                    for (leaf, field) in [
+                        (&member.task_force_id, "task_force_id"),
+                        (&member.fleet_id, "fleet_id"),
+                        (&member.sunk_convoys, "sunk_convoys"),
+                    ] {
+                        require_unobtained(leaf, &format!("{mp}.{field}"))?;
+                    }
+                    for (leaf, field) in [
+                        (&member.strength, "strength"),
+                        (&member.organisation, "organisation"),
+                    ] {
+                        require_unobtained(leaf, &format!("{mp}.{field}"))?;
+                    }
+                }
             }
             if side == "attacker" {
                 measured_attackers.push(owner);
@@ -1074,21 +1296,36 @@ fn validate_war_participants(
 fn validate_sunk_ships(rows: &Leaf<Vec<SunkShipEventExact>>) -> Result<usize, GateFailure> {
     let rows = required(rows, "sunk_ships")?;
     let mut sequences = BTreeSet::new();
+    let mut prior_sequence = 0u64;
     for (index, row) in rows.iter().enumerate() {
-        if row.event_sequence == 0
+        if row.event_sequence <= 1
             || row.combat_id == 0
             || row.combat_generation == 0
-            || row.victim_country_identity_raw == [0, 0]
-            || row.killer_country_id_raw == 0
+            || row.victim_country_id_raw == 0
+            || row.attacker_country_id_raw == 0
+            || row.sink_date_raw <= 0
+            || row.victim_member_battle_slot_index > 4_096
             || row.killed == row.assisted_kill
+            || (row.cause_record_flag && row.assisted_kill)
+            || row.victim_ship_reference_raw == [0, 0]
             || row.ship_name.is_empty()
             || row.ship_class_name.is_empty()
+            || row.ship_name.len() > 4_096
+            || row.ship_class_name.len() > 4_096
+            || row.attribution_source_name.len() > 4_096
+            || row.attribution_source_class_name.len() > 4_096
+            || row.ship_name.as_bytes().contains(&0)
+            || row.ship_class_name.as_bytes().contains(&0)
+            || row.attribution_source_name.as_bytes().contains(&0)
+            || row.attribution_source_class_name.as_bytes().contains(&0)
+            || row.event_sequence <= prior_sequence
             || !sequences.insert(row.event_sequence)
         {
             return Err(invalid(format!(
                 "sunk_ships[{index}] exact writer identity/content is invalid"
             )));
         }
+        prior_sequence = row.event_sequence;
     }
     Ok(rows.len())
 }
@@ -1275,6 +1512,32 @@ fn land_panel(row: &CombatRow) -> LandCombatPanel {
             Leaf::Absent,
         ),
     };
+    let attacker_leader = attacker.measured().map_or_else(
+        || {
+            if matches!(&attacker, Leaf::Unobtained) {
+                Leaf::Unobtained
+            } else {
+                Leaf::Absent
+            }
+        },
+        |side| side.leader_id.clone(),
+    );
+    let defender_leader = defender.measured().map_or_else(
+        || {
+            if matches!(&defender, Leaf::Unobtained) {
+                Leaf::Unobtained
+            } else {
+                Leaf::Absent
+            }
+        },
+        |side| side.leader_id.clone(),
+    );
+    let attacker_displayed_modifiers = attacker
+        .measured()
+        .map_or(Leaf::Absent, |side| side.effective_displayed_modifiers.clone());
+    let defender_displayed_modifiers = defender
+        .measured()
+        .map_or(Leaf::Absent, |side| side.effective_displayed_modifiers.clone());
     LandCombatPanel {
         combat_id: row.combat_id.clone(),
         location_province: row.location_province.clone(),
@@ -1292,9 +1555,10 @@ fn land_panel(row: &CombatRow) -> LandCombatPanel {
         participant_events,
         attacker,
         defender,
-        attacker_leader: Leaf::Absent,
-        defender_leader: Leaf::Absent,
-        displayed_modifiers: Leaf::Absent,
+        attacker_leader,
+        defender_leader,
+        attacker_displayed_modifiers,
+        defender_displayed_modifiers,
     }
 }
 
@@ -1363,6 +1627,14 @@ mod tests {
             width_status: Leaf::Measured("unavailable_pending_x2_control".into()),
             width_observations: Leaf::Absent,
             current_loss_observations: Leaf::Absent,
+            leader_id: Leaf::Absent,
+            leader_status: Leaf::Measured("unavailable_panel_not_observed".into()),
+            effective_displayed_modifiers: Leaf::Absent,
+            effective_displayed_modifiers_status: Leaf::Measured(
+                "unavailable_panel_not_observed".into(),
+            ),
+            panel_capture_sequence: Leaf::Absent,
+            panel_observation_source: Leaf::Absent,
             counts_incomplete: Leaf::Measured(false),
             reserve_division_ids: Leaf::Measured(vec![30]),
             reserve_members_status: Leaf::Measured("exact".into()),
@@ -1411,7 +1683,7 @@ mod tests {
             Leaf::Measured("exact".into())
         );
         assert_eq!(panel.attacker_leader, Leaf::Absent);
-        assert_eq!(panel.displayed_modifiers, Leaf::Absent);
+        assert_eq!(panel.attacker_displayed_modifiers, Leaf::Absent);
     }
 
     #[test]
@@ -1527,6 +1799,32 @@ mod tests {
         let mut side = empty_side();
         side.current_loss_observations = Leaf::Measured(Vec::new());
         assert!(validate_land_side(&side, "defender").is_err());
+    }
+
+    #[test]
+    fn exact_panel_observation_requires_joined_leader_modifier_order_and_source() {
+        let mut side = empty_side();
+        side.leader_id = Leaf::Measured(Some(4_713));
+        side.leader_status = Leaf::Measured("exact".into());
+        side.effective_displayed_modifiers = Leaf::Measured(vec![
+            "BM_AIR_SUPPORT".into(),
+            "BM_STACKING".into(),
+            "BM_DECRYPTION".into(),
+        ]);
+        side.effective_displayed_modifiers_status = Leaf::Measured("exact".into());
+        side.panel_capture_sequence = Leaf::Measured(51);
+        side.panel_observation_source =
+            Leaf::Measured("authenticated_a729_combatview_materializer_1415c9860".into());
+        assert!(validate_land_side(&side, "attacker").is_ok());
+
+        side.effective_displayed_modifiers = Leaf::Measured(vec![
+            "BM_STACKING".into(),
+            "BM_AIR_SUPPORT".into(),
+        ]);
+        assert!(matches!(
+            validate_land_side(&side, "attacker"),
+            Err(GateFailure::Invalid(_))
+        ));
     }
 
     fn convoy_terminal_row(

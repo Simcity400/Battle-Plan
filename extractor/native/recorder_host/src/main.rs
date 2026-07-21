@@ -299,6 +299,24 @@ struct Config {
     /// `collector_compact_phase_timing.jsonl`). Pure instrumentation; profile-
     /// driven (debug on, production off). Never gates data-loss detection.
     sidecar_log: bool,
+    /// Evidence-only A40 owner transaction. This enables exact-a729
+    /// selected-designer and peace lifecycle hooks plus a raw sidecar receipt;
+    /// it never schedules a production domain or authorizes replay activation.
+    a40_evidence_capture: bool,
+    /// Evidence-only A39 character-presentation owner transaction. This
+    /// performs the exact same-launch A25 textbox baseline, installs the
+    /// feature-gated A39 observers only after d47/d46 catalog publication,
+    /// and writes CPR1/RTI1 fixture candidates without scheduling d82.
+    a39_evidence_capture: bool,
+    /// Evidence-only A36 selected-context ability refresh/tooltip observer.
+    /// Raw pointer-bearing transactions are written to a diagnostic sidecar;
+    /// this never schedules d88 or emits an ABL1/ABA2 production payload.
+    a36_evidence_capture: bool,
+    /// Evidence-only A34 owner transaction. The strict pointer-free supplement
+    /// is copied into the authenticated collector control block; the injected
+    /// owner still derives family/order/geometry/text/alerts and country DB id
+    /// solely from the one-shot exact-a729 hook receipt.
+    a34_evidence_supplement: Option<serde_json::Value>,
     extraction_perf_gate: bool,
     d53_emit_mode: D53EmitMode,
     d51_emit_mode: D51EmitMode,
@@ -1133,6 +1151,12 @@ fn run() -> Result<(), String> {
     }
     if scheduled_roster_includes_domain57(&cfg.scheduled_domains)
         && cfg.domain57_game_speed_gate.is_none()
+        && !allow_x12_debug_d57_without_speed_gate(
+            cfg.production,
+            cfg.profile,
+            cfg.early_launch.is_some(),
+            env::var("BATTLE_PLAN_ENABLE_X12_SPEED_PAUSE_HOOK").or_else(|_| env::var("HOI4_ENABLE_X12_SPEED_PAUSE_HOOK")).ok().as_deref(),
+        )
     {
         return Err("domain 57 is scheduled but its speed-root gate was not validated".to_string());
     }
@@ -1161,6 +1185,7 @@ fn run() -> Result<(), String> {
                 live_resolution_report: bundle.live_resolution_report.clone(),
                 expected_process_id: cfg.pid,
                 expected_process_creation_filetime_utc,
+                allow_prepared_process_identity_rebind: early_pending.is_some(),
                 timeout: bundle.timeout,
             };
             let verified =
@@ -1369,6 +1394,7 @@ fn run() -> Result<(), String> {
                 early_runtime_dlc_descriptors
                     .take()
                     .ok_or("early launch lost its authenticated runtime DLC descriptors")?,
+                cfg.g2_capture_intent.is_some(),
                 cfg.early_launch
                     .as_ref()
                     .ok_or("early launch lost its CLI authority")?
@@ -1379,7 +1405,13 @@ fn run() -> Result<(), String> {
     };
     // The pipe stream is written STRAIGHT to disk during capture (bounded memory);
     // `capture` carries only the byte count + rolling sha256, never the bytes.
-    let (mut capture, rollover_set, scientist_capture_authority, early_render_process) = {
+    let (
+        mut capture,
+        rollover_set,
+        scientist_capture_authority,
+        early_render_process,
+        design_catalog_timeline_capture,
+    ) = {
         let pipe_name = pipe_name.clone();
         let raw_path = raw_path.clone();
         let pipe_session_token = pipe_token.clone();
@@ -1430,6 +1462,29 @@ fn run() -> Result<(), String> {
             None => RetainedProcessAuthority::open(cfg.pid, None)?,
         });
         process_authority.revalidate_live()?;
+        let design_catalog_timeline_capture = if cfg.production {
+            let python = cfg
+                .static_bundle
+                .as_ref()
+                .map(|bundle| bundle.python.as_os_str())
+                .unwrap_or_else(|| OsStr::new("python"));
+            let mut capture = start_owned_design_catalog_timeline(
+                cfg.pid,
+                &cfg.out_dir,
+                python,
+            )?;
+            // An attached process is already running, so do not expose the
+            // compact pipe or install the collector until A27 has sealed its
+            // first coherent full census. Early-launch targets are still
+            // suspended here and cross the equivalent barrier after resume,
+            // before collector COMMIT.
+            if early_pending.is_none() {
+                wait_owned_design_catalog_timeline_ready(&mut capture)?;
+            }
+            Some(capture)
+        } else {
+            None
+        };
         let scientist_requested = cfg.special_projects_scan
             && proof_expected_domain_ids.contains(&scientists_live_lane::PROJECTS_LIVE_DOMAIN_ID);
         if scientist_requested && cfg.special_projects_bridge.is_some() {
@@ -1542,6 +1597,7 @@ fn run() -> Result<(), String> {
                 outcome.rollover_set,
                 scientist_authority,
                 None,
+                design_catalog_timeline_capture,
             )
         } else {
         let hook_target_dll_proof = target_dll_proof.clone();
@@ -1564,6 +1620,9 @@ fn run() -> Result<(), String> {
         ready_rx
             .recv()
             .map_err(|_| "capture pipe exited before listening barrier".to_string())??;
+        let early_a27_ready = design_catalog_timeline_capture
+            .as_ref()
+            .map(|capture| capture.ready.clone());
         let mut early_render_process = match early_pending.take() {
             Some(pending) => {
                 let early = cfg
@@ -1598,6 +1657,7 @@ fn run() -> Result<(), String> {
                 };
                 let validation_process = process_authority.clone();
                 let validation_result = deferred_early_game_module.clone();
+                let a27_ready_timeout = Duration::from_millis(u64::from(early.timeout_ms));
                 Some(
                     pending.activate_with_post_resume_validation(
                         &spec,
@@ -1621,6 +1681,9 @@ fn run() -> Result<(), String> {
                             validation_result
                                 .set(authority)
                                 .map_err(|_| "post-resume game module authority was already set")?;
+                            if let Some(ready) = early_a27_ready.as_deref() {
+                                wait_owned_design_catalog_ready_path(ready, a27_ready_timeout)?;
+                            }
                             Ok(())
                         },
                     )?,
@@ -1782,9 +1845,13 @@ fn run() -> Result<(), String> {
             outcome.rollover_set,
             scientist_authority,
             early_render_process,
+            design_catalog_timeline_capture,
         )
         }
     };
+    if let Some(timeline_capture) = design_catalog_timeline_capture {
+        cfg.design_catalog_live = Some(finish_owned_design_catalog_timeline(timeline_capture)?);
+    }
     if let Some(descriptor) = rollover_set.as_ref() {
         if cfg.stream_format != StreamFormat::Compact
             || cfg.stream_compression != compact_stream::StreamCompression::None
@@ -1872,6 +1939,7 @@ fn run() -> Result<(), String> {
                     "projects_root_source": "not_applicable_json_debug_stream",
                     "projects_root_discovery_debt": "not_applicable_json_debug_stream",
                     "stream_format": cfg.stream_format.as_str(),
+                    "a39_evidence_capture": cfg.a39_evidence_capture,
                     "extraction_perf_gate": cfg.extraction_perf_gate,
                     "d53_emit_mode": cfg.d53_emit_mode.as_str(),
                     "d51_emit_mode": cfg.d51_emit_mode.as_str(),
@@ -1917,8 +1985,18 @@ fn run() -> Result<(), String> {
                 &raw_path,
                 capture_identity_mode,
             )?;
-            let expected_domain_ids = compact_expected_domain_ids(&cfg.scheduled_domains);
-            let coverage_errors = compact_domain_coverage_errors(&summary, &expected_domain_ids);
+            let scheduled_expected_domain_ids = compact_expected_domain_ids(&cfg.scheduled_domains);
+            let coverage_errors =
+                compact_domain_coverage_errors(&summary, &scheduled_expected_domain_ids);
+            let mut expected_domain_ids = scheduled_expected_domain_ids;
+            // Suspended-launch production appends one authenticated, pointer-free
+            // ProductionRenderFrame (d77) immediately before each FRAME_END.
+            // d77 remains non-schedulable: it is expected only when the H4CT
+            // early-render transaction actually completed for this capture.
+            if early_render_process.is_some() && !expected_domain_ids.contains(&77) {
+                expected_domain_ids.push(77);
+                expected_domain_ids.sort_unstable();
+            }
             let gate_status = compact_gate_status(&summary);
             let control_invalid_seen =
                 (gate_status.failure_status_flags_or & COMPACT_STATUS_CONTROL_INVALID) != 0;
@@ -2004,6 +2082,7 @@ fn run() -> Result<(), String> {
                     "projects_root_source": projects_root_source,
                     "projects_root_discovery_debt": projects_root_discovery_debt,
                     "stream_format": cfg.stream_format.as_str(),
+                    "a39_evidence_capture": cfg.a39_evidence_capture,
                     "compact_stream_identity_mode": match capture_identity_mode {
                         compact_contract::stream_validator::StreamIdentityMode::IdentityV1 => "identity_v1",
                         compact_contract::stream_validator::StreamIdentityMode::Legacy => "legacy",
@@ -2129,16 +2208,23 @@ fn run() -> Result<(), String> {
         None => None,
     };
     if cfg.production {
-        let python = cfg
-            .static_bundle
+        let request = cfg
+            .design_catalog_live
             .as_ref()
-            .map(|bundle| bundle.python.as_os_str())
-            .unwrap_or_else(|| OsStr::new("python"));
-        cfg.design_catalog_live = Some(capture_owned_design_catalog_live(
-            cfg.pid,
-            &cfg.out_dir,
-            python,
-        )?);
+            .ok_or("production capture did not retain an A27 timeline")?;
+        let first_game_hour_raw = manifest
+            .get("first_game_hour_raw")
+            .and_then(Value::as_i64)
+            .ok_or("A27 timeline coverage requires first_game_hour_raw")?;
+        let last_game_hour_raw = manifest
+            .get("last_game_hour_raw")
+            .and_then(Value::as_i64)
+            .ok_or("A27 timeline coverage requires last_game_hour_raw")?;
+        validate_design_catalog_timeline_coverage(
+            request,
+            first_game_hour_raw,
+            last_game_hour_raw,
+        )?;
     }
     let emitted_token_inventory = match static_bundle_admission.as_mut() {
         Some(admission) => {
@@ -2378,7 +2464,7 @@ fn run() -> Result<(), String> {
             obj.insert("logical_stream_id".to_string(), json!(0));
             obj.insert(
                 "acceptance_telemetry_scope".to_string(),
-                json!("logical_stream_set_aggregate"),
+                json!("logical_stream"),
             );
             obj.insert(
                 "logical_stream_set".to_string(),
@@ -2841,6 +2927,10 @@ fn write_sink_failure_acceptance_plan(cfg: &Config, pipe_token: &str) -> Result<
     let collector_dll_sha256 = to_hex(&hash_file_sha256_bytes(&cfg.dll)?);
     let game_executable_sha256 =
         to_hex(&hash_file_sha256_bytes(&early_launch.executable)?);
+    let recorder_executable = env::current_exe()
+        .map_err(|error| format!("sink-failure recorder current_exe failed: {error}"))?;
+    let recorder_executable_sha256 =
+        to_hex(&hash_file_sha256_bytes(&recorder_executable)?);
     let collector_dll_file = cfg
         .dll
         .file_name()
@@ -2851,6 +2941,10 @@ fn write_sink_failure_acceptance_plan(cfg: &Config, pipe_token: &str) -> Result<
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| "sink-failure game executable has no portable leaf name".to_string())?;
+    let recorder_executable_file = recorder_executable
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "sink-failure recorder executable has no portable leaf name".to_string())?;
     let document = json!({
         "schema": "extractor.sink-failure-acceptance-plan.v1",
         "admissible_for_production": false,
@@ -2862,6 +2956,8 @@ fn write_sink_failure_acceptance_plan(cfg: &Config, pipe_token: &str) -> Result<
         "process_id": cfg.pid,
         "game_executable_file": game_executable_file,
         "game_executable_sha256": game_executable_sha256,
+        "recorder_executable_file": recorder_executable_file,
+        "recorder_executable_sha256": recorder_executable_sha256,
         "collector_dll_file": collector_dll_file,
         "collector_dll_sha256": collector_dll_sha256,
         "expected_receipt_schema": "extractor.authenticated-sink-failure.v2",
@@ -3245,7 +3341,10 @@ fn replay_packaging_manifest_json(
         let resolved = resolve_static_artifact(&game_id, request)?;
         static_artifacts.push(json!({
             "name": request.name,
+            "path": resolved.payload_path,
             "sha256": to_hex(&Sha256::digest(&resolved.bytes)),
+            "bytes": resolved.bytes.len() as u64,
+            "content_manifest_digest_sha256": replay_content_manifest_digest_sha256,
         }));
     }
     let design_catalog_live = cfg
@@ -3254,13 +3353,22 @@ fn replay_packaging_manifest_json(
         .map(resolve_design_catalog_live)
         .transpose()?
         .map(|resolved| {
+            let source_schema = resolved.index_descriptor["source_schema"].clone();
+            let first_capture_hour_index =
+                resolved.index_descriptor["first_capture_hour_index"].clone();
+            let last_capture_hour_index =
+                resolved.index_descriptor["last_capture_hour_index"].clone();
+            let capture_count = resolved.index_descriptor["capture_count"].clone();
             json!({
                 "schema": snapshot::design_catalog::PORTABLE_DESIGN_CATALOG_SCHEMA,
-                "source_schema": snapshot::design_catalog::A27_LIVE_CATALOG_SCHEMA,
+                "source_schema": source_schema,
                 "path": snapshot::design_catalog::PORTABLE_ARTIFACT_PATH,
                 "sha256": resolved.sha256,
                 "source_sha256": resolved.source_sha256,
                 "bytes": resolved.bytes.len() as u64,
+                "first_capture_hour_index": first_capture_hour_index,
+                "last_capture_hour_index": last_capture_hour_index,
+                "capture_count": capture_count,
             })
         });
     let g2_engine_capture = g2
@@ -3307,8 +3415,11 @@ fn recorded_design_catalog_live_sha256(
     }
     if value.get("schema").and_then(Value::as_str)
         != Some(snapshot::design_catalog::PORTABLE_DESIGN_CATALOG_SCHEMA)
-        || value.get("source_schema").and_then(Value::as_str)
-            != Some(snapshot::design_catalog::A27_LIVE_CATALOG_SCHEMA)
+        || !matches!(
+            value.get("source_schema").and_then(Value::as_str),
+            Some(snapshot::design_catalog::A27_LIVE_CATALOG_SCHEMA)
+                | Some(snapshot::design_catalog::A27_LIVE_CATALOG_TIMELINE_SCHEMA)
+        )
         || value.get("path").and_then(Value::as_str)
             != Some(snapshot::design_catalog::PORTABLE_ARTIFACT_PATH)
     {
@@ -3612,6 +3723,10 @@ fn repack_writer_config(
         stream_format: StreamFormat::Compact,
         profile: None,
         sidecar_log: false,
+        a40_evidence_capture: false,
+        a39_evidence_capture: false,
+        a36_evidence_capture: false,
+        a34_evidence_supplement: None,
         extraction_perf_gate: false,
         d53_emit_mode: D53EmitMode::Delta,
         d51_emit_mode: D51EmitMode::Delta,
@@ -4403,6 +4518,7 @@ fn fold_and_repack_existing_run_dir(mut repack: RepackConfig) -> Result<(), Stri
                 live_resolution_report: bundle.live_resolution_report.clone(),
                 expected_process_id,
                 expected_process_creation_filetime_utc,
+                allow_prepared_process_identity_rebind: false,
                 timeout: bundle.timeout,
             };
             let capture_id = manifest
@@ -4441,6 +4557,7 @@ fn fold_and_repack_existing_run_dir(mut repack: RepackConfig) -> Result<(), Stri
                 expected_process_id: request.expected_process_id,
                 expected_process_creation_filetime_utc: request
                     .expected_process_creation_filetime_utc,
+                allow_prepared_process_identity_rebind: false,
                 expected_capture_id: capture_id.to_string(),
                 expected_session_id: session_id.to_string(),
                 expected_stream_sha256: stream_sha256.to_string(),
@@ -4709,6 +4826,10 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut session_id = None;
     let mut stream_format: Option<StreamFormat> = None;
     let mut sidecar_log: Option<bool> = None;
+    let mut a40_evidence_capture = false;
+    let mut a39_evidence_capture = false;
+    let mut a36_evidence_capture = false;
+    let mut a34_evidence_supplement = None;
     let mut extraction_perf_gate: Option<bool> = None;
     let mut d53_emit_mode = D53EmitMode::Delta;
     let mut d51_emit_mode = D51EmitMode::Delta;
@@ -4864,6 +4985,41 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--skip-host-fold" => skip_host_fold = true,
             "--compact-country-frame" => compact_country_frame = Some(true),
             "--sidecar-log" => sidecar_log = Some(true),
+            "--a40-design-peace-evidence" => a40_evidence_capture = true,
+            "--a39-character-presentation-evidence" => a39_evidence_capture = true,
+            "--a36-active-ability-evidence" => a36_evidence_capture = true,
+            "--a34-decision-panel-evidence-supplement" => {
+                if a34_evidence_supplement.is_some() {
+                    return Err(
+                        "duplicate --a34-decision-panel-evidence-supplement is not allowed"
+                            .into(),
+                    );
+                }
+                i += 1;
+                let path = PathBuf::from(required(
+                    args.get(i),
+                    "--a34-decision-panel-evidence-supplement",
+                )?);
+                let bytes = std::fs::read(&path).map_err(|error| {
+                    format!(
+                        "read A34 decision-panel evidence supplement {}: {error}",
+                        path.display()
+                    )
+                })?;
+                let value = snapshot::parse_json_strict(&bytes).map_err(|error| {
+                    format!(
+                        "strict parse A34 decision-panel evidence supplement {}: {error}",
+                        path.display()
+                    )
+                })?;
+                if !value.is_object() {
+                    return Err(
+                        "--a34-decision-panel-evidence-supplement must contain one JSON object"
+                            .into(),
+                    );
+                }
+                a34_evidence_supplement = Some(value);
+            }
             "--division-body-bridge" => {
                 i += 1;
                 division_body_bridge = Some(required(args.get(i), "--division-body-bridge")?);
@@ -5352,12 +5508,19 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     if static_bundle.is_some() && stream_format != StreamFormat::Compact {
         return Err("static bundle capture requires --stream-format compact".to_string());
     }
+    let x12_debug_evidence_without_speed_gate = allow_x12_debug_d57_without_speed_gate(
+        production,
+        profile,
+        early_launch_executable.is_some(),
+        env::var("BATTLE_PLAN_ENABLE_X12_SPEED_PAUSE_HOOK").or_else(|_| env::var("HOI4_ENABLE_X12_SPEED_PAUSE_HOOK")).ok().as_deref(),
+    );
     let domain57_omission_reason = if scheduled_roster_includes_domain57(&scheduled_domains) {
         match (
                 speed_root_gate_path.is_some(),
                 domain57_game_speed_transcript_file_sha256.is_some(),
             ) {
                 (true, true) => None,
+                (false, false) if x12_debug_evidence_without_speed_gate => None,
                 (false, false) => {
                     scheduled_domains.retain(|domain| {
                         compact_domain_id(domain)
@@ -5521,6 +5684,57 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 .to_string(),
         );
     }
+    if a40_evidence_capture && (production || early_launch.is_none()) {
+        return Err(
+            "--a40-design-peace-evidence requires a non-production early launch".to_string(),
+        );
+    }
+    if a39_evidence_capture && (production || early_launch.is_none()) {
+        return Err(
+            "--a39-character-presentation-evidence requires a non-production early launch"
+                .to_string(),
+        );
+    }
+    if a36_evidence_capture && (production || early_launch.is_none()) {
+        return Err(
+            "--a36-active-ability-evidence requires a non-production early launch".to_string(),
+        );
+    }
+    if a34_evidence_supplement.is_some() && (production || early_launch.is_none()) {
+        return Err(
+            "--a34-decision-panel-evidence-supplement requires a non-production early launch"
+                .to_string(),
+        );
+    }
+    if let Some(supplement) = a34_evidence_supplement.as_ref() {
+        let declared_catalog_sha256 = supplement
+            .get("decision_catalog_sha256")
+            .and_then(Value::as_str)
+            .filter(|value| {
+                value.len() == 64
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+            })
+            .ok_or(
+                "A34 evidence supplement lacks a canonical lowercase decision_catalog_sha256",
+            )?;
+        let catalog = static_artifacts
+            .iter()
+            .find(|artifact| {
+                artifact.name == STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS
+            })
+            .ok_or(
+                "A34 evidence requires --static-decisions-definitions for the exact catalog join",
+            )?;
+        let actual_catalog_sha256 = to_hex(&hash_file_sha256_bytes(&catalog.path)?);
+        if actual_catalog_sha256 != declared_catalog_sha256 {
+            return Err(
+                "A34 evidence supplement decision_catalog_sha256 differs from the supplied static decision catalog"
+                    .into(),
+            );
+        }
+    }
     Ok(Config {
         pid: pid.unwrap_or(0),
         dll,
@@ -5547,6 +5761,10 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         stream_format,
         profile,
         sidecar_log,
+        a40_evidence_capture,
+        a39_evidence_capture,
+        a36_evidence_capture,
+        a34_evidence_supplement,
         extraction_perf_gate,
         d53_emit_mode,
         d51_emit_mode,
@@ -5870,7 +6088,7 @@ fn static_artifact_flag_name(name: &str) -> &'static str {
 }
 
 fn usage() -> String {
-    "usage: collector_record (--pid <pid> | --early-launch-exe <hoi4.exe> [--early-launch-arg value]...) --pdx-user-dir <profile> --dll <collector.dll> --out-dir <dir> [--early-hook-timeout-ms N] [--g2-capture-intent json] [--session-id UUID] [--capture-id ID] [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--scheduled-domains-exact] [--profile production|debug] [--production] [--acceptance-test-mode synthetic-fault|paused|sink-open-fault|sink-write-fault --acceptance-test-nonce 64hex] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--stream-compression zstd|none] [--replay-zstd-level N] [--replay-zstd-window-log N] [--skip-host-fold] [--hour-latch] [--hour-latch-poll-ms N] [--hour-latch-queue-cap N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-bundle-manifest path --static-bundle-mod-state path --static-bundle-dlc-state path --static-bundle-load-order path --static-bundle-source-inventory path --static-bundle-live-resolution-report path] [--portable-content-use-trace path] [--static-bundle-verifier path] [--static-bundle-python path] [--static-bundle-timeout-ms N] [--domain57-game-speed-gate-v2 path --domain57-game-speed-transcript-file-sha256 hex] [--design-catalog-live path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path] [--static-technology-sharing path]\n\
+    "usage: collector_record (--pid <pid> | --early-launch-exe <hoi4.exe> [--early-launch-arg value]...) --pdx-user-dir <profile> --dll <collector.dll> --out-dir <dir> [--early-hook-timeout-ms N] [--g2-capture-intent json] [--session-id UUID] [--capture-id ID] [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--scheduled-domains-exact] [--profile production|debug] [--production] [--acceptance-test-mode synthetic-fault|paused|sink-open-fault|sink-write-fault --acceptance-test-nonce 64hex] [--stream-format json|compact] [--extraction-perf-gate] [--d53-emit-mode delta|full] [--d51-emit-mode delta|full] [--d41-emit-mode delta|full] [--d44-emit-mode delta|full] [--d48-emit-mode delta|full] [--d53-relation-read-mode offsets|scan|shadow] [--sidecar-log] [--a34-decision-panel-evidence-supplement json] [--a36-active-ability-evidence] [--a39-character-presentation-evidence] [--a40-design-peace-evidence] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--stream-compression zstd|none] [--replay-zstd-level N] [--replay-zstd-window-log N] [--skip-host-fold] [--hour-latch] [--hour-latch-poll-ms N] [--hour-latch-queue-cap N] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-bundle-manifest path --static-bundle-mod-state path --static-bundle-dlc-state path --static-bundle-load-order path --static-bundle-source-inventory path --static-bundle-live-resolution-report path] [--portable-content-use-trace path] [--static-bundle-verifier path] [--static-bundle-python path] [--static-bundle-timeout-ms N] [--domain57-game-speed-gate-v2 path --domain57-game-speed-transcript-file-sha256 hex] [--design-catalog-live path] [--static-templates-equipment-catalog path] [--static-localisation-join path] [--static-decisions-definitions path] [--static-idea-tech-loc-xref path] [--static-ship-definitions path] [--static-gfx-icon-manifest path] [--static-technology-sharing path]\n\
      \n\
      Static artifacts: non-production probes may omit them. Production requires one\n\
      admitted bundle containing all seven deterministic artifacts plus exact\n\
@@ -6134,18 +6352,42 @@ fn redact_absolute_path_string(value: &str) -> String {
     }
 }
 
-fn redact_json_strings(value: &Value) -> Value {
+fn redact_json_strings(value: &Value) -> Result<Value, String> {
+    // Static-artifact provenance is itself portable index data. Reuse the
+    // checked recursive pass so absolute paths in nested object keys are
+    // redacted too, and fail closed instead of silently overwriting colliding
+    // basenames.
+    redact_json_strings_checked(value, "$static_artifact")
+}
+
+fn redact_json_strings_checked(value: &Value, location: &str) -> Result<Value, String> {
     match value {
-        Value::String(text) => Value::String(redact_absolute_path_string(text)),
-        Value::Array(values) => Value::Array(values.iter().map(redact_json_strings).collect()),
+        Value::String(text) => Ok(Value::String(redact_absolute_path_string(text))),
+        Value::Array(values) => values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                redact_json_strings_checked(value, &format!("{location}[{index}]"))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
         Value::Object(map) => {
             let mut out = serde_json::Map::new();
             for (key, value) in map {
-                out.insert(redact_absolute_path_string(key), redact_json_strings(value));
+                let redacted_key = redact_absolute_path_string(key);
+                if out.contains_key(&redacted_key) {
+                    return Err(format!(
+                        "portable recorder manifest key collision after path redaction at {location}"
+                    ));
+                }
+                out.insert(
+                    redacted_key,
+                    redact_json_strings_checked(value, &format!("{location}.{key}"))?,
+                );
             }
-            Value::Object(out)
+            Ok(Value::Object(out))
         }
-        other => other.clone(),
+        other => Ok(other.clone()),
     }
 }
 
@@ -6153,7 +6395,7 @@ fn redact_json_strings(value: &Value) -> Value {
 /// file boundary. The local run manifest retains absolute paths for recovery
 /// and audit, but the independently shareable `.battleplan` never does.
 fn portable_session_manifest_bytes(value: &Value) -> Result<Vec<u8>, String> {
-    let redacted = redact_json_strings(value);
+    let redacted = redact_json_strings_checked(value, "$")?;
     reject_absolute_paths_in_json(&redacted, "$")?;
     serde_json::to_vec_pretty(&redacted)
         .map_err(|error| format!("serialize portable recorder manifest failed: {error}"))
@@ -6166,6 +6408,8 @@ fn reject_absolute_paths_in_json(value: &Value, location: &str) -> Result<(), St
                 || is_unc_absolute_path(text)
                 || is_unix_rooted_path(text)
                 || contains_drive_absolute_fragment(text)
+                || contains_unc_absolute_fragment(text)
+                || contains_unix_absolute_fragment(text)
             {
                 return Err(format!(
                     "portable recorder manifest still contains an absolute path at {location}"
@@ -6183,6 +6427,8 @@ fn reject_absolute_paths_in_json(value: &Value, location: &str) -> Result<(), St
                     || is_unc_absolute_path(key)
                     || is_unix_rooted_path(key)
                     || contains_drive_absolute_fragment(key)
+                    || contains_unc_absolute_fragment(key)
+                    || contains_unix_absolute_fragment(key)
                 {
                     return Err(format!(
                         "portable recorder manifest still contains an absolute path key at {location}"
@@ -6202,6 +6448,29 @@ fn contains_drive_absolute_fragment(value: &str) -> bool {
         window[0].is_ascii_alphabetic()
             && window[1] == b':'
             && (window[2] == b'\\' || window[2] == b'/')
+    })
+}
+
+fn contains_unc_absolute_fragment(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.windows(2).any(|window| window == b"\\\\")
+        || bytes.windows(2).enumerate().any(|(index, window)| {
+            window == b"//"
+                && index > 0
+                && matches!(
+                    bytes[index - 1],
+                    b' ' | b'\t' | b'=' | b'(' | b'[' | b'{' | b'\'' | b'"'
+                )
+        })
+}
+
+fn contains_unix_absolute_fragment(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.iter().enumerate().any(|(index, byte)| {
+        *byte == b'/'
+            && index > 0
+            && bytes.get(index + 1).is_some_and(|next| *next != b'/')
+            && matches!(bytes[index - 1], b' ' | b'\t' | b'=' | b':' | b'(' | b'[' | b'{' | b'\'' | b'"')
     })
 }
 
@@ -6589,17 +6858,17 @@ fn validate_static_artifact_shape(
 fn whitelisted_object(
     object: &serde_json::Map<String, Value>,
     fields: &[&str],
-) -> serde_json::Map<String, Value> {
+) -> Result<serde_json::Map<String, Value>, String> {
     let mut out = serde_json::Map::new();
     for field in fields {
         if let Some(value) = object.get(*field) {
-            out.insert((*field).to_string(), redact_json_strings(value));
+            out.insert((*field).to_string(), redact_json_strings(value)?);
         }
     }
-    out
+    Ok(out)
 }
 
-fn whitelisted_layers(catalog: &Value) -> Value {
+fn whitelisted_layers(catalog: &Value) -> Result<Value, String> {
     let layers = catalog
         .get("layers")
         .and_then(Value::as_array)
@@ -6612,7 +6881,7 @@ fn whitelisted_layers(catalog: &Value) -> Value {
                 .expect("static artifact layer objects validated before provenance build");
             let mut carried = serde_json::Map::new();
             if let Some(value) = object.get("label") {
-                carried.insert("label".to_string(), redact_json_strings(value));
+                carried.insert("label".to_string(), redact_json_strings(value)?);
             }
             // Same root/root_name selection rule as require_layer_root: an
             // empty/whitespace "root" must not shadow a valid "root_name",
@@ -6629,32 +6898,33 @@ fn whitelisted_layers(catalog: &Value) -> Value {
                 );
             }
             if let Some(value) = object.get("replace_path") {
-                carried.insert("replace_path".to_string(), redact_json_strings(value));
+                carried.insert("replace_path".to_string(), redact_json_strings(value)?);
             }
-            Value::Object(carried)
+            Ok(Value::Object(carried))
         })
-        .collect();
-    Value::Array(out)
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(Value::Array(out))
 }
 
 fn insert_meta_provenance(
     out: &mut serde_json::Map<String, Value>,
     object: &serde_json::Map<String, Value>,
     fields: &[&str],
-) {
+) -> Result<(), String> {
     let meta = object["meta"]
         .as_object()
         .expect("static artifact meta validated before provenance build");
     out.insert(
         "meta".to_string(),
-        Value::Object(whitelisted_object(meta, fields)),
+        Value::Object(whitelisted_object(meta, fields)?),
     );
+    Ok(())
 }
 
 fn insert_localisation_source_provenance(
     out: &mut serde_json::Map<String, Value>,
     object: &serde_json::Map<String, Value>,
-) {
+) -> Result<(), String> {
     let localisation_source = object["localisation_source"]
         .as_object()
         .expect("static artifact localisation source validated before provenance build");
@@ -6663,8 +6933,9 @@ fn insert_localisation_source_provenance(
         Value::Object(whitelisted_object(
             localisation_source,
             &["key_count", "sha256", "source"],
-        )),
+        )?),
     );
+    Ok(())
 }
 
 /// Build the provenance block surfaced into `index.json` for a present artifact.
@@ -6677,18 +6948,18 @@ fn artifact_provenance(request: &StaticArtifactRequest, catalog: &Value) -> Resu
         .expect("static artifact root validated before provenance build");
     let mut out = serde_json::Map::new();
     for field in ["schema", "artifact_kind", "artifact_sha256"] {
-        out.insert(field.to_string(), redact_json_strings(&object[field]));
+        out.insert(field.to_string(), redact_json_strings(&object[field])?);
     }
     out.insert(
         "mod_identity_layers".to_string(),
-        whitelisted_layers(catalog),
+        whitelisted_layers(catalog)?,
     );
 
     match request.name {
         STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG => {
             out.insert(
                 "domain_id".to_string(),
-                redact_json_strings(&object["domain_id"]),
+                redact_json_strings(&object["domain_id"])?,
             );
             let counts = object["counts"]
                 .as_object()
@@ -6705,13 +6976,13 @@ fn artifact_provenance(request: &StaticArtifactRequest, catalog: &Value) -> Resu
                         "unit_definition_files",
                         "unit_definitions",
                     ],
-                )),
+                )?),
             );
         }
         STATIC_ARTIFACT_LOCALISATION_JOIN => {
             out.insert(
                 "request".to_string(),
-                redact_json_strings(&object["request"]),
+                redact_json_strings(&object["request"])?,
             );
             let meta = object["meta"]
                 .as_object()
@@ -6731,7 +7002,7 @@ fn artifact_provenance(request: &StaticArtifactRequest, catalog: &Value) -> Resu
                         "lines_seen",
                         "overrides",
                     ],
-                )),
+                )?),
             );
         }
         STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS => {
@@ -6748,8 +7019,8 @@ fn artifact_provenance(request: &StaticArtifactRequest, catalog: &Value) -> Resu
                     "decision_mapped",
                     "decision_omitted_no_loc_key",
                 ],
-            );
-            insert_localisation_source_provenance(&mut out, object);
+            )?;
+            insert_localisation_source_provenance(&mut out, object)?;
         }
         STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC => {
             insert_meta_provenance(
@@ -6765,8 +7036,8 @@ fn artifact_provenance(request: &StaticArtifactRequest, catalog: &Value) -> Resu
                     "idea_mapped",
                     "idea_omitted_no_loc_key",
                 ],
-            );
-            insert_localisation_source_provenance(&mut out, object);
+            )?;
+            insert_localisation_source_provenance(&mut out, object)?;
         }
         STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC => {
             insert_meta_provenance(
@@ -6780,8 +7051,8 @@ fn artifact_provenance(request: &StaticArtifactRequest, catalog: &Value) -> Resu
                     "module_files_parsed",
                     "module_files_total",
                 ],
-            );
-            insert_localisation_source_provenance(&mut out, object);
+            )?;
+            insert_localisation_source_provenance(&mut out, object)?;
         }
         STATIC_ARTIFACT_GFX_ICON_MANIFEST => {
             insert_meta_provenance(
@@ -6797,7 +7068,7 @@ fn artifact_provenance(request: &StaticArtifactRequest, catalog: &Value) -> Resu
                     "unresolved_textures",
                     "unused_missing_texture_allowlist_entries",
                 ],
-            );
+            )?;
         }
         STATIC_ARTIFACT_TECHNOLOGY_SHARING_STATIC => {
             insert_meta_provenance(
@@ -6813,8 +7084,8 @@ fn artifact_provenance(request: &StaticArtifactRequest, catalog: &Value) -> Resu
                     "runtime_token_proof",
                     "runtime_hash_proof",
                 ],
-            );
-            insert_localisation_source_provenance(&mut out, object);
+            )?;
+            insert_localisation_source_provenance(&mut out, object)?;
         }
         _ => unreachable!("static artifact name validated before provenance build"),
     }
@@ -6847,6 +7118,7 @@ struct ResolvedStaticArtifact {
     index_descriptor: Value,
 }
 
+#[derive(Debug)]
 struct ResolvedDesignCatalogLive {
     bytes: Vec<u8>,
     sha256: String,
@@ -6874,8 +7146,15 @@ fn resolve_design_catalog_live(
     }
     let raw_value: Value = snapshot::parse_json_strict(&first)
         .map_err(|error| format!("strict A27 source parse failed: {error}"))?;
-    if raw_value.get("schema").and_then(Value::as_str)
-        != Some(snapshot::design_catalog::A27_LIVE_CATALOG_SCHEMA)
+    let source_schema = raw_value
+        .get("schema")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "A27 live design catalog has no source schema".to_string())?;
+    if !matches!(
+        source_schema,
+        snapshot::design_catalog::A27_LIVE_CATALOG_SCHEMA
+            | snapshot::design_catalog::A27_LIVE_CATALOG_TIMELINE_SCHEMA
+    )
         || raw_value
             .pointer("/authority/program")
             .and_then(Value::as_str)
@@ -6890,7 +7169,9 @@ fn resolve_design_catalog_live(
     let catalog = snapshot::design_catalog::PortableDesignCatalog::decode_a27_live_json(&first)
         .map_err(|error| format!("A27 live design catalog failed exact admission: {error}"))?;
     let source_sha256 = to_hex(&Sha256::digest(&first));
-    if catalog.source_sha256 != source_sha256 {
+    if source_schema == snapshot::design_catalog::A27_LIVE_CATALOG_SCHEMA
+        && catalog.source_sha256 != source_sha256
+    {
         return Err("A27 live design catalog parser/source hash disagreement".to_string());
     }
     if let Some(expected) = request.expected_sha256.as_deref() {
@@ -6909,13 +7190,18 @@ fn resolve_design_catalog_live(
         "present": true,
         "role": "design_catalog_live",
         "schema": snapshot::design_catalog::PORTABLE_DESIGN_CATALOG_SCHEMA,
-        "source_schema": snapshot::design_catalog::A27_LIVE_CATALOG_SCHEMA,
+        "source_schema": source_schema,
         "path": snapshot::design_catalog::PORTABLE_ARTIFACT_PATH,
         "sha256": sha256,
         "bytes": portable_bytes.len() as u64,
         "source_sha256": source_sha256,
         "record_count": catalog.records.len() as u64,
         "source_record_id": catalog.source_record_id,
+        "first_capture_hour_index": catalog.capture_hour_index,
+        "capture_count": 1 + catalog.temporal_deltas.len() as u64,
+        "last_capture_hour_index": catalog.temporal_deltas.last()
+            .map(|delta| delta.capture_hour_index)
+            .unwrap_or(catalog.capture_hour_index),
     });
     Ok(ResolvedDesignCatalogLive {
         bytes: portable_bytes,
@@ -6937,32 +7223,185 @@ fn admit_owned_design_catalog_live(path: PathBuf) -> Result<DesignCatalogLiveReq
     })
 }
 
-fn capture_owned_design_catalog_live(
+struct OwnedDesignCatalogTimelineCapture {
+    child: Option<std::process::Child>,
+    output: PathBuf,
+    ready: PathBuf,
+    stop: PathBuf,
+}
+
+impl Drop for OwnedDesignCatalogTimelineCapture {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = fs::write(&self.stop, b"stop");
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn start_owned_design_catalog_timeline(
     pid: u32,
     out_dir: &Path,
     python: &OsStr,
-) -> Result<DesignCatalogLiveRequest, String> {
+) -> Result<OwnedDesignCatalogTimelineCapture, String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let owned_dir = out_dir.join("recorder_owned");
     fs::create_dir_all(&owned_dir)
-        .map_err(|error| format!("create recorder-owned A27 directory failed: {error}"))?;
-    let output = owned_dir.join("a27_live_catalog.source.json");
+        .map_err(|error| format!("create recorder-owned A27 timeline directory failed: {error}"))?;
+    let output = owned_dir.join("a27_live_catalog_timeline.source.json");
+    let ready = owned_dir.join("a27_live_catalog_timeline.ready");
+    let stop = owned_dir.join("a27_live_catalog_timeline.stop");
+    for stale in [&output, &ready, &stop] {
+        if stale.exists() {
+            fs::remove_file(stale).map_err(|error| {
+                format!("remove stale A27 timeline file {} failed: {error}", stale.display())
+            })?;
+        }
+    }
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../lanes/design_catalog_live/live_a729_acceptance.py");
-    let status = Command::new(python)
+        .join("../lanes/design_catalog_live/capture_timeline.py");
+    let log = fs::File::create(owned_dir.join("a27_live_catalog_timeline.log"))
+        .map_err(|error| format!("create A27 timeline log failed: {error}"))?;
+    let log_error = log
+        .try_clone()
+        .map_err(|error| format!("clone A27 timeline log handle failed: {error}"))?;
+    let mut child = Command::new(python)
         .arg(&script)
-        .arg("--capture-only")
         .arg("--pid")
         .arg(pid.to_string())
-        .arg("--snapshot-out")
+        .arg("--timeline-out")
         .arg(&output)
-        .status()
-        .map_err(|error| format!("launch authenticated A27 producer failed: {error}"))?;
-    if !status.success() {
+        .arg("--ready-file")
+        .arg(&ready)
+        .arg("--stop-file")
+        .arg(&stop)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(log))
+        .stderr(std::process::Stdio::from(log_error))
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|error| format!("launch authenticated A27 timeline producer failed: {error}"))?;
+    if let Some(status) = child
+        .try_wait()
+        .map_err(|error| format!("poll A27 timeline producer failed: {error}"))?
+    {
         return Err(format!(
-            "authenticated A27 producer exited without a complete snapshot: {status}"
+            "authenticated A27 timeline producer exited during startup: {status}"
         ));
     }
-    admit_owned_design_catalog_live(output)
+    Ok(OwnedDesignCatalogTimelineCapture {
+        child: Some(child),
+        output,
+        ready,
+        stop,
+    })
+}
+
+fn wait_owned_design_catalog_timeline_ready(
+    capture: &mut OwnedDesignCatalogTimelineCapture,
+) -> Result<(), String> {
+    const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+    let deadline = Instant::now() + STARTUP_TIMEOUT;
+    loop {
+        if capture.ready.exists() {
+            return Ok(());
+        }
+        let child = capture
+            .child
+            .as_mut()
+            .ok_or_else(|| "A27 timeline producer child was already consumed".to_string())?;
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("poll A27 timeline readiness failed: {error}"))?
+        {
+            return Err(format!(
+                "authenticated A27 timeline producer exited before its first coherent census: {status}"
+            ));
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "authenticated A27 timeline producer did not seal its first coherent census within {} ms",
+                STARTUP_TIMEOUT.as_millis()
+            ));
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn wait_owned_design_catalog_ready_path(
+    ready: &Path,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if ready.exists() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "authenticated A27 timeline producer did not seal its post-resume baseline within {} ms",
+                timeout.as_millis()
+            ));
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn finish_owned_design_catalog_timeline(
+    mut capture: OwnedDesignCatalogTimelineCapture,
+) -> Result<DesignCatalogLiveRequest, String> {
+    fs::write(&capture.stop, b"stop")
+        .map_err(|error| format!("signal A27 timeline producer failed: {error}"))?;
+    let mut child = capture
+        .child
+        .take()
+        .ok_or_else(|| "A27 timeline producer child was already consumed".to_string())?;
+    let status = child
+        .wait()
+        .map_err(|error| format!("wait for A27 timeline producer failed: {error}"))?;
+    if !status.success() || !capture.ready.exists() {
+        return Err(format!(
+            "authenticated A27 timeline producer exited without a complete sequence: {status}"
+        ));
+    }
+    admit_owned_design_catalog_live(capture.output.clone())
+}
+
+fn validate_design_catalog_timeline_coverage(
+    request: &DesignCatalogLiveRequest,
+    first_game_hour_raw: i64,
+    last_game_hour_raw: i64,
+) -> Result<(), String> {
+    const DATE_EPOCH_RAW: i64 = 43_799_999;
+    let first = first_game_hour_raw
+        .checked_sub(DATE_EPOCH_RAW)
+        .and_then(|hour| u64::try_from(hour).ok())
+        .ok_or_else(|| "A27 timeline first replay hour is outside the portable epoch".to_string())?;
+    let last = last_game_hour_raw
+        .checked_sub(DATE_EPOCH_RAW)
+        .and_then(|hour| u64::try_from(hour).ok())
+        .ok_or_else(|| "A27 timeline last replay hour is outside the portable epoch".to_string())?;
+    let resolved = resolve_design_catalog_live(request)?;
+    let catalog =
+        snapshot::design_catalog::PortableDesignCatalog::decode_a27_live_json(&resolved.bytes)?;
+    let actual_last = catalog
+        .temporal_deltas
+        .last()
+        .map(|delta| delta.capture_hour_index)
+        .unwrap_or(catalog.capture_hour_index);
+    if catalog.capture_hour_index != first || actual_last != last {
+        return Err(format!(
+            "A27 timeline does not cover the compact replay spine: catalog {}..{} replay {}..{}",
+            catalog.capture_hour_index, actual_last, first, last
+        ));
+    }
+    let expected_count = last.saturating_sub(first).saturating_add(1);
+    if 1 + catalog.temporal_deltas.len() as u64 != expected_count {
+        return Err("A27 timeline has a missing or duplicate replay-hour census".into());
+    }
+    Ok(())
 }
 
 /// Read + resolve a requested static artifact.
@@ -7381,6 +7820,10 @@ fn publish_rollover_package_set(
             ));
         }
 
+        let member_dir = package_root.join(format!("{:020}", stream.logical_stream_id));
+        fs::create_dir_all(&member_dir)
+            .map_err(|error| format!("create logical-stream package directory failed: {error}"))?;
+
         if stream.logical_stream_id == 0 {
             let replay_name = root_manifest
                 .get("replay_file")
@@ -7390,6 +7833,13 @@ fn publish_rollover_package_set(
             if !replay_path.is_file() || !root_manifest_path.is_file() {
                 return Err("root rollover member was not fully finalized".into());
             }
+            let (portable_manifest_sha256, package_sha256) =
+                publish_rollover_embedded_manifest(
+                    &replay_path,
+                    &member_dir,
+                    stream,
+                    replay_name,
+                )?;
             if root_manifest
                 .get("replay_artifact")
                 .and_then(|value| value.get("recovery"))
@@ -7405,18 +7855,15 @@ fn publish_rollover_package_set(
                 "raw_relative_path": format!("logical-streams/{}", stream.relative_path),
                 "raw_bytes": stream.file_bytes,
                 "raw_sha256": stream.file_sha256_hex,
-                "manifest_relative_path": root_manifest_path.file_name().and_then(|v| v.to_str()).ok_or("root manifest file name is not UTF-8")?,
-                "manifest_sha256": to_hex(&hash_file_sha256_bytes(root_manifest_path)?),
+                "manifest_relative_path": format!("logical-streams/packages/{:020}/portable_session_manifest.json", stream.logical_stream_id),
+                "manifest_sha256": portable_manifest_sha256,
                 "package_relative_path": replay_name,
-                "package_sha256": to_hex(&hash_file_sha256_bytes(&replay_path)?),
+                "package_sha256": package_sha256,
                 "recovery": root_manifest.get("replay_artifact").and_then(|v| v.get("recovery")).and_then(Value::as_bool).unwrap_or(true),
             }));
             continue;
         }
 
-        let member_dir = package_root.join(format!("{:020}", stream.logical_stream_id));
-        fs::create_dir_all(&member_dir)
-            .map_err(|error| format!("create logical-stream package directory failed: {error}"))?;
         let member_manifest_path = member_dir.join("native_session_manifest.json");
         let member_capture = PipeCapture {
             byte_count: stream.file_bytes,
@@ -7473,7 +7920,7 @@ fn publish_rollover_package_set(
         if let Some(object) = compact_stream.as_object_mut() {
             object.insert(
                 "acceptance_telemetry_scope".to_string(),
-                json!("logical_stream_set_aggregate"),
+                json!("logical_stream"),
             );
         }
         let campaign_identity = recorder_host::campaign_identity::to_manifest_json(
@@ -7577,7 +8024,7 @@ fn publish_rollover_package_set(
         object.insert("acceptance_telemetry".to_string(), root_acceptance_telemetry);
         object.insert(
             "acceptance_telemetry_scope".to_string(),
-            json!("logical_stream_set_aggregate"),
+            json!("logical_stream"),
         );
         object.remove("host_finalize");
         write_synced_json(&member_manifest_path, &member_manifest)?;
@@ -7662,6 +8109,13 @@ fn publish_rollover_package_set(
             cfg.skip_host_fold,
             verify_report.as_ref(),
         );
+        let (portable_manifest_sha256, package_sha256) =
+            publish_rollover_embedded_manifest(
+                &replay_path,
+                &member_dir,
+                stream,
+                &replay_name,
+            )?;
         published_members.push(json!({
             "logical_stream_id": stream.logical_stream_id,
             "campaign_id_hex": stream.campaign_id_hex,
@@ -7669,10 +8123,10 @@ fn publish_rollover_package_set(
             "raw_relative_path": format!("logical-streams/{}", stream.relative_path),
             "raw_bytes": stream.file_bytes,
             "raw_sha256": stream.file_sha256_hex,
-            "manifest_relative_path": format!("logical-streams/packages/{:020}/native_session_manifest.json", stream.logical_stream_id),
-            "manifest_sha256": to_hex(&hash_file_sha256_bytes(&member_manifest_path)?),
+            "manifest_relative_path": format!("logical-streams/packages/{:020}/portable_session_manifest.json", stream.logical_stream_id),
+            "manifest_sha256": portable_manifest_sha256,
             "package_relative_path": format!("logical-streams/packages/{:020}/{replay_name}", stream.logical_stream_id),
-            "package_sha256": to_hex(&hash_file_sha256_bytes(&replay_path)?),
+            "package_sha256": package_sha256,
             "recovery": !hourly_met,
         }));
     }
@@ -7696,6 +8150,74 @@ fn publish_rollover_package_set(
     }
 }
 
+/// Retain the exact recorder-manifest bytes embedded in a finalized rollover
+/// package as the portable external manifest authority. The live host manifest
+/// receives post-pack timing/verification telemetry and therefore cannot be
+/// byte-identical to the already-sealed container entry. Rollover admission
+/// deliberately requires this byte equality, so publishing a separate
+/// immutable copy prevents a split authority without discarding useful
+/// live-host telemetry.
+fn publish_rollover_embedded_manifest(
+    replay_path: &Path,
+    member_dir: &Path,
+    stream: &recorder_host::duplex_session::rollover_fs::DurableRolloverPublicationStream,
+    expected_replay_name: &str,
+) -> Result<(String, String), String> {
+    use recorder_host::duplex_session::rollover_fs::publish_immutable_descriptor;
+
+    let (container, package_bytes, package_sha256) =
+        snapshot::Container::open_strict_with_file_receipt(
+            replay_path,
+            &snapshot::ExpectedIdentity::default(),
+        )
+        .map_err(|error| format!("authenticate finalized rollover package: {error}"))?;
+    if package_bytes == 0 {
+        return Err("finalized rollover package is empty".to_string());
+    }
+    let manifests = container.entries_by_role("recorder_manifest");
+    if manifests.len() != 1 {
+        return Err(format!(
+            "finalized rollover package must contain exactly one recorder_manifest entry; found {}",
+            manifests.len()
+        ));
+    }
+    let bytes = container
+        .read_entry_bytes(&manifests[0].path)
+        .map_err(|error| format!("authenticate embedded rollover manifest: {error}"))?;
+    if bytes.len() > 16 * 1024 * 1024 {
+        return Err("embedded rollover manifest exceeds 16 MiB cap".to_string());
+    }
+    let manifest = snapshot::parse_json_strict(&bytes)
+        .map_err(|error| format!("strict-decode embedded rollover manifest: {error}"))?;
+    recorder_host::campaign_identity::validate_in_session_manifest(&manifest)
+        .map_err(|error| format!("embedded rollover campaign identity is invalid: {error}"))?;
+    let expected_raw = format!("logical-streams/{}", stream.relative_path);
+    if manifest.get("logical_stream_id").and_then(Value::as_u64)
+        != Some(stream.logical_stream_id)
+        || manifest.get("raw_stream").and_then(Value::as_str) != Some(expected_raw.as_str())
+        || manifest.get("replay_file").and_then(Value::as_str) != Some(expected_replay_name)
+        || manifest
+            .get("campaign_identity")
+            .and_then(Value::as_object)
+            .and_then(|identity| identity.get("campaign_id"))
+            .and_then(Value::as_str)
+            != Some(stream.campaign_id_hex.as_str())
+        || manifest
+            .get("campaign_identity")
+            .and_then(Value::as_object)
+            .and_then(|identity| identity.get("stream_header_sha256"))
+            .and_then(Value::as_str)
+            != Some(stream.cid1_payload_sha256_hex.as_str())
+    {
+        return Err(format!(
+            "embedded rollover manifest disagrees with logical stream {}",
+            stream.logical_stream_id
+        ));
+    }
+    publish_immutable_descriptor(member_dir, "portable_session_manifest.json", &bytes)?;
+    Ok((to_hex(&Sha256::digest(&bytes)), package_sha256))
+}
+
 fn verify_published_rollover_package_set(
     root: &Path,
     path: &Path,
@@ -7711,6 +8233,8 @@ fn verify_published_rollover_package_set(
         .map_err(|error| format!("decode published rollover package set failed: {error}"))?;
     if value.get("schema").and_then(Value::as_str)
         != Some("cid1-rollover-package-set-v1")
+        || value.get("source_descriptor").and_then(Value::as_str)
+            != Some("logical-streams/logical-stream-set.json")
         || value
             .get("source_descriptor_sha256")
             .and_then(Value::as_str)
@@ -7748,6 +8272,7 @@ fn verify_published_rollover_package_set(
                 != Some(raw.cid1_payload_sha256_hex.as_str())
             || member.get("raw_sha256").and_then(Value::as_str)
                 != Some(raw.file_sha256_hex.as_str())
+            || member.get("raw_bytes").and_then(Value::as_u64) != Some(raw.file_bytes)
         {
             return Err(format!(
                 "published rollover package member {expected_id} differs from raw authority"
@@ -8639,6 +9164,15 @@ fn bind_domain57_authority_to_manifest_profile(profile: &mut Value, cfg: &Config
         return;
     };
     profile.insert(
+        "x12_debug_evidence_without_speed_gate_v1".to_string(),
+        Value::Bool(allow_x12_debug_d57_without_speed_gate(
+            cfg.production,
+            cfg.profile,
+            cfg.early_launch.is_some(),
+            env::var("BATTLE_PLAN_ENABLE_X12_SPEED_PAUSE_HOOK").or_else(|_| env::var("HOI4_ENABLE_X12_SPEED_PAUSE_HOOK")).ok().as_deref(),
+        )),
+    );
+    profile.insert(
         "domain57_game_speed_gate_v2".to_string(),
         cfg.domain57_game_speed_gate.clone().unwrap_or(Value::Null),
     );
@@ -9185,6 +9719,10 @@ fn write_control_file(
         // is captured hourly. This is always 1 and never a profile choice.
         "scheduled_snapshot_step_hours": 1,
         "sidecar_log": cfg.sidecar_log,
+        "a40_evidence_capture": cfg.a40_evidence_capture,
+        "a39_evidence_capture": cfg.a39_evidence_capture,
+        "a36_evidence_capture": cfg.a36_evidence_capture,
+        "a34_evidence_supplement": cfg.a34_evidence_supplement,
         "session_id": cfg.session_id,
         "scheduled_domains": resolved_scheduled_domains.join(";"),
         "division_body_bridge": cfg.division_body_bridge.as_deref(),
@@ -9192,6 +9730,20 @@ fn write_control_file(
         "idea_group_filter": cfg.idea_group_filter.as_deref(),
         "advisor_token_filter": cfg.advisor_token_filter.as_deref(),
     });
+    if allow_x12_debug_d57_without_speed_gate(
+        cfg.production,
+        cfg.profile,
+        cfg.early_launch.is_some(),
+        env::var("BATTLE_PLAN_ENABLE_X12_SPEED_PAUSE_HOOK").or_else(|_| env::var("HOI4_ENABLE_X12_SPEED_PAUSE_HOOK")).ok().as_deref(),
+    ) {
+        payload
+            .as_object_mut()
+            .expect("collector control payload is an object")
+            .insert(
+                "x12_debug_evidence_without_speed_gate_v1".to_string(),
+                Value::Bool(true),
+            );
+    }
     // Optional structured authority is absent when d57 is not scheduled. A
     // present JSON null is deliberately not used: the collector treats a
     // present non-object as malformed control.
@@ -11361,6 +11913,80 @@ fn read_combined_record_until(
     Ok(record)
 }
 
+/// Select the recorder's first identity event without ever starting two
+/// competing exact reads. H4CT readiness is non-consuming and has priority;
+/// H4CR is consumed only after the complete declared first record is already
+/// queued. Both the readiness loop and the selected durable operation retain
+/// the one fixed first-frame deadline.
+fn arbitrate_initial_identity_until(
+    data: &mut recorder_host::auto_attach::windows_combined_backend::WindowsCombinedDataReader,
+    control: &mut recorder_host::auto_attach::windows_combined_backend::WindowsCombinedControlDriver,
+    identity: &mut recorder_host::duplex_session::identity_control::RecorderIdentityControlDispatcher<
+        recorder_host::duplex_session::durable_fs::FilesystemIdentityDurableSink,
+    >,
+    deadline: recorder_host::control_transport::ControlDeadline,
+) -> Result<recorder_host::duplex_session::identity_control::ValidatedFirstCompactRecord, String>
+{
+    let mut header = [0u8; COMPACT_RECORD_HEADER_LEN];
+    loop {
+        let control_available = control
+            .control_session_mut()
+            .ok_or("combined control session disappeared during startup arbitration")?
+            .startup_control_input_bytes_available(deadline)
+            .map_err(|error| format!("probe startup H4CT input failed: {error}"))?;
+        if control_available != 0 {
+            let acknowledged = control
+                .control_session_mut()
+                .ok_or("combined control session disappeared before startup CIF1")?
+                .acknowledge_startup_identity_failure(identity, deadline)
+                .map_err(|error| format!("durable startup CIF1 acknowledgement failed: {error}"))?;
+            let failure = acknowledged.failure();
+            return Err(format!(
+                "collector identity failed before CID1 and was durably acknowledged: reason={:?} attempt_id={} logical_id={:?}",
+                failure.reason, failure.attempt_id, failure.current_logical_id
+            ));
+        }
+
+        let (copied, available) = data
+            .peek_available_prefix(&mut header)
+            .map_err(|error| format!("probe startup H4CR input failed: {error}"))?;
+        if available >= COMPACT_RECORD_HEADER_LEN {
+            if copied != COMPACT_RECORD_HEADER_LEN {
+                return Err(format!(
+                    "startup H4CR peek copied {copied} header bytes while {available} bytes were available"
+                ));
+            }
+            let parsed = compact_contract::parse_compact_record_header(&header)
+                .map_err(|error| format!("initial H4CR header invalid: {error}"))?;
+            if available >= parsed.record_len() {
+                // Close the readiness race: if CIF1 became visible after the
+                // first control probe, route and acknowledge it before touching
+                // H4CR. If it arrives after this second probe, the complete CID1
+                // was already queued first and remains the selected event.
+                let control_available = control
+                    .control_session_mut()
+                    .ok_or("combined control session disappeared before startup selection")?
+                    .startup_control_input_bytes_available(deadline)
+                    .map_err(|error| format!("re-probe startup H4CT input failed: {error}"))?;
+                if control_available != 0 {
+                    continue;
+                }
+                let record = read_combined_record_until(data, deadline)?;
+                return recorder_host::duplex_session::identity_control::ValidatedFirstCompactRecord::identity_v1(
+                    0,
+                    &record,
+                )
+                .map_err(|error| format!("validate first CID1 record failed: {error}"));
+            }
+        }
+
+        let remaining = deadline
+            .remaining()
+            .ok_or("first identity event deadline expired")?;
+        thread::sleep(remaining.min(Duration::from_millis(1)));
+    }
+}
+
 fn capture_combined_pipe_to_file(
     mut data: recorder_host::auto_attach::windows_combined_backend::WindowsCombinedDataReader,
     mut control: recorder_host::auto_attach::windows_combined_backend::WindowsCombinedControlDriver,
@@ -11383,12 +12009,6 @@ fn capture_combined_pipe_to_file(
         Duration::from_millis(recorder_host::auto_attach::policy::FIRST_FRAME_DEADLINE_MS),
     )
     .map_err(|error| format!("create first-frame deadline failed: {error}"))?;
-    let first_record_bytes = read_combined_record_until(&mut data, first_deadline)?;
-    let first_record = recorder_host::duplex_session::identity_control::ValidatedFirstCompactRecord::identity_v1(
-        0,
-        &first_record_bytes,
-    )
-    .map_err(|error| format!("validate first CID1 record failed: {error}"))?;
     let sink = recorder_host::duplex_session::durable_fs::FilesystemIdentityDurableSink::new(
         run_dir.join("identity-control"),
     );
@@ -11396,6 +12016,13 @@ fn capture_combined_pipe_to_file(
         recorder_host::duplex_session::identity_control::RecorderIdentityControlDispatcher::new(
             sink,
         );
+    let first_record = arbitrate_initial_identity_until(
+        &mut data,
+        &mut control,
+        &mut identity,
+        first_deadline,
+    )?;
+    let first_record_bytes = first_record.complete_record().to_vec();
     let acknowledged = control
         .control_session_mut()
         .ok_or("combined control session disappeared before CFA1")?
@@ -11506,6 +12133,18 @@ fn capture_combined_pipe_to_file(
                     );
                     match cycle {
                         Ok(Some(cycle)) => {
+                            if let Some(acknowledged_failure) =
+                                cycle.acknowledged_identity_failures().first()
+                            {
+                                let failure = acknowledged_failure.failure();
+                                return Err(format!(
+                                    "collector identity failure was durably acknowledged during rollover heartbeat: reason={:?} attempt_id={} logical_id={:?} acknowledged_count={}",
+                                    failure.reason,
+                                    failure.attempt_id,
+                                    failure.current_logical_id,
+                                    cycle.acknowledged_identity_failures().len()
+                                ));
+                            }
                             if recording {
                                 proof_emitter.report_recurring_heartbeat(
                                     cycle.proof().last_complete_h4cr_sequence,
@@ -11575,10 +12214,24 @@ fn capture_combined_pipe_to_file(
                     }
                 } else {
                     match control.drive_due_heartbeat(&mut identity) {
-                        Ok(Some(cycle)) if recording => {
-                            proof_emitter.report_recurring_heartbeat(
-                                cycle.proof().last_complete_h4cr_sequence,
-                            )?;
+                        Ok(Some(cycle)) => {
+                            if let Some(acknowledged_failure) =
+                                cycle.acknowledged_identity_failures().first()
+                            {
+                                let failure = acknowledged_failure.failure();
+                                return Err(format!(
+                                    "collector identity failure was durably acknowledged during heartbeat: reason={:?} attempt_id={} logical_id={:?} acknowledged_count={}",
+                                    failure.reason,
+                                    failure.attempt_id,
+                                    failure.current_logical_id,
+                                    cycle.acknowledged_identity_failures().len()
+                                ));
+                            }
+                            if recording {
+                                proof_emitter.report_recurring_heartbeat(
+                                    cycle.proof().last_complete_h4cr_sequence,
+                                )?;
+                            }
                         }
                         Ok(_) => {}
                         Err(recorder_host::auto_attach::windows_combined_backend::WindowsCombinedBackendError::TargetExited) => {
@@ -13596,6 +14249,23 @@ fn hour_latch_delivery_problems(summary: &CompactSummary) -> Vec<String> {
 fn scheduled_roster_includes_domain57(scheduled_domains: &[String]) -> bool {
     compact_expected_domain_ids(scheduled_domains)
         .contains(&COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE)
+}
+
+/// X12's suspended early-launch proof must install its mutation hooks before
+/// the first game-state initialization writes. A same-process A3 transcript
+/// gate therefore cannot exist yet. Permit this one debug/evidence topology;
+/// production and ordinary D57 captures still require the transcript-bound v2
+/// gate.
+fn allow_x12_debug_d57_without_speed_gate(
+    production: bool,
+    profile: Option<compact_contract::CaptureProfile>,
+    early_launch: bool,
+    activation: Option<&str>,
+) -> bool {
+    !production
+        && profile == Some(compact_contract::CaptureProfile::Debug)
+        && early_launch
+        && activation == Some("1")
 }
 
 fn hour_latch_gate_problems(summary: &CompactSummary, required: bool) -> Vec<String> {
@@ -16750,7 +17420,7 @@ mod tests {
         assert!(applied[0]["reason"]
             .as_str()
             .unwrap()
-            .contains("order-target rows skip-counted"));
+            .contains("omitted order identities are not serialized"));
     }
 
     #[test]
@@ -16980,7 +17650,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_expected_partial_e2e_folds_domain27_partial_rows_with_manifest_tolerance() {
+    fn compact_expected_partial_e2e_tolerates_domain27_gate_but_folds_unknown() {
         let mut raw = Vec::new();
         let game_hour_raw = 60_759_359;
         let baseline_hour_raw = game_hour_raw - 1;
@@ -17063,14 +17733,13 @@ mod tests {
         assert!(manifest["expected_partial_tolerances_applied"][0]["reason"]
             .as_str()
             .unwrap()
-            .contains("order-target rows skip-counted"));
+            .contains("omitted order identities are not serialized"));
 
-        let orders = snapshot["order_of_battle"]["battle_plan_orders"]
-            .as_array()
-            .expect("D27 tolerated partial should fold valid battle plan rows");
-        assert_eq!(orders.len(), 1);
-        assert_eq!(orders[0]["army"], json!(17));
-        assert_eq!(orders[0]["order_instance"]["states"], json!([118, 119]));
+        assert_eq!(
+            snapshot["order_of_battle"]["battle_plan_orders"],
+            Value::Null,
+            "the manifest gate tolerates expected partial, but omitted order identities keep the folded leaf unknown"
+        );
         assert!(snapshot["provenance"]["collector"]["domain_problems"]
             .as_array()
             .unwrap()
@@ -17084,7 +17753,7 @@ mod tests {
             .any(|note| note
                 .as_str()
                 .unwrap()
-                .contains("expected partial tolerance applied")));
+                .contains("omitted order identities are not serialized")));
     }
 
     #[test]
@@ -17174,7 +17843,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_tolerated_domain26_partial_e2e_passes_gate_and_folds_sparse_rows() {
+    fn compact_tolerated_domain26_partial_e2e_passes_gate_and_folds_unknown() {
         let mut raw = Vec::new();
         let game_hour_raw = 60_759_359;
         append_test_compact_record(
@@ -17274,12 +17943,9 @@ mod tests {
         let divisions = snapshot["divisions"]
             .as_array()
             .expect("D20 baseline should still fold divisions");
-        assert!(divisions.iter().all(|division| {
-            division
-                .get("equipment")
-                .and_then(Value::as_array)
-                .is_some()
-        }));
+        assert!(divisions
+            .iter()
+            .all(|division| division.get("equipment") == Some(&Value::Null)));
         assert!(snapshot["provenance"]["collector"]["domain_problems"]
             .as_array()
             .unwrap()
@@ -18233,15 +18899,11 @@ mod tests {
             fleet_id: 200,
             owner_tag_db_id: 1,
             flags: naval56::compact::FLAG_VALIDATED_DIRECT
-                | naval56::compact::FLAG_FIXTURE_REQUIRED
                 | naval56::compact::FLAG_HAS_LOCATION
                 | naval56::compact::FLAG_HAS_SUNK_CONVOY_COUNT,
             location_province_id: 12345,
             sunk_convoys: 2,
-            source_status: naval56::compact::STATUS_MISSION_FIXTURE_REQUIRED
-                | naval56::compact::STATUS_HOME_BASE_FIXTURE_REQUIRED
-                | naval56::compact::STATUS_REPAIR_RETREAT_FIXTURE_REQUIRED
-                | naval56::compact::STATUS_CONVOY_CONTEXT_FIXTURE_REQUIRED,
+            source_status: 0,
             ..naval56::NavalMissionStatusRow::default()
         };
         let payload = naval56::encode_payload(
@@ -18250,7 +18912,7 @@ mod tests {
                 changed_rows: 1,
                 observed_task_forces: 1,
                 validated_location_rows: 1,
-                fixture_required_rows: 1,
+                fixture_required_rows: 0,
                 convoy_sunk_count_rows: 1,
                 ..naval56::NavalMissionStatusHeader::default()
             },
@@ -25454,8 +26116,8 @@ mod tests {
                 region_id: Some(18),
                 attacker_member_count: Some(5),
                 defender_member_count: Some(8),
-                attacker_positioning_milli: Some(812),
-                defender_positioning_milli: Some(765),
+                attacker_positioning_raw: Some(81_200),
+                defender_positioning_raw: Some(76_500),
                 attacker_anti_air_raw: Some(123_000),
                 defender_anti_air_raw: Some(98_000),
             }],
@@ -25902,6 +26564,10 @@ mod tests {
             stream_format: StreamFormat::Compact,
             profile: None,
             sidecar_log: false,
+            a40_evidence_capture: false,
+            a39_evidence_capture: false,
+            a36_evidence_capture: false,
+            a34_evidence_supplement: None,
             extraction_perf_gate: true,
             d53_emit_mode: D53EmitMode::Delta,
             d51_emit_mode: D51EmitMode::Delta,
@@ -27402,6 +28068,37 @@ mod tests {
             "{error}"
         );
 
+        assert!(allow_x12_debug_d57_without_speed_gate(
+            false,
+            Some(compact_contract::CaptureProfile::Debug),
+            true,
+            Some("1"),
+        ));
+        assert!(!allow_x12_debug_d57_without_speed_gate(
+            true,
+            Some(compact_contract::CaptureProfile::Debug),
+            true,
+            Some("1"),
+        ));
+        assert!(!allow_x12_debug_d57_without_speed_gate(
+            false,
+            Some(compact_contract::CaptureProfile::Production),
+            true,
+            Some("1"),
+        ));
+        assert!(!allow_x12_debug_d57_without_speed_gate(
+            false,
+            Some(compact_contract::CaptureProfile::Debug),
+            true,
+            None,
+        ));
+        assert!(!allow_x12_debug_d57_without_speed_gate(
+            false,
+            Some(compact_contract::CaptureProfile::Debug),
+            false,
+            Some("1"),
+        ));
+
         assert!(!scheduled_roster_includes_domain57(&[]));
         assert!(!scheduled_roster_includes_domain57(&[
             "fuel_live".to_string()
@@ -27671,6 +28368,17 @@ mod tests {
             json!(to_hex(
                 &hash_file_sha256_bytes(cfg.early_launch.as_ref().unwrap().executable.as_path())
                     .unwrap()
+            ))
+        );
+        let recorder_executable = env::current_exe().unwrap();
+        assert_eq!(
+            plan["recorder_executable_file"],
+            json!(recorder_executable.file_name().unwrap().to_str().unwrap())
+        );
+        assert_eq!(
+            plan["recorder_executable_sha256"],
+            json!(to_hex(
+                &hash_file_sha256_bytes(&recorder_executable).unwrap()
             ))
         );
         assert_eq!(
@@ -28247,6 +28955,10 @@ mod tests {
             stream_format: StreamFormat::Compact,
             profile: None,
             sidecar_log: false,
+            a40_evidence_capture: false,
+            a39_evidence_capture: false,
+            a36_evidence_capture: false,
+            a34_evidence_supplement: None,
             pdx_user_dir: None,
             extraction_perf_gate: true,
             d53_emit_mode: D53EmitMode::Delta,
@@ -28290,7 +29002,7 @@ mod tests {
         let capture_content_digest = "55".repeat(32);
         let replay_content_digest = "66".repeat(32);
         let witness = serde_json::to_vec(&json!({
-            "schema": "hoi4-g2-engine-pixel-witness-v1",
+            "schema": "hoi4-g2-engine-pixel-witness-v2",
             "content_manifest_digest_sha256": capture_content_digest.as_str(),
         }))
         .unwrap();
@@ -30513,7 +31225,7 @@ mod tests {
 
         payload.extend_from_slice(&31u32.to_le_bytes());
         payload.extend_from_slice(
-            &(1u32 | (1u32 << 5) | (1u32 << 6) | COMPACT_WEATHER_REGION_FLAG_SANDSTORM)
+            &((1u32 << 5) | (1u32 << 6) | COMPACT_WEATHER_REGION_FLAG_SANDSTORM)
                 .to_le_bytes(),
         );
         payload.extend_from_slice(&1_000_000i32.to_le_bytes());
@@ -32250,7 +32962,10 @@ mod tests {
             "schema": snapshot::design_catalog::A27_LIVE_CATALOG_SCHEMA,
             "authority": {
                 "program": "hoi4.exe 1.19.2.0.a729",
-                "program_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+                "program_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+                "current_date_raw": 60_759_359,
+                "capture_hour_index": 16_959_360,
+                "coherence": "double_read_all_roots_fields_and_membership"
             },
             "full_replacement": true,
             "completeness": {
@@ -32260,32 +32975,64 @@ mod tests {
                 "owner": true,
                 "ui_occurrences": true
             },
+            "country_count": 1,
+            "countries": [{"registry_index": 0, "tag": "GER"}],
             "division_templates": [{
                 "catalog_scan_ordinal": 0,
-                "definition": {"name": "Infantry"},
+                "country_vector_ordinal": 0,
+                "definition": {
+                    "name": "Infantry",
+                    "name_utf8_hex": "496e66616e747279",
+                    "regiment_grid_columns": 5,
+                    "regiment_grid_rows": 5,
+                    "regiment_pointer_count": 0,
+                    "regiment_placeholder_ordinals": [],
+                    "regiments": [],
+                    "support_pointer_count": 0,
+                    "support_placeholder_ordinals": [],
+                    "support": [],
+                    "regimental_support_pointer_count": 0,
+                    "regimental_support_placeholder_ordinals": [],
+                    "regimental_support": [],
+                    "priority": 0,
+                    "lock_regime_snapshot_raw": 0,
+                    "is_locked": false,
+                    "obsolete": false
+                },
                 "definition_complete": true,
                 "id": 8,
                 "obsolete": false,
                 "owner_tag": "GER",
+                "source_country_registry_index": 0,
+                "source_country_tag": "GER",
                 "type": 52
             }],
             "variants": [{
                 "catalog_scan_ordinal": 0,
+                "creator_tag": "GER",
                 "definition": {
                     "archetype_token": "light_tank_chassis_1",
+                    "archetype_token_utf8_hex": "6c696768745f74616e6b5f636861737369735f31",
                     "cached_stats": [],
                     "cached_stats_complete": true,
                     "display_name": "Seven",
+                    "display_name_utf8_hex": "536576656e",
+                    "equipment_token_raw": 71,
                     "modules": [],
                     "modules_complete": true,
                     "upgrades": [],
                     "upgrades_complete": true,
-                    "variant_name": null
+                    "variant_name": null,
+                    "variant_name_utf8_hex": ""
                 },
                 "definition_complete": true,
+                "first_ui_discovery_ordinal": null,
                 "id": 7,
                 "obsolete": false,
+                "origin_override_tag": null,
                 "owner_tag": "GER",
+                "selected_country_tag": "GER",
+                "source_occurrences": [],
                 "type": 70
             }]
         }))
@@ -32447,6 +33194,8 @@ mod tests {
         fs::write(&catalog_path, fake_a27_live_catalog()).unwrap();
         let mut changed: Value = serde_json::from_slice(&fs::read(&catalog_path).unwrap()).unwrap();
         changed["variants"][0]["definition"]["display_name"] = json!("Changed after seal");
+        changed["variants"][0]["definition"]["display_name_utf8_hex"] =
+            json!("4368616e676564206166746572207365616c");
         fs::write(&catalog_path, serde_json::to_vec(&changed).unwrap()).unwrap();
         let rejected_path = dir.join("changed_after_seal.battleplan");
         let error = write_native_replay_container(
@@ -32468,7 +33217,7 @@ mod tests {
     }
 
     #[test]
-    fn frozen_full_a27_source_projects_6407_pointer_free_records() {
+    fn stale_pre_coherence_a27_source_is_not_promoted() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../lanes/design_catalog_live/proofs/a27_live_same_tick_v2/snapshot.json");
         let source = fs::read(&path).unwrap();
@@ -32476,27 +33225,15 @@ mod tests {
             Sha256::hex(&source),
             "6fa4386b9bd688df47a613b6268ccb0f125fcd2fe75edd9c484154ff38d5628b"
         );
-        let resolved = resolve_design_catalog_live(&DesignCatalogLiveRequest {
+        let error = resolve_design_catalog_live(&DesignCatalogLiveRequest {
             path,
             expected_sha256: Some(Sha256::hex(&source)),
         })
-        .unwrap();
-        let catalog =
-            snapshot::design_catalog::PortableDesignCatalog::decode_a27_live_json(&resolved.bytes)
-                .unwrap();
-        assert_eq!(catalog.records.len(), 6_407);
-        let portable = String::from_utf8(resolved.bytes).unwrap();
-        for forbidden in [
-            "pointer_identity",
-            "subunit_definition_pointer",
-            "game_state",
-            "module_base",
-        ] {
-            assert!(
-                !portable.contains(forbidden),
-                "portable A27 leaked {forbidden}"
-            );
-        }
+        .unwrap_err();
+        assert!(
+            error.contains("capture_hour_index") || error.contains("coherence"),
+            "{error}"
+        );
     }
 
     fn fake_decisions_static_catalog() -> Value {
@@ -33578,6 +34315,29 @@ mod tests {
         assert!(!text.contains("Player"));
         assert!(text.contains("mod/fixture.mod"));
         assert!(text.contains("hoi4.exe"));
+    }
+
+    #[test]
+    fn portable_recorder_manifest_rejects_embedded_paths_and_redaction_key_collisions() {
+        for embedded in [
+            r"failure while opening \\server\share\private.json",
+            "failure while opening //server/share/private.json",
+            "failure while opening /home/player/private.json",
+            "source:/home/player/private.json",
+            r"failure while opening C:\Users\Example\private.json",
+        ] {
+            let error = portable_session_manifest_bytes(&json!({"detail": embedded}))
+                .expect_err("embedded absolute path must not enter a portable manifest");
+            assert!(error.contains("absolute path"), "{error}");
+        }
+
+        let collision = json!({
+            r"C:\first\same.json": 1,
+            r"D:\second\same.json": 2,
+        });
+        let error = portable_session_manifest_bytes(&collision)
+            .expect_err("redacted object keys must not overwrite one another");
+        assert!(error.contains("key collision after path redaction"), "{error}");
     }
 
     #[test]

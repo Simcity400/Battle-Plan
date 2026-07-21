@@ -3,7 +3,7 @@
 This lane-local probe uses the melted save's `orders_group.order_instance`
 blocks as an exact geometry oracle only after live order rows are paired by
 army id, slot order, and order type. The known type-5 `states` vector at
-`order+0xE0/+0xE8` is the positive control for the pairing.
+`order+0xE0` data with live count `+0xEC` is the positive control for the pairing.
 """
 
 from __future__ import annotations
@@ -38,7 +38,8 @@ SCHEMA = "army_oob_orders_battleplans_save_geometry_probe_v1"
 PROC_NAME = direct_oob_probe.PROC_NAME
 EXPECTED_SHA256 = direct_oob_probe.EXPECTED_SHA256
 ORDER_OFF_PATH_BEGIN = 0x70
-ORDER_OFF_PATH_SIZE = 0x78
+ORDER_OFF_PATH_CAPACITY = 0x78
+ORDER_OFF_PATH_SIZE = 0x7C
 ORDER_OFF_TYPE3_SECONDARY_BEGIN = 0xC0
 ORDER_OFF_TYPE3_SECONDARY_SIZE = 0xC8
 MAX_PROVINCE_ID = 65_535
@@ -157,8 +158,8 @@ def run(
                 "type3_secondary_size": ORDER_OFF_TYPE3_SECONDARY_SIZE,
             },
             "production_position": (
-                "save/live exact-row validation for geometry offsets only. The validated +0x70/+0x78 "
-                "path vector still needs a domain-54 compact schema/feed expansion before it is a "
+                "save/live validation for geometry offsets only. The corrected +0x70/+0x7C "
+                "path vector uses +0x78 as capacity only and still needs a domain-54 compact schema/feed expansion before it is a "
                 "DLL-only production capture field."
             ),
             "errors": [],

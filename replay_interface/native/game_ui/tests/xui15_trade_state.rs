@@ -5,7 +5,10 @@ use game_ui::trade_state::{
     admit_trade_screen, apply_trade_to_compose_options, build_trade_compose_scene,
     render_trade_screen, AdmittedTradeScreen, TradeData, TradeDataIssue,
 };
-use replay_core::{Leaf, ResourceTradeDealRow, TradeResourceRow, TradeView, ViewStatus};
+use replay_core::{
+    Leaf, MarketStockpileRow, ProductionLicenseAgreementRow, ProductionLicenseVariantRow,
+    ResourceTradeDealRow, TradeContractRow, TradeResourceRow, TradeView, ViewStatus,
+};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -77,7 +80,13 @@ fn resource_rows() -> Vec<TradeResourceRow> {
                 } else {
                     0.0
                 }),
-                needed: Leaf::Measured(if oil { -12.0 } else { 0.0 }),
+                needed: Leaf::Measured(if oil {
+                    -12.0
+                } else if steel {
+                    5.0
+                } else {
+                    0.0
+                }),
                 needed_current: if oil {
                     Leaf::Measured(-12.0)
                 } else {
@@ -129,7 +138,36 @@ fn deal(
     }
 }
 
+fn equipment_contract() -> TradeContractRow {
+    TradeContractRow {
+        market_trade_projection: Leaf::Measured(true),
+        contract_id: Leaf::Measured("21:81".into()),
+        counterpart: Leaf::Measured("SWE".into()),
+        direction: Leaf::Measured("outgoing".into()),
+        convoys_assigned: Leaf::Measured(2),
+        visible_order: Leaf::Measured(0),
+        equipment_purchase_relation_complete: Leaf::Measured(true),
+        relation_agreement_id: Leaf::Measured("equipment_purchase:7:1:60000000".into()),
+        seller: Leaf::Measured("GER".into()),
+        seller_tag_db_id: Leaf::Measured(1),
+        buyer: Leaf::Measured("SWE".into()),
+        buyer_tag_db_id: Leaf::Measured(7),
+        relation_first: Leaf::Measured("SWE".into()),
+        relation_first_tag_db_id: Leaf::Measured(7),
+        relation_second: Leaf::Measured("GER".into()),
+        relation_second_tag_db_id: Leaf::Measured(1),
+        relation_start_date_raw: Leaf::Measured(60_000_000),
+        relation_start_date: Leaf::Measured("1937.11.3.0".into()),
+        relation_end_date_raw: Leaf::Unobtained,
+        relation_end_date: Leaf::Unobtained,
+        relation_source: Leaf::Measured(
+            "D43_MTLL_plus_D53_CEquipmentPurchaseRelation".into(),
+        ),
+    }
+}
+
 fn view() -> TradeView {
+    let equipment_contract = equipment_contract();
     TradeView {
         resource_pools_complete: Leaf::Measured(true),
         produced: map(10.0, 20.0),
@@ -150,7 +188,52 @@ fn view() -> TradeView {
         factories_total: Leaf::Measured(25),
         factories_used: Leaf::Measured(11),
         factories_available: Leaf::Measured(14),
-        contracts: Leaf::Absent,
+        contracts: Leaf::Measured(vec![equipment_contract.clone()]),
+        equipment_purchase_contracts: Leaf::Measured(vec![equipment_contract]),
+        market_stockpile: Leaf::Measured(vec![
+            MarketStockpileRow {
+                equipment_variant_id: Leaf::Measured(90),
+                equipment_type: Leaf::Measured(70),
+                amount_raw: Leaf::Measured(76_700_000),
+                amount: Leaf::Measured(767.0),
+                ordinal: Leaf::Measured(0),
+            },
+            MarketStockpileRow {
+                equipment_variant_id: Leaf::Measured(91),
+                equipment_type: Leaf::Measured(70),
+                amount_raw: Leaf::Measured(100_000),
+                amount: Leaf::Measured(1.0),
+                ordinal: Leaf::Measured(1),
+            },
+        ]),
+        market_stockpile_complete: Leaf::Measured(true),
+        production_license_agreements: Leaf::Measured(vec![ProductionLicenseAgreementRow {
+            agreement_id: Leaf::Measured("licence:7:1:60000000".into()),
+            visible_order: Leaf::Measured(0),
+            owner: Leaf::Measured("GER".into()),
+            owner_tag_db_id: Leaf::Measured(1),
+            partner: Leaf::Measured("SWE".into()),
+            partner_tag_db_id: Leaf::Measured(7),
+            relation_first: Leaf::Measured("SWE".into()),
+            relation_first_tag_db_id: Leaf::Measured(7),
+            relation_second: Leaf::Measured("GER".into()),
+            relation_second_tag_db_id: Leaf::Measured(1),
+            start_date_raw: Leaf::Measured(60_000_000),
+            start_date: Leaf::Measured("1937.11.3.0".into()),
+            end_date_raw: Leaf::Unobtained,
+            end_date: Leaf::Unobtained,
+            variants: Leaf::Measured(vec![ProductionLicenseVariantRow {
+                variant_id: Leaf::Measured(5081),
+                visible_order: Leaf::Measured(0),
+                creator_tag_db_id: Leaf::Measured(7),
+                origin_tag_db_id: Leaf::Measured(0),
+                source_tag_db_id: Leaf::Measured(7),
+            }]),
+            source: Leaf::Measured(
+                "PLIC_v2_plus_D53_CLicenceProductionAccessRelation".into(),
+            ),
+        }]),
+        production_license_agreements_complete: Leaf::Measured(true),
     }
 }
 
@@ -202,6 +285,27 @@ fn exact_admission_preserves_resource_and_deal_order_with_complete_totals() {
     assert_eq!(totals.convoys_assigned, 3);
     assert_eq!(totals.convoys_required, 5);
     assert_eq!(totals.partners, vec!["SWE", "SOV"]);
+    let TradeData::Available(stockpile) = &presentation.market_stockpile else {
+        panic!("market stockpile unavailable");
+    };
+    assert_eq!(
+        stockpile
+            .iter()
+            .map(|row| row.equipment_variant_id)
+            .collect::<Vec<_>>(),
+        vec![90, 91]
+    );
+    assert_eq!(stockpile[0].amount_raw, 76_700_000);
+    let TradeData::Available(contracts) = &presentation.equipment_purchase_contracts else {
+        panic!("equipment purchase relation context unavailable");
+    };
+    assert_eq!(contracts[0].counterpart, "SWE");
+    assert_eq!(contracts[0].agreement_id, "equipment_purchase:7:1:60000000");
+    let TradeData::Available(licenses) = &presentation.production_license_agreements else {
+        panic!("licence agreements unavailable");
+    };
+    assert_eq!(licenses[0].partner, "SWE");
+    assert_eq!(licenses[0].variants[0].variant_id, 5081);
 }
 
 #[test]
@@ -249,6 +353,12 @@ fn compose_binding_uses_authored_names_and_keeps_visible_order() {
     let mut options = ComposeOptions::new(1920, 1080);
     apply_trade_to_compose_options(&presentation, &mut options);
     assert_eq!(options.text_overrides["factories_total"], "25");
+    assert_eq!(options.text_overrides["xui15_equipment_contract_count"], "1");
+    assert_eq!(
+        options.text_overrides["xui15_equipment_contract_0_counterpart"],
+        "SWE"
+    );
+    assert_eq!(options.text_overrides["xui15_license_count"], "1");
     assert_eq!(
         options.text_overrides["xui15_resource_0_needed"],
         "-12\n-20"
@@ -260,6 +370,8 @@ fn compose_binding_uses_authored_names_and_keeps_visible_order() {
     assert_eq!(options.text_overrides["xui15_deal_0_country"], "SWE");
     assert_eq!(options.text_overrides["xui15_deal_1_country"], "SOV");
     assert_eq!(options.text_overrides["xui15_deal_0_convoys"], "2/3");
+    assert_eq!(options.text_overrides["xui15_license_count"], "1");
+    assert_eq!(options.text_overrides["xui15_license_0_partner"], "SWE");
 }
 
 #[test]

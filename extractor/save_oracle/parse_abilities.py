@@ -459,6 +459,11 @@ def build(text, source, was_melted):
                 "ace_category": a["ace_category"], "tier": a["tier"],
                 "portrait": a["portrait"],
                 "alive": a["alive"],
+                # Preserve the serialized death-processing bit.  A5's
+                # independent lifecycle fixture joins this field directly to
+                # CAceEntry+0x16C; dropping it here made that join impossible
+                # even though _parse_ace had already parsed the token.
+                "handled": a["handled"],
                 "kill_type": a["kill_type"],
                 "killer_id": a["killer_id"],
                 "killer_type": a["killer_type"],

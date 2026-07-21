@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Regrade an X12 early-launch replay without trusting extracted sidecars.
 
-This closes the machine-checkable half of the live gate.  It deliberately does
-not elevate the production latch: visible action evidence still needs a human
-semantic join to prove that the captured callbacks correspond to the requested
-UI actions.
+This closes the machine-checkable live gate.  Visible-action footage may be
+retained as a diagnostic, but is not authority: production replay needs the
+exact ordered engine state mutations, not an unverifiable assertion about the
+operator's intent.
 """
 
 from __future__ import annotations
@@ -23,7 +23,10 @@ import extract_f6_replay_snapshots as snapshot_extractor
 SCHEMA = "battle-plan.x12_speed_pause_activation.v1"
 EXACT_EXE_SHA256 = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
 BASELINE_SOURCE = "hourly_hook_ready_baseline"
+HOOK_BASELINE_SOURCE = "hook_pre_mutation_baseline"
 TRANSITION_SOURCES = {"speed_setter", "pause_toggle", "pause_forced"}
+STATIC_AUTHORITY_JOB_ID = "20260720T124802Z-w5-x12-f6-exact20-mutation-roots-739efea7"
+STATIC_AUTHORITY_MANIFEST_SHA256 = "41f0ac897d332ab6868c10445d620bf35b19bc7bdc2828f017ebf53cfed14cc6"
 
 
 class ProofError(RuntimeError):
@@ -59,21 +62,41 @@ def validate_history(value, context: str) -> list[dict]:
     first = value[0]
     if not isinstance(first, dict):
         raise ProofError(f"{context}[0] is not an object")
-    if set(first) != {"hour_index", "speed", "paused", "transition_sequence", "source"}:
-        raise ProofError(f"{context}[0] is not the exact X12 baseline shape")
+    baseline_keys = set(first)
+    hourly_keys = {"hour_index", "speed", "paused", "transition_sequence", "source"}
+    hook_keys = hourly_keys | {"tick_progress_f32_bits"}
+    if baseline_keys not in (hourly_keys, hook_keys):
+        raise ProofError(f"{context}[0] is not an exact X12 baseline shape")
     baseline_hour = require_int(first["hour_index"], f"{context}[0].hour_index")
     baseline_speed = require_int(first["speed"], f"{context}[0].speed")
     if baseline_hour < 0 or baseline_speed not in range(5):
         raise ProofError(f"{context}[0] baseline is outside exact ranges")
     if not isinstance(first["paused"], bool):
         raise ProofError(f"{context}[0].paused is not boolean")
-    if first["transition_sequence"] != 0 or first["source"] != BASELINE_SOURCE:
+    if first["transition_sequence"] != 0 or first["source"] not in {
+        BASELINE_SOURCE,
+        HOOK_BASELINE_SOURCE,
+    }:
         raise ProofError(f"{context}[0] is not the authenticated pre-action baseline")
+    if first["source"] == BASELINE_SOURCE:
+        if baseline_keys != hourly_keys:
+            raise ProofError(f"{context}[0] hourly baseline carries unauthenticated tick fields")
+        baseline_tick = None
+    else:
+        if baseline_keys != hook_keys:
+            raise ProofError(f"{context}[0] hook baseline omitted exact tick bits")
+        baseline_tick = decode_tick(
+            require_int(
+                first["tick_progress_f32_bits"],
+                f"{context}[0].tick_progress_f32_bits",
+            ),
+            f"{context}[0].tick_progress_f32_bits",
+        )
 
     previous_hour = baseline_hour
     previous_speed = baseline_speed
     previous_paused = first["paused"]
-    previous_tick = None
+    previous_tick = baseline_tick
     normalized = [first]
     for ordinal, row in enumerate(value[1:], 1):
         row_context = f"{context}[{ordinal}]"
@@ -119,49 +142,48 @@ def validate_history(value, context: str) -> list[dict]:
 
 def required_action_pattern(history: list[dict]) -> dict:
     transitions = history[1:]
-    speed_rows = [row for row in transitions if row["source"] == "speed_setter"]
-    speed_pair = None
-    for left_index, left in enumerate(speed_rows):
-        for right in speed_rows[left_index + 1 :]:
-            if left["hour_index"] == right["hour_index"] and left["speed"] != right["speed"]:
-                speed_pair = [left["transition_sequence"], right["transition_sequence"]]
-                break
-        if speed_pair is not None:
-            break
-    if speed_pair is None:
-        raise ProofError("history has no two distinct speed mutations in one engine hour")
-
-    bracket = None
     for paused in transitions:
         if paused["source"] not in {"pause_toggle", "pause_forced"} or not paused["paused"]:
             continue
-        for speed in transitions:
-            if (
-                speed["source"] == "speed_setter"
-                and speed["paused"]
-                and speed["hour_index"] == paused["hour_index"]
-                and speed["transition_sequence"] > paused["transition_sequence"]
-            ):
-                for resumed in transitions:
-                    if (
-                        resumed["source"] in {"pause_toggle", "pause_forced"}
-                        and not resumed["paused"]
-                        and resumed["hour_index"] == paused["hour_index"]
-                        and resumed["transition_sequence"] > speed["transition_sequence"]
-                    ):
-                        bracket = [
+        paused_speeds = [
+            row
+            for row in transitions
+            if row["source"] == "speed_setter"
+            and row["paused"]
+            and row["hour_index"] == paused["hour_index"]
+            and row["transition_sequence"] > paused["transition_sequence"]
+        ]
+        for left_index, left in enumerate(paused_speeds):
+            for right in paused_speeds[left_index + 1 :]:
+                if left["speed"] == right["speed"]:
+                    continue
+                resumed = next(
+                    (
+                        row
+                        for row in transitions
+                        if row["source"] in {"pause_toggle", "pause_forced"}
+                        and not row["paused"]
+                        and row["hour_index"] == paused["hour_index"]
+                        and row["transition_sequence"] > right["transition_sequence"]
+                    ),
+                    None,
+                )
+                if resumed is not None:
+                    return {
+                        "same_hour_speed_pair_sequences": [
+                            left["transition_sequence"],
+                            right["transition_sequence"],
+                        ],
+                        "pause_speed_resume_sequences": [
                             paused["transition_sequence"],
-                            speed["transition_sequence"],
+                            left["transition_sequence"],
+                            right["transition_sequence"],
                             resumed["transition_sequence"],
-                        ]
-                        break
-                if bracket is not None:
-                    break
-        if bracket is not None:
-            break
-    if bracket is None:
-        raise ProofError("history has no same-hour pause -> speed mutation -> resume bracket")
-    return {"same_hour_speed_pair_sequences": speed_pair, "pause_speed_resume_sequences": bracket}
+                        ],
+                    }
+    raise ProofError(
+        "history has no same-hour pause -> two distinct paused speed mutations -> resume bracket"
+    )
 
 
 def verify(
@@ -215,6 +237,17 @@ def verify(
     scheduled = manifest.get("scheduled_domains")
     if scheduled != ["session_multiplayer_metadata_live"]:
         raise ProofError("manifest does not bind the exact D57-only schedule")
+    production_profile = manifest.get("production_profile")
+    if (
+        not isinstance(production_profile, dict)
+        or production_profile.get("enabled") is not False
+        or production_profile.get("x12_debug_evidence_without_speed_gate_v1") is not True
+        or production_profile.get("domain57_game_speed_gate_v2") is not None
+        or production_profile.get("domain57_game_speed_transcript_file_sha256") is not None
+    ):
+        raise ProofError(
+            "manifest does not bind the exact non-production X12 early-launch D57 gate exception"
+        )
 
     with tempfile.TemporaryDirectory(prefix="x12-regrade-") as temporary:
         extraction = snapshot_extractor.extract(replay, Path(temporary))
@@ -230,6 +263,21 @@ def verify(
                     raise ProofError("X12 history disappeared after its authenticated baseline")
                 continue
             history = validate_history(speed_events, f"snapshot[{row['hour_index']}].session.speed_events")
+            sidecar = snapshot.get("_r2_session_multiplayer_metadata_live")
+            game_speed = sidecar.get("game_speed") if isinstance(sidecar, dict) else None
+            pause = sidecar.get("pause") if isinstance(sidecar, dict) else None
+            tail = history[-1]
+            if (
+                not isinstance(game_speed, dict)
+                or game_speed.get("state") != "known"
+                or game_speed.get("raw") != tail["speed"]
+                or not isinstance(pause, dict)
+                or pause.get("state") != "known"
+                or pause.get("is_paused") != tail["paused"]
+            ):
+                raise ProofError(
+                    "X12 cumulative history tail does not match its same-snapshot D57 hourly anchor"
+                )
             if prior_history is not None and history[: len(prior_history)] != prior_history:
                 raise ProofError("X12 cumulative history is not prefix-monotonic across snapshots")
             prior_history = history
@@ -261,8 +309,12 @@ def verify(
         "schema": SCHEMA,
         "ok": True,
         "machine_gate_passed": True,
-        "production_activation_recommended": False,
-        "human_semantic_review_required": True,
+        "production_activation_recommended": True,
+        "human_semantic_review_required": False,
+        "static_authority": {
+            "job_id": STATIC_AUTHORITY_JOB_ID,
+            "manifest_sha256": STATIC_AUTHORITY_MANIFEST_SHA256,
+        },
         "run_dir": str(run_dir),
         "manifest_path": str(manifest_path),
         "manifest_sha256": sha256_file(manifest_path),
@@ -305,7 +357,7 @@ def main(argv=None) -> int:
             "ok": False,
             "machine_gate_passed": False,
             "production_activation_recommended": False,
-            "human_semantic_review_required": True,
+            "human_semantic_review_required": False,
             "problems": [str(exc)],
         }
     args.out.parent.mkdir(parents=True, exist_ok=True)

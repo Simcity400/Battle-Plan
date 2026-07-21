@@ -33,6 +33,12 @@ pub struct StaticBundleRequest {
     pub live_resolution_report: PathBuf,
     pub expected_process_id: u32,
     pub expected_process_creation_filetime_utc: u64,
+    /// A selected product-modset corpus is necessarily acquired from an
+    /// earlier process. A recorder-owned suspended launch may rebind only the
+    /// process identity; Python still re-hashes every source, and the early
+    /// launch path independently joins the selected runtime mod/DLC/VFS
+    /// content before COMMIT. Late attach must leave this false.
+    pub allow_prepared_process_identity_rebind: bool,
     pub timeout: Duration,
 }
 
@@ -49,6 +55,7 @@ pub struct FinalizedStaticBundleRequest {
     pub live_resolution_report: PathBuf,
     pub expected_process_id: u32,
     pub expected_process_creation_filetime_utc: u64,
+    pub allow_prepared_process_identity_rebind: bool,
     pub expected_capture_id: String,
     pub expected_session_id: String,
     pub expected_stream_sha256: String,
@@ -276,6 +283,8 @@ pub fn finalize_with_process(
         live_resolution_report,
         expected_process_id: admitted.expected_process_id,
         expected_process_creation_filetime_utc: admitted.expected_process_creation_filetime_utc,
+        allow_prepared_process_identity_rebind: admitted
+            .allow_prepared_process_identity_rebind,
         expected_capture_id: capture_id.to_string(),
         expected_session_id: session_id.to_string(),
         expected_stream_sha256: stream_sha256.to_string(),
@@ -335,6 +344,7 @@ pub fn verify_finalized_with_process(
         &bindings.5,
         request.expected_process_id,
         request.expected_process_creation_filetime_utc,
+        request.allow_prepared_process_identity_rebind,
     )?;
     let invocation = ProcessInvocation {
         program: request.python.clone(),
@@ -423,6 +433,7 @@ pub fn verify_with_process(
         &live_resolution_report,
         request.expected_process_id,
         request.expected_process_creation_filetime_utc,
+        request.allow_prepared_process_identity_rebind,
     )?;
 
     let invocation = ProcessInvocation {
@@ -598,6 +609,7 @@ fn verify_live_resolution_process_identity(
     report: &Path,
     expected_process_id: u32,
     expected_creation_filetime_utc: u64,
+    allow_prepared_process_identity_rebind: bool,
 ) -> Result<Value, String> {
     if expected_process_id == 0 || expected_creation_filetime_utc == 0 {
         return Err("static bundle expected process identity is incomplete".to_string());
@@ -625,16 +637,20 @@ fn verify_live_resolution_process_identity(
         .ok_or_else(|| {
             "static bundle live-resolution report process creation identity is invalid".to_string()
         })?;
-    if observed_process_id != expected_process_id
-        || observed_creation != expected_creation_filetime_utc
-    {
+    let exact_target = observed_process_id == expected_process_id
+        && observed_creation == expected_creation_filetime_utc;
+    if !exact_target && !allow_prepared_process_identity_rebind {
         return Err(format!(
             "static bundle live-resolution process identity ({observed_process_id}, {observed_creation}) does not match capture target ({expected_process_id}, {expected_creation_filetime_utc})"
         ));
     }
     Ok(json!({
-        "process_id": observed_process_id,
-        "process_creation_filetime_utc": observed_creation,
+        "mode": if exact_target { "exact_capture_target" } else { "prepared_corpus_rebound_to_suspended_target" },
+        "prepared_process_id": observed_process_id,
+        "prepared_process_creation_filetime_utc": observed_creation,
+        "capture_process_id": expected_process_id,
+        "capture_process_creation_filetime_utc": expected_creation_filetime_utc,
+        "process_identity_rebound": !exact_target,
     }))
 }
 
@@ -986,6 +1002,7 @@ mod tests {
             live_resolution_report: root.join("live_resolution_report.json"),
             expected_process_id: 4242,
             expected_process_creation_filetime_utc: 9001,
+            allow_prepared_process_identity_rebind: false,
             timeout: Duration::from_secs(5),
         }
     }
@@ -1037,6 +1054,8 @@ mod tests {
             live_resolution_report: request.live_resolution_report.clone(),
             expected_process_id: request.expected_process_id,
             expected_process_creation_filetime_utc: request.expected_process_creation_filetime_utc,
+            allow_prepared_process_identity_rebind: request
+                .allow_prepared_process_identity_rebind,
             expected_capture_id: "capture-1".to_string(),
             expected_session_id: "00000000-0000-4000-8000-000000000001".to_string(),
             expected_stream_sha256: "b".repeat(64),
@@ -1061,10 +1080,17 @@ mod tests {
             "pre_injection_deferred_allowed"
         );
         assert_eq!(verified.evidence["token_join_status"], "deferred");
-        assert_eq!(verified.evidence["process_identity"]["process_id"], 4242);
         assert_eq!(
-            verified.evidence["process_identity"]["process_creation_filetime_utc"],
+            verified.evidence["process_identity"]["capture_process_id"],
+            4242
+        );
+        assert_eq!(
+            verified.evidence["process_identity"]["capture_process_creation_filetime_utc"],
             9001
+        );
+        assert_eq!(
+            verified.evidence["process_identity"]["mode"],
+            "exact_capture_target"
         );
         assert_eq!(
             verified.evidence["deferred_token_gate_explicitly_allowed"],
@@ -1111,6 +1137,35 @@ mod tests {
         };
         let error = verify_with_process(&request, &process).unwrap_err();
         assert!(error.contains("does not match capture target"), "{error}");
+    }
+
+    #[test]
+    fn suspended_launch_records_prepared_corpus_process_rebind() {
+        let root = TempDir::new("prepared_process_rebind");
+        let mut request = fixture_request(&root.0);
+        request.expected_process_id += 1;
+        request.expected_process_creation_filetime_utc += 1;
+        request.allow_prepared_process_identity_rebind = true;
+        let process = MockProcess {
+            result: Mutex::new(Some(Ok(passing_result()))),
+        };
+        let verified = verify_with_process(&request, &process).unwrap();
+        assert_eq!(
+            verified.evidence["process_identity"]["mode"],
+            "prepared_corpus_rebound_to_suspended_target"
+        );
+        assert_eq!(
+            verified.evidence["process_identity"]["prepared_process_id"],
+            4242
+        );
+        assert_eq!(
+            verified.evidence["process_identity"]["capture_process_id"],
+            4243
+        );
+        assert_eq!(
+            verified.evidence["process_identity"]["process_identity_rebound"],
+            true
+        );
     }
 
     #[test]

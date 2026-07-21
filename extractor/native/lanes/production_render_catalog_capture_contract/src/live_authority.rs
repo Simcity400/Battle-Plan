@@ -821,6 +821,18 @@ pub fn materialize_d80_static_authority(
             if semantic.stage != source.stage || semantic.slot != source.slot {
                 return Err("d80 reflected texture/source order disagrees".to_string());
             }
+            if let RawStaticShaderResourceSource::PoliticalTexture {
+                target_binding_identity,
+                ..
+            } = &source.source
+            {
+                if target_binding_identity != &semantic.semantic_token {
+                    return Err(
+                        "d80 political texture target identity differs from the reflected semantic"
+                            .to_string(),
+                    );
+                }
+            }
             Ok(RawStaticShaderResourceSemantic {
                 stage: semantic.stage,
                 slot: semantic.slot,

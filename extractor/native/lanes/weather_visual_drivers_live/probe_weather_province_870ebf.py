@@ -43,7 +43,7 @@ MAX_PROVINCE_ROWS = 65536
 REGION_ID_OFF = 0x08
 REGION_ACTIVE_MODS_OFF = 0x30
 REGION_INTENSITY_OFF = 0x5D
-REGION_PHENOM_ENUM_OFF = 0x78
+REGION_RAW_ACTIVITY_OFF = 0x78
 REGION_RAIN_LIGHT_OFF = 0x108
 REGION_RAIN_HEAVY_OFF = 0x110
 REGION_SNOW_OFF = 0x118
@@ -204,7 +204,7 @@ def decode_region_rows(proc: wm.Process, base: int, module_base: int) -> tuple[l
             counters["region_id_match"] = counters.get("region_id_match", 0) + 1
         else:
             errors.append(f"region {idx} id {region_id} != index")
-        phenomenon = u32(body, REGION_PHENOM_ENUM_OFF)
+        phenomenon = u32(body, REGION_RAW_ACTIVITY_OFF)
         active_signal = is_heap(u64(body, 0x58)) or is_heap(u64(body, 0x70))
         active_mods, active_mods_valid = vec_count_from_body(body, REGION_ACTIVE_MODS_OFF)
         if active_mods_valid:

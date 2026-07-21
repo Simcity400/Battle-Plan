@@ -1,6 +1,6 @@
 # Production replay UI promotion
 
-Status: **PRODUCT ROUTE FROZEN AND TESTED; NON-AUTHENTICATED PIXEL ROUTES OMITTED**
+Status: **ROUTE PARTITION FROZEN; XUI25 INPUT AUTHORITY WIRED BUT LIVE-UNAUTHENTICATED; NON-AUTHENTICATED PIXEL ROUTES OMITTED**
 
 Pinned target: `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 
@@ -23,19 +23,19 @@ For every root, the GUI consumer's suffix must equal the admitted `UsedContentKe
 
 The product compositor deliberately does not read or draw controller-unbound fragments: menubar `zoom_in`/`zoom_out`, `theatre_selection_entry` rows, or `core.gui` `ToolTip`. The broader probe compositor remains evidence-only. The product route does not construct the full XUI01 catalog, XUI02 window manager, XUI26 frontend manager, or unrelated panel definitions.
 
-XUI25 remains exact rather than a default: composition requires a replay-carried display variant matching the supported 1920x1080 physical / 1280x720 `min_gui` / scale `1.0` / borderless fullscreen / `l_english` / mouse-keyboard key. An absent key or any other viewport omits UI without resampling.
+XUI25 remains exact rather than a default: composition requires a replay-carried display variant matching the supported 1920x1080 physical / 1280x720 `min_gui` / scale `1.0` / borderless fullscreen / `l_english` / mouse-keyboard key, including an authenticated same-launch input-family receipt. The manifest-pinned observer/materializer and pre-d77 admission bind are wired, but current recordings still lack the live pointer-movement receipt and authority refreeze. An absent receipt/key or any other viewport omits UI without resampling.
 
 ## Complete product disposition
 
 | Group | Disposition | Exact result |
 |---|---|---|
 | XUI24 | ROUTED | Exact loose/archive/integrated-DLC/selected-DLC/mod VFS winners and replay content admission back every product read. |
-| XUI25 | ROUTED | The recorded exact display/language/input variant gates composition; there is no inferred/default variant or resize resampling. |
+| XUI25 | OMITTED / INPUT OBSERVER WIRED / LIVE AUTHORITY PENDING | The exact display/language carrier, manifest-pinned input-family observer/materializer, pre-d77 bind, and fail-closed selector are wired with no inferred/default variant or resize resampling. Current d77 frames remain inadmissible and absent from the product route until one same-launch pointer-movement receipt passes root validation and the authority is refrozen. |
 | XUI27 | ROUTED EXTENSION | The four runtime-root identities and their complete effective-VFS dependency closures make the HUD route admissible. |
-| XUI09, XUI10, XUI13 | PIXEL CANVAS OMITTED | Their data/canvas laws are promotion-ready, but recordings do not authenticate the research/doctrine, focus, or designer surface activation plus semantic GUI-root binding. XUI13's canonical A27 catalog and d78 order are admitted; only its product surface authority is absent. |
-| XUI01-XUI08 except routed packets, XUI11-XUI12, XUI14-XUI23, XUI26 | AUTHORITY/DATA OMITTED | Twenty-one packets remain absent from the product image. Their exact named carrier requirements are frozen in the adjacent machine manifest; no chrome-only panel, sample row, placeholder, guessed layout, or broad installed-catalog parse is shipped. |
+| XUI09, XUI10, XUI13, XUI15 | PIXEL CANVAS OMITTED | Recordings do not authenticate the research/doctrine, focus, designer, or trade surface activation plus semantic GUI-root binding. XUI13's temporal A27 delta/tombstone carrier and same-hour D78 admission are wired but remain gated on root validation plus H-A27 multi-hour evidence. |
+| XUI01-XUI08, XUI11-XUI12, XUI14, XUI16-XUI23, XUI25-XUI26 | AUTHORITY/DATA OMITTED | Twenty-two packets remain absent from the product image. Their exact named carrier requirements are frozen in the adjacent machine manifest; no chrome-only panel, sample row, placeholder, guessed layout, or broad installed-catalog parse is shipped. |
 
-The 21 omitted historical packets are `XUI01`, `XUI02`, `XUI03`, `XUI04`, `XUI05`, `XUI06`, `XUI07`, `XUI08`, `XUI11`, `XUI12`, `XUI14`, `XUI15`, `XUI16`, `XUI17`, `XUI18`, `XUI19`, `XUI20`, `XUI21`, `XUI22`, `XUI23`, and `XUI26`. The product test mechanically proves that these 21, the three canvas omissions, and routed `XUI24`/`XUI25` form an exact disjoint partition of XUI01-XUI26; XUI27 is tracked separately as the routed extension.
+The 22 authority/data-omitted historical packets, the four pixel-canvas omissions, and routed `XUI24` form an exact disjoint partition of XUI01-XUI26; XUI27 is tracked separately as the routed extension. `XUI25` remains omitted until its authenticated live pointer-movement receipt is available.
 
 XUI12's typed production and stockpile successor data does not authorize pixels: the portable frame still lacks authenticated d71 `countryproductionlineview/item_grid` materialized slot rectangles, final clip, and scroll state. XUI05 lacks evaluated tooltip instances. The remaining exact carrier requirements are recorded per packet in `manifest.json` rather than expanded into speculative renderer behavior.
 

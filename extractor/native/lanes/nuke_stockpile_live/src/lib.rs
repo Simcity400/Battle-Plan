@@ -11,9 +11,10 @@ mod exact;
 
 pub use exact::{
     built_count_from_raw, read_country_built_nukes, read_country_nukes, CountryNukeSnapshot,
-    NukeEntrySnapshot, NukeMemory, ReadError, COUNTRY_NUKE_ARRAY_OFF, COUNTRY_NUKE_COUNT_OFF,
-    MAX_NUKE_TYPE_ROWS, NUKE_AMOUNT_RAW_OFF, NUKE_OWNER_OFF, NUKE_READY_OFF, NUKE_STRIDE,
-    NUKE_VTABLE_RVA,
+    NukeEntrySnapshot, NukeMemory, ReadError, COUNTRY_NUKE_ARRAY_OFF,
+    COUNTRY_NUKE_CAPACITY_OFF, COUNTRY_NUKE_COUNT_OFF, MAX_NUKE_TYPE_ROWS,
+    NUKE_AMOUNT_RAW_OFF, NUKE_OWNER_OFF, NUKE_READY_OFF, NUKE_STRIDE, NUKE_TYPE_COUNT,
+    NUKE_TYPE_OFF, NUKE_VTABLE_RVA,
 };
 
 use std::collections::BTreeSet;
@@ -21,24 +22,26 @@ use std::collections::BTreeSet;
 pub const DOMAIN_ID: u16 = 83;
 pub const DOMAIN_NAME: &str = "nuke_stockpile_live";
 pub const MAGIC: u32 = u32::from_le_bytes(*b"NUK1");
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const AUTHORITY_SOURCE_UNAVAILABLE: u32 = 0;
 pub const AUTHORITY_EXACT_A729_RECEIPT: u32 = 1;
 pub const MAX_COUNTRIES: usize = 2_048;
 
-/// Root-controlled promotion switch. The exact20 function/data receipts and
-/// the collector's authenticated current-process country-roster source are now
-/// bound together. This does not make source failures permissive: callers must
-/// still authenticate the exact source and every memory read remains coherent
-/// and fail-closed.
+/// Root-controlled promotion switch. Fresh Wave-5 producer/consumer,
+/// constructor, and vtable authority is bound to the collector's authenticated
+/// current-process country roster. This does not make source failures
+/// permissive: callers must still authenticate the exact source and every
+/// memory read remains coherent and fail-closed.
 pub const PRODUCTION_AUTHORITY_ENABLED: bool = true;
-pub const EXACT20_FUNCTION_MANIFEST_SHA256: [u8; 32] =
-    hex32(b"3befb21facb2fdd5724602b2a72655ade23995b8270521aeecbe5eddeed34301");
-pub const EXACT20_DATA_ARTIFACT_SHA256: [u8; 32] =
-    hex32(b"20f780f52303e5c59868fcce8ee09258d4dc997bf5d3aadbdec3a3c00ce509bf");
+pub const WAVE5_PRODUCER_CONSUMER_MANIFEST_SHA256: [u8; 32] =
+    hex32(b"0968ed85cd6103149ebd51415d6b64d1959bb05d1aff4cbfce9d31e437a6995c");
+pub const WAVE5_CONTAINER_CONSTRUCTOR_MANIFEST_SHA256: [u8; 32] =
+    hex32(b"233962bab3a8ca79150977f1f7e77312d1bbd262e89e582d1c01caaf01a89032");
+pub const WAVE5_VTABLE_ARTIFACT_SHA256: [u8; 32] =
+    hex32(b"cfd9d9e4088b4998398e579a5ebee222534868bad8a4529240b370faf467adbb");
 pub const EXECUTABLE_SHA256: [u8; 32] =
     hex32(b"870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad");
-pub const RETAINED_POSITIVE_SAVE_SHA256: [u8; 32] =
+pub const RETAINED_PROGRESS_SAVE_SHA256: [u8; 32] =
     hex32(b"538f8a418e1662ed6759b06ed964687c4446cd50bc62b1fe63de210db0250073");
 
 const fn hex32(input: &[u8; 64]) -> [u8; 32] {
@@ -91,6 +94,7 @@ pub struct CountryRoot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CountryNukeRow {
     pub tag_db_id: u32,
+    pub container_capacity: i32,
     pub entries: Vec<NukeEntrySnapshot>,
 }
 
@@ -169,6 +173,7 @@ pub fn read_snapshot_from_country_roots<M: NukeMemory>(
         let snapshot = read_country_nukes(memory, root.object_ptr, module_base)?;
         countries.push(CountryNukeRow {
             tag_db_id: root.tag_db_id,
+            container_capacity: snapshot.container_capacity,
             entries: snapshot.entries,
         });
     }
@@ -205,7 +210,7 @@ pub fn collect_and_encode<S: ExactNukeStockpileSource>(
         status_flags: 0,
         frame_hour,
         authority: AuthorityState::ExactA729Receipt,
-        receipt_sha256: EXACT20_FUNCTION_MANIFEST_SHA256,
+        receipt_sha256: WAVE5_PRODUCER_CONSUMER_MANIFEST_SHA256,
         snapshot: Some(snapshot),
     })
 }
@@ -234,8 +239,19 @@ pub fn validate_snapshot(snapshot: &NukeStockpileSnapshot) -> Result<(), Carrier
         if country.tag_db_id == 0 || !countries.insert(country.tag_db_id) {
             return invalid("nuke snapshot has zero or duplicate country identity");
         }
-        if country.entries.len() > MAX_NUKE_TYPE_ROWS as usize {
-            return invalid("country nuke entry count exceeds exact a729 bound");
+        if country.container_capacity < NUKE_TYPE_COUNT {
+            return invalid("country nuke container capacity violates exact a729 invariant");
+        }
+        if country.entries.len() != NUKE_TYPE_COUNT as usize {
+            return invalid("country nuke entry count violates exact a729 invariant");
+        }
+        if country
+            .entries
+            .iter()
+            .enumerate()
+            .any(|(index, entry)| entry.nuke_type_raw != index as u32)
+        {
+            return invalid("country nuke type order violates exact a729 invariant");
         }
     }
     Ok(())
@@ -253,7 +269,7 @@ pub fn validate_frame(frame: &NukeStockpileFrame) -> Result<(), CarrierError> {
         }
         AuthorityState::ExactA729Receipt => {
             if frame.status_flags != 0
-                || frame.receipt_sha256 != EXACT20_FUNCTION_MANIFEST_SHA256
+                || frame.receipt_sha256 != WAVE5_PRODUCER_CONSUMER_MANIFEST_SHA256
                 || frame.snapshot.is_none()
             {
                 return invalid("receipted A17 frame must be clean and measured");
@@ -275,7 +291,8 @@ pub fn encode_payload(frame: &NukeStockpileFrame) -> Result<Vec<u8>, CarrierErro
     u64v(&mut out, frame.frame_hour);
     out.extend_from_slice(&EXECUTABLE_SHA256);
     out.extend_from_slice(&frame.receipt_sha256);
-    out.extend_from_slice(&EXACT20_DATA_ARTIFACT_SHA256);
+    out.extend_from_slice(&WAVE5_CONTAINER_CONSTRUCTOR_MANIFEST_SHA256);
+    out.extend_from_slice(&WAVE5_VTABLE_ARTIFACT_SHA256);
     out.push(u8::from(frame.snapshot.is_some()));
     out.extend_from_slice(&[0; 3]);
     let Some(snapshot) = &frame.snapshot else {
@@ -285,8 +302,11 @@ pub fn encode_payload(frame: &NukeStockpileFrame) -> Result<Vec<u8>, CarrierErro
     u32v(&mut out, snapshot.countries.len() as u32);
     for country in &snapshot.countries {
         u32v(&mut out, country.tag_db_id);
+        i32v(&mut out, country.container_capacity);
         u32v(&mut out, country.entries.len() as u32);
         for entry in &country.entries {
+            u32v(&mut out, entry.nuke_type_raw);
+            u32v(&mut out, 0);
             i64v(&mut out, entry.amount_raw);
             u32v(&mut out, entry.nukes_ready);
             u32v(&mut out, 0);
@@ -309,8 +329,11 @@ pub fn decode_payload(payload: &[u8]) -> Result<NukeStockpileFrame, CarrierError
     }
     let mut receipt_sha256 = [0; 32];
     receipt_sha256.copy_from_slice(reader.bytes(32)?);
-    if reader.bytes(32)? != EXACT20_DATA_ARTIFACT_SHA256 {
-        return invalid("NUK1 data authority artifact mismatch");
+    if reader.bytes(32)? != WAVE5_CONTAINER_CONSTRUCTOR_MANIFEST_SHA256 {
+        return invalid("NUK1 container-constructor authority mismatch");
+    }
+    if reader.bytes(32)? != WAVE5_VTABLE_ARTIFACT_SHA256 {
+        return invalid("NUK1 CNuke vtable authority mismatch");
     }
     let has_snapshot = reader.bool()?;
     if reader.bytes(3)? != [0, 0, 0] {
@@ -325,23 +348,29 @@ pub fn decode_payload(payload: &[u8]) -> Result<NukeStockpileFrame, CarrierError
         let mut countries = Vec::with_capacity(country_count);
         for _ in 0..country_count {
             let tag_db_id = reader.u32()?;
+            let container_capacity = reader.i32()?;
             let entry_count = reader.u32()? as usize;
-            if entry_count > MAX_NUKE_TYPE_ROWS as usize {
-                return invalid("NUK1 entry count exceeds bound");
+            if entry_count != NUKE_TYPE_COUNT as usize {
+                return invalid("NUK1 entry count violates exact a729 invariant");
             }
             let mut entries = Vec::with_capacity(entry_count);
             for _ in 0..entry_count {
+                let nuke_type_raw = reader.u32()?;
+                if reader.u32()? != 0 {
+                    return invalid("NUK1 entry identity reserved field is nonzero");
+                }
                 let amount_raw = reader.i64()?;
                 let nukes_ready = reader.u32()?;
                 if reader.u32()? != 0 {
                     return invalid("NUK1 entry reserved field is nonzero");
                 }
                 entries.push(NukeEntrySnapshot {
+                    nuke_type_raw,
                     amount_raw,
                     nukes_ready,
                 });
             }
-            countries.push(CountryNukeRow { tag_db_id, entries });
+            countries.push(CountryNukeRow { tag_db_id, container_capacity, entries });
         }
         Some(NukeStockpileSnapshot {
             source_sequence,
@@ -377,6 +406,9 @@ fn u64v(out: &mut Vec<u8>, value: u64) {
 fn i64v(out: &mut Vec<u8>, value: i64) {
     out.extend_from_slice(&value.to_le_bytes());
 }
+fn i32v(out: &mut Vec<u8>, value: i32) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
 
 struct Reader<'a> {
     payload: &'a [u8],
@@ -409,6 +441,9 @@ impl<'a> Reader<'a> {
     fn i64(&mut self) -> Result<i64, CarrierError> {
         Ok(i64::from_le_bytes(self.bytes(8)?.try_into().unwrap()))
     }
+    fn i32(&mut self) -> Result<i32, CarrierError> {
+        Ok(i32::from_le_bytes(self.bytes(4)?.try_into().unwrap()))
+    }
 }
 
 #[cfg(test)]
@@ -422,17 +457,20 @@ mod tests {
             status_flags: 0,
             frame_hour: 900,
             authority: AuthorityState::ExactA729Receipt,
-            receipt_sha256: EXACT20_FUNCTION_MANIFEST_SHA256,
+            receipt_sha256: WAVE5_PRODUCER_CONSUMER_MANIFEST_SHA256,
             snapshot: Some(NukeStockpileSnapshot {
                 source_sequence: 17,
                 countries: vec![CountryNukeRow {
                     tag_db_id: 23,
+                    container_capacity: 2,
                     entries: vec![
                         NukeEntrySnapshot {
+                            nuke_type_raw: 0,
                             amount_raw: 8_000,
                             nukes_ready: 0,
                         },
                         NukeEntrySnapshot {
+                            nuke_type_raw: 1,
                             amount_raw: 250_000_000,
                             nukes_ready: 1,
                         },
@@ -465,6 +503,21 @@ mod tests {
             .unwrap()
             .snapshot
             .is_none());
+    }
+
+    #[test]
+    fn schema_v2_rejects_noncanonical_capacity_count_and_type_order() {
+        let mut frame = receipted_frame();
+        frame.snapshot.as_mut().unwrap().countries[0].container_capacity = 1;
+        assert!(encode_payload(&frame).is_err());
+
+        let mut frame = receipted_frame();
+        frame.snapshot.as_mut().unwrap().countries[0].entries.pop();
+        assert!(encode_payload(&frame).is_err());
+
+        let mut frame = receipted_frame();
+        frame.snapshot.as_mut().unwrap().countries[0].entries[0].nuke_type_raw = 1;
+        assert!(encode_payload(&frame).is_err());
     }
 
     struct NeverRead(Cell<bool>);

@@ -341,6 +341,18 @@ pub struct NavalUnitView {
     pub active_combat_epochs_available: bool,
     pub active_combat_epochs: Vec<String>,
     pub combat_membership_authority: Option<String>,
+    /// Exact save-tick movement path; never convoy-route attribution.
+    pub movement_path_available: bool,
+    pub movement_path: Vec<u32>,
+    pub movement_progress: Option<f64>,
+    pub save_repair_mode: Option<i64>,
+    pub save_repair_split: Option<bool>,
+    pub save_repair_target_province: Option<u32>,
+    pub save_repair_parent_uid: Option<String>,
+    pub save_repair_child_uid: Option<String>,
+    pub save_repair_last_mission: Option<i64>,
+    pub save_detached_activity: Option<String>,
+    pub save_retreat: Option<bool>,
     pub ship_count: Option<i64>,
     pub dominant_hull_class: Option<String>,
     pub location_province: Option<u32>,
@@ -358,6 +370,10 @@ pub fn naval_unit_view_from_row(row: &FleetUnitRow, available: bool) -> NavalUni
         Leaf::Measured(epochs) => (true, epochs.clone()),
         Leaf::Absent | Leaf::Unobtained => (false, Vec::new()),
     };
+    let (movement_path_available, movement_path) = match &row.movement_path {
+        Leaf::Measured(path) => (true, path.clone()),
+        Leaf::Absent | Leaf::Unobtained => (false, Vec::new()),
+    };
     NavalUnitView {
         uid: row.task_force_uid.clone(),
         fleet_uid: opt_string(&row.fleet_uid),
@@ -370,6 +386,17 @@ pub fn naval_unit_view_from_row(row: &FleetUnitRow, available: bool) -> NavalUni
         active_combat_epochs_available,
         active_combat_epochs,
         combat_membership_authority: opt_string(&row.combat_membership_authority),
+        movement_path_available,
+        movement_path,
+        movement_progress: opt_f64(&row.movement_progress),
+        save_repair_mode: opt_i64(&row.save_repair_mode),
+        save_repair_split: opt_bool(&row.save_repair_split),
+        save_repair_target_province: opt_u32(&row.save_repair_target_province),
+        save_repair_parent_uid: opt_string(&row.save_repair_parent_uid),
+        save_repair_child_uid: opt_string(&row.save_repair_child_uid),
+        save_repair_last_mission: opt_i64(&row.save_repair_last_mission),
+        save_detached_activity: opt_string(&row.save_detached_activity),
+        save_retreat: opt_bool(&row.save_retreat),
         ship_count: opt_i64(&row.ship_count),
         dominant_hull_class: opt_string(&row.dominant_hull_class),
         location_province: opt_u32(&row.location_province),
@@ -523,6 +550,8 @@ mod tests {
             fleet_uid: Leaf::Measured("200".to_string()),
             owner: Leaf::Measured("GER".to_string()),
             location_province: Leaf::Measured(6434),
+            movement_path: Leaf::Measured(vec![6434, 5088]),
+            movement_progress: Leaf::Measured(0.5),
             mission: Leaf::Measured("STRIKE_FORCE".to_string()),
             mission_enum: Leaf::Measured(2),
             mission_state: Leaf::Measured(3),
@@ -536,6 +565,14 @@ mod tests {
             ),
             home_base_province: Leaf::Measured(4021),
             repair_base_province: Leaf::Measured(5088),
+            save_repair_mode: Leaf::Measured(3),
+            save_repair_split: Leaf::Measured(false),
+            save_repair_target_province: Leaf::Measured(5088),
+            save_repair_parent_uid: Leaf::Measured("202:61".to_string()),
+            save_repair_child_uid: Leaf::Absent,
+            save_repair_last_mission: Leaf::Measured(2),
+            save_detached_activity: Leaf::Measured("refitting".to_string()),
+            save_retreat: Leaf::Measured(true),
             sunk_convoys: Leaf::Measured(0),
             ship_count: Leaf::Measured(12),
             dominant_hull_class: Leaf::Measured("ship_hull_light_1".to_string()),
@@ -557,6 +594,12 @@ mod tests {
             view.combat_membership_authority.as_deref(),
             Some("d49_d50_member_epoch")
         );
+        assert!(view.movement_path_available);
+        assert_eq!(view.movement_path, vec![6434, 5088]);
+        assert_eq!(view.movement_progress, Some(0.5));
+        assert_eq!(view.save_repair_mode, Some(3));
+        assert_eq!(view.save_repair_target_province, Some(5088));
+        assert_eq!(view.save_retreat, Some(true));
     }
 
     #[test]

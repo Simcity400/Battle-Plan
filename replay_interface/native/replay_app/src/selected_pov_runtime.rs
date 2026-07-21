@@ -11,7 +11,8 @@ use game_ui::active_abilities::{
     ActiveAbilityPresentation,
 };
 use game_ui::army_orders_group::{
-    bind_army_orders_group_controls, ArmyOrdersGroupControls,
+    bind_army_battleplan_panel, bind_army_orders_group_controls, ArmyBattleplanPanel,
+    ArmyOrdersGroupControls,
 };
 use game_ui::character_ui::{AdmittedCharacterUi, CharacterPresentationInput};
 use game_ui::combat_detail_losses::{
@@ -20,6 +21,10 @@ use game_ui::combat_detail_losses::{
 use game_ui::decision_replay::{
     bind_decision_panel, decision_panel_snapshot_from_world, DecisionPanelBinding,
     DecisionStaticCatalog,
+};
+use game_ui::event_chrome::{
+    admit_event_history, event_definitions_by_id, load_events, AdmittedFiredEvent, EventDef,
+    EventHistoryRequest,
 };
 use game_ui::national_focus::{
     admit_exact_national_focus_presentation, AdmittedNationalFocusPresentation, FocusCatalog,
@@ -30,10 +35,13 @@ use game_ui::readonly_design_peace::{
     AdmittedSelectedDesignerIdentity, PeaceConferenceSnapshot,
 };
 use game_ui::research_canvas::ResearchCanvasRequest;
+use game_ui::trade_state::{admit_trade_screen, AdmittedTradeScreen};
 use game_ui::{assets::AssetResolver, gfx::SpriteRegistry};
+use game_ui::loc::Localisation;
+use game_ui::text_law::RuntimeTextContext;
 use replay_core::agency_upgrade_controller::admit_agency_upgrade_controller_refresh;
 use replay_core::cipher_controller::admit_cipher_controller_refresh;
-use replay_core::{Leaf, WorldFrame};
+use replay_core::{ArmyBattleplanOrderKey, Leaf, RuntimeTextCatalog, ViewStatus, WorldFrame};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FeatureState<T> {
@@ -74,7 +82,9 @@ pub struct CipherControllerSummary {
 
 /// Authenticated inputs that cannot be reconstructed from a replay frame.
 /// The product passes them only after its effective VFS/UI09 layers have
-/// admitted the same content identity. `None` means feature-local unavailable.
+/// admitted the same content identity. Decisions use the recorder-packaged
+/// effective catalog when no test/owner override is supplied, and d87's
+/// catalog hash must match it before binding.
 #[derive(Clone, Copy, Default)]
 pub struct SelectedPovSupplementalInputs<'a> {
     pub focus: Option<(
@@ -86,6 +96,9 @@ pub struct SelectedPovSupplementalInputs<'a> {
     pub character: Option<(u32, &'a CharacterPresentationInput)>,
     pub peace: Option<&'a PeaceConferenceSnapshot>,
     pub selected_army_id: Option<u32>,
+    /// Stable replay identity selected by the product UI. A raw slot index or
+    /// engine pointer is never accepted because either can alias after churn.
+    pub selected_order_key: Option<&'a ArmyBattleplanOrderKey>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -101,16 +114,36 @@ pub struct SelectedPovRuntimeSnapshot {
     pub selected_designer: FeatureState<AdmittedSelectedDesignerIdentity>,
     pub peace_conference: FeatureState<AdmittedPeaceConference>,
     pub orders_group: FeatureState<ArmyOrdersGroupControls>,
+    pub battleplan_panel: FeatureState<ArmyBattleplanPanel>,
     pub combat_detail: FeatureState<Xui20ReplayAdmission>,
+    pub fired_events: FeatureState<Vec<AdmittedFiredEvent>>,
+    /// XUI15 typed classic-resource trade presentation. This is consumed on
+    /// every selected-POV refresh; pixel composition remains separately gated
+    /// on an authenticated trade-window activation/root binding.
+    pub trade: FeatureState<AdmittedTradeScreen>,
 }
 
 pub struct SelectedPovRuntime {
     ability_definitions: FeatureState<BTreeMap<String, AbilityDefinition>>,
+    decision_catalog: FeatureState<DecisionStaticCatalog>,
+    event_definitions: FeatureState<BTreeMap<String, EventDef>>,
+    event_localisation: FeatureState<Localisation>,
     snapshot: SelectedPovRuntimeSnapshot,
 }
 
 impl SelectedPovRuntime {
-    pub fn new(resolver: &AssetResolver, registry: &SpriteRegistry) -> Self {
+    /// Construct the selected-POV runtime with an optional recorder-packaged
+    /// effective decision catalog. The catalog bytes must come from the
+    /// authenticated replay package/VFS boundary; this crate deliberately has
+    /// no compile-time dependency on machine-local `game_defs/out`.
+    ///
+    /// Passing `None` keeps only XUI19 unavailable. It never falls back to an
+    /// installed game tree or a developer checkout artifact.
+    pub fn new_with_decision_catalog_bytes(
+        resolver: &AssetResolver,
+        registry: &SpriteRegistry,
+        decision_catalog_bytes: Option<&[u8]>,
+    ) -> Self {
         let ability_definitions = match load_active_ability_definitions(resolver, registry) {
             Ok(definitions) => FeatureState::admitted(definitions),
             Err(error) => FeatureState::unavailable(format!(
@@ -118,8 +151,39 @@ impl SelectedPovRuntime {
                 error.message
             )),
         };
+        let decision_catalog = match decision_catalog_bytes {
+            Some(bytes) => match DecisionStaticCatalog::from_extractor_json(bytes) {
+                Ok(catalog) => FeatureState::admitted(catalog),
+                Err(error) => FeatureState::unavailable(format!(
+                    "A34 recorder-packaged effective decision catalog rejected: {}",
+                    error.message
+                )),
+            },
+            None => FeatureState::unavailable(
+                "A34 recorder-packaged effective decision catalog was not supplied",
+            ),
+        };
+        let event_definitions = load_events(resolver)
+            .map_err(|error| error.message)
+            .and_then(|corpus| {
+                event_definitions_by_id(&corpus)
+                    .map_err(|error| format!("XUI21 event-definition registry rejected: {error:?}"))
+            })
+            .map(FeatureState::admitted)
+            .unwrap_or_else(|error| FeatureState::unavailable(format!(
+                "XUI21 effective event-definition registry unavailable: {error}"
+            )));
+        let event_localisation = Localisation::load_english(resolver)
+            .map(FeatureState::admitted)
+            .unwrap_or_else(|error| FeatureState::unavailable(format!(
+                "XUI21 effective localisation unavailable: {}",
+                error.message
+            )));
         Self {
             ability_definitions,
+            decision_catalog,
+            event_definitions,
+            event_localisation,
             snapshot: unavailable_snapshot(None, "selected POV has not been evaluated"),
         }
     }
@@ -133,6 +197,8 @@ impl SelectedPovRuntime {
         frame: &WorldFrame,
         pov_country: Option<&str>,
         supplemental: SelectedPovSupplementalInputs<'_>,
+        runtime_text: Option<&RuntimeTextCatalog>,
+        sprites: &SpriteRegistry,
     ) {
         let Some(pov) = pov_country else {
             self.snapshot = unavailable_snapshot(None, "world view has no selected country POV");
@@ -222,7 +288,10 @@ impl SelectedPovRuntime {
             ),
         };
 
-        let decision_panel = match supplemental.decisions {
+        let decision_catalog = supplemental
+            .decisions
+            .or(self.decision_catalog.value.as_ref());
+        let decision_panel = match decision_catalog {
             Some(catalog) => decision_panel_snapshot_from_world(frame.decision_panel_exact())
                 .and_then(|snapshot| {
                     if snapshot.country_tag != pov {
@@ -236,7 +305,10 @@ impl SelectedPovRuntime {
                 .map(FeatureState::admitted)
                 .unwrap_or_else(|error| FeatureState::unavailable(error.message)),
             None => FeatureState::unavailable(
-                "A34 effective decision catalog not admitted for this replay",
+                self.decision_catalog
+                    .unavailable_reason
+                    .as_deref()
+                    .unwrap_or("A34 effective decision catalog not admitted for this replay"),
             ),
         };
 
@@ -280,6 +352,59 @@ impl SelectedPovRuntime {
             ),
         };
 
+        let fired_events = match (
+            self.event_definitions.value.as_ref(),
+            self.event_localisation.value.as_ref(),
+            runtime_text,
+        ) {
+            (Some(definitions), Some(localisation), Some(runtime_text))
+                if runtime_text.contexts_complete => {
+                let contexts = runtime_text
+                    .contexts
+                    .iter()
+                    .map(|(id, row)| (id.clone(), RuntimeTextContext::from(row)))
+                    .collect::<BTreeMap<_, _>>();
+                admit_event_history(EventHistoryRequest {
+                    source_record_id: "world_events.fired_events:d75",
+                    history: frame.fired_events(),
+                    definitions,
+                    localisation,
+                    sprites,
+                    runtime_text: &contexts,
+                })
+                .map(FeatureState::admitted)
+                .unwrap_or_else(|error| FeatureState::unavailable(format!(
+                    "XUI21 fired-event history unavailable: {error:?}"
+                )))
+            }
+            (None, _, _) => FeatureState::unavailable(
+                self.event_definitions.unavailable_reason.as_deref().unwrap_or(
+                    "XUI21 effective event-definition registry unavailable",
+                ),
+            ),
+            (_, None, _) => FeatureState::unavailable(
+                self.event_localisation
+                    .unavailable_reason
+                    .as_deref()
+                    .unwrap_or("XUI21 effective localisation unavailable"),
+            ),
+            (_, _, Some(_)) => FeatureState::unavailable(
+                "XUI21 A25 runtime-text carrier is incomplete",
+            ),
+            (_, _, None) => FeatureState::unavailable(
+                "XUI21 A25 runtime-text carrier is unavailable",
+            ),
+        };
+
+        let battleplan_panel = admit_battleplan_panel(
+            bind_army_battleplan_panel(
+                frame,
+                supplemental.selected_army_id,
+                supplemental.selected_order_key,
+            ),
+            supplemental.selected_order_key,
+        );
+
         self.snapshot = SelectedPovRuntimeSnapshot {
             pov_country: Some(pov.to_string()),
             topbar: FeatureState::admitted(game_ui::binding::topbar_binding_from_frame(frame, pov)),
@@ -295,8 +420,15 @@ impl SelectedPovRuntime {
                 frame,
                 supplemental.selected_army_id,
             )),
+            battleplan_panel,
             combat_detail: FeatureState::admitted(admit_xui20_replay(
                 &combat_detail_losses_from_frame(frame),
+            )),
+            fired_events,
+            trade: FeatureState::admitted(admit_trade_screen(
+                frame.trade_status(),
+                pov,
+                frame.trade(pov),
             )),
         };
     }
@@ -306,6 +438,39 @@ fn selected_designer(frame: &WorldFrame) -> FeatureState<AdmittedSelectedDesigne
     admit_current_selected_designer_identity(frame)
         .map(FeatureState::admitted)
         .unwrap_or_else(|error| FeatureState::unavailable(format!("{error:?}")))
+}
+
+fn admit_battleplan_panel(
+    panel: ArmyBattleplanPanel,
+    selected_order_key: Option<&ArmyBattleplanOrderKey>,
+) -> FeatureState<ArmyBattleplanPanel> {
+    if panel.status != ViewStatus::Present {
+        return FeatureState::unavailable(format!(
+            "d54 exact battleplan carrier is not present: {:?}",
+            panel.status
+        ));
+    }
+    let Some(selected_army_id) = panel.selected_army_id else {
+        return FeatureState::unavailable("no exact army selection was supplied");
+    };
+    if panel.selected_army_present != Some(true) {
+        return FeatureState::unavailable(format!(
+            "selected army {selected_army_id} is not present in the complete d54 manager census"
+        ));
+    }
+    if let Some(key) = selected_order_key {
+        if key.army_id != selected_army_id {
+            return FeatureState::unavailable(
+                "selected order identity belongs to a different selected army",
+            );
+        }
+        if panel.selected_order.is_none() {
+            return FeatureState::unavailable(
+                "selected order stable identity is absent from the exact d54 order census",
+            );
+        }
+    }
+    FeatureState::admitted(panel)
 }
 
 fn unavailable_snapshot(
@@ -324,7 +489,10 @@ fn unavailable_snapshot(
         selected_designer: FeatureState::unavailable(reason),
         peace_conference: FeatureState::unavailable(reason),
         orders_group: FeatureState::unavailable(reason),
+        battleplan_panel: FeatureState::unavailable(reason),
         combat_detail: FeatureState::unavailable(reason),
+        fired_events: FeatureState::unavailable(reason),
+        trade: FeatureState::unavailable(reason),
     }
 }
 
@@ -347,24 +515,81 @@ mod tests {
             snapshot.selected_designer.unavailable_reason.as_deref(),
             snapshot.peace_conference.unavailable_reason.as_deref(),
             snapshot.orders_group.unavailable_reason.as_deref(),
+            snapshot.battleplan_panel.unavailable_reason.as_deref(),
             snapshot.combat_detail.unavailable_reason.as_deref(),
+            snapshot.fired_events.unavailable_reason.as_deref(),
+            snapshot.trade.unavailable_reason.as_deref(),
         ] {
             assert_eq!(state, Some("no selected POV"));
         }
         assert!(snapshot.topbar.value.is_none());
         assert!(snapshot.combat_detail.value.is_none());
+        assert!(snapshot.trade.value.is_none());
+    }
+
+    #[test]
+    fn battleplan_admission_rejects_missing_or_stale_exact_selection() {
+        let no_army = ArmyBattleplanPanel {
+            status: ViewStatus::Present,
+            selected_army_id: None,
+            selected_army_present: None,
+            orders: Vec::new(),
+            selected_order: None,
+        };
+        assert_eq!(
+            admit_battleplan_panel(no_army, None)
+                .unavailable_reason
+                .as_deref(),
+            Some("no exact army selection was supplied")
+        );
+
+        let key = ArmyBattleplanOrderKey {
+            army_id: 17,
+            engine_order_instance_id: 2025,
+            generation: 4,
+        };
+        let stale_order = ArmyBattleplanPanel {
+            status: ViewStatus::Present,
+            selected_army_id: Some(17),
+            selected_army_present: Some(true),
+            orders: Vec::new(),
+            selected_order: None,
+        };
+        assert_eq!(
+            admit_battleplan_panel(stale_order, Some(&key))
+                .unavailable_reason
+                .as_deref(),
+            Some("selected order stable identity is absent from the exact d54 order census")
+        );
     }
 
     #[test]
     fn production_ui_runtime_refreshes_the_typed_consumer_before_rendering() {
-        let source = include_str!("ui_runtime.rs");
-        let refresh = source
+        let product_source = include_str!("ui_runtime.rs");
+        let refresh = product_source
             .find("self.selected_pov_runtime.refresh(")
             .expect("selected-POV runtime refresh");
-        let selected_present = source
+        let selected_present = product_source
             .find("prepare_selected_present_ui_pass(")
             .expect("selected-Present preparation");
+        let decision_model = product_source
+            .find(".decision_panel\n            .value")
+            .expect("A34 model consumption");
+        let selected_pov_source = include_str!("selected_pov_runtime.rs");
+        let selected_pov_impl = selected_pov_source
+            .split_once("#[cfg(test)]")
+            .expect("selected-POV production implementation")
+            .0;
+        let battleplan_binding = selected_pov_impl
+            .find("let battleplan_panel = admit_battleplan_panel(\n            bind_army_battleplan_panel(")
+            .expect("d54 production battleplan binding");
+        let snapshot_publish = selected_pov_impl
+            .find("self.snapshot = SelectedPovRuntimeSnapshot {")
+            .expect("selected-POV typed snapshot publication");
         assert!(refresh < selected_present);
-        assert!(source.contains("pub fn selected_pov_runtime("));
+        assert!(battleplan_binding < snapshot_publish);
+        assert!(refresh < decision_model);
+        assert!(decision_model < selected_present);
+        assert!(!product_source.contains("pub fn selected_pov_runtime("));
     }
 }

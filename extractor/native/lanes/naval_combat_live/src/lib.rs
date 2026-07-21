@@ -32,9 +32,12 @@ pub use convoy_terminal_attribution::{
 };
 
 pub use convoy_terminal_runtime::{
-    authenticate_exact_a729_route_read, clear_convoy_terminal_resolver_snapshot,
+    authenticate_evidence_a729_route_read, authenticate_exact_a729_route_read,
+    clear_convoy_terminal_resolver_snapshot,
     current_convoy_terminal_publication_receipt, current_convoy_terminal_resolver_snapshot,
-    publish_convoy_terminal_resolver_bindings, publish_convoy_terminal_resolver_snapshot,
+    publish_convoy_terminal_resolver_bindings,
+    publish_convoy_terminal_resolver_snapshot,
+    publish_evidence_convoy_terminal_resolver_bindings,
     try_current_convoy_terminal_resolver_snapshot, AuthenticatedLiveRouteBinding,
     ResolverPublicationReceipt, ResolverSnapshot,
 };
@@ -66,13 +69,16 @@ pub use convoy_transport_attack::{
 
 #[cfg(all(windows, target_arch = "x86_64"))]
 pub use convoy_terminal_hook_windows::{
-    convoy_terminal_hook_heartbeat, convoy_terminal_hook_installed,
+    convoy_terminal_evidence_activation_enabled, convoy_terminal_hook_heartbeat,
+    convoy_terminal_hook_installed,
     drain_convoy_terminal_events, drain_convoy_transport_attack_payload,
-    install_convoy_terminal_hook, read_live_a729_client_route,
+    install_convoy_terminal_evidence_hook, install_convoy_terminal_hook,
+    read_live_a729_client_route,
     seal_and_drain_convoy_transport_attack_payload, uninstall_convoy_terminal_hook,
     ConvoyTerminalDrain, ConvoyTerminalHookHeartbeat,
     ConvoyTerminalHookTelemetry, ConvoyTerminalInstallError, ConvoyTerminalValidatedEvent,
     ConvoyTerminalSealError, D70MutationKind, D70MutationProof,
+    H_CONVOY_EVIDENCE_ACTIVATION_ENV,
 };
 
 pub use domain49_50_naval_combat_live::{

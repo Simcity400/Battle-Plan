@@ -14,7 +14,7 @@ pub const ROW_KIND_PROVINCE_LOGISTICS: u32 = 1;
 pub const ROW_KIND_DIVISION_SUPPLY: u32 = 2;
 pub const ROW_KIND_COMPUTED_BADGE: u32 = 3;
 pub const ROW_KIND_CSUPPLY_PROVINCE_INPUT: u32 = 4;
-// Shared production row kind 5 is exact CCountrySupplySystem disrupted_supply.
+pub const ROW_KIND_COUNTRY_DISRUPTED_SUPPLY: u32 = 5;
 // Keep this lane-local, explicitly non-production candidate on a disjoint id.
 pub const ROW_KIND_FOREIGN_HOMEBASE_PRESSURE_CANDIDATE: u32 = 6;
 
@@ -37,14 +37,18 @@ pub const ROW_FLAG_CONVOY_PRESSURE_WALL: u32 = 1 << 15;
 pub const ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED: u32 = 1 << 16;
 pub const ROW_FLAG_CSUPPLY_EFFICIENCY: u32 = 1 << 17;
 pub const ROW_FLAG_CSUPPLY_PROVINCE_ARRAY: u32 = 1 << 18;
-pub const ROW_FLAG_FOREIGN_HOMEBASE_PRESSURE: u32 = 1 << 19;
-pub const ROW_FLAG_PRESSURE_CANDIDATE_LAYOUT: u32 = 1 << 20;
+pub const ROW_FLAG_COUNTRY_DISRUPTED_SUPPLY_EXACT: u32 = 1 << 19;
+pub const ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE: u32 = 1 << 20;
+pub const ROW_FLAG_FOREIGN_HOMEBASE_PRESSURE: u32 = 1 << 21;
+pub const ROW_FLAG_PRESSURE_CANDIDATE_LAYOUT: u32 = 1 << 22;
+pub const ROW_ID_DELETED: u32 = 1 << 31;
 
 pub const BADGE_EXACT_PROVINCE_SUPPLY_TRANSIENT: i32 = 1;
 pub const BADGE_ATTRITION_RUNTIME_COMPUTED: i32 = 2;
 pub const BADGE_MOTORIZATION_SETTINGS_UNPINNED: i32 = 3;
 pub const BADGE_CONVOY_LOGISTICS_PRESSURE_UNPINNED: i32 = 4;
 pub const BADGE_CSUPPLY_INPUT_ARRAYS_UNSAFE: i32 = 5;
+pub const BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE: i32 = 6;
 
 pub const MAX_PROVINCE_ID: u32 = 13_413;
 pub const MAX_STATE_ID: u32 = 1_081;
@@ -54,6 +58,7 @@ pub const MAX_SUPPLY_RAW: i32 = 100_000_000;
 pub const MAX_SUPPLY_GAIN_RAW: i32 = 500_000;
 pub const MAX_DIVISION_FUEL_RAW: i32 = i32::MAX;
 pub const MAX_BUILDING_LEVEL: i32 = 1_000;
+pub const MAX_COUNTRY_DISRUPTED_SUPPLY_RAW: i32 = FIXED_SCALE_RAW as i32;
 
 const VALID_ROW_FLAGS: u32 = ROW_FLAG_RAIL
     | ROW_FLAG_SUPPLY_NODE
@@ -74,6 +79,8 @@ const VALID_ROW_FLAGS: u32 = ROW_FLAG_RAIL
     | ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED
     | ROW_FLAG_CSUPPLY_EFFICIENCY
     | ROW_FLAG_CSUPPLY_PROVINCE_ARRAY
+    | ROW_FLAG_COUNTRY_DISRUPTED_SUPPLY_EXACT
+    | ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE
     | ROW_FLAG_FOREIGN_HOMEBASE_PRESSURE
     | ROW_FLAG_PRESSURE_CANDIDATE_LAYOUT;
 
@@ -113,6 +120,9 @@ pub struct Domain44GateSummary {
     pub division_rows_total: u64,
     pub badge_rows_total: u64,
     pub csupply_input_rows_total: u64,
+    pub country_disrupted_supply_rows_total: u64,
+    pub country_disrupted_supply_tombstones_total: u64,
+    pub country_disrupted_source_available: bool,
     pub pressure_candidate_rows_total: u64,
     pub observed_province_roots: u64,
     pub observed_division_roots: u64,
@@ -216,16 +226,20 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
     let mut decoded_division_rows = 0usize;
     let mut decoded_badge_rows = 0usize;
     let mut decoded_csupply_input_rows = 0usize;
+    let mut decoded_country_disrupted_supply_rows = 0usize;
+    let mut decoded_country_disrupted_supply_tombstones = 0usize;
     let mut decoded_pressure_candidate_rows = 0usize;
     let mut seen_provinces = BTreeSet::new();
     let mut seen_divisions = BTreeSet::new();
     let mut seen_csupply_input_provinces = BTreeSet::new();
+    let mut seen_country_disrupted_supply = BTreeSet::new();
     let mut seen_pressure_candidates = BTreeSet::new();
     let mut has_exact_supply_wall = false;
     let mut has_attrition_wall = false;
     let mut has_motorization_wall = false;
     let mut has_convoy_pressure_wall = false;
     let mut has_csupply_candidate_rejected = false;
+    let mut has_country_disrupted_source_available = false;
     let mut cursor = header_len;
     for row_index in 0..row_count {
         let row_kind = read_u32_le(payload, cursor);
@@ -467,6 +481,71 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                 }
                 add_unit(&mut summary, "csupply_efficiency_rows", 1);
             }
+            ROW_KIND_COUNTRY_DISRUPTED_SUPPLY => {
+                decoded_country_disrupted_supply_rows =
+                    decoded_country_disrupted_supply_rows.saturating_add(1);
+                let deleted_id = (entity_id & ROW_ID_DELETED != 0)
+                    .then_some(entity_id & !ROW_ID_DELETED);
+                let province_id = deleted_id.unwrap_or(entity_id);
+                if province_id == 0 || province_id > MAX_PROVINCE_ID {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics disrupted row {row_index} has invalid province_id {province_id}"
+                    ));
+                }
+                if owner_tag_db_id == 0 || owner_tag_db_id > MAX_TAG_DB_ID {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics disrupted row {row_index} has invalid owner_tag_db_id {owner_tag_db_id}"
+                    ));
+                }
+                if !seen_country_disrupted_supply.insert((
+                    owner_tag_db_id,
+                    province_id,
+                    join_id,
+                )) {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics disrupted row {row_index} duplicates owner/province/node_type identity"
+                    ));
+                }
+                if deleted_id.is_some() {
+                    decoded_country_disrupted_supply_tombstones =
+                        decoded_country_disrupted_supply_tombstones.saturating_add(1);
+                    if flags != 0
+                        || value_a_raw != 0
+                        || value_b_raw != 0
+                        || value_c_raw != 0
+                        || value_d_raw != 0
+                        || aux_raw != 0
+                    {
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: supply logistics disrupted tombstone row {row_index} has live fields"
+                        ));
+                    }
+                } else {
+                    if flags != ROW_FLAG_COUNTRY_DISRUPTED_SUPPLY_EXACT {
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: supply logistics disrupted row {row_index} has invalid flags {flags:#x}"
+                        ));
+                    }
+                    validate_nonnegative_value(
+                        offset,
+                        &mut summary,
+                        row_index,
+                        "country_disrupted_supply_raw",
+                        value_a_raw,
+                        MAX_COUNTRY_DISRUPTED_SUPPLY_RAW,
+                    );
+                    if value_b_raw != 0
+                        || value_c_raw != 0
+                        || value_d_raw != 0
+                        || aux_raw != 0
+                    {
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: supply logistics disrupted row {row_index} has nonzero reserved value fields"
+                        ));
+                    }
+                    add_unit(&mut summary, "country_disrupted_supply_rows", 1);
+                }
+            }
             ROW_KIND_FOREIGN_HOMEBASE_PRESSURE_CANDIDATE => {
                 decoded_pressure_candidate_rows = decoded_pressure_candidate_rows.saturating_add(1);
                 if entity_id == 0 || entity_id > MAX_PROVINCE_ID {
@@ -557,7 +636,8 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                         | ROW_FLAG_ATTRITION_WALL
                         | ROW_FLAG_MOTORIZATION_WALL
                         | ROW_FLAG_CONVOY_PRESSURE_WALL
-                        | ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED);
+                        | ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED
+                        | ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE);
                 if badge_flags.count_ones() != 1 {
                     summary.parse_errors.push(format!(
                         "offset {offset}: supply logistics badge row {row_index} must carry exactly one badge flag"
@@ -608,6 +688,14 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                         ));
                     }
                 }
+                if flags & ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE != 0 {
+                    has_country_disrupted_source_available = true;
+                    if value_a_raw != BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE {
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: supply logistics country-disrupted source badge row {row_index} has invalid code {value_a_raw}"
+                        ));
+                    }
+                }
                 add_unit(&mut summary, "computed_badge_rows", 1);
             }
             other => summary.parse_errors.push(format!(
@@ -631,14 +719,22 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
             "offset {offset}: supply logistics badge_rows {badge_rows} != decoded {decoded_badge_rows}"
         ));
     }
-    if decoded_csupply_input_rows != csupply_input_rows {
+    if decoded_csupply_input_rows + decoded_country_disrupted_supply_rows != csupply_input_rows {
         summary.parse_errors.push(format!(
-            "offset {offset}: supply logistics csupply_input_rows {csupply_input_rows} != decoded {decoded_csupply_input_rows}"
+            "offset {offset}: supply logistics csupply_input_rows {csupply_input_rows} != decoded kind4+kind5 {}+{}",
+            decoded_csupply_input_rows, decoded_country_disrupted_supply_rows
         ));
     }
     if decoded_pressure_candidate_rows != pressure_candidate_rows {
         summary.parse_errors.push(format!(
             "offset {offset}: supply logistics pressure_candidate_rows {pressure_candidate_rows} != decoded {decoded_pressure_candidate_rows}"
+        ));
+    }
+    if decoded_country_disrupted_supply_rows > 0
+        && !has_country_disrupted_source_available
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics disrupted rows lack exact-source availability badge"
         ));
     }
     for (label, present) in [
@@ -663,6 +759,11 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
     summary.division_rows_total = decoded_division_rows as u64;
     summary.badge_rows_total = decoded_badge_rows as u64;
     summary.csupply_input_rows_total = decoded_csupply_input_rows as u64;
+    summary.country_disrupted_supply_rows_total =
+        (decoded_country_disrupted_supply_rows - decoded_country_disrupted_supply_tombstones) as u64;
+    summary.country_disrupted_supply_tombstones_total =
+        decoded_country_disrupted_supply_tombstones as u64;
+    summary.country_disrupted_source_available = has_country_disrupted_source_available;
     summary.pressure_candidate_rows_total = decoded_pressure_candidate_rows as u64;
     add_unit(
         &mut summary,
@@ -746,6 +847,18 @@ fn main() {
         summary.csupply_input_rows_total
     );
     println!(
+        "country_disrupted_supply_rows_total={}",
+        summary.country_disrupted_supply_rows_total
+    );
+    println!(
+        "country_disrupted_supply_tombstones_total={}",
+        summary.country_disrupted_supply_tombstones_total
+    );
+    println!(
+        "country_disrupted_source_available={}",
+        summary.country_disrupted_source_available
+    );
+    println!(
         "pressure_candidate_rows_total={}",
         summary.pressure_candidate_rows_total
     );
@@ -809,12 +922,36 @@ mod tests {
                 aux_raw: 99_000,
             },
             SupplyLogisticsRow {
+                row_kind: ROW_KIND_COUNTRY_DISRUPTED_SUPPLY,
+                entity_id: 7081,
+                join_id: 3,
+                owner_tag_db_id: 47,
+                flags: ROW_FLAG_COUNTRY_DISRUPTED_SUPPLY_EXACT,
+                value_a_raw: 4017,
+                value_b_raw: 0,
+                value_c_raw: 0,
+                value_d_raw: 0,
+                aux_raw: 0,
+            },
+            SupplyLogisticsRow {
                 row_kind: ROW_KIND_COMPUTED_BADGE,
                 entity_id: 0,
                 join_id: 0,
                 owner_tag_db_id: 0,
                 flags: ROW_FLAG_EXACT_SUPPLY_WALL,
                 value_a_raw: BADGE_EXACT_PROVINCE_SUPPLY_TRANSIENT,
+                value_b_raw: 0,
+                value_c_raw: 0,
+                value_d_raw: 0,
+                aux_raw: 0,
+            },
+            SupplyLogisticsRow {
+                row_kind: ROW_KIND_COMPUTED_BADGE,
+                entity_id: 0,
+                join_id: 0,
+                owner_tag_db_id: 0,
+                flags: ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE,
+                value_a_raw: BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE,
                 value_b_raw: 0,
                 value_c_raw: 0,
                 value_d_raw: 0,
@@ -880,10 +1017,10 @@ mod tests {
             changed_rows: rows.len() as u32,
             province_rows: 1,
             division_rows: 1,
-            badge_rows: 5,
+            badge_rows: 6,
             observed_province_roots: 13_414,
             observed_division_roots: 1_600,
-            csupply_input_rows: 0,
+            csupply_input_rows: 1,
             pressure_candidate_rows: 0,
         };
         let payload = encode_payload(&header, &rows);
@@ -893,10 +1030,12 @@ mod tests {
             "{:?}",
             summary.parse_errors
         );
-        assert_eq!(summary.data_rows_total, 7);
+        assert_eq!(summary.data_rows_total, 9);
         assert_eq!(summary.province_rows_total, 1);
         assert_eq!(summary.division_rows_total, 1);
-        assert_eq!(summary.badge_rows_total, 5);
+        assert_eq!(summary.badge_rows_total, 6);
+        assert_eq!(summary.country_disrupted_supply_rows_total, 1);
+        assert!(summary.country_disrupted_source_available);
         assert_eq!(summary.observed_province_roots, 13_414);
         assert_eq!(
             summary
@@ -916,6 +1055,52 @@ mod tests {
             summary.data_units_total.get("division_fuel_rows").copied(),
             Some(1)
         );
+    }
+
+    #[test]
+    fn decodes_composite_disrupted_tombstone_and_requires_source_witness() {
+        let mut rows = fixture_rows();
+        let disrupted = rows
+            .iter_mut()
+            .find(|row| row.row_kind == ROW_KIND_COUNTRY_DISRUPTED_SUPPLY)
+            .expect("fixture disrupted row");
+        disrupted.entity_id |= ROW_ID_DELETED;
+        disrupted.flags = 0;
+        disrupted.value_a_raw = 0;
+        let header = SupplyLogisticsHeader {
+            elapsed_wall_ms: 1,
+            status_flags: STATUS_COMPACT_HEALTH_OK,
+            changed_rows: rows.len() as u32,
+            province_rows: 1,
+            division_rows: 1,
+            badge_rows: 6,
+            observed_province_roots: 1,
+            observed_division_roots: 1,
+            csupply_input_rows: 1,
+            pressure_candidate_rows: 0,
+        };
+        let summary = decode_payload(0, &encode_payload(&header, &rows));
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(summary.country_disrupted_supply_rows_total, 0);
+        assert_eq!(summary.country_disrupted_supply_tombstones_total, 1);
+
+        rows.retain(|row| {
+            row.flags != ROW_FLAG_COUNTRY_DISRUPTED_SOURCE_AVAILABLE
+        });
+        let header = SupplyLogisticsHeader {
+            changed_rows: rows.len() as u32,
+            badge_rows: 5,
+            ..header
+        };
+        let summary = decode_payload(0, &encode_payload(&header, &rows));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("lack exact-source availability badge")));
     }
 
     #[test]
@@ -1264,10 +1449,10 @@ mod tests {
             changed_rows: rows.len() as u32,
             province_rows: 1,
             division_rows: 1,
-            badge_rows: 5,
+            badge_rows: 6,
             observed_province_roots: 1,
             observed_division_roots: 1,
-            csupply_input_rows: 0,
+            csupply_input_rows: 1,
             pressure_candidate_rows: 1,
         };
         let payload = encode_payload(&header, &rows);

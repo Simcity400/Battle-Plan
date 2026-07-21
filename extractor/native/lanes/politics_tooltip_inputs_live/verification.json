@@ -1,76 +1,51 @@
 {
-  "schema": "hoi4-extractor-a24-verification-v1",
-  "status": "PASS_EXACT_A729_NATIVE_SOURCE_D73_CARRIER_FOLD_PROMOTION_READY",
+  "schema": "hoi4-extractor-a24-verification-v2",
+  "status": "STATIC_INSPECTION_COMPLETE_CENTRAL_VALIDATION_AND_LIVE_FIXTURE_PENDING",
   "authority": {
     "program": "hoi4.exe 1.19.2.0.a729",
     "image_base": "0x140000000",
-    "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+    "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "ghidra_ready_shards": 20
   },
-  "mechanical_verifier": {
-    "command": "python extractor/native/lanes/politics_tooltip_inputs_live/verify_a24.py",
-    "exit_code": 0,
-    "checks_passed": 72,
-    "checks_total": 72
+  "current_turn_execution": {
+    "mechanical_verifier_run": false,
+    "build_run": false,
+    "test_run": false,
+    "reason": "Subagent policy forbids builds, tests, verifiers, compilers, formatters, and generators. The primary agent must run central validation after shared edits stabilize."
   },
-  "cargo_gates": [
-    {
-      "command": "cargo test --manifest-path extractor/native/Cargo.toml -p politics_tooltip_inputs_live_lane",
-      "exit_code": 0,
-      "result": "7 passed; 0 failed; includes authenticated source scheduling, source-to-d73 encoding, bad-chain, unobserved-tuple and missing-family rejection"
-    },
-    {
-      "command": "cargo test --manifest-path extractor/native/Cargo.toml -p compact_contract",
-      "exit_code": 0,
-      "result": "117 passed; 0 failed"
-    },
-    {
-      "command": "cargo check --manifest-path extractor/native/Cargo.toml -p collector",
-      "exit_code": 1,
-      "result": "A24 and its Windows hook dependencies compiled successfully; the shared collector then failed in unrelated concurrent market-trade edits at lib.rs:32265, 32462 and 32610. Cargo metadata succeeded."
-    },
-    {
-      "command": "cargo test --manifest-path extractor/native/Cargo.toml -p recorder_host --test a24_d73",
-      "exit_code": 0,
-      "result": "2 passed; 0 failed; all six A24 families plus cross-hour rejection"
-    }
-  ],
-  "non_a24_test_incident": {
-    "command": "cargo test --manifest-path extractor/native/Cargo.toml -p recorder_host a24_domain73_folds_typed_engine_results_and_provenance -- --exact",
-    "exit_code": 1,
-    "reason": "The monolithic lib-test target fails during unrelated FRD helper compilation because FRD_HEADER_LEN_V2 and FRD_SCHEMA_VERSION_V2 are absent. The dedicated A24 integration target compiles the production recorder library and passes."
+  "historical_results": {
+    "disposition": "SUPERSEDED_BY_2026_07_20_PRODUCER_RECOVERY_AND_PTI1_V2",
+    "note": "Prior lane, compact-contract, collector, and recorder results proved the v1 carrier path only. They do not prove the recovered producer graph, selected-Present binding, or live taps."
   },
   "ghidra": {
-    "string_job_id": "20260717T103021Z-a24-politics-tooltip-anchors-v1-4af7c984",
-    "string_artifact_sha256": "4096785ffe2701327a1702ddc5e4640255f8f0505c050cf684376ddbbc07a3c6",
-    "producer_job_id": "20260717T103340Z-a24-politics-tooltip-producers-v1-c7bba362",
-    "producer_manifest_sha256": "aec720fe9371b012bfb6a8f000f74ab39232f3482a766c0edfac7582ce489ce5",
-    "stale_helper_job_id": "20260717T103804Z-a24-politics-runtime-helpers-v1-1a23f7fd",
-    "stale_helper_job_json_sha256": "58078f2f6a995e02dbe5a14887b696b01f50d55d5653ed4ce79d6bb1a46e7331"
+    "ui_producer_job_id": "20260720T130541Z-w5-a24-exact-ui-producers-da7088d4",
+    "ui_producer_manifest_sha256": "18bac19dc5de7fc0ef90a9341e0bc5ed1ac73c745a1dc96f6177ed08c8f70b35",
+    "helper_job_id": "20260720T124332Z-w5-a24-recover-runtime-producers-6a870988",
+    "helper_manifest_sha256": "989783832d3fe63a4f87bef2e2ba4e3c34c2048f11e87d55afb15164073e1503",
+    "string_job_id": "20260720T130531Z-w5-a24-runtime-string-producers-426c66d5",
+    "string_artifact_sha256": "8ddf4ac6308c965a393a295d0f3e51e72bd51a6b7b56cb4800ebfaeee3d6e2df",
+    "sentinel_job_id": "20260720T131310Z-w5-a24-exact-producer-entry-sentinels-ae52331e",
+    "sentinel_artifact_sha256": "1bcf5829cd3a6af2ca1720ee26f63285ec374fdbc609adb27152769122203270",
+    "modifier_sentinel_job_id": "20260720T131506Z-w5-a24-modifier-producer-entry-sentinels-7284f717",
+    "modifier_sentinel_artifact_sha256": "7f78ebae425582b1be1ab5ae9b3cd7f0d2c7a174cd4d526d0188b22f5d4e34fa"
   },
-  "native_source": {
-    "source": "politics_tooltip_inputs_live_lane::a729_hook::A729PoliticsHookSource",
-    "hook_absolute_address": "0x141C33FE0",
-    "hook_rva": "0x01C33FE0",
-    "sentinel_hex": "48895c24185556574154415541564157",
-    "producer_manifest_sha256": "aec720fe9371b012bfb6a8f000f74ab39232f3482a766c0edfac7582ce489ce5",
-    "retained_dispatch_event_count": 258,
-    "retained_dispatch_analysis_sha256": "7fe5897afe038acd9e7050e50c73b6f37a527e109a4a6b784d185610f16fa016",
-    "admission": "exact tuple count plus one-time tuple consumption plus retained dispatch identity plus PTI1 validation plus all six families"
+  "implemented_static_path": {
+    "carrier": "PTI1 schema v2",
+    "collector_seam": "collector::encode_a24_exact_politics_tooltip_frame",
+    "fold": "recorder_host::WorldFold::fold_politics_tooltip_inputs",
+    "replay": "PoliticsDetailView::tooltip_inputs plus strict selected-Present join",
+    "ui": "game_ui::politics_tooltips exact target selector"
   },
-  "cleanup": {
-    "pre_work_removed_path": "target_xui23",
-    "pre_work_bytes_removed": 860697432,
-    "preserved": [
-      "A24 source and reports",
-      "Ghidra jobs and artifacts",
-      "world_fold recovery and history artifacts"
-    ],
-    "post_test_removed_path": "target_xui23",
-    "post_test_bytes_removed": 2446267936,
-    "post_test_target_cleanup": "complete after absolute within-repo verification",
-    "post_hook_test_removed_path": "target_xui23",
-    "post_hook_test_bytes_removed": 384189258,
-    "post_hook_test_items_removed": 1581,
-    "post_hook_test_target_cleanup": "complete after absolute within-repo verification"
+  "live_activation": {
+    "state": "DISABLED_FAIL_CLOSED",
+    "domain_registry": "reserved_unschedulable_requires_data_record",
+    "production_latch": "LIVE_PRODUCER_TAPS_COMPLETE=false",
+    "existing_hook": "0x141C33FE0 tuple-only owner observation",
+    "reason": "No in-module detours currently produce authenticated rows for all six semantic families."
+  },
+  "remaining_gate": {
+    "automation": "extractor/native/lanes/politics_tooltip_inputs_live/H_A24_CAPTURE_AUTOMATION_20260720.json",
+    "required": "Implement exact same-thread producer/helper detours and execute one complete selected-Present fixture before enabling d73.",
+    "human_input_required_now": false
   }
 }

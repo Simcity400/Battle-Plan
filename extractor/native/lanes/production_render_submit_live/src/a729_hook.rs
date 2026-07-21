@@ -1,6 +1,12 @@
 //! Signature-gated hooks for the pinned a729 particle submit graph.
 
+mod a25_gui_bridge;
 mod g2_capture;
+mod o05_building_capture;
+pub use o05_building_capture::{
+    take_scope_for_selected_present as take_o05_scope_for_selected_present,
+    RawO05RuntimeRecordObservation, RawO05RuntimeScopeObservation,
+};
 
 use crate::{
     canonicalize_packet, fnv1a32, DefinitionIdentity, FinalDrawCall, FinalDrawFamily,
@@ -18,7 +24,8 @@ use crate::{
     RawStageSlotObject, RawStaticD3dDrawState, RawStaticDrawCall, RawStaticStreamOutputBuffer,
     RawStencilFaceDesc, RawTexture2dDesc, RawTextureObject, RawTextureResourceSnapshot,
     RawTextureSubresourceSnapshot, RawVertexBufferObject, RawWeatherEntityPair,
-    RawSnowMudTextureObservation, RawWeatherEntityRef, RawWeatherFactoryAttempt,
+    RawOccupationSecondaryTextureObservation, RawSnowMudTextureObservation, RawWeatherEntityRef,
+    RawWeatherFactoryAttempt,
     RawWeatherObservation, RawWeatherUpdateOwner, RawWeatherVisibilityObservation,
     RenderOrderBoundary, WeatherEntityRole, WeatherEntityVisibility,
     ENGINE_SHADER_EFFECT_LOOKUP_RVA, ENTITY_DESTROY_RVA, ENTITY_FACTORY_RVA, ENTITY_FINAL_DRAW_RVA,
@@ -81,11 +88,12 @@ const MAX_D3D_VIEWPORTS_AND_SCISSORS: usize = 16;
 const MAX_D3D_CLASS_INSTANCES: usize = 256;
 const MAX_D3D_CREATION_ROWS: usize = 262_144;
 const MAX_VFS_OPEN_RECEIPTS: usize = 1_048_576;
+const MAX_OCCUPATION_SECONDARY_RESOURCES: usize = 16;
 const MAX_D3D_SHADER_BYTECODE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_D3D_INPUT_ELEMENTS: u32 = 32;
 pub const BOOTSTRAP_HOOK_COUNT: usize = 2;
-const HARDWARE_D3D_HOOK_COUNT: usize = 23;
-const ENGINE_HOOK_COUNT: usize = 43;
+const HARDWARE_D3D_HOOK_COUNT: usize = 19;
+const ENGINE_HOOK_COUNT: usize = 47;
 pub const STAGED_HOOK_COUNT: usize = HARDWARE_D3D_HOOK_COUNT + ENGINE_HOOK_COUNT;
 pub const READY_HOOK_COUNT: usize = BOOTSTRAP_HOOK_COUNT + STAGED_HOOK_COUNT;
 pub const STAGED_HOOK_GROUP_COM: u64 = 0x01;
@@ -382,10 +390,6 @@ static ORIGINAL_D3D_CREATE_DSV: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_D3D11_CREATE_DEVICE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_D3D_COMPILE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_D3D_SO_SET_TARGETS: AtomicUsize = AtomicUsize::new(0);
-static ORIGINAL_D3D_DRAW_INDEXED: AtomicUsize = AtomicUsize::new(0);
-static ORIGINAL_D3D_DRAW: AtomicUsize = AtomicUsize::new(0);
-static ORIGINAL_D3D_DRAW_INDEXED_INSTANCED: AtomicUsize = AtomicUsize::new(0);
-static ORIGINAL_D3D_DRAW_INSTANCED: AtomicUsize = AtomicUsize::new(0);
 static COM_DETOUR_TEARDOWN: AtomicBool = AtomicBool::new(false);
 static ACTIVE_COM_DETOURS: AtomicUsize = AtomicUsize::new(0);
 static COM_DETOUR_QUIESCENCE: OnceLock<(Mutex<()>, Condvar)> = OnceLock::new();
@@ -401,6 +405,7 @@ static NEXT_RENDER_ORDER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static NEXT_RENDER_FRAME_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static NEXT_PRESENT_GLOBAL_ORDER: AtomicU32 = AtomicU32::new(0);
 static NEXT_SNOW_MUD_PRODUCER_ORDINAL: AtomicU64 = AtomicU64::new(1);
+static NEXT_OCCUPATION_SECONDARY_UPLOAD_ORDER: AtomicU32 = AtomicU32::new(1);
 static NEXT_CATALOG_OBSERVATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static PENDING_STAGE_FIRST_CREATION: AtomicU64 = AtomicU64::new(0);
 static PRESENT_GAME_STATE_ROOT_SLOT: AtomicUsize = AtomicUsize::new(0);
@@ -411,6 +416,7 @@ static STAGED_HOOK_TARGETS: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
 static HOOK_STAGE: OnceLock<Mutex<HookStage>> = OnceLock::new();
 static EARLY_CAPTURE_EPOCH: OnceLock<Mutex<EarlyCaptureEpochState>> = OnceLock::new();
 static RUNTIME_DLC_ROSTER: OnceLock<Mutex<Option<RuntimeDlcRosterObservation>>> = OnceLock::new();
+static HOOK_LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
 
 struct ActiveComDetour;
 
@@ -493,10 +499,6 @@ fn com_originals() -> [&'static AtomicUsize; HARDWARE_D3D_HOOK_COUNT] {
         &ORIGINAL_D3D_CREATE_RTV,
         &ORIGINAL_D3D_CREATE_DSV,
         &ORIGINAL_D3D_SO_SET_TARGETS,
-        &ORIGINAL_D3D_DRAW_INDEXED,
-        &ORIGINAL_D3D_DRAW,
-        &ORIGINAL_D3D_DRAW_INDEXED_INSTANCED,
-        &ORIGINAL_D3D_DRAW_INSTANCED,
     ]
 }
 
@@ -783,6 +785,11 @@ struct HookState {
     sampler_state_creations: Vec<RawSamplerStateCreation>,
     created_d3d_objects: HashMap<usize, CreatedD3dObject>,
     weather_changes: VecDeque<RawWeatherObservation>,
+    /// A compatibility drain may request the complete transition history.
+    /// Track bounded-queue loss so that API fails instead of silently
+    /// returning a truncated history; selected-Present snapshots use the
+    /// independent per-region maps below.
+    weather_change_overflows: u64,
     weather_visibility_updates: VecDeque<RawWeatherVisibilityObservation>,
     latest_weather_observation_by_region: BTreeMap<u32, RawWeatherObservation>,
     latest_weather_visibility_by_region: BTreeMap<u32, RawWeatherVisibilityObservation>,
@@ -816,6 +823,11 @@ struct HookState {
     pending_render_frame: Option<PendingRenderFrame>,
     completed_render_frames: VecDeque<RawRenderFrameCapture>,
     latest_snow_mud_observation: Option<Arc<RawSnowMudTextureObservation>>,
+    /// Latest exact nontransparent 2816x1024 BGRA upload per process-local
+    /// resource. These remain candidates until draw-time bytes and reflected
+    /// ProvinceSecondaryColorMap consumers independently identify the resource.
+    latest_occupation_secondary_by_resource:
+        BTreeMap<usize, Arc<RawOccupationSecondaryTextureObservation>>,
     pending_camera_event_batches: HashMap<usize, VecDeque<RawA729CameraEventBatch>>,
     runtime_publication_generation: u64,
     /// Exact collector cutoff captured while this state lock was held. It is
@@ -1305,26 +1317,6 @@ fn actual_hardware_d3d_hook_specs(device: usize, context: usize) -> Result<Vec<H
             hook_d3d_so_set_targets as *mut c_void,
             &ORIGINAL_D3D_SO_SET_TARGETS,
         ),
-        (
-            context_method(12, "DrawIndexed")?,
-            hook_d3d_draw_indexed as *mut c_void,
-            &ORIGINAL_D3D_DRAW_INDEXED,
-        ),
-        (
-            context_method(13, "Draw")?,
-            hook_d3d_draw as *mut c_void,
-            &ORIGINAL_D3D_DRAW,
-        ),
-        (
-            context_method(20, "DrawIndexedInstanced")?,
-            hook_d3d_draw_indexed_instanced as *mut c_void,
-            &ORIGINAL_D3D_DRAW_INDEXED_INSTANCED,
-        ),
-        (
-            context_method(21, "DrawInstanced")?,
-            hook_d3d_draw_instanced as *mut c_void,
-            &ORIGINAL_D3D_DRAW_INSTANCED,
-        ),
     ];
     debug_assert_eq!(specs.len(), HARDWARE_D3D_HOOK_COUNT);
     Ok(specs)
@@ -1336,13 +1328,24 @@ fn rollback_created_hooks(specs: &[HookSpec], created: usize) -> Result<(), Stri
         .iter()
         .take(created)
         .any(|(_, _, original)| is_com_original(original));
+    let includes_a25_gui_bridge = specs
+        .iter()
+        .take(created)
+        .any(|(_, _, original)| a25_gui_bridge::owns_original_slot(original));
     if includes_com {
         begin_com_detour_teardown();
     }
+    if includes_a25_gui_bridge {
+        a25_gui_bridge::begin_teardown();
+    }
+    let mut disable_failed = false;
     for (target, _, _) in specs.iter().take(created).rev() {
         match unsafe { MinHook::disable_hook(*target as *mut c_void) } {
             Ok(()) | Err(MH_STATUS::MH_ERROR_DISABLED) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
-            Err(status) => failures.push(format!("disable {target:#x}: {status}")),
+            Err(status) => {
+                disable_failed = true;
+                failures.push(format!("disable {target:#x}: {status}"));
+            }
         }
     }
     let mut quiescence_failed = false;
@@ -1351,6 +1354,15 @@ fn rollback_created_hooks(specs: &[HookSpec], created: usize) -> Result<(), Stri
             quiescence_failed = true;
             failures.push(error);
         }
+    }
+    if includes_a25_gui_bridge {
+        if let Err(error) = a25_gui_bridge::wait_for_quiescence() {
+            quiescence_failed = true;
+            failures.push(error);
+        }
+    }
+    if disable_failed || quiescence_failed {
+        return Err(format!("hook rollback failed: {}", failures.join(", ")));
     }
     let mut removal_failed = false;
     for (target, _, _) in specs.iter().take(created).rev() {
@@ -2565,6 +2577,7 @@ pub struct HookDiagnostics {
     pub nested_envelope_count: u64,
     pub live_entity_count: u64,
     pub queued_weather_change_count: u64,
+    pub weather_change_overflow_count: u64,
     pub observed_weather_region_count: u64,
     pub active_airborne_weather_region_count: u64,
     pub duplicate_entity_count: u64,
@@ -2643,6 +2656,10 @@ pub struct RawRenderFrameCapture {
     /// this Present. Shared byte storage avoids copying the 2.75 MiB texture
     /// when the engine legitimately reuses an unchanged producer result.
     pub snow_mud_texture: Option<Arc<RawSnowMudTextureObservation>>,
+    /// Candidate upload rows ordered by process-local resource identity. The
+    /// collector may promote exactly one only after complete draw-time byte
+    /// equality and reflected terrain-t6/water-t3 joins.
+    pub occupation_secondary_textures: Vec<Arc<RawOccupationSecondaryTextureObservation>>,
     pub events: Vec<RawRenderOrderEvent>,
     pub static_d3d_captures: Vec<RawStaticD3dCapture>,
     pub static_catalog_fragment: RawStaticCatalogFragment,
@@ -2795,107 +2812,10 @@ pub struct InstalledAddresses {
     pub camera_wheel_update: usize,
     pub camera_vertical_event_producer: usize,
     pub camera_map_pick: usize,
-}
-
-unsafe extern "system" fn hook_d3d_draw_indexed(
-    device_context: usize,
-    index_count: u32,
-    start_index: u32,
-    base_vertex: i32,
-) {
-    let Some(_active_detour) = ActiveComDetour::enter() else {
-        return;
-    };
-    let original_ptr = ORIGINAL_D3D_DRAW_INDEXED.load(Ordering::Acquire);
-    if original_ptr == 0 {
-        reject();
-        return;
-    }
-    g2_capture::capture_before_draw(device_context, "DrawIndexed", index_count);
-    let original: unsafe extern "system" fn(usize, u32, u32, i32) =
-        unsafe { mem::transmute(original_ptr) };
-    unsafe { original(device_context, index_count, start_index, base_vertex) };
-}
-
-unsafe extern "system" fn hook_d3d_draw(
-    device_context: usize,
-    vertex_count: u32,
-    start_vertex: u32,
-) {
-    let Some(_active_detour) = ActiveComDetour::enter() else {
-        return;
-    };
-    let original_ptr = ORIGINAL_D3D_DRAW.load(Ordering::Acquire);
-    if original_ptr == 0 {
-        reject();
-        return;
-    }
-    g2_capture::capture_before_draw(device_context, "Draw", vertex_count);
-    let original: unsafe extern "system" fn(usize, u32, u32) =
-        unsafe { mem::transmute(original_ptr) };
-    unsafe { original(device_context, vertex_count, start_vertex) };
-}
-
-unsafe extern "system" fn hook_d3d_draw_indexed_instanced(
-    device_context: usize,
-    index_count_per_instance: u32,
-    instance_count: u32,
-    start_index: u32,
-    base_vertex: i32,
-    start_instance: u32,
-) {
-    let Some(_active_detour) = ActiveComDetour::enter() else {
-        return;
-    };
-    let original_ptr = ORIGINAL_D3D_DRAW_INDEXED_INSTANCED.load(Ordering::Acquire);
-    if original_ptr == 0 {
-        reject();
-        return;
-    }
-    let draw_count = index_count_per_instance.saturating_mul(instance_count);
-    g2_capture::capture_before_draw(device_context, "DrawIndexedInstanced", draw_count);
-    let original: unsafe extern "system" fn(usize, u32, u32, u32, i32, u32) =
-        unsafe { mem::transmute(original_ptr) };
-    unsafe {
-        original(
-            device_context,
-            index_count_per_instance,
-            instance_count,
-            start_index,
-            base_vertex,
-            start_instance,
-        )
-    };
-}
-
-unsafe extern "system" fn hook_d3d_draw_instanced(
-    device_context: usize,
-    vertex_count_per_instance: u32,
-    instance_count: u32,
-    start_vertex: u32,
-    start_instance: u32,
-) {
-    let Some(_active_detour) = ActiveComDetour::enter() else {
-        return;
-    };
-    let original_ptr = ORIGINAL_D3D_DRAW_INSTANCED.load(Ordering::Acquire);
-    if original_ptr == 0 {
-        reject();
-        return;
-    }
-    let draw_count = vertex_count_per_instance.saturating_mul(instance_count);
-    g2_capture::capture_before_draw(device_context, "DrawInstanced", draw_count);
-    let original: unsafe extern "system" fn(usize, u32, u32, u32, u32) =
-        unsafe { mem::transmute(original_ptr) };
-    unsafe {
-        original(
-            device_context,
-            vertex_count_per_instance,
-            instance_count,
-            start_vertex,
-            start_instance,
-        )
-    };
+    pub o05_update_provinces: usize,
+    pub o05_building_constructor: usize,
+    pub o05_building_vector_update: usize,
+    pub o05_entity_transform_setter: usize,
 }
 
 /// Binds the authenticated a729 global CGameState pointer slot before render
@@ -2979,6 +2899,10 @@ fn engine_hook_specs(a: InstalledAddresses) -> [HookSpec; ENGINE_HOOK_COUNT] {
         hook_camera_wheel_update as *mut c_void,
         hook_camera_vertical_event_producer as *mut c_void,
         hook_camera_map_pick as *mut c_void,
+        o05_building_capture::hook_update_provinces as *mut c_void,
+        o05_building_capture::hook_building_constructor as *mut c_void,
+        o05_building_capture::hook_building_vector_update as *mut c_void,
+        o05_building_capture::hook_entity_transform_setter as *mut c_void,
     ];
     let originals = [
         &ORIGINAL_VFS_OPEN_CONSTRUCTOR,
@@ -3024,6 +2948,10 @@ fn engine_hook_specs(a: InstalledAddresses) -> [HookSpec; ENGINE_HOOK_COUNT] {
         &ORIGINAL_CAMERA_WHEEL_UPDATE,
         &ORIGINAL_CAMERA_VERTICAL_EVENT_PRODUCER,
         &ORIGINAL_CAMERA_MAP_PICK,
+        &o05_building_capture::ORIGINAL_UPDATE_PROVINCES,
+        &o05_building_capture::ORIGINAL_BUILDING_CONSTRUCTOR,
+        &o05_building_capture::ORIGINAL_BUILDING_VECTOR_UPDATE,
+        &o05_building_capture::ORIGINAL_ENTITY_TRANSFORM_SETTER,
     ];
     let targets = targets(a);
     std::array::from_fn(|index| (targets[index], detours[index], originals[index]))
@@ -3056,10 +2984,6 @@ fn staged_hook_identity_labels() -> [&'static str; STAGED_HOOK_COUNT] {
         "d3d.device.CreateRenderTargetView",
         "d3d.device.CreateDepthStencilView",
         "d3d.context.SOSetTargets",
-        "d3d.context.DrawIndexed.g2_owner",
-        "d3d.context.Draw.g2_owner",
-        "d3d.context.DrawIndexedInstanced.g2_owner",
-        "d3d.context.DrawInstanced.g2_owner",
         "engine.VfsOpenConstructor",
         "engine.WindowBackbufferRtvProducer",
         "engine.OpaqueTextureTargetProducer",
@@ -3103,6 +3027,10 @@ fn staged_hook_identity_labels() -> [&'static str; STAGED_HOOK_COUNT] {
         "engine.CameraWheelUpdate",
         "engine.CameraVerticalEventProducer",
         "engine.CameraMapPick",
+        "engine.O05UpdateProvinces",
+        "engine.O05BuildingConstructor",
+        "engine.O05BuildingVectorUpdate",
+        "engine.O05EntityTransformSetter",
     ]
 }
 
@@ -3127,10 +3055,6 @@ fn staged_hook_group_bits() -> [u64; STAGED_HOOK_COUNT] {
         STAGED_HOOK_GROUP_COM,
         STAGED_HOOK_GROUP_COM,
         STAGED_HOOK_GROUP_COM,
-        STAGED_HOOK_GROUP_COM,
-        STAGED_HOOK_GROUP_COM,
-        STAGED_HOOK_GROUP_COM,
-        STAGED_HOOK_GROUP_COM,
         STAGED_HOOK_GROUP_VFS_CONTENT,
         STAGED_HOOK_GROUP_RENDER_TARGETS,
         STAGED_HOOK_GROUP_RENDER_TARGETS,
@@ -3174,6 +3098,10 @@ fn staged_hook_group_bits() -> [u64; STAGED_HOOK_COUNT] {
         STAGED_HOOK_GROUP_CAMERA_EVENTS,
         STAGED_HOOK_GROUP_CAMERA_EVENTS,
         STAGED_HOOK_GROUP_CAMERA_EVENTS,
+        STAGED_HOOK_GROUP_ENTITY,
+        STAGED_HOOK_GROUP_ENTITY,
+        STAGED_HOOK_GROUP_ENTITY,
+        STAGED_HOOK_GROUP_ENTITY,
     ]
 }
 
@@ -3243,6 +3171,9 @@ fn staged_hook_set_receipt_sha256(
 }
 
 pub fn install() -> Result<InstalledAddresses, String> {
+    let _lifecycle = HOOK_LIFECYCLE_LOCK
+        .lock()
+        .map_err(|_| "render-hook lifecycle mutex poisoned".to_string())?;
     if INSTALLED.load(Ordering::Acquire) {
         return Ok(addresses(MODULE_BASE.load(Ordering::Acquire)));
     }
@@ -3464,6 +3395,7 @@ pub fn install() -> Result<InstalledAddresses, String> {
     ] {
         verify_sentinel(address, sentinel, label)?;
     }
+    o05_building_capture::verify_sentinels(base)?;
     STATE.get_or_init(|| Mutex::new(HookState::default()));
     let _deferred_engine_specs = [
         (
@@ -3681,6 +3613,26 @@ pub fn install() -> Result<InstalledAddresses, String> {
             hook_camera_map_pick as *mut c_void,
             &ORIGINAL_CAMERA_MAP_PICK,
         ),
+        (
+            a.o05_update_provinces,
+            o05_building_capture::hook_update_provinces as *mut c_void,
+            &o05_building_capture::ORIGINAL_UPDATE_PROVINCES,
+        ),
+        (
+            a.o05_building_constructor,
+            o05_building_capture::hook_building_constructor as *mut c_void,
+            &o05_building_capture::ORIGINAL_BUILDING_CONSTRUCTOR,
+        ),
+        (
+            a.o05_building_vector_update,
+            o05_building_capture::hook_building_vector_update as *mut c_void,
+            &o05_building_capture::ORIGINAL_BUILDING_VECTOR_UPDATE,
+        ),
+        (
+            a.o05_entity_transform_setter,
+            o05_building_capture::hook_entity_transform_setter as *mut c_void,
+            &o05_building_capture::ORIGINAL_ENTITY_TRANSFORM_SETTER,
+        ),
     ];
     if !engine_originals_are_clear(a) {
         return Err("engine hook originals were populated before bootstrap install".into());
@@ -3709,10 +3661,24 @@ pub fn install() -> Result<InstalledAddresses, String> {
         .map_err(|_| "hook stage state poisoned")? = HookStage::Bootstrap;
     MODULE_BASE.store(base, Ordering::Release);
     INSTALLED.store(true, Ordering::Release);
+    if let Err(error) = a25_gui_bridge::install(base) {
+        let cleanup = uninstall_locked()
+            .err()
+            .map(|cleanup| format!("; render-hook rollback failed: {cleanup}"))
+            .unwrap_or_default();
+        return Err(format!("A25 evidence-only GUI bridge install failed: {error}{cleanup}"));
+    }
     Ok(a)
 }
 
 pub fn uninstall() -> Result<(), String> {
+    let _lifecycle = HOOK_LIFECYCLE_LOCK
+        .lock()
+        .map_err(|_| "render-hook lifecycle mutex poisoned".to_string())?;
+    uninstall_locked()
+}
+
+fn uninstall_locked() -> Result<(), String> {
     if !INSTALLED.load(Ordering::Acquire) {
         crate::teardown_gui_paint_instrumentation()?;
         return Ok(());
@@ -3735,11 +3701,23 @@ pub fn uninstall() -> Result<(), String> {
         begin_com_detour_teardown();
     }
     let mut failures = Vec::new();
+    if let Err(error) = a25_gui_bridge::uninstall() {
+        return Err(format!(
+            "A25 evidence-only GUI bridge teardown failed: {error}"
+        ));
+    }
+    let mut disable_failed = false;
     for target in all_targets.iter().copied() {
         match unsafe { MinHook::disable_hook(target as *mut c_void) } {
             Ok(()) | Err(MH_STATUS::MH_ERROR_DISABLED) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
-            Err(status) => failures.push(format!("{target:#x} hook disable failed: {status}")),
+            Err(status) => {
+                disable_failed = true;
+                failures.push(format!("{target:#x} hook disable failed: {status}"));
+            }
         }
+    }
+    if disable_failed {
+        return Err(failures.join(", "));
     }
     if includes_com {
         if let Err(error) = wait_for_com_detour_quiescence() {
@@ -3784,6 +3762,7 @@ pub fn uninstall() -> Result<(), String> {
     NEXT_RENDER_FRAME_SEQUENCE.store(1, Ordering::Release);
     NEXT_PRESENT_GLOBAL_ORDER.store(0, Ordering::Release);
     NEXT_SNOW_MUD_PRODUCER_ORDINAL.store(1, Ordering::Release);
+    NEXT_OCCUPATION_SECONDARY_UPLOAD_ORDER.store(1, Ordering::Release);
     NEXT_CATALOG_OBSERVATION_SEQUENCE.store(1, Ordering::Release);
     NEXT_WEATHER_UPDATE_INDEX.store(1, Ordering::Release);
     for value in [
@@ -3830,6 +3809,10 @@ pub fn uninstall() -> Result<(), String> {
         &ORIGINAL_CAMERA_WHEEL_UPDATE,
         &ORIGINAL_CAMERA_VERTICAL_EVENT_PRODUCER,
         &ORIGINAL_CAMERA_MAP_PICK,
+        &o05_building_capture::ORIGINAL_UPDATE_PROVINCES,
+        &o05_building_capture::ORIGINAL_BUILDING_CONSTRUCTOR,
+        &o05_building_capture::ORIGINAL_BUILDING_VECTOR_UPDATE,
+        &o05_building_capture::ORIGINAL_ENTITY_TRANSFORM_SETTER,
         &ORIGINAL_D3D_CREATE_INPUT_LAYOUT,
         &ORIGINAL_D3D_CREATE_VERTEX_SHADER,
         &ORIGINAL_D3D_CREATE_PIXEL_SHADER,
@@ -3860,6 +3843,7 @@ pub fn uninstall() -> Result<(), String> {
     if let Some(state) = STATE.get() {
         *state.lock().map_err(|_| "render hook state poisoned")? = HookState::default();
     }
+    o05_building_capture::reset();
     if let Some(targets) = STAGED_HOOK_TARGETS.get() {
         targets
             .lock()
@@ -5070,6 +5054,12 @@ pub fn drain_complete_weather_changes() -> Result<Vec<RawWeatherObservation>, St
     if completeness_violated(&state) {
         return Err(completeness_message(&state));
     }
+    if state.weather_change_overflows != 0 {
+        return Err(format!(
+            "weather change history overflowed {} times",
+            state.weather_change_overflows
+        ));
+    }
     Ok(state.weather_changes.drain(..).collect())
 }
 
@@ -5143,6 +5133,7 @@ pub fn diagnostics() -> HookDiagnostics {
         nested_envelope_count: state.nested_envelopes,
         live_entity_count: state.entities.len() as u64,
         queued_weather_change_count: state.weather_changes.len() as u64,
+        weather_change_overflow_count: state.weather_change_overflows,
         observed_weather_region_count: state.weather_runtime_codes.len() as u64,
         active_airborne_weather_region_count: state
             .weather_runtime_codes
@@ -6269,6 +6260,22 @@ unsafe extern "system" fn hook_particle_final_draw(
     } else {
         bound_render_program(render_context)
     };
+    if a25_gui_bridge::owner_run_is_active() {
+        if let (Ok(vertex_count), Some(program)) = (
+            u32::try_from(vertex_count),
+            observed_program.filter(|program| program.render_context_ptr == render_context),
+        ) {
+            a25_gui_bridge::record_final_draw(
+                PARTICLE_FINAL_DRAW_RVA as u32,
+                RawDrawCall::Draw {
+                    vertex_count,
+                    start_vertex,
+                },
+                render_context,
+                program.shader_program_ptr,
+            );
+        }
+    }
     let assignment = CURRENT_PARTICLE_DRAW_RANGE.with(|range| {
         let Some(range) = *range.borrow() else {
             return None;
@@ -6952,6 +6959,7 @@ unsafe extern "system" fn hook_opaque_texture_target_producer(
 
 unsafe extern "system" fn hook_entity_destroy(entity: usize) {
     if entity != 0 {
+        o05_building_capture::observe_entity_destroy(entity);
         if let Some(mut state) = STATE.get().and_then(|value| value.lock().ok()) {
             state.entities.remove(&entity);
         }
@@ -7047,6 +7055,24 @@ unsafe extern "system" fn hook_entity_final_draw(
     } else {
         bound_render_program(render_context)
     };
+    if a25_gui_bridge::owner_run_is_active() {
+        if let (Ok(index_count), Ok(start_index), Some(program)) = (
+            u32::try_from(index_count),
+            u32::try_from(start_index),
+            observed_program.filter(|program| program.render_context_ptr == render_context),
+        ) {
+            a25_gui_bridge::record_final_draw(
+                ENTITY_FINAL_DRAW_RVA as u32,
+                RawDrawCall::DrawIndexed {
+                    index_count,
+                    start_index,
+                    base_vertex: base_vertex as i32,
+                },
+                render_context,
+                program.shader_program_ptr,
+            );
+        }
+    }
     let assignment = CURRENT_ENTITY_DRAW_RANGE.with(|range| {
         let Some(range) = *range.borrow() else {
             return None;
@@ -7181,7 +7207,9 @@ unsafe extern "system" fn hook_shader_program_binder(render_context: usize, shad
     let inside_authenticated_draw = CURRENT_PARTICLE_DRAW_RANGE
         .with(|value| value.borrow().is_some())
         || CURRENT_ENTITY_DRAW_RANGE.with(|value| value.borrow().is_some());
-    if (inside_authenticated_draw || inside_non_ui_render_phase())
+    if (inside_authenticated_draw
+        || inside_non_ui_render_phase()
+        || a25_gui_bridge::owner_run_is_active())
         && render_context != 0
         && shader_program != 0
     {
@@ -7203,6 +7231,25 @@ unsafe extern "system" fn hook_indexed_instanced_final_draw(
     instance_count: u32,
 ) {
     let program = bound_render_program(render_context);
+    if a25_gui_bridge::owner_run_is_active() {
+        if let (Ok(index_count_per_instance), Some(program)) = (
+            u32::try_from(index_count_per_instance),
+            program.filter(|program| program.render_context_ptr == render_context),
+        ) {
+            a25_gui_bridge::record_final_draw(
+                INDEXED_INSTANCED_FINAL_DRAW_RVA as u32,
+                RawDrawCall::DrawIndexedInstanced {
+                    index_count_per_instance,
+                    instance_count,
+                    start_index: 0,
+                    base_vertex: 0,
+                    start_instance: 0,
+                },
+                render_context,
+                program.shader_program_ptr,
+            );
+        }
+    }
     if inside_non_ui_render_phase() {
         let shader_program_ptr = program.map_or(0, |value| value.shader_program_ptr);
         let sequence = record_final_draw(
@@ -7237,6 +7284,24 @@ unsafe extern "system" fn hook_instanced_final_draw(
     instance_count: u32,
 ) {
     let program = bound_render_program(render_context);
+    if a25_gui_bridge::owner_run_is_active() {
+        if let (Ok(vertex_count_per_instance), Some(program)) = (
+            u32::try_from(vertex_count_per_instance),
+            program.filter(|program| program.render_context_ptr == render_context),
+        ) {
+            a25_gui_bridge::record_final_draw(
+                INSTANCED_FINAL_DRAW_RVA as u32,
+                RawDrawCall::DrawInstanced {
+                    vertex_count_per_instance,
+                    instance_count,
+                    start_vertex: 0,
+                    start_instance: 0,
+                },
+                render_context,
+                program.shader_program_ptr,
+            );
+        }
+    }
     if inside_non_ui_render_phase() {
         let shader_program_ptr = program.map_or(0, |value| value.shader_program_ptr);
         let sequence = record_final_draw(
@@ -7387,6 +7452,7 @@ unsafe extern "system" fn hook_post_process_render_root(
         RenderOrderBoundary::PostProcessEnd,
         POST_PROCESS_RENDER_ROOT_RVA,
     );
+    g2_capture::capture_after_post_process();
     CURRENT_POST_PROCESS_PHASE.with(|value| *value.borrow_mut() = false);
     CURRENT_RENDER_PROGRAM.with(|value| *value.borrow_mut() = None);
     BOUND_RENDER_PROGRAMS.with(|value| value.borrow_mut().clear());
@@ -7405,8 +7471,25 @@ unsafe extern "system" fn hook_present_render_root(renderer: usize) {
     record_boundary(RenderOrderBoundary::PresentBegin, PRESENT_RENDER_ROOT_RVA);
     unsafe { original(renderer) };
     record_boundary(RenderOrderBoundary::PresentEnd, PRESENT_RENDER_ROOT_RVA);
-    if complete_render_frame().is_err() {
-        reject_render_order_event();
+    match complete_render_frame() {
+        Ok(receipt) => {
+            if a25_gui_bridge::seal_present(
+                receipt.global_order,
+                receipt.ticks,
+                receipt.frequency_hz,
+                receipt.process_start_nonce,
+                receipt.hook_epoch_nonce,
+                receipt.game_hour_raw,
+            )
+            .is_err()
+            {
+                reject_render_order_event();
+            }
+        }
+        Err(_) => {
+            a25_gui_bridge::discard_candidate();
+            reject_render_order_event();
+        }
     }
 }
 
@@ -7513,6 +7596,44 @@ unsafe extern "system" fn hook_snow_mud_upload(
         }
     } else if CURRENT_SNOW_MUD_PRODUCER.with(|slot| slot.borrow().is_some()) {
         reject_snow_mud_capture();
+    }
+    if width == crate::OCCUPATION_SECONDARY_WIDTH
+        && height == crate::OCCUPATION_SECONDARY_HEIGHT
+        && bytes_per_texel == crate::OCCUPATION_SECONDARY_BYTES_PER_TEXEL
+    {
+        match capture_occupation_secondary_preupload(
+            cpu_bytes,
+            width,
+            height,
+            bytes_per_texel,
+            resource,
+        ) {
+            Ok(observation) => {
+                if let Some(mut state) = STATE.get().and_then(|value| value.lock().ok()) {
+                    if !state
+                        .latest_occupation_secondary_by_resource
+                        .contains_key(&resource)
+                        && state.latest_occupation_secondary_by_resource.len()
+                            >= MAX_OCCUPATION_SECONDARY_RESOURCES
+                    {
+                        state.latest_occupation_secondary_by_resource.clear();
+                        reject_locked(&mut state);
+                    } else {
+                        state
+                            .latest_occupation_secondary_by_resource
+                            .insert(resource, Arc::new(observation));
+                    }
+                }
+            }
+            Err(_) => {
+                if let Some(mut state) = STATE.get().and_then(|value| value.lock().ok()) {
+                    state
+                        .latest_occupation_secondary_by_resource
+                        .remove(&resource);
+                    reject_locked(&mut state);
+                }
+            }
+        }
     }
     unsafe {
         original(
@@ -7626,6 +7747,102 @@ fn capture_snow_mud_preupload(
     })
 }
 
+fn capture_occupation_secondary_preupload(
+    cpu_bytes: *const u8,
+    width: u32,
+    height: u32,
+    bytes_per_texel: u32,
+    resource: usize,
+) -> Result<RawOccupationSecondaryTextureObservation, String> {
+    if cpu_bytes.is_null()
+        || resource == 0
+        || width != crate::OCCUPATION_SECONDARY_WIDTH
+        || height != crate::OCCUPATION_SECONDARY_HEIGHT
+        || bytes_per_texel != crate::OCCUPATION_SECONDARY_BYTES_PER_TEXEL
+    {
+        return Err(
+            "occupation secondary upload descriptor is not the authenticated a729 descriptor"
+                .into(),
+        );
+    }
+    let game_hour_before = capture_present_game_hour_raw()?;
+    let qpc_before = query_performance_counter()
+        .ok_or("occupation secondary pre-copy QueryPerformanceCounter failed")?;
+    let mut bytes = vec![0; crate::OCCUPATION_SECONDARY_BYTE_LENGTH];
+    read_exact(cpu_bytes as usize, &mut bytes)
+        .ok_or("occupation secondary CPU pre-upload bytes are unreadable")?;
+    let producer_qpc_ticks = query_performance_counter()
+        .ok_or("occupation secondary QueryPerformanceCounter failed")?;
+    let producer_game_hour_raw = capture_present_game_hour_raw()?;
+    if producer_qpc_ticks <= qpc_before || producer_game_hour_raw != game_hour_before {
+        return Err(
+            "occupation secondary game hour/QPC changed during the CPU pre-upload copy".into(),
+        );
+    }
+    let (process_start_nonce, hook_epoch_nonce, producer_qpc_frequency_hz) = {
+        let epoch = EARLY_CAPTURE_EPOCH
+            .get()
+            .ok_or("occupation secondary early capture epoch is unavailable")?
+            .lock()
+            .map_err(|_| "occupation secondary early capture epoch is poisoned")?;
+        let process = epoch
+            .process
+            .as_ref()
+            .ok_or("occupation secondary process epoch is unavailable")?;
+        if process.executable_sha256 != portable_render_stream::A729_EXECUTABLE_SHA256
+            || process.process_start_nonce == 0
+            || epoch.hook_epoch_nonce == 0
+            || epoch.qpc_frequency_hz == 0
+        {
+            return Err("occupation secondary capture epoch/binary identity is incomplete".into());
+        }
+        (
+            process.process_start_nonce,
+            epoch.hook_epoch_nonce,
+            epoch.qpc_frequency_hz,
+        )
+    };
+    let upload_order = NEXT_OCCUPATION_SECONDARY_UPLOAD_ORDER
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            current.checked_add(1)
+        })
+        .map_err(|_| "occupation secondary upload order overflowed")?;
+    if upload_order == 0 {
+        return Err("occupation secondary upload order is zero".into());
+    }
+    let payload_sha256 = format!("{:x}", Sha256::digest(&bytes));
+    let observation = RawOccupationSecondaryTextureObservation {
+        schema: crate::OCCUPATION_SECONDARY_TEXTURE_SCHEMA.into(),
+        executable_sha256: portable_render_stream::A729_EXECUTABLE_SHA256.into(),
+        raster_worker_rva: crate::OCCUPATION_SECONDARY_RASTER_WORKER_RVA,
+        raster_worker_decompile_sha256:
+            crate::OCCUPATION_SECONDARY_RASTER_WORKER_DECOMPILE_SHA256.into(),
+        upload_target_rva: portable_render_stream::SNOW_MUD_UPLOAD_TARGET_RVA,
+        upload_instructions_sha256:
+            portable_render_stream::SNOW_MUD_UPLOAD_INSTRUCTIONS_SHA256.into(),
+        process_start_nonce,
+        hook_epoch_nonce,
+        upload_order,
+        producer_game_hour_raw,
+        producer_qpc_ticks,
+        producer_qpc_frequency_hz,
+        resource_ptr: resource,
+        width,
+        height,
+        row_pitch: crate::OCCUPATION_SECONDARY_ROW_PITCH,
+        bytes_per_texel,
+        bytes,
+        payload_sha256,
+    };
+    if !observation.has_exact_nontransparent_alpha_law() {
+        return Err(
+            "occupation secondary upload is transparent or violates the exact 0/76 alpha law"
+                .into(),
+        );
+    }
+    Ok(observation)
+}
+
 fn has_pending_render_frame() -> bool {
     STATE
         .get()
@@ -7698,7 +7915,7 @@ fn begin_render_frame(submit_index: u64) -> Result<u64, String> {
     Ok(frame_sequence)
 }
 
-fn complete_render_frame() -> Result<(), String> {
+fn complete_render_frame() -> Result<PresentationQpcReceipt, String> {
     let mut state = STATE
         .get()
         .ok_or("render hook state is unavailable")?
@@ -7708,7 +7925,8 @@ fn complete_render_frame() -> Result<(), String> {
     // PresentEnd can therefore be wholly before or wholly after an atomic
     // render-hour latch, never captured before it and published after it.
     let receipt = capture_present_qpc_receipt()?;
-    complete_render_frame_locked(&mut state, receipt)
+    complete_render_frame_locked(&mut state, receipt)?;
+    Ok(receipt)
 }
 
 #[cfg(test)]
@@ -7760,6 +7978,23 @@ fn complete_render_frame_locked(
         }
         None => None,
     };
+    let occupation_secondary_textures = state
+        .latest_occupation_secondary_by_resource
+        .values()
+        .map(|observation| {
+            if observation.process_start_nonce != receipt.process_start_nonce
+                || observation.hook_epoch_nonce != receipt.hook_epoch_nonce
+                || observation.producer_qpc_frequency_hz != receipt.frequency_hz
+                || observation.producer_qpc_ticks > receipt.ticks
+                || observation.producer_game_hour_raw > receipt.game_hour_raw
+            {
+                return Err(
+                    "occupation secondary upload crosses the Present epoch/hour/order".into(),
+                );
+            }
+            Ok(Arc::clone(observation))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     let weather_membership_updates = state
         .latest_weather_observation_by_region
         .values()
@@ -7829,6 +8064,7 @@ fn complete_render_frame_locked(
         weather_snapshot_sha256,
         game_hour_raw: receipt.game_hour_raw,
         snow_mud_texture,
+        occupation_secondary_textures,
         events: state.render_order_events.drain(..).collect(),
         static_d3d_captures: state.static_d3d_captures.drain(..).collect(),
         static_catalog_fragment,
@@ -8691,10 +8927,6 @@ unsafe extern "system" fn hook_weather(producer: usize, view: usize, release_con
         .weather_runtime_codes
         .insert(pending.strategic_region_id, observed_code);
     drop(state);
-    if initial_observation && current_code != 0 && current_code == pending.previous_code {
-        reject();
-        return;
-    }
     let membership = if initial_observation || current_code != pending.previous_code {
         let sequence = NEXT_RENDER_ORDER_SEQUENCE.fetch_add(1, Ordering::AcqRel);
         let Some(observation) = capture_weather_change(
@@ -8754,6 +8986,8 @@ unsafe extern "system" fn hook_weather(producer: usize, view: usize, release_con
         if let Some(observation) = membership {
             if state.weather_changes.len() == MAX_SUBMITS {
                 state.weather_changes.pop_front();
+                state.weather_change_overflows =
+                    state.weather_change_overflows.saturating_add(1);
             }
             state
                 .latest_weather_observation_by_region
@@ -8814,9 +9048,6 @@ fn capture_weather_change(
         return None;
     }
     if current_code == 0 && pending.selection_seed_words.is_some() {
-        return None;
-    }
-    if current_code != 0 && pending.selection_seed_words.is_none() {
         return None;
     }
     let pairs_base = read_usize(producer.checked_add(0x48)?)?;
@@ -8945,10 +9176,14 @@ fn capture_weather_visibility(
         portable_render_stream::weather_visibility_law(pending.view_distance_f32_bits).ok()?;
     let pair_count = read_u32(pending.producer.checked_add(0x54)?)?;
     let pair_capacity = read_u32(pending.producer.checked_add(0x50)?)?;
-    if pair_count == 0 || pair_count > pair_capacity || pair_count > MAX_WEATHER_PAIRS {
+    if pair_count > pair_capacity || pair_count > MAX_WEATHER_PAIRS {
         return None;
     }
-    let pairs = read_usize(pending.producer.checked_add(0x48)?)?;
+    let pairs = if pair_count == 0 {
+        0
+    } else {
+        read_usize(pending.producer.checked_add(0x48)?)?
+    };
     let state = STATE.get()?.lock().ok()?;
     let mut seen = BTreeSet::new();
     let mut ordered_entity_visibility = Vec::new();
@@ -8970,9 +9205,7 @@ fn capture_weather_visibility(
             )?);
         }
     }
-    if ordered_entity_visibility.is_empty()
-        || pending.setter_writes.keys().any(|entity| !seen.contains(entity))
-    {
+    if pending.setter_writes.keys().any(|entity| !seen.contains(entity)) {
         return None;
     }
     Some(RawWeatherVisibilityObservation {
@@ -9267,6 +9500,11 @@ fn read_usize(address: usize) -> Option<usize> {
     let mut bytes = [0u8; 8];
     read_exact(address, &mut bytes)?;
     Some(usize::from_le_bytes(bytes))
+}
+fn read_bytes(address: usize, length: usize) -> Option<Vec<u8>> {
+    let mut bytes = vec![0u8; length];
+    read_exact(address, &mut bytes)?;
+    Some(bytes)
 }
 fn read_exact(address: usize, out: &mut [u8]) -> Option<()> {
     if address == 0 || out.is_empty() {
@@ -10194,6 +10432,10 @@ pub fn commit_capture_receipt(
 /// Accept one H4CT-authenticated G2 arm after the exact capture receipt has
 /// been committed. The existing production hook graph remains the only D3D
 /// owner; no auxiliary capture DLL participates.
+pub fn configure_g2_capture_expected(expected: bool) -> Result<(), String> {
+    g2_capture::configure_expected(expected)
+}
+
 pub fn arm_g2_capture(
     arm: compact_contract::early_render_control::EarlyG2CaptureArmV1,
 ) -> Result<(), String> {
@@ -11709,6 +11951,11 @@ fn addresses(base: usize) -> InstalledAddresses {
         camera_wheel_update: base + CAMERA_WHEEL_UPDATE_RVA as usize,
         camera_vertical_event_producer: base + CAMERA_VERTICAL_EVENT_PRODUCER_RVA as usize,
         camera_map_pick: base + CAMERA_MAP_PICK_RVA as usize,
+        o05_update_provinces: base + o05_building_capture::UPDATE_PROVINCES_RVA,
+        o05_building_constructor: base + o05_building_capture::BUILDING_CONSTRUCTOR_RVA,
+        o05_building_vector_update: base + o05_building_capture::BUILDING_VECTOR_UPDATE_RVA,
+        o05_entity_transform_setter: base
+            + o05_building_capture::ENTITY_TRANSFORM_SETTER_RVA,
     }
 }
 fn targets(a: InstalledAddresses) -> [usize; ENGINE_HOOK_COUNT] {
@@ -11756,6 +12003,10 @@ fn targets(a: InstalledAddresses) -> [usize; ENGINE_HOOK_COUNT] {
         a.camera_wheel_update,
         a.camera_vertical_event_producer,
         a.camera_map_pick,
+        a.o05_update_provinces,
+        a.o05_building_constructor,
+        a.o05_building_vector_update,
+        a.o05_entity_transform_setter,
     ]
 }
 
@@ -12796,16 +13047,20 @@ mod tests {
 
         assert_eq!(engine_hook_specs(addresses(0)).len(), ENGINE_HOOK_COUNT);
         assert_eq!(BOOTSTRAP_HOOK_COUNT, 2);
-        assert_eq!(HARDWARE_D3D_HOOK_COUNT, 23);
+        assert_eq!(HARDWARE_D3D_HOOK_COUNT, 19);
         assert_eq!(STAGED_HOOK_COUNT, 66);
         assert_eq!(READY_HOOK_COUNT, 68);
-        assert_eq!(staged_hook_count_for_group_mask(0x01), Some(23));
-        assert_eq!(staged_hook_count_for_group_mask(0x03), Some(25));
+        assert_eq!(staged_hook_count_for_group_mask(0x01), Some(19));
+        assert_eq!(staged_hook_count_for_group_mask(0x03), Some(21));
+        // Every staged hook except the three camera-event taps is in the
+        // low nine groups.  The four O05 hooks replaced four COM-owned G2
+        // hooks in the fixed 66-hook inventory, but they are entity-owned and
+        // therefore remain selected by 0x1ff.
         assert_eq!(staged_hook_count_for_group_mask(0x1ff), Some(63));
         assert_eq!(staged_hook_count_for_group_mask(0x3ff), Some(66));
         assert_eq!(staged_hook_count_for_group_mask(0x02), None);
-        assert_eq!(staged_hook_count_for_group_mask(0x101), Some(25));
-        assert_eq!(staged_hook_count_for_group_mask(0x201), Some(26));
+        assert_eq!(staged_hook_count_for_group_mask(0x101), Some(21));
+        assert_eq!(staged_hook_count_for_group_mask(0x201), Some(22));
         assert_eq!(
             parse_diagnostic_stage_mask(None).unwrap(),
             StagedHookSelection {

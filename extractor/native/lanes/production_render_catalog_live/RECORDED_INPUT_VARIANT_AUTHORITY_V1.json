@@ -1,0 +1,33 @@
+{
+  "schema": "hoi4-a729-recorded-input-variant-authority-v1",
+  "status": "production_authority_contract",
+  "binary": {
+    "program": "hoi4.exe 1.19.2.0.a729",
+    "image_base": "0x140000000",
+    "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+  },
+  "observer": {
+    "family": "mouse_keyboard_pointer",
+    "required_observations": 2,
+    "prior_observation": "capture-loop QueryPerformanceCounter sample after the exact hook epoch is installed",
+    "current_observation": "selected-Present boundary",
+    "foreground_process_must_equal_capture_process": true,
+    "both_positions_must_be_inside_game_client": true,
+    "positions_must_differ": true,
+    "observation_qpc_order_must_increase": true,
+    "current_selected_present_receipt_is_bound": true,
+    "process_start_nonce_and_hook_epoch_nonce_are_bound": true
+  },
+  "materializer": {
+    "domain_separator": "hoi4.a729.recorded-input-variant-observation.v2",
+    "portable_variant": "MouseKeyboard",
+    "keyboard_only": "unsupported",
+    "controller": "unsupported",
+    "failure_policy": "omit recorded_input_variant and reject XUI25 composition"
+  },
+  "ordering": {
+    "bind_before": "d77 portable render authority and selected UI pass assembly",
+    "cross_launch_reuse": "rejected",
+    "duplicate_binding": "rejected"
+  }
+}

@@ -1,10 +1,13 @@
-//! Recorder-owned G2 pre-first-UI backbuffer witness.
+//! Recorder-owned G2 exact post-process-end backbuffer witness.
 //!
-//! The production render lane is already the sole D3D hook owner. G2 extends
-//! that exact hook graph with four Draw* observers instead of injecting the
-//! competing `terrain_capture` DLL. The authenticated H4CT arm is accepted
+//! The production render lane is already the sole D3D hook owner. G2 reuses
+//! the existing exact post-process-root detour instead of adding Draw hooks or
+//! injecting the competing `terrain_capture` DLL. The authenticated H4CT arm is accepted
 //! only after COMMIT and produces the same immutable witness consumed by the
-//! shared G2 materializer.
+//! shared G2 materializer. The readback is inserted synchronously after the
+//! exact a729 post-process root returns but before its hook returns to any UI
+//! caller. It therefore does not depend on an incomplete census of D3D Draw or
+//! direct-writer methods.
 
 use super::*;
 use compact_contract::early_render_control::EarlyG2CaptureArmV1;
@@ -13,7 +16,8 @@ use std::fs::{self, OpenOptions};
 use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 
-const WITNESS_SCHEMA: &str = "hoi4-g2-engine-pixel-witness-v1";
+const WITNESS_SCHEMA: &str = "hoi4-g2-engine-pixel-witness-v2";
+const WITNESS_STATUS: &str = "AUTHENTICATED_POST_PROCESS_END_MAP_READBACK";
 const BOUNDARY: &str = "post_authenticated_map_bgra8_no_selected_present_writers";
 const BMP_FILE: &str = "g2_engine_map_boundary.bmp";
 const WITNESS_FILE: &str = "g2_engine_pixel_witness.json";
@@ -25,7 +29,7 @@ const FORMAT_BGRA8_UNORM_SRGB: u32 = 91;
 #[derive(Default)]
 struct G2CaptureState {
     arm: Option<EarlyG2CaptureArmV1>,
-    /// Hours for which the authenticated map/UI boundary was already allowed
+    /// Hours for which the authenticated post-process-end boundary was already allowed
     /// to execute before the recorder arm became visible. Retaining the exact
     /// hour closes the COMMIT-to-arm race without treating unrelated loading
     /// frames as evidence for the requested selected hour.
@@ -33,9 +37,19 @@ struct G2CaptureState {
 }
 
 static CAPTURE_STATE: OnceLock<Mutex<G2CaptureState>> = OnceLock::new();
+static EXPECTATION_CONFIGURED: AtomicBool = AtomicBool::new(false);
+static CAPTURE_EXPECTED: AtomicBool = AtomicBool::new(false);
 static CAPTURED: AtomicBool = AtomicBool::new(false);
 static IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static LAST_ATTEMPTED_PRESENT: AtomicU32 = AtomicU32::new(u32::MAX);
+
+pub(super) fn configure_expected(expected: bool) -> Result<(), String> {
+    if EXPECTATION_CONFIGURED.swap(true, Ordering::AcqRel) {
+        return Err("G2 expectation was already configured".into());
+    }
+    CAPTURE_EXPECTED.store(expected, Ordering::Release);
+    Ok(())
+}
 
 fn hex(hash: &[u8; 32]) -> String {
     let mut out = String::with_capacity(64);
@@ -137,6 +151,11 @@ fn tight_bgra(snapshot: &RawTextureResourceSnapshot) -> Result<Vec<u8>, String> 
 }
 
 pub(super) fn arm(arm: EarlyG2CaptureArmV1) -> Result<(), String> {
+    if !EXPECTATION_CONFIGURED.load(Ordering::Acquire)
+        || !CAPTURE_EXPECTED.load(Ordering::Acquire)
+    {
+        return Err("G2 arm was not authorized by the pre-resume launch binding".into());
+    }
     if hex(&arm.authority_exe_sha256) != A729_EXECUTABLE_SHA256 {
         return Err("G2 arm executable is not exact a729".into());
     }
@@ -187,28 +206,16 @@ pub(super) fn arm(arm: EarlyG2CaptureArmV1) -> Result<(), String> {
         .contains(&arm.expected_selected_hour)
     {
         return Err(
-            "G2 requested-hour map/UI boundary executed before the authenticated arm".into(),
+            "G2 requested-hour post-process-end boundary executed before the authenticated arm".into(),
         );
     }
     state.arm = Some(arm);
     Ok(())
 }
 
-fn boundary_candidate(
-    device_context: usize,
-) -> Option<(usize, usize, usize, u32)> {
+fn boundary_candidate() -> Option<(usize, usize, usize, u64, u64, u32)> {
     let epoch = EARLY_CAPTURE_EPOCH.get()?.lock().ok()?.clone();
-    if epoch.immediate_context_ptr != device_context {
-        return None;
-    }
-    let (vertex_shader, vertex_linkage) = capture_shader(device_context, 80)?;
-    let (pixel_shader, pixel_linkage) = capture_shader(device_context, 78)?;
-    let mut acquired = ComRefs::default();
-    acquired.extend([vertex_shader, pixel_shader]);
-    if vertex_shader == 0 || pixel_shader == 0 || vertex_linkage || pixel_linkage {
-        return None;
-    }
-    let (backbuffer_view, backbuffer_resource) = {
+    let (backbuffer_view, backbuffer_resource, registration_sequence, recreate_generation) = {
         let state = STATE.get()?.lock().ok()?;
         let boundary = state.render_order_events.iter().rev().find_map(|event| match event {
             RawRenderOrderEvent::Boundary { kind, .. } => Some(*kind),
@@ -216,12 +223,6 @@ fn boundary_candidate(
         });
         if state.pending_render_frame.is_none()
             || boundary != Some(RenderOrderBoundary::PostProcessEnd)
-            || !state.shader_creation_observations.iter().any(|row| {
-                row.shader_ptr == vertex_shader && row.stage == RawShaderStage::Vertex
-            })
-            || !state.shader_creation_observations.iter().any(|row| {
-                row.shader_ptr == pixel_shader && row.stage == RawShaderStage::Pixel
-            })
         {
             return None;
         }
@@ -229,17 +230,17 @@ fn boundary_candidate(
         let registration = state.registered_render_targets.get(&view)?;
         if registration.kind
             != (RawRegisteredRenderTargetKind::SwapchainBackBuffer { buffer_index: 0 })
+            || registration.recreate_generation != state.swapchain_recreate_generation
         {
             return None;
         }
-        (view, registration.resource_ptr)
+        (
+            view,
+            registration.resource_ptr,
+            registration.registration_sequence,
+            registration.recreate_generation,
+        )
     };
-    let (color_targets, depth_target) = capture_render_targets(device_context)?;
-    acquired.extend(color_targets.iter().copied());
-    acquired.push(depth_target);
-    if color_targets.as_slice() != [backbuffer_view] {
-        return None;
-    }
     let (active_resource, _) = capture_view_desc(
         backbuffer_view,
         CreatedD3dObjectKind::RenderTargetView,
@@ -248,26 +249,26 @@ fn boundary_candidate(
         return None;
     }
     Some((
-        vertex_shader,
-        pixel_shader,
+        epoch.immediate_context_ptr,
+        backbuffer_view,
         backbuffer_resource,
+        registration_sequence,
+        recreate_generation,
         NEXT_PRESENT_GLOBAL_ORDER.load(Ordering::Acquire).saturating_add(1),
     ))
 }
 
-pub(super) fn capture_before_draw(device_context: usize, draw_call: &'static str, draw_count: u32) {
-    if draw_count == 0 || CAPTURED.load(Ordering::Acquire) || IN_PROGRESS.load(Ordering::Acquire) {
+pub(super) fn capture_after_post_process() {
+    if !CAPTURE_EXPECTED.load(Ordering::Acquire)
+        || CAPTURED.load(Ordering::Acquire)
+        || IN_PROGRESS.load(Ordering::Acquire)
+    {
         return;
     }
     let Ok(raw_hour) = capture_present_game_hour_raw() else {
         return;
     };
     let Some(hour) = compact_contract::calendar::hour_index_from_raw(raw_hour) else {
-        return;
-    };
-    let Some((vertex_shader, pixel_shader, resource, present_sequence)) =
-        boundary_candidate(device_context)
-    else {
         return;
     };
     let arm = {
@@ -287,6 +288,18 @@ pub(super) fn capture_before_draw(device_context: usize, draw_call: &'static str
     if hour != arm.expected_selected_hour {
         return;
     }
+    let Some((
+        device_context,
+        backbuffer_view,
+        resource,
+        registration_sequence,
+        recreate_generation,
+        present_sequence,
+    )) = boundary_candidate()
+    else {
+        reject();
+        return;
+    };
     if LAST_ATTEMPTED_PRESENT.swap(present_sequence, Ordering::AcqRel) == present_sequence
         || IN_PROGRESS.swap(true, Ordering::AcqRel)
     {
@@ -305,7 +318,7 @@ pub(super) fn capture_before_draw(device_context: usize, draw_call: &'static str
         write_new(&output.join(BMP_FILE), &bmp)?;
         let witness = serde_json::json!({
             "schema": WITNESS_SCHEMA,
-            "status": "AUTHENTICATED_PRE_FIRST_UI_DRAW_MAP_READBACK",
+            "status": WITNESS_STATUS,
             "observation_id": arm.observation_id,
             "render_boundary": BOUNDARY,
             "pixel_format": "BGRA8_UNORM",
@@ -329,16 +342,17 @@ pub(super) fn capture_before_draw(device_context: usize, draw_call: &'static str
             "engine_bgra_sha256": hash(&pixels),
             "pixel_byte_len": pixels.len(),
             "capture_context_sha256": hex(&arm.capture_context_sha256),
-            "ui_boundary_authentication": {
-                "active_backbuffer_resource": format!("0x{resource:X}"),
-                "pixel_shader_pointer": format!("0x{pixel_shader:X}"),
-                "vertex_shader_pointer": format!("0x{vertex_shader:X}"),
-                "both_shaders_from_current_swapchain_creation_cache": true,
-                "first_ui_draw_call": draw_call,
-                "first_ui_draw_count": draw_count,
-                "first_ui_draw_executed": false
-            },
-            "unreceipted_pixel_writers": 0
+            "post_process_boundary_authentication": {
+                "producer_rva": POST_PROCESS_RENDER_ROOT_RVA,
+                "immediate_context_pointer": format!("0x{device_context:X}"),
+                "registered_backbuffer_view_pointer": format!("0x{backbuffer_view:X}"),
+                "registered_backbuffer_resource_pointer": format!("0x{resource:X}"),
+                "registration_sequence": registration_sequence,
+                "recreate_generation": recreate_generation,
+                "exact_swapchain_backbuffer_registration": true,
+                "post_process_original_returned": true,
+                "readback_inserted_before_post_process_hook_return": true
+            }
         });
         let mut bytes = serde_json::to_vec_pretty(&witness)
             .map_err(|error| format!("serialize G2 witness failed: {error}"))?;

@@ -121,6 +121,12 @@ pub use o04_cities::{
     O04_EVIDENCE_MANIFEST_SHA256, O04_LIVE_CITY_SUBMIT_BINDING_SHA256,
     O04_LIVE_CITY_SUBMIT_VERIFICATION_SHA256,
 };
+mod o05_buildings;
+pub use o05_buildings::{
+    O05BuildingFrame, O05BuildingObjectKind, O05BuildingRenderDisposition, O05BuildingSemantic,
+    O05_A729_EXECUTABLE_SHA256, O05_BUILDING_SCHEMA,
+    O05_RUNTIME_CONSUMER_MANIFEST_SHA256, O05_RUNTIME_PRODUCER_MANIFEST_SHA256,
+};
 
 mod ui_pass;
 pub use ui_pass::{
@@ -182,6 +188,11 @@ pub struct ProductionRenderFrame {
     /// existing entity draws. It carries no duplicate draw payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub o04_cities: Option<O04CityFrame>,
+    /// Exact semantic join between O05 map-building runtime records and the
+    /// existing entity outputs. It carries no duplicate draw payloads. Static
+    /// placement rows alone are never sufficient to populate this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub o05_buildings: Option<O05BuildingFrame>,
     /// Optional exact selected-Present UI-pass operation stream. Older v3
     /// frames omit it; when present it is complete and fail-closed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -449,6 +460,81 @@ impl SnowMudReplayReadbackReceipt {
     }
 }
 
+pub const OCCUPATION_SECONDARY_H2_READBACK_SCHEMA: &str =
+    "hoi4.occupation_secondary_replay_readback.v1";
+
+/// Replay-side staging readback for the exact selected-submit occupation
+/// texture. Recording authority remains the authenticated CPU upload and D80
+/// joins; this receipt proves the portable packet reached both native
+/// consumers byte-for-byte.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OccupationSecondaryReplayReadbackReceipt {
+    pub schema: String,
+    pub target_binding_identity: String,
+    pub upload_order: u32,
+    pub selected_present_sha256: String,
+    pub payload_sha256: String,
+    pub readback_sha256: String,
+    pub width: u32,
+    pub height: u32,
+    pub source_row_pitch: u32,
+    pub mapped_row_pitch: u32,
+    pub verified_row_count: u32,
+    #[serde(with = "decimal_u64")]
+    pub verified_tight_byte_count: u64,
+    pub terrain_t6_binding_count: u32,
+    pub water_t3_binding_count: u32,
+    pub receipt_sha256: String,
+}
+
+impl OccupationSecondaryReplayReadbackReceipt {
+    pub fn computed_receipt_sha256(&self) -> Result<String, String> {
+        let mut canonical = self.clone();
+        canonical.receipt_sha256.clear();
+        canonical_json_sha256(&canonical)
+    }
+
+    pub fn validate_against(
+        &self,
+        packet: &PoliticalTexturePacket,
+        selected_present: &SelectedPresentReceipt,
+    ) -> Result<(), String> {
+        if self.schema != OCCUPATION_SECONDARY_H2_READBACK_SCHEMA
+            || packet.kind != PoliticalTextureKind::Secondary
+            || packet.target_binding_identity != OCCUPATION_SECONDARY_TARGET_BINDING
+            || self.target_binding_identity != packet.target_binding_identity
+            || self.upload_order != packet.upload_order
+            || self.selected_present_sha256 != selected_present.computed_sha256()?
+            || self.payload_sha256 != packet.sha256
+            || self.readback_sha256 != packet.sha256
+            || self.width != packet.width
+            || self.height != packet.height
+            || self.source_row_pitch != packet.row_pitch
+            || self.mapped_row_pitch < packet.row_pitch
+            || self.verified_row_count != packet.height
+            || self.verified_tight_byte_count
+                != u64::from(packet.row_pitch) * u64::from(packet.height)
+            || self.terrain_t6_binding_count == 0
+            || self.water_t3_binding_count == 0
+        {
+            return Err("occupation secondary H2 identity/coverage/consumer mismatch".into());
+        }
+        for sha256 in [
+            &self.selected_present_sha256,
+            &self.payload_sha256,
+            &self.readback_sha256,
+            &self.receipt_sha256,
+        ] {
+            check_sha256(sha256, None)?;
+        }
+        if self.receipt_sha256 != self.computed_receipt_sha256()? {
+            return Err("occupation secondary H2 receipt SHA-256 mismatch".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RenderAuthority {
@@ -473,6 +559,11 @@ pub struct RenderAuthority {
     /// depends on input-family selection is omitted; playback never defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recorded_input_variant: Option<RecordedInputVariant>,
+    /// Digest of the same-launch authenticated observation that selected the
+    /// input family. The variant and receipt are an inseparable pair; replay
+    /// must never accept a caller-authored enum without its producer receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_input_receipt_sha256: Option<String>,
     pub particle_runtime_mode: ParticleRuntimeMode,
 }
 
@@ -2559,6 +2650,20 @@ pub enum WeatherPositionClass {
     Small,
 }
 
+/// Exact `0x14166ec50` class branch: a big position uses the big vector only
+/// while that vector is nonempty, otherwise it selects the small vector.
+/// Small positions never select the big vector.
+pub fn weather_selected_variant_class(
+    position_class: WeatherPositionClass,
+    has_big_variants: bool,
+) -> WeatherPositionClass {
+    if position_class == WeatherPositionClass::Big && !has_big_variants {
+        WeatherPositionClass::Small
+    } else {
+        position_class
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WeatherResolution {
@@ -2685,6 +2790,90 @@ pub fn weather_composition_checkpoint_sha256(submits: &[RenderSubmit]) -> Result
 
 /// Optional exact texture upload.  This is deliberately byte-native: gameplay
 /// ownership or diplomatic state is never accepted as a substitute.
+pub const OCCUPATION_SECONDARY_TARGET_BINDING: &str = "ProvinceSecondaryColorMap";
+pub const OCCUPATION_SECONDARY_WIDTH: u32 = 2_816;
+pub const OCCUPATION_SECONDARY_HEIGHT: u32 = 1_024;
+pub const OCCUPATION_SECONDARY_BYTES_PER_TEXEL: u32 = 4;
+pub const OCCUPATION_SECONDARY_ROW_PITCH: u32 =
+    OCCUPATION_SECONDARY_WIDTH * OCCUPATION_SECONDARY_BYTES_PER_TEXEL;
+pub const OCCUPATION_SECONDARY_BYTE_LENGTH: usize =
+    OCCUPATION_SECONDARY_ROW_PITCH as usize * OCCUPATION_SECONDARY_HEIGHT as usize;
+pub const OCCUPATION_SECONDARY_ALPHA: u8 = 76;
+pub const OCCUPATION_SECONDARY_UPLOAD_RECEIPT_SCHEMA: &str =
+    "hoi4.a729.occupation-secondary-upload.v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OccupationSecondaryUploadReceipt {
+    pub schema: String,
+    pub executable_sha256: String,
+    pub raster_worker_rva: u32,
+    pub raster_worker_decompile_sha256: String,
+    pub upload_target_rva: u32,
+    pub upload_instructions_sha256: String,
+    #[serde(with = "decimal_u64")]
+    pub process_start_nonce: u64,
+    #[serde(with = "decimal_u64")]
+    pub hook_epoch_nonce: u64,
+    pub upload_order: u32,
+    pub producer_game_hour_raw: i32,
+    #[serde(with = "decimal_u64")]
+    pub producer_qpc_ticks: u64,
+    #[serde(with = "decimal_u64")]
+    pub producer_qpc_frequency_hz: u64,
+    pub selected_present_sha256: String,
+    pub payload_sha256: String,
+    pub receipt_sha256: String,
+}
+
+impl OccupationSecondaryUploadReceipt {
+    pub fn computed_receipt_sha256(&self) -> Result<String, String> {
+        let mut canonical = self.clone();
+        canonical.receipt_sha256.clear();
+        canonical_json_sha256(&canonical)
+    }
+
+    pub fn validate_against(
+        &self,
+        packet: &PoliticalTexturePacket,
+        selected_present: &SelectedPresentReceipt,
+    ) -> Result<(), String> {
+        if self.schema != OCCUPATION_SECONDARY_UPLOAD_RECEIPT_SCHEMA
+            || self.executable_sha256 != A729_EXECUTABLE_SHA256
+            || self.raster_worker_rva != 0x019c_8a10
+            || self.raster_worker_decompile_sha256
+                != "8915c1e7db348c9ed057dc2d1014ff472288c199f534ae7a9429625b895f996b"
+            || self.upload_target_rva != SNOW_MUD_UPLOAD_TARGET_RVA
+            || self.upload_instructions_sha256 != SNOW_MUD_UPLOAD_INSTRUCTIONS_SHA256
+            || self.process_start_nonce == 0
+            || self.hook_epoch_nonce == 0
+            || self.upload_order != packet.upload_order
+            || self.producer_qpc_ticks == 0
+            || self.producer_qpc_frequency_hz == 0
+            || self.producer_qpc_ticks > selected_present.selected_qpc_ticks
+            || self.producer_game_hour_raw > selected_present.selected_game_hour_raw
+            || self.selected_present_sha256 != selected_present.computed_sha256()?
+            || self.payload_sha256 != packet.sha256
+        {
+            return Err("occupation secondary upload receipt identity/join mismatch".into());
+        }
+        for sha256 in [
+            &self.executable_sha256,
+            &self.raster_worker_decompile_sha256,
+            &self.upload_instructions_sha256,
+            &self.selected_present_sha256,
+            &self.payload_sha256,
+            &self.receipt_sha256,
+        ] {
+            check_sha256(sha256, None)?;
+        }
+        if self.receipt_sha256 != self.computed_receipt_sha256()? {
+            return Err("occupation secondary upload receipt SHA-256 mismatch".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PoliticalTexturePacket {
@@ -2700,6 +2889,8 @@ pub struct PoliticalTexturePacket {
     pub format: PoliticalTextureFormat,
     pub bytes: Vec<u8>,
     pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occupation_observation: Option<OccupationSecondaryUploadReceipt>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2832,6 +3023,18 @@ impl ProductionRenderFrame {
         check_sha256(&self.authority.hook_set_receipt_sha256, None)?;
         check_sha256(&self.authority.capture_receipt_sha256, None)?;
         check_sha256(&self.authority.launch_epoch_sha256, None)?;
+        match (
+            self.authority.recorded_input_variant,
+            self.authority.recorded_input_receipt_sha256.as_deref(),
+        ) {
+            (Some(_), Some(receipt)) => check_sha256(receipt, None)?,
+            (None, None) => {}
+            _ => {
+                return Err(
+                    "production render recorded-input variant/receipt pair is incomplete".into(),
+                )
+            }
+        }
         if self.authority.process_id == 0
             || self.authority.process_start_nonce == 0
             || self.authority.observer_installed_qpc == 0
@@ -2939,6 +3142,40 @@ impl ProductionRenderFrame {
                 &self.authority.effective_vfs_manifest_sha256,
             )?;
         }
+        for packet in self
+            .submits
+            .iter()
+            .flat_map(|submit| submit.political_textures.iter())
+        {
+            match (
+                packet.kind,
+                packet.target_binding_identity.as_str(),
+                packet.occupation_observation.as_ref(),
+            ) {
+                (
+                    PoliticalTextureKind::Secondary,
+                    OCCUPATION_SECONDARY_TARGET_BINDING,
+                    Some(receipt),
+                ) => receipt.validate_against(packet, selected)?,
+                (
+                    PoliticalTextureKind::Secondary,
+                    OCCUPATION_SECONDARY_TARGET_BINDING,
+                    None,
+                ) => {
+                    return Err(
+                        "occupation secondary packet lacks an authenticated CPU upload receipt"
+                            .into(),
+                    )
+                }
+                (_, _, Some(_)) => {
+                    return Err(
+                        "non-occupation political packet carries an occupation upload receipt"
+                            .into(),
+                    )
+                }
+                (_, _, None) => {}
+            }
+        }
         if let Some(m02) = &self.m02_combat {
             m02.validate()?;
             if m02.update_index != self.update_index
@@ -3001,18 +3238,33 @@ impl ProductionRenderFrame {
             return Err("unified render order references absent M02 carrier".into());
         }
         if let Some(ui_pass) = &self.authenticated_ui_pass {
-            if self.authority.recorded_input_variant.is_none() {
+            if self.authority.recorded_input_variant.is_none()
+                || self.authority.recorded_input_receipt_sha256.is_none()
+            {
                 return Err(
-                    "selected-Present UI pass lacks authenticated recorded input variant".into(),
+                    "selected-Present UI pass lacks authenticated recorded input variant receipt"
+                        .into(),
                 );
             }
+            check_sha256(
+                self.authority
+                    .recorded_input_receipt_sha256
+                    .as_deref()
+                    .expect("presence checked above"),
+                None,
+            )?;
             ui_pass.validate()?;
             if ui_pass.update_index != self.update_index
                 || ui_pass.first_sequence != self.first_sequence
                 || ui_pass.last_sequence != self.last_sequence
+                || ui_pass.selected_present_receipt_sha256
+                    != self.selected_present.computed_sha256()?
+                || Some(ui_pass.recorded_input_receipt_sha256.as_str())
+                    != self.authority.recorded_input_receipt_sha256.as_deref()
             {
                 return Err(
-                    "selected-Present UI-pass frontier does not match production frame".into(),
+                    "selected-Present UI-pass frontier/selector/input receipt does not match production frame"
+                        .into(),
                 );
             }
             validate_render_target_vfs_authority(
@@ -3247,6 +3499,103 @@ impl ProductionRenderFrame {
                     {
                         return Err(
                             "O04 semantic identity/transform differs from entity submission".into(),
+                        );
+                    }
+                }
+            }
+        }
+        if let Some(o05) = &self.o05_buildings {
+            o05.validate()?;
+            if o05.update_index != self.update_index
+                || o05.first_sequence != self.first_sequence
+                || o05.last_sequence != self.last_sequence
+                || o05.map_buildings_source.effective_vfs_manifest_sha256
+                    != self.authority.effective_vfs_manifest_sha256
+            {
+                return Err("O05 update/sequence/content authority differs from production frame".into());
+            }
+            let display_submit = self
+                .display_submit_index
+                .as_deref()
+                .and_then(|value| value.parse::<u64>().ok())
+                .and_then(|submit_index| self.submit(submit_index))
+                .ok_or("O05 carrier has no authenticated display submit")?;
+            let referenced = o05
+                .ordered_outputs
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let actual_order = display_submit
+                .ordered_draws
+                .iter()
+                .filter(|output| referenced.contains(*output))
+                .cloned()
+                .collect::<Vec<_>>();
+            if actual_order != o05.ordered_outputs {
+                return Err("O05 output order differs from authenticated display submit".into());
+            }
+            for building in &o05.records {
+                let Some(first_output) = building.referenced_outputs.first() else {
+                    continue;
+                };
+                let entity_instance_id = match first_output {
+                    RenderOutputRef::Entity {
+                        entity_instance_id, ..
+                    } => *entity_instance_id,
+                    RenderOutputRef::Particle { .. } => unreachable!("validated O05 output"),
+                };
+                let complete_display_outputs = display_submit
+                    .ordered_draws
+                    .iter()
+                    .filter(|output| {
+                        matches!(
+                            output,
+                            RenderOutputRef::Entity {
+                                entity_instance_id: candidate,
+                                ..
+                            } if *candidate == entity_instance_id
+                        )
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if complete_display_outputs != building.referenced_outputs {
+                    return Err(
+                        "O05 output refs are not the complete display-submit entity cover".into(),
+                    );
+                }
+                let entity_asset = building.entity_asset.as_ref().expect("validated O05 asset");
+                let mesh = building.mesh.as_ref().expect("validated O05 mesh");
+                if entity_asset.effective_vfs_manifest_sha256
+                    != self.authority.effective_vfs_manifest_sha256
+                    || mesh.effective_vfs_manifest_sha256
+                        != self.authority.effective_vfs_manifest_sha256
+                {
+                    return Err("O05 building content authority differs from production frame".into());
+                }
+                for output in &building.referenced_outputs {
+                    let entity = match output {
+                        RenderOutputRef::Entity {
+                            pass_ordinal,
+                            entity_instance_id,
+                            draw_order,
+                        } => display_submit.entities.iter().find(|entity| {
+                            entity.pass_ordinal == *pass_ordinal
+                                && entity.entity_instance_id == *entity_instance_id
+                                && entity.draw_order == *draw_order
+                        }),
+                        RenderOutputRef::Particle { .. } => None,
+                    }
+                    .ok_or("O05 building references an absent entity submission")?;
+                    if entity.content_identity.resolved_entity_asset != *entity_asset
+                        || entity.content_identity.mesh != *mesh
+                        || entity.world_transform_4x4_f32_bits
+                            != building
+                                .world_transform_4x4_f32_bits
+                                .expect("validated O05 transform")
+                    {
+                        return Err(
+                            "O05 semantic asset/mesh/transform differs from entity submission"
+                                .into(),
                         );
                     }
                 }
@@ -3682,7 +4031,7 @@ impl RenderSubmit {
                 .ok()
                 .and_then(|pitch| pitch.checked_mul(texture.height as usize))
                 .ok_or_else(|| "political texture byte count overflow".to_string())?;
-            if texture.target_binding_identity.trim().is_empty() {
+            if texture.upload_order == 0 || texture.target_binding_identity.trim().is_empty() {
                 return Err("political texture has no exact target binding identity".into());
             }
             if texture.width == 0 || texture.height == 0 || texture.bytes.len() != expected {
@@ -3720,9 +4069,101 @@ impl RenderSubmit {
                         .into(),
                 );
             }
+            if texture.kind == PoliticalTextureKind::Secondary
+                && texture.target_binding_identity == OCCUPATION_SECONDARY_TARGET_BINDING
+            {
+                validate_occupation_secondary_packet(self, texture)?;
+            }
         }
         Ok(())
     }
+}
+
+fn validate_occupation_secondary_packet(
+    submit: &RenderSubmit,
+    texture: &PoliticalTexturePacket,
+) -> Result<(), String> {
+    let alpha_law_is_exact = texture
+        .bytes
+        .chunks_exact(OCCUPATION_SECONDARY_BYTES_PER_TEXEL as usize)
+        .all(|texel| texel[3] == 0 || texel[3] == OCCUPATION_SECONDARY_ALPHA)
+        && texture
+            .bytes
+            .chunks_exact(OCCUPATION_SECONDARY_BYTES_PER_TEXEL as usize)
+            .any(|texel| texel[3] == OCCUPATION_SECONDARY_ALPHA);
+    if texture.width != OCCUPATION_SECONDARY_WIDTH
+        || texture.height != OCCUPATION_SECONDARY_HEIGHT
+        || texture.row_pitch != OCCUPATION_SECONDARY_ROW_PITCH
+        || texture.bytes.len() != OCCUPATION_SECONDARY_BYTE_LENGTH
+        || texture.format != PoliticalTextureFormat::B8g8r8a8UnormSrgb
+        || !alpha_law_is_exact
+    {
+        return Err(
+            "occupation secondary packet violates the exact descriptor/nontransparent alpha law"
+                .into(),
+        );
+    }
+    let mut terrain_t6 = 0u32;
+    let mut water_t3 = 0u32;
+    for binding in submit
+        .ordered_static_map_programs
+        .iter()
+        .flat_map(|program| program.ordered_operations.iter())
+        .filter_map(|operation| match &operation.command {
+            StaticMapCommand::Draw { draw } => Some(draw),
+            StaticMapCommand::ClearColor { .. }
+            | StaticMapCommand::ClearDepthStencil { .. } => None,
+        })
+        .flat_map(|draw| draw.ordered_shader_resources.iter())
+    {
+        let StaticShaderResourceSource::PoliticalTexture {
+            texture_kind,
+            target_binding_identity,
+            upload_order,
+            payload_sha256,
+            ..
+        } = &binding.source
+        else {
+            continue;
+        };
+        if *texture_kind != texture.kind
+            || target_binding_identity != &texture.target_binding_identity
+            || *upload_order != texture.upload_order
+            || payload_sha256 != &texture.sha256
+        {
+            continue;
+        }
+        if binding.stage != ShaderStage::Pixel
+            || binding.semantic_token != OCCUPATION_SECONDARY_TARGET_BINDING
+        {
+            return Err(
+                "occupation secondary consumer differs from its reflected pixel semantic".into(),
+            );
+        }
+        match binding.slot {
+            6 => {
+                terrain_t6 = terrain_t6
+                    .checked_add(1)
+                    .ok_or("occupation secondary terrain consumer count overflow")?
+            }
+            3 => {
+                water_t3 = water_t3
+                    .checked_add(1)
+                    .ok_or("occupation secondary water consumer count overflow")?
+            }
+            _ => {
+                return Err(
+                    "occupation secondary consumer is outside terrain-t6/water-t3".into(),
+                )
+            }
+        }
+    }
+    if terrain_t6 == 0 || water_t3 == 0 {
+        return Err(
+            "occupation secondary packet lacks complete terrain-t6/water-t3 consumers".into(),
+        );
+    }
+    Ok(())
 }
 
 /// Cross-carrier compatibility gate. Individual carrier validation proves each
@@ -3805,14 +4246,17 @@ fn validate_weather_membership(
         7 => Some("sandstorm"),
         _ => return Err("weather membership contains an unknown airborne code".into()),
     };
-    let expected_code = if weather.rain_heavy_active {
-        3
-    } else if weather.rain_light_active {
+    // Exact CAirInterface::GetWeatherEffectForAirRegion (0x14166ec50)
+    // priority. Normal transition writes are mutually exclusive; retaining the
+    // consumer order also authenticates any observed transient state.
+    let expected_code = if weather.rain_light_active {
         2
-    } else if weather.blizzard_active {
-        5
+    } else if weather.rain_heavy_active {
+        3
     } else if weather.snow_active {
         4
+    } else if weather.blizzard_active {
+        5
     } else if weather.sandstorm_active {
         7
     } else {
@@ -3912,11 +4356,18 @@ fn validate_weather_membership(
                     }
                     expected_entities.push((fading_id, WeatherEntityRole::Fading));
                 }
+                let expected_variant_class = weather_selected_variant_class(
+                    position.class,
+                    weather
+                        .ordered_variant_content
+                        .iter()
+                        .any(|variant| variant.class == WeatherPositionClass::Big),
+                );
                 if weather
                     .ordered_variant_content
                     .iter()
                     .filter(|variant| {
-                        variant.class == position.class
+                        variant.class == expected_variant_class
                             && variant.authored_effect_index == selected_index
                             && variant.resolved_variant_token == variant_token
                     })
@@ -6044,6 +6495,26 @@ mod tests {
     use super::*;
     use portable_content_manifest::ContentLayerKind;
 
+    #[test]
+    fn weather_big_positions_fall_back_only_when_big_vector_is_empty() {
+        assert_eq!(
+            weather_selected_variant_class(WeatherPositionClass::Big, true),
+            WeatherPositionClass::Big
+        );
+        assert_eq!(
+            weather_selected_variant_class(WeatherPositionClass::Big, false),
+            WeatherPositionClass::Small
+        );
+        assert_eq!(
+            weather_selected_variant_class(WeatherPositionClass::Small, true),
+            WeatherPositionClass::Small
+        );
+        assert_eq!(
+            weather_selected_variant_class(WeatherPositionClass::Small, false),
+            WeatherPositionClass::Small
+        );
+    }
+
     fn hash(bytes: &[u8]) -> String {
         format!("{:x}", Sha256::digest(bytes))
     }
@@ -6213,6 +6684,7 @@ mod tests {
                 effect_catalog_sha256: "3".repeat(64),
                 entity_animation_catalog_sha256: "4".repeat(64),
                 recorded_input_variant: None,
+                recorded_input_receipt_sha256: None,
                 particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
             },
             update_index: 16_959_360,
@@ -6256,6 +6728,7 @@ mod tests {
             m02_combat: Some(m02),
             m03_arrows: None,
             o04_cities: None,
+            o05_buildings: None,
             authenticated_ui_pass: None,
             checkpoint: empty_checkpoint(42, 16_959_360, Some("11")),
         }
@@ -6350,6 +6823,7 @@ mod tests {
                 sha256:
                     "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a"
                         .into(),
+                occupation_observation: None,
             });
         let error = frame.validate().unwrap_err();
         assert!(
@@ -6862,6 +7336,7 @@ mod tests {
     fn production_frame_with_exact_ui_pass() -> ProductionRenderFrame {
         let mut frame = production_frame_with_m02();
         frame.authority.recorded_input_variant = Some(RecordedInputVariant::MouseKeyboard);
+        frame.authority.recorded_input_receipt_sha256 = Some("9".repeat(64));
         let m02 = frame.m02_combat.as_ref().unwrap();
         let m02_ref = m02.ordered_draws[0].clone();
         let target = m02
@@ -6884,6 +7359,7 @@ mod tests {
                     authored_surface_identity: "modded_selected_present_hud".into(),
                     runtime_root: "modded_selected_present_root".into(),
                     selected_gui_definition: gui_definition.clone(),
+                    engine_instance_token: u64::from(ui_pass_ordinal) + 1,
                     child_path: vec![ui_pass_ordinal],
                     element_type: "modded_paint_element".into(),
                     name: format!("element-{ui_pass_ordinal}"),
@@ -7057,6 +7533,14 @@ mod tests {
             last_sequence: frame.last_sequence,
             ui_pass_draw_count: m02.ui_pass_draw_count,
             target,
+            selected_present_receipt_sha256: frame.selected_present.computed_sha256().unwrap(),
+            producer_selection_receipt_sha256: "7".repeat(64),
+            source_frontier_sha256: "8".repeat(64),
+            recorded_input_receipt_sha256: frame
+                .authority
+                .recorded_input_receipt_sha256
+                .clone()
+                .unwrap(),
             active_mapmode_state: Some(ActiveMapmodeState {
                 mode_token: "modded_weather_mapmode".into(),
                 button_ordinal: 7,
@@ -7418,6 +7902,7 @@ mod tests {
 
         let mut absent_input = production_frame_with_exact_ui_pass();
         absent_input.authority.recorded_input_variant = None;
+        absent_input.authority.recorded_input_receipt_sha256 = None;
         assert!(absent_input
             .validate()
             .unwrap_err()
@@ -7763,6 +8248,7 @@ mod tests {
                 effect_catalog_sha256: "3".repeat(64),
                 entity_animation_catalog_sha256: "4".repeat(64),
                 recorded_input_variant: None,
+                recorded_input_receipt_sha256: None,
                 particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
             },
             update_index: 16_959_360,
@@ -7867,6 +8353,7 @@ mod tests {
             m02_combat: None,
             m03_arrows: None,
             o04_cities: None,
+            o05_buildings: None,
             authenticated_ui_pass: None,
             checkpoint: empty_checkpoint(42, 16_959_360, Some("11")),
         };
@@ -8359,6 +8846,7 @@ mod tests {
                 effect_catalog_sha256: "3".repeat(64),
                 entity_animation_catalog_sha256: "4".repeat(64),
                 recorded_input_variant: None,
+                recorded_input_receipt_sha256: None,
                 particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
             },
             update_index: 16_959_360,
@@ -8438,6 +8926,7 @@ mod tests {
             m02_combat: None,
             m03_arrows: None,
             o04_cities: None,
+            o05_buildings: None,
             authenticated_ui_pass: None,
             checkpoint: empty_checkpoint(0, 16_959_360, Some("1")),
         };

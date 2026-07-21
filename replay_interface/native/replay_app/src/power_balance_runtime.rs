@@ -332,6 +332,22 @@ where
             producer_manifest_sha256: presentation.producer_manifest_sha256.clone(),
             completeness_record_identity: presentation.completeness_record_identity.clone(),
             frame_hour: presentation_frame_hour,
+            materialization_qpc_ticks: presentation.materialization_qpc_ticks,
+            selected_present_candidate_id: presentation
+                .selected_present
+                .selected_present_candidate_id,
+            selected_present_ordinal: presentation.selected_present.selected_present_ordinal,
+            selected_present_qpc_ticks: presentation
+                .selected_present
+                .selected_present_qpc_ticks,
+            selected_present_cutoff_qpc_ticks: presentation
+                .selected_present
+                .selected_present_cutoff_qpc_ticks,
+            qpc_frequency_hz: presentation.selected_present.qpc_frequency_hz,
+            selected_present_receipt_sha256: presentation
+                .selected_present
+                .selected_present_receipt_sha256
+                .clone(),
             runtime_text_contexts: runtime_text_contexts.into_values().collect(),
             runtime_text_bindings,
         };
@@ -351,6 +367,7 @@ where
             launcher_levels_text,
             launcher_icon_sprite: balance.launcher_icon_sprite.clone(),
             launcher_glow_visible: balance.launcher_glow_visible,
+            panel_open: balance.panel_open,
             bar_state: match balance.bar_state {
                 PowerBalanceBarStateExact::StableLeft => BarState::StableLeft,
                 PowerBalanceBarStateExact::StableRight => BarState::StableRight,
@@ -476,10 +493,20 @@ mod tests {
                 "countries": ["ITA"]
             }]},
             "_r2_power_balance_presentation_live": {
-                "schema_version": 2,
+                "schema_version": 3,
                 "authority": "exact_a729_power_balance_controller",
                 "elapsed_wall_ms": 7,
                 "frame_hour": 900,
+                "materialization_qpc_ticks": 90,
+                "selected_present": {
+                    "frame_hour": 900,
+                    "selected_present_candidate_id": 1,
+                    "selected_present_ordinal": 0,
+                    "selected_present_qpc_ticks": 100,
+                    "selected_present_cutoff_qpc_ticks": 100,
+                    "qpc_frequency_hz": 10000000,
+                    "selected_present_receipt_sha256": "abababababababababababababababababababababababababababababababab"
+                },
                 "producer_manifest_sha256": "a540af1c030d9ef2fbb1cd290627087627771a196e7a60e4241cb5287b66e4e2",
                 "completeness_record_identity": "d74:a729:900:complete",
                 "expected_balance_count": 1,
@@ -498,6 +525,7 @@ mod tests {
                     "launcher_levels_text_ref": "levels",
                     "launcher_icon_sprite": "GFX_bop_ITA_mussolini_side",
                     "launcher_glow_visible": false,
+                    "panel_open": true,
                     "bar_state": "moving_left",
                     "range_indicator_frame": 1,
                     "range_indicator_top_left": [198, 101],
@@ -562,10 +590,20 @@ mod tests {
         PowerBalancePresentationExactView {
             status: ViewStatus::Present,
             presentation: Some(PowerBalancePresentationExact {
-                schema_version: 2,
+                schema_version: 3,
                 authority: "exact_a729_power_balance_controller".into(),
                 elapsed_wall_ms: 7,
                 frame_hour: 900,
+                materialization_qpc_ticks: 90,
+                selected_present: replay_core::PowerBalanceSelectedPresentExact {
+                    frame_hour: 900,
+                    selected_present_candidate_id: 1,
+                    selected_present_ordinal: 0,
+                    selected_present_qpc_ticks: 100,
+                    selected_present_cutoff_qpc_ticks: 100,
+                    qpc_frequency_hz: 10_000_000,
+                    selected_present_receipt_sha256: "ab".repeat(32),
+                },
                 producer_manifest_sha256:
                     "a540af1c030d9ef2fbb1cd290627087627771a196e7a60e4241cb5287b66e4e2"
                         .into(),
@@ -586,6 +624,7 @@ mod tests {
                     launcher_levels_text_ref: Some("levels".into()),
                     launcher_icon_sprite: Some("GFX_right".into()),
                     launcher_glow_visible: false,
+                    panel_open: true,
                     bar_state: PowerBalanceBarStateExact::MovingLeft,
                     range_indicator_frame: 1,
                     range_indicator_top_left: [198, 101],
@@ -676,61 +715,37 @@ mod tests {
     }
 
     #[test]
-    fn world_frame_a25_join_reaches_game_ui_with_receipts_intact() {
+    fn world_frame_without_selected_present_cannot_admit_a37_typed_companion() {
         let frame = integration_frame(900, "ITA", true, None);
-        let catalogs_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../game_ui/tests/fixtures/xui18_power_balance/catalogs.json");
-        let catalogs = std::fs::read_to_string(catalogs_path).unwrap();
-        let catalog = PowerBalanceDefinitionCatalog::from_catalogs_json(&catalogs).unwrap();
-        let admitted = admit_country_power_balance_ui(
-            &frame,
-            "ITA",
-            &catalog,
-            &DecisionSet::default(),
-        )
-        .unwrap();
-        let AdmittedPowerBalanceScreen::Visible(rows) = admitted else {
-            panic!("typed A37/A25 integration frame must admit one visible balance")
-        };
-        assert_eq!(rows.len(), 1);
         assert_eq!(
-            rows[0].provenance.producer_manifest_sha256,
-            "a540af1c030d9ef2fbb1cd290627087627771a196e7a60e4241cb5287b66e4e2"
+            frame.power_balance_presentation_exact_status(),
+            ViewStatus::DomainUnavailable
         );
-        assert_eq!(
-            rows[0].provenance.completeness_record_identity,
-            "d74:a729:900:complete"
-        );
-        assert_eq!(rows[0].provenance.runtime_text_contexts.len(), 10);
-        assert!(rows[0]
-            .provenance
-            .runtime_text_contexts
-            .iter()
-            .all(|context| context.frame_hour == 900
-                && context.pov_country_or_global == "ITA"
-                && context.setter_entry_rva == replay_core::A729_TEXT_SETTER_RVA));
+        assert!(power_balance_runtime_supplements(&frame, "ITA")
+            .unwrap_err()
+            .contains("presentation is unavailable"));
     }
 
     #[test]
-    fn world_frame_a25_join_rejects_missing_wrong_hour_wrong_pov_and_incomplete() {
+    fn world_frame_a37_join_fails_before_a25_when_selected_present_is_absent() {
         let missing = integration_frame(900, "ITA", true, Some("trend"));
         assert!(power_balance_runtime_supplements(&missing, "ITA")
             .unwrap_err()
-            .contains("missing A25 context trend"));
+            .contains("presentation is unavailable"));
 
         let wrong_hour = integration_frame(901, "ITA", true, None);
         assert!(power_balance_runtime_supplements(&wrong_hour, "ITA")
             .unwrap_err()
-            .contains("hour/POV/provenance mismatch"));
+            .contains("presentation is unavailable"));
 
         let wrong_pov = integration_frame(900, "GER", true, None);
         assert!(power_balance_runtime_supplements(&wrong_pov, "ITA")
             .unwrap_err()
-            .contains("hour/POV/provenance mismatch"));
+            .contains("presentation is unavailable"));
 
         let incomplete = integration_frame(900, "ITA", false, None);
         assert!(power_balance_runtime_supplements(&incomplete, "ITA")
             .unwrap_err()
-            .contains("A25 context set is incomplete"));
+            .contains("presentation is unavailable"));
     }
 }

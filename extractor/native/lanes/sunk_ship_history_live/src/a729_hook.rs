@@ -4,9 +4,11 @@
 //! parent module is false. An explicit owner-run environment gate may install
 //! the same byte-checked detours solely to write raw activation evidence; it
 //! cannot emit D86 or satisfy either latch. The outer CFEXMember writer
-//! establishes the exact d49/d50 epoch/slot in TLS; the nested CSunkShipInfo
-//! constructor is observed only after its original returns. Callback capture
-//! is bounded, capacity-bounded, and any loss poisons completeness.
+//! establishes the exact d49/d50 epoch/slot in TLS. All three global history
+//! writer wrappers are observed after their originals return; each callback
+//! requires exactly one new vector entry and then copies that completed
+//! CSunkShipInfo. Callback capture is bounded, capacity-bounded, and any loss
+//! poisons completeness.
 
 #![cfg(windows)]
 
@@ -20,7 +22,9 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThreadId};
 
 pub const OUTER_CFEX_MEMBER_WRITER_RVA: usize = 0x1961_DD0;
-pub const RECORD_CONSTRUCTOR_RVA: usize = 0x0C1_DF70;
+pub const ATTRIBUTED_RECORD_WRITER_RVA: usize = 0x01D_2C90;
+pub const COMBAT_SOURCE_RECORD_WRITER_RVA: usize = 0x01D_2D10;
+pub const CAUSE_RECORD_WRITER_RVA: usize = 0x01D_2DA0;
 pub const SUNK_SHIP_INFO_VTABLE_RVA: usize = 0x294_1608;
 pub const MAX_PENDING_EVENTS: usize = 65_536;
 pub const MAX_CAPTURE_TEXT: usize = 256;
@@ -28,25 +32,33 @@ pub const EVIDENCE_ACTIVATION_ENV: &str = "BATTLE_PLAN_ENABLE_A33_SUNK_SHIP_EVID
 
 const CGAMESTATE_SINGLETON_RVA: usize = 0x0331_6E90;
 const SUNK_SHIP_HISTORY_VECTOR_OFFSET: usize = 0x590;
+const CGAMESTATE_CURRENT_DATE_OFFSET: usize = 0x468;
+const SUNK_SHIP_INFO_SINK_DATE_OFFSET: usize = 0x58;
 
 const OUTER_SENTINEL: [u8; 16] = [
     0x4c, 0x89, 0x4c, 0x24, 0x20, 0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24,
     0x10, 0x48,
 ];
-const CONSTRUCTOR_SENTINEL: [u8; 16] = [
+const RECORD_WRITER_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
     0x20, 0x57,
 ];
 
 type OuterFn = unsafe extern "system" fn(usize, usize, usize, usize, u8);
-type ConstructorFn = unsafe extern "system" fn(usize, usize, usize, usize, usize, usize) -> usize;
+type AttributedWriterFn = unsafe extern "system" fn(usize, usize, usize, usize);
+type CombatSourceWriterFn = unsafe extern "system" fn(usize, usize, usize, usize, usize, usize);
+type CauseWriterFn = unsafe extern "system" fn(usize, usize, usize, usize, u32);
 
 static ORIGINAL_OUTER: AtomicUsize = AtomicUsize::new(0);
-static ORIGINAL_CONSTRUCTOR: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_ATTRIBUTED_WRITER: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_COMBAT_SOURCE_WRITER: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_CAUSE_WRITER: AtomicUsize = AtomicUsize::new(0);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 static ACTIVE_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
-static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+// Sequence 1 is the authenticated empty baseline. The first terminal event is
+// 2 so a source-sequence consumer cannot confuse empty history with one row.
+static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(2);
 static NEXT_HOOK_EPOCH: AtomicU64 = AtomicU64::new(1);
 static ACTIVE_HOOK_EPOCH: AtomicU64 = AtomicU64::new(0);
 static DROPPED_UNBOUND: AtomicU64 = AtomicU64::new(0);
@@ -86,12 +98,20 @@ pub struct RawSunkShipCapture {
     pub combat_id: u32,
     pub combat_generation: u64,
     pub victim_member_battle_slot_index: u32,
-    pub victim_country_identity_raw: [u32; 2],
-    pub killer_country_id_raw: u32,
+    pub victim_country_id_raw: u32,
+    pub attacker_country_id_raw: u32,
+    pub ui_source_country_id_raw: u32,
     pub sink_date_raw: i32,
     pub assisted_kill: bool,
+    pub victim_ship_reference_raw: [u32; 2],
+    pub damage_source_reference_raw: [u32; 2],
+    pub task_force_id_raw: u32,
+    pub terminal_context_raw: [u32; 2],
+    pub cause_record_flag: bool,
     pub ship_name: String,
     pub ship_class_name: String,
+    pub attribution_source_name: String,
+    pub attribution_source_class_name: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -105,11 +125,12 @@ pub struct HookDrain {
     pub dropped_overflow: u64,
     pub completeness_poisoned: bool,
     /// Exact `CGameState+0x590` pointer-vector was structurally valid and empty before
-    /// either detour was enabled. This is the only currently admitted complete
+    /// any detour was enabled. This is the only currently admitted complete
     /// pre-hook baseline for an activation fixture.
     pub baseline_measured_empty: bool,
-    /// The same vector was measured empty again after both detours were active,
-    /// closing the pre-hook observation race.
+    /// The same vector was measured empty again after the outer detour and all
+    /// three post-append writer detours were active, closing the pre-hook
+    /// observation race.
     pub baseline_revalidated_empty: bool,
     /// True only for the explicit owner-run evidence gate. Such a drain is raw
     /// activation evidence and can never be encoded as an authoritative D86.
@@ -134,19 +155,23 @@ impl HookDrain {
             && self.loss_free()
             && !self.events.is_empty()
             && self.events.iter().all(|event| {
-                event.event_sequence != 0
+                event.event_sequence > 1
                     && event.thread_id != 0
                     && event.member_epoch_publication_sequence != 0
                     && event.member_epoch_game_hour_raw > 0
                     && event.combat_id != 0
                     && event.combat_generation != 0
-                    && event.victim_country_identity_raw != [0, 0]
-                    && event.killer_country_id_raw != 0
+                    && event.victim_country_id_raw != 0
+                    && event.attacker_country_id_raw != 0
                     && event.sink_date_raw > 0
+                    && !(event.cause_record_flag && event.assisted_kill)
+                    && event.victim_ship_reference_raw != [0, 0]
                     && !event.ship_name.is_empty()
                     && !event.ship_class_name.is_empty()
                     && event.ship_name.len() < MAX_CAPTURE_TEXT
                     && event.ship_class_name.len() < MAX_CAPTURE_TEXT
+                    && event.attribution_source_name.len() < MAX_CAPTURE_TEXT
+                    && event.attribution_source_class_name.len() < MAX_CAPTURE_TEXT
             })
             && self.events.windows(2).all(|pair| {
                 pair[0].event_sequence < pair[1].event_sequence
@@ -209,9 +234,14 @@ fn install_promoted(evidence_install: bool) -> Result<(), String> {
         return Err("A33 GetModuleHandleW(NULL) returned null".into());
     }
     let outer = base + OUTER_CFEX_MEMBER_WRITER_RVA;
-    let constructor = base + RECORD_CONSTRUCTOR_RVA;
+    let attributed_writer = base + ATTRIBUTED_RECORD_WRITER_RVA;
+    let combat_source_writer = base + COMBAT_SOURCE_RECORD_WRITER_RVA;
+    let cause_writer = base + CAUSE_RECORD_WRITER_RVA;
+    let targets = [outer, attributed_writer, combat_source_writer, cause_writer];
     verify_sentinel(outer, &OUTER_SENTINEL)?;
-    verify_sentinel(constructor, &CONSTRUCTOR_SENTINEL)?;
+    for writer in [attributed_writer, combat_source_writer, cause_writer] {
+        verify_sentinel(writer, &RECORD_WRITER_SENTINEL)?;
+    }
     let baseline_measured_empty = measure_empty_history_baseline(base)?;
     if !evidence_install && !baseline_measured_empty {
         return Err("A33 production install requires a measured-empty complete-history baseline".into());
@@ -229,20 +259,49 @@ fn install_promoted(evidence_install: bool) -> Result<(), String> {
         MinHook::create_hook(outer as *mut c_void, hook_outer as *mut c_void)
     }
     .map_err(|status| format!("A33 outer create failed: {status}"))?;
-    let original_constructor = match unsafe {
-        MinHook::create_hook(constructor as *mut c_void, hook_constructor as *mut c_void)
+    let original_attributed_writer = match unsafe {
+        MinHook::create_hook(
+            attributed_writer as *mut c_void,
+            hook_attributed_writer as *mut c_void,
+        )
     } {
         Ok(original) => original,
         Err(status) => {
             let _ = unsafe { MinHook::remove_hook(outer as *mut c_void) };
-            return Err(format!("A33 constructor create failed: {status}"));
+            return Err(format!("A33 attributed writer create failed: {status}"));
+        }
+    };
+    let original_combat_source_writer = match unsafe {
+        MinHook::create_hook(
+            combat_source_writer as *mut c_void,
+            hook_combat_source_writer as *mut c_void,
+        )
+    } {
+        Ok(original) => original,
+        Err(status) => {
+            remove_hooks_best_effort(&[attributed_writer, outer]);
+            return Err(format!("A33 combat-source writer create failed: {status}"));
+        }
+    };
+    let original_cause_writer = match unsafe {
+        MinHook::create_hook(cause_writer as *mut c_void, hook_cause_writer as *mut c_void)
+    } {
+        Ok(original) => original,
+        Err(status) => {
+            remove_hooks_best_effort(&[combat_source_writer, attributed_writer, outer]);
+            return Err(format!("A33 cause writer create failed: {status}"));
         }
     };
     ORIGINAL_OUTER.store(original_outer as usize, Ordering::Release);
-    ORIGINAL_CONSTRUCTOR.store(original_constructor as usize, Ordering::Release);
+    ORIGINAL_ATTRIBUTED_WRITER.store(original_attributed_writer as usize, Ordering::Release);
+    ORIGINAL_COMBAT_SOURCE_WRITER.store(
+        original_combat_source_writer as usize,
+        Ordering::Release,
+    );
+    ORIGINAL_CAUSE_WRITER.store(original_cause_writer as usize, Ordering::Release);
     MODULE_BASE.store(base, Ordering::Release);
     ACTIVE_HOOK_EPOCH.store(hook_epoch, Ordering::Release);
-    NEXT_SEQUENCE.store(1, Ordering::Release);
+    NEXT_SEQUENCE.store(2, Ordering::Release);
     DROPPED_UNBOUND.store(0, Ordering::Release);
     DROPPED_REENTRANT.store(0, Ordering::Release);
     DROPPED_UNREADABLE.store(0, Ordering::Release);
@@ -251,17 +310,16 @@ fn install_promoted(evidence_install: bool) -> Result<(), String> {
     COMPLETENESS_POISONED.store(false, Ordering::Release);
     BASELINE_MEASURED_EMPTY.store(baseline_measured_empty, Ordering::Release);
     EVIDENCE_INSTALL.store(evidence_install, Ordering::Release);
-    for target in [constructor, outer] {
+    for target in [cause_writer, combat_source_writer, attributed_writer, outer] {
         if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
-            if let Err(cleanup) = cleanup_after_failed_install(outer, constructor) {
+            if let Err(cleanup) = cleanup_after_failed_install(&targets) {
                 // Keep the original pointers and installation marker alive so
                 // collector teardown can retry without freeing an in-flight
                 // trampoline.
                 INSTALLED.store(true, Ordering::Release);
                 return Err(format!("A33 enable failed: {status}; {cleanup}"));
             }
-            ORIGINAL_OUTER.store(0, Ordering::Release);
-            ORIGINAL_CONSTRUCTOR.store(0, Ordering::Release);
+            reset_originals();
             MODULE_BASE.store(0, Ordering::Release);
             ACTIVE_HOOK_EPOCH.store(0, Ordering::Release);
             EVIDENCE_INSTALL.store(false, Ordering::Release);
@@ -273,14 +331,13 @@ fn install_promoted(evidence_install: bool) -> Result<(), String> {
     let baseline_revalidated_empty = match measure_empty_history_baseline(base) {
         Ok(empty) => empty,
         Err(error) => {
-            if let Err(cleanup) = cleanup_after_failed_install(outer, constructor) {
+            if let Err(cleanup) = cleanup_after_failed_install(&targets) {
                 INSTALLED.store(true, Ordering::Release);
                 return Err(format!(
                     "A33 post-enable baseline revalidation failed: {error}; {cleanup}"
                 ));
             }
-            ORIGINAL_OUTER.store(0, Ordering::Release);
-            ORIGINAL_CONSTRUCTOR.store(0, Ordering::Release);
+            reset_originals();
             MODULE_BASE.store(0, Ordering::Release);
             ACTIVE_HOOK_EPOCH.store(0, Ordering::Release);
             EVIDENCE_INSTALL.store(false, Ordering::Release);
@@ -291,14 +348,13 @@ fn install_promoted(evidence_install: bool) -> Result<(), String> {
     };
     BASELINE_REVALIDATED_EMPTY.store(baseline_revalidated_empty, Ordering::Release);
     if !evidence_install && !baseline_revalidated_empty {
-        if let Err(cleanup) = cleanup_after_failed_install(outer, constructor) {
+        if let Err(cleanup) = cleanup_after_failed_install(&targets) {
             INSTALLED.store(true, Ordering::Release);
             return Err(format!(
                 "A33 history changed while the production hooks were activating; {cleanup}"
             ));
         }
-        ORIGINAL_OUTER.store(0, Ordering::Release);
-        ORIGINAL_CONSTRUCTOR.store(0, Ordering::Release);
+        reset_originals();
         MODULE_BASE.store(0, Ordering::Release);
         ACTIVE_HOOK_EPOCH.store(0, Ordering::Release);
         EVIDENCE_INSTALL.store(false, Ordering::Release);
@@ -313,14 +369,13 @@ fn install_promoted(evidence_install: bool) -> Result<(), String> {
         {
             Ok(history) => history,
             Err(_) => {
-                if let Err(cleanup) = cleanup_after_failed_install(outer, constructor) {
+                if let Err(cleanup) = cleanup_after_failed_install(&targets) {
                     INSTALLED.store(true, Ordering::Release);
                     return Err(format!(
                         "A33 history lock poisoned during production install; {cleanup}"
                     ));
                 }
-                ORIGINAL_OUTER.store(0, Ordering::Release);
-                ORIGINAL_CONSTRUCTOR.store(0, Ordering::Release);
+                reset_originals();
                 MODULE_BASE.store(0, Ordering::Release);
                 ACTIVE_HOOK_EPOCH.store(0, Ordering::Release);
                 BASELINE_MEASURED_EMPTY.store(false, Ordering::Release);
@@ -410,8 +465,9 @@ pub fn drain_before_member_epoch_republish() -> Result<(), String> {
             event_sequence: capture.event_sequence,
             combat_id: capture.combat_id,
             combat_generation: capture.combat_generation,
-            victim_country_identity_raw: capture.victim_country_identity_raw,
-            killer_country_id_raw: capture.killer_country_id_raw,
+            victim_country_id_raw: capture.victim_country_id_raw,
+            attacker_country_id_raw: capture.attacker_country_id_raw,
+            ui_source_country_id_raw: capture.ui_source_country_id_raw,
             sink_date_raw: capture.sink_date_raw,
             victim_member_battle_slot_index: capture.victim_member_battle_slot_index,
             flags: if capture.assisted_kill {
@@ -419,8 +475,15 @@ pub fn drain_before_member_epoch_republish() -> Result<(), String> {
             } else {
                 crate::EVENT_FLAG_KILLED
             },
+            victim_ship_reference_raw: capture.victim_ship_reference_raw,
+            damage_source_reference_raw: capture.damage_source_reference_raw,
+            task_force_id_raw: capture.task_force_id_raw,
+            terminal_context_raw: capture.terminal_context_raw,
+            cause_record_flag: capture.cause_record_flag,
             ship_name: capture.ship_name,
             ship_class_name: capture.ship_class_name,
+            attribution_source_name: capture.attribution_source_name,
+            attribution_source_class_name: capture.attribution_source_class_name,
         };
         if history
             .events
@@ -484,21 +547,24 @@ pub fn seal_drain_and_uninstall() -> Result<HookDrain, String> {
     }
     let base = MODULE_BASE.load(Ordering::Acquire);
     let outer = base + OUTER_CFEX_MEMBER_WRITER_RVA;
-    let constructor = base + RECORD_CONSTRUCTOR_RVA;
+    let attributed_writer = base + ATTRIBUTED_RECORD_WRITER_RVA;
+    let combat_source_writer = base + COMBAT_SOURCE_RECORD_WRITER_RVA;
+    let cause_writer = base + CAUSE_RECORD_WRITER_RVA;
     disable(outer)?;
     wait_for_callbacks()?;
-    disable(constructor)?;
+    for writer in [attributed_writer, combat_source_writer, cause_writer] {
+        disable(writer)?;
+    }
     wait_for_callbacks()?;
     let drained = drain()?;
-    for target in [constructor, outer] {
+    for target in [cause_writer, combat_source_writer, attributed_writer, outer] {
         match unsafe { MinHook::remove_hook(target as *mut c_void) } {
             Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
             Err(status) => return Err(format!("A33 remove failed: {status}")),
         }
     }
     INSTALLED.store(false, Ordering::Release);
-    ORIGINAL_OUTER.store(0, Ordering::Release);
-    ORIGINAL_CONSTRUCTOR.store(0, Ordering::Release);
+    reset_originals();
     MODULE_BASE.store(0, Ordering::Release);
     ACTIVE_HOOK_EPOCH.store(0, Ordering::Release);
     EVIDENCE_INSTALL.store(false, Ordering::Release);
@@ -527,19 +593,31 @@ fn wait_for_callbacks() -> Result<(), String> {
     Ok(())
 }
 
-fn cleanup_after_failed_install(outer: usize, constructor: usize) -> Result<(), String> {
-    let outer_disable = disable(outer);
-    let constructor_disable = disable(constructor);
-    outer_disable?;
-    constructor_disable?;
+fn cleanup_after_failed_install(targets: &[usize]) -> Result<(), String> {
+    for &target in targets {
+        disable(target)?;
+    }
     wait_for_callbacks()?;
-    for target in [constructor, outer] {
+    for &target in targets.iter().rev() {
         match unsafe { MinHook::remove_hook(target as *mut c_void) } {
             Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
             Err(status) => return Err(format!("A33 rollback remove failed: {status}")),
         }
     }
     Ok(())
+}
+
+fn remove_hooks_best_effort(targets: &[usize]) {
+    for &target in targets {
+        let _ = unsafe { MinHook::remove_hook(target as *mut c_void) };
+    }
+}
+
+fn reset_originals() {
+    ORIGINAL_OUTER.store(0, Ordering::Release);
+    ORIGINAL_ATTRIBUTED_WRITER.store(0, Ordering::Release);
+    ORIGINAL_COMBAT_SOURCE_WRITER.store(0, Ordering::Release);
+    ORIGINAL_CAUSE_WRITER.store(0, Ordering::Release);
 }
 
 unsafe extern "system" fn hook_outer(a: usize, b: usize, c: usize, d: usize, e: u8) {
@@ -567,30 +645,82 @@ unsafe extern "system" fn hook_outer(a: usize, b: usize, c: usize, d: usize, e: 
     });
 }
 
-unsafe extern "system" fn hook_constructor(
-    out: usize,
-    a: usize,
-    b: usize,
-    c: usize,
-    d: usize,
-    e: usize,
-) -> usize {
+unsafe extern "system" fn hook_attributed_writer(
+    game_state: usize,
+    victim: usize,
+    attacker: usize,
+    task_force: usize,
+) {
     let _active = CallbackGuard::enter();
-    let original: ConstructorFn = mem::transmute(ORIGINAL_CONSTRUCTOR.load(Ordering::Acquire));
-    let result = original(out, a, b, c, d, e);
+    let before_count = history_vector_count(game_state);
+    let original: AttributedWriterFn =
+        mem::transmute(ORIGINAL_ATTRIBUTED_WRITER.load(Ordering::Acquire));
+    original(game_state, victim, attacker, task_force);
+    observe_writer_append(game_state, before_count);
+}
+
+unsafe extern "system" fn hook_combat_source_writer(
+    game_state: usize,
+    victim: usize,
+    attacker_country: usize,
+    damage_source: usize,
+    task_force: usize,
+    attacker: usize,
+) {
+    let _active = CallbackGuard::enter();
+    let before_count = history_vector_count(game_state);
+    let original: CombatSourceWriterFn =
+        mem::transmute(ORIGINAL_COMBAT_SOURCE_WRITER.load(Ordering::Acquire));
+    original(
+        game_state,
+        victim,
+        attacker_country,
+        damage_source,
+        task_force,
+        attacker,
+    );
+    observe_writer_append(game_state, before_count);
+}
+
+unsafe extern "system" fn hook_cause_writer(
+    game_state: usize,
+    victim: usize,
+    attacker_country: usize,
+    task_force: usize,
+    cause: u32,
+) {
+    let _active = CallbackGuard::enter();
+    let before_count = history_vector_count(game_state);
+    let original: CauseWriterFn =
+        mem::transmute(ORIGINAL_CAUSE_WRITER.load(Ordering::Acquire));
+    original(game_state, victim, attacker_country, task_force, cause);
+    observe_writer_append(game_state, before_count);
+}
+
+fn observe_writer_append(game_state: usize, before_count: Option<u32>) {
     let Some(context) = OUTER_CONTEXT.with(Cell::get) else {
-        return result;
+        poison(&DROPPED_UNBOUND);
+        return;
     };
     if context.thread_id == 0 || context.thread_id != unsafe { GetCurrentThreadId() } {
         poison(&DROPPED_UNBOUND);
-        return result;
+        return;
+    }
+    let singleton = MODULE_BASE
+        .load(Ordering::Acquire)
+        .checked_add(CGAMESTATE_SINGLETON_RVA)
+        .and_then(read_value::<usize>);
+    if singleton != Some(game_state) {
+        poison(&DROPPED_UNBOUND);
+        return;
     }
     let nested = IN_CALLBACK.with(|flag| flag.replace(true));
     if nested {
         poison(&DROPPED_REENTRANT);
-        return result;
+        return;
     }
-    if let Some(capture) = capture_record(result, context) {
+    let appended_record = before_count.and_then(|count| history_vector_appended_record(game_state, count));
+    if let Some(capture) = appended_record.and_then(|record| capture_record(record, context)) {
         if let Some(state) = STATE.get() {
             match state.try_lock() {
                 Ok(mut queue) if queue.len() < MAX_PENDING_EVENTS => queue.push_back(capture),
@@ -604,7 +734,35 @@ unsafe extern "system" fn hook_constructor(
         poison(&DROPPED_UNREADABLE);
     }
     IN_CALLBACK.with(|flag| flag.set(false));
-    result
+}
+
+fn history_vector_count(game_state: usize) -> Option<u32> {
+    if game_state == 0 {
+        return None;
+    }
+    let vector = game_state.checked_add(SUNK_SHIP_HISTORY_VECTOR_OFFSET)?;
+    let capacity: u32 = read_value(vector + 0x08)?;
+    let count: u32 = read_value(vector + 0x0c)?;
+    if count > capacity || capacity > crate::MAX_EVENTS as u32 {
+        return None;
+    }
+    Some(count)
+}
+
+fn history_vector_appended_record(game_state: usize, before_count: u32) -> Option<usize> {
+    let vector = game_state.checked_add(SUNK_SHIP_HISTORY_VECTOR_OFFSET)?;
+    let data: usize = read_value(vector)?;
+    let capacity: u32 = read_value(vector + 0x08)?;
+    let count: u32 = read_value(vector + 0x0c)?;
+    if data == 0
+        || count != before_count.checked_add(1)?
+        || count > capacity
+        || capacity > crate::MAX_EVENTS as u32
+    {
+        return None;
+    }
+    let last_offset = usize::try_from(count - 1).ok()?.checked_mul(8)?;
+    read_value(data.checked_add(last_offset)?)
 }
 
 fn capture_record(address: usize, context: OuterContext) -> Option<RawSunkShipCapture> {
@@ -615,9 +773,46 @@ fn capture_record(address: usize, context: OuterContext) -> Option<RawSunkShipCa
     if vtable != MODULE_BASE.load(Ordering::Acquire) + SUNK_SHIP_INFO_VTABLE_RVA {
         return None;
     }
-    let ship_name = read_msvc_string(address + 0x08)?;
+    let ship_name = read_msvc_string(address + 0x08, true)?;
     let class_ptr: usize = read_value(address + 0x68)?;
-    let ship_class_name = read_msvc_string(class_ptr.checked_add(0x68)?)?;
+    let ship_class_name = read_msvc_string(class_ptr.checked_add(0x68)?, true)?;
+    // The serializer admits an empty attacker name for sources without a
+    // concrete attacking ship. Preserve that exact absence rather than
+    // poisoning an otherwise readable sunk-history event.
+    let attribution_source_name = read_msvc_string(address + 0x28, false)?;
+    let attribution_class_ptr: usize = read_value(address + 0x70)?;
+    let attribution_source_class_name = if attribution_class_ptr == 0 {
+        String::new()
+    } else {
+        read_msvc_string(attribution_class_ptr.checked_add(0x68)?, false)?
+    };
+    // +0x60 is the following embedded CGameDate vtable, not the date scalar.
+    // Re-read the singleton date on the same callback thread so a future
+    // layout drift cannot silently turn that vtable into an apparently valid
+    // positive sink timestamp.
+    let sink_date_raw: i32 = read_value(address + SUNK_SHIP_INFO_SINK_DATE_OFFSET)?;
+    let game_state: usize = read_value(
+        MODULE_BASE
+            .load(Ordering::Acquire)
+            .checked_add(CGAMESTATE_SINGLETON_RVA)?,
+    )?;
+    if game_state == 0
+        || sink_date_raw
+            != read_value::<i32>(game_state.checked_add(CGAMESTATE_CURRENT_DATE_OFFSET)?)?
+    {
+        return None;
+    }
+    let assisted_kill_raw: u8 = read_value(address + 0xa1)?;
+    let cause_record_flag_raw: u8 = read_value(address + 0xa0)?;
+    if assisted_kill_raw > 1 || cause_record_flag_raw > 1 {
+        return None;
+    }
+    let task_force: usize = read_value(address + 0x90)?;
+    let task_force_id_raw = if task_force == 0 {
+        0
+    } else {
+        read_value(task_force.checked_add(0xa4)?)?
+    };
     let event_sequence = NEXT_SEQUENCE.fetch_add(1, Ordering::AcqRel);
     if event_sequence == 0 {
         return None;
@@ -630,19 +825,30 @@ fn capture_record(address: usize, context: OuterContext) -> Option<RawSunkShipCa
         combat_id: context.combat_id,
         combat_generation: context.combat_generation,
         victim_member_battle_slot_index: context.battle_slot_index_raw,
-        victim_country_identity_raw: [read_value(address + 0x48)?, read_value(address + 0x4c)?],
-        killer_country_id_raw: read_value(address + 0x78)?,
-        sink_date_raw: read_value(address + 0x60)?,
-        assisted_kill: read_value::<u8>(address + 0xa1)? != 0,
+        victim_country_id_raw: read_value(address + 0x48)?,
+        attacker_country_id_raw: read_value(address + 0x4c)?,
+        ui_source_country_id_raw: read_value(address + 0x78)?,
+        sink_date_raw,
+        assisted_kill: assisted_kill_raw != 0,
+        victim_ship_reference_raw: [read_value(address + 0x7c)?, read_value(address + 0x80)?],
+        damage_source_reference_raw: [read_value(address + 0x84)?, read_value(address + 0x88)?],
+        task_force_id_raw,
+        terminal_context_raw: [read_value(address + 0x98)?, read_value(address + 0x9c)?],
+        cause_record_flag: cause_record_flag_raw != 0,
         ship_name,
         ship_class_name,
+        attribution_source_name,
+        attribution_source_class_name,
     })
 }
 
-fn read_msvc_string(address: usize) -> Option<String> {
+fn read_msvc_string(address: usize, required: bool) -> Option<String> {
     let len: usize = read_value(address + 0x10)?;
     let cap: usize = read_value(address + 0x18)?;
-    if len == 0 || len >= MAX_CAPTURE_TEXT || cap < len {
+    if len == 0 {
+        return if required { None } else { Some(String::new()) };
+    }
+    if len >= MAX_CAPTURE_TEXT || cap < len {
         return None;
     }
     let data = if cap < 16 { address } else { read_value::<usize>(address)? };
@@ -731,19 +937,27 @@ mod tests {
             combat_id: 4,
             combat_generation: 2,
             victim_member_battle_slot_index: 1,
-            victim_country_identity_raw: [5, 6],
-            killer_country_id_raw: 8,
+            victim_country_id_raw: 5,
+            attacker_country_id_raw: 6,
+            ui_source_country_id_raw: 8,
             sink_date_raw: 123,
             assisted_kill: false,
+            victim_ship_reference_raw: [9, 10],
+            damage_source_reference_raw: [11, 12],
+            task_force_id_raw: 13,
+            terminal_context_raw: [14, 15],
+            cause_record_flag: false,
             ship_name: "HMS Exact".into(),
             ship_class_name: "Destroyer".into(),
+            attribution_source_name: "KMS Exact".into(),
+            attribution_source_class_name: "Cruiser".into(),
         }
     }
 
     fn candidate() -> HookDrain {
         HookDrain {
             hook_epoch: 9,
-            events: vec![event(1)],
+            events: vec![event(2)],
             baseline_measured_empty: true,
             baseline_revalidated_empty: true,
             evidence_install: true,
@@ -771,7 +985,16 @@ mod tests {
     #[test]
     fn evidence_candidate_rejects_non_monotonic_event_sequence() {
         let mut drain = candidate();
-        drain.events.push(event(1));
+        drain.events.push(event(2));
         assert!(!drain.evidence_fixture_contract_satisfied());
+    }
+
+    #[test]
+    fn evidence_candidate_preserves_optional_attacker_absence() {
+        let mut drain = candidate();
+        drain.events[0].damage_source_reference_raw = [0, 0];
+        drain.events[0].attribution_source_name.clear();
+        drain.events[0].attribution_source_class_name.clear();
+        assert!(drain.evidence_fixture_contract_satisfied());
     }
 }

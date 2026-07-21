@@ -107,6 +107,13 @@ pub struct Domain51GateSummary {
 }
 
 pub fn encode_payload(header: &ScriptedStateHeader, rows: &[ScriptedStateRow]) -> Vec<u8> {
+    // Canonical ordering is part of the portable d51 identity.  Do it at the
+    // codec boundary as well as in the production collector so auxiliary
+    // producers and deterministic fixtures cannot accidentally serialize
+    // hash-container or caller insertion order.
+    let mut canonical_rows = rows.to_vec();
+    canonical_rows.sort_by(canonical_row_cmp);
+    let rows = canonical_rows.as_slice();
     let mut key_bytes = Vec::new();
     let mut row_keys = Vec::with_capacity(rows.len());
     let mut variable_rows = 0u32;
@@ -326,6 +333,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
     let mut decoded_delayed_event_due_rows = 0usize;
     let mut decoded_scripted_gui_rows = 0usize;
     let mut seen_rows = BTreeSet::new();
+    let mut previous_canonical_order = None;
 
     for row_index in 0..row_count {
         let cursor = HEADER_LEN + row_index * ROW_LEN;
@@ -523,12 +531,12 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
         } else {
             0
         };
+        let identity_key = key_bytes_for_row.unwrap_or_default().to_vec();
         let row_key = (
             scope_kind,
             owner_id,
             value_kind,
-            key_offset as u32,
-            key_len as u32,
+            identity_key.clone(),
             token_id,
             seed_discriminator,
         );
@@ -537,6 +545,24 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
                 "offset {offset}: scripted state row {row_index} duplicates scope/value/key identity"
             ));
         }
+        let canonical_order = (
+            canonical_value_family(value_kind),
+            scope_kind,
+            owner_id,
+            token_id,
+            identity_key,
+            seed_discriminator,
+            deleted,
+        );
+        if previous_canonical_order
+            .as_ref()
+            .is_some_and(|previous| previous >= &canonical_order)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: scripted state row {row_index} is not in canonical semantic order"
+            ));
+        }
+        previous_canonical_order = Some(canonical_order);
     }
 
     if decoded_variable_rows != variable_rows {
@@ -612,6 +638,51 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
         decoded_scripted_gui_rows,
     );
     summary
+}
+
+fn canonical_value_family(value_kind: u32) -> u32 {
+    match value_kind {
+        VALUE_VARIABLE_FIXED_I64 => 1,
+        VALUE_FLAG_NAMED | VALUE_FLAG_TOKEN_ONLY => 2,
+        VALUE_DELAYED_EVENT => 3,
+        VALUE_DELAYED_EVENT_OPAQUE => 4,
+        VALUE_SCRIPTED_GUI_OPAQUE => 5,
+        other => 0x1000_0000u32.saturating_add(other),
+    }
+}
+
+pub fn canonical_row_cmp(
+    left: &ScriptedStateRow,
+    right: &ScriptedStateRow,
+) -> std::cmp::Ordering {
+    let left_kind = left.value_kind & !ROW_VALUE_KIND_DELETED;
+    let right_kind = right.value_kind & !ROW_VALUE_KIND_DELETED;
+    (
+        canonical_value_family(left_kind),
+        left.scope_kind,
+        left.owner_id,
+        left.token_id.unwrap_or(0),
+        left.key.as_deref().unwrap_or(""),
+        if left_kind == VALUE_DELAYED_EVENT {
+            left.value_raw.unwrap_or(0)
+        } else {
+            0
+        },
+        left.deleted || left.value_kind & ROW_VALUE_KIND_DELETED != 0,
+    )
+        .cmp(&(
+            canonical_value_family(right_kind),
+            right.scope_kind,
+            right.owner_id,
+            right.token_id.unwrap_or(0),
+            right.key.as_deref().unwrap_or(""),
+            if right_kind == VALUE_DELAYED_EVENT {
+                right.value_raw.unwrap_or(0)
+            } else {
+                0
+            },
+            right.deleted || right.value_kind & ROW_VALUE_KIND_DELETED != 0,
+        ))
 }
 
 fn validate_opaque_badge_key(

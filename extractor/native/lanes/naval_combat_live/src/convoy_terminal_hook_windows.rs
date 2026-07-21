@@ -178,6 +178,7 @@ pub struct ConvoyTerminalHookHeartbeat {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConvoyTerminalInstallError {
     PromotionBlocked(Vec<ActivationBlocker>),
+    EvidenceActivationDisabled,
     BinaryGate,
     AlreadyInstalled,
     TeardownPending,
@@ -197,6 +198,17 @@ pub enum ConvoyTerminalInstallError {
     PatchedBytesDrift,
     QuiesceTimeout,
     ResolverClear(String),
+}
+
+pub const H_CONVOY_EVIDENCE_ACTIVATION_ENV: &str = "BATTLE_PLAN_ENABLE_H_CONVOY_EVIDENCE_HOOK";
+
+/// Explicit process-launch authorization for the isolated acquisition hook.
+/// It neither changes the domain registry nor satisfies production blockers.
+pub fn convoy_terminal_evidence_activation_enabled() -> bool {
+    matches!(
+        std::env::var(H_CONVOY_EVIDENCE_ACTIVATION_ENV).as_deref(),
+        Ok("1")
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -801,6 +813,25 @@ pub fn install_convoy_terminal_hook(
     if !blockers.is_empty() {
         return Err(ConvoyTerminalInstallError::PromotionBlocked(blockers));
     }
+    install_convoy_terminal_hook_inner(executable_sha256, true)
+}
+
+/// Install the exact hook only for the isolated H-CONVOY loss/no-loss capture.
+/// Production activation and the accepted control-pair hash deliberately stay
+/// blocked while this acquisition path is armed by its launch environment.
+pub fn install_convoy_terminal_evidence_hook(
+    executable_sha256: &str,
+) -> Result<(), ConvoyTerminalInstallError> {
+    if !convoy_terminal_evidence_activation_enabled() {
+        return Err(ConvoyTerminalInstallError::EvidenceActivationDisabled);
+    }
+    install_convoy_terminal_hook_inner(executable_sha256, false)
+}
+
+fn install_convoy_terminal_hook_inner(
+    executable_sha256: &str,
+    enforce_production_activation: bool,
+) -> Result<(), ConvoyTerminalInstallError> {
     if !executable_sha256.eq_ignore_ascii_case(A729_EXE_SHA256) {
         return Err(ConvoyTerminalInstallError::BinaryGate);
     }
@@ -819,7 +850,7 @@ pub fn install_convoy_terminal_hook(
     let memory = ProcessMemory;
     let prepared = prepare_a729_hook(&memory, module_base, executable_sha256)
         .map_err(|_| ConvoyTerminalInstallError::BinaryGate)?;
-    if !prepared.activation_blockers.is_empty() {
+    if enforce_production_activation && !prepared.activation_blockers.is_empty() {
         return Err(ConvoyTerminalInstallError::PromotionBlocked(
             prepared.activation_blockers,
         ));

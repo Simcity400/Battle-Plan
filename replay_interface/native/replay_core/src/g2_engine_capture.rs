@@ -1,4 +1,4 @@
-//! Fail-closed admission for the recorder-owned pre-first-UI G2 observation.
+//! Fail-closed admission for the recorder-owned post-process-end G2 observation.
 //!
 //! G2 is optional. Its presence is declared only by the selected game's
 //! `index.json`; loose role entries cannot opt a recording into the contract.
@@ -11,19 +11,23 @@ use snapshot::sha256::{to_hex, Sha256};
 use snapshot::Store;
 
 const PACKAGED_SCHEMA: &str = "hoi4-g2-packaged-engine-capture-v1";
-const WITNESS_SCHEMA: &str = "hoi4-g2-engine-pixel-witness-v1";
+const WITNESS_SCHEMA: &str = "hoi4-g2-engine-pixel-witness-v2";
 const WITNESS_ROLE: &str = "g2_engine_witness";
 const BMP_ROLE: &str = "g2_engine_bgra_bmp";
 const WITNESS_PATH: &str = "g2/g2_engine_pixel_witness.json";
 const BMP_PATH: &str = "g2/g2_engine_map_boundary.bmp";
 const BMP_FILE: &str = "g2_engine_map_boundary.bmp";
-const STATUS: &str = "AUTHENTICATED_PRE_FIRST_UI_DRAW_MAP_READBACK";
+const STATUS: &str = "AUTHENTICATED_POST_PROCESS_END_MAP_READBACK";
+const POST_PROCESS_RENDER_ROOT_RVA: u32 = 0x00FF_3450;
 const RENDER_BOUNDARY: &str = "post_authenticated_map_bgra8_no_selected_present_writers";
 const EARLY_LAUNCH_SCHEMA: &str = "extractor.early-render-launch-manifest.v1";
 const EARLY_RECEIPT_SCHEMA: &str = "extractor.early-render-capture-receipt.v1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PackagedG2EngineCapture {
+    pub selected_game_id: String,
+    pub selected_index_path: String,
+    pub selected_index_sha256: String,
     pub witness_path: String,
     pub witness_sha256: String,
     pub witness_bytes: u64,
@@ -37,14 +41,16 @@ pub struct PackagedG2EngineCapture {
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct G2UiBoundaryAuthentication {
-    pub active_backbuffer_resource: String,
-    pub pixel_shader_pointer: String,
-    pub vertex_shader_pointer: String,
-    pub both_shaders_from_current_swapchain_creation_cache: bool,
-    pub first_ui_draw_call: String,
-    pub first_ui_draw_count: u32,
-    pub first_ui_draw_executed: bool,
+pub struct G2PostProcessBoundaryAuthentication {
+    pub producer_rva: u32,
+    pub immediate_context_pointer: String,
+    pub registered_backbuffer_view_pointer: String,
+    pub registered_backbuffer_resource_pointer: String,
+    pub registration_sequence: u64,
+    pub recreate_generation: u64,
+    pub exact_swapchain_backbuffer_registration: bool,
+    pub post_process_original_returned: bool,
+    pub readback_inserted_before_post_process_hook_return: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -75,8 +81,7 @@ pub struct G2EnginePixelWitness {
     pub engine_bgra_sha256: String,
     pub pixel_byte_len: u64,
     pub capture_context_sha256: String,
-    pub ui_boundary_authentication: G2UiBoundaryAuthentication,
-    pub unreceipted_pixel_writers: u32,
+    pub post_process_boundary_authentication: G2PostProcessBoundaryAuthentication,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -199,6 +204,9 @@ pub(crate) fn admit_from_store(
         )?,
     )?;
     Ok(Some(PackagedG2EngineCapture {
+        selected_game_id: game_id.to_owned(),
+        selected_index_path: index_path,
+        selected_index_sha256: to_hex(&Sha256::digest(&index_bytes)),
         witness_path: declaration.witness_path,
         witness_sha256: declaration.witness_sha256,
         witness_bytes: declaration.witness_bytes,
@@ -262,7 +270,7 @@ fn validate_bytes(bytes: &[u8], expected_len: u64, expected_sha: &str, role: &st
 }
 
 fn validate_witness_and_bmp(witness: &G2EnginePixelWitness, bmp: &[u8]) -> Result<(), String> {
-    let boundary = &witness.ui_boundary_authentication;
+    let boundary = &witness.post_process_boundary_authentication;
     if witness.schema != WITNESS_SCHEMA
         || witness.status != STATUS
         || witness.observation_id.trim().is_empty()
@@ -277,20 +285,18 @@ fn validate_witness_and_bmp(witness: &G2EnginePixelWitness, bmp: &[u8]) -> Resul
         || !matches!(witness.source_dxgi_format, 28 | 29 | 87 | 91)
         || witness.source_sample_count != 1
         || witness.engine_bmp_file != BMP_FILE
-        || witness.unreceipted_pixel_writers != 0
         || witness.localisation_language.trim().is_empty()
-        || !boundary.both_shaders_from_current_swapchain_creation_cache
-        || boundary.first_ui_draw_executed
-        || boundary.first_ui_draw_count == 0
-        || !matches!(
-            boundary.first_ui_draw_call.as_str(),
-            "Draw" | "DrawIndexed" | "DrawInstanced" | "DrawIndexedInstanced"
-        )
-        || !valid_pointer(&boundary.active_backbuffer_resource)
-        || !valid_pointer(&boundary.pixel_shader_pointer)
-        || !valid_pointer(&boundary.vertex_shader_pointer)
+        || boundary.producer_rva != POST_PROCESS_RENDER_ROOT_RVA
+        || !valid_pointer(&boundary.immediate_context_pointer)
+        || !valid_pointer(&boundary.registered_backbuffer_view_pointer)
+        || !valid_pointer(&boundary.registered_backbuffer_resource_pointer)
+        || boundary.registration_sequence == 0
+        || boundary.recreate_generation == 0
+        || !boundary.exact_swapchain_backbuffer_registration
+        || !boundary.post_process_original_returned
+        || !boundary.readback_inserted_before_post_process_hook_return
     {
-        return Err("packaged G2 witness violates authenticated pre-first-UI fields".into());
+        return Err("packaged G2 witness violates exact post-process boundary fields".into());
     }
     for digest in [
         &witness.authority_exe_sha256,
@@ -486,7 +492,7 @@ fn valid_pointer(value: &str) -> bool {
         return false;
     };
     !digits.is_empty()
-        && digits != "0"
+        && digits.bytes().any(|byte| byte != b'0')
         && digits
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte))
@@ -630,16 +636,17 @@ mod tests {
             "engine_bgra_sha256": sha(pixels),
             "pixel_byte_len": pixels.len(),
             "capture_context_sha256": "88".repeat(32),
-            "ui_boundary_authentication": {
-                "active_backbuffer_resource": "0x1000",
-                "pixel_shader_pointer": "0x2000",
-                "vertex_shader_pointer": "0x3000",
-                "both_shaders_from_current_swapchain_creation_cache": true,
-                "first_ui_draw_call": "DrawIndexed",
-                "first_ui_draw_count": 1,
-                "first_ui_draw_executed": false
-            },
-            "unreceipted_pixel_writers": 0
+            "post_process_boundary_authentication": {
+                "producer_rva": POST_PROCESS_RENDER_ROOT_RVA,
+                "immediate_context_pointer": "0x1000",
+                "registered_backbuffer_view_pointer": "0x2000",
+                "registered_backbuffer_resource_pointer": "0x3000",
+                "registration_sequence": 4,
+                "recreate_generation": 1,
+                "exact_swapchain_backbuffer_registration": true,
+                "post_process_original_returned": true,
+                "readback_inserted_before_post_process_hook_return": true
+            }
         }))
         .unwrap()
     }
@@ -743,6 +750,17 @@ mod tests {
             .expect("declared G2 capture");
         assert_eq!(capture.witness.selected_hour, 12);
         assert_eq!(capture.bmp_path, BMP_PATH);
+        assert_eq!(capture.selected_game_id, "g");
+        assert_eq!(capture.selected_index_path, "payload/g/index.json");
+        let selected_index_bytes = store
+            .container()
+            .unwrap()
+            .read_entry_bytes(&capture.selected_index_path)
+            .unwrap();
+        assert_eq!(
+            capture.selected_index_sha256,
+            to_hex(&Sha256::digest(&selected_index_bytes))
+        );
         drop(store);
         fs::remove_file(path).unwrap();
     }
@@ -753,6 +771,9 @@ mod tests {
         let source = crate::source::open_recording(&path).unwrap();
         let capture = source.g2_engine_capture().expect("admitted G2 package");
         assert_eq!(capture.witness.viewport_width, 1);
+        assert_eq!(capture.selected_game_id, "g");
+        assert_eq!(capture.selected_index_path, "payload/g/index.json");
+        assert!(canonical_sha256(&capture.selected_index_sha256));
         assert_eq!(capture.capture_content_manifest_digest_sha256, "aa".repeat(32));
         assert_eq!(capture.replay_content_manifest_digest_sha256, "66".repeat(32));
         drop(source);
@@ -822,7 +843,7 @@ mod tests {
     #[test]
     fn witness_duplicate_members_are_rejected_before_typed_projection() {
         assert!(decode_witness(
-            br#"{"schema":"hoi4-g2-engine-pixel-witness-v1","schema":"forged"}"#
+            br#"{"schema":"hoi4-g2-engine-pixel-witness-v2","schema":"forged"}"#
         )
         .is_err());
     }
@@ -834,5 +855,12 @@ mod tests {
         let decoded = decode_witness(&witness(&authority, &bmp)).unwrap();
         bmp[54] ^= 0xff;
         assert!(validate_witness_and_bmp(&decoded, &bmp).is_err());
+    }
+
+    #[test]
+    fn zero_pointer_with_leading_zeroes_is_rejected() {
+        assert!(!valid_pointer("0x0"));
+        assert!(!valid_pointer("0x00"));
+        assert!(valid_pointer("0x000A"));
     }
 }

@@ -19,13 +19,14 @@ replay-side packet states in
 
 | ID | What the replay layer needs | Extractor state | Blocks (replay packet) |
 | --- | --- | --- | --- |
-| A24 | Politics evaluated-tooltip inputs | CONTRACT REQUIRED | XUI11 |
+| A24 | Politics evaluated-tooltip inputs | Static graph, PTI1 carrier, strict replay projection, and fail-closed UI binding complete; exact live producer taps + selected-present fixture pending, d73 reserved/unschedulable | XUI11 |
 | A25 | Runtime text/localization/formatting/wrap/glyph/inline-icon runs (d76 reserved) | CONTRACT REQUIRED | XUI06, XUI16, XUI17, XUI18 |
 | A26 | Resolved per-instance tooltip rectangles + ordered evaluated content rows (d72) | Active RE | XUI05 |
 | A28 | Authenticated dynamic-collection visible order — remaining families (d71) | Open (equipment-grid producer proven) | XUI16, XUI17 |
-| A29 | Research ahead-of-time inputs | DATA BLOCKED extractor-side | — (XUI09 PROVEN with the delivered subset; residual is extractor-side only) |
+| A29 | Research ahead-of-time inputs | Static exact-producer RE and pointer-free same-hour carrier/fold/replay wiring complete under `a729_observed_research_ahead_producer_v1`; branch 0 authenticates the exact no-display/`NO_RESEARCH_PENALTY` result but cannot promote; fail-closed pending an H-A29 branch-1/2 ahead-technology receipt and root validation; base-factor inference is forbidden and no human semantic input is required | XUI09 (wired fail-closed; promotion blocked until H-A29 is accepted) |
 | A30 | Intelligence/operative UI state | DATA BLOCKED | XUI14 |
 | A31 | Focus-presentation runtime leaves | d89 producer/codec/fold/replay/UI implemented; live activation fixture pending | — (XUI10 exact admission is wired; d89 remains reserved and unscheduled) |
+| A32 | Display/language/input launch variant | Display/language settings carrier integrated; same-launch authenticated pointer-family observer, authority pin and pre-d77 collector bind not active. Keyboard/controller traversal explicitly unsupported | XUI25 (wired fail-closed; current d77 has no input family) |
 | A33 | Combat detail/losses | INTEGRATION+RE+FIXTURE | XUI20 |
 | A34 | Decision-panel generic rows/costs/alerts | IN PROGRESS | XUI19 |
 | A36 | Active abilities: availability/activation/cooldown/cost/target/duration/order/tooltip/disabled-reason | DATA BLOCKED | XUI23 |
@@ -40,8 +41,9 @@ replay-side packet states in
 
 **Delivered AND consumed:** A27 (design catalog — consumed by
 `game_ui::design_catalog::admit_design_catalog`, gate 1/1; XUI13's remaining
-gate is designer-surface activation authentication, not catalog data), A32
-(display variant), A35 (occupation/garrisons).
+gate is designer-surface activation authentication, not catalog data), A35
+(occupation/garrisons). A32 is intentionally listed above: its display and
+language carrier is consumed, but its input-family authority is not active.
 
 ## 2. Extractor ← waiting on replay layer
 

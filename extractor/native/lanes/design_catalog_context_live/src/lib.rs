@@ -8,6 +8,8 @@ use std::collections::BTreeSet;
 
 #[cfg(windows)]
 pub mod a729_hook;
+#[cfg(windows)]
+pub mod a40_peace_evidence;
 pub mod selected_designer_identity;
 
 pub const DOMAIN_ID: u16 = 78;

@@ -13,11 +13,17 @@ use replay_core::{
     WorldTimeline,
 };
 use serde_json::{json, Value};
-use snapshot::{pack, PackEntry, PackIdentity};
+use snapshot::{pack, PackEntry, PackIdentity, Store};
 use std::fs;
 #[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
+#[cfg(windows)]
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::{mem::MaybeUninit, ptr::null_mut};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -173,7 +179,7 @@ fn snapshot_100() -> Value {
                 { "id": "fleet-1", "owner": "GER", "name": "Baltic Fleet",
                   "task_forces": [
                     { "id": "tf-1", "owner": "GER", "location_province": 321,
-                      "mission": "patrol", "dominant_hull_class": "destroyer",
+                      "dominant_hull_class": "destroyer",
                       "ships": [
                         { "id": "ship-1", "definition": "destroyer", "organisation": 0.9,
                           "strength": 0.8, "experience": 0.2, "name": "Z1",
@@ -996,7 +1002,11 @@ fn dir_store_typed_views_and_trichotomy() {
     assert!(f103.country("USA").is_none()); // absent stays absent
 
     // fully well-formed frames carry no coverage warnings
-    assert!(f100.coverage_warnings().is_empty());
+    assert!(
+        f100.coverage_warnings().is_empty(),
+        "unexpected hour-100 coverage warnings: {:?}",
+        f100.coverage_warnings()
+    );
     // hour 101's only finding is the null div_type identity degradation
     assert_eq!(f101.coverage_warnings().len(), 1);
 
@@ -2505,7 +2515,9 @@ fn canonical_and_genuinely_legacy_directory_stores_both_open() {
 }
 
 #[cfg(windows)]
-fn windows_dehydrated_payload_metadata_count(root: &Path) -> Result<(usize, usize), String> {
+fn windows_dehydrated_replay_snapshot_candidates(
+    root: &Path,
+) -> Result<(usize, Vec<(String, String)>), String> {
     const OFFLINE: u32 = 0x0000_1000;
     const REPARSE_POINT: u32 = 0x0000_0400;
     const RECALL_ON_OPEN: u32 = 0x0004_0000;
@@ -2516,7 +2528,7 @@ fn windows_dehydrated_payload_metadata_count(root: &Path) -> Result<(usize, usiz
     // preflight itself cannot hydrate a candidate fixture.
     let mut pending = vec![root.to_path_buf()];
     let mut scanned_files = 0usize;
-    let mut dehydrated_files = 0usize;
+    let mut candidates = Vec::new();
     while let Some(directory) = pending.pop() {
         let entries = fs::read_dir(&directory).map_err(|error| {
             format!("enumerate metadata under {}: {error}", directory.display())
@@ -2544,13 +2556,156 @@ fn windows_dehydrated_payload_metadata_count(root: &Path) -> Result<(usize, usiz
             }
             if file_type.is_file() {
                 scanned_files += 1;
-                if attributes & DEHYDRATED != 0 {
-                    dehydrated_files += 1;
+                let path = entry.path();
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if attributes & DEHYDRATED != 0
+                    && attributes & REPARSE_POINT != 0
+                    && name.ends_with(".snapshot.json")
+                {
+                    let relative = path.strip_prefix(root).map_err(|error| {
+                        format!("derive replay-relative placeholder path: {error}")
+                    })?;
+                    let components = relative
+                        .components()
+                        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+                        .collect::<Vec<_>>();
+                    if let [game, file] = components.as_slice() {
+                        candidates.push((game.clone(), file.clone()));
+                    }
                 }
             }
         }
     }
-    Ok((scanned_files, dehydrated_files))
+    candidates.sort();
+    Ok((scanned_files, candidates))
+}
+
+#[cfg(windows)]
+#[derive(Debug, Eq, PartialEq)]
+struct WindowsHandleIdentity {
+    reparse_tag: u32,
+    volume_serial_number: String,
+    file_id_128: String,
+}
+
+#[cfg(windows)]
+fn windows_handle_identity(
+    path: &Path,
+    flags: u32,
+) -> Result<WindowsHandleIdentity, String> {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FileAttributeTagInfo, FileIdInfo, GetFileInformationByHandleEx,
+        FILE_ATTRIBUTE_TAG_INFO, FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+
+    let wide = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let raw = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            flags,
+            null_mut(),
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE {
+        return Err(format!(
+            "metadata-only CreateFileW failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let mut info = MaybeUninit::<FILE_ATTRIBUTE_TAG_INFO>::zeroed();
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            handle.as_raw_handle(),
+            FileAttributeTagInfo,
+            info.as_mut_ptr().cast(),
+            std::mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "FileAttributeTagInfo failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let tag = unsafe { info.assume_init() }.ReparseTag;
+    let mut file_id = MaybeUninit::<FILE_ID_INFO>::zeroed();
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            handle.as_raw_handle(),
+            FileIdInfo,
+            file_id.as_mut_ptr().cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "FileIdInfo failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let file_id = unsafe { file_id.assume_init() };
+    if file_id.FileId.Identifier.iter().all(|byte| *byte == 0)
+        || file_id.FileId.Identifier.iter().all(|byte| *byte == u8::MAX)
+    {
+        return Err("FileIdInfo returned an unavailable 128-bit identifier sentinel".into());
+    }
+    let file_id_128 = file_id
+        .FileId
+        .Identifier
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(WindowsHandleIdentity {
+        reparse_tag: tag,
+        volume_serial_number: format!("{:016x}", file_id.VolumeSerialNumber),
+        file_id_128,
+    })
+}
+
+#[cfg(windows)]
+fn windows_cloud_files_identity(path: &Path) -> Result<WindowsHandleIdentity, String> {
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+    let identity = windows_handle_identity(path, FILE_FLAG_OPEN_REPARSE_POINT)?;
+    if identity.reparse_tag & 0xffff_0fff != 0x9000_001a {
+        return Err(format!(
+            "selected reparse tag {:#010x} is not Cloud Files",
+            identity.reparse_tag
+        ));
+    }
+    Ok(identity)
+}
+
+#[cfg(windows)]
+fn windows_require_expected_identity(
+    identity: &WindowsHandleIdentity,
+    volume_variable: &str,
+    file_id_variable: &str,
+    context: &str,
+) {
+    let expected_volume = std::env::var(volume_variable)
+        .unwrap_or_else(|_| panic!("F3_ENV_GATE={volume_variable}_NOT_SET"));
+    let expected_file_id = std::env::var(file_id_variable)
+        .unwrap_or_else(|_| panic!("F3_ENV_GATE={file_id_variable}_NOT_SET"));
+    assert_eq!(
+        identity.volume_serial_number, expected_volume,
+        "F3_ENV_GATE={context}_VOLUME_IDENTITY_CHANGED"
+    );
+    assert_eq!(
+        identity.file_id_128, expected_file_id,
+        "F3_ENV_GATE={context}_FILE_IDENTITY_CHANGED"
+    );
 }
 
 /// Must run on the primary OneDrive dev rig before ship. The environment
@@ -2561,17 +2716,91 @@ fn windows_dehydrated_payload_metadata_count(root: &Path) -> Result<(usize, usiz
 #[test]
 #[ignore = "requires a real dehydrated OneDrive recorder-metadata store on the dev rig"]
 fn windows_onedrive_dehydrated_recorder_store_binds_end_to_end_before_ship() {
+    let provider_state = std::env::var("BATTLE_PLAN_ONEDRIVE_SYNC_PROVIDER_STATE").or_else(|_| std::env::var("HOI4_ONEDRIVE_SYNC_PROVIDER_STATE"))
+        .expect("F3_ENV_GATE=ONEDRIVE_PROVIDER_STATE_NOT_SET: set enabled or disabled through the deployment acceptance runner");
+    assert!(
+        matches!(provider_state.as_str(), "enabled" | "disabled"),
+        "F3_ENV_GATE=ONEDRIVE_PROVIDER_STATE_INVALID: expected enabled or disabled"
+    );
     let path = std::env::var_os("BATTLE_PLAN_ONEDRIVE_DEHYDRATED_REPLAY_STORE").or_else(|| std::env::var_os("HOI4_ONEDRIVE_DEHYDRATED_REPLAY_STORE"))
         .map(PathBuf::from)
         .expect("F3_ENV_GATE=ONEDRIVE_STORE_ENV_NOT_SET: set BATTLE_PLAN_ONEDRIVE_DEHYDRATED_REPLAY_STORE to a genuinely dehydrated directory store");
-    let (scanned_files, dehydrated_files) = windows_dehydrated_payload_metadata_count(&path)
+    let (scanned_files, candidates) = windows_dehydrated_replay_snapshot_candidates(&path)
         .unwrap_or_else(|error| panic!("F3_ENV_GATE=ONEDRIVE_METADATA_PROBE_FAILED: {error}"));
     assert!(
-        dehydrated_files > 0,
-        "F3_ENV_GATE=ONEDRIVE_STORE_NOT_DEHYDRATED: metadata-only scan found {dehydrated_files} dehydrated payloads among {scanned_files} files; refusing a vacuous hydrated-store pass"
+        !candidates.is_empty(),
+        "F3_ENV_GATE=ONEDRIVE_REPLAY_SNAPSHOT_NOT_DEHYDRATED: metadata-only scan found no dehydrated <game>/*.snapshot.json payload among {scanned_files} files; refusing an unrelated-placeholder or hydrated-store pass"
     );
-    let timeline = WorldTimeline::open(open_recording(&path).unwrap()).unwrap();
-    let frame = timeline.frame(timeline.first_hour()).unwrap();
+    let selected_path = std::env::var("BATTLE_PLAN_ONEDRIVE_SELECTED_REPLAY_SNAPSHOT").or_else(|_| std::env::var("HOI4_ONEDRIVE_SELECTED_REPLAY_SNAPSHOT"))
+        .expect("F3_ENV_GATE=ONEDRIVE_SELECTED_SNAPSHOT_NOT_SET: deployment runner must select one exact game/snapshot.json placeholder");
+    assert!(
+        !selected_path.contains('\\') && selected_path.split('/').count() == 2,
+        "F3_ENV_GATE=ONEDRIVE_SELECTED_SNAPSHOT_INVALID: expected game/file.snapshot.json"
+    );
+    let (game, file) = candidates
+        .iter()
+        .find(|(game, file)| selected_path == format!("{game}/{file}"))
+        .expect("F3_ENV_GATE=ONEDRIVE_SELECTED_SNAPSHOT_NOT_DEHYDRATED: selected exact snapshot is absent from the fresh placeholder census");
+    let expected_tag_text = std::env::var("BATTLE_PLAN_ONEDRIVE_SELECTED_REPARSE_TAG").or_else(|_| std::env::var("HOI4_ONEDRIVE_SELECTED_REPARSE_TAG"))
+        .expect("F3_ENV_GATE=ONEDRIVE_SELECTED_REPARSE_TAG_NOT_SET");
+    let expected_tag = u32::from_str_radix(
+        expected_tag_text
+            .strip_prefix("0x")
+            .expect("selected reparse tag must use 0xhhhhhhhh form"),
+        16,
+    )
+    .expect("selected reparse tag must be hexadecimal");
+    let root_identity = windows_handle_identity(
+        &path,
+        windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS,
+    )
+    .unwrap_or_else(|error| panic!("F3_ENV_GATE=ONEDRIVE_STORE_IDENTITY_REJECTED: {error}"));
+    windows_require_expected_identity(
+        &root_identity,
+        "BATTLE_PLAN_ONEDRIVE_STORE_VOLUME_SERIAL_NUMBER",
+        "BATTLE_PLAN_ONEDRIVE_STORE_FILE_ID_128",
+        "ONEDRIVE_STORE",
+    );
+    let selected_identity = windows_cloud_files_identity(&path.join(game).join(file))
+        .unwrap_or_else(|error| panic!("F3_ENV_GATE=ONEDRIVE_CLOUD_TAG_REJECTED: {error}"));
+    assert_eq!(
+        selected_identity.reparse_tag, expected_tag,
+        "F3_ENV_GATE=ONEDRIVE_SELECTED_REPARSE_TAG_CHANGED"
+    );
+    windows_require_expected_identity(
+        &selected_identity,
+        "BATTLE_PLAN_ONEDRIVE_SELECTED_VOLUME_SERIAL_NUMBER",
+        "BATTLE_PLAN_ONEDRIVE_SELECTED_FILE_ID_128",
+        "ONEDRIVE_SELECTED",
+    );
+    let store = Store::open_directory(&path).unwrap();
+    let index = store.index(game).unwrap();
+    let selected = index
+        .snapshots
+        .iter()
+        .find(|entry| entry.file.as_str() == file.as_str())
+        .expect("dehydrated replay snapshot must be listed by its game index");
+    let selected_hour = selected
+        .hour_index
+        .expect("selected replay snapshot must carry an index hour");
+    if provider_state == "disabled" {
+        drop(store);
+        let timeline = WorldTimeline::open(open_recording_game(&path, game).unwrap()).unwrap();
+        let error = match timeline.frame(selected_hour) {
+            Ok(_) => panic!("disabled provider unexpectedly supplied replay-frame bytes"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, WorldError::Source(SourceError::Open(_))),
+            "disabled provider must surface through the replay source adapter: {error}"
+        );
+        return;
+    }
+    drop(store);
+    let timeline = WorldTimeline::open(open_recording_game(&path, game).unwrap()).unwrap();
+    let frame = timeline
+        .frame(selected_hour)
+        .expect("enabled sync provider failed to hydrate exact replay frame");
     let metadata = frame.session_metadata();
     assert!(
         matches!(&metadata.active_dlcs, Leaf::Measured(_)),

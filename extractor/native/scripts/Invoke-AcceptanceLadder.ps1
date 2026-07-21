@@ -15,14 +15,15 @@
                                   degrade, acceptance telemetry present.
       2. paused-short-proof     - paused game short capture (SOURCE_UNAVAILABLE
                                   degrade path), telemetry present.
-      3. speed5-short-proof     - speed-5 short capture: p95 frame time < 100 ms,
+      3. speed5-short-proof     - speed-5 short capture: max frame time < 100 ms,
                                   zero skipped + zero coalesced game hours.
       4. five-minute-full-roster- five-minute full-roster capture, hourly met, zero
                                   skipped hours, frame budget held.
       5. weak-pc-six-core       - six-core CPU-affinity-constrained capture (weak-PC
                                   emulation), same gates as the full-roster rung.
-      6. six-hour-soak          - six-hour soak: hourly met, zero skipped + zero
-                                  coalesced hours, frame budget held for the run.
+      6. six-hour-soak          - >=21,600-second soak: hourly met, zero skipped +
+                                  zero coalesced hours, elapsed/resource observations
+                                  receipt-bound, frame budget held for the run.
 
     This script orchestrates and can self-test the machinery. It never builds per
     rung: live launches pass -SkipBuild and reuse the final centrally built,
@@ -88,6 +89,9 @@ $ErrorActionPreference = "Stop"
 # declares `param([switch]$SelfTest)`, and dot-sourcing runs its param block in
 # THIS scope, which would otherwise reset $SelfTest to its (false) default.
 $runSelfTest = [bool]$SelfTest
+$script:SixHourSoakMinimumDurationSeconds = 21600.0
+$script:SixHourSoakMinimumElapsedUs = 21600000000L
+$script:SixHourSoakMinimumGameHours = 48
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $scriptDir "ProductionCapture.Validation.ps1")
@@ -106,8 +110,9 @@ elseif (-not [string]::IsNullOrWhiteSpace($(if (Test-Path Env:BATTLE_PLAN_LADDER
 # fail-closed ordering (Test-PredecessorsPassed) keys off a rung's POSITION HERE,
 # never off any mutable `order` value read from the state JSON. Each rung names
 # the capture it launches, a per-rung `proof` predicate it must independently
-# satisfy (empty = none beyond the full artifact gate), and whether it is a long
-# run that must carry the launcher's -AcknowledgeLongRun acknowledgement.
+# satisfy (empty = none beyond the full artifact gate). The Safe-launcher path
+# enforces >=21,600 seconds directly in its argument assembly and retained
+# elapsed proof.
 # ---------------------------------------------------------------------------
 
 function Get-LadderRungDefinitions {
@@ -126,7 +131,7 @@ function Get-LadderRungDefinitions {
         },
         [ordered]@{
             name        = "speed5-short-proof"
-            description = "speed-5 short capture: p95 frame < 100ms, zero skipped + zero coalesced hours"
+            description = "speed-5 short capture: max frame < 100ms, zero skipped + zero coalesced hours"
             captureMode = "ShortSpeed5"
             proof       = ""
         },
@@ -144,11 +149,10 @@ function Get-LadderRungDefinitions {
             proof         = ""
         },
         [ordered]@{
-            name              = "six-hour-soak"
-            description       = "six-hour soak: hourly met, zero skipped + zero coalesced hours, frame budget held"
-            captureMode       = "FullGame"
-            proof             = ""
-            acknowledgeLongRun = $true
+            name        = "six-hour-soak"
+            description = "six-hour soak: hourly met, zero skipped + zero coalesced hours, frame budget held"
+            captureMode = "FullGame"
+            proof       = "soak_elapsed"
         }
     )
 }
@@ -444,30 +448,6 @@ function ConvertTo-QuotedArgumentLine {
     }) -join ' ')
 }
 
-function Get-CaptureLauncherArgs {
-    <#
-        The PowerShell child-process argument array for one rung's capture launch.
-        The FullGame (six-hour) rung is a deliberate long run, so it — and ONLY it
-        — carries -AcknowledgeLongRun, without which the launcher's turnaround
-        guard rejects it. All other rungs run under the default guard.
-    #>
-    param(
-        [Parameter(Mandatory = $true)]$RungDef,
-        [Parameter(Mandatory = $true)][string]$CaptureScript,
-        [Parameter(Mandatory = $true)][string]$RunDir
-    )
-    $args = @(
-        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-        "-File", $CaptureScript,
-        "-Mode", [string]$RungDef.captureMode,
-        "-OutDir", $RunDir
-    )
-    if ($RungDef.Contains("acknowledgeLongRun") -and $RungDef.acknowledgeLongRun -eq $true) {
-        $args += "-AcknowledgeLongRun"
-    }
-    return $args
-}
-
 # ---------------------------------------------------------------------------
 # Bound-report producer pin plumbing (F6 graded rungs). Start-Hoi4ProductionCapture
 # Safe.ps1 emits the attempt-bound production_validation_report.json the ladder grades
@@ -504,7 +484,7 @@ function Get-SafeLauncherPins {
         to the Safe launcher.
         Returns the parsed pins object. Optional passthrough knobs (DurationSeconds,
         MinGameHours, EmittedTokensPath, TokenOmissionsPath, PythonExe, AttemptStateRoot,
-        AffinityTarget) are returned as-is when present.
+        AffinityTarget, DeploymentProfilePath) are returned as-is when present.
     #>
     param([Parameter(Mandatory = $true)][string]$PinsFile)
     if ([string]::IsNullOrWhiteSpace($PinsFile) -or -not (Test-Path -LiteralPath $PinsFile -PathType Leaf)) {
@@ -553,10 +533,43 @@ function Get-SafeLauncherArgs {
     foreach ($pinName in $script:SafeLauncherRequiredStringPins) {
         $a += @(("-" + $pinName), ([string](Get-ObjectProperty $Pins $pinName)))
     }
-    foreach ($opt in @("DurationSeconds", "MinGameHours", "EmittedTokensPath", "TokenOmissionsPath", "PythonExe", "AttemptStateRoot")) {
+    if ([string]$RungDef.name -eq "six-hour-soak") {
+        $deploymentProfilePath = Get-ObjectProperty $Pins "DeploymentProfilePath"
+        if ($deploymentProfilePath -isnot [string] -or [string]::IsNullOrWhiteSpace($deploymentProfilePath)) {
+            throw "six-hour-soak requires a nonblank DeploymentProfilePath pin; fail-closed"
+        }
+        $durationValue = Get-ObjectProperty $Pins "DurationSeconds"
+        if ($null -eq $durationValue -or [string]::IsNullOrWhiteSpace([string]$durationValue)) {
+            $durationValue = $script:SixHourSoakMinimumDurationSeconds
+        }
+        if (-not (Test-IsJsonNumber $durationValue) -or [double]$durationValue -lt $script:SixHourSoakMinimumDurationSeconds) {
+            throw "six-hour-soak requires numeric DurationSeconds >= $($script:SixHourSoakMinimumDurationSeconds); fail-closed"
+        }
+        $minHoursValue = Get-ObjectProperty $Pins "MinGameHours"
+        if ($null -eq $minHoursValue -or [string]::IsNullOrWhiteSpace([string]$minHoursValue)) {
+            $minHoursValue = $script:SixHourSoakMinimumGameHours
+        }
+        if (-not (Test-IsJsonInteger $minHoursValue) -or [int64]$minHoursValue -lt $script:SixHourSoakMinimumGameHours) {
+            throw "six-hour-soak requires integer MinGameHours >= $($script:SixHourSoakMinimumGameHours); fail-closed"
+        }
+        $a += @(
+            "-DurationSeconds", ([string]$durationValue),
+            "-MinGameHours", ([string]$minHoursValue),
+            "-DeploymentProfilePath", $deploymentProfilePath
+        )
+    }
+    foreach ($opt in @("EmittedTokensPath", "TokenOmissionsPath", "PythonExe", "AttemptStateRoot")) {
         $val = Get-ObjectProperty $Pins $opt
         if ($null -ne $val -and -not ([string]::IsNullOrWhiteSpace([string]$val))) {
             $a += @(("-" + $opt), ([string]$val))
+        }
+    }
+    if ([string]$RungDef.name -ne "six-hour-soak") {
+        foreach ($opt in @("DurationSeconds", "MinGameHours")) {
+            $val = Get-ObjectProperty $Pins $opt
+            if ($null -ne $val -and -not ([string]::IsNullOrWhiteSpace([string]$val))) {
+                $a += @(("-" + $opt), ([string]$val))
+            }
         }
     }
     $proofKind = Get-RungProofKind -RungDef $RungDef
@@ -583,9 +596,9 @@ function Get-RungBoundProducerOwed {
         ladder grade accepts it. The four production-performance rungs use the same
         Safe-launcher binding without an acceptance-test mode.
 
-        The Get-CaptureLauncherArgs / ConvertTo-QuotedArgumentLine machinery is
-        retained (and unit-tested) as the historical launch seam. Current live rungs
-        use Get-SafeLauncherArgs.
+        Current live rungs use Get-SafeLauncherArgs. The obsolete generic launch
+        helper was removed because it described a different script contract and had
+        no production caller.
     #>
     param([Parameter(Mandatory = $true)]$RungDef)
     # Every rung now has a real Safe-launcher producer and an independent
@@ -938,6 +951,175 @@ function Get-ArtifactGateVerdict {
     return [pscustomobject]@{ Passed = ($problems.Count -eq 0); Problems = $problems.ToArray() }
 }
 
+function Get-SoakElapsedObservation {
+    <# Re-derive the six-hour wall/monotonic and requested-duration proof. #>
+    param(
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)][string]$RunDir
+    )
+    $problems = [System.Collections.Generic.List[string]]::new()
+    $durationMs = Get-ObjectProperty $Manifest "duration_ms"
+    if (-not (Test-IsJsonInteger $durationMs) -or [int64]$durationMs -lt ([int64]($script:SixHourSoakMinimumDurationSeconds * 1000))) {
+        $problems.Add("soak_manifest_duration_below_six_hours")
+    }
+    $wall = (Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.clock_skew.wall_elapsed_us").Value
+    $mono = (Resolve-JsonPath -Manifest $Manifest -Path "acceptance_telemetry.clock_skew.mono_elapsed_us").Value
+    foreach ($row in @(@("wall", $wall), @("mono", $mono))) {
+        if (-not (Test-IsJsonInteger $row[1]) -or [int64]$row[1] -lt $script:SixHourSoakMinimumElapsedUs) {
+            $problems.Add("soak_$($row[0])_elapsed_below_six_hours")
+        }
+    }
+    $peakPrivateBytes = (Resolve-JsonPath -Manifest $Manifest -Path "host_finalize.peak_private_bytes").Value
+    $peakWorkingSetBytes = (Resolve-JsonPath -Manifest $Manifest -Path "host_finalize.peak_working_set_bytes").Value
+    $streamBytes = (Resolve-JsonPath -Manifest $Manifest -Path "host_finalize.stream_bytes").Value
+    foreach ($row in @(@("peak_private_bytes", $peakPrivateBytes), @("peak_working_set_bytes", $peakWorkingSetBytes), @("stream_bytes", $streamBytes))) {
+        if (-not (Test-IsJsonInteger $row[1]) -or [int64]$row[1] -le 0) {
+            $problems.Add("soak_$($row[0])_missing_or_nonpositive")
+        }
+    }
+    $planPath = Join-Path $RunDir "production_capture_plan.json"
+    $requestedDurationSeconds = $null
+    $requestedMinGameHours = $null
+    $deploymentProfileFile = $null
+    $deploymentProfileSha256 = $null
+    $deploymentProfileSourceFile = $null
+    try {
+        $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+        $arguments = @(Get-ObjectProperty $plan "recorder_arguments")
+        $requestedDurationSeconds = [Convert]::ToDouble(
+            (Get-RecordedArgumentValue -Arguments $arguments -Name "--duration-s"),
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+        $requestedMinGameHours = [Convert]::ToInt64(
+            (Get-RecordedArgumentValue -Arguments $arguments -Name "--min-game-hours"),
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+        if ([double]::IsNaN($requestedDurationSeconds) -or [double]::IsInfinity($requestedDurationSeconds) -or $requestedDurationSeconds -lt $script:SixHourSoakMinimumDurationSeconds) {
+            $problems.Add("soak_plan_duration_below_six_hours")
+        }
+        if ($requestedMinGameHours -lt $script:SixHourSoakMinimumGameHours) {
+            $problems.Add("soak_plan_min_game_hours_below_required")
+        }
+        $deploymentProfileSourceFile = Get-ObjectProperty $plan "deployment_profile_source_file"
+        $deploymentProfileFile = Get-ObjectProperty $plan "deployment_profile_file"
+        $deploymentProfileSha256 = Get-ObjectProperty $plan "deployment_profile_sha256"
+        if ($deploymentProfileSourceFile -isnot [string] -or [string]::IsNullOrWhiteSpace($deploymentProfileSourceFile) -or
+            [IO.Path]::GetFileName($deploymentProfileSourceFile) -cne $deploymentProfileSourceFile) {
+            $problems.Add("soak_deployment_profile_source_file_not_portable")
+        }
+        if ($deploymentProfileFile -isnot [string] -or [string]::IsNullOrWhiteSpace($deploymentProfileFile) -or
+            [IO.Path]::GetFileName($deploymentProfileFile) -cne $deploymentProfileFile) {
+            $problems.Add("soak_deployment_profile_file_not_portable")
+        }
+        if ($deploymentProfileSha256 -isnot [string] -or $deploymentProfileSha256 -cnotmatch '^[0-9a-f]{64}$') {
+            $problems.Add("soak_deployment_profile_sha256_invalid")
+        } elseif ($deploymentProfileFile -is [string] -and [IO.Path]::GetFileName($deploymentProfileFile) -ceq $deploymentProfileFile) {
+            $retainedDeploymentProfilePath = Join-Path $RunDir $deploymentProfileFile
+            if (-not (Test-Path -LiteralPath $retainedDeploymentProfilePath -PathType Leaf) -or
+                (Get-FileHash -LiteralPath $retainedDeploymentProfilePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $deploymentProfileSha256) {
+                $problems.Add("soak_retained_deployment_profile_hash_mismatch")
+            }
+        }
+    } catch {
+        $problems.Add("soak_capture_plan_duration_unreadable: $($_.Exception.Message)")
+    }
+    return [pscustomobject]@{
+        Passed = ($problems.Count -eq 0)
+        Problems = $problems.ToArray()
+        DurationMs = $durationMs
+        WallElapsedUs = $wall
+        MonoElapsedUs = $mono
+        RequestedDurationSeconds = $requestedDurationSeconds
+        RequestedMinGameHours = $requestedMinGameHours
+        DeploymentProfileSourceFile = $deploymentProfileSourceFile
+        DeploymentProfileFile = $deploymentProfileFile
+        DeploymentProfileSha256 = $deploymentProfileSha256
+        PeakPrivateBytes = $peakPrivateBytes
+        PeakWorkingSetBytes = $peakWorkingSetBytes
+        StreamBytes = $streamBytes
+    }
+}
+
+function Write-SoakAcceptanceReceipt {
+    <# Publish one immutable, attempt-bound six-hour observation receipt. #>
+    param([Parameter(Mandatory = $true)][string]$RunDir)
+    $path = Join-Path $RunDir "six_hour_soak_acceptance_receipt.json"
+    if (Test-Path -LiteralPath $path) { throw "soak acceptance receipt already exists: $path" }
+    $manifestPath = Join-Path $RunDir "native_session_manifest.json"
+    $planPath = Join-Path $RunDir "production_capture_plan.json"
+    $manifest = Read-CaptureManifest -RunDir $RunDir
+    $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+    $observation = Get-SoakElapsedObservation -Manifest $manifest -RunDir $RunDir
+    if (-not $observation.Passed) { throw "cannot publish soak receipt: $($observation.Problems -join '; ')" }
+    $receipt = [ordered]@{
+        schema = "battle-plan.six_hour_soak_acceptance.v1"
+        admissible_for_production = $true
+        rung = "six-hour-soak"
+        capture_id = Get-ObjectProperty $plan "capture_id"
+        session_id = Get-ObjectProperty $manifest "session_id"
+        manifest_sha256 = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        capture_plan_sha256 = (Get-FileHash -LiteralPath $planPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        requested_duration_seconds = $observation.RequestedDurationSeconds
+        requested_min_game_hours = $observation.RequestedMinGameHours
+        deployment_profile_source_file = $observation.DeploymentProfileSourceFile
+        deployment_profile_file = $observation.DeploymentProfileFile
+        deployment_profile_sha256 = $observation.DeploymentProfileSha256
+        manifest_duration_ms = $observation.DurationMs
+        wall_elapsed_us = $observation.WallElapsedUs
+        mono_elapsed_us = $observation.MonoElapsedUs
+        peak_private_bytes = $observation.PeakPrivateBytes
+        peak_working_set_bytes = $observation.PeakWorkingSetBytes
+        stream_bytes = $observation.StreamBytes
+        artifact_gate = "regraded_in_process"
+    }
+    $temp = "$path.$([guid]::NewGuid().ToString('N')).tmp"
+    $utf8 = [Text.UTF8Encoding]::new($false)
+    [IO.File]::WriteAllText($temp, ($receipt | ConvertTo-Json -Depth 8), $utf8)
+    $stream = [IO.File]::Open($temp, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try { $stream.Flush($true) } finally { $stream.Dispose() }
+    Move-Item -LiteralPath $temp -Destination $path
+    return $path
+}
+
+function Test-SoakAcceptanceReceipt {
+    param([Parameter(Mandatory = $true)][string]$RunDir)
+    $problems = [System.Collections.Generic.List[string]]::new()
+    $path = Join-Path $RunDir "six_hour_soak_acceptance_receipt.json"
+    try { $receipt = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json }
+    catch { return [pscustomobject]@{ Passed = $false; Problems = @("soak_acceptance_receipt_missing_or_unreadable") } }
+    $manifestPath = Join-Path $RunDir "native_session_manifest.json"
+    $planPath = Join-Path $RunDir "production_capture_plan.json"
+    if ([string](Get-ObjectProperty $receipt "schema") -cne "battle-plan.six_hour_soak_acceptance.v1") { $problems.Add("soak_receipt_schema_invalid") }
+    if ((Get-ObjectProperty $receipt "admissible_for_production") -isnot [bool] -or (Get-ObjectProperty $receipt "admissible_for_production") -ne $true) { $problems.Add("soak_receipt_not_production_admissible") }
+    if ([string](Get-ObjectProperty $receipt "rung") -cne "six-hour-soak") { $problems.Add("soak_receipt_rung_invalid") }
+    if ([string](Get-ObjectProperty $receipt "manifest_sha256") -cne (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()) { $problems.Add("soak_receipt_manifest_hash_mismatch") }
+    if ([string](Get-ObjectProperty $receipt "capture_plan_sha256") -cne (Get-FileHash -LiteralPath $planPath -Algorithm SHA256).Hash.ToLowerInvariant()) { $problems.Add("soak_receipt_plan_hash_mismatch") }
+    $manifest = Read-CaptureManifest -RunDir $RunDir
+    $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+    $receiptCaptureId = Get-ObjectProperty $receipt "capture_id"
+    $receiptSessionId = Get-ObjectProperty $receipt "session_id"
+    if ($receiptCaptureId -isnot [string] -or [string]::IsNullOrWhiteSpace($receiptCaptureId) -or $receiptCaptureId -cne [string](Get-ObjectProperty $plan "capture_id")) { $problems.Add("soak_receipt_capture_id_mismatch") }
+    if ($receiptSessionId -isnot [string] -or [string]::IsNullOrWhiteSpace($receiptSessionId) -or $receiptSessionId -cne [string](Get-ObjectProperty $manifest "session_id")) { $problems.Add("soak_receipt_session_id_mismatch") }
+    $observation = Get-SoakElapsedObservation -Manifest $manifest -RunDir $RunDir
+    foreach ($problem in $observation.Problems) { $problems.Add($problem) }
+    foreach ($field in @("manifest_duration_ms", "wall_elapsed_us", "mono_elapsed_us", "peak_private_bytes", "peak_working_set_bytes", "stream_bytes")) {
+        if (-not (Test-IsJsonInteger (Get-ObjectProperty $receipt $field))) { $problems.Add("soak_receipt_$field`_invalid") }
+    }
+    if ((Get-ObjectProperty $receipt "manifest_duration_ms") -ne $observation.DurationMs) { $problems.Add("soak_receipt_manifest_duration_mismatch") }
+    if ((Get-ObjectProperty $receipt "wall_elapsed_us") -ne $observation.WallElapsedUs) { $problems.Add("soak_receipt_wall_elapsed_mismatch") }
+    if ((Get-ObjectProperty $receipt "mono_elapsed_us") -ne $observation.MonoElapsedUs) { $problems.Add("soak_receipt_mono_elapsed_mismatch") }
+    if ((Get-ObjectProperty $receipt "peak_private_bytes") -ne $observation.PeakPrivateBytes) { $problems.Add("soak_receipt_peak_private_bytes_mismatch") }
+    if ((Get-ObjectProperty $receipt "peak_working_set_bytes") -ne $observation.PeakWorkingSetBytes) { $problems.Add("soak_receipt_peak_working_set_bytes_mismatch") }
+    if ((Get-ObjectProperty $receipt "stream_bytes") -ne $observation.StreamBytes) { $problems.Add("soak_receipt_stream_bytes_mismatch") }
+    if ((Get-ObjectProperty $receipt "requested_duration_seconds") -ne $observation.RequestedDurationSeconds) { $problems.Add("soak_receipt_requested_duration_mismatch") }
+    if ((Get-ObjectProperty $receipt "requested_min_game_hours") -ne $observation.RequestedMinGameHours) { $problems.Add("soak_receipt_min_game_hours_mismatch") }
+    if ([string](Get-ObjectProperty $receipt "deployment_profile_source_file") -cne [string]$observation.DeploymentProfileSourceFile) { $problems.Add("soak_receipt_deployment_profile_source_file_mismatch") }
+    if ([string](Get-ObjectProperty $receipt "deployment_profile_file") -cne [string]$observation.DeploymentProfileFile) { $problems.Add("soak_receipt_deployment_profile_file_mismatch") }
+    if ([string](Get-ObjectProperty $receipt "deployment_profile_sha256") -cne [string]$observation.DeploymentProfileSha256) { $problems.Add("soak_receipt_deployment_profile_sha256_mismatch") }
+    if ([string](Get-ObjectProperty $receipt "artifact_gate") -cne "regraded_in_process") { $problems.Add("soak_receipt_artifact_gate_invalid") }
+    return [pscustomobject]@{ Passed = ($problems.Count -eq 0); Problems = $problems.ToArray() }
+}
+
 function Test-LadderRungProof {
     <#
         The per-rung condition that must be INDEPENDENTLY proven from the manifest,
@@ -1001,6 +1183,13 @@ function Test-LadderRungProof {
     } elseif ($kind -eq "paused") {
         foreach ($f in @("observed_paused", "source_unavailable_degrade")) {
             Test-ProofFlag -Manifest $Manifest -Path "pause_proof.$f" -Label "paused_evidence_not_available" -Problems $problems
+        }
+    } elseif ($kind -eq "soak_elapsed") {
+        if ([string]::IsNullOrWhiteSpace($RunDir)) {
+            $problems.Add("soak_run_dir_missing")
+        } else {
+            $elapsed = Get-SoakElapsedObservation -Manifest $Manifest -RunDir $RunDir
+            foreach ($problem in $elapsed.Problems) { $problems.Add($problem) }
         }
     }
 
@@ -1227,6 +1416,12 @@ function Test-RungBoundVerdict {
             return [pscustomobject]@{ Passed = $false; Reason = "bound_affinity_proof_no_longer_verifies: $($affinity.Problems -join '; ')" }
         }
     }
+    if ($Name -eq "six-hour-soak") {
+        $soakReceipt = Test-SoakAcceptanceReceipt -RunDir $runDir
+        if (-not $soakReceipt.Passed) {
+            return [pscustomobject]@{ Passed = $false; Reason = "bound_soak_receipt_no_longer_verifies: $($soakReceipt.Problems -join '; ')" }
+        }
+    }
     return [pscustomobject]@{ Passed = $true; Reason = $null }
 }
 
@@ -1368,6 +1563,10 @@ function Invoke-LadderRung {
     }
     $affinity = Test-LadderAffinityProof -RungDef $rungDef -RunDir $producedDir
     foreach ($p in $affinity.Problems) { $problems.Add($p) }
+    if ($Name -eq "six-hour-soak" -and $problems.Count -eq 0) {
+        try { Write-SoakAcceptanceReceipt -RunDir $producedDir | Out-Null }
+        catch { $problems.Add("soak_acceptance_receipt_publish_failed: $($_.Exception.Message)") }
+    }
 
     $verdict = [pscustomobject]@{
         Passed   = ($problems.Count -eq 0)
@@ -1471,9 +1670,14 @@ function New-FakeCaptureForRung {
     )
     $sessionId = [guid]::NewGuid().ToString()
     $captureId = "capture-" + [guid]::NewGuid().ToString("N").Substring(0, 12)
+    $isSoak = $RungName -eq "six-hour-soak"
+    $fakeDurationMs = if ($isSoak) { 21600000L } else { 300000L }
+    $fakeElapsedUs = if ($isSoak) { 21600000100L } else { 300000100L }
+    $fakeDurationSeconds = if ($isSoak) { "21600" } else { "300" }
     $manifest = [ordered]@{
         schema              = "native_collector_session_v1"
         session_id          = $sessionId
+        duration_ms         = $fakeDurationMs
         skipped_game_hours  = 0
         hourly_requirement  = [ordered]@{ required = $true; met = $true; problems = @() }
         compact_stream      = [ordered]@{
@@ -1482,8 +1686,9 @@ function New-FakeCaptureForRung {
         }
         acceptance_telemetry = [ordered]@{
             sink_write_us = [ordered]@{ count = 10; avg = 25.0; p50 = 20; p95 = 60; p99 = 100; max = 120 }
-            clock_skew    = [ordered]@{ wall_elapsed_us = 300000000; mono_elapsed_us = 300000100; drift_us = -100; wall_monotonic_ok = $true }
+            clock_skew    = [ordered]@{ wall_elapsed_us = ($fakeElapsedUs - 100); mono_elapsed_us = $fakeElapsedUs; drift_us = -100; wall_monotonic_ok = $true }
         }
+        host_finalize = [ordered]@{ peak_private_bytes = 268435456; peak_working_set_bytes = 201326592; stream_bytes = 1048576 }
     }
     if ($ValidatorReject) {
         # No-data capture: count>0 but null percentiles. The in-process manifest gate
@@ -1505,7 +1710,19 @@ function New-FakeCaptureForRung {
 
     # Capture plan: records the attempt's capture_id/session_id AND the rung this run
     # is for (finding 3 identity binding), as a real bound producer must.
-    $plan = [ordered]@{ schema = "battle-plan.production_capture_plan.v1"; capture_id = $captureId; session_id = $sessionId; pid = 4242; process_creation_filetime_utc = 133000000000000000; rung = $RungName }
+    $plan = [ordered]@{
+        schema = "battle-plan.production_capture_plan.v1"; capture_id = $captureId
+        session_id = $sessionId; pid = 4242; process_creation_filetime_utc = 133000000000000000
+        rung = $RungName
+        recorder_arguments = @("--duration-s", $fakeDurationSeconds, "--min-game-hours", "48")
+    }
+    if ($isSoak) {
+        $fakeProfilePath = Join-Path $RunDir "selected_deployment_profile.bin"
+        Set-Content -LiteralPath $fakeProfilePath -Value '{"profile":"self-test"}' -Encoding UTF8
+        $plan["deployment_profile_source_file"] = "self_test_profile.json"
+        $plan["deployment_profile_file"] = "selected_deployment_profile.bin"
+        $plan["deployment_profile_sha256"] = (Get-FileHash -LiteralPath $fakeProfilePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
     $plan | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $RunDir "production_capture_plan.json") -Encoding UTF8
     if ($RungName -eq "weak-pc-six-core") {
         [ordered]@{
@@ -1662,16 +1879,7 @@ function Invoke-LadderSelfTest {
         catch { $threwMut = $true }
         Assert-True $threwMut "running a forged-order rung ahead of its predecessors must throw fail-closed"
 
-        # 9. F6: only the FullGame (six-hour) rung carries -AcknowledgeLongRun.
-        $defs = Get-LadderRungDefinitions
-        $sixHour = @($defs | Where-Object { $_.name -eq "six-hour-soak" })[0]
-        $speed5 = @($defs | Where-Object { $_.name -eq "speed5-short-proof" })[0]
-        $sixHourArgs = Get-CaptureLauncherArgs -RungDef $sixHour -CaptureScript "C:\some path\launch.ps1" -RunDir "C:\out dir"
-        $speed5Args = Get-CaptureLauncherArgs -RungDef $speed5 -CaptureScript "C:\some path\launch.ps1" -RunDir "C:\out dir"
-        Assert-True ($sixHourArgs -contains "-AcknowledgeLongRun") "the six-hour FullGame rung must pass -AcknowledgeLongRun"
-        Assert-True (-not ($speed5Args -contains "-AcknowledgeLongRun")) "short rungs must NOT pass -AcknowledgeLongRun"
-
-        # 10. F1: space-containing path args are correctly quoted, and a child
+        # 9. F1: space-containing path args are correctly quoted, and a child
         #     PowerShell process receives them intact (mirrors the real repo path
         #     under "...\Documents\Paradox Interactive\Hearts of Iron IV\...").
         $spacedDir = Join-Path $tmp "Paradox Interactive\Hearts of Iron IV"
@@ -2002,7 +2210,22 @@ Set-Content -LiteralPath $Sentinel -Value ("A=[$A]`nB=[$B]`nC=[$C]") -Encoding U
             $dstPlanPath = Join-Path $dst "production_capture_plan.json"
             $dstPlan = Get-Content -LiteralPath $dstPlanPath -Raw | ConvertFrom-Json
             $dstPlan.rung = $r.name
+            if ($r.name -eq "six-hour-soak") {
+                $dstPlan.recorder_arguments = @("--duration-s", "21600", "--min-game-hours", "48")
+                $dstProfilePath = Join-Path $dst "selected_deployment_profile.bin"
+                Set-Content -LiteralPath $dstProfilePath -Value '{"profile":"self-test"}' -Encoding UTF8
+                $dstPlan | Add-Member -NotePropertyName deployment_profile_source_file -NotePropertyValue "self_test_profile.json"
+                $dstPlan | Add-Member -NotePropertyName deployment_profile_file -NotePropertyValue "selected_deployment_profile.bin"
+                $dstPlan | Add-Member -NotePropertyName deployment_profile_sha256 -NotePropertyValue ((Get-FileHash -LiteralPath $dstProfilePath -Algorithm SHA256).Hash.ToLowerInvariant())
+                $dstManifestPath = Join-Path $dst "native_session_manifest.json"
+                $dstManifest = Get-Content -LiteralPath $dstManifestPath -Raw | ConvertFrom-Json
+                $dstManifest.duration_ms = 21600000L
+                $dstManifest.acceptance_telemetry.clock_skew.wall_elapsed_us = 21600000000L
+                $dstManifest.acceptance_telemetry.clock_skew.mono_elapsed_us = 21600000100L
+                $dstManifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $dstManifestPath -Encoding UTF8
+            }
             $dstPlan | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $dstPlanPath -Encoding UTF8
+            if ($r.name -eq "six-hour-soak") { Write-SoakAcceptanceReceipt -RunDir $dst | Out-Null }
             $r.status = "passed"; $r.run_dir = $dst; $r.verdict_utc = (Get-Date).ToUniversalTime().ToString("o")
         }
         Save-LadderState -State $cloneState -StateFile $cloneFile
@@ -2157,6 +2380,21 @@ Set-Content -LiteralPath $Sentinel -Value ("A=[$A]`nB=[$B]`nC=[$C]") -Encoding U
         Assert-True ($safeArgsAssembled -contains "-DurationSeconds" -and $safeArgsAssembled -contains "300") "an optional knob present in the pins must be forwarded"
         Assert-True ($safeArgsAssembled -contains "-AllowExistingEmptyOutDir") "arg assembly must explicitly hand off the ladder's fresh empty run directory"
         Assert-True ($safeArgsAssembled -contains "-SkipBuild") "each rung must reuse the final prebuilt binaries instead of compiling per rung"
+
+        $soakDef = @(Get-LadderRungDefinitions | Where-Object { $_.name -eq "six-hour-soak" })[0]
+        $shortSoakPins = ($parsedPins | ConvertTo-Json -Depth 8 | ConvertFrom-Json)
+        $shortSoakPins | Add-Member -NotePropertyName DeploymentProfilePath -NotePropertyValue (Join-Path $tmp "selected_deployment_profile.json")
+        $threwShortSoak = $false
+        try { Get-SafeLauncherArgs -RungDef $soakDef -CaptureScript "C:\capture.ps1" -Pins $shortSoakPins -RunDir "D:\soak" | Out-Null }
+        catch { $threwShortSoak = $true }
+        Assert-True $threwShortSoak "six-hour soak must reject a 300-second pins override"
+        $soakPins = ($parsedPins | ConvertTo-Json -Depth 8 | ConvertFrom-Json)
+        $soakPins.DurationSeconds = 21600
+        $soakPins | Add-Member -NotePropertyName MinGameHours -NotePropertyValue 48
+        $soakPins | Add-Member -NotePropertyName DeploymentProfilePath -NotePropertyValue (Join-Path $tmp "selected_deployment_profile.json")
+        $soakArgs = Get-SafeLauncherArgs -RungDef $soakDef -CaptureScript "C:\capture.ps1" -Pins $soakPins -RunDir "D:\soak"
+        Assert-True ($soakArgs -contains "21600") "six-hour soak must carry an explicit >=21600-second duration"
+        Assert-True ($soakArgs -contains "-DeploymentProfilePath") "six-hour soak must bind the selected deployment profile"
 
         # 27. Owed-producer mapping post-wiring: all rungs have a Safe-launcher
         #     producer plus independent in-process re-grade.

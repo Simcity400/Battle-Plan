@@ -215,9 +215,11 @@ blends by fade. Files-only degrade: the deterministic per-region
 visibly missing Eastern-Front accumulation, but deterministic, mod-aware,
 never crashes).
 
-**STATUS (reconciled 2026-07-09):** the per-region weather stream is
-extractor-side LANDED (`map._r2_weather_live`, `world_fold.rs:2459`, with
-region intensity/phenomenon fields) -- replay-side ingest pending. The
+**STATUS (reconciled 2026-07-20):** the per-region weather stream is
+end-to-end LANDED (`map._r2_weather_live` producer/fold/schema/replay). Replay
+requires all 305 region identities and derives `weather_kind` only from the
+exact named flags; compact-v1 `+0x78` is retained as an activity diagnostic,
+not treated as an enum. The
 ACCUMULATED snow/mud ground state (the SnowMudData ask above, incl. the
 R-SNOWMUD texture-snapshot alternative) remains OPEN.
 

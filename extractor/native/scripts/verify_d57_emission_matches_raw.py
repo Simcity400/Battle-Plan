@@ -14,11 +14,9 @@ The raw-canonical ruling (I1_D57_SPEED_EVIDENCE.md §7, OWNER DECISION 2026-07-1
 the wire/canonical datum is the RAW slot `0..4` straight out of engine memory
 (`CGameState+0x4BC`); the displayed `1..5` is a derived consumer view
 (`displayed = raw + 1`) that is NEVER stored. The collector honours this: it
-emits `SessionEventRow{kind: GameSpeed, value_i32: <raw 0..4>}`
-(collector/src/lib.rs:26929-26942), where the value comes from
-`read_domain57_game_speed()` which fail-closes any word outside
-`0..=DOMAIN57_MAX_GAME_SPEED (=4)` (collector/src/lib.rs:27210-27222;
-compact_contract/src/build_profile.rs:94,102).
+    emits `SessionEventRow{kind: GameSpeed, value_i32: <raw 0..4>}`, where the value comes from
+    `read_domain57_game_speed()` which fail-closes any word outside
+    `0..=DOMAIN57_MAX_GAME_SPEED (=4)`.
 
 This harness re-derives the ground-truth raw word for each of the five UI speed
 states from the SEALED, VERIFIED probe transcript (the probe recorded
@@ -70,10 +68,11 @@ domain-57 .bin stream today: the only stream-gate binary,
 compact_replay_verification_gates, validates a whole recorder --run-dir, not a
 bytes stream, so the checks are reproduced here rather than shelled out.)
 
-Activation: `DOMAIN57_GAME_SPEED_READER_DEFAULT_ENABLED = false`
-(build_profile.rs:98). The emission exists ONLY under the collector's EXPLICIT
-OPT-IN (Domain57GameSpeedMode != Disabled; collector/src/lib.rs:3044-3193,26925).
-This harness does NOT change that flag; it consumes an opt-in capture's records.
+Activation: `DOMAIN57_GAME_SPEED_READER_DEFAULT_ENABLED = true` for the exact
+a729 profile. Ordinary scheduled D57 production still requires the same-process,
+transcript-bound v2 control; the only no-transcript exception is the explicit
+debug X12 suspended-early-launch evidence topology. This harness does not alter
+either gate; it consumes an admitted capture's records.
 Every emission frame that carries a GameSpeed row must therefore also carry
 SOURCE_FLAG_SESSION_ROOT_VALIDATED and must NOT be a proof fixture -- a genuine
 opt-in production emission, not a hand-built stream.

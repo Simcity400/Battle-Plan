@@ -38,9 +38,11 @@ primary-agent action.
 - `duplex_session/rollover_fs.rs` is now the concrete H4CR storage owner. Its
   data and control handles share one guarded state: complete records remain
   contiguous, buffered records may drain only through the advertised CRP1
-  boundary, the old file is synced and renamed before the next empty file is
-  created and synced, and the exact candidate CID1 is synced before it can be
-  handed to the second CFA1 barrier. The durable JSON state retains each sealed
+  boundary, the old file is synced and renamed with a Windows write-through
+  namespace transition before the next empty file is created and synced, and
+  the exact candidate CID1 is synced before it can be handed to the second CFA1
+  barrier. Any record write/sync failure terminalizes the shared store before
+  another record can be admitted. The durable JSON state retains each sealed
   stream's frontier, CID1 digests, and whole-file SHA-256; recovery recomputes
   all of them. Immutable rejection receipts preserve refused proposals.
 - The H4CT worker now has one rollover-aware receive router. It completes the
@@ -60,7 +62,10 @@ primary-agent action.
   or same-pair clock rollback before world emission and executes the existing
   CRP1/CRA1/new-CID1/second-CFA1 coordinator. Sequence numbering and first-world
   proof gating restart only after the second CFA1 is accepted. Uncertain reads
-  and one-component conflicts remain terminal.
+  and one-component conflicts remain terminal and emit an exact bound CIF1;
+  world data stops until its durable CIA1 is observed. Initial identity failure
+  is also arbitrated against the first H4CR record, so data-pipe EOF cannot race
+  the unbound CIF1/CIA1 journal transaction.
 - Recorder main selects the filesystem rollover store for the rollover
   capability, seals every logical stream, and re-admits the exact ordered set
   from durable state before packaging. Each member passes the ordinary summary,
@@ -68,6 +73,11 @@ primary-agent action.
   set descriptor is published atomically only after all member manifests and
   packages exist; completed raw-state recovery can mechanically recreate a
   missing raw descriptor after a crash.
+- Each package-set member binds an immutable copy of the exact
+  `recorder_manifest` bytes authenticated from its sealed replay container.
+  Post-pack host timing/verification telemetry remains in the live run manifest
+  and cannot replace the portable authority or create a manifest/container
+  split.
 - The shipped replay opener recognizes the package-set descriptor and requires
   an explicit logical-stream selection. It verifies the hashed raw descriptor,
   every CRP1 transition, the selected manifest/package pair, and refuses

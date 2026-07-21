@@ -20,6 +20,12 @@ def sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def canonical_text_sha(path: Path) -> str:
+    text = path.read_text(encoding="utf-8", errors="strict")
+    payload = text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def main() -> int:
     ui10_run = subprocess.run(
         [
@@ -37,11 +43,17 @@ def main() -> int:
     )
     graph = json.loads((UI10 / "verifier_result.json").read_text(encoding="utf-8"))
     contract = json.loads((UI09 / "promotion_contract.json").read_text(encoding="utf-8"))
+    for name in ("ui10_manifest", "ui10_typed_graph"):
+        if contract["frozen_inputs"][name].get("hash_basis") != "canonical_text_lf":
+            raise AssertionError(f"UI09 {name} is not LF-canonical")
     old = {
         "manifest": contract["frozen_inputs"]["ui10_manifest"]["sha256"],
         "graph": contract["frozen_inputs"]["ui10_typed_graph"]["sha256"],
     }
-    current = {"manifest": sha(UI10 / "manifest.json"), "graph": sha(UI10 / "verifier_result.json")}
+    current = {
+        "manifest": canonical_text_sha(UI10 / "manifest.json"),
+        "graph": canonical_text_sha(UI10 / "verifier_result.json"),
+    }
     contract["frozen_inputs"]["ui10_manifest"]["sha256"] = current["manifest"]
     contract["frozen_inputs"]["ui10_typed_graph"]["sha256"] = current["graph"]
     current_contract = HERE / "runs/ui09_current_contract.json"
@@ -72,7 +84,11 @@ def main() -> int:
         "ui10_verifier_exit_code": ui10_run.returncode,
         "old_hashes": old,
         "current_hashes": current,
-        "classification": "UI10_COMPLETION_SUPERSEDES_STALE_UI09_PINS_WITH_IDENTICAL_REQUIRED_COUNTS",
+        "classification": (
+            "UI10_CURRENT_CANONICAL_JOIN_MATCHES_UI09"
+            if old == current
+            else "UI10_COMPLETION_SUPERSEDES_STALE_UI09_PINS_WITH_IDENTICAL_REQUIRED_COUNTS"
+        ),
         "required_counts": {
             "focus_nodes": graph["focus"]["nodes"],
             "technology_nodes": graph["technology"]["meta"]["tech_count"],

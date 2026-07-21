@@ -259,8 +259,6 @@ def choose_geometry_targets(proc: Any, orders: list[Any]) -> list[dict[str, Any]
         for order in orders:
             if order.order_type not in set(candidate["applies_to"]):
                 continue
-            if candidate["name"] == "old_type2_province_vector_plus_0x70" and order.order_type != 2:
-                continue
             decoded = candidate_probe.read_vector(
                 proc,
                 order.order_addr,

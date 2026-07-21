@@ -342,7 +342,8 @@ pub fn validate_static_materialization(
 }
 
 /// Production entrypoint remains fail-closed until a same-transition live
-/// fixture and the heterogeneous-template d71 representation are admitted.
+/// fixture carries complete pre-filter d71 source accounting as well as the
+/// already-supported heterogeneous per-slot templates.
 pub fn admit_live_materialization(
     raw: &RawDecisionGridSnapshot,
 ) -> Result<DecisionGridMaterialization, MaterializationError> {

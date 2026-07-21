@@ -369,19 +369,22 @@ impl AuthenticatedWeatherCatalog {
             });
 
         for (ordinal, position) in positions.iter().enumerate() {
+            let selected_class = portable_render_stream::weather_selected_variant_class(
+                position.class,
+                code.ordered_variants
+                    .iter()
+                    .any(|variant| variant.class == WeatherPositionClass::Big),
+            );
             let candidates = code
                 .ordered_variants
                 .iter()
-                .filter(|variant| variant.class == position.class)
+                .filter(|variant| variant.class == selected_class)
                 .collect::<Vec<_>>();
             let selected = if raw.airborne_runtime_code == 0 {
                 None
             } else {
-                let seed = selection_seed.as_mut()?;
-                let selection_word = super::weather_selection_word(*seed);
-                seed[0] = seed[0].wrapping_add(1);
-                (!candidates.is_empty())
-                    .then(|| candidates[selection_word as usize % candidates.len()])
+                super::weather_selected_candidate_index(&mut selection_seed, candidates.len())?
+                    .map(|index| candidates[index])
             };
             let Some(selected) = selected else {
                 resolved_positions.push(explicit_empty_position(ordinal, position)?);

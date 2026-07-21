@@ -404,7 +404,8 @@ pub use production_d3d::{
     prepare_s1_shadow_execution, validate_s1_shadow_execution, BuildingPresentationPriority,
     PreparedProductionD3dFrame, PreparedS1ShadowExecution, ProductionD3dExecutedDraw,
     ProductionD3dExecutionBridge, ProductionD3dExecutionReceipt, ProductionD3dOmission,
-    ProductionD3dStaticPassProgram, SnowMudD3dExecutionProof,
+    OccupationSecondaryD3dExecutionProof, ProductionD3dStaticPassProgram,
+    SnowMudD3dExecutionProof,
     PRODUCTION_D3D_EXECUTION_RECEIPT_SCHEMA,
 };
 #[cfg(windows)]
@@ -431,12 +432,13 @@ pub use production_map_target::{
 };
 pub use rail_files::{
     compute_province_centroids, cubic_bezier, exact_rail_segments_from_replay,
-    parse_rail_geometry_defines, rail_control_handle_len,
+    parse_rail_geometry_defines, prepare_exact_rail_replay_carrier, rail_control_handle_len,
     rail_file_derived_layer_from_resolver, rail_geometry_defines_from_resolver, rail_level_v_band,
     rail_max_level_from_resolver, rail_polylines, rail_render_law, rail_ribbon_edges,
     railway_alpha_draws, railway_alpha_step,
     supply_hub_markers, ProvinceCentroid, RailFileDerivedLayer, RailFileDerivedStats,
-    ExactRailSegment, RailGeometryDefines, RailLawRow, RailPolyline, SupplyHubMarker,
+    ExactRailHubVisualState, ExactRailReplayCarrier, ExactRailResourceIdentity, ExactRailSegment,
+    RailGeometryDefines, RailLawRow, RailPolyline, SupplyHubMarker,
     DEFINES_SOURCE as RAIL_DEFINES_SOURCE, DEFINITION_CSV_SOURCE as RAIL_DEFINITION_CSV_SOURCE,
     GRAPHICS_DEFINES_SOURCE as RAIL_GRAPHICS_DEFINES_SOURCE, MAP_HEIGHT as RAIL_MAP_HEIGHT,
     MAP_WIDTH as RAIL_MAP_WIDTH, PROVINCES_BMP_SOURCE as RAIL_PROVINCES_BMP_SOURCE, RAIL_LEVEL_MAX,

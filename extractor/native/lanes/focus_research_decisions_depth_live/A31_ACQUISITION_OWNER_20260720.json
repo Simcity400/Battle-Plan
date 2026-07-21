@@ -9,22 +9,37 @@
     "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
   },
   "fresh_ghidra": {
+    "consolidated_authority_job_id": "20260720T104531Z-w5-a31-consolidated-owner-frame-order-pr-79b1ba63",
+    "consolidated_authority_manifest_sha256": "b319dd1b721ed6a13e47088b7def034111f9882631080bffbf049fbb79265a2f",
+    "consolidated_authority_job_receipt_sha256": "b1c9d8c0678956f17bea2e7f9e06e7ff4baf31254c11b3c983a9a5ca9ae2d04b",
+    "consolidated_requested_roots_resolved": "13/13",
     "function_job_id": "20260720T062545Z-w4-a31-owner-runnable-producer-e5090f36",
     "function_manifest_sha256": "510353dae716bccaaf37f988b0f7101e31552ecf687ecbd613bce1dd2efb784a",
     "requested_roots_resolved": "6/6",
     "sentinel_job_id": "20260720T062745Z-w4-a31-hook-entry-sentinels-284611de",
     "sentinel_dump_sha256": "498d09aa4161bedf4087983b47ee97626c4d78df9a4537026aff2ea1b4671429",
     "country_context_sentinel_job_id": "20260720T065515Z-w4-a31-country-context-hook-sentinel-44d091b1",
-    "country_context_sentinel_dump_sha256": "4c85cfe84aee03808798f821e90f8ab5a7e019e990be67ee48b47d34c09d83b4"
+    "country_context_sentinel_dump_sha256": "4c85cfe84aee03808798f821e90f8ab5a7e019e990be67ee48b47d34c09d83b4",
+    "frame_order_job_id": "20260720T103726Z-w5-a31-exact-frame-order-boundary-a49db01b",
+    "frame_order_manifest_sha256": "c3c2a38805153497ad3298893a1b101582aa0651604a742e78214108b7820745",
+    "frame_order_job_receipt_sha256": "58ec9118271f47d517ed1b29cb3c900dccc4e0f60e553bbb9bbd47e3de4d082b",
+    "detail_refresh_sentinel_job_id": "20260720T102614Z-w5-a31-detail-refresh-entry-sentinel-7f8e06ea",
+    "detail_refresh_sentinel_dump_sha256": "31966be8db16e8aaf55465e901b6d0e8b704f8ecf0af0b83371fc540bc69723b",
+    "inline_instrumentation_job_id": "20260720T213713Z-w5final-a31-exact-display-joint-instrume-56d3fc12",
+    "inline_instrumentation_manifest_sha256": "76cb5caf7dc418b5fbe79dac037440ccb3cecd34140ee9019ad33c96950e0273",
+    "inline_instrumentation_job_receipt_sha256": "5c0dcd6032b2aa747ed02bec309c9c41d0697e445b46b86b91f9fb4132f5059a"
   },
   "hook_graph": {
     "vector_publisher": "0x14136f750",
     "dynamic_refresh": "0x14137a780",
+    "detail_refresh": "0x14137a600",
     "item_state_writer": "0x1413778f0",
     "item_state_producer": "0x141379a50",
     "highlight_producer": "0x141377430",
-    "install": "sentinel-gated transactional MinHook create/enable with rollback",
-    "uninstall": "disable/remove followed by callback quiescence before state/trampoline release"
+    "display_percent_callsite": "0x141bb636e",
+    "joint_country_callsite": "0x141379e5f",
+    "install": "sentinel-gated transactional MinHook entry hooks plus byte-gated near relays with rollback",
+    "uninstall": "restore inline sites, disable/remove entry hooks, and quiesce callbacks before state/trampoline release"
   },
   "owner_runner": {
     "type": "collector::A31FixtureAcquisitionOwner",
@@ -33,16 +48,21 @@
     "transaction": [
       "install",
       "arm(frame_hour,country_tag,authenticated_country_object_address)",
-      "record exact internal display-percent and joint-country callsite leaves",
+      "owner relays record exact internal display-percent and joint-country callsite leaves",
+      "pair dynamic refresh with same-view detail refresh",
       "seal against selected-Present order/QPC/receipt",
       "encode exact NFP1 in evidence mode",
       "sync NFP1 then commit authenticated JSON receipt"
-    ]
+    ],
+    "site_quiescence": "interactive runner requires the national-focus panel closed for exact mid-function install and teardown",
+    "joint_positive_witness": "each receipt requires a real 0x141379e5f callback; producer hidden defaults do not increment the callsite counter"
   },
   "ordering": {
     "engine_item_order": "CNationalFocusView+0x2058 pointer vector 0..count-1",
+    "stable_publish_witness": "required on the stable fixture",
+    "transition_owner_witness": "same-epoch publish optional only with exact view/item vtables and equal opening/closing vector identity",
     "frame_join": "armed frame hour and canonical country tag",
-    "selected_present_join": "refresh completion QPC must not exceed selected Present QPC and QPC frequencies must match",
+    "selected_present_join": "arm, paired dynamic/detail completion, and selected Present QPC frequencies must match and arm_qpc <= completion_qpc <= selected_present_qpc",
     "callback_order": "monotonic process-local callback sequence retained in receipt"
   },
   "portable_boundary": {
@@ -50,7 +70,9 @@
     "stable_item_identity": "D12-authenticated CNationalFocus id at definition+0x18",
     "pointer_free_before_encode": true,
     "evidence_encoder": "compact_contract::national_focus_presentation::encode_payload",
-    "regrader": "tools/verify_a31_acquisition_receipt.py"
+    "regrader": "tools/verify_a31_acquisition_receipt.py",
+    "stable_transition_regrader": "tools/verify_a31_fixture_matrix.py",
+    "interactive_owner_runner": "extractor/native/scripts/Invoke-A31NationalFocusFixturePair.ps1"
   },
   "activation": {
     "domain_id": 89,

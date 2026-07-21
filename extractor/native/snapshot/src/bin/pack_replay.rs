@@ -16,7 +16,8 @@
 
 use serde_json::Value;
 use snapshot::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 
@@ -137,13 +138,8 @@ fn cmd_pack(args: &[String]) -> i32 {
         }
     };
     // atomic finalize: write to .tmp then rename (spec §6)
-    let tmp = out.with_extension("hoi4replay.tmp");
-    if let Err(e) = fs::write(&tmp, &container) {
-        eprintln!("pack: write {}: {e}", tmp.display());
-        return 1;
-    }
-    if let Err(e) = fs::rename(&tmp, &out) {
-        eprintln!("pack: finalize rename: {e}");
+    if let Err(e) = publish_verified_container(&out, &container) {
+        eprintln!("pack: durable publication failed: {e}");
         return 1;
     }
     eprintln!(
@@ -153,6 +149,178 @@ fn cmd_pack(args: &[String]) -> i32 {
         container.len()
     );
     0
+}
+
+fn publish_verified_container(out: &Path, bytes: &[u8]) -> Result<(), String> {
+    let in_memory = Container::from_bytes(bytes.to_vec(), &ExpectedIdentity::default())
+        .map_err(|error| format!("packed bytes failed pre-publication open: {error}"))?;
+    in_memory
+        .verify_all()
+        .map_err(|error| format!("packed bytes failed pre-publication verification: {error}"))?;
+
+    let parent = out.parent().filter(|path| !path.as_os_str().is_empty());
+    if let Some(parent) = parent {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("create output directory: {error}"))?;
+    }
+    let file_name = out
+        .file_name()
+        .ok_or_else(|| "output path has no file name".to_string())?;
+    let canonical_parent = fs::canonicalize(parent.unwrap_or_else(|| Path::new(".")))
+        .map_err(|error| format!("anchor output directory: {error}"))?;
+    let anchored_out = canonical_parent.join(file_name);
+    reject_reparse_destination(&anchored_out)?;
+    let (temp, mut file) = create_unique_temp(&anchored_out)?;
+
+    let write_result = (|| -> Result<(), String> {
+        file.write_all(bytes).map_err(|error| error.to_string())?;
+        file.flush().map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|error| error.to_string())?;
+        let mut persisted = Vec::with_capacity(bytes.len());
+        file.read_to_end(&mut persisted)
+            .map_err(|error| error.to_string())?;
+        if persisted != bytes {
+            return Err("temporary container readback differs from packed bytes".into());
+        }
+        let reopened = Container::from_bytes(persisted, &ExpectedIdentity::default())
+            .map_err(|error| format!("temporary container failed to re-open: {error}"))?;
+        reopened
+            .verify_all()
+            .map_err(|error| format!("temporary container failed verification: {error}"))
+    })();
+    if let Err(error) = write_result {
+        drop(file);
+        let cleanup = fs::remove_file(&temp);
+        return Err(cleanup_note(error, &temp, cleanup));
+    }
+    drop(file);
+
+    if let Err(error) = atomic_replace(&temp, &anchored_out) {
+        let cleanup = fs::remove_file(&temp);
+        return Err(cleanup_note(
+            format!("atomic replace failed: {error}"),
+            &temp,
+            cleanup,
+        ));
+    }
+    sync_published_parent(&anchored_out)
+        .map_err(|error| format!("sync output directory: {error}"))?;
+
+    let published = fs::read(&anchored_out)
+        .map_err(|error| format!("read published container: {error}"))?;
+    if published != bytes {
+        return Err("published container differs from verified temporary bytes".into());
+    }
+    let reopened = Container::from_bytes(published, &ExpectedIdentity::default())
+        .map_err(|error| format!("published container failed to re-open: {error}"))?;
+    reopened
+        .verify_all()
+        .map_err(|error| format!("published container failed verification: {error}"))
+}
+
+fn create_unique_temp(out: &Path) -> Result<(PathBuf, fs::File), String> {
+    let name = out
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "output file name is not portable UTF-8".to_string())?;
+    let parent = out.parent().unwrap_or_else(|| Path::new("."));
+    let nonce = format!(
+        "{}.{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    );
+    for attempt in 0..128u32 {
+        let temp = parent.join(format!(".{name}.pack-tmp-{nonce}.{attempt}"));
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+        {
+            Ok(file) => return Ok((temp, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("create unique output temp: {error}")),
+        }
+    }
+    Err("could not allocate a unique output temp after 128 attempts".into())
+}
+
+fn reject_reparse_destination(out: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(out) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err("refusing a symbolic-link output destination".into());
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                if metadata.file_attributes() & 0x0000_0400 != 0 {
+                    return Err("refusing a reparse-point output destination".into());
+                }
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("inspect output destination: {error}")),
+    }
+}
+
+fn cleanup_note(primary: String, temp: &Path, cleanup: std::io::Result<()>) -> String {
+    match cleanup {
+        Ok(()) => primary,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => primary,
+        Err(error) => format!(
+            "{primary}; failed to remove temporary artifact {}: {error}",
+            temp.display()
+        ),
+    }
+}
+
+#[cfg(not(windows))]
+fn sync_published_parent(out: &Path) -> std::io::Result<()> {
+    fs::File::open(out.parent().unwrap_or_else(|| Path::new(".")))?.sync_all()
+}
+
+#[cfg(windows)]
+fn sync_published_parent(_out: &Path) -> std::io::Result<()> {
+    // MoveFileExW below carries MOVEFILE_WRITE_THROUGH.
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn atomic_replace(temp: &Path, out: &Path) -> std::io::Result<()> {
+    fs::rename(temp, out)
+}
+
+#[cfg(windows)]
+fn atomic_replace(temp: &Path, out: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
+    }
+    let existing = temp
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let replacement = out
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let ok = unsafe { MoveFileExW(existing.as_ptr(), replacement.as_ptr(), 0x1 | 0x8) };
+    if ok == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 fn cmd_verify(args: &[String]) -> i32 {

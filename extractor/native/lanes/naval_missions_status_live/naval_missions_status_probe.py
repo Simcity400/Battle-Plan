@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Lane-local live proof probe for naval mission/status domain 56.
+"""Lane-local regression probe for naval mission/status domain 56.
 
-This probe is bounded discovery/validation only. It reuses the already
-validated naval OOB root traversal and does not claim hot-path extraction for
-mission, home-base, repair, retreat, or convoy-route semantics without the
-required fixture diffs.
+This bounded diagnostic reuses the validated naval OOB traversal. Production
+semantics come from the exact D56 reader/decoder contract. Convoy route/loss
+identity is owned exclusively by D90 and is never inferred here.
 """
 
 from __future__ import annotations
@@ -135,17 +134,18 @@ def summarize_convoy_route_context(
             }
         )
     return {
-        "status": "narrowed_to_existing_ship_counter_only",
+        "status": "aggregate_counter_only_route_owned_by_d90",
         "verdict": (
             "CShip+0x3C sunk-convoy counts are reachable through the production ship roots; "
-            "route/loss context was not reachable from fixture-independent fleet/task-force/ship roots"
+            "route/loss identity is intentionally excluded from D56 and owned by D90"
         ),
         "ship_rows_sampled": len(ships),
         "task_forces_with_sunk_convoys": len(rows),
         "total_sunk_convoys_observed": sum(row["sunk_convoys"] for row in rows),
-        "route_context_blocker": (
-            "active convoy combat or a controlled convoy-loss route fixture is required to map "
-            "losses to route/mission context rather than aggregate CShip counters"
+        "route_context_blocker": None,
+        "route_context_owner": (
+            "domain 90 full client EntityHandle {id,type_tag=4713} plus typed "
+            "source/destination endpoints"
         ),
         "sunk_convoy_rows": rows[:80],
     }
@@ -157,7 +157,7 @@ def domain56_registration_patch_plan() -> List[str]:
         "Closed: the shared collector schedules its lane-owned domain-56 reader and appends accepted payloads through the existing sequence-owned compact writer; no second collector or DLL is used.",
         "Closed: domain56_compact.rs remains the wire authority (44-byte header plus 64-byte task-force rows keyed by task_force_id); exact detached_activity is emitted as mission_state while rejected repair-progress/retreat semantics stay absent rather than guessed.",
         "Closed: recorder_host gates and accounts domain 56, preserves the raw compact stream in .battleplan, and folds accepted rows fail-closed.",
-        "Open validation only: retain an authenticated integrated speed-five/current-equivalent run before claiming live production acceptance.",
+        "Validation-only: integrated performance/freshness evidence is owned by the central production acceptance battery; no D56 reverse-engineering input remains.",
     ]
 
 
@@ -199,22 +199,6 @@ def make_fixture_contracts() -> List[Dict[str, Any]]:
                 "No observation from this card is promoted as repair_progress_milli or retreat_state; those scalar interpretations are mechanically rejected.",
             ],
         },
-        {
-            "id": "domain56_convoy_route_context_fixture_v1",
-            "purpose": "Map convoy losses to route/mission context instead of only aggregate ship sunk-convoy counters.",
-            "commands": [
-                probe + " --out extractor/native/runs/naval_missions_status_live_870ebf_20260701_convoy_before/naval_missions_status_probe.json --snapshot-label before_convoy_loss",
-                probe + " --out extractor/native/runs/naval_missions_status_live_870ebf_20260701_convoy_after/naval_missions_status_probe.json --snapshot-label after_convoy_loss",
-            ],
-            "operator_steps_between_commands": [
-                "Create or load an active convoy battle/loss fixture with known source and destination route context.",
-                "Keep the involved task force and fleet identity stable when possible.",
-            ],
-            "acceptance": [
-                "A route or battle context root changes with the known convoy loss event.",
-                "The result links loss count to route/mission context, not only CShip+0x3C aggregate counters.",
-            ],
-        },
     ]
 
 
@@ -254,7 +238,7 @@ def build_summary(proc: oob.wm.Process, args: argparse.Namespace) -> Dict[str, A
         task_force_id = task_force["task_force_id"]
         location = oob.safe_u32(proc, task_force["body_ptr"] + oob.TASK_FORCE_OFF_LOCATION_PROVINCE)
         region_row = region_by_tf.get(task_force_id)
-        flags = ["HAS_LOCATION", "VALIDATED_DIRECT", "FIXTURE_REQUIRED"]
+        flags = ["HAS_LOCATION", "VALIDATED_DIRECT"]
         if region_row:
             flags.extend(["HAS_REGION", "DERIVED_REGION"])
         if sunk_by_tf.get(task_force_id):

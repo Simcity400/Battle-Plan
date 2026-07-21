@@ -532,7 +532,26 @@ fn rt_naval_air_activity() {
             tf.location_province,
             exp_u32(probe("location_province").as_ref())
         );
-        assert_eq!(tf.mission, exp_string(probe("mission").as_ref()));
+        let status_path = |leaf_key: &str| {
+            raw(
+                &f,
+                &[
+                    "order_of_battle",
+                    "extra",
+                    "naval_missions_status_live",
+                    "task_forces",
+                    "0",
+                    leaf_key,
+                ],
+            )
+        };
+        assert_eq!(tf.mission, exp_string(status_path("mission_name")));
+        assert_eq!(tf.mission_enum, exp_i64(status_path("mission_enum")));
+        assert_eq!(tf.mission_state, exp_i64(status_path("mission_state")));
+        assert_eq!(
+            tf.detached_activity,
+            exp_string(status_path("detached_activity"))
+        );
         assert_eq!(tf.ship_count, exp_i64(probe("ship_count").as_ref()));
         assert_eq!(
             tf.dominant_hull_class,
@@ -1329,9 +1348,57 @@ fn rt_country_management() {
         let want_ll: Vec<replay_core::TradeContractRow> = ll
             .iter()
             .map(|o| replay_core::TradeContractRow {
+                market_trade_projection: exp_bool(o.get("r2_market_trade_projection")),
+                contract_id: exp_string(o.get("contract_id")),
                 counterpart: exp_string(o.get("counterpart")),
                 direction: exp_string(o.get("direction")),
                 convoys_assigned: exp_i64(o.get("convoys").and_then(|c| c.get("assigned"))),
+                visible_order: exp_i64(o.get("visible_order")),
+                equipment_purchase_relation_complete: exp_bool(
+                    o.get("equipment_purchase_relation_complete"),
+                ),
+                relation_agreement_id: exp_string(
+                    o.get("equipment_purchase_relation").and_then(|r| r.get("agreement_id")),
+                ),
+                seller: exp_string(
+                    o.get("equipment_purchase_relation").and_then(|r| r.get("seller")),
+                ),
+                seller_tag_db_id: exp_u32(
+                    o.get("equipment_purchase_relation").and_then(|r| r.get("seller_tag_db_id")),
+                ),
+                buyer: exp_string(
+                    o.get("equipment_purchase_relation").and_then(|r| r.get("buyer")),
+                ),
+                buyer_tag_db_id: exp_u32(
+                    o.get("equipment_purchase_relation").and_then(|r| r.get("buyer_tag_db_id")),
+                ),
+                relation_first: exp_string(
+                    o.get("equipment_purchase_relation").and_then(|r| r.get("relation_first")),
+                ),
+                relation_first_tag_db_id: exp_u32(
+                    o.get("equipment_purchase_relation").and_then(|r| r.get("relation_first_tag_db_id")),
+                ),
+                relation_second: exp_string(
+                    o.get("equipment_purchase_relation").and_then(|r| r.get("relation_second")),
+                ),
+                relation_second_tag_db_id: exp_u32(
+                    o.get("equipment_purchase_relation").and_then(|r| r.get("relation_second_tag_db_id")),
+                ),
+                relation_start_date_raw: exp_i64(
+                    o.get("equipment_purchase_relation").and_then(|r| r.get("start_date_raw")),
+                ),
+                relation_start_date: exp_string(
+                    o.get("equipment_purchase_relation").and_then(|r| r.get("start_date")),
+                ),
+                relation_end_date_raw: exp_i64(
+                    o.get("equipment_purchase_relation").and_then(|r| r.get("end_date_raw")),
+                ),
+                relation_end_date: exp_string(
+                    o.get("equipment_purchase_relation").and_then(|r| r.get("end_date")),
+                ),
+                relation_source: exp_string(
+                    o.get("equipment_purchase_relation").and_then(|r| r.get("source")),
+                ),
             })
             .collect();
         assert_eq!(
@@ -1512,26 +1579,10 @@ fn rt_power_balance_combat() {
             nc.location_province,
             exp_u32(raw(&f, &["naval_combats", "0", "location_province"]))
         );
-        let sc = raw(&f, &["world_events", "sunk_convoys"])
-            .and_then(Value::as_array)
-            .expect("sunk_convoys");
-        let want: Vec<replay_core::ConvoyLossRow> = sc
-            .iter()
-            .map(|o| replay_core::ConvoyLossRow {
-                month: exp_i64(o.get("month")),
-                killer: exp_string(o.get("killer_country")),
-                owner: exp_string(o.get("owner")),
-                convoys: exp_i64(o.get("convoys")),
-                first_seen_aggregate_ordinal: exp_i64(
-                    o.get("first_seen_aggregate_ordinal"),
-                ),
-                attribution_scope: exp_string(o.get("attribution_scope")),
-            })
-            .collect();
         assert_eq!(
             nac.sunk_convoys,
-            Leaf::Measured(want),
-            "sunk convoys @ {}",
+            Leaf::Absent,
+            "the positive fixture must not fabricate B4 sunk-convoy history without exact authority @ {}",
             f.hour_index()
         );
 
@@ -1579,24 +1630,13 @@ fn rt_scripted_gui_vars() {
             sg.country_flags.get("GER"),
             Some(&Leaf::Measured(vec!["inner_circle_active".to_string()]))
         );
-        let runtime = match sg.runtime_by_country.get("GER") {
-            Some(Leaf::Measured(rows)) => rows.get("GER_inner_circle_ui").unwrap(),
-            other => panic!("GER scripted-GUI runtime carrier missing: {other:?}"),
-        };
-        assert_eq!(runtime.visible.value, Leaf::Measured(true));
-        assert_eq!(runtime.visible.unavailable_reason, None);
-        let member_image = runtime
-            .properties
-            .get("member_1.image")
-            .expect("member_1.image materialized value");
         assert_eq!(
-            member_image.value,
-            Leaf::Measured("GFX_inner_circle_member_1".to_string())
+            sg.runtime_by_country.get("GER"),
+            Some(&Leaf::Absent),
+            "the variable-state fixture must not fabricate d84 runtime materialization @ {}",
+            f.hour_index()
         );
-        assert_eq!(
-            member_image.unavailable_reason.as_deref(),
-            None
-        );
+        assert_eq!(sg.runtime_authority, Leaf::Absent);
         let wf = raw(&f, &["world", "flags"])
             .and_then(Value::as_object)
             .expect("world flags");

@@ -10,8 +10,10 @@ create the deferred bundle, and emit the same pointer-free recorder handoff.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
+import struct
 import sys
 from pathlib import Path
 from typing import Any
@@ -31,6 +33,137 @@ BINDING_FILES = (
     "resolution_report.json",
     "ui14_engine_vfs.json",
 )
+
+
+def _strict_object(path: Path) -> dict[str, Any]:
+    def pairs(rows: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, child in rows:
+            if key in value:
+                raise LR.ResolutionError(f"duplicate JSON member in {path}: {key}")
+            value[key] = child
+        return value
+    value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=pairs)
+    if not isinstance(value, dict):
+        raise LR.ResolutionError(f"capture evidence is not a JSON object: {path}")
+    return value
+
+
+def _validate_ui14_capture_binding(
+    *, capture_root: Path, process: dict[str, Any], ui14: dict[str, Any],
+) -> dict[str, Any]:
+    """Join the supplied UI14 receipt to the selected live process and raw trace."""
+    root = capture_root.resolve()
+    manifest_path = root / "manifest.json"
+    active_path = root / "configuration" / "dlc_load.active.json"
+    cpu = root / "cpu"
+    ready_path = cpu / "cpu_capture_ready.json"
+    trace_path = cpu / "cpu_state.jsonl"
+    if (not manifest_path.is_file() or not active_path.is_file()
+            or not ready_path.is_file() or not trace_path.is_file()):
+        raise LR.ResolutionError(
+            "UI14 capture root lacks manifest, active configuration, ready receipt or raw trace"
+        )
+    manifest = _strict_object(manifest_path)
+    manifest_rows = manifest.get("artifacts")
+    if (not isinstance(manifest_rows, list)
+            or isinstance(manifest.get("artifact_count"), bool)
+            or manifest.get("artifact_count") != len(manifest_rows)):
+        raise LR.ResolutionError("UI14 capture manifest artifact roster is malformed")
+    expected_artifacts = {
+        "configuration/dlc_load.active.json": active_path,
+        "cpu/cpu_capture_ready.json": ready_path,
+        "cpu/cpu_state.jsonl": trace_path,
+    }
+    for relative, path in expected_artifacts.items():
+        matches = [row for row in manifest_rows
+                   if isinstance(row, dict) and row.get("path") == relative]
+        if (len(matches) != 1 or set(matches[0]) != {"path", "bytes", "sha256"}
+                or isinstance(matches[0].get("bytes"), bool)
+                or matches[0].get("bytes") != path.stat().st_size
+                or matches[0].get("sha256") != SB.sha256_file(path)):
+            raise LR.ResolutionError(f"UI14 capture manifest does not bind {relative}")
+    active = _strict_object(active_path)
+    enabled = active.get("enabled_mods")
+    normalized_enabled = ([value.replace("\\", "/") for value in enabled]
+                          if isinstance(enabled, list)
+                          and all(isinstance(value, str) and value for value in enabled)
+                          else None)
+    if (normalized_enabled is None or len(normalized_enabled) != len(set(normalized_enabled))
+            or set(normalized_enabled) != {layer["id"] for layer in ui14["layers"]}):
+        raise LR.ResolutionError(
+            "capture-manifest active mod roster differs from the UI14 engine receipt"
+        )
+    ready = _strict_object(ready_path)
+    if (ready.get("schema") != "hoi4-rendering-law-cpu-capture-ready-v1"
+            or ready.get("executable_sha256") != LR.EXPECTED_EXE_SHA256
+            or ready.get("process_id") != process["pid"]
+            or ready.get("process_creation_filetime_utc") != process["creation_filetime_utc"]
+            or not isinstance(ready.get("module_base"), str)
+            or not re.fullmatch(r"0x[1-9A-F][0-9A-F]*", ready["module_base"])
+            or not isinstance(ready.get("control_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", ready["control_sha256"])
+            or not isinstance(ready.get("capture_nonce_sha256"), str)
+            or ready.get("packets") != ["UI14"]):
+        raise LR.ResolutionError("UI14 ready receipt is not bound to the selected process")
+    module_base = int(ready["module_base"], 16)
+    nonce = hashlib.sha256(
+        b"hoi4-rendering-law-cpu-capture-binding-v1\0"
+        + struct.pack("<IQQ", process["pid"], process["creation_filetime_utc"], module_base)
+        + bytes.fromhex(ready["control_sha256"])
+    ).hexdigest()
+    if ready["capture_nonce_sha256"] != nonce:
+        raise LR.ResolutionError("UI14 ready receipt capture nonce digest mismatch")
+
+    events: list[dict[str, Any]] = []
+    for line_number, line in enumerate(trace_path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line:
+            raise LR.ResolutionError(f"UI14 trace has a blank line at {line_number}")
+        try:
+            row = json.loads(line, object_pairs_hook=lambda pairs: _pairs_or_error(pairs, line_number))
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise LR.ResolutionError(f"UI14 trace line {line_number} is invalid: {exc}") from exc
+        if (not isinstance(row, dict)
+                or row.get("schema") != "hoi4-rendering-law-cpu-events-v1"
+                or row.get("process_id") != process["pid"]):
+            raise LR.ResolutionError(f"UI14 trace line {line_number} is not process-bound")
+        events.append(row)
+    if not events or events[0].get("type") != "cpu_capture_initialized" \
+            or events[0].get("packets") != ["UI14"]:
+        raise LR.ResolutionError("UI14 trace initialization is absent or for another packet")
+    entries = [row for row in events if row.get("type") == "ui14_descriptor_parser_entry"]
+    for layer in ui14["layers"]:
+        matches = [row for row in entries
+                   if str(row.get("descriptor_utf8", "")).replace("\\", "/") == layer["id"]]
+        if (len(matches) != 1
+                or matches[0].get("ordinal") != layer["engine_descriptor_ordinal"]
+                or matches[0].get("caller_return_rva") != "0x2066E9E"):
+            raise LR.ResolutionError(
+                f"UI14 descriptor layer is not proved by the raw parser trace: {layer['id']}"
+            )
+    return {
+        "schema": "extractor.ui14_capture_binding.v1",
+        "process_id": process["pid"],
+        "process_creation_filetime_utc": process["creation_filetime_utc"],
+        "module_base": ready["module_base"],
+        "control_sha256": ready["control_sha256"],
+        "capture_nonce_sha256": nonce,
+        "capture_manifest_sha256": SB.sha256_file(manifest_path),
+        "active_dlc_load_sha256": SB.sha256_file(active_path),
+        "ready_sha256": SB.sha256_file(ready_path),
+        "trace_sha256": SB.sha256_file(trace_path),
+        "trace_event_count": len(events),
+        "matched_mod_descriptor_count": len(ui14["layers"]),
+    }
+
+
+def _pairs_or_error(pairs: list[tuple[str, Any]], line_number: int) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, child in pairs:
+        if key in value:
+            raise ValueError(f"duplicate member {key!r} at line {line_number}")
+        value[key] = child
+    return value
 
 
 def _relative_file(root: Path, path: Path) -> dict[str, Any]:
@@ -333,6 +466,15 @@ def _complete_preparation(
             "passed": build["passed"],
         },
     }
+    ui14_binding = report.get("ui14_capture_binding")
+    if isinstance(ui14_binding, dict):
+        receipt["ui14_capture_evidence"] = {
+            "manifest": _relative_file(output, output / ui14_binding["manifest_file"]),
+            "active_config": _relative_file(output, output / ui14_binding["active_config_file"]),
+            "ready": _relative_file(output, output / ui14_binding["ready_file"]),
+            "trace": _relative_file(output, output / ui14_binding["trace_file"]),
+            "capture_nonce_sha256": ui14_binding["capture_nonce_sha256"],
+        }
     _reject_pointers(receipt)
     ready_path = output / "product_modset_capture_ready.json"
     if ready_path.exists():
@@ -347,6 +489,7 @@ def prepare(
     userdir: Path,
     pid: int,
     ui14_engine_vfs: Path,
+    ui14_capture_root: Path,
     output: Path,
 ) -> dict[str, Any]:
     if pid <= 0:
@@ -357,17 +500,48 @@ def prepare(
     exe = exe.resolve()
     userdir = userdir.resolve()
     ui14_engine_vfs = ui14_engine_vfs.resolve()
-    if not exe.is_file() or not userdir.is_dir() or not ui14_engine_vfs.is_file():
-        raise LR.ResolutionError("executable, userdir, and UI14 engine-VFS receipt must exist")
+    if (not exe.is_file() or not userdir.is_dir() or not ui14_engine_vfs.is_file()
+            or not ui14_capture_root.is_dir()):
+        raise LR.ResolutionError(
+            "executable, userdir, UI14 engine-VFS receipt and UI14 capture root must exist"
+        )
 
     bindings_dir = output / "bindings"
+    process = LR.query_process(pid)
     LR.resolve_live_bindings(
         exe=exe,
         userdir=userdir,
         pid=pid,
         out_dir=bindings_dir,
         ui14_engine_vfs=ui14_engine_vfs,
+        process=process,
     )
+    ui14 = SB.load_object(bindings_dir / "ui14_engine_vfs.json", "resolved UI14 receipt")
+    binding = _validate_ui14_capture_binding(
+        capture_root=ui14_capture_root, process=process, ui14=ui14
+    )
+    evidence_dir = output / "ui14_capture_evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=False)
+    capture_root = ui14_capture_root.resolve()
+    for source, destination_name in (
+        (capture_root / "manifest.json", "manifest.json"),
+        (capture_root / "configuration" / "dlc_load.active.json", "dlc_load.active.json"),
+        (capture_root / "cpu" / "cpu_capture_ready.json", "cpu_capture_ready.json"),
+        (capture_root / "cpu" / "cpu_state.jsonl", "cpu_state.jsonl"),
+    ):
+        before = source.read_bytes()
+        after = source.read_bytes()
+        if before != after:
+            raise LR.ResolutionError(f"UI14 evidence changed while retaining {source.name}")
+        (evidence_dir / destination_name).write_bytes(before)
+    binding["manifest_file"] = "ui14_capture_evidence/manifest.json"
+    binding["active_config_file"] = "ui14_capture_evidence/dlc_load.active.json"
+    binding["ready_file"] = "ui14_capture_evidence/cpu_capture_ready.json"
+    binding["trace_file"] = "ui14_capture_evidence/cpu_state.jsonl"
+    report_path = bindings_dir / "resolution_report.json"
+    report = SB.load_object(report_path, "resolved report")
+    report["ui14_capture_binding"] = binding
+    report_path.write_bytes(SB.pretty_json(report))
     return _complete_preparation(
         exe=exe,
         bindings_dir=bindings_dir,
@@ -422,25 +596,33 @@ def main(argv: list[str] | None = None) -> int:
         help="previously authenticated binding directory; performs no live process query",
     )
     parser.add_argument("--ui14-engine-vfs", type=Path)
+    parser.add_argument("--ui14-capture-root", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         if args.bindings is not None:
-            if args.userdir is not None or args.ui14_engine_vfs is not None:
-                parser.error("--bindings cannot be combined with --userdir/--ui14-engine-vfs")
+            if (args.userdir is not None or args.ui14_engine_vfs is not None
+                    or args.ui14_capture_root is not None):
+                parser.error(
+                    "--bindings cannot be combined with --userdir/--ui14-engine-vfs/--ui14-capture-root"
+                )
             receipt = prepare_offline(
                 exe=args.exe,
                 bindings=args.bindings,
                 output=args.out,
             )
         else:
-            if args.userdir is None or args.ui14_engine_vfs is None:
-                parser.error("live --pid mode requires --userdir and --ui14-engine-vfs")
+            if (args.userdir is None or args.ui14_engine_vfs is None
+                    or args.ui14_capture_root is None):
+                parser.error(
+                    "live --pid mode requires --userdir, --ui14-engine-vfs and --ui14-capture-root"
+                )
             receipt = prepare(
                 exe=args.exe,
                 userdir=args.userdir,
                 pid=args.pid,
                 ui14_engine_vfs=args.ui14_engine_vfs,
+                ui14_capture_root=args.ui14_capture_root,
                 output=args.out,
             )
     except (LR.ResolutionError, SB.BundleError, OSError, json.JSONDecodeError) as exc:

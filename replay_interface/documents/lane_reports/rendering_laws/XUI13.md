@@ -1,6 +1,6 @@
 # XUI13 - templates and variants
 
-Status: **REPLAY DATA/CATALOG PROMOTION READY - PRODUCT DESIGNER SURFACE AUTHORITY REQUIRED**
+Status: **TEMPORAL REPLAY DATA WIRED - ROOT VALIDATION, H-A27, AND PRODUCT DESIGNER SURFACE AUTHORITY REQUIRED**
 
 Function address: **N/A (no Ghidra operation was needed or used)**  
 Job ID: **N/A**  
@@ -9,7 +9,7 @@ Manifest SHA-256: **2525e8da946ebc7487b4b425d988f18ced57a6467c16af3e4c545609b52c
 
 ## Result
 
-The production replay seam is implemented in `game_ui::design_catalog` for division templates plus ship, tank, aircraft, and general equipment variants. It preserves exact producer order for designs, module slots, stat rows, and upgrades. Admission requires explicit definition, owner, lifecycle, module, stat, upgrade, and display-order completeness; malformed or incomplete inputs reject.
+The replay seam is implemented in `game_ui::design_catalog` for division templates plus ship, tank, aircraft, and general equipment variants. Portable schema v3 carries the first complete native A27 payload after removing relocation-only fields, followed by authenticated hourly full-row upserts, absence-derived tombstones, and exact order. The smaller UI records remain a projection mechanically regenerated from native rows. Admission requires explicit definition, owner, lifecycle, module, stat, upgrade, and display-order completeness; malformed, incomplete, missing-hour, or cross-hour inputs reject.
 
 The focused suite covers all five families and negative provenance, identity, completeness, duplicate, non-finite, negative-upgrade, and non-permutation cases.
 
@@ -29,11 +29,11 @@ These values are definition evidence, not live-catalog or display-order evidence
 
 ## Production handoff and remaining boundary
 
-A27's canonical recorder handoff is now closed. The recorder seals the pointer-free catalog at `static/design_catalog_live/a27_live_catalog.json` under the dedicated `design_catalog_live` role; portable relocation and replay admission succeed after the source artifact is deleted, and post-seal mutation rejects. The focused end-to-end gate `recorder_seals_relocates_and_admits_a27_xui13_catalog` passes 1/1. The full frozen 20,734,645-byte A27 source hashes to `6fa4386b9bd688df47a613b6268ccb0f125fcd2fe75edd9c484154ff38d5628b`; its projection produces exactly 6,407 records and excludes `pointer_identity`, `subunit_definition_pointer`, `game_state`, and `module_base`. Domain 78 supplies the authenticated current display order, and unknown IDs reject.
+A27's temporal recorder handoff is wired. The recorder starts one hidden repeated-census worker before capture, stops it after the compact pipe closes, and refuses publication unless consecutive whole-sweep-sealed catalog hours exactly cover the replay spine. Portable relocation and replay admission succeed after the source timeline is deleted, while post-seal mutation rejects. Portable v1 is retired because it discarded native template composition/scalars, creator/origin and occurrence provenance, UTF-8 byte evidence, handles, and raw stat/upgrade values while labelling the projection complete. Portable v3 retains those fields and temporal mutation semantics. The full frozen 20,734,645-byte source hash and 6,407-record count remain historical single-hour evidence. Domain 78 supplies authenticated display order only for an hour reconstructed from A27; unknown IDs and missing/cross-hour joins reject.
 
 `admit_design_catalog` admits only that complete authenticated A27 catalog plus the d78 order. Token order, map order, numeric ID order, localisation order, static source order, and the shallow legacy `replay_core::DesignsView` remain forbidden substitutes.
 
-The remaining product-pixel boundary is not catalog data: a recording must authenticate designer surface activation and the effective-VFS semantic GUI-root/dependency closure for that surface. Until then, the production app omits the designer canvas as a unit and does not parse a default GUI path.
+Two gates remain. Root-owned central validation must settle the temporal implementation, then H-A27 must prove three consecutive advancing hours with a real design mutation. If its external reader cannot keep pace, the retained machine failure becomes the precise requirement for an in-process mutation hook. Separately, a recording must authenticate designer surface activation and the effective-VFS semantic GUI-root/dependency closure for that surface. Until both are closed, historical designer canvases remain unavailable rather than borrowing final catalog state.
 
 ## Evidence
 

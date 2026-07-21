@@ -19,11 +19,11 @@ def valid_history():
         },
         {
             "hour_index": 100,
-            "speed": 3,
-            "paused": False,
+            "speed": 2,
+            "paused": True,
             "transition_sequence": 1,
             "tick_progress_f32_bits": 0x3E000000,
-            "source": "speed_setter",
+            "source": "pause_toggle",
         },
         {
             "hour_index": 100,
@@ -31,7 +31,7 @@ def valid_history():
             "paused": True,
             "transition_sequence": 2,
             "tick_progress_f32_bits": 0x3E000000,
-            "source": "pause_toggle",
+            "source": "speed_setter",
         },
         {
             "hour_index": 100,
@@ -56,8 +56,8 @@ class X12ActivationVerifierTests(unittest.TestCase):
     def test_exact_history_and_required_pattern_pass(self):
         history = verifier.validate_history(valid_history(), "fixture")
         pattern = verifier.required_action_pattern(history)
-        self.assertEqual(pattern["same_hour_speed_pair_sequences"], [1, 3])
-        self.assertEqual(pattern["pause_speed_resume_sequences"], [2, 3, 4])
+        self.assertEqual(pattern["same_hour_speed_pair_sequences"], [2, 3])
+        self.assertEqual(pattern["pause_speed_resume_sequences"], [1, 2, 3, 4])
 
     def test_source_that_does_not_match_delta_fails(self):
         history = valid_history()
@@ -69,8 +69,54 @@ class X12ActivationVerifierTests(unittest.TestCase):
         history = valid_history()
         history.pop()
         normalized = verifier.validate_history(history, "fixture")
-        with self.assertRaisesRegex(verifier.ProofError, "pause -> speed mutation -> resume"):
+        with self.assertRaisesRegex(
+            verifier.ProofError,
+            "pause -> two distinct paused speed mutations -> resume",
+        ):
             verifier.required_action_pattern(normalized)
+
+    def test_machine_pattern_rejects_second_speed_outside_pause_bracket(self):
+        history = valid_history()
+        history[1] = {
+            "hour_index": 100,
+            "speed": 3,
+            "paused": False,
+            "transition_sequence": 1,
+            "tick_progress_f32_bits": 0x3E000000,
+            "source": "speed_setter",
+        }
+        history[2] = {
+            "hour_index": 100,
+            "speed": 3,
+            "paused": True,
+            "transition_sequence": 2,
+            "tick_progress_f32_bits": 0x3E000000,
+            "source": "pause_toggle",
+        }
+        normalized = verifier.validate_history(history, "fixture")
+        with self.assertRaisesRegex(verifier.ProofError, "two distinct paused speed mutations"):
+            verifier.required_action_pattern(normalized)
+
+    def test_hook_pre_mutation_baseline_can_precede_first_hourly_frame(self):
+        history = valid_history()
+        history[0] = {
+            "hour_index": 100,
+            "speed": 2,
+            "paused": False,
+            "transition_sequence": 0,
+            "tick_progress_f32_bits": 0x3D800000,
+            "source": "hook_pre_mutation_baseline",
+        }
+        self.assertEqual(
+            verifier.validate_history(history, "fixture")[0]["source"],
+            "hook_pre_mutation_baseline",
+        )
+
+    def test_hook_baseline_requires_exact_tick_bits(self):
+        history = valid_history()
+        history[0]["source"] = "hook_pre_mutation_baseline"
+        with self.assertRaisesRegex(verifier.ProofError, "omitted exact tick bits"):
+            verifier.validate_history(history, "fixture")
 
 
 if __name__ == "__main__":

@@ -210,6 +210,29 @@ function Test-ProductionCaptureArtifacts {
     $expectedIds = @($expectedDomains | ForEach-Object { [int]$_.id })
     $expectedDataIds = @($expectedDomains | Where-Object { $_.requires_data_record -eq $true } | ForEach-Object { [int]$_.id })
 
+    # d77 is deliberately reserved/non-schedulable.  The suspended-launch
+    # collector inserts it as an authenticated carrier only after H4CT READY,
+    # FIRST and COMMIT.  Treat it as part of the exact production roster only
+    # when that receipt is present and internally joined to the launch manifest.
+    $earlyLaunch = Get-ObjectProperty $manifest "early_render_launch_manifest"
+    $earlyReceipt = Get-ObjectProperty $manifest "early_render_capture_receipt"
+    $earlyReceiptSha = Get-ObjectProperty $manifest "early_render_capture_receipt_sha256"
+    $hasAuthenticatedEarlyRender = (
+        $null -ne $earlyLaunch -and
+        $null -ne $earlyReceipt -and
+        [string](Get-ObjectProperty $earlyLaunch "schema") -ceq "extractor.early-render-launch-manifest.v1" -and
+        [string](Get-ObjectProperty $earlyReceipt "schema") -ceq "extractor.early-render-capture-receipt.v1" -and
+        (Get-ObjectProperty $earlyReceipt "created_suspended") -eq $true -and
+        [string](Get-ObjectProperty $earlyLaunch "executable_sha256") -ceq "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad" -and
+        [string](Get-ObjectProperty $earlyReceipt "executable_sha256") -ceq [string](Get-ObjectProperty $earlyLaunch "executable_sha256") -and
+        [string](Get-ObjectProperty $earlyReceipt "collector_sha256") -ceq [string](Get-ObjectProperty $earlyLaunch "collector_sha256") -and
+        (Test-HexSha256 $earlyReceiptSha)
+    )
+    if ($hasAuthenticatedEarlyRender) {
+        $expectedIds = @($expectedIds + 77 | Sort-Object -Unique)
+        $expectedDataIds = @($expectedDataIds + 77 | Sort-Object -Unique)
+    }
+
     if ([string](Get-ObjectProperty $manifest "stream_format") -ne "compact") { Add-CaptureProblem $problems "stream_format_not_compact" }
     if ((Get-ObjectProperty (Get-ObjectProperty $manifest "production_profile") "enabled") -ne $true) { Add-CaptureProblem $problems "production_profile_not_enabled" }
     if (@(Get-ObjectProperty (Get-ObjectProperty $manifest "production_profile") "profile_domains_not_scheduled").Count -ne 0) { Add-CaptureProblem $problems "profile_domains_not_scheduled" }
@@ -268,10 +291,16 @@ function Test-ProductionCaptureArtifacts {
     }
     $actualIds = @($seenById.Keys | Sort-Object)
     if (($actualIds -join ',') -ne (($expectedIds | Sort-Object) -join ',')) { Add-CaptureProblem $problems "registry_roster_mismatch" }
+    if ($seenById.ContainsKey(77) -and -not $hasAuthenticatedEarlyRender) {
+        Add-CaptureProblem $problems "domain_77_without_authenticated_early_render"
+    }
     foreach ($id in $expectedIds) {
         if (-not $seenById.ContainsKey($id)) { Add-CaptureProblem $problems "domain_${id}_missing"; continue }
         $row = $seenById[$id]
-        if ([int64](Get-ObjectProperty $row "record_count") -ne $frameCount) { Add-CaptureProblem $problems "domain_${id}_record_count_mismatch" }
+        if ($id -eq 77) {
+            if ([int64](Get-ObjectProperty $row "record_count") -ne 0) { Add-CaptureProblem $problems "domain_77_unexpected_perf_record" }
+        }
+        elseif ([int64](Get-ObjectProperty $row "record_count") -ne $frameCount) { Add-CaptureProblem $problems "domain_${id}_record_count_mismatch" }
         if ($expectedDataIds -contains $id -and [int64](Get-ObjectProperty $row "data_record_count") -ne $frameCount) { Add-CaptureProblem $problems "domain_${id}_data_record_count_mismatch" }
         $rawFlags = [uint32](Get-ObjectProperty $row "status_flags_or")
         $effectiveFlags = Get-ObjectProperty $row "effective_failure_status_flags_or"

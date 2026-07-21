@@ -210,15 +210,21 @@ Lane-local `MTRB` residual trailer, appended after the v1 rows:
 Current proof:
 `extractor/native/runs/market_trade_live_residuals_20260701_v12/`.
 
-The refreshed residual proof classifies every assigned trade-economy residual:
+The historical v12 residual proof recorded the pre-X3/X15 classification. The
+current carrier classification, after the exact resource-trade and D53 joins,
+is:
 
 - residual gap rows: 10
-- validated slices: 6
-- source-blocked residuals: 3
+- validated slices: 9
+- source-blocked residuals: 1
 - schema-blocked residuals: 0
-- owned-elsewhere context rows: 1
+- owned-elsewhere context rows: 0
 - shared-patch-blocked rows: 0
-- Rust gate: passed, no parse errors
+
+The v12 replay-pack receipt below remains historical evidence for its captured
+bytes; it is not reused as proof of the later X3/X15 carrier joins. Those joins
+are admitted by the current strict decoder/fold/typed-replay gates and the
+wave-level central validation.
 
 The residual stream is also packed and verified as a lane-local replay
 container:
@@ -235,10 +241,16 @@ Classified residuals:
 - `purchase_contract_delivery_route_progress`: validated slice.
 - `purchase_contract_price_detail`: validated slice.
 - `purchase_contract_speed_completed`: validated slice.
-- `market_stockpile_sellable_equipment`: source-blocked.
-- `country_resource_import_export_flows`: source-blocked.
-- `license_production_contract_detail`: source-blocked.
-- `market_access_diplomatic_context`: owned by diplomacy context.
+- `market_stockpile_sellable_equipment`: `MTS1` carrier/fold/replay route wired
+  from the exact static owner chain, but still source-blocked on the fresh live
+  owner-chain validation fixture.
+- `country_resource_import_export_flows`: validated exact six-pool `MTRF v2`
+  slice.
+- `license_production_contract_detail`: validated partial slice from ordered
+  `PLIC v2` variants joined to the exact current-hour D53 licence lifecycle;
+  royalty and factory-cost rates remain omitted.
+- `market_access_diplomatic_context`: validated D43/D53 equipment-purchase
+  relation join with exact pair, order, and lifecycle witnesses.
 - `lend_lease_market_contract_mapping`: validated slice for the core directed
   purchase-contract mapping, not full lend-lease replay.
 

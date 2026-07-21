@@ -59,6 +59,7 @@ pub struct DecisionStaticEntry {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DecisionStaticCatalog {
+    pub source_sha256: String,
     pub entries: BTreeMap<String, DecisionStaticEntry>,
 }
 
@@ -106,6 +107,7 @@ impl DecisionStaticCatalog {
     /// Admit the extractor's effective `decisions.json` without interpreting
     /// arbitrary Clausewitz trigger/effect bodies.
     pub fn from_extractor_json(bytes: &[u8]) -> Result<Self> {
+        let source_sha256 = snapshot::sha256::to_hex(&snapshot::sha256::Sha256::digest(bytes));
         let root: Value = serde_json::from_slice(bytes)
             .map_err(|error| GameUiError::parse(format!("decisions.json: {error}")))?;
         let root = object(&root, "decisions.json")?;
@@ -220,7 +222,10 @@ impl DecisionStaticCatalog {
                 },
             );
         }
-        Ok(Self { entries })
+        Ok(Self {
+            source_sha256,
+            entries,
+        })
     }
 }
 
@@ -284,9 +289,54 @@ pub struct DecisionPanelSnapshot {
     pub producer_complete: bool,
     pub frame_hour: i64,
     pub country_tag: String,
+    pub decision_catalog_sha256: String,
+    pub grid: DecisionGridState,
+    pub children: Vec<DecisionPanelChild>,
     pub available_alert_count: u32,
     pub timeout_alert_count: u32,
     pub rows: Vec<DecisionPanelRow>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionGridState {
+    pub clip_left: i32,
+    pub clip_top: i32,
+    pub clip_right: i32,
+    pub clip_bottom: i32,
+    pub content_origin_x: i32,
+    pub content_origin_y: i32,
+    pub content_extent_width: i32,
+    pub content_extent_height: i32,
+    pub scroll_min: i64,
+    pub scroll_max: i64,
+    pub scroll_target: i64,
+    pub scroll_current: i64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionPanelChildKind {
+    Category,
+    FixedHeader,
+    Event,
+    Decision,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionPanelChild {
+    pub presentation_index: u32,
+    pub kind: DecisionPanelChildKind,
+    pub decision_row_index: Option<u32>,
+    pub identity: String,
+    pub name_text: Option<String>,
+    pub secondary_text: Option<String>,
+    pub expanded: Option<bool>,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
 }
 
 /// Convert replay-core's fail-closed d87 view into the only runtime carrier
@@ -350,10 +400,56 @@ pub fn decision_panel_snapshot_from_world(
             alert_timeout: row.alert_timeout,
         })
         .collect();
+    let children = panel
+        .children
+        .iter()
+        .map(|child| DecisionPanelChild {
+            presentation_index: child.presentation_index,
+            kind: match child.kind {
+                replay_core::DecisionPanelChildKindExact::Category => {
+                    DecisionPanelChildKind::Category
+                }
+                replay_core::DecisionPanelChildKindExact::FixedHeader => {
+                    DecisionPanelChildKind::FixedHeader
+                }
+                replay_core::DecisionPanelChildKindExact::Event => {
+                    DecisionPanelChildKind::Event
+                }
+                replay_core::DecisionPanelChildKindExact::Decision => {
+                    DecisionPanelChildKind::Decision
+                }
+            },
+            decision_row_index: child.decision_row_index,
+            identity: child.identity.clone(),
+            name_text: child.name_text.clone(),
+            secondary_text: child.secondary_text.clone(),
+            expanded: child.expanded,
+            x: child.x,
+            y: child.y,
+            width: child.width,
+            height: child.height,
+        })
+        .collect();
     Ok(DecisionPanelSnapshot {
         producer_complete: panel.producer_complete,
         frame_hour,
         country_tag: panel.country_tag.clone(),
+        decision_catalog_sha256: panel.decision_catalog_sha256.clone(),
+        grid: DecisionGridState {
+            clip_left: panel.grid.clip_left,
+            clip_top: panel.grid.clip_top,
+            clip_right: panel.grid.clip_right,
+            clip_bottom: panel.grid.clip_bottom,
+            content_origin_x: panel.grid.content_origin_x,
+            content_origin_y: panel.grid.content_origin_y,
+            content_extent_width: panel.grid.content_extent_width,
+            content_extent_height: panel.grid.content_extent_height,
+            scroll_min: panel.grid.scroll_min,
+            scroll_max: panel.grid.scroll_max,
+            scroll_target: panel.grid.scroll_target,
+            scroll_current: panel.grid.scroll_current,
+        },
+        children,
         available_alert_count: panel.available_alert_count,
         timeout_alert_count: panel.timeout_alert_count,
         rows,
@@ -381,6 +477,46 @@ pub struct DecisionCard {
     pub timer_text: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecisionPanelRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecisionCategoryBinding {
+    pub category_id: String,
+    pub name_text: String,
+    pub description_text: Option<String>,
+    pub expanded: bool,
+    pub rect: DecisionPanelRect,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecisionEventBinding {
+    pub event_id: String,
+    pub name_text: String,
+    pub timer_text: Option<String>,
+    pub rect: DecisionPanelRect,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DecisionPanelItem {
+    Category(DecisionCategoryBinding),
+    FixedHeader {
+        identity: String,
+        name_text: Option<String>,
+        rect: DecisionPanelRect,
+    },
+    Event(DecisionEventBinding),
+    Decision {
+        card: DecisionCard,
+        rect: DecisionPanelRect,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecisionPanelBinding {
     pub frame_hour: i64,
@@ -388,6 +524,9 @@ pub struct DecisionPanelBinding {
     pub available_alert_count: u32,
     pub timeout_alert_count: u32,
     pub alert_tooltip_row_limit: u32,
+    pub grid: DecisionGridState,
+    pub items: Vec<DecisionPanelItem>,
+    /// Decision-only compatibility projection. Exact rendering uses `items`.
     pub cards: Vec<DecisionCard>,
 }
 
@@ -396,6 +535,16 @@ fn valid_token(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+}
+
+fn valid_event_identity(value: &str) -> bool {
+    value
+        .strip_prefix("event_")
+        .is_some_and(|id| {
+            !id.is_empty()
+                && id.bytes().all(|byte| byte.is_ascii_digit())
+                && id.parse::<u32>().is_ok()
+        })
 }
 
 fn icon_sprite(token: Option<&str>) -> String {
@@ -420,16 +569,32 @@ pub fn bind_decision_panel(
     if !valid_token(&snapshot.country_tag) {
         return Err(GameUiError::parse("decision panel country_tag is invalid"));
     }
+    if snapshot.decision_catalog_sha256 != catalog.source_sha256 {
+        return Err(GameUiError::missing(
+            "decision panel effective catalog hash disagrees with production catalog",
+        ));
+    }
+    if snapshot.grid.clip_right <= snapshot.grid.clip_left
+        || snapshot.grid.clip_bottom <= snapshot.grid.clip_top
+        || snapshot.grid.content_extent_width < 0
+        || snapshot.grid.content_extent_height < 0
+        || snapshot.grid.scroll_min > snapshot.grid.scroll_max
+        || !(snapshot.grid.scroll_min..=snapshot.grid.scroll_max)
+            .contains(&snapshot.grid.scroll_target)
+        || !(snapshot.grid.scroll_min..=snapshot.grid.scroll_max)
+            .contains(&snapshot.grid.scroll_current)
+    {
+        return Err(GameUiError::parse(
+            "decision panel exact grid clip/content/scroll state is invalid",
+        ));
+    }
     let mut identities = BTreeSet::new();
     let mut available_alert_count = 0u32;
     let mut timeout_alert_count = 0u32;
     let mut cards = Vec::with_capacity(snapshot.rows.len());
-    for (ordinal, row) in snapshot.rows.iter().enumerate() {
-        if row.presentation_index as usize != ordinal {
-            return Err(GameUiError::parse(format!(
-                "decision row {} presentation index {} is not contiguous",
-                row.decision_id, row.presentation_index
-            )));
+    for row in &snapshot.rows {
+        if row.presentation_index as usize >= snapshot.children.len() {
+            return Err(GameUiError::parse("decision row presentation index is outside the grid"));
         }
         if !valid_token(&row.decision_id) || !valid_token(&row.category_id) {
             return Err(GameUiError::parse("decision row identity is invalid"));
@@ -548,12 +713,112 @@ pub fn bind_decision_panel(
             "decision panel alert counts disagree with ordered rows",
         ));
     }
+    let mut items = Vec::with_capacity(snapshot.children.len());
+    let mut referenced_rows = BTreeSet::new();
+    for (ordinal, child) in snapshot.children.iter().enumerate() {
+        if child.presentation_index as usize != ordinal
+            || child.width <= 0
+            || child.height <= 0
+            || !valid_token(&child.identity)
+        {
+            return Err(GameUiError::parse(
+                "decision panel heterogeneous child order/geometry/identity invalid",
+            ));
+        }
+        let rect = DecisionPanelRect {
+            x: child.x,
+            y: child.y,
+            width: child.width,
+            height: child.height,
+        };
+        let item = match (child.kind, child.decision_row_index) {
+            (DecisionPanelChildKind::Category, None) => {
+                let name_text = child.name_text.clone().filter(|text| !text.is_empty()).ok_or_else(|| {
+                    GameUiError::missing("decision category lacks exact rendered name")
+                })?;
+                let expanded = child.expanded.ok_or_else(|| {
+                    GameUiError::missing("decision category lacks exact expansion state")
+                })?;
+                DecisionPanelItem::Category(DecisionCategoryBinding {
+                    category_id: child.identity.clone(),
+                    name_text,
+                    description_text: child.secondary_text.clone(),
+                    expanded,
+                    rect,
+                })
+            }
+            (DecisionPanelChildKind::FixedHeader, None)
+                if child.identity == "event_header"
+                    && child.secondary_text.is_none()
+                    && child.expanded.is_none() =>
+            {
+                DecisionPanelItem::FixedHeader {
+                    identity: child.identity.clone(),
+                    name_text: child.name_text.clone(),
+                    rect,
+                }
+            }
+            (DecisionPanelChildKind::Event, None) => {
+                if !valid_event_identity(&child.identity) || child.expanded.is_some() {
+                    return Err(GameUiError::parse(
+                        "decision event identity/structural state is invalid",
+                    ));
+                }
+                let name_text = child.name_text.clone().filter(|text| !text.is_empty()).ok_or_else(|| {
+                    GameUiError::missing("decision event lacks exact rendered name")
+                })?;
+                DecisionPanelItem::Event(DecisionEventBinding {
+                    event_id: child.identity.clone(),
+                    name_text,
+                    timer_text: child.secondary_text.clone(),
+                    rect,
+                })
+            }
+            (DecisionPanelChildKind::Decision, Some(row_index)) => {
+                if child.expanded.is_some() {
+                    return Err(GameUiError::parse(
+                        "decision item carries category expansion state",
+                    ));
+                }
+                let card = cards.get(row_index as usize).ok_or_else(|| {
+                    GameUiError::parse("decision grid child row index is out of range")
+                })?;
+                if !referenced_rows.insert(row_index)
+                    || card.presentation_index != child.presentation_index
+                    || card.decision_id != child.identity
+                    || child.name_text.as_deref() != Some(card.name_text.as_str())
+                    || child.secondary_text.as_deref() != card.timer_text.as_deref()
+                {
+                    return Err(GameUiError::parse(
+                        "decision grid child/card bijection disagrees",
+                    ));
+                }
+                DecisionPanelItem::Decision {
+                    card: card.clone(),
+                    rect,
+                }
+            }
+            _ => {
+                return Err(GameUiError::parse(
+                    "decision structural child supplied an invalid decision reference",
+                ))
+            }
+        };
+        items.push(item);
+    }
+    if referenced_rows.len() != cards.len() {
+        return Err(GameUiError::parse(
+            "decision panel contains a card absent from heterogeneous grid order",
+        ));
+    }
     Ok(DecisionPanelBinding {
         frame_hour: snapshot.frame_hour,
         country_tag: snapshot.country_tag.clone(),
         available_alert_count,
         timeout_alert_count,
         alert_tooltip_row_limit: MAX_DECISIONS_IN_DECISION_ALERT_TOOLTIP,
+        grid: snapshot.grid.clone(),
+        items,
         cards,
     })
 }

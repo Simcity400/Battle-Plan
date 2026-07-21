@@ -1,25 +1,25 @@
-//! Signature-gated a729 producer for exact resolved tooltip instances.
+//! Owner-runnable, signature-gated a729 producer for the final tooltip blob.
 //!
-//! A26 owns only the generic tooltip-controller detour. Final text and owner
-//! destruction arrive through A25's sole shared setter/destructor detours.
+//! The controller detour is the sole A26 hook. After the original controller
+//! returns, A26 copies the exact post-layout text, owner identity, rectangle,
+//! viewport and a QPC timestamp in one observation. It does not depend on A25,
+//! split newlines, infer source rows, or retain process pointers in the carrier.
 
 use crate::{
-    rows_from_final_resolved_text, ExactTooltipInstanceSource, RectI32, ResolvedTooltipInstance,
+    ExactTooltipInstanceSource, RectI32, ResolvedTooltipInstance, SelectedPresentStamp,
+    TooltipTraceFrame,
 };
 use core::ffi::c_void;
 use minhook::MinHook;
-use runtime_text_inputs_live_lane::a729_hook::{
-    install_a729_runtime_text_hooks, register_post_setter_observer,
-    register_pre_destructor_observer,
-};
-use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::mem;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Performance::QueryPerformanceCounter;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 pub const TOOLTIP_CONTROLLER_RVA: u32 = 0x002A_4080;
@@ -33,18 +33,25 @@ const HOVER_CONTEXT_OBJECT_OFFSET: usize = 0x140;
 const VIEWPORT_WIDTH_OFFSET: usize = 0x180;
 const VIEWPORT_HEIGHT_OFFSET: usize = 0x184;
 const TEXTBOX_AUTHORED_NAME_OFFSET: usize = 0x98;
+const TEXTBOX_GRAPHICS_CHILD_OFFSET: usize = 0x88;
+const GRAPHICS_CHILD_LAYOUT_OBJECT_OFFSET: usize = 0xC8;
+const LAYOUT_OBJECT_FINAL_TEXT_OFFSET: usize = 0x188;
 const CGUI_TYPE_OFFSET: usize = 0x60;
 const CGUI_TYPE_NAME_OFFSET: usize = 0x28;
 const GUI_VISIBLE_FLAGS_OFFSET: usize = 0x75;
-const TEXTBOX_CHILD_FINAL_STRING_OFFSET: usize = 0x110;
+const MAX_PENDING_OBSERVATIONS: usize = 4_096;
 
 const CONTROLLER_SENTINEL: [u8; 16] = [
     0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x88, 0x50, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41,
 ];
+const EXTENT_SENTINEL: [u8; 16] = [
+    0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0x89, 0x88, 0x00, 0x00, 0x00, 0x48, 0x8B, 0xDA,
+];
 
-/// Function-evidence manifest for the controller, position, and extent accessors.
+/// Exact-a729 function-evidence manifest produced by the current 20-shard
+/// broker for the controller/layout closure.
 pub const PRODUCER_MANIFEST_SHA256: [u8; 32] =
-    hex32(b"2bc2bc389cfcadb3903ad6c79a03645a5fe4b7102feac1eb982f89e6aabac9c5");
+    hex32(b"b1f2f0bc2afde8c970fd4e63dd9c969bde9744d146c4f23e9dddae4f00ba4c64");
 
 type ControllerFn = unsafe extern "system" fn(usize, u8);
 type ExtentFn = unsafe extern "system" fn(usize, *mut i32) -> *mut i32;
@@ -52,384 +59,471 @@ type ExtentFn = unsafe extern "system" fn(usize, *mut i32) -> *mut i32;
 static ORIGINAL_CONTROLLER: AtomicUsize = AtomicUsize::new(0);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
+static INSTALL_EPOCH: AtomicUsize = AtomicUsize::new(0);
+static CALLBACKS_OPEN: AtomicBool = AtomicBool::new(false);
+static IN_FLIGHT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 static STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
 
-thread_local! {
-    static ACTIVE_CONTROLLER: Cell<usize> = const { Cell::new(0) };
-}
-
 #[derive(Clone)]
-struct PendingText {
-    final_text: String,
-    setter_caller_rva: u32,
-    hovered_type_name: String,
-}
-
-#[derive(Clone)]
-struct LiveSnapshot {
-    generation: u32,
+struct VisibleObservation {
+    sequence: u64,
+    qpc_ticks: u64,
+    owner_generation: u64,
     position: [i32; 2],
     extent: [i32; 2],
     viewport: [i32; 2],
-    text: PendingText,
+    hovered_element_authored_name: String,
+    tooltip_owner_authored_name: String,
+    final_resolved_text: String,
+}
+
+#[derive(Clone)]
+enum ControllerObservation {
+    Hidden { sequence: u64, qpc_ticks: u64 },
+    Visible(VisibleObservation),
 }
 
 #[derive(Default)]
 struct HookState {
-    pending: HashMap<usize, PendingText>,
-    active: HashMap<usize, LiveSnapshot>,
-    generations: HashMap<usize, u32>,
-    next_generation: u32,
     controller_calls: u64,
-    setter_events: u64,
-    destructor_events: u64,
-    current_error: Option<String>,
+    observation_sequence: u64,
+    observations: VecDeque<ControllerObservation>,
+    last_sealed_present_qpc_ticks: u64,
+    last_owner_address: usize,
+    owner_generation: u64,
+    poison: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HookDiagnostics {
+    pub installed: bool,
+    pub install_epoch: u64,
+    pub callbacks_open: bool,
+    pub in_flight_callbacks: usize,
     pub controller_calls: u64,
-    pub setter_events: u64,
-    pub destructor_events: u64,
-    pub pending_owner_count: u64,
-    pub visible_instance_count: u64,
-    pub current_error: bool,
+    pub observation_sequence: u64,
+    pub owner_generation: u64,
+    pub has_observed_baseline: bool,
+    pub poisoned: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct InstalledHookAddress {
-    pub tooltip_controller: usize,
+pub struct A729ResolvedTooltipHookOwner {
+    target: usize,
+    epoch: usize,
+    active: bool,
+}
+
+impl A729ResolvedTooltipHookOwner {
+    pub fn install() -> Result<Self, String> {
+        let _install = INSTALL_LOCK
+            .lock()
+            .map_err(|_| "A26 install mutex poisoned".to_string())?;
+        if INSTALLED.load(Ordering::Acquire) {
+            return Err("A26 tooltip hook already has a live owner".into());
+        }
+        let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
+        if base == 0 {
+            return Err("GetModuleHandleW(NULL) returned null".to_string());
+        }
+        let target = base + TOOLTIP_CONTROLLER_RVA as usize;
+        let extent = base + TOOLTIP_EXTENT_ACCESSOR_RVA as usize;
+        verify_sentinel(target, &CONTROLLER_SENTINEL, "tooltip controller")?;
+        verify_sentinel(extent, &EXTENT_SENTINEL, "tooltip extent accessor")?;
+        let epoch = INSTALL_EPOCH
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| "A26 hook install epoch exhausted".to_string())?
+            + 1;
+        {
+            let mut state = STATE
+                .get_or_init(|| Mutex::new(HookState::default()))
+                .lock()
+                .map_err(|_| "A26 hook state mutex poisoned".to_string())?;
+            *state = HookState::default();
+        }
+        let original = unsafe {
+            MinHook::create_hook(
+                target as *mut c_void,
+                hook_tooltip_controller as *mut c_void,
+            )
+        }
+        .map_err(|status| format!("A26 tooltip controller hook creation failed: {status}"))?;
+        ORIGINAL_CONTROLLER.store(original as usize, Ordering::Release);
+        MODULE_BASE.store(base, Ordering::Release);
+        CALLBACKS_OPEN.store(true, Ordering::Release);
+        if let Err(status) = unsafe { MinHook::enable_hook(target as *mut c_void) } {
+            CALLBACKS_OPEN.store(false, Ordering::Release);
+            let _ = unsafe { MinHook::remove_hook(target as *mut c_void) };
+            ORIGINAL_CONTROLLER.store(0, Ordering::Release);
+            MODULE_BASE.store(0, Ordering::Release);
+            return Err(format!("A26 tooltip controller hook enable failed: {status}"));
+        }
+        INSTALLED.store(true, Ordering::Release);
+        Ok(Self {
+            target,
+            epoch,
+            active: true,
+        })
+    }
+
+    pub fn source(&self, pov_country_or_global: impl Into<String>) -> Result<A729ResolvedTooltipHookSource, String> {
+        if !self.active || !INSTALLED.load(Ordering::Acquire) {
+            return Err("A26 hook owner is not active".into());
+        }
+        A729ResolvedTooltipHookSource::new(self.epoch, pov_country_or_global)
+    }
+
+    pub fn uninstall(&mut self) -> Result<(), String> {
+        if !self.active {
+            return Ok(());
+        }
+        let _install = INSTALL_LOCK
+            .lock()
+            .map_err(|_| "A26 install mutex poisoned".to_string())?;
+        CALLBACKS_OPEN.store(false, Ordering::Release);
+        unsafe { MinHook::disable_hook(self.target as *mut c_void) }
+            .map_err(|status| format!("A26 controller disable failed: {status}"))?;
+        wait_for_quiescence(Duration::from_secs(30))?;
+        unsafe { MinHook::remove_hook(self.target as *mut c_void) }
+            .map_err(|status| format!("A26 controller removal failed: {status}"))?;
+        ORIGINAL_CONTROLLER.store(0, Ordering::Release);
+        MODULE_BASE.store(0, Ordering::Release);
+        INSTALLED.store(false, Ordering::Release);
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for A729ResolvedTooltipHookOwner {
+    fn drop(&mut self) {
+        if self.active && self.uninstall().is_err() {
+            // A failed teardown is not declared safe. Leave the installed bit
+            // set so the collector can pin its module instead of unloading it.
+            INSTALLED.store(true, Ordering::Release);
+        }
+    }
 }
 
 pub struct A729ResolvedTooltipHookSource {
+    install_epoch: usize,
     pov_country_or_global: String,
 }
 
 impl A729ResolvedTooltipHookSource {
-    pub fn new(pov_country_or_global: impl Into<String>) -> Result<Self, String> {
+    fn new(
+        install_epoch: usize,
+        pov_country_or_global: impl Into<String>,
+    ) -> Result<Self, String> {
         let pov_country_or_global = pov_country_or_global.into();
-        if pov_country_or_global.trim().is_empty() {
-            return Err("A26 POV country/global identity is empty".to_string());
+        if !crate::valid_pov_country_or_global(&pov_country_or_global) {
+            return Err("A26 POV country/global identity is not portable".to_string());
         }
         Ok(Self {
+            install_epoch,
             pov_country_or_global,
         })
-    }
-
-    pub fn diagnostics(&self) -> HookDiagnostics {
-        let Some(state) = STATE.get().and_then(|state| state.lock().ok()) else {
-            return HookDiagnostics::default();
-        };
-        HookDiagnostics {
-            controller_calls: state.controller_calls,
-            setter_events: state.setter_events,
-            destructor_events: state.destructor_events,
-            pending_owner_count: state.pending.len() as u64,
-            visible_instance_count: state.active.len() as u64,
-            current_error: state.current_error.is_some(),
-        }
-    }
-
-    fn snapshots(&self, frame_hour: u64) -> Result<Vec<ResolvedTooltipInstance>, String> {
-        let state = STATE
-            .get()
-            .ok_or_else(|| "A26 a729 hook state is not initialized".to_string())?
-            .lock()
-            .map_err(|_| "A26 a729 hook state mutex poisoned".to_string())?;
-        if let Some(error) = &state.current_error {
-            return Err(error.clone());
-        }
-        if state.active.len() > 1 {
-            return Err(
-                "a729 global tooltip controller exposed multiple visible ToolTip owners".into(),
-            );
-        }
-        let mut rows = state.active.values().cloned().collect::<Vec<_>>();
-        rows.sort_by_key(|row| row.generation);
-        rows.into_iter()
-            .enumerate()
-            .map(|(repeat_index, snapshot)| {
-                let source_identity = format!(
-                    "hovered-cgui-type:{};setter-caller-rva:0x{:08X}",
-                    snapshot.text.hovered_type_name, snapshot.text.setter_caller_rva
-                );
-                let evaluation_context = format!(
-                    "controller-rva:0x{TOOLTIP_CONTROLLER_RVA:08X};tooltip-owner-generation:{}",
-                    snapshot.generation
-                );
-                let tooltip_rows = rows_from_final_resolved_text(
-                    &snapshot.text.final_text,
-                    &source_identity,
-                    &evaluation_context,
-                )
-                .map_err(|error| format!("A26 final text row split failed: {error:?}"))?;
-                Ok(ResolvedTooltipInstance {
-                    frame_hour,
-                    pov_country_or_global: self.pov_country_or_global.clone(),
-                    view_id: "core.gui".to_string(),
-                    element_path: "guiTypes/ToolTip".to_string(),
-                    repeat_index: u32::try_from(repeat_index)
-                        .map_err(|_| "A26 repeat index overflow".to_string())?,
-                    screen_rect: RectI32 {
-                        x: snapshot.position[0],
-                        y: snapshot.position[1],
-                        width: snapshot.extent[0],
-                        height: snapshot.extent[1],
-                    },
-                    viewport_width_px: snapshot.viewport[0],
-                    viewport_height_px: snapshot.viewport[1],
-                    producer_record_identity: format!(
-                        "a26:a729:controller=0x{TOOLTIP_CONTROLLER_RVA:08X}:generation={}:setter=0x{:08X}",
-                        snapshot.generation, snapshot.text.setter_caller_rva
-                    ),
-                    rows: tooltip_rows,
-                })
-            })
-            .collect()
     }
 }
 
 impl ExactTooltipInstanceSource for A729ResolvedTooltipHookSource {
     fn is_exact_a729_tooltip_source(&self) -> bool {
         INSTALLED.load(Ordering::Acquire)
+            && CALLBACKS_OPEN.load(Ordering::Acquire)
+            && MODULE_BASE.load(Ordering::Acquire) != 0
+            && INSTALL_EPOCH.load(Ordering::Acquire) == self.install_epoch
     }
 
     fn producer_manifest_sha256(&self) -> [u8; 32] {
         PRODUCER_MANIFEST_SHA256
     }
 
-    fn completeness_record_identity(&self, frame_hour: u64) -> Result<String, String> {
-        let diagnostics = self.diagnostics();
-        if diagnostics.current_error {
-            let state = STATE
-                .get()
-                .ok_or_else(|| "A26 a729 hook state is not initialized".to_string())?
-                .lock()
-                .map_err(|_| "A26 a729 hook state mutex poisoned".to_string())?;
-            return Err(state
-                .current_error
-                .clone()
-                .unwrap_or_else(|| "A26 current completeness error".to_string()));
+    fn capture_selected_present(
+        &self,
+        selected_present: &SelectedPresentStamp,
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+    ) -> Result<TooltipTraceFrame, String> {
+        let _install = INSTALL_LOCK
+            .lock()
+            .map_err(|_| "A26 install mutex poisoned".to_string())?;
+        if !self.is_exact_a729_tooltip_source() {
+            return Err("A26 hook source is not owned by an active installation".into());
         }
-        Ok(format!(
-            "a26:a729:{frame_hour}:controller_calls={}:setter_events={}:visible={}",
-            diagnostics.controller_calls,
-            diagnostics.setter_events,
-            diagnostics.visible_instance_count
-        ))
-    }
-
-    fn expected_instance_count(&self, _: u64) -> Result<u32, String> {
-        let count = self.snapshots(0)?.len();
-        u32::try_from(count).map_err(|_| "A26 instance count exceeds u32".to_string())
-    }
-
-    fn collect_frame(&self, frame_hour: u64) -> Result<Vec<ResolvedTooltipInstance>, String> {
-        self.snapshots(frame_hour)
+        if status_flags != 0 {
+            return Err("A26 successful source cannot emit compact failure flags".into());
+        }
+        if selected_present.selected_present_candidate_id == 0
+            || selected_present.selected_present_qpc_ticks == 0
+        {
+            return Err("A26 selected Present identity is incomplete".into());
+        }
+        crate::validate_sha256_hex(
+            &selected_present.selected_present_receipt_sha256,
+            "selected Present receipt",
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        let mut state = STATE
+            .get()
+            .ok_or_else(|| "A26 hook state is not initialized".to_string())?
+            .lock()
+            .map_err(|_| "A26 hook state mutex poisoned".to_string())?;
+        if let Some(error) = &state.poison {
+            return Err(error.clone());
+        }
+        let observation = state
+            .observations
+            .iter()
+            .filter(|observation| {
+                let qpc = observation_qpc(observation);
+                qpc > state.last_sealed_present_qpc_ticks
+                    && qpc <= selected_present.selected_present_qpc_ticks
+            })
+            .max_by_key(|observation| {
+                (observation_qpc(observation), observation_sequence(observation))
+            })
+            .cloned();
+        let Some(observation) = observation else {
+            return Err(if state.controller_calls == 0 {
+                "A26 has no controller observation; startup silence is unobtained".into()
+            } else {
+                "A26 has no controller observation inside the selected-Present interval".into()
+            });
+        };
+        let (sequence, observation_qpc_ticks, instances) = match observation {
+            ControllerObservation::Hidden {
+                sequence,
+                qpc_ticks,
+            } => (sequence, qpc_ticks, Vec::new()),
+            ControllerObservation::Visible(value) => {
+                let instance = ResolvedTooltipInstance {
+                    frame_hour: selected_present.frame_hour,
+                    pov_country_or_global: self.pov_country_or_global.clone(),
+                    hovered_element_authored_name: value.hovered_element_authored_name,
+                    tooltip_owner_authored_name: value.tooltip_owner_authored_name,
+                    repeat_index: 0,
+                    screen_rect: RectI32 {
+                        x: value.position[0],
+                        y: value.position[1],
+                        width: value.extent[0],
+                        height: value.extent[1],
+                    },
+                    viewport_width_px: value.viewport[0],
+                    viewport_height_px: value.viewport[1],
+                    producer_record_identity: format!(
+                        "a26:a729:controller=0x{TOOLTIP_CONTROLLER_RVA:08X}:owner-generation={}:observation={}:qpc={}",
+                        value.owner_generation, value.sequence, value.qpc_ticks
+                    ),
+                    final_resolved_text: value.final_resolved_text,
+                };
+                (value.sequence, value.qpc_ticks, vec![instance])
+            }
+        };
+        state.last_sealed_present_qpc_ticks = selected_present.selected_present_qpc_ticks;
+        state.observations.retain(|observation| {
+            observation_qpc(observation) > selected_present.selected_present_qpc_ticks
+        });
+        Ok(TooltipTraceFrame {
+            elapsed_wall_ms,
+            status_flags,
+            frame_hour: selected_present.frame_hour,
+            selected_present_candidate_id: selected_present.selected_present_candidate_id,
+            selected_present_ordinal: selected_present.selected_present_ordinal,
+            selected_present_qpc_ticks: selected_present.selected_present_qpc_ticks,
+            selected_present_receipt_sha256: selected_present
+                .selected_present_receipt_sha256
+                .clone(),
+            producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
+            completeness_record_identity: format!(
+                "a26:a729:selected-present={}:observation={}:observation-qpc={}",
+                selected_present.selected_present_candidate_id, sequence, observation_qpc_ticks
+            ),
+            expected_instance_count: instances.len() as u32,
+            instances,
+        })
     }
 }
 
-/// Install the exact controller hook after A25 has authenticated and installed
-/// its sole setter/destructor hooks. No hook is created on a sentinel mismatch.
-pub fn install_a729_resolved_tooltip_hook() -> Result<InstalledHookAddress, String> {
-    if INSTALLED.load(Ordering::Acquire) {
-        return Ok(InstalledHookAddress {
-            tooltip_controller: MODULE_BASE.load(Ordering::Acquire)
-                + TOOLTIP_CONTROLLER_RVA as usize,
-        });
+pub fn diagnostics() -> HookDiagnostics {
+    let state = STATE.get().and_then(|state| state.lock().ok());
+    HookDiagnostics {
+        installed: INSTALLED.load(Ordering::Acquire),
+        install_epoch: INSTALL_EPOCH.load(Ordering::Acquire) as u64,
+        callbacks_open: CALLBACKS_OPEN.load(Ordering::Acquire),
+        in_flight_callbacks: IN_FLIGHT_CALLBACKS.load(Ordering::Acquire),
+        controller_calls: state.as_ref().map_or(0, |state| state.controller_calls),
+        observation_sequence: state
+            .as_ref()
+            .map_or(0, |state| state.observation_sequence),
+        owner_generation: state.as_ref().map_or(0, |state| state.owner_generation),
+        has_observed_baseline: state
+            .as_ref()
+            .is_some_and(|state| state.controller_calls > 0),
+        poisoned: state.as_ref().is_some_and(|state| state.poison.is_some()),
     }
-    let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
-    if base == 0 {
-        return Err("GetModuleHandleW(NULL) returned null".to_string());
-    }
-    let controller = base + TOOLTIP_CONTROLLER_RVA as usize;
-    verify_sentinel(controller, &CONTROLLER_SENTINEL, "tooltip controller")?;
-    install_a729_runtime_text_hooks()?;
-    STATE.get_or_init(|| Mutex::new(HookState::default()));
+}
 
-    let original = unsafe {
-        MinHook::create_hook(
-            controller as *mut c_void,
-            hook_tooltip_controller as *mut c_void,
-        )
-    }
-    .map_err(|status| format!("A26 tooltip controller hook creation failed: {status}"))?;
-    ORIGINAL_CONTROLLER.store(original as usize, Ordering::Release);
-    MODULE_BASE.store(base, Ordering::Release);
+struct InFlightGuard {
+    admitted: bool,
+}
 
-    if let Err(error) = register_post_setter_observer(post_setter_observer) {
-        let _ = unsafe { MinHook::remove_hook(controller as *mut c_void) };
-        return Err(error);
+impl InFlightGuard {
+    fn enter() -> Self {
+        IN_FLIGHT_CALLBACKS.fetch_add(1, Ordering::AcqRel);
+        Self {
+            admitted: CALLBACKS_OPEN.load(Ordering::Acquire),
+        }
     }
-    if let Err(error) = register_pre_destructor_observer(pre_destructor_observer) {
-        let _ = unsafe { MinHook::remove_hook(controller as *mut c_void) };
-        return Err(error);
+
+    fn may_publish(&self) -> bool {
+        self.admitted && CALLBACKS_OPEN.load(Ordering::Acquire)
     }
-    if let Err(status) = unsafe { MinHook::enable_hook(controller as *mut c_void) } {
-        let _ = unsafe { MinHook::remove_hook(controller as *mut c_void) };
-        return Err(format!(
-            "A26 tooltip controller hook enable failed: {status}"
-        ));
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        IN_FLIGHT_CALLBACKS.fetch_sub(1, Ordering::AcqRel);
     }
-    INSTALLED.store(true, Ordering::Release);
-    Ok(InstalledHookAddress {
-        tooltip_controller: controller,
-    })
 }
 
 unsafe extern "system" fn hook_tooltip_controller(controller: usize, update: u8) {
-    let previous = ACTIVE_CONTROLLER.with(|active| active.replace(controller));
+    let guard = InFlightGuard::enter();
     let original = ORIGINAL_CONTROLLER.load(Ordering::Acquire);
     if original != 0 {
         let original: ControllerFn = unsafe { mem::transmute(original) };
         unsafe { original(controller, update) };
     }
-    snapshot_after_controller(controller);
-    ACTIVE_CONTROLLER.with(|active| active.set(previous));
+    if guard.may_publish() {
+        publish_controller_observation(controller);
+    }
 }
 
-unsafe extern "system" fn post_setter_observer(owner: usize, setter_child: usize, caller_rva: u32) {
-    if !is_tooltip_owner(owner) {
+fn publish_controller_observation(controller: usize) {
+    let result = snapshot_values(controller);
+    let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) else {
         return;
-    }
-    let controller = ACTIVE_CONTROLLER.with(Cell::get);
-    let result = (|| {
-        if controller == 0 {
-            return Err(
-                "ToolTip setter executed outside authenticated controller scope".to_string(),
+    };
+    state.controller_calls = state.controller_calls.saturating_add(1);
+    state.observation_sequence = state.observation_sequence.saturating_add(1);
+    let sequence = state.observation_sequence;
+    match result {
+        Ok(SnapshotResult::Hidden {
+            qpc_ticks,
+            owner_address,
+        }) => {
+            update_owner_generation(&mut state, owner_address);
+            push_observation(
+                &mut state,
+                ControllerObservation::Hidden {
+                sequence,
+                qpc_ticks,
+                },
             );
         }
-        let final_text = read_engine_string(
-            setter_child
-                .checked_add(TEXTBOX_CHILD_FINAL_STRING_OFFSET)
-                .ok_or_else(|| "ToolTip child text address overflow".to_string())?,
-        )
-        .ok_or_else(|| "ToolTip final engine string unreadable".to_string())?;
-        let final_text = String::from_utf8(final_text)
-            .map_err(|_| "ToolTip final engine string is not UTF-8".to_string())?;
-        let hovered_type_name = hovered_type_name(controller)
-            .ok_or_else(|| "ToolTip hovered CGuiType name unreadable".to_string())?;
-        Ok(PendingText {
-            final_text,
-            setter_caller_rva: caller_rva,
-            hovered_type_name,
-        })
-    })();
-    if let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) {
-        state.setter_events = state.setter_events.saturating_add(1);
-        match result {
-            Ok(text) => {
-                state.pending.insert(owner, text);
-                state.current_error = None;
-            }
-            Err(error) => state.current_error = Some(error),
+        Ok(SnapshotResult::Visible {
+            qpc_ticks,
+            owner_address,
+            position,
+            extent,
+            viewport,
+            hovered_element_authored_name,
+            tooltip_owner_authored_name,
+            final_resolved_text,
+        }) => {
+            let owner_generation = update_owner_generation(&mut state, owner_address);
+            push_observation(
+                &mut state,
+                ControllerObservation::Visible(VisibleObservation {
+                    sequence,
+                    qpc_ticks,
+                    owner_generation,
+                    position,
+                    extent,
+                    viewport,
+                    hovered_element_authored_name,
+                    tooltip_owner_authored_name,
+                    final_resolved_text,
+                }),
+            );
+        }
+        Err(error) => {
+            state.poison.get_or_insert(error);
+            state.observations.clear();
         }
     }
 }
 
-unsafe extern "system" fn pre_destructor_observer(owner: usize, _: u32) {
-    if let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) {
-        state.pending.remove(&owner);
-        state.active.remove(&owner);
-        state.generations.remove(&owner);
-        state.destructor_events = state.destructor_events.saturating_add(1);
-        state.current_error = None;
+fn observation_qpc(observation: &ControllerObservation) -> u64 {
+    match observation {
+        ControllerObservation::Hidden { qpc_ticks, .. } => *qpc_ticks,
+        ControllerObservation::Visible(observation) => observation.qpc_ticks,
     }
 }
 
-fn snapshot_after_controller(controller: usize) {
-    let result = snapshot_values(controller);
-    if let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) {
-        state.controller_calls = state.controller_calls.saturating_add(1);
-        match result {
-            Ok(SnapshotResult::Hidden(owner)) => {
-                state.active.remove(&owner);
-                state.current_error = None;
-            }
-            Ok(SnapshotResult::Visible {
-                owner,
-                position,
-                extent,
-                viewport,
-            }) => {
-                let Some(text) = state.pending.get(&owner).cloned() else {
-                    state.active.remove(&owner);
-                    state.current_error = Some(
-                        "visible ToolTip has no final-setter record in the authenticated controller scope"
-                            .to_string(),
-                    );
-                    return;
-                };
-                let generation = if let Some(generation) = state.generations.get(&owner) {
-                    *generation
-                } else {
-                    let generation = state.next_generation;
-                    state.next_generation = state.next_generation.saturating_add(1);
-                    state.generations.insert(owner, generation);
-                    generation
-                };
-                state.active.clear();
-                state.active.insert(
-                    owner,
-                    LiveSnapshot {
-                        generation,
-                        position,
-                        extent,
-                        viewport,
-                        text,
-                    },
-                );
-                state.current_error = None;
-            }
-            Err(error) => {
-                state.active.clear();
-                state.current_error = Some(error);
-            }
-        }
+fn observation_sequence(observation: &ControllerObservation) -> u64 {
+    match observation {
+        ControllerObservation::Hidden { sequence, .. } => *sequence,
+        ControllerObservation::Visible(observation) => observation.sequence,
     }
+}
+
+fn push_observation(state: &mut HookState, observation: ControllerObservation) {
+    if observation_qpc(&observation) <= state.last_sealed_present_qpc_ticks {
+        return;
+    }
+    if state.observations.len() == MAX_PENDING_OBSERVATIONS {
+        state
+            .poison
+            .get_or_insert_with(|| "A26 controller observation queue overflowed".into());
+        state.observations.clear();
+        return;
+    }
+    state.observations.push_back(observation);
+}
+
+fn update_owner_generation(state: &mut HookState, owner_address: usize) -> u64 {
+    if state.last_owner_address != owner_address {
+        state.last_owner_address = owner_address;
+        state.owner_generation = state.owner_generation.saturating_add(1);
+    }
+    state.owner_generation
 }
 
 enum SnapshotResult {
-    Hidden(usize),
+    Hidden {
+        qpc_ticks: u64,
+        owner_address: usize,
+    },
     Visible {
-        owner: usize,
+        qpc_ticks: u64,
+        owner_address: usize,
         position: [i32; 2],
         extent: [i32; 2],
         viewport: [i32; 2],
+        hovered_element_authored_name: String,
+        tooltip_owner_authored_name: String,
+        final_resolved_text: String,
     },
 }
 
 fn snapshot_values(controller: usize) -> Result<SnapshotResult, String> {
-    let owner = read_usize(
-        controller
-            .checked_add(CONTROLLER_TOOLTIP_OWNER_OFFSET)
-            .ok_or_else(|| "tooltip owner address overflow".to_string())?,
-    )
-    .ok_or_else(|| "tooltip owner unreadable".to_string())?;
-    if !is_tooltip_owner(owner) {
-        return Err("controller ToolTip owner failed exact vtable/name validation".into());
-    }
-    let flags = read_u8(
-        owner
-            .checked_add(GUI_VISIBLE_FLAGS_OFFSET)
-            .ok_or_else(|| "tooltip flags address overflow".to_string())?,
-    )
-    .ok_or_else(|| "tooltip visibility flags unreadable".to_string())?;
+    let qpc_ticks = qpc_ticks()?;
+    let owner = read_usize(controller + CONTROLLER_TOOLTIP_OWNER_OFFSET)
+        .ok_or_else(|| "tooltip owner unreadable".to_string())?;
+    let tooltip_owner_authored_name = validate_tooltip_owner(owner)?;
+    let flags = read_u8(owner + GUI_VISIBLE_FLAGS_OFFSET)
+        .ok_or_else(|| "tooltip visibility flags unreadable".to_string())?;
     if flags & 0x08 == 0 {
-        return Ok(SnapshotResult::Hidden(owner));
+        return Ok(SnapshotResult::Hidden {
+            qpc_ticks,
+            owner_address: owner,
+        });
     }
-    let position = read_i32_pair(
-        controller
-            .checked_add(CONTROLLER_POSITION_OFFSET)
-            .ok_or_else(|| "tooltip position address overflow".to_string())?,
-    )
-    .ok_or_else(|| "tooltip final packed position unreadable".to_string())?;
-    let viewport_owner = read_usize(
-        controller
-            .checked_add(CONTROLLER_VIEWPORT_OFFSET)
-            .ok_or_else(|| "tooltip viewport address overflow".to_string())?,
-    )
-    .ok_or_else(|| "tooltip viewport owner unreadable".to_string())?;
+    let position = read_i32_pair(controller + CONTROLLER_POSITION_OFFSET)
+        .ok_or_else(|| "tooltip final packed position unreadable".to_string())?;
+    let viewport_owner = read_usize(controller + CONTROLLER_VIEWPORT_OFFSET)
+        .ok_or_else(|| "tooltip viewport owner unreadable".to_string())?;
     let viewport = [
         read_i32(viewport_owner + VIEWPORT_WIDTH_OFFSET)
             .ok_or_else(|| "tooltip viewport width unreadable".to_string())?,
@@ -443,12 +537,40 @@ fn snapshot_values(controller: usize) -> Result<SnapshotResult, String> {
     if extent[0] <= 0 || extent[1] <= 0 || viewport[0] <= 0 || viewport[1] <= 0 {
         return Err("tooltip extent or viewport is nonpositive".into());
     }
+    let graphics_child = read_usize(owner + TEXTBOX_GRAPHICS_CHILD_OFFSET)
+        .ok_or_else(|| "tooltip graphics child unreadable".to_string())?;
+    let layout = read_usize(graphics_child + GRAPHICS_CHILD_LAYOUT_OBJECT_OFFSET)
+        .ok_or_else(|| "tooltip layout object unreadable".to_string())?;
+    let final_resolved_text = read_engine_string(layout + LAYOUT_OBJECT_FINAL_TEXT_OFFSET)
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| "visible tooltip final post-layout text unreadable or empty".to_string())?;
+    let hovered_element_authored_name = hovered_type_name(controller)
+        .ok_or_else(|| "tooltip hovered authored CGuiType name unreadable".to_string())?;
     Ok(SnapshotResult::Visible {
-        owner,
+        qpc_ticks,
+        owner_address: owner,
         position,
         extent,
         viewport,
+        hovered_element_authored_name,
+        tooltip_owner_authored_name,
+        final_resolved_text,
     })
+}
+
+fn validate_tooltip_owner(owner: usize) -> Result<String, String> {
+    let base = MODULE_BASE.load(Ordering::Acquire);
+    if base == 0 || read_usize(owner) != base.checked_add(TEXTBOX_VTABLE_RVA) {
+        return Err("controller ToolTip owner failed exact CTextBox vtable validation".into());
+    }
+    let name = read_engine_string(owner + TEXTBOX_AUTHORED_NAME_OFFSET)
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .ok_or_else(|| "tooltip owner authored name unreadable".to_string())?;
+    if name != "ToolTip" {
+        return Err("controller tooltip owner authored name is not ToolTip".into());
+    }
+    Ok(name)
 }
 
 fn hovered_type_name(controller: usize) -> Option<String> {
@@ -459,27 +581,30 @@ fn hovered_type_name(controller: usize) -> Option<String> {
         gui_type.checked_add(CGUI_TYPE_NAME_OFFSET)?,
     )?)
     .ok()
+    .filter(|name| !name.is_empty())
 }
 
-fn is_tooltip_owner(owner: usize) -> bool {
-    let base = MODULE_BASE.load(Ordering::Acquire);
-    if base == 0 || read_usize(owner) != base.checked_add(TEXTBOX_VTABLE_RVA) {
-        return false;
+fn wait_for_quiescence(timeout: Duration) -> Result<(), String> {
+    let started = Instant::now();
+    while IN_FLIGHT_CALLBACKS.load(Ordering::Acquire) != 0 {
+        if started.elapsed() >= timeout {
+            return Err("A26 controller callbacks did not quiesce".into());
+        }
+        std::thread::yield_now();
     }
-    let cached = read_engine_string(owner + TEXTBOX_AUTHORED_NAME_OFFSET)
-        .and_then(|bytes| String::from_utf8(bytes).ok());
-    if cached.as_deref() == Some("ToolTip") {
-        return true;
+    Ok(())
+}
+
+fn qpc_ticks() -> Result<u64, String> {
+    let mut value = 0i64;
+    if unsafe { QueryPerformanceCounter(&mut value) } == 0 || value <= 0 {
+        return Err("QueryPerformanceCounter failed".into());
     }
-    let type_name = read_usize(owner + CGUI_TYPE_OFFSET)
-        .and_then(|gui_type| read_engine_string(gui_type + CGUI_TYPE_NAME_OFFSET))
-        .and_then(|bytes| String::from_utf8(bytes).ok());
-    type_name.as_deref() == Some("ToolTip")
+    Ok(value as u64)
 }
 
 fn verify_sentinel(address: usize, expected: &[u8], label: &str) -> Result<(), String> {
-    let actual =
-        rpm(address, expected.len()).ok_or_else(|| format!("{label} sentinel unreadable"))?;
+    let actual = rpm(address, expected.len()).ok_or_else(|| format!("{label} sentinel unreadable"))?;
     if actual != expected {
         return Err(format!("{label} sentinel mismatch at 0x{address:X}"));
     }

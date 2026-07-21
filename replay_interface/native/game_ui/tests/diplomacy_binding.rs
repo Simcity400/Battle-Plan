@@ -329,8 +329,15 @@ fn a16_current_autonomy_is_available_to_both_country_panel_sides() {
           "game_id":"a16_binding",
           "date":"1940.2.14.20",
           "hour_index":900,
-          "countries":{"GER":{},"BUL":{}},
+          "countries":{
+            "GER":{"_r2_tag_db_id":1},
+            "BUL":{"_r2_tag_db_id":22}
+          },
           "diplomacy_world":{"domain53_extra":{
+            "subject_autonomy_rows":[{
+              "overlord_tag_db_id":1,
+              "subject_tag_db_id":22
+            }],
             "subject_autonomy_current_status":"measured_nonempty",
             "subject_autonomy_current_rows":[{
               "overlord":"GER",

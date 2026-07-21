@@ -135,6 +135,12 @@ This is a global sunk-convoy history root and is distinct from the existing
 per-ship cumulative `CShip+0x3C` counter. It belongs in the naval production
 domain rather than being relabelled as an air-region record.
 
+> Wave5 correction (2026-07-20): the paragraph below described the historical
+> SCH1/v1 sorting path and premature production scheduling. Current authority is
+> SCH1/v3, preserves stored first-seen aggregate order, binds exact frame/build/
+> receipts, and keeps domain 70 reserved with activation false pending the
+> owner-run paused B4 equality receipt.
+
 Production implements that ownership decision as dedicated domain 70
 `sunk_convoy_history_live`, not a d49 adjunct. Its versioned `SCH1` full-snapshot
 payload carries exact `{month, convoys, killer_country_tag_db_id,
@@ -142,7 +148,8 @@ owner_tag_db_id}` rows. The collector double-reads the vector header and each
 row, gates every object on vtable `module+0x295D008`, requires exact bounded
 values, sorts by month/killer/owner, and rejects duplicate identities. The
 recorder folds the rows into `world_events.sunk_convoys` with country-id
-resolution. Domain 70 is registered as a production-profile `validated_slice`.
+resolution. This historical production-profile disposition is superseded by
+the Wave5 correction above.
 
 ## Production admission law
 

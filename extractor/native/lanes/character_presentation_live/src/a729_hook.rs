@@ -6,7 +6,7 @@
 //! until the post-hook receipt and required mixed fixtures are admitted.
 
 use crate::{
-    validate_snapshot, AcePortraitObservation, CharacterPresentationSnapshot,
+    validate_snapshot, AceListContext, AcePortraitObservation, CharacterPresentationSnapshot,
     ExactCharacterPresentationSource, TraitNodeState, TraitTreeObservation, TraitTreeRoot,
     MAX_TOKEN_BYTES, MAX_TRAIT_NODES,
 };
@@ -16,12 +16,13 @@ use minhook::{MinHook, MH_STATUS};
 use runtime_text_inputs_live_lane::a729_hook::{
     install_a729_runtime_text_hooks, pin_observed_textbox_context,
     register_post_setter_observer, register_pre_setter_observer,
+    register_sprite_setter_observer,
 };
 use std::collections::BTreeMap;
 use std::mem;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
@@ -60,10 +61,6 @@ const ACE_ROW_BIND_SENTINEL: [u8; 17] = [
     0x48, 0x8b, 0xc4, 0x4c, 0x89, 0x48, 0x20, 0x4c, 0x89, 0x40, 0x18, 0x55, 0x53, 0x56, 0x57, 0x41,
     0x54,
 ];
-const SPRITE_SET_SENTINEL: [u8; 20] = [
-    0x48, 0x85, 0xc9, 0x0f, 0x84, 0x47, 0x01, 0x00, 0x00, 0x48, 0x89, 0x5c, 0x24, 0x18, 0x48,
-    0x89, 0x74, 0x24, 0x20, 0x57,
-];
 const TRAIT_TOOLTIP_FORMATTER_SENTINEL: [u8; 24] = [
     0x48, 0x89, 0x5c, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41,
     0x57, 0x48, 0x8d, 0xac, 0x24, 0x30, 0xf8, 0xff, 0xff,
@@ -73,6 +70,8 @@ const TRAIT_SELECTED_LEADER_REFERENCE: usize = 0x78;
 const ACE_OBJECT_ID: usize = 0x0c;
 const ACE_ROW_PORTRAIT_WIDGET: usize = 0x48;
 const ACE_ROW_MODIFIER_TEXT_WIDGET: usize = 0x60;
+const ACE_CONTROLLER_SELECTED_WING_REFERENCE: usize = 0x5a8;
+const ACE_CONTROLLER_PLANE_TYPE_MASK: usize = 0x5e4;
 const TRAIT_TREE_VECTOR: usize = 0x28;
 const TRAIT_TREE_CAPACITY: usize = 0x30;
 const TRAIT_TREE_COUNT: usize = 0x34;
@@ -93,17 +92,17 @@ const REFERENCE_REGISTRY_SMALL_TABLE_RVA: usize = 0x0343_8e60;
 const REFERENCE_SMALL_TABLE_COUNT: u32 = 100;
 const REFERENCE_DEFAULT_LIMIT: u32 = 0x1269;
 const REFERENCE_HASH_MULTIPLIER: u64 = 0x4963_1a45;
+const CGAMESTATE_SINGLETON_RVA: usize = 0x0331_6e90;
+const CGAMESTATE_CURRENT_DATE_OFF: usize = 0x468;
 
 type TraitRefreshFn = unsafe extern "system" fn(usize, usize, i32);
 type AceRefreshFn = unsafe extern "system" fn(usize) -> u64;
 type AceRowBindFn = unsafe extern "system" fn(usize, usize, usize, usize, u32);
-type SpriteSetFn = unsafe extern "system" fn(usize, usize, u8);
 type TraitTooltipFormatterFn = unsafe extern "system" fn(usize, usize, usize) -> u64;
 
 static ORIGINAL_TRAIT_REFRESH: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_ACE_REFRESH: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_ACE_ROW_BIND: AtomicUsize = AtomicUsize::new(0);
-static ORIGINAL_SPRITE_SET: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_TRAIT_TOOLTIP_FORMATTER: AtomicUsize = AtomicUsize::new(0);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -113,6 +112,7 @@ static LIFECYCLE_HEALTHY: AtomicBool = AtomicBool::new(false);
 static TEARDOWN_ACTIVE: AtomicBool = AtomicBool::new(false);
 static IN_FLIGHT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 static HEALTH_EPOCH: AtomicU64 = AtomicU64::new(1);
+static COLLECTOR_GAME_HOUR_RAW: AtomicI32 = AtomicI32::new(i32::MIN);
 static STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
 static FIXTURE_DECODER: OnceLock<Mutex<Option<Arc<dyn ExactA729BoundaryDecoder>>>> = OnceLock::new();
 static COLLECTOR_DECODER: OnceLock<Arc<CollectorBoundaryDecoder>> = OnceLock::new();
@@ -166,6 +166,48 @@ fn capture_epoch_is_current(epoch: u64) -> bool {
         HEALTH_EPOCH.load(Ordering::Acquire),
         capture_gate_open(),
     )
+}
+
+/// Publish the collector's expected raw game-hour label. Hook callbacks
+/// independently read CGameState's current date at materialization and accept
+/// it only when it equals this value, so an old GUI row can never be relabeled
+/// as current evidence.
+pub fn publish_collector_game_hour_raw(game_hour_raw: i32) {
+    COLLECTOR_GAME_HOUR_RAW.store(game_hour_raw, Ordering::Release);
+}
+
+fn observed_game_hour_raw() -> Result<i32, String> {
+    let expected = COLLECTOR_GAME_HOUR_RAW.load(Ordering::Acquire);
+    if expected == i32::MIN {
+        return Err("A39 collector game hour is unavailable".to_string());
+    }
+    let module_base = MODULE_BASE.load(Ordering::Acquire);
+    let game_state_slot = module_base
+        .checked_add(CGAMESTATE_SINGLETON_RVA)
+        .ok_or_else(|| "A39 CGameState singleton address overflowed".to_string())?;
+    let game_state_first = read_usize(game_state_slot)
+        .filter(|address| *address != 0)
+        .ok_or_else(|| "A39 CGameState singleton was unreadable".to_string())?;
+    let game_state_second = read_usize(game_state_slot)
+        .filter(|address| *address == game_state_first)
+        .ok_or_else(|| "A39 CGameState singleton changed during callback".to_string())?;
+    let date_address = game_state_second
+        .checked_add(CGAMESTATE_CURRENT_DATE_OFF)
+        .ok_or_else(|| "A39 current-date address overflowed".to_string())?;
+    let observed_first = read_u32(date_address)
+        .map(|raw| raw as i32)
+        .ok_or_else(|| "A39 current game hour was unreadable".to_string())?;
+    let observed_second = read_u32(date_address)
+        .map(|raw| raw as i32)
+        .filter(|raw| *raw == observed_first)
+        .ok_or_else(|| "A39 current game hour changed during callback".to_string())?;
+    read_usize(game_state_slot)
+        .filter(|address| *address == game_state_second)
+        .ok_or_else(|| "A39 CGameState singleton changed around the date read".to_string())?;
+    if observed_second != expected {
+        return Err("A39 callback game hour differs from the collector frame".to_string());
+    }
+    Ok(observed_second)
 }
 
 fn epoch_witness_matches(entry_epoch: u64, current_epoch: u64, gate_open: bool) -> bool {
@@ -252,6 +294,7 @@ struct ActiveAceModifierSet {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DecodedTraitComponent {
     sequence: u64,
+    observed_game_hour_raw: i32,
     identity_catalog_epoch: Option<u64>,
     rows: Vec<TraitTreeObservation>,
 }
@@ -259,7 +302,9 @@ struct DecodedTraitComponent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DecodedAceComponent {
     sequence: u64,
+    observed_game_hour_raw: i32,
     identity_catalog_epoch: Option<u64>,
+    context: AceListContext,
     rows: Vec<AcePortraitObservation>,
 }
 
@@ -268,6 +313,7 @@ struct DecodedAceComponent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessLocalTraitRefresh {
     pub sequence: u64,
+    pub observed_game_hour_raw: i32,
     pub controller_ptr: usize,
     /// Exact CReferenceObject pair copied from controller+0x78 after refresh.
     /// It is a process-local join key, not a portable unit-leader identity.
@@ -325,8 +371,16 @@ pub struct ProcessLocalAceBind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessLocalAceRefresh {
     pub sequence: u64,
+    pub observed_game_hour_raw: i32,
     pub controller_ptr: usize,
+    pub context: ProcessLocalAceListContext,
     pub binds: Vec<ProcessLocalAceBind>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessLocalAceListContext {
+    SelectedWing { wing_ptr: usize },
+    PlaneTypeMask { mask_raw: u32 },
 }
 
 /// Future receipt-bound identity-decoder seam. The hook has already copied the
@@ -351,7 +405,7 @@ pub trait ExactA729BoundaryDecoder: Send + Sync {
     fn decode_ace_refresh(
         &self,
         boundary: &ProcessLocalAceRefresh,
-    ) -> Result<Vec<AcePortraitObservation>, String>;
+    ) -> Result<(AceListContext, Vec<AcePortraitObservation>), String>;
 }
 
 /// Process-local identity joins supplied by the already authenticated d47/d46
@@ -364,6 +418,7 @@ pub struct ProcessLocalIdentityCatalog {
     pub leaders_by_address: BTreeMap<usize, (u32, u64)>,
     pub trait_tokens_by_definition: BTreeMap<usize, String>,
     pub aces_by_address: BTreeMap<usize, (u32, u64)>,
+    pub wings_by_address: BTreeMap<usize, (u32, u32)>,
 }
 
 pub fn decode_trait_rows_with_catalog(
@@ -409,6 +464,7 @@ pub fn decode_trait_rows_with_catalog(
     validate_snapshot(&CharacterPresentationSnapshot {
         source_sequence: boundary.sequence,
         trait_trees: rows.clone(),
+        ace_context: AceListContext::PlaneTypeMask { mask_raw: 1 },
         ace_portraits: Vec::new(),
     })
     .map_err(|error| format!("{error:?}"))?;
@@ -419,6 +475,7 @@ pub fn decode_ace_rows_with_catalog(
     boundary: &ProcessLocalAceRefresh,
     catalog: &ProcessLocalIdentityCatalog,
 ) -> Result<Vec<AcePortraitObservation>, String> {
+    let context = decode_ace_context_with_catalog(&boundary.context, catalog)?;
     let mut rows = Vec::with_capacity(boundary.binds.len());
     for (expected_ordinal, bind) in boundary.binds.iter().enumerate() {
         if bind.visible_ordinal != expected_ordinal as u32 {
@@ -441,11 +498,55 @@ pub fn decode_ace_rows_with_catalog(
     }
     validate_snapshot(&CharacterPresentationSnapshot {
         source_sequence: boundary.sequence,
-        trait_trees: Vec::new(),
+        // Component-local validation supplies the two carrier-required roots
+        // only as an internal shape witness. The combined snapshot later
+        // replaces these placeholders with the authenticated trait component.
+        trait_trees: vec![
+            TraitTreeObservation {
+                owner_tag_db_id: 1,
+                unit_leader_id: 1,
+                root: TraitTreeRoot::ControllerOffset120,
+                nodes: Vec::new(),
+            },
+            TraitTreeObservation {
+                owner_tag_db_id: 1,
+                unit_leader_id: 1,
+                root: TraitTreeRoot::ControllerOffset130,
+                nodes: Vec::new(),
+            },
+        ],
+        ace_context: context,
         ace_portraits: rows.clone(),
     })
     .map_err(|error| format!("{error:?}"))?;
     Ok(rows)
+}
+
+fn decode_ace_context_with_catalog(
+    context: &ProcessLocalAceListContext,
+    catalog: &ProcessLocalIdentityCatalog,
+) -> Result<AceListContext, String> {
+    match context {
+        ProcessLocalAceListContext::SelectedWing { wing_ptr } => {
+            let &(owner_tag_db_id, wing_id) = catalog
+                .wings_by_address
+                .get(wing_ptr)
+                .ok_or_else(|| "A39 selected wing is absent from exact air-wing registry".to_string())?;
+            if owner_tag_db_id == 0 || wing_id == 0 {
+                return Err("A39 selected-wing registry carried a zero identity".into());
+            }
+            Ok(AceListContext::SelectedWing {
+                owner_tag_db_id,
+                wing_id,
+            })
+        }
+        ProcessLocalAceListContext::PlaneTypeMask { mask_raw } if *mask_raw != 0 => {
+            Ok(AceListContext::PlaneTypeMask { mask_raw: *mask_raw })
+        }
+        ProcessLocalAceListContext::PlaneTypeMask { .. } => {
+            Err("A39 plane-type context mask is zero".into())
+        }
+    }
 }
 
 /// Concrete fixture decoder for an immutable authenticated root snapshot. The
@@ -529,9 +630,10 @@ impl ExactA729BoundaryDecoder for CollectorBoundaryDecoder {
     fn decode_ace_refresh(
         &self,
         boundary: &ProcessLocalAceRefresh,
-    ) -> Result<Vec<AcePortraitObservation>, String> {
+    ) -> Result<(AceListContext, Vec<AcePortraitObservation>), String> {
         let (_, catalog) = self.snapshot()?;
-        decode_ace_rows_with_catalog(boundary, &catalog)
+        let context = decode_ace_context_with_catalog(&boundary.context, &catalog)?;
+        Ok((context, decode_ace_rows_with_catalog(boundary, &catalog)?))
     }
 }
 
@@ -554,6 +656,13 @@ fn validate_identity_catalog(catalog: &ProcessLocalIdentityCatalog) -> Result<()
         .any(|(address, (owner, ace))| *address == 0 || *owner == 0 || *ace == 0)
     {
         return Err("A39 collector catalog contains an invalid ace identity".into());
+    }
+    if catalog
+        .wings_by_address
+        .iter()
+        .any(|(address, (owner, wing))| *address == 0 || *owner == 0 || *wing == 0)
+    {
+        return Err("A39 collector catalog contains an invalid wing identity".into());
     }
     Ok(())
 }
@@ -603,31 +712,61 @@ impl ExactA729BoundaryDecoder for CatalogBoundaryDecoder {
     fn decode_ace_refresh(
         &self,
         boundary: &ProcessLocalAceRefresh,
-    ) -> Result<Vec<AcePortraitObservation>, String> {
-        decode_ace_rows_with_catalog(boundary, &self.catalog)
+    ) -> Result<(AceListContext, Vec<AcePortraitObservation>), String> {
+        let context = decode_ace_context_with_catalog(&boundary.context, &self.catalog)?;
+        Ok((context, decode_ace_rows_with_catalog(boundary, &self.catalog)?))
     }
 }
 
 /// Reserved d82 source. It is useful to the capture harness now, but cannot
 /// authenticate as a production source while the promotion constant is false.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct A729ObservedCharacterPresentationSource;
+#[derive(Clone, Copy, Debug)]
+pub struct A729ObservedCharacterPresentationSource {
+    expected_game_hour_raw: i32,
+}
 
 impl A729ObservedCharacterPresentationSource {
-    pub const fn new() -> Self {
-        Self
+    pub const fn new(expected_game_hour_raw: i32) -> Self {
+        Self {
+            expected_game_hour_raw,
+        }
     }
 
     /// Harness-only candidate decode used to generate the missing mixed
     /// fixtures. This never changes the source authentication result.
     pub fn decode_fixture_candidate(&self) -> Result<CharacterPresentationSnapshot, String> {
         let (trait_component, ace_component) = drain_decoded_component_pair()?;
+        if trait_component.observed_game_hour_raw != ace_component.observed_game_hour_raw
+            || trait_component.observed_game_hour_raw != self.expected_game_hour_raw
+        {
+            return Err("A39 fixture components do not share the requested game hour".into());
+        }
+        let shared_epoch = match (
+            trait_component.identity_catalog_epoch,
+            ace_component.identity_catalog_epoch,
+        ) {
+            (Some(trait_epoch), Some(ace_epoch)) if trait_epoch == ace_epoch => trait_epoch,
+            _ => {
+                return Err(
+                    "A39 fixture components do not share one collector catalog epoch".into(),
+                )
+            }
+        };
+        if collector_boundary_decoder().identity_catalog_epoch() != Some(shared_epoch) {
+            return Err(
+                "A39 fixture components are stale for the collector catalog epoch".into(),
+            );
+        }
         let snapshot = CharacterPresentationSnapshot {
             source_sequence: trait_component.sequence.max(ace_component.sequence),
             trait_trees: trait_component.rows,
+            ace_context: ace_component.context,
             ace_portraits: ace_component.rows,
         };
         validate_decoded_snapshot(&snapshot)?;
+        if collector_boundary_decoder().identity_catalog_epoch() != Some(shared_epoch) {
+            return Err("A39 collector catalog changed while reading the fixture batch".into());
+        }
         Ok(snapshot)
     }
 }
@@ -645,6 +784,11 @@ impl ExactCharacterPresentationSource for A729ObservedCharacterPresentationSourc
             );
         }
         let (trait_component, ace_component) = drain_decoded_component_pair()?;
+        if trait_component.observed_game_hour_raw != self.expected_game_hour_raw
+            || ace_component.observed_game_hour_raw != self.expected_game_hour_raw
+        {
+            return Err("A39 UI observations are stale or cross-hour for this collector frame".into());
+        }
         let shared_epoch = match (
             trait_component.identity_catalog_epoch,
             ace_component.identity_catalog_epoch,
@@ -666,6 +810,7 @@ impl ExactCharacterPresentationSource for A729ObservedCharacterPresentationSourc
         let snapshot = CharacterPresentationSnapshot {
             source_sequence: trait_component.sequence.max(ace_component.sequence),
             trait_trees: trait_component.rows,
+            ace_context: ace_component.context,
             ace_portraits: ace_component.rows,
         };
         validate_decoded_snapshot(&snapshot)?;
@@ -811,11 +956,6 @@ fn install_hook_set() -> Result<InstalledAddresses, String> {
             "ace row bind",
         ),
         (
-            resolved.sprite_set,
-            &SPRITE_SET_SENTINEL[..],
-            "sprite set",
-        ),
-        (
             resolved.trait_tooltip_formatter,
             &TRAIT_TOOLTIP_FORMATTER_SENTINEL[..],
             "trait tooltip formatter",
@@ -829,6 +969,8 @@ fn install_hook_set() -> Result<InstalledAddresses, String> {
         .map_err(|error| format!("A39 shared A25 pre-setter observer failed: {error}"))?;
     register_post_setter_observer(a39_post_text_setter_observer)
         .map_err(|error| format!("A39 shared A25 post-setter observer failed: {error}"))?;
+    register_sprite_setter_observer(a39_sprite_setter_observer)
+        .map_err(|error| format!("A39 shared sprite observer failed: {error}"))?;
     let state = STATE.get_or_init(|| Mutex::new(HookState::default()));
     *state.lock().map_err(|_| "A39 hook state poisoned")? = HookState::default();
     MODULE_BASE.store(base, Ordering::Release);
@@ -848,11 +990,6 @@ fn install_hook_set() -> Result<InstalledAddresses, String> {
             resolved.ace_row_bind,
             hook_ace_row_bind as *mut c_void,
             &ORIGINAL_ACE_ROW_BIND,
-        ),
-        (
-            resolved.sprite_set,
-            hook_sprite_set as *mut c_void,
-            &ORIGINAL_SPRITE_SET,
         ),
         (
             resolved.trait_tooltip_formatter,
@@ -1126,7 +1263,12 @@ unsafe extern "system" fn hook_ace_row_bind(
     leave_callback(prior_callbacks);
 }
 
-unsafe extern "system" fn hook_sprite_set(widget_ptr: usize, string_ptr: usize, mode: u8) {
+unsafe extern "system" fn a39_sprite_setter_observer(
+    widget_ptr: usize,
+    string_ptr: usize,
+    _mode: u8,
+    _caller_rva: u32,
+) {
     let _epoch = CallbackEpoch::enter();
     let admitted_epoch = capture_epoch_witness();
     let prior_callbacks = enter_callback(CALLBACK_SPRITE_SET);
@@ -1144,13 +1286,6 @@ unsafe extern "system" fn hook_sprite_set(widget_ptr: usize, string_ptr: usize, 
     }
     if admitted_epoch.is_some_and(capture_epoch_is_current) && !nested && target_matches {
         capture_ace_portrait_sprite(widget_ptr, string_ptr);
-    }
-    let original = ORIGINAL_SPRITE_SET.load(Ordering::Acquire);
-    if original != 0 {
-        let original: SpriteSetFn = unsafe { mem::transmute(original) };
-        unsafe { original(widget_ptr, string_ptr, mode) };
-    } else {
-        reject_callback("A39 sprite-set trampoline unavailable");
     }
     leave_callback(prior_callbacks);
 }
@@ -1258,6 +1393,13 @@ fn record_trait_refresh(controller_ptr: usize, refresh_argument_raw: i32) {
     };
     let boundary = ProcessLocalTraitRefresh {
         sequence: next_sequence(),
+        observed_game_hour_raw: match observed_game_hour_raw() {
+            Ok(hour) => hour,
+            Err(error) => {
+                reject_callback(&error);
+                return;
+            }
+        },
         controller_ptr,
         selected_leader_reference_raw,
         selected_leader_ptr,
@@ -1874,9 +2016,24 @@ fn finish_ace_refresh(controller_ptr: usize) {
         reject_callback("A39 ace refresh supplied null controller");
         return;
     }
+    let context = match read_process_local_ace_context(controller_ptr) {
+        Ok(context) => context,
+        Err(error) => {
+            reject_callback(&error);
+            return;
+        }
+    };
     let boundary = ProcessLocalAceRefresh {
         sequence: next_sequence(),
+        observed_game_hour_raw: match observed_game_hour_raw() {
+            Ok(hour) => hour,
+            Err(error) => {
+                reject_callback(&error);
+                return;
+            }
+        },
         controller_ptr,
+        context,
         binds,
     };
     let decoded = decode_ace_synchronously(&boundary);
@@ -1890,6 +2047,35 @@ fn finish_ace_refresh(controller_ptr: usize) {
         }
         Ok(_) => {}
         Err(error) => reject(&mut state, &error),
+    }
+}
+
+fn read_process_local_ace_context(
+    controller_ptr: usize,
+) -> Result<ProcessLocalAceListContext, String> {
+    let selected_reference = controller_ptr
+        .checked_add(ACE_CONTROLLER_SELECTED_WING_REFERENCE)
+        .and_then(read_u64)
+        .ok_or_else(|| "A39 selected-wing reference was unreadable".to_string())?;
+    let plane_type_mask = controller_ptr
+        .checked_add(ACE_CONTROLLER_PLANE_TYPE_MASK)
+        .and_then(read_u32)
+        .ok_or_else(|| "A39 plane-type mask was unreadable".to_string())?;
+    if selected_reference != 0 {
+        let wing_ptr = resolve_reference_object(
+            MODULE_BASE.load(Ordering::Acquire),
+            selected_reference,
+        )?;
+        if wing_ptr == 0 {
+            return Err("A39 selected-wing reference resolved to null".into());
+        }
+        Ok(ProcessLocalAceListContext::SelectedWing { wing_ptr })
+    } else if plane_type_mask != 0 {
+        Ok(ProcessLocalAceListContext::PlaneTypeMask {
+            mask_raw: plane_type_mask,
+        })
+    } else {
+        Err("A39 ace refresh has neither selected wing nor plane-type mask".into())
     }
 }
 
@@ -1951,11 +2137,13 @@ fn decode_trait_synchronously(
     let candidate = CharacterPresentationSnapshot {
         source_sequence: boundary.sequence,
         trait_trees: rows.clone(),
+        ace_context: AceListContext::PlaneTypeMask { mask_raw: 1 },
         ace_portraits: Vec::new(),
     };
     validate_decoded_snapshot(&candidate)?;
     Ok(DecodedTraitComponent {
         sequence: boundary.sequence,
+        observed_game_hour_raw: boundary.observed_game_hour_raw,
         identity_catalog_epoch,
         rows,
     })
@@ -1967,20 +2155,36 @@ fn decode_ace_synchronously(
     let _decoder_guard = DecoderCallGuard::enter()?;
     let decoder = decoder()?;
     let identity_catalog_epoch = decoder.identity_catalog_epoch();
-    let rows = catch_unwind(AssertUnwindSafe(|| decoder.decode_ace_refresh(boundary)))
+    let (context, rows) = catch_unwind(AssertUnwindSafe(|| decoder.decode_ace_refresh(boundary)))
         .map_err(|_| "A39 ace fixture decoder panicked")??;
     if decoder.identity_catalog_epoch() != identity_catalog_epoch {
         return Err("A39 identity catalog changed during ace decode".into());
     }
     validate_snapshot(&CharacterPresentationSnapshot {
         source_sequence: boundary.sequence,
-        trait_trees: Vec::new(),
+        trait_trees: vec![
+            TraitTreeObservation {
+                owner_tag_db_id: 1,
+                unit_leader_id: 1,
+                root: TraitTreeRoot::ControllerOffset120,
+                nodes: Vec::new(),
+            },
+            TraitTreeObservation {
+                owner_tag_db_id: 1,
+                unit_leader_id: 1,
+                root: TraitTreeRoot::ControllerOffset130,
+                nodes: Vec::new(),
+            },
+        ],
+        ace_context: context.clone(),
         ace_portraits: rows.clone(),
     })
     .map_err(|error| format!("{error:?}"))?;
     Ok(DecodedAceComponent {
         sequence: boundary.sequence,
+        observed_game_hour_raw: boundary.observed_game_hour_raw,
         identity_catalog_epoch,
+        context,
         rows,
     })
 }
@@ -1999,12 +2203,11 @@ fn addresses(base: usize) -> InstalledAddresses {
     }
 }
 
-fn targets(addresses: InstalledAddresses) -> [usize; 5] {
+fn targets(addresses: InstalledAddresses) -> [usize; 4] {
     [
         addresses.trait_refresh,
         addresses.ace_refresh,
         addresses.ace_row_bind,
-        addresses.sprite_set,
         addresses.trait_tooltip_formatter,
     ]
 }
@@ -2014,7 +2217,6 @@ fn originals_ready() -> bool {
         &ORIGINAL_TRAIT_REFRESH,
         &ORIGINAL_ACE_REFRESH,
         &ORIGINAL_ACE_ROW_BIND,
-        &ORIGINAL_SPRITE_SET,
         &ORIGINAL_TRAIT_TOOLTIP_FORMATTER,
     ]
     .into_iter()
@@ -2093,6 +2295,7 @@ fn clear_removed_hook_set() {
     LIFECYCLE_HEALTHY.store(false, Ordering::Release);
     TEARDOWN_ACTIVE.store(false, Ordering::Release);
     MODULE_BASE.store(0, Ordering::Release);
+    COLLECTOR_GAME_HOUR_RAW.store(i32::MIN, Ordering::Release);
     ACTIVE_TRAIT_REASON.with(|slot| *slot.borrow_mut() = None);
     clear_originals();
     invalidate_collector_identity_catalog();
@@ -2108,7 +2311,6 @@ fn clear_originals() {
         &ORIGINAL_TRAIT_REFRESH,
         &ORIGINAL_ACE_REFRESH,
         &ORIGINAL_ACE_ROW_BIND,
-        &ORIGINAL_SPRITE_SET,
         &ORIGINAL_TRAIT_TOOLTIP_FORMATTER,
     ] {
         original.store(0, Ordering::Release);
@@ -2297,17 +2499,26 @@ mod tests {
     fn candidate(progress_raw: Option<i64>) -> CharacterPresentationSnapshot {
         CharacterPresentationSnapshot {
             source_sequence: 1,
-            trait_trees: vec![TraitTreeObservation {
-                owner_tag_db_id: 1,
-                unit_leader_id: 7,
-                root: TraitTreeRoot::ControllerOffset120,
-                nodes: vec![TraitNodeObservation {
-                    trait_token: "panzer_leader".into(),
-                    state: TraitNodeState::Picked,
-                    progress_raw,
-                    reason_context_id: None,
-                }],
-            }],
+            trait_trees: vec![
+                TraitTreeObservation {
+                    owner_tag_db_id: 1,
+                    unit_leader_id: 7,
+                    root: TraitTreeRoot::ControllerOffset120,
+                    nodes: vec![TraitNodeObservation {
+                        trait_token: "panzer_leader".into(),
+                        state: TraitNodeState::Picked,
+                        progress_raw,
+                        reason_context_id: None,
+                    }],
+                },
+                TraitTreeObservation {
+                    owner_tag_db_id: 1,
+                    unit_leader_id: 7,
+                    root: TraitTreeRoot::ControllerOffset130,
+                    nodes: Vec::new(),
+                },
+            ],
+            ace_context: AceListContext::PlaneTypeMask { mask_raw: 0x400 },
             ace_portraits: vec![AcePortraitObservation {
                 owner_tag_db_id: 1,
                 ace_id: 11,
@@ -2331,15 +2542,16 @@ mod tests {
         fn decode_ace_refresh(
             &self,
             _boundary: &ProcessLocalAceRefresh,
-        ) -> Result<Vec<AcePortraitObservation>, String> {
-            Ok(candidate(None).ace_portraits)
+        ) -> Result<(AceListContext, Vec<AcePortraitObservation>), String> {
+            let candidate = candidate(None);
+            Ok((candidate.ace_context, candidate.ace_portraits))
         }
     }
 
     #[test]
     fn production_activation_is_fail_closed() {
         let _decoder = Decoder;
-        let source = A729ObservedCharacterPresentationSource::new();
+        let source = A729ObservedCharacterPresentationSource::new(1);
         assert!(!source.is_exact_a729_character_presentation_source());
         assert!(source.read_character_presentation().is_err());
     }
@@ -2354,24 +2566,33 @@ mod tests {
     fn process_local_catalog_joins_trait_and_final_portrait_without_addresses() {
         let trait_boundary = ProcessLocalTraitRefresh {
             sequence: 4,
+            observed_game_hour_raw: 1,
             controller_ptr: 0x1000,
             selected_leader_reference_raw: 0x2000,
             selected_leader_ptr: 0x2500,
             refresh_argument_raw: 0,
-            trees: vec![ProcessLocalTraitTree {
-                root: TraitTreeRoot::ControllerOffset120,
-                nodes: vec![ProcessLocalTraitNode {
-                    source_ordinal: 0,
-                    item_ptr: 0x2800,
-                    trait_definition_ptr: 0x3000,
-                    state: TraitNodeState::Pickable,
-                    progress_raw: Some(42),
-                }],
-            }],
+            trees: vec![
+                ProcessLocalTraitTree {
+                    root: TraitTreeRoot::ControllerOffset120,
+                    nodes: vec![ProcessLocalTraitNode {
+                        source_ordinal: 0,
+                        item_ptr: 0x2800,
+                        trait_definition_ptr: 0x3000,
+                        state: TraitNodeState::Pickable,
+                        progress_raw: Some(42),
+                    }],
+                },
+                ProcessLocalTraitTree {
+                    root: TraitTreeRoot::ControllerOffset130,
+                    nodes: Vec::new(),
+                },
+            ],
         };
         let ace_boundary = ProcessLocalAceRefresh {
             sequence: 5,
+            observed_game_hour_raw: 1,
             controller_ptr: 0x4000,
+            context: ProcessLocalAceListContext::PlaneTypeMask { mask_raw: 0x400 },
             binds: vec![ProcessLocalAceBind {
                 visible_ordinal: 0,
                 ace_id: 11,
@@ -2400,7 +2621,9 @@ mod tests {
     fn collector_decoder_atomically_replaces_and_invalidates_catalog() {
         let boundary = ProcessLocalAceRefresh {
             sequence: 9,
+            observed_game_hour_raw: 1,
             controller_ptr: 0x4000,
+            context: ProcessLocalAceListContext::PlaneTypeMask { mask_raw: 0x400 },
             binds: vec![ProcessLocalAceBind {
                 visible_ordinal: 0,
                 ace_id: 11,
@@ -2419,7 +2642,7 @@ mod tests {
         let epoch = decoder.identity_catalog_epoch().unwrap();
         assert!(!decoder.publish(catalog).unwrap());
         assert_eq!(decoder.identity_catalog_epoch(), Some(epoch));
-        assert_eq!(decoder.decode_ace_refresh(&boundary).unwrap()[0].ace_id, 11);
+        assert_eq!(decoder.decode_ace_refresh(&boundary).unwrap().1[0].ace_id, 11);
 
         assert!(decoder.invalidate());
         assert_eq!(decoder.identity_catalog_epoch(), None);
@@ -2439,7 +2662,6 @@ mod tests {
         assert_eq!(TRAIT_REFRESH_SENTINEL.len(), 18);
         assert_eq!(ACE_REFRESH_SENTINEL.len(), 21);
         assert_eq!(ACE_ROW_BIND_SENTINEL.len(), 17);
-        assert_eq!(SPRITE_SET_SENTINEL.len(), 20);
         assert_eq!(TRAIT_TOOLTIP_FORMATTER_SENTINEL.len(), 24);
         assert_eq!(TRAIT_SELECTED_LEADER_REFERENCE, 0x78);
         assert_eq!(ACE_OBJECT_ID, 0x0c);

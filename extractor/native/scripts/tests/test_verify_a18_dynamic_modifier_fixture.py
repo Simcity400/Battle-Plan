@@ -57,7 +57,7 @@ def checkpoint(phase, hour, days, hash_digit):
         if phase == "post_removal"
         else join("timed", days)
     )
-    return {
+    result = {
         "schema": "hoi4.a18.dynamic_modifier_save_live_checkpoint.v1",
         "phase": phase,
         "process_identity": dict(PROCESS),
@@ -73,15 +73,34 @@ def checkpoint(phase, hour, days, hash_digit):
         "same_hour": True,
         "accepted": True,
     }
+    if phase == "positive_before":
+        result["continuity"] = {"kind": "fresh_baseline"}
+    else:
+        previous_phase = "positive_before" if phase == "positive_after" else "positive_after"
+        previous_hash = "1" * 64 if phase == "positive_after" else "2" * 64
+        previous_hour = 1000 if phase == "positive_after" else 1024
+        result["continuity"] = {
+            "kind": "exact_prior_checkpoint",
+            "previous_phase": previous_phase,
+            "previous_save_sha256": previous_hash,
+            "previous_game_hour_raw": previous_hour,
+            "game_hour_delta": hour - previous_hour,
+        }
+    return result
 
 
 def row(modifier_id, days):
+    masked = [0] * 0x40
+    masked[0x10:0x14] = list((-1 if days is None else days).to_bytes(4, "little", signed=True))
+    masked[0x20] = 1
+    masked[0x30:0x34] = list((2).to_bytes(4, "little"))
+    masked[0x34:0x38] = list((2).to_bytes(4, "little"))
     return {
         "modifier_id": modifier_id,
         "enabled": True,
         "values_raw": [10_000, -5_000],
         "remaining_days": days,
-        "pointer_masked_entry_bytes": [0] * 0x40,
+        "pointer_masked_entry_bytes": masked,
     }
 
 
@@ -151,10 +170,12 @@ def test_accepts_exact_positive_decrement_and_synchronous_zero_removal():
 def test_rejects_absence_when_zero_was_not_observed_at_erase_boundary():
     checkpoints, hook = fixture()
     broken = copy.deepcopy(hook)
-    broken["witnesses"][1]["erase_boundaries"][0]["rows_before_erase"][0]["remaining_days"] = 1
+    zero = broken["witnesses"][1]["erase_boundaries"][0]["rows_before_erase"][0]
+    zero["remaining_days"] = 1
+    zero["pointer_masked_entry_bytes"][0x10:0x14] = list((1).to_bytes(4, "little", signed=True))
     accepted, errors, _details = VERIFY.verify_documents(checkpoints, broken, MANIFEST)
     assert not accepted
-    assert any("zero" in error for error in errors)
+    assert any("vector slice" in error for error in errors)
 
 
 def test_rejects_a_synthesized_expiry_even_when_other_fields_match():
@@ -164,3 +185,23 @@ def test_rejects_a_synthesized_expiry_even_when_other_fields_match():
     accepted, errors, _details = VERIFY.verify_documents(checkpoints, broken, MANIFEST)
     assert not accepted
     assert any("expiry" in error for error in errors)
+
+
+def test_rejects_zero_row_that_is_not_the_exact_current_vector_slice():
+    checkpoints, hook = fixture()
+    broken = copy.deepcopy(hook)
+    boundary = broken["witnesses"][1]["erase_boundaries"][0]
+    boundary["rows_before_erase"][0]["values_raw"][0] += 1
+    accepted, errors, _details = VERIFY.verify_documents(checkpoints, broken, MANIFEST)
+    assert not accepted
+    assert any("vector slice" in error for error in errors)
+
+
+def test_rejects_skipped_daily_step_even_with_valid_endpoint_rows():
+    checkpoints, hook = fixture()
+    broken = copy.deepcopy(hook)
+    broken["witnesses"][1]["game_hour_raw_before"] += 24
+    broken["witnesses"][1]["game_hour_raw_after"] += 24
+    accepted, errors, _details = VERIFY.verify_documents(checkpoints, broken, MANIFEST)
+    assert not accepted
+    assert any("continuous daily" in error for error in errors)

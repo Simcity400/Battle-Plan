@@ -1,10 +1,10 @@
-//! Authenticated G2 engine pixel witness at the map/UI boundary.
+//! Legacy diagnostic-only G2 pre-first-observed-Draw readback.
 //!
-//! This module deliberately captures inside the hooked render-thread draw path,
-//! after both shaders have been authenticated against the current swapchain's
-//! creation cache and before the original first UI draw executes. A later
-//! packager may join the immutable witness to a finalized portable recording;
-//! it may not manufacture or replace this raw observation.
+//! This module captures inside the standalone terrain diagnostic hook after two
+//! creation-cache shader observations and before that observed Draw executes.
+//! It does not prove the engine post-process boundary, does not use the
+//! production witness schema, and is never admissible to the G2 materializer or
+//! production replay package.
 
 use super::*;
 use snapshot::sha256::{to_hex, Sha256};
@@ -180,7 +180,7 @@ unsafe fn backbuffer_bgra(
         unsafe { release_unknown(dsv as *mut WinVoid) };
     }
     if rtv.is_null() {
-        return Err("G2 first UI draw has no render target".to_string());
+        return Err("diagnostic G2 observed Draw has no render target".to_string());
     }
     let mut resource: *mut ID3D11Resource = ptr::null_mut();
     unsafe { (*rtv).GetResource(&mut resource) };
@@ -332,7 +332,7 @@ pub(super) unsafe fn capture_before_first_ui_draw(
         write_new_file(&output_dir.join(G2_ENGINE_BMP_FILE), &bmp)?;
         let witness = serde_json::json!({
             "schema": G2_ENGINE_WITNESS_SCHEMA,
-            "status": "AUTHENTICATED_PRE_FIRST_UI_DRAW_MAP_READBACK",
+            "status": "DIAGNOSTIC_PRE_FIRST_OBSERVED_DRAW_READBACK",
             "observation_id": observation_id.clone(),
             "render_boundary": G2_RENDER_BOUNDARY,
             "pixel_format": "BGRA8_UNORM",

@@ -8,10 +8,10 @@ use std::collections::BTreeSet;
 
 pub const DOMAIN_ID: u16 = 73;
 pub const DOMAIN_NAME: &str = "politics_tooltip_inputs_live";
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const AUTHORITY_EXACT_A729_POLITICS_PRODUCER: u32 = 1;
 pub const MAGIC: u32 = u32::from_le_bytes(*b"PTI1");
-pub const HEADER_LEN: usize = 76;
+pub const HEADER_LEN: usize = 104;
 pub const MAX_ROWS: usize = 131_072;
 pub const MAX_TERMS_PER_ROW: usize = 65_536;
 pub const MAX_STRING_BYTES: usize = 16_384;
@@ -118,10 +118,24 @@ pub struct PoliticsTooltipFrame {
     pub elapsed_wall_ms: u64,
     pub status_flags: u32,
     pub frame_hour: u64,
+    pub selected_present_candidate_id: u64,
+    pub selected_present_ordinal: u32,
+    pub selected_present_qpc_ticks: u64,
+    pub selected_present_cutoff_qpc_ticks: u64,
+    pub selected_present_receipt_sha256: String,
     pub producer_manifest_sha256: [u8; 32],
     pub completeness_record_identity: String,
     pub expected_row_count: u32,
     pub rows: Vec<PoliticsTooltipInput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PoliticsSelectedPresentBinding {
+    pub candidate_id: u64,
+    pub ordinal: u32,
+    pub qpc_ticks: u64,
+    pub cutoff_qpc_ticks: u64,
+    pub receipt_sha256: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,6 +150,10 @@ pub enum PoliticsTooltipError {
 pub trait ExactPoliticsTooltipSource {
     fn is_exact_a729_politics_source(&self) -> bool;
     fn producer_manifest_sha256(&self) -> [u8; 32];
+    fn selected_present_binding(
+        &self,
+        frame_hour: u64,
+    ) -> Result<PoliticsSelectedPresentBinding, String>;
     fn completeness_record_identity(&self, frame_hour: u64) -> Result<String, String>;
     fn expected_row_count(&self, frame_hour: u64) -> Result<u32, String>;
     fn collect_frame(&self, frame_hour: u64) -> Result<Vec<PoliticsTooltipInput>, String>;
@@ -150,10 +168,18 @@ pub fn collect_and_encode<S: ExactPoliticsTooltipSource>(
     if !source.is_exact_a729_politics_source() {
         return Err(PoliticsTooltipError::UnauthenticatedSource);
     }
+    let selected_present = source
+        .selected_present_binding(frame_hour)
+        .map_err(PoliticsTooltipError::Source)?;
     encode_payload(&PoliticsTooltipFrame {
         elapsed_wall_ms,
         status_flags,
         frame_hour,
+        selected_present_candidate_id: selected_present.candidate_id,
+        selected_present_ordinal: selected_present.ordinal,
+        selected_present_qpc_ticks: selected_present.qpc_ticks,
+        selected_present_cutoff_qpc_ticks: selected_present.cutoff_qpc_ticks,
+        selected_present_receipt_sha256: selected_present.receipt_sha256,
         producer_manifest_sha256: source.producer_manifest_sha256(),
         completeness_record_identity: source
             .completeness_record_identity(frame_hour)
@@ -172,6 +198,17 @@ pub fn validate_frame(frame: &PoliticsTooltipFrame) -> Result<(), PoliticsToolti
         return invalid("producer manifest hash is zero");
     }
     validate_nonempty(&frame.completeness_record_identity, "completeness record")?;
+    if frame.selected_present_candidate_id == 0
+        || frame.selected_present_qpc_ticks == 0
+        || frame.selected_present_cutoff_qpc_ticks < frame.selected_present_qpc_ticks
+        || frame.selected_present_receipt_sha256.len() != 64
+        || !frame
+            .selected_present_receipt_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return invalid("selected-present authority is incomplete");
+    }
     if frame.rows.len() > MAX_ROWS || frame.expected_row_count as usize != frame.rows.len() {
         return invalid("row completeness/count mismatch");
     }
@@ -358,10 +395,15 @@ pub fn encode_payload(frame: &PoliticsTooltipFrame) -> Result<Vec<u8>, PoliticsT
     put_u32(&mut out, frame.status_flags);
     put_u64(&mut out, frame.elapsed_wall_ms);
     put_u64(&mut out, frame.frame_hour);
+    put_u64(&mut out, frame.selected_present_candidate_id);
+    put_u32(&mut out, frame.selected_present_ordinal);
+    put_u64(&mut out, frame.selected_present_qpc_ticks);
+    put_u64(&mut out, frame.selected_present_cutoff_qpc_ticks);
     out.extend_from_slice(&frame.producer_manifest_sha256);
     put_u32(&mut out, frame.expected_row_count);
     put_u32(&mut out, frame.rows.len() as u32);
     put_u32(&mut out, HEADER_LEN as u32);
+    put_string(&mut out, &frame.selected_present_receipt_sha256)?;
     put_string(&mut out, &frame.completeness_record_identity)?;
     for row in &frame.rows {
         put_u64(&mut out, row.frame_hour);
@@ -404,12 +446,17 @@ pub fn decode_payload(payload: &[u8]) -> Result<PoliticsTooltipFrame, PoliticsTo
     let status_flags = reader.u32()?;
     let elapsed_wall_ms = reader.u64()?;
     let frame_hour = reader.u64()?;
+    let selected_present_candidate_id = reader.u64()?;
+    let selected_present_ordinal = reader.u32()?;
+    let selected_present_qpc_ticks = reader.u64()?;
+    let selected_present_cutoff_qpc_ticks = reader.u64()?;
     let producer_manifest_sha256 = reader.array32()?;
     let expected_row_count = reader.u32()?;
     let row_count = bounded_count(reader.u32()?, MAX_ROWS)?;
     if reader.u32()? as usize != HEADER_LEN {
         return invalid("header length invalid");
     }
+    let selected_present_receipt_sha256 = reader.string()?;
     let completeness_record_identity = reader.string()?;
     let mut rows = Vec::with_capacity(row_count);
     for _ in 0..row_count {
@@ -448,6 +495,11 @@ pub fn decode_payload(payload: &[u8]) -> Result<PoliticsTooltipFrame, PoliticsTo
         elapsed_wall_ms,
         status_flags,
         frame_hour,
+        selected_present_candidate_id,
+        selected_present_ordinal,
+        selected_present_qpc_ticks,
+        selected_present_cutoff_qpc_ticks,
+        selected_present_receipt_sha256,
         producer_manifest_sha256,
         completeness_record_identity,
         expected_row_count,
@@ -955,6 +1007,11 @@ mod tests {
             elapsed_wall_ms: 7,
             status_flags: 0,
             frame_hour: 900,
+            selected_present_candidate_id: 7,
+            selected_present_ordinal: 0,
+            selected_present_qpc_ticks: 100,
+            selected_present_cutoff_qpc_ticks: 100,
+            selected_present_receipt_sha256: "a".repeat(64),
             producer_manifest_sha256: [0xA5; 32],
             completeness_record_identity: "a729.politics.rows[900]".into(),
             expected_row_count: rows.len() as u32,
@@ -1024,6 +1081,18 @@ mod tests {
         }
         fn producer_manifest_sha256(&self) -> [u8; 32] {
             [0xA5; 32]
+        }
+        fn selected_present_binding(
+            &self,
+            _: u64,
+        ) -> Result<PoliticsSelectedPresentBinding, String> {
+            Ok(PoliticsSelectedPresentBinding {
+                candidate_id: 7,
+                ordinal: 0,
+                qpc_ticks: 100,
+                cutoff_qpc_ticks: 100,
+                receipt_sha256: "a".repeat(64),
+            })
         }
         fn completeness_record_identity(&self, _: u64) -> Result<String, String> {
             Ok("frame".into())

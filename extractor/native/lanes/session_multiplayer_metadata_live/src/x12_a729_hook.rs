@@ -6,7 +6,7 @@
 //! claiming sub-hour history.
 
 use core::ffi::c_void;
-use minhook::MinHook;
+use minhook::{MinHook, MH_STATUS};
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::mem;
@@ -21,7 +21,9 @@ use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThreadI
 pub const SPEED_SETTER_RVA: usize = 0x001E_DAD0;
 pub const PAUSE_TOGGLE_RVA: usize = 0x00DC_6520;
 pub const PAUSE_FORCED_RVA: usize = 0x00DB_E260;
-/// Remains false until the retained X12 lifecycle fixture closes the live gate.
+/// Remains false until one autonomous X12 lifecycle replay passes the
+/// independent machine regrade and the primary agent completes central
+/// validation. No human semantic join is required.
 pub const PRODUCTION_ACTIVATION: bool = false;
 pub const EVIDENCE_ACTIVATION_ENV: &str = "BATTLE_PLAN_ENABLE_X12_SPEED_PAUSE_HOOK";
 
@@ -58,6 +60,7 @@ static ACCEPTING_CALLBACKS: AtomicBool = AtomicBool::new(false);
 static CALLBACKS_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 static CALLBACK_FATAL: AtomicBool = AtomicBool::new(false);
 static STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
+static HOOK_LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
 
 thread_local! {
     static IN_CALLBACK: Cell<bool> = const { Cell::new(false) };
@@ -81,6 +84,35 @@ pub struct SpeedPauseTransition {
     pub thread_id: u32,
 }
 
+/// Exact state immediately before the first observed mutation.  Early-launch
+/// capture can legitimately see engine initialization mutate speed or pause
+/// before D57 emits its first hourly frame, so an empty first frame is not a
+/// valid baseline requirement.  This hook-owned observation lets the fold
+/// replay sequence one from a real pre-mutation state instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpeedPauseBaseline {
+    pub game_hour_raw: i32,
+    pub speed_raw: i32,
+    pub paused: bool,
+    pub tick_progress_f32_bits: u32,
+    pub thread_id: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpeedPauseObservedState {
+    pub game_hour_raw: i32,
+    pub speed_raw: i32,
+    pub paused: bool,
+    pub tick_progress_f32_bits: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpeedPauseDrain {
+    pub current: SpeedPauseObservedState,
+    pub baseline: Option<SpeedPauseBaseline>,
+    pub transitions: Vec<SpeedPauseTransition>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ObservedState {
     game_hour_raw: i32,
@@ -92,6 +124,7 @@ struct ObservedState {
 #[derive(Debug, Default)]
 struct HookState {
     next_sequence: u64,
+    pending_baseline: Option<SpeedPauseBaseline>,
     pending: VecDeque<SpeedPauseTransition>,
     callback_count: u64,
     owner_thread_id: Option<u32>,
@@ -118,11 +151,15 @@ pub struct InstalledAddresses {
 pub struct HookDiagnostics {
     pub callback_count: u64,
     pub last_sequence: u64,
+    pub pending_baseline: bool,
     pub pending: usize,
     pub current_error: Option<String>,
 }
 
 pub fn install() -> Result<InstalledAddresses, String> {
+    let _lifecycle = HOOK_LIFECYCLE_LOCK
+        .lock()
+        .map_err(|_| "X12 hook lifecycle mutex poisoned".to_string())?;
     let base = (unsafe { GetModuleHandleW(ptr::null()) }) as usize;
     if base == 0 {
         return Err("X12 GetModuleHandleW(NULL) returned null".into());
@@ -205,11 +242,15 @@ pub fn uninstall() -> Result<(), String> {
 /// that entered before the close to finish, and only then examines the queue
 /// and sticky error state.  Any such late mutation is a terminal capture error.
 pub fn seal_after_final_drain_and_uninstall() -> Result<(), String> {
-    if !INSTALLED.swap(false, Ordering::AcqRel) {
+    let _lifecycle = HOOK_LIFECYCLE_LOCK
+        .lock()
+        .map_err(|_| "X12 hook lifecycle mutex poisoned".to_string())?;
+    let was_installed = INSTALLED.swap(false, Ordering::AcqRel);
+    let base = MODULE_BASE.load(Ordering::Acquire);
+    if !was_installed && base == 0 {
         return Ok(());
     }
     ACCEPTING_CALLBACKS.store(false, Ordering::Release);
-    let base = MODULE_BASE.swap(0, Ordering::AcqRel);
     let addresses = InstalledAddresses {
         speed_setter: base + SPEED_SETTER_RVA,
         pause_toggle: base + PAUSE_TOGGLE_RVA,
@@ -223,10 +264,11 @@ pub fn seal_after_final_drain_and_uninstall() -> Result<(), String> {
     ];
     let mut disabled = [false; 3];
     for (index, (target, name)) in targets.iter().copied().enumerate() {
-        if let Err(status) = unsafe { MinHook::disable_hook(target as *mut c_void) } {
-            errors.push(format!("disable {name}: {status}"));
-        } else {
-            disabled[index] = true;
+        match unsafe { MinHook::disable_hook(target as *mut c_void) } {
+            Ok(()) | Err(MH_STATUS::MH_ERROR_DISABLED) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {
+                disabled[index] = true;
+            }
+            Err(status) => errors.push(format!("disable {name}: {status}")),
         }
     }
 
@@ -249,11 +291,13 @@ pub fn seal_after_final_drain_and_uninstall() -> Result<(), String> {
             if let Some(error) = &state.current_error {
                 errors.push(format!("X12 final hook state failed: {error}"));
             }
-            if !state.pending.is_empty() {
+            if state.pending_baseline.is_some() || !state.pending.is_empty() {
                 errors.push(format!(
-                    "{} X12 transition(s) published after the final D57 drain",
-                    state.pending.len()
+                    "X12 baseline/transition evidence remained after the final D57 drain (baseline={}, transitions={})",
+                    state.pending_baseline.is_some(),
+                    state.pending.len(),
                 ));
+                state.pending_baseline = None;
                 state.pending.clear();
             }
         }
@@ -261,14 +305,22 @@ pub fn seal_after_final_drain_and_uninstall() -> Result<(), String> {
     }
 
     if disabled.iter().all(|value| *value) {
+        let mut removal_failed = false;
         for (target, name) in targets.iter().copied() {
-            if let Err(status) = unsafe { MinHook::remove_hook(target as *mut c_void) } {
-                errors.push(format!("remove {name}: {status}"));
+            match unsafe { MinHook::remove_hook(target as *mut c_void) } {
+                Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+                Err(status) => {
+                    removal_failed = true;
+                    errors.push(format!("remove {name}: {status}"));
+                }
             }
         }
-        ORIGINAL_SPEED.store(0, Ordering::Release);
-        ORIGINAL_PAUSE_TOGGLE.store(0, Ordering::Release);
-        ORIGINAL_PAUSE_FORCED.store(0, Ordering::Release);
+        if !removal_failed {
+            ORIGINAL_SPEED.store(0, Ordering::Release);
+            ORIGINAL_PAUSE_TOGGLE.store(0, Ordering::Release);
+            ORIGINAL_PAUSE_FORCED.store(0, Ordering::Release);
+            MODULE_BASE.store(0, Ordering::Release);
+        }
     } else {
         // A failed disable leaves at least one detour executable. Preserve its
         // trampoline and restore the successfully disabled siblings so the
@@ -283,6 +335,7 @@ pub fn seal_after_final_drain_and_uninstall() -> Result<(), String> {
         }
         MODULE_BASE.store(base, Ordering::Release);
         INSTALLED.store(true, Ordering::Release);
+        ACCEPTING_CALLBACKS.store(true, Ordering::Release);
     }
     if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
 }
@@ -299,22 +352,55 @@ pub fn evidence_activation_enabled() -> bool {
             == Some("1")
 }
 
-pub fn drain() -> Result<Vec<SpeedPauseTransition>, String> {
+/// Atomically drains the first pre-mutation baseline and all subsequent
+/// transitions.  The baseline is returned at most once per hook installation.
+pub fn drain_with_baseline() -> Result<SpeedPauseDrain, String> {
     if !installed() {
         return Err("X12 speed/pause hooks are not installed".into());
     }
     if CALLBACK_FATAL.load(Ordering::Acquire) {
         return Err("X12 callback admission/state failed".into());
     }
-    let mut state = STATE
+    let state_mutex = STATE
         .get()
-        .ok_or("X12 hook state is not initialized")?
-        .lock()
-        .map_err(|_| "X12 hook state mutex poisoned")?;
-    if let Some(error) = &state.current_error {
-        return Err(error.clone());
+        .ok_or("X12 hook state is not initialized")?;
+    for _ in 0..1024 {
+        if CALLBACKS_IN_FLIGHT.load(Ordering::Acquire) != 0 {
+            std::thread::yield_now();
+            continue;
+        }
+        let mut state = state_mutex
+            .lock()
+            .map_err(|_| "X12 hook state mutex poisoned")?;
+        if CALLBACKS_IN_FLIGHT.load(Ordering::Acquire) != 0 {
+            drop(state);
+            std::thread::yield_now();
+            continue;
+        }
+        if let Some(error) = &state.current_error {
+            return Err(error.clone());
+        }
+        let base = MODULE_BASE.load(Ordering::Acquire);
+        let cgame_state = read_usize(base + CGAMESTATE_SINGLETON_RVA)
+            .ok_or("X12 CGameState singleton unreadable during atomic drain")?;
+        let current = observe(cgame_state)?;
+        if CALLBACKS_IN_FLIGHT.load(Ordering::Acquire) != 0 {
+            drop(state);
+            std::thread::yield_now();
+            continue;
+        }
+        return Ok(SpeedPauseDrain {
+            current: SpeedPauseObservedState {
+                game_hour_raw: current.game_hour_raw,
+                speed_raw: current.speed_raw,
+                paused: current.paused,
+                tick_progress_f32_bits: current.tick_progress_f32_bits,
+            },
+            baseline: state.pending_baseline.take(),
+            transitions: state.pending.drain(..).collect(),
+        });
     }
-    Ok(state.pending.drain(..).collect())
+    Err("X12 callbacks did not quiesce for an atomic D57 drain".into())
 }
 
 pub fn diagnostics() -> HookDiagnostics {
@@ -324,6 +410,7 @@ pub fn diagnostics() -> HookDiagnostics {
     HookDiagnostics {
         callback_count: state.callback_count,
         last_sequence: state.next_sequence,
+        pending_baseline: state.pending_baseline.is_some(),
         pending: state.pending.len(),
         current_error: state.current_error.clone(),
     }
@@ -333,6 +420,12 @@ unsafe extern "system" fn hook_speed(cgame_state: usize, requested: i32) {
     let _callback = CallbackFlight::enter();
     let accepting = ACCEPTING_CALLBACKS.load(Ordering::Acquire);
     let nested = IN_CALLBACK.with(|guard| guard.replace(true));
+    if nested {
+        // A nested hooked mutation could otherwise be collapsed into the
+        // outer callback's before/after pair. Reject the capture instead of
+        // claiming an exact transition order that was not retained.
+        CALLBACK_FATAL.store(true, Ordering::Release);
+    }
     let before = (!nested).then(|| observe(cgame_state)).transpose();
     let original = ORIGINAL_SPEED.load(Ordering::Acquire);
     if original != 0 {
@@ -351,6 +444,9 @@ unsafe extern "system" fn hook_pause_toggle(idler: usize, mode: u8, text: usize)
     let _callback = CallbackFlight::enter();
     let accepting = ACCEPTING_CALLBACKS.load(Ordering::Acquire);
     let nested = IN_CALLBACK.with(|guard| guard.replace(true));
+    if nested {
+        CALLBACK_FATAL.store(true, Ordering::Release);
+    }
     let before = (!nested).then(|| observe_from_idler(idler)).transpose();
     let original = ORIGINAL_PAUSE_TOGGLE.load(Ordering::Acquire);
     if original != 0 {
@@ -369,6 +465,9 @@ unsafe extern "system" fn hook_pause_forced(idler: usize, reason: i32) {
     let _callback = CallbackFlight::enter();
     let accepting = ACCEPTING_CALLBACKS.load(Ordering::Acquire);
     let nested = IN_CALLBACK.with(|guard| guard.replace(true));
+    if nested {
+        CALLBACK_FATAL.store(true, Ordering::Release);
+    }
     let before = (!nested).then(|| observe_from_idler(idler)).transpose();
     let original = ORIGINAL_PAUSE_FORCED.load(Ordering::Acquire);
     if original != 0 {
@@ -438,6 +537,15 @@ fn publish_change(
         state.current_error = Some("X12 transition sequence overflow".into());
         return;
     };
+    if state.next_sequence == 0 {
+        state.pending_baseline = Some(SpeedPauseBaseline {
+            game_hour_raw: before.game_hour_raw,
+            speed_raw: before.speed_raw,
+            paused: before.paused,
+            tick_progress_f32_bits: before.tick_progress_f32_bits,
+            thread_id,
+        });
+    }
     state.next_sequence = sequence;
     state.pending.push_back(SpeedPauseTransition {
         sequence,

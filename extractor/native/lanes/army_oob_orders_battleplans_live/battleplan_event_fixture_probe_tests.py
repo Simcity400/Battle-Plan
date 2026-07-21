@@ -45,11 +45,11 @@ def geometry_entry(values: list[int]) -> dict:
         "valid": True,
         "candidates": [
             {
-                "candidate_name": "old_type2_province_vector_plus_0x70",
+                "candidate_name": "type1_type2_type3_path_vector_plus_0x70",
                 "field_name": "province_path",
                 "field_type": "vec<u32>",
                 "begin_offset": "+0x70",
-                "size_offset": "+0x78",
+                "size_offset": "+0x7C",
                 "valid": True,
                 "value": values,
             }
@@ -93,7 +93,7 @@ class BattleplanEventFixtureProbeTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(len(obs["observations"]), 2)
         self.assertEqual(obs["observations"][1]["candidate"], "+0x80")
-        self.assertEqual(fixture["non_type5_geometry"][0]["validated_offsets"][1]["offset"], "+0x78")
+        self.assertEqual(fixture["non_type5_geometry"][0]["validated_offsets"][1]["offset"], "+0x7C")
         self.assertEqual(fixture["battleplan_execution_state"][0]["field_values"], {"execution_u8_0x80": 1})
 
     def test_execution_scan_requires_no_redraw_mutation(self) -> None:

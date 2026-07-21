@@ -18,6 +18,7 @@ pub const REBUILD_OWNER_RVA: usize = 0x0137_1b70;
 pub const VECTOR_PUBLISHER_RVA: usize = 0x0136_f750;
 pub const ITEM_CONSTRUCTOR_RVA: usize = 0x0136_a5c0;
 pub const DYNAMIC_REFRESH_RVA: usize = 0x0137_a780;
+pub const DETAIL_REFRESH_RVA: usize = 0x0137_a600;
 pub const ITEM_STATE_PRODUCER_RVA: usize = 0x0137_9a50;
 pub const ITEM_STATE_WRITER_RVA: usize = 0x0137_78f0;
 pub const HIGHLIGHT_PRODUCER_RVA: usize = 0x0137_7430;

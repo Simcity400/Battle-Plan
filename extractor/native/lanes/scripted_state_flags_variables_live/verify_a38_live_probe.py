@@ -13,6 +13,8 @@ from typing import Any
 EXPECTED_EXECUTABLE = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
 EXPECTED_JOB = "20260720T020812Z-w3-a38-controller-owner-41ee5208"
 EXPECTED_RECEIPT = "7d0a36b1822faf85a949d628a79bc4a09f95dc9c9aa3ed4aecb715b72b0a9082"
+EXPECTED_LIFECYCLE_JOB = "20260720T102415Z-w5-a38-manager-membership-lifecycle-bc716c00"
+EXPECTED_LIFECYCLE_RECEIPT = "5a22ef76262753aef9c47a57ab3a1990e8bff87e93427544cc7f76ea745a4f7a"
 REPO_ROOT = Path(__file__).resolve().parents[4]
 EXPECTED_VECTORS = {
     "effect_enabled_widgets",
@@ -56,6 +58,7 @@ def verify(document: dict[str, Any], source: Path) -> dict[str, Any]:
 
     identity = document.get("identity") or {}
     authority = document.get("ghidra_authority") or {}
+    lifecycle_authority = document.get("ghidra_lifecycle_authority") or {}
     registry = document.get("registry") or {}
     winner = document.get("effective_winner_index") or {}
     manager = document.get("validated_manager") or {}
@@ -71,6 +74,14 @@ def verify(document: dict[str, Any], source: Path) -> dict[str, Any]:
         and authority.get("job_id") == EXPECTED_JOB
         and authority.get("manifest_sha256") == EXPECTED_RECEIPT,
         authority,
+    )
+    check(
+        "exact20_lifecycle_authority",
+        lifecycle_authority.get("job_id") == EXPECTED_LIFECYCLE_JOB
+        and lifecycle_authority.get("manifest_sha256") == EXPECTED_LIFECYCLE_RECEIPT
+        and lifecycle_authority.get("executing_shard") == "shard-16"
+        and lifecycle_authority.get("seed_resolution") == "1/1",
+        lifecycle_authority,
     )
 
     registry_path = resolve_receipt_path(str(registry.get("path", "")))
@@ -90,8 +101,30 @@ def verify(document: dict[str, Any], source: Path) -> dict[str, Any]:
     check("ui14_engine_vfs_bound", lower_sha(document.get("ui14_engine_vfs_sha256")), document.get("ui14_engine_vfs_sha256"))
 
     count = manager.get("updater_count")
-    check("singleton_validated_manager", manager.get("status") == "validated", manager.get("status"))
-    check("nonempty_complete_manager", isinstance(count, int) and count > 0 and count == len(updaters), {"declared": count, "rows": len(updaters)})
+    check(
+        "singleton_validated_manager",
+        document.get("manager_selection_status") == "one_validated_manager"
+        and manager.get("status") == "validated",
+        {
+            "selection": document.get("manager_selection_status"),
+            "status": manager.get("status"),
+        },
+    )
+    check(
+        "complete_committed_manager",
+        isinstance(count, int)
+        and count >= 0
+        and count == len(updaters)
+        and manager.get("rebuild_generation_committed") is True,
+        {
+            "declared": count,
+            "rows": len(updaters),
+            "generation_before": manager.get("rebuild_generation_before"),
+            "generation_after": manager.get("rebuild_generation_after"),
+            "generation_committed": manager.get("rebuild_generation_committed"),
+            "measurement": "measured_empty" if count == 0 else "measured_nonempty",
+        },
+    )
 
     row_failures: list[str] = []
     portable_rows = portable.get("rows") if isinstance(portable.get("rows"), list) else []
@@ -124,12 +157,26 @@ def verify(document: dict[str, Any], source: Path) -> dict[str, Any]:
                 row_failures.append(f"row:{index}:vector:{name}:{vector.get('status')}")
     check("all_rows_stable_and_joined", not row_failures, row_failures)
     check("pointer_free_projection_complete", len(portable_rows) == len(updaters) and portable.get("structural_capture_ready") is True, {"rows": len(portable_rows), "ready": portable.get("structural_capture_ready"), "blockers": portable.get("blockers")})
-    check("ready_for_runtime_compiler", portable.get("ready_for_runtime_result_compilation") is True, portable.get("blockers"))
+    check(
+        "runtime_compiler_stays_fail_closed",
+        portable.get("ready_for_runtime_result_compilation") is False
+        and set(portable.get("runtime_result_compilation_blockers") or [])
+        == {
+            "post_FUN_140B79C90_in_process_owner_receipt_required",
+            "synchronized_property_value_consumer_observations_required",
+        },
+        portable.get("runtime_result_compilation_blockers"),
+    )
     check(
         "raw_capture_not_self_promoted",
         portable.get("promotion_allowed") is False
         and set(portable.get("production_admission_blockers") or [])
-        == {"complete_engine_result_frame_not_compiled", "in_process_h4ct_winner_authorization_required"},
+        == {
+            "post_FUN_140B79C90_in_process_owner_receipt_required",
+            "complete_engine_result_frame_not_compiled",
+            "synchronized_property_value_consumer_observations_required",
+            "in_process_h4ct_winner_authorization_required",
+        },
         portable.get("production_admission_blockers"),
     )
 
@@ -140,7 +187,9 @@ def verify(document: dict[str, Any], source: Path) -> dict[str, Any]:
         "accepted": accepted,
         "production_admission_ready": False,
         "production_admission_blockers": [
+            "post_FUN_140B79C90_in_process_owner_receipt_required",
             "complete_engine_result_frame_not_compiled",
+            "synchronized_property_value_consumer_observations_required",
             "in_process_h4ct_winner_authorization_required",
         ],
         "source": {"path": str(source), "sha256": sha256_file(source)},

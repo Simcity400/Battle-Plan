@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 
 use crate::control_transport::{
     ControlCancellation, ControlCapabilities, ControlDeadline, ControlFrame, ControlPeerIdentity,
-    DeadlineControlChannel, DeadlineControlIo, EndpointRole, MessageKind,
+    DeadlineControlChannel, DeadlineControlInputReadiness, DeadlineControlIo, EndpointRole,
+    MessageKind,
 };
 use crate::duplex_session::identity_control::{
     AcknowledgedFirstCompactRecord, AcknowledgedIdentityFailure, IdentityDurableCandidateSink,
@@ -1208,6 +1209,68 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
             &self.transport_cancellation,
         ) {
             Ok(acknowledged) => Ok(acknowledged),
+            Err(error) => {
+                let error = DuplexWorkerError::IdentityControl(error.to_string());
+                self.fail(error.to_string());
+                Err(error)
+            }
+        }
+    }
+
+    /// Non-consuming readiness probe for the sole startup H4CT router. It is
+    /// valid only after authenticated hello and before FirstWorld; the caller
+    /// uses it to arbitrate a collector CIF1 against the first complete CID1 on
+    /// H4CR without starting two competing or cancellable partial reads.
+    pub fn startup_control_input_bytes_available(
+        &mut self,
+        deadline: ControlDeadline,
+    ) -> Result<usize, DuplexWorkerError>
+    where
+        I: DeadlineControlInputReadiness,
+    {
+        self.require_state(
+            DuplexWorkerState::WaitingForWorld,
+            "probe startup control input",
+        )?;
+        match self.channel.input_bytes_available_until(
+            deadline,
+            &self.transport_cancellation,
+        ) {
+            Ok(available) => Ok(available),
+            Err(error) => {
+                let error = DuplexWorkerError::Transport(error.to_string());
+                self.fail(error.to_string());
+                Err(error)
+            }
+        }
+    }
+
+    /// Consume exactly one pre-CID1 CIF1 through the durable dispatcher and
+    /// emit CIA1 before terminating the session. Success means the evidence and
+    /// gap ledger are durable and the matching acknowledgement was written;
+    /// capture must not continue or admit a later CID1 under this session.
+    pub fn acknowledge_startup_identity_failure<S: IdentityDurableCandidateSink>(
+        &mut self,
+        identity: &mut RecorderIdentityControlDispatcher<S>,
+        deadline: ControlDeadline,
+    ) -> Result<AcknowledgedIdentityFailure, DuplexWorkerError> {
+        self.require_state(
+            DuplexWorkerState::WaitingForWorld,
+            "acknowledge startup identity failure",
+        )?;
+        match identity.receive_and_dispatch_identity_failure(
+            &mut self.channel,
+            deadline,
+            &self.transport_cancellation,
+        ) {
+            Ok(acknowledged) => {
+                let failure = acknowledged.failure();
+                self.fail(format!(
+                    "collector identity failed before CID1: reason={:?} attempt_id={} logical_id={:?}",
+                    failure.reason, failure.attempt_id, failure.current_logical_id
+                ));
+                Ok(acknowledged)
+            }
             Err(error) => {
                 let error = DuplexWorkerError::IdentityControl(error.to_string());
                 self.fail(error.to_string());

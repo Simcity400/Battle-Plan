@@ -41,7 +41,7 @@ production_render_catalog_live = { package = "production_render_catalog_live_lan
 portable_content_manifest = { path = "../../../portable_replay/native/content_manifest" }
 design_catalog_context_live_lane = { path = "../lanes/design_catalog_context_live" }
 hud_role_observer_live_lane = { path = "../lanes/hud_role_observer_live" }
-character_presentation_live_lane = { path = "../lanes/character_presentation_live" }
+character_presentation_live_lane = { path = "../lanes/character_presentation_live", features = ["a729-fixture-hook"] }
 nuke_stockpile_live_lane = { path = "../lanes/nuke_stockpile_live" }
 sunk_ship_history_live_lane = { path = "../lanes/sunk_ship_history_live" }
 decision_panel_live_lane = { path = "../lanes/decision_panel_live" }

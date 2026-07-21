@@ -18,6 +18,9 @@ use std::fmt;
 pub const RUNTIME_TEXT_SCHEMA: &str = "hoi4-runtime-text-v1";
 pub const A729_TEXT_SETTER_RVA: u32 = 0x022B_59E0;
 pub const A729_FORMATTER_RVA: u32 = 0x0223_2AB0;
+pub const MAX_RUNTIME_TEXT_CONTEXTS: usize = 262_144;
+pub const MAX_RUNTIME_TEXT_RUNS: usize = 262_144;
+pub const MAX_RUNTIME_TEXT_BYTES: usize = 1 << 20;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeTextCatalog {
@@ -80,6 +83,7 @@ pub struct RuntimeTextCapturedLayout {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeGlyphRun {
+    pub run_ordinal: u32,
     pub font: String,
     pub glyph_id: u32,
     pub x: i32,
@@ -89,6 +93,7 @@ pub struct RuntimeGlyphRun {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeInlineIconRun {
+    pub run_ordinal: u32,
     pub sprite: String,
     pub frame: u32,
     pub x: i32,
@@ -185,6 +190,12 @@ pub fn admit_runtime_text(
                     "required for measured carrier",
                 )
             })?;
+            if rows.len() > MAX_RUNTIME_TEXT_CONTEXTS {
+                return Err(RuntimeTextAdmissionError::new(
+                    "runtime_text.contexts",
+                    "context count exceeds carrier bound",
+                ));
+            }
             let mut contexts = BTreeMap::new();
             let mut semantic_keys = BTreeSet::new();
             for (index, row) in rows.into_iter().enumerate() {
@@ -361,6 +372,12 @@ fn admit_record(
             RuntimeTextSource::SetterCallerRva(rva)
         }
     };
+    if row.final_text.bytes_hex.len() > MAX_RUNTIME_TEXT_BYTES * 2 {
+        return Err(RuntimeTextAdmissionError::new(
+            format!("{path}.final_text.bytes_hex"),
+            "final text exceeds carrier bound",
+        ));
+    }
     let bytes = decode_hex(&row.final_text.bytes_hex).map_err(|message| {
         RuntimeTextAdmissionError::new(format!("{path}.final_text.bytes_hex"), message)
     })?;
@@ -412,6 +429,14 @@ fn admit_record(
             glyphs,
             inline_icons,
         } => {
+            if glyphs.len() > MAX_RUNTIME_TEXT_RUNS
+                || inline_icons.len() > MAX_RUNTIME_TEXT_RUNS
+            {
+                return Err(RuntimeTextAdmissionError::new(
+                    format!("{path}.layout"),
+                    "captured layout run count exceeds carrier bound",
+                ));
+            }
             if glyphs.is_empty() && inline_icons.is_empty() && !bytes.is_empty() {
                 return Err(RuntimeTextAdmissionError::new(
                     format!("{path}.layout"),
@@ -457,11 +482,26 @@ fn admit_record(
                     ));
                 }
             }
+            let mut mixed_ordinals = glyphs
+                .iter()
+                .map(|run| run.run_ordinal)
+                .chain(inline_icons.iter().map(|run| run.run_ordinal))
+                .collect::<Vec<_>>();
+            mixed_ordinals.sort_unstable();
+            for (expected, actual) in mixed_ordinals.into_iter().enumerate() {
+                if actual as usize != expected {
+                    return Err(RuntimeTextAdmissionError::new(
+                        format!("{path}.layout"),
+                        "captured mixed glyph/icon run order is duplicate or incomplete",
+                    ));
+                }
+            }
             RuntimeTextLayout::CapturedRuntime(RuntimeTextCapturedLayout {
                 clip,
                 glyphs: glyphs
                     .into_iter()
                     .map(|glyph| RuntimeGlyphRun {
+                        run_ordinal: glyph.run_ordinal,
                         font: glyph.font,
                         glyph_id: glyph.glyph_id,
                         x: glyph.x,
@@ -472,6 +512,7 @@ fn admit_record(
                 inline_icons: inline_icons
                     .into_iter()
                     .map(|icon| RuntimeInlineIconRun {
+                        run_ordinal: icon.run_ordinal,
                         sprite: icon.sprite,
                         frame: icon.frame,
                         x: icon.x,
@@ -679,6 +720,7 @@ enum WireLayout {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WireGlyph {
+    run_ordinal: u32,
     font: String,
     glyph_id: u32,
     x: i32,
@@ -689,6 +731,7 @@ struct WireGlyph {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WireIcon {
+    run_ordinal: u32,
     sprite: String,
     frame: u32,
     x: i32,
@@ -755,6 +798,7 @@ mod tests {
             "mode": "captured_runtime",
             "clip": [-4, 2, 80, 24],
             "glyphs": [{
+                "run_ordinal": 0,
                 "font": "hoi4_16",
                 "glyph_id": 17,
                 "x": -2,
@@ -762,6 +806,7 @@ mod tests {
                 "rgba": [248, 249, 250, 255]
             }],
             "inline_icons": [{
+                "run_ordinal": 1,
                 "sprite": "GFX_inline_command_power",
                 "frame": 0,
                 "x": 12,
@@ -1010,6 +1055,8 @@ mod tests {
         x_overflow["layout"]["inline_icons"][0]["x"] = json!(i32::MAX);
         let mut y_overflow = captured_row("A!");
         y_overflow["layout"]["inline_icons"][0]["y"] = json!(i32::MAX);
+        let mut duplicate_run_ordinal = captured_row("A!");
+        duplicate_run_ordinal["layout"]["inline_icons"][0]["run_ordinal"] = json!(0);
 
         for (case, invalid) in [
             ("blank_font", blank_font),
@@ -1017,6 +1064,7 @@ mod tests {
             ("zero_advance", zero_advance),
             ("x_overflow", x_overflow),
             ("y_overflow", y_overflow),
+            ("duplicate_run_ordinal", duplicate_run_ordinal),
         ] {
             let value = json!({
                 "schema": RUNTIME_TEXT_SCHEMA,

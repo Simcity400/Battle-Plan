@@ -455,9 +455,9 @@ impl FilesystemRolloverStore {
             .ok_or("publication stream file is absent")?;
         durable_file(&mut file, &open)?;
         drop(file);
-        fs::rename(&open, &sealed)
-            .map_err(|error| format!("seal final logical stream {logical_stream_id}: {error}"))?;
-        sync_directory(&inner.root)?;
+        rename_new_durable(&open, &sealed).map_err(|error| {
+            format!("seal final logical stream {logical_stream_id}: {error}")
+        })?;
         let file_sha256 = hash_file(&sealed)?;
         let campaign_id_hex = hex(&inner.expected_campaign_id);
         let cid1_payload_sha256_hex = hex(&inner.expected_cid1_payload_sha256);
@@ -653,13 +653,30 @@ impl FilesystemRolloverDataWriter {
         } else if kind != AcceptedRecordKind::Ordinary {
             return terminal(&mut inner, "streaming logical stream received a duplicate CID1");
         }
-        inner.file.as_mut().ok_or("rollover stream file is absent")?
-            .write_all(record)
-            .map_err(|error| format!("write rollover H4CR: {error}"))?;
+        let write_result = inner
+            .file
+            .as_mut()
+            .ok_or_else(|| "rollover stream file is absent".to_string())
+            .and_then(|file| {
+                file.write_all(record)
+                    .map_err(|error| format!("write rollover H4CR: {error}"))
+            });
+        if let Err(error) = write_result {
+            return terminal(&mut inner, &error);
+        }
         inner.state.last_complete_sequence = Some(header.sequence);
         if inner.state.phase == DurableRolloverPhase::AwaitingCid1 {
-            inner.file.as_mut().ok_or("rollover stream file is absent")?
-                .sync_all().map_err(|error| format!("sync rollover CID1: {error}"))?;
+            let sync_result = inner
+                .file
+                .as_mut()
+                .ok_or_else(|| "rollover stream file is absent".to_string())
+                .and_then(|file| {
+                    file.sync_all()
+                        .map_err(|error| format!("sync rollover CID1: {error}"))
+                });
+            if let Err(error) = sync_result {
+                return terminal(&mut inner, &error);
+            }
             inner.pending_first_record = Some(record.to_vec());
         }
         self.shared.changed.notify_all();
@@ -739,9 +756,8 @@ impl RecorderRolloverStore for FilesystemRolloverStore {
         let mut file = inner.file.take().ok_or("rollover stream file is absent")?;
         durable_file(&mut file, &old_open)?;
         drop(file);
-        fs::rename(&old_open, &old_sealed)
+        rename_new_durable(&old_open, &old_sealed)
             .map_err(|error| format!("seal logical stream {old_id}: {error}"))?;
-        sync_directory(&inner.root)?;
 
         let new_id = proposal.proposed_logical_stream_id;
         let new_open = open_path(&inner.root, new_id);
@@ -1200,13 +1216,80 @@ fn publish_new_file_atomically(root: &Path, file_name: &str, bytes: &[u8]) -> Re
         .map_err(|error| format!("write {}: {error}", candidate.display()))?;
     durable_file(&mut file, &candidate)?;
     drop(file);
-    fs::rename(&candidate, &final_path).map_err(|error| {
+    rename_new_durable(&candidate, &final_path).map_err(|error| {
         format!(
             "publish immutable descriptor {}: {error}",
             final_path.display()
         )
+    })
+}
+
+/// Rename a freshly-created file to a previously absent final name and make
+/// the namespace transition durable before returning. Stream seals and set
+/// descriptors are immutable authorities, so replacement is deliberately not
+/// permitted.
+#[cfg(not(windows))]
+fn rename_new_durable(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::rename(source, destination).map_err(|error| {
+        format!(
+            "rename {} to {}: {error}",
+            source.display(),
+            destination.display()
+        )
     })?;
-    sync_directory(root)
+    let parent = destination
+        .parent()
+        .ok_or("durable rename destination has no parent")?;
+    sync_directory(parent)
+}
+
+#[cfg(windows)]
+fn rename_new_durable(source: &Path, destination: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn MoveFileExW(
+            existing_file_name: *const u16,
+            new_file_name: *const u16,
+            flags: u32,
+        ) -> i32;
+    }
+
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+    if destination.exists() {
+        return Err(format!(
+            "durable rename destination {} already exists",
+            destination.display()
+        ));
+    }
+    let source_wide: Vec<u16> = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let destination_wide: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    if unsafe {
+        MoveFileExW(
+            source_wide.as_ptr(),
+            destination_wide.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        Err(format!(
+            "write-through rename {} to {}: {}",
+            source.display(),
+            destination.display(),
+            std::io::Error::last_os_error()
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn durable_file(file: &mut File, path: &Path) -> Result<(), String> {

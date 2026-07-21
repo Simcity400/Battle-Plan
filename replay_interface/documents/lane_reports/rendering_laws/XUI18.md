@@ -126,14 +126,12 @@ renderer derives these values from the static placeholder text or icon.
 
 ## Mechanical verification
 
-- Scoped `rustfmt --check`: pass.
-- Focused XUI18 tests: **6/6 passed**.
-- Complete `game_ui` package: pass; library gate **117 passed, 0 failed, 1
-  intentional installed-file ignore**, followed by every acceptance and
-  integration binary at zero failures.
-- Deterministic XUI18 verifier: **44/44 passed** with parser, focused, and full gates
-  enabled; the settled contract, findings, verification, and manifest artifacts
-  were byte-identical across two complete freezes.
+- Focused XUI18 tests: **12/12 passed** within the root-owned centralized
+  Final/All run.
+- Complete replay workspace, including every `game_ui` acceptance and
+  integration target plus doctests: pass under the same centralized run.
+- The deterministic XUI18 verifier consumes that exact central attestation and
+  reruns the two packet-owned parser gates without invoking Cargo itself.
 
 ## Binary provenance reused from frozen UI03
 

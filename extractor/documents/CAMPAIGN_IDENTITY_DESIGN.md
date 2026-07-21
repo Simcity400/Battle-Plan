@@ -18,10 +18,10 @@ from their canonical representation. Current-build serializer/deserializer RE pr
 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`; see
 [`W15_CAMPAIGN_IDENTITY_STATIC_RE.md`](dossiers/W15_CAMPAIGN_IDENTITY_STATIC_RE.md). This is
 **static representation proof, not a validated live identity**. The CID1 codec, shared explicit-mode
-stateful validator, CFA1 codec, durable receipt ordering, and recorder-main manifest gate are now
-offline-green. Pillar 3 remains fail-closed: production `Known` is impossible until the collector
-producer barrier, live L0 acceptance, durable failure/rollover accounting, and the complete matrix
-below pass.
+stateful validator, CFA1 codec, collector producer barrier, durable rollover store, ordered package
+publication, replay selection, and recorder-main manifest gate are now statically composed. Pillar
+3 remains fail-closed: all duplex/rollover activation latches are false, so production `Known` is
+impossible until live L0/lifecycle acceptance and the complete matrix below pass.
 
 The current d68 `session` scalar, start date, scenario/bookmark, modset, and human-country
 roster are witnesses only. They must never be substituted when either chosen component is
@@ -198,9 +198,9 @@ readable as identity-unavailable and cannot be stitched automatically across ses
 `Known` is not admitted merely because the pair is canonical. The CID1 decoder must have two
 complete matching observations bracketing admission, a calendar-valid `game_hour_raw`, a
 non-empty control-free build-profile id, and a SHA-256 recomputed over the complete validated
-CID1 payload. The manifest carries that payload hash. If any prerequisite is absent—including on
-the active Legacy capture path, which still emits no CID1—state remains `unavailable` and no digest
-is authorized for stitching.
+CID1 payload. The manifest carries that payload hash. If any prerequisite is absent—including in
+the currently selected Legacy product profile while the CID1 activation latches remain false—state
+remains `unavailable` and no digest is authorized for stitching.
 
 ### Stateful rollover on the duplex control transport
 
@@ -457,8 +457,9 @@ extractor/native/collector/src/lib.rs
   beside read_compact_session_header and H4CR framing:
   guarded stable readers, sequence-zero CID1 emission, exact CFA1 blocking, and
   fail-closed boundary re-read exist behind inactive product latches.
-+ route uncertainty/conflict through durable CIF1/CIA1;
-+ wire acknowledged CRP1/CRA1/new-CID1/CFA1 rollover into the ordinary product loop.
+  Uncertainty/conflict routes through durable CIF1/CIA1, including the
+  pre-CID1 startup race, and acknowledged CRP1/CRA1/new-CID1/CFA1 rollover is
+  wired into the ordinary product loop.
 
 extractor/native/recorder_host/src/stream_fold.rs
 extractor/native/replay_decoder/src/*
@@ -467,8 +468,9 @@ extractor/native/replay_decoder/src/*
 
 extractor/native/recorder_host/src/main.rs
   in compact_stream_manifest_json/native-session packaging:
-  Explicit-mode pre-dispatch validation, opaque ValidatedCid1 retention, and Known gating exist
-  dormant/offline-green; live duplex receipt/durable sink composition and rollover remain open.
+  Explicit-mode pre-dispatch validation, opaque ValidatedCid1 retention, Known gating, durable
+  logical-stream storage, rollover routing, ordered set packaging, and startup CIF1/CIA1
+  arbitration are composed behind inactive latches.
 
 extractor/native/recorder_host/src/world_fold.rs
 + carry campaign/segment provenance without using d68 session/start_date as fallback;
@@ -486,13 +488,12 @@ extractor/native/lanes/compact_replay_verification_gates/src/*
 ## Open items
 
 - Static offset and representation discovery is complete for the pinned executable, but the L0
-  guarded same-hour D-0-4 read and exact oracle comparison have not run; there is no authorized
-  production reader or build-profile fallback.
-- CID1 payload/parser/stateful validation, explicit-mode CFA1, durable receipt ordering, and
-  recorder-main manifest gating are offline-green. Dormant collector sequence-0 emission/CFA1
-  blocking and boundary re-read now exist, but activation, production fold/replay walker migration, durable
-  identity-failure accounting, and product acknowledged rollover remain open. Until all pass,
-  production `campaign_identity.state="known"` is impossible.
+  guarded same-hour D-0-4 read and exact oracle comparison have not run; the composed production
+  reader remains disabled and there is no build-profile fallback.
+- CID1 placement/validation, both CFA1 barriers, durable CIF1/CIA1 failure accounting, acknowledged
+  rollover, ordered packaging, and replay selection are composed. Activation and the owner-run
+  lifecycle/multiplayer matrix remain open. Until all pass, production
+  `campaign_identity.state="known"` is impossible.
 - No capture pair proves reload/relaunch/hotjoin/observer/rehost stability or distinctness
   across two new campaigns.
 - Independent campaigns cloned from one save cannot be distinguished by passive persisted

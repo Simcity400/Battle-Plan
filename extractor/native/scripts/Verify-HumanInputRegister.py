@@ -211,13 +211,40 @@ def validate_closure_evidence(repo: Path) -> None:
     w20_bytes = w20_path.read_bytes()
     if w20_receipt.get("all_identities_verified_after_restore") is not True:
         fail("W20 recovery receipt no longer verifies all restored identities")
-    if len(w20_bytes) != 392_964 or w20_receipt.get("restored_bytes") != len(w20_bytes):
-        fail("W20 restored byte length drift")
     w20_sha256 = hashlib.sha256(w20_bytes).hexdigest()
-    if w20_sha256 != "9715a81dababc7c6d888a957ec102e73f2d5cc01b3cd93d2f995facd56d23e4d":
-        fail(f"W20 restored SHA-256 drift: {w20_sha256}")
-    if w20_receipt.get("restored_sha256") != w20_sha256:
-        fail("W20 recovery receipt SHA-256 does not match restored bytes")
+    frozen_bytes = 392_964
+    frozen_sha256 = "9715a81dababc7c6d888a957ec102e73f2d5cc01b3cd93d2f995facd56d23e4d"
+    checkout_bytes = 384_598
+    checkout_sha256 = "4804b6618cdc73d97b9871bb86328218ed4181e2322259db79c3b29979025e70"
+    checkout_lf_count = 8_366
+    if (
+        w20_receipt.get("restored_bytes") != frozen_bytes
+        or w20_receipt.get("restored_sha256") != frozen_sha256
+    ):
+        fail("W20 recovery receipt frozen identity drift")
+    if not (
+        len(w20_bytes) == checkout_bytes
+        and w20_sha256 == checkout_sha256
+        and b"\r" not in w20_bytes
+        and w20_bytes.count(b"\n") == checkout_lf_count
+        and w20_receipt.get("source_bytes") == checkout_bytes
+        and w20_receipt.get("source_sha256") == checkout_sha256
+        and w20_receipt.get("source_lf_count") == checkout_lf_count
+        and w20_receipt.get("current_checkout_bytes") == checkout_bytes
+        and w20_receipt.get("current_checkout_sha256") == checkout_sha256
+        and w20_receipt.get("current_checkout_lf_count") == checkout_lf_count
+        and w20_receipt.get("current_checkout_representation")
+        == "Git-normalized LF bytes; the receipt-bound transform reproduces the frozen CRLF identity"
+        and w20_receipt.get("checkout_transform")
+        == "replace each LF with CRLF; source contains zero CRLF pairs"
+    ):
+        fail(
+            "W20 index is not the exact receipt-bound Git-normalized LF checkout: "
+            f"bytes={len(w20_bytes)}, sha256={w20_sha256}"
+        )
+    restored = w20_bytes.replace(b"\n", b"\r\n")
+    if len(restored) != frozen_bytes or hashlib.sha256(restored).hexdigest() != frozen_sha256:
+        fail("W20 authenticated LF checkout does not reproduce the frozen CRLF identity")
 
     anomaly = (repo / "replay_interface/native/replay_app/src/anomaly.rs").read_text(encoding="utf-8")
     timeline = (repo / "replay_interface/native/replay_app/src/timeline.rs").read_text(encoding="utf-8")

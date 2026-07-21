@@ -282,7 +282,8 @@ pub(super) unsafe fn execute_prepared_runtime_draw_mrt(
             stream_output,
         ),
         crate::PreparedRuntimeDraw::Entity { submission, .. }
-        | crate::PreparedRuntimeDraw::O04City { submission, .. } => {
+        | crate::PreparedRuntimeDraw::O04City { submission, .. }
+        | crate::PreparedRuntimeDraw::O05Building { submission, .. } => {
             resolver
                 .read_admitted_used_content(&submission.content_identity.resolved_entity_asset)?;
             resolver.read_admitted_used_content(&submission.content_identity.mesh)?;
@@ -319,6 +320,9 @@ pub(super) unsafe fn execute_static_exact_used_draw(
 ) -> Result<()> {
     let mut snow_mud_proof = None;
     let mut snow_mud_binding_count = 0;
+    let mut occupation_secondary_proof = None;
+    let mut occupation_terrain_t6_binding_count = 0;
+    let mut occupation_water_t3_binding_count = 0;
     execute_static_exact_used_draw_mrt(
         gfx,
         resolver,
@@ -328,6 +332,9 @@ pub(super) unsafe fn execute_static_exact_used_draw(
         &mut snow_mud_proof,
         &mut snow_mud_binding_count,
         false,
+        &mut occupation_secondary_proof,
+        &mut occupation_terrain_t6_binding_count,
+        &mut occupation_water_t3_binding_count,
         political_textures,
         tiled_lights,
         prepared_targets,
@@ -346,6 +353,9 @@ pub(super) unsafe fn execute_static_exact_used_draw_mrt(
     snow_mud_proof: &mut Option<super::SnowMudD3dExecutionProof>,
     snow_mud_binding_count: &mut u32,
     collect_snow_mud_h2: bool,
+    occupation_secondary_proof: &mut Option<super::OccupationSecondaryD3dExecutionProof>,
+    occupation_terrain_t6_binding_count: &mut u32,
+    occupation_water_t3_binding_count: &mut u32,
     political_textures: &[replay_core::PoliticalTexturePacket],
     tiled_lights: &[replay_core::TiledLightSubmission],
     prepared_targets: &[PreparedTargetTexture],
@@ -466,7 +476,7 @@ pub(super) unsafe fn execute_static_exact_used_draw_mrt(
                 if packet.width != resource.width || packet.height != resource.height {
                     return Err("political texture packet/resource descriptor mismatch".into());
                 }
-                dynamic_views.push(create_inline_texture_view(
+                let inline = create_inline_texture_view(
                     gfx,
                     resolver,
                     binding.stage,
@@ -480,7 +490,45 @@ pub(super) unsafe fn execute_static_exact_used_draw_mrt(
                         .checked_mul(packet.height)
                         .ok_or("political texture slice overflow")?,
                     payload_sha256,
-                )?);
+                )?;
+                if *texture_kind == replay_core::PoliticalTextureKind::Secondary
+                    && target_binding_identity
+                        == replay_core::OCCUPATION_SECONDARY_TARGET_BINDING
+                {
+                    let (terrain_t6_increment, water_t3_increment) =
+                        match (binding.stage, binding.slot) {
+                            (replay_core::ShaderStage::Pixel, 6) => (1, 0),
+                            (replay_core::ShaderStage::Pixel, 3) => (0, 1),
+                            _ => {
+                                return Err(
+                                    "occupation secondary replay binding is outside terrain-t6/water-t3"
+                                        .into(),
+                                )
+                            }
+                        };
+                    *occupation_terrain_t6_binding_count =
+                        occupation_terrain_t6_binding_count
+                            .checked_add(terrain_t6_increment)
+                            .ok_or("occupation terrain-t6 replay binding count overflow")?;
+                    *occupation_water_t3_binding_count =
+                        occupation_water_t3_binding_count
+                            .checked_add(water_t3_increment)
+                            .ok_or("occupation water-t3 replay binding count overflow")?;
+                    if collect_snow_mud_h2 {
+                        let proof = verify_occupation_secondary_inline_readback(
+                            gfx,
+                            &inline,
+                            packet,
+                            terrain_t6_increment,
+                            water_t3_increment,
+                        )?;
+                        merge_occupation_secondary_execution_proof(
+                            occupation_secondary_proof,
+                            proof,
+                        )?;
+                    }
+                }
+                dynamic_views.push(inline);
             }
             replay_core::StaticShaderResourceSource::TiledLightIndex {
                 writer_index,
@@ -1243,7 +1291,8 @@ fn merge_snow_mud_execution_proof(
             *accumulated = Some(next);
         }
         Some(current) => {
-            if current.readback_sha256 != next.readback_sha256
+            if current.tight_readback_bytes != next.tight_readback_bytes
+                || current.readback_sha256 != next.readback_sha256
                 || current.mapped_row_pitch != next.mapped_row_pitch
                 || current.verified_row_count != next.verified_row_count
                 || current.verified_tight_byte_count != next.verified_tight_byte_count
@@ -1331,12 +1380,134 @@ unsafe fn verify_snow_mud_inline_readback(
             }
             tight.extend_from_slice(row_bytes);
         }
+        let readback_sha256 = Sha256::hex(&tight);
         Ok(super::SnowMudD3dExecutionProof {
-            readback_sha256: Sha256::hex(&tight),
+            tight_readback_bytes: tight,
+            readback_sha256,
             mapped_row_pitch: mapped.RowPitch,
             verified_row_count: packet.height,
             verified_tight_byte_count: u64::from(packet.row_pitch) * u64::from(packet.height),
             replaced_binding_count: 1,
+        })
+    })();
+    (*gfx.context.as_raw()).Unmap(staging.as_raw() as *mut _, 0);
+    verification
+}
+
+fn merge_occupation_secondary_execution_proof(
+    accumulated: &mut Option<super::OccupationSecondaryD3dExecutionProof>,
+    next: super::OccupationSecondaryD3dExecutionProof,
+) -> Result<()> {
+    match accumulated {
+        None => *accumulated = Some(next),
+        Some(current) => {
+            if current.tight_readback_bytes != next.tight_readback_bytes
+                || current.readback_sha256 != next.readback_sha256
+                || current.mapped_row_pitch != next.mapped_row_pitch
+                || current.verified_row_count != next.verified_row_count
+                || current.verified_tight_byte_count != next.verified_tight_byte_count
+            {
+                return Err(
+                    "occupation secondary consumers produced inconsistent GPU readbacks".into(),
+                );
+            }
+            current.terrain_t6_binding_count = current
+                .terrain_t6_binding_count
+                .checked_add(next.terrain_t6_binding_count)
+                .ok_or("occupation terrain-t6 proof count overflow")?;
+            current.water_t3_binding_count = current
+                .water_t3_binding_count
+                .checked_add(next.water_t3_binding_count)
+                .ok_or("occupation water-t3 proof count overflow")?;
+        }
+    }
+    Ok(())
+}
+
+unsafe fn verify_occupation_secondary_inline_readback(
+    gfx: &Gfx,
+    inline: &TextureViewGpu,
+    packet: &replay_core::PoliticalTexturePacket,
+    terrain_t6_binding_count: u32,
+    water_t3_binding_count: u32,
+) -> Result<super::OccupationSecondaryD3dExecutionProof> {
+    let Some(TextureResourceGpu::Texture2d(texture)) = inline._resource.as_ref() else {
+        return Err("occupation secondary replay upload is not a Texture2D".into());
+    };
+    let mut source_desc: D3D11_TEXTURE2D_DESC = mem::zeroed();
+    (*texture.as_raw()).GetDesc(&mut source_desc);
+    if source_desc.Width != replay_core::OCCUPATION_SECONDARY_WIDTH
+        || source_desc.Height != replay_core::OCCUPATION_SECONDARY_HEIGHT
+        || source_desc.Format as u32 != 91
+        || source_desc.MipLevels != 1
+        || source_desc.ArraySize != 1
+        || source_desc.SampleDesc.Count != 1
+        || packet.width != source_desc.Width
+        || packet.height != source_desc.Height
+    {
+        return Err("occupation secondary replay upload descriptor changed before readback".into());
+    }
+    let staging_desc = D3D11_TEXTURE2D_DESC {
+        Usage: D3D11_USAGE_STAGING,
+        BindFlags: 0,
+        CPUAccessFlags: D3D11_CPU_ACCESS_READ,
+        MiscFlags: 0,
+        ..source_desc
+    };
+    let mut staging = ptr::null_mut();
+    hr_ok(
+        (*gfx.device.as_raw()).CreateTexture2D(&staging_desc, ptr::null(), &mut staging),
+        "CreateTexture2D staging for occupation secondary H2",
+    )?;
+    let staging = ComPtr::from_raw(staging, "occupation secondary H2 staging")?;
+    (*gfx.context.as_raw()).CopyResource(
+        staging.as_raw() as *mut _,
+        texture.as_raw() as *mut _,
+    );
+    let mut mapped: D3D11_MAPPED_SUBRESOURCE = mem::zeroed();
+    hr_ok(
+        (*gfx.context.as_raw()).Map(
+            staging.as_raw() as *mut _,
+            0,
+            D3D11_MAP_READ,
+            0,
+            &mut mapped,
+        ),
+        "Map occupation secondary H2 staging",
+    )?;
+    let verification = (|| -> Result<super::OccupationSecondaryD3dExecutionProof> {
+        let source_pitch = usize::try_from(packet.row_pitch)
+            .map_err(|_| "occupation secondary source pitch exceeds usize")?;
+        let mapped_pitch = usize::try_from(mapped.RowPitch)
+            .map_err(|_| "occupation secondary mapped pitch exceeds usize")?;
+        if mapped.pData.is_null() || mapped_pitch < source_pitch {
+            return Err("occupation secondary readback returned a null/short row".into());
+        }
+        let mapped_len = mapped_pitch
+            .checked_mul(packet.height as usize)
+            .ok_or("occupation secondary mapped byte length overflow")?;
+        let mapped_bytes = std::slice::from_raw_parts(mapped.pData as *const u8, mapped_len);
+        let mut tight = Vec::with_capacity(packet.bytes.len());
+        for row in 0..packet.height as usize {
+            let mapped_start = row * mapped_pitch;
+            let source_start = row * source_pitch;
+            let row_bytes = &mapped_bytes[mapped_start..mapped_start + source_pitch];
+            if row_bytes != &packet.bytes[source_start..source_start + source_pitch] {
+                return Err(format!(
+                    "occupation secondary replay readback differs from the packet at row {row}"
+                )
+                .into());
+            }
+            tight.extend_from_slice(row_bytes);
+        }
+        Ok(super::OccupationSecondaryD3dExecutionProof {
+            readback_sha256: Sha256::hex(&tight),
+            tight_readback_bytes: tight,
+            mapped_row_pitch: mapped.RowPitch,
+            verified_row_count: packet.height,
+            verified_tight_byte_count: u64::from(packet.row_pitch) * u64::from(packet.height),
+            terrain_t6_binding_count,
+            water_t3_binding_count,
         })
     })();
     (*gfx.context.as_raw()).Unmap(staging.as_raw() as *mut _, 0);

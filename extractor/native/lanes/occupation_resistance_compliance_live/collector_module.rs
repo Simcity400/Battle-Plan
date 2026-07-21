@@ -240,6 +240,26 @@ impl CompactOccupationResistanceComplianceTracker {
         }
     }
 
+    pub fn encode_frame_with_alert(
+        &mut self,
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        observed_state_rows: u32,
+        garrison_anomaly_rows: u32,
+        rows: &[compact::OccupationStateRow],
+        alert: &compact::GarrisonAlertExtension,
+    ) -> EncodedFrame {
+        let mut frame = self.encode_frame(
+            elapsed_wall_ms,
+            status_flags,
+            observed_state_rows,
+            garrison_anomaly_rows,
+            rows,
+        );
+        frame.payload = compact::encode_payload_with_alert(&frame.header, &frame.rows, alert);
+        frame
+    }
+
     fn delta_rows(
         &mut self,
         rows: &[compact::OccupationStateRow],
@@ -1025,6 +1045,25 @@ fn i32_from(data: &[u8], offset: usize) -> i32 {
     let mut bytes = [0u8; 4];
     bytes.copy_from_slice(&data[offset..offset + 4]);
     i32::from_le_bytes(bytes)
+}
+
+pub fn encode_rows_with_alert(
+    elapsed_wall_ms: u64,
+    status_flags: u32,
+    observed_state_rows: u32,
+    garrison_anomaly_rows: u32,
+    rows: &[compact::OccupationStateRow],
+    alert: &compact::GarrisonAlertExtension,
+) -> EncodedFrame {
+    let mut frame = encode_rows(
+        elapsed_wall_ms,
+        status_flags,
+        observed_state_rows,
+        garrison_anomaly_rows,
+        rows,
+    );
+    frame.payload = compact::encode_payload_with_alert(&frame.header, &frame.rows, alert);
+    frame
 }
 
 fn i64_from(data: &[u8], offset: usize) -> i64 {

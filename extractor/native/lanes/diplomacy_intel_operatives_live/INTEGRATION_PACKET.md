@@ -3,14 +3,16 @@
 > Historical integration packet, superseded for current a729 operation/intel
 > families. Domain 53 is now shared-registered and carries exact OPIN v3
 > preparing/prepared/running/finished operation instances, atomic four-lane
-> intel levels, INGR v3 network graphs with exact per-state strengths and
+> intel levels, INGR v4 network graphs with exact per-state strengths,
+> reciprocal `build_network`/`quiet_network` operative membership, and
 > mechanically recomputed network-scoped national coverage, and the
 > incoming-action/faction trailers.
 > The old `FIXTURE_BLOCKED`, `SHARED_INTEGRATION_PENDING`, and
 > `omitted_unresolved` examples below are retained only as implementation
-> history and must not be used as current promotion state. Current residuals
-> are controller presentation joins and an authenticated same-frame GH04
-> runtime fixture, the separate
+> history and must not be used as current promotion state. The A11 world-state
+> route is closed through typed replay; a positive same-frame INGR v4 row is
+> useful automated acceptance evidence, not missing RE. Current residuals are
+> A30 controller/presentation joins and the separate
 > unresolved agency/operative labels documented by their `_unvalidated` names,
 > centralized validation, and the remaining exact-10 consumer rewrites.
 
@@ -662,7 +664,7 @@ Checklist row deltas:
 
 ```markdown
 | Relations/opinions | Opinion, tension, guarantees, access, non-aggression, attaches, faction relations. | `SHARED_INTEGRATION_PENDING` | Domain 53 shared registration preserves validated relation/opinion/flag rows and compact observed-state relation rows; full field audit/action semantics remain open. | Shared proof plus production rows or exact rejections for every remaining UI/save-visible relation field. |
-| Subjects/autonomy | Puppet/subject relation, autonomy progress, overlord, subject levels. | `SHARED_INTEGRATION_PENDING` | Domain 53 shared registration preserves validated `CSubjectRelation` subject-autonomy rows and state observations. | Shared proof plus subject level/static joins and autonomy-change event semantics. |
+| Subjects/autonomy | Puppet/subject relation, autonomy progress, overlord, subject levels. | `PRODUCTION_INTEGRATED` | Domain 53 preserves the legacy `CSubjectRelation` row and carries the complete authenticated `CCurrentAutonomyStatus` set through AUST, fold, typed replay, and both-side country-panel projection. | Closed by exact owner/extent/producer authority, signed-score/adjacency direction, gap invalidation, and pointer-free key/state admission; live matrix optional. |
 | War lifecycle | War ids/names, attacker/defender groups, start/end, participants, casualties. | `ROOT_DISCOVERY_OPEN` | Domain 53 shared registration may preserve validated tag-pair/casualty rows, but war grouping/name/start-date scalar remains unvalidated and badged. | War grouping/name/date closure or exact blocker. |
 | Intel agency | Agency scalars, upgrades, cryptology, capacity, recruitment. | `SHARED_INTEGRATION_PENDING` | Domain 53 shared registration preserves validated agency/cryptology scalars plus raw capacity cluster rows `agency+0xE4/+0xF0/+0xF4` without semantic relabeling. | Semantic fixtures for exact capacity labels, upgrades, recruitment, and full cryptology state. |
 | Operatives | Operative identity, owner, skill/XP, detected state, lifecycle flags. | `SHARED_INTEGRATION_PENDING` | Domain 53 shared registration preserves active operative identity/stat rows and numeric lifecycle flag cohorts. | Mission/captured/pool/nationality/portrait/trait/operation-assignment closure. |

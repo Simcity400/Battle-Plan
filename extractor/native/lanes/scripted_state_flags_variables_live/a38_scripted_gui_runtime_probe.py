@@ -33,6 +33,8 @@ CICON_VTABLE_RVA = 0x2B341A0
 
 MANAGER_UPDATERS = 0x20
 MANAGER_UPDATER_COUNT = 0x2C
+MANAGER_REBUILD_GENERATION = 0x68
+INVALID_REBUILD_GENERATION = 0xFFFFFFFF
 MAX_UPDATERS = 65536
 
 UPDATER_DEFINITION = 0xE8
@@ -101,6 +103,16 @@ GHIDRA_AUTHORITY = {
         "remain discovery aliases only"
     ),
     "seed_package": "extractor/documents/dossiers/A38_EXACT20_REEXPORT_SEEDS_20260720.json",
+}
+
+GHIDRA_LIFECYCLE_AUTHORITY = {
+    "status": "exact20_supplemental_lifecycle_receipt_admitted",
+    "job_id": "20260720T102415Z-w5-a38-manager-membership-lifecycle-bc716c00",
+    "executing_shard": "shard-16",
+    "seed_resolution": "1/1",
+    "manifest_sha256": "5a22ef76262753aef9c47a57ab3a1990e8bff87e93427544cc7f76ea745a4f7a",
+    "functions": ["0x140B78D70", "0x140B7B090", "0x140B79DD0"],
+    "capture_rule": "cold zero-count manager is unavailable; only committed in-process empty is measured-empty",
 }
 
 
@@ -465,6 +477,8 @@ def updater_snapshot(proc, updater, manager_order_index, registry, registry_ids,
         }
     definition = try_u64(proc, updater + UPDATER_DEFINITION)
     window = try_u64(proc, updater + UPDATER_WINDOW)
+    window_vtable = try_u64(proc, window) if heap_ok(window) else None
+    window_live = isinstance(window_vtable, int) and proc.in_module(window_vtable)
     definition_id = (
         read_ascii_msvc_string(proc, definition + 0x08, 512) if heap_ok(definition) else None
     )
@@ -479,7 +493,13 @@ def updater_snapshot(proc, updater, manager_order_index, registry, registry_ids,
     return {
         "manager_order_index": manager_order_index,
         "updater": hx(updater),
-        "status": "validated" if matched_id else "definition_id_not_uniquely_joined",
+        "status": (
+            "validated"
+            if matched_id and window_live
+            else "window_not_live"
+            if matched_id
+            else "definition_id_not_uniquely_joined"
+        ),
         "definition": hx(definition),
         "definition_id_exact_offset_0x08": definition_id,
         "definition_id_source": "definition_plus_0x08_msvc_string",
@@ -490,6 +510,8 @@ def updater_snapshot(proc, updater, manager_order_index, registry, registry_ids,
             registry_identity(matched_id, registry[matched_id], winners) if matched_id else None
         ),
         "window": hx(window),
+        "window_vtable": hx(window_vtable),
+        "window_state": "live" if window_live else "unavailable",
         "owner_country_tag_db_id": owner_id,
         "owner_country_tag": tags.get(owner_id),
         "root_visible_byte": try_u8(proc, updater + UPDATER_ROOT_VISIBLE),
@@ -500,6 +522,7 @@ def updater_snapshot(proc, updater, manager_order_index, registry, registry_ids,
 def manager_snapshot(proc, manager, registry, registry_ids, winners, tags, max_updaters):
     if try_u64(proc, manager) != proc.module_base + MANAGER_VTABLE_RVA:
         return {"manager": hx(manager), "status": "vtable_mismatch"}
+    generation_before = try_u32(proc, manager + MANAGER_REBUILD_GENERATION)
     updaters, error = stable_pointer_array(
         proc,
         manager + MANAGER_UPDATERS,
@@ -526,17 +549,37 @@ def manager_snapshot(proc, manager, registry, registry_ids, winners, tags, max_u
         result["joined_registry_updaters"] = joined
         if updaters and joined == 0:
             result["status"] = "no_updater_joined_registry"
+    generation_after = try_u32(proc, manager + MANAGER_REBUILD_GENERATION)
+    result["rebuild_generation_before"] = generation_before
+    result["rebuild_generation_after"] = generation_after
+    result["rebuild_generation_committed"] = bool(
+        isinstance(generation_before, int)
+        and generation_before == generation_after
+        and generation_before != INVALID_REBUILD_GENERATION
+    )
+    if result["status"] == "validated" and not result["rebuild_generation_committed"]:
+        result["status"] = "rebuild_generation_uncommitted"
     return result
 
 
 def portable_prerequisites(manager):
     rows = []
     blockers = []
-    for expected_index, updater in enumerate(manager.get("updaters") or []):
+    updater_rows = manager.get("updaters") or []
+    # FUN_140B78D70 invalidates +0x68 to 0xFFFFFFFF before FUN_140B79DD0
+    # destroys/zeroes/repopulates the vector. A stable non-sentinel generation
+    # around the complete manager snapshot distinguishes diagnostic
+    # measured-empty from the rebuild transient. Portable d84 publication still
+    # belongs only to the in-process frame authorizer.
+    if not manager.get("rebuild_generation_committed"):
+        blockers.append("manager_rebuild_generation_uncommitted")
+    for expected_index, updater in enumerate(updater_rows):
         if updater.get("manager_order_index") != expected_index:
             blockers.append("manager_order_not_contiguous:%d" % expected_index)
         if updater.get("status") != "validated":
             blockers.append("updater_not_joined:%d" % expected_index)
+        if updater.get("window_state") != "live":
+            blockers.append("updater_window_not_live:%d" % expected_index)
         owner = updater.get("owner_country_tag")
         if (
             not isinstance(owner, str)
@@ -575,8 +618,19 @@ def portable_prerequisites(manager):
     return {
         "schema": "extractor.a38_scripted_gui_portable_prerequisites.v1",
         "pointer_free": True,
+        "manager_measurement": (
+            "measured_empty"
+            if manager.get("rebuild_generation_committed") and not updater_rows
+            else "measured_nonempty"
+            if manager.get("rebuild_generation_committed")
+            else "unavailable"
+        ),
         "structural_capture_ready": structural_capture_ready,
-        "ready_for_runtime_result_compilation": structural_capture_ready,
+        "ready_for_runtime_result_compilation": False,
+        "runtime_result_compilation_blockers": [
+            "post_FUN_140B79C90_in_process_owner_receipt_required",
+            "synchronized_property_value_consumer_observations_required",
+        ],
         "promotion_allowed": False,
         "promotion_blocker": (
             "raw read-process evidence is diagnostic; production still requires "
@@ -584,7 +638,9 @@ def portable_prerequisites(manager):
         ),
         "blockers": sorted(set(blockers)),
         "production_admission_blockers": [
+            "post_FUN_140B79C90_in_process_owner_receipt_required",
             "complete_engine_result_frame_not_compiled",
+            "synchronized_property_value_consumer_observations_required",
             "in_process_h4ct_winner_authorization_required",
         ],
         "rows": rows,
@@ -639,23 +695,33 @@ def run_probe(workers, max_updaters, effective_winner_index, ui14_engine_vfs_sha
             for hit in scan["hits"]
         ]
         validated = [row for row in managers if row["status"] == "validated"]
-        if len(validated) != 1:
+        if len(validated) == 1:
+            selected_manager = validated[0]
+            manager_selection_status = "one_validated_manager"
+        elif len(validated) == 0 and len(managers) == 1:
+            # Preserve one exact-vtable but currently unavailable candidate as
+            # rejected evidence. This is how a generation-sentinel rebuild or
+            # destroyed-window transition survives acquisition packaging
+            # instead of disappearing as a probe exception.
+            selected_manager = managers[0]
+            manager_selection_status = "one_unavailable_manager_candidate"
+        else:
             raise RuntimeError("expected exactly one validated CScriptedWindowManager, got %d" % len(validated))
-        portable = portable_prerequisites(validated[0])
+        portable = portable_prerequisites(selected_manager)
         if winner_receipt is None:
-            portable["ready_for_runtime_result_compilation"] = False
             portable["blockers"] = sorted(
                 set(portable["blockers"] + ["authenticated_effective_winner_index_not_supplied"])
             )
         elif ui14_engine_vfs_sha256 is None:
-            portable["ready_for_runtime_result_compilation"] = False
             portable["blockers"] = sorted(
                 set(portable["blockers"] + ["ui14_engine_vfs_sha256_not_supplied"])
             )
         portable["structural_capture_ready"] = not any(
             blocker.startswith((
+                "manager_rebuild_generation_uncommitted",
                 "manager_order_not_contiguous",
                 "updater_not_joined",
+                "updater_window_not_live",
                 "owner_tag_not_canonical",
                 "definition_winner_not_joined",
                 "vector_not_stable",
@@ -663,11 +729,7 @@ def run_probe(workers, max_updaters, effective_winner_index, ui14_engine_vfs_sha
             ))
             for blocker in portable["blockers"]
         )
-        portable["ready_for_runtime_result_compilation"] = bool(
-            portable["structural_capture_ready"]
-            and winner_receipt is not None
-            and ui14_engine_vfs_sha256 is not None
-        )
+        portable["ready_for_runtime_result_compilation"] = False
         return {
             "schema": "extractor.a38_scripted_gui_runtime_live_probe.v1",
             "created_utc": datetime.now(timezone.utc).isoformat(),
@@ -675,6 +737,7 @@ def run_probe(workers, max_updaters, effective_winner_index, ui14_engine_vfs_sha
             "identity": fingerprint,
             "expected_sha256": EXPECTED_SHA256,
             "ghidra_authority": GHIDRA_AUTHORITY,
+            "ghidra_lifecycle_authority": GHIDRA_LIFECYCLE_AUTHORITY,
             "ghidra_discovery_provenance": GHIDRA_DISCOVERY_PROVENANCE,
             "registry": {
                 "path": os.path.relpath(registry_path, REPO_ROOT).replace("\\", "/"),
@@ -692,7 +755,8 @@ def run_probe(workers, max_updaters, effective_winner_index, ui14_engine_vfs_sha
             },
             "manager_scan": scan,
             "manager_candidates": managers,
-            "validated_manager": validated[0],
+            "manager_selection_status": manager_selection_status,
+            "validated_manager": selected_manager,
             "portable_prerequisites": portable,
         }
 
@@ -730,7 +794,9 @@ def main():
         "manager_hits": len(report["manager_scan"]["hits"]),
         "validated_manager": report["validated_manager"]["manager"],
         "updater_count": report["validated_manager"]["updater_count"],
-        "joined_registry_updaters": report["validated_manager"]["joined_registry_updaters"],
+        "joined_registry_updaters": report["validated_manager"].get(
+            "joined_registry_updaters"
+        ),
         "portable_prerequisites_ready": report["portable_prerequisites"][
             "ready_for_runtime_result_compilation"
         ],

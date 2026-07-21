@@ -38,6 +38,11 @@ check(
 )
 check("domain id exact", dossier["carrier"]["domain_id"] == 73)
 check("all six required line kinds", len(dossier["required_line_kinds"]) == 6)
+check(
+    "dossier records fail-closed pending activation",
+    dossier["status"]
+    == "STATIC_GRAPH_DETOURS_OWNER_CAPTURE_AND_REPLAY_BINDING_COMPLETE_LIVE_FIXTURE_PENDING_FAIL_CLOSED",
+)
 
 lane_source = (LANE / "src/lib.rs").read_text(encoding="utf-8")
 hook_source = (LANE / "src/a729_hook.rs").read_text(encoding="utf-8")
@@ -64,6 +69,11 @@ for token in [
     "seal_exact_politics_frame",
     "required politics families incomplete",
     "PRODUCER_MANIFEST_SHA256",
+    "LIVE_PRODUCER_TAPS_COMPLETE: bool = false",
+    "REQUIRED_PRODUCER_SENTINELS",
+    "uninstall_a729_politics_hook",
+    "arm_a24_capture_epoch",
+    "MODIFIER_VALUE_LOOKUP_RVA",
     "TOOLTIP_FORMATTER_CALLSITE_A_RVA",
     "TOOLTIP_DISPATCH_CHAIN_TAIL",
 ]:
@@ -74,12 +84,8 @@ check(
     hook_source.count("PoliticsLineKind::") >= 6,
 )
 check(
-    "dossier records complete native source",
-    dossier["live_producer_install"]["state"] == "COMPLETE_FAIL_CLOSED",
-)
-check(
-    "retained dispatch event count exact",
-    dossier["live_producer_install"]["retained_trace_event_count"] == 258,
+    "dossier records incomplete disabled native source",
+    dossier["live_producer_install"]["state"] == "IMPLEMENTED_FIXTURE_PENDING_DISABLED_FAIL_CLOSED",
 )
 
 workspace = (ROOT / "extractor/native/Cargo.toml").read_text(encoding="utf-8")
@@ -100,6 +106,21 @@ world_fold = (ROOT / "extractor/native/recorder_host/src/world_fold.rs").read_te
 )
 integration = (ROOT / "extractor/native/recorder_host/tests/a24_d73.rs").read_text(
     encoding="utf-8"
+)
+replay_world = (
+    ROOT / "replay_interface/native/replay_core/src/world.rs"
+).read_text(encoding="utf-8")
+replay_exports = (
+    ROOT / "replay_interface/native/replay_core/src/lib.rs"
+).read_text(encoding="utf-8")
+game_ui = (
+    ROOT / "replay_interface/native/game_ui/src/politics_tooltips.rs"
+).read_text(encoding="utf-8")
+game_ui_exports = (
+    ROOT / "replay_interface/native/game_ui/src/lib.rs"
+).read_text(encoding="utf-8")
+capture = json.loads(
+    (LANE / "H_A24_CAPTURE_AUTOMATION_20260720.json").read_text(encoding="utf-8")
 )
 report = (LANE / "A24_RE_REPORT.md").read_text(encoding="utf-8")
 
@@ -126,10 +147,26 @@ check(
     "integration covers cross-hour rejection",
     "pti1_frame_cannot_attach_to_a_different_snapshot_hour" in integration,
 )
+check("typed replay leaf installed", "pub tooltip_inputs: Leaf<Vec<PoliticsTooltipInputExact>>" in replay_world)
+check("strict PTI1 replay builder installed", "fn build_politics_tooltip_inputs(" in replay_world)
+check("unknown country join poisons frame", "producer row names a country absent" in replay_world)
+check("A24 replay types exported", "PoliticsTooltipInputExact" in replay_exports)
+check("fail-closed game UI selector installed", "PoliticsTooltipSelection" in game_ui)
+check("game UI forbids trigger inference", "never evaluates Clausewitz triggers" in game_ui)
+check("game UI A24 module exported", "pub mod politics_tooltips;" in game_ui_exports)
+check(
+    "capture automation pending and fail closed",
+    capture["status"] == "OWNER_CAPTURE_IMPLEMENTED_LIVE_FIXTURE_PENDING_FAIL_CLOSED",
+)
+check("capture matrix covers required taps", len(capture["required_taps"]) == 9)
+check(
+    "capture automation requires no current human input",
+    capture["human_input"]["required_now"] is False,
+)
 
-manifest_hash = "aec720fe9371b012bfb6a8f000f74ab39232f3482a766c0edfac7582ce489ce5"
+manifest_hash = "18bac19dc5de7fc0ef90a9341e0bc5ed1ac73c745a1dc96f6177ed08c8f70b35"
 for address in dossier["producer_graph"]["function_addresses"]:
-    check(f"report binds function {address}", address in report)
+    check(f"report binds function {address}", address in report.lower())
 check("report binds producer manifest hash", manifest_hash in report)
 check(
     "report binds string artifact hash",
@@ -175,8 +212,8 @@ for artifact in artifact_manifest["artifacts"]:
     )
 
 result = {
-    "schema": "hoi4-extractor-a24-verification-v1",
-    "status": "PASS_EXACT_A729_NATIVE_SOURCE_D73_CARRIER_FOLD_PROMOTION_READY",
+    "schema": "hoi4-extractor-a24-verification-v2",
+    "status": "PASS_STATIC_GRAPH_REPLAY_BINDING_LIVE_TAPS_PENDING_FAIL_CLOSED",
     "checks_passed": sum(1 for row in checks if row["pass"]),
     "checks_total": len(checks),
     "checks": checks,

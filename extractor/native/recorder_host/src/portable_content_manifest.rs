@@ -25,8 +25,9 @@ use crate::early_render_launch::{EarlyRenderCaptureReceipt, EarlyRenderLaunchMan
 use crate::modset::ModsetReport;
 use crate::production_content_vfs::effective_vfs_from_launch;
 use crate::production_map_content_index::{
-    resolve_authenticated_static_program_content, resolve_authenticated_ui_pass_content,
-    StaticProgramContentObservation, RUNTIME_UI_CONSUMER_PREFIX, STATIC_PROGRAM_CONSUMER_PREFIX,
+    resolve_authenticated_o05_building_content, resolve_authenticated_static_program_content,
+    resolve_authenticated_ui_pass_content, StaticProgramContentObservation,
+    RUNTIME_UI_CONSUMER_PREFIX, STATIC_PROGRAM_CONSUMER_PREFIX,
 };
 
 pub const TRACE_SCHEMA: &str = "extractor.portable-content-use-trace.v1";
@@ -1026,7 +1027,7 @@ fn build_from_finalized_static_bundle_with_runtime_stream_admission(
         }
         None => None,
     };
-    let static_program_content = if runtime.static_program_frames.is_empty() {
+    let mut static_program_content = if runtime.static_program_frames.is_empty() {
         Vec::new()
     } else {
         resolve_authenticated_static_program_content(
@@ -1037,6 +1038,15 @@ fn build_from_finalized_static_bundle_with_runtime_stream_admission(
             &base,
         )?
     };
+    if !runtime.static_program_frames.is_empty() {
+        static_program_content.extend(resolve_authenticated_o05_building_content(
+            selected_vfs
+                .as_ref()
+                .ok_or("O05 buildings require the selected launch VFS")?,
+            runtime.static_program_frames.iter(),
+            &base,
+        )?);
+    }
     let runtime_ui_content = if runtime.static_program_frames.is_empty() {
         Vec::new()
     } else {
@@ -1355,6 +1365,11 @@ fn build_from_finalized_static_bundle_inner(
             if binding.storage_kind != inventory_storage_kind {
                 return Err(format!(
                     "source namespace mod {layer_id:?} storage kind differs from launch binding"
+                ));
+            }
+            if binding.content_sha256 != binding_content_sha256 {
+                return Err(format!(
+                    "source namespace mod {layer_id:?} content digest differs from suspended-launch binding"
                 ));
             }
         }

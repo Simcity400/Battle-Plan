@@ -105,7 +105,9 @@ fn context_kind_code(kind: crate::SelectedContextKind) -> u32 {
 pub fn validate_frame(frame: &ProductionAbilityFrame) -> Result<(), CarrierError> {
     match frame.authority {
         AuthorityState::Unavailable
-            if frame.status_flags != 0 && frame.snapshot.is_none() =>
+            if compact_contract::compact_status_unknown_flags_v1(frame.status_flags) == 0
+                && compact_contract::compact_status_is_failure(frame.status_flags)
+                && frame.snapshot.is_none() =>
         {
             Ok(())
         }
@@ -406,6 +408,17 @@ mod tests {
         assert_eq!(decoded.authority, AuthorityState::Unavailable);
         assert_eq!(decoded.snapshot, None);
         assert_eq!(decoded.status_flags, 1 << 9);
+    }
+
+    #[test]
+    fn unavailable_rejects_unknown_or_informational_only_status() {
+        assert!(encode_unavailable(901, 8, 1 << 31).is_err());
+        assert!(encode_unavailable(
+            901,
+            8,
+            compact_contract::COMPACT_STATUS_DELTA_DATA,
+        )
+        .is_err());
     }
 
     #[test]

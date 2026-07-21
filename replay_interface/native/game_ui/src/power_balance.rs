@@ -448,6 +448,13 @@ pub struct PowerBalanceRuntimeProvenance {
     pub producer_manifest_sha256: String,
     pub completeness_record_identity: String,
     pub frame_hour: i64,
+    pub materialization_qpc_ticks: u64,
+    pub selected_present_candidate_id: u64,
+    pub selected_present_ordinal: u32,
+    pub selected_present_qpc_ticks: u64,
+    pub selected_present_cutoff_qpc_ticks: u64,
+    pub qpc_frequency_hz: u64,
+    pub selected_present_receipt_sha256: String,
     pub runtime_text_contexts: Vec<PowerBalanceRuntimeTextProvenance>,
     pub runtime_text_bindings: Vec<PowerBalanceRuntimeTextBinding>,
 }
@@ -469,6 +476,7 @@ pub struct PowerBalanceRuntimeSupplement {
     pub launcher_levels_text: Option<String>,
     pub launcher_icon_sprite: Option<String>,
     pub launcher_glow_visible: bool,
+    pub panel_open: bool,
     pub bar_state: BarState,
     pub range_indicator_frame: usize,
     /// Engine-resolved final local top-left for the code-positioned
@@ -529,6 +537,7 @@ pub struct PowerBalancePresentation {
     pub launcher_levels_text: Option<String>,
     pub launcher_icon_sprite: Option<String>,
     pub launcher_glow_visible: bool,
+    pub panel_open: bool,
     pub bar_sprite: String,
     pub range_indicator_frame: usize,
     pub range_indicator_top_left: [i32; 2],
@@ -686,6 +695,16 @@ fn admit_one(
             .completeness_record_identity
             .trim()
             .is_empty()
+        && runtime.provenance.materialization_qpc_ticks > 0
+        && runtime.provenance.selected_present_candidate_id > 0
+        && runtime.provenance.selected_present_qpc_ticks
+            >= runtime.provenance.materialization_qpc_ticks
+        && runtime.provenance.selected_present_cutoff_qpc_ticks
+            >= runtime.provenance.selected_present_qpc_ticks
+        && runtime.provenance.qpc_frequency_hz > 0
+        && crate::is_lowercase_sha256(
+            &runtime.provenance.selected_present_receipt_sha256,
+        )
         && !runtime.provenance.runtime_text_contexts.is_empty()
         && runtime.provenance.runtime_text_contexts.iter().all(|context| {
             let same_hour = match context_hour {
@@ -742,6 +761,7 @@ fn admit_one(
         return Err(PowerBalanceRejection::InvalidRuntimeIcon);
     }
     let launcher_values_valid = runtime.launcher_visible
+        && runtime.panel_open
         && [
             runtime.launcher_percentage_text.as_deref(),
             runtime.launcher_levels_text.as_deref(),
@@ -855,6 +875,7 @@ fn admit_one(
         launcher_levels_text: runtime.launcher_levels_text.clone(),
         launcher_icon_sprite: runtime.launcher_icon_sprite.clone(),
         launcher_glow_visible: runtime.launcher_glow_visible,
+        panel_open: runtime.panel_open,
         bar_sprite: runtime.bar_state.sprite().to_string(),
         range_indicator_frame: runtime.range_indicator_frame,
         range_indicator_top_left: runtime.range_indicator_top_left,

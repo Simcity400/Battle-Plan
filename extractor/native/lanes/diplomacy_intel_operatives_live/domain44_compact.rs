@@ -181,12 +181,15 @@ pub const MAX_ACTION_DATE_HOURS: u32 = 100_000_000;
 const INTEL_NETWORK_GRAPH_TRAILER_MAGIC: &[u8; 4] = b"INGR";
 const INTEL_NETWORK_GRAPH_TRAILER_VERSION_V1: u16 = 1;
 const INTEL_NETWORK_GRAPH_TRAILER_VERSION_V2: u16 = 2;
-const INTEL_NETWORK_GRAPH_TRAILER_VERSION: u16 = 3;
+const INTEL_NETWORK_GRAPH_TRAILER_VERSION_V3: u16 = 3;
+const INTEL_NETWORK_GRAPH_TRAILER_VERSION: u16 = 4;
 const INTEL_NETWORK_GRAPH_TRAILER_HEADER_LEN: usize = 12;
 const INTEL_NETWORK_GRAPH_V1_ROW_HEADER_LEN: usize = 16;
 const INTEL_NETWORK_GRAPH_V2_ROW_HEADER_LEN: usize = 88;
 const INTEL_NETWORK_GRAPH_V3_ROW_HEADER_LEN: usize = 92;
+const INTEL_NETWORK_GRAPH_V4_ROW_HEADER_LEN: usize = 96;
 const INTEL_NETWORK_GRAPH_V3_FLAG_COVERAGE: u32 = 1 << 0;
+pub const MAX_INTEL_NETWORK_OPERATIVES: usize = MAX_OPERATIVES_PER_AGENCY as usize;
 
 // `FACS` faction-roster trailer (tail-appended after the base self-delimiting
 // payload; DIAQ/INGR precedent). Per faction: a fixed row header + a
@@ -214,6 +217,16 @@ const SUBJECT_AUTONOMY_STATUS_FLAG_PREVIOUS: u32 = 1;
 const SUBJECT_AUTONOMY_STATUS_FLAG_NEXT: u32 = 1 << 1;
 pub const MAX_SUBJECT_AUTONOMY_STATUS_ROWS: usize = 4_096;
 
+// E14 exact operation-token membership census. OPTK is emitted even for a
+// measured-empty set; absence means unavailable, never empty. Rows preserve
+// only portable owner/target ids plus the authored operation-token id.
+const OPERATION_TOKEN_TRAILER_MAGIC: &[u8; 4] = b"OPTK";
+const OPERATION_TOKEN_TRAILER_VERSION: u16 = 1;
+const OPERATION_TOKEN_TRAILER_HEADER_LEN: usize = 12;
+const OPERATION_TOKEN_ROW_HEADER_LEN: usize = 12;
+pub const MAX_OPERATION_TOKEN_ROWS: usize = 65_536;
+pub const MAX_OPERATION_TOKEN_ID_LEN: usize = 128;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiplomacyIntelSnapshot {
     pub elapsed_wall_ms: u64,
@@ -235,10 +248,12 @@ pub struct DiplomacyIntelSnapshot {
     pub operation_anchors: Vec<OperationAnchorRow>,
     pub intel_map: Vec<IntelMapRow>,
     pub state_events: Vec<StateEventRow>,
-    /// Wave-5 running-operation instances (COperationInstance {instance_id,
-    /// def_ref_ok, associated_country}). Carried in the `OPIN` trailer AFTER
-    /// the self-delimiting base payload — NOT counted in `row_count()` (the
-    /// base row loop must not see them). Absent trailer => empty (not measured).
+    /// Exact running-operation instances. Carried in the versioned `OPIN`
+    /// trailer after the self-delimiting base payload and therefore not counted
+    /// in `row_count()` (the base row loop must not see them). For current
+    /// producer records an absent trailer is the canonical measured-empty
+    /// operation family; source-unavailable detail is expressed by source
+    /// proofs/status, not by fabricating rows.
     pub operation_instances: Vec<OperationInstanceRow>,
     pub incoming_actions: Vec<IncomingActionQueueRow>,
     pub intel_network_graphs: Vec<IntelNetworkGraphRow>,
@@ -251,6 +266,10 @@ pub struct DiplomacyIntelSnapshot {
     /// An absent FACS trailer decodes false; legacy FACS v1 with rows decodes
     /// true to preserve its established non-empty completeness semantics.
     pub faction_roster_complete: bool,
+    /// Exact COperationTokenManager owner/token/target memberships. OPTK is an
+    /// additive complete-set trailer and is not part of the base row count.
+    pub operation_tokens: Vec<OperationTokenMembershipRow>,
+    pub operation_tokens_complete: bool,
 }
 
 impl DiplomacyIntelSnapshot {
@@ -327,6 +346,10 @@ fn encoded_payload_capacity(snapshot: &DiplomacyIntelSnapshot) -> usize {
         &snapshot.subject_autonomy_statuses,
         snapshot.subject_autonomy_status_complete,
     ))
+    .saturating_add(operation_token_trailer_capacity(
+        &snapshot.operation_tokens,
+        snapshot.operation_tokens_complete,
+    ))
 }
 
 fn operation_instance_trailer_capacity(rows: &[OperationInstanceRow]) -> usize {
@@ -367,7 +390,11 @@ fn intel_network_graph_trailer_capacity(rows: &[IntelNetworkGraphRow]) -> usize 
         rows.iter()
             .fold(INTEL_NETWORK_GRAPH_TRAILER_HEADER_LEN, |acc, row| {
                 let row_header_len = if row.state_strengths.is_some() {
-                    INTEL_NETWORK_GRAPH_V3_ROW_HEADER_LEN
+                    if row.operative_ids.is_some() {
+                        INTEL_NETWORK_GRAPH_V4_ROW_HEADER_LEN
+                    } else {
+                        INTEL_NETWORK_GRAPH_V3_ROW_HEADER_LEN
+                    }
                 } else if row.coverage.is_some() {
                     INTEL_NETWORK_GRAPH_V2_ROW_HEADER_LEN
                 } else {
@@ -375,6 +402,11 @@ fn intel_network_graph_trailer_capacity(rows: &[IntelNetworkGraphRow]) -> usize 
                 };
                 let state_len = if row.state_strengths.is_some() { 12 } else { 4 };
                 acc.saturating_add(row_header_len)
+                    .saturating_add(
+                        row.operative_ids
+                            .as_ref()
+                            .map_or(0, |ids| ids.len().saturating_mul(4)),
+                    )
                     .saturating_add(row.state_ids.len().saturating_mul(state_len))
             })
     }
@@ -615,7 +647,7 @@ pub struct IncomingActionQueueRow {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntelNetworkGraphRow {
-    /// INGR v1-v3 wire name retained for compatibility. Exact a729
+    /// INGR v1-v4 wire name retained for compatibility. Exact a729
     /// country CId used to construct every contained CCountryIntelNetwork.
     pub strategic_operative_index: u32,
     pub network_slot: u32,
@@ -627,6 +659,10 @@ pub struct IntelNetworkGraphRow {
     /// with `state_ids` under the fixed 100000 scale.
     pub state_strengths: Option<Vec<IntelNetworkStateStrength>>,
     pub coverage: Option<IntelNetworkCoverage>,
+    /// Exact sorted operative ids whose a729 action union is `build_network`
+    /// or `quiet_network` and whose payload points to this network. `None`
+    /// exists only for legacy INGR v1-v3 recordings.
+    pub operative_ids: Option<Vec<u32>>,
 }
 
 fn subject_autonomy_status_trailer_capacity(
@@ -639,6 +675,28 @@ fn subject_autonomy_status_trailer_capacity(
         SUBJECT_AUTONOMY_STATUS_TRAILER_HEADER_LEN
             .saturating_add(rows.len().saturating_mul(SUBJECT_AUTONOMY_STATUS_TRAILER_ROW_LEN))
     }
+}
+
+fn operation_token_trailer_capacity(
+    rows: &[OperationTokenMembershipRow],
+    complete: bool,
+) -> usize {
+    if !complete {
+        0
+    } else {
+        rows.iter().fold(OPERATION_TOKEN_TRAILER_HEADER_LEN, |total, row| {
+            total
+                .saturating_add(OPERATION_TOKEN_ROW_HEADER_LEN)
+                .saturating_add(row.token_id.len())
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct OperationTokenMembershipRow {
+    pub owner_tag_db_id: u32,
+    pub target_tag_db_id: u32,
+    pub token_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -961,6 +1019,11 @@ pub fn encode_payload(snapshot: &DiplomacyIntelSnapshot) -> Vec<u8> {
         &snapshot.subject_autonomy_statuses,
         snapshot.subject_autonomy_status_complete,
     );
+    append_operation_token_trailer(
+        &mut payload,
+        &snapshot.operation_tokens,
+        snapshot.operation_tokens_complete,
+    );
     payload
 }
 
@@ -1250,6 +1313,11 @@ pub fn summarize_snapshot_instrumented(
         &snapshot.subject_autonomy_statuses,
         snapshot.subject_autonomy_status_complete,
     );
+    append_operation_token_trailer(
+        &mut trailer_bytes,
+        &snapshot.operation_tokens,
+        snapshot.operation_tokens_complete,
+    );
 
     let mut operation_instance_rows = 0usize;
     let mut operation_instance_country_rows = 0usize;
@@ -1260,9 +1328,28 @@ pub fn summarize_snapshot_instrumented(
     let mut intel_network_graph_state_rows = 0usize;
     let mut faction_rows = 0usize;
     let mut faction_member_rows = 0usize;
+    let mut operation_token_rows = 0usize;
+    let operative_owners = snapshot
+        .operatives
+        .iter()
+        .filter(|row| {
+            !row_id_deleted(row.op_id)
+                && valid_tag(row.owner_tag_db_id)
+                && row.op_id != 0
+                && row.op_id <= MAX_OPERATIVE_ID
+        })
+        .map(|row| (row.op_id, row.owner_tag_db_id))
+        .collect::<BTreeMap<_, _>>();
     if !trailer_bytes.is_empty() {
         let trailer_rows =
             decode_domain53_trailers(offset, &trailer_bytes, 0, &mut summary.parse_errors);
+        validate_intel_network_operative_membership(
+            offset,
+            status_flags,
+            &operative_owners,
+            &trailer_rows.intel_network_graphs,
+            &mut summary.parse_errors,
+        );
         operation_instance_rows = trailer_rows.operation_instances.len();
         operation_instance_country_rows = trailer_rows
             .operation_instances
@@ -1293,6 +1380,7 @@ pub fn summarize_snapshot_instrumented(
             .iter()
             .map(|row| row.member_tag_db_ids.len())
             .sum();
+        operation_token_rows = trailer_rows.operation_tokens.len();
     }
     add_unit(
         &mut summary,
@@ -1331,6 +1419,7 @@ pub fn summarize_snapshot_instrumented(
     );
     add_unit(&mut summary, "faction_rows", faction_rows);
     add_unit(&mut summary, "faction_member_rows", faction_member_rows);
+    add_unit(&mut summary, "operation_token_rows", operation_token_rows);
 
     // `decoded_counts != expected_counts` (decode_payload:1596) is impossible on a
     // valid encode (decoded counts == header counts == snapshot vec lens).
@@ -1508,6 +1597,27 @@ fn append_subject_autonomy_status_trailer(
     }
 }
 
+fn append_operation_token_trailer(
+    payload: &mut Vec<u8>,
+    rows: &[OperationTokenMembershipRow],
+    complete: bool,
+) {
+    if !complete {
+        return;
+    }
+    payload.extend_from_slice(OPERATION_TOKEN_TRAILER_MAGIC);
+    payload.extend_from_slice(&OPERATION_TOKEN_TRAILER_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(OPERATION_TOKEN_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    for row in rows {
+        payload.extend_from_slice(&row.owner_tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.target_tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&(row.token_id.len().min(u16::MAX as usize) as u16).to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(row.token_id.as_bytes());
+    }
+}
+
 fn subject_autonomy_ratio_raw(
     current_score_raw: i64,
     lower_score_raw: i64,
@@ -1538,11 +1648,10 @@ fn subject_autonomy_ratio_raw(
 /// (flags: DEF_REF_OK bit0, COUNTRY_PRESENT bit1). Emitted only when at least
 /// one instance is present; no rows => no trailer (legacy-shaped record).
 ///
-/// BLOCKED-ADDITIVE (build 870ebf): the D53 base extract is fail-closed on
-/// 870ebf (unvalidated live root offsets → empty SOURCE_UNAVAILABLE record),
-/// so `rows` is always empty in production today and this trailer is not
-/// live-emitted. The encode/decode is fully exercised by unit tests; it lights
-/// up when the d53 base root source-availability lands.
+/// Current exact-a729 producers emit v3 whenever at least one authenticated
+/// instance exists. A zero-row operation family has no trailer and is
+/// distinguished from unavailable detail by the enclosing d53 proof/status
+/// contract.
 fn append_operation_instance_trailer(payload: &mut Vec<u8>, rows: &[OperationInstanceRow]) {
     if rows.is_empty() {
         return;
@@ -1637,6 +1746,14 @@ fn append_intel_network_graph_trailer(payload: &mut Vec<u8>, rows: &[IntelNetwor
     let exact_coverage = rows.iter().all(|row| row.coverage.is_some());
     let any_coverage = rows.iter().any(|row| row.coverage.is_some());
     let any_state_strengths = rows.iter().any(|row| row.state_strengths.is_some());
+    let any_operative_ids = rows.iter().any(|row| row.operative_ids.is_some());
+    let exact_operative_ids = rows.iter().all(|row| {
+        row.operative_ids.as_ref().is_some_and(|ids| {
+            ids.len() <= MAX_INTEL_NETWORK_OPERATIVES
+                && ids.iter().all(|id| *id != 0 && *id <= MAX_OPERATIVE_ID)
+                && ids.windows(2).all(|pair| pair[0] < pair[1])
+        })
+    });
     let exact_state_strengths = rows.iter().all(|row| {
         row.state_strengths.as_ref().is_some_and(|strengths| {
             strengths.len() == row.state_ids.len()
@@ -1650,14 +1767,20 @@ fn append_intel_network_graph_trailer(payload: &mut Vec<u8>, rows: &[IntelNetwor
                     })
         })
     });
-    // Mixed or malformed v3 rows have no truthful legacy representation: do
-    // not silently discard a subset of measured strengths.
-    if (any_coverage && !exact_coverage) || (any_state_strengths && !exact_state_strengths) {
+    // Mixed or malformed exact rows have no truthful legacy representation:
+    // do not silently discard a subset of measured strengths or assignments.
+    if (any_coverage && !exact_coverage)
+        || (any_state_strengths && !exact_state_strengths)
+        || (any_operative_ids && !exact_operative_ids)
+        || (exact_operative_ids && !exact_state_strengths)
+    {
         return;
     }
     payload.extend_from_slice(INTEL_NETWORK_GRAPH_TRAILER_MAGIC);
-    let version = if exact_state_strengths {
+    let version = if exact_state_strengths && exact_operative_ids {
         INTEL_NETWORK_GRAPH_TRAILER_VERSION
+    } else if exact_state_strengths {
+        INTEL_NETWORK_GRAPH_TRAILER_VERSION_V3
     } else if exact_coverage {
         INTEL_NETWORK_GRAPH_TRAILER_VERSION_V2
     } else {
@@ -1672,7 +1795,10 @@ fn append_intel_network_graph_trailer(payload: &mut Vec<u8>, rows: &[IntelNetwor
         payload.extend_from_slice(&row.target_tag_db_id.to_le_bytes());
         payload
             .extend_from_slice(&(row.state_ids.len().min(u32::MAX as usize) as u32).to_le_bytes());
-        if version == INTEL_NETWORK_GRAPH_TRAILER_VERSION {
+        if matches!(
+            version,
+            INTEL_NETWORK_GRAPH_TRAILER_VERSION_V3 | INTEL_NETWORK_GRAPH_TRAILER_VERSION
+        ) {
             payload.extend_from_slice(
                 &(if row.coverage.is_some() {
                     INTEL_NETWORK_GRAPH_V3_FLAG_COVERAGE
@@ -1695,14 +1821,30 @@ fn append_intel_network_graph_trailer(payload: &mut Vec<u8>, rows: &[IntelNetwor
             payload.extend_from_slice(&coverage.weight_owned_raw.to_le_bytes());
             payload.extend_from_slice(&coverage.weight_owned_worth_raw.to_le_bytes());
             payload.extend_from_slice(&coverage.national_coverage_raw.to_le_bytes());
-        } else if version == INTEL_NETWORK_GRAPH_TRAILER_VERSION {
+        } else if matches!(
+            version,
+            INTEL_NETWORK_GRAPH_TRAILER_VERSION_V3 | INTEL_NETWORK_GRAPH_TRAILER_VERSION
+        ) {
             payload.extend_from_slice(&[0u8; 72]);
         }
         if version == INTEL_NETWORK_GRAPH_TRAILER_VERSION {
+            let operative_ids = row
+                .operative_ids
+                .as_ref()
+                .expect("v4 operative completeness checked above");
+            payload.extend_from_slice(&(operative_ids.len() as u32).to_le_bytes());
+            for operative_id in operative_ids {
+                payload.extend_from_slice(&operative_id.to_le_bytes());
+            }
+        }
+        if matches!(
+            version,
+            INTEL_NETWORK_GRAPH_TRAILER_VERSION_V3 | INTEL_NETWORK_GRAPH_TRAILER_VERSION
+        ) {
             for strength in row
                 .state_strengths
                 .as_ref()
-                .expect("v3 strength completeness checked above")
+                .expect("v3/v4 strength completeness checked above")
             {
                 payload.extend_from_slice(&strength.state_id.to_le_bytes());
                 payload.extend_from_slice(&strength.strength_raw.to_le_bytes());
@@ -1710,6 +1852,45 @@ fn append_intel_network_graph_trailer(payload: &mut Vec<u8>, rows: &[IntelNetwor
         } else {
             for state_id in &row.state_ids {
                 payload.extend_from_slice(&state_id.to_le_bytes());
+            }
+        }
+    }
+}
+
+fn validate_intel_network_operative_membership(
+    offset: usize,
+    status_flags: u32,
+    operative_owners: &BTreeMap<u32, u32>,
+    rows: &[IntelNetworkGraphRow],
+    errors: &mut Vec<String>,
+) {
+    // A delta payload may carry a complete replacement INGR family without
+    // repeating unchanged operative base rows. The extractor authenticates the
+    // same-frame join before delta projection and replay authenticates it again
+    // after folding, so only full compact payloads can require a local join.
+    if status_flags & STATUS_DELTA_DATA != 0 {
+        return;
+    }
+    let mut assigned = BTreeSet::new();
+    for row in rows {
+        let Some(operative_ids) = row.operative_ids.as_ref() else {
+            continue;
+        };
+        for operative_id in operative_ids {
+            if !assigned.insert(*operative_id) {
+                errors.push(format!(
+                    "offset {offset}: intel-network graph assigns operative_id {operative_id} to more than one network"
+                ));
+            }
+            match operative_owners.get(operative_id) {
+                None => errors.push(format!(
+                    "offset {offset}: intel-network graph references missing operative_id {operative_id}"
+                )),
+                Some(owner) if *owner != row.strategic_operative_index => errors.push(format!(
+                    "offset {offset}: intel-network graph operative_id {operative_id} owner {owner} does not match network owner {}",
+                    row.strategic_operative_index
+                )),
+                Some(_) => {}
             }
         }
     }
@@ -1767,6 +1948,7 @@ fn decode_operation_instance_trailer(
     }
     let mut rows = Vec::with_capacity(row_count);
     let mut seen = BTreeSet::new();
+    let mut assigned_globally = BTreeSet::new();
     let mut cursor = OPERATION_INSTANCE_TRAILER_HEADER_LEN;
     if version == OPERATION_INSTANCE_TRAILER_VERSION_V1 {
         let expected = OPERATION_INSTANCE_TRAILER_HEADER_LEN
@@ -1869,8 +2051,19 @@ fn decode_operation_instance_trailer(
             .map(ToOwned::to_owned);
         cursor += definition_len;
         let mut assigned_operative_ids = Vec::with_capacity(operative_count);
+        let mut assigned_within_row = BTreeSet::new();
         for _ in 0..operative_count {
-            assigned_operative_ids.push(read_u32_le(trailer, cursor));
+            let operative_id = read_u32_le(trailer, cursor);
+            assigned_operative_ids.push(operative_id);
+            if operative_id == 0
+                || operative_id > MAX_OPERATIVE_ID
+                || !assigned_within_row.insert(operative_id)
+                || !assigned_globally.insert(operative_id)
+            {
+                errors.push(format!(
+                    "offset {offset}: operation-instance row {instance_id} has an invalid or non-reciprocal operative assignment {operative_id}"
+                ));
+            }
             cursor += 4;
         }
         let status = match (version, status_raw) {
@@ -1900,6 +2093,12 @@ fn decode_operation_instance_trailer(
             || definition_len == 0
             || definition_len > MAX_OPERATION_DEFINITION_ID_LEN
             || definition_id.is_none()
+            || definition_id.as_ref().is_some_and(|value| {
+                !value.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric()
+                        || matches!(byte, b'_' | b'-' | b'.' | b':' | b'/')
+                })
+            })
             || operative_count > MAX_OPERATION_ASSIGNED_OPERATIVES
             || assigned_operative_ids
                 .iter()
@@ -1913,6 +2112,7 @@ fn decode_operation_instance_trailer(
             || flags & !OPERATION_INSTANCE_V2_FLAG_STATE_TARGET != 0
             || reserved != 0
             || (flags & OPERATION_INSTANCE_V2_FLAG_STATE_TARGET != 0) != (target_state != 0)
+            || target_state > compact_contract::build_profile::MAX_STATE_ID
             || (matches!(
                 status,
                 Some(OperationInstanceStatus::Preparing | OperationInstanceStatus::Prepared)
@@ -1924,7 +2124,7 @@ fn decode_operation_instance_trailer(
             || (matches!(
                 status,
                 Some(OperationInstanceStatus::Running | OperationInstanceStatus::Finished)
-            ) && duration_hours == 0)
+            ) && (start_hour == 0 || duration_hours == 0 || duration_hours % 24 != 0))
             || (matches!(status, Some(OperationInstanceStatus::Finished))
                 && (phase_index + 1 != phase_count
                     || progress_fixed
@@ -2033,6 +2233,9 @@ fn decode_subject_autonomy_status_trailer(
             || flags & !known_flags != 0
             || previous_state_hash.is_some_and(|hash| hash == 0)
             || next_state_hash.is_some_and(|hash| hash == 0)
+            || previous_state_hash == Some(current_state_hash)
+            || next_state_hash == Some(current_state_hash)
+            || (previous_state_hash.is_some() && previous_state_hash == next_state_hash)
             || (previous_state_hash.is_none() && previous_raw != 0)
             || (next_state_hash.is_none() && next_raw != 0)
             || !(0..=FIXED_SCALE_RAW as i32).contains(&ratio_raw)
@@ -2061,6 +2264,96 @@ fn decode_subject_autonomy_status_trailer(
     (rows, total_len)
 }
 
+fn decode_operation_token_trailer(
+    offset: usize,
+    payload: &[u8],
+    start: usize,
+    errors: &mut Vec<String>,
+) -> (Vec<OperationTokenMembershipRow>, usize) {
+    let Some(header_end) = start.checked_add(OPERATION_TOKEN_TRAILER_HEADER_LEN) else {
+        errors.push(format!("offset {offset}: operation-token trailer header overflow"));
+        return (Vec::new(), 0);
+    };
+    if header_end > payload.len() {
+        errors.push(format!("offset {offset}: truncated operation-token trailer header"));
+        return (Vec::new(), 0);
+    }
+    let trailer = &payload[start..];
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let row_count = read_u32_le(trailer, 8) as usize;
+    if version != OPERATION_TOKEN_TRAILER_VERSION
+        || header_len != OPERATION_TOKEN_TRAILER_HEADER_LEN
+        || row_count > MAX_OPERATION_TOKEN_ROWS
+    {
+        errors.push(format!(
+            "offset {offset}: operation-token trailer header shape invalid"
+        ));
+        return (Vec::new(), 0);
+    }
+    let mut rows = Vec::with_capacity(row_count);
+    let mut seen = BTreeSet::new();
+    let mut cursor = OPERATION_TOKEN_TRAILER_HEADER_LEN;
+    for _ in 0..row_count {
+        let Some(row_header_end) = cursor.checked_add(OPERATION_TOKEN_ROW_HEADER_LEN) else {
+            errors.push(format!("offset {offset}: operation-token row header overflow"));
+            return (Vec::new(), 0);
+        };
+        if row_header_end > trailer.len() {
+            errors.push(format!("offset {offset}: truncated operation-token row header"));
+            return (Vec::new(), 0);
+        }
+        let owner = read_u32_le(trailer, cursor);
+        let target = read_u32_le(trailer, cursor + 4);
+        let token_len = read_u16_le(trailer, cursor + 8) as usize;
+        let reserved = read_u16_le(trailer, cursor + 10);
+        cursor = row_header_end;
+        let Some(row_end) = cursor.checked_add(token_len) else {
+            errors.push(format!("offset {offset}: operation-token id overflow"));
+            return (Vec::new(), 0);
+        };
+        if row_end > trailer.len() {
+            errors.push(format!("offset {offset}: truncated operation-token id"));
+            return (Vec::new(), 0);
+        }
+        let token_id = std::str::from_utf8(&trailer[cursor..row_end])
+            .ok()
+            .filter(|value| {
+                !value.is_empty()
+                    && value.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':')
+                    })
+            })
+            .map(ToOwned::to_owned);
+        cursor = row_end;
+        if !valid_tag(owner)
+            || !valid_tag(target)
+            || owner == target
+            || token_len == 0
+            || token_len > MAX_OPERATION_TOKEN_ID_LEN
+            || reserved != 0
+            || token_id.is_none()
+        {
+            errors.push(format!(
+                "offset {offset}: operation-token row violates the exact portable contract"
+            ));
+            continue;
+        }
+        let token_id = token_id.expect("validated operation-token id");
+        if !seen.insert((owner, target, token_id.clone())) {
+            errors.push(format!(
+                "offset {offset}: duplicate operation-token membership {owner}/{target}/{token_id}"
+            ));
+        }
+        rows.push(OperationTokenMembershipRow {
+            owner_tag_db_id: owner,
+            target_tag_db_id: target,
+            token_id,
+        });
+    }
+    (rows, cursor)
+}
+
 #[derive(Default)]
 struct DecodedTrailers {
     operation_instances: Vec<OperationInstanceRow>,
@@ -2070,6 +2363,8 @@ struct DecodedTrailers {
     faction_roster_complete: bool,
     subject_autonomy_statuses: Vec<SubjectAutonomyStatusRow>,
     subject_autonomy_status_complete: bool,
+    operation_tokens: Vec<OperationTokenMembershipRow>,
+    operation_tokens_complete: bool,
 }
 
 fn decode_domain53_trailers(
@@ -2084,6 +2379,7 @@ fn decode_domain53_trailers(
     let mut seen_ingr = false;
     let mut seen_facs = false;
     let mut seen_aust = false;
+    let mut seen_optk = false;
     while cursor < payload.len() {
         if payload.get(cursor..cursor + 4) == Some(OPERATION_INSTANCE_TRAILER_MAGIC) {
             if seen_opin {
@@ -2161,6 +2457,19 @@ fn decode_domain53_trailers(
             decoded.subject_autonomy_statuses = rows;
             decoded.subject_autonomy_status_complete = true;
             seen_aust = true;
+            cursor += consumed;
+        } else if payload.get(cursor..cursor + 4) == Some(OPERATION_TOKEN_TRAILER_MAGIC) {
+            if seen_optk {
+                errors.push(format!("offset {offset}: duplicate operation-token trailer"));
+                return decoded;
+            }
+            let (rows, consumed) = decode_operation_token_trailer(offset, payload, cursor, errors);
+            if consumed == 0 {
+                return decoded;
+            }
+            decoded.operation_tokens = rows;
+            decoded.operation_tokens_complete = true;
+            seen_optk = true;
             cursor += consumed;
         } else {
             errors.push(format!(
@@ -2310,6 +2619,7 @@ fn decode_intel_network_graph_trailer(
         version,
         INTEL_NETWORK_GRAPH_TRAILER_VERSION_V1
             | INTEL_NETWORK_GRAPH_TRAILER_VERSION_V2
+            | INTEL_NETWORK_GRAPH_TRAILER_VERSION_V3
             | INTEL_NETWORK_GRAPH_TRAILER_VERSION
     )
         || header_len != INTEL_NETWORK_GRAPH_TRAILER_HEADER_LEN
@@ -2333,7 +2643,8 @@ fn decode_intel_network_graph_trailer(
         let row_header_len = match version {
             INTEL_NETWORK_GRAPH_TRAILER_VERSION_V1 => INTEL_NETWORK_GRAPH_V1_ROW_HEADER_LEN,
             INTEL_NETWORK_GRAPH_TRAILER_VERSION_V2 => INTEL_NETWORK_GRAPH_V2_ROW_HEADER_LEN,
-            _ => INTEL_NETWORK_GRAPH_V3_ROW_HEADER_LEN,
+            INTEL_NETWORK_GRAPH_TRAILER_VERSION_V3 => INTEL_NETWORK_GRAPH_V3_ROW_HEADER_LEN,
+            _ => INTEL_NETWORK_GRAPH_V4_ROW_HEADER_LEN,
         };
         if trailer.len().saturating_sub(cursor) < row_header_len {
             errors.push(format!(
@@ -2345,11 +2656,14 @@ fn decode_intel_network_graph_trailer(
         let network_slot = read_u32_le(trailer, cursor + 4);
         let target = read_u32_le(trailer, cursor + 8);
         let state_count = read_u32_le(trailer, cursor + 12) as usize;
-        let coverage_offset = if version == INTEL_NETWORK_GRAPH_TRAILER_VERSION {
+        let coverage_offset = if matches!(
+            version,
+            INTEL_NETWORK_GRAPH_TRAILER_VERSION_V3 | INTEL_NETWORK_GRAPH_TRAILER_VERSION
+        ) {
             let flags = read_u32_le(trailer, cursor + 16);
             if flags & !INTEL_NETWORK_GRAPH_V3_FLAG_COVERAGE != 0 {
                 errors.push(format!(
-                    "offset {offset}: intel-network graph v3 row has unknown flags 0x{flags:08x}"
+                        "offset {offset}: intel-network graph v3/v4 row has unknown flags 0x{flags:08x}"
                 ));
             }
             if flags & INTEL_NETWORK_GRAPH_V3_FLAG_COVERAGE != 0 {
@@ -2360,7 +2674,7 @@ fn decode_intel_network_graph_trailer(
                     .any(|byte| *byte != 0)
                 {
                     errors.push(format!(
-                        "offset {offset}: intel-network graph v3 row has non-zero reserved coverage bytes"
+                        "offset {offset}: intel-network graph v3/v4 row has non-zero reserved coverage bytes"
                     ));
                 }
                 None
@@ -2369,6 +2683,11 @@ fn decode_intel_network_graph_trailer(
             Some(cursor + 16)
         } else {
             None
+        };
+        let operative_count = if version == INTEL_NETWORK_GRAPH_TRAILER_VERSION {
+            read_u32_le(trailer, cursor + 92) as usize
+        } else {
+            0
         };
         let coverage = coverage_offset.map(|coverage_offset| IntelNetworkCoverage {
                 covered_core_states: read_u32_le(trailer, coverage_offset),
@@ -2385,13 +2704,52 @@ fn decode_intel_network_graph_trailer(
                 national_coverage_raw: read_i64_le(trailer, coverage_offset + 64),
             });
         cursor += row_header_len;
+        let operative_ids = if version == INTEL_NETWORK_GRAPH_TRAILER_VERSION {
+            if operative_count > MAX_INTEL_NETWORK_OPERATIVES {
+                errors.push(format!(
+                    "offset {offset}: intel-network graph operative_count {operative_count} exceeds {MAX_INTEL_NETWORK_OPERATIVES}"
+                ));
+                return (Vec::new(), 0);
+            }
+            let operative_bytes = operative_count.saturating_mul(4);
+            if trailer.len().saturating_sub(cursor) < operative_bytes {
+                errors.push(format!(
+                    "offset {offset}: intel-network graph operative list truncated at byte {cursor}"
+                ));
+                return (Vec::new(), 0);
+            }
+            let mut ids = Vec::with_capacity(operative_count);
+            let mut previous = None;
+            for _ in 0..operative_count {
+                let operative_id = read_u32_le(trailer, cursor);
+                cursor += 4;
+                if operative_id == 0 || operative_id > MAX_OPERATIVE_ID {
+                    errors.push(format!(
+                        "offset {offset}: intel-network graph has invalid operative_id {operative_id}"
+                    ));
+                }
+                if previous.is_some_and(|last| operative_id <= last) {
+                    errors.push(format!(
+                        "offset {offset}: intel-network graph operative_ids are not strictly increasing"
+                    ));
+                }
+                previous = Some(operative_id);
+                ids.push(operative_id);
+            }
+            Some(ids)
+        } else {
+            None
+        };
         if state_count == 0 || state_count > MAX_INTEL_NETWORK_STATES {
             errors.push(format!(
                 "offset {offset}: intel-network graph row has invalid state_count {state_count}"
             ));
             return (Vec::new(), 0);
         }
-        let state_row_len = if version == INTEL_NETWORK_GRAPH_TRAILER_VERSION {
+        let state_row_len = if matches!(
+            version,
+            INTEL_NETWORK_GRAPH_TRAILER_VERSION_V3 | INTEL_NETWORK_GRAPH_TRAILER_VERSION
+        ) {
             12
         } else {
             4
@@ -2403,9 +2761,14 @@ fn decode_intel_network_graph_trailer(
             ));
             return (Vec::new(), 0);
         }
-        if !valid_tag(target) {
+        if !valid_tag(strategic_operative_index) {
             errors.push(format!(
-                "offset {offset}: intel-network graph row has invalid target {target}"
+                "offset {offset}: intel-network graph row has invalid owner {strategic_operative_index}"
+            ));
+        }
+        if !valid_tag(target) || target == strategic_operative_index {
+            errors.push(format!(
+                "offset {offset}: intel-network graph row has invalid owner/target pair {strategic_operative_index}/{target}"
             ));
         }
         if !seen.insert((strategic_operative_index, network_slot)) {
@@ -2432,13 +2795,19 @@ fn decode_intel_network_graph_trailer(
             }
         }
         let mut state_ids = Vec::with_capacity(state_count);
-        let mut state_strengths = (version == INTEL_NETWORK_GRAPH_TRAILER_VERSION)
-            .then(|| Vec::with_capacity(state_count));
+        let mut state_strengths = matches!(
+            version,
+            INTEL_NETWORK_GRAPH_TRAILER_VERSION_V3 | INTEL_NETWORK_GRAPH_TRAILER_VERSION
+        )
+        .then(|| Vec::with_capacity(state_count));
         let mut previous = None;
         for _ in 0..state_count {
             let state_id = read_u32_le(trailer, cursor);
             cursor += 4;
-            let strength_raw = if version == INTEL_NETWORK_GRAPH_TRAILER_VERSION {
+            let strength_raw = if matches!(
+                version,
+                INTEL_NETWORK_GRAPH_TRAILER_VERSION_V3 | INTEL_NETWORK_GRAPH_TRAILER_VERSION
+            ) {
                 let value = read_i64_le(trailer, cursor);
                 cursor += 8;
                 Some(value)
@@ -2467,7 +2836,7 @@ fn decode_intel_network_graph_trailer(
                 }
                 state_strengths
                     .as_mut()
-                    .expect("v3 strength vector initialized")
+                    .expect("v3/v4 strength vector initialized")
                     .push(IntelNetworkStateStrength {
                         state_id,
                         strength_raw,
@@ -2481,6 +2850,7 @@ fn decode_intel_network_graph_trailer(
             state_ids,
             state_strengths,
             coverage,
+            operative_ids,
         });
     }
     (rows, cursor)
@@ -2679,6 +3049,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
     let mut seen_agencies = BTreeSet::new();
     let mut seen_agency_capacity_clusters = BTreeSet::new();
     let mut seen_operatives = BTreeSet::new();
+    let mut operative_owners = BTreeMap::new();
     let mut seen_crypto = BTreeSet::new();
     let mut seen_operations = BTreeSet::new();
     let mut seen_intel_map = BTreeSet::new();
@@ -2816,6 +3187,15 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
             KIND_OPERATIVE => {
                 decoded_counts.operative += 1;
                 let flags = read_u16_le(payload, cursor + 2);
+                let owner = read_u32_le(payload, cursor + 4);
+                let op_id = read_u32_le(payload, cursor + 8);
+                if !row_id_deleted(op_id)
+                    && valid_tag(owner)
+                    && op_id != 0
+                    && op_id <= MAX_OPERATIVE_ID
+                {
+                    operative_owners.insert(op_id, owner);
+                }
                 if flags & OPERATIVE_FLAG_LIFECYCLE_PRESENT != 0 {
                     operative_lifecycle_rows = operative_lifecycle_rows.saturating_add(1);
                 }
@@ -2900,9 +3280,17 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
     let mut intel_network_graph_state_rows = 0usize;
     let mut faction_rows = 0usize;
     let mut faction_member_rows = 0usize;
+    let mut operation_token_rows = 0usize;
     if cursor != payload.len() {
         let trailer_rows =
             decode_domain53_trailers(offset, payload, cursor, &mut summary.parse_errors);
+        validate_intel_network_operative_membership(
+            offset,
+            status_flags,
+            &operative_owners,
+            &trailer_rows.intel_network_graphs,
+            &mut summary.parse_errors,
+        );
         operation_instance_rows = trailer_rows.operation_instances.len();
         operation_instance_country_rows = trailer_rows
             .operation_instances
@@ -2933,6 +3321,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
             .iter()
             .map(|row| row.member_tag_db_ids.len())
             .sum();
+        operation_token_rows = trailer_rows.operation_tokens.len();
     }
     add_unit(
         &mut summary,
@@ -2971,6 +3360,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
     );
     add_unit(&mut summary, "faction_rows", faction_rows);
     add_unit(&mut summary, "faction_member_rows", faction_member_rows);
+    add_unit(&mut summary, "operation_token_rows", operation_token_rows);
     if decoded_counts != expected_counts {
         summary.parse_errors.push(format!(
             "offset {offset}: diplomacy/intel per-kind counts decoded {:?} != header {:?}",
@@ -3238,6 +3628,8 @@ pub fn decode_snapshot_payload(
         snapshot.subject_autonomy_statuses = trailers.subject_autonomy_statuses;
         snapshot.subject_autonomy_status_complete =
             trailers.subject_autonomy_status_complete;
+        snapshot.operation_tokens = trailers.operation_tokens;
+        snapshot.operation_tokens_complete = trailers.operation_tokens_complete;
         if !trailer_errors.is_empty() {
             return Err(trailer_errors);
         }
@@ -5620,6 +6012,73 @@ mod tests {
     }
 
     #[test]
+    fn operation_runtime_v3_rejects_cross_instance_operative_reuse() {
+        let row = |instance_id| OperationInstanceRow {
+            instance_id,
+            def_ref_ok: true,
+            associated_country_tag_db_id: Some(1),
+            definition_id: Some("operation_capture_cipher".into()),
+            owner_country_tag_db_id: Some(2),
+            target_country_tag_db_id: Some(1),
+            target_state_id: None,
+            status: Some(OperationInstanceStatus::Running),
+            phase_index: 0,
+            phase_count: 3,
+            progress_fixed: Some(40_000),
+            start_hour: Some(850),
+            duration_hours: Some(720),
+            assigned_operative_ids: vec![7],
+        };
+        let mut snapshot = fixture_snapshot();
+        snapshot.operation_instances = vec![row(9), row(10)];
+        let summary = decode_payload(0, &encode_payload(&snapshot));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("non-reciprocal operative assignment 7")));
+    }
+
+    #[test]
+    fn operation_runtime_v3_rejects_noncanonical_state_and_duration() {
+        let valid = OperationInstanceRow {
+            instance_id: 9,
+            def_ref_ok: true,
+            associated_country_tag_db_id: Some(1),
+            definition_id: Some("operation_capture_cipher".into()),
+            owner_country_tag_db_id: Some(2),
+            target_country_tag_db_id: Some(1),
+            target_state_id: None,
+            status: Some(OperationInstanceStatus::Running),
+            phase_index: 0,
+            phase_count: 3,
+            progress_fixed: Some(40_000),
+            start_hour: Some(850),
+            duration_hours: Some(720),
+            assigned_operative_ids: vec![7],
+        };
+        for invalid in [
+            OperationInstanceRow {
+                target_state_id: Some(
+                    compact_contract::build_profile::MAX_STATE_ID.saturating_add(1),
+                ),
+                ..valid.clone()
+            },
+            OperationInstanceRow {
+                duration_hours: Some(25),
+                ..valid.clone()
+            },
+        ] {
+            let mut snapshot = fixture_snapshot();
+            snapshot.operation_instances = vec![invalid];
+            let summary = decode_payload(0, &encode_payload(&snapshot));
+            assert!(summary
+                .parse_errors
+                .iter()
+                .any(|error| error.contains("violates the exact runtime contract")));
+        }
+    }
+
+    #[test]
     fn incoming_action_queue_trailer_round_trips_with_operation_instances() {
         let mut snapshot = fixture_snapshot();
         snapshot.operation_instances = vec![OperationInstanceRow::legacy(129_014, true, Some(3))];
@@ -5710,6 +6169,7 @@ mod tests {
                 state_ids: vec![121, 122, 123],
                 state_strengths: None,
                 coverage: None,
+                operative_ids: None,
             },
             IntelNetworkGraphRow {
                 strategic_operative_index: 1,
@@ -5718,6 +6178,7 @@ mod tests {
                 state_ids: vec![219, 253, 254],
                 state_strengths: None,
                 coverage: None,
+                operative_ids: None,
             },
         ];
         let payload = encode_payload(&snapshot);
@@ -5746,6 +6207,149 @@ mod tests {
         );
         let decoded = decode_snapshot_payload(0, &payload).unwrap();
         assert_eq!(decoded.intel_network_graphs, snapshot.intel_network_graphs);
+    }
+
+    #[test]
+    fn intel_network_graph_v4_round_trips_reciprocal_operative_ids() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.intel_network_graphs = vec![IntelNetworkGraphRow {
+            strategic_operative_index: 1,
+            network_slot: 0,
+            target_tag_db_id: 2,
+            state_ids: vec![121, 122],
+            state_strengths: Some(vec![
+                IntelNetworkStateStrength {
+                    state_id: 121,
+                    strength_raw: 50_000,
+                },
+                IntelNetworkStateStrength {
+                    state_id: 122,
+                    strength_raw: 75_000,
+                },
+            ]),
+            coverage: None,
+            operative_ids: Some(vec![11_387]),
+        }];
+        let payload = encode_payload(&snapshot);
+        let offset = payload
+            .windows(4)
+            .position(|window| window == INTEL_NETWORK_GRAPH_TRAILER_MAGIC)
+            .expect("INGR trailer");
+        assert_eq!(
+            read_u16_le(&payload, offset + 4),
+            INTEL_NETWORK_GRAPH_TRAILER_VERSION
+        );
+        let decoded = decode_snapshot_payload(0, &payload).unwrap();
+        assert_eq!(decoded.intel_network_graphs, snapshot.intel_network_graphs);
+    }
+
+    #[test]
+    fn intel_network_graph_v4_rejects_orphan_and_cross_owner_operative_ids() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.intel_network_graphs = vec![IntelNetworkGraphRow {
+            strategic_operative_index: 1,
+            network_slot: 0,
+            target_tag_db_id: 2,
+            state_ids: vec![121],
+            state_strengths: Some(vec![IntelNetworkStateStrength {
+                state_id: 121,
+                strength_raw: 50_000,
+            }]),
+            coverage: None,
+            operative_ids: Some(vec![7]),
+        }];
+        let summary = decode_payload(0, &encode_payload(&snapshot));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("references missing operative_id 7")));
+        assert!(summarize_snapshot(0, &snapshot)
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("references missing operative_id 7")));
+
+        snapshot.intel_network_graphs[0].strategic_operative_index = 2;
+        snapshot.intel_network_graphs[0].target_tag_db_id = 3;
+        snapshot.intel_network_graphs[0].operative_ids = Some(vec![11_387]);
+        let summary = decode_payload(0, &encode_payload(&snapshot));
+        assert!(summary.parse_errors.iter().any(|error| {
+            error.contains("operative_id 11387 owner 1 does not match network owner 2")
+        }));
+        assert!(summarize_snapshot(0, &snapshot)
+            .parse_errors
+            .iter()
+            .any(|error| {
+                error.contains("operative_id 11387 owner 1 does not match network owner 2")
+            }));
+    }
+
+    #[test]
+    fn intel_network_graph_v4_rejects_duplicate_reciprocal_assignment() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.intel_network_graphs = vec![
+            IntelNetworkGraphRow {
+                strategic_operative_index: 1,
+                network_slot: 0,
+                target_tag_db_id: 2,
+                state_ids: vec![121],
+                state_strengths: Some(vec![IntelNetworkStateStrength {
+                    state_id: 121,
+                    strength_raw: 50_000,
+                }]),
+                coverage: None,
+                operative_ids: Some(vec![11_387]),
+            },
+            IntelNetworkGraphRow {
+                strategic_operative_index: 1,
+                network_slot: 1,
+                target_tag_db_id: 3,
+                state_ids: vec![122],
+                state_strengths: Some(vec![IntelNetworkStateStrength {
+                    state_id: 122,
+                    strength_raw: 75_000,
+                }]),
+                coverage: None,
+                operative_ids: Some(vec![11_387]),
+            },
+        ];
+        let summary = decode_payload(0, &encode_payload(&snapshot));
+        assert!(summary.parse_errors.iter().any(|error| {
+            error.contains("assigns operative_id 11387 to more than one network")
+        }));
+        assert!(summarize_snapshot(0, &snapshot)
+            .parse_errors
+            .iter()
+            .any(|error| {
+                error.contains("assigns operative_id 11387 to more than one network")
+            }));
+    }
+
+    #[test]
+    fn intel_network_graph_v4_defers_operative_join_for_delta_payloads() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.status_flags |= STATUS_DELTA_DATA;
+        snapshot.operatives.clear();
+        snapshot.intel_network_graphs = vec![IntelNetworkGraphRow {
+            strategic_operative_index: 1,
+            network_slot: 0,
+            target_tag_db_id: 2,
+            state_ids: vec![121],
+            state_strengths: Some(vec![IntelNetworkStateStrength {
+                state_id: 121,
+                strength_raw: 50_000,
+            }]),
+            coverage: None,
+            operative_ids: Some(vec![11_387]),
+        }];
+        let summary = decode_payload(0, &encode_payload(&snapshot));
+        assert!(!summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("missing operative_id")));
+        assert!(!summarize_snapshot(0, &snapshot)
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("missing operative_id")));
     }
 
     // === FACS faction trailer (melt-anchored: D04 1944.2.11 had 6 factions;
@@ -5986,6 +6590,29 @@ mod tests {
     }
 
     #[test]
+    fn operation_token_trailer_round_trips_complete_and_measured_empty_sets() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.operation_tokens = vec![OperationTokenMembershipRow {
+            owner_tag_db_id: 1,
+            target_tag_db_id: 3,
+            token_id: "token_army".to_string(),
+        }];
+        snapshot.operation_tokens_complete = true;
+        let decoded = decode_snapshot_payload(0, &encode_payload(&snapshot)).unwrap();
+        assert!(decoded.operation_tokens_complete);
+        assert_eq!(decoded.operation_tokens, snapshot.operation_tokens);
+
+        snapshot.operation_tokens.clear();
+        let payload = encode_payload(&snapshot);
+        assert!(payload
+            .windows(OPERATION_TOKEN_TRAILER_MAGIC.len())
+            .any(|window| window == OPERATION_TOKEN_TRAILER_MAGIC));
+        let decoded = decode_snapshot_payload(0, &payload).unwrap();
+        assert!(decoded.operation_tokens_complete);
+        assert!(decoded.operation_tokens.is_empty());
+    }
+
+    #[test]
     fn subject_autonomy_status_rejects_invalid_score_bounds() {
         let mut snapshot = fixture_snapshot();
         let mut status = fixture_subject_autonomy_status();
@@ -5998,6 +6625,46 @@ mod tests {
         assert!(errors
             .iter()
             .any(|error| error.contains("invalid subject-autonomy status trailer row")));
+
+        let mut snapshot = fixture_snapshot();
+        let mut status = fixture_subject_autonomy_status();
+        status.current_score_raw = i64::MAX;
+        status.lower_score_raw = i64::MIN;
+        status.upper_score_raw = i64::MAX;
+        status.ratio_raw = 0;
+        snapshot.subject_autonomy_statuses = vec![status];
+        snapshot.subject_autonomy_status_complete = true;
+
+        let errors = decode_snapshot_payload(0, &encode_payload(&snapshot)).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("invalid subject-autonomy status trailer row")));
+    }
+
+    #[test]
+    fn subject_autonomy_status_rejects_non_distinct_pointer_free_adjacency() {
+        let valid = fixture_subject_autonomy_status();
+        let mut previous_is_current = valid.clone();
+        previous_is_current.previous_state_hash = Some(valid.current_state_hash);
+        let mut next_is_current = valid.clone();
+        next_is_current.next_state_hash = Some(valid.current_state_hash);
+        let mut adjacent_states_collide = valid.clone();
+        adjacent_states_collide.next_state_hash = valid.previous_state_hash;
+
+        for status in [
+            previous_is_current,
+            next_is_current,
+            adjacent_states_collide,
+        ] {
+            let mut snapshot = fixture_snapshot();
+            snapshot.subject_autonomy_statuses = vec![status];
+            snapshot.subject_autonomy_status_complete = true;
+
+            let errors = decode_snapshot_payload(0, &encode_payload(&snapshot)).unwrap_err();
+            assert!(errors
+                .iter()
+                .any(|error| error.contains("invalid subject-autonomy status trailer row")));
+        }
     }
 
     #[test]
@@ -6055,6 +6722,7 @@ mod tests {
                 state_ids: vec![121, 122, 123],
                 state_strengths: None,
                 coverage: None,
+                operative_ids: None,
             },
             IntelNetworkGraphRow {
                 strategic_operative_index: 1,
@@ -6063,6 +6731,7 @@ mod tests {
                 state_ids: vec![219, 253, 254],
                 state_strengths: None,
                 coverage: None,
+                operative_ids: None,
             },
         ];
         let payload = encode_payload(&snapshot);
@@ -6071,6 +6740,32 @@ mod tests {
             .parse_errors
             .iter()
             .any(|error| error.contains("duplicates operative 1 slot 0")));
+    }
+
+    #[test]
+    fn intel_network_graph_trailer_rejects_invalid_owner_or_self_target() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.intel_network_graphs = vec![IntelNetworkGraphRow {
+            strategic_operative_index: 0,
+            network_slot: 0,
+            target_tag_db_id: 2,
+            state_ids: vec![121],
+            state_strengths: None,
+            coverage: None,
+            operative_ids: None,
+        }];
+        let summary = decode_payload(0, &encode_payload(&snapshot));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("invalid owner 0")));
+
+        snapshot.intel_network_graphs[0].strategic_operative_index = 2;
+        let summary = decode_payload(0, &encode_payload(&snapshot));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("invalid owner/target pair 2/2")));
     }
 
     #[test]
@@ -6297,6 +6992,8 @@ mod tests {
             intel_network_graphs: Vec::new(),
             factions: Vec::new(),
             faction_roster_complete: false,
+            operation_tokens: Vec::new(),
+            operation_tokens_complete: false,
         }
     }
 
@@ -6337,6 +7034,7 @@ mod tests {
             state_ids: vec![11, 42, 108],
             state_strengths: None,
             coverage: None,
+            operative_ids: None,
         }];
         snapshot.factions = vec![FactionRow {
             faction_id: 1,

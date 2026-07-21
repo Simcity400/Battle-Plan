@@ -37,7 +37,7 @@ WEATHER_REGION_VTABLE_RVA = 0x2960B90
 WEATHER_PROVINCE_VTABLE_RVA = 0x2960B40
 
 REGION_ID_OFF = 0x08
-REGION_PHENOM_ENUM_OFF = 0x78
+REGION_RAW_ACTIVITY_OFF = 0x78
 REGION_RAIN_LIGHT_OFF = 0x108
 REGION_RAIN_HEAVY_OFF = 0x110
 REGION_SNOW_OFF = 0x118
@@ -183,7 +183,7 @@ def read_live_weather_outputs(proc: wm.Process, module_base: int) -> tuple[dict[
         if u32(body, REGION_ID_OFF) != idx:
             errors.append(f"region {idx} id mismatch")
             continue
-        phen = u32(body, REGION_PHENOM_ENUM_OFF)
+        phen = u32(body, REGION_RAW_ACTIVITY_OFF)
         phen_counts[str(phen)] = phen_counts.get(str(phen), 0) + 1
         flags = named_flag_by_phen.setdefault(str(phen), {
             "rain_light": 0,

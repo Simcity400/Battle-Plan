@@ -52,6 +52,7 @@ pub const CURRENT_870EBF_OFFSETS: ExtractorOffsets = ExtractorOffsets {
     side_parent_body_off: 0x18,
     side_forward_child_off: 0x20,
     side_positioning_off: 0x138,
+    side_anti_air_off: 0x150,
     front_location_off: 0xA4,
     group_members_data_off: 0x08,
     group_members_cap_off: 0x10,
@@ -100,6 +101,8 @@ pub struct ExtractorOffsets {
     /// Advisory forward route: side child object that may hold CFEXGroup ptrs.
     pub side_forward_child_off: u64,
     pub side_positioning_off: u64,
+    /// Exact signed fixed-point x100000 side anti-air producer output.
+    pub side_anti_air_off: u64,
     /// front + this = u32 battle location province (VALIDATED 4/4 vs save).
     pub front_location_off: u64,
     pub group_members_data_off: u64,
@@ -143,8 +146,10 @@ pub struct NavalCombatBodyBridgeRow {
     pub region_id: Option<u32>,
     pub attacker_member_count: u32,
     pub defender_member_count: u32,
-    pub attacker_positioning_milli: Option<i32>,
-    pub defender_positioning_milli: Option<i32>,
+    pub attacker_positioning_raw: Option<i32>,
+    pub defender_positioning_raw: Option<i32>,
+    pub attacker_anti_air_raw: Option<i64>,
+    pub defender_anti_air_raw: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -222,6 +227,7 @@ pub fn build_capture_frame(
     let mut lifecycle_rows = Vec::new();
     let mut raw_member_rows = Vec::new();
     for snapshot in snapshots {
+        validate_side_scalar_completeness(snapshot, &mut errors);
         if snapshot.lifecycle.attacker_member_count == 0
             || snapshot.lifecycle.defender_member_count == 0
         {
@@ -239,10 +245,10 @@ pub fn build_capture_frame(
             region_id: snapshot.lifecycle.region_id,
             attacker_member_count: Some(snapshot.lifecycle.attacker_member_count),
             defender_member_count: Some(snapshot.lifecycle.defender_member_count),
-            attacker_positioning_milli: snapshot.lifecycle.attacker_positioning_milli,
-            defender_positioning_milli: snapshot.lifecycle.defender_positioning_milli,
-            attacker_anti_air_raw: None,
-            defender_anti_air_raw: None,
+            attacker_positioning_raw: snapshot.lifecycle.attacker_positioning_raw,
+            defender_positioning_raw: snapshot.lifecycle.defender_positioning_raw,
+            attacker_anti_air_raw: snapshot.lifecycle.attacker_anti_air_raw,
+            defender_anti_air_raw: snapshot.lifecycle.defender_anti_air_raw,
         });
         raw_member_rows.extend(snapshot.members.iter().cloned().map(|row| {
             PendingMemberBridgeRow {
@@ -315,6 +321,7 @@ pub fn build_transition_capture_frame(
     let mut lifecycle_rows = Vec::new();
     let mut raw_member_rows = Vec::new();
     for snapshot in current_by_key.values() {
+        validate_side_scalar_completeness(snapshot, &mut errors);
         if snapshot.lifecycle.attacker_member_count == 0
             || snapshot.lifecycle.defender_member_count == 0
         {
@@ -332,10 +339,10 @@ pub fn build_transition_capture_frame(
             region_id: snapshot.lifecycle.region_id,
             attacker_member_count: Some(snapshot.lifecycle.attacker_member_count),
             defender_member_count: Some(snapshot.lifecycle.defender_member_count),
-            attacker_positioning_milli: snapshot.lifecycle.attacker_positioning_milli,
-            defender_positioning_milli: snapshot.lifecycle.defender_positioning_milli,
-            attacker_anti_air_raw: None,
-            defender_anti_air_raw: None,
+            attacker_positioning_raw: snapshot.lifecycle.attacker_positioning_raw,
+            defender_positioning_raw: snapshot.lifecycle.defender_positioning_raw,
+            attacker_anti_air_raw: snapshot.lifecycle.attacker_anti_air_raw,
+            defender_anti_air_raw: snapshot.lifecycle.defender_anti_air_raw,
         });
         raw_member_rows.extend(snapshot.members.iter().cloned().map(|row| {
             PendingMemberBridgeRow {
@@ -346,6 +353,7 @@ pub fn build_transition_capture_frame(
     }
 
     for (key, snapshot) in previous_by_key.iter() {
+        validate_side_scalar_completeness(snapshot, &mut errors);
         if current_by_key.contains_key(key) {
             let current_member_keys = current_by_key
                 .get(key)
@@ -376,10 +384,10 @@ pub fn build_transition_capture_frame(
             region_id: snapshot.lifecycle.region_id,
             attacker_member_count: Some(snapshot.lifecycle.attacker_member_count),
             defender_member_count: Some(snapshot.lifecycle.defender_member_count),
-            attacker_positioning_milli: snapshot.lifecycle.attacker_positioning_milli,
-            defender_positioning_milli: snapshot.lifecycle.defender_positioning_milli,
-            attacker_anti_air_raw: None,
-            defender_anti_air_raw: None,
+            attacker_positioning_raw: snapshot.lifecycle.attacker_positioning_raw,
+            defender_positioning_raw: snapshot.lifecycle.defender_positioning_raw,
+            attacker_anti_air_raw: snapshot.lifecycle.attacker_anti_air_raw,
+            defender_anti_air_raw: snapshot.lifecycle.defender_anti_air_raw,
         });
         raw_member_rows.extend(
             snapshot
@@ -469,17 +477,15 @@ fn validate_pending_member_cship_joins(
             member.combat_id,
             member.generation,
             member.side,
-            member.group_index,
-            member.member_index,
+            member.battle_slot_index_raw,
         );
         if !seen.insert(key) {
             errors.push(format!(
-                "duplicate member row combat={} generation={} side={} group={} member={}",
+                "duplicate member identity combat={} generation={} side={} battle_slot={}",
                 member.combat_id,
                 member.generation,
                 member.side.name(),
-                member.group_index,
-                member.member_index
+                member.battle_slot_index_raw
             ));
             continue;
         }
@@ -508,6 +514,8 @@ fn validate_pending_member_cship_joins(
             }
         } else {
             non_convoy_count = non_convoy_count.saturating_add(1);
+            let terminal_sunk = member.state_bitmask
+                == Some(crate::domain49_50_naval_combat_live::FEX_STATE_SUNK);
             if member.unit_type_tag != CURRENT_870EBF_CSHIP_ROUTE.type_tag {
                 errors.push(format!(
                     "non-convoy member combat={} side={} has unit_type_tag {}, expected {}",
@@ -547,6 +555,11 @@ fn validate_pending_member_cship_joins(
                     cship.alias_instance_id,
                     cship.ref100_sentinel_raw
                 )),
+                None if terminal_sunk => {
+                    // after both live CShip and convoy resolution fail.
+                    // Preserve the terminal member without inventing any
+                    // CShip/OOB telemetry.
+                }
                 None => errors.push(format!(
                     "ship_instance_id {ship_id} missing from current CShip route snapshot"
                 )),
@@ -649,13 +662,29 @@ fn index_cships(
     index
 }
 
-fn member_key(member: &MemberBridgeRow) -> (u32, u64, CombatSide, u32, u32) {
+fn validate_side_scalar_completeness(
+    snapshot: &ValidatedCombatSnapshot,
+    errors: &mut Vec<String>,
+) {
+    let row = &snapshot.lifecycle;
+    if row.attacker_positioning_raw.is_none()
+        || row.defender_positioning_raw.is_none()
+        || row.attacker_anti_air_raw.is_none()
+        || row.defender_anti_air_raw.is_none()
+    {
+        errors.push(format!(
+            "combat {}:{} is missing an exact side +0x138/+0x150 scalar",
+            row.combat_id, row.generation
+        ));
+    }
+}
+
+fn member_key(member: &MemberBridgeRow) -> (u32, u64, CombatSide, u32) {
     (
         member.combat_id,
         member.generation,
         member.side,
-        member.group_index,
-        member.member_index,
+        member.battle_slot_index_raw,
     )
 }
 
@@ -784,8 +813,10 @@ mod tests {
                 region_id: Some(18),
                 attacker_member_count: 1,
                 defender_member_count: 1,
-                attacker_positioning_milli: Some(812),
-                defender_positioning_milli: Some(765),
+                attacker_positioning_raw: Some(81_200),
+                defender_positioning_raw: Some(76_500),
+                attacker_anti_air_raw: Some(123_000),
+                defender_anti_air_raw: Some(98_000),
             },
             members: vec![
                 MemberBridgeRow {
@@ -887,6 +918,11 @@ mod tests {
         let mut duplicate = snapshot.members[0].clone();
         duplicate.group_index = 1;
         duplicate.member_index = 0;
+        // Keep the member identity distinct so this reaches the independent
+        // per-combat-generation ship uniqueness guard. Reusing slot zero
+        // would correctly fail earlier as a duplicate member identity and
+        // would not exercise the stale-group contract named by this test.
+        duplicate.battle_slot_index_raw = 2;
         snapshot.members.push(duplicate);
         snapshot.lifecycle.attacker_member_count = 2;
         let errors = build_capture_frame(&[snapshot], &[cship(1001)], 10, 512, 5).unwrap_err();

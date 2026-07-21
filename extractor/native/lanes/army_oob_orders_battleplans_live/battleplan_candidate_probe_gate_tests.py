@@ -32,7 +32,7 @@ def valid_report() -> dict:
                 "evidence": ["non-boolean values"],
             },
             {
-                "name": "old_type2_province_vector_plus_0x70",
+                "name": "type1_type2_type3_path_vector_plus_0x70",
                 "status": "fixture_required",
                 "tested_rows": 10,
                 "valid_rows": 9,
@@ -47,7 +47,7 @@ class CandidateProbeGateTests(unittest.TestCase):
         errors = validate_report(
             valid_report(),
             required_rejected=["template_is_executing_u8_plus_0x150"],
-            required_fixture_required=["old_type2_province_vector_plus_0x70"],
+            required_fixture_required=["type1_type2_type3_path_vector_plus_0x70"],
         )
         self.assertEqual(errors, [])
 

@@ -114,7 +114,7 @@ class BattleplanFixtureGateTests(unittest.TestCase):
                 "order_type": 2,
                 "order_generation": 1,
                 "passive_scan": {
-                    "offset": "+0x70/+0x78",
+                    "offset": "+0x70/+0x7C",
                     "status": "plausible",
                     "sample": [12825, 12770, 2007],
                 },

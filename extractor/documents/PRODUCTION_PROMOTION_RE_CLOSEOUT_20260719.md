@@ -10,7 +10,8 @@ The offline reverse-engineering and retained-evidence pass is exhausted for the 
 
 This document is the consolidated authority for what still needs a human-coordinated game state, capture, environment, or product decision. A row is not a request to guess a value: it is a request to create the stated controlled observation so the value can be derived mechanically.
 
-Reconciled 2026-07-20: the canonical machine register now has 37 external-input
+Reconciled 2026-07-20 and refreshed for Wave5: the canonical machine register
+now has 43 external-input
 rows covered exactly once by 16 deduplicated owner/runner execution bundles,
 plus 12 product decisions and the non-human residual dispositions. The final
 reconciliation is
@@ -74,12 +75,15 @@ Wave4 code; the primary agent must run the central battery after all lanes settl
 
 | ID | Required controlled input | Exact acceptance purpose |
 |---|---|---|
-| H-XUI27 | One same-present engine UI observation paired with an authenticated replay `WorldFrame`, content manifest, and settings | No retained session pairs the engine presentation and replay presentation at the same state; this is the terminal replay UI parity observation. |
-| H-A25 | Exact `CInstantText` glyph and inline-icon capture | Derive runtime glyph placement and icon participation; installed scripts and retained captures do not contain the object join. |
+| H-XUI27 | One normal a729 same-Present session covering the frozen five-state UI matrix across 1920x1080 and 2560x1440, each paired with an authenticated replay `WorldFrame`, content/settings/input/VFS identity, and lossless engine plane | No retained session pairs the engine presentation and replay presentation at those same states; this is the terminal replay UI parity observation after the replay-only authority refreeze. |
+| H-A25 | One visible base-game leader-ability tooltip containing ordinary text plus `command_power` or `clock_texticon` during the owner-scoped, same-Present GUI capture | Authenticate the exact mixed glyph/icon decisions, assets, destination/scissor, selected target, complete GUI frontier, recorded-input authority, and common owner/paint identity; retained CPU/GPU evidence does not contain that live object join. |
 | H-A31 | Controlled national-focus GUI state matrix | Join focus model state to rendered focus presentation. |
+| H-A29 | One active-research technology year/ahead-of-time tooltip during a pinned-a729 capture | Authenticate the actual same-hour producer-emitted `YEARS`, `VALUE`, `REDUCED_YEARS`, and `RED` substitutions, localization branch, slot/technology join, pointer-free callback provenance, fold, replay, and XUI09 equality. Base-factor or template-year reconstruction is forbidden. |
 | H-A37 | Controlled By Blood Alone power-balance stable and cross-direction transition matrix | Authenticate current/change sign, independent trending-side identity, indicator frame, fold, and replay output in the same transition. |
 | H-A28-A36-A39-A40 | The pinned JSON/input-SHA capture matrices for active abilities, ace/character presentation, selected designers, and active peace state | A28 itself remains autonomous controller/root work. A36, A39, and A40 retain only the exact external states in the final execution bundle. |
 | H-POPUP | The pinned-a729 XUI21 matrix covering five popup classes, four resolution paths, repeated/same-hour firings, and capture-start pending state | Authenticate the implemented fire/materialisation/resolution hooks, zero-loss completeness telemetry, d75 lifecycle rows, and exact A25 title/description/option owner joins. |
+| H-A26 | One owner-run authenticated tooltip same-Present matrix covering hidden baseline, capture-start-visible, show/hide/destruction/owner changes, multiline dynamic final blob, and edge geometry at 1920x1080 and 2560x1440 | Prove exact owner, final post-layout blob, rectangle, selected-Present identity, d72 fold, typed replay, and real production-renderer HUD equality. Startup silence, newline-derived source rows, inferred availability, caller-stamped frame identity, and screenshots are rejected. |
+| H-A27 | One exact-a729 session spanning at least three consecutive advancing replay hours with one real design rename/edit or obsolete/reactivate mutation | Prove the repeated whole-sweep reader seals every hour, emits exact upserts and absence-derived tombstones, reconstructs portable v3 deterministically, and admits d78 only at the matching hour. A coverage failure records the exact in-process-hook boundary; it never authorizes borrowed final state. |
 
 ### Combat, naval, air, supply, and strategic state
 
@@ -87,12 +91,15 @@ Wave4 code; the primary agent must run the central battery after all lanes settl
 |---|---|---|
 | H-X2-LOSS | One instrumented nonzero manpower/equipment update across two authoritative hours of the same active combat side | Authenticate the exact side scalar and pointer-free equipment-map entries. Retained `SDamageDone` attribution is already exact but is a different carrier. |
 | H-X2-WIDTH | Two exact `0x141299610` calls bracketing one D55-authenticated reserve-to-committed transition | Static RE, fresh exact-20 authority, and carrier/fold/replay/XUI20 wiring are complete. Retained evidence has 116 such transitions but zero active width-hook calls. Join every committed-wrapper `+0x170` return and final sum to the same combat generation and hour; inspect mutable roots only if direct sum equality fails. |
+| H-X2-PANEL | One active land battle kept selected through a both-side combat-detail refresh | Exercise the already-active exact game materializer carrier. Require positive capture sequence, exact leader or exact-none status, canonical unique engine modifier order, simultaneous D55 combat generation/side binding, pointer-free fold, and independent replay regrade; screenshots and inferred side flags are rejected. |
 | H-A33-SUNK | One disposable exact-a729 empty-history run in which the operator causes one naval sink | The automated probe must retain a complete baseline, same-thread D49 member epoch, SHP1 history, zero-loss receipt, fold/replay parity, and independent regrade. |
+| H-B7 | One bounded read-only inspection of the paused D04 raid-system heap at `1944.2.11.18` | Authenticate exact parent/child identity, engine ordering, state and dummy classification against the retained oracle. Only an independently regraded `ACCEPTED_EXACT_440_PARENTS_167_CHILDREN` receipt may authorize a later d91 scheduling patch. |
 | H-AIR | Paused active air combat | An exhaustive 33-melt, 1.777-GB census contains no serialized active-air-combat block. |
-| H-PEACE | Unresolved active peace conference | The same exhaustive save census contains no nonempty active peace conference. |
+| H-PEACE | One registered active conference lifecycle from pre-claim refresh through nonempty contest to terminal summary | Retain the loss-free raw trace and independent regrade. Acceptance does not authorize production: post-capture RE must prove an immutable portable action/allocation tuple plus terminal join or a separate engine result identity. |
 | H-CONVOY | One convoy terminal loss plus a no-loss control using the engineered exact `0x141962378` pre-collapse hook and pinned exact-ten authority receipt | Authenticate `CFEXMember+0xD0` client resolution to live source/destination state while owner/killer/count still exist; terminal saves irreversibly discard that join. Exact-ten static custody is closed; this branched gameplay observation is the sole remaining convoy input. |
 | H-ACE | Same-tick raw-memory and save fixture for one ace lifecycle transition | Cross-authenticate alive, kill type, handled state, and save representation. |
 | H-DYNMOD | One timed dynamic-modifier lifecycle | Validate raw expiry/duration fields and remaining daily ticks without inventing absolute expiry. |
+| H-A19 | One uninterrupted delayed-event lifecycle covering retained decrement, execution, failed-trigger consumption, and definition cancellation, with one originator distinct from recipient | Authenticate the DEL2 paired hooks, shared dispatch join, ordered pointer-free reasons, corrected scope/originator fields, fold/replay equality, and fail-closed gap/unmatched-disappearance behavior. No human semantic annotation remains. |
 | H-SNOWMUD | Temporal snow/mud capture across changing ground conditions | XN16 proves one-frame capture only; temporal recording remains unproven. |
 
 `H-X2-END` is retired: the two exact terminal writers (`0x140CCC7F0`
@@ -134,10 +141,10 @@ aliases; another human transition cannot repair the missing semantic join.
 
 | ID | Required controlled input | Exact acceptance purpose |
 |---|---|---|
-| H-A3-P3-X12 | P3 campaign-identity matrix plus X12 within-hour transition actions after hook engineering | A3 raw-speed mapping and pause orthogonality are already exact for pinned a729; this alias now covers only P3 identity arms and X12 ordered, gap-free sub-hour transitions. |
+| H-A3-P3-X12 | P3 campaign-identity matrix plus one authorized X12 autonomous live run | A3 raw-speed mapping and pause orthogonality are already exact for pinned a729. The X12 hook/driver owns its baseline and ordered sub-hour mutations; this alias now covers only P3 identity arms and permission for the machine-run X12 receipt. |
 | H-XN15L | Early-launch production capture followed by replay composition/pixel comparison | Close the launch-time renderer state that cannot be rescued by late attach. |
 | H-G2-PIXEL | One authenticated close-zoom engine MainScene/map-target readback and portable-replay render at the same render boundary, hour, physical viewport, graphics settings, language, DLC/mod VFS, camera, and POV | Retain both 32-bit BGRA planes and admit a reviewed golden only when the receipt-bound gate reports `mismatch_pixels=0` and `max_channel_delta=0`; typed-state hashes or receipts without pixels are insufficient. |
-| H-B4-B5-B7 | One paused D04 B5 session covering all 958 war rows with the matching same-tick save | B4 is statically closed and B7/raid remains autonomous root work. Only B5's threat/instigator/hostility same-tick equality is external. |
+| H-B4-B5-B7 | Three bounded paused D04 observations: B4 441-row/sum-2810 equality, B5 958-war-row save/memory equality, and B7 440-parent/167-child raid equality | Static laws and dormant carriers are closed. Each independent runner/regrader must bind the exact paused a729 process and its named retained oracle; accepted evidence does not silently enable scheduling, and every lane requires its separate reviewed activation patch. |
 
 `H-C07-T1` and `H-C07-S1` are retired by
 `replay_interface/re_evidence/rendering_laws/C07/C07_HUMAN_INPUT_REQUIREMENTS.json`.
@@ -173,20 +180,20 @@ See `X9_SPECIALIZATION_TOKEN_NAMESPACE_PROMOTION_20260720.json`.
 | H-CAP6-H3 | Allegiance, country-color mode, and selection matrix | Derive exact tint and selection-state rules. |
 | H-CAP6-H4 | Simultaneous counter badge states | Derive badge precedence and layer ordering. |
 | H-CAP6-H5 | Enemy counters across FoW/intel levels | Derive hidden/partial presentation behavior. |
-| H-RG-H1 | Unclamped HDR plus consecutive-frame luminance observations | Close temporal grading/exposure behavior. |
-| H-RG-H2 | One-variable wide-bloom-width discriminator | Derive bloom width without visual tuning. |
-| H-RG-H4 | Visibly nontransparent political secondary-map producer case | Prove the secondary-map blend/producer path. |
-| H-ONEDRIVE | A genuine dehydrated OneDrive placeholder replay store | Exercise metadata-only traversal without hydration; 47,621 files were scanned locally and zero placeholders exist. |
+| H-RG-H1 | Stationary over-0.5 HDR luminance convergence series | Close temporal grading/exposure behavior with authentic consecutive payloads. |
+| H-RG-H2 | Separately admitted default and one-variable wide-bloom-width scenes | Derive bloom width without visual tuning and pass both exact bloom regrades. |
+| H-RG-H4 | Separately armed single-frame transparent political control followed, after its completion, by a visibly striped F6 Resistance capture | Prove the secondary-map CPU producer/upload, same-submit D80 identity, distinct replay readback, and zero-diff route; one immediate two-frame request is invalid. |
+| H-ONEDRIVE | One genuine OneDrive Files-On-Demand replay store observed with the provider enabled and then disabled against the same two dehydrated, index-listed snapshot identities | Exercise identity-bound hydration in the enabled arm and exact typed refusal without ordinary-file substitution in the disabled arm; 47,621 files were scanned locally and zero qualifying placeholders exist. The runner and independent receipt verifier own all selection, hashing, test, and interpretation work. |
 | H-MODSET | Selected installed-mod matrix and one current seven-role static bundle per chosen mod set | Authenticate effective-VFS bundle generation before publication; retained bundles have deferred token joins and the old D04 bundle is schema v2. |
 
 ### Live acceptance and fault behavior
 
 | ID | Required controlled input | Exact acceptance purpose |
 |---|---|---|
-| H-SINK-OK | One normal production early-launch capture graded by `verify_sink_reconciliation.py --expect success` | Retain nonzero collector and host-write samples, monotonic wall time, terminal sole-pipe reconciliation, manifest acceptance, and graceful replay finalization. All producer/consumer validation is automated. |
+| H-SINK-OK | **No separate input.** Every normal production Safe-launcher rung automatically runs `verify_sink_reconciliation.py --expect success` and binds its report into the capture-validation receipt. | Retain nonzero collector and host-write samples, monotonic wall time, terminal sole-pipe reconciliation, manifest acceptance, and graceful replay finalization without scheduling another launch. |
 | H-SINK-FAIL | One `Invoke-SinkFailureAcceptance.ps1` early-launch arm (`sink-open-fault` or `sink-write-fault`) | Retain the recorder-authored pre-injection plan and authenticated `collector_sink_failure.json` v2 receipt. The arm, exact report matching, non-publication check, and regrade are automated; no manual fault construction remains. |
-| H-F6-PAUSE | One attempt-bound paused capture/fold/extraction proof | Exercise the paused proof once its producer wiring exists. |
-| H-SOAK | Six-hour product soak on the target/weak-PC profile | Validate rollover, heartbeat, memory, storage growth, and replay continuity under deployment conditions. |
+| H-F6-PAUSE | One fresh nonce-bound paused-short-proof attempt after the synthetic-fault predecessor | Exercise the fully automated paused proof; authenticated D57/replay state replaces visible acknowledgement. |
+| H-SOAK | One uninterrupted six-hour product soak on the selected deployment profile | Require a >=21,600-second request, >=21,600,000,000 us wall and monotonic observations, and the selected-profile/manifest/plan-bound `six_hour_soak_acceptance_receipt.json`; validate rollover, heartbeat, measured memory/storage growth, and replay continuity against the selected profile policy. |
 
 ## Remaining engineering and repository-authority work
 
@@ -197,18 +204,23 @@ These are **not human reverse-engineering requests** and must not be misreported
 3. The offline product runtime now has durable append tickets, rollover propose/drain/seal/open/ack/header barriers, dormant paired-runner heartbeat, and graceful H4CT close before H4CR drain. Activation remains disabled until concrete live adapters, CID1 proof, and the active legacy spawner's hard-kill/finite-stdout boundaries are replaced or authenticated.
 4. The XUI21 fire/materialisation/resolution graph, multi-slot context contract, and authenticated one-shot weather-worker fault tooling are implemented. XUI21 now needs its named exhaustive runtime coverage matrix, not additional producer discovery; weather fault acceptance remains a separate named live observation.
 5. Domain 81's exact-ten owner, enumeration, authentication, and frame-law authority is closed. The authenticated fail-closed manager/type-`0x1a` double-read hub collector is implemented and activates the existing v2 encoder, recorder fold, authority accounting, and replay-ingest route only for a complete snapshot; v1 remains the explicit unavailable fallback. The promotion-manifest authority remains SHA-256 `32388518a63eaa22ea6290e82fb3677a5515039e937334ebc2c2d26a0c0bc6b1`. Central validation has passed; no human capture is required.
-6. A11/A30 owner, reciprocal-assignment, and controller laws are integrated. Exact executable and game-file evidence shows no engine network collection/order for the product-authored summary; any selected-overlay visibility probe is autonomous harness work. No H-A11/H-A30 human row remains. Current Wave4 sources passed centralized Final/All and Release/All.
+6. A11/A30 owner, reciprocal operation assignment, reciprocal INGR v4 `build_network`/`quiet_network` assignment, and controller laws are integrated. Exact executable and game-file evidence shows no engine network collection/order for the product-authored summary. Selected operation/network widget state is atlas-excluded; the full XUI14 replay-app adapter and in-scope visibility producers remain engineering, not human input. Current Wave5 sources still require root-owned central validation.
 7. The weather named-token, definition, and entity-selector bridge is exact-ten closed. Active weather remains false pending authenticated initial/per-update visibility, update ownership, and selected-Present effect-output coverage or the filed controlled-camera equivalent.
 8. Refresh the full recursive XUI27 authority chain only after all source changes settle. Run two clean identical replay-owned passes, update the independent golden only from equal results, run terminal verification, then repeat the G3 recount.
 9. The strict package-runtime boundary now provides deterministic manifests, signing admission, atomic active/previous pointers, rollback, locks, Windows-safe paths, and reparse-point refusal. Product owners must still select the production signature algorithm/key custody and rotation/revocation policy, installer/update entry point, trust-store distribution, and tray/window surface.
 10. Pure Cargo/cache scratch totals about 17 GB and can be regenerated. The two mixed audit trees contain superseded intermediate source even though they contain no unique production evidence; archive that source history before deleting those mixed trees.
 11. A38 exact-20 authority and d84 transport are complete, but the existing read-only probe and autonomous harness acquisition path have not yet been exhausted. It remains non-human machine work; no operator card is justified until those paths fail to materialize the required live frame.
+12. A34's exact country-decision graph, DPN1 v2 transport, selected-Present join, fold, replay admission, and heterogeneous UI model are present. The collector now owns an authenticated early-render transaction that calls `A34DecisionPanelEvidenceOwner::resolve_and_drain` and roster-validates the explicit supplement. Clean-clone catalog packaging, the nonempty/measured-empty fixture, and root validation remain; caller-provided evidence is not promoted as an inferred production value. These are engineering/evidence dependencies, not human semantic inputs.
+13. C07 generic-building record layout, current grow-in presentation scale, pointer-free carrier/decoder/attachment, and replay executor are wired fail-closed. Retained objects and draw oracles do not contain the stable runtime-object/entity/output join, so generic promoted rows remain zero. Acquire one complete automated pinned-a729 selected-Present observation across the five roots named in `C07_GENERIC_BUILDING_PRODUCTION_WIRING_20260720.json`; no human semantic input is required and activation remains false.
+14. A13's supported current global/country/state variables and flags are production-complete in d51. The carrier preserves exact token, DateHour, and value while deliberately refusing unauthenticated dictionary text. Delayed lifecycle belongs to A19/d64, scripted-GUI materialization belongs to A38/d84, and arbitrary engine scopes remain unavailable; none is a human A13 request.
+15. A24's static producer graph, exact sentinels, reversible same-thread multi-tap evidence owner, PTI1 typed replay leaf, and fail-closed UI selector are complete. D73 remains reserved and unscheduled while `LIVE_PRODUCER_TAPS_COMPLETE=false`; the multi-case selected-Present matrix must collectively authenticate all six mutually exclusive families with zero loss before activation. No human semantic row is authorized.
+16. A26 final-blob engineering is complete: the owner session, atomic selected-Present TTI2 carrier, fold, strict typed replay, actual production-renderer HUD consumer, matrix assembler/schema, and independent verifier are present. D72 deliberately stays reserved and unscheduled until H-A26 and root validation pass; stale historical manifests are not promotion authority.
 
 ## Closed without further human input
 
 - M02 and M03/A48 production contracts.
-- A24, A29, A33/A34 core mechanics, d75 fired-event lifecycle, and the pre-folded decoder seam.
-- A16 exact-20 current-status producer law, AUST transport, fold/replay integration, and centralized validation. Its five-state live matrix is optional regression evidence only.
+- A24 static producer graph, evidence hook owner and replay binding, A33/A34 core mechanics, d75 fired-event lifecycle, and the pre-folded decoder seam. A24's live matrix and A29's observed-producer receipt remain separately tracked activation gates.
+- A16 exact current-status producer law, current 15-root production re-audit, AUST transport, signed-score/adjacency and gap-safe fold, pointer-free replay/UI integration, and consecutive-witness AUST-aware fixture grading. Wave4 passed centralized validation; the current Wave5 hardening awaits the root-owned central pass. Its five-state live matrix is optional regression evidence only.
 - A17 nuclear-stockpile semantic law and d83 transport. Authenticated live-source admission is machine engineering; a positive built-or-ready fixture is optional regression evidence only.
 - Portable replay strict JSON, archive/VFS, path portability, integrity, and rollback-index hardening.
 - Sink telemetry, exact IO classification, authenticated open/write fault arms,
@@ -230,6 +242,7 @@ These are **not human reverse-engineering requests** and must not be misreported
 - Save-oracle fixture coverage and the retained D04 special-project census.
 - Naval mission enum and retained combat-lifecycle masking.
 - A17 exact stockpile reader, A18 raw timed-modifier semantics, and A20 temporal validator implementation.
+- A13 supported current global/country/state variable and flag transport; unsupported arbitrary scopes are explicit absence rather than an inferred value or human-input request.
 
 ## Promotion gate
 

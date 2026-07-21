@@ -23,16 +23,56 @@ if (-not (Test-Path -LiteralPath $verifier -PathType Leaf)) {
 if (Test-Path -LiteralPath $RunDir) {
     throw "refusing to reuse a sink-failure run directory: $RunDir"
 }
+$RecorderPath = (Resolve-Path -LiteralPath $RecorderPath).Path
+$recorderFile = Split-Path -Leaf $RecorderPath
+$recorderSha256 = (Get-FileHash -LiteralPath $RecorderPath -Algorithm SHA256).Hash.ToLowerInvariant()
+
+function Get-RecorderOptionValues {
+    param([string[]]$Arguments, [string]$Name)
+    $values = [System.Collections.Generic.List[string]]::new()
+    for ($i = 0; $i -lt @($Arguments).Count; $i++) {
+        $argument = [string]$Arguments[$i]
+        if ($argument -ceq $Name) {
+            if (($i + 1) -ge $Arguments.Count) {
+                throw "RecorderArguments option $Name has no value"
+            }
+            $values.Add([string]$Arguments[$i + 1])
+            $i++
+        } elseif ($argument.StartsWith("$Name=", [StringComparison]::Ordinal)) {
+            $values.Add($argument.Substring($Name.Length + 1))
+        }
+    }
+    # Let PowerShell enumerate the collected values. The caller wraps the result
+    # in @(...), so zero/one/many occurrences remain distinguishable. Returning
+    # a unary-comma nested array would make duplicate options appear as one item.
+    return $values.ToArray()
+}
+
+function Require-OneRecorderOption {
+    param([string[]]$Arguments, [string]$Name, [string]$Expected = "")
+    $values = @(Get-RecorderOptionValues -Arguments $Arguments -Name $Name)
+    if ($values.Count -ne 1 -or [string]::IsNullOrWhiteSpace($values[0])) {
+        throw "RecorderArguments must contain exactly one nonblank $Name value"
+    }
+    if (-not [string]::IsNullOrEmpty($Expected) -and $values[0] -cne $Expected) {
+        throw "RecorderArguments $Name must be '$Expected', got '$($values[0])'"
+    }
+    return $values[0]
+}
+
 $forbidden = @("--pid", "--out-dir", "--acceptance-test-mode", "--acceptance-test-nonce")
 foreach ($flag in $forbidden) {
-    if ($RecorderArguments -contains $flag) {
+    if (@($RecorderArguments | Where-Object { [string]$_ -ceq $flag -or ([string]$_).StartsWith("$flag=", [StringComparison]::Ordinal) }).Count -ne 0) {
         throw "RecorderArguments must not contain wrapper-owned flag $flag"
     }
 }
-foreach ($required in @("--early-launch-exe", "--profile", "production", "--production", "--stream-format", "compact")) {
-    if ($RecorderArguments -notcontains $required) {
-        throw "RecorderArguments must contain $required"
-    }
+Require-OneRecorderOption -Arguments $RecorderArguments -Name "--early-launch-exe" | Out-Null
+Require-OneRecorderOption -Arguments $RecorderArguments -Name "--profile" -Expected "production" | Out-Null
+Require-OneRecorderOption -Arguments $RecorderArguments -Name "--stream-format" -Expected "compact" | Out-Null
+Require-OneRecorderOption -Arguments $RecorderArguments -Name "--capture-id" | Out-Null
+$productionFlags = @($RecorderArguments | Where-Object { [string]$_ -ceq "--production" })
+if ($productionFlags.Count -ne 1 -or @($RecorderArguments | Where-Object { ([string]$_).StartsWith("--production=", [StringComparison]::Ordinal) }).Count -ne 0) {
+    throw "RecorderArguments must contain exactly one bare --production flag"
 }
 
 $nonceBytes = [byte[]]::new(32)
@@ -55,6 +95,11 @@ $plan = Join-Path $RunDir "sink_failure_acceptance_plan.json"
 if (-not (Test-Path -LiteralPath $receipt -PathType Leaf) -or
     -not (Test-Path -LiteralPath $plan -PathType Leaf)) {
     throw "recorder failed without the authenticated sink-failure receipt and pre-launch plan"
+}
+$planObject = Get-Content -LiteralPath $plan -Raw | ConvertFrom-Json
+if ([string]$planObject.recorder_executable_file -cne $recorderFile -or
+    [string]$planObject.recorder_executable_sha256 -cne $recorderSha256) {
+    throw "sink-failure plan is not bound to the recorder executable selected by this wrapper"
 }
 
 $certification = Join-Path $RunDir "sink_reconciliation_verification.json"

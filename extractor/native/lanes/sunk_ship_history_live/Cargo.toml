@@ -7,6 +7,7 @@ edition = "2021"
 path = "src/lib.rs"
 
 [dependencies]
+compact_contract = { path = "../../compact_contract" }
 naval_combat_live_lane = { path = "../naval_combat_live" }
 
 [target.'cfg(windows)'.dependencies]

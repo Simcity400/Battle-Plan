@@ -20,10 +20,15 @@ const PROVINCE_ROW_LEN: usize = 32;
 const REGION_COUNT: usize = 305;
 const KNOWN_REGION_FLAGS: u32 = 0xff;
 const KNOWN_PROVINCE_FLAGS: u32 = 0x3ff;
+const RAIN_LIGHT: u32 = 1;
 const RAIN_HEAVY: u32 = 1 << 1;
+const SNOW: u32 = 1 << 2;
+const BLIZZARD: u32 = 1 << 3;
 const ARCTIC_WATER: u32 = 1 << 4;
 const ACTIVE_SIGNAL: u32 = 1 << 5;
 const PHENOMENON_ACTIVE: u32 = 1 << 6;
+const SANDSTORM: u32 = 1 << 7;
+const NAMED_AIRBORNE_FLAGS: u32 = RAIN_LIGHT | RAIN_HEAVY | SNOW | BLIZZARD | SANDSTORM;
 const PROVINCE_TEMP_PRESENT: u32 = 1;
 const PROVINCE_TEMP_CHANGE_PRESENT: u32 = 1 << 1;
 const PROVINCE_WATER_PRESENT: u32 = 1 << 2;
@@ -34,7 +39,10 @@ const PROVINCE_CUSTOM_MODIFIER_PRESENT: u32 = 1 << 6;
 const PROVINCE_STRUCT_VALIDATED: u32 = 1 << 7;
 const PROVINCE_MAP_RECOLOR_DRIVER: u32 = 1 << 8;
 const PROVINCE_DYNAMIC_LUT_DRIVER: u32 = 1 << 9;
-const MAX_PHENOMENON: u32 = 16;
+// Raw +0x78 is retained by compact-v1 as a bounded activity diagnostic. RE
+// proves it is not a stable weather-kind enum; all kind/transition proof below
+// is derived from the named flags.
+const MAX_RAW_ACTIVITY_CANDIDATE: u32 = 16;
 const MAX_TEMPERATURE_RAW: i32 = 10_000_000;
 const MAX_TEMP_CHANGE_RAW: i32 = 10_000_000;
 const MAX_PRECIP_RAW: i32 = 100_000_000;
@@ -64,6 +72,24 @@ fn i32_at(bytes: &[u8], offset: usize) -> Result<i32, String> {
     Ok(i32::from_le_bytes(raw.try_into().unwrap()))
 }
 
+/// Exact CAirInterface::GetWeatherEffectForAirRegion (0x14166ec50) named-flag
+/// priority. Arctic water is an independent non-airborne phenomenon.
+fn airborne_code(flags: u32) -> u8 {
+    if flags & RAIN_LIGHT != 0 {
+        2
+    } else if flags & RAIN_HEAVY != 0 {
+        3
+    } else if flags & SNOW != 0 {
+        4
+    } else if flags & BLIZZARD != 0 {
+        5
+    } else if flags & SANDSTORM != 0 {
+        7
+    } else {
+        0
+    }
+}
+
 #[derive(Debug, Default)]
 struct Gate {
     weather_records: u64,
@@ -78,8 +104,11 @@ struct Gate {
     hours: BTreeSet<i32>,
     observed_province_count: Option<usize>,
     flags_by_region: BTreeMap<u32, u32>,
+    expiry_by_region: BTreeMap<u32, i32>,
     provinces_by_id: BTreeMap<u32, [u32; 7]>,
     rain_heavy_transitions: u64,
+    weather_kind_transitions: u64,
+    expiry_refreshes: u64,
     total_flag_transitions: u64,
     rain_heavy_min: usize,
     rain_heavy_max: usize,
@@ -169,7 +198,8 @@ impl Gate {
             let id = u32_at(payload, base)?;
             let flags = u32_at(payload, base + 4)?;
             let temperature_raw = i32_at(payload, base + 8)?;
-            let phenomenon = u32_at(payload, base + 12)?;
+            let raw_activity_candidate = u32_at(payload, base + 12)?;
+            let transition_expiry = i32_at(payload, base + 16)?;
             let active_modifier_count = u32_at(payload, base + 20)?;
             let intensity = u32_at(payload, base + 24)?;
             let reserved = u32_at(payload, base + 28)?;
@@ -184,12 +214,24 @@ impl Gate {
             if active_signal != phenomenon_active {
                 return Err(format!("region {id} has mismatched active flags {flags:#x}"));
             }
-            if phenomenon > MAX_PHENOMENON {
-                return Err(format!("region {id} has invalid phenomenon {phenomenon}"));
-            }
-            if (phenomenon != 0) != active_signal {
+            if raw_activity_candidate > MAX_RAW_ACTIVITY_CANDIDATE {
                 return Err(format!(
-                    "region {id} phenomenon {phenomenon} disagrees with active flags {flags:#x}"
+                    "region {id} has invalid raw activity candidate {raw_activity_candidate}"
+                ));
+            }
+            if (raw_activity_candidate != 0) != active_signal {
+                return Err(format!(
+                    "region {id} raw activity candidate {raw_activity_candidate} disagrees with active flags {flags:#x}"
+                ));
+            }
+            if (flags & NAMED_AIRBORNE_FLAGS).count_ones() > 1 {
+                return Err(format!(
+                    "region {id} overlaps mutually-exclusive named airborne flags {flags:#x}"
+                ));
+            }
+            if transition_expiry < 0 {
+                return Err(format!(
+                    "region {id} has negative absolute transition expiry {transition_expiry}"
                 ));
             }
             if !(-MAX_TEMPERATURE_RAW..=MAX_TEMPERATURE_RAW).contains(&temperature_raw) {
@@ -206,7 +248,7 @@ impl Gate {
             if reserved != 0 {
                 return Err(format!("region {id} has reserved value {reserved}"));
             }
-            if phenomenon != 0 {
+            if raw_activity_candidate != 0 {
                 computed_active += 1;
             }
             if let Some(old) = self.flags_by_region.insert(id, flags) {
@@ -216,6 +258,29 @@ impl Gate {
                 }
                 if changed & RAIN_HEAVY != 0 {
                     self.rain_heavy_transitions += 1;
+                }
+                if airborne_code(old) != airborne_code(flags) {
+                    self.weather_kind_transitions += 1;
+                    if self.expiry_by_region.get(&id).copied() == Some(transition_expiry) {
+                        return Err(format!(
+                            "region {id} changed named weather kind without refreshing expiry"
+                        ));
+                    }
+                }
+            }
+            if let Some(old_expiry) = self.expiry_by_region.insert(id, transition_expiry) {
+                if transition_expiry != old_expiry {
+                    if old_expiry > hour {
+                        return Err(format!(
+                            "region {id} refreshed before prior expiry {old_expiry} at hour {hour}"
+                        ));
+                    }
+                    if transition_expiry <= hour {
+                        return Err(format!(
+                            "region {id} refreshed to non-future expiry {transition_expiry} at hour {hour}"
+                        ));
+                    }
+                    self.expiry_refreshes += 1;
                 }
             }
         }
@@ -354,6 +419,8 @@ impl Gate {
             && self.nonconsecutive_pairs == 0
             && self.total_flag_transitions > 0
             && self.rain_heavy_transitions > 0
+            && self.weather_kind_transitions > 0
+            && self.expiry_refreshes > 0
             && self.rain_heavy_max < REGION_COUNT
             && self.arctic_water_min > 0
             && self.arctic_water_max < REGION_COUNT
@@ -383,7 +450,9 @@ impl Gate {
                 "  \"unique_province_ids\": {},\n",
                 "  \"rain_heavy_count_min\": {},\n  \"rain_heavy_count_max\": {},\n",
                 "  \"arctic_water_count_min\": {},\n  \"arctic_water_count_max\": {},\n",
-                "  \"rain_heavy_transitions\": {},\n  \"total_flag_transitions\": {}\n}}"
+                "  \"rain_heavy_transitions\": {},\n",
+                "  \"weather_kind_transitions\": {},\n",
+                "  \"expiry_refreshes\": {},\n  \"total_flag_transitions\": {}\n}}"
             ),
             if self.passed() { "PASS" } else { "FAIL" },
             self.weather_records, self.baselines, self.deltas,
@@ -394,7 +463,9 @@ impl Gate {
             if self.rain_heavy_min == usize::MAX { 0 } else { self.rain_heavy_min },
             self.rain_heavy_max,
             if self.arctic_water_min == usize::MAX { 0 } else { self.arctic_water_min },
-            self.arctic_water_max, self.rain_heavy_transitions, self.total_flag_transitions,
+            self.arctic_water_max, self.rain_heavy_transitions,
+            self.weather_kind_transitions, self.expiry_refreshes,
+            self.total_flag_transitions,
         )
     }
 }
@@ -417,7 +488,7 @@ impl ValidatedStream {
     fn json(&self) -> String {
         format!(
             concat!(
-                "{{\n  \"schema\": \"hoi4.a20-weather-temporal-gate.v1\",\n",
+                "{{\n  \"schema\": \"hoi4.a20-weather-temporal-gate.v2\",\n",
                 "  \"status\": \"{}\",\n  \"storage_compression\": \"{}\",\n",
                 "  \"encoded_bytes\": {},\n  \"encoded_sha256\": \"{}\",\n",
                 "  \"decoded_bytes\": {},\n  \"decoded_sha256\": \"{}\",\n",
@@ -572,7 +643,8 @@ mod tests {
             out.extend_from_slice(&flags.to_le_bytes());
             out.extend_from_slice(&0i32.to_le_bytes());
             out.extend_from_slice(&0u32.to_le_bytes());
-            out.extend_from_slice(&0u32.to_le_bytes());
+            let expiry = if delta { 200i32 } else { 100i32 };
+            out.extend_from_slice(&expiry.to_le_bytes());
             out.extend_from_slice(&0u32.to_le_bytes());
             out.extend_from_slice(&0u32.to_le_bytes());
             out.extend_from_slice(&0u32.to_le_bytes());
@@ -608,6 +680,14 @@ mod tests {
     fn malformed_observed_region_count_fails_closed() {
         let mut bytes = payload(false, None);
         bytes[24..28].copy_from_slice(&304u32.to_le_bytes());
+        assert!(Gate::new().consume(100, &bytes).is_err());
+    }
+
+    #[test]
+    fn negative_signed_transition_expiry_fails_closed() {
+        let mut bytes = payload(false, None);
+        let expiry = HEADER_LEN + 16;
+        bytes[expiry..expiry + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(Gate::new().consume(100, &bytes).is_err());
     }
 
@@ -697,5 +777,7 @@ mod tests {
         assert_eq!(stream.gate.skipped_hours(), 0);
         assert_eq!(stream.gate.flags_by_region.len(), REGION_COUNT);
         assert_eq!(stream.gate.provinces_by_id.len(), 13_414);
+        assert!(stream.gate.provinces_by_id.contains_key(&0));
+        assert!(stream.gate.provinces_by_id.contains_key(&13_413));
     }
 }

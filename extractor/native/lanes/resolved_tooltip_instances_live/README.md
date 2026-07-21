@@ -1,19 +1,23 @@
 # A26 resolved tooltip instances
 
-Status: `PROMOTION READY — EXACT A729 PRODUCER, SCHEDULABLE d72, FROZEN FOLD`
+Status: `NOT PROMOTION READY — d72 RESERVED/UNSCHEDULABLE`
 
-The extractor-side carrier and exact a729 producer are implemented. `src/a729_hook.rs` signature-gates the generic tooltip controller at RVA `0x002A4080`, reuses A25's sole shared final-setter and deleting-destructor detours, and emits copied values only. It never places process pointers in replay. Schedulable domain 72 contains the exact frame key, final engine rectangle, viewport, producer identity, ordered final text fragments, three-state row availability, producer-manifest authentication, and a complete-frame record/count contract. `recorder_host::world_fold` admits it under `_r2_resolved_tooltip_instances_live`, preserves authenticated measured-empty frames, rejects wrong-hour attachment, and emits no inferred layout or text semantics.
+Wave5 retracted the earlier promotion claim and completed the narrowed exact
+final-blob route: the sole-hook owner session, TTI2 owner/geometry/selected-
+Present carrier, fold, strict typed replay, actual production-renderer HUD
+consumer, matrix assembler/schema, and independent verifier are implemented.
+D72 remains reserved and unschedulable until H-A26 supplies the authentic live
+matrix and root central validation passes.
 
-RenderDoc, OCR, static localisation, replay-side Clausewitz evaluation, cursor-offset rules, inferred edge flips, and reconstructed modifier breakdowns remain rejected as production sources. The controller supplies its already-resolved position after the engine's own anchor, flip, margin, viewport, and clamp branches. Final setter text is split only on literal newline boundaries and carried as `resolved` fragments so A26 does not guess header/value/breakdown/scripted authoring semantics. An authenticated frame with zero visible instances is measured-empty; a missing frame is unobtained.
+RenderDoc, OCR, static localisation, replay-side Clausewitz evaluation, cursor-offset rules, inferred edge flips, and reconstructed modifier breakdowns remain rejected. The exact final post-layout blob is opaque engine output: newline splitting cannot establish source rows, line kinds, source identities, evaluation contexts, or availability. Startup silence is unobtained; measured-empty requires an observed controller cycle and atomic selected-Present seal.
 
-## Mechanical result
+## Validation state
 
-- Focused hook/carrier tests: `6/6` pass, including exact round trip, authenticated measured-empty, completeness/key/geometry/order rejection, row-availability rejection, unauthenticated-source rejection, and newline-only final-fragment preservation.
-- `cargo metadata --no-deps --format-version 1`: pass after consolidating the lane manifest to one dependency table.
-- `cargo check -p resolved_tooltip_instances_live_lane --lib`: pass with the Windows hook, A25 shared-observer dependency, MinHook, and exact a729 sentinels compiled.
-- Recorder integration: focused domain-72 fold tests pass `2/2`, covering all instance/row/provenance fields, authenticated measured-empty, and wrong-hour fail-closed behavior.
-- Compact registry: domain 72 is `validated_slice`, schedulable, and mechanically identical between `compact_contract` and `domain_registry.json`.
-- Production handoff schema: `resolved_tooltip_instances` declares the same frame, key, rectangle, row, availability, authentication, and completeness fields.
+The old TTI1/A25/semantic-row build and test receipts predate the wave5
+correction and are not evidence for TTI2. The corrected hook, carrier,
+collector, fold, typed replay, and HUD consumer require root-owned central
+validation. Any historical `validated_slice`, schedulable-registry, promoted
+descriptor, or positive runtime-receipt claim is retracted.
 
 ## Retained RenderDoc findings
 
@@ -28,20 +32,19 @@ Both RDCs, all four retained vertex blobs, both constant-buffer ZIPs, and both s
 
 ## Exact producer implementation
 
-The live implementation supplies, for every admitted frame:
+The target live implementation must supply, for every admitted frame:
 
 1. the exact instance-key set and completeness record;
 2. each final engine-resolved rectangle and viewport;
-3. stable producer record identity;
-4. every final evaluated text fragment in strict newline order, including dynamic/scripted breakdown text without inventing semantic classes; and
-5. explicit `resolved`, `not_applicable`, or `data_blocked(field)` availability.
+3. stable authenticated owner and producer record identity; and
+4. the exact opaque final post-layout blob without inferred row or availability semantics.
 
 
 ## Ghidra report tuple
 
 - Function address: `0x1402A4080`
-- Job ID: `20260717T113739Z-a25-ctextbox-vtable-identity-accessors-7ddacf03`
-- Artifact path: `evidence/func_1402a4080.decompile.c` (SHA-256 `a1838600f7f016606ed6287926ef47d5b836a5501bc83ef59467c5dd61a1c071`)
-- Ghidra evidence-manifest SHA-256: `2bc2bc389cfcadb3903ad6c79a03645a5fe4b7102feac1eb982f89e6aabac9c5`
-- Manifest SHA-256: `89897f3ac71c7cf8c81c4238bbeabfcb81146efefbc3363f568109323844df2a`
+- Job ID: `20260720T131321Z-wave5-a26-controller-layout-retry-3f25f602`
+- Ghidra evidence-manifest SHA-256: `b1f2f0bc2afde8c970fd4e63dd9c969bde9744d146c4f23e9dddae4f00ba4c64`
+- Full evidence and live-matrix contract:
+  `extractor/documents/dossiers/A26_WAVE5_FINAL_BLOB_ENGINEERING_20260720.md`
 

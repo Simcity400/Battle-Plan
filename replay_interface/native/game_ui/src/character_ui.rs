@@ -14,7 +14,7 @@ use crate::gui::{GuiElement, LayoutSet};
 use crate::paradox_text::{parse_file, Document};
 use crate::{GameUiError, Result};
 use replay_core::{
-    AceRosterExactView, CharacterPresentationExactView, CharacterRosterExactView,
+    AceRosterExactView, CharacterAceListContext, CharacterPresentationExactView, CharacterRosterExactView,
     CharacterTraitNodeState, UnitLeaderExactRow, ViewStatus,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -514,6 +514,9 @@ pub struct AcePresentationInput {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CharacterPresentationInput {
     pub leaders: Vec<LeaderPresentationInput>,
+    /// Exact ace-view selection under which row order and modifier text were
+    /// materialized. `None` cannot consume context-bound d82 ace rows.
+    pub ace_context: Option<CharacterAceListContext>,
     pub aces: Vec<AcePresentationInput>,
 }
 
@@ -604,6 +607,30 @@ pub fn apply_exact_a39_observations(
         .presentation
         .as_ref()
         .ok_or_else(|| invalid("d82 Present view omitted presentation"))?;
+    if input.ace_context.as_ref() != Some(&presentation.ace_context) {
+        return Err(invalid("d82 ace rows do not match the requested selected-wing/plane-mask context"));
+    }
+    if presentation
+        .trait_trees
+        .iter()
+        .any(|tree| tree.owner_tag_db_id != owner_tag_db_id)
+    {
+        return Err(invalid("d82 trait trees belong to a different owner"));
+    }
+    if presentation
+        .ace_portraits
+        .iter()
+        .any(|ace| ace.owner_tag_db_id != owner_tag_db_id)
+    {
+        return Err(invalid("d82 ace rows belong to a different owner"));
+    }
+    if matches!(
+        &presentation.ace_context,
+        CharacterAceListContext::SelectedWing { owner_tag_db_id: context_owner, .. }
+            if *context_owner != owner_tag_db_id
+    ) {
+        return Err(invalid("d82 selected-wing context belongs to a different owner"));
+    }
     let mut output = input.clone();
     let leader_index: BTreeMap<u64, usize> = output
         .leaders
@@ -616,11 +643,7 @@ pub fn apply_exact_a39_observations(
     }
     let mut observed_nodes = BTreeSet::new();
     let mut ordered_nodes_by_leader = BTreeMap::<u64, Vec<TraitNodePresentation>>::new();
-    for tree in presentation
-        .trait_trees
-        .iter()
-        .filter(|tree| tree.owner_tag_db_id == owner_tag_db_id)
-    {
+    for tree in &presentation.trait_trees {
         let Some(&leader_index) = leader_index.get(&tree.unit_leader_id) else {
             return Err(invalid(format!(
                 "d82 observed unknown unit_leader_id {}",
@@ -677,11 +700,7 @@ pub fn apply_exact_a39_observations(
         output.leaders[index].trait_nodes = ordered_nodes;
     }
 
-    let owner_aces = presentation
-        .ace_portraits
-        .iter()
-        .filter(|ace| ace.owner_tag_db_id == owner_tag_db_id)
-        .collect::<Vec<_>>();
+    let owner_aces = presentation.ace_portraits.iter().collect::<Vec<_>>();
     if owner_aces.len() != output.aces.len() {
         return Err(invalid("d82 owner ace portrait membership is not bijective"));
     }
@@ -945,10 +964,16 @@ mod tests {
     fn aces() -> AceRosterExactView {
         AceRosterExactView {
             status: ViewStatus::Present,
+            owner_tag_db_id: 47,
+            carrier_version: 2,
+            observed_country_rows: 1,
+            observed_ace_rows: 1,
             wing_assignment_complete: true,
             aces: vec![AceExactRow {
+                owner_tag_db_id: 47,
                 ace_id: 9,
                 country_ace_index: 0,
+                source_mask: 115,
                 name: "A".into(),
                 surname: "B".into(),
                 callsign: "C".into(),
@@ -979,6 +1004,11 @@ mod tests {
                     reason: String::new(),
                 }],
             }],
+            ace_context: Some(CharacterAceListContext::PlaneTypeMask {
+                owner_tag_db_id: (),
+                wing_id: (),
+                plane_type_mask_raw: 0x400,
+            }),
             aces: vec![AcePresentationInput {
                 ace_id: 9,
                 visible_ordinal: 0,
@@ -1013,7 +1043,7 @@ mod tests {
         let exact = replay_core::CharacterPresentationExactView {
             status: ViewStatus::Present,
             presentation: Some(replay_core::CharacterPresentationExact {
-                schema_version: 2,
+                schema_version: 3,
                 authority: "exact_a729_character_presentation".into(),
                 executable_sha256: "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad".into(),
                 trait_collection_manifest_sha256: "837c8b4db6a6cbc03fa5c950dc24c814f5156d6cf0de08f5041bfcccab7d78c9".into(),
@@ -1023,6 +1053,7 @@ mod tests {
                 ace_bind_sort_manifest_sha256: "ea545ce9457982590bd42741d1f573a7874594b7c3f836bf290ae8a276f83396".into(),
                 ace_modifier_setter_artifact_sha256: "3b49c9eb735a03fc711f7322b74a5b86ad64b25ffdbcaa73a390b64a2edfd552".into(),
                 ace_modifier_formatter_manifest_sha256: "79fd3a1e1b9eafb09566b2721260936c8430acffcf0ba408cc866c6292ac8f0b".into(),
+                ace_selected_context_manifest_sha256: "b593bfc287648ac2bdced54567db5241f2acfe4032f8aed2a77632e29b468c5c".into(),
                 elapsed_wall_ms: 1,
                 frame_hour: 2,
                 completeness_record_identity: "xui17:a729:refresh:3".into(),
@@ -1040,6 +1071,11 @@ mod tests {
                         reason_context_id: Some("leader_traits::trait_tooltip::0".into()),
                     }],
                 }],
+                ace_context: CharacterAceListContext::PlaneTypeMask {
+                    owner_tag_db_id: (),
+                    wing_id: (),
+                    plane_type_mask_raw: 0x400,
+                },
                 ace_portraits: vec![replay_core::CharacterAcePortraitObservation {
                     owner_tag_db_id: 17,
                     ace_id: 9,
@@ -1059,6 +1095,14 @@ mod tests {
         assert!(overlaid.leaders[0].trait_nodes[0].reason.is_empty());
         assert_eq!(overlaid.aces[0].portrait_gfx, "GFX_GER_ace_m_7");
         assert_eq!(overlaid.aces[0].modifier_text, "+10% agility");
+
+        let mut foreign_owner = exact.clone();
+        let presentation = foreign_owner.presentation.as_mut().unwrap();
+        presentation.trait_trees[0].owner_tag_db_id = 18;
+        presentation.ace_portraits[0].owner_tag_db_id = 18;
+        assert!(
+            apply_exact_a39_observations(17, &foreign_owner, &complete_input()).is_err()
+        );
     }
 
     #[test]
@@ -1066,7 +1110,7 @@ mod tests {
         let exact = replay_core::CharacterPresentationExactView {
             status: ViewStatus::Present,
             presentation: Some(replay_core::CharacterPresentationExact {
-                schema_version: 2,
+                schema_version: 3,
                 authority: "exact_a729_character_presentation".into(),
                 executable_sha256: "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad".into(),
                 trait_collection_manifest_sha256: "837c8b4db6a6cbc03fa5c950dc24c814f5156d6cf0de08f5041bfcccab7d78c9".into(),
@@ -1076,6 +1120,7 @@ mod tests {
                 ace_bind_sort_manifest_sha256: "ea545ce9457982590bd42741d1f573a7874594b7c3f836bf290ae8a276f83396".into(),
                 ace_modifier_setter_artifact_sha256: "3b49c9eb735a03fc711f7322b74a5b86ad64b25ffdbcaa73a390b64a2edfd552".into(),
                 ace_modifier_formatter_manifest_sha256: "79fd3a1e1b9eafb09566b2721260936c8430acffcf0ba408cc866c6292ac8f0b".into(),
+                ace_selected_context_manifest_sha256: "b593bfc287648ac2bdced54567db5241f2acfe4032f8aed2a77632e29b468c5c".into(),
                 elapsed_wall_ms: 1,
                 frame_hour: 2,
                 completeness_record_identity: "xui17:a729:refresh:4".into(),
@@ -1103,6 +1148,11 @@ mod tests {
                         },
                     ],
                 }],
+                ace_context: CharacterAceListContext::PlaneTypeMask {
+                    owner_tag_db_id: (),
+                    wing_id: (),
+                    plane_type_mask_raw: 0x400,
+                },
                 ace_portraits: vec![replay_core::CharacterAcePortraitObservation {
                     owner_tag_db_id: 17,
                     ace_id: 9,

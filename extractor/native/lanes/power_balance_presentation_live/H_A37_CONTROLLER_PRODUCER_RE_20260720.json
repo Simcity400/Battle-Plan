@@ -124,9 +124,9 @@
       "event/other controller rows"
     ],
     "visibility": "Each family applies selected balance/category membership, runtime gate 0x140724770 and its family visibility function before materialization.",
-    "final_order": "All materialized presenter pointers are combined, exact-sorted by 0x141c474b0/0x141c475a0 using comparator 0x141c48340, then inserted into decision_grid by 0x141c48550.",
+    "final_order": "The 0x130-byte on-map-locator source vector publishes each accepted presenter immediately through 0x141c48550. Conventional decision, targeted-decision and timed-decision presenters are accumulated separately, exact-sorted by 0x141c474b0/0x141c475a0 using comparator 0x141c48340, then appended through 0x141c48550. The finalized grid child array is authoritative; never globally re-sort both routes.",
     "comparator": "selected category first; descending category/order rank from 0x140721690; descending definition integer at +0x968; ascending presenter ordinal at +0x520",
-    "capture_boundary": "Capture the sorted pointer list immediately before 0x141c48550 insertion or enumerate the finalized decision_grid and join each presenter to its stable definition id and exact runtime text/state leaves."
+    "capture_boundary": "Capture post-return from 0x141c4aa30 after both insertion routes, grid finalization and owner synchronization. Enumerate the finalized decision_grid and reverse-join every child to exactly one active presenter-pool slot, stable definition id and exact runtime text/state leaves; a single pre-insertion pointer list cannot cover both routes."
   },
   "repository_audit": {
     "carrier": "extractor/native/lanes/power_balance_presentation_live/src/lib.rs",

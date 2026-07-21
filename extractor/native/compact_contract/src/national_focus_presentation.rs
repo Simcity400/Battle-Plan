@@ -9,17 +9,17 @@ use std::collections::BTreeSet;
 pub const DOMAIN_ID: u16 = 89;
 pub const DOMAIN_NAME: &str = "national_focus_presentation_live";
 pub const MAGIC: u32 = u32::from_le_bytes(*b"NFP1");
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const MAX_VISIBLE_ITEMS: usize = 131_072;
 pub const MAX_TEXT_BYTES: usize = 65_536;
 pub const EXECUTABLE_SHA256: [u8; 32] = hex32(
     b"870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
 );
 pub const EXACT20_FUNCTION_MANIFEST_SHA256: [u8; 32] = hex32(
-    b"303351ed65468aa7655b904998819c96ca1c325f906b5a3bf32c4f18decc7969",
+    b"b319dd1b721ed6a13e47088b7def034111f9882631080bffbf049fbb79265a2f",
 );
 pub const EXACT20_JOB_RECEIPT_SHA256: [u8; 32] = hex32(
-    b"c6c3fb002bc05f1e092d7eb9b436aa720ca2cf19ad08f055747216dfa5871b4f",
+    b"b1c9d8c0678956f17bea2e7f9e06e7ff4baf31254c11b3c983a9a5ca9ae2d04b",
 );
 
 /// Static authority is complete, but a real complete/transition fixture has
@@ -92,11 +92,23 @@ pub struct Snapshot {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectedPresentBinding {
+    /// QPC frontier after the paired dynamic/detail refresh completed.
+    pub materialization_qpc_ticks: u64,
+    pub selected_present_global_order: u32,
+    pub selected_present_qpc_ticks: u64,
+    pub qpc_frequency_hz: u64,
+    /// Canonical portable-render-stream `SelectedPresentReceipt` digest.
+    pub selected_present_receipt_sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Frame {
     pub elapsed_wall_ms: u64,
     pub frame_hour: u64,
     pub status_flags: u32,
     pub authority: AuthorityState,
+    pub selected_present: Option<SelectedPresentBinding>,
     pub snapshot: Option<Snapshot>,
 }
 
@@ -141,6 +153,7 @@ pub fn collect_and_encode<S: ExactNationalFocusPresentationSource>(
     frame_hour: u64,
     elapsed_wall_ms: u64,
     country_tag: &str,
+    selected_present: SelectedPresentBinding,
 ) -> Result<Vec<u8>, CarrierError> {
     if !PRODUCTION_SCHEDULING_ENABLED || !LIVE_FIXTURE_ACCEPTED {
         return Err(CarrierError::ActivationDisabled);
@@ -151,6 +164,7 @@ pub fn collect_and_encode<S: ExactNationalFocusPresentationSource>(
         frame_hour,
         status_flags: 0,
         authority: AuthorityState::Exact20Receipt,
+        selected_present: Some(selected_present),
         snapshot: Some(snapshot),
     })
 }
@@ -165,6 +179,7 @@ pub fn encode_unavailable(
         frame_hour,
         status_flags,
         authority: AuthorityState::Unavailable,
+        selected_present: None,
         snapshot: None,
     })
 }
@@ -210,8 +225,27 @@ pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), CarrierError> {
 
 pub fn validate_frame(frame: &Frame) -> Result<(), CarrierError> {
     match frame.authority {
-        AuthorityState::Unavailable if frame.status_flags != 0 && frame.snapshot.is_none() => Ok(()),
+        AuthorityState::Unavailable
+            if frame.status_flags != 0
+                && frame.selected_present.is_none()
+                && frame.snapshot.is_none() =>
+        {
+            Ok(())
+        }
         AuthorityState::Exact20Receipt if frame.status_flags == 0 => {
+            let selected_present = frame.selected_present.as_ref().ok_or_else(|| {
+                CarrierError::Invalid("NFP1 exact frame omitted selected-Present binding".into())
+            })?;
+            if selected_present.materialization_qpc_ticks == 0
+                || selected_present.selected_present_global_order == 0
+                || selected_present.selected_present_qpc_ticks == 0
+                || selected_present.qpc_frequency_hz == 0
+                || selected_present.materialization_qpc_ticks
+                    > selected_present.selected_present_qpc_ticks
+                || !valid_sha256(&selected_present.selected_present_receipt_sha256)
+            {
+                return invalid("NFP1 selected-Present binding is incomplete or unordered");
+            }
             let snapshot = frame
                 .snapshot
                 .as_ref()
@@ -248,6 +282,19 @@ pub fn encode_payload(frame: &Frame) -> Result<Vec<u8>, CarrierError> {
     output.extend_from_slice(&EXECUTABLE_SHA256);
     output.extend_from_slice(&EXACT20_FUNCTION_MANIFEST_SHA256);
     output.extend_from_slice(&EXACT20_JOB_RECEIPT_SHA256);
+    output.push(u8::from(frame.selected_present.is_some()));
+    output.extend_from_slice(&[0; 3]);
+    if let Some(selected) = &frame.selected_present {
+        u64v(&mut output, selected.materialization_qpc_ticks);
+        u32v(&mut output, selected.selected_present_global_order);
+        u32v(&mut output, 0);
+        u64v(&mut output, selected.selected_present_qpc_ticks);
+        u64v(&mut output, selected.qpc_frequency_hz);
+        output.extend_from_slice(
+            &decode_sha256(&selected.selected_present_receipt_sha256)
+                .expect("validated selected-Present SHA-256"),
+        );
+    }
     output.push(u8::from(frame.snapshot.is_some()));
     output.extend_from_slice(&[0; 3]);
     if let Some(snapshot) = &frame.snapshot {
@@ -298,6 +345,35 @@ pub fn decode_payload(payload: &[u8]) -> Result<Frame, CarrierError> {
     {
         return invalid("NFP1 executable/receipt identity mismatch");
     }
+    let selected_present = match reader.u8()? {
+        0 => {
+            if reader.bytes(3)? != [0, 0, 0] {
+                return invalid("NFP1 selected-Present reserved bytes invalid");
+            }
+            None
+        }
+        1 => {
+            if reader.bytes(3)? != [0, 0, 0] {
+                return invalid("NFP1 selected-Present reserved bytes invalid");
+            }
+            let materialization_qpc_ticks = reader.u64()?;
+            let selected_present_global_order = reader.u32()?;
+            if reader.u32()? != 0 {
+                return invalid("NFP1 selected-Present reserved word invalid");
+            }
+            let selected_present_qpc_ticks = reader.u64()?;
+            let qpc_frequency_hz = reader.u64()?;
+            let selected_present_receipt_sha256 = encode_hex(reader.bytes(32)?);
+            Some(SelectedPresentBinding {
+                materialization_qpc_ticks,
+                selected_present_global_order,
+                selected_present_qpc_ticks,
+                qpc_frequency_hz,
+                selected_present_receipt_sha256,
+            })
+        }
+        _ => return invalid("NFP1 selected-Present marker invalid"),
+    };
     let present = reader.u8()?;
     if present > 1 || reader.bytes(3)? != [0, 0, 0] {
         return invalid("NFP1 snapshot marker/reserved bytes invalid");
@@ -356,6 +432,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<Frame, CarrierError> {
         frame_hour,
         status_flags,
         authority,
+        selected_present,
         snapshot,
     };
     validate_frame(&frame)?;
@@ -374,6 +451,43 @@ fn valid_text(value: &str) -> bool {
         && value.len() <= MAX_TEXT_BYTES
         && !value.as_bytes().contains(&0)
         && !value.chars().any(char::is_control)
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn decode_sha256(value: &str) -> Option<[u8; 32]> {
+    if !valid_sha256(value) {
+        return None;
+    }
+    let mut output = [0u8; 32];
+    for (index, byte) in output.iter_mut().enumerate() {
+        let pair = value.as_bytes().get(index * 2..index * 2 + 2)?;
+        *byte = (hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?;
+    }
+    Some(output)
+}
+
+fn hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        _ => None,
+    }
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
 }
 
 /// Portable Clausewitz focus-definition identity. The engine definition
@@ -426,10 +540,31 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn frame() -> Frame { Frame { elapsed_wall_ms: 7, frame_hour: 42, status_flags: 0, authority: AuthorityState::Exact20Receipt, snapshot: Some(Snapshot { source_sequence: 9, producer_complete: true, country_tag: "GER".into(), view_id: "nationalfocusview:GER".into(), producer_record_identity: "a729:a31:42:GER:9".into(), expected_visible_item_count: 2, visible_items: vec![ FocusPresentationItem { focus_id: "ger_a".into(), source_ordinal: 0, presentation_state_code: 1, display_progress_percent: 100, highlight_glow_visible: false, historical_marker_visible: true, joint_viewing_country_tag: None }, FocusPresentationItem { focus_id: "ger_b".into(), source_ordinal: 1, presentation_state_code: 3, display_progress_percent: 37, highlight_glow_visible: true, historical_marker_visible: false, joint_viewing_country_tag: Some("ITA".into()) } ] }) } }
+    fn selected_present() -> SelectedPresentBinding {
+        SelectedPresentBinding {
+            materialization_qpc_ticks: 90,
+            selected_present_global_order: 7,
+            selected_present_qpc_ticks: 100,
+            qpc_frequency_hz: 10_000_000,
+            selected_present_receipt_sha256: "ab".repeat(32),
+        }
+    }
+    fn frame() -> Frame { Frame { elapsed_wall_ms: 7, frame_hour: 42, status_flags: 0, authority: AuthorityState::Exact20Receipt, selected_present: Some(selected_present()), snapshot: Some(Snapshot { source_sequence: 9, producer_complete: true, country_tag: "GER".into(), view_id: "nationalfocusview:GER".into(), producer_record_identity: "a729:a31:42:GER:9".into(), expected_visible_item_count: 2, visible_items: vec![ FocusPresentationItem { focus_id: "ger_a".into(), source_ordinal: 0, presentation_state_code: 1, display_progress_percent: 100, highlight_glow_visible: false, historical_marker_visible: true, joint_viewing_country_tag: None }, FocusPresentationItem { focus_id: "ger_b".into(), source_ordinal: 1, presentation_state_code: 3, display_progress_percent: 37, highlight_glow_visible: true, historical_marker_visible: false, joint_viewing_country_tag: Some("ITA".into()) } ] }) } }
     #[test] fn roundtrip_preserves_pointer_free_item_identity_and_engine_order() { let expected = frame(); assert_eq!(decode_payload(&encode_payload(&expected).unwrap()).unwrap(), expected); }
     #[test] fn incomplete_or_inferred_state_rejects_whole_frame() { let mut value = frame(); value.snapshot.as_mut().unwrap().visible_items[1].source_ordinal = 7; assert!(encode_payload(&value).is_err()); let mut value = frame(); value.snapshot.as_mut().unwrap().visible_items[0].display_progress_percent = 99; assert!(encode_payload(&value).is_err()); }
-    #[test] fn production_activation_remains_false_without_live_fixture() { struct Source; impl ExactNationalFocusPresentationSource for Source { fn is_exact_a729_focus_view_source(&self) -> bool { true } fn producer_manifest_sha256(&self) -> [u8; 32] { EXACT20_FUNCTION_MANIFEST_SHA256 } fn collect_snapshot(&self, _: u64, _: &str) -> Result<Snapshot, String> { Ok(frame().snapshot.unwrap()) } } assert_eq!(collect_and_encode(&Source, 42, 7, "GER"), Err(CarrierError::ActivationDisabled)); }
+    #[test] fn production_activation_remains_false_without_live_fixture() { struct Source; impl ExactNationalFocusPresentationSource for Source { fn is_exact_a729_focus_view_source(&self) -> bool { true } fn producer_manifest_sha256(&self) -> [u8; 32] { EXACT20_FUNCTION_MANIFEST_SHA256 } fn collect_snapshot(&self, _: u64, _: &str) -> Result<Snapshot, String> { Ok(frame().snapshot.unwrap()) } } assert_eq!(collect_and_encode(&Source, 42, 7, "GER", selected_present()), Err(CarrierError::ActivationDisabled)); }
+    #[test]
+    fn selected_present_binding_is_mandatory_and_ordered() {
+        let mut value = frame();
+        value.selected_present = None;
+        assert!(encode_payload(&value).is_err());
+        let mut value = frame();
+        value.selected_present.as_mut().unwrap().materialization_qpc_ticks = 101;
+        assert!(encode_payload(&value).is_err());
+        let mut value = frame();
+        value.selected_present.as_mut().unwrap().selected_present_receipt_sha256 = "A".repeat(64);
+        assert!(encode_payload(&value).is_err());
+    }
     #[test]
     fn source_authority_and_requested_country_are_mandatory() {
         struct Source { authenticated: bool, manifest: [u8; 32], country: &'static str }

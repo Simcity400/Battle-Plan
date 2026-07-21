@@ -208,6 +208,7 @@ mod tests {
                 Ok(PublishReport {
                     published_path: observed_destination.to_path_buf(),
                     container_bytes: 123,
+                    container_sha256: "0".repeat(64),
                     visible_snapshot_hours: 1,
                     segments: 2,
                 })

@@ -2,6 +2,10 @@
 pub mod country_variables_extractor;
 pub mod scripted_gui_runtime_carrier;
 pub mod scripted_gui_runtime_compact;
+#[cfg(windows)]
+pub mod a729_delayed_event_lifecycle;
+#[cfg(windows)]
+pub mod a729_scripted_gui_runtime;
 #[path = "../scripted_state_domain51_collector.rs"]
 pub mod scripted_state_domain51_collector;
 #[path = "../scripted_state_domain51_gate.rs"]
@@ -25,9 +29,9 @@ pub use scripted_gui_runtime_compact::{
     DOMAIN_NAME as SCRIPTED_GUI_RUNTIME_DOMAIN_NAME,
 };
 pub use scripted_state_domain51_collector::{
-    collect_domain51_frame, registration_descriptor, DelayedEventRow, Domain51CollectedFrame,
-    Domain51FrameInput, FlagEntry, FlagScopeRead, OpaqueRootState, ScopeReadStatus, VariableEntry,
-    VariableScopeRead,
+    collect_a13_domain51_frame, collect_domain51_frame, registration_descriptor, A13CarrierError,
+    A13FrameInput, DelayedEventRow, Domain51CollectedFrame, Domain51FrameInput, FlagEntry,
+    FlagScopeRead, OpaqueRootState, ScopeReadStatus, VariableEntry, VariableScopeRead,
 };
 pub use scripted_state_domain51_gate::compact::{
     Domain51GateSummary, DOMAIN_ID, DOMAIN_NAME, STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED,

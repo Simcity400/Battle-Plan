@@ -14,7 +14,7 @@ use super::{
     PRODUCER_MANIFEST_SHA256, REFERENCED_DIVISION_TEMPLATE_TYPE,
 };
 use core::ffi::c_void;
-use minhook::MinHook;
+use minhook::{MinHook, MH_STATUS};
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::mem;
@@ -26,6 +26,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 pub const EQUIPMENT_SELECTION_RVA: u32 = 0x0177_15A0;
+pub const EQUIPMENT_AUTODESIGN_SUCCESS_RVA: u32 = 0x0147_DDD0;
 pub const DIVISION_ORDER_RVA: u32 = 0x0175_6C40;
 pub const DIVISION_SELECTION_RVA: u32 = 0x0167_AEE0;
 pub const VARIANT_UPGRADE_SELECTION_RVA: u32 = 0x01F5_D420;
@@ -38,6 +39,14 @@ const EQUIPMENT_SELECTION_SENTINEL: [u8; 16] = [
     0x48, 0x85, 0xD2, 0x0F, 0x84, 0x14, 0x03, 0x00, 0x00, 0x48, 0x89, 0x5C, 0x24, 0x08,
     0x55, 0x56,
 ];
+const EQUIPMENT_AUTODESIGN_SUCCESS_SENTINEL: [u8; 16] = [
+    0x44, 0x88, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x48, 0x89, 0x4C, 0x24,
+    0x08, 0x55,
+];
+pub const EQUIPMENT_AUTODESIGN_SUCCESS_MANIFEST_SHA256: &str =
+    "44bb3647f7285c8b961aca7ba0d702289c1145ddf983421369bf9abdc90e0ce5";
+pub const EQUIPMENT_AUTODESIGN_SUCCESS_SENTINEL_ARTIFACT_SHA256: &str =
+    "618865df111fb54b0a6d6773b1832a5696c5c916a9e66dbe4c00aba186a5be80";
 const DIVISION_ORDER_SENTINEL: [u8; 16] = [
     0x40, 0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48,
     0x83, 0xEC,
@@ -57,6 +66,9 @@ const DIVISION_ROW_POOL_DATA: usize = 0x2BB0;
 const DIVISION_ROW_POOL_USED: usize = 0x2BBC;
 const DIVISION_ROW_TEMPLATE: usize = 0x528;
 const DIVISION_HANDLER_SELECTED: usize = 0x8D0;
+const VARIANT_UPGRADE_NESTED_VIEW: usize = 0x1BB0;
+const VARIANT_UPGRADE_NESTED_SELECTED: usize = 0xA48;
+const VARIANT_UPGRADE_WINDOW_SELECTED: usize = 0x1CE0;
 const VARIANT_DEFINITION: usize = 0x3F0;
 const OBJECT_TYPE: usize = 0x08;
 const STABLE_ID: usize = 0x0C;
@@ -66,18 +78,23 @@ const EQUIPMENT_VARIANT_VTABLE_RVA: usize = 0x0293_AFB8;
 type TwoArgFn = unsafe extern "system" fn(usize, usize);
 type OneArgFn = unsafe extern "system" fn(usize);
 type PredicateFn = unsafe extern "system" fn(usize) -> u8;
+type ThreeArgReturnFn = unsafe extern "system" fn(usize, usize, u8) -> u64;
 
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_EQUIPMENT_SELECTION: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_EQUIPMENT_AUTODESIGN_SUCCESS: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_DIVISION_ORDER: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_DIVISION_SELECTION: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_VARIANT_UPGRADE: AtomicUsize = AtomicUsize::new(0);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 static IN_FLIGHT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 static STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
+static HOOK_LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
 
 thread_local! {
     static IN_CALLBACK: Cell<bool> = const { Cell::new(false) };
+    static IN_EQUIPMENT_SELECTION: Cell<bool> = const { Cell::new(false) };
+    static EQUIPMENT_AUTODESIGN_SUCCEEDED: Cell<bool> = const { Cell::new(false) };
 }
 
 #[derive(Clone, Debug)]
@@ -103,6 +120,7 @@ struct HookState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InstalledHookAddresses {
     pub equipment_selection: usize,
+    pub equipment_autodesign_success: usize,
     pub division_order: usize,
     pub division_selection: usize,
     pub variant_upgrade_selection: usize,
@@ -142,18 +160,22 @@ impl ExactSelectedDesignerIdentitySource for ExactA729SelectedDesignerSource {
             .ok_or("A40 hook state is not initialized")?
             .lock()
             .map_err(|_| "A40 hook state mutex poisoned")?;
-        if let Some(error) = &state.current_error {
-            return Err(error.clone());
-        }
-        let observed = state
-            .latest
-            .get(&family)
-            .ok_or_else(|| format!("A40 has not observed a complete {family:?} selection"))?;
+        let observed = match state.latest.get(&family) {
+            Some(observed) => observed,
+            None => {
+                return Err(state.current_error.clone().unwrap_or_else(|| {
+                    format!("A40 has not observed a complete {family:?} selection")
+                }))
+            }
+        };
         Ok(frame_from_observed(frame_hour, observed.clone()))
     }
 }
 
 pub fn install_for_fixture() -> Result<InstalledHookAddresses, String> {
+    let _lifecycle = HOOK_LIFECYCLE_LOCK
+        .lock()
+        .map_err(|_| "A40 hook lifecycle mutex poisoned".to_string())?;
     if INSTALLED.load(Ordering::Acquire) {
         return Ok(installed_addresses(MODULE_BASE.load(Ordering::Acquire)));
     }
@@ -166,6 +188,10 @@ pub fn install_for_fixture() -> Result<InstalledHookAddresses, String> {
     }
     let specs = [
         (EQUIPMENT_SELECTION_RVA, &EQUIPMENT_SELECTION_SENTINEL[..]),
+        (
+            EQUIPMENT_AUTODESIGN_SUCCESS_RVA,
+            &EQUIPMENT_AUTODESIGN_SUCCESS_SENTINEL[..],
+        ),
         (DIVISION_ORDER_RVA, &DIVISION_ORDER_SENTINEL[..]),
         (DIVISION_SELECTION_RVA, &DIVISION_SELECTION_SENTINEL[..]),
         (VARIANT_UPGRADE_SELECTION_RVA, &VARIANT_UPGRADE_SENTINEL[..]),
@@ -188,6 +214,11 @@ pub fn install_for_fixture() -> Result<InstalledHookAddresses, String> {
             &ORIGINAL_EQUIPMENT_SELECTION,
         ),
         (
+            addresses.equipment_autodesign_success,
+            hook_equipment_autodesign_success as *mut c_void,
+            &ORIGINAL_EQUIPMENT_AUTODESIGN_SUCCESS,
+        ),
+        (
             addresses.division_order,
             hook_division_order as *mut c_void,
             &ORIGINAL_DIVISION_ORDER,
@@ -208,8 +239,20 @@ pub fn install_for_fixture() -> Result<InstalledHookAddresses, String> {
         let original = match unsafe { MinHook::create_hook(target as *mut c_void, detour) } {
             Ok(original) => original,
             Err(status) => {
+                let mut cleanup_failures = Vec::new();
                 for rollback in created.iter().rev() {
-                    let _ = unsafe { MinHook::remove_hook(*rollback as *mut c_void) };
+                    match unsafe { MinHook::remove_hook(*rollback as *mut c_void) } {
+                        Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+                        Err(error) => cleanup_failures.push(format!(
+                            "remove {rollback:#x}: {error}"
+                        )),
+                    }
+                }
+                if !cleanup_failures.is_empty() {
+                    return Err(format!(
+                        "A40 hook creation at {target:#x} failed: {status}; rollback failed: {}",
+                        cleanup_failures.join(", ")
+                    ));
                 }
                 clear_originals();
                 MODULE_BASE.store(0, Ordering::Release);
@@ -223,9 +266,37 @@ pub fn install_for_fixture() -> Result<InstalledHookAddresses, String> {
     }
     for target in &created {
         if let Err(status) = unsafe { MinHook::enable_hook(*target as *mut c_void) } {
+            let mut cleanup_failures = Vec::new();
             for rollback in created.iter().rev() {
-                let _ = unsafe { MinHook::disable_hook(*rollback as *mut c_void) };
-                let _ = unsafe { MinHook::remove_hook(*rollback as *mut c_void) };
+                match unsafe { MinHook::disable_hook(*rollback as *mut c_void) } {
+                    Ok(())
+                    | Err(MH_STATUS::MH_ERROR_DISABLED)
+                    | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+                    Err(error) => cleanup_failures.push(format!(
+                        "disable {rollback:#x}: {error}"
+                    )),
+                }
+            }
+            if cleanup_failures.is_empty() {
+                if let Err(error) = wait_for_quiescence() {
+                    cleanup_failures.push(error);
+                }
+            }
+            if cleanup_failures.is_empty() {
+                for rollback in created.iter().rev() {
+                    match unsafe { MinHook::remove_hook(*rollback as *mut c_void) } {
+                        Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+                        Err(error) => cleanup_failures.push(format!(
+                            "remove {rollback:#x}: {error}"
+                        )),
+                    }
+                }
+            }
+            if !cleanup_failures.is_empty() {
+                return Err(format!(
+                    "A40 hook enable at {target:#x} failed: {status}; rollback failed: {}",
+                    cleanup_failures.join(", ")
+                ));
             }
             clear_originals();
             MODULE_BASE.store(0, Ordering::Release);
@@ -237,6 +308,9 @@ pub fn install_for_fixture() -> Result<InstalledHookAddresses, String> {
 }
 
 pub fn uninstall_fixture_hooks() -> Result<(), String> {
+    let _lifecycle = HOOK_LIFECYCLE_LOCK
+        .lock()
+        .map_err(|_| "A40 hook lifecycle mutex poisoned".to_string())?;
     let needs_disable = INSTALLED.load(Ordering::Acquire);
     if !needs_disable && MODULE_BASE.load(Ordering::Acquire) == 0 {
         return Ok(());
@@ -247,13 +321,19 @@ pub fn uninstall_fixture_hooks() -> Result<(), String> {
         addresses.variant_upgrade_selection,
         addresses.division_selection,
         addresses.division_order,
+        addresses.equipment_autodesign_success,
         addresses.equipment_selection,
     ];
     let mut first_error = None;
     if needs_disable {
         for target in &targets {
-            if let Err(status) = unsafe { MinHook::disable_hook(*target as *mut c_void) } {
-                first_error.get_or_insert_with(|| format!("A40 hook disable at {target:#x} failed: {status}"));
+            match unsafe { MinHook::disable_hook(*target as *mut c_void) } {
+                Ok(())
+                | Err(MH_STATUS::MH_ERROR_DISABLED)
+                | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+                Err(status) => {
+                    first_error.get_or_insert_with(|| format!("A40 hook disable at {target:#x} failed: {status}"));
+                }
             }
         }
         if let Some(error) = first_error.as_ref() {
@@ -263,22 +343,24 @@ pub fn uninstall_fixture_hooks() -> Result<(), String> {
     }
     wait_for_quiescence()?;
     for target in targets {
-        if let Err(status) = unsafe { MinHook::remove_hook(target as *mut c_void) } {
-            first_error.get_or_insert_with(|| format!("A40 hook removal at {target:#x} failed: {status}"));
+        match unsafe { MinHook::remove_hook(target as *mut c_void) } {
+            Ok(()) | Err(MH_STATUS::MH_ERROR_NOT_CREATED) => {}
+            Err(status) => {
+                first_error.get_or_insert_with(|| format!("A40 hook removal at {target:#x} failed: {status}"));
+            }
         }
+    }
+    if let Some(error) = first_error {
+        return Err(error);
     }
     clear_originals();
     MODULE_BASE.store(0, Ordering::Release);
-    if let Some(error) = first_error {
-        Err(error)
-    } else {
-        if let Some(state) = STATE.get() {
-            *state
-                .lock()
-                .map_err(|_| "A40 hook state mutex poisoned")? = HookState::default();
-        }
-        Ok(())
+    if let Some(state) = STATE.get() {
+        *state
+            .lock()
+            .map_err(|_| "A40 hook state mutex poisoned")? = HookState::default();
     }
+    Ok(())
 }
 
 pub fn diagnostics() -> HookDiagnostics {
@@ -324,13 +406,16 @@ pub fn drain_fixture_payload(
             .ok_or_else(|| SelectedDesignerError::Source("A40 hook state is not initialized".into()))?
             .lock()
             .map_err(|_| SelectedDesignerError::Source("A40 hook state mutex poisoned".into()))?;
-        if let Some(error) = &state.current_error {
-            return Err(SelectedDesignerError::Source(error.clone()));
+        match state.latest.remove(&family) {
+            Some(observed) => observed,
+            None => {
+                return Err(SelectedDesignerError::Source(
+                    state.current_error.clone().unwrap_or_else(|| {
+                        format!("A40 has no undrained {family:?} selection")
+                    }),
+                ))
+            }
         }
-        state
-            .latest
-            .remove(&family)
-            .ok_or_else(|| SelectedDesignerError::Source(format!("A40 has no undrained {family:?} selection")))?
     };
     let snapshot = frame_from_observed(frame_hour, observed);
     super::encode_payload(&super::SelectedDesignerTransportFrame {
@@ -366,6 +451,8 @@ fn frame_from_observed(
 fn installed_addresses(base: usize) -> InstalledHookAddresses {
     InstalledHookAddresses {
         equipment_selection: base + EQUIPMENT_SELECTION_RVA as usize,
+        equipment_autodesign_success:
+            base + EQUIPMENT_AUTODESIGN_SUCCESS_RVA as usize,
         division_order: base + DIVISION_ORDER_RVA as usize,
         division_selection: base + DIVISION_SELECTION_RVA as usize,
         variant_upgrade_selection: base + VARIANT_UPGRADE_SELECTION_RVA as usize,
@@ -374,6 +461,7 @@ fn installed_addresses(base: usize) -> InstalledHookAddresses {
 
 fn clear_originals() {
     ORIGINAL_EQUIPMENT_SELECTION.store(0, Ordering::Release);
+    ORIGINAL_EQUIPMENT_AUTODESIGN_SUCCESS.store(0, Ordering::Release);
     ORIGINAL_DIVISION_ORDER.store(0, Ordering::Release);
     ORIGINAL_DIVISION_SELECTION.store(0, Ordering::Release);
     ORIGINAL_VARIANT_UPGRADE.store(0, Ordering::Release);
@@ -408,11 +496,41 @@ fn wait_for_quiescence() -> Result<(), String> {
 unsafe extern "system" fn hook_equipment_selection(view: usize, variant: usize) {
     let _callback = CallbackGuard::enter();
     let nested = IN_CALLBACK.with(|guard| guard.replace(true));
+    if !nested {
+        EQUIPMENT_AUTODESIGN_SUCCEEDED.with(|value| value.set(false));
+        IN_EQUIPMENT_SELECTION.with(|value| value.set(true));
+    }
     call_two_arg_original(&ORIGINAL_EQUIPMENT_SELECTION, view, variant);
     if !nested {
-        publish_result(capture_equipment_selection(view, variant));
+        IN_EQUIPMENT_SELECTION.with(|value| value.set(false));
+        if EQUIPMENT_AUTODESIGN_SUCCEEDED.with(Cell::get) {
+            publish_result(capture_equipment_selection(view, variant));
+        } else {
+            publish_error(
+                "A40 equipment selection did not cross the exact successful auto-design boundary",
+            );
+        }
     }
     IN_CALLBACK.with(|guard| guard.set(nested));
+}
+
+unsafe extern "system" fn hook_equipment_autodesign_success(
+    designer_state: usize,
+    variant: usize,
+    automatic: u8,
+) -> u64 {
+    let _callback = CallbackGuard::enter();
+    let original = ORIGINAL_EQUIPMENT_AUTODESIGN_SUCCESS.load(Ordering::Acquire);
+    let result = if original == 0 {
+        0
+    } else {
+        let original: ThreeArgReturnFn = unsafe { mem::transmute(original) };
+        unsafe { original(designer_state, variant, automatic) }
+    };
+    if automatic != 0 && result != 0 && IN_EQUIPMENT_SELECTION.with(Cell::get) {
+        EQUIPMENT_AUTODESIGN_SUCCEEDED.with(|value| value.set(true));
+    }
+    result
 }
 
 unsafe extern "system" fn hook_division_order(view: usize) {
@@ -435,7 +553,14 @@ unsafe extern "system" fn hook_division_selection(handler: usize, template: usiz
             .and_then(|state| state.lock().ok())
             .and_then(|state| state.division_views_by_handler.get(&handler).copied());
         match view {
-            Some(view) => publish_result(capture_division_selection(view)),
+            Some(view)
+                if read_usize(handler + DIVISION_HANDLER_SELECTED) == Some(template) =>
+            {
+                publish_result(capture_division_selection(view))
+            }
+            Some(_) => publish_error(
+                "A40 division selection transaction did not commit the requested template",
+            ),
             None => publish_error("A40 division selection has no authenticated view/handler join"),
         }
     }
@@ -475,7 +600,10 @@ unsafe fn call_one_arg_original(slot: &AtomicUsize, a: usize) {
     }
 }
 
-fn capture_equipment_selection(view: usize, variant: usize) -> Result<ObservedSelection, String> {
+fn capture_equipment_selection(
+    view: usize,
+    variant: usize,
+) -> Result<ObservedSelection, String> {
     let base = module_base()?;
     let designer = crate::a729_hook::latest_active_role_root()?
         .ok_or("A40 equipment selection has no active d78 controller snapshot")?;
@@ -555,6 +683,12 @@ fn capture_division_selection(view: usize) -> Result<ObservedSelection, String> 
         DIVISION_TEMPLATE_VTABLE_RVA,
         REFERENCED_DIVISION_TEMPLATE_TYPE,
     )?;
+    if read_usize(view + DIVISION_ROW_POOL_DATA) != Some(data)
+        || read_u32(view + DIVISION_ROW_POOL_USED) != Some(used as u32)
+        || read_usize(handler + DIVISION_HANDLER_SELECTED) != Some(selected)
+    {
+        return Err("A40 division order/selection changed during capture".into());
+    }
     if !ordered_designs.contains(&selected_design) {
         return Err("A40 selected division template is absent from controller order".into());
     }
@@ -579,6 +713,17 @@ fn capture_variant_upgrade_selection(
 ) -> Result<ObservedSelection, String> {
     if window == 0 {
         return Err("A40 variant-upgrade selection supplied null window".into());
+    }
+    let nested_view = read_usize(window + VARIANT_UPGRADE_NESTED_VIEW)
+        .filter(|pointer| *pointer != 0)
+        .ok_or("A40 variant-upgrade nested view is null/unreadable")?;
+    if read_usize(nested_view + VARIANT_UPGRADE_NESTED_SELECTED) != Some(variant)
+        || read_usize(window + VARIANT_UPGRADE_WINDOW_SELECTED) != Some(variant)
+    {
+        return Err(
+            "A40 variant-upgrade transaction did not commit one identical source variant"
+                .into(),
+        );
     }
     let selected_design = read_identity(
         variant,
@@ -674,12 +819,28 @@ fn read_identity(
     expected_type: u32,
 ) -> Result<StableDesignIdentity, String> {
     let base = module_base()?;
-    if pointer == 0 || read_usize(pointer) != Some(base + expected_vtable_rva) {
+    if pointer == 0 {
+        return Err("A40 selected object pointer is null".into());
+    }
+    let first = (
+        read_usize(pointer),
+        read_u32(pointer + OBJECT_TYPE),
+        read_u32(pointer + STABLE_ID),
+    );
+    let second = (
+        read_usize(pointer),
+        read_u32(pointer + OBJECT_TYPE),
+        read_u32(pointer + STABLE_ID),
+    );
+    if first != second {
+        return Err("A40 selected object identity changed during capture".into());
+    }
+    let (vtable, object_type, stable_id) = first;
+    if vtable != Some(base + expected_vtable_rva) {
         return Err("A40 selected object failed exact vtable gate".into());
     }
-    let object_type = read_u32(pointer + OBJECT_TYPE)
-        .ok_or("A40 selected object type unreadable")?;
-    let stable_id = read_u32(pointer + STABLE_ID)
+    let object_type = object_type.ok_or("A40 selected object type unreadable")?;
+    let stable_id = stable_id
         .filter(|id| *id != 0)
         .ok_or("A40 selected object stable id unreadable/zero")?;
     if object_type != expected_type {
@@ -739,10 +900,18 @@ mod tests {
     #[test]
     fn exact_hook_rvas_and_sentinels_are_frozen() {
         assert_eq!(EQUIPMENT_SELECTION_RVA, 0x0177_15A0);
+        assert_eq!(EQUIPMENT_AUTODESIGN_SUCCESS_RVA, 0x0147_DDD0);
         assert_eq!(DIVISION_ORDER_RVA, 0x0175_6C40);
         assert_eq!(DIVISION_SELECTION_RVA, 0x0167_AEE0);
         assert_eq!(VARIANT_UPGRADE_SELECTION_RVA, 0x01F5_D420);
+        assert_eq!(VARIANT_UPGRADE_NESTED_VIEW, 0x1BB0);
+        assert_eq!(VARIANT_UPGRADE_NESTED_SELECTED, 0xA48);
+        assert_eq!(VARIANT_UPGRADE_WINDOW_SELECTED, 0x1CE0);
         assert_eq!(&EQUIPMENT_SELECTION_SENTINEL[..4], &[0x48, 0x85, 0xD2, 0x0F]);
+        assert_eq!(
+            &EQUIPMENT_AUTODESIGN_SUCCESS_SENTINEL[..4],
+            &[0x44, 0x88, 0x44, 0x24]
+        );
         assert_eq!(&DIVISION_ORDER_SENTINEL[..4], &[0x40, 0x53, 0x55, 0x56]);
     }
 

@@ -2,7 +2,8 @@
 //!
 //! This module consumes only `replay_core::TradeView`. It never reconstructs
 //! controller values from aggregate pools and never substitutes equipment-
-//! market contracts for classic resource routes.
+//! market contracts for classic resource routes. Equipment purchases and
+//! production licences are admitted as separate exact relation families.
 
 use crate::assets::AssetResolver;
 use crate::compose::{ComposeOptions, ComposeOutput, Compositor};
@@ -14,7 +15,10 @@ use crate::gui_scene_util::{
 use crate::loc::Localisation;
 use crate::paradox_text::Value;
 use crate::Result;
-use replay_core::{Leaf, ResourceTradeDealRow, TradeResourceRow, TradeView, ViewStatus};
+use replay_core::{
+    Leaf, MarketStockpileRow, ProductionLicenseAgreementRow, ProductionLicenseVariantRow,
+    ResourceTradeDealRow, TradeContractRow, TradeResourceRow, TradeView, ViewStatus,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const TRADE_RESOURCE_ORDER: [&str; 7] = [
@@ -107,6 +111,52 @@ pub struct TradeFactoryHeader {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct MarketStockpileCard {
+    pub equipment_variant_id: u32,
+    pub equipment_type: u32,
+    pub amount_raw: i64,
+    pub amount: f64,
+    pub visible_order: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProductionLicenseVariantCard {
+    pub variant_id: u32,
+    pub visible_order: i64,
+    pub creator_tag_db_id: u32,
+    pub origin_tag_db_id: u32,
+    pub source_tag_db_id: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProductionLicenseAgreementCard {
+    pub agreement_id: String,
+    pub visible_order: i64,
+    pub owner: String,
+    pub partner: String,
+    pub start_date_raw: i64,
+    pub start_date: String,
+    pub end_date_raw: Option<i64>,
+    pub end_date: Option<String>,
+    pub variants: Vec<ProductionLicenseVariantCard>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EquipmentPurchaseContractCard {
+    pub contract_id: String,
+    pub visible_order: i64,
+    pub counterpart: String,
+    pub direction: String,
+    pub agreement_id: String,
+    pub seller: String,
+    pub buyer: String,
+    pub start_date_raw: i64,
+    pub start_date: String,
+    pub end_date_raw: Option<i64>,
+    pub end_date: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct TradeResourceTotals {
     pub imported: f64,
     pub exported: f64,
@@ -128,6 +178,9 @@ pub struct TradePresentation {
     pub resource_pools: TradeData<Vec<TradeResourcePoolCard>>,
     pub resource_cards: TradeData<Vec<TradeResourceCard>>,
     pub deals: TradeData<Vec<TradeDealCard>>,
+    pub market_stockpile: TradeData<Vec<MarketStockpileCard>>,
+    pub equipment_purchase_contracts: TradeData<Vec<EquipmentPurchaseContractCard>>,
+    pub production_license_agreements: TradeData<Vec<ProductionLicenseAgreementCard>>,
     pub factories: TradeData<TradeFactoryHeader>,
     pub resource_totals: TradeData<TradeResourceTotals>,
     pub deal_totals: TradeData<TradeDealTotals>,
@@ -160,6 +213,9 @@ pub fn admit_trade_screen(
     let resource_pools = admit_resource_pools(view);
     let resource_cards = admit_resource_cards(view);
     let deals = admit_deals(view);
+    let market_stockpile = admit_market_stockpile(view);
+    let equipment_purchase_contracts = admit_equipment_purchase_contracts(view);
+    let production_license_agreements = admit_production_license_agreements(view);
     let factories = admit_factories(view);
     let resource_totals = match &resource_cards {
         TradeData::Available(rows) => TradeData::Available(TradeResourceTotals {
@@ -178,6 +234,9 @@ pub fn admit_trade_screen(
         resource_pools,
         resource_cards,
         deals,
+        market_stockpile,
+        equipment_purchase_contracts,
+        production_license_agreements,
         factories,
         resource_totals,
         deal_totals,
@@ -265,25 +324,66 @@ fn measured_resource_card(
     if resource != expected_resource || visible_order != expected_order as i64 {
         return None;
     }
+    let balance = *measured(&row.balance)?;
+    let produced = *measured(&row.produced)?;
+    let imported = *measured(&row.imported)?;
+    let exported = *measured(&row.exported)?;
+    let special_project = *measured(&row.special_project)?;
+    let production_line = *measured(&row.production_line)?;
+    let needed = *measured(&row.needed)?;
+    if ![
+        balance,
+        produced,
+        imported,
+        exported,
+        special_project,
+        production_line,
+        needed,
+    ]
+    .into_iter()
+    .all(exact_trade_i32_value)
+    {
+        return None;
+    }
     let needed_current = row.needed_current.measured().copied();
     let needed_max = row.needed_max.measured().copied();
-    if expected_resource == "oil" && (needed_current.is_none() || needed_max.is_none()) {
+    let needed_type = measured(&row.needed_type)?.clone();
+    let needed_semantics = if expected_resource == "oil" {
+        needed_current.is_some_and(exact_trade_i32_value)
+            && needed_max.is_some_and(exact_trade_i32_value)
+            && needed_current == Some(needed)
+            && needed_type == "current_max"
+    } else {
+        matches!(&row.needed_current, Leaf::Absent)
+            && matches!(&row.needed_max, Leaf::Absent)
+            && needed == balance
+            && ((balance.is_sign_negative() && needed_type == "deficit")
+                || (!balance.is_sign_negative() && needed_type == "surplus"))
+    };
+    if !needed_semantics {
         return None;
     }
     Some(TradeResourceCard {
         resource,
         visible_order,
-        balance: *measured(&row.balance)?,
-        produced: *measured(&row.produced)?,
-        imported: *measured(&row.imported)?,
-        exported: *measured(&row.exported)?,
-        special_project: *measured(&row.special_project)?,
-        production_line: *measured(&row.production_line)?,
-        needed: *measured(&row.needed)?,
+        balance,
+        produced,
+        imported,
+        exported,
+        special_project,
+        production_line,
+        needed,
         needed_current,
         needed_max,
-        needed_type: measured(&row.needed_type)?.clone(),
+        needed_type,
     })
+}
+
+fn exact_trade_i32_value(value: f64) -> bool {
+    value.is_finite()
+        && value.fract() == 0.0
+        && value >= i32::MIN as f64
+        && value <= i32::MAX as f64
 }
 
 fn admit_deals(view: &TradeView) -> TradeData<Vec<TradeDealCard>> {
@@ -299,7 +399,7 @@ fn admit_deals(view: &TradeView) -> TradeData<Vec<TradeDealCard>> {
         let Some(card) = measured_deal_card(row, index) else {
             return TradeData::Unavailable(TradeDataIssue::IncompleteRow);
         };
-        if card.deal_id < 0 || !seen_ids.insert(card.deal_id) {
+        if !seen_ids.insert(card.deal_id) {
             return TradeData::Unavailable(TradeDataIssue::IncompleteRow);
         }
         cards.push(card);
@@ -312,26 +412,320 @@ fn measured_deal_card(row: &ResourceTradeDealRow, expected_order: usize) -> Opti
     if visible_order != expected_order as i64 {
         return None;
     }
+    let deal_id = *measured(&row.deal_id)?;
+    let counterpart = measured(&row.counterpart)?.clone();
+    let direction = measured(&row.direction)?.clone();
+    let resource = measured(&row.resource)?.clone();
+    let requested = *measured(&row.requested)?;
+    let delivered = *measured(&row.delivered)?;
+    let available_export = *measured(&row.available_export)?;
+    let civilian_factories = *measured(&row.civilian_factories)?;
+    let factory_cost_per_resource = *measured(&row.factory_cost_per_resource)?;
     let convoys_assigned = *measured(&row.convoys_assigned)?;
     let convoys_required = *measured(&row.convoys_required)?;
+    let route_kind = measured(&row.route_kind)?.clone();
+    let delivery_efficiency = *measured(&row.delivery_efficiency)?;
+    if deal_id <= 0
+        || counterpart.trim().is_empty()
+        || !["import", "export"].contains(&direction.as_str())
+        || !TRADE_RESOURCE_ORDER.contains(&resource.as_str())
+        || !requested.is_finite()
+        || requested.fract() != 0.0
+        || !delivered.is_finite()
+        || !available_export.is_finite()
+        || available_export.fract() != 0.0
+        || i32::try_from(civilian_factories).is_err()
+        || !factory_cost_per_resource.is_finite()
+        || i32::try_from(convoys_assigned).is_err()
+        || i32::try_from(convoys_required).is_err()
+        || !["land", "sea", "locked"].contains(&route_kind.as_str())
+        || !delivery_efficiency.is_finite()
+        || !(0.0..=1.0).contains(&delivery_efficiency)
+        || !matches!(
+            (&row.no_trade_influence, &row.no_resources),
+            (Leaf::Measured(_), Leaf::Measured(_)) | (Leaf::Absent, Leaf::Absent)
+        )
+    {
+        return None;
+    }
     Some(TradeDealCard {
-        deal_id: *measured(&row.deal_id)?,
-        counterpart: measured(&row.counterpart)?.clone(),
-        direction: measured(&row.direction)?.clone(),
-        resource: measured(&row.resource)?.clone(),
-        requested: *measured(&row.requested)?,
-        delivered: *measured(&row.delivered)?,
-        available_export: *measured(&row.available_export)?,
-        civilian_factories: *measured(&row.civilian_factories)?,
-        factory_cost_per_resource: *measured(&row.factory_cost_per_resource)?,
+        deal_id,
+        counterpart,
+        direction,
+        resource,
+        requested,
+        delivered,
+        available_export,
+        civilian_factories,
+        factory_cost_per_resource,
         convoys_assigned,
         convoys_required,
         no_convoys: convoys_assigned < convoys_required,
         no_trade_influence: optional_bool(&row.no_trade_influence),
         no_resources: optional_bool(&row.no_resources),
-        route_kind: measured(&row.route_kind)?.clone(),
-        delivery_efficiency: *measured(&row.delivery_efficiency)?,
+        route_kind,
+        delivery_efficiency,
         visible_order,
+    })
+}
+
+fn admit_market_stockpile(view: &TradeView) -> TradeData<Vec<MarketStockpileCard>> {
+    if let Some(issue) = completeness_issue(&view.market_stockpile_complete) {
+        return TradeData::Unavailable(issue);
+    }
+    let Leaf::Measured(rows) = &view.market_stockpile else {
+        return TradeData::Unavailable(leaf_issue(&view.market_stockpile));
+    };
+    let mut seen = BTreeSet::new();
+    let mut cards = Vec::with_capacity(rows.len());
+    for (index, row) in rows.iter().enumerate() {
+        let Some(card) = measured_market_stockpile_card(row, index) else {
+            return TradeData::Unavailable(TradeDataIssue::IncompleteRow);
+        };
+        if !seen.insert((card.equipment_variant_id, card.equipment_type)) {
+            return TradeData::Unavailable(TradeDataIssue::IncompleteRow);
+        }
+        cards.push(card);
+    }
+    TradeData::Available(cards)
+}
+
+fn measured_market_stockpile_card(
+    row: &MarketStockpileRow,
+    expected_order: usize,
+) -> Option<MarketStockpileCard> {
+    let equipment_variant_id = *measured(&row.equipment_variant_id)?;
+    let equipment_type = *measured(&row.equipment_type)?;
+    let amount_raw = *measured(&row.amount_raw)?;
+    let amount = *measured(&row.amount)?;
+    let visible_order = *measured(&row.ordinal)?;
+    if equipment_variant_id == 0
+        || equipment_type != 70
+        || amount_raw < 0
+        || !amount.is_finite()
+        || amount < 0.0
+        || visible_order != expected_order as i64
+    {
+        return None;
+    }
+    Some(MarketStockpileCard {
+        equipment_variant_id,
+        equipment_type,
+        amount_raw,
+        amount,
+        visible_order,
+    })
+}
+
+fn admit_equipment_purchase_contracts(
+    view: &TradeView,
+) -> TradeData<Vec<EquipmentPurchaseContractCard>> {
+    let Leaf::Measured(rows) = &view.equipment_purchase_contracts else {
+        return TradeData::Unavailable(leaf_issue(&view.equipment_purchase_contracts));
+    };
+    let mut ids = BTreeSet::new();
+    let mut previous_order = -1i64;
+    let mut cards = Vec::with_capacity(rows.len());
+    for row in rows {
+        let Some(card) = measured_equipment_purchase_contract(row) else {
+            return TradeData::Unavailable(TradeDataIssue::IncompleteRow);
+        };
+        if card.visible_order <= previous_order || !ids.insert(card.contract_id.clone()) {
+            return TradeData::Unavailable(TradeDataIssue::InvalidExactOrder);
+        }
+        previous_order = card.visible_order;
+        cards.push(card);
+    }
+    TradeData::Available(cards)
+}
+
+fn measured_equipment_purchase_contract(
+    row: &TradeContractRow,
+) -> Option<EquipmentPurchaseContractCard> {
+    if !matches!(
+        &row.equipment_purchase_relation_complete,
+        Leaf::Measured(true)
+    ) {
+        return None;
+    }
+    let contract_id = measured(&row.contract_id)?.clone();
+    let visible_order = *measured(&row.visible_order)?;
+    let counterpart = measured(&row.counterpart)?.clone();
+    let direction = measured(&row.direction)?.clone();
+    let agreement_id = measured(&row.relation_agreement_id)?.clone();
+    let seller = measured(&row.seller)?.clone();
+    let seller_id = *measured(&row.seller_tag_db_id)?;
+    let buyer = measured(&row.buyer)?.clone();
+    let buyer_id = *measured(&row.buyer_tag_db_id)?;
+    let first_id = *measured(&row.relation_first_tag_db_id)?;
+    let second_id = *measured(&row.relation_second_tag_db_id)?;
+    let start_date_raw = *measured(&row.relation_start_date_raw)?;
+    let start_date = measured(&row.relation_start_date)?.clone();
+    if contract_id.is_empty()
+        || visible_order < 0
+        || seller_id == 0
+        || buyer_id == 0
+        || seller_id == buyer_id
+        || !((first_id == seller_id && second_id == buyer_id)
+            || (first_id == buyer_id && second_id == seller_id))
+        || agreement_id
+            != format!("equipment_purchase:{first_id}:{second_id}:{start_date_raw}")
+        || !((direction == "outgoing" && counterpart == buyer)
+            || (direction == "incoming" && counterpart == seller))
+        || start_date_raw <= 0
+        || start_date.is_empty()
+        || !matches!(
+            &row.relation_source,
+            Leaf::Measured(source) if source == "D43_MTLL_plus_D53_CEquipmentPurchaseRelation"
+        )
+    {
+        return None;
+    }
+    let (end_date_raw, end_date) = match (&row.relation_end_date_raw, &row.relation_end_date) {
+        (Leaf::Measured(raw), Leaf::Measured(date)) if *raw >= start_date_raw && !date.is_empty() => {
+            (Some(*raw), Some(date.clone()))
+        }
+        (Leaf::Unobtained | Leaf::Absent, Leaf::Unobtained | Leaf::Absent) => (None, None),
+        _ => return None,
+    };
+    Some(EquipmentPurchaseContractCard {
+        contract_id,
+        visible_order,
+        counterpart,
+        direction,
+        agreement_id,
+        seller,
+        buyer,
+        start_date_raw,
+        start_date,
+        end_date_raw,
+        end_date,
+    })
+}
+
+fn admit_production_license_agreements(
+    view: &TradeView,
+) -> TradeData<Vec<ProductionLicenseAgreementCard>> {
+    if let Some(issue) = completeness_issue(&view.production_license_agreements_complete) {
+        return TradeData::Unavailable(issue);
+    }
+    let Leaf::Measured(rows) = &view.production_license_agreements else {
+        return TradeData::Unavailable(leaf_issue(&view.production_license_agreements));
+    };
+    let mut agreement_ids = BTreeSet::new();
+    let mut variant_orders = BTreeSet::new();
+    let mut previous_order = -1i64;
+    let mut cards = Vec::with_capacity(rows.len());
+    for row in rows {
+        let Some(card) = measured_production_license_agreement(row) else {
+            return TradeData::Unavailable(TradeDataIssue::IncompleteRow);
+        };
+        if card.visible_order <= previous_order || !agreement_ids.insert(card.agreement_id.clone()) {
+            return TradeData::Unavailable(TradeDataIssue::InvalidExactOrder);
+        }
+        previous_order = card.visible_order;
+        for variant in &card.variants {
+            if !variant_orders.insert(variant.visible_order) {
+                return TradeData::Unavailable(TradeDataIssue::InvalidExactOrder);
+            }
+        }
+        cards.push(card);
+    }
+    if variant_orders
+        .iter()
+        .copied()
+        .ne(0..variant_orders.len() as i64)
+    {
+        return TradeData::Unavailable(TradeDataIssue::InvalidExactOrder);
+    }
+    TradeData::Available(cards)
+}
+
+fn measured_production_license_agreement(
+    row: &ProductionLicenseAgreementRow,
+) -> Option<ProductionLicenseAgreementCard> {
+    let agreement_id = measured(&row.agreement_id)?.clone();
+    let visible_order = *measured(&row.visible_order)?;
+    let owner = measured(&row.owner)?.clone();
+    let owner_id = *measured(&row.owner_tag_db_id)?;
+    let partner = measured(&row.partner)?.clone();
+    let partner_id = *measured(&row.partner_tag_db_id)?;
+    let first_id = *measured(&row.relation_first_tag_db_id)?;
+    let second_id = *measured(&row.relation_second_tag_db_id)?;
+    let start_date_raw = *measured(&row.start_date_raw)?;
+    let start_date = measured(&row.start_date)?.clone();
+    let source = measured(&row.source)?;
+    let Leaf::Measured(variants) = &row.variants else {
+        return None;
+    };
+    if agreement_id != format!("licence:{first_id}:{second_id}:{start_date_raw}")
+        || owner_id == 0
+        || partner_id == 0
+        || owner_id == partner_id
+        || !((first_id == owner_id && second_id == partner_id)
+            || (first_id == partner_id && second_id == owner_id))
+        || owner.is_empty()
+        || partner.is_empty()
+        || start_date_raw <= 0
+        || start_date.is_empty()
+        || source != "PLIC_v2_plus_D53_CLicenceProductionAccessRelation"
+        || variants.is_empty()
+    {
+        return None;
+    }
+    let mut variant_cards = Vec::with_capacity(variants.len());
+    for variant in variants {
+        variant_cards.push(measured_production_license_variant(variant, partner_id)?);
+    }
+    let (end_date_raw, end_date) = match (&row.end_date_raw, &row.end_date) {
+        (Leaf::Measured(raw), Leaf::Measured(date)) if *raw >= start_date_raw && !date.is_empty() => {
+            (Some(*raw), Some(date.clone()))
+        }
+        (Leaf::Unobtained | Leaf::Absent, Leaf::Unobtained | Leaf::Absent) => (None, None),
+        _ => return None,
+    };
+    Some(ProductionLicenseAgreementCard {
+        agreement_id,
+        visible_order,
+        owner,
+        partner,
+        start_date_raw,
+        start_date,
+        end_date_raw,
+        end_date,
+        variants: variant_cards,
+    })
+}
+
+fn measured_production_license_variant(
+    row: &ProductionLicenseVariantRow,
+    partner_id: u32,
+) -> Option<ProductionLicenseVariantCard> {
+    let variant_id = *measured(&row.variant_id)?;
+    let visible_order = *measured(&row.visible_order)?;
+    let creator_tag_db_id = *measured(&row.creator_tag_db_id)?;
+    let origin_tag_db_id = *measured(&row.origin_tag_db_id)?;
+    let source_tag_db_id = *measured(&row.source_tag_db_id)?;
+    let expected_source = if origin_tag_db_id == 0 {
+        creator_tag_db_id
+    } else {
+        origin_tag_db_id
+    };
+    if variant_id == 0
+        || variant_id >= (1 << 24)
+        || visible_order < 0
+        || creator_tag_db_id == 0
+        || source_tag_db_id != expected_source
+        || source_tag_db_id != partner_id
+    {
+        return None;
+    }
+    Some(ProductionLicenseVariantCard {
+        variant_id,
+        visible_order,
+        creator_tag_db_id,
+        origin_tag_db_id,
+        source_tag_db_id,
     })
 }
 
@@ -342,6 +736,12 @@ fn admit_factories(view: &TradeView) -> TradeData<TradeFactoryHeader> {
         &view.factories_available,
     ) {
         (Leaf::Measured(total), Leaf::Measured(used), Leaf::Measured(available)) => {
+            if [*total, *used, *available]
+                .into_iter()
+                .any(|value| i32::try_from(value).is_err())
+            {
+                return TradeData::Unavailable(TradeDataIssue::IncompleteRow);
+            }
             TradeData::Available(TradeFactoryHeader {
                 total: *total,
                 used: *used,
@@ -366,6 +766,9 @@ fn compute_deal_totals(rows: &[TradeDealCard]) -> TradeData<TradeDealTotals> {
     for row in rows {
         requested += row.requested;
         delivered += row.delivered;
+        if !requested.is_finite() || !delivered.is_finite() {
+            return TradeData::Unavailable(TradeDataIssue::ArithmeticOverflow);
+        }
         let Some(next) = civilian_factories.checked_add(row.civilian_factories) else {
             return TradeData::Unavailable(TradeDataIssue::ArithmeticOverflow);
         };
@@ -581,6 +984,52 @@ pub fn apply_trade_to_compose_options(
                 &format!("{prefix}convoys"),
                 format!("{}/{}", row.convoys_assigned, row.convoys_required),
             );
+        }
+    }
+    match &presentation.equipment_purchase_contracts {
+        TradeData::Available(rows) => {
+            set_text(
+                options,
+                "xui15_equipment_contract_count",
+                rows.len().to_string(),
+            );
+            for (index, row) in rows.iter().enumerate() {
+                let prefix = format!("xui15_equipment_contract_{index}_");
+                set_text(options, &format!("{prefix}counterpart"), row.counterpart.clone());
+                set_text(options, &format!("{prefix}direction"), row.direction.clone());
+                set_text(options, &format!("{prefix}start_date"), row.start_date.clone());
+                set_text(
+                    options,
+                    &format!("{prefix}end_date"),
+                    row.end_date.clone().unwrap_or_default(),
+                );
+            }
+        }
+        TradeData::Unavailable(_) => {
+            set_text(options, "xui15_equipment_contract_count", "--");
+        }
+    }
+    match &presentation.production_license_agreements {
+        TradeData::Available(rows) => {
+            set_text(options, "xui15_license_count", rows.len().to_string());
+            for (index, row) in rows.iter().enumerate() {
+                let prefix = format!("xui15_license_{index}_");
+                set_text(options, &format!("{prefix}partner"), row.partner.clone());
+                set_text(options, &format!("{prefix}start_date"), row.start_date.clone());
+                set_text(
+                    options,
+                    &format!("{prefix}end_date"),
+                    row.end_date.clone().unwrap_or_default(),
+                );
+                set_text(
+                    options,
+                    &format!("{prefix}variant_count"),
+                    row.variants.len().to_string(),
+                );
+            }
+        }
+        TradeData::Unavailable(_) => {
+            set_text(options, "xui15_license_count", "--");
         }
     }
 }

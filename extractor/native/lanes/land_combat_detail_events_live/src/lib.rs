@@ -19,13 +19,14 @@ pub const DOMAIN_LAND_COMBAT_DETAIL_EVENTS_NAME: &str = "land_combat_detail_even
 // rows, extending the header with a side-detail count. v1 payloads (no side
 // detail) remain decodable: a v1 header omits the trailing count field, so the
 // version gate selects the header/parse shape (never a payload-byte sniff).
-pub const SCHEMA_VERSION: u16 = 7;
+pub const SCHEMA_VERSION: u16 = 8;
 pub const SCHEMA_VERSION_V1_NO_SIDE_DETAIL: u16 = 1;
 pub const SCHEMA_VERSION_V2_SIDE_DETAIL: u16 = 2;
 pub const SCHEMA_VERSION_V3_ATTRIBUTION: u16 = 3;
 pub const SCHEMA_VERSION_V4_TACTIC_PROGRESS: u16 = 4;
 pub const SCHEMA_VERSION_V5_RESERVE_MEMBERS: u16 = 5;
 pub const SCHEMA_VERSION_V6_TERMINAL_RECORDS: u16 = 6;
+pub const SCHEMA_VERSION_V7_WIDTH_LOSS: u16 = 7;
 /// v1 header (event rows only). Kept for decoding older streams.
 pub const PAYLOAD_HEADER_LEN_V1: usize = 28;
 /// v2 header adds a u32 side_detail_row_count after the event-row count block.
@@ -38,7 +39,9 @@ pub const PAYLOAD_HEADER_LEN_V4: usize = 36;
 pub const PAYLOAD_HEADER_LEN_V5: usize = 40;
 /// v6 appends the authenticated terminal-record row count.
 pub const PAYLOAD_HEADER_LEN_V6: usize = 44;
-/// v7 appends exact-call width and current-epoch loss observation counts.
+/// v7 appends exact-call width and current-epoch loss observation counts. v8
+/// assigns the former trailing reserved word to authenticated combat-panel
+/// side observations, retaining the same 52-byte header.
 pub const PAYLOAD_HEADER_LEN: usize = 52;
 pub const DETAIL_EVENT_ROW_LEN: usize = 52;
 
@@ -170,6 +173,29 @@ pub const MAX_LAND_COMBATS_RESERVE_MEMBERS: usize = 8_000 * MAX_SIDE_UNITS;
 pub const MAX_LAND_COMBAT_TERMINAL_ROWS: usize = 8_000;
 pub const MAX_LAND_COMBAT_WIDTH_ROWS: usize = 8_000 * MAX_SIDE_UNITS;
 pub const MAX_LAND_COMBAT_LOSS_ROWS: usize = 8_000 * MAX_SIDE_UNITS;
+pub const MAX_LAND_COMBAT_PANEL_ROWS: usize = 8_000;
+
+/// One pointer-free observation sealed by the exact land-combat side panel
+/// materializer at 0x1415C9860. The nested 0x1415BBF00 appends prove the exact
+/// displayed modifier set/order, and 0x14129E190 supplies the selected leader.
+pub const PANEL_OBSERVATION_ROW_LEN: usize = 40;
+pub const PANEL_FLAG_OUTER_SENTINEL: u32 = 1 << 0;
+pub const PANEL_FLAG_MODIFIER_SENTINEL: u32 = 1 << 1;
+pub const PANEL_FLAG_LEADER_SENTINEL: u32 = 1 << 2;
+pub const PANEL_FLAG_ACTIVE_EPOCH_BOUND: u32 = 1 << 3;
+pub const PANEL_FLAG_COMPLETE_SCOPE: u32 = 1 << 4;
+pub const PANEL_FLAG_LEADER_IDENTITY: u32 = 1 << 5;
+pub const PANEL_FLAG_ENGINE_ORDER: u32 = 1 << 6;
+pub const PANEL_REQUIRED_FLAG_MASK: u32 = PANEL_FLAG_OUTER_SENTINEL
+    | PANEL_FLAG_MODIFIER_SENTINEL
+    | PANEL_FLAG_LEADER_SENTINEL
+    | PANEL_FLAG_ACTIVE_EPOCH_BOUND
+    | PANEL_FLAG_COMPLETE_SCOPE
+    | PANEL_FLAG_LEADER_IDENTITY
+    | PANEL_FLAG_ENGINE_ORDER;
+pub const PANEL_MODIFIER_KNOWN_MASK: u32 = 0x03ff;
+/// Exact append order in 0x1415C9860, expressed as tooltip enum ids.
+pub const PANEL_MODIFIER_CANONICAL_ORDER: [u8; 10] = [8, 2, 1, 0, 3, 4, 5, 6, 7, 9];
 
 /// One row per exact `wrapper+0x170` return in an authenticated synchronous
 /// `0x141299610` call. The final producer return is repeated for a mechanical
@@ -372,6 +398,19 @@ pub struct CurrentLossObservationRow {
     pub equipment_after_raw: i64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PanelObservationRow {
+    pub combat_id: u32,
+    pub generation: u64,
+    pub side: CombatSide,
+    pub capture_sequence: u64,
+    /// Exact `CArmyLeader+0x0C`; zero is an authenticated no-leader result.
+    pub leader_id: u32,
+    /// Tooltip enum presence bits 0..=9. Order is the pinned engine order.
+    pub modifier_bits: u32,
+    pub control_flags: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LandCombatSnapshot {
     pub combat_id: u32,
@@ -424,6 +463,7 @@ pub struct GateSummary {
     pub terminal_record_rows: u64,
     pub width_observation_rows: u64,
     pub current_loss_observation_rows: u64,
+    pub panel_observation_rows: u64,
     pub domains_seen: BTreeSet<u16>,
     pub status_flags_or: u32,
 }
@@ -697,6 +737,7 @@ pub struct CaptureFrame {
     pub width_observation_rows: Vec<WidthObservationRow>,
     /// Dormant X2 carrier transport. Empty until the exact loss controls pass.
     pub current_loss_observation_rows: Vec<CurrentLossObservationRow>,
+    pub panel_observation_rows: Vec<PanelObservationRow>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -738,13 +779,14 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
         let side_detail_rows = side_detail_rows_from_snapshots(&current);
         let attribution_rows = attribution_rows_from_snapshots(&current);
         let reserve_member_rows = reserve_member_rows_from_snapshots(&current);
-        let payload = encode_detail_events_payload_v7(
+        let payload = encode_detail_events_payload_v8(
             elapsed_wall_ms,
             STATUS_DELTA_DATA | STATUS_PARTIAL_DATA | STATUS_TRANSITION_BASELINE_RESET,
             &[],
             &side_detail_rows,
             &attribution_rows,
             &reserve_member_rows,
+            &[],
             &[],
             &[],
             &[],
@@ -771,6 +813,7 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
             terminal_record_rows: Vec::new(),
             width_observation_rows: Vec::new(),
             current_loss_observation_rows: Vec::new(),
+            panel_observation_rows: Vec::new(),
         });
     }
     let frame = build_transition_capture_frame(
@@ -882,6 +925,8 @@ pub struct DecodedDetailEventsPayload {
     pub width_observation_rows: Vec<WidthObservationRow>,
     /// X2 exact current-epoch loss rows (empty before v7).
     pub current_loss_observation_rows: Vec<CurrentLossObservationRow>,
+    /// Authenticated panel-selected leader and displayed modifiers (v8).
+    pub panel_observation_rows: Vec<PanelObservationRow>,
 }
 
 pub fn build_transition_capture_frame(
@@ -895,13 +940,14 @@ pub fn build_transition_capture_frame(
     let side_detail_rows = side_detail_rows_from_snapshots(current);
     let attribution_rows = attribution_rows_from_snapshots(current);
     let reserve_member_rows = reserve_member_rows_from_snapshots(current);
-    let payload = encode_detail_events_payload_v7(
+    let payload = encode_detail_events_payload_v8(
         elapsed_wall_ms,
         STATUS_DELTA_DATA,
         &rows,
         &side_detail_rows,
         &attribution_rows,
         &reserve_member_rows,
+        &[],
         &[],
         &[],
         &[],
@@ -925,6 +971,7 @@ pub fn build_transition_capture_frame(
         terminal_record_rows: Vec::new(),
         width_observation_rows: Vec::new(),
         current_loss_observation_rows: Vec::new(),
+        panel_observation_rows: Vec::new(),
     })
 }
 
@@ -1229,11 +1276,10 @@ pub fn encode_detail_events_payload_v6(
     payload
 }
 
-/// v7 production encoder: v6 plus the two dormant X2 observation transports.
-/// Both families are pointer-free and independently control-gated. Their
-/// counts are explicit header fields; no row shape is inferred from payload
-/// remainder bytes.
-pub fn encode_detail_events_payload_v7(
+/// Current production encoder: v6 plus the pointer-free X2 width/loss and
+/// authenticated panel-observation transports. Counts are explicit header
+/// fields; no row shape is inferred from payload remainder bytes.
+pub fn encode_detail_events_payload_v8(
     elapsed_wall_ms: u64,
     status_flags: u32,
     rows: &[DetailEventRow],
@@ -1243,6 +1289,7 @@ pub fn encode_detail_events_payload_v7(
     terminal_record_rows: &[TerminalCombatRecordRow],
     width_observation_rows: &[WidthObservationRow],
     current_loss_observation_rows: &[CurrentLossObservationRow],
+    panel_observation_rows: &[PanelObservationRow],
 ) -> Vec<u8> {
     let strings = canonical_tactic_strings(side_detail_rows);
     let string_indices = strings
@@ -1260,6 +1307,7 @@ pub fn encode_detail_events_payload_v7(
             + terminal_record_rows.len() * TERMINAL_RECORD_ROW_LEN
             + width_observation_rows.len() * WIDTH_OBSERVATION_ROW_LEN
             + current_loss_observation_rows.len() * CURRENT_LOSS_OBSERVATION_ROW_LEN
+            + panel_observation_rows.len() * PANEL_OBSERVATION_ROW_LEN
             + string_bytes,
     );
     payload.extend_from_slice(&SCHEMA_VERSION.to_le_bytes());
@@ -1274,7 +1322,7 @@ pub fn encode_detail_events_payload_v7(
     payload.extend_from_slice(&(terminal_record_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
     payload.extend_from_slice(&(width_observation_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
     payload.extend_from_slice(&(current_loss_observation_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&(panel_observation_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
     append_event_rows(&mut payload, rows);
     for row in side_detail_rows {
         append_side_detail_row(&mut payload, row, &string_indices, true);
@@ -1293,6 +1341,9 @@ pub fn encode_detail_events_payload_v7(
     }
     for row in current_loss_observation_rows {
         append_current_loss_observation_row(&mut payload, row);
+    }
+    for row in panel_observation_rows {
+        append_panel_observation_row(&mut payload, row);
     }
     for value in strings {
         payload.extend_from_slice(&(value.len() as u32).to_le_bytes());
@@ -1522,6 +1573,18 @@ fn append_current_loss_observation_row(
     payload.extend_from_slice(&row.equipment_after_raw.to_le_bytes());
 }
 
+fn append_panel_observation_row(payload: &mut Vec<u8>, row: &PanelObservationRow) {
+    validate_panel_observation_row(row).expect("invalid panel observation row");
+    payload.extend_from_slice(&row.combat_id.to_le_bytes());
+    payload.extend_from_slice(&row.generation.to_le_bytes());
+    payload.extend_from_slice(&row.side.wire_id().to_le_bytes());
+    payload.extend_from_slice(&row.capture_sequence.to_le_bytes());
+    payload.extend_from_slice(&row.leader_id.to_le_bytes());
+    payload.extend_from_slice(&row.modifier_bits.to_le_bytes());
+    payload.extend_from_slice(&row.control_flags.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+}
+
 fn validate_width_observation_row(row: &WidthObservationRow) -> Result<(), String> {
     if row.combat_id == 0
         || row.combat_id > MAX_COMBAT_ID
@@ -1559,6 +1622,20 @@ fn validate_current_loss_observation_row(
         || row.equipment_before_raw == row.equipment_after_raw
     {
         return Err("current-loss observation identity/control/delta field invalid".into());
+    }
+    Ok(())
+}
+
+fn validate_panel_observation_row(row: &PanelObservationRow) -> Result<(), String> {
+    if row.combat_id == 0
+        || row.combat_id > MAX_COMBAT_ID
+        || row.generation == 0
+        || row.capture_sequence == 0
+        || row.leader_id > MAX_DIVISION_ID
+        || row.modifier_bits & !PANEL_MODIFIER_KNOWN_MASK != 0
+        || row.control_flags != PANEL_REQUIRED_FLAG_MASK
+    {
+        return Err("panel observation identity/control field invalid".into());
     }
     Ok(())
 }
@@ -1816,6 +1893,7 @@ pub fn result_json(gate: &GateResult) -> String {
             "  \"terminal_record_rows\": {},\n",
             "  \"width_observation_rows\": {},\n",
             "  \"current_loss_observation_rows\": {},\n",
+            "  \"panel_observation_rows\": {},\n",
             "  \"status_flags_or\": {}\n",
             "}}\n"
         ),
@@ -1835,6 +1913,7 @@ pub fn result_json(gate: &GateResult) -> String {
         gate.summary.terminal_record_rows,
         gate.summary.width_observation_rows,
         gate.summary.current_loss_observation_rows,
+        gate.summary.panel_observation_rows,
         gate.summary.status_flags_or
     )
 }
@@ -1848,7 +1927,7 @@ pub fn decode_detail_events_payload(
     // payload-byte sniff). v1 = events only, v2 = side detail, v3 = side detail
     // plus damage attribution, v4 = exact side progress and tactic identity,
     // v5 = exact reserve-member identities, v6 = terminal records, v7 =
-    // pointer-free X2 width/current-loss observation transports.
+    // pointer-free X2 width/current-loss transports, v8 = exact panel rows.
     if payload.len() < 4 {
         return Err(vec![format!("offset {offset}: detail payload too short")]);
     }
@@ -1861,9 +1940,10 @@ pub fn decode_detail_events_payload(
         terminal_record_row_count,
         width_observation_row_count,
         current_loss_observation_row_count,
+        panel_observation_row_count,
         side_detail_row_len,
     ) = match version {
-        SCHEMA_VERSION_V1_NO_SIDE_DETAIL => (PAYLOAD_HEADER_LEN_V1, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize),
+        SCHEMA_VERSION_V1_NO_SIDE_DETAIL => (PAYLOAD_HEADER_LEN_V1, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize),
         SCHEMA_VERSION_V2_SIDE_DETAIL => {
             if payload.len() < PAYLOAD_HEADER_LEN_V2 {
                 return Err(vec![format!(
@@ -1873,6 +1953,7 @@ pub fn decode_detail_events_payload(
             (
                 PAYLOAD_HEADER_LEN_V2,
                 read_u32(payload, 24) as usize,
+                0usize,
                 0usize,
                 0usize,
                 0usize,
@@ -1895,6 +1976,7 @@ pub fn decode_detail_events_payload(
                 0usize,
                 0usize,
                 0usize,
+                0usize,
                 SIDE_DETAIL_ROW_LEN_V3,
             )
         }
@@ -1908,6 +1990,7 @@ pub fn decode_detail_events_payload(
                 PAYLOAD_HEADER_LEN_V4,
                 read_u32(payload, 24) as usize,
                 read_u32(payload, 28) as usize,
+                0usize,
                 0usize,
                 0usize,
                 0usize,
@@ -1929,6 +2012,7 @@ pub fn decode_detail_events_payload(
                 0usize,
                 0usize,
                 0usize,
+                0usize,
                 SIDE_DETAIL_ROW_LEN,
             )
         }
@@ -1946,10 +2030,11 @@ pub fn decode_detail_events_payload(
                 read_u32(payload, 36) as usize,
                 0usize,
                 0usize,
+                0usize,
                 SIDE_DETAIL_ROW_LEN,
             )
         }
-        SCHEMA_VERSION => {
+        SCHEMA_VERSION_V7_WIDTH_LOSS => {
             if payload.len() < PAYLOAD_HEADER_LEN {
                 return Err(vec![format!(
                     "offset {offset}: detail v7 payload too short"
@@ -1963,6 +2048,25 @@ pub fn decode_detail_events_payload(
                 read_u32(payload, 36) as usize,
                 read_u32(payload, 40) as usize,
                 read_u32(payload, 44) as usize,
+                0usize,
+                SIDE_DETAIL_ROW_LEN,
+            )
+        }
+        SCHEMA_VERSION => {
+            if payload.len() < PAYLOAD_HEADER_LEN {
+                return Err(vec![format!(
+                    "offset {offset}: detail v8 payload too short"
+                )]);
+            }
+            (
+                PAYLOAD_HEADER_LEN,
+                read_u32(payload, 24) as usize,
+                read_u32(payload, 28) as usize,
+                read_u32(payload, 32) as usize,
+                read_u32(payload, 36) as usize,
+                read_u32(payload, 40) as usize,
+                read_u32(payload, 44) as usize,
+                read_u32(payload, 48) as usize,
                 SIDE_DETAIL_ROW_LEN,
             )
         }
@@ -1980,7 +2084,7 @@ pub fn decode_detail_events_payload(
     let status_flags = read_u32(payload, 12);
     let row_count = read_u32(payload, 16) as usize;
     let string_count = read_u32(payload, 20) as usize;
-    // The final u32 of each header is a reserved-zero field (v1 @24, v2 @28).
+    // v8 assigns the final v7 reserved word to panel_observation_row_count.
     let reserved = read_u32(payload, header_len - 4);
     if row_len != DETAIL_EVENT_ROW_LEN {
         errors.push(format!(
@@ -2005,8 +2109,8 @@ pub fn decode_detail_events_payload(
             "offset {offset}: transition baseline reset is not badged PARTIAL_DATA"
         ));
     }
-    if (!matches!(version, SCHEMA_VERSION_V4_TACTIC_PROGRESS | SCHEMA_VERSION_V5_RESERVE_MEMBERS | SCHEMA_VERSION_V6_TERMINAL_RECORDS | SCHEMA_VERSION) && string_count != 0)
-        || reserved != 0
+    if (!matches!(version, SCHEMA_VERSION_V4_TACTIC_PROGRESS | SCHEMA_VERSION_V5_RESERVE_MEMBERS | SCHEMA_VERSION_V6_TERMINAL_RECORDS | SCHEMA_VERSION_V7_WIDTH_LOSS | SCHEMA_VERSION) && string_count != 0)
+        || (version != SCHEMA_VERSION && reserved != 0)
     {
         errors.push(format!(
             "offset {offset}: detail payload header reserved/string fields nonzero"
@@ -2052,6 +2156,11 @@ pub fn decode_detail_events_payload(
             "offset {offset}: current_loss_observation_row_count {current_loss_observation_row_count} exceeds max"
         ));
     }
+    if panel_observation_row_count > MAX_LAND_COMBAT_PANEL_ROWS {
+        errors.push(format!(
+            "offset {offset}: panel_observation_row_count {panel_observation_row_count} exceeds max"
+        ));
+    }
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -2062,7 +2171,8 @@ pub fn decode_detail_events_payload(
         .saturating_add(reserve_member_row_count.saturating_mul(RESERVE_MEMBER_ROW_LEN))
         .saturating_add(terminal_record_row_count.saturating_mul(TERMINAL_RECORD_ROW_LEN))
         .saturating_add(width_observation_row_count.saturating_mul(WIDTH_OBSERVATION_ROW_LEN))
-        .saturating_add(current_loss_observation_row_count.saturating_mul(CURRENT_LOSS_OBSERVATION_ROW_LEN));
+        .saturating_add(current_loss_observation_row_count.saturating_mul(CURRENT_LOSS_OBSERVATION_ROW_LEN))
+        .saturating_add(panel_observation_row_count.saturating_mul(PANEL_OBSERVATION_ROW_LEN));
     if payload.len() < fixed_len {
         errors.push(format!(
             "offset {offset}: detail payload len {} shorter than fixed rows {fixed_len}",
@@ -2240,6 +2350,15 @@ pub fn decode_detail_events_payload(
         }
         cursor += CURRENT_LOSS_OBSERVATION_ROW_LEN;
     }
+    let mut panel_observation_rows = Vec::with_capacity(panel_observation_row_count);
+    let mut seen_panel = BTreeSet::new();
+    for row_index in 0..panel_observation_row_count {
+        match decode_panel_observation_row(offset, row_index, payload, cursor, &mut seen_panel) {
+            Ok(row) => panel_observation_rows.push(row),
+            Err(err) => errors.push(err),
+        }
+        cursor += PANEL_OBSERVATION_ROW_LEN;
+    }
 
     validate_width_observation_groups(offset, &width_observation_rows, &mut errors);
     validate_current_loss_observation_groups(
@@ -2257,6 +2376,7 @@ pub fn decode_detail_events_payload(
         &terminal_record_rows,
         &width_observation_rows,
         &current_loss_observation_rows,
+        &panel_observation_rows,
         &mut errors,
     );
 
@@ -2271,10 +2391,40 @@ pub fn decode_detail_events_payload(
             terminal_record_rows,
             width_observation_rows,
             current_loss_observation_rows,
+            panel_observation_rows,
         })
     } else {
         Err(errors)
     }
+}
+
+fn decode_panel_observation_row(
+    offset: usize,
+    row_index: usize,
+    payload: &[u8],
+    cursor: usize,
+    seen: &mut BTreeSet<(u32, u64, CombatSide)>,
+) -> Result<PanelObservationRow, String> {
+    let side = decode_observation_side(read_u32(payload, cursor + 12))
+        .ok_or_else(|| format!("offset {offset}: panel row {row_index}: side invalid"))?;
+    let row = PanelObservationRow {
+        combat_id: read_u32(payload, cursor),
+        generation: read_u64(payload, cursor + 4),
+        side,
+        capture_sequence: read_u64(payload, cursor + 16),
+        leader_id: read_u32(payload, cursor + 24),
+        modifier_bits: read_u32(payload, cursor + 28),
+        control_flags: read_u32(payload, cursor + 32),
+    };
+    let reserved = read_u32(payload, cursor + 36);
+    validate_panel_observation_row(&row)
+        .map_err(|error| format!("offset {offset}: panel row {row_index}: {error}"))?;
+    if reserved != 0 || !seen.insert((row.combat_id, row.generation, row.side)) {
+        return Err(format!(
+            "offset {offset}: panel row {row_index}: reserved nonzero or duplicate side"
+        ));
+    }
+    Ok(row)
 }
 
 fn decode_width_observation_row(
@@ -2504,6 +2654,8 @@ fn decode_side_detail_row(
         schema_version,
         SCHEMA_VERSION_V4_TACTIC_PROGRESS
             | SCHEMA_VERSION_V5_RESERVE_MEMBERS
+            | SCHEMA_VERSION_V6_TERMINAL_RECORDS
+            | SCHEMA_VERSION_V7_WIDTH_LOSS
             | SCHEMA_VERSION
     );
     let progress_raw = has_tactic_progress.then(|| read_i32(payload, cursor + 100));
@@ -2689,6 +2841,7 @@ fn validate_payload_referential_consistency(
     terminal_record_rows: &[TerminalCombatRecordRow],
     width_observation_rows: &[WidthObservationRow],
     current_loss_observation_rows: &[CurrentLossObservationRow],
+    panel_observation_rows: &[PanelObservationRow],
     errors: &mut Vec<String>,
 ) {
     let mut metadata_by_combat = BTreeMap::new();
@@ -2878,6 +3031,14 @@ fn validate_payload_referential_consistency(
         if !side_details.contains_key(&(row.combat_id, row.generation, row.side)) {
             errors.push(format!(
                 "offset {offset}: current-loss observation for combat {}:{} has no matching side-detail row",
+                row.combat_id, row.generation
+            ));
+        }
+    }
+    for row in panel_observation_rows {
+        if !side_details.contains_key(&(row.combat_id, row.generation, row.side)) {
+            errors.push(format!(
+                "offset {offset}: panel observation for combat {}:{} has no matching side-detail row",
                 row.combat_id, row.generation
             ));
         }
@@ -3088,7 +3249,8 @@ fn decode_detail_events_payload_into_summary(
         .saturating_add(decoded.reserve_member_rows.len())
         .saturating_add(decoded.terminal_record_rows.len())
         .saturating_add(decoded.width_observation_rows.len())
-        .saturating_add(decoded.current_loss_observation_rows.len());
+        .saturating_add(decoded.current_loss_observation_rows.len())
+        .saturating_add(decoded.panel_observation_rows.len());
     let authority = D55DataAuthority {
         elapsed_wall_ms: decoded.elapsed_wall_ms,
         status_flags: decoded.status_flags,
@@ -3113,6 +3275,9 @@ fn decode_detail_events_payload_into_summary(
     summary.current_loss_observation_rows = summary
         .current_loss_observation_rows
         .saturating_add(decoded.current_loss_observation_rows.len() as u64);
+    summary.panel_observation_rows = summary
+        .panel_observation_rows
+        .saturating_add(decoded.panel_observation_rows.len() as u64);
     for row in decoded.rows {
         match row.event_kind {
             EVENT_PHASE_STARTED => summary.phase_started_rows += 1,
@@ -3646,17 +3811,24 @@ mod tests {
         } else {
             0
         };
-        let width_observation_rows = if version >= SCHEMA_VERSION
+        let width_observation_rows = if version >= SCHEMA_VERSION_V7_WIDTH_LOSS
             && payload.len() >= PAYLOAD_HEADER_LEN
         {
             read_u32(payload, 40)
         } else {
             0
         };
-        let current_loss_observation_rows = if version >= SCHEMA_VERSION
+        let current_loss_observation_rows = if version >= SCHEMA_VERSION_V7_WIDTH_LOSS
             && payload.len() >= PAYLOAD_HEADER_LEN
         {
             read_u32(payload, 44)
+        } else {
+            0
+        };
+        let panel_observation_rows = if version >= SCHEMA_VERSION
+            && payload.len() >= PAYLOAD_HEADER_LEN
+        {
+            read_u32(payload, 48)
         } else {
             0
         };
@@ -3669,7 +3841,8 @@ mod tests {
                 .saturating_add(reserve_member_rows)
                 .saturating_add(terminal_record_rows)
                 .saturating_add(width_observation_rows)
-                .saturating_add(current_loss_observation_rows),
+                .saturating_add(current_loss_observation_rows)
+                .saturating_add(panel_observation_rows),
         )
     }
 
@@ -4858,7 +5031,7 @@ mod tests {
     }
 
     #[test]
-    fn x2_v7_observation_rows_are_pointer_free_grouped_and_exact_sum_gated() {
+    fn x2_v8_observation_rows_are_pointer_free_grouped_and_exact_sum_gated() {
         let side = SideDetailRow {
             combat_id: 21_381,
             generation: 7,
@@ -4934,20 +5107,31 @@ mod tests {
                 }
             },
         ];
-        let payload = encode_detail_events_payload_v7(
+        let panel = PanelObservationRow {
+            combat_id: 21_381,
+            generation: 7,
+            side: CombatSide::Attacker,
+            capture_sequence: 46,
+            leader_id: 912,
+            modifier_bits: (1 << 8) | (1 << 2) | (1 << 5),
+            control_flags: PANEL_REQUIRED_FLAG_MASK,
+        };
+        let payload = encode_detail_events_payload_v8(
             5,
             STATUS_DELTA_DATA,
             &[],
-            &[side],
+            std::slice::from_ref(&side),
             &[],
             &[],
             &[],
             &widths,
             &losses,
+            &[panel],
         );
         let decoded = decode_detail_events_payload(0, &payload).unwrap();
         assert_eq!(decoded.width_observation_rows, widths.to_vec());
         assert_eq!(decoded.current_loss_observation_rows, losses.to_vec());
+        assert_eq!(decoded.panel_observation_rows, vec![panel]);
 
         let mut corrupt = payload.clone();
         let width_start = PAYLOAD_HEADER_LEN + SIDE_DETAIL_ROW_LEN;
@@ -4979,6 +5163,27 @@ mod tests {
             .unwrap_err()
             .iter()
             .any(|error| error.contains("complete/order-unique/consistent")));
+
+        let panel_start =
+            loss_start + losses.len() * CURRENT_LOSS_OBSERVATION_ROW_LEN;
+        let mut bad_panel = encode_detail_events_payload_v8(
+            5,
+            STATUS_DELTA_DATA,
+            &[],
+            std::slice::from_ref(&side),
+            &[],
+            &[],
+            &[],
+            &widths,
+            &losses,
+            &[panel],
+        );
+        bad_panel[panel_start + 32..panel_start + 36]
+            .copy_from_slice(&0u32.to_le_bytes());
+        assert!(decode_detail_events_payload(0, &bad_panel)
+            .unwrap_err()
+            .iter()
+            .any(|error| error.contains("panel row")));
     }
 
     #[test]

@@ -16,12 +16,72 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const STATIC_PROGRAM_CONSUMER_PREFIX: &str = "production_map.static_program/";
 pub const RUNTIME_UI_CONSUMER_PREFIX: &str = "production_ui.command/";
+pub const O05_BUILDING_CONSUMER: &str = "production_render.o05_building";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StaticProgramContentObservation {
     pub consumer: String,
     pub content_key: String,
     pub content: UsedContentKey,
+}
+
+/// Resolve the exact file identities named by the selected-Present O05
+/// carrier. The carrier may classify only entity submissions already present
+/// in the production frame; this function merely adds their exact source,
+/// entity-asset, and mesh winners to the portable content manifest under the
+/// O05 consumer.
+pub fn resolve_authenticated_o05_building_content<'a>(
+    vfs: &EffectiveVfs,
+    frames: impl IntoIterator<Item = &'a ProductionRenderFrame>,
+    manifest: &ContentManifest,
+) -> Result<Vec<StaticProgramContentObservation>, String> {
+    manifest
+        .validate()
+        .map_err(|error| format!("O05 content manifest is invalid: {error}"))?;
+    if manifest.manifest_digest_sha256.is_none() {
+        return Err("O05 content manifest is not finalized".into());
+    }
+    let mut observations = Vec::new();
+    let mut seen = BTreeSet::new();
+    for frame in frames {
+        frame
+            .validate()
+            .map_err(|error| format!("O05 production frame is invalid: {error}"))?;
+        if frame.authority.effective_vfs_manifest_sha256
+            != manifest.effective_vfs_manifest_sha256
+            || frame.authority.effective_vfs_manifest_sha256 != vfs.authority_manifest_sha256()
+        {
+            return Err("O05 frame, manifest, and selected VFS authorities differ".into());
+        }
+        let Some(o05) = &frame.o05_buildings else {
+            continue;
+        };
+        let content = std::iter::once(&o05.map_buildings_source).chain(
+            o05.records.iter().flat_map(|record| {
+                record.entity_asset.iter().chain(record.mesh.iter())
+            }),
+        );
+        for expected in content {
+            let resolved = vfs.resolve_required(
+                &expected.normalized_game_relative_path,
+                "selected-Present O05 building content",
+            )?;
+            if resolved.content != *expected {
+                return Err(format!(
+                    "selected-Present O05 winner changed for {}",
+                    expected.normalized_game_relative_path
+                ));
+            }
+            if seen.insert(expected.clone()) {
+                observations.push(StaticProgramContentObservation {
+                    consumer: O05_BUILDING_CONSUMER.into(),
+                    content_key: expected.normalized_game_relative_path.clone(),
+                    content: expected.clone(),
+                });
+            }
+        }
+    }
+    Ok(observations)
 }
 
 /// Resolve the exact content already sealed into typed selected-Present HUD
@@ -819,6 +879,7 @@ mod tests {
                 effect_catalog_sha256: "1".repeat(64),
                 entity_animation_catalog_sha256: "2".repeat(64),
                 recorded_input_variant: None,
+                recorded_input_receipt_sha256: None,
                 particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
             },
             update_index: 16_959_360,
@@ -840,6 +901,7 @@ mod tests {
             m02_combat: None,
             m03_arrows: None,
             o04_cities: None,
+            o05_buildings: None,
             authenticated_ui_pass: None,
             checkpoint: RenderCheckpoint {
                 last_sequence: 0,

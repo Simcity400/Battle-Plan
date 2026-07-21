@@ -64,10 +64,12 @@ record and enforces durable write → flush → sync receipt ordering. Recorder 
 dispatch, retains opaque `ValidatedCid1`, excludes CID1 from ordinary counts, and allows manifest
 `Known` only through that token (focused 3/3).
 
-Phase B is still partial: the collector's sequence-0/CFA1 producer barrier is unapplied, the active
-capture path remains Legacy, and there is no authorized `+0x720/+0x728` reader, production durable
-sink composition, or live control-channel delivery. No production identity or stitching activation
-is authorized.
+Phase B is statically composed end to end: the collector owns the sequence-0/CFA1 barrier and
+authenticated `+0x720/+0x728` reader, the recorder owns durable CRP1/CRA1 logical-stream rotation
+and ordered package-set publication, and replay requires explicit member selection with exact
+descriptor/container joins. The normal product profile nevertheless remains Legacy because the
+recorder, collector, and two rollover live-evidence latches are all false. No production identity
+or stitching activation is authorized until the owner-run matrix passes.
 
 Activation requires the complete matrix: paused D04 must give two stable, same-hour exact matches to
 seed `1026046527` and UUID `a4b17fed-ed12-4361-9064-fb6576638110`; exact-save reload, older-lineage
@@ -103,17 +105,17 @@ digest-collision states remain fail-closed exactly as P3 defines them in the mas
   just don't form the main replay timeline. Playback follows the last-played
   branch end to end.
 
-## 5. Duplex control and heartbeat — OFFLINE CONTRACT GREEN; ACTIVATION DISABLED
+## 5. Duplex control and heartbeat — PRODUCT ROUTE COMPOSED; ACTIVATION DISABLED
 
 The H4CT envelope, deadline/cancellation channel, peer/capability admission, recurring-heartbeat
 state, restrictive overlapped Windows named-pipe adapters, explicit-mode CFA1 codec, durable receipt
-contract, real paired H4CR/H4CT server, and recorder-main one-shot-injection composition seam now
-exist. Their type-state remains deliberately activation-disabled and cannot mint a product permit.
+contract, real paired H4CR/H4CT server, collector sequence-zero/rollover producer, recorder
+filesystem store, ordered publication, and replay selection now exist in the product composition.
+Their type-state remains deliberately activation-disabled and cannot mint a product permit.
 
-Activation still requires the collector-side H4CT/CID1 client, production filesystem durable sink
-adapter, replacement of the old stdout proof path, live peer/deadline/cancellation gates, recurring
-liveness, rollover, and crash/reconnect policy. Stage B remains disabled until that complete
-lifecycle is production-wired.
+Activation now requires the owner-run live peer/deadline/cancellation, recurring-liveness,
+same-pair rollback, whole-pair change, crash, and failure-boundary evidence. Stage B remains
+disabled until that lifecycle passes and its independent promotion authority is recorded.
 
 ## 6. Bare-bones settings / plug-and-play — ALIGNED BY DESIGN
 

@@ -20,6 +20,7 @@ use crate::owner_glyph_capture::{
 };
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
+use std::thread::{self, ThreadId};
 
 /// Lane-owned authorization for the raw harness probe. This is deliberately
 /// not the d76 production-promotion latch.
@@ -59,11 +60,16 @@ pub struct OwnerGlyphProbeTelemetry {
 }
 
 struct ActiveInvocation {
+    owner_thread_id: ThreadId,
     owner: usize,
     owner_join: ObservedOwnerRenderJoin,
     candidate: OwnerGlyphPresentCandidate,
     frame_hour: u64,
     render_invocation_ordinal: u64,
+    gui_engine_instance_token: u64,
+    paint_ordinal: u32,
+    destination_rect: [i32; 4],
+    ui_clip: Option<[i32; 4]>,
     clip: Option<[i32; 4]>,
     glyphs: Vec<OwnerScopedGlyphObservation>,
     inline_icons: Vec<OwnerScopedInlineIconObservation>,
@@ -121,9 +127,16 @@ impl OwnerGlyphEvidenceAutomation {
         layout_object: usize,
         candidate: OwnerGlyphPresentCandidate,
         frame_hour: u64,
+        gui_engine_instance_token: u64,
+        paint_ordinal: u32,
+        destination_rect: [i32; 4],
+        ui_clip: Option<[i32; 4]>,
         clip: Option<[i32; 4]>,
     ) -> Result<(), String> {
         self.validate_candidate(candidate, frame_hour)?;
+        if gui_engine_instance_token == 0 {
+            return Err("A25 owner render has no common GUI engine-instance token".into());
+        }
         if self.active.is_some() {
             self.telemetry.reentrancy_count = self.telemetry.reentrancy_count.saturating_add(1);
             self.telemetry.rejected_count = self.telemetry.rejected_count.saturating_add(1);
@@ -140,11 +153,16 @@ impl OwnerGlyphEvidenceAutomation {
             .checked_add(1)
             .ok_or("A25 render invocation ordinal overflowed")?;
         self.active = Some(ActiveInvocation {
+            owner_thread_id: thread::current().id(),
             owner: owner_join.owner,
             owner_join,
             candidate,
             frame_hour,
             render_invocation_ordinal: ordinal,
+            gui_engine_instance_token,
+            paint_ordinal,
+            destination_rect,
+            ui_clip,
             clip,
             glyphs: Vec::new(),
             inline_icons: Vec::new(),
@@ -251,6 +269,18 @@ impl OwnerGlyphEvidenceAutomation {
     }
 
     pub fn finish_owner_render(&mut self) -> Result<(), String> {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.owner_thread_id != thread::current().id())
+        {
+            self.telemetry.rejected_count = self.telemetry.rejected_count.saturating_add(1);
+            if let Some(active) = self.active.as_mut() {
+                active.health.hook_failure_count =
+                    active.health.hook_failure_count.saturating_add(1);
+            }
+            return Err("A25 owner-glyph render exit crossed hook threads".into());
+        }
         let active = self
             .active
             .take()
@@ -276,6 +306,10 @@ impl OwnerGlyphEvidenceAutomation {
             element_id: active.owner_join.element_id,
             source: active.owner_join.source,
             selected_final_text_sha256: active.owner_join.selected_final_text_sha256,
+            gui_engine_instance_token: active.gui_engine_instance_token,
+            paint_ordinal: active.paint_ordinal,
+            destination_rect: active.destination_rect,
+            ui_clip: active.ui_clip,
             clip: active.clip,
             glyph_decision_count,
             inline_icon_decision_count,
@@ -358,8 +392,24 @@ impl OwnerGlyphEvidenceAutomation {
     }
 
     fn active_mut(&mut self) -> Result<&mut ActiveInvocation, String> {
-        if self.active.is_none() {
+        if self.active.is_none()
+            || self
+                .active
+                .as_ref()
+                .is_some_and(|active| active.owner_thread_id != thread::current().id())
+        {
             self.telemetry.rejected_count = self.telemetry.rejected_count.saturating_add(1);
+        }
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.owner_thread_id != thread::current().id())
+        {
+            if let Some(active) = self.active.as_mut() {
+                active.health.hook_failure_count =
+                    active.health.hook_failure_count.saturating_add(1);
+            }
+            return Err("A25 glyph/icon callback crossed hook threads".into());
         }
         self.active
             .as_mut()
@@ -368,7 +418,13 @@ impl OwnerGlyphEvidenceAutomation {
 
     fn note_active_failure(&mut self, note: impl FnOnce(&mut CaptureHealth)) {
         if let Some(active) = self.active.as_mut() {
-            note(&mut active.health);
+            if active.owner_thread_id == thread::current().id() {
+                note(&mut active.health);
+            } else {
+                active.health.hook_failure_count =
+                    active.health.hook_failure_count.saturating_add(1);
+                self.telemetry.rejected_count = self.telemetry.rejected_count.saturating_add(1);
+            }
         } else {
             self.telemetry.rejected_count = self.telemetry.rejected_count.saturating_add(1);
         }

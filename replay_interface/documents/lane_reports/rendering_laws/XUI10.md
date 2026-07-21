@@ -248,7 +248,13 @@ The widget-name xrefs are job
 `38821cc63ebd66700a3660cfb09330788301f7a177797665c88e93547405126d`,
 identity-manifest hash
 `cd33527ef2f8f5d73ac87272d13b3c6219927272875ffe379ec7f4e1f4f8f8fe`.
-There are no remaining exact producer addresses in A31.
+The static A31 producer/address inventory is exhausted. The final display
+integer is an internal callsite value (`ESI -> EDX` at `0x141BB636E`), not a
+return value from `0x141BB5DF0`; `0x141BB5A70` is not a joint-country identity
+resolver. Live stable/transition fixture acquisition therefore still requires
+the custom harness to feed those exact observation boundaries through the
+collector's A31 ABI. This is a live evidence-input requirement, not authority
+to infer either leaf.
 
 ## Evidence
 

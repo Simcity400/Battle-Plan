@@ -11,9 +11,9 @@ pub const ARMY_OFF_ORDERS_VEC: u64 = 0x98;
 pub const ORDER_OFF_TYPE: u64 = 0x30;
 pub const ORDER_OFF_ARMY_BACKREF: u64 = 0x38;
 pub const ORDER_OFF_PATH_BEGIN: u64 = 0x70;
-pub const ORDER_OFF_PATH_SIZE: u64 = 0x78;
+pub const ORDER_OFF_PATH_SIZE: u64 = 0x7C;
 pub const ORDER_OFF_TYPE5_STATES_BEGIN: u64 = 0xE0;
-pub const ORDER_OFF_TYPE5_STATES_SIZE: u64 = 0xE8;
+pub const ORDER_OFF_TYPE5_STATES_SIZE: u64 = 0xEC;
 
 pub const STATUS_NONE: u32 = 0;
 pub const STATUS_EXACT: u32 = 1;

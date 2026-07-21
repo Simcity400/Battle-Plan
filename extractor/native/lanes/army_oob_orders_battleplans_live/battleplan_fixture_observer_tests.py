@@ -42,7 +42,7 @@ class BattleplanFixtureObserverTests(unittest.TestCase):
             },
             {
                 "name": "province_path_count",
-                "offset": "+0x78",
+                "offset": "+0x7C",
                 "type": "u32",
                 "evidence": "sampled vector count",
             },
@@ -52,7 +52,7 @@ class BattleplanFixtureObserverTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
         self.assertEqual(len(fixture["non_type5_geometry"][0]["validated_offsets"]), 2)
-        self.assertEqual(fixture["non_type5_geometry"][0]["validated_offsets"][1]["offset"], "+0x78")
+        self.assertEqual(fixture["non_type5_geometry"][0]["validated_offsets"][1]["offset"], "+0x7C")
 
     def test_unchanged_observations_build_rejections_when_allowed(self) -> None:
         obs = base_observation()

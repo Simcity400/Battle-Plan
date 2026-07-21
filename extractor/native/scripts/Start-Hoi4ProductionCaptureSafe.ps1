@@ -31,6 +31,7 @@ param(
     [int]$CancellationGraceSeconds = 5,
     [string]$AttemptStateRoot = "",
     [string]$PrebuiltArtifactAttestationPath = "",
+    [string]$DeploymentProfilePath = "",
     [string]$Rung = "",
     [ValidateSet("production", "synthetic-fault", "paused")][string]$AcceptanceMode = "production",
     [string]$AcceptanceTestNonce = "",
@@ -61,12 +62,14 @@ $speedStreamVerifier = Join-Path $scriptDir "verify_speed5_stream.py"
 $speedEvidenceVerifier = Join-Path $scriptDir "verify_speed_root_evidence_v2.py"
 $speedEvidenceProbe = Join-Path $scriptDir "collect_speed_root_evidence_v2.py"
 $speedEvidenceSchema = Join-Path $scriptDir "speed_root_evidence_v2.schema.json"
+$sinkReconciliationVerifier = Join-Path $scriptDir "verify_sink_reconciliation.py"
 $expectedSpeedEvidenceVerifierSha = "1a8057e0084e8507b1c8cde6a7d7c0198652db6efca0bbcb891bc7dc99cb8e28"
 $expectedSpeedEvidenceProbeSha = "7302d6981b74b5eba149a58b30e359c9e519e7b7e275273c07ca4214615b406b"
 $expectedSpeedEvidenceSchemaSha = "84ff925213ada78f2302fc2115350067dd4975f3ccc6fc295a7ff86c49d22f59"
 $expectedHoi4ExeSha = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
 . (Join-Path $scriptDir "ProductionCapture.Validation.ps1")
 . (Join-Path $scriptDir "ProductionArtifact.Attestation.ps1")
+. (Join-Path $scriptDir "WindowsPath.Identity.ps1")
 $pythonCommand=Get-Command $PythonExe -CommandType Application -ErrorAction Stop
 $PythonExe=$pythonCommand.Source
 $preparedModsetReceipt=$null
@@ -124,6 +127,20 @@ if ($AcceptanceMode -eq "production") {
     $expectedRung = if ($AcceptanceMode -eq "synthetic-fault") { "synthetic-fault" } else { "paused-short-proof" }
     if ($Rung -cne $expectedRung) { throw "acceptance mode $AcceptanceMode requires rung $expectedRung" }
 }
+$deploymentProfileFile = $null
+$deploymentProfileSha256 = $null
+$deploymentProfileSourceFile = $null
+if ($Rung -ceq "six-hour-soak") {
+    if ([string]::IsNullOrWhiteSpace($DeploymentProfilePath) -or -not (Test-Path -LiteralPath $DeploymentProfilePath -PathType Leaf)) {
+        throw "six-hour-soak requires the product-selected deployment profile file"
+    }
+    $DeploymentProfilePath = (Resolve-Path -LiteralPath $DeploymentProfilePath).Path
+    $deploymentProfileSourceFile = Split-Path -Leaf $DeploymentProfilePath
+    $deploymentProfileFile = "selected_deployment_profile.bin"
+    $deploymentProfileSha256 = (Get-FileHash -LiteralPath $DeploymentProfilePath -Algorithm SHA256).Hash.ToLowerInvariant()
+} elseif (-not [string]::IsNullOrWhiteSpace($DeploymentProfilePath)) {
+    throw "DeploymentProfilePath is accepted only for the six-hour-soak rung"
+}
 if ([string]::IsNullOrWhiteSpace($AttemptStateRoot)) {
     if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw "LOCALAPPDATA is unavailable; pass -AttemptStateRoot" }
     $AttemptStateRoot = Join-Path $env:LOCALAPPDATA "Hoi4MpStats\capture_attempts"
@@ -150,15 +167,34 @@ if ([string]::IsNullOrWhiteSpace($OutDir)) {
     $OutDir = Join-Path $env:LOCALAPPDATA "Hoi4MpStats\captures\$SessionId"
 }
 $OutDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutDir)
-if (-not $AllowOneDriveOutput) {
-    $blockedRoots = @($env:OneDrive, $env:OneDriveConsumer, $env:OneDriveCommercial, $repoRoot) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+function Assert-CaptureOutputNotSynced {
+    param([Parameter(Mandatory = $true)][string]$Candidate)
+    if ($AllowOneDriveOutput) { return }
+
+    # Resolve through an opened existing ancestor.  This detects a textual
+    # local path whose parent is a junction into OneDrive, including registry-
+    # only business accounts absent from the process environment.
+    $resolvedCandidate = Resolve-WindowsPathThroughExistingAncestor -LiteralPath $Candidate
+    $blockedRoots = [System.Collections.Generic.List[object]]::new()
+    foreach ($account in @(Get-OneDriveAccountRoots)) {
+        $blockedRoots.Add([pscustomobject]@{
+            label = $account.account_label
+            final_path = $account.final_path
+        })
+    }
+    $repoIdentity = Get-WindowsPathIdentity -LiteralPath $repoRoot
+    $blockedRoots.Add([pscustomobject]@{
+        label = 'repository_root'
+        final_path = $repoIdentity.final_path
+    })
     foreach ($blocked in $blockedRoots) {
-        $root = [System.IO.Path]::GetFullPath($blocked).TrimEnd('\') + '\'
-        if (($OutDir.TrimEnd('\') + '\').StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "capture output is under OneDrive/repository root $blocked; choose a local non-synced -OutDir or explicitly pass -AllowOneDriveOutput"
+        if (Test-WindowsPathContainedByRoot `
+            -Candidate $resolvedCandidate -Root $blocked.final_path) {
+            throw "capture output resolves under blocked sync/repository identity $($blocked.label); choose a local non-synced -OutDir or explicitly pass -AllowOneDriveOutput"
         }
     }
 }
+Assert-CaptureOutputNotSynced -Candidate $OutDir
 if (Test-Path -LiteralPath $OutDir) {
     # Default (fail-closed) behaviour is unchanged: an existing OutDir is refused so a
     # stale/planted directory can never be adopted. -AllowExistingEmptyOutDir is an
@@ -170,6 +206,17 @@ if (Test-Path -LiteralPath $OutDir) {
     if (-not $existingEmptyOk) { throw "refusing to reuse an existing session directory: $OutDir" }
 } else {
     New-Item -ItemType Directory -Path $OutDir | Out-Null
+}
+# Re-open the now-existing destination and repeat the identity check.  The
+# pre-create ancestor check and this post-create check together fail closed if
+# a junction/reparse ancestor is swapped during directory creation.
+Assert-CaptureOutputNotSynced -Candidate $OutDir
+if ($Rung -ceq "six-hour-soak") {
+    $retainedDeploymentProfilePath = Join-Path $OutDir $deploymentProfileFile
+    [IO.File]::Copy($DeploymentProfilePath, $retainedDeploymentProfilePath, $false)
+    if ((Get-FileHash -LiteralPath $retainedDeploymentProfilePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $deploymentProfileSha256) {
+        throw "retained deployment-profile bytes differ from the selected source"
+    }
 }
 if ([string]::IsNullOrWhiteSpace($EmittedTokensPath)) {
     $EmittedTokensPath = Join-Path $OutDir "emitted_token_inventory.json"
@@ -366,6 +413,11 @@ if ($AcceptanceMode -ne "production") {
 # produced run is BOUND to that rung (Invoke-AcceptanceLadder Get-RunDirBoundRung). Absent
 # (default) the plan carries no `rung` key and every prior behaviour is unchanged.
 if (-not [string]::IsNullOrWhiteSpace($Rung)) { $plan["rung"] = $Rung }
+if ($Rung -ceq "six-hour-soak") {
+    $plan["deployment_profile_source_file"] = $deploymentProfileSourceFile
+    $plan["deployment_profile_file"] = $deploymentProfileFile
+    $plan["deployment_profile_sha256"] = $deploymentProfileSha256
+}
 $planPath = Join-Path $OutDir "production_capture_plan.json"
 Write-DurableJson -Path $planPath -Value $plan
 if ($DryRun) { Write-Host "DRY RUN: one recorder invocation planned; no process opened and no injection performed"; exit 0 }
@@ -597,10 +649,18 @@ finally {
 }
 
 $validationReportPath = Join-Path $OutDir "production_validation_report.json"
+$sinkReconciliationReport = $null
 if ($AcceptanceMode -eq "production") {
     $validation = Test-ProductionCaptureArtifacts -RunDir $OutDir -RegistryPath $registryPath -SpeedProofPath (Join-Path $OutDir "speed5_proof.json") -StaticArtifactPaths $static -ExpectedStagedDll $stagedDll -CompactGateExe $compactGate -FoldCheckExe $foldCheck -ContainerVerifyExe $packReplay -PythonExe $PythonExe -StaticBundleScript $staticBundleScript -StaticBundleDir $StaticBundleDir -GameExePath $exePath -ModStatePath $ModStatePath -DlcStatePath $DlcStatePath -LoadOrderPath $LoadOrderPath -SourceInventoryPath $SourceInventoryPath -LiveResolutionReportPath $LiveResolutionReportPath -CapturePlanPath $planPath -SpeedRootGatePath $SpeedRootGatePath -CollectorControlPath $collectorControlPath -SpeedMonitorPath $speedLog -SpeedStreamVerifier $speedStreamVerifier -SpeedEvidenceTranscriptPath $SpeedEvidenceTranscriptPath -SpeedEvidenceNonceLedgerRoot $SpeedEvidenceNonceLedgerRoot -SpeedEvidenceVerifier $speedEvidenceVerifier -ExpectedSpeedEvidenceVerifierSha256 $expectedSpeedEvidenceVerifierSha -ExpectedSpeedEvidenceProbeSha256 $expectedSpeedEvidenceProbeSha -ExpectedSpeedStaticDisasmSha256 $SpeedStaticDisasmSha256 -ToolTimeoutSeconds $MaxFinalizeSeconds -CancellationGraceSeconds $CancellationGraceSeconds
     $validation | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $validationReportPath -Encoding UTF8
     if (-not $validation.ok) { throw "production validation failed: $($validation.problems -join ', ')" }
+    $sinkReconciliationReport = Join-Path $OutDir "sink_reconciliation_verification.json"
+    $sinkGate = Invoke-IndependentCaptureGate -Name "verify_sink_reconciliation" -FilePath $PythonExe -Arguments @($sinkReconciliationVerifier,"--run-dir",$OutDir,"--expect","success","--out",$sinkReconciliationReport) -LogDir (Join-Path $OutDir "sink_reconciliation_logs") -TimeoutSeconds $MaxFinalizeSeconds -CancellationGraceSeconds $CancellationGraceSeconds
+    if (-not $sinkGate.passed -or -not (Test-Path -LiteralPath $sinkReconciliationReport -PathType Leaf)) { throw "independent sink reconciliation failed" }
+    $sinkResult = Get-Content -LiteralPath $sinkReconciliationReport -Raw | ConvertFrom-Json
+    if ([string]$sinkResult.schema -cne "extractor.sink-reconciliation-verification.v1" -or [string]$sinkResult.verdict -cne "passed" -or @($sinkResult.problems).Count -ne 0) {
+        throw "sink reconciliation returned a noncanonical pass"
+    }
 } else {
     $manifest = Get-Content -LiteralPath (Join-Path $OutDir "native_session_manifest.json") -Raw | ConvertFrom-Json
     $replayFile = [string]$manifest.replay_file
@@ -658,6 +718,9 @@ if ($AcceptanceMode -ne "production") {
     $validationReceipt["replay_sha256"] = (Get-FileHash -LiteralPath $replayPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $validationReceipt["acceptance_proof"] = $validation
     $validationReceipt["acceptance_test_observation"] = $manifest.acceptance_test_observation
+} else {
+    $validationReceipt["sink_reconciliation_report_path"] = "sink_reconciliation_verification.json"
+    $validationReceipt["sink_reconciliation_report_sha256"] = (Get-FileHash -LiteralPath $sinkReconciliationReport -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 Write-DurableJson -Path $validationReceiptPath -Value $validationReceipt
 $validationReceiptSha=(Get-FileHash -LiteralPath $validationReceiptPath -Algorithm SHA256).Hash.ToLowerInvariant()

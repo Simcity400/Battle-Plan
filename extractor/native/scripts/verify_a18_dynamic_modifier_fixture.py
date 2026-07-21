@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 EXPECTED_SHA = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
-EXPECTED_JOB = "20260720T052710Z-w4-a18-zero-removal-hook-contract-5d917e1b"
+EXPECTED_JOB = "20260720T101858Z-w5-a18-dmi2-synchronous-zero-removal-rec-845d4d32"
 EXPECTED_MANIFEST = "9281a49e3f046984a699c3c42fd1ad172361d670aed9586631329255b038cd25"
 EXPECTED_UPDATE_RVA = 0x54BEB0
 EXPECTED_ERASE_RVA = 0x604D30
@@ -72,8 +72,84 @@ def row_map(rows):
         for start in (0, 0x18, 0x28):
             if any(masked[start : start + 8]):
                 raise ValueError("witness pointer slot was not redacted")
+        days_raw = int.from_bytes(bytes(masked[0x10:0x14]), "little", signed=True)
+        expected_days = -1 if row.get("remaining_days") is None else row["remaining_days"]
+        if days_raw != expected_days:
+            raise ValueError("witness masked bytes disagree with remaining_days")
+        if masked[0x20] not in (0, 1) or bool(masked[0x20]) is not row["enabled"]:
+            raise ValueError("witness masked bytes disagree with enabled")
+        capacity = int.from_bytes(bytes(masked[0x30:0x34]), "little")
+        count = int.from_bytes(bytes(masked[0x34:0x38]), "little")
+        if count > capacity or count != len(row["values_raw"]):
+            raise ValueError("witness masked value-vector header is inconsistent")
         out[modifier_id] = row
     return out
+
+
+def same_witness_row(left, right):
+    return (
+        left.get("modifier_id") == right.get("modifier_id")
+        and left.get("enabled") == right.get("enabled")
+        and left.get("values_raw") == right.get("values_raw")
+        and left.get("remaining_days") == right.get("remaining_days")
+    )
+
+
+def row_after_daily_decrement(row):
+    row_map([row])
+    remaining = row.get("remaining_days")
+    next_days = None if remaining is None else max(0, remaining - 1)
+    masked = list(row["pointer_masked_entry_bytes"])
+    masked[0x10:0x14] = list((-1 if next_days is None else next_days).to_bytes(4, "little", signed=True))
+    return {
+        "modifier_id": row["modifier_id"],
+        "enabled": row["enabled"],
+        "values_raw": list(row["values_raw"]),
+        "remaining_days": next_days,
+        "pointer_masked_entry_bytes": masked,
+    }
+
+
+def simulate_daily_transform(witness):
+    before = witness.get("before")
+    after = witness.get("after")
+    row_map(before)
+    row_map(after)
+    current = [row_after_daily_decrement(row) for row in before]
+    boundaries = witness.get("erase_boundaries")
+    if not isinstance(boundaries, list):
+        raise ValueError("hook erase-boundary list is malformed")
+    prior_start = None
+    retained_boundaries = []
+    for boundary in boundaries:
+        if not isinstance(boundary, dict):
+            raise ValueError("hook erase boundary is malformed")
+        start, end = boundary.get("start_index"), boundary.get("end_index")
+        rows = boundary.get("rows_before_erase")
+        if (
+            not exact_int(start, 0, (1 << 32) - 1)
+            or not exact_int(end, 1, (1 << 32) - 1)
+            or end != start + 1
+            or end > len(current)
+            or (prior_start is not None and start >= prior_start)
+        ):
+            raise ValueError("hook erase calls are not reverse-order singleton ranges")
+        row_map(rows)
+        if len(rows) != 1 or not same_witness_row(current[start], rows[0]):
+            raise ValueError("hook erased row is not the exact current post-decrement vector slice")
+        retained_boundaries.append(rows[0])
+        del current[start:end]
+        prior_start = start
+    if len(current) != len(after) or any(
+        not same_witness_row(expected, observed)
+        for expected, observed in zip(current, after)
+    ):
+        raise ValueError("hook after-vector is not the exact decrement-plus-erase result")
+    return {
+        "before": row_map(before),
+        "after": row_map(after),
+        "erased": row_map(retained_boundaries),
+    }
 
 
 def join_map(checkpoint):
@@ -96,6 +172,8 @@ def join_map(checkpoint):
                 raise ValueError("checkpoint exact-field join checks are incomplete")
             if not isinstance(join.get("enabled"), bool):
                 raise ValueError("checkpoint enabled field is malformed")
+            if join.get("value_scale") != 100_000:
+                raise ValueError("checkpoint value scale is not exact fixed-five")
             if not isinstance(join.get("values_raw"), list) or not all(
                 exact_int(value, -(1 << 63), (1 << 63) - 1)
                 for value in join["values_raw"]
@@ -125,6 +203,57 @@ def process_key(identity):
     if not exact_int(pid, 1, (1 << 32) - 1) or not exact_int(created, 1, (1 << 64) - 1) or sha != EXPECTED_SHA:
         raise ValueError("process identity is incomplete or not exact a729")
     return pid, created, sha
+
+
+def exact_target_chain(models, start_index, owner_id, timed_id, permanent_id):
+    initial_witness, initial_model = models[start_index]
+    expected_timed = initial_model["after"].get(timed_id)
+    permanent = initial_model["after"].get(permanent_id)
+    if expected_timed is None or permanent is None or permanent.get("remaining_days") is not None:
+        return None
+    prior_hour = initial_witness["game_hour_raw_after"]
+    steps = 1
+    for witness, model in models[start_index + 1 :]:
+        if witness.get("owner_tag_db_id") != owner_id:
+            continue
+        if (
+            witness.get("thread_id") != initial_witness.get("thread_id")
+            or witness.get("game_hour_raw_before") != witness.get("game_hour_raw_after")
+            or witness.get("game_hour_raw_before") - prior_hour != 24
+        ):
+            return None
+        timed_before = model["before"].get(timed_id)
+        permanent_before = model["before"].get(permanent_id)
+        permanent_after = model["after"].get(permanent_id)
+        if (
+            timed_before is None
+            or not same_witness_row(timed_before, expected_timed)
+            or permanent_before is None
+            or permanent_after is None
+            or not same_witness_row(permanent_before, permanent)
+            or not same_witness_row(permanent_after, permanent)
+        ):
+            return None
+        decremented = row_after_daily_decrement(timed_before)
+        steps += 1
+        if timed_before.get("remaining_days") == 1:
+            if (
+                timed_id in model["after"]
+                or not any(same_witness_row(row, decremented) for row in model["erased"].values())
+            ):
+                return None
+            return {
+                "zero_witness": witness,
+                "daily_steps": steps,
+                "first_hour": initial_witness["game_hour_raw_after"],
+                "zero_hour": witness["game_hour_raw_after"],
+            }
+        timed_after = model["after"].get(timed_id)
+        if timed_after is None or not same_witness_row(timed_after, decremented):
+            return None
+        expected_timed = timed_after
+        prior_hour = witness["game_hour_raw_after"]
+    return None
 
 
 def verify_documents(checkpoints, hook, manifest):
@@ -183,6 +312,24 @@ def verify_documents(checkpoints, hook, manifest):
         phase_hours = [by_phase[phase]["save"]["game_hour_raw"] for phase in PHASES]
         if not all(exact_int(hour, -(1 << 31), (1 << 31) - 1) for hour in phase_hours):
             raise ValueError("checkpoint game hours are malformed")
+        if by_phase["positive_before"].get("continuity") != {"kind": "fresh_baseline"}:
+            raise ValueError("positive-before checkpoint is not a fresh baseline")
+        for phase, previous_phase in (
+            ("positive_after", "positive_before"),
+            ("post_removal", "positive_after"),
+        ):
+            continuity = by_phase[phase].get("continuity")
+            previous = by_phase[previous_phase]
+            if (
+                not isinstance(continuity, dict)
+                or continuity.get("kind") != "exact_prior_checkpoint"
+                or continuity.get("previous_phase") != previous_phase
+                or continuity.get("previous_save_sha256") != previous["save"]["sha256"]
+                or continuity.get("previous_game_hour_raw") != previous["save"]["game_hour_raw"]
+                or continuity.get("game_hour_delta")
+                != by_phase[phase]["save"]["game_hour_raw"] - previous["save"]["game_hour_raw"]
+            ):
+                raise ValueError("checkpoint continuity binding is incomplete")
         first_delta = phase_hours[1] - phase_hours[0]
         if not 0 < first_delta <= 24 or phase_hours[2] < phase_hours[1]:
             raise ValueError("checkpoint phases do not bracket the next daily decrement in order")
@@ -267,22 +414,32 @@ def verify_documents(checkpoints, hook, manifest):
         if len(sequences) != len(witnesses) or not all(exact_int(value, 1, (1 << 64) - 1) for value in sequences) or sequences != sorted(set(sequences)):
             raise ValueError("hook witness sequence is not strict")
 
-        decrement_witness = None
-        zero_witness = None
+        models = []
+        decrement_candidates = []
         for witness in witnesses:
             if not exact_int(witness.get("thread_id"), 1, (1 << 32) - 1):
                 raise ValueError("hook witness thread id is malformed")
+            if not exact_int(witness.get("owner_tag_db_id"), 1, (1 << 32) - 1):
+                raise ValueError("hook witness owner id is malformed")
             if not exact_int(witness.get("game_hour_raw_before"), -(1 << 31), (1 << 31) - 1) or not exact_int(
                 witness.get("game_hour_raw_after"), -(1 << 31), (1 << 31) - 1
             ):
                 raise ValueError("hook witness game hour is malformed")
-            if witness.get("owner_tag_db_id") != owner_id:
-                continue
             if witness.get("game_hour_raw_before") != witness.get("game_hour_raw_after"):
                 raise ValueError("hook witness changed game hour inside update")
-            before_rows, after_rows = row_map(witness.get("before")), row_map(witness.get("after"))
+            model = simulate_daily_transform(witness)
+            models.append((witness, model))
+            if witness.get("owner_tag_db_id") != owner_id:
+                continue
+            before_rows, after_rows = model["before"], model["after"]
             permanent_before, permanent_after = before_rows.get(permanent_id), after_rows.get(permanent_id)
-            if permanent_before is None or permanent_after is None or permanent_before.get("remaining_days") is not None or permanent_after.get("remaining_days") is not None or not same_exact_instance(permanent_before, permanent_after):
+            if (
+                permanent_before is None
+                or permanent_after is None
+                or permanent_before.get("remaining_days") is not None
+                or permanent_after.get("remaining_days") is not None
+                or not same_witness_row(permanent_before, permanent_after)
+            ):
                 continue
             timed_before, timed_after = before_rows.get(timed_id), after_rows.get(timed_id)
             if (
@@ -294,27 +451,23 @@ def verify_documents(checkpoints, hook, manifest):
                 and witness.get("game_hour_raw_after") == phase_hours[1]
                 and same_exact_instance(timed_before, timed_after)
             ):
-                decrement_witness = witness
-            zero_rows = []
-            boundaries = witness.get("erase_boundaries")
-            if not isinstance(boundaries, list):
-                raise ValueError("hook erase-boundary list is malformed")
-            for boundary in boundaries:
-                if not isinstance(boundary, dict) or not exact_int(boundary.get("start_index"), 0, (1 << 32) - 1) or not exact_int(boundary.get("end_index"), 1, (1 << 32) - 1) or boundary["end_index"] <= boundary["start_index"]:
-                    raise ValueError("hook erase boundary is malformed")
-                boundary_rows = row_map(boundary.get("rows_before_erase"))
-                if boundary["end_index"] - boundary["start_index"] != len(boundary_rows):
-                    raise ValueError("hook erased range does not match retained row count")
-                zero_rows.extend(boundary_rows.values())
-            zero = next((row for row in zero_rows if row.get("modifier_id") == timed_id and row.get("remaining_days") == 0), None)
-            if timed_before is not None and timed_before.get("remaining_days") == 1 and zero is not None and timed_id not in after_rows and same_exact_instance(timed_before, zero):
-                zero_witness = witness
-        if decrement_witness is None:
+                decrement_candidates.append(len(models) - 1)
+        if not decrement_candidates:
             raise ValueError("hook receipt lacks exact timed N-to-N-minus-one witness")
-        if zero_witness is None:
-            raise ValueError("hook receipt lacks synchronous one-to-zero-to-removal witness")
-        if decrement_witness["sequence"] >= zero_witness["sequence"]:
-            raise ValueError("zero/removal witness does not follow the positive decrement")
+        chain = None
+        decrement_index = None
+        for candidate in decrement_candidates:
+            candidate_chain = exact_target_chain(models, candidate, owner_id, timed_id, permanent_id)
+            if candidate_chain is not None:
+                decrement_index = candidate
+                chain = candidate_chain
+                break
+        if chain is None or decrement_index is None:
+            raise ValueError(
+                "hook receipt lacks a continuous daily N-to-N-minus-one-through-one-to-zero-to-removal chain"
+            )
+        decrement_witness = models[decrement_index][0]
+        zero_witness = chain["zero_witness"]
         if decrement_witness["game_hour_raw_after"] != phase_hours[1]:
             raise ValueError("positive-after checkpoint is not bound to the decrement witness hour")
         if by_phase["post_removal"]["save"]["game_hour_raw"] < zero_witness["game_hour_raw_after"]:
@@ -336,6 +489,9 @@ def verify_documents(checkpoints, hook, manifest):
             "checkpoint_days": [before_timed["remaining_days"], after_timed["remaining_days"]],
             "decrement_witness_sequence": decrement_witness["sequence"],
             "zero_removal_witness_sequence": zero_witness["sequence"],
+            "continuous_daily_steps": chain["daily_steps"],
+            "continuous_daily_hour_span": chain["zero_hour"] - chain["first_hour"],
+            "ordered_vector_transform_verified": True,
         }
     except (KeyError, TypeError, ValueError) as exc:
         errors.append(str(exc))

@@ -7,6 +7,7 @@
 //! D80/UI assembly only after `materialize_gui_paint_receipt` succeeds.
 
 use portable_content_manifest::UsedContentKey;
+use portable_render_stream::{HudCommand, RenderTargetDesc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
@@ -76,6 +77,10 @@ const MAX_ACTIVE_GUI_PAINT_SCOPES: usize = 64;
 const MAX_PENDING_GUI_PAINT_PRESENTS: usize = 8;
 const MAX_PENDING_GUI_PAINT_RECEIPTS: usize = 16_384;
 const MAX_COMPLETED_GUI_PAINT_FRONTIERS: usize = 8;
+/// Bound raw lowerings retained under one owner operation. The portable
+/// operation ordinal is shared by every lowering in that scope; A25 mixed
+/// glyph/icon text may therefore contain more than one D3D draw.
+const MAX_DRAWS_PER_GUI_PAINT_CANDIDATE_SCOPE: usize = MAX_PENDING_GUI_PAINT_RECEIPTS;
 
 const DRAW_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x41, 0x8b, 0xf8, 0x8b, 0xda,
@@ -298,6 +303,13 @@ pub struct RawGuiPaintObservation {
     pub expected_first_ui_ordinal: u32,
     pub expected_last_ui_ordinal: u32,
     pub complete_ui_operation_count: u32,
+    /// Exact selected UI-pass target observed with this owner scope. Every
+    /// draw fingerprint must bind its canonical descriptor digest.
+    pub selected_ui_pass_target: RenderTargetDesc,
+    /// Generic non-A25 command materialized from the same raw D3D scope. A25
+    /// text leaves this absent and is materialized only after the owner-glyph
+    /// join. No placeholder command is permitted.
+    pub pre_materialized_command: Option<HudCommand>,
     pub owner: RawGuiPaintOwnerObservation,
     pub draws: Vec<GuiPaintDrawFingerprint>,
 }
@@ -323,6 +335,8 @@ pub struct RawGuiPaintCandidateObservation {
     pub expected_first_ui_ordinal: u32,
     pub expected_last_ui_ordinal: u32,
     pub complete_ui_operation_count: u32,
+    pub selected_ui_pass_target: RenderTargetDesc,
+    pub pre_materialized_command: Option<HudCommand>,
     pub owner: RawGuiPaintOwnerObservation,
     pub draws: Vec<GuiPaintDrawFingerprint>,
 }
@@ -370,6 +384,8 @@ pub struct GuiPaintReceipt {
     pub identity: GuiPaintCommandIdentity,
     pub draw_ordinal_span: GuiPaintDrawOrdinalSpan,
     pub complete_ui_operation_count: u32,
+    pub selected_ui_pass_target: RenderTargetDesc,
+    pub pre_materialized_command: Option<HudCommand>,
     pub ordered_draws: Vec<GuiPaintDrawFingerprint>,
     pub ordered_draws_sha256: String,
     pub receipt_sha256: String,
@@ -388,6 +404,7 @@ pub struct GuiPaintReceiptFrontier {
     pub selected_present_global_order: u32,
     pub selected_present_receipt_sha256: String,
     pub complete_ui_operation_count: u32,
+    pub selected_ui_pass_target: RenderTargetDesc,
     pub ordered_receipts: Vec<GuiPaintReceipt>,
     pub ordered_receipt_hashes_sha256: String,
     pub frontier_sha256: String,
@@ -425,17 +442,14 @@ pub fn materialize_gui_paint_receipt(
     if draw_count == 0 || draw_count != raw.expected_draw_count {
         return Err("GUI paint scope has a missing or partial draw frontier".into());
     }
-    if raw.expected_last_ui_ordinal < raw.expected_first_ui_ordinal
-        || raw
-            .expected_last_ui_ordinal
-            .checked_sub(raw.expected_first_ui_ordinal)
-            .and_then(|span| span.checked_add(1))
-            != Some(draw_count)
+    if raw.expected_last_ui_ordinal != raw.expected_first_ui_ordinal
+        || raw.owner.paint_ordinal != raw.expected_first_ui_ordinal
         || raw.complete_ui_operation_count == 0
         || raw.expected_last_ui_ordinal >= raw.complete_ui_operation_count
     {
         return Err("GUI paint UI ordinal span/frontier is incomplete".into());
     }
+    validate_selected_ui_target(&raw.selected_ui_pass_target, &raw.draws)?;
     validate_draw_frontier(&raw)?;
 
     let identity = GuiPaintCommandIdentity {
@@ -473,6 +487,8 @@ pub fn materialize_gui_paint_receipt(
         identity,
         draw_ordinal_span,
         complete_ui_operation_count: raw.complete_ui_operation_count,
+        selected_ui_pass_target: raw.selected_ui_pass_target,
+        pre_materialized_command: raw.pre_materialized_command,
         ordered_draws: raw.draws,
         ordered_draws_sha256,
         receipt_sha256: String::new(),
@@ -509,18 +525,22 @@ impl GuiPaintReceipt {
             "selected-Present receipt",
         )?;
         validate_portable_identity(&self.identity)?;
+        validate_selected_ui_target(&self.selected_ui_pass_target, &self.ordered_draws)?;
+        if let Some(command) = &self.pre_materialized_command {
+            validate_pre_materialized_command(
+                command,
+                &self.identity,
+                self.draw_ordinal_span,
+                &self.selected_ui_pass_target,
+            )?;
+        }
         let count = u32::try_from(self.ordered_draws.len())
             .map_err(|_| "GUI paint receipt draw count exceeds u32".to_string())?;
         if count == 0
             || self.draw_ordinal_span.draw_count != count
             || self.draw_ordinal_span.last_ui_ordinal
-                < self.draw_ordinal_span.first_ui_ordinal
-            || self
-                .draw_ordinal_span
-                .last_ui_ordinal
-                .checked_sub(self.draw_ordinal_span.first_ui_ordinal)
-                .and_then(|span| span.checked_add(1))
-                != Some(count)
+                != self.draw_ordinal_span.first_ui_ordinal
+            || self.identity.paint_ordinal != self.draw_ordinal_span.first_ui_ordinal
             || self.draw_ordinal_span.last_ui_ordinal >= self.complete_ui_operation_count
         {
             return Err("GUI paint portable ordinal span/frontier is invalid".into());
@@ -559,6 +579,7 @@ pub fn materialize_gui_paint_frontier(
     let selected_present_global_order = first.selected_present_global_order;
     let selected_present_receipt_sha256 = first.selected_present_receipt_sha256.clone();
     let complete_ui_operation_count = first.complete_ui_operation_count;
+    let selected_ui_pass_target = first.selected_ui_pass_target.clone();
     let mut expected_ui_ordinal = 0u32;
     let mut previous_global_render_sequence: Option<u64> = None;
     let mut receipt_hashes = Vec::with_capacity(ordered_receipts.len());
@@ -571,6 +592,7 @@ pub fn materialize_gui_paint_frontier(
             || receipt.selected_present_global_order != selected_present_global_order
             || receipt.selected_present_receipt_sha256 != selected_present_receipt_sha256
             || receipt.complete_ui_operation_count != complete_ui_operation_count
+            || receipt.selected_ui_pass_target != selected_ui_pass_target
         {
             return Err("GUI paint frontier crosses a Present or capture epoch".into());
         }
@@ -610,6 +632,7 @@ pub fn materialize_gui_paint_frontier(
         selected_present_global_order,
         selected_present_receipt_sha256,
         complete_ui_operation_count,
+        selected_ui_pass_target,
         ordered_receipts,
         ordered_receipt_hashes_sha256,
         frontier_sha256: String::new(),
@@ -628,6 +651,7 @@ impl GuiPaintReceiptFrontier {
             || rebuilt.selected_present_global_order != self.selected_present_global_order
             || rebuilt.selected_present_receipt_sha256 != self.selected_present_receipt_sha256
             || rebuilt.complete_ui_operation_count != self.complete_ui_operation_count
+            || rebuilt.selected_ui_pass_target != self.selected_ui_pass_target
             || rebuilt.ordered_receipt_hashes_sha256 != self.ordered_receipt_hashes_sha256
             || rebuilt.frontier_sha256 != self.frontier_sha256
         {
@@ -870,6 +894,344 @@ impl GuiPaintPresentKey {
     }
 }
 
+/// Present identity available at hook time, before the hour selector can
+/// compute the selected-Present receipt digest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct GuiPaintCandidateKey {
+    pub process_start_nonce: u64,
+    pub hook_epoch_nonce: u64,
+    pub submit_index: u64,
+    pub frame_sequence: u64,
+    pub present_global_order: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuiPaintCandidateScopeStart {
+    pub hooks: RawGuiPaintHookReceipt,
+    pub candidate: GuiPaintCandidateKey,
+    pub scope_entry_global_sequence: u64,
+    pub selected_ui_pass_target: RenderTargetDesc,
+    pub pre_materialized_command: Option<HudCommand>,
+    pub owner: RawGuiPaintOwnerObservation,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GuiPaintCandidateCaptureTelemetry {
+    pub completed_scope_count: u64,
+    pub selected_observation_count: u64,
+    pub discarded_non_selected_observation_count: u64,
+    pub rejected_scope_count: u64,
+    pub queue_overflow_count: u64,
+}
+
+struct ActiveGuiPaintCandidateScope {
+    start: GuiPaintCandidateScopeStart,
+    draws: Vec<GuiPaintDrawFingerprint>,
+    intervening_non_draw_event_count: u32,
+}
+
+/// Hook-time queue which never guesses a future selection digest. The live
+/// producer owns one instance per process/hook epoch and drains it only after
+/// the selected render receipt is recomputed.
+pub struct GuiPaintCandidateCapture {
+    executable_sha256: String,
+    process_start_nonce: u64,
+    hook_epoch_nonce: u64,
+    hook_set_receipt_sha256: String,
+    active_scopes: BTreeMap<u64, ActiveGuiPaintCandidateScope>,
+    completed: VecDeque<RawGuiPaintCandidateObservation>,
+    telemetry: GuiPaintCandidateCaptureTelemetry,
+}
+
+impl GuiPaintCandidateCapture {
+    pub fn new(
+        executable_sha256: String,
+        process_start_nonce: u64,
+        hook_epoch_nonce: u64,
+        hook_set_receipt_sha256: String,
+    ) -> Result<Self, String> {
+        if executable_sha256 != GUI_PAINT_A729_EXECUTABLE_SHA256
+            || process_start_nonce == 0
+            || hook_epoch_nonce == 0
+        {
+            return Err("GUI paint candidate capture epoch is incomplete".into());
+        }
+        check_sha256(&hook_set_receipt_sha256, "hook-set receipt")?;
+        Ok(Self {
+            executable_sha256,
+            process_start_nonce,
+            hook_epoch_nonce,
+            hook_set_receipt_sha256,
+            active_scopes: BTreeMap::new(),
+            completed: VecDeque::new(),
+            telemetry: GuiPaintCandidateCaptureTelemetry::default(),
+        })
+    }
+
+    pub fn begin_scope(
+        &mut self,
+        thread_token: u64,
+        start: GuiPaintCandidateScopeStart,
+    ) -> Result<(), String> {
+        let candidate = start.candidate;
+        if thread_token == 0
+            || start.scope_entry_global_sequence == 0
+            || candidate.process_start_nonce != self.process_start_nonce
+            || candidate.hook_epoch_nonce != self.hook_epoch_nonce
+            || candidate.submit_index == 0
+            || candidate.frame_sequence == 0
+            || candidate.present_global_order == 0
+            || start.hooks.executable_sha256 != self.executable_sha256
+            || start.hooks.hook_set_receipt_sha256 != self.hook_set_receipt_sha256
+            || validate_hook_receipt(&start.hooks).is_err()
+            || validate_owner(&start.owner).is_err()
+            || start.owner.owner_observation_sequence < start.scope_entry_global_sequence
+            || start.selected_ui_pass_target.width == 0
+            || start.selected_ui_pass_target.height == 0
+            || start.selected_ui_pass_target.sample_count == 0
+            || self.active_scopes.contains_key(&thread_token)
+            || self.active_scopes.len() >= MAX_ACTIVE_GUI_PAINT_SCOPES
+        {
+            self.telemetry.rejected_scope_count =
+                self.telemetry.rejected_scope_count.saturating_add(1);
+            self.active_scopes.remove(&thread_token);
+            return Err("GUI paint candidate scope authority is incomplete or reentrant".into());
+        }
+        self.active_scopes.insert(
+            thread_token,
+            ActiveGuiPaintCandidateScope {
+                start,
+                draws: Vec::new(),
+                intervening_non_draw_event_count: 0,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn record_draw(
+        &mut self,
+        thread_token: u64,
+        draw: GuiPaintDrawFingerprint,
+    ) -> Result<(), String> {
+        let Some(scope) = self.active_scopes.get(&thread_token) else {
+            self.telemetry.rejected_scope_count =
+                self.telemetry.rejected_scope_count.saturating_add(1);
+            return Err("GUI paint candidate draw has no active scope".into());
+        };
+        let mismatched = draw.final_draw_kind != scope.start.hooks.final_draw_kind
+            || draw.global_render_sequence <= scope.start.scope_entry_global_sequence
+            || scope.draws.len() >= MAX_DRAWS_PER_GUI_PAINT_CANDIDATE_SCOPE
+            || scope.draws.last().is_some_and(|previous| {
+                previous.global_render_sequence.checked_add(1)
+                    != Some(draw.global_render_sequence)
+                    || previous.ui_ordinal != draw.ui_ordinal
+                    || previous.d3d_capture_sequence >= draw.d3d_capture_sequence
+            });
+        if mismatched {
+            self.active_scopes.remove(&thread_token);
+            self.telemetry.rejected_scope_count =
+                self.telemetry.rejected_scope_count.saturating_add(1);
+            return Err("GUI paint candidate draw order mismatched its owner scope".into());
+        }
+        self.active_scopes
+            .get_mut(&thread_token)
+            .expect("candidate scope existed immediately before append")
+            .draws
+            .push(draw);
+        Ok(())
+    }
+
+    pub fn note_non_draw_event(&mut self, thread_token: u64) -> Result<(), String> {
+        let Some(_scope) = self.active_scopes.remove(&thread_token) else {
+            self.telemetry.rejected_scope_count =
+                self.telemetry.rejected_scope_count.saturating_add(1);
+            return Err("GUI paint candidate non-draw event has no active scope".into());
+        };
+        self.telemetry.rejected_scope_count =
+            self.telemetry.rejected_scope_count.saturating_add(1);
+        Err("GUI paint candidate scope was interleaved by a non-draw event".into())
+    }
+
+    pub fn end_scope(
+        &mut self,
+        thread_token: u64,
+        scope_exit_global_sequence: u64,
+        complete_ui_operation_count: u32,
+    ) -> Result<(), String> {
+        let Some(scope) = self.active_scopes.remove(&thread_token) else {
+            self.telemetry.rejected_scope_count =
+                self.telemetry.rejected_scope_count.saturating_add(1);
+            return Err("GUI paint candidate scope end has no active scope".into());
+        };
+        let draw_count = u32::try_from(scope.draws.len())
+            .map_err(|_| "GUI paint candidate draw count exceeds u32".to_string())?;
+        let first_ui_ordinal = scope.draws.first().map_or(0, |draw| draw.ui_ordinal);
+        let last_ui_ordinal = scope.draws.last().map_or(0, |draw| draw.ui_ordinal);
+        if draw_count == 0
+            || scope.intervening_non_draw_event_count != 0
+            || scope_exit_global_sequence <= scope.start.scope_entry_global_sequence
+            || complete_ui_operation_count == 0
+            || last_ui_ordinal >= complete_ui_operation_count
+        {
+            self.telemetry.rejected_scope_count =
+                self.telemetry.rejected_scope_count.saturating_add(1);
+            return Err("GUI paint candidate scope is partial or interleaved".into());
+        }
+        validate_portable_draws(&scope.draws, first_ui_ordinal)?;
+        validate_selected_ui_target(&scope.start.selected_ui_pass_target, &scope.draws)?;
+        if self.completed.len() >= MAX_PENDING_GUI_PAINT_RECEIPTS {
+            self.telemetry.queue_overflow_count =
+                self.telemetry.queue_overflow_count.saturating_add(1);
+            return Err("GUI paint candidate queue is full".into());
+        }
+        let candidate = scope.start.candidate;
+        self.completed.push_back(RawGuiPaintCandidateObservation {
+            hooks: scope.start.hooks,
+            process_start_nonce: candidate.process_start_nonce,
+            hook_epoch_nonce: candidate.hook_epoch_nonce,
+            candidate_submit_index: candidate.submit_index,
+            candidate_frame_sequence: candidate.frame_sequence,
+            candidate_present_global_order: candidate.present_global_order,
+            scope_entry_global_sequence: scope.start.scope_entry_global_sequence,
+            scope_exit_global_sequence,
+            scope_depth_at_entry: 1,
+            nested_scope_count: 0,
+            intervening_non_draw_event_count: 0,
+            expected_draw_count: draw_count,
+            expected_first_ui_ordinal: first_ui_ordinal,
+            expected_last_ui_ordinal: last_ui_ordinal,
+            complete_ui_operation_count,
+            selected_ui_pass_target: scope.start.selected_ui_pass_target,
+            pre_materialized_command: scope.start.pre_materialized_command,
+            owner: scope.start.owner,
+            draws: scope.draws,
+        });
+        self.telemetry.completed_scope_count =
+            self.telemetry.completed_scope_count.saturating_add(1);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    pub fn select_present(
+        &mut self,
+        selected: &crate::a729_hook::RawSelectedRenderFrameCapture,
+    ) -> Result<GuiPaintReceiptFrontier, String> {
+        if !self.active_scopes.is_empty() {
+            return Err("GUI paint selected Present crossed an active candidate scope".into());
+        }
+        let candidates = self.completed.drain(..).collect::<Vec<_>>();
+        let buffered_count = candidates.len() as u64;
+        let selected_frontier = match materialize_gui_paint_frontier_from_selected(selected, candidates)
+        {
+            Ok(frontier) => frontier,
+            Err(error) => {
+                self.telemetry.discarded_non_selected_observation_count = self
+                    .telemetry
+                    .discarded_non_selected_observation_count
+                    .saturating_add(buffered_count);
+                self.telemetry.rejected_scope_count =
+                    self.telemetry.rejected_scope_count.saturating_add(1);
+                return Err(error);
+            }
+        };
+        self.telemetry.selected_observation_count = self
+            .telemetry
+            .selected_observation_count
+            .saturating_add(u64::from(selected_frontier.selected_observation_count));
+        self.telemetry.discarded_non_selected_observation_count = self
+            .telemetry
+            .discarded_non_selected_observation_count
+            .saturating_add(u64::from(
+                selected_frontier.discarded_non_selected_observation_count,
+            ));
+        Ok(selected_frontier.frontier)
+    }
+
+    pub fn telemetry(&self) -> GuiPaintCandidateCaptureTelemetry {
+        self.telemetry
+    }
+
+    pub fn active_scope_count(&self) -> usize {
+        self.active_scopes.len()
+    }
+
+    pub fn completed_observation_count(&self) -> usize {
+        self.completed.len()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectedGuiPaintCandidateFrontier {
+    pub buffered_observation_count: u32,
+    pub selected_observation_count: u32,
+    pub discarded_non_selected_observation_count: u32,
+    pub frontier: GuiPaintReceiptFrontier,
+}
+
+#[cfg(windows)]
+pub fn materialize_gui_paint_frontier_from_selected(
+    selected: &crate::a729_hook::RawSelectedRenderFrameCapture,
+    candidates: Vec<RawGuiPaintCandidateObservation>,
+) -> Result<SelectedGuiPaintCandidateFrontier, String> {
+    crate::a729_hook::validate_selected_render_frame_receipt(selected)?;
+    let present = GuiPaintPresentKey::from_selected_render_frame(selected)?;
+    if candidates.is_empty() {
+        return Err("selected Present has no buffered GUI paint candidates".into());
+    }
+    let buffered_observation_count = u32::try_from(candidates.len())
+        .map_err(|_| "GUI paint buffered candidate count exceeds u32".to_string())?;
+    let mut receipts = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        if candidate.process_start_nonce != present.process_start_nonce
+            || candidate.hook_epoch_nonce != present.hook_epoch_nonce
+        {
+            return Err("GUI paint candidate crosses the selected process/hook epoch".into());
+        }
+        if candidate.candidate_submit_index != present.selected_submit_index
+            || candidate.candidate_frame_sequence != present.selected_frame_sequence
+            || candidate.candidate_present_global_order != present.selected_present_global_order
+        {
+            continue;
+        }
+        receipts.push(materialize_gui_paint_receipt(RawGuiPaintObservation {
+            hooks: candidate.hooks,
+            process_start_nonce: candidate.process_start_nonce,
+            hook_epoch_nonce: candidate.hook_epoch_nonce,
+            selected_submit_index: candidate.candidate_submit_index,
+            selected_frame_sequence: candidate.candidate_frame_sequence,
+            selected_present_global_order: candidate.candidate_present_global_order,
+            selected_present_receipt_sha256: present.selected_present_receipt_sha256.clone(),
+            scope_entry_global_sequence: candidate.scope_entry_global_sequence,
+            scope_exit_global_sequence: candidate.scope_exit_global_sequence,
+            scope_depth_at_entry: candidate.scope_depth_at_entry,
+            nested_scope_count: candidate.nested_scope_count,
+            intervening_non_draw_event_count: candidate.intervening_non_draw_event_count,
+            expected_draw_count: candidate.expected_draw_count,
+            expected_first_ui_ordinal: candidate.expected_first_ui_ordinal,
+            expected_last_ui_ordinal: candidate.expected_last_ui_ordinal,
+            complete_ui_operation_count: candidate.complete_ui_operation_count,
+            selected_ui_pass_target: candidate.selected_ui_pass_target,
+            pre_materialized_command: candidate.pre_materialized_command,
+            owner: candidate.owner,
+            draws: candidate.draws,
+        })?);
+    }
+    if receipts.is_empty() {
+        return Err("selected Present has no matching buffered GUI paint observations".into());
+    }
+    let selected_observation_count = u32::try_from(receipts.len())
+        .map_err(|_| "GUI paint selected observation count exceeds u32".to_string())?;
+    let discarded_non_selected_observation_count = buffered_observation_count
+        .checked_sub(selected_observation_count)
+        .ok_or_else(|| "GUI paint candidate accounting underflowed".to_string())?;
+    Ok(SelectedGuiPaintCandidateFrontier {
+        buffered_observation_count,
+        selected_observation_count,
+        discarded_non_selected_observation_count,
+        frontier: materialize_gui_paint_frontier(receipts)?,
+    })
+}
+
 /// Materialize hook-time candidates only after the current runtime selects and
 /// authenticates one Present. This is the chronological capture path: hooks
 /// buffer candidate observations without guessing a future selection digest;
@@ -929,6 +1291,8 @@ pub fn materialize_gui_paint_control_observation_from_selected(
             expected_first_ui_ordinal: candidate.expected_first_ui_ordinal,
             expected_last_ui_ordinal: candidate.expected_last_ui_ordinal,
             complete_ui_operation_count: candidate.complete_ui_operation_count,
+            selected_ui_pass_target: candidate.selected_ui_pass_target,
+            pre_materialized_command: candidate.pre_materialized_command,
             owner: candidate.owner,
             draws: candidate.draws,
         })?);
@@ -956,6 +1320,8 @@ pub struct GuiPaintScopeStart {
     pub hooks: RawGuiPaintHookReceipt,
     pub present: GuiPaintPresentKey,
     pub scope_entry_global_sequence: u64,
+    pub selected_ui_pass_target: RenderTargetDesc,
+    pub pre_materialized_command: Option<HudCommand>,
     pub owner: RawGuiPaintOwnerObservation,
 }
 
@@ -1016,6 +1382,7 @@ struct ActiveGuiPaintScope {
 struct GuiPaintInstrumentationState {
     activation_authority: Option<GuiPaintActivationAuthority>,
     control_probe_authority: Option<GuiPaintControlProbeAuthority>,
+    candidate_capture: Option<GuiPaintCandidateCapture>,
     active_scopes: BTreeMap<u64, ActiveGuiPaintScope>,
     pending_receipts: BTreeMap<GuiPaintPresentKey, Vec<GuiPaintReceipt>>,
     completed_frontiers: VecDeque<GuiPaintReceiptFrontier>,
@@ -1084,6 +1451,7 @@ pub fn activate_gui_paint_instrumentation(
     if GUI_PAINT_INSTRUMENTATION_ACTIVE.load(Ordering::Acquire)
         || state.activation_authority.is_some()
         || state.control_probe_authority.is_some()
+        || state.candidate_capture.is_some()
         || !state.active_scopes.is_empty()
         || !state.pending_receipts.is_empty()
         || !state.completed_frontiers.is_empty()
@@ -1103,8 +1471,15 @@ pub fn activate_gui_paint_instrumentation(
         GUI_PAINT_INSTRUMENTATION_ACTIVE.store(false, Ordering::Release);
         return Err("GUI paint activation encountered non-pristine instrumentation state".into());
     }
+    let candidate_capture = GuiPaintCandidateCapture::new(
+        authority.executable_sha256.clone(),
+        authority.process_start_nonce,
+        authority.hook_epoch_nonce,
+        authority.hook_set_receipt_sha256.clone(),
+    )?;
     state.activation_authority = Some(authority.clone());
     state.control_probe_authority = None;
+    state.candidate_capture = Some(candidate_capture);
     GUI_PAINT_INSTRUMENTATION_ACTIVE.store(true, Ordering::Release);
     Ok(())
 }
@@ -1144,6 +1519,7 @@ pub fn activate_gui_paint_control_probe(
         || GUI_PAINT_INSTRUMENTATION_ACTIVE.load(Ordering::Acquire)
         || state.activation_authority.is_some()
         || state.control_probe_authority.is_some()
+        || state.candidate_capture.is_some()
         || !state.active_scopes.is_empty()
         || !state.pending_receipts.is_empty()
         || !state.completed_frontiers.is_empty()
@@ -1167,6 +1543,7 @@ pub fn activate_gui_paint_control_probe(
     }
     state.activation_authority = None;
     state.control_probe_authority = Some(authority.clone());
+    state.candidate_capture = None;
     GUI_PAINT_INSTRUMENTATION_ACTIVE.store(true, Ordering::Release);
     Ok(())
 }
@@ -1189,13 +1566,141 @@ pub fn gui_paint_product_emission_is_active() -> bool {
     gui_paint_instrumentation_state()
         .lock()
         .is_ok_and(|state| {
-            state.activation_authority.is_some() && state.control_probe_authority.is_none()
+            state.activation_authority.is_some()
+                && state.control_probe_authority.is_none()
+                && state.candidate_capture.is_some()
         })
 }
 
-/// Start one generic paint scope after owner resolution. `thread_token` is the
-/// exact native thread id supplied by the hook; it is extractor-local and is
-/// erased before receipt materialization.
+/// Start a hook-time GUI scope under its concrete Present candidate. Unlike
+/// `begin_gui_paint_scope`, this production path never accepts or predicts a
+/// selected-Present receipt digest.
+pub fn begin_gui_paint_candidate_scope(
+    thread_token: u64,
+    start: GuiPaintCandidateScopeStart,
+) -> Result<(), String> {
+    if !gui_paint_product_emission_is_active() {
+        record_inactive(|telemetry| &mut telemetry.inactive_begin_count);
+        return Err("GUI paint production candidate latch is false".into());
+    }
+    let mut state = gui_paint_instrumentation_state()
+        .lock()
+        .map_err(|_| "GUI paint instrumentation state is poisoned".to_string())?;
+    state
+        .candidate_capture
+        .as_mut()
+        .ok_or_else(|| "GUI paint production candidate capture is absent".to_string())?
+        .begin_scope(thread_token, start)
+}
+
+pub fn record_gui_paint_candidate_draw(
+    thread_token: u64,
+    draw: GuiPaintDrawFingerprint,
+) -> Result<(), String> {
+    if !gui_paint_product_emission_is_active() {
+        record_inactive(|telemetry| &mut telemetry.inactive_draw_count);
+        return Err("GUI paint production candidate latch is false".into());
+    }
+    let mut state = gui_paint_instrumentation_state()
+        .lock()
+        .map_err(|_| "GUI paint instrumentation state is poisoned".to_string())?;
+    state
+        .candidate_capture
+        .as_mut()
+        .ok_or_else(|| "GUI paint production candidate capture is absent".to_string())?
+        .record_draw(thread_token, draw)
+}
+
+pub fn note_gui_paint_candidate_non_draw_event(thread_token: u64) -> Result<(), String> {
+    if !gui_paint_product_emission_is_active() {
+        record_inactive(|telemetry| &mut telemetry.inactive_non_draw_count);
+        return Err("GUI paint production candidate latch is false".into());
+    }
+    let mut state = gui_paint_instrumentation_state()
+        .lock()
+        .map_err(|_| "GUI paint instrumentation state is poisoned".to_string())?;
+    state
+        .candidate_capture
+        .as_mut()
+        .ok_or_else(|| "GUI paint production candidate capture is absent".to_string())?
+        .note_non_draw_event(thread_token)
+}
+
+pub fn end_gui_paint_candidate_scope(
+    thread_token: u64,
+    scope_exit_global_sequence: u64,
+    complete_ui_operation_count: u32,
+) -> Result<(), String> {
+    if !gui_paint_product_emission_is_active() {
+        record_inactive(|telemetry| &mut telemetry.inactive_end_count);
+        return Err("GUI paint production candidate latch is false".into());
+    }
+    let mut state = gui_paint_instrumentation_state()
+        .lock()
+        .map_err(|_| "GUI paint instrumentation state is poisoned".to_string())?;
+    state
+        .candidate_capture
+        .as_mut()
+        .ok_or_else(|| "GUI paint production candidate capture is absent".to_string())?
+        .end_scope(
+            thread_token,
+            scope_exit_global_sequence,
+            complete_ui_operation_count,
+        )
+}
+
+/// Recompute selection first, then materialize and publish exactly the GUI
+/// observations belonging to that selected Present. All other candidate rows
+/// are accounted and discarded inside `GuiPaintCandidateCapture`.
+#[cfg(windows)]
+pub fn publish_selected_gui_paint_candidate_frontier(
+    selected: &crate::a729_hook::RawSelectedRenderFrameCapture,
+) -> Result<String, String> {
+    if !gui_paint_product_emission_is_active() {
+        record_inactive(|telemetry| &mut telemetry.inactive_present_count);
+        return Err("GUI paint production candidate latch is false".into());
+    }
+    let mut state = gui_paint_instrumentation_state()
+        .lock()
+        .map_err(|_| "GUI paint instrumentation state is poisoned".to_string())?;
+    let state = &mut *state;
+    if state.completed_frontiers.len() >= MAX_COMPLETED_GUI_PAINT_FRONTIERS {
+        bump(
+            &mut state.telemetry.completed_queue_overflow_drop_count,
+            &mut state.telemetry.telemetry_counter_overflow_count,
+        );
+        return Err("GUI paint completed frontier queue is full".into());
+    }
+    let frontier = state
+        .candidate_capture
+        .as_mut()
+        .ok_or_else(|| "GUI paint production candidate capture is absent".to_string())?
+        .select_present(selected)?;
+    let frontier_sha256 = frontier.frontier_sha256.clone();
+    state.completed_frontiers.push_back(frontier);
+    bump(
+        &mut state.telemetry.emitted_frontier_count,
+        &mut state.telemetry.telemetry_counter_overflow_count,
+    );
+    Ok(frontier_sha256)
+}
+
+pub fn gui_paint_candidate_capture_telemetry(
+) -> Result<GuiPaintCandidateCaptureTelemetry, String> {
+    let state = gui_paint_instrumentation_state()
+        .lock()
+        .map_err(|_| "GUI paint instrumentation state is poisoned".to_string())?;
+    state
+        .candidate_capture
+        .as_ref()
+        .map(GuiPaintCandidateCapture::telemetry)
+        .ok_or_else(|| "GUI paint production candidate capture is absent".to_string())
+}
+
+/// Start one diagnostic paint scope after owner resolution. Production uses
+/// `begin_gui_paint_candidate_scope` because a hook-time producer cannot know
+/// the future selected-Present receipt digest accepted by this legacy control
+/// shape. `thread_token` is extractor-local and erased before materialization.
 pub fn begin_gui_paint_scope(
     thread_token: u64,
     start: GuiPaintScopeStart,
@@ -1203,6 +1708,10 @@ pub fn begin_gui_paint_scope(
     if !gui_paint_instrumentation_is_active() {
         record_inactive(|telemetry| &mut telemetry.inactive_begin_count);
         return Err("GUI paint instrumentation activation latch is false".into());
+    }
+    if gui_paint_product_emission_is_active() {
+        record_drop(|telemetry| &mut telemetry.invalid_owner_or_hook_drop_count);
+        return Err("production GUI paint must enter through candidate chronology".into());
     }
     if thread_token == 0
         || start.scope_entry_global_sequence == 0
@@ -1218,12 +1727,7 @@ pub fn begin_gui_paint_scope(
         .lock()
         .map_err(|_| "GUI paint instrumentation state is poisoned".to_string())?;
     let state = &mut *state;
-    let authority_matches = state.activation_authority.as_ref().is_some_and(|authority| {
-        authority.executable_sha256 == start.hooks.executable_sha256
-            && authority.hook_set_receipt_sha256 == start.hooks.hook_set_receipt_sha256
-            && authority.process_start_nonce == start.present.process_start_nonce
-            && authority.hook_epoch_nonce == start.present.hook_epoch_nonce
-    }) || state.control_probe_authority.as_ref().is_some_and(|authority| {
+    let authority_matches = state.control_probe_authority.as_ref().is_some_and(|authority| {
         authority.executable_sha256 == start.hooks.executable_sha256
             && authority.hook_set_receipt_sha256 == start.hooks.hook_set_receipt_sha256
             && authority.process_start_nonce == start.present.process_start_nonce
@@ -1299,9 +1803,10 @@ pub fn record_gui_paint_draw(
     };
     let valid = draw.final_draw_kind == scope.start.hooks.final_draw_kind
         && draw.global_render_sequence > scope.start.scope_entry_global_sequence
+        && scope.draws.len() < MAX_DRAWS_PER_GUI_PAINT_CANDIDATE_SCOPE
         && scope.draws.last().is_none_or(|previous| {
             previous.global_render_sequence.checked_add(1) == Some(draw.global_render_sequence)
-                && previous.ui_ordinal.checked_add(1) == Some(draw.ui_ordinal)
+                && previous.ui_ordinal == draw.ui_ordinal
                 && previous.d3d_capture_sequence < draw.d3d_capture_sequence
         });
     if !valid {
@@ -1416,6 +1921,8 @@ pub fn end_gui_paint_scope(
         expected_first_ui_ordinal: first_ui_ordinal,
         expected_last_ui_ordinal: last_ui_ordinal,
         complete_ui_operation_count,
+        selected_ui_pass_target: scope.start.selected_ui_pass_target,
+        pre_materialized_command: scope.start.pre_materialized_command,
         owner: scope.start.owner,
         draws: scope.draws,
     };
@@ -1457,6 +1964,10 @@ pub fn publish_gui_paint_present_frontier(
     if !gui_paint_instrumentation_is_active() {
         record_inactive(|telemetry| &mut telemetry.inactive_present_count);
         return Err("GUI paint instrumentation activation latch is false".into());
+    }
+    if gui_paint_product_emission_is_active() {
+        record_drop(|telemetry| &mut telemetry.present_frontier_drop_count);
+        return Err("production GUI paint must publish from selected candidate chronology".into());
     }
     validate_present_key(present)?;
     let mut state = gui_paint_instrumentation_state()
@@ -1610,11 +2121,25 @@ pub fn teardown_gui_paint_instrumentation() -> Result<GuiPaintInstrumentationSna
         .lock()
         .map_err(|_| "GUI paint instrumentation state is poisoned".to_string())?;
     let state = &mut *state;
-    let active = state.active_scopes.len() as u64;
-    let pending = state.pending_receipts.values().map(Vec::len).sum::<usize>() as u64;
+    let candidate_active = state
+        .candidate_capture
+        .as_ref()
+        .map_or(0, GuiPaintCandidateCapture::active_scope_count);
+    let candidate_pending = state
+        .candidate_capture
+        .as_ref()
+        .map_or(0, GuiPaintCandidateCapture::completed_observation_count);
+    let active = state.active_scopes.len().saturating_add(candidate_active) as u64;
+    let pending = state
+        .pending_receipts
+        .values()
+        .map(Vec::len)
+        .sum::<usize>()
+        .saturating_add(candidate_pending) as u64;
     let completed = state.completed_frontiers.len() as u64;
     state.activation_authority = None;
     state.control_probe_authority = None;
+    state.candidate_capture = None;
     state.active_scopes.clear();
     state.pending_receipts.clear();
     state.completed_frontiers.clear();
@@ -1644,15 +2169,29 @@ pub fn gui_paint_instrumentation_snapshot() -> Result<GuiPaintInstrumentationSna
 }
 
 fn snapshot_locked(state: &GuiPaintInstrumentationState) -> GuiPaintInstrumentationSnapshot {
+    let candidate_active = state
+        .candidate_capture
+        .as_ref()
+        .map_or(0, GuiPaintCandidateCapture::active_scope_count);
+    let candidate_pending = state
+        .candidate_capture
+        .as_ref()
+        .map_or(0, GuiPaintCandidateCapture::completed_observation_count);
     GuiPaintInstrumentationSnapshot {
         active: gui_paint_instrumentation_is_active(),
         mode: instrumentation_mode_locked(state),
         product_emission_allowed: state.activation_authority.is_some()
             && state.control_probe_authority.is_none()
+            && state.candidate_capture.is_some()
             && gui_paint_instrumentation_is_active(),
-        active_scope_count: state.active_scopes.len(),
+        active_scope_count: state.active_scopes.len().saturating_add(candidate_active),
         pending_present_count: state.pending_receipts.len(),
-        pending_receipt_count: state.pending_receipts.values().map(Vec::len).sum(),
+        pending_receipt_count: state
+            .pending_receipts
+            .values()
+            .map(Vec::len)
+            .sum::<usize>()
+            .saturating_add(candidate_pending),
         completed_frontier_count: state.completed_frontiers.len(),
         telemetry: state.telemetry,
     }
@@ -1676,10 +2215,19 @@ fn clear_gui_paint_rows(state: &mut GuiPaintInstrumentationState) -> u64 {
     let active = state.active_scopes.len() as u64;
     let pending = state.pending_receipts.values().map(Vec::len).sum::<usize>() as u64;
     let completed = state.completed_frontiers.len() as u64;
+    let candidate = state.candidate_capture.as_ref().map_or(0u64, |capture| {
+        capture
+            .active_scope_count()
+            .saturating_add(capture.completed_observation_count()) as u64
+    });
+    state.candidate_capture = None;
     state.active_scopes.clear();
     state.pending_receipts.clear();
     state.completed_frontiers.clear();
-    active.saturating_add(pending).saturating_add(completed)
+    active
+        .saturating_add(pending)
+        .saturating_add(completed)
+        .saturating_add(candidate)
 }
 
 fn validate_present_key(present: &GuiPaintPresentKey) -> Result<(), String> {
@@ -1695,6 +2243,47 @@ fn validate_present_key(present: &GuiPaintPresentKey) -> Result<(), String> {
         &present.selected_present_receipt_sha256,
         "selected-Present receipt",
     )
+}
+
+fn validate_selected_ui_target(
+    target: &RenderTargetDesc,
+    draws: &[GuiPaintDrawFingerprint],
+) -> Result<(), String> {
+    if target.width == 0 || target.height == 0 || target.sample_count == 0 {
+        return Err("GUI paint selected UI target has an invalid extent/sample count".into());
+    }
+    let digest = sha256_json(target, "selected GUI paint target")?;
+    if draws
+        .iter()
+        .any(|draw| draw.output_target_sha256 != digest)
+    {
+        return Err("GUI paint draw target digest differs from its exact target descriptor".into());
+    }
+    Ok(())
+}
+
+fn validate_pre_materialized_command(
+    command: &HudCommand,
+    identity: &GuiPaintCommandIdentity,
+    span: GuiPaintDrawOrdinalSpan,
+    target: &RenderTargetDesc,
+) -> Result<(), String> {
+    if span.draw_count != 1
+        || span.first_ui_ordinal != span.last_ui_ordinal
+        || command.ordinal != span.first_ui_ordinal
+        || command.identity.authored_surface_identity != identity.authored_surface_identity
+        || command.identity.runtime_root != identity.runtime_root
+        || command.identity.selected_gui_definition != identity.selected_gui_definition
+        || command.identity.engine_instance_token != identity.engine_instance_token
+        || command.identity.child_path != identity.child_path
+        || command.identity.element_type != identity.element_type
+        || command.identity.name != identity.name
+        || command.identity.paint_ordinal != identity.paint_ordinal
+        || identity.paint_ordinal != span.first_ui_ordinal
+    {
+        return Err("pre-materialized GUI command differs from its owner/draw receipt".into());
+    }
+    command.validate(target)
 }
 
 fn record_inactive(field: fn(&mut GuiPaintInstrumentationTelemetry) -> &mut u64) {
@@ -1854,12 +2443,8 @@ fn validate_portable_draws(
 ) -> Result<(), String> {
     let mut previous_global: Option<u64> = None;
     let mut previous_capture = None;
-    for (index, draw) in draws.iter().enumerate() {
-        let index = u32::try_from(index)
-            .map_err(|_| "GUI paint draw index exceeds u32".to_string())?;
-        if draw.ui_ordinal != first_ui_ordinal.checked_add(index).ok_or_else(|| {
-            "GUI paint UI ordinal overflowed while validating the frontier".to_string()
-        })? || draw.global_render_sequence == 0
+    for draw in draws {
+        if draw.ui_ordinal != first_ui_ordinal || draw.global_render_sequence == 0
             || draw.d3d_capture_sequence == 0
             || draw.ordered_shader_bindings.is_empty()
         {
@@ -1962,6 +2547,8 @@ fn receipt_body_sha256(receipt: &GuiPaintReceipt) -> Result<String, String> {
         identity: &'a GuiPaintCommandIdentity,
         draw_ordinal_span: GuiPaintDrawOrdinalSpan,
         complete_ui_operation_count: u32,
+        selected_ui_pass_target: &'a RenderTargetDesc,
+        pre_materialized_command: &'a Option<HudCommand>,
         ordered_draws_sha256: &'a str,
     }
     sha256_json(
@@ -1981,6 +2568,8 @@ fn receipt_body_sha256(receipt: &GuiPaintReceipt) -> Result<String, String> {
             identity: &receipt.identity,
             draw_ordinal_span: receipt.draw_ordinal_span,
             complete_ui_operation_count: receipt.complete_ui_operation_count,
+            selected_ui_pass_target: &receipt.selected_ui_pass_target,
+            pre_materialized_command: &receipt.pre_materialized_command,
             ordered_draws_sha256: &receipt.ordered_draws_sha256,
         },
         "GUI paint receipt",
@@ -1997,6 +2586,7 @@ fn frontier_body_sha256(frontier: &GuiPaintReceiptFrontier) -> Result<String, St
         selected_present_global_order: u32,
         selected_present_receipt_sha256: &'a str,
         complete_ui_operation_count: u32,
+        selected_ui_pass_target: &'a RenderTargetDesc,
         ordered_receipt_hashes_sha256: &'a str,
     }
     sha256_json(
@@ -2008,6 +2598,7 @@ fn frontier_body_sha256(frontier: &GuiPaintReceiptFrontier) -> Result<String, St
             selected_present_global_order: frontier.selected_present_global_order,
             selected_present_receipt_sha256: &frontier.selected_present_receipt_sha256,
             complete_ui_operation_count: frontier.complete_ui_operation_count,
+            selected_ui_pass_target: &frontier.selected_ui_pass_target,
             ordered_receipt_hashes_sha256: &frontier.ordered_receipt_hashes_sha256,
         },
         "GUI paint frontier",
@@ -2111,6 +2702,7 @@ fn check_sha256(value: &str, label: &str) -> Result<(), String> {
 mod instrumentation_tests {
     use super::*;
     use portable_content_manifest::ContentLayerKind;
+    use portable_render_stream::PreparedRenderTarget;
 
     static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -2126,6 +2718,20 @@ mod instrumentation_tests {
             selected_frame_sequence: u64::from(order),
             selected_present_global_order: order,
             selected_present_receipt_sha256: hash('a'),
+        }
+    }
+
+    fn target() -> RenderTargetDesc {
+        RenderTargetDesc {
+            prepared_target: PreparedRenderTarget::SwapchainBackBuffer,
+            width: 1920,
+            height: 1080,
+            dxgi_format_u32: 28,
+            mip_level: 0,
+            sample_count: 1,
+            sample_quality: 0,
+            persistent_content: None,
+            exact_resource: None,
         }
     }
 
@@ -2146,6 +2752,8 @@ mod instrumentation_tests {
             },
             present,
             scope_entry_global_sequence: 10,
+            selected_ui_pass_target: target(),
+            pre_materialized_command: None,
             owner: RawGuiPaintOwnerObservation {
                 owner_observation_sequence: 11,
                 gui_owner_ptr: 0x1000,
@@ -2245,9 +2853,47 @@ mod instrumentation_tests {
             ordered_constant_buffer_bindings,
             geometry_sha256: hash('3'),
             pipeline_sha256: hash('4'),
-            output_target_sha256: hash('5'),
+            output_target_sha256: sha256_json(&target(), "test target").unwrap(),
             draw_payload_sha256: hash('6'),
         }
+    }
+
+    #[test]
+    fn candidate_scope_retains_multiple_lowerings_under_one_operation_ordinal() {
+        let scope = start(present(1));
+        let mut capture = GuiPaintCandidateCapture::new(
+            GUI_PAINT_A729_EXECUTABLE_SHA256.into(),
+            1,
+            2,
+            hash('b'),
+        )
+        .unwrap();
+        capture
+            .begin_scope(
+                44,
+                GuiPaintCandidateScopeStart {
+                    hooks: scope.hooks,
+                    candidate: GuiPaintCandidateKey {
+                        process_start_nonce: 1,
+                        hook_epoch_nonce: 2,
+                        submit_index: 1,
+                        frame_sequence: 1,
+                        present_global_order: 1,
+                    },
+                    scope_entry_global_sequence: scope.scope_entry_global_sequence,
+                    selected_ui_pass_target: scope.selected_ui_pass_target,
+                    pre_materialized_command: None,
+                    owner: scope.owner,
+                },
+            )
+            .unwrap();
+        capture.record_draw(44, draw()).unwrap();
+        let mut inline_icon_draw = draw();
+        inline_icon_draw.global_render_sequence = 13;
+        inline_icon_draw.d3d_capture_sequence = 2;
+        capture.record_draw(44, inline_icon_draw).unwrap();
+        capture.end_scope(44, 14, 1).unwrap();
+        assert_eq!(capture.completed_observation_count(), 1);
     }
 
     fn lock_and_reset() -> std::sync::MutexGuard<'static, ()> {
@@ -2256,21 +2902,11 @@ mod instrumentation_tests {
         guard
     }
 
-    fn force_test_activation() {
+    fn force_test_control_activation() {
         let mut state = gui_paint_instrumentation_state().lock().unwrap();
-        state.control_probe_authority = None;
-        state.activation_authority = Some(GuiPaintActivationAuthority {
-            executable_sha256: GUI_PAINT_A729_EXECUTABLE_SHA256.into(),
-            process_start_nonce: 1,
-            hook_epoch_nonce: 2,
-            exact10_reexport_receipt_sha256: GUI_PAINT_EXACT10_REEXPORT_RECEIPT_SHA256.into(),
-            exact10_job_bindings_sha256: GUI_PAINT_EXACT10_JOB_BINDINGS_SHA256.into(),
-            exact10_pool_status_sha256: GUI_PAINT_EXACT10_POOL_STATUS_SHA256.into(),
-            exact10_identity_manifest_sha256: GUI_PAINT_EXACT10_IDENTITY_MANIFEST_SHA256.into(),
-            authority_manifest_sha256: hash('7'),
-            control_observation_sha256: hash('8'),
-            hook_set_receipt_sha256: hash('b'),
-        });
+        state.activation_authority = None;
+        state.control_probe_authority = Some(probe_authority());
+        state.candidate_capture = None;
         GUI_PAINT_INSTRUMENTATION_ACTIVE.store(true, Ordering::Release);
     }
 
@@ -2374,9 +3010,9 @@ mod instrumentation_tests {
     }
 
     #[test]
-    fn test_only_active_path_materializes_and_publishes_exact_frontier() {
+    fn test_only_control_path_materializes_and_publishes_exact_frontier() {
         let _guard = lock_and_reset();
-        force_test_activation();
+        force_test_control_activation();
         let key = present(1);
         begin_gui_paint_scope(44, start(key.clone())).unwrap();
         record_gui_paint_draw(44, draw()).unwrap();
@@ -2384,41 +3020,55 @@ mod instrumentation_tests {
         assert_eq!(receipt_hash.len(), 64);
         let frontier_hash = publish_gui_paint_present_frontier(&key).unwrap();
         assert_eq!(frontier_hash.len(), 64);
-        let frontiers = drain_gui_paint_frontiers().unwrap();
-        assert_eq!(frontiers.len(), 1);
-        frontiers[0].validate_for_ui_emission().unwrap();
+        let observations = drain_gui_paint_control_observations().unwrap();
+        assert_eq!(observations.len(), 1);
+        observations[0].validate().unwrap();
         teardown_gui_paint_instrumentation().unwrap();
     }
 
     #[test]
     fn teardown_accounts_active_pending_and_completed_rows() {
         let _guard = lock_and_reset();
-        force_test_activation();
+        force_test_control_activation();
         let first = present(1);
         begin_gui_paint_scope(1, start(first.clone())).unwrap();
         record_gui_paint_draw(1, draw()).unwrap();
         end_gui_paint_scope(1, 13, 1).unwrap();
         publish_gui_paint_present_frontier(&first).unwrap();
-        let second = present(2);
+        // A diagnostic activation is bound to one exact selected-Present receipt.
+        // Reuse that authority while creating independent pending and active rows.
+        let second = present(1);
         begin_gui_paint_scope(2, start(second.clone())).unwrap();
         record_gui_paint_draw(2, draw()).unwrap();
         end_gui_paint_scope(2, 13, 1).unwrap();
         begin_gui_paint_scope(3, start(second)).unwrap();
-        let before = gui_paint_instrumentation_snapshot().unwrap().telemetry;
+        let before = gui_paint_instrumentation_snapshot().unwrap();
+        assert_eq!(before.active_scope_count, 1);
+        assert_eq!(before.pending_receipt_count, 1);
+        assert_eq!(before.completed_frontier_count, 1);
         let snapshot = teardown_gui_paint_instrumentation().unwrap();
         assert!(!snapshot.active);
         assert_eq!(snapshot.active_scope_count, 0);
         assert_eq!(
             snapshot.telemetry.teardown_active_scope_drop_count,
-            before.teardown_active_scope_drop_count + 1
+            before
+                .telemetry
+                .teardown_active_scope_drop_count
+                .saturating_add(before.active_scope_count as u64)
         );
         assert_eq!(
             snapshot.telemetry.teardown_pending_receipt_drop_count,
-            before.teardown_pending_receipt_drop_count + 1
+            before
+                .telemetry
+                .teardown_pending_receipt_drop_count
+                .saturating_add(before.pending_receipt_count as u64)
         );
         assert_eq!(
             snapshot.telemetry.teardown_completed_frontier_drop_count,
-            before.teardown_completed_frontier_drop_count + 1
+            before
+                .telemetry
+                .teardown_completed_frontier_drop_count
+                .saturating_add(before.completed_frontier_count as u64)
         );
     }
 }

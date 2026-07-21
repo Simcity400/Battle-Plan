@@ -120,7 +120,7 @@ pub fn read_variables_container<R: MemoryRead>(
     country_obj: u64,
     container: u64,
 ) -> CountryVariableRead {
-    let Some((base, size, mask)) = stable_header(mem, container) else {
+    let Some(header_before @ (base, size, mask)) = stable_header(mem, container) else {
         return unmeasured_with_container(
             country_obj,
             container,
@@ -128,6 +128,13 @@ pub fn read_variables_container<R: MemoryRead>(
         );
     };
     if size == 0 {
+        if stable_header(mem, container) != Some(header_before) {
+            return unmeasured_with_container(
+                country_obj,
+                container,
+                "country_variables_header_changed_after_empty_read",
+            );
+        }
         return CountryVariableRead {
             status: VariableReadStatus::MeasuredEmpty,
             country_obj,
@@ -156,7 +163,24 @@ pub fn read_variables_container<R: MemoryRead>(
     }
 
     let span = nb.saturating_add(4).saturating_mul(NODE_STRIDE);
-    if let Some(entries) = read_variables_container_snapshot(mem, base, span, size) {
+    if let (Some(first), Some(second)) = (
+        read_variables_container_snapshot(mem, base, span, size),
+        read_variables_container_snapshot(mem, base, span, size),
+    ) {
+        if first != second {
+            return unmeasured_with_container(
+                country_obj,
+                container,
+                "country_variables_rows_changed_between_snapshots",
+            );
+        }
+        if stable_header(mem, container) != Some(header_before) {
+            return unmeasured_with_container(
+                country_obj,
+                container,
+                "country_variables_header_changed_after_snapshot",
+            );
+        }
         return CountryVariableRead {
             status: VariableReadStatus::Measured,
             country_obj,
@@ -164,51 +188,69 @@ pub fn read_variables_container<R: MemoryRead>(
             node_base: Some(base),
             declared_size: size,
             bucket_mask: mask,
-            entries,
+            entries: first,
             failure_reason: None,
         };
     }
 
     let end = base.saturating_add(span);
-    let mut exact: Option<BTreeMap<String, i64>> = None;
-    let mut phase = 0u64;
-    while phase < NODE_STRIDE {
-        let mut tmp = BTreeMap::new();
-        let mut dup = false;
-        let mut addr = base.saturating_add(phase);
-        while addr.saturating_add(NODE_STRIDE) <= end {
-            if let Some(key) = read_msvc_string(mem, addr) {
-                if tmp.contains_key(&key) {
-                    dup = true;
+    let mut scans = Vec::with_capacity(2);
+    for _pass in 0..2 {
+        let mut exact: Option<BTreeMap<String, i64>> = None;
+        let mut phase = 0u64;
+        while phase < NODE_STRIDE {
+            let mut tmp = BTreeMap::new();
+            let mut dup = false;
+            let mut addr = base.saturating_add(phase);
+            while addr.saturating_add(NODE_STRIDE) <= end {
+                if let Some(key) = read_msvc_string(mem, addr) {
+                    if tmp.contains_key(&key) {
+                        dup = true;
+                    }
+                    if let Some(raw) = mem.read_i64(addr.saturating_add(NODE_VALUE)) {
+                        tmp.insert(key, raw);
+                    }
                 }
-                if let Some(raw) = mem.read_i64(addr.saturating_add(NODE_VALUE)) {
-                    tmp.insert(key, raw);
-                }
+                addr = addr.saturating_add(NODE_STRIDE);
             }
-            addr = addr.saturating_add(NODE_STRIDE);
-        }
-        if !dup && tmp.len() == size as usize {
-            if let Some(existing) = exact.as_ref() {
-                if existing != &tmp {
-                    return unmeasured_with_container(
-                        country_obj,
-                        container,
-                        "country_variables_phase_ambiguous",
-                    );
+            if !dup && tmp.len() == size as usize {
+                if let Some(existing) = exact.as_ref() {
+                    if existing != &tmp {
+                        return unmeasured_with_container(
+                            country_obj,
+                            container,
+                            "country_variables_phase_ambiguous",
+                        );
+                    }
                 }
+                exact = Some(tmp);
             }
-            exact = Some(tmp);
+            phase += 8;
         }
-        phase += 8;
+        let Some(entries) = exact else {
+            return unmeasured_with_container(
+                country_obj,
+                container,
+                "country_variables_size_gate_failed",
+            );
+        };
+        scans.push(entries);
     }
-
-    let Some(entries) = exact else {
+    if scans[0] != scans[1] {
         return unmeasured_with_container(
             country_obj,
             container,
-            "country_variables_size_gate_failed",
+            "country_variables_rows_changed_between_phase_scans",
         );
-    };
+    }
+    let entries = scans.pop().expect("two completed phase scans");
+    if stable_header(mem, container) != Some(header_before) {
+        return unmeasured_with_container(
+            country_obj,
+            container,
+            "country_variables_header_changed_after_scan",
+        );
+    }
     CountryVariableRead {
         status: VariableReadStatus::Measured,
         country_obj,

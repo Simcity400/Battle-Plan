@@ -164,6 +164,17 @@ authorization paths. The normalized collector control is
 `domain57_game_speed_gate_v2` in both collector control and manifest; the two
 objects must be semantic-JSON identical.
 
+The only gate-free D57 path is the explicitly non-production X12 acquisition
+fixture. It requires debug profile, suspended early launch, exact
+`BATTLE_PLAN_ENABLE_X12_SPEED_PAUSE_HOOK=1`, and recorder-written
+`x12_debug_evidence_without_speed_gate_v1=true` together with
+`early_render_capture_v1=true`. That exception exists because the X12 hooks
+must observe initialization mutations before a same-process A3 transcript
+could be collected. It cannot authorize production or an ordinary debug D57
+capture. The recorder retains the same true binding in manifest
+`production_profile`; the X12 verifier also requires both A3 gate/hash siblings
+to remain null.
+
 Raw transcript-file bytes are a separate transport binding, not an additional
 gate/control field. The driver passes
 `--domain57-game-speed-transcript-file-sha256 <lowercase sha256>`. The recorder
@@ -177,3 +188,9 @@ This remains fresh operator-attested paired evidence: without a separately
 verified screenshot/RenderDoc artifact, the transcript cannot mechanically
 prove which pixels the operator saw. It does prove the exact ordered memory
 observations paired with explicit UI-action acknowledgements.
+
+The retained 2026-07-16 transcript remains semantic evidence for the pinned
+binary, but is not reusable admission. It embeds absolute paths from the former
+OneDrive checkout and pins historical probe bytes. After the repository move
+and probe evolution, each production capture must collect and verify a fresh
+same-process transcript instead of rewriting or rebasing that archival object.

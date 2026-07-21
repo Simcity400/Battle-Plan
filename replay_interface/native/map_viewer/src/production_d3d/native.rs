@@ -87,6 +87,9 @@ pub struct NativeProductionD3dExecutor<'a> {
     snow_mud_proof: Option<SnowMudD3dExecutionProof>,
     snow_mud_binding_count: u32,
     collect_snow_mud_h2: bool,
+    occupation_secondary_proof: Option<OccupationSecondaryD3dExecutionProof>,
+    occupation_terrain_t6_binding_count: u32,
+    occupation_water_t3_binding_count: u32,
     political_textures: Vec<replay_core::PoliticalTexturePacket>,
     tiled_lights: Vec<replay_core::TiledLightSubmission>,
     graph_colors: BTreeMap<PreparedRenderTarget, NativeGraphColorTarget>,
@@ -125,6 +128,9 @@ impl<'a> NativeProductionD3dExecutor<'a> {
             snow_mud_proof: None,
             snow_mud_binding_count: 0,
             collect_snow_mud_h2,
+            occupation_secondary_proof: None,
+            occupation_terrain_t6_binding_count: 0,
+            occupation_water_t3_binding_count: 0,
             political_textures: Vec::new(),
             tiled_lights: Vec::new(),
             graph_colors: BTreeMap::new(),
@@ -136,6 +142,12 @@ impl<'a> NativeProductionD3dExecutor<'a> {
     /// frame. It is absent when the frame had no SnowMudTexture consumers.
     pub fn snow_mud_execution_proof(&self) -> Option<&SnowMudD3dExecutionProof> {
         self.snow_mud_proof.as_ref()
+    }
+
+    pub fn occupation_secondary_execution_proof(
+        &self,
+    ) -> Option<&OccupationSecondaryD3dExecutionProof> {
+        self.occupation_secondary_proof.as_ref()
     }
 
     fn submitted_target(
@@ -378,6 +390,9 @@ impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
         self.snow_mud_texture = frame.snow_mud_texture.clone();
         self.snow_mud_proof = None;
         self.snow_mud_binding_count = 0;
+        self.occupation_secondary_proof = None;
+        self.occupation_terrain_t6_binding_count = 0;
+        self.occupation_water_t3_binding_count = 0;
         self.tiled_lights = frame.tiled_lights.clone();
         self.graph_colors.clear();
         self.graph_depths.clear();
@@ -417,7 +432,10 @@ impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
             let output = match draw {
                 PreparedRuntimeDraw::Particle { packet, .. } => &packet.output_state,
                 PreparedRuntimeDraw::Entity { submission, .. }
-                | PreparedRuntimeDraw::O04City { submission, .. } => &submission.output_state,
+                | PreparedRuntimeDraw::O04City { submission, .. }
+                | PreparedRuntimeDraw::O05Building { submission, .. } => {
+                    &submission.output_state
+                }
             };
             for target in &output.ordered_color_targets {
                 self.ensure_graph_color(target, None)?;
@@ -545,6 +563,9 @@ impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
                         &mut self.snow_mud_proof,
                         &mut self.snow_mud_binding_count,
                         self.collect_snow_mud_h2,
+                        &mut self.occupation_secondary_proof,
+                        &mut self.occupation_terrain_t6_binding_count,
+                        &mut self.occupation_water_t3_binding_count,
                         &self.political_textures,
                         &self.tiled_lights,
                         &prepared_targets,
@@ -566,7 +587,8 @@ impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
         let output = match draw {
             PreparedRuntimeDraw::Particle { packet, .. } => &packet.output_state,
             PreparedRuntimeDraw::Entity { submission, .. }
-            | PreparedRuntimeDraw::O04City { submission, .. } => &submission.output_state,
+            | PreparedRuntimeDraw::O04City { submission, .. }
+            | PreparedRuntimeDraw::O05Building { submission, .. } => &submission.output_state,
         };
         let (target, additional_colors) = self.submitted_target(output)?;
         unsafe {
@@ -600,6 +622,9 @@ impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
                 &mut self.snow_mud_proof,
                 &mut self.snow_mud_binding_count,
                 self.collect_snow_mud_h2,
+                &mut self.occupation_secondary_proof,
+                &mut self.occupation_terrain_t6_binding_count,
+                &mut self.occupation_water_t3_binding_count,
                 &self.political_textures,
                 &self.tiled_lights,
                 &prepared_targets,
@@ -629,6 +654,45 @@ impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
             (true, Some(packet), Some(proof))
                 if proof.replaced_binding_count == packet.snow_mud_fade_consumer_count => {}
             _ => return Err("product SnowMudTexture H2 proof collection is incomplete".into()),
+        }
+        let mut occupation_packets = self.political_textures.iter().filter(|packet| {
+            packet.kind == replay_core::PoliticalTextureKind::Secondary
+                && packet.target_binding_identity
+                    == replay_core::OCCUPATION_SECONDARY_TARGET_BINDING
+        });
+        let occupation_packet = occupation_packets.next();
+        if occupation_packets.next().is_some() {
+            return Err("product has repeated occupation secondary packets".into());
+        }
+        match (
+            occupation_packet,
+            self.occupation_terrain_t6_binding_count,
+            self.occupation_water_t3_binding_count,
+        ) {
+            (None, 0, 0) => {}
+            (Some(_), terrain, water) if terrain > 0 && water > 0 => {}
+            _ => {
+                return Err(
+                    "product occupation secondary binding topology is incomplete".into(),
+                )
+            }
+        }
+        match (
+            self.collect_snow_mud_h2,
+            occupation_packet,
+            &self.occupation_secondary_proof,
+        ) {
+            (false, _, None) | (true, None, None) => {}
+            (true, Some(_), Some(proof))
+                if proof.terrain_t6_binding_count
+                    == self.occupation_terrain_t6_binding_count
+                    && proof.water_t3_binding_count
+                        == self.occupation_water_t3_binding_count => {}
+            _ => {
+                return Err(
+                    "product occupation secondary H2 proof collection is incomplete".into(),
+                )
+            }
         }
         unsafe { (*self.backend.context()).Flush() };
         Ok(())

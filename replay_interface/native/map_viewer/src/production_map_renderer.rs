@@ -9,7 +9,7 @@ use crate::{GameFileResolver, Result};
 use replay_core::{
     AuthenticatedCameraCarrier, AuthenticatedUiPass, BufferSource, ConstantBufferBinding, ContentManifest, EntitySubmission,
     C07TreeRuntimeCarrier, HudCommandExecution, M02CombatFrame,
-    M03ArrowFrame, O04CityFrame, ParticlePacket, PoliticalTexturePacket, ProductionRenderFrame,
+    M03ArrowFrame, O04CityFrame, O05BuildingFrame, ParticlePacket, PoliticalTexturePacket, ProductionRenderFrame,
     RenderExecutionRef, RenderOutputRef, RenderSubmit, RequiredContentKind, StaticGeometrySource, StaticMapCommand,
     StaticMapPassProgram, StaticShaderResourceSource, TiledLightSubmission, UiPassOperation,
     UsedContentKey, ValidatedContentAdmission, S1ShadowCarrier,
@@ -43,6 +43,12 @@ pub enum PreparedRuntimeDraw {
         ordered_draw: RenderOutputRef,
         submission: EntitySubmission,
         generator_ordinal: u32,
+    },
+    O05Building {
+        ordered_draw: RenderOutputRef,
+        submission: EntitySubmission,
+        runtime_object_id: u64,
+        update_ordinal: u32,
     },
 }
 
@@ -229,6 +235,7 @@ pub struct PreparedProductionMapFrame {
     pub authenticated_ui_pass: Option<AuthenticatedUiPass>,
     pub m03_arrows: Option<M03ArrowFrame>,
     pub o04_cities: Option<O04CityFrame>,
+    pub o05_buildings: Option<O05BuildingFrame>,
     pub omitted_data_needs: Vec<ProductionMapDataNeed>,
 }
 
@@ -339,6 +346,7 @@ impl ProductionMapRenderer {
             authenticated_ui_pass,
             m03_arrows,
             o04_cities,
+            o05_buildings,
         ) = match production_render {
             None => {
                 omitted_data_needs.push(ProductionMapDataNeed {
@@ -359,6 +367,7 @@ impl ProductionMapRenderer {
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),
+                    None,
                     None,
                     None,
                     None,
@@ -386,6 +395,9 @@ impl ProductionMapRenderer {
                 if let Some(o04) = &frame.o04_cities {
                     self.validate_o04_content(frame, o04)?;
                 }
+                if let Some(o05) = &frame.o05_buildings {
+                    self.validate_o05_content(frame, o05)?;
+                }
                 match selected_submit(frame)? {
                     None => (
                         None,
@@ -404,6 +416,7 @@ impl ProductionMapRenderer {
                         frame.authenticated_ui_pass.clone(),
                         frame.m03_arrows.clone(),
                         frame.o04_cities.clone(),
+                        frame.o05_buildings.clone(),
                     ),
                     Some(submit) => {
                         if let Some(tree_runtime) = &submit.tree_runtime {
@@ -421,7 +434,11 @@ impl ProductionMapRenderer {
                         self.load_selected_static_resources(submit)?;
                         self.validate_static_program_content(submit)?;
                         self.validate_submit_content(submit)?;
-                        let draws = ordered_draws(submit, frame.o04_cities.as_ref())?;
+                        let draws = ordered_draws(
+                            submit,
+                            frame.o04_cities.as_ref(),
+                            frame.o05_buildings.as_ref(),
+                        )?;
                         (
                             Some(submit.submit_index),
                             Some(submit.global_order),
@@ -439,6 +456,7 @@ impl ProductionMapRenderer {
                             frame.authenticated_ui_pass.clone(),
                             frame.m03_arrows.clone(),
                             frame.o04_cities.clone(),
+                            frame.o05_buildings.clone(),
                         )
                     }
                 }
@@ -486,6 +504,13 @@ impl ProductionMapRenderer {
                         .into(),
             });
         }
+        if o05_buildings.is_none() {
+            omitted_data_needs.push(ProductionMapDataNeed {
+                packet: "O05".into(),
+                feature: "generic map-building entity submissions".into(),
+                reason: "portable production frame has no complete selected-Present O05 runtime-object carrier; static map/buildings.txt placements and retained GPU keys are not promoted as runtime authority".into(),
+            });
+        }
 
         Ok(PreparedProductionMapFrame {
             content_manifest_sha256: self.manifest_sha256.clone(),
@@ -507,6 +532,7 @@ impl ProductionMapRenderer {
             authenticated_ui_pass,
             m03_arrows,
             o04_cities,
+            o05_buildings,
             omitted_data_needs,
         })
     }
@@ -784,6 +810,120 @@ impl ProductionMapRenderer {
         Ok(())
     }
 
+    fn validate_o05_content(
+        &self,
+        production: &ProductionRenderFrame,
+        frame: &O05BuildingFrame,
+    ) -> Result<()> {
+        frame
+            .validate()
+            .map_err(|error| format!("invalid O05 carrier: {error}"))?;
+        if frame.update_index != production.update_index
+            || frame.first_sequence != production.first_sequence
+            || frame.last_sequence != production.last_sequence
+        {
+            return Err(
+                "O05 carrier hour/sequence authority differs from its production frame".into(),
+            );
+        }
+        self.validate_o05_admitted_content(&frame.map_buildings_source)?;
+        let submit = selected_submit(production)?
+            .ok_or("O05 carrier has no authenticated display submit")?;
+
+        let referenced = frame
+            .ordered_outputs
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if referenced.len() != frame.ordered_outputs.len() {
+            return Err("O05 carrier repeats an entity output".into());
+        }
+        let actual_order = submit
+            .ordered_draws
+            .iter()
+            .filter(|output| referenced.contains(*output))
+            .cloned()
+            .collect::<Vec<_>>();
+        if actual_order != frame.ordered_outputs {
+            return Err("O05 outputs are dangling or differ from display-submit order".into());
+        }
+
+        for building in &frame.records {
+            let Some(first_output) = building.referenced_outputs.first() else {
+                continue;
+            };
+            let entity_asset = building.entity_asset.as_ref().expect("validated O05 asset");
+            let mesh = building.mesh.as_ref().expect("validated O05 mesh");
+            self.validate_o05_admitted_content(entity_asset)?;
+            self.validate_o05_admitted_content(mesh)?;
+            let entity_instance_id = match first_output {
+                RenderOutputRef::Entity {
+                    entity_instance_id, ..
+                } => *entity_instance_id,
+                _ => return Err("O05 building has no entity output".into()),
+            };
+            let complete_entity_outputs = submit
+                .ordered_draws
+                .iter()
+                .filter(|output| {
+                    matches!(
+                        output,
+                        RenderOutputRef::Entity {
+                            entity_instance_id: actual,
+                            ..
+                        } if *actual == entity_instance_id
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if complete_entity_outputs != building.referenced_outputs {
+                return Err("O05 building outputs are not the complete entity-instance cover".into());
+            }
+            for output in &building.referenced_outputs {
+                let submission = entity_submission(submit, output)
+                    .ok_or("O05 building references an absent entity submission")?;
+                if submission.content_identity.resolved_entity_asset != *entity_asset
+                    || submission.content_identity.mesh != *mesh
+                    || submission.world_transform_4x4_f32_bits
+                        != building
+                            .world_transform_4x4_f32_bits
+                            .expect("validated O05 transform")
+                {
+                    return Err(
+                        "O05 building semantic identity/transform differs from entity submission"
+                            .into(),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_o05_admitted_content(&self, content: &UsedContentKey) -> Result<()> {
+        content
+            .validate()
+            .map_err(|error| format!("invalid O05 UsedContentKey: {error}"))?;
+        if content.effective_vfs_manifest_sha256 != self.effective_vfs_manifest_sha256 {
+            return Err("O05 content belongs to a different effective VFS".into());
+        }
+        let declared = self.resource_catalog.values().any(|resource| {
+            resource.content == *content
+                && resource
+                    .consumers
+                    .iter()
+                    .any(|consumer| consumer == "production_render.o05_building")
+        });
+        if !declared {
+            return Err(format!(
+                "O05 content {} is not bound to production_render.o05_building in the portable manifest",
+                content.normalized_game_relative_path
+            )
+            .into());
+        }
+        self.resolver.read_admitted_used_content(content)?;
+        Ok(())
+    }
+
     fn validate_static_program_content(&self, submit: &RenderSubmit) -> Result<()> {
         for program in &submit.ordered_static_map_programs {
             let actual = program
@@ -911,6 +1051,7 @@ fn selected_submit(frame: &ProductionRenderFrame) -> Result<Option<&RenderSubmit
 fn ordered_draws(
     submit: &RenderSubmit,
     o04_cities: Option<&O04CityFrame>,
+    o05_buildings: Option<&O05BuildingFrame>,
 ) -> Result<Vec<PreparedRuntimeDraw>> {
     let o04_outputs = o04_cities
         .map(|frame| {
@@ -926,6 +1067,25 @@ fn ordered_draws(
                 .collect::<BTreeMap<_, _>>()
         })
         .unwrap_or_default();
+    let o05_outputs = o05_buildings
+        .map(|frame| {
+            frame
+                .records
+                .iter()
+                .flat_map(|building| {
+                    building.referenced_outputs.iter().cloned().map(|output| {
+                        (
+                            output,
+                            (building.runtime_object_id, building.update_ordinal),
+                        )
+                    })
+                })
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    if o04_outputs.keys().any(|output| o05_outputs.contains_key(output)) {
+        return Err("one entity output is classified as both O04 city and O05 building".into());
+    }
     let mut particles = BTreeMap::new();
     for packet in &submit.particles {
         particles
@@ -977,6 +1137,13 @@ fn ordered_draws(
                         ordered_draw: ordered.clone(),
                         submission: submission.clone(),
                         generator_ordinal: *generator_ordinal,
+                    }
+                } else if let Some((runtime_object_id, update_ordinal)) = o05_outputs.get(ordered) {
+                    PreparedRuntimeDraw::O05Building {
+                        ordered_draw: ordered.clone(),
+                        submission: submission.clone(),
+                        runtime_object_id: *runtime_object_id,
+                        update_ordinal: *update_ordinal,
                     }
                 } else {
                     PreparedRuntimeDraw::Entity {

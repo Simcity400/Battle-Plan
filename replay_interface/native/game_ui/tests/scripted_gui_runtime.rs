@@ -72,17 +72,34 @@ fn view() -> ScriptedGuiView {
             "TST".to_string(),
             Leaf::Measured(BTreeMap::from([("score".to_string(), 3.0)])),
         )]),
+        by_country_raw_fixed5: BTreeMap::from([(
+            "TST".to_string(),
+            Leaf::Measured(BTreeMap::from([("score".to_string(), 300_000)])),
+        )]),
         country_flags: BTreeMap::from([(
             "TST".to_string(),
             Leaf::Measured(vec!["ready".to_string()]),
         )]),
+        country_flag_states: BTreeMap::new(),
+        country_token_flag_states: BTreeMap::new(),
+        by_state: BTreeMap::new(),
+        by_state_raw_fixed5: BTreeMap::new(),
+        state_flags: BTreeMap::new(),
+        state_flag_states: BTreeMap::new(),
+        state_token_flag_states: BTreeMap::new(),
         runtime_by_country: BTreeMap::from([(
             "TST".to_string(),
             Leaf::Measured(BTreeMap::from([("mod_panel".to_string(), captured)])),
         )]),
         runtime_authority: Leaf::Absent,
         world_variables: Leaf::Measured(BTreeMap::from([("phase".to_string(), 2.0)])),
+        world_variables_raw_fixed5: Leaf::Measured(BTreeMap::from([(
+            "phase".to_string(),
+            200_000,
+        )])),
         world_flags: Leaf::Measured(vec!["campaign_started".to_string()]),
+        world_flag_states: Leaf::Absent,
+        world_token_flag_states: Leaf::Absent,
     }
 }
 

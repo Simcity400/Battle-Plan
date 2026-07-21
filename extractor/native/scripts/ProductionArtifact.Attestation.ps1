@@ -70,7 +70,18 @@ function Get-ProductionRustInputDigest {
         (Join-Path $repo ".cargo\config"),
         (Join-Path $repo ".config\nextest.toml"),
         (Join-Path $repo "rust-toolchain.toml"),
-        (Join-Path $repo "rust-toolchain")
+        (Join-Path $repo "rust-toolchain"),
+        # Capture admission and live promotion code executes outside the Rust
+        # input roots but is part of the production trust boundary. Keep this
+        # roster exact so the central Release receipt cannot bless stale or
+        # substituted product-modset/XN15L verification logic.
+        (Join-Path $repo "extractor\game_defs\static_bundle.py"),
+        (Join-Path $repo "extractor\game_defs\live_binding_resolver.py"),
+        (Join-Path $repo "extractor\game_defs\build_runtime_static_bundle.py"),
+        (Join-Path $repo "extractor\game_defs\prepare_product_modset_capture.py"),
+        (Join-Path $repo "extractor\game_defs\materialize_ui14_engine_vfs.py"),
+        (Join-Path $repo "extractor\game_defs\verify_product_modset_capture_ready.py"),
+        (Join-Path $repo "replay_interface\re_evidence\rendering_laws\XN15L\verify_xn15l_live.py")
     )) {
         if (-not (Test-Path -LiteralPath $extra -PathType Leaf)) { continue }
         $full = [System.IO.Path]::GetFullPath($extra)
@@ -88,7 +99,7 @@ function Get-ProductionRustInputDigest {
         schema = "battle-plan.production_rust_input_digest.v1"
         sha256 = $digest
         file_count = $records.Count
-        selection = "extractor/native and portable_replay/native Rust/C/Cargo/data/Python/PowerShell inputs plus repository Cargo/toolchain/nextest configuration; Cargo output roots excluded"
+        selection = "extractor/native and portable_replay/native Rust/C/Cargo/data/Python/PowerShell inputs plus repository Cargo/toolchain/nextest configuration and exact external product-modset/XN15L verifier inputs; Cargo output roots excluded"
     }
 }
 

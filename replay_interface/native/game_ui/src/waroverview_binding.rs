@@ -424,11 +424,13 @@ mod tests {
             wars: Leaf::Absent,
             faction_members: Leaf::Absent,
             operation_instances: Leaf::Absent,
+            operation_token_memberships: Leaf::Absent,
             intel_levels: Leaf::Absent,
             intel_network_graphs: Leaf::Absent,
             subject_autonomy_current: Leaf::Absent,
             agency_upgrade_controller_refresh: Leaf::Absent,
             cipher_controller_refresh: Leaf::Absent,
+            intelligence_controller_companion: Leaf::Absent,
             relation_flags: BTreeMap::new(),
         }
     }

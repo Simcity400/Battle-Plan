@@ -8,6 +8,8 @@ pub mod agency_upgrade_controller;
 pub mod cipher_controller;
 #[cfg(windows)]
 pub mod a30_controller_evidence;
+#[cfg(windows)]
+pub mod a30_operative_operation_evidence;
 pub mod extractor;
 pub mod replay_verify;
 pub mod stream_gate;

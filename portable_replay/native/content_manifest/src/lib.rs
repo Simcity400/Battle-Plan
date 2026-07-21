@@ -1179,6 +1179,8 @@ fn validate_source_profile(profile: &SourceProfileIdentity) -> Result<(), String
     if profile.profile_id.trim().is_empty() || profile.playset_id.trim().is_empty() {
         return Err("source profile/playset id is blank".into());
     }
+    validate_portable_label(&profile.profile_id, "source profile id")?;
+    validate_portable_label(&profile.playset_id, "source playset id")?;
     validate_sha256(&profile.selection_sha256, "source profile selection")
 }
 
@@ -1187,6 +1189,7 @@ fn validate_layer(layer: &RecordedContentLayer) -> Result<(), String> {
     if layer.display_name.trim().is_empty() {
         return Err("content layer id/display name is blank".into());
     }
+    validate_portable_label(&layer.display_name, "content layer display name")?;
     if let Some(hash) = &layer.descriptor_sha256 {
         validate_sha256(hash, "layer descriptor")?;
     }
@@ -1799,6 +1802,28 @@ mod tests {
             .validate()
             .unwrap_err()
             .contains("unsafe/non-portable"));
+
+        for leaked in [
+            r"C:\Users\Example\OneDrive\profile",
+            r"\\server\share\playset",
+            "loaded from /home/player/profile",
+        ] {
+            let mut leaked_profile = manifest();
+            leaked_profile.manifest_digest_sha256 = None;
+            leaked_profile.source_profile.profile_id = leaked.into();
+            assert!(leaked_profile
+                .validate()
+                .unwrap_err()
+                .contains("unsafe/non-portable"));
+
+            let mut leaked_display = manifest();
+            leaked_display.manifest_digest_sha256 = None;
+            leaked_display.ordered_layers[0].display_name = leaked.into();
+            assert!(leaked_display
+                .validate()
+                .unwrap_err()
+                .contains("unsafe/non-portable"));
+        }
     }
 
     #[test]
@@ -1830,4 +1855,37 @@ mod tests {
             manifest.product_modset_sha256
         );
     }
+}
+
+/// User/profile labels cross the replay distribution boundary but do not
+/// participate in physical path resolution. Preserve ordinary display text
+/// while refusing absolute, traversal, and embedded host-path grammars.
+fn validate_portable_label(value: &str, label: &str) -> Result<(), String> {
+    let trimmed = value.trim();
+    let slash = value.replace('\\', "/");
+    let bytes = slash.as_bytes();
+    let embedded_drive = bytes.windows(3).any(|window| {
+        window[0].is_ascii_alphabetic()
+            && window[1] == b':'
+            && window[2] == b'/'
+    });
+    let embedded_unix = bytes.iter().enumerate().any(|(index, byte)| {
+        *byte == b'/'
+            && index > 0
+            && bytes.get(index + 1).is_some_and(|next| *next != b'/')
+            && matches!(bytes[index - 1], b' ' | b'\t' | b'=' | b'(' | b'[' | b'{' | b'\'' | b'"')
+    });
+    if trimmed.is_empty()
+        || trimmed != value
+        || value.chars().any(char::is_control)
+        || slash.starts_with('/')
+        || value.starts_with(r"\\")
+        || value.contains(r"\\")
+        || embedded_drive
+        || embedded_unix
+        || slash.split('/').any(|part| part == "." || part == "..")
+    {
+        return Err(format!("{label} is unsafe/non-portable: {value:?}"));
+    }
+    Ok(())
 }

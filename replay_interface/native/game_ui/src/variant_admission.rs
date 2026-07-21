@@ -181,6 +181,44 @@ pub struct VariantCatalog {
     envelopes: Vec<VariantEnvelope>,
 }
 
+/// Product contract for a renderer that has exactly one mechanically proven
+/// key but does not own a complete `VariantEnvelope` (layout/pixel/font
+/// oracle). This is deliberately narrower than `VariantCatalog`: it may gate
+/// an independently authenticated renderer, but it must never be presented as
+/// catalog-envelope selection or used to borrow a neighbouring key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExactKeyVariantContract {
+    admitted: DisplayVariantKey,
+}
+
+impl ExactKeyVariantContract {
+    pub fn admit(admitted: DisplayVariantKey) -> Result<Self, VariantRejection> {
+        if !admitted.valid() {
+            return Err(VariantRejection::InvalidEnvelope(
+                "invalid mechanically narrow display variant key".into(),
+            ));
+        }
+        if admitted.input_variant != InputVariant::MouseKeyboard {
+            return Err(VariantRejection::UnsupportedInputVariant(
+                admitted.input_variant,
+            ));
+        }
+        Ok(Self { admitted })
+    }
+
+    pub fn select(
+        &self,
+        requested: &DisplayVariantKey,
+    ) -> Result<&DisplayVariantKey, VariantRejection> {
+        if requested != &self.admitted {
+            return Err(VariantRejection::UnsupportedExactVariant(
+                requested.clone(),
+            ));
+        }
+        Ok(&self.admitted)
+    }
+}
+
 impl VariantCatalog {
     pub fn admit(envelopes: Vec<VariantEnvelope>) -> Result<Self, VariantRejection> {
         let mut keys = BTreeSet::new();

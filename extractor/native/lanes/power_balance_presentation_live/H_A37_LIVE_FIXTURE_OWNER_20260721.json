@@ -1,0 +1,51 @@
+{
+  "schema": "hoi4.h_a37.live_fixture_owner.v1",
+  "status": "ready_for_owner_execution_activation_false",
+  "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+  "environment": {
+    "BATTLE_PLAN_A37_EVIDENCE": "1",
+    "BATTLE_PLAN_A37_EVIDENCE_OUT_DIR": "existing absolute output directory",
+    "early_render_capture_v1": true,
+    "production_scheduling_enabled": false,
+    "controller_observer_activated": false,
+    "panel_visibility_observer_activated": false
+  },
+  "owner_api": {
+    "install": "collector::install_a37_power_balance_capture_owner",
+    "uninstall": "collector::uninstall_a37_power_balance_capture_owner",
+    "product_invocation": "collector installs at capture startup, joins the latest post-original raw controller callback to the hourly early-render selected Present, writes a37_raw_controller_selected_present.json once, and uninstalls at collector teardown",
+    "pbp2_authority": "none; the evidence owner cannot call the production seal while activation and scheduling are false"
+  },
+  "required_cases": [
+    {
+      "file": "positive_current_negative_change.json",
+      "current_value": "positive_nonzero",
+      "change": "negative_nonzero",
+      "proof_scope": "positive current, negative exact change, open/visible controller, selected record/range present, selected-Present QPC join"
+    },
+    {
+      "file": "negative_current_positive_change.json",
+      "current_value": "negative_nonzero",
+      "change": "positive_nonzero",
+      "proof_scope": "negative current, positive exact change, open/visible controller, selected record/range present, selected-Present QPC join"
+    }
+  ],
+  "case_output_handling": "Run each case in a fresh process/output directory and retain a37_raw_controller_selected_present.json under the required case filename before regrading.",
+  "required_join": [
+    "post-original terminal controller callback",
+    "controller open byte equals GUI-visible bit",
+    "post-materialization QPC is not after selected Present",
+    "raw receipt selected-Present digest equals the production selector receipt",
+    "PBP2 is not emitted and activation remains false"
+  ],
+  "explicitly_unproved_and_unavailable": [
+    "stable balance/country/side/range identities",
+    "range indicator frame and geometry",
+    "effective icons and launcher presentation",
+    "resolved text and modifier description",
+    "decision materialization",
+    "full d74 replay typed-companion parity"
+  ],
+  "regrader": "regrade_a37_live_fixture.py",
+  "promotion_rule": "A passing receipt closes only the raw controller spine. It cannot promote d74. Full exact runtime producers for every unavailable semantic field, a complete PBP2 selected-Present fixture, root Final/All and replay parity remain required before any latch or registry promotion."
+}

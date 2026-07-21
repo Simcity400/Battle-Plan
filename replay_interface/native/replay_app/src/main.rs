@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Battle Plan product surface: Win32 + D3D11 swapchain app.
 //!
 //! Product map rendering enters through the portable replay's admitted,

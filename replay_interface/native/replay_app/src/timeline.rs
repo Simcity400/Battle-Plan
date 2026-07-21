@@ -317,6 +317,14 @@ pub trait OwnerProvider {
         None
     }
 
+    fn g2_engine_capture(&self) -> Option<&replay_core::PackagedG2EngineCapture> {
+        None
+    }
+
+    fn decision_catalog(&self) -> Option<&replay_core::PackagedDecisionCatalog> {
+        None
+    }
+
     fn admit_playback_content(
         &self,
         _inventory: &replay_core::PlaybackContentInventory,
@@ -577,6 +585,14 @@ impl OwnerProvider for RecordingTimeline {
 
     fn content_manifest(&self) -> Option<&replay_core::ContentManifest> {
         self.timeline.content_manifest()
+    }
+
+    fn g2_engine_capture(&self) -> Option<&replay_core::PackagedG2EngineCapture> {
+        self.timeline.g2_engine_capture()
+    }
+
+    fn decision_catalog(&self) -> Option<&replay_core::PackagedDecisionCatalog> {
+        self.timeline.decision_catalog()
     }
 
     fn admit_playback_content(

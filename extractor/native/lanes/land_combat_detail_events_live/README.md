@@ -17,8 +17,9 @@ domain-21 `CLandCombat` root and the exact-gated terminal writer hook:
 - exact country-to-country `SDamageDone` attribution;
 - pointer-free terminal combat records joined to `(combat_id,generation)`.
 
-Schema v7 also reserves fail-closed, pointer-free transport for the last two X2
-observations. `src/x2_carriers.rs` contains the exact synchronous width-call
+Schema v8 preserves the fail-closed v7 width/loss transports and adds the
+authenticated pointer-free combat-panel observation family.
+`src/x2_carriers.rs` contains the exact synchronous width-call
 carrier and the current-loss writer contract seam. Both activation constants
 remain false until their retained human-input control cards are satisfied, so
 the production collector emits empty v7 observation families today.
@@ -52,7 +53,9 @@ attribution must not be relabelled as manpower or equipment loss.
 
 - `src/lib.rs`: compact domain-55 encoder, transition builder, decoder/gate, and
   tests.
-- `src/x2_carriers.rs`: dormant exact-build width and loss carrier seams with
+- `src/x2_carriers.rs`: dormant exact-build width/loss carrier seams plus the
+  active opportunistic exact panel leader/modifier materialization carrier with
+  no inferred flags or recorder-thread virtual calls.
   byte/identity gates, bounded queues, and pointer-erasing projectors.
 - `src/bin/land_combat_detail_lane_proof.rs`: lane-local compact/replay proof
   harness.

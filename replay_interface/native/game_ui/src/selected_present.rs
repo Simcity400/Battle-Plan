@@ -403,56 +403,85 @@ fn render_text(
                 effective_clip.right_i32 - effective_clip.left_i32,
                 effective_clip.bottom_i32 - effective_clip.top_i32,
             ]);
-            for glyph in &captured.glyphs {
-                let font = fonts.get(&glyph.font).ok_or_else(|| {
-                    GameUiError::missing(format!(
-                        "captured HUD text {} lacks exact font binding {}",
-                        command.ordinal, glyph.font
-                    ))
-                })?;
-                let (x, y) = captured_owner_relative_point(destination, glyph.x, glyph.y, "glyph")?;
-                if !font.draw_runtime_glyph(
-                    &mut image,
-                    glyph.glyph_id,
-                    x,
-                    y,
-                    glyph.rgba,
-                    glyph_clip,
-                ) {
-                    return Err(GameUiError::missing(format!(
-                        "captured HUD text {} font {} lacks glyph {}",
-                        command.ordinal, glyph.font, glyph.glyph_id
-                    )));
-                }
+            enum CapturedRun<'a> {
+                Glyph(&'a replay_core::RuntimeGlyphRun),
+                InlineIcon(&'a replay_core::RuntimeInlineIconRun),
             }
-            for icon in &captured.inline_icons {
-                let binding = inline_icon_bindings
-                    .iter()
-                    .find(|binding| binding.sprite_identity == icon.sprite)
-                    .ok_or_else(|| {
-                        GameUiError::missing(format!(
-                            "captured HUD text {} lacks inline-icon binding {}",
-                            command.ordinal, icon.sprite
-                        ))
-                    })?;
-                let definition = registry.get(&binding.sprite_identity).ok_or_else(|| {
-                    GameUiError::missing(format!(
-                        "captured HUD text {} references missing inline sprite {}",
-                        command.ordinal, binding.sprite_identity
-                    ))
-                })?;
-                let decoded = resolver.decode_sprite(definition)?;
-                let frame = decoded.frames.get(icon.frame as usize).ok_or_else(|| {
-                    GameUiError::parse(format!(
-                        "captured HUD inline sprite {} frame {} is outside 0..{}",
-                        icon.sprite,
-                        icon.frame,
-                        decoded.frames.len()
-                    ))
-                })?;
-                let (x, y) =
-                    captured_owner_relative_point(destination, icon.x, icon.y, "inline icon")?;
-                draw_image(&mut image, frame, x, y);
+            let mut ordered_runs = captured
+                .glyphs
+                .iter()
+                .map(|run| (run.run_ordinal, CapturedRun::Glyph(run)))
+                .chain(
+                    captured
+                        .inline_icons
+                        .iter()
+                        .map(|run| (run.run_ordinal, CapturedRun::InlineIcon(run))),
+                )
+                .collect::<Vec<_>>();
+            ordered_runs.sort_by_key(|(ordinal, _)| *ordinal);
+            for (_, run) in ordered_runs {
+                match run {
+                    CapturedRun::Glyph(glyph) => {
+                        let font = fonts.get(&glyph.font).ok_or_else(|| {
+                            GameUiError::missing(format!(
+                                "captured HUD text {} lacks exact font binding {}",
+                                command.ordinal, glyph.font
+                            ))
+                        })?;
+                        let (x, y) = captured_owner_relative_point(
+                            destination,
+                            glyph.x,
+                            glyph.y,
+                            "glyph",
+                        )?;
+                        if !font.draw_runtime_glyph(
+                            &mut image,
+                            glyph.glyph_id,
+                            x,
+                            y,
+                            glyph.rgba,
+                            glyph_clip,
+                        ) {
+                            return Err(GameUiError::missing(format!(
+                                "captured HUD text {} font {} lacks glyph {}",
+                                command.ordinal, glyph.font, glyph.glyph_id
+                            )));
+                        }
+                    }
+                    CapturedRun::InlineIcon(icon) => {
+                        let binding = inline_icon_bindings
+                            .iter()
+                            .find(|binding| binding.sprite_identity == icon.sprite)
+                            .ok_or_else(|| {
+                                GameUiError::missing(format!(
+                                    "captured HUD text {} lacks inline-icon binding {}",
+                                    command.ordinal, icon.sprite
+                                ))
+                            })?;
+                        let definition = registry.get(&binding.sprite_identity).ok_or_else(|| {
+                            GameUiError::missing(format!(
+                                "captured HUD text {} references missing inline sprite {}",
+                                command.ordinal, binding.sprite_identity
+                            ))
+                        })?;
+                        let decoded = resolver.decode_sprite(definition)?;
+                        let frame = decoded.frames.get(icon.frame as usize).ok_or_else(|| {
+                            GameUiError::parse(format!(
+                                "captured HUD inline sprite {} frame {} is outside 0..{}",
+                                icon.sprite,
+                                icon.frame,
+                                decoded.frames.len()
+                            ))
+                        })?;
+                        let (x, y) = captured_owner_relative_point(
+                            destination,
+                            icon.x,
+                            icon.y,
+                            "inline icon",
+                        )?;
+                        draw_image(&mut image, frame, x, y);
+                    }
+                }
             }
             apply_rect_clip(&mut image, effective_clip);
         }
@@ -1041,6 +1070,7 @@ mod tests {
                 authored_surface_identity: "topbar".into(),
                 runtime_root: "topbar".into(),
                 selected_gui_definition: content[0].clone(),
+                engine_instance_token: 1,
                 child_path: vec![0],
                 element_type: "iconType".into(),
                 name: "DateText".into(),

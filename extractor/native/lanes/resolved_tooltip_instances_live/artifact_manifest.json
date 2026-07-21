@@ -1,4 +1,6 @@
 {
+  "status": "STALE_NOT_PROMOTION_AUTHORITY",
+  "disposition": "All pinned inputs predate TTI2. The owner runner, replay path, and independent regrader now exist but are intentionally not represented by these stale hashes. Do not refresh or promote until H-A26 and root central validation pass.",
   "authority_executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
   "files": [
     {

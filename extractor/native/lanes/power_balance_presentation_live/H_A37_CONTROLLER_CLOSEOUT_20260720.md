@@ -41,11 +41,14 @@ string. It does not expose a complete ordered list of modifier ids and source
 records. D74 must carry an A25-resolved aggregate text reference instead of
 inventing rows from D67 or parsing localized text.
 
-`0x141C4AA30` closes the decision binding. It gathers standard,
-targeted-timed, targeted, timed and event/other families after exact category,
-runtime and visibility gates, combines the presenters, sorts them through
-`0x141C474B0`/`0x141C475A0` and comparator `0x141C48340`, then inserts the
-final order into `decision_grid` through `0x141C48550`.
+`0x141C4AA30` closes the decision binding with two distinct publication
+routes. It walks the `0x130`-byte on-map-locator source vector and inserts each
+accepted presenter immediately through `0x141C48550`. It separately gathers
+conventional decision, targeted-decision and timed-decision presenters after
+the exact category, runtime and visibility gates, sorts only that vector
+through `0x141C474B0`/`0x141C475A0` and comparator `0x141C48340`, then appends
+the sorted suffix through `0x141C48550`. The finalized grid order must be
+captured after both routes; combining and globally re-sorting them is false.
 
 The root-owned exact20 receipt is now bound to the static observer ABI as job
 `20260720T020812Z-w3-a37-power-balance-5c5d63f5`, shard `shard-11`, manifest
@@ -73,14 +76,18 @@ manifest, target, sentinel, thread, owner, flag, or normalized-state mismatch;
 it cannot admit a live callback while activation is false and serializes no
 process pointer.
 
-Production collection and scheduling remain disabled. Static authority binding
-and live observer activation are deliberately separate gates: activation still
-requires an authenticated same-transition fixture proving current-value sign,
-change sign, independent trending-side identity, engine frame 1/2 normalization
-and replay parity together. The three earlier discovery manifests
+Production collection and scheduling remain disabled. The real hook owner now
+emits only a selected-Present-joined raw controller receipt; it cannot accept a
+caller-authored PBP2 or invoke the production seal while the activation latches
+are false. PBP2 v3 transport, fold, replay join and typed companion remain
+dormant consumers, not proof that their semantic producers exist. Stable
+balance/country/side/range identities, geometry, icons, text and decisions need
+exact runtime producers plus a complete live PBP2 fixture before activation.
+The three earlier discovery manifests remain
+discovery provenance rather than the bound consolidated receipt. Their hashes
 are `da22c2cf2e8be089907e025d6720485fa96b2e1f50c9485113c0c2f6d8b06906`,
 `2992dda21dbf78d76288a255cfbcd066ea226bd741192fb8978f1771d6fd3c25`,
 and `253cd925a507d18ee85d94826ca3540d1c44f51d484c1b1454e2e374a685e4c5`.
-remain discovery provenance rather than the bound consolidated receipt. Human
-input is now limited to the live fixture above; root-owned central validation
-must also pass before d74 can be scheduled.
+The two-case raw fixture closes only current/change/open/QPC behavior. Further
+machine RE and integration, then root-owned central validation, are required
+before d74 can be scheduled.

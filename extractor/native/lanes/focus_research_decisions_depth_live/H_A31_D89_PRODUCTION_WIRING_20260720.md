@@ -2,10 +2,13 @@
 
 The exact20 A31 owner/item evidence is now represented by a reserved,
 pointer-free production route: compact domain 89 (`NFP1`,
-`national_focus_presentation_live`). Static authority is job
-`20260720T020812Z-w3-a31-focus-owner-93fbbf62`, whose ten requested entries all
-resolved exactly; its FunctionEvidence manifest is
-`303351ed65468aa7655b904998819c96ca1c325f906b5a3bf32c4f18decc7969`.
+`national_focus_presentation_live`). Current authority is consolidated job
+`20260720T104531Z-w5-a31-consolidated-owner-frame-order-pr-79b1ba63`, whose 13
+requested entries all resolved exactly; its FunctionEvidence manifest is
+`b319dd1b721ed6a13e47088b7def034111f9882631080bffbf049fbb79265a2f`.
+The NFP1 authority header now binds this receipt, superseding the earlier
+ten-root receipt that did not explicitly include the terminal detail hook and
+both frame-order callers.
 
 The lane-local producer authenticates the `CNationalFocusView` and both
 `CNationalFocusTreeItem` vtables, double-reads the final vector header and
@@ -32,3 +35,10 @@ QPC/order transaction, exact internal-leaf ingestion, transactional hook
 lifecycle, evidence-mode NFP1 writer, and independent receipt regrader. See
 `A31_ACQUISITION_OWNER_20260720.md`. These additions make the existing fixture
 gate runnable; they do not enable d89.
+
+Wave5 corrects the acquisition boundary to match exact-a729 frame order:
+`0x14137A780` updates item state before `0x14137A600` updates national/joint
+detail nodes. The owner now materializes only after the same-view pair and the
+pair regrader requires a genuinely changed state/transient leaf. See
+`A31_FRAME_ORDER_AND_FIXTURE_MATRIX_20260720.md`. No retained authenticated
+pair exists, so this closes engineering rather than activation.

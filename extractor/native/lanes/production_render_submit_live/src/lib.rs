@@ -15,7 +15,7 @@ use portable_render_stream::{
     RenderOutputState, ShaderProgram, Skinning, StaticMapCommand, StaticMapPassProgram,
     TextureBinding, TiledLightSubmission, WeatherCameraBranch, WeatherEntityRole,
     WeatherEntityVisibility, WeatherInstance, WeatherMembership, WeatherPosition,
-    WeatherResolution, WeatherVariantContentJoin, WeatherVisibilityPhase,
+    WeatherPositionClass, WeatherResolution, WeatherVariantContentJoin, WeatherVisibilityPhase,
 };
 pub use production_render_catalog_capture_contract::{
     correlate_content_creation, materialize_d77_draw_authority, materialize_d80_static_authority,
@@ -54,15 +54,19 @@ pub mod a25_runtime_text_present;
 mod weather_catalog;
 pub use weather_catalog::*;
 mod authority_producer;
+mod c07_buildings;
 mod gui_paint_receipt;
 mod observed_live_authority;
+mod occupation_secondary_upload;
 mod runtime_content_interpreter;
 mod snow_mud_preupload;
 #[cfg(windows)]
 pub mod shader_reflection;
 pub use authority_producer::*;
+pub use c07_buildings::*;
 pub use gui_paint_receipt::*;
 pub use observed_live_authority::*;
+pub use occupation_secondary_upload::*;
 pub use runtime_content_interpreter::*;
 pub use snow_mud_preupload::*;
 
@@ -3182,8 +3186,7 @@ pub fn promote_weather_observation<R: ExactWeatherCatalogResolver>(
         || (raw.checkpoint_observation
             && raw.previous_airborne_runtime_code != raw.airborne_runtime_code)
         || (raw.previous_airborne_runtime_code == raw.airborne_runtime_code
-            && !((raw.initial_observation && raw.airborne_runtime_code == 0)
-                || raw.checkpoint_observation))
+            && !(raw.initial_observation || raw.checkpoint_observation))
     {
         return invalid("weather observation lacks exact normal-update/change-or-initial ownership");
     }
@@ -3194,8 +3197,6 @@ pub fn promote_weather_observation<R: ExactWeatherCatalogResolver>(
         {
             return invalid("code-zero weather change contains selection or live membership");
         }
-    } else if raw.selection_seed_words.is_none() {
-        return invalid("nonzero weather change is missing the exact selection seed");
     }
     let row = resolver.resolve(raw).ok_or_else(|| {
         PromotionError::Invalid("weather catalog could not resolve exact ordered membership".into())
@@ -3209,14 +3210,19 @@ pub fn promote_weather_observation<R: ExactWeatherCatalogResolver>(
         7 => Some("sandstorm"),
         _ => return invalid("weather observation contains an unknown airborne code"),
     };
-    let expected_code = if raw.rain_heavy_active {
-        3
-    } else if raw.rain_light_active {
+    // CAirInterface::GetWeatherEffectForAirRegion (0x14166ec50) consumes the
+    // named SWeatherPerRegion flags in this exact order. The ordinary weather
+    // transition writer makes the precipitation flags mutually exclusive, but
+    // promotion still preserves the engine's priority for fail-closed parity
+    // with any captured transient or corrupted state.
+    let expected_code = if raw.rain_light_active {
         2
-    } else if raw.blizzard_active {
-        5
+    } else if raw.rain_heavy_active {
+        3
     } else if raw.snow_active {
         4
+    } else if raw.blizzard_active {
+        5
     } else if raw.sandstorm_active {
         7
     } else {
@@ -3276,7 +3282,6 @@ pub fn promote_weather_visibility_observation(
     if raw.camera_branch != branch
         || raw.computed_fade_alpha_f32_bits != alpha_bits
         || raw.computed_playback_rate_f32_bits != playback_bits
-        || raw.ordered_entity_visibility.is_empty()
     {
         return invalid("weather visibility observation differs from the frozen camera law");
     }
@@ -3482,22 +3487,28 @@ fn validate_weather_resolution(
                 return invalid("code-zero weather instantiated an authored position");
             }
         } else {
-            let seed = selection_seed
-                .as_mut()
-                .ok_or_else(|| PromotionError::Invalid("weather selection seed vanished".into()))?;
-            let selection_word = weather_selection_word(*seed);
-            seed[0] = seed[0].wrapping_add(1);
+            let selected_class = portable_render_stream::weather_selected_variant_class(
+                position.class,
+                row.ordered_variant_content
+                    .iter()
+                    .any(|variant| variant.class == WeatherPositionClass::Big),
+            );
             let candidates = row
                 .ordered_variant_content
                 .iter()
-                .filter(|variant| variant.class == position.class)
+                .filter(|variant| variant.class == selected_class)
                 .collect::<Vec<_>>();
-            if candidates.is_empty() {
+            let selected_index = weather_selected_candidate_index(
+                &mut selection_seed,
+                candidates.len(),
+            )
+            .ok_or_else(|| PromotionError::Invalid("weather selection seed vanished".into()))?;
+            if selected_index.is_none() {
                 if position.resolution != WeatherResolution::ExplicitEmpty {
                     return invalid("weather selected an empty class vector but instantiated");
                 }
             } else {
-                let selected = candidates[selection_word as usize % candidates.len()];
+                let selected = candidates[selected_index.expect("nonempty selected index")];
                 if position.resolution != WeatherResolution::Instantiated
                     || position.selected_authored_effect_index
                         != Some(selected.authored_effect_index)
@@ -3526,9 +3537,16 @@ fn validate_weather_resolution(
                 {
                     return invalid("instantiated weather position is incomplete");
                 }
+                let expected_variant_class =
+                    portable_render_stream::weather_selected_variant_class(
+                        position.class,
+                        row.ordered_variant_content
+                            .iter()
+                            .any(|variant| variant.class == WeatherPositionClass::Big),
+                    );
                 let mut variant_matches = row.ordered_variant_content.iter().filter(|variant| {
                     Some(variant.authored_effect_index) == position.selected_authored_effect_index
-                        && variant.class == position.class
+                        && variant.class == expected_variant_class
                         && Some(variant.resolved_variant_token.as_str())
                             == position.resolved_variant_token.as_deref()
                 });
@@ -3620,14 +3638,32 @@ fn validate_weather_resolution(
 }
 
 /// Reproduces the producer's exact per-position selection word from the two
-/// captured seed words. The caller must advance `seed_words[0]` once after
-/// each authored position, including positions whose selected vector is empty.
+/// captured seed words. The caller advances `seed_words[0]` only after a
+/// nonempty selected vector consumes this word; an explicit-empty position
+/// consumes nothing.
 pub fn weather_selection_word(seed_words: [u32; 2]) -> u32 {
     let mut value = seed_words[1].wrapping_add(seed_words[0].wrapping_mul(0xb529_7a4d));
     value = (value >> 8 ^ value).wrapping_add(0x68e3_1da4);
     value = (value.wrapping_mul(0x100) ^ value).wrapping_mul(0x1b56_c4e9);
     value = (value >> 8 ^ value).wrapping_mul(0x92d6_8ca2);
     (value >> 8 ^ value) & 0x7fff_ffff
+}
+
+/// Apply the producer's PRNG consumption boundary to one already-selected
+/// big/small vector. An empty vector is an authenticated explicit-empty result
+/// and does not require or advance a seed. `None` means a nonempty vector had
+/// no captured seed and therefore cannot be resolved exactly.
+fn weather_selected_candidate_index(
+    selection_seed: &mut Option<[u32; 2]>,
+    candidate_count: usize,
+) -> Option<Option<usize>> {
+    if candidate_count == 0 {
+        return Some(None);
+    }
+    let seed = selection_seed.as_mut()?;
+    let selection_word = weather_selection_word(*seed);
+    seed[0] = seed[0].wrapping_add(1);
+    Some(Some(selection_word as usize % candidate_count))
 }
 
 pub fn validate_raw_packet(packet: &RawParticlePacket) -> Result<(), PromotionError> {
@@ -4886,6 +4922,30 @@ mod tests {
     fn weather_selection_word_matches_frozen_integer_law() {
         assert_eq!(weather_selection_word([1, 0x5ea6_ba9e]), 0x1885_198a);
         assert_eq!(weather_selection_word([2, 0x5ea6_ba9e]), 0x0ff6_e14e);
+
+        let mut absent_seed = None;
+        assert_eq!(
+            weather_selected_candidate_index(&mut absent_seed, 0),
+            Some(None)
+        );
+        assert_eq!(absent_seed, None);
+        assert_eq!(
+            weather_selected_candidate_index(&mut absent_seed, 1),
+            None
+        );
+
+        let initial = [1, 0x5ea6_ba9e];
+        let mut seed = Some(initial);
+        assert_eq!(
+            weather_selected_candidate_index(&mut seed, 0),
+            Some(None)
+        );
+        assert_eq!(seed, Some(initial));
+        assert_eq!(
+            weather_selected_candidate_index(&mut seed, 3),
+            Some(Some(0x1885_198ausize % 3))
+        );
+        assert_eq!(seed, Some([2, 0x5ea6_ba9e]));
     }
 
     #[test]
@@ -4935,6 +4995,28 @@ mod tests {
                 assert!(promote_weather_visibility_observation(&collapsed, 2, 3).is_err());
             }
         }
+
+        // A manager row may be active while its strategic region has no
+        // authored weather positions. The exact producer still completes the
+        // camera branch but owns no entity pairs and therefore calls no
+        // setters; preserve that observed empty phase instead of inventing an
+        // entity or rejecting otherwise complete manager coverage.
+        let distance = 600.0f32;
+        let (branch, alpha, playback) =
+            portable_render_stream::weather_visibility_law(distance.to_bits()).unwrap();
+        let empty = RawWeatherVisibilityObservation {
+            observation_index: 1,
+            sequence: 2,
+            update_index: 3,
+            owner: RawWeatherUpdateOwner::NormalStrategicRegionUpdate,
+            strategic_region_id: 304,
+            view_distance_f32_bits: distance.to_bits(),
+            camera_branch: branch,
+            computed_fade_alpha_f32_bits: alpha,
+            computed_playback_rate_f32_bits: playback,
+            ordered_entity_visibility: vec![],
+        };
+        assert!(promote_weather_visibility_observation(&empty, 2, 3).is_ok());
     }
 
     #[test]

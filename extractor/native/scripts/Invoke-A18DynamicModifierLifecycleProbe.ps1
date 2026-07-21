@@ -149,6 +149,10 @@ try {
                 '--phase', $phase
             )
             if (-not [string]::IsNullOrWhiteSpace($Rakaly)) { $checkpointArgs += @('--rakaly', $Rakaly) }
+            if ($phaseIndex -gt 0) {
+                $previousPhase = $phases[$phaseIndex - 1]
+                $checkpointArgs += @('--previous-checkpoint', $checkpointPaths[$previousPhase])
+            }
             & $Python @checkpointArgs
             if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $checkpoint -PathType Leaf)) {
                 $checkpointPaths[$phase] = $checkpoint

@@ -522,6 +522,14 @@ pub trait DeadlineControlIo {
     ) -> io::Result<()>;
 }
 
+/// Read-only readiness seam for transports that can inspect their receive
+/// queue without consuming framing bytes.  Startup arbitration uses this to
+/// choose between H4CR and H4CT before beginning either exact read; it must not
+/// advance the transport, alter sequence state, or manufacture readiness.
+pub trait DeadlineControlInputReadiness {
+    fn input_bytes_available(&self) -> io::Result<usize>;
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ControlError {
     Poisoned,
@@ -822,6 +830,27 @@ impl<I: DeadlineControlIo> DeadlineControlChannel<I> {
 
     pub fn capabilities(&self) -> ControlCapabilities {
         self.capabilities
+    }
+
+    /// Inspect queued receive bytes without consuming a partial control frame.
+    /// The same fixed deadline and cancellation authority used by the eventual
+    /// exact receive also bound this readiness probe. Any transport failure is
+    /// terminal for the channel.
+    pub fn input_bytes_available_until(
+        &mut self,
+        deadline: ControlDeadline,
+        cancellation: &ControlCancellation,
+    ) -> Result<usize, ControlError>
+    where
+        I: DeadlineControlInputReadiness,
+    {
+        self.preflight(deadline, cancellation)?;
+        let available = match self.io.input_bytes_available() {
+            Ok(available) => available,
+            Err(error) => return self.fail(map_io_error(error)),
+        };
+        self.preflight(deadline, cancellation)?;
+        Ok(available)
     }
 
     /// Complete the capability half of peer admission from a decoded hello.

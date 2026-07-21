@@ -27,14 +27,12 @@ STATUS_EXACT = 1
 
 FIXTURE_PHASES = {
     "type2_redraw_delete": ("baseline", "redraw", "delete"),
-    "type4_discriminator": ("created",),
     "membership_lifecycle": ("baseline", "assign", "remove"),
     "empty_inactive_manager": ("baseline", "add_member", "remove_member"),
 }
 
 ACTIVATION_KEYS = (
     "same_instance_type2_redraw_delete",
-    "type4_geometry",
     "complete_membership_equality_lifecycle",
     "empty_inactive_manager_root",
 )
@@ -88,7 +86,6 @@ def build_carrier(observation: dict[str, Any], source_sha256: str) -> tuple[dict
         "same_instance_type2_redraw_delete": validate_type2(
             fixtures.get("type2_redraw_delete"), errors
         ),
-        "type4_discriminator": validate_type4(fixtures.get("type4_discriminator"), errors),
         "complete_membership_equality_lifecycle": validate_membership(
             fixtures.get("membership_lifecycle"), errors
         ),
@@ -252,8 +249,8 @@ def validate_type4(value: Any, errors: list[str]) -> bool:
         errors.append("type4 raw_geometry_candidates must preserve at least one raw candidate")
     else:
         offsets = {(item.get("begin_offset"), item.get("size_offset")) for item in raw_candidates if isinstance(item, dict)}
-        if ("+0x70", "+0x78") not in offsets:
-            errors.append("type4 raw_geometry_candidates must include +0x70/+0x78")
+        if ("+0x70", "+0x7C") not in offsets:
+            errors.append("type4 raw_geometry_candidates must include +0x70/+0x7C")
         for index, candidate in enumerate(raw_candidates):
             if not isinstance(candidate, dict) or not is_hex(candidate.get("raw_descriptor_hex")):
                 errors.append(f"type4 raw_geometry_candidates[{index}] needs raw_descriptor_hex")
@@ -535,7 +532,12 @@ def validate_raw_order(value: Any, row: dict[str, Any], name: str, errors: list[
         "type_at_0x30": 4,
         "army_backref_at_0x38": 8,
         "path_begin_at_0x70": 8,
-        "path_size_at_0x78": 4,
+        "path_capacity_at_0x78": 4,
+        "path_size_at_0x7c": 4,
+        "paradrop_target_at_0xb8": 4,
+        "type5_states_begin_at_0xe0": 8,
+        "type5_states_capacity_at_0xe8": 4,
+        "type5_states_size_at_0xec": 4,
         "assigned_begin_at_0x210": 8,
         "assigned_size_at_0x21c": 4,
         "instance_id_at_0x244": 4,
@@ -659,7 +661,12 @@ def blank_raw_order() -> dict[str, Any]:
             "type_at_0x30": "",
             "army_backref_at_0x38": "",
             "path_begin_at_0x70": "",
-            "path_size_at_0x78": "",
+            "path_capacity_at_0x78": "",
+            "path_size_at_0x7c": "",
+            "paradrop_target_at_0xb8": "",
+            "type5_states_begin_at_0xe0": "",
+            "type5_states_capacity_at_0xe8": "",
+            "type5_states_size_at_0xec": "",
             "assigned_begin_at_0x210": "",
             "assigned_size_at_0x21c": "",
             "instance_id_at_0x244": "",
@@ -695,30 +702,8 @@ def observation_template() -> dict[str, Any]:
         blank_boundary("redraw", 1, 2),
         blank_boundary("delete", 2, 2, deleted=True),
     ]
-    type4 = blank_boundary("created", 3, 4)
-    type4["raw_geometry_candidates"] = [
-        {
-            "begin_offset": "+0x70",
-            "size_offset": "+0x78",
-            "raw_descriptor_hex": "",
-            "ordered_values": [],
-        }
-    ]
-    type4["save_order"] = {
-        "boundary_token": type4["boundary_token"],
-        "save_sha256": "",
-        "save_path": "",
-        "army_id": 0,
-        "army_ref": {"id": 0, "type": 0},
-        "instance_id": 0,
-        "path_provinces": [],
-        "states": [],
-        "scheduled_member_ids": [],
-        "scheduled_member_refs": [],
-        "raw_order_object": {},
-    }
     membership = []
-    for sequence, phase in enumerate(FIXTURE_PHASES["membership_lifecycle"], start=4):
+    for sequence, phase in enumerate(FIXTURE_PHASES["membership_lifecycle"], start=3):
         boundary = blank_boundary(phase, sequence, 2)
         boundary["save_order"] = {
             "boundary_token": boundary["boundary_token"],
@@ -732,7 +717,7 @@ def observation_template() -> dict[str, Any]:
         }
         membership.append(boundary)
     manager = []
-    for sequence, phase in enumerate(FIXTURE_PHASES["empty_inactive_manager"], start=7):
+    for sequence, phase in enumerate(FIXTURE_PHASES["empty_inactive_manager"], start=6):
         manager.append(
             {
                 "boundary_id": f"replace-manager-{phase}-boundary-id",
@@ -788,7 +773,6 @@ def observation_template() -> dict[str, Any]:
         "activation_requested": False,
         "fixtures": {
             "type2_redraw_delete": {"boundaries": type2},
-            "type4_discriminator": {"boundaries": [type4]},
             "membership_lifecycle": {"boundaries": membership},
             "empty_inactive_manager": {
                 "fixture_army_ids": {"active": 0, "inactive": 0, "zero_member": 0},

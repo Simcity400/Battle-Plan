@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Replay ingest and scrubbable world timeline.
 //!
 //! The only place recording bytes enter the replay layer. Everything
@@ -5,10 +7,12 @@
 //! [`WorldFrame`] and never touches container or schema internals.
 //! See `replay_interface/documents/REPLAY_ARCHITECTURE.md`.
 
+pub mod army_battleplans;
 pub mod design_catalog;
 pub mod g2_engine_capture;
 pub mod agency_upgrade_controller;
 pub mod cipher_controller;
+pub mod intelligence_controller_companion;
 pub mod runtime_text;
 pub mod orders_group_manager;
 pub mod rollover_package_set;
@@ -44,7 +48,10 @@ pub use portable_render_stream::{
     M02Participants, M02ResultPresentation, M02ResultState, M02WidgetState, M03ArrowDraw,
     M03ArrowDrawMember, M03ArrowDrawMemberRef, M03ArrowDrawRef, M03ArrowFrame, M03ArrowRow,
     M03PlanSubtype, M03StableKey, M03Visibility, MapmodeProvenance, MapnameD80State, O04CityFrame,
-    O04CitySemantic, O04CitylightState, ParentAnchor, ParticlePacket, ParticleRuntimeMode,
+    O04CitySemantic, O04CitylightState, O05BuildingFrame, O05BuildingObjectKind,
+    O05BuildingRenderDisposition, O05BuildingSemantic,
+    OccupationSecondaryReplayReadbackReceipt, OccupationSecondaryUploadReceipt, ParentAnchor,
+    ParticlePacket, ParticleRuntimeMode,
     PipelineDesc, PoliticalTextureFormat, PoliticalTextureKind, PoliticalTexturePacket,
     PreparedRenderTarget, PrimitiveTopology, ProductionRenderFrame, RasterizerDesc,
     RecordedInputVariant, RenderAuthority, RenderCheckpoint, RenderExecutionRef, RenderOutputRef,
@@ -77,7 +84,13 @@ pub use portable_render_stream::{
     C07_TREE_GLOBAL_NONZERO_CELLS, C07_TREE_INSTANCE_STRIDE_BYTES, C07_TREE_PRODUCER_FUNCTION_RVA,
     C07_TREE_RETAINED_BUCKETS, C07_TREE_RETAINED_CONTRACT_SHA256, C07_TREE_RETAINED_PASSES,
     C07_TREE_RETAINED_RDC_SHA256, C07_TREE_RETAINED_VISIBLE_CELLS, C07_TREE_RUNTIME_SCHEMA,
-    C07_TREE_UNCAPTURED_CELLS, MAPNAME_TRANSP_OFFSET_SEMANTIC, O04_A729_EXECUTABLE_SHA256,
+    C07_TREE_UNCAPTURED_CELLS, MAPNAME_TRANSP_OFFSET_SEMANTIC,
+    OCCUPATION_SECONDARY_ALPHA, OCCUPATION_SECONDARY_BYTES_PER_TEXEL,
+    OCCUPATION_SECONDARY_BYTE_LENGTH, OCCUPATION_SECONDARY_H2_READBACK_SCHEMA,
+    OCCUPATION_SECONDARY_HEIGHT, OCCUPATION_SECONDARY_ROW_PITCH,
+    OCCUPATION_SECONDARY_TARGET_BINDING, OCCUPATION_SECONDARY_WIDTH,
+    OCCUPATION_SECONDARY_UPLOAD_RECEIPT_SCHEMA,
+    O04_A729_EXECUTABLE_SHA256,
     O04_CITY_SCHEMA, O04_EVIDENCE_MANIFEST_SHA256, O04_LIVE_CITY_SUBMIT_BINDING_SHA256,
     O04_LIVE_CITY_SUBMIT_VERIFICATION_SHA256, S1_A729_EXECUTABLE_SHA256, S1_CHAIN_AUTHORITY_SHA256,
     S1_L02_AUTHORITY_SHA256, S1_L03_AUTHORITY_SHA256, S1_LIGHT_DEPTH_DXGI_FORMAT,
@@ -90,7 +103,8 @@ pub use portable_render_stream::{
 pub use design_catalog::{
     CurrentDesignCatalog, DesignCatalogJoinError, DesignKind, DesignLifecycleState, DesignModule,
     DesignRecord, DesignStat, DesignUpgrade, DisplayOrderSnapshot, FieldCompleteness,
-    PortableDesignCatalog, A27_LIVE_CATALOG_SCHEMA,
+    PortableDesignCatalog, PortableDesignCatalogDelta, A27_LIVE_CATALOG_SCHEMA,
+    A27_LIVE_CATALOG_TIMELINE_SCHEMA,
     PORTABLE_ARTIFACT_PATH as A27_DESIGN_CATALOG_ARTIFACT_PATH, PORTABLE_DESIGN_CATALOG_SCHEMA,
 };
 pub use runtime_text::{
@@ -99,11 +113,21 @@ pub use runtime_text::{
     RuntimeTextProducer, RuntimeTextRecord, RuntimeTextSource, A729_FORMATTER_RVA,
     A729_TEXT_SETTER_RVA, RUNTIME_TEXT_SCHEMA,
 };
+pub use intelligence_controller_companion::{
+    admit_intelligence_controller_companion, AdmittedIntelligenceControllerCompanion,
+    IntelligenceControllerAuthorityExact, IntelligenceControllerCompanionExact,
+    IntelligenceControllerCompanionError, IntelligenceSurfaceGateExact,
+    IntelligenceSurfaceId, IntelligenceVisibilityExact,
+};
 pub use orders_group_manager::{
-    ArmyOrdersGroupManagerView, ArmyOrdersGroupScalarExact, ORDERS_GROUP_MANAGER_AUTHORITY,
+    ArmyCohesionMode, ArmyExecutionMode, ArmyOrdersGroupManagerView,
+    ArmyOrdersGroupScalarExact, ORDERS_GROUP_MANAGER_AUTHORITY,
+};
+pub use army_battleplans::{
+    ArmyBattleplanGeometry, ArmyBattleplanOrderExact, ArmyBattleplanOrderKey, ArmyBattleplansView,
 };
 pub use g2_engine_capture::{
-    G2EnginePixelWitness, G2UiBoundaryAuthentication, PackagedG2EngineCapture,
+    G2EnginePixelWitness, G2PostProcessBoundaryAuthentication, PackagedG2EngineCapture,
 };
 pub use rollover_package_set::{
     authenticate_rollover_segment, AuthenticatedRolloverPackage, RolloverPackageSegment, RolloverPackageSet,
@@ -120,21 +144,24 @@ pub use snapshot::{
 pub use source::{
     open_container_with_spooled_decoder, open_prefolded_replay, open_recording, open_recording_game, open_recording_game_with_decoder,
     open_recording_game_with_spooled_decoder, open_recording_with_decoder,
-    open_recording_with_spooled_decoder, RawFrame, RecordedCampaignIdentity,
-    RecordedCampaignIdentityWitnesses, ReplaySource, SourceError,
+    open_recording_with_spooled_decoder, PackagedDecisionCatalog, RawFrame,
+    RecordedCampaignIdentity, RecordedCampaignIdentityWitnesses, ReplaySource, SourceError,
 };
 pub use world::{
     AceExactRow, AceLifecycleState, AceRosterExactView, ActiveRulerExactRow, AirCombatLossRow,
     AirRegionCombatRow, AirRegionDamageRow, AirSuperiorityRow, AppointedAdvisorRow, BuildingStatus,
-    ChannelCoverage, CharacterAcePortraitObservation, CharacterIdentityExactRow,
+    ChannelCoverage, CharacterAceListContext, CharacterAcePortraitObservation,
+    CharacterIdentityExactRow,
     CharacterPresentationExact, CharacterPresentationExactView, CharacterRosterExactView,
     CharacterTraitNodeObservation, CharacterTraitNodeState, CharacterTraitTreeObservation,
     CombatParticipantEvent,
     CombatRow, CommandAbilityCarrierAuthority, CommandAbilityEnvelope, CommandAbilityRow,
     CommandAbilitySnapshot, CommandAbilityTimer, CommandAbilityTimerKind,
-    ConvoyD70MutationKindExact, ConvoyLossRow, ConvoyRouteEndpointKindExact,
+    ConvoyD70MutationKindExact, ConvoyLossRow, ConvoyPriorityReservation,
+    ConvoyRouteEndpointKindExact,
     ConvoyRouteProducerKindExact, ConvoyTransportAttackExactRow,
-    ConvoyTransportAttackExactView, CountryCore, CountryDiplomacy, CountryIdentity,
+    ConvoyTransportAttackExactView, ConvoyVariantAmount, CountryCore, CountryDiplomacy,
+    CountryDisruptedSupplyExactRow, CountryDisruptedSupplyExactView, CountryIdentity,
     CountryLeaderRoleExactRow, DelayedEventRow, DesignsView, DiplomacyView, DiplomaticPairState,
     DivisionRow, DivisionTemplateRow, DivisionUnitRow, DoctrineCompletedRow, DoctrineProgressRow,
     DoctrineView, DynamicCollectionGroup, DynamicCollectionMaterializedSlot, DynamicCollectionRect,
@@ -147,31 +174,45 @@ pub use world::{
     FleetUnitRow, FocusView, GarrisonReinforcementExactRow, HudSurfaceActivation,
     HudSurfaceActivationKind, HudSurfaceActivationRoot, HudSurfaceActivationView, IntelLevelRow,
     IntelNetworkGraphRow, IntelNetworkNationalCoverage, IntelView,
+    OperativeNetworkAssignment,
     LandCombatCurrentLossObservation, LandCombatDetail, LandCombatEquipmentLossDelta,
     LandCombatSideDetail, LandCombatTacticIdentity, LandCombatWidthObservation,
     LandCombatWidthWrapper, LandDamageAttributionRow, LeaderRosterView, LeaderRow, Leaf,
+    MarketStockpileRow,
     MapLayerSource, NavalAirCombatView, NavalCombatMemberRow, NavalCombatRow, NavalSupremacyRow,
     NukeStockpileCountryExact, NukeStockpileEntryExact, NukeStockpileExact,
     NukeStockpileExactView, NationalFocusPresentationExact,
     NationalFocusPresentationExactView, NationalFocusPresentationItemExact,
+    NationalFocusSelectedPresentExact,
     DecisionAvailabilityExact, DecisionCostExact, DecisionLifecycleExact, DecisionPanelExact,
-    DecisionPanelExactView, DecisionPanelRowExact, DecisionTargetExact,
+    DecisionPanelChildExact, DecisionPanelChildKindExact, DecisionPanelExactView,
+    DecisionPanelGridExact, DecisionPanelRowExact, DecisionPanelSelectedPresentExact,
+    DecisionTargetExact,
     OccupationEquipmentExactRow, OccupationHistoryExactRow, OccupationManpowerExactRow,
     OccupationRow, OperationRow, OperationRuntimeRow, OperationRuntimeStatus,
-    OperationRuntimeTarget, OperativeRow, PlayerCountry, PoliticsDetailView, PovVisibilityView,
+    OperationRuntimeTarget, OperativeRow, PlayerCountry, PoliticsDetailView,
+    PoliticsTooltipCostActionExact, PoliticsTooltipInputExact, PoliticsTooltipLineKindExact,
+    PoliticsTooltipNumericTermExact, PoliticsTooltipReasonExact, PoliticsTooltipValueExact,
+    PovVisibilityView,
     PowerBalanceBarStateExact, PowerBalanceChangeCadenceExact, PowerBalanceDecisionAvailabilityExact,
     PowerBalanceDecisionExact, PowerBalancePresentationExact, PowerBalancePresentationExactView,
     PowerBalancePresentationRowExact, PowerBalanceRow, PowerBalanceTrendExact, PowerBalanceView,
+    PowerBalanceSelectedPresentExact,
     ProjectSpecializationExact, SpecialProjectBreakthroughExactRow,
     SpecialProjectBreakthroughExactView, SpecialProjectProgressExactRow,
     SpecialProjectProgressExactView,
-    ProductionLineRow, ProductionView, ProvenanceView, ResolvedPowerBalanceTextRefsExact,
+    ProductionLicenseAgreementRow, ProductionLicenseVariantRow, ProductionLineRow,
+    ProductionView, ProvenanceView, ResolvedPowerBalanceTextRefsExact,
+    ResolvedTooltipExactFrame, ResolvedTooltipExactView, ResolvedTooltipInstanceExact,
+    ResolvedTooltipRectExact,
     A729_POWER_BALANCE_CONTROLLER_MANIFEST_SHA256,
-    ProvinceVisibility, RaidStateView, RailNeighborCarrier, RailProvinceCarrier, RailReplayView,
+    ProvinceVisibility, RaidCountryStatusView, RaidInstanceView, RaidSourceView, RaidStateView,
+    RailHubVisualState, RailNeighborCarrier,
+    RailProvinceCarrier, RailReplayView,
     ResearchLiveProgressRow, ResearchProgressRow, ResearchTechnologyRow, ResearchView,
     EngineMaterialized, ResourceTradeDealRow, ScriptedGuiDefinitionIdentityView,
     ScriptedGuiManagerOrderView, ScriptedGuiRuntimeAuthorityView, ScriptedGuiRuntimeInputs,
-    ScriptedGuiTombstoneView, ScriptedGuiView, SessionMetadataView,
+    ScriptedGuiTombstoneView, ScriptedGuiView, ScriptedFlagStateView, SessionMetadataView,
     OrderedDesignIdentityExact, SelectedDesignerFamilyExact, SelectedDesignerIdentityExact,
     SelectedDesignerIdentityExactView, SelectedDesignerOwnerExact, StableDesignIdentityExact,
     ShipCompositionRow, SnowMudCell, SnowMudView, SpeedEvent, SpottedUnitsView, StateBuildings,

@@ -18,7 +18,8 @@ Current shared collector constants, from `extractor/native/collector/src/lib.rs`
 - `CWeatherManager` vtable: `module_base + 0x2960BE0`.
 - Region vector: `CWeatherManager + 0x40`, size/capacity `305`.
 - `SWeatherPerRegion` vtable: `module_base + 0x2960B90`.
-- Region stride: `0x160`; `region_id` at `+0x08`; phenomenon enum at `+0x78`;
+- Region stride: `0x160`; `region_id` at `+0x08`; compact-v1 raw activity
+  diagnostic at `+0x78` (not a stable weather-kind enum);
   active-modifier vector at `+0x30`; low-byte named flags at `+0x108`, `+0x110`,
   `+0x118`, `+0x120`, `+0x130`; temperature raw at `+0x138`; next-change raw at
   `+0x150`.

@@ -352,6 +352,12 @@ full-slice `COMPLETE`/`NOT COMPLETE` report for this lane.
   roots, not substitutes for unresolved war, diplomacy queue, running operation,
   spy-network, or full agency/operative event streams. The decoder reports them
   as `compact_state_event_rows` plus source-specific counters;
+- the E14 `OPTK` additive trailer carries the exact complete
+  `(owner_tag_db_id, target_tag_db_id, authored operation-token id)` set from
+  `COperationTokensDatabase` joined to every country's
+  `COperationTokenManager`. A zero-row trailer is measured empty; absence is
+  unavailable. Raw CK2 ids, pointers, pool ids, and discriminants never leave
+  the extractor;
 - fail-closed flags for partial/resisted rows, especially operations detail and
   intel-map values.
 
@@ -378,6 +384,9 @@ slot handoff:
 - current accepted source proofs are build identity, country roots,
   independently gated country faction groups, relation roots, agency root,
   cryptology root, operative root with lifecycle flag cohorts, and war root;
+- OPTK requires `SOURCE_PROOF_OPERATION_TOKEN_MEMBERSHIP_870EBF`, minted only
+  after the database and every country-manager container are double-read stable
+  and every numeric token id resolves uniquely to an authored id;
 - compact state-event rows require the source proof for the row source:
   relation/opinion/subject events require relation roots, country faction-group
   events require both country roots and `SOURCE_PROOF_FACTION_GROUP_870EBF`,

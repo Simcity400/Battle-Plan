@@ -36,25 +36,25 @@ passed its evidence, verifier, composition, and final-review gates.
 
 `PROVEN` is not equivalent to `PROMOTED`.
 
-## Current post-automation census (2026-07-17)
+## Current post-automation census (2026-07-21)
 
-- Canonical RE register: 51 rows = 50 `PROVEN` + one
-  `HUMAN_CAPTURE_REQUIRED`; the 50 active reports comprise 49 exact/fail-closed
-  production-ready packets plus one exact external packet gate. Runtime-input
-  gates: zero. Implementation gates: zero.
+- Canonical RE register: 51 rows = 51 `PROVEN`; the 50 active reports are all
+  exact/fail-closed production-ready packets. Exact external packet gates:
+  zero. Runtime-input gates: zero. Implementation gates: zero.
 - Event/compose external capture closure is `PROVEN`: the synchronized clean
   terrain -> water -> rivers -> trees round includes pass-close payloads and
   RTV/DSV clear provenance, passes all three structural validators, and passes
   the production D3D11 renderer with final target FNV-1a64
   `3b3e6af22757b767`. The 775-artifact outer package manifest is SHA-256
   `09c07387a50df6a8756319c4951f03c4a0b1125cd2e0a1f64c579a1e3e8efceb`.
-- Current human-contract authority:
+- Historical human-contract authority:
   `final_integration/human_contracts/remaining_contract_registry_20260717.json`;
-  its mechanical verifier left exactly M02 and M03 and hash-binds their
-  post-capture automatic intake audits. CORRECTION (2026-07-19): M02 closed
-  2026-07-18 via its validated capture; the only remaining human-capture
-  contract is M03 (A48 labelled fixture). The 07-17 registry predates the M02
-  closure. O04 closed through the
+  its mechanical verifier left M02 and M03 at the time of that freeze and
+  hash-binds their post-capture automatic intake audits. Both contracts are now
+  closed: M02 via its validated capture and M03 via the pinned a729 command
+  paths plus retained labelled semantic and CPU-to-GPU fixtures. The 07-17
+  registry is retained as historical evidence, not current authority. O04
+  closed through the
   labelled-Paris 81-object / 243-draw synchronized package; UI13 closed through
   an independently reproduced 341-artifact final producer capture gate.
 - First-order integration authority: `final_integration/event_compose/mechanical_result.json`
@@ -99,7 +99,7 @@ passed its evidence, verifier, composition, and final-review gates.
 | N04 | `n04_label_alpha` | PROVEN | Exact dual-alpha integrator and selector-submit law pass 6,174 draws with zero unresolved leaves |
 | M01 | `m01_3d_unit_models` | PROVEN | Exact 413-object three-pass identity and game-file anchor seams pass twice; A7/A14 are frozen typed live inputs with fail-closed production handling |
 | M02 | `m02_combat_indicators` | PROVEN | Closed 2026-07-18 (row corrected 2026-07-19): capture CAPTURE_VALIDATED, all five labelled A-E states proven, portable carrier `m02_combat.rs`, twice-stable 140/140 receipts (`M02.md`; `re_evidence/rendering_laws/M02/production_completion/`) |
-| M03 | `cont_ui03` | HUMAN_CAPTURE_REQUIRED | Live intake proves 12 stable order IDs, 25 exact builders, 10 full CPU-to-draw chains, and 68 draw joins; the trace is not an A48-labelled transition fixture, so all 7 operator groups / 8 movement kinds / 6 plan subtypes remain |
+| M03 | `cont_ui03` | PROVEN | Pinned a729 command paths plus retained labelled lifecycle, definition, selection, edit-mode, culling, comparator, and CPU-to-GPU fixtures close the exact replay carrier with no operator input remaining |
 | M04 | `m04_rails` | PROVEN | Exact anchor/carrier/alpha/update law passes 12,449/12,449 retained rail draws |
 
 ## Shared services
@@ -210,15 +210,15 @@ descope.
 | XUI06 text and localization renderer | DATA_BLOCKED | Production renderer and strict admission pass focused 5/5 plus twice-stable 35/35; exact runtime localization, formatting, wrap, glyph, and inline-icon runs remain upstream extractor requirement A25 |
 | XUI07 runtime UI graphics | PROVEN | Production law resolves 3,863 assignments across 162 graphics files and all 14 aliases; focused 15/15 and twice-stable promotion gates pass with zero open leaves |
 | XUI08 designers and peace conference | DATA_BLOCKED | Replay-owned designer and peace-result admission/rendering pass focused 14/14 and verifier 16/16 twice; exact GUI display order is separated from controller offsets, with only the external live carrier still required |
-| XUI09 research state | PROVEN | Exact A29 ahead-of-time inputs are integrated fail-closed; completed/in-progress technology and doctrine state, visible slot ordering/progress, and effective penalty/reduction laws pass all six focused tests in two independent full verifier runs with no open renderer leaves |
-| XUI10 national-focus state | PROVEN | Replay-owned national-focus production, ordering, progress/pause, topology, icons, and admission pass 157/157 twice with byte-identical replay manifest and zero extractor reads |
+| XUI09 research state | DATA_BLOCKED | Exact A29 ahead-of-time producer/carrier/admission is integrated fail-closed and the replay-owned renderer leaves are closed, but production remains unavailable until H-A29 authenticates a same-hour branch-1/2 producer receipt and Wave5 root validation passes; base-factor or save synthesis is forbidden |
+| XUI10 national-focus state | DATA_BLOCKED | Replay-owned focus ordering, progress/pause, topology, icons, and admission are closed, while the reserved d89 presentation companion remains unavailable until H-A31 authenticates one stable and one discriminating exact-a729 selected-Present frame plus root validation |
 | XUI11 politics detail | DATA_BLOCKED | Production law passes 95/95 twice and typed recorded politics fields are integrated; exact evaluated-tooltip/runtime inputs remain absent from the extractor schema and are tracked separately in `extractor/documents/RE_REMAINING.md` |
 | XUI12 production and stockpile | DATA_BLOCKED | Replay-owned D1-D7 seams and completeness laws pass Rust 88, Python 239, and twice-stable 21/21 gates; only extractor-owned production inputs X4-P1..P6 remain |
-| XUI13 templates and variants | DATA_BLOCKED | Corrected 2026-07-19: A27 catalog delivered AND consumed (`game_ui::design_catalog::admit_design_catalog` + d78 order; packaging/relocation gate 1/1, focused 10/10). Remaining gate is designer-surface activation / effective-VFS GUI-root-closure authentication from a recording — not catalog data |
+| XUI13 templates and variants | DATA_BLOCKED | The retained single-hour catalog and d78 selected-designer context are consumed, and temporal A27 v3 reconstruction is wired fail-closed. Root validation plus H-A27's contiguous three-hour real-mutation receipt remain before historical catalog state is admissible; designer-surface activation/effective-VFS GUI-root closure is a separate recording gate |
 | XUI14 intelligence and operatives | DATA_BLOCKED | Replay-owned seven-surface rendering, ordering, visibility, measured-empty and unavailable-data laws pass 38/38 twice; only the separately tracked extractor producer inputs remain |
-| XUI15 trade state | PROVEN | MTRF v2, MTRR, MTRH, and MTRD v2 carry the canonical seven-resource pools, complete ordered rows, reciprocal deals, convoy/factory costs, and exact route `+0xE8/+0xE9` flags through typed replay and countrytradeview rendering; legacy MTRD v1 remains fail-closed for the two absent flags |
-| XUI16 occupation and garrisons | DATA_BLOCKED | A35 is exact end-to-end, including 499 garrisons, 1,241 equipment rows, 3,974 history rows, 14,175 loss children and the proven slot-0x3f global alert law; twice-stable 61/61 replay verification passes, with only shared A25 runtime text and A28 collection ordering still upstream |
-| XUI17 characters, leaders, traits, and aces | DATA_BLOCKED | Replay-owned A39 seam passes replay-core 3/3, game-UI 3/3, installed-files 1/1, replay-app check, and twice-stable 8-file verification; extractor A25 alone owns runtime text and A28 alone owns authenticated visible order |
+| XUI15 trade state | DATA_BLOCKED | MTRF v2, MTRR, MTRH, and MTRD v2 close the canonical resource-trade path and reject legacy mixed v1/v2 rows. PLIC v2 production-licence manager rows, D53 partner/lifecycle agreement, fold, typed replay, and UI cards are wired, but Wave5 root validation and the exact current-hour producer agreement remain before the expanded surface is promotion-authoritative |
+| XUI16 occupation and garrisons | DATA_BLOCKED | A35's exact garrison/equipment/history/global-alert law, d52 fold, replay binding and production-renderer callsite are wired fail-closed. Root validation and one owner-runnable active-detail fixture remain, alongside shared A25 text and A28 collection ordering |
+| XUI17 characters, leaders, traits, and aces | DATA_BLOCKED | Replay-owned A39 admission is wired, and the early-launch owner now joins hashed CPR1/RTI1 evidence to exact selected context/hour. Root validation plus H-A39's mixed trait, blocked-hover, portrait, and assigned/unassigned-ace fixture remain; A25 text and A28 visible order stay shared upstream dependencies |
 | XUI18 power balance | DATA_BLOCKED | Replay-owned position/sides/ranges/modifiers/decision/launcher laws pass 44/44 twice with 17/17 manifest artifacts exact; only A25/A37 runtime inputs remain upstream |
 | XUI19 decisions and missions | DATA_BLOCKED | Replay-owned decision/mission admission and presentation pass 113/113 twice with a byte-identical 26-artifact manifest; the remaining producer dependency is recorded separately under A34 |
 | XUI20 combat detail and losses | DATA_BLOCKED | Replay-owned land/naval/air loss and region, combat-log-family, D60 and W1A/W1B admission/rendering pass 48/48 twice; malformed data rejects and only separately tracked external producer inputs remain |
@@ -226,7 +226,7 @@ descope.
 | XUI22 generic scripted-GUI state | DATA_BLOCKED | Replay-owned generic visibility/enabled, dynamic-property and effect-gate evaluation passes 25/25 twice with a 24-artifact manifest; only the explicit A38 engine-materialization carrier remains external |
 | XUI23 active abilities | DATA_BLOCKED | Replay-owned ability catalog/admission/rendering seam passes focused 20/20 and two clean root verifier regenerations; extractor A36 alone must supply authenticated selected-context availability, activation, cooldown, cost, target, duration, order, tooltip, and disabled reason |
 | XUI24 mod-added UI discovery | PROVEN | Effective loose/archive/DLC/mod registration, immediate-parent replacement, namespace/DLC ordinals, dynamic discovery and installed scripted-localisation grammar pass 37/37 twice with zero residuals |
-| XUI25 display/language/input variants | PROVEN | Exact layout, pixel-oracle, ordered glyph-set, resize/clipping and keyboard/controller variant admission pass 42/42 twice with a 15-artifact zero-mismatch manifest |
+| XUI25 display/language/input variants | DATA_BLOCKED | Exact layout, pixel-oracle, ordered glyph-set, resize/clipping and the typed launch carrier are implemented. The authenticated input-family observer, manifest-pinned v2 materializer and pre-d77 admission bind are now wired fail-closed, but one real same-launch pointer-movement receipt, Wave5 root validation and the XUI25 authority refreeze remain; keyboard/controller traversal is explicitly unsupported. |
 | XUI26 frontend/meta/dev and DLC music | PROVEN | All 28 families and 232 GUI definitions are admitted; 17 replay-owned routes and 9 explicit external-service inputs pass the 338-check gate twice with byte-identical manifest `1391c95e2623c3847242c74216d2c9b9cf391cce1335515ca635a1635a2be38e` |
 | XUI27 final UI composition | PROVEN | Replay-owned terminal freeze is independently green with 372 current sources, 26 recursive packet authorities, two byte-identical canonical pass receipts, and zero current replay failures. Its 182 historical drifts and six extractor-boundary rows are explicit non-certifying inventory; this row does not claim those external inputs complete or certify the final extractor-created end-to-end replay |
 

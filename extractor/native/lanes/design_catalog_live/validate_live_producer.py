@@ -11,6 +11,7 @@ from pathlib import Path
 from a729_layout import PROGRAM_SHA256, TYPE_TEMPLATE, TYPE_VARIANT
 
 SCHEMA = "extractor.a27.live_heap_catalog.a729.v2"
+DATE_EPOCH_RAW = 43_799_999
 COMPLETENESS = {"membership", "owner", "definitions", "lifecycle", "ui_occurrences"}
 STAT_FIELDS = {
     "speed_cache", "range", "air_attack", "agility", "max_speed",
@@ -126,6 +127,20 @@ def validate(snapshot: dict, oracle: dict) -> list[str]:
     authority = snapshot.get("authority", {})
     _require(authority.get("program") == "hoi4.exe 1.19.2.0.a729", "program authority mismatch", errors)
     _require(authority.get("program_sha256") == PROGRAM_SHA256, "program SHA-256 mismatch", errors)
+    current_date_raw = authority.get("current_date_raw")
+    capture_hour_index = authority.get("capture_hour_index")
+    _require(
+        isinstance(current_date_raw, int)
+        and isinstance(capture_hour_index, int)
+        and current_date_raw - DATE_EPOCH_RAW == capture_hour_index,
+        "capture date/hour identity mismatch",
+        errors,
+    )
+    _require(
+        authority.get("coherence") == "double_read_all_roots_fields_and_membership",
+        "whole-sweep coherence seal missing",
+        errors,
+    )
     _require(snapshot.get("full_replacement") is True, "snapshot is not a full replacement", errors)
     completeness = snapshot.get("completeness", {})
     _require(set(completeness) == COMPLETENESS and all(completeness.get(k) is True for k in COMPLETENESS), "completeness contract mismatch", errors)

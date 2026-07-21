@@ -26,8 +26,8 @@
 //! `main.rs` finalize path calls this once the sealed [`SegmentInput`](super::SegmentInput)
 //! set and its spilled payloads exist.
 
-use std::fs;
-use std::io::Write;
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use snapshot::container::{Container, ExpectedIdentity};
@@ -52,6 +52,8 @@ pub trait StitchedPayloadSource {
 pub struct PublishReport {
     pub published_path: PathBuf,
     pub container_bytes: usize,
+    /// SHA-256 re-read from the published destination after atomic replace.
+    pub container_sha256: String,
     /// Count of visible main-timeline snapshot hours in the published index.
     pub visible_snapshot_hours: usize,
     /// Count of segments (visible + rollback + empty recovery) in the graph.
@@ -264,6 +266,7 @@ pub fn pack_and_validate<S: StitchedPayloadSource>(
     let report = PublishReport {
         published_path: PathBuf::new(),
         container_bytes: bytes.len(),
+        container_sha256: Sha256::hex(&bytes),
         visible_snapshot_hours: visible.len(),
         segments: graph.segments.len(),
     };
@@ -274,9 +277,9 @@ pub fn pack_and_validate<S: StitchedPayloadSource>(
 ///
 /// The container is packed and fully re-validated in memory first; only then are the
 /// bytes written to a sibling temp file, fsynced, and atomically renamed over `dest`.
-/// On ANY failure the prior file at `dest` is left untouched and the temp artifact is
-/// removed, so a crash at seal / pack / publish never destroys the previous replay or
-/// the immutable inputs.
+/// Every pre-commit failure leaves the prior file untouched and removes the temp.
+/// After the atomic commit, the destination is re-opened and re-verified before a
+/// success report is returned.
 pub fn publish_stitched_container<S: StitchedPayloadSource>(
     plan: &StitchedPlan,
     source: &S,
@@ -289,17 +292,41 @@ pub fn publish_stitched_container<S: StitchedPayloadSource>(
         fs::create_dir_all(parent)
             .map_err(|error| format!("create output directory failed: {error}"))?;
     }
-    let temp = sibling_temp_path(dest);
+    let file_name = dest
+        .file_name()
+        .ok_or_else(|| "stitched publication destination has no file name".to_string())?;
+    let canonical_parent = fs::canonicalize(parent.unwrap_or_else(|| Path::new(".")))
+        .map_err(|error| format!("anchor stitched output directory failed: {error}"))?;
+    let anchored_dest = canonical_parent.join(file_name);
+    reject_reparse_destination(&anchored_dest)?;
+    let (temp, mut file) = create_unique_sibling_temp(&anchored_dest)?;
 
-    // Build beside: write + fsync the temp file, then atomically rename over dest.
-    // A failure before the rename leaves dest untouched; clean the temp on any error.
-    let write_result = (|| -> std::io::Result<()> {
-        let mut file = fs::File::create(&temp)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
+    // Build beside through an exclusively-created retained handle. Re-read the
+    // exact handle and independently validate its bytes before publication.
+    let write_result = (|| -> Result<(), String> {
+        file.write_all(&bytes).map_err(|error| error.to_string())?;
+        file.flush().map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|error| error.to_string())?;
+        let mut persisted = Vec::with_capacity(bytes.len());
+        file.read_to_end(&mut persisted)
+            .map_err(|error| error.to_string())?;
+        if persisted != bytes {
+            return Err("stitched temp readback differs from packed bytes".to_string());
+        }
+        let persisted_container = Container::from_bytes(
+            persisted,
+            &ExpectedIdentity::default(),
+        )
+        .map_err(|error| format!("persisted stitched temp failed to re-open: {error}"))?;
+        persisted_container
+            .verify_all()
+            .map_err(|error| format!("persisted stitched temp payload verification failed: {error}"))?;
         Ok(())
     })();
     if let Err(error) = write_result {
+        drop(file);
         let cleanup = fs::remove_file(&temp);
         return Err(with_cleanup_note(
             format!("write stitched temp container failed: {error}"),
@@ -307,12 +334,13 @@ pub fn publish_stitched_container<S: StitchedPayloadSource>(
             cleanup,
         ));
     }
+    drop(file);
 
     // Same-volume atomic replacement. Rust's Windows `fs::rename` does NOT
     // replace an existing destination, so use MoveFileExW with the explicit
     // REPLACE_EXISTING + WRITE_THROUGH contract there. A failure still leaves
     // the prior destination intact.
-    if let Err(error) = atomic_replace(&temp, dest) {
+    if let Err(error) = atomic_replace(&temp, &anchored_dest) {
         let cleanup = fs::remove_file(&temp);
         return Err(with_cleanup_note(
             format!("atomic publish (rename) failed: {error}"),
@@ -320,9 +348,76 @@ pub fn publish_stitched_container<S: StitchedPayloadSource>(
             cleanup,
         ));
     }
+    sync_published_parent(&anchored_dest)
+        .map_err(|error| format!("sync stitched publication directory failed: {error}"))?;
+
+    let published = fs::read(&anchored_dest)
+        .map_err(|error| format!("re-open published stitched container failed: {error}"))?;
+    let published_sha256 = Sha256::hex(&published);
+    if published_sha256 != report.container_sha256 || published.len() != bytes.len() {
+        return Err(format!(
+            "published stitched destination failed byte identity: expected {} bytes/{}, got {} bytes/{published_sha256}",
+            bytes.len(), report.container_sha256, published.len()
+        ));
+    }
+    let published_container = Container::from_bytes(published, &ExpectedIdentity::default())
+        .map_err(|error| format!("published stitched destination failed to re-open: {error}"))?;
+    published_container
+        .verify_all()
+        .map_err(|error| format!("published stitched destination verification failed: {error}"))?;
 
     report.published_path = dest.to_path_buf();
+    report.container_sha256 = published_sha256;
     Ok(report)
+}
+
+fn reject_reparse_destination(dest: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(dest) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err("stitched publication refuses a symbolic-link destination".into());
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+                if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                    return Err("stitched publication refuses a reparse-point destination".into());
+                }
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("inspect stitched publication destination failed: {error}")),
+    }
+}
+
+fn create_unique_sibling_temp(dest: &Path) -> Result<(PathBuf, fs::File), String> {
+    for attempt in 0..128u32 {
+        let temp = sibling_temp_path(dest, attempt);
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+        {
+            Ok(file) => return Ok((temp, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("create unique stitched temp failed: {error}")),
+        }
+    }
+    Err("could not allocate a unique stitched temp after 128 attempts".into())
+}
+
+#[cfg(not(windows))]
+fn sync_published_parent(dest: &Path) -> std::io::Result<()> {
+    fs::File::open(dest.parent().unwrap_or_else(|| Path::new(".")))?.sync_all()
+}
+
+#[cfg(windows)]
+fn sync_published_parent(_dest: &Path) -> std::io::Result<()> {
+    // MoveFileExW below carries MOVEFILE_WRITE_THROUGH.
+    Ok(())
 }
 
 #[cfg(not(windows))]
@@ -372,7 +467,7 @@ fn atomic_replace(temp: &Path, dest: &Path) -> std::io::Result<()> {
 
 /// A sibling temp path in the destination's own directory (so the rename is a
 /// same-volume atomic replace). Uniqued by pid + nanos to avoid concurrent collision.
-fn sibling_temp_path(dest: &Path) -> PathBuf {
+fn sibling_temp_path(dest: &Path, attempt: u32) -> PathBuf {
     let nonce = format!(
         "{}.{}",
         std::process::id(),
@@ -385,7 +480,7 @@ fn sibling_temp_path(dest: &Path) -> PathBuf {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "stitched".to_string());
-    let temp_name = format!(".{file_name}.stitch-tmp-{nonce}");
+    let temp_name = format!(".{file_name}.stitch-tmp-{nonce}.{attempt}");
     match dest.parent().filter(|p| !p.as_os_str().is_empty()) {
         Some(parent) => parent.join(temp_name),
         None => PathBuf::from(temp_name),

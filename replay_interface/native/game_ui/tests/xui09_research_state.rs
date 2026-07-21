@@ -102,7 +102,34 @@ fn progress(name: &str, pct: f64, eta: i64) -> ResearchProgressRow {
     }
 }
 
+fn a29_source_record_sha256(slot: i64, branch: u32, quartet: [i64; 4]) -> String {
+    let mut source_record = Vec::new();
+    source_record.extend_from_slice(b"the game:a729:a29-observed-producer:v1\0");
+    source_record.extend_from_slice(
+        b"870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    );
+    source_record.extend_from_slice(
+        b"82884a9a122f95298d5068bdb68590806346c2c1ac274ca3b56889bb0e5abcc2",
+    );
+    source_record.extend_from_slice(
+        b"3fbca6726f09499e6cf1961969ae4154b9c265f8e5c688f8d939d8397387cee2",
+    );
+    source_record.extend_from_slice(&((slot + 1) as u64).to_le_bytes());
+    source_record.extend_from_slice(&2u32.to_le_bytes());
+    source_record.extend_from_slice(&3u64.to_le_bytes());
+    source_record.extend_from_slice(&10_000_000u64.to_le_bytes());
+    source_record.extend_from_slice(&43_800_024i32.to_le_bytes());
+    source_record.extend_from_slice(&((200 + slot) as u32).to_le_bytes());
+    source_record.extend_from_slice(&branch.to_le_bytes());
+    for raw in quartet {
+        source_record.extend_from_slice(&raw.to_le_bytes());
+    }
+    snapshot::sha256::Sha256::hex(&source_record)
+}
+
 fn live(slot: i64, name: &str, pct: f64, eta: i64) -> ResearchLiveProgressRow {
+    let source_record_sha256 =
+        a29_source_record_sha256(slot, 2, [150_000, 300_000, 50_000, 200_000]);
     ResearchLiveProgressRow {
         slot_index: Leaf::Measured(slot),
         tech_handle_raw: Leaf::Measured(1000 + slot),
@@ -127,6 +154,39 @@ fn live(slot: i64, name: &str, pct: f64, eta: i64) -> ResearchLiveProgressRow {
         ahead_of_time_penalty_pct: Leaf::Measured(3.0),
         ahead_of_time_reduction_years: Leaf::Measured(0.5),
         ahead_of_time_reduced_penalty_pct: Leaf::Measured(2.0),
+        ahead_of_time_fixed_scale: Leaf::Measured(100_000),
+        ahead_of_time_years_raw: Leaf::Measured(150_000),
+        ahead_of_time_penalty_raw: Leaf::Measured(300_000),
+        ahead_of_time_reduction_years_raw: Leaf::Measured(50_000),
+        ahead_of_time_reduced_penalty_raw: Leaf::Measured(200_000),
+        ahead_of_time_provenance_authority: Leaf::Measured(
+            "a729_observed_research_ahead_producer_v1".into(),
+        ),
+        ahead_of_time_provenance_executable_sha256: Leaf::Measured(
+            "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad".into(),
+        ),
+        ahead_of_time_provenance_exact_root_job_id: Leaf::Measured(
+            "20260720T124311Z-w5-a29-effective-producer-roots-e50d79d0".into(),
+        ),
+        ahead_of_time_provenance_exact_root_manifest_sha256: Leaf::Measured(
+            "82884a9a122f95298d5068bdb68590806346c2c1ac274ca3b56889bb0e5abcc2".into(),
+        ),
+        ahead_of_time_provenance_sentinel_job_id: Leaf::Measured(
+            "20260720T130641Z-w5-a29-hook-sentinels-and-substitution-i-9016d012".into(),
+        ),
+        ahead_of_time_provenance_sentinel_dump_sha256: Leaf::Measured(
+            "3fbca6726f09499e6cf1961969ae4154b9c265f8e5c688f8d939d8397387cee2".into(),
+        ),
+        ahead_of_time_provenance_ui_year_producer_rva: Leaf::Measured(0x01BC_EA60),
+        ahead_of_time_provenance_effective_value_producer_rva: Leaf::Measured(0x00AB_E4C0),
+        ahead_of_time_provenance_localization_consumer_rva: Leaf::Measured(0x0223_0F20),
+        ahead_of_time_provenance_source_record_sha256: Leaf::Measured(source_record_sha256),
+        ahead_of_time_provenance_localization_branch: Leaf::Measured(2),
+        ahead_of_time_provenance_callback_sequence: Leaf::Measured(slot + 1),
+        ahead_of_time_provenance_callback_thread_id: Leaf::Measured(2),
+        ahead_of_time_provenance_producer_game_hour_raw: Leaf::Measured(43_800_024),
+        ahead_of_time_provenance_callback_qpc_ticks: Leaf::Measured(3),
+        ahead_of_time_provenance_qpc_frequency_hz: Leaf::Measured(10_000_000),
     }
 }
 
@@ -264,7 +324,7 @@ fn live_rows_win_and_authored_orders_receive_exact_states() {
 }
 
 #[test]
-fn save_rows_are_ordered_by_array_ordinal_when_live_rows_are_unavailable() {
+fn save_rows_cannot_replace_observed_active_producer_receipts() {
     let (technology, doctrine_canvas) = canvases();
     let mut research = research();
     research.in_progress_live = Leaf::Unobtained;
@@ -275,22 +335,16 @@ fn save_rows_are_ordered_by_array_ordinal_when_live_rows_are_unavailable() {
     let definitions = definitions();
     let technology_order = vec!["tech_done".into(), "tech_a".into(), "tech_b".into()];
     let doctrine_order = vec!["doctrine_a".into(), "doctrine_b".into()];
-    let admitted = admit(
-        &research,
-        &technology,
-        &doctrine_canvas,
-        &technology_order,
-        &doctrine_order,
-        &definitions,
-    )
-    .expect("save fallback");
     assert_eq!(
-        admitted
-            .slots()
-            .iter()
-            .map(|row| (row.slot_index, row.tech_id.as_str()))
-            .collect::<Vec<_>>(),
-        vec![(0, "tech_b"), (1, "tech_a")]
+        admit(
+            &research,
+            &technology,
+            &doctrine_canvas,
+            &technology_order,
+            &doctrine_order,
+            &definitions,
+        ),
+        Err(ResearchStateRejection::ActiveSlotsUnavailable)
     );
 }
 
@@ -352,6 +406,59 @@ fn missing_effective_ahead_inputs_fail_closed() {
     assert_eq!(
         admit(
             &research,
+            &technology,
+            &doctrine_canvas,
+            &technology_order,
+            &doctrine_order,
+            &definitions,
+        ),
+        Err(ResearchStateRejection::MissingAheadOfTimeInputs)
+    );
+}
+
+#[test]
+fn observed_no_penalty_branch_is_admitted_but_wrong_authority_rejects() {
+    let (technology, doctrine_canvas) = canvases();
+    let definitions = definitions();
+    let technology_order = vec!["tech_done".into(), "tech_a".into(), "tech_b".into()];
+    let doctrine_order = vec!["doctrine_a".into(), "doctrine_b".into()];
+    let mut no_penalty = research();
+    let Leaf::Measured(rows) = &mut no_penalty.in_progress_live else {
+        unreachable!()
+    };
+    rows[0].ahead_of_time_years = Leaf::Measured(0.0);
+    rows[0].ahead_of_time_penalty_pct = Leaf::Measured(0.0);
+    rows[0].ahead_of_time_reduced_penalty_pct = Leaf::Measured(0.0);
+    rows[0].ahead_of_time_years_raw = Leaf::Measured(0);
+    rows[0].ahead_of_time_penalty_raw = Leaf::Measured(0);
+    rows[0].ahead_of_time_reduced_penalty_raw = Leaf::Measured(0);
+    rows[0].ahead_of_time_provenance_localization_branch = Leaf::Measured(0);
+    rows[0].ahead_of_time_provenance_source_record_sha256 =
+        Leaf::Measured(a29_source_record_sha256(1, 0, [0, 0, 50_000, 0]));
+    let admitted = admit(
+        &no_penalty,
+        &technology,
+        &doctrine_canvas,
+        &technology_order,
+        &doctrine_order,
+        &definitions,
+    )
+    .expect("exact producer no-penalty branch");
+    let slot = admitted
+        .slots()
+        .iter()
+        .find(|slot| slot.tech_id == "tech_b")
+        .expect("branch-zero slot");
+    assert!(ahead_of_time_tooltip_inputs(slot).is_none());
+
+    let Leaf::Measured(rows) = &mut no_penalty.in_progress_live else {
+        unreachable!()
+    };
+    rows[0].ahead_of_time_provenance_authority =
+        Leaf::Measured("base_factor_reconstruction".into());
+    assert_eq!(
+        admit(
+            &no_penalty,
             &technology,
             &doctrine_canvas,
             &technology_order,

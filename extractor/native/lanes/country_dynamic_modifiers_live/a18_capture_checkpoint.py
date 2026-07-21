@@ -299,6 +299,99 @@ def joined_row(live: dict, save: dict) -> dict:
     }
 
 
+def exact_join_fields(left: dict, right: dict) -> bool:
+    return (
+        left.get("modifier_id") == right.get("modifier_id")
+        and left.get("enabled") == right.get("enabled")
+        and left.get("values_raw") == right.get("values_raw")
+    )
+
+
+def bind_previous_checkpoint(result: dict, previous_path: str | None) -> None:
+    phase = result["phase"]
+    if phase == "positive_before":
+        if previous_path:
+            raise RuntimeError("positive_before must not name a previous checkpoint")
+        if next(join for join in result["joins"] if join["modifier_id"] == result["target"]["timed_modifier"])["remaining_days"] < 2:
+            raise RuntimeError("positive_before timed modifier must have at least two days")
+        result["continuity"] = {"kind": "fresh_baseline"}
+        return
+    if not previous_path:
+        raise RuntimeError("%s requires --previous-checkpoint" % phase)
+    previous_file = Path(previous_path).resolve()
+    previous = json.loads(previous_file.read_text(encoding="utf-8"))
+    expected_previous_phase = "positive_before" if phase == "positive_after" else "positive_after"
+    if (
+        previous.get("schema") != "hoi4.a18.dynamic_modifier_save_live_checkpoint.v1"
+        or previous.get("accepted") is not True
+        or previous.get("phase") != expected_previous_phase
+    ):
+        raise RuntimeError("previous checkpoint phase/schema/admission mismatch")
+    identity_fields = ("pid", "create_time_100ns", "executable_sha256", "instance_id")
+    if any(
+        previous.get("process_identity", {}).get(field)
+        != result.get("process_identity", {}).get(field)
+        for field in identity_fields
+    ):
+        raise RuntimeError("previous checkpoint belongs to a different process instance")
+    if previous.get("target") != result.get("target"):
+        raise RuntimeError("previous checkpoint target changed")
+    for field in ("owner_tag", "owner_tag_db_id"):
+        if previous.get("live", {}).get(field) != result.get("live", {}).get(field):
+            raise RuntimeError("previous checkpoint owner changed")
+    previous_hour = previous.get("save", {}).get("game_hour_raw")
+    current_hour = result.get("save", {}).get("game_hour_raw")
+    if not isinstance(previous_hour, int) or not isinstance(current_hour, int):
+        raise RuntimeError("checkpoint continuity hour is malformed")
+    delta = current_hour - previous_hour
+    if phase == "positive_after" and not 0 < delta <= 24:
+        raise RuntimeError("positive_after is not within the next daily decrement window")
+    if phase == "post_removal" and delta < 0:
+        raise RuntimeError("post_removal predates positive_after")
+    previous_joins = instance_map(previous.get("joins", []))
+    current_joins = instance_map(result.get("joins", []))
+    permanent_id = result["target"]["permanent_modifier"]
+    timed_id = result["target"]["timed_modifier"]
+    previous_permanent = previous_joins.get(permanent_id)
+    current_permanent = current_joins.get(permanent_id)
+    if (
+        previous_permanent is None
+        or current_permanent is None
+        or previous_permanent.get("remaining_days", object()) is not None
+        or current_permanent.get("remaining_days", object()) is not None
+        or not exact_join_fields(previous_permanent, current_permanent)
+    ):
+        raise RuntimeError("permanent modifier changed across checkpoint continuity")
+    previous_timed = previous_joins.get(timed_id)
+    current_timed = current_joins.get(timed_id)
+    if phase == "positive_after":
+        if (
+            previous_timed is None
+            or current_timed is None
+            or not isinstance(previous_timed.get("remaining_days"), int)
+            or previous_timed["remaining_days"] < 2
+            or current_timed.get("remaining_days") != previous_timed["remaining_days"] - 1
+            or not exact_join_fields(previous_timed, current_timed)
+        ):
+            raise RuntimeError("positive checkpoints do not show exact N-to-N-minus-one")
+    elif not (
+        isinstance(previous_timed, dict)
+        and isinstance(previous_timed.get("remaining_days"), int)
+        and previous_timed["remaining_days"] >= 1
+        and isinstance(current_timed, dict)
+        and current_timed.get("absent_live") is True
+        and current_timed.get("absent_save") is True
+    ):
+        raise RuntimeError("post_removal does not follow a positive timed checkpoint")
+    result["continuity"] = {
+        "kind": "exact_prior_checkpoint",
+        "previous_phase": expected_previous_phase,
+        "previous_save_sha256": previous["save"]["sha256"],
+        "previous_game_hour_raw": previous_hour,
+        "game_hour_delta": delta,
+    }
+
+
 def run(args) -> dict:
     save = Path(args.save).resolve()
     before_stat = save.stat()
@@ -379,7 +472,7 @@ def run(args) -> dict:
             raise RuntimeError("positive checkpoint timed modifier must have at least one day")
 
     instance_material = "%s|%d|%d" % (executable_sha, proc.pid, creation)
-    return {
+    result = {
         "schema": "hoi4.a18.dynamic_modifier_save_live_checkpoint.v1",
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "phase": args.phase,
@@ -414,6 +507,8 @@ def run(args) -> dict:
         "same_hour": True,
         "accepted": True,
     }
+    bind_previous_checkpoint(result, getattr(args, "previous_checkpoint", None))
+    return result
 
 
 def main() -> int:
@@ -424,6 +519,7 @@ def main() -> int:
     parser.add_argument("--timed-modifier", required=True)
     parser.add_argument("--permanent-modifier", required=True)
     parser.add_argument("--phase", required=True, choices=("positive_before", "positive_after", "post_removal"))
+    parser.add_argument("--previous-checkpoint")
     parser.add_argument("--rakaly")
     args = parser.parse_args()
     result = run(args)

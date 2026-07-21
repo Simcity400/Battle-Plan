@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const UI_PASS_SCHEMA: &str = "hoi4.production-selected-present-ui-pass.v1";
+pub const UI_PASS_SCHEMA: &str = "hoi4.production-selected-present-ui-pass.v2";
 pub const UI_A729_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 
@@ -30,6 +30,17 @@ pub struct AuthenticatedUiPass {
     pub last_sequence: u64,
     pub ui_pass_draw_count: u32,
     pub target: RenderTargetDesc,
+    /// Exact selected-Present selector receipt consumed by the producer.
+    pub selected_present_receipt_sha256: String,
+    /// In-process a729 selector receipt before projection into the portable
+    /// `SelectedPresentReceipt`. Both hashes are retained because they seal
+    /// different canonical payloads.
+    pub producer_selection_receipt_sha256: String,
+    /// Exact complete zero-through-N-minus-one GUI frontier receipt.
+    pub source_frontier_sha256: String,
+    /// Same-launch input-family observation receipt used for variant
+    /// admission. This binds the pass itself to the authority-level variant.
+    pub recorded_input_receipt_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_mapmode_state: Option<ActiveMapmodeState>,
     pub ui_pass_operations: Vec<UiPassOperation>,
@@ -70,6 +81,11 @@ pub struct HudCommandIdentity {
     pub authored_surface_identity: String,
     pub runtime_root: String,
     pub selected_gui_definition: UsedContentKey,
+    /// Pointer-free token assigned by the authenticated GUI owner producer.
+    /// It is carried through replay so the owner/paint join cannot collapse
+    /// to matching authored strings after process pointers are erased.
+    #[serde(with = "decimal_u64")]
+    pub engine_instance_token: u64,
     pub child_path: Vec<u32>,
     pub element_type: String,
     pub name: String,
@@ -271,6 +287,10 @@ impl AuthenticatedUiPass {
             last_sequence: u64,
             ui_pass_draw_count: u32,
             target: &'a RenderTargetDesc,
+            selected_present_receipt_sha256: &'a str,
+            producer_selection_receipt_sha256: &'a str,
+            source_frontier_sha256: &'a str,
+            recorded_input_receipt_sha256: &'a str,
             active_mapmode_state: &'a Option<ActiveMapmodeState>,
             ui_pass_operations: &'a [UiPassOperation],
         }
@@ -281,12 +301,16 @@ impl AuthenticatedUiPass {
             last_sequence: self.last_sequence,
             ui_pass_draw_count: self.ui_pass_draw_count,
             target: &self.target,
+            selected_present_receipt_sha256: &self.selected_present_receipt_sha256,
+            producer_selection_receipt_sha256: &self.producer_selection_receipt_sha256,
+            source_frontier_sha256: &self.source_frontier_sha256,
+            recorded_input_receipt_sha256: &self.recorded_input_receipt_sha256,
             active_mapmode_state: &self.active_mapmode_state,
             ui_pass_operations: &self.ui_pass_operations,
         })
         .map_err(|error| error.to_string())?;
         let mut hasher = Sha256::new();
-        hasher.update(b"hoi4.production-selected-present-ui-pass-identity.v1\0");
+        hasher.update(b"hoi4.production-selected-present-ui-pass-identity.v2\0");
         hasher.update(bytes);
         Ok(format!("{:x}", hasher.finalize()))
     }
@@ -299,6 +323,10 @@ impl AuthenticatedUiPass {
             return Err("selected-Present UI-pass sequence range is reversed".into());
         }
         validate_static_target(&self.target, false)?;
+        check_sha256(&self.selected_present_receipt_sha256, None)?;
+        check_sha256(&self.producer_selection_receipt_sha256, None)?;
+        check_sha256(&self.source_frontier_sha256, None)?;
+        check_sha256(&self.recorded_input_receipt_sha256, None)?;
         if let Some(state) = &self.active_mapmode_state {
             state.validate()?;
         }
@@ -311,9 +339,9 @@ impl AuthenticatedUiPass {
 
         let mut hashes = BTreeSet::new();
         let mut identities = BTreeSet::new();
-        let mut root_by_surface = BTreeMap::new();
-        let mut definition_by_surface = BTreeMap::new();
-        let mut last_paint_by_surface = BTreeMap::<(String, String), u32>::new();
+        let mut root_by_owner = BTreeMap::new();
+        let mut definition_by_owner = BTreeMap::new();
+        let mut last_paint_by_owner = BTreeMap::<(String, u64, String), u32>::new();
         for (ordinal, operation) in self.ui_pass_operations.iter().enumerate() {
             if operation.ui_pass_ordinal() != ordinal as u32 {
                 return Err("UI-pass operation ordinals are not exact 0..N-1 order".into());
@@ -335,30 +363,38 @@ impl AuthenticatedUiPass {
                         return Err("UI-pass HUD command identity is duplicated".into());
                     }
                     let surface = command.identity.authored_surface_identity.clone();
+                    let owner = (
+                        surface.clone(),
+                        command.identity.engine_instance_token,
+                    );
                     let root = command.identity.runtime_root.clone();
-                    if root_by_surface
-                        .insert(surface.clone(), root.clone())
+                    if root_by_owner
+                        .insert(owner.clone(), root.clone())
                         .is_some_and(|prior| prior != root)
                     {
                         return Err(
-                            "UI-pass HUD surface changes authenticated runtime root between segments"
+                            "UI-pass HUD owner changes authenticated runtime root between segments"
                                 .into(),
                         );
                     }
-                    if definition_by_surface
+                    if definition_by_owner
                         .insert(
-                            surface.clone(),
+                            owner,
                             command.identity.selected_gui_definition.clone(),
                         )
                         .is_some_and(|prior| prior != command.identity.selected_gui_definition)
                     {
                         return Err(
-                            "UI-pass HUD surface changes selected GUI definition between segments"
+                            "UI-pass HUD owner changes selected GUI definition between segments"
                                 .into(),
                         );
                     }
-                    let paint_key = (surface, root);
-                    if last_paint_by_surface
+                    let paint_key = (
+                        surface,
+                        command.identity.engine_instance_token,
+                        root,
+                    );
+                    if last_paint_by_owner
                         .insert(paint_key, command.identity.paint_ordinal)
                         .is_some_and(|prior| command.identity.paint_ordinal <= prior)
                     {
@@ -398,7 +434,9 @@ impl HudCommand {
         Ok(format!("{:x}", hasher.finalize()))
     }
 
-    fn validate(&self, target: &RenderTargetDesc) -> Result<(), String> {
+    /// Validate one independently captured HUD command against the exact UI
+    /// pass target before it is admitted into a complete pass frontier.
+    pub fn validate(&self, target: &RenderTargetDesc) -> Result<(), String> {
         self.identity.validate()?;
         self.placement.validate(target)?;
         if self.placement.surface_paint_ordinal != self.identity.paint_ordinal {
@@ -473,6 +511,7 @@ impl HudCommandIdentity {
     fn validate(&self) -> Result<(), String> {
         if self.authored_surface_identity.trim().is_empty()
             || self.runtime_root.trim().is_empty()
+            || self.engine_instance_token == 0
             || self.element_type.trim().is_empty()
             || self.name.trim().is_empty()
         {

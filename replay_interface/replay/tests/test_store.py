@@ -107,6 +107,80 @@ class TestIngestSynthetic(unittest.TestCase):
         self.assertEqual(snap["states"]["2"]["owner"], "POL")
         self.assertEqual(snap["states"]["2"]["controller"], "GER")
 
+    def test_save_combat_handles_are_typed_and_losslessly_retained(self):
+        _dump(
+            self.oracle,
+            "oob.json",
+            {
+                "air_wings": [
+                    {"id": "1001:69", "owner": "GER"},
+                    {"id": "2002:69", "owner": "ENG"},
+                ]
+            },
+        )
+        _dump(
+            self.oracle,
+            "combats.json",
+            {
+                "combats": [
+                    {
+                        "combat_id": [77, 12],
+                        "kind": "air",
+                        "location": 42,
+                        "day": 5,
+                        "duration": 2,
+                        "attacker": {"units": [[1001, 69]], "progress": 1.25},
+                        "defender": {"units": [[2002, 69]], "progress": 2.5},
+                    }
+                ]
+            },
+        )
+        snap = store.build_snapshot_from_oracle(self.oracle, "syn")
+        combat = snap["combats"][0]
+        self.assertEqual(combat["combat_id"], 77)
+        self.assertEqual(combat["attackers"], [1001])
+        self.assertEqual(combat["defenders"], [2002])
+        self.assertEqual(combat["modifiers"]["save_combat_handle"], [77, 12])
+        self.assertEqual(
+            combat["modifiers"]["save_attacker_unit_handles"], [[1001, 69]]
+        )
+        self.assertEqual(combat["modifiers"]["save_attacker_owners"], ["GER"])
+        self.assertEqual(combat["modifiers"]["save_defender_owners"], ["ENG"])
+        self.assertTrue(combat["modifiers"]["save_air_owner_join_complete"])
+
+    def test_save_air_owner_join_fails_closed_on_ambiguous_or_missing_wings(self):
+        _dump(
+            self.oracle,
+            "oob.json",
+            {
+                "air_wings": [
+                    {"id": "1001:69", "owner": "GER"},
+                    {"id": "1001:69", "owner": "ITA"},
+                    {"id": "2002:70", "owner": "ENG"},
+                ]
+            },
+        )
+        _dump(
+            self.oracle,
+            "combats.json",
+            {
+                "combats": [
+                    {
+                        "combat_id": [77, 12],
+                        "kind": "air",
+                        "attacker": {"units": [[1001, 69]]},
+                        # A bare-id fallback would incorrectly resolve this
+                        # complete handle to the OOB wing with type 70.
+                        "defender": {"units": [[2002, 69]]},
+                    }
+                ]
+            },
+        )
+        combat = store.build_snapshot_from_oracle(self.oracle, "syn")["combats"][0]
+        self.assertEqual(combat["modifiers"]["save_attacker_owners"], [])
+        self.assertEqual(combat["modifiers"]["save_defender_owners"], [])
+        self.assertFalse(combat["modifiers"]["save_air_owner_join_complete"])
+
     def test_store_writes_collector_map_control_snapshot_without_save(self):
         snap = schema.empty_snapshot("collector-syn", "1937.6.1.13")
         snap["provenance"]["collector"] = {

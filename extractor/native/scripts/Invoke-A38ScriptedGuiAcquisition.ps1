@@ -9,6 +9,7 @@ param(
     [int] $Attempts = 12,
     [int] $RetrySeconds = 15,
     [int] $Workers = 8,
+    [switch] $OwnerFixtureMatrix,
     [string] $Python = 'python'
 )
 
@@ -17,6 +18,7 @@ $expectedExeSha = '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c6
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $probe = Join-Path $repoRoot 'extractor\native\lanes\scripted_state_flags_variables_live\a38_scripted_gui_runtime_probe.py'
 $verifier = Join-Path $repoRoot 'extractor\native\lanes\scripted_state_flags_variables_live\verify_a38_live_probe.py'
+$matrixVerifier = Join-Path $repoRoot 'extractor\native\lanes\scripted_state_flags_variables_live\verify_a38_owner_fixture.py'
 $winner = (Resolve-Path -LiteralPath $EffectiveWinnerIndex).Path
 $resolvedOut = [System.IO.Path]::GetFullPath($OutDir)
 [System.IO.Directory]::CreateDirectory($resolvedOut) | Out-Null
@@ -64,9 +66,26 @@ for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
     & $Python @probeArgs
     $probeExit = $LASTEXITCODE
     $accepted = $false
-    if ($probeExit -eq 0 -and (Test-Path -LiteralPath $raw)) {
-        & $Python $verifier $raw --out $verification
-        $accepted = $LASTEXITCODE -eq 0
+    $managerStatus = $null
+    $managerMeasurement = 'unavailable'
+    $rebuildGenerationBefore = $null
+    $rebuildGenerationAfter = $null
+    if (Test-Path -LiteralPath $raw) {
+        $rawDocument = Get-Content -LiteralPath $raw -Raw | ConvertFrom-Json
+        $managerStatus = $rawDocument.validated_manager.status
+        $rebuildGenerationBefore = $rawDocument.validated_manager.rebuild_generation_before
+        $rebuildGenerationAfter = $rawDocument.validated_manager.rebuild_generation_after
+        if ($rawDocument.validated_manager.rebuild_generation_committed -eq $true) {
+            $managerMeasurement = if ($rawDocument.validated_manager.updater_count -eq 0) {
+                'measured_empty'
+            } else {
+                'measured_nonempty'
+            }
+        }
+        if ($probeExit -eq 0) {
+            & $Python $verifier $raw --out $verification
+            $accepted = $LASTEXITCODE -eq 0
+        }
     }
     $attemptRows.Add([ordered]@{
         attempt = $attempt
@@ -74,8 +93,12 @@ for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
         raw = if (Test-Path -LiteralPath $raw) { $raw } else { $null }
         verification = if (Test-Path -LiteralPath $verification) { $verification } else { $null }
         accepted = $accepted
+        manager_status = $managerStatus
+        manager_measurement = $managerMeasurement
+        rebuild_generation_before = $rebuildGenerationBefore
+        rebuild_generation_after = $rebuildGenerationAfter
     })
-    if ($accepted) {
+    if ($accepted -and -not $OwnerFixtureMatrix) {
         break
     }
     if ($attempt -lt $Attempts) {
@@ -83,7 +106,7 @@ for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
     }
 }
 
-$acceptedRows = @($attemptRows | Where-Object accepted)
+$acceptedRows = @($attemptRows | Where-Object { $_.accepted })
 $bundle = [ordered]@{
     schema = 'extractor.a38_autonomous_acquisition.v1'
     executable_sha256 = $expectedExeSha
@@ -92,16 +115,34 @@ $bundle = [ordered]@{
     process_id = @($process)[0].Id
     attempts = @($attemptRows)
     accepted_count = $acceptedRows.Count
-    status = if ($acceptedRows.Count -eq 1) { 'ACCEPTED_RAW_CAPTURE' } else { 'EXHAUSTED_WITHOUT_ACCEPTED_CAPTURE' }
+    owner_fixture_matrix_requested = [bool] $OwnerFixtureMatrix
+    status = if ($OwnerFixtureMatrix) {
+        'OWNER_FIXTURE_MATRIX_ATTEMPTS_CAPTURED'
+    } elseif ($acceptedRows.Count -eq 1) {
+        'ACCEPTED_RAW_CAPTURE'
+    } else {
+        'EXHAUSTED_WITHOUT_ACCEPTED_CAPTURE'
+    }
     production_admission_ready = $false
     production_admission_blockers = @(
+        'post_FUN_140B79C90_in_process_owner_receipt_required',
         'complete_engine_result_frame_not_compiled',
+        'synchronized_property_value_consumer_observations_required',
         'in_process_h4ct_winner_authorization_required'
     )
 }
 $bundlePath = Join-Path $resolvedOut 'a38_acquisition_bundle.json'
 $bundleJson = ($bundle | ConvertTo-Json -Depth 8) + [Environment]::NewLine
 [System.IO.File]::WriteAllText($bundlePath, $bundleJson, [System.Text.UTF8Encoding]::new($false))
+if ($OwnerFixtureMatrix) {
+    $matrixVerification = Join-Path $resolvedOut 'a38_owner_fixture_matrix.verification.json'
+    & $Python $matrixVerifier $bundlePath --out $matrixVerification
+    if ($LASTEXITCODE -ne 0) {
+        throw "A38 owner fixture matrix remains incomplete; inspect $matrixVerification"
+    }
+    Write-Output "A38 diagnostic owner fixture matrix accepted: $matrixVerification"
+    return
+}
 if ($acceptedRows.Count -ne 1) {
     throw "A38 autonomous acquisition exhausted $Attempts attempts; inspect $bundlePath"
 }

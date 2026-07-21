@@ -6,34 +6,41 @@
 //! exactly one winner in the authenticated launch VFS.
 
 use crate::a729_hook::{validate_selected_render_frame_receipt, RawSelectedRenderFrameCapture};
-use crate::gui_paint_receipt::GuiPaintReceipt;
+use crate::gui_paint_receipt::{GuiPaintReceipt, GuiPaintReceiptFrontier};
 use crate::RawEffectiveVfsWinnerIndexBinding;
 use portable_content_manifest::{ContentLayerKind, UsedContentKey};
 use portable_render_stream::{
-    FontBinding, HudCommand, HudCommandExecution, HudCommandIdentity, HudPaintCommand,
-    HudPlacement, InlineIconBinding, RenderTargetDesc, TextHorizontalAlignment, TextLayoutInputs,
+    ActiveMapmodeState, AuthenticatedUiPass, FontBinding, HudCommand, HudCommandExecution,
+    HudCommandIdentity, HudPaintCommand, HudPlacement, InlineIconBinding, RenderTargetDesc,
+    TextHorizontalAlignment, TextLayoutInputs, UiPassClip, UiPassOperation, UI_PASS_SCHEMA,
 };
 use runtime_text_inputs_live_lane::owner_glyph_probe::{
     OwnerGlyphPresentCandidate, SelectedOwnerGlyphCapture,
 };
 use runtime_text_inputs_live_lane::RuntimeTextLayout;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A captured-runtime text command cannot be scheduled while the upstream
 /// live owner/path fixtures remain unpromoted. Evidence mode may exercise the
 /// same materializer and retain its failures without enabling replay output.
 pub const A25_CAPTURED_RUNTIME_TEXT_PRODUCTION_ENABLED: bool = false;
+/// d76 currently records the selected local UI catalog in one global scope.
+/// Keep the A25 command binding identical instead of accepting caller entropy.
+pub const A25_RUNTIME_TEXT_POV_SCOPE: &str = "global";
+const A25_CAPTURED_RUNTIME_TEXT_CANONICAL_RGBA: [u8; 4] = [255; 4];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct A25SelectedPresentTextPaint {
     pub gui_paint: GuiPaintReceipt,
     pub owner_capture: SelectedOwnerGlyphCapture,
-    pub pov_country_or_global: String,
-    pub placement: HudPlacement,
-    pub selected_ui_pass_target: RenderTargetDesc,
-    pub rgba: [u8; 4],
-    pub horizontal_alignment: TextHorizontalAlignment,
-    pub layout_inputs: TextLayoutInputs,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct A25SelectedPresentUiPassAssembly {
+    pub update_index: u64,
+    pub active_mapmode_state: Option<ActiveMapmodeState>,
+    pub recorded_input_receipt_sha256: String,
+    pub owner_captures: Vec<SelectedOwnerGlyphCapture>,
 }
 
 /// Convert the exact extractor-local A25 asset receipts into the existing
@@ -46,6 +53,11 @@ pub fn materialize_a25_selected_present_text_command(
     validate_selected_render_frame_receipt(selected)?;
     winners.validate()?;
     input.gui_paint.validate_for_emission()?;
+    if input.gui_paint.pre_materialized_command.is_some() {
+        return Err("A25 GUI receipt also carries a non-A25 command".into());
+    }
+    let selected_ui_pass_target = input.gui_paint.selected_ui_pass_target.clone();
+    let placement = owner_placement(&input.owner_capture.admitted)?;
     let frame = &selected.selected.frame;
     let catalog = &selected.selected.runtime.catalog;
     catalog.validate_launch_binding()?;
@@ -74,20 +86,19 @@ pub fn materialize_a25_selected_present_text_command(
     if identity.runtime_root != input.owner_capture.view_id
         || identity.name != input.owner_capture.element_id
         || input.owner_capture.context_id.trim().is_empty()
-        || input.pov_country_or_global.trim().is_empty()
+        || identity.engine_instance_token
+            != input.owner_capture.admitted.gui_engine_instance_token
+        || identity.paint_ordinal != input.owner_capture.admitted.paint_ordinal
     {
         return Err("A25 text paint owner identity differs from its runtime-text row".into());
     }
-    if input.gui_paint.draw_ordinal_span.draw_count != 1
+    if input.gui_paint.draw_ordinal_span.draw_count == 0
         || input.gui_paint.draw_ordinal_span.first_ui_ordinal
             != input.gui_paint.draw_ordinal_span.last_ui_ordinal
         || identity.paint_ordinal != input.gui_paint.draw_ordinal_span.first_ui_ordinal
-        || input.placement.surface_paint_ordinal != identity.paint_ordinal
+        || placement.surface_paint_ordinal != identity.paint_ordinal
     {
         return Err("A25 text paint does not own exactly one UI-pass operation".into());
-    }
-    if input.layout_inputs != TextLayoutInputs::CapturedRuntime {
-        return Err("A25 owner-glyph observation may emit only CapturedRuntime layout".into());
     }
     if !matches!(
         &input.owner_capture.admitted.layout,
@@ -95,7 +106,7 @@ pub fn materialize_a25_selected_present_text_command(
     ) {
         return Err("A25 selected-Present owner capture has no admitted runtime layout".into());
     }
-    validate_placement_target(&input.placement, &input.selected_ui_pass_target)?;
+    validate_placement_target(&placement, &selected_ui_pass_target)?;
 
     let mut ordered_content = vec![identity.selected_gui_definition.clone()];
     let mut used_paths = BTreeSet::from([
@@ -164,6 +175,7 @@ pub fn materialize_a25_selected_present_text_command(
         authored_surface_identity: identity.authored_surface_identity.clone(),
         runtime_root: identity.runtime_root.clone(),
         selected_gui_definition: identity.selected_gui_definition.clone(),
+        engine_instance_token: identity.engine_instance_token,
         child_path: identity.child_path.clone(),
         element_type: identity.element_type.clone(),
         name: identity.name.clone(),
@@ -172,18 +184,21 @@ pub fn materialize_a25_selected_present_text_command(
     let mut command = HudCommand {
         ordinal: identity.paint_ordinal,
         identity: command_identity,
-        placement: input.placement,
+        placement,
         execution: HudCommandExecution::InterpretedPaint {
             paint: HudPaintCommand::Text {
                 runtime_text_context_id: input.owner_capture.context_id,
                 runtime_text_frame_hour: i64::try_from(candidate.frame_hour)
                     .map_err(|_| "A25 frame hour exceeds replay i64".to_string())?,
-                runtime_text_pov_country_or_global: input.pov_country_or_global,
+                runtime_text_pov_country_or_global: A25_RUNTIME_TEXT_POV_SCOPE.into(),
                 runtime_text_view_id: input.owner_capture.view_id,
                 runtime_text_element_id: input.owner_capture.element_id,
-                rgba: input.rgba,
-                horizontal_alignment: input.horizontal_alignment,
-                layout_inputs: input.layout_inputs,
+                // Captured-runtime painting uses each admitted glyph's exact
+                // RGBA/position and never reflows by horizontal alignment.
+                // Canonical constants keep ignored fields out of caller control.
+                rgba: A25_CAPTURED_RUNTIME_TEXT_CANONICAL_RGBA,
+                horizontal_alignment: TextHorizontalAlignment::Left,
+                layout_inputs: TextLayoutInputs::CapturedRuntime,
                 font_bindings,
                 inline_icon_bindings,
             },
@@ -192,8 +207,159 @@ pub fn materialize_a25_selected_present_text_command(
         command_identity_sha256: String::new(),
     };
     command.command_identity_sha256 =
-        command.computed_identity_sha256(&input.selected_ui_pass_target)?;
+        command.computed_identity_sha256(&selected_ui_pass_target)?;
     Ok(command)
+}
+
+/// Assemble a complete selected-Present UI pass from the chronological GUI
+/// frontier. A25 commands are derived here; every other GUI receipt must have
+/// an independently authenticated command, so this function never invents a
+/// placeholder operation merely to close the ordinal range.
+pub fn assemble_selected_present_ui_pass(
+    selected: &RawSelectedRenderFrameCapture,
+    winners: &RawEffectiveVfsWinnerIndexBinding,
+    frontier: GuiPaintReceiptFrontier,
+    input: A25SelectedPresentUiPassAssembly,
+) -> Result<AuthenticatedUiPass, String> {
+    validate_selected_render_frame_receipt(selected)?;
+    winners.validate()?;
+    frontier.validate_for_ui_emission()?;
+    let frame = &selected.selected.frame;
+    if frontier.process_start_nonce != frame.process_start_nonce
+        || frontier.hook_epoch_nonce != frame.hook_epoch_nonce
+        || frontier.selected_submit_index != selected.receipt.selected_submit_index
+        || frontier.selected_frame_sequence != selected.receipt.selected_frame_sequence
+        || frontier.selected_present_global_order != selected.receipt.selected_global_order
+        || frontier.selected_present_receipt_sha256
+            != selected.receipt.selection_receipt_sha256
+    {
+        return Err("A25 UI frontier crosses its selected Present".into());
+    }
+    let first_sequence = frontier
+        .ordered_receipts
+        .first()
+        .and_then(|receipt| receipt.ordered_draws.first())
+        .map(|draw| draw.global_render_sequence)
+        .ok_or("A25 UI frontier has no first draw sequence")?;
+    let last_sequence = frontier
+        .ordered_receipts
+        .last()
+        .and_then(|receipt| receipt.ordered_draws.last())
+        .map(|draw| draw.global_render_sequence)
+        .ok_or("A25 UI frontier has no last draw sequence")?;
+
+    let mut owner_by_key = BTreeMap::new();
+    for capture in input.owner_captures {
+        let key = (
+            capture.admitted.gui_engine_instance_token,
+            capture.admitted.paint_ordinal,
+        );
+        if owner_by_key.insert(key, capture).is_some() {
+            return Err("A25 selected owner capture identity is duplicated".into());
+        }
+    }
+    let mut operations = Vec::with_capacity(frontier.complete_ui_operation_count as usize);
+    for receipt in frontier.ordered_receipts {
+        if receipt.draw_ordinal_span.draw_count == 0
+            || receipt.draw_ordinal_span.first_ui_ordinal
+                != receipt.draw_ordinal_span.last_ui_ordinal
+            || receipt.identity.paint_ordinal != receipt.draw_ordinal_span.first_ui_ordinal
+        {
+            return Err("selected GUI receipt is not one exact UI operation".into());
+        }
+        let ordinal = receipt.identity.paint_ordinal;
+        let owner_key = (receipt.identity.engine_instance_token, ordinal);
+        let generic_command = receipt.pre_materialized_command.clone();
+        let command = match (owner_by_key.remove(&owner_key), generic_command) {
+            (Some(owner_capture), None) => materialize_a25_selected_present_text_command(
+                selected,
+                winners,
+                A25SelectedPresentTextPaint {
+                    gui_paint: receipt,
+                    owner_capture,
+                },
+            )?,
+            (None, Some(command)) => command,
+            (Some(_), Some(_)) => {
+                return Err("A25 and non-A25 UI commands claim the same operation".into())
+            }
+            (None, None) => {
+                return Err("complete GUI frontier contains an unmaterialized operation".into())
+            }
+        };
+        operations.push(UiPassOperation::HudCommand { command });
+    }
+    if !owner_by_key.is_empty() {
+        return Err("selected UI assembly has commands outside the complete GUI frontier".into());
+    }
+    let selected_ordinal = selected
+        .receipt
+        .candidate_count
+        .checked_sub(1)
+        .ok_or("A25 selected Present has zero candidates")?;
+    let portable_selected_present = portable_render_stream::SelectedPresentReceipt::sealed(
+        selected.receipt.candidate_count,
+        selected.receipt.candidate_set_sha256.clone(),
+        selected.receipt.selected_submit_index,
+        selected_ordinal,
+        selected.receipt.target_game_hour_raw,
+        selected.receipt.selected_presentation_qpc_ticks,
+        selected.receipt.cutoff_qpc_ticks,
+    );
+    let mut pass = AuthenticatedUiPass {
+        schema: UI_PASS_SCHEMA.into(),
+        update_index: input.update_index,
+        first_sequence,
+        last_sequence,
+        ui_pass_draw_count: frontier.complete_ui_operation_count,
+        target: frontier.selected_ui_pass_target,
+        selected_present_receipt_sha256: portable_selected_present.computed_sha256()?,
+        producer_selection_receipt_sha256: selected.receipt.selection_receipt_sha256.clone(),
+        source_frontier_sha256: frontier.frontier_sha256,
+        recorded_input_receipt_sha256: input.recorded_input_receipt_sha256,
+        active_mapmode_state: input.active_mapmode_state,
+        ui_pass_operations: operations,
+        pass_identity_sha256: String::new(),
+    };
+    pass.pass_identity_sha256 = pass.computed_identity_sha256()?;
+    pass.validate()?;
+    Ok(pass)
+}
+
+fn owner_placement(
+    admitted: &runtime_text_inputs_live_lane::owner_glyph_capture::AdmittedOwnerGlyphCapture,
+) -> Result<HudPlacement, String> {
+    let [left_i32, top_i32, right_i32, bottom_i32] = admitted.destination_rect;
+    if right_i32 <= left_i32 || bottom_i32 <= top_i32 {
+        return Err("A25 owner-render rectangle has a non-positive extent".into());
+    }
+    let destination_rect = portable_render_stream::UiPassRect {
+        left_i32,
+        top_i32,
+        right_i32,
+        bottom_i32,
+    };
+    let clip_state = match admitted.ui_clip {
+        None => UiPassClip::Disabled,
+        Some([left_i32, top_i32, right_i32, bottom_i32]) => {
+            if right_i32 <= left_i32 || bottom_i32 <= top_i32 {
+                return Err("A25 owner-render scissor has a non-positive extent".into());
+            }
+            UiPassClip::Enabled {
+                rect: portable_render_stream::UiPassRect {
+                    left_i32,
+                    top_i32,
+                    right_i32,
+                    bottom_i32,
+                },
+            }
+        }
+    };
+    Ok(HudPlacement {
+        destination_rect,
+        clip_state,
+        surface_paint_ordinal: admitted.paint_ordinal,
+    })
 }
 
 /// Pointer-free selected candidate key consumed by the A25 evidence-mode

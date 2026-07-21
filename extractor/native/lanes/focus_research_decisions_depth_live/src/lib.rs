@@ -13,6 +13,10 @@ use recorder_host::domain_data_authority::{summarize_domain_data_payload, Domain
 pub mod a729_focus_item_producer;
 #[cfg(windows)]
 pub mod a729_focus_item_hook;
+#[cfg(windows)]
+mod a729_focus_item_inline;
+#[cfg(windows)]
+pub mod a729_research_ahead_hook;
 pub mod national_focus_presentation;
 
 pub const DOMAIN_ID: u16 = 45;

@@ -3,7 +3,7 @@
   "status": "PASS_PRODUCTION_ADAPTER_READY_TO_PROMOTE",
   "production_source": {
     "path": "replay_interface/native/map_viewer/src/frame_bundle.rs",
-    "sha256": "c6919d0a0984b7640133292b15d61cbda5674aae1b144fafed9991a80109c1e5"
+    "sha256": "418c871d9a67591a4fd94b9435a6f51a49321374203ceebb99ff349bae7ebd52"
   },
   "focused_tests": {
     "command": "cargo test --manifest-path replay_interface/native/map_viewer/Cargo.toml descriptor_only_ -- --nocapture",

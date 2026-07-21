@@ -19,6 +19,12 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const ACE_TRAILER_MAGIC: &[u8; 4] = b"ACE1";
 pub const ACE_TRAILER_VERSION: u16 = 2;
 pub const ACE_TRAILER_VERSION_V1: u16 = 1;
+pub const ACE_ROSTER_AUTHORITY: &str = "exact_a729_cace_owner_roster";
+pub const ACE_ROSTER_EXECUTABLE_SHA256: &str =
+    "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
+pub const ACE_ROSTER_FUNCTION_MANIFEST_SHA256: &str =
+    "f85162e5b2a531962e1080fb3add1867f4522a2aba7811d013a9f43c8e708720";
+pub const ACE_ROSTER_ORDERING: &str = "country_ace_index_then_ace_id";
 pub const ACE_TRAILER_HEADER_LEN: usize = 40;
 pub const ACE_TRAILER_ROW_LEN: usize = 40;
 pub const ACE_TRAILER_ROW_LEN_V1: usize = 32;
@@ -253,6 +259,9 @@ pub fn encode_trailer(header: &AirAceRosterHeader, rows: &[AirAceRosterRow]) -> 
 /// The decoded `ACE1` trailer: validated header + full-replace rows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AceTrailerFrame {
+    /// Exact wire version retained for the portable authority envelope. V1 is
+    /// alive-only historical transport; v2 is the stable raw lifecycle tuple.
+    pub version: u16,
     pub header: AirAceRosterHeader,
     pub rows: Vec<AirAceRosterRow>,
 }
@@ -393,6 +402,13 @@ pub fn decode_trailer_rows(
                 "ace row {row_index} has unknown source_mask {source_mask:#x}"
             ));
         }
+        let required_identity_sources =
+            SOURCE_LIVE_COUNTRY_ACE_VECTOR | SOURCE_LIVE_ACE_OBJECT_LAYOUT;
+        if source_mask & required_identity_sources != required_identity_sources {
+            return Err(format!(
+                "ace row {row_index} lacks exact country-vector/object-layout identity sources"
+            ));
+        }
         if tag_db_id == 0 || tag_db_id > MAX_TAG_DB_ID {
             return Err(format!(
                 "ace row {row_index} has invalid tag_db_id {tag_db_id}"
@@ -423,6 +439,22 @@ pub fn decode_trailer_rows(
             }
             None
         };
+        if wing.is_some()
+            != (source_mask & SOURCE_LIVE_WING_ACE_ID_ASSIGNMENT != 0)
+        {
+            return Err(format!(
+                "ace row {row_index} wing assignment disagrees with source authority"
+            ));
+        }
+        let frame_assignment_blocked =
+            header.status_flags & ACE_STATUS_WING_ASSIGNMENT_BLOCKED != 0;
+        if frame_assignment_blocked
+            != (source_mask & SOURCE_WING_ASSIGNMENT_SCAN_BLOCKED != 0)
+        {
+            return Err(format!(
+                "ace row {row_index} assignment-blocked source disagrees with frame status"
+            ));
+        }
 
         let alive_known = flags & ROW_FLAG_ALIVE_KNOWN != 0;
         let dead = flags & ROW_FLAG_DEAD != 0;
@@ -477,6 +509,11 @@ pub fn decode_trailer_rows(
                 "ace row {row_index} claims death-record source without ALIVE_KNOWN"
             ));
         }
+        if alive_known && source_mask & SOURCE_LIVE_ACE_DEATH_RECORD == 0 {
+            return Err(format!(
+                "ace row {row_index} has ALIVE_KNOWN without death-record source"
+            ));
+        }
         let handled_known = flags & ROW_FLAG_HANDLED_KNOWN != 0;
         let handled = flags & ROW_FLAG_HANDLED != 0;
         if handled && !handled_known {
@@ -495,6 +532,11 @@ pub fn decode_trailer_rows(
                 "ace row {row_index} has kill_type_raw without flag"
             ));
         }
+        if alive_known && !dead && kill_type_known && kill_type_raw != 0 {
+            return Err(format!(
+                "ace row {row_index} has nonzero death-only kill_type_raw on a living ace"
+            ));
+        }
         // V2's lifecycle bytes are captured as one stable tuple.  Partial
         // presence would turn a torn read into apparently authoritative raw
         // state.  V1 is the only supported alive-only wire shape: it predates
@@ -509,6 +551,14 @@ pub fn decode_trailer_rows(
         {
             return Err(format!(
                 "ace row {row_index} claims lifecycle-record source without alive, handled, and kill_type presence"
+            ));
+        }
+        if !v1
+            && alive_known
+            && source_mask & SOURCE_LIVE_ACE_LIFECYCLE_RECORD == 0
+        {
+            return Err(format!(
+                "ace row {row_index} has a v2 lifecycle tuple without lifecycle-record source"
             ));
         }
 
@@ -574,7 +624,11 @@ pub fn decode_trailer_rows(
         ));
     }
 
-    Ok(AceTrailerFrame { header, rows })
+    Ok(AceTrailerFrame {
+        version,
+        header,
+        rows,
+    })
 }
 
 /// Decode + gate the `ACE1` trailer at `trailer_offset` within `payload`,
@@ -958,6 +1012,34 @@ mod tests {
 
         let error = decode_trailer_rows(&bytes, 0).expect_err("partial tuple must fail closed");
         assert!(error.contains("partial v2 lifecycle tuple"), "{error}");
+    }
+
+    #[test]
+    fn decoder_rejects_missing_identity_or_lifecycle_source_authority() {
+        for clear_source in [
+            SOURCE_LIVE_ACE_OBJECT_LAYOUT,
+            SOURCE_LIVE_ACE_LIFECYCLE_RECORD,
+        ] {
+            let row = alive_row(5440);
+            let mut bytes = encode_trailer(&header_for(std::slice::from_ref(&row)), &[row]);
+            let source_offset = ACE_TRAILER_HEADER_LEN + 12;
+            let source = read_u32_le(&bytes, source_offset) & !clear_source;
+            bytes[source_offset..source_offset + 4].copy_from_slice(&source.to_le_bytes());
+            assert!(
+                decode_trailer_rows(&bytes, 0).is_err(),
+                "clearing source bit {clear_source:#x} must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn decoder_rejects_death_only_kill_type_on_living_ace() {
+        let mut row = alive_row(5440);
+        row.kill_type_raw = Some(1);
+        let bytes = encode_trailer(&header_for(std::slice::from_ref(&row)), &[row]);
+        let error =
+            decode_trailer_rows(&bytes, 0).expect_err("living nonzero kill type must fail");
+        assert!(error.contains("death-only kill_type_raw"), "{error}");
     }
 
     #[test]

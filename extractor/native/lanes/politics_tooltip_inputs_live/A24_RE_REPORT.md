@@ -1,6 +1,6 @@
 # A24 politics-tooltip upstream RE and d73 carrier
 
-Status: **promotion-ready: exact a729 native source, d73 carrier, collector seam, registry entry, and production fold are installed and fail closed.**
+Status: **static producer graph, exact detour set, pointer-free owner capture, and typed extractor-to-replay/UI binding complete; the authenticated multi-surface live fixture remains; d73 is reserved, unschedulable, and fail closed.**
 
 This report belongs only to the extractor A24 lane. It does not amend or reuse the rendering-laws `PROGRAM_STATUS` surface.
 
@@ -31,6 +31,54 @@ All rows below bind the function address, Ghidra job, exact artifact, whole-job 
 
 The string-xref job is `20260717T103021Z-a24-politics-tooltip-anchors-v1-4af7c984`. Artifact `C:\Users\Example\ghidra_agent_exports\20260717T103021Z-a24-politics-tooltip-anchors-v1-4af7c984\string-xrefs.txt` has SHA-256 `4096785ffe2701327a1702ddc5e4640255f8f0505c050cf684376ddbbc07a3c6` and identity-manifest SHA-256 `cd33527ef2f8f5d73ac87272d13b3c6219927272875ffe379ec7f4e1f4f8f8fe`. It binds `countrypoliticsview`, `political_ideas_window`, `country_politics_idea_category_entry`, `modifier_container`, `IDEA_WINDOW_CANNOT_SWITCH`, `IDEA_NOT_AVAILABLE_ICON`, and `MODIFIER_POLITICS_PREFIX` to the functions above.
 
+The recovery pass found that the earlier graph was insufficient to authenticate
+the six PTI1 families. Exact replacement evidence was exported from the pinned
+20-shard broker:
+
+| Exact producer | Proven runtime output | Member SHA-256 |
+|---|---|---|
+| `0x14128DC50` | Compact advisor PP/CP/allocation costs, affordability coloring, unavailable icon, and final resolved string | `de88afe804eae0f97dadb2854494a770811607209230f8cf4d71862a34d52c1f` |
+| `0x14128A780` | Full advisor availability, ordered `CANT_TAKE_IDEAS` reasons, PP/CP/allocation costs, modifiers, affordability, and final strings | `d398e741796715399d0b06cf2031642a0841d6eeb6b5787ccffbfae2a6fef272` |
+| `0x140376270` | Exact displayed ideology identity and raw popularity-change line | `f938c228ea9bb38b96c062ca5e2718d13d869a6755e519b38e4450f1be6fc5a3` |
+| `0x141C7D4D0` | Full timed-idea tooltip and removal date from `remaining_days * 0x18 + CGameState+0x468` | `0e1bc4dce0c4efbccae14933b6d47d69217bccc5787cd28d31f6b3087ea73de2` |
+| `0x141C2B640` | Active-idea runtime description, custom fields/modifiers, removal-trigger text, and `TIMED_IDEA_DATE` | `2ac20a759232db390a88ad29c02c182e500dec2d03e13bd23a23c08bc4bafb0e` |
+| `0x141C302E0` | Political-idea remove permission, remove cost, affordability, reasons, and effects | `e1f46c2eda5cd5a8ea9c9df9815e1653d38ee26c4d54a033b754c0561e7bf512` |
+| `0x141C2E8C0` | Category occupancy/capacity and exact add/change/no-more-ideas reasons | `553b16a36ff274dcef74c44f6708be36d207126c1c3bbfe4269847d088fcf0b6` |
+| `0x141C6AA70` | Boost-party current popularity, raw change, and ordered `WHY` breakdown | `635788349d94fe9ee784744317ffe49084268d7e6c4e873fda15a86dbf709bbf` |
+| `0x141BFE110` | Selection disabled-reason owner and compact-cost producer call | `8d839d60b64b317e574a215f5df5f3743b4392ec7214f54733037a23c36d6638` |
+| `0x141BFC990` | Compact-cost refresh owner | `fb361e038fd7c708ab0ea3ad5540f46fb3963f3758febfba4532688eafa58d54` |
+
+These ten members share job
+`20260720T130541Z-w5-a24-exact-ui-producers-da7088d4`, manifest SHA-256
+`18bac19dc5de7fc0ef90a9341e0bc5ed1ac73c745a1dc96f6177ed08c8f70b35`.
+The helper graph shares job
+`20260720T124332Z-w5-a24-recover-runtime-producers-6a870988`, manifest
+SHA-256
+`989783832d3fe63a4f87bef2e2ba4e3c34c2048f11e87d55afb15164073e1503`.
+It proves exact idea availability at `0x140FBEB00` (member
+`065550044d6bc499d88c905e9549c3fd73310352fbe9bf01b4fef289d903aca3`),
+effective fixed-point cost accumulation at `0x140B9A060` (member
+`7abf1a652c32fa3f3835f0b744610936e35a63afe6bddc90c7eb40d2da1b57ab`),
+`CCountry+0xF90 -> CPoliticalStatus` at `0x1406C2D50`, country-handle
+resolution at `0x140BA56A0`, and idea modifier-description/stat production at
+`0x141C35770`.
+
+The exact token xref receipt is
+`20260720T130531Z-w5-a24-runtime-string-producers-426c66d5`, artifact SHA-256
+`8ddf4ac6308c965a393a295d0f3e51e72bd51a6b7b56cb4800ebfaeee3d6e2df`.
+It binds `POLITICS_IDEA_COST`, `POLITICS_ADVISOR_COST`,
+`COMMAND_POWER_ADVISOR_COST`, `POLITICS_IDEOLOGY_POPULARITY_CHANGE`,
+`TIMED_IDEA_DATE`, `POLITICS_IDEA_NO_REMOVE`,
+`POLITICS_ADVISOR_PP_COST_SHORT`, and `BOOST_PARTY_SELECT_TT` to the
+producers above. Exact 16-byte entry sentinels are frozen by jobs
+`20260720T131310Z-w5-a24-exact-producer-entry-sentinels-ae52331e`
+(artifact SHA-256
+`1bcf5829cd3a6af2ca1720ee26f63285ec374fdbc609adb27152769122203270`)
+and
+`20260720T131506Z-w5-a24-modifier-producer-entry-sentinels-7284f717`
+(artifact SHA-256
+`7f78ebae425582b1be1ab5ae9b3cd7f0d2c7a174cd4d526d0188b22f5d4e34fa`).
+
 ## Incidental findings retained
 
 These were encountered while closing A24 and are preserved without promoting them beyond what the named artifact proves. All four decompiles share Ghidra job `20260717T103340Z-a24-politics-tooltip-producers-v1-c7bba362`, artifact manifest `C:\Users\Example\ghidra_agent_exports\20260717T103340Z-a24-politics-tooltip-producers-v1-c7bba362\evidence\_FUNCTION_EVIDENCE_MANIFEST.json`, manifest SHA-256 `aec720fe9371b012bfb6a8f000f74ab39232f3482a766c0edfac7582ce489ce5`.
@@ -44,9 +92,9 @@ These were encountered while closing A24 and are preserved without promoting the
 
 The string-xref artifact above also binds `MODIFIER_BASE_VALUE` to `0x141d1afd0` and multiple generic modifier producers. This is an anchor only: function `0x141d1afd0`, job `20260717T103021Z-a24-politics-tooltip-anchors-v1-4af7c984`, artifact `C:\Users\Example\ghidra_agent_exports\20260717T103021Z-a24-politics-tooltip-anchors-v1-4af7c984\string-xrefs.txt`, artifact SHA-256 `4096785ffe2701327a1702ddc5e4640255f8f0505c050cf684376ddbbc07a3c6`, identity-manifest SHA-256 `cd33527ef2f8f5d73ac87272d13b3c6219927272875ffe379ec7f4e1f4f8f8fe`.
 
-## Non-evidence infrastructure incidents
+## Superseded infrastructure incidents
 
-The pre-existing helper export `20260717T103804Z-a24-politics-runtime-helpers-v1-1a23f7fd` requested `0x140fbeb00`, `0x140b9a060`, `0x1406c2d50`, `0x140ba56a0`, `0x141c350f0`, and `0x141c35770`. Its only readable artifact is `job.json`, SHA-256 `58078f2f6a995e02dbe5a14887b696b01f50d55d5653ed4ce79d6bb1a46e7331`; it remains marked running and produced no function manifest. Therefore none of those helper addresses is claimed from that job, and the operation was not duplicated.
+The pre-existing helper export `20260717T103804Z-a24-politics-runtime-helpers-v1-1a23f7fd` requested `0x140fbeb00`, `0x140b9a060`, `0x1406c2d50`, `0x140ba56a0`, `0x141c350f0`, and `0x141c35770`. Its only readable artifact is `job.json`, SHA-256 `58078f2f6a995e02dbe5a14887b696b01f50d55d5653ed4ce79d6bb1a46e7331`; it remains non-evidence. The 2026-07-20 helper job above supersedes that failed attempt with authenticated function members.
 
 Three failed runtime-text searches are recorded for completeness and are not semantic evidence: `20260717T105856Z-a24-politics-runtime-text-v2-b4b31899`, `20260717T110320Z-a24-politics-runtime-text-v2-retry-dad5addf`, and `20260717T110352Z-a24-politics-runtime-text-v2-retry2-2b4cf2b8`.
 
@@ -58,29 +106,79 @@ The effective installed GUI is `<local-path> of Iron IV\interface\countrypolitic
 
 The English politics localisation is `<local-path> of Iron IV\localisation\english\politics_l_english.yml`, SHA-256 `ea6346f4e10dab0b7bec0fb55f165390bdd9158eb3c7b33207379ba8687b4423`. It pins `REMOVE_IDEA_POLITICAL_POWER`, `IDEA_WINDOW_SWITCH`, `IDEA_WINDOW_CANNOT_SWITCH`, `IDEA_COST_POLITICAL_POWER`, `IDEA_NOT_AVAILABLE_ICON`, `POLITICS_IDEA_STAT_TRADE`, and `POLITICS_IDEA_STAT_RECRUITABLE`.
 
-The XUI11 retained-store receipt covers 214 RDCs and 69,298,844,274 bytes with zero politics/advisor/minister/national-spirit filename hits. That is an exhaustive path/filename result, not visual OCR. A capture cannot replace resolved trigger results, aggregate terms, evaluation context, or the completeness witness, so A24 requires no new human capture.
+The XUI11 retained-store receipt covers 214 RDCs and 69,298,844,274 bytes
+with zero politics/advisor/minister/national-spirit filename hits. That is an
+exhaustive path/filename result, not visual OCR. Those captures cannot replace
+resolved trigger results, aggregate terms, evaluation context, or a
+completeness witness. They therefore neither close A24 nor establish a present
+human-input requirement.
 
 ## Production carrier and fold
 
-Reserved unscheduled domain 73 uses `PTI1` schema v1. Its exact row key is `{frame_hour, country_tag, target_kind, target_token_or_slot, line_kind}`. It carries measured/not-applicable/unobtainable availability, exact raw integer plus scale, source identity, evaluation context, a producer-manifest SHA-256, completeness-record identity, and expected row count.
+Reserved unscheduled domain 73 uses `PTI1` schema v2. Its exact row key is `{frame_hour, country_tag, target_kind, target_token_or_slot, line_kind}`. It carries measured/not-applicable/unobtainable availability, exact raw integer plus scale, source identity, evaluation context, a producer-manifest SHA-256, the selected-Present candidate/ordinal/QPC/cutoff/receipt SHA-256, completeness-record identity, and expected row count.
 
 The six typed families are trigger result/reason tree, effective hire/removal cost, conditional-modifier aggregate with exact source terms, advisor-slot capacity/vacancy/eligibility/disabled reasons, timed dynamic modifier value/source/expiry, and displayed party-popularity change sources. Validation rejects duplicate keys, mismatched typed variants, malformed reason trees, nonmonotonic source ordinals, aggregate sum disagreement, scale disagreement, inconsistent advisor vacancy, invalid expiry order, unauthenticated source admission, and cross-hour snapshot attachment.
 
-The collector exposes `encode_a24_exact_politics_tooltip_frame`. `recorder_host` folds clean frames to `_r2_politics_tooltip_inputs_live`, preserves status flags and provenance, distinguishes absent from authenticated measured-empty, emits null on failure or frame-hour mismatch, and never carries a prior hour's politics tooltip input.
+The collector exposes `encode_a24_exact_politics_tooltip_frame`.
+`recorder_host` folds clean frames to `_r2_politics_tooltip_inputs_live`,
+preserves status flags and provenance, distinguishes absent from authenticated
+measured-empty, emits null on failure or frame-hour mismatch, and never carries
+a prior hour's politics tooltip input. `replay_core` now strictly decodes PTI1,
+checks exact hour/authority/manifest/count/key/value/reason/source-term
+invariants, recomputes and joins the PTI1 selected-Present receipt against the
+production-render receipt, rejects unknown country joins, and projects measured rows to
+`PoliticsDetailView::tooltip_inputs`. `game_ui::politics_tooltips` exposes only
+exact target-key selection and preserves absent versus unobtained versus
+measured-empty. It does not evaluate triggers or infer missing rows.
 
-Mechanical gates:
+Prior lane, contract, collector, and recorder test results predate this recovery
+and are retained only as historical evidence. They do not validate the new
+producer-manifest binding or live taps. The primary agent must run the central
+validation battery after the shared Wave5 edit set stabilizes.
 
-- `politics_tooltip_inputs_live_lane`: 7/7 tests passed.
-- `compact_contract`: 117/117 tests passed, including registry parity.
-- `collector`: cargo check passed.
-- dedicated production-library recorder integration: 2/2 tests passed, covering all six families and cross-hour rejection.
+## Live source disposition and activation
 
-The old monolithic `recorder_host` lib-test target currently fails before selecting A24 because unrelated FRD test helpers reference absent `FRD_HEADER_LEN_V2` and `FRD_SCHEMA_VERSION_V2`. The dedicated `recorder_host/tests/a24_d73.rs` target compiles the production recorder library and passes; A24 does not modify those unrelated FRD symbols.
+`src/a729_hook.rs` now installs 23 sentinel-gated detours: the politics entry
+refresh, all nine exact UI producers, the three refresh/binding owners, the
+five internal value/text producers, the availability/cost/affordability/remove
+helpers, and the nested raw modifier-value lookup. Entry and return are paired
+on a thread-local native stack with monotonically allocated invocation IDs.
+Only nested helper calls under an A24 root are retained. Durable observations
+contain module RVAs, fixed-point values, predicates, copied engine strings,
+QPC entry/return times, frame hour, and pointer-free engine identities; raw
+process pointers are never serialized.
 
-## Authenticated native source
+An evidence epoch must be armed before UI choreography. Sealing rejects an
+hour mismatch, any observation outside the arm-to-selected-Present interval,
+an unknown/non-image stack RVA, missing parent invocation, duplicate sequence
+or invocation, incomplete tap census, active callback, queue eviction, or any
+producer/scheduler diagnostic. Teardown disables all detours, waits for callback
+quiescence, removes every trampoline, and clears process-local state before the
+collector DLL may unload. The collector exposes install/arm/receipt-copy/
+uninstall harness ABI functions and an installed-source PTI1 encoder; the
+owner runner is `extractor/native/scripts/Invoke-A24PoliticsTooltipEvidence.ps1`.
 
-`src/a729_hook.rs` implements `A729PoliticsHookSource` directly behind the existing `ExactPoliticsTooltipSource` trait and therefore feeds the existing `collector::encode_a24_exact_politics_tooltip_frame` seam without a parallel carrier or ABI. Installation verifies the exact 16-byte a729 sentinel `48895c24185556574154415541564157` before placing a MinHook at RVA `0x01C33FE0` / absolute `0x141C33FE0`. The hook records the completed producer tuple `(entry, *idea_id_pointer, country_context)` from the function's three proven arguments.
+The exact UI producer manifest is
+`18bac19dc5de7fc0ef90a9341e0bc5ed1ac73c745a1dc96f6177ed08c8f70b35`.
+The internal-value job
+`20260720T134130Z-w5-a24-internal-value-producers-722157a2` has manifest
+`ea5a7659b80b58cfc3f7e41d518da67b1d9114d9f966a66fe7c069a463f79eb1`;
+the raw modifier-term closure, slot census, and timed value/expiry jobs have
+manifests `a6c5582e6073445b2d1d9402f757ce8b5ae463862ab96bf2e44d34cda58b5a69`,
+`23e9625c8f49e2aaeeeb96ed1f57f6e1df081e83b86f34c680b2d4c5b0d0c0d0`,
+and `7c254928e9c7571dc11a2d9369c6f053c9b6159d8c29756f8b9acbf27b7a7562`.
 
-Frame admission is intentionally stricter than the PTI1 carrier alone. Each producer tuple is consumed once; null tuple parts, reuse, rejection, or bounded-queue eviction poison completeness. Submitted batches must identify either exact formatter callsite RVA `0x0188963C` or `0x018897B4` and the common retained chain tail `0x0162961E -> 0x00DB7668 -> 0x002A4F1C -> 0x00DC16E9 -> 0x0221A1D5`. That identity is backed by 258 authenticated formatter events in `extractor/native/lanes/resolved_tooltip_instances_live/retained_cpu_tooltip_analysis.json`, SHA-256 `7fe5897afe038acd9e7050e50c73b6f37a527e109a4a6b784d185610f16fa016`.
+Production admission remains explicitly disabled by
+`LIVE_PRODUCER_TAPS_COMPLETE=false`; `is_exact_a729_politics_source` remains
+false outside tests and d73 remains reserved/unschedulable. Static code cannot
+substitute for the missing live observation. Promotion requires selected-
+Present cases covering every mutually exclusive politics surface, complete
+visible-target enumeration including measured empty, and PTI1 raw/formatted
+agreement through the existing strict regrader. The complete matrix and
+negative gates are frozen in `H_A24_CAPTURE_AUTOMATION_20260720.json`.
 
-A frame cannot seal until the exact expected producer-tuple count agrees, at least one authenticated dispatch identity is present, every row passes the complete PTI1 invariant set, and all six required semantic families are represented. The source returns only sealed frame-local rows, publishes producer manifest `aec720fe9371b012bfb6a8f000f74ab39232f3482a766c0edfac7582ce489ce5`, and fails closed on any missing frame or completeness violation. Tests cover the successful source-to-d73 encode path plus unobserved tuple, bad chain, and missing-family rejection.
+No human input is required now. A human request may be opened only after the
+automated harness has exhausted scripted politics/advisor/idea/boost-party
+choreography and can document a runtime state that it cannot reach. Until then,
+the remaining gap is implementation and automated live observation, not
+external evidence.

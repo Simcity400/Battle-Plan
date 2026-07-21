@@ -194,7 +194,20 @@ fn exact() -> IntelligenceUiTrace {
                 target_country: "ENG".into(),
                 operative_ids: vec!["8".into()],
                 state_ids: vec![1, 4, 9],
-                strength_fixed: 75_000,
+                state_strengths: vec![
+                    IntelNetworkStateStrengthUiRow {
+                        state_id: 1,
+                        strength_fixed: 75_000,
+                    },
+                    IntelNetworkStateStrengthUiRow {
+                        state_id: 4,
+                        strength_fixed: 70_000,
+                    },
+                    IntelNetworkStateStrengthUiRow {
+                        state_id: 9,
+                        strength_fixed: 65_000,
+                    },
+                ],
                 national_coverage_fixed: 20_000,
             }],
         }),
@@ -247,7 +260,16 @@ fn network_summary_uses_product_stable_content_key_not_engine_order() {
             target_country: "FRA".into(),
             operative_ids: Vec::new(),
             state_ids: vec![2, 8],
-            strength_fixed: 25_000,
+            state_strengths: vec![
+                IntelNetworkStateStrengthUiRow {
+                    state_id: 2,
+                    strength_fixed: 25_000,
+                },
+                IntelNetworkStateStrengthUiRow {
+                    state_id: 8,
+                    strength_fixed: 20_000,
+                },
+            ],
             national_coverage_fixed: 10_000,
         },
     );

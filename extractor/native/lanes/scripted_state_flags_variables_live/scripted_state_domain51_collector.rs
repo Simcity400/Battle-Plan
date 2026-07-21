@@ -96,8 +96,10 @@ impl OpaqueRootState {
     }
 }
 
-/// A validated pending delayed-event (wave-3 CDelayedEvent chain). Owner and
-/// scope are country tag_db_ids; `combined_event_id` is CEvent+0x0C
+/// A validated pending delayed-event (wave-3 CDelayedEvent chain). Owner is
+/// the containing `CCountry+0x1290` vector, scope is `CDelayedEvent+0x18`, and
+/// originator is the independently constructor-supplied
+/// `CDelayedEvent+0xC0`; `combined_event_id` is CEvent+0x0C
 /// (namespace*100000+index); `scope_random` is the +0x1C/+0x20 seed pair;
 /// `due_remaining_hours` is CDelayedEvent+0xC4 (total remaining hours =
 /// months*720 + days*24 + hours, 17/17 oracle-validated). An out-of-bounds /
@@ -108,6 +110,7 @@ pub struct DelayedEventRow {
     pub owner_tag_db_id: u32,
     pub combined_event_id: u32,
     pub scope_tag_db_id: u32,
+    pub originator_tag_db_id: u32,
     pub scope_random: u64,
     pub due_remaining_hours: Option<u32>,
 }
@@ -139,6 +142,42 @@ pub struct Domain51CollectedFrame {
     pub validated_scope_partial_failure: bool,
 }
 
+/// A13's production input.  Domain 51 owns only the authoritative
+/// global/country/state variable and flag snapshots.  Delayed-event lifecycle
+/// is domain 64/A19 and scripted-GUI runtime materialisation is domain 84/A38;
+/// neither can enter this carrier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct A13FrameInput {
+    pub elapsed_wall_ms: u64,
+    pub executable_sha256: [u8; 32],
+    /// H4CR frame label and two independent reads of `CGameState+0x468`.
+    /// A13 is a current-state snapshot, so crossing an engine-hour boundary
+    /// invalidates the whole family rather than mixing two simulation epochs.
+    pub game_hour_raw: i32,
+    pub observed_game_hour_before: i32,
+    pub observed_game_hour_after: i32,
+    /// Nonzero caller-owned observation ordinal. It is process-local custody
+    /// only and is deliberately not serialized as portable identity.
+    pub source_sequence: u64,
+    pub variable_scopes: Vec<VariableScopeRead>,
+    pub flag_scopes: Vec<FlagScopeRead>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum A13CarrierError {
+    WrongExecutable,
+    InvalidScope(String),
+    IncompleteRoster,
+    DuplicateIdentity,
+    RowCountOverflow,
+    CrossedGameHour,
+}
+
+pub const EXACT_A729_EXECUTABLE_SHA256: [u8; 32] = [
+    0x87, 0x0e, 0xbf, 0x1f, 0x61, 0x52, 0x62, 0xfa, 0xcc, 0xa4, 0x8a, 0x3b, 0x94, 0x77, 0x75, 0xc4,
+    0x1f, 0x0a, 0x53, 0x38, 0xf3, 0x06, 0x8c, 0x40, 0x95, 0x82, 0x09, 0xf5, 0xc4, 0x1c, 0x65, 0xad,
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Domain51RegistrationDescriptor {
     pub id: u16,
@@ -160,6 +199,185 @@ pub fn registration_descriptor() -> Domain51RegistrationDescriptor {
         schedulable_when_registered: true,
         requires_data_record: true,
     }
+}
+
+/// Authenticate, canonicalise, and encode the A13-only production snapshot.
+///
+/// Scope coverage is witnessed twice: the independently collected variable
+/// and flag scope rosters must be identical.  This prevents a missing country
+/// or state from becoming a measured-empty family.  Rows are then ordered by
+/// `(scope_kind, owner_id, key/token)` so hash-container traversal order never
+/// leaks into portable replay identity.
+pub fn collect_a13_domain51_frame(
+    mut input: A13FrameInput,
+) -> Result<Domain51CollectedFrame, A13CarrierError> {
+    if input.executable_sha256 != EXACT_A729_EXECUTABLE_SHA256 {
+        return Err(A13CarrierError::WrongExecutable);
+    }
+    if input.source_sequence == 0
+        || input.observed_game_hour_before != input.game_hour_raw
+        || input.observed_game_hour_after != input.game_hour_raw
+    {
+        return Err(A13CarrierError::CrossedGameHour);
+    }
+    canonicalise_variable_scopes(&mut input.variable_scopes)?;
+    canonicalise_flag_scopes(&mut input.flag_scopes)?;
+    let variable_roster = scope_roster(&input.variable_scopes)?;
+    let flag_roster = scope_roster(&input.flag_scopes)?;
+    if variable_roster != flag_roster
+        || !variable_roster.contains(&(compact::SCOPE_GLOBAL, 0))
+        || !variable_roster
+            .iter()
+            .any(|(scope_kind, _)| *scope_kind == compact::SCOPE_COUNTRY)
+        || !variable_roster
+            .iter()
+            .any(|(scope_kind, _)| *scope_kind == compact::SCOPE_STATE)
+        || input
+            .variable_scopes
+            .iter()
+            .any(|scope| !scope.status.is_measured())
+        || input
+            .flag_scopes
+            .iter()
+            .any(|scope| !scope.status.is_measured())
+    {
+        return Err(A13CarrierError::IncompleteRoster);
+    }
+    let row_count = input
+        .variable_scopes
+        .iter()
+        .map(|scope| scope.entries.len())
+        .chain(input.flag_scopes.iter().map(|scope| scope.entries.len()))
+        .try_fold(0usize, |total, rows| total.checked_add(rows))
+        .ok_or(A13CarrierError::RowCountOverflow)?;
+    if u32::try_from(row_count).is_err() {
+        return Err(A13CarrierError::RowCountOverflow);
+    }
+    Ok(collect_domain51_frame(Domain51FrameInput {
+        elapsed_wall_ms: input.elapsed_wall_ms,
+        variable_scopes: input.variable_scopes,
+        flag_scopes: input.flag_scopes,
+        delayed_events: OpaqueRootState::NotRequested,
+        scripted_gui_open_state: OpaqueRootState::NotRequested,
+        delayed_event_rows: Vec::new(),
+    }))
+}
+
+fn scope_roster<T>(scopes: &[T]) -> Result<std::collections::BTreeSet<(u32, u32)>, A13CarrierError>
+where
+    T: A13Scope,
+{
+    let mut roster = std::collections::BTreeSet::new();
+    for scope in scopes {
+        validate_scope_identity(scope.scope_kind(), scope.owner_id())?;
+        if !roster.insert((scope.scope_kind(), scope.owner_id())) {
+            return Err(A13CarrierError::DuplicateIdentity);
+        }
+    }
+    Ok(roster)
+}
+
+trait A13Scope {
+    fn scope_kind(&self) -> u32;
+    fn owner_id(&self) -> u32;
+}
+
+impl A13Scope for VariableScopeRead {
+    fn scope_kind(&self) -> u32 { self.scope_kind }
+    fn owner_id(&self) -> u32 { self.owner_id }
+}
+
+impl A13Scope for FlagScopeRead {
+    fn scope_kind(&self) -> u32 { self.scope_kind }
+    fn owner_id(&self) -> u32 { self.owner_id }
+}
+
+fn validate_scope_identity(scope_kind: u32, owner_id: u32) -> Result<(), A13CarrierError> {
+    let valid = match scope_kind {
+        compact::SCOPE_GLOBAL => owner_id == 0,
+        compact::SCOPE_COUNTRY => owner_id != 0 && owner_id <= compact::MAX_COUNTRY_TAG_DB_ID,
+        compact::SCOPE_STATE => owner_id != 0 && owner_id <= compact::MAX_STATE_ID,
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(A13CarrierError::InvalidScope(format!(
+            "unsupported or invalid A13 scope {scope_kind}:{owner_id}"
+        )))
+    }
+}
+
+fn canonicalise_variable_scopes(scopes: &mut [VariableScopeRead]) -> Result<(), A13CarrierError> {
+    for scope in scopes.iter_mut() {
+        validate_scope_identity(scope.scope_kind, scope.owner_id)?;
+        validate_status_shape(scope.status, scope.entries.is_empty())?;
+        scope.entries.sort_by(|left, right| left.key.cmp(&right.key));
+        for entry in &scope.entries {
+            validate_key(&entry.key)?;
+        }
+        if scope.entries.windows(2).any(|rows| rows[0].key == rows[1].key) {
+            return Err(A13CarrierError::DuplicateIdentity);
+        }
+    }
+    scopes.sort_by_key(|scope| (scope.scope_kind, scope.owner_id));
+    Ok(())
+}
+
+fn canonicalise_flag_scopes(scopes: &mut [FlagScopeRead]) -> Result<(), A13CarrierError> {
+    for scope in scopes.iter_mut() {
+        validate_scope_identity(scope.scope_kind, scope.owner_id)?;
+        validate_status_shape(scope.status, scope.entries.is_empty())?;
+        for entry in &scope.entries {
+            let token_id = entry.token_id.ok_or_else(|| {
+                A13CarrierError::InvalidScope("flag row lacks engine token identity".into())
+            })?;
+            if token_id == 0 || entry.date_hour_raw.is_none() || entry.value.is_none() {
+                return Err(A13CarrierError::InvalidScope(
+                    "flag row lacks token/date/value producer fields".into(),
+                ));
+            }
+            if let Some(key) = entry.key.as_deref() {
+                validate_key(key)?;
+            }
+        }
+        scope.entries.sort_by(|left, right| {
+            left.token_id
+                .cmp(&right.token_id)
+                .then_with(|| left.key.cmp(&right.key))
+        });
+        if scope.entries.windows(2).any(|rows| rows[0].token_id == rows[1].token_id) {
+            return Err(A13CarrierError::DuplicateIdentity);
+        }
+    }
+    scopes.sort_by_key(|scope| (scope.scope_kind, scope.owner_id));
+    Ok(())
+}
+
+fn validate_status_shape(status: ScopeReadStatus, empty: bool) -> Result<(), A13CarrierError> {
+    let valid = match status {
+        ScopeReadStatus::Measured => !empty,
+        ScopeReadStatus::MeasuredEmpty | ScopeReadStatus::Unmeasured => empty,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(A13CarrierError::InvalidScope(
+            "scope status disagrees with row presence".into(),
+        ))
+    }
+}
+
+fn validate_key(key: &str) -> Result<(), A13CarrierError> {
+    if key.is_empty()
+        || key.len() > compact::MAX_KEY_BYTES
+        || !key.bytes().all(|byte| (32..=126).contains(&byte))
+    {
+        return Err(A13CarrierError::InvalidScope(
+            "scripted key is empty, oversized, or non-portable".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub fn collect_domain51_frame(input: Domain51FrameInput) -> Domain51CollectedFrame {
@@ -221,7 +439,15 @@ pub fn collect_domain51_frame(input: Domain51FrameInput) -> Domain51CollectedFra
                 owner_id: scope.owner_id,
                 value_kind,
                 key: entry.key,
-                token_id: entry.token_id,
+                // The v2 named-flag wire identity is its authenticated key;
+                // numeric token identity is carried only by token-only rows.
+                // The A13 carrier still requires the source token above so a
+                // fabricated name-only entry can never enter this branch.
+                token_id: if value_kind == compact::VALUE_FLAG_TOKEN_ONLY {
+                    entry.token_id
+                } else {
+                    None
+                },
                 value_raw: entry.value.map(i64::from),
                 date_hour_raw: entry.date_hour_raw,
                 deleted: false,
@@ -278,6 +504,7 @@ pub fn collect_domain51_frame(input: Domain51FrameInput) -> Domain51CollectedFra
         &mut measured_scopes,
         &mut rejected_scopes,
     );
+    rows.sort_by(compact::canonical_row_cmp);
 
     if validated_scope_partial_failure {
         status_flags |= compact::STATUS_PARTIAL_DATA;
@@ -374,6 +601,93 @@ mod tests {
         }
     }
 
+    fn complete_a13_input() -> A13FrameInput {
+        A13FrameInput {
+            elapsed_wall_ms: 3,
+            executable_sha256: EXACT_A729_EXECUTABLE_SHA256,
+            game_hour_raw: 13_440,
+            observed_game_hour_before: 13_440,
+            observed_game_hour_after: 13_440,
+            source_sequence: 1,
+            variable_scopes: vec![
+                VariableScopeRead {
+                    scope_kind: compact::SCOPE_GLOBAL,
+                    owner_id: 0,
+                    status: ScopeReadStatus::MeasuredEmpty,
+                    entries: vec![],
+                },
+                country_vars(1),
+                VariableScopeRead {
+                    scope_kind: compact::SCOPE_STATE,
+                    owner_id: 42,
+                    status: ScopeReadStatus::MeasuredEmpty,
+                    entries: vec![],
+                },
+            ],
+            flag_scopes: vec![
+                FlagScopeRead {
+                    scope_kind: compact::SCOPE_GLOBAL,
+                    owner_id: 0,
+                    status: ScopeReadStatus::MeasuredEmpty,
+                    entries: vec![],
+                },
+                named_flag(1),
+                FlagScopeRead {
+                    scope_kind: compact::SCOPE_STATE,
+                    owner_id: 42,
+                    status: ScopeReadStatus::MeasuredEmpty,
+                    entries: vec![],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn a13_carrier_requires_one_complete_same_hour_scope_roster() {
+        let frame = collect_a13_domain51_frame(complete_a13_input()).unwrap();
+        assert_eq!(frame.observed_scopes, 6);
+        assert_eq!(frame.measured_scopes, 6);
+        assert_eq!(frame.rejected_scopes, 0);
+        assert_eq!(frame.status_flags & compact::STATUS_PARTIAL_DATA, 0);
+        assert!(compact::decode_payload(0, &frame.payload)
+            .parse_errors
+            .is_empty());
+    }
+
+    #[test]
+    fn a13_carrier_rejects_crossed_hour_and_unmeasured_scope() {
+        let mut crossed = complete_a13_input();
+        crossed.observed_game_hour_after += 1;
+        assert_eq!(
+            collect_a13_domain51_frame(crossed),
+            Err(A13CarrierError::CrossedGameHour)
+        );
+
+        let mut partial = complete_a13_input();
+        partial.variable_scopes[0].status = ScopeReadStatus::Unmeasured;
+        assert_eq!(
+            collect_a13_domain51_frame(partial),
+            Err(A13CarrierError::IncompleteRoster)
+        );
+    }
+
+    #[test]
+    fn a13_carrier_rejects_arbitrary_engine_scopes_and_roster_mismatch() {
+        let mut arbitrary = complete_a13_input();
+        arbitrary.variable_scopes[0].scope_kind = 4;
+        assert!(matches!(
+            collect_a13_domain51_frame(arbitrary),
+            Err(A13CarrierError::InvalidScope(_))
+        ));
+
+        let mut missing_state_flags = complete_a13_input();
+        missing_state_flags.flag_scopes.pop();
+        assert_eq!(
+            collect_a13_domain51_frame(missing_state_flags),
+            Err(A13CarrierError::IncompleteRoster)
+        );
+    }
+
     #[test]
     fn encodes_validated_country_global_state_variables_and_flags() {
         let frame = collect_domain51_frame(Domain51FrameInput {
@@ -464,6 +778,7 @@ mod tests {
                     owner_tag_db_id: 2,
                     combined_event_id: 28_200_333,
                     scope_tag_db_id: 2,
+                    originator_tag_db_id: 68,
                     scope_random: 0x3723_2577_1394_6267,
                     due_remaining_hours: Some(755),
                 },
@@ -471,6 +786,7 @@ mod tests {
                     owner_tag_db_id: 68,
                     combined_event_id: 36_000_046,
                     scope_tag_db_id: 68,
+                    originator_tag_db_id: 2,
                     scope_random: 0x1,
                     // Absent due (torn read badged absent, != 0).
                     due_remaining_hours: None,
@@ -585,6 +901,7 @@ mod tests {
                     owner_tag_db_id: 20,
                     combined_event_id: 9_200_000,
                     scope_tag_db_id: 20,
+                    originator_tag_db_id: 1,
                     scope_random: 0xAAAA_BBBB_CCCC_DDDD,
                     due_remaining_hours: Some(755),
                 },
@@ -592,6 +909,7 @@ mod tests {
                     owner_tag_db_id: 20,
                     combined_event_id: 9_200_000,
                     scope_tag_db_id: 20,
+                    originator_tag_db_id: 1,
                     scope_random: 0x1111_2222_3333_4444,
                     due_remaining_hours: Some(755),
                 },
@@ -626,6 +944,7 @@ mod tests {
                 // namespace 0 -> combined id < 100_000 is invalid.
                 combined_event_id: 42,
                 scope_tag_db_id: 2,
+                originator_tag_db_id: 2,
                 scope_random: 0,
                 due_remaining_hours: Some(755),
             }],

@@ -1037,6 +1037,31 @@ mod tests {
     }
 
     #[test]
+    fn post_pack_external_manifest_mutation_cannot_become_rollover_authority() {
+        let (root, descriptor) = fixture("external_manifest_mutation");
+        let manifest_path = root.join("native_session_manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["host_finalize"] = json!({"post_pack_only": true});
+        let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+        fs::write(&manifest_path, &manifest_bytes).unwrap();
+
+        // Even a descriptor rewritten to trust the post-pack file cannot make
+        // those bytes equal the recorder_manifest already sealed in the
+        // selected container.
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&descriptor).unwrap()).unwrap();
+        value["ordered_streams"][0]["manifest_sha256"] = json!(hash(&manifest_bytes));
+        fs::write(&descriptor, serde_json::to_vec(&value).unwrap()).unwrap();
+        let error = RolloverPackageSet::open(&descriptor)
+            .unwrap()
+            .select(0)
+            .unwrap_err();
+        assert!(error.contains("recorder_manifest metadata disagrees"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn recovery_member_is_never_admitted_to_product_playback() {
         let (root, descriptor) = fixture("recovery");
         let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&descriptor).unwrap()).unwrap();

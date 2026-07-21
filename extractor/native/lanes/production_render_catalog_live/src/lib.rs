@@ -217,6 +217,209 @@ pub fn portable_render_authority(
     effect_catalog_sha256: String,
     entity_animation_catalog_sha256: String,
 ) -> Result<RenderAuthority, CatalogBuildError> {
+    portable_render_authority_with_input(
+        capture,
+        effective_vfs_manifest_sha256,
+        effect_catalog_sha256,
+        entity_animation_catalog_sha256,
+        None,
+    )
+}
+
+pub const RECORDED_INPUT_VARIANT_PRODUCTION_ENABLED: bool = true;
+pub const RECORDED_INPUT_VARIANT_AUTHORITY_MANIFEST_SHA256: Option<&str> =
+    Some("fe58b55280e9080a3933e53c626c8dc3b5988d70e2f3970f9e10ac0f3b56045e");
+pub const A729_EXECUTABLE_SHA256: &str =
+    "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
+
+/// Pointer-free input evidence sampled by the injected observer in the normal
+/// capture loop and again at a later selected-Present boundary. This intentionally proves only the pointer
+/// member of the game's mouse/keyboard family. A stationary pointer, another
+/// foreground process, keyboard-only navigation and controllers produce no
+/// receipt and therefore remain unsupported.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawRecordedPointerInputObservation {
+    pub executable_sha256: String,
+    pub process_id: u32,
+    pub process_start_nonce: u64,
+    pub hook_epoch_nonce: u64,
+    pub observation_sequence: u64,
+    pub prior_observation_qpc_ticks: u64,
+    pub selected_present_qpc_ticks: u64,
+    pub selected_present_receipt_sha256: String,
+    pub client_extent: [u32; 2],
+    pub prior_client_position: [i32; 2],
+    pub current_client_position: [i32; 2],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthenticatedRecordedInputVariant {
+    pub executable_sha256: String,
+    pub process_id: u32,
+    pub process_start_nonce: u64,
+    pub hook_epoch_nonce: u64,
+    pub observation_sequence: u64,
+    pub prior_observation_qpc_ticks: u64,
+    pub selected_present_qpc_ticks: u64,
+    pub selected_present_receipt_sha256: String,
+    pub client_extent: [u32; 2],
+    pub prior_client_position: [i32; 2],
+    pub current_client_position: [i32; 2],
+    pub variant: RecordedInputVariant,
+    pub authority_manifest_sha256: String,
+    pub observation_receipt_sha256: String,
+}
+
+impl AuthenticatedRecordedInputVariant {
+    pub fn computed_receipt_sha256(&self) -> Result<String, CatalogBuildError> {
+        let variant = match self.variant {
+            RecordedInputVariant::MouseKeyboard => 1u8,
+            RecordedInputVariant::Keyboard => 2,
+            RecordedInputVariant::Controller => 3,
+        };
+        let mut hasher = Sha256::new();
+        hasher.update(b"hoi4.a729.recorded-input-variant-observation.v2\0");
+        hasher.update(self.executable_sha256.as_bytes());
+        hasher.update(self.process_id.to_le_bytes());
+        hasher.update(self.process_start_nonce.to_le_bytes());
+        hasher.update(self.hook_epoch_nonce.to_le_bytes());
+        hasher.update(self.observation_sequence.to_le_bytes());
+        hasher.update(self.prior_observation_qpc_ticks.to_le_bytes());
+        hasher.update(self.selected_present_qpc_ticks.to_le_bytes());
+        hasher.update(self.selected_present_receipt_sha256.as_bytes());
+        for value in self.client_extent {
+            hasher.update(value.to_le_bytes());
+        }
+        for value in self
+            .prior_client_position
+            .into_iter()
+            .chain(self.current_client_position)
+        {
+            hasher.update(value.to_le_bytes());
+        }
+        hasher.update([variant]);
+        hasher.update(self.authority_manifest_sha256.as_bytes());
+        Ok(format!("{:x}", hasher.finalize()))
+    }
+
+    pub fn validate(&self, capture: &RawRenderCatalogCapture) -> Result<(), CatalogBuildError> {
+        if !RECORDED_INPUT_VARIANT_PRODUCTION_ENABLED
+            || !RECORDED_INPUT_VARIANT_AUTHORITY_MANIFEST_SHA256
+                .is_some_and(|expected| self.authority_manifest_sha256 == expected)
+            || self.executable_sha256 != capture.process.executable_sha256
+            || self.executable_sha256 != A729_EXECUTABLE_SHA256
+            || self.process_id == 0
+            || self.process_id != capture.process.process_id
+            || self.process_start_nonce != capture.process.process_start_nonce
+            || self.process_start_nonce != capture.launch_epoch.process_start_nonce
+            || self.hook_epoch_nonce != capture.launch_epoch.hook_epoch_nonce
+            || self.observation_sequence == 0
+            || self.prior_observation_qpc_ticks == 0
+            || self.selected_present_qpc_ticks <= self.prior_observation_qpc_ticks
+            || self.client_extent[0] == 0
+            || self.client_extent[1] == 0
+            || self.prior_client_position == self.current_client_position
+            || self.prior_client_position[0] < 0
+            || self.prior_client_position[1] < 0
+            || self.current_client_position[0] < 0
+            || self.current_client_position[1] < 0
+            || self.prior_client_position[0] as u32 >= self.client_extent[0]
+            || self.prior_client_position[1] as u32 >= self.client_extent[1]
+            || self.current_client_position[0] as u32 >= self.client_extent[0]
+            || self.current_client_position[1] as u32 >= self.client_extent[1]
+        {
+            return invalid(
+                "recorded input variant lacks frozen same-launch observation authority",
+            );
+        }
+        for (label, value) in [
+            ("input-variant authority manifest", &self.authority_manifest_sha256),
+            (
+                "input-variant selected-Present receipt",
+                &self.selected_present_receipt_sha256,
+            ),
+            ("input-variant observation receipt", &self.observation_receipt_sha256),
+        ] {
+            if value.len() != 64
+                || !value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return invalid(format!("{label} is not canonical lowercase SHA-256"));
+            }
+        }
+        if self.computed_receipt_sha256()? != self.observation_receipt_sha256 {
+            return invalid("recorded input variant observation receipt mismatch");
+        }
+        Ok(())
+    }
+}
+
+/// Convert a raw foreground pointer movement into the sole supported portable
+/// input family. The collector cannot request Keyboard or Controller here;
+/// those variants require independent focus/traversal evidence.
+pub fn authenticate_recorded_pointer_input(
+    observation: RawRecordedPointerInputObservation,
+) -> Result<AuthenticatedRecordedInputVariant, CatalogBuildError> {
+    let inside = |position: [i32; 2], extent: [u32; 2]| {
+        position[0] >= 0
+            && position[1] >= 0
+            && (position[0] as u32) < extent[0]
+            && (position[1] as u32) < extent[1]
+    };
+    if observation.executable_sha256 != A729_EXECUTABLE_SHA256
+        || observation.process_id == 0
+        || observation.process_start_nonce == 0
+        || observation.hook_epoch_nonce == 0
+        || observation.observation_sequence == 0
+        || observation.prior_observation_qpc_ticks == 0
+        || observation.selected_present_qpc_ticks
+            <= observation.prior_observation_qpc_ticks
+        || observation.client_extent[0] == 0
+        || observation.client_extent[1] == 0
+        || observation.prior_client_position == observation.current_client_position
+        || !inside(observation.prior_client_position, observation.client_extent)
+        || !inside(observation.current_client_position, observation.client_extent)
+        || observation.selected_present_receipt_sha256.len() != 64
+        || !observation
+            .selected_present_receipt_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return invalid("raw recorded pointer observation is incomplete or unsupported");
+    }
+    let mut receipt = AuthenticatedRecordedInputVariant {
+        executable_sha256: observation.executable_sha256,
+        process_id: observation.process_id,
+        process_start_nonce: observation.process_start_nonce,
+        hook_epoch_nonce: observation.hook_epoch_nonce,
+        observation_sequence: observation.observation_sequence,
+        prior_observation_qpc_ticks: observation.prior_observation_qpc_ticks,
+        selected_present_qpc_ticks: observation.selected_present_qpc_ticks,
+        selected_present_receipt_sha256: observation.selected_present_receipt_sha256,
+        client_extent: observation.client_extent,
+        prior_client_position: observation.prior_client_position,
+        current_client_position: observation.current_client_position,
+        variant: RecordedInputVariant::MouseKeyboard,
+        authority_manifest_sha256: RECORDED_INPUT_VARIANT_AUTHORITY_MANIFEST_SHA256
+            .ok_or_else(|| CatalogBuildError("recorded input authority is disabled".into()))?
+            .to_string(),
+        observation_receipt_sha256: String::new(),
+    };
+    receipt.observation_receipt_sha256 = receipt.computed_receipt_sha256()?;
+    Ok(receipt)
+}
+
+/// UI-capable authority constructor. The legacy wrapper above deliberately
+/// supplies `None`; production UI must call this only with a same-launch live
+/// input-family receipt accepted by the frozen observation gate.
+pub fn portable_render_authority_with_input(
+    capture: &RawRenderCatalogCapture,
+    effective_vfs_manifest_sha256: String,
+    effect_catalog_sha256: String,
+    entity_animation_catalog_sha256: String,
+    recorded_input: Option<&AuthenticatedRecordedInputVariant>,
+) -> Result<RenderAuthority, CatalogBuildError> {
     capture
         .validate_launch_binding()
         .map_err(|error| CatalogBuildError(format!("capture launch receipt: {error}")))?;
@@ -234,6 +437,9 @@ pub fn portable_render_authority(
         }
     }
     let launch = &capture.launch_epoch;
+    if let Some(recorded_input) = recorded_input {
+        recorded_input.validate(capture)?;
+    }
     Ok(RenderAuthority {
         process_id: launch.process_id,
         process_start_nonce: launch.process_start_nonce,
@@ -256,10 +462,9 @@ pub fn portable_render_authority(
         effective_vfs_manifest_sha256,
         effect_catalog_sha256,
         entity_animation_catalog_sha256,
-        // Input-family selection is a UI authority and is not observed by the
-        // non-UI d77/d80 producer. Keep it absent so UI fails closed instead of
-        // inventing a session default.
-        recorded_input_variant: None,
+        recorded_input_variant: recorded_input.map(|receipt| receipt.variant),
+        recorded_input_receipt_sha256: recorded_input
+            .map(|receipt| receipt.observation_receipt_sha256.clone()),
         particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
     })
 }
@@ -2597,6 +2802,49 @@ fn mip_extent(value: u32, mip: u32) -> u32 {
 #[cfg(test)]
 mod static_identity_tests {
     use super::*;
+
+    fn pointer_observation() -> RawRecordedPointerInputObservation {
+        RawRecordedPointerInputObservation {
+            executable_sha256: A729_EXECUTABLE_SHA256.into(),
+            process_id: 41,
+            process_start_nonce: 42,
+            hook_epoch_nonce: 43,
+            observation_sequence: 44,
+            prior_observation_qpc_ticks: 100,
+            selected_present_qpc_ticks: 200,
+            selected_present_receipt_sha256: "a".repeat(64),
+            client_extent: [1920, 1080],
+            prior_client_position: [10, 20],
+            current_client_position: [11, 20],
+        }
+    }
+
+    #[test]
+    fn recorded_pointer_materializer_is_manifest_pinned_and_deterministic() {
+        let receipt = authenticate_recorded_pointer_input(pointer_observation()).unwrap();
+        assert_eq!(receipt.variant, RecordedInputVariant::MouseKeyboard);
+        assert_eq!(
+            receipt.authority_manifest_sha256,
+            RECORDED_INPUT_VARIANT_AUTHORITY_MANIFEST_SHA256.unwrap()
+        );
+        assert_eq!(
+            receipt.observation_receipt_sha256,
+            receipt.computed_receipt_sha256().unwrap()
+        );
+    }
+
+    #[test]
+    fn stationary_outside_or_reordered_pointer_observations_reject() {
+        for mutation in 0..3 {
+            let mut observation = pointer_observation();
+            match mutation {
+                0 => observation.current_client_position = observation.prior_client_position,
+                1 => observation.current_client_position = [1920, 20],
+                _ => observation.selected_present_qpc_ticks = 100,
+            }
+            assert!(authenticate_recorded_pointer_input(observation).is_err());
+        }
+    }
 
     #[test]
     fn canonical_operation_domains_prevent_relabel_merge_and_split() {

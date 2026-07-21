@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed verifier for the one remaining d49 anti-air live fixture."""
+"""Fail-closed verifier for the optional historical d49 anti-air fixture."""
 
 from __future__ import annotations
 

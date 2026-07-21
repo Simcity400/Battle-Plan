@@ -3,3 +3,35 @@ replay_interface/re_evidence/rendering_laws/M03/_rdtmp/frame filter=lfs diff=lfs
 replay_interface/re_evidence/rendering_laws/M03/_rdtmp_postfx/frame filter=lfs diff=lfs merge=lfs -text
 replay_interface/renderdoc/fixtures/w20_furniture_draw/*.json text eol=lf
 replay_interface/documents/lane_reports/evidence/w20-rdc-integrity/w20-rdc-corpus-integrity.json -text
+# These restored packet authorities are raw SHA-pinned.  The O02 dump has
+# intentional mixed line endings from the reviewed Ghidra export; do not
+# normalize it.  W13 placement is the exact LF Git object recovered from the
+# reviewed checkpoint.
+replay_interface/re_evidence/a729-dat-arrows-v2/a729-dat-arrows-v2.txt -text
+replay_interface/renderdoc/fixtures/w13_city_identity/placement_validation.json text eol=lf
+replay_interface/re_evidence/rendering_laws/L05/HOST_ROUTINE_EVIDENCE.json text eol=lf
+replay_interface/re_evidence/rendering_laws/UI15/*.json text eol=lf
+replay_interface/re_evidence/rendering_laws/UI15/*.md text eol=lf
+replay_interface/re_evidence/rendering_laws/UI15/*.py text eol=lf
+replay_interface/documents/lane_reports/rendering_laws/UI15.md text eol=lf
+
+# Rendering-law evidence is SHA-pinned as canonical LF text. Keep these packet
+# trees byte-stable on Windows so their verifiers do not mistake checkout EOL
+# conversion for evidence drift.
+replay_interface/re_evidence/rendering_laws/C01/**/*.json text eol=lf
+replay_interface/re_evidence/rendering_laws/C01/**/*.jsonl text eol=lf
+replay_interface/re_evidence/rendering_laws/C01/**/*.md text eol=lf
+replay_interface/re_evidence/rendering_laws/C01/**/*.py text eol=lf
+replay_interface/re_evidence/rendering_laws/C04/**/*.json text eol=lf
+replay_interface/re_evidence/rendering_laws/C04/**/*.jsonl text eol=lf
+replay_interface/re_evidence/rendering_laws/C04/**/*.md text eol=lf
+replay_interface/re_evidence/rendering_laws/C04/**/*.py text eol=lf
+replay_interface/re_evidence/rendering_laws/T00/**/*.json text eol=lf
+replay_interface/re_evidence/rendering_laws/T00/**/*.jsonl text eol=lf
+replay_interface/re_evidence/rendering_laws/T00/**/*.md text eol=lf
+replay_interface/re_evidence/rendering_laws/T00/**/*.py text eol=lf
+replay_interface/re_evidence/rendering_laws/T01/**/*.json text eol=lf
+replay_interface/re_evidence/rendering_laws/T01/**/*.jsonl text eol=lf
+replay_interface/re_evidence/rendering_laws/T01/**/*.md text eol=lf
+replay_interface/re_evidence/rendering_laws/T01/**/*.py text eol=lf
+replay_interface/re_evidence/rendering_laws/refresh_c04_t00_t01_pins.py text eol=lf
