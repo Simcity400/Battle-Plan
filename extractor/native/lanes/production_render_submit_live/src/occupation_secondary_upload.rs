@@ -10,9 +10,9 @@ pub const OCCUPATION_SECONDARY_TEXTURE_SCHEMA: &str =
     "hoi4.a729.occupation_secondary_upload.v1";
 pub use portable_render_stream::{
     OCCUPATION_SECONDARY_ALPHA, OCCUPATION_SECONDARY_BYTES_PER_TEXEL,
-    OCCUPATION_SECONDARY_BYTE_LENGTH, OCCUPATION_SECONDARY_HEIGHT,
-    OCCUPATION_SECONDARY_ROW_PITCH, OCCUPATION_SECONDARY_TARGET_BINDING,
-    OCCUPATION_SECONDARY_WIDTH,
+    OCCUPATION_SECONDARY_BYTE_LENGTH, OCCUPATION_SECONDARY_COVERAGE_ALPHAS,
+    OCCUPATION_SECONDARY_HEIGHT, OCCUPATION_SECONDARY_ROW_PITCH,
+    OCCUPATION_SECONDARY_TARGET_BINDING, OCCUPATION_SECONDARY_WIDTH,
 };
 
 /// Exact final CPU raster worker proven in
@@ -55,10 +55,11 @@ impl RawOccupationSecondaryTextureObservation {
     pub fn has_exact_nontransparent_alpha_law(&self) -> bool {
         let mut nontransparent = false;
         for texel in self.bytes.chunks_exact(OCCUPATION_SECONDARY_BYTES_PER_TEXEL as usize) {
-            match texel[3] {
-                0 => {}
-                OCCUPATION_SECONDARY_ALPHA => nontransparent = true,
-                _ => return false,
+            if !OCCUPATION_SECONDARY_COVERAGE_ALPHAS.contains(&texel[3]) {
+                return false;
+            }
+            if texel[3] != 0 {
+                nontransparent = true;
             }
         }
         nontransparent
@@ -174,4 +175,51 @@ pub fn promote_occupation_secondary_texture_observation(
         .validate_against(&packet, selected_present)
         .map_err(PromotionError::Invalid)?;
     Ok(packet)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn observation(bytes: Vec<u8>) -> RawOccupationSecondaryTextureObservation {
+        RawOccupationSecondaryTextureObservation {
+            schema: OCCUPATION_SECONDARY_TEXTURE_SCHEMA.into(),
+            executable_sha256: A729_EXECUTABLE_SHA256.into(),
+            raster_worker_rva: OCCUPATION_SECONDARY_RASTER_WORKER_RVA,
+            raster_worker_decompile_sha256:
+                OCCUPATION_SECONDARY_RASTER_WORKER_DECOMPILE_SHA256.into(),
+            upload_target_rva: SNOW_MUD_UPLOAD_TARGET_RVA,
+            upload_instructions_sha256: SNOW_MUD_UPLOAD_INSTRUCTIONS_SHA256.into(),
+            process_start_nonce: 1,
+            hook_epoch_nonce: 1,
+            upload_order: 1,
+            producer_game_hour_raw: 1,
+            producer_qpc_ticks: 1,
+            producer_qpc_frequency_hz: 1,
+            resource_ptr: 1,
+            width: OCCUPATION_SECONDARY_WIDTH,
+            height: OCCUPATION_SECONDARY_HEIGHT,
+            row_pitch: OCCUPATION_SECONDARY_ROW_PITCH,
+            bytes_per_texel: OCCUPATION_SECONDARY_BYTES_PER_TEXEL,
+            payload_sha256: hex_sha256(&bytes),
+            bytes,
+        }
+    }
+
+    #[test]
+    fn exact_two_by_two_coverage_alpha_levels_are_admitted() {
+        let mut bytes = vec![0; OCCUPATION_SECONDARY_BYTE_LENGTH];
+        for (index, alpha) in OCCUPATION_SECONDARY_COVERAGE_ALPHAS
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            bytes[index * OCCUPATION_SECONDARY_BYTES_PER_TEXEL as usize + 3] = alpha;
+        }
+        let mut raw = observation(bytes);
+        assert!(raw.has_exact_nontransparent_alpha_law());
+
+        raw.bytes[3] = 75;
+        assert!(!raw.has_exact_nontransparent_alpha_law());
+    }
 }

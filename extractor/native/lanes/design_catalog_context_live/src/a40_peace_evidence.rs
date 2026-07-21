@@ -1,12 +1,14 @@
 //! Evidence-only exact-a729 A40 peace-conference transition observer.
 //!
-//! This module deliberately emits no compact production domain. Peace actions
-//! are value objects and the pinned binary exposes no intrinsic allocation or
-//! terminal-result identity. The observer therefore retains bounded raw
-//! process-local witnesses so one authentic conference can establish the
-//! missing lifecycle law without allowing pointers or inferred ordinals into a
-//! replay. A separate regrader must reduce an admitted trace to portable
-//! identities before any production activation is considered.
+//! This module deliberately emits no compact production domain. Exact-a729
+//! closes the identity question negatively: peace actions are serialized value
+//! objects without intrinsic allocation ids, and the terminal summary is an
+//! aggregate formatter without result objects or an allocation-to-result join.
+//! The observer therefore retains bounded raw process-local witnesses only for
+//! autonomous positive validation. Production reduction must use complete
+//! snapshots, snapshot-scoped row ids, and explicitly unjoined terminal rows;
+//! it may never promote pointers, inferred ordinals, or payload hashes into
+//! engine lifecycle identity.
 
 use core::ffi::c_void;
 use minhook::{MinHook, MH_STATUS};
@@ -31,6 +33,12 @@ pub const STATIC_PRODUCER_CONSUMER_MANIFEST_SHA256: &str =
     "da15e19ccb176ca17b7df0d54b1572ad792be671b0c004e834318ca2c25ba845";
 pub const HOOK_SENTINEL_ARTIFACT_SHA256: &str =
     "1fcb96ea47b374d47bfd0287043004de62b20f6e14a53e015c1ef8c32776b441";
+pub const NEGATIVE_IDENTITY_LAYOUT_MANIFEST_SHA256: &str =
+    "e7aedb65fae4955b819ec73231307d37da6a287380217af8bf9d4c5d70483f60";
+pub const NEGATIVE_IDENTITY_VTABLE_A_MANIFEST_SHA256: &str =
+    "184998042c415c11229cc5b101e5d0758990c323f807d0639d129e8def9b915c";
+pub const NEGATIVE_IDENTITY_VTABLE_B_MANIFEST_SHA256: &str =
+    "1fb2e8c659d9454cd8f2b1fc37a60b5bfa0baa566d915977c06d96e62a79720b";
 
 const CONFERENCE_REFRESH_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5C, 0x24, 0x18, 0x55, 0x56, 0x57, 0x48, 0x83, 0xEC, 0x30, 0x48, 0x8B,

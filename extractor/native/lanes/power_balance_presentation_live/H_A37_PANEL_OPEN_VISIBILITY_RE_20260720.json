@@ -2,7 +2,7 @@
   "schema": "hoi4.h_a37.panel_open_visibility_re.v1",
   "date": "2026-07-20",
   "lane": "H-A37",
-  "disposition": "STATIC_PRODUCER_CLOSED_OBSERVER_SCAFFOLD_INERT_LIVE_ACTIVATION_FALSE",
+  "disposition": "STATIC_PRODUCER_AND_LIVE_LIFECYCLE_CLOSED_OBSERVER_SCAFFOLD_INERT_LIVE_ACTIVATION_FALSE",
   "binary_authority": {
     "status_checked_utc": "2026-07-20T04:50:43Z",
     "ready": true,
@@ -50,6 +50,27 @@
     "power_balance_controller_slot": "country_politics_view+0x7a50",
     "launcher_root_slot": "country_politics_view+0x7ba0"
   },
+  "current_country_lifecycle_receipt": {
+    "path": "H_A37_CURRENT_COUNTRY_LIFECYCLE_RE_20260721.json",
+    "job_id": "20260721T120232Z-a37-current-country-owner-lifecycle-34341641",
+    "shard": "shard-16",
+    "seed_resolution": "8/8",
+    "manifest_sha256": "2c298279fa8e4c4c6c9794713d01987fd96f7b58f8bc936033523e38229b34e7",
+    "owner_slot": "CCountryPoliticsView+0x7a50",
+    "current_country_rule": "game_state+0x520 when positive else game_state+0x524",
+    "automatable_save_route": "paused D04 -> ITA positive selector/panel -> D04 no-match close; never unpause or save"
+  },
+  "live_lifecycle_receipt": {
+    "path": "H_A37_LIVE_CURRENT_COUNTRY_LIFECYCLE_20260721.json",
+    "route_completed": "paused D04 handle 368 -> ITA handle 16 -> D04 handle 368",
+    "unchanged_game_hour": 60830441,
+    "positive_panel_observed": true,
+    "no_match_close_observed": true,
+    "trace_job_id": "20260721T121839Z-trace-calls-5cafaa7e",
+    "trace_result_sha256": "edf0e832d3ce0cd34f1bf3c8dda63b80800bb998cc7d79273b3b37aa02826678",
+    "restored_paused_without_save": true,
+    "promotion_allowed_by_trace": false
+  },
   "exact_laws": {
     "launcher_callback_binding": "0x1415710b0 binds show_power_balance to callback object country_politics_view+0x2dc0; the constructor initializes that callback with 0x141570450.",
     "panel_open_identity": "0x1414c29c0 returns the byte at CPowerBalanceView+0x30 without transformation.",
@@ -78,9 +99,9 @@
     }
   ],
   "retained_capture_audit": {
-    "result": "NO_AUTHENTICATED_OPEN_PANEL_LIVE_SAMPLE",
-    "evidence": "extractor/documents/dossiers/A37/SOURCE_CENSUS.json and retained XUI18/render-capture inventories provide layout, sprites and shader behavior but no complete open-panel runtime A37 frame.",
-    "consequence": "Static lifecycle RE closes where and how to sample, but cannot set either live observer latch true."
+    "result": "LIVE_OPEN_AND_NO_MATCH_CLOSE_LIFECYCLE_OBSERVED_SELECTED_PRESENT_COLLECTOR_RECEIPT_STILL_REQUIRED",
+    "evidence": "The reversible live receipt content-addresses the ITA Politics and BOP-open frames, the D04 no-match close, and final paused restoration; the bounded exact-a729 trace records the close root. These are lifecycle corroboration, not an authenticated selected-Present collector frame.",
+    "consequence": "The lifecycle RE is closed without human input, but the discovery trace cannot set either production observer latch true."
   },
   "production_changes": {
     "path": "extractor/native/lanes/power_balance_presentation_live/src/a729_hook.rs",
@@ -92,8 +113,8 @@
   },
   "remaining_gate": {
     "human_input_required_now": false,
-    "automatable_next_step": "Install the already-authenticated original-call-then-observe wrappers and retain launcher hidden/visible plus panel closed/open transitions together with the existing controller-state fixture matrix.",
+    "automatable_next_step": "Run the authenticated collector same-transition fixture and replay parity gate using the now-retained D04 -> ITA -> D04 lifecycle receipt; no additional lifecycle reverse engineering or human action is required.",
     "promotion_authorized": false,
-    "reason": "No authenticated live lifecycle sample exists and A729_CONTROLLER_OBSERVER_ACTIVATED also remains false."
+    "reason": "The live lifecycle exists, but no authenticated selected-Present collector receipt has passed the separate same-transition fold/replay parity gate and A729_CONTROLLER_OBSERVER_ACTIVATED remains false."
   }
 }

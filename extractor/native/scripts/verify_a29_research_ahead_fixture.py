@@ -126,6 +126,142 @@ def validate_manifest(manifest):
         raise ValueError("compact stream has no tech_live data record")
 
 
+def validate_navigation_receipt(receipt, manifest):
+    if receipt.get("schema") != "hoi4.a29.autonomous-research-navigation.v2":
+        raise ValueError("A29 autonomous navigation receipt schema mismatch")
+    if receipt.get("acquisition_owner") != "machine":
+        raise ValueError("A29 navigation was not machine-owned")
+    if (
+        receipt.get("result")
+        != "EXACT_D04_RESEARCH_TREE_HOVER_COMPLETE_A29_HOOK_VERDICT_REQUIRED"
+    ):
+        raise ValueError("A29 navigation did not complete the exact D04 route")
+    if receipt.get("executable_sha256") != EXPECTED_EXECUTABLE_SHA256:
+        raise ValueError("A29 navigation executable is not exact a729")
+    if receipt.get("process_id") != manifest.get("pid"):
+        raise ValueError("A29 navigation PID does not match the capture manifest")
+    if receipt.get("client_size") != [1920, 1080]:
+        raise ValueError("A29 navigation did not use the frozen D04 1920x1080 profile")
+    if (
+        receipt.get("navigation_profile")
+        != "New D04 Save Deep War/paused/1944.2.11.18/1920x1080"
+    ):
+        raise ValueError("A29 navigation profile is not the frozen paused-D04 route")
+    if (
+        receipt.get("navigation_policy")
+        != "exact_d04_two_read_only_ui_clicks_then_future_node_hover_no_technology_click"
+    ):
+        raise ValueError("A29 navigation does not attest the no-tech-click policy")
+    if receipt.get("promotion_authorized") is not False:
+        raise ValueError("A29 navigation receipt improperly claims promotion authority")
+    if (
+        receipt.get("expected_visual_diagnostic")
+        != "Technology is 0.88 years ahead of time."
+    ):
+        raise ValueError("A29 navigation receipt lacks the observed positive diagnostic")
+    steps = receipt.get("steps")
+    if not isinstance(steps, list) or len(steps) != 3 or receipt.get("step_count") != 3:
+        raise ValueError("A29 navigation does not contain exactly three frozen steps")
+    expected_steps = (
+        (
+            "research_button_click",
+            "open_research_topbar",
+            [241, 56],
+            "physical_setcursorpos_mouse_event",
+            "settle_milliseconds",
+            500,
+        ),
+        (
+            "active_row_click",
+            "open_active_engineer_company_iii",
+            [195, 340],
+            "physical_setcursorpos_mouse_event",
+            "settle_milliseconds",
+            500,
+        ),
+        (
+            "future_node_hover",
+            "hover_engineer_company_iv_1945",
+            [1404, 302],
+            "physical_setcursorpos_hover_only",
+            "dwell_milliseconds",
+            5000,
+        ),
+    )
+    canonical = []
+    for index, (step, expected) in enumerate(zip(steps, expected_steps)):
+        if not isinstance(step, dict):
+            raise ValueError("A29 navigation step %d is malformed" % index)
+        action, label, client_point, method, delay_field, minimum_delay = expected
+        if (
+            step.get("action") != action
+            or step.get("label") != label
+            or step.get("client_point") != client_point
+            or step.get("method") != method
+        ):
+            raise ValueError("A29 navigation step %d differs from the frozen route" % index)
+        if (
+            step.get("window_owner_process_id") != receipt.get("process_id")
+            or step.get("foreground_owner_process_id") != receipt.get("process_id")
+            or step.get("cursor_confirmed") is not True
+        ):
+            raise ValueError("A29 navigation step %d lacks PID/window/foreground guards" % index)
+        screen_point = step.get("screen_point")
+        if (
+            not isinstance(screen_point, list)
+            or len(screen_point) != 2
+            or not all(exact_int(value, -32768, 32767) for value in screen_point)
+        ):
+            raise ValueError("A29 navigation step %d screen point is malformed" % index)
+        delay = step.get(delay_field)
+        maximum_delay = 30000 if delay_field == "dwell_milliseconds" else 10000
+        if not exact_int(delay, minimum_delay, maximum_delay):
+            raise ValueError("A29 navigation step %d delay is outside policy" % index)
+        canonical.append(
+            "%s|%s|%d|%d|%s|%d"
+            % (action, label, client_point[0], client_point[1], method, delay)
+        )
+    if receipt.get("final_cursor_screen") != steps[-1].get("screen_point"):
+        raise ValueError("A29 navigation final cursor does not retain the future-node hover")
+    expected_sha256 = sha256_bytes(";".join(canonical).encode("utf-8"))
+    if receipt.get("step_sequence_sha256") != expected_sha256:
+        raise ValueError("A29 navigation step-sequence SHA-256 mismatch")
+    return {
+        "process_id": receipt["process_id"],
+        "client_size": receipt["client_size"],
+        "step_count": len(steps),
+        "step_sequence_sha256": expected_sha256,
+        "navigation_policy": receipt["navigation_policy"],
+    }
+
+
+def validate_unpause_receipt(receipt, manifest):
+    if receipt.get("schema") != "hoi4-rendering-law-scenario-action-v1":
+        raise ValueError("A29 authenticated unpause receipt schema mismatch")
+    if receipt.get("action") != "authenticated_clock_unpause":
+        raise ValueError("A29 capture lacks the authenticated clock-unpause action")
+    if receipt.get("executable_sha256") != EXPECTED_EXECUTABLE_SHA256:
+        raise ValueError("A29 unpause executable is not exact a729")
+    if receipt.get("process_id") != manifest.get("pid"):
+        raise ValueError("A29 unpause PID does not match the capture manifest")
+    if receipt.get("pause_before") != 1 or receipt.get("pause_after") != 0:
+        raise ValueError("A29 unpause does not prove paused-to-running state")
+    before = receipt.get("game_hour_before")
+    after = receipt.get("game_hour_after")
+    if not exact_int(before, 1, (1 << 31) - 1) or not exact_int(
+        after, before + 1, (1 << 31) - 1
+    ):
+        raise ValueError("A29 unpause does not prove advancing authenticated hours")
+    if not exact_int(receipt.get("speed_raw"), 0, 5):
+        raise ValueError("A29 unpause raw game speed is malformed")
+    return {
+        "process_id": receipt["process_id"],
+        "game_hour_before": before,
+        "game_hour_after": after,
+        "speed_raw": receipt["speed_raw"],
+    }
+
+
 def snapshot_documents_from_replay(path: Path, external_manifest):
     try:
         archive = zipfile.ZipFile(path, "r")
@@ -439,6 +575,8 @@ def inspect_snapshots(snapshots):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--capture-manifest", required=True)
+    parser.add_argument("--navigation-receipt", required=True)
+    parser.add_argument("--unpause-receipt", required=True)
     parser.add_argument("--replay")
     parser.add_argument("--snapshot", action="append", default=[])
     parser.add_argument("--out", required=True)
@@ -446,6 +584,8 @@ def main() -> int:
 
     out_path = Path(args.out).resolve()
     manifest_path = Path(args.capture_manifest).resolve()
+    navigation_path = Path(args.navigation_receipt).resolve()
+    unpause_path = Path(args.unpause_receipt).resolve()
     replay_path = Path(args.replay).resolve() if args.replay else None
     snapshot_paths = [Path(value).resolve() for value in args.snapshot]
     errors = []
@@ -466,6 +606,30 @@ def main() -> int:
         )
         manifest = load_json_bytes(manifest_raw, "capture manifest")
         validate_manifest(manifest)
+        try:
+            navigation_raw = navigation_path.read_bytes()
+        except OSError:
+            raise ValueError("A29 autonomous navigation receipt is unreadable") from None
+        navigation = load_json_bytes(navigation_raw, "A29 autonomous navigation receipt")
+        navigation_details = validate_navigation_receipt(navigation, manifest)
+        inputs.append(
+            {
+                "kind": "autonomous_navigation_receipt",
+                "sha256": sha256_bytes(navigation_raw),
+            }
+        )
+        try:
+            unpause_raw = unpause_path.read_bytes()
+        except OSError:
+            raise ValueError("A29 authenticated unpause receipt is unreadable") from None
+        unpause = load_json_bytes(unpause_raw, "A29 authenticated unpause receipt")
+        unpause_details = validate_unpause_receipt(unpause, manifest)
+        inputs.append(
+            {
+                "kind": "authenticated_unpause_receipt",
+                "sha256": sha256_bytes(unpause_raw),
+            }
+        )
         snapshots = []
         if replay_path is not None:
             if not replay_path.is_file():
@@ -489,6 +653,8 @@ def main() -> int:
             "snapshot_count_inspected": snapshot_count,
             "authenticated_witness_count": len(witnesses),
             "witnesses": witnesses,
+            "autonomous_navigation": navigation_details,
+            "authenticated_unpause": unpause_details,
         }
     except (OSError, ValueError, zipfile.BadZipFile) as error:
         errors.append(str(error))
@@ -509,6 +675,8 @@ def main() -> int:
             "fixed_five_raw_value_equality": accepted,
             "localization_branch_semantics": accepted,
             "pointer_free_source_hash": accepted,
+            "autonomous_navigation_receipt": accepted,
+            "authenticated_clock_unpause": accepted,
         },
         "details": details,
         "errors": errors,

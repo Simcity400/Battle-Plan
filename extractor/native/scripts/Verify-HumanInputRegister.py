@@ -17,7 +17,7 @@ from typing import Any
 
 
 REGISTER = Path("extractor/documents/PRODUCTION_PROMOTION_HUMAN_INPUT_REGISTER_20260719.json")
-SCHEMA = "hoi4-production-promotion-human-input-register-v2"
+SCHEMA = "hoi4-production-promotion-human-input-register-v3"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 PATH_FIELDS = {"authority", "validation", "source", "evidence"}
 SOURCE_MARKERS = ("human_input", "human_fixture", "human_capture")
@@ -289,6 +289,7 @@ def verify(repo: Path) -> dict[str, Any]:
         "authority",
         "validation",
         "exact10_authority",
+        "dependency_reclassification",
         "canonical_human_inputs",
         "aliases",
         "missing_authenticated_artifacts",
@@ -349,6 +350,53 @@ def verify(repo: Path) -> dict[str, Any]:
 
     if "H-A28" in canonical_ids or any(item_id.startswith("H-M03") for item_id in canonical_ids):
         fail("closed or agent-discoverable A28/M03 work reappeared as human input")
+
+    reclassification = register["dependency_reclassification"]
+    if not isinstance(reclassification, dict):
+        fail("dependency_reclassification must be an object")
+    expected_reclassification_keys = {
+        "as_of",
+        "user_action_required",
+        "autonomous_external_state_acquisition",
+        "unresolved_re_or_engineering",
+        "stale_or_closed",
+        "authorized_defaults",
+        "classification_rule",
+    }
+    require_keys(reclassification, expected_reclassification_keys, "dependency_reclassification")
+    if set(reclassification) != expected_reclassification_keys:
+        fail("dependency_reclassification has unexpected keys")
+    classified: set[str] = set()
+    for key in (
+        "user_action_required",
+        "autonomous_external_state_acquisition",
+        "unresolved_re_or_engineering",
+        "stale_or_closed",
+    ):
+        values = reclassification[key]
+        if not isinstance(values, list) or len(values) != len(set(values)):
+            fail(f"dependency_reclassification.{key} must be a unique array")
+        overlap = classified & set(values)
+        if overlap:
+            fail(f"dependency_reclassification arrays overlap: {sorted(overlap)}")
+        classified.update(values)
+    if classified != canonical_ids:
+        fail(
+            "dependency_reclassification must exhaust canonical ids: "
+            f"missing={sorted(canonical_ids - classified)}, "
+            f"unknown={sorted(classified - canonical_ids)}"
+        )
+    defaults = reclassification["authorized_defaults"]
+    expected_default_keys = {
+        "save_and_scene",
+        "profile_modset_and_target",
+        "candidate_review",
+        "boundary",
+    }
+    if not isinstance(defaults, dict) or set(defaults) != expected_default_keys:
+        fail("dependency_reclassification.authorized_defaults has unexpected keys")
+    if reclassification["user_action_required"]:
+        fail("current user authorization leaves no canonical card user-blocking")
 
     aliases = register["aliases"]
     alias_ids: set[str] = set()
@@ -453,6 +501,14 @@ def verify(repo: Path) -> dict[str, Any]:
         "schema": "hoi4-production-promotion-human-input-register-verification-v1",
         "result": "PASS",
         "canonical_human_input_count": len(canonical_ids),
+        "user_action_required_count": len(reclassification["user_action_required"]),
+        "autonomous_external_state_acquisition_count": len(
+            reclassification["autonomous_external_state_acquisition"]
+        ),
+        "unresolved_re_or_engineering_count": len(
+            reclassification["unresolved_re_or_engineering"]
+        ),
+        "stale_or_closed_count": len(reclassification["stale_or_closed"]),
         "alias_count": len(alias_ids),
         "missing_authenticated_artifact_count": len(register["missing_authenticated_artifacts"]),
         "product_decision_count": len(register["product_decisions"]),

@@ -255,7 +255,12 @@ def validate_observation(observation, *, expected_sequence: int, base: int, stab
     label = observation["label"]
     if not isinstance(label, str) or not LABEL.fullmatch(label):
         raise GateError(f"observation {expected_sequence}: invalid label")
-    if observation["action_token"] != f"OBSERVE_CAMPAIGN_IDENTITY_{label}_AND_ACK":
+    accepted_action_tokens = {
+        f"OBSERVE_CAMPAIGN_IDENTITY_{label}_AND_ACK": "manual_ack",
+        f"OBSERVE_CAMPAIGN_IDENTITY_{label}_AUTOMATIC_SAME_HOUR_V1": "automatic_same_hour",
+    }
+    barrier_mode = accepted_action_tokens.get(observation["action_token"])
+    if barrier_mode is None:
         raise GateError(f"observation {expected_sequence}: action token does not bind the label")
     nonce = observation["action_nonce_hex"]
     if not isinstance(nonce, str) or not HEX64.fullmatch(nonce) or nonce in nonce_set:
@@ -275,6 +280,8 @@ def validate_observation(observation, *, expected_sequence: int, base: int, stab
     read_b = validate_read(observation["read_b"], expected_label="B", parsed_addresses=parsed, sequence=expected_sequence)
     if any(read_a[key] != read_b[key] for key in IDENTITY_BRACKET_KEYS):
         raise GateError(f"observation {expected_sequence}: bracketing reads A and B are not byte-identical on identity")
+    if barrier_mode == "automatic_same_hour" and read_a["game_hour_raw"] != read_b["game_hour_raw"]:
+        raise GateError(f"observation {expected_sequence}: automatic barrier crossed a game-hour boundary")
     return addresses, [read_a, read_b]
 
 

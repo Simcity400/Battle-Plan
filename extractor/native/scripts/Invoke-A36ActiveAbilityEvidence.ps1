@@ -5,9 +5,13 @@ param(
     [Parameter(Mandatory = $true)] [string] $PdxUserDir,
     [Parameter(Mandatory = $true)] [string] $CollectorDll,
     [Parameter(Mandatory = $true)] [string] $OutDir,
+    [Parameter(Mandatory = $true)] [string] $StaticBundleManifest,
+    [Parameter(Mandatory = $true)] [string] $StaticBundleBindingsDir,
     [int] $DurationSeconds = 1800,
     [int] $SampleMilliseconds = 100,
     [string[]] $EarlyLaunchArgument = @('--continuelastsave', '--gdpr-compliant'),
+    [uint32] $ExistingPid = 0,
+    [ValidateSet('C01', 'C02', 'C03', 'C04')] [string[]] $ValidateCard = @('C01', 'C02', 'C03', 'C04'),
     [string] $Python = 'python'
 )
 
@@ -15,7 +19,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $expectedExeSha256 = '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad'
-foreach ($path in @($RecorderExe, $Hoi4Exe, $PdxUserDir, $CollectorDll)) {
+foreach ($path in @($RecorderExe, $Hoi4Exe, $PdxUserDir, $CollectorDll, $StaticBundleManifest, $StaticBundleBindingsDir)) {
     if (-not (Test-Path -LiteralPath $path)) {
         throw "Required path does not exist: $path"
     }
@@ -26,17 +30,36 @@ if ($DurationSeconds -lt 300) {
 if ($SampleMilliseconds -lt 1 -or $SampleMilliseconds -gt 1000) {
     throw 'SampleMilliseconds must be in 1..1000.'
 }
-if (@(Get-Process -Name the game -ErrorAction SilentlyContinue).Count -ne 0) {
-    throw 'A36 evidence requires a clean early launch; close the existing hoi4.exe first.'
+if ($ExistingPid -eq 0 -and @(Get-Process -Name the game -ErrorAction SilentlyContinue).Count -ne 0) {
+    throw 'A36 early-launch evidence requires no existing hoi4.exe; pass -ExistingPid for an authenticated non-production late attach.'
 }
 
 $resolvedRecorder = (Resolve-Path -LiteralPath $RecorderExe).Path
 $resolvedExe = (Resolve-Path -LiteralPath $Hoi4Exe).Path
 $resolvedUserDir = (Resolve-Path -LiteralPath $PdxUserDir).Path
 $resolvedCollector = (Resolve-Path -LiteralPath $CollectorDll).Path
+$resolvedStaticBundleManifest = (Resolve-Path -LiteralPath $StaticBundleManifest).Path
+$resolvedStaticBundleBindingsDir = (Resolve-Path -LiteralPath $StaticBundleBindingsDir).Path
 $resolvedOut = [System.IO.Path]::GetFullPath($OutDir)
 if ((Get-FileHash -LiteralPath $resolvedExe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedExeSha256) {
     throw 'Hoi4Exe does not match exact a729 authority.'
+}
+if ($ExistingPid -ne 0) {
+    $existing = Get-Process -Id $ExistingPid -ErrorAction Stop
+    if (-not [string]::Equals($existing.ProcessName, 'the game', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "ExistingPid $ExistingPid is not hoi4.exe."
+    }
+    $existingPath = $existing.Path
+    if (-not [string]::Equals(
+        [System.IO.Path]::GetFullPath($existingPath),
+        $resolvedExe,
+        [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "ExistingPid $ExistingPid executable path differs from Hoi4Exe."
+    }
+    if ((Get-FileHash -LiteralPath $existingPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedExeSha256) {
+        throw "ExistingPid $ExistingPid does not match exact a729 authority."
+    }
 }
 if (Test-Path -LiteralPath $resolvedOut) {
     if (-not (Test-Path -LiteralPath $resolvedOut -PathType Container) -or
@@ -59,10 +82,11 @@ if (Test-Path -LiteralPath $collectorReceipt) {
 $captureStartedUtc = [DateTime]::UtcNow
 
 $arguments = @(
-    '--early-launch-exe', $resolvedExe,
     '--pdx-user-dir', $resolvedUserDir,
     '--dll', $resolvedCollector,
     '--out-dir', $resolvedOut,
+    '--session-id', ([guid]::NewGuid().ToString()),
+    '--capture-id', ([guid]::NewGuid().ToString()),
     '--duration-s', $DurationSeconds,
     '--sample-ms', $SampleMilliseconds,
     '--stream-format', 'compact',
@@ -72,16 +96,28 @@ $arguments = @(
     '--scheduled-domain', 'oob_command',
     '--scheduled-domain', 'characters_leaders_cabinet_live',
     '--scheduled-domains-exact',
+    '--static-bundle-manifest', $resolvedStaticBundleManifest,
+    '--static-bundle-mod-state', (Join-Path $resolvedStaticBundleBindingsDir 'mod_state.json'),
+    '--static-bundle-dlc-state', (Join-Path $resolvedStaticBundleBindingsDir 'dlc_state.json'),
+    '--static-bundle-load-order', (Join-Path $resolvedStaticBundleBindingsDir 'load_order.json'),
+    '--static-bundle-source-inventory', (Join-Path $resolvedStaticBundleBindingsDir 'source_inventory.json'),
+    '--static-bundle-live-resolution-report', (Join-Path $resolvedStaticBundleBindingsDir 'resolution_report.json'),
+    '--static-bundle-timeout-ms', '1800000',
     '--sidecar-log',
-    '--skip-host-fold',
     '--a36-active-ability-evidence'
 )
-foreach ($value in $EarlyLaunchArgument) {
-    $arguments += @('--early-launch-arg', $value)
+if ($ExistingPid -eq 0) {
+    $arguments = @('--early-launch-exe', $resolvedExe) + $arguments
+    foreach ($value in $EarlyLaunchArgument) {
+        $arguments += @('--early-launch-arg', $value)
+    }
+} else {
+    $arguments = @('--pid', [string]$ExistingPid) + $arguments
 }
 
 Write-Output @'
-A36 hooks will be installed before the continued save opens. In this one process:
+A36 hooks will be installed before the continued save opens, or at the authenticated
+late-attach boundary selected with -ExistingPid. In this one process:
   C01: select a context whose ability list simultaneously has an available row and a
        disabled row, then hover every row so both final tooltip and exact reason are captured;
        keep that selection until the game crosses the next game-hour boundary.
@@ -99,6 +135,7 @@ Do not pause while waiting for an hour boundary: the exact portable root catalog
 the scheduled compact sweep, and every accepted card must carry its own pointer-free ABL1 join.
 Do not restart the game. The raw receipt is diagnostic and cannot promote d88 by itself.
 '@
+Write-Output "Mechanical regrade will require cards: $($ValidateCard -join ', ')."
 
 & $resolvedRecorder @arguments
 if ($LASTEXITCODE -ne 0) {
@@ -132,12 +169,18 @@ if (-not [string]::Equals(
     Copy-Item -LiteralPath $candidatePath -Destination $copiedReceipt
 }
 
-& $Python $verifier `
-    --receipt $copiedReceipt `
-    --capture-manifest $captureManifest `
-    --collector-dll $resolvedCollector `
-    --out $verification
+$verifyArguments = @(
+    $verifier,
+    '--receipt', $copiedReceipt,
+    '--capture-manifest', $captureManifest,
+    '--collector-dll', $resolvedCollector,
+    '--out', $verification
+)
+foreach ($card in $ValidateCard) {
+    $verifyArguments += @('--required-card', $card)
+}
+& $Python @verifyArguments
 if ($LASTEXITCODE -ne 0) {
     throw "A36 raw fixture is incomplete or invalid; evidence was preserved and regraded at $verification"
 }
-Write-Output "A36 four-card raw fixture accepted for promotion review: $verification"
+Write-Output "A36 requested-card raw fixture accepted for promotion review: $verification"

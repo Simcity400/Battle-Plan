@@ -5,9 +5,13 @@ param(
     [Parameter(Mandatory = $true)] [string] $PdxUserDir,
     [Parameter(Mandatory = $true)] [string] $CollectorDll,
     [Parameter(Mandatory = $true)] [string] $OutDir,
-    [string] $ContinueSave,
+    [Parameter(Mandatory = $true)] [string] $ContinueSave,
+    [Parameter(Mandatory = $true)] [string] $StaticBundleManifest,
+    [Parameter(Mandatory = $true)] [string] $StaticBundleBindingsDir,
     [int] $DurationSeconds = 900,
     [int] $SampleMilliseconds = 25,
+    [int] $NavigationProcessTimeoutSeconds = 240,
+    [int] $NavigationInitialSettleSeconds = 75,
     [string[]] $EarlyLaunchArgument = @('--continuelastsave', '--gdpr-compliant'),
     [string] $Python = 'python'
 )
@@ -16,7 +20,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $expectedExeSha256 = '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad'
-foreach ($path in @($RecorderExe, $Hoi4Exe, $PdxUserDir, $CollectorDll)) {
+$expectedD04SaveSha256 = 'c8488b05a3b87c718eeff979976537b79e867634d0b4dccb1eef6c5a45362735'
+foreach ($path in @($RecorderExe, $Hoi4Exe, $PdxUserDir, $CollectorDll, $StaticBundleManifest, $StaticBundleBindingsDir)) {
     if (-not (Test-Path -LiteralPath $path)) {
         throw "Required path does not exist: $path"
     }
@@ -24,18 +29,32 @@ foreach ($path in @($RecorderExe, $Hoi4Exe, $PdxUserDir, $CollectorDll)) {
 if ($ContinueSave -and -not (Test-Path -LiteralPath $ContinueSave -PathType Leaf)) {
     throw "Continue-save does not exist: $ContinueSave"
 }
-if ($DurationSeconds -lt 60) {
-    throw 'DurationSeconds must be at least 60 seconds.'
+$observedSaveSha256 = (Get-FileHash -LiteralPath $ContinueSave -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($observedSaveSha256 -cne $expectedD04SaveSha256) {
+    throw "A29 autonomous navigation requires the frozen New D04 Save Deep War identity: $observedSaveSha256"
+}
+if ($DurationSeconds -lt 600) {
+    throw 'DurationSeconds must be at least 600 seconds for autonomous load, exact D04 research-tree navigation, and twelve-hour capture.'
 }
 if ($SampleMilliseconds -lt 10) {
     throw 'SampleMilliseconds must be at least 10 milliseconds.'
+}
+if ($NavigationProcessTimeoutSeconds -lt 30 -or $NavigationProcessTimeoutSeconds -gt 600) {
+    throw 'NavigationProcessTimeoutSeconds must be in 30..600.'
+}
+if ($NavigationInitialSettleSeconds -lt 0 -or $NavigationInitialSettleSeconds -gt 300) {
+    throw 'NavigationInitialSettleSeconds must be in 0..300.'
 }
 
 $resolvedRecorder = (Resolve-Path -LiteralPath $RecorderExe).Path
 $resolvedExe = (Resolve-Path -LiteralPath $Hoi4Exe).Path
 $resolvedPdxUserDir = (Resolve-Path -LiteralPath $PdxUserDir).Path
 $resolvedCollector = (Resolve-Path -LiteralPath $CollectorDll).Path
+$resolvedStaticBundleManifest = (Resolve-Path -LiteralPath $StaticBundleManifest).Path
+$resolvedStaticBundleBindingsDir = (Resolve-Path -LiteralPath $StaticBundleBindingsDir).Path
 $resolvedOut = [System.IO.Path]::GetFullPath($OutDir)
+$sessionId = [guid]::NewGuid().ToString()
+$captureId = [guid]::NewGuid().ToString()
 $observedExeSha256 = (Get-FileHash -LiteralPath $resolvedExe -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($observedExeSha256 -cne $expectedExeSha256) {
     throw "Hoi4Exe is not exact a729 authority: $observedExeSha256"
@@ -54,11 +73,21 @@ if (Test-Path -LiteralPath $resolvedOut) {
 }
 
 $verifier = Join-Path $PSScriptRoot 'verify_a29_research_ahead_fixture.py'
+$navigationScript = Join-Path $PSScriptRoot 'Invoke-A29AutonomousResearchNavigation.ps1'
+$unpauseScript = Join-Path $PSScriptRoot '..\..\..\replay_interface\re_evidence\rendering_laws\capture_harness\authenticated_unpause.ps1'
 if (-not (Test-Path -LiteralPath $verifier -PathType Leaf)) {
     throw "A29 verifier is missing: $verifier"
 }
+if (-not (Test-Path -LiteralPath $navigationScript -PathType Leaf)) {
+    throw "A29 autonomous navigation script is missing: $navigationScript"
+}
+if (-not (Test-Path -LiteralPath $unpauseScript -PathType Leaf)) {
+    throw "A29 authenticated unpause script is missing: $unpauseScript"
+}
 $captureManifest = Join-Path $resolvedOut 'native_session_manifest.json'
 $verification = Join-Path $resolvedOut 'a29_research_ahead_fixture_verification.json'
+$navigationReceipt = Join-Path $resolvedOut 'a29_autonomous_research_navigation.json'
+$unpauseReceipt = Join-Path $resolvedOut 'a29_authenticated_unpause.json'
 $continueGamePath = Join-Path $resolvedPdxUserDir 'continue_game.json'
 $continueGamePriorExists = Test-Path -LiteralPath $continueGamePath -PathType Leaf
 $continueGamePriorBytes = if ($continueGamePriorExists) {
@@ -123,6 +152,8 @@ $arguments = @(
     '--pdx-user-dir', $resolvedPdxUserDir,
     '--dll', $resolvedCollector,
     '--out-dir', $resolvedOut,
+    '--session-id', $sessionId,
+    '--capture-id', $captureId,
     '--duration-s', $DurationSeconds,
     '--sample-ms', $SampleMilliseconds,
     '--min-game-hours', '12',
@@ -130,6 +161,13 @@ $arguments = @(
     '--profile', 'debug',
     '--scheduled-domain', 'tech_live',
     '--scheduled-domains-exact',
+    '--static-bundle-manifest', $resolvedStaticBundleManifest,
+    '--static-bundle-mod-state', (Join-Path $resolvedStaticBundleBindingsDir 'mod_state.json'),
+    '--static-bundle-dlc-state', (Join-Path $resolvedStaticBundleBindingsDir 'dlc_state.json'),
+    '--static-bundle-load-order', (Join-Path $resolvedStaticBundleBindingsDir 'load_order.json'),
+    '--static-bundle-source-inventory', (Join-Path $resolvedStaticBundleBindingsDir 'source_inventory.json'),
+    '--static-bundle-live-resolution-report', (Join-Path $resolvedStaticBundleBindingsDir 'resolution_report.json'),
+    '--static-bundle-timeout-ms', '1800000',
     '--sidecar-log',
     '--hour-latch'
 )
@@ -137,18 +175,9 @@ foreach ($value in $EarlyLaunchArgument) {
     $arguments += @('--early-launch-arg', $value)
 }
 
-Write-Host @'
-A29 operator action:
-  1. Let the pinned save finish loading.
-  2. Select a country with an active research slot.
-  3. Open that active technology and display its year/ahead-of-time tooltip.
-  4. Keep the tooltip visible for several seconds while the game is running
-     slowly, so a tech_live poll joins the UI producer in the same game hour.
-  5. Leave the game running until the recorder exits; the debug capture gate
-     requires at least twelve in-game hours in total.
-The verifier will reject a capture that lacks the authenticated producer row.
-'@
+Write-Host 'A29 autonomous acquisition: clean early launch, exact D04 physical Research/active-row navigation, future-node hover, authenticated unpause, and fail-closed branch-1/2 verification.'
 
+$recorderJob = $null
 try {
     if ($null -ne $continueGameReplacement) {
         # Mark the path overridden first so any partial write still restores
@@ -160,11 +189,76 @@ try {
             [System.Text.UTF8Encoding]::new($false)
         )
     }
-    & $resolvedRecorder @arguments
+    $recorderJob = Start-Job -ScriptBlock {
+        param([string]$Recorder, [string[]]$RecorderArguments)
+        & $Recorder @RecorderArguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "collector_record exited with code $LASTEXITCODE"
+        }
+    } -ArgumentList $resolvedRecorder, (,$arguments)
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($NavigationProcessTimeoutSeconds)
+    $exactProcess = $null
+    while ([DateTime]::UtcNow -lt $deadline -and $null -eq $exactProcess) {
+        if ($recorderJob.State -in @('Failed', 'Stopped', 'Disconnected')) {
+            throw "collector_record background job terminated before exact-a729 exposed a window: $($recorderJob.State)"
+        }
+        foreach ($candidate in @(Get-Process -Name the game -ErrorAction SilentlyContinue)) {
+            try {
+                $candidatePath = $candidate.MainModule.FileName
+                if (-not [string]::Equals($candidatePath, $resolvedExe, [StringComparison]::OrdinalIgnoreCase)) {
+                    continue
+                }
+                $candidateSha256 = (Get-FileHash -LiteralPath $candidatePath -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($candidateSha256 -cne $expectedExeSha256 -or $candidate.MainWindowHandle -eq [IntPtr]::Zero) {
+                    continue
+                }
+                $exactProcess = $candidate
+                break
+            } catch {
+                # A process still entering startup can transiently hide its
+                # module/window. It is never selected without the exact checks.
+            }
+        }
+        if ($null -eq $exactProcess) {
+            Start-Sleep -Milliseconds 500
+        }
+    }
+    if ($null -eq $exactProcess) {
+        throw "Exact-a729 did not expose an authenticated main window within $NavigationProcessTimeoutSeconds seconds."
+    }
+
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $navigationScript `
+        -ProcessId $exactProcess.Id `
+        -ReceiptPath $navigationReceipt `
+        -InitialSettleSeconds $NavigationInitialSettleSeconds
     if ($LASTEXITCODE -ne 0) {
-        throw "collector_record exited with code $LASTEXITCODE"
+        throw "A29 autonomous research navigation failed with code $LASTEXITCODE"
+    }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $unpauseScript `
+        -ProcessId $exactProcess.Id `
+        -ReceiptPath $unpauseReceipt
+    if ($LASTEXITCODE -ne 0) {
+        throw "A29 authenticated unpause failed with code $LASTEXITCODE"
+    }
+
+    Wait-Job -Job $recorderJob | Out-Null
+    $recorderState = $recorderJob.State
+    $recorderOutput = @(Receive-Job -Job $recorderJob -ErrorAction Continue)
+    foreach ($line in $recorderOutput) {
+        Write-Verbose ([string]$line)
+    }
+    if ($recorderState -ne 'Completed') {
+        throw "collector_record background job ended in state $recorderState"
     }
 } finally {
+    if ($null -ne $recorderJob) {
+        if ($recorderJob.State -notin @('Completed', 'Failed', 'Stopped', 'Disconnected')) {
+            Wait-Job -Job $recorderJob | Out-Null
+        }
+        Receive-Job -Job $recorderJob -ErrorAction SilentlyContinue | Out-Null
+        Remove-Job -Job $recorderJob -Force -ErrorAction SilentlyContinue
+    }
     if ($continueGameOverridden) {
         if ($continueGamePriorExists) {
             [System.IO.File]::WriteAllBytes($continueGamePath, $continueGamePriorBytes)
@@ -191,6 +285,8 @@ if (-not (Test-Path -LiteralPath $replay -PathType Leaf)) {
 
 & $Python $verifier `
     --capture-manifest $captureManifest `
+    --navigation-receipt $navigationReceipt `
+    --unpause-receipt $unpauseReceipt `
     --replay $replay `
     --out $verification
 if ($LASTEXITCODE -ne 0) {

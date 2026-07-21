@@ -2960,7 +2960,11 @@ pub const OCCUPATION_SECONDARY_ROW_PITCH: u32 =
     OCCUPATION_SECONDARY_WIDTH * OCCUPATION_SECONDARY_BYTES_PER_TEXEL;
 pub const OCCUPATION_SECONDARY_BYTE_LENGTH: usize =
     OCCUPATION_SECONDARY_ROW_PITCH as usize * OCCUPATION_SECONDARY_HEIGHT as usize;
+/// Full-coverage stripe alpha (`trunc_u8(0.3 * 255)`). The final raster uses
+/// a 2x2 coverage mask, so authentic edge texels also carry exact quarter
+/// coverage multiples of this value.
 pub const OCCUPATION_SECONDARY_ALPHA: u8 = 76;
+pub const OCCUPATION_SECONDARY_COVERAGE_ALPHAS: [u8; 5] = [0, 19, 38, 57, 76];
 pub const OCCUPATION_SECONDARY_UPLOAD_RECEIPT_SCHEMA: &str =
     "hoi4.a729.occupation-secondary-upload.v1";
 
@@ -4366,11 +4370,11 @@ fn validate_occupation_secondary_packet(
     let alpha_law_is_exact = texture
         .bytes
         .chunks_exact(OCCUPATION_SECONDARY_BYTES_PER_TEXEL as usize)
-        .all(|texel| texel[3] == 0 || texel[3] == OCCUPATION_SECONDARY_ALPHA)
+        .all(|texel| OCCUPATION_SECONDARY_COVERAGE_ALPHAS.contains(&texel[3]))
         && texture
             .bytes
             .chunks_exact(OCCUPATION_SECONDARY_BYTES_PER_TEXEL as usize)
-            .any(|texel| texel[3] == OCCUPATION_SECONDARY_ALPHA);
+            .any(|texel| texel[3] != 0);
     if texture.width != OCCUPATION_SECONDARY_WIDTH
         || texture.height != OCCUPATION_SECONDARY_HEIGHT
         || texture.row_pitch != OCCUPATION_SECONDARY_ROW_PITCH

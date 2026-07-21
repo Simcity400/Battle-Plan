@@ -136,11 +136,13 @@ pub struct A40PeaceEvidenceInstallReceipt {
     pub production_carrier_enabled: bool,
 }
 
-/// Evidence-only owner for the raw active-conference lifecycle trace.
+/// Evidence-only owner for autonomous positive active-conference validation.
 ///
-/// Unlike d85 this observer has no compact domain: until the authentic trace
-/// proves an immutable allocation/result identity, raw process-local pointers
-/// and memory blocks may only leave the hook as a diagnostic receipt.
+/// Unlike d85 this observer has no compact domain. Exact-a729 proves there is
+/// no intrinsic action/allocation id and no terminal allocation-result join,
+/// so raw process-local pointers and memory blocks may only leave the hook as a
+/// diagnostic receipt. A production reducer must emit complete snapshots with
+/// snapshot-scoped row ids and preserve terminal rows as explicitly unjoined.
 pub struct A40PeaceEvidenceOwner {
     install_receipt: A40PeaceEvidenceInstallReceipt,
     installed: bool,

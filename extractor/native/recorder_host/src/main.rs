@@ -5695,9 +5695,12 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 .to_string(),
         );
     }
-    if a36_evidence_capture && (production || early_launch.is_none()) {
+    if a36_evidence_capture
+        && (profile == Some(compact_contract::CaptureProfile::Production)
+            || (profile.is_none() && production))
+    {
         return Err(
-            "--a36-active-ability-evidence requires a non-production early launch".to_string(),
+            "--a36-active-ability-evidence requires a non-production capture".to_string(),
         );
     }
     if a34_evidence_supplement.is_some() && (production || early_launch.is_none()) {
@@ -28413,6 +28416,45 @@ mod tests {
         args
     }
 
+    #[test]
+    fn a36_evidence_accepts_authenticated_non_production_pid_attach() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan-recorder_a36_attach_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        let attached = parse_args(profile_test_args(
+            &dir,
+            &["--profile", "debug", "--a36-active-ability-evidence"],
+        ))
+        .expect("A36 evidence should admit an authenticated debug PID attach");
+        assert_eq!(attached.pid, 1234);
+        assert!(attached.early_launch.is_none());
+        assert!(attached.a36_evidence_capture);
+        // `Config::production` means the production domain/static-artifact
+        // contract is enabled; the debug profile intentionally enables that
+        // same contract while retaining debug capture semantics. The profile,
+        // not this derived domain-set flag, is the evidence-mode boundary.
+        assert!(attached.production);
+        assert_eq!(
+            attached.profile,
+            Some(compact_contract::CaptureProfile::Debug)
+        );
+
+        let production_error = parse_args(profile_test_args(
+            &dir,
+            &["--profile", "production", "--a36-active-ability-evidence"],
+        ))
+        .expect_err("A36 evidence must remain unavailable in production capture mode");
+        assert!(production_error.contains("requires a non-production capture"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     fn add_required_production_inputs(dir: &Path, mut args: Vec<String>) -> Vec<String> {
         args = add_required_static_bundle_inputs(dir, args);
         args.push("--session-id".to_string());
@@ -29008,7 +29050,7 @@ mod tests {
         let capture_content_digest = "55".repeat(32);
         let replay_content_digest = "66".repeat(32);
         let witness = serde_json::to_vec(&json!({
-            "schema": "hoi4-g2-engine-pixel-witness-v2",
+            "schema": "hoi4-g2-engine-pixel-witness-v3",
             "content_manifest_digest_sha256": capture_content_digest.as_str(),
         }))
         .unwrap();

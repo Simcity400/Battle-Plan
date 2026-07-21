@@ -23,7 +23,7 @@ pub const EARLY_DIAGNOSTIC_LIVENESS_SCHEMA: &str = "extractor.early-render-diagn
 pub const EARLY_DIAGNOSTIC_STAGE_MASK_FULL: u64 = 0x3ff;
 pub const EARLY_DIAGNOSTIC_STAGE_MASK_COM: u64 = 0x01;
 pub const G2_CAPTURE_INTENT_SCHEMA: &str = "hoi4-g2-recorder-capture-intent-v1";
-pub const G2_ENGINE_WITNESS_SCHEMA: &str = "hoi4-g2-engine-pixel-witness-v2";
+pub const G2_ENGINE_WITNESS_SCHEMA: &str = "hoi4-g2-engine-pixel-witness-v3";
 pub const G2_ENGINE_BMP_FILE: &str = "g2_engine_map_boundary.bmp";
 pub const G2_ENGINE_WITNESS_FILE: &str = "g2_engine_pixel_witness.json";
 const G2_ENGINE_STATUS: &str = "AUTHENTICATED_POST_PROCESS_END_MAP_READBACK";
@@ -172,6 +172,36 @@ struct G2PostProcessBoundaryWitness {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct G2GlobalPovWitness {
+    observer_ui_root_rva: u32,
+    observer_predicate_function_rva: u32,
+    game_state_root_rva: usize,
+    selected_controller_handle_offset: u32,
+    selected_controller_handle: u32,
+    handle_remap_table_offset: u32,
+    controller_table_offset: u32,
+    remapped_controller_index: u32,
+    controller_pointer: String,
+    controller_observer_count_offset: u32,
+    controller_observer_count: i32,
+    global_observer_mode: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct G2CloseZoomWitness {
+    camera_owner_vtable_rva: u32,
+    camera_root_pointer: String,
+    current_eye_f32_bits: [u32; 3],
+    current_look_at_f32_bits: [u32; 3],
+    target_eye_f32_bits: [u32; 3],
+    target_look_at_f32_bits: [u32; 3],
+    required_height_f32_bits: u32,
+    exact_retained_close_zoom_band: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct G2EngineWitness {
     schema: String,
     status: String,
@@ -198,6 +228,8 @@ struct G2EngineWitness {
     engine_bgra_sha256: String,
     pixel_byte_len: usize,
     capture_context_sha256: String,
+    close_zoom_authentication: G2CloseZoomWitness,
+    global_pov_authentication: G2GlobalPovWitness,
     post_process_boundary_authentication: G2PostProcessBoundaryWitness,
 }
 
@@ -328,6 +360,39 @@ pub fn validate_g2_capture_artifacts(
         || !boundary.readback_inserted_before_post_process_hook_return
     {
         return Err("G2 witness has invalid exact post-process boundary authentication".into());
+    }
+    let pov = &witness.global_pov_authentication;
+    if pov.observer_ui_root_rva != 0x01DD_9390
+        || pov.observer_predicate_function_rva != 0x006F_0430
+        || pov.game_state_root_rva != 0x0331_6E90
+        || !matches!(pov.selected_controller_handle_offset, 0x520 | 0x524)
+        || pov.handle_remap_table_offset != 0x340
+        || pov.controller_table_offset != 0x310
+        || !valid_g2_pointer(&pov.controller_pointer)
+        || pov.controller_observer_count_offset != 0x41c
+        || pov.controller_observer_count >= 1
+        || !pov.global_observer_mode
+    {
+        return Err("G2 witness has no exact engine-attested global observer POV".into());
+    }
+    let camera = &witness.close_zoom_authentication;
+    if camera.camera_owner_vtable_rva != 0x0295_2510
+        || !valid_g2_pointer(&camera.camera_root_pointer)
+        || camera.required_height_f32_bits != 0x4248_29C8
+        || camera.current_eye_f32_bits[1] != camera.required_height_f32_bits
+        || camera.target_eye_f32_bits[1] != camera.required_height_f32_bits
+        || [
+            camera.current_eye_f32_bits,
+            camera.current_look_at_f32_bits,
+            camera.target_eye_f32_bits,
+            camera.target_look_at_f32_bits,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|bits| !f32::from_bits(bits).is_finite())
+        || !camera.exact_retained_close_zoom_band
+    {
+        return Err("G2 witness has no exact engine-attested retained close-zoom camera".into());
     }
     if bmp.len() < 54
         || &bmp[..2] != b"BM"
@@ -3675,6 +3740,30 @@ mod tests {
             "engine_bgra_sha256": hash(&pixels),
             "pixel_byte_len": pixels.len(),
             "capture_context_sha256": intent.capture_context_sha256,
+            "close_zoom_authentication": {
+                "camera_owner_vtable_rva": 0x0295_2510,
+                "camera_root_pointer": "0x5000",
+                "current_eye_f32_bits": [1.0f32.to_bits(), 0x4248_29C8, 2.0f32.to_bits()],
+                "current_look_at_f32_bits": [1.0f32.to_bits(), 3.0f32.to_bits(), 2.0f32.to_bits()],
+                "target_eye_f32_bits": [1.0f32.to_bits(), 0x4248_29C8, 2.0f32.to_bits()],
+                "target_look_at_f32_bits": [1.0f32.to_bits(), 3.0f32.to_bits(), 2.0f32.to_bits()],
+                "required_height_f32_bits": 0x4248_29C8,
+                "exact_retained_close_zoom_band": true
+            },
+            "global_pov_authentication": {
+                "observer_ui_root_rva": 0x01DD_9390,
+                "observer_predicate_function_rva": 0x006F_0430,
+                "game_state_root_rva": 0x0331_6E90,
+                "selected_controller_handle_offset": 0x520,
+                "selected_controller_handle": 1,
+                "handle_remap_table_offset": 0x340,
+                "controller_table_offset": 0x310,
+                "remapped_controller_index": 1,
+                "controller_pointer": "0x4000",
+                "controller_observer_count_offset": 0x41c,
+                "controller_observer_count": 0,
+                "global_observer_mode": true
+            },
             "post_process_boundary_authentication": {
                 "producer_rva": production_render_submit_live_lane::POST_PROCESS_RENDER_ROOT_RVA,
                 "immediate_context_pointer": "0x1000",

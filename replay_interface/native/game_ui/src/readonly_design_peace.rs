@@ -240,6 +240,9 @@ pub struct PeaceParticipantRow {
 pub struct PeaceAllocationRow {
     pub source_record_id: String,
     pub ordinal: u32,
+    /// Snapshot-scoped row identity: conference reference, refresh epoch, and
+    /// source ordinal. Exact-a729 does not publish an intrinsic allocation id,
+    /// so this value must never be used as a cross-refresh lifecycle key.
     pub allocation_id: String,
     pub turn: u32,
     pub action_kind: String,
@@ -258,7 +261,12 @@ pub struct PeaceAllocationRow {
 pub struct PeaceResultRow {
     pub source_record_id: String,
     pub ordinal: u32,
+    /// Snapshot-scoped terminal-summary row identity. The engine exposes an
+    /// aggregate formatter, not a registered result object.
     pub result_id: String,
+    /// Nonempty only when the producer observed an exact engine join in the
+    /// same snapshot. Empty preserves the engine's unjoined terminal summary;
+    /// consumers must not infer a join from payload equality or row order.
     pub allocation_id: String,
     pub action_kind: String,
     pub actor_country_tag: String,
@@ -839,32 +847,50 @@ pub fn admit_peace_conference(
     }
     let mut result_ids = BTreeSet::new();
     for row in &active.results {
-        let Some(allocation) = active
-            .allocations
-            .iter()
-            .find(|allocation| allocation.allocation_id == row.allocation_id)
-        else {
-            return Err(Xui08Rejection::InvalidResult);
-        };
-        let actor_country = active
-            .participants
-            .iter()
-            .find(|participant| participant.participant_id == allocation.actor_participant_id)
-            .map(|participant| participant.country_tag.as_str());
+        let valid_state_ids = unique_nonempty(row.target_state_ids.iter().map(u32::to_string))
+            && !row.target_state_ids.contains(&0);
+        let valid_ship_ids = unique_nonempty(row.target_ship_ids.iter().cloned());
         if !nonempty(&row.source_record_id)
             || !nonempty(&row.result_id)
             || !nonempty(&row.action_kind)
             || !nonempty(&row.actor_country_tag)
             || !nonempty(&row.outcome)
-            || actor_country != Some(row.actor_country_tag.as_str())
-            || row.action_kind != allocation.action_kind
-            || row.beneficiary_country_tag != allocation.beneficiary_country_tag
-            || row.target_country_tag != allocation.target_country_tag
-            || row.target_state_ids != allocation.target_state_ids
-            || row.target_ship_ids != allocation.target_ship_ids
+            || !valid_state_ids
+            || !valid_ship_ids
+            || row
+                .beneficiary_country_tag
+                .as_deref()
+                .is_some_and(|value| !nonempty(value))
+            || row
+                .target_country_tag
+                .as_deref()
+                .is_some_and(|value| !nonempty(value))
             || !result_ids.insert(row.result_id.as_str())
         {
             return Err(Xui08Rejection::InvalidResult);
+        }
+        if nonempty(&row.allocation_id) {
+            let Some(allocation) = active
+                .allocations
+                .iter()
+                .find(|allocation| allocation.allocation_id == row.allocation_id)
+            else {
+                return Err(Xui08Rejection::InvalidResult);
+            };
+            let actor_country = active
+                .participants
+                .iter()
+                .find(|participant| participant.participant_id == allocation.actor_participant_id)
+                .map(|participant| participant.country_tag.as_str());
+            if actor_country != Some(row.actor_country_tag.as_str())
+                || row.action_kind != allocation.action_kind
+                || row.beneficiary_country_tag != allocation.beneficiary_country_tag
+                || row.target_country_tag != allocation.target_country_tag
+                || row.target_state_ids != allocation.target_state_ids
+                || row.target_ship_ids != allocation.target_ship_ids
+            {
+                return Err(Xui08Rejection::InvalidResult);
+            }
         }
     }
     Ok(AdmittedPeaceConference {

@@ -23,19 +23,19 @@ replay-side packet states in
 | A25 | Runtime text/localization/formatting/wrap/glyph/inline-icon runs (d76 reserved) | CONTRACT REQUIRED | XUI06, XUI16, XUI17, XUI18 |
 | A26 | Resolved per-instance tooltip rectangles + ordered evaluated content rows (d72) | Active RE | XUI05 |
 | A28 | Authenticated dynamic-collection visible order — remaining families (d71) | Open (equipment-grid producer proven) | XUI16, XUI17 |
-| A29 | Research ahead-of-time inputs | Static exact-producer RE and pointer-free same-hour carrier/fold/replay wiring complete under slot-bound `a729_observed_research_ahead_producer_v2`; branch 0 authenticates the exact no-display/`NO_RESEARCH_PENALTY` result but cannot promote; fail-closed pending an H-A29 branch-1/2 ahead-technology receipt and root validation; base-factor inference is forbidden and no human semantic input is required | XUI09 (wired fail-closed; promotion blocked until H-A29 is accepted) |
-| A30 | Intelligence/operative UI state | DATA BLOCKED | XUI14 |
+| A29 | Research ahead-of-time inputs | Static exact-producer RE and pointer-free same-hour carrier/fold/replay wiring complete under slot-bound `a729_observed_research_ahead_producer_v2`; branch 0 authenticates the exact no-display/`NO_RESEARCH_PENALTY` result but cannot promote; centralized validation passed and the fail-closed gate now waits only for an H-A29 branch-1/2 ahead-technology receipt. Base-factor inference is forbidden and no human semantic input is required | XUI09 (wired fail-closed; activation blocked until H-A29 is accepted) |
+| A30 | Intelligence/operative UI state | Static RE and production wiring complete for all seven XUI14 surfaces, operative identity/assignment/portrait, recruitable-pool join, cipher and network proof. The remaining selected-Present matrix is machine evidence after central build/injection; no human semantic input remains | XUI14 (wired fail-closed; runtime receipt pending) |
 | A31 | Focus-presentation runtime leaves | d89 producer/codec/fold/replay/UI implemented; live activation fixture pending | — (XUI10 exact admission is wired; d89 remains reserved and unscheduled) |
 | A32 | Display/language/input launch variant | Display/language settings carrier integrated; same-launch authenticated pointer-family observer, authority pin and pre-d77 collector bind not active. Keyboard/controller traversal explicitly unsupported | XUI25 (wired fail-closed; current d77 has no input family) |
 | A33 | Combat detail/losses | INTEGRATION+RE+FIXTURE | XUI20 |
 | A34 | Decision-panel generic rows/costs/alerts | IN PROGRESS | XUI19 |
-| A36 | Active abilities: availability/activation/cooldown/cost/target/duration/order/tooltip/disabled-reason | DATA BLOCKED | XUI23 |
-| A37 | Power-balance runtime inputs (d74 reserved) | CONTRACT REQUIRED | XUI18 |
+| A36 | Active abilities: availability/activation/cooldown/cost/target/duration/order/tooltip/disabled-reason | Static RE, exact active-record/caster trust boundary, ten-hook evidence owner, ABA2/ABL1 carrier, fold, replay and UI are complete and centrally validated. d88 remains reserved pending the mechanically regraded live transition/multi-leader/measured-empty matrix; no semantic RE remains | XUI23 (wired fail-closed; external runtime matrix pending) |
+| A37 | Power-balance runtime inputs (d74 reserved) | Exact controller/panel lifecycle, runtime leaves, selected-Present materializer, PBP2 carrier, fold/replay/UI and autonomous evidence owner are implemented and centrally validated. d74 remains reserved pending authenticated same-transition and open-panel receipts; no human semantic judgment is required | XUI18 (wired fail-closed; autonomous runtime fixture pending) |
 | A38 | Scripted-GUI engine-materialization carrier | CONTRACT REQUIRED | XUI22 |
-| A39 | Character-presentation residuals | Wired, activation-gated | Reserved d82 CPR1 v2 exact order/state/progress, pointer-free A25 hover-reason context join, enforced same-hour d82-before-d76 collector barrier, and final ace portrait/modifier observers; central validation and the frozen mixed live fixture remain before scheduling |
+| A39 | Character-presentation residuals | Wired and centrally validated; activation-gated | Reserved d82 CPR1 v2 exact order/state/progress, pointer-free A25 hover-reason context join, enforced same-hour d82-before-d76 collector barrier, and final ace portrait/modifier observers; only the frozen mixed live fixture remains before scheduling |
 | A40 | Designer/peace snapshots (live carrier) | Open | XUI08 |
 | XUI21-E1 | Fired-event/popup producer (d75; contract frozen in `extractor/documents/dossiers/XUI21_FIRED_EVENT_POPUP_INPUTS.json`) | RE complete; collector attach + emission not frozen | XUI21 |
-| X4-P1..P6 | Production/deployment-queue inputs | Promotion-ready | XUI12 |
+| X4-P1..P6 | Production/deployment-queue inputs | Promotion-ready, including exact save/rehost deployment queues | XUI12 |
 | X15 | Resource trade P1–P5 integration | Open | trade surfaces |
 | XUI03-rows | Controller-boundary collection rows | Open (tracked in extractor evidence) | XUI03 |
 

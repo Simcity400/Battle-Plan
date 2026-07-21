@@ -6,7 +6,7 @@ This is the owner-runnable identity probe that closes the "no owner-runnable
 identity probe exists" gap blocking every CID1 (pillar 3) live-acceptance arm.
 It captures the two RE-proven CGameState identity fields
 (game_unique_seed i32 @ +0x720, game_unique_id MSVC std::string @ +0x728) as
-operator-paced, bracketed, tear-proof observations, appends each to an
+nonce-bound, bracketed, tear-proof observations, appends each to an
 append-only transcript, and seals the transcript under a caller-issued evidence
 nonce. The independent verifier -- not this collector -- is the only authority
 that emits a pass/fail verdict.
@@ -68,16 +68,20 @@ verifier's validate_static); create it once for the pinned build:
      --out <absolute transcript.json> \
      --action-token AUTHORIZE_READ_ONLY_CAMPAIGN_IDENTITY_EVIDENCE_INIT
 
-2) For EACH labeled observation (repeat N times; e.g. L0/S/D/M matrix arms):
-   put the game at the intended, visually-confirmed state (for L0: paused at the
-   first frame), then run:
+2) For EACH labeled observation (repeat N times; e.g. L0/S/D/M matrix arms),
+   have the owner/orchestrator put the game in the contract-selected state, then
+   run the default automatic same-hour barrier:
    python collect_campaign_identity_evidence.py observe \
      --transcript <transcript.json> \
      --label L0_paused_first_frame \
-     --action-token OBSERVE_CAMPAIGN_IDENTITY_L0_paused_first_frame_AND_ACK
-   The tool takes stable read A, then WAITS for you to press Enter (operator-paced
-   bracket, no stopwatch); after you acknowledge it takes stable read B. A and B
-   must be byte-identical on the identity fields or the observation is refused.
+     --barrier-mode automatic_same_hour \
+     --action-token OBSERVE_CAMPAIGN_IDENTITY_L0_paused_first_frame_AUTOMATIC_SAME_HOUR_V1
+   The tool takes two independently coherent observations without accepting
+   stdin. Both observations must remain in the same game hour and be
+   byte-identical on the identity fields. The action nonce, caller-issued
+   evidence nonce, exact process binding, and sealed transcript authenticate the
+   resulting automatic barrier. The legacy manual_ack mode remains available
+   only for reproducing historical receipts.
 
 3) Seal (no verdict):
    python collect_campaign_identity_evidence.py seal \
@@ -669,7 +673,20 @@ def command_init(args) -> None:
 def command_observe(args) -> None:
     if not LABEL.fullmatch(args.label):
         raise ProbeError("observation label must match [A-Za-z0-9_]{2,64}")
-    expected_token = f"OBSERVE_CAMPAIGN_IDENTITY_{args.label}_AND_ACK"
+    manual_token = f"OBSERVE_CAMPAIGN_IDENTITY_{args.label}_AND_ACK"
+    barrier_mode = args.barrier_mode
+    if barrier_mode is None:
+        # Preserve historical invocations that carried the explicit AND_ACK
+        # token while making the new automatic token the stdin-free path.
+        barrier_mode = "manual_ack" if args.action_token == manual_token else "automatic_same_hour"
+    if barrier_mode == "automatic_same_hour":
+        expected_token = (
+            f"OBSERVE_CAMPAIGN_IDENTITY_{args.label}_AUTOMATIC_SAME_HOUR_V1"
+        )
+    elif barrier_mode == "manual_ack":
+        expected_token = manual_token
+    else:
+        raise ProbeError("unsupported campaign-identity barrier mode")
     if args.action_token != expected_token:
         raise ProbeError(f"explicit observation action token missing; expected {expected_token}")
     transcript = load_transcript(args.transcript)
@@ -696,12 +713,15 @@ def command_observe(args) -> None:
         print(f"observation '{args.label}': taking stable read A...", flush=True)
         snap_a = read_coherent_identity(process, base, args.max_attempts)
         read_a = read_record(snap_a, "A")
-        _operator_ack(f"read A captured (seed={snap_a['seed']}). Keep the game at this exact state, then press Enter to take bracketing read B... ")
+        if barrier_mode == "manual_ack":
+            _operator_ack(f"read A captured (seed={snap_a['seed']}). Keep the game at this exact state, then press Enter to take bracketing read B... ")
         print(f"observation '{args.label}': taking bracketing read B...", flush=True)
         snap_b = read_coherent_identity(process, base, args.max_attempts)
         read_b = read_record(snap_b, "B")
     if not identity_fields_equal(read_a, read_b):
         raise ProbeError("bracketing reads A and B disagree on identity; the campaign identity is not stable across the observation window; refusing")
+    if barrier_mode == "automatic_same_hour" and read_a["game_hour_raw"] != read_b["game_hour_raw"]:
+        raise ProbeError("automatic campaign-identity barrier crossed a game-hour boundary; refusing")
     observation = {
         "sequence": sequence,
         "label": args.label,
@@ -858,6 +878,12 @@ def main(argv=None) -> int:
     observe.add_argument("--transcript", type=Path, required=True)
     observe.add_argument("--label", required=True)
     observe.add_argument("--action-token", required=True)
+    observe.add_argument(
+        "--barrier-mode",
+        choices=("automatic_same_hour", "manual_ack"),
+        default=None,
+        help="automatic_same_hour is the production path; legacy AND_ACK action tokens infer manual_ack when this option is omitted",
+    )
     observe.add_argument("--max-attempts", type=int, choices=range(2, MAX_COHERENT_ATTEMPTS_CEILING + 1), default=8)
     seal = sub.add_parser("seal")
     seal.add_argument("--transcript", type=Path, required=True)

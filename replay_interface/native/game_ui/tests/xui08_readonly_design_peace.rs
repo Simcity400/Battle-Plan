@@ -434,7 +434,7 @@ fn peace_participant_and_reference_sets_fail_closed() {
     );
 }
 #[test]
-fn peace_results_must_bind_an_allocation() {
+fn peace_results_reject_a_claimed_join_to_an_unknown_allocation() {
     let mut p = peace();
     if let PeaceConferenceSnapshot::Active(v) = &mut p {
         v.results[0].allocation_id = "missing".into();
@@ -443,6 +443,14 @@ fn peace_results_must_bind_an_allocation() {
         admit_peace_conference(&p),
         Err(Xui08Rejection::InvalidResult)
     );
+}
+#[test]
+fn peace_terminal_summary_may_preserve_the_engines_absent_allocation_join() {
+    let mut p = peace();
+    if let PeaceConferenceSnapshot::Active(v) = &mut p {
+        v.results[0].allocation_id.clear();
+    }
+    assert!(admit_peace_conference(&p).is_ok());
 }
 #[test]
 fn peace_result_payload_must_exactly_match_its_allocation() {

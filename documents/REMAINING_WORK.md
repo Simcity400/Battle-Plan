@@ -1,6 +1,6 @@
 # Remaining work to production
 
-**Updated: 2026-07-20.** The single deduped backlog. Detail lives in the
+**Updated: 2026-07-21.** The single deduped backlog. Detail lives in the
 per-half ledgers (linked); this list is complete at the item level — if it is
 not here (or in `SEAM_CONTRACTS.md`), it is not open. Check items off here;
 update ledgers as usual.
@@ -8,8 +8,9 @@ update ledgers as usual.
 Wave4 human-input reconciliation is final at
 `extractor/documents/dossiers/WAVE4_PROVISIONAL_HUMAN_INPUT_RECONCILIATION_20260720.json`:
 37 atomic external-input claims are covered exactly once by 16 deduplicated
-execution bundles, plus 12 product decisions. Wave4 code is still pending the
-root-owned central validation. A16, A17, A20, X9, B4, army-order cards,
+execution bundles, plus 12 product decisions. Wave 6 static RE and production
+wiring passed the root-owned centralized Final/All validation. A16, A17, A20,
+X9, B4, army-order cards,
 A11/A30 engine network ordering, A34, and RG-H3 are not human inputs. B1, X4,
 and raid roots return to autonomous engineering until their producer paths are
 exhausted. G3 has no separate run; its external outputs are the G2, CAP6,
@@ -20,7 +21,7 @@ restore, and weather bundles.
 Detail: `extractor/documents/MASTER_EXTRACTION_CONTRACT.md` (§A/B/D/E/F/P/S/X)
 and `extractor/documents/RE_REMAINING.md`.
 
-- **Live/fixture-blocked extraction (§A):** A5 ace events, A7 terminal convoy-route attribution,
+- **Live/fixture-blocked extraction (§A):** A5 ace events, A7 terminal convoy-route acceptance,
   A11 per-state spy-network strength/controller projection,
   A13 authoritative scripted-GUI state, A16 subject autonomy, A17 nukes,
   A18 dynamic modifiers, A19 delayed events, A23 CProgram owner-tag gate.
@@ -57,7 +58,10 @@ and `extractor/documents/RE_REMAINING.md`.
   result projection are implemented fail-closed. X2 width static RE and
   carrier/fold/replay/XUI20 wiring are complete; only its external before/after
   activation control and the separate current-epoch loss control remain (see seam).
-- **Save-family dispositions (§E):** E12–E29 (18 open).
+- **Save-family dispositions (§E):** no semantic RE remains in E12–E29.
+  E16/E17 and E27 retain compact production-integration work, and E14 retains
+  one ordinary mechanically regraded promotion receipt; the other rows are
+  closed, captured by an existing exact carrier, or evidence-backed rejections.
 - **Build/ops (§F):** F1b one failing `replay_decoder` fixture test (blocks
   S4), F3 Windows capability gates, F5 truthful acceptance telemetry, F6 full
   acceptance ladder rungs 1–6.
@@ -73,13 +77,12 @@ and `extractor/documents/RE_REMAINING.md`.
   naval-battle, land/air-combat, special-project, restored outputs), S9 live
   static-bundle admission (never produced live). S1 is closed: all seven
   contract-required artifacts are mandatory and fail closed before admission.
-- **Rail replay state d81:** exact a729 province anchors and ordered reciprocal
-  `RailwayInfo` adjacency/levels are wired collector-to-replay. The hub-manager
-  global, type-`0x1a` active vector, icon authentication, province/subtype
-  identity, and frame projection are discovery-complete. Repeat any still-needed
-  exact seeds through the current healthy 20-shard broker under the exact
-  identity/mode/job-provenance gate, then wire the fail-closed
-  schema extension; no human capture or centroid/static-building fallback is allowed.
+- **Rail replay state d81:** CLOSED. Exact a729 province anchors, ordered
+  reciprocal `RailwayInfo` adjacency/levels, hub-manager/type-`0x1a` rows,
+  dynamic subtype-4713 railway lines, D80 ribbon/arrow joins, carrier, fold and
+  replay projection are wired and centrally validated. No human capture,
+  repeated seed export, centroid fallback, damage-texture guess, or remaining
+  semantic RE is authorized.
 - **Coverage sweeps (§X):** X1a–c, X2b–d, X3, X4 deployment queues, X8 order
   membership, X9 projects, X10 direct hooks, X11 expected-partial narrowing,
   X12 sub-hour timing.
@@ -101,20 +104,21 @@ Detail: `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.m
 - **XUI21 fired-event popup coverage:** the common fire hook, pending baseline,
   materialisation, player/AI/timeout paths, d75/A25 owner joins, and zero-loss
   completeness contract are implemented fail-closed. Run H-POPUP's pinned
-  five-class/four-resolution matrix; no further producer discovery is open.
+  five-class/four-resolution matrix. This is a mechanically graded runtime
+  coverage run, not human RE; no further producer discovery is open.
 - **Map-label B10 integration:** reverse engineering is closed: the engine keys
   country labels by province controller and uses the authenticated selector-wide
   mapname CB1 carrier. Project measured `control_by_province` rows and emit the
   exact semantic token; no wartime owner/controller or alpha-fitting capture remains.
-- **Weather rendering:** run the retained 423-hour d24 temporal gate before any
-  new A20 request. Temporal SnowMudData still needs the authenticated recurring/
-  on-change capture H-SNOWMUD, while close-zoom particle/entity parity remains
-  agent-owned until an exact render/entity root exists.
+- **Weather rendering:** the retained 423-hour d24 temporal gate passed and
+  Wave 6 closes the exact SnowMud CPU producer/upload boundary. Promotion still
+  needs the existing early-launch collector to record two content-changing H
+  rows plus matching replay H2 readbacks. That is an autonomous, mechanically
+  graded capture transition, not additional RE or human interpretation.
 
-- **XUI27 final UI composition** — pixel parity for every panel family,
-  modal/tooltip combination, map-under-UI state, localization variant, and
-  unavailable-data case. QUEUED, never run. The last replay-side promotion
-  gate.
+- **XUI27 final UI composition** — replay-owned terminal composition is
+  PROVEN and centrally validated. Its six extractor-boundary rows remain
+  explicit external-input gates and do not reopen replay-side RE.
 - **Adversarial release-review wave** — by program policy ALL adversarial
   review was deferred until after freeze; it has never run.
 - **Reissue the finalization receipt** with stable SHAs after the fix wave
@@ -170,9 +174,12 @@ Detail: `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.m
     `wj03rsxj7.output` (machine-local).
 - **Capture-gated residuals** (CAP1–CAP11 verified against the board
   2026-07-19 — 10 of 11 closed/superseded by the XN/XUI program):
-  - **CAP6 counter-quad geometry/atlas ground truth** — still open;
-    `UNIT_COUNTER_LAW.md` remains capture-gated ("no product renderer should
-    draw unit counters from this draft yet"); nearest owner XUI27.
+  - **CAP6 counter rendering** — Wave 6 proves the live counter owner/root/
+    wrapper/paint-root path and common GUI draw nesting and wires the exact
+    selected-Present final-D3D collector. The immediate gate is one autonomous
+    central build/injection receipt with `selected_present_sealable=true`, not
+    additional owner-path RE. The H1–H5 variation sweeps remain behavioral
+    fidelity observations and cannot by themselves authorize production.
   - **`restore_gate_1` recapture RETIRED (recovered 2026-07-19):** the original
     243-file capture is preserved byte-exactly under
     `<local-path>`; portable
@@ -185,9 +192,10 @@ Detail: `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.m
     has a provenance receipt and is no longer a missing-artifact blocker.
   - Non-blocking: N02 retrospective glyph-VB byte-parity check
     (QUOTA_PENDING; explicitly does not block promotion).
-- **G3 fidelity recount** — the archived FIDELITY_LEDGER totals were
-  self-flagged "PENDING FRESH RECOUNT" and were never recounted; fold a fresh
-  recount into PROGRAM_STATUS (or record the recount here) before release.
+- **G3 fidelity recount** — the corrected v3 recount is implemented and the
+  stale historical totals are retired. Its product-route gate now depends on
+  authenticated raw occupation/SnowMud producer-consumer joins plus G2 pixels,
+  not on a further semantic recount or human annotation.
 - **Phase H** — swap a real recording into the replay path and rerun the
   G-gates end-to-end (explicitly deferred until extractor completion).
 
@@ -195,7 +203,7 @@ Detail: `replay_interface/documents/lane_reports/rendering_laws/PROGRAM_STATUS.m
 
 See `SEAM_CONTRACTS.md`: ~15 extractor-side input contracts blocking XUI
 packets (A24–A40 namespace), 1 open replay-side ask (X-ENDEDCOMBAT incl. the
-confirmed `_merge_two_snapshots` union defect), X-DECODER awaiting only root's
+confirmed `_merge_two_snapshots` union defect), X-DECODER closed through
 central validation, and the legacy-row dedup
 pass that nobody has run.
 
@@ -209,15 +217,16 @@ pass that nobody has run.
   answers before their gates run): D04 save availability, affinity target,
   player input during graded rungs, naval-fixture steering, D57 harness
   shape, fixture-variance verifier task.
-- **X-DECODER central validation:** the ownership decision is implemented.
+- **X-DECODER central validation:** CLOSED. The ownership decision is implemented
+  and the centralized Final/All battery passed.
   The certified pre-fold request/result contract is portable-owned,
   `replay_core` has no extractor dependency, and an explicit decoder path now
   wires verified stream-only containers while ordinary product open remains
   fail-closed. The explicit spooled route now authenticates the container entry
   directly to disk, drives the existing file-backed `WorldFold`, enforces exact
   closed-hour cardinality, and lazily rehashes/parses one snapshot per request;
-  it has no stream-length-dependent memory ceiling. Root must run the single
-  centralized Rust validation. The shipped replay app now supplies the bounded
+  it has no stream-length-dependent memory ceiling. The shipped replay app now
+  supplies the bounded
   capability at its interactive, headless, and validate/open boundaries through
   one product-owned spool policy; it exposes the source receipt and has no
   ordinary/raw fallback.

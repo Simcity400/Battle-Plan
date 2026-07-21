@@ -1,0 +1,93 @@
+{
+  "schema": "hoi4.h_a37.current_country_lifecycle_re.v1",
+  "date": "2026-07-21",
+  "lane": "H-A37",
+  "disposition": "OWNER_AND_CURRENT_COUNTRY_LIFECYCLE_CLOSED_STATICALLY_AND_OBSERVED_LIVE",
+  "binary_authority": {
+    "binary_id": "hoi4.exe 1.19.2.0.a729",
+    "image_base": "0x140000000",
+    "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "ghidra_ready": true,
+    "shard_count": 20,
+    "read_only_no_analysis": true
+  },
+  "fresh_exact_export": {
+    "job_id": "20260721T120232Z-a37-current-country-owner-lifecycle-34341641",
+    "shard_id": "shard-16",
+    "depth": 1,
+    "pcode": true,
+    "seed_resolution": "8/8",
+    "function_count": 77,
+    "artifact_count": 308,
+    "manifest_sha256": "2c298279fa8e4c4c6c9794713d01987fd96f7b58f8bc936033523e38229b34e7",
+    "roots": [
+      "0x141570510",
+      "0x141570450",
+      "0x140e424f0",
+      "0x141c4a6b0",
+      "0x141c49570",
+      "0x141c4a860",
+      "0x141c4baa0",
+      "0x14156a2f0"
+    ]
+  },
+  "owner_lifecycle": {
+    "country_politics_constructor": "0x14156a2f0",
+    "country_politics_vtable": "0x1429c2a58",
+    "power_balance_allocation": "0x14156a2f0 allocates 0x660 bytes and calls CPowerBalanceView constructor 0x141c47e90",
+    "power_balance_owner_slot": "CCountryPoliticsView+0x7a50",
+    "launcher_callback": "0x141570450",
+    "launcher_callback_registration": "CCountryPoliticsView constructor registers 0x141570450 in its callback set; 0x1415710b0 binds it to show_power_balance",
+    "close_competitors_then_open": "When closed, 0x141570450 closes the competing politics panels in engine order, resolves CCountryPoliticsView+0x7a50, and calls 0x141c4a6b0",
+    "close_selected_panel": "When open, the same callback resolves the same +0x7a50 owner slot and calls 0x141c49570"
+  },
+  "current_country_lifecycle": {
+    "country_handle_selection": "Use game_state+0x520 when its signed i32 is positive; otherwise use game_state+0x524",
+    "balance_registry": "game_state+0x450",
+    "selector": "0x140e424f0 scans the registry's 0x190-byte records in engine order and returns the first record whose +0x38 country predicate accepts the selected handle",
+    "launcher_refresh": "0x141570510 applies the identical game_state+0x520/+0x524 handle rule before publishing launcher visibility and values",
+    "panel_show": "0x141c4a6b0 applies the identical current-country rule, stores the selected record at controller+0x598 and its range at +0x5a0, or hides and clears controller+0x30 when no row matches",
+    "open_panel_refresh": "0x141c4a860 re-applies the identical current-country rule; a current-country change to a nonmatching country hides the GUI and clears controller+0x30, while a matching country replaces +0x598/+0x5a0 before the terminal writer",
+    "terminal_writer": "0x141c4baa0 receives only the post-selection owner and never selects a different country"
+  },
+  "save_oracle_join": {
+    "source": "H_A37_D04_SAVE_ORACLE_20260721.json",
+    "initial_player": "D04",
+    "initial_matching_rows": 0,
+    "automatable_positive_country": "ITA",
+    "ita_balance": "ITA_power_balance",
+    "ita_value": 0.465,
+    "ita_trending_side": "ITA_grand_council_side",
+    "restoration_country": "D04",
+    "reason": "The already-loaded paused save contains an ITA-owned power-balance row and no D04 row, so a reversible D04 to ITA to D04 console switch exercises positive selection and the exact no-match close lifecycle without advancing the clock or editing a save."
+  },
+  "automated_live_plan": {
+    "user_semantic_input_required": false,
+    "preconditions": [
+      "exact executable SHA-256 and PID are revalidated",
+      "the game remains paused at 1944.2.11.18",
+      "no other task owns the exclusive live/UI lease",
+      "the original save is never overwritten"
+    ],
+    "actions": [
+      "retain the initial D04 current-country handle and paused clock",
+      "use the authenticated window harness to issue console command tag ITA",
+      "open CCountryPoliticsView and its authenticated show_power_balance launcher",
+      "retain bounded trace/observation receipts for launcher refresh, toggle, selector, show and terminal writer",
+      "issue console command tag D04 while the panel is open to exercise 0x141c4a860 no-match closure",
+      "verify the current-country handle, visible flag, panel-open byte and game clock returned to the initial D04 paused state",
+      "close the console and leave the game paused without saving"
+    ],
+    "promotion_boundary": "The live trace is discovery corroboration. Only authenticated collector/selected-Present receipts may activate PBP2 or d74."
+  },
+  "live_execution_receipt": {
+    "path": "H_A37_LIVE_CURRENT_COUNTRY_LIFECYCLE_20260721.json",
+    "route": "paused D04 handle 368 -> ITA handle 16 -> D04 handle 368",
+    "game_hour_before_during_after": 60830441,
+    "positive_panel_observed": true,
+    "no_match_close_observed": true,
+    "restored_without_save": true,
+    "human_input_required": false
+  },
+  "conclusion": "The owning panel and current-country lifecycle are closed both statically and by a bounded reversible live observation. No further human action or semantic judgment is required for this RE question. The discovery trace does not by itself activate the separate production collector/selected-Present promotion gate."
+}
