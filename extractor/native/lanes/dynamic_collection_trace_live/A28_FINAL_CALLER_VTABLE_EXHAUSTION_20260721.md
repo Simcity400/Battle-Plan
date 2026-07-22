@@ -97,3 +97,50 @@ itself.
 
 No build, test, verifier, compiler, formatter, or generator was run while
 performing this static RE and implementation pass.
+
+## Air/MIO producer admission follow-up (2026-07-22)
+
+The four retained air/MIO family graphs now have a production admission module
+at `src/a729_air_mio_controller.rs`. It requires a complete pointer-free
+candidate/disposition ledger, stable referenced-object or controller-atom
+identity, stable reusable-slot identity, exact runtime templates, resolved row
+and clip geometry, content/viewport extents, and fixed min/max/current/target
+from one post-return transition. The collector has a family-specific encoding
+seam, the fixture regrader authenticates the same fields, and `game_ui` applies
+family-specific collection/template/identity checks after generic DCT1
+validation.
+
+This does not manufacture the missing runtime records. The air-selection
+upstream gap is now statically closed by exact-a729 job
+`20260722T013755Z-a28-air-upstream-four-bucket-authority-285d9be0` (manifest
+`839b5f4f9d184dfe4edcf0941797f56fd09e10753f5c8457ae748d21ad2a376e`).
+`0x01952420` visits the full candidate vector and applies the ordered common
+mask/bit/archetype gates before populating bucket 0 unconditionally and buckets
+1, 2, and 3 through the exact `+0x5B4`, flag-bit-20, and
+`0x01005DD0(candidate, 3) > 0` predicates. The authenticated predicate sites,
+artifact hashes, destination vectors, and selected-bucket join are frozen in
+`../../../documents/dossiers/A28/AIR_FOUR_BUCKET_PREDICATE_AUTHORITY_20260722.json`.
+The production validator accepts only the exact reason/RVA pairs valid for the
+candidate's authenticated bucket lane.
+
+Air and MIO history candidates additionally require an authenticated resolver
+record before their local source record/reference pair may become a portable
+type/id. All four families still need hook-owned zero-gap transition records
+before d71 can be scheduled. The exact contract and remaining evidence blockers are frozen
+in `../../../documents/dossiers/A28/AIR_MIO_PRODUCER_CONTRACT_20260722.json`.
+
+Candidate identity now includes the authenticated producer source lane and a
+positive stable source-local occurrence key. This is required for production
+history, where the same portable object may be encountered once through the
+production-line input and again through the history table before the duplicate
+is rejected. The occurrence key is resolver-owned and cannot be a pointer or a
+mutable final traversal ordinal.
+
+The static acquisition surface is also complete: the A28 action driver reuses
+the authenticated exact-process/window input implementation, the wrapper
+requires the four exact raw observation filenames, and the aggregate regrader
+admits them create-new by content hash. The retained evidence has no
+authenticated D04 coordinate law for opening either controller panel, so the
+checked-in profile contains machine-executed bounded markers only. Those
+markers do not authorize promotion and missing controller observations remain
+unavailable rather than measured-empty.

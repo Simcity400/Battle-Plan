@@ -13,6 +13,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
+use serde::Serialize;
 
 use crate::convoy_terminal_attribution::{
     CombatEpoch, EntityHandle, ExactCombatEpochResolver, ExactLiveRouteResolver,
@@ -34,15 +35,19 @@ pub struct AuthenticatedLiveRouteBinding {
     pub resolution: LiveRouteResolution,
     /// Process-local evidence only. These values are never encoded in CTA1.
     pub reference_resolver: usize,
+    pub reference_registry: usize,
+    pub reference_slot: usize,
     pub route_object: usize,
     pub route_vtable: usize,
+    pub source_endpoint_object: usize,
+    pub destination_endpoint_object: usize,
     pub observation_game_hour_raw: i32,
     pub raw_observation_sha256: [u8; 32],
     pub authority_manifest_sha256: [u8; 32],
     pub control_pair_sha256: [u8; 32],
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ResolverPublicationReceipt {
     pub publication_sequence: u64,
     pub game_hour_raw: i32,
@@ -77,6 +82,13 @@ impl ResolverSnapshot {
         client: EntityHandle,
     ) -> Option<&AuthenticatedLiveRouteBinding> {
         self.routes.get(&client)
+    }
+
+    /// Process-local acquisition view.  The returned addresses are never
+    /// encoded into CTA1/CTA2 and are exposed only to the explicitly armed
+    /// H-CONVOY evidence owner while the immutable resolver epoch is live.
+    pub fn evidence_member_epochs(&self) -> impl Iterator<Item = (usize, CombatEpoch)> + '_ {
+        self.member_epochs.iter().map(|(address, epoch)| (*address, *epoch))
     }
 }
 
@@ -127,8 +139,12 @@ fn authenticate_a729_route_read(
         client: read.client,
         resolution: read.resolution,
         reference_resolver: read.reference_resolver,
+        reference_registry: read.reference_registry,
+        reference_slot: read.reference_slot,
         route_object: read.route_object,
         route_vtable: read.route_vtable,
+        source_endpoint_object: read.source_endpoint_object,
+        destination_endpoint_object: read.destination_endpoint_object,
         observation_game_hour_raw: game_hour_raw,
         raw_observation_sha256: read.raw_observation_sha256(game_hour_raw),
         authority_manifest_sha256,
@@ -179,8 +195,12 @@ fn validate_route_binding(
         return Err("live route binding has an invalid or nonmatching client key".into());
     }
     if binding.reference_resolver == 0
+        || binding.reference_registry == 0
+        || binding.reference_slot == 0
         || binding.route_object == 0
         || binding.route_vtable == 0
+        || binding.source_endpoint_object == 0
+        || binding.destination_endpoint_object == 0
     {
         return Err("live route binding lacks rooted process-local custody".into());
     }

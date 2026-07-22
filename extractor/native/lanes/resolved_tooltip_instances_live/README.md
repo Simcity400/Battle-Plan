@@ -9,6 +9,13 @@ consumer, matrix assembler/schema, and independent verifier are implemented.
 D72 remains reserved and unschedulable until H-A26 supplies the authentic live
 matrix and root central validation passes.
 
+The live matrix no longer requires manual UI operation. The autonomous
+two-resolution action/harness protocol, A25 mixed glyph/icon receipt schema,
+and combined independent admission are specified in
+`A25_A26_AUTONOMOUS_ACQUISITION.md`. This does not manufacture a positive
+receipt: d72 remains reserved until a real run emits all nine authenticated
+cases and the combined verifier accepts them.
+
 RenderDoc, OCR, static localisation, replay-side Clausewitz evaluation, cursor-offset rules, inferred edge flips, and reconstructed modifier breakdowns remain rejected. The exact final post-layout blob is opaque engine output: newline splitting cannot establish source rows, line kinds, source identities, evaluation contexts, or availability. Startup silence is unobtained; measured-empty requires an observed controller cycle and atomic selected-Present seal.
 
 ## Validation state

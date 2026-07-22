@@ -987,10 +987,10 @@ def _ingest_combats(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
             "terrain": c.get("terrain"),
             "progress": attacker.get("progress"),
             # Preserve the complete save handles alongside the schema's
-            # pointer-free integer projections.  This is especially important
-            # for H-AIR: an eventual active-air fixture must retain the engine
-            # object type words so opposing wing handles are not silently
-            # collapsed into division-looking ids.
+            # pointer-free integer projections.  The generic save-format
+            # compatibility path retains type words for any typed combat row;
+            # it is not evidence that current a729 persists a tactical air
+            # combat object, and it creates no H-AIR acquisition requirement.
             "modifiers": {
                 "day": c.get("day"),
                 "duration": c.get("duration"),

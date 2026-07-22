@@ -414,6 +414,42 @@ class TestSameHourMergeNoDataLoss(unittest.TestCase):
             "ended",
         )
 
+    def test_ended_combats_present_detail_wins_in_either_merge_order(self):
+        unavailable = _snap("1940.1.2.0")
+        unavailable["ended_combats"] = [{
+            "combat_id": 7,
+            "generation": 2,
+            "lifecycle": "ended",
+            "side_detail_availability": "unavailable",
+            "location_province": 10,
+            "land_combat_detail_events_live": None,
+        }]
+        present = _snap("1940.1.2.0")
+        present["ended_combats"] = [{
+            "combat_id": 7,
+            "generation": 2,
+            "lifecycle": "ended",
+            "side_detail_availability": "present",
+            "location_province": None,
+            "land_combat_detail_events_live": {
+                "phase_event": "ended",
+                "generation": 2,
+            },
+        }]
+
+        for merged in (
+            diff_engine._merge_two_snapshots(unavailable, present),
+            diff_engine._merge_two_snapshots(present, unavailable),
+        ):
+            self.assertEqual(len(merged["ended_combats"]), 1)
+            row = merged["ended_combats"][0]
+            self.assertEqual((row["combat_id"], row["generation"]), (7, 2))
+            self.assertEqual(row["side_detail_availability"], "present")
+            self.assertEqual(row["location_province"], 10)
+            self.assertEqual(
+                row["land_combat_detail_events_live"]["phase_event"], "ended"
+            )
+
     def test_live_sidecar_domains_survive_same_hour_merge(self):
         # Same-hour coalescing exists for "memory snapshot + save snapshot at the
         # same tick"; the live sidecars (weather / mio_live / ...) are exactly

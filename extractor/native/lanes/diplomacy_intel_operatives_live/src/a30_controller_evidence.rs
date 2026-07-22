@@ -101,6 +101,8 @@ static DROPPED_LOCK_BUSY: AtomicU64 = AtomicU64::new(0);
 static DROPPED_OVERFLOW: AtomicU64 = AtomicU64::new(0);
 static DROPPED_UNCONSUMED_ARM: AtomicU64 = AtomicU64::new(0);
 static COMPLETENESS_POISONED: AtomicBool = AtomicBool::new(false);
+static LAST_AGENCY_CONTROLLER: AtomicUsize = AtomicUsize::new(0);
+static LAST_CIPHER_CONTROLLER: AtomicUsize = AtomicUsize::new(0);
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 static ARMED: OnceLock<Mutex<ArmedRefreshes>> = OnceLock::new();
 static QUEUE: OnceLock<Mutex<VecDeque<Domain53ControllerEvidenceRecord>>> = OnceLock::new();
@@ -360,6 +362,21 @@ pub fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
 }
 
+/// Process-local discovery for the opt-in autonomous owner.  Addresses are
+/// consumed only to arm the next exact controller callback and are never
+/// serialized.
+pub fn discovered_controllers() -> Option<(usize, usize)> {
+    let agency = LAST_AGENCY_CONTROLLER.load(Ordering::Acquire);
+    let cipher = LAST_CIPHER_CONTROLLER.load(Ordering::Acquire);
+    (agency != 0 && cipher != 0).then_some((agency, cipher))
+}
+
+pub fn capture_complete() -> bool {
+    let Ok(queue) = queue().try_lock() else { return false };
+    queue.iter().filter(|row| row.family == ControllerEvidenceFamily::AgencyUpgrade).count() == 1
+        && queue.iter().filter(|row| row.family == ControllerEvidenceFamily::CipherCountry).count() == 1
+}
+
 pub fn arm_agency_refresh(arm: AgencyRefreshArm) -> Result<(), String> {
     validate_agency_arm(&arm)?;
     if !installed() || TEARING_DOWN.load(Ordering::Acquire) {
@@ -502,6 +519,31 @@ pub fn receipt_from_drain(drain: &HookDrain) -> ControllerEvidenceReceipt {
     }
 }
 
+pub fn visibility_products_from_drain(
+    drain: &HookDrain,
+) -> Result<super::a30_visibility::VisibilityProductJoins, String> {
+    let mut agency = None;
+    let mut cipher = None;
+    for record in &drain.records {
+        match record.family {
+            ControllerEvidenceFamily::AgencyUpgrade => {
+                if agency.is_some() { return Err("A30 drain repeats agency refresh".into()); }
+                agency = Some(crate::agency_upgrade_controller::AgencyUpgradeControllerRefresh::decode(&record.payload)
+                    .map_err(|error| format!("A30 AUGC drain decode: {error:?}"))?);
+            }
+            ControllerEvidenceFamily::CipherCountry => {
+                if cipher.is_some() { return Err("A30 drain repeats cipher refresh".into()); }
+                cipher = Some(crate::cipher_controller::CipherControllerRefresh::decode(&record.payload)
+                    .map_err(|error| format!("A30 CIPC drain decode: {error:?}"))?);
+            }
+        }
+    }
+    super::a30_visibility::VisibilityProductJoins::from_controller_refreshes(
+        agency.as_ref().ok_or("A30 drain has no agency refresh")?,
+        cipher.as_ref().ok_or("A30 drain has no cipher refresh")?,
+    )
+}
+
 pub fn seal_drain_and_uninstall() -> Result<HookDrain, String> {
     let _guard = INSTALL_LOCK.lock().map_err(|_| "A30 teardown lock poisoned")?;
     if !installed() {
@@ -540,6 +582,7 @@ pub fn seal_drain_and_uninstall() -> Result<HookDrain, String> {
 unsafe extern "system" fn hook_agency_outer(controller: usize) {
     let _active = CallbackGuard::enter();
     let Some(original) = original_outer(&ORIGINAL_AGENCY_OUTER) else { poison(&DROPPED_UNREADABLE); return };
+    LAST_AGENCY_CONTROLLER.store(controller, Ordering::Release);
     if TEARING_DOWN.load(Ordering::Acquire) {
         unsafe { original(controller) };
         return;
@@ -637,6 +680,7 @@ unsafe extern "system" fn hook_agency_filter(source: usize, output: usize, predi
 unsafe extern "system" fn hook_cipher_outer(controller: usize) {
     let _active = CallbackGuard::enter();
     let Some(original) = original_outer(&ORIGINAL_CIPHER_OUTER) else { poison(&DROPPED_UNREADABLE); return };
+    LAST_CIPHER_CONTROLLER.store(controller, Ordering::Release);
     if TEARING_DOWN.load(Ordering::Acquire) {
         unsafe { original(controller) };
         return;
@@ -753,6 +797,8 @@ fn reset_state(epoch: u64) -> Result<(), String> {
         counter.store(0, Ordering::Release);
     }
     COMPLETENESS_POISONED.store(false, Ordering::Release);
+    LAST_AGENCY_CONTROLLER.store(0, Ordering::Release);
+    LAST_CIPHER_CONTROLLER.store(0, Ordering::Release);
     Ok(())
 }
 
@@ -779,7 +825,7 @@ fn original_outer(slot: &AtomicUsize) -> Option<ControllerOuterFn> {
     (address != 0).then(|| unsafe { mem::transmute(address) })
 }
 
-struct InProcessMemory;
+pub(crate) struct InProcessMemory;
 impl Domain53Memory for InProcessMemory {
     fn module_base(&self) -> u64 { MODULE_BASE.load(Ordering::Acquire) as u64 }
     fn read_bytes(&self, address: u64, len: usize) -> Result<Vec<u8>, ExtractError> {

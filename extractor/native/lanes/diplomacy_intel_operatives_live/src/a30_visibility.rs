@@ -138,6 +138,25 @@ impl NetworkProductWitness {
         })
     }
 
+    pub fn from_authenticated_payload(
+        frame_hour: u64,
+        owner_tag_db_id: u32,
+        producer_record_identity: [u8; 32],
+        payload_sha256: String,
+        row_count: u32,
+        source_proof_present: bool,
+    ) -> Result<Self, String> {
+        if frame_hour == 0
+            || owner_tag_db_id == 0
+            || producer_record_identity.iter().all(|byte| *byte == 0)
+            || !source_proof_present
+            || !lower_sha256(&payload_sha256)
+        {
+            return Err("A30 network payload authority is unavailable".into());
+        }
+        Ok(Self { frame_hour, owner_tag_db_id, producer_record_identity, payload_sha256, row_count })
+    }
+
     pub(crate) fn matches(
         &self,
         frame_hour: u64,
@@ -244,6 +263,25 @@ pub(crate) fn reset() -> Result<(), String> {
         .map_err(|_| "A30 visibility observation lock poisoned")?
         .clear();
     Ok(())
+}
+
+/// Process-local surface classification for the autonomous evidence owner.
+/// It exposes no controller/widget pointer and is used only to avoid sealing a
+/// completed controller transaction against the wrong UI transition.
+pub fn latest_observed_surface() -> Option<IntelligenceSurface> {
+    let observations = OBSERVATIONS.try_lock().ok()?;
+    let row = observations.iter().max_by_key(|row| row.refresh_end_qpc_ticks)?;
+    match row.kind {
+        VisibilityObservationKind::IntelLedgerRefresh => Some(IntelligenceSurface::IntelLedger),
+        VisibilityObservationKind::AgencyRefresh => match (
+            row.operations_visible,
+            row.ciphers_visible,
+        ) {
+            (Some(true), Some(false)) => Some(IntelligenceSurface::Operations),
+            (Some(false), Some(true)) => Some(IntelligenceSurface::Ciphers),
+            _ => Some(IntelligenceSurface::Agency),
+        },
+    }
 }
 
 pub(crate) fn record_after_agency_refresh_tail(

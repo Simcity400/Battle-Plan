@@ -3,9 +3,8 @@
 ## Outcome
 
 Every autonomous engineering prerequisite behind the remaining A18 fixture is
-implemented. The remaining action is only to supply or load the game state and
-let the owner runner observe it; no human transcription or semantic judgment is
-needed.
+implemented. The action driver now creates and advances the complete state; no
+human transcription, lifecycle action, or semantic judgment is needed.
 
 Frame polling was insufficient for the final gate. Fresh Wave 5 exact-a729
 re-export
@@ -42,12 +41,12 @@ collector.
 
 Run `extractor/native/scripts/Invoke-A18DynamicModifierLifecycleProbe.ps1` with
 the release recorder, exact-a729 executable, user directory, collector DLL, the
-save path that will be overwritten at each checkpoint, owner tag, timed and
+user directory's deterministic `quicksave.hoi4` path, owner tag, timed and
 permanent modifier ids, and an output directory.
 
 The runner performs a clean early launch with
-`BATTLE_PLAN_ENABLE_A18_DYNMOD_EVIDENCE=1`, watches the chosen save for three distinct
-stable contents, and prompts for:
+`BATTLE_PLAN_ENABLE_A18_DYNMOD_EVIDENCE=1`, launches the authenticated action driver,
+and watches the deterministic quicksave for three distinct stable contents:
 
 1. `positive_before`, where the timed instance is `N>=2`;
 2. `positive_after`, immediately after the next daily decrement (`N-1`);

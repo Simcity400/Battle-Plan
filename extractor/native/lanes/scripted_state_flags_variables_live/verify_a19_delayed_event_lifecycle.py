@@ -206,6 +206,14 @@ def grade(frames: list[dict[str, Any]]) -> dict[str, Any]:
         row["originator_tag_db_id"] != row["owner_tag_db_id"] for row in observations
     ):
         errors.append("no discriminating originator != recipient observation")
+    reason_counts = {
+        reason: sum(row["reason"] == reason for row in observations)
+        for reason in sorted(REASONS)
+    }
+    reason_event_ids = {
+        reason: sorted({row["event_id"] for row in observations if row["reason"] == reason})
+        for reason in sorted(REASONS)
+    }
     return {
         "schema": "hoi4.a19.delayed_event_lifecycle_regrade.v1",
         "status": "pass" if not errors else "fail",
@@ -218,6 +226,10 @@ def grade(frames: list[dict[str, Any]]) -> dict[str, Any]:
             row["originator_tag_db_id"] != row["owner_tag_db_id"]
             for row in observations
         ),
+        "observed_game_hour_min": min((row["game_hour_raw"] for row in observations), default=None),
+        "observed_game_hour_max": max((row["game_hour_raw"] for row in observations), default=None),
+        "reason_counts": reason_counts,
+        "reason_event_ids": reason_event_ids,
         "errors": errors,
     }
 
@@ -239,6 +251,10 @@ def main() -> int:
             "covered_reasons": [],
             "single_hook_epoch": False,
             "originator_recipient_separated": False,
+            "observed_game_hour_min": None,
+            "observed_game_hour_max": None,
+            "reason_counts": {reason: 0 for reason in sorted(REASONS)},
+            "reason_event_ids": {reason: [] for reason in sorted(REASONS)},
             "errors": [f"capture input rejected: {exc}"],
         }
     encoded = json.dumps(result, indent=2, sort_keys=True) + "\n"

@@ -155,8 +155,20 @@ or invocation, incomplete tap census, active callback, queue eviction, or any
 producer/scheduler diagnostic. Teardown disables all detours, waits for callback
 quiescence, removes every trampoline, and clears process-local state before the
 collector DLL may unload. The collector exposes install/arm/receipt-copy/
-uninstall harness ABI functions and an installed-source PTI1 encoder; the
-owner runner is `extractor/native/scripts/Invoke-A24PoliticsTooltipEvidence.ps1`.
+uninstall harness ABI functions, an installed-source PTI1 encoder, and the
+one-argument `battle-plan_a24_capture_command_json` remote-owner ABI. That ABI
+drains the production-render selected-Present inside the collector and accepts
+no Present payload from the caller. The clean-launch owner is
+`extractor/native/scripts/Invoke-A24PoliticsTooltipEvidence.ps1`; it authenticates
+the frozen D04 save, centrally attested recorder/DLL, loaded module, paused raw
+hour, country handle, window ownership, and 1920x1080 client before delegating
+the six create-new cases to `capture_a24_autonomous_scenes.py`. The frozen
+profile `A24_AUTONOMOUS_SCENES_1920X1080.json` drives physical click, wheel, and
+hover sweeps without prompts, advances exactly one hour between cases, and
+repause-checks every boundary. `verify_a24_autonomous_admission.py` joins the
+six receipt hashes, exact 23-tap union, consecutive hours, regrade result,
+executable, and central Release collector attestation into one immutable
+admission receipt. The owner cannot schedule d73 or change its activation latch.
 
 The exact UI producer manifest is
 `18bac19dc5de7fc0ef90a9341e0bc5ed1ac73c745a1dc96f6177ed08c8f70b35`.

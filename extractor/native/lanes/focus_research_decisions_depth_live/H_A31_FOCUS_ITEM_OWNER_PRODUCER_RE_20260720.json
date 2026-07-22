@@ -158,10 +158,12 @@
     "fixture_pair_regrader": "tools/verify_a31_fixture_matrix.py"
   },
   "human_input_boundary": {
-    "current_state": "STATIC_AND_AGENT_IMPLEMENTATION_COMPLETE_PENDING_ROOT_VALIDATION_AND_RUNTIME_FIXTURE",
+    "current_state": "AUTONOMOUS_RUNTIME_FIXTURE_IMPLEMENTED_PENDING_ROOT_VALIDATION_AND_EXECUTION",
     "agent_prerequisites": [
       "complete root-owned central validation"
     ],
-    "later_irreducible_fixture": "After those prerequisites close, one exact-a729 stable frame and one discriminating transition frame remain required to prove real invocation, zero-loss transient joins, and transition behavior."
+    "human_input_required": null,
+    "autonomous_owner_runner": "extractor/native/scripts/Invoke-A31NationalFocusFixturePair.ps1",
+    "runtime_fixture": "After central validation, the owner runner clean-launches the pinned save and autonomously acquires and mechanically admits the exact-a729 stable and discriminating transition frames."
   }
 }

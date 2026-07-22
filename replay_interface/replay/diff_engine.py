@@ -1860,15 +1860,16 @@ def _merge_two_snapshots(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]
                                       "combat_id")
     # Terminal combat lifecycle is a distinct collection. Combat ids are reused,
     # so the only safe identity is the complete (combat_id, generation) pair.
-    # Same-key rows merge null-aware to preserve complementary terminal detail.
+    # Same-key rows merge null-aware to preserve complementary terminal detail;
+    # a measured-present detail row outranks an unavailable observation in
+    # either stitching order.
     if "ended_combats" in a or "ended_combats" in b:
         av = a.get("ended_combats")
         bv = b.get("ended_combats")
         lists = [value for value in (av, bv) if isinstance(value, list)]
         if lists:
-            merged["ended_combats"] = _merge_by_composite_key(
-                lists[0], lists[1] if len(lists) > 1 else [],
-                ("combat_id", "generation"),
+            merged["ended_combats"] = _merge_ended_combat_rows(
+                lists[0], lists[1] if len(lists) > 1 else []
             )
         elif av is None or bv is None:
             # Preserve the producer's unavailable state when neither input
@@ -1913,23 +1914,47 @@ def _merge_by_key(la: List[Dict[str, Any]], lb: List[Dict[str, Any]], key: str
     return [out[k] for k in order]
 
 
-def _merge_by_composite_key(
+def _merge_ended_combat_rows(
     la: List[Dict[str, Any]],
     lb: List[Dict[str, Any]],
-    keys: Tuple[str, ...],
 ) -> List[Dict[str, Any]]:
+    """Union terminal combat observations without degrading retained detail.
+
+    Terminal combat ids are reusable, so `(combat_id, generation)` is the
+    identity.  A same-hour row badged `present` owns more information than an
+    `unavailable` observation of the same terminal event.  Merge the less
+    informative row first so the present row wins scalar conflicts while the
+    null-aware merge can still retain complementary non-empty leaves.
+    """
     out: Dict[Any, Dict[str, Any]] = {}
     order: List[Any] = []
     for row in la + lb:
-        if isinstance(row, dict) and all(row.get(key) is not None for key in keys):
-            identity: Any = tuple(row[key] for key in keys)
+        if isinstance(row, dict) and all(
+            row.get(key) is not None for key in ("combat_id", "generation")
+        ):
+            identity: Any = (row["combat_id"], row["generation"])
         else:
+            # Preserve malformed producer data for schema validation to reject;
+            # coalescing must not silently discard it.
             identity = id(row)
         if identity not in out:
             order.append(identity)
             out[identity] = row
+            continue
+
+        previous = out[identity]
+        previous_present = (
+            isinstance(previous, dict)
+            and previous.get("side_detail_availability") == "present"
+        )
+        row_present = (
+            isinstance(row, dict)
+            and row.get("side_detail_availability") == "present"
+        )
+        if previous_present and not row_present:
+            out[identity] = _deep_null_aware_merge(row, previous)
         else:
-            out[identity] = _deep_null_aware_merge(out[identity], row)
+            out[identity] = _deep_null_aware_merge(previous, row)
     return [out[identity] for identity in order]
 
 

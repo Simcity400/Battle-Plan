@@ -758,7 +758,10 @@ function Invoke-SelfTest {
 $repoRoot = Resolve-RepoRoot
 $nativeRoot = Join-Path $repoRoot "extractor\native"
 $launcherPath = Join-Path $nativeRoot "scripts\Start-Hoi4ProductionSpeed5Capture.ps1"
-$cargoManifest = Join-Path $nativeRoot "Cargo.toml"
+$captureDriverPath = Join-Path $nativeRoot "scripts\Start-Hoi4ProductionCaptureSafe.ps1"
+$artifactAttestationHelper = Join-Path $nativeRoot "scripts\ProductionArtifact.Attestation.ps1"
+$artifactAttestationPath = Join-Path $repoRoot ".cargo-target\release\hoi4-production-prebuilt-artifacts.json"
+. $artifactAttestationHelper
 
 if ($BaselineManifest.Length -eq 0) {
     $BaselineManifest = Join-Path $nativeRoot "runs\production_speed5_ShortSpeed5_20260709_124210\native_session_manifest.json"
@@ -804,7 +807,7 @@ if ($DryRun) {
     Write-Host ""
     Write-Host "Stage 0 (preflight) would:"
     Write-Host "  - require exactly one hoi4.exe (pid=$pidForDisplay)"
-    Write-Host "  - build: cargo build --release --manifest-path `"$cargoManifest`" -p collector -p recorder_host"
+    Write-Host "  - authenticate the central prebuilt release receipt: `"$artifactAttestationPath`""
     if (-not $SkipProbe) {
         Write-Host "  - probe capture (~$(Format-Num $ProbeSeconds 0)s Smoke) and require game_hours_advanced > 0"
     }
@@ -854,11 +857,16 @@ if (-not $SkipDiskSpaceCheck) {
     }
 }
 
-# Build once; all stage launcher calls then use -SkipBuild.
+# Reuse only a source-current, hash-authenticated central release. The live
+# session must not start its own Cargo process; all stage launchers use
+# -SkipBuild after this fail-closed admission.
 if (-not $SkipBuild) {
-    Write-Host "building collector + recorder_host (release)..."
-    & cargo build --release --manifest-path $cargoManifest -p collector -p recorder_host
-    if ($LASTEXITCODE -ne 0) { throw "cargo build failed (rc=$LASTEXITCODE)" }
+    Write-Host "authenticating centrally built release extractor artifacts..."
+    $prebuiltArtifacts = Test-ProductionArtifactAttestation `
+        -RepoRoot $repoRoot `
+        -ReceiptPath $artifactAttestationPath `
+        -ExpectedDriverPath $captureDriverPath
+    Write-Host "prebuilt_receipt_sha256=$($prebuiltArtifacts.receipt_sha256)"
 }
 
 # Game-advancing probe.

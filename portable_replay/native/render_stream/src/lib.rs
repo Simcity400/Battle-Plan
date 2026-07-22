@@ -765,9 +765,11 @@ pub struct RenderSubmit {
     /// consumers are feature-local omissions, never inferred programs.
     #[serde(default)]
     pub ordered_static_map_programs: Vec<StaticMapPassProgram>,
-    /// Exact C07 join over authenticated static tree operations. Absence means
-    /// tree runtime selection is unavailable. A present retained-scope carrier
-    /// never authorizes synthesis of its 95,275 uncaptured global cells.
+    /// Exact C07 join over authenticated selected-submit tree operations.
+    /// Absence means per-frame tree selection is unavailable. A present
+    /// carrier selects only observed draws from the complete 296-bucket /
+    /// 99,056-cell engine-derived library; it never promotes unselected cells
+    /// into the frame or reconstructs model/LOD state from camera distance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tree_runtime: Option<C07TreeRuntimeCarrier>,
     /// Exact selected-submit L02/L03 shadow projection and resource/pass join.

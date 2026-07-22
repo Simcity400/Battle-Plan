@@ -71,6 +71,8 @@ pub use convoy_transport_attack::{
 pub use convoy_terminal_hook_windows::{
     convoy_terminal_evidence_activation_enabled, convoy_terminal_hook_heartbeat,
     convoy_terminal_hook_installed,
+    capture_h_convoy_control_raw, publish_h_convoy_evidence_game_state,
+    take_h_convoy_positive_raw,
     drain_convoy_terminal_events, drain_convoy_transport_attack_payload,
     install_convoy_terminal_evidence_hook, install_convoy_terminal_hook,
     read_live_a729_client_route,
@@ -78,6 +80,8 @@ pub use convoy_terminal_hook_windows::{
     ConvoyTerminalDrain, ConvoyTerminalHookHeartbeat,
     ConvoyTerminalHookTelemetry, ConvoyTerminalInstallError, ConvoyTerminalValidatedEvent,
     ConvoyTerminalSealError, D70MutationKind, D70MutationProof,
+    HConvoyControlRawObservation, HConvoyD70Identity, HConvoyD70Row,
+    HConvoyPositiveRawObservation, HConvoyRouteRawObservation,
     H_CONVOY_EVIDENCE_ACTIVATION_ENV,
 };
 

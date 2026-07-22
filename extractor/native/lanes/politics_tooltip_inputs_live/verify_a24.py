@@ -123,6 +123,10 @@ capture = json.loads(
     (LANE / "H_A24_CAPTURE_AUTOMATION_20260720.json").read_text(encoding="utf-8")
 )
 report = (LANE / "A24_RE_REPORT.md").read_text(encoding="utf-8")
+runner = (ROOT / "extractor/native/scripts/Invoke-A24PoliticsTooltipEvidence.ps1").read_text(encoding="utf-8")
+scene_driver = (LANE / "capture_a24_autonomous_scenes.py").read_text(encoding="utf-8")
+scene_profile = json.loads((LANE / "A24_AUTONOMOUS_SCENES_1920X1080.json").read_text(encoding="utf-8"))
+admitter = (LANE / "verify_a24_autonomous_admission.py").read_text(encoding="utf-8")
 
 check("workspace member installed", "lanes/politics_tooltip_inputs_live" in workspace)
 check("collector dependency installed", "politics_tooltip_inputs_live_lane" in collector_manifest)
@@ -163,6 +167,15 @@ check(
     "capture automation requires no current human input",
     capture["human_input"]["required_now"] is False,
 )
+check("capture automation owns selected Present in process", "battle-plan_a24_capture_command_json" in collector_source)
+check("capture runner has no caller HarnessExe", "HarnessExe" not in runner)
+check("capture runner uses clean early launch", "--early-launch-exe" in runner and "--continuelastsave" in runner)
+check("capture runner binds central Release attestation", "Test-ProductionArtifactAttestation" in runner)
+check("scene profile has six exact families", len(scene_profile["scenes"]) == 6 and {row["line_kind"] for row in scene_profile["scenes"]} == set(dossier["required_line_kinds"]))
+check("scene driver is prompt free", "input(" not in scene_driver and "human_input_used" in scene_driver)
+check("scene driver uses physical UI actions", all(token in scene_driver for token in ("SetCursorPos", "mouse_event", "keybd_event")))
+check("scene driver seals in-process selected Present", "battle-plan_a24_capture_command_json" in scene_driver and '"operation": "seal"' in scene_driver)
+check("immutable admission covers exact taps", "REQUIRED_TAPS" in admitter and "PASS_IMMUTABLE_EXACT_A729_SIX_SURFACE_ADMISSION" in admitter)
 
 manifest_hash = "18bac19dc5de7fc0ef90a9341e0bc5ed1ac73c745a1dc96f6177ed08c8f70b35"
 for address in dossier["producer_graph"]["function_addresses"]:

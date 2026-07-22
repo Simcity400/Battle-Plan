@@ -41,3 +41,18 @@ It requires `pbp2_emitted=false` and an explicit unavailable-field ledger.
 Stable semantic identities, range frame/geometry, icons, text, decisions and
 full replay parity remain unproved, so even a passing raw receipt cannot
 activate or schedule d74.
+
+The complete acquisition owner is now
+`extractor/native/scripts/Invoke-A37PromotionAcquisition.ps1`, with guarded UI
+transactions in `Invoke-A37AutonomousControllerTransaction.ps1`. Each required
+sign case starts a fresh exact-a729 process from the frozen D04 save. The
+collector receives `BATTLE_PLAN_A37_EVIDENCE=1` at process creation, while its
+case-local evidence directory is deliberately withheld until the target value
+and change transaction has completed and the BOP panel is open. The collector
+therefore retries rather than freezing an earlier zero-change callback. The
+wrapper publishes the two exact filenames consumed by
+`regrade_a37_live_fixture.py`, writes the regrade output atomically, and binds
+all raw, transaction, recorder, attestation, verifier and supporting-matrix
+identities in `a37_promotion_acquisition_receipt.json`. The existing screenshot
+matrix remains supporting evidence only and is never substituted for either
+raw selected-Present case.

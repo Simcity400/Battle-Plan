@@ -56,9 +56,7 @@ pub struct AutoAttachDuplexProductPermit {
 
 pub fn auto_attach_duplex_product_permit(
 ) -> Result<AutoAttachDuplexProductPermit, DuplexWorkerError> {
-    if AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED
-        && compact_contract::build_profile::DOMAIN_CAMPAIGN_ID_LIVE_READER_ENABLED
-    {
+    if auto_attach_identity_v1_enabled() {
         Ok(AutoAttachDuplexProductPermit { _private: () })
     } else {
         Err(DuplexWorkerError::ActivationDisabled)
@@ -66,14 +64,18 @@ pub fn auto_attach_duplex_product_permit(
 }
 
 /// One fail-closed identity-mode selector shared by recorder-main consumers.
-/// A duplex-only flag flip cannot silently reinterpret Legacy bytes as CID1.
-pub const fn auto_attach_identity_v1_enabled() -> bool {
-    AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED
-        && compact_contract::build_profile::DOMAIN_CAMPAIGN_ID_LIVE_READER_ENABLED
+/// A duplex-only flag flip cannot silently reinterpret Legacy bytes as CID1;
+/// the only alternate route is the explicit nonce-bound lifecycle-evidence
+/// permit, which leaves both ordinary product constants false.
+pub fn auto_attach_identity_v1_enabled() -> bool {
+    (AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED
+        && compact_contract::build_profile::DOMAIN_CAMPAIGN_ID_LIVE_READER_ENABLED)
+        || compact_contract::cid1_lifecycle_evidence::cid1_lifecycle_evidence_permit_enabled()
 }
 
-pub const fn auto_attach_rollover_enabled() -> bool {
-    auto_attach_identity_v1_enabled() && AUTO_ATTACH_ROLLOVER_LIVE_LIFECYCLE_EVIDENCE_BOUND
+pub fn auto_attach_rollover_enabled() -> bool {
+    (auto_attach_identity_v1_enabled() && AUTO_ATTACH_ROLLOVER_LIVE_LIFECYCLE_EVIDENCE_BOUND)
+        || compact_contract::cid1_lifecycle_evidence::cid1_lifecycle_evidence_permit_enabled()
 }
 
 pub fn required_auto_attach_duplex_capabilities() -> ControlCapabilities {

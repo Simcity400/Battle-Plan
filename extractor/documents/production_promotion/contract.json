@@ -113,12 +113,12 @@
     {
       "path": "extractor/native/domain_registry.json",
       "role": "schedulable domain roster and status",
-      "sha256": "df229f7c2d25b295fec28fe7c9458d9f73469433ca7d6860027a6e77f22a5603"
+      "sha256": "81703a0b96c11199877057f3fa7b8d8eef31d5d6d0e3c19499623f8965439ec9"
     },
     {
       "path": "extractor/native/compact_contract/src/build_profile.rs",
       "role": "pinned RVAs, layouts, and build gates",
-      "sha256": "502a63005f033008ce0d8b4f75ab0402aeb3bec538fb07b9348b63e3df88fa17"
+      "sha256": "7e143b281820b8aca12053f8b08c95bf64bd5c468dedb3301fe4f992211f9dd1"
     },
     {
       "path": "extractor/native/compact_contract/src/building_registry.rs",
@@ -128,27 +128,27 @@
     {
       "path": "extractor/native/compact_contract/src/lib.rs",
       "role": "compact schema and fail-closed interpretation",
-      "sha256": "733168fb93f8c7a5f77d6eec05269c138f65aa912e2b88dfecbb3aea364311ad"
+      "sha256": "5e38ebddd94fddd747b0601541ac9573b3203c12b5782426d05a2700e0d174a2"
     },
     {
       "path": "extractor/native/collector/src/lib.rs",
       "role": "live read and compact emission",
-      "sha256": "cb305667ed34bb0f59e719e0e18b1ee1833da0d84f7f86acaceb3c74a70439c2"
+      "sha256": "c5d825df7626827c1cdfc42170778d82dcc170f3c396d2f60ecef9d0e0b8d136"
     },
     {
       "path": "extractor/native/recorder_host/src/domain_data_authority.rs",
       "role": "domain admission and authority accounting",
-      "sha256": "00ff6b3e98176c798374d882d96a1615053a269a46a33f6d2c86e94108cca647"
+      "sha256": "750d79b9aee0a65b699f32505c2346ee057958ad42ae19ce2b2962316534aa90"
     },
     {
       "path": "extractor/native/recorder_host/src/world_fold.rs",
       "role": "authoritative replay world folds",
-      "sha256": "4100cbc55af54fcd5e3a1e334b889ab9c7d5dffca0738d95a11236f2259594ab"
+      "sha256": "2c90031cc4468cb166f5c65882bfd82f1f6c2c709d4cb1ebc657354c90efd252"
     },
     {
       "path": "extractor/native/recorder_host/src/main.rs",
       "role": "recorder gate and production composition",
-      "sha256": "02703ba80b0a7f162699a3b630f05d5ea6259b45d5da56423483a1bb3ca44f42"
+      "sha256": "59f7ed73a5aac44a93ad1673a4a1530aa3e981db747f8dab2a16c0a587173047"
     }
   ],
   "residuals": [],

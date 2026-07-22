@@ -16,6 +16,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use serde::Serialize;
 
 use crate::convoy_terminal_attribution::{
     activation_blockers, capture_candidate, prepare_a729_hook, A729PreCollapseRegisters,
@@ -135,7 +136,7 @@ pub struct ConvoyTerminalValidatedEvent {
     pub d70: D70MutationProof,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ConvoyTerminalHookTelemetry {
     pub callbacks_seen: u64,
     pub original_calls: u64,
@@ -165,7 +166,7 @@ pub struct ConvoyTerminalDrain {
     pub resolver: ResolverPublicationReceipt,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ConvoyTerminalHookHeartbeat {
     pub installed: bool,
     pub teardown_requested: bool,
@@ -237,22 +238,80 @@ struct InstalledState {
     patch_restored: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct D70Identity {
-    month: i32,
-    killer: u32,
-    owner: u32,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct HConvoyD70Identity {
+    pub month_raw: i32,
+    pub killer_tag_db_id: u32,
+    pub owner_tag_db_id: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct D70Row {
-    identity: D70Identity,
-    count: u32,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct HConvoyD70Row {
+    #[serde(flatten)]
+    pub identity: HConvoyD70Identity,
+    pub count: u32,
 }
 
 struct PreObservation {
     carrier: ConvoyTerminalAttributionCarrier,
-    d70: Vec<D70Row>,
+    d70: Vec<HConvoyD70Row>,
+    raw: HConvoyPositiveRawObservation,
+}
+
+/// Pointer-bearing, process-local custody retained only for the isolated
+/// H-CONVOY fixture.  The acquisition owner serializes these windows into
+/// hashed raw-role files; CTA1/CTA2 remain pointer-free.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct HConvoyRouteRawObservation {
+    pub client_id: u32,
+    pub client_type_tag: u32,
+    pub producer_kind: u8,
+    pub source_kind: u8,
+    pub destination_kind: u8,
+    pub source_id: u32,
+    pub destination_id: u32,
+    pub reference_registry: usize,
+    pub reference_slot: usize,
+    pub route_object: usize,
+    pub route_slot_bytes: Vec<u8>,
+    pub route_object_bytes: Vec<u8>,
+    pub source_endpoint_object: usize,
+    pub destination_endpoint_object: usize,
+    pub source_endpoint_bytes: Vec<u8>,
+    pub destination_endpoint_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct HConvoyPositiveRawObservation {
+    pub module_base: usize,
+    pub context_bytes: Vec<u8>,
+    pub game_hour_raw: i32,
+    pub rcx: usize,
+    pub edx: u32,
+    pub r8: usize,
+    pub r9: usize,
+    pub r12: usize,
+    pub r15: usize,
+    pub killer_tag_db_id: u32,
+    pub member_bytes: Vec<u8>,
+    pub combat_id: u32,
+    pub combat_generation: u64,
+    pub route: HConvoyRouteRawObservation,
+    pub d70_before: Vec<HConvoyD70Row>,
+    pub d70_after: Vec<HConvoyD70Row>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct HConvoyControlRawObservation {
+    pub game_hour_raw: i32,
+    pub member_address: usize,
+    pub member_bytes: Vec<u8>,
+    pub combat_id: u32,
+    pub combat_generation: u64,
+    pub route: HConvoyRouteRawObservation,
+    pub d70: Vec<HConvoyD70Row>,
+    pub heartbeat: ConvoyTerminalHookHeartbeat,
+    pub heartbeat_sequence: u64,
 }
 
 struct ProcessMemory;
@@ -290,6 +349,125 @@ pub fn read_live_a729_client_route(
     read_exact_a729_client_route(&ProcessMemory, module_base, client)
 }
 
+fn read_exact_bytes(memory: &ProcessMemory, address: usize, len: usize) -> Option<Vec<u8>> {
+    let mut bytes = vec![0u8; len];
+    memory.read_exact(address, &mut bytes).then_some(bytes)
+}
+
+fn capture_route_raw(
+    memory: &ProcessMemory,
+    module_base: usize,
+    client: crate::convoy_terminal_attribution::EntityHandle,
+) -> Option<HConvoyRouteRawObservation> {
+    let read = read_exact_a729_client_route(memory, module_base, client).ok()?;
+    let route_object_len = match read.resolution.producer_kind {
+        crate::convoy_terminal_attribution::RouteProducerKind::NavalTransport => 0x58,
+        crate::convoy_terminal_attribution::RouteProducerKind::LendLease => 0xD8,
+        crate::convoy_terminal_attribution::RouteProducerKind::Export => return None,
+    };
+    let route_slot_bytes = read_exact_bytes(memory, read.reference_slot, 24)?;
+    let route_object_bytes = read_exact_bytes(memory, read.route_object, route_object_len)?;
+    let (source_endpoint_bytes, destination_endpoint_bytes) =
+        if read.resolution.producer_kind
+            == crate::convoy_terminal_attribution::RouteProducerKind::LendLease
+        {
+            (
+                read_exact_bytes(memory, read.source_endpoint_object, 0x5C)?,
+                read_exact_bytes(memory, read.destination_endpoint_object, 0x5C)?,
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+    Some(HConvoyRouteRawObservation {
+        client_id: client.id,
+        client_type_tag: client.type_tag,
+        producer_kind: read.resolution.producer_kind as u8,
+        source_kind: read.resolution.source.kind as u8,
+        destination_kind: read.resolution.destination.kind as u8,
+        source_id: read.resolution.source.id,
+        destination_id: read.resolution.destination.id,
+        reference_registry: read.reference_registry,
+        reference_slot: read.reference_slot,
+        route_object: read.route_object,
+        route_slot_bytes,
+        route_object_bytes,
+        source_endpoint_object: read.source_endpoint_object,
+        destination_endpoint_object: read.destination_endpoint_object,
+        source_endpoint_bytes,
+        destination_endpoint_bytes,
+    })
+}
+
+/// Publish the validated game-state root used by the collector's clean
+/// d49/d50 walk.  It is usable only while the evidence environment gate is
+/// armed and its hour agrees with the immutable resolver receipt.
+pub fn publish_h_convoy_evidence_game_state(game_state: usize, game_hour_raw: i32) {
+    if convoy_terminal_evidence_activation_enabled() && game_state != 0 {
+        EVIDENCE_GAME_STATE.store(game_state, Ordering::Release);
+        EVIDENCE_GAME_HOUR.store(game_hour_raw as u32 as u64, Ordering::Release);
+    }
+}
+
+/// Capture one no-loss boundary without invoking engine code.  The requested
+/// client must have exactly one active d49/d50 member in the current immutable
+/// resolver epoch.
+pub fn capture_h_convoy_control_raw(
+    client: crate::convoy_terminal_attribution::EntityHandle,
+) -> Result<HConvoyControlRawObservation, String> {
+    if !convoy_terminal_evidence_activation_enabled() || !convoy_terminal_hook_installed() {
+        return Err("H-CONVOY control snapshot is not armed".into());
+    }
+    let game_state = EVIDENCE_GAME_STATE.load(Ordering::Acquire);
+    let hour = EVIDENCE_GAME_HOUR.load(Ordering::Acquire) as u32 as i32;
+    let resolver = current_convoy_terminal_publication_receipt()
+        .map_err(|error| format!("H-CONVOY resolver receipt unavailable: {error}"))?;
+    if game_state == 0 || resolver.game_hour_raw != hour || resolver.publication_sequence == 0 {
+        return Err("H-CONVOY game-state/resolver boundary is stale".into());
+    }
+    let memory = ProcessMemory;
+    let module_base = MODULE_BASE.load(Ordering::Acquire);
+    let snapshot = try_current_convoy_terminal_resolver_snapshot()
+        .ok_or("H-CONVOY resolver snapshot is unavailable")?;
+    let route = capture_route_raw(&memory, module_base, client)
+        .ok_or("H-CONVOY route raw window is unavailable")?;
+    let mut selected = None;
+    for (member, epoch) in snapshot.evidence_member_epochs() {
+        let Some(observed) = memory.handle(member.checked_add(crate::convoy_terminal_attribution::CFEX_MEMBER_CLIENT_HANDLE_OFF)
+            .ok_or("H-CONVOY member address overflow")?) else { continue; };
+        if observed == client {
+            if selected.is_some() {
+                return Err("H-CONVOY client maps to multiple active combat members".into());
+            }
+            selected = Some((member, epoch));
+        }
+    }
+    let (member_address, epoch) = selected.ok_or("H-CONVOY client lacks an active combat member")?;
+    let member_bytes = read_exact_bytes(&memory, member_address, 0x124)
+        .ok_or("H-CONVOY member raw window is unreadable")?;
+    let d70 = read_d70(&memory, module_base, game_state)
+        .ok_or("H-CONVOY D70 vector is unreadable")?;
+    Ok(HConvoyControlRawObservation {
+        game_hour_raw: hour,
+        member_address,
+        member_bytes,
+        combat_id: epoch.combat_id,
+        combat_generation: epoch.generation,
+        route,
+        d70,
+        heartbeat: convoy_terminal_hook_heartbeat(),
+        heartbeat_sequence: EVIDENCE_HEARTBEAT_SEQUENCE.fetch_add(1, Ordering::AcqRel),
+    })
+}
+
+pub fn take_h_convoy_positive_raw() -> Result<HConvoyPositiveRawObservation, String> {
+    POSITIVE_RAW_OBSERVATION
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .map_err(|_| "H-CONVOY positive raw observation slot poisoned".to_string())?
+        .take()
+        .ok_or_else(|| "H-CONVOY positive raw observation is absent".to_string())
+}
+
 macro_rules! counters {
     ($($name:ident),+ $(,)?) => { $(static $name: AtomicU64 = AtomicU64::new(0);)+ };
 }
@@ -321,6 +499,10 @@ static ORIGINAL_TARGET: AtomicUsize = AtomicUsize::new(0);
 static PRODUCER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static INSTALL_STATE: Mutex<Option<InstalledState>> = Mutex::new(None);
 static EVENT_QUEUE: OnceLock<Mutex<VecDeque<ConvoyTerminalValidatedEvent>>> = OnceLock::new();
+static POSITIVE_RAW_OBSERVATION: OnceLock<Mutex<Option<HConvoyPositiveRawObservation>>> = OnceLock::new();
+static EVIDENCE_GAME_STATE: AtomicUsize = AtomicUsize::new(0);
+static EVIDENCE_GAME_HOUR: AtomicU64 = AtomicU64::new(0);
+static EVIDENCE_HEARTBEAT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
     static IN_CALLBACK: Cell<bool> = const { Cell::new(false) };
@@ -539,6 +721,10 @@ fn reset_observer_state_for_install() {
     if let Some(queue) = EVENT_QUEUE.get() {
         queue.lock().unwrap_or_else(|poison| poison.into_inner()).clear();
     }
+    if let Some(slot) = POSITIVE_RAW_OBSERVATION.get() {
+        *slot.lock().unwrap_or_else(|poison| poison.into_inner()) = None;
+    }
+    EVIDENCE_HEARTBEAT_SEQUENCE.store(1, Ordering::Release);
 }
 
 unsafe extern "system" fn convoy_terminal_hook(
@@ -637,6 +823,34 @@ fn prepare_observation(
             return None;
         }
     };
+    let mut context_bytes = vec![0u8; crate::convoy_terminal_attribution::A729_CONTEXT_BYTES.len()];
+    if !memory.read_exact(
+        module_base.checked_add(crate::convoy_terminal_attribution::A729_CONTEXT_RVA)?,
+        &mut context_bytes,
+    ) || context_bytes != crate::convoy_terminal_attribution::A729_CONTEXT_BYTES
+    {
+        DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
+        return None;
+    }
+    let member_bytes = match read_exact_bytes(&memory, member, 0x124) {
+        Some(bytes) => bytes,
+        None => {
+            DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+    };
+    let route = match capture_route_raw(&memory, module_base, carrier.client) {
+        Some(route)
+            if route.producer_kind == carrier.route.producer_kind as u8
+                && route.source_kind == carrier.route.source.kind as u8
+                && route.destination_kind == carrier.route.destination.kind as u8
+                && route.source_id == carrier.route.source.id
+                && route.destination_id == carrier.route.destination.id => route,
+        _ => {
+            DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+    };
     let d70 = match read_d70(&memory, module_base, game_state) {
         Some(rows) => rows,
         None => {
@@ -644,7 +858,25 @@ fn prepare_observation(
             return None;
         }
     };
-    Some(PreObservation { carrier, d70 })
+    let raw = HConvoyPositiveRawObservation {
+        module_base,
+        context_bytes,
+        game_hour_raw: hour,
+        rcx: registers.rcx_game_state,
+        edx: registers.edx_count,
+        r8: registers.r8_killer_country_ref,
+        r9: registers.r9_owner_country_ref,
+        r12: registers.r12_member,
+        r15: registers.r15_killer_country_ref,
+        killer_tag_db_id: carrier.killer_tag_db_id,
+        member_bytes,
+        combat_id: carrier.combat.combat_id,
+        combat_generation: carrier.combat.generation,
+        route,
+        d70_before: d70.clone(),
+        d70_after: Vec::new(),
+    };
+    Some(PreObservation { carrier, d70, raw })
 }
 
 fn complete_observation(game_state: usize, pre: PreObservation) {
@@ -671,6 +903,21 @@ fn complete_observation(game_state: usize, pre: PreObservation) {
         DROP_D70_MUTATION.fetch_add(1, Ordering::Relaxed);
         return;
     };
+    let mut raw = pre.raw;
+    raw.d70_after = after;
+    let Ok(mut slot) = POSITIVE_RAW_OBSERVATION
+        .get_or_init(|| Mutex::new(None))
+        .try_lock()
+    else {
+        DROP_QUEUE_BUSY.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    if slot.is_some() {
+        DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    *slot = Some(raw);
+    drop(slot);
     enqueue(ConvoyTerminalValidatedEvent {
         carrier: pre.carrier,
         d70,
@@ -691,7 +938,7 @@ fn enqueue(event: ConvoyTerminalValidatedEvent) {
     EVENTS_EMITTED.fetch_add(1, Ordering::Relaxed);
 }
 
-fn read_d70(memory: &ProcessMemory, module_base: usize, game_state: usize) -> Option<Vec<D70Row>> {
+fn read_d70(memory: &ProcessMemory, module_base: usize, game_state: usize) -> Option<Vec<HConvoyD70Row>> {
     if module_base == 0 || game_state == 0 {
         return None;
     }
@@ -717,11 +964,11 @@ fn read_d70(memory: &ProcessMemory, module_base: usize, game_state: usize) -> Op
             return None;
         }
         let fields = || {
-            Some(D70Row {
-                identity: D70Identity {
-                    month: read_i32(memory, object.checked_add(0x08)?)?,
-                    killer: memory.u32(object.checked_add(0x10)?)?,
-                    owner: memory.u32(object.checked_add(0x14)?)?,
+            Some(HConvoyD70Row {
+                identity: HConvoyD70Identity {
+                    month_raw: read_i32(memory, object.checked_add(0x08)?)?,
+                    killer_tag_db_id: memory.u32(object.checked_add(0x10)?)?,
+                    owner_tag_db_id: memory.u32(object.checked_add(0x14)?)?,
                 },
                 count: memory.u32(object.checked_add(0x0C)?)?,
             })
@@ -730,10 +977,10 @@ fn read_d70(memory: &ProcessMemory, module_base: usize, game_state: usize) -> Op
         if fields()? != row
             || row.count == 0
             || row.count > MAX_CONVOYS_PER_D70_ROW
-            || row.identity.killer == 0
-            || row.identity.killer > MAX_COUNTRY_TAG_DB_ID
-            || row.identity.owner == 0
-            || row.identity.owner > MAX_COUNTRY_TAG_DB_ID
+            || row.identity.killer_tag_db_id == 0
+            || row.identity.killer_tag_db_id > MAX_COUNTRY_TAG_DB_ID
+            || row.identity.owner_tag_db_id == 0
+            || row.identity.owner_tag_db_id > MAX_COUNTRY_TAG_DB_ID
             || !identities.insert(row.identity)
         {
             return None;
@@ -744,8 +991,8 @@ fn read_d70(memory: &ProcessMemory, module_base: usize, game_state: usize) -> Op
 }
 
 fn prove_d70_mutation(
-    before: &[D70Row],
-    after: &[D70Row],
+    before: &[HConvoyD70Row],
+    after: &[HConvoyD70Row],
     owner: u32,
     killer: u32,
 ) -> Option<D70MutationProof> {
@@ -757,8 +1004,8 @@ fn prove_d70_mutation(
             }
             if changed.is_some()
                 || old.identity != new.identity
-                || old.identity.owner != owner
-                || old.identity.killer != killer
+                || old.identity.owner_tag_db_id != owner
+                || old.identity.killer_tag_db_id != killer
                 || new.count != old.count.checked_add(1)?
             {
                 return None;
@@ -781,7 +1028,7 @@ fn prove_d70_mutation(
         return None;
     }
     let appended = after.last()?;
-    if appended.identity.owner != owner || appended.identity.killer != killer || appended.count != 1 {
+    if appended.identity.owner_tag_db_id != owner || appended.identity.killer_tag_db_id != killer || appended.count != 1 {
         return None;
     }
     Some(D70MutationProof {
@@ -968,6 +1215,8 @@ fn finalize_convoy_terminal_uninstall(
     }
     ORIGINAL_TARGET.store(0, Ordering::Release);
     MODULE_BASE.store(0, Ordering::Release);
+    EVIDENCE_GAME_STATE.store(0, Ordering::Release);
+    EVIDENCE_GAME_HOUR.store(0, Ordering::Release);
     *INSTALL_STATE.lock().unwrap_or_else(|poison| poison.into_inner()) = None;
     TEARDOWN.store(false, Ordering::Release);
     Ok(())

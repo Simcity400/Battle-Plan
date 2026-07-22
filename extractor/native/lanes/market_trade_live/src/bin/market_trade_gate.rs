@@ -7,6 +7,7 @@ fn main() {
     let mut args = env::args().skip(1);
     let mut stream_path = None;
     let mut min_game_hours = 1usize;
+    let mut require_x15_activation_transition = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--stream" => stream_path = args.next(),
@@ -19,6 +20,9 @@ fn main() {
                     eprintln!("invalid --min-game-hours {value:?}: {err}");
                     process::exit(2);
                 });
+            }
+            "--require-x15-activation-transition" => {
+                require_x15_activation_transition = true;
             }
             "-h" | "--help" => {
                 print_usage();
@@ -40,7 +44,13 @@ fn main() {
         process::exit(2);
     });
     let gate = gate_compact_stream(&raw, min_game_hours);
-    println!("ok={}", gate.ok);
+    let x15_activation_ok = !require_x15_activation_transition
+        || (gate.summary.activation_saw_closed_before_active
+            && gate.summary.activation_saw_active_after_closed
+            && gate.summary.activation_saw_closed_after_active
+            && gate.summary.activation_state_transitions >= 2
+            && gate.summary.activation_sequence_errors.is_empty());
+    println!("ok={}", gate.ok && x15_activation_ok);
     println!("problems={:?}", gate.problems);
     println!("domain_data_records={}", gate.summary.domain_data_records);
     println!("unique_game_hours={}", gate.summary.unique_game_hours);
@@ -82,6 +92,32 @@ fn main() {
         gate.summary.residual_shared_patch_blocked_rows_total
     );
     println!("detail_rows_total={}", gate.summary.detail_rows_total);
+    println!(
+        "activation_records={}",
+        gate.summary.activation_records
+    );
+    println!(
+        "activation_active_records={}",
+        gate.summary.activation_active_records
+    );
+    println!(
+        "activation_closed_records={}",
+        gate.summary.activation_closed_records
+    );
+    println!(
+        "activation_state_transitions={}",
+        gate.summary.activation_state_transitions
+    );
+    println!(
+        "activation_closed_active_closed={}",
+        gate.summary.activation_saw_closed_before_active
+            && gate.summary.activation_saw_active_after_closed
+            && gate.summary.activation_saw_closed_after_active
+    );
+    println!(
+        "activation_sequence_errors={:?}",
+        gate.summary.activation_sequence_errors
+    );
     println!(
         "detail_price_valid_rows_total={}",
         gate.summary.detail_price_valid_rows_total
@@ -139,9 +175,9 @@ fn main() {
         gate.summary.lend_lease_price_valid_rows_total
     );
     println!("parse_errors={:?}", gate.summary.parse_errors);
-    process::exit(if gate.ok { 0 } else { 1 });
+    process::exit(if gate.ok && x15_activation_ok { 0 } else { 1 });
 }
 
 fn print_usage() {
-    eprintln!("usage: market_trade_gate --stream <collector_stream.bin> [--min-game-hours <n>]");
+    eprintln!("usage: market_trade_gate --stream <collector_stream.bin> [--min-game-hours <n>] [--require-x15-activation-transition]");
 }

@@ -273,9 +273,9 @@ pub(crate) fn cosmetic_tags_1936_from_history_files(
 /// `CAN - Canada.txt` → CAN_UK "Canada"/rgb 119,48,39 WITH Together for
 /// Victory, CAN_ALY WITHOUT; `COG - Congo.txt` → COG_belgian_congo WITH
 /// Gotterdammerung). This is the files-grounded answer to the user's
-/// no-DLC-compatibility requirement; the replay resolves it against the
-/// recording's DLC set (default: all DLC present — the common case + the
-/// frame4700 byte target).
+/// no-DLC-compatibility requirement. Production replay resolution is bound to
+/// `SessionMetadataView.active_dlcs` by `map_furniture`; static bundle baking
+/// passes an explicit all-DLC predicate for the frame4700 byte target.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConditionalCosmetic {
     /// The cosmetic tag applied when the condition holds.

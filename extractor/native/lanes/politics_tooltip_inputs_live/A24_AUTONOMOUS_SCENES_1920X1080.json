@@ -1,0 +1,76 @@
+{
+  "schema": "hoi4.a24.autonomous-politics-scenes.v1",
+  "authority": {
+    "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "save_sha256": "c8488b05a3b87c718eeff979976537b79e867634d0b4dccb1eef6c5a45362735",
+    "initial_game_hour_raw": 60830441,
+    "country_tag": "D04",
+    "country_handle": 368,
+    "client_size": [1920, 1080]
+  },
+  "policy": {
+    "ui_settle_milliseconds": 850,
+    "tooltip_dwell_milliseconds": 1800,
+    "present_dwell_milliseconds": 1200,
+    "advance_exactly_one_hour_between_scenes": true,
+    "restore_paused": true,
+    "coordinate_provenance": "authenticated D04 1920x1080 politics capture a37_matrix_20260722_062222 plus installed country_politics_view.gui geometry"
+  },
+  "scenes": [
+    {
+      "id": "S01_EVALUATED_REASON_TREE",
+      "line_kind": "evaluated_trigger_result_and_reason_tree",
+      "actions": [
+        {"kind": "click", "x": 45, "y": 45, "label": "open_politics"},
+        {"kind": "wheel", "x": 930, "y": 1040, "delta": -720, "label": "scroll_to_cabinet"},
+        {"kind": "hover_sweep", "points": [[390, 890], [560, 890], [730, 890], [900, 890], [390, 970], [560, 970], [730, 970], [900, 970]], "label": "disabled_and_available_advisor_rows"},
+        {"kind": "click", "x": 390, "y": 960, "label": "open_advisor_or_law_selection"},
+        {"kind": "hover_sweep", "points": [[1160, 260], [1430, 260], [1700, 260], [1160, 410], [1430, 410], [1700, 410], [1160, 560], [1430, 560], [1700, 560], [1160, 710], [1430, 710], [1700, 710]], "label": "selection_reason_tree_rows"}
+      ]
+    },
+    {
+      "id": "S02_EFFECTIVE_COST",
+      "line_kind": "effective_hire_or_removal_cost",
+      "actions": [
+        {"kind": "hover_sweep", "points": [[1160, 260], [1430, 260], [1700, 260], [1160, 410], [1430, 410], [1700, 410], [1160, 560], [1430, 560], [1700, 560], [1160, 710], [1430, 710], [1700, 710]], "label": "selection_cost_and_affordability_rows"}
+      ]
+    },
+    {
+      "id": "S03_AGGREGATED_CONDITIONAL_MODIFIER",
+      "line_kind": "aggregated_conditional_modifier",
+      "actions": [
+        {"kind": "key", "virtual_key": 27, "scan_code": 1, "label": "close_selection_window"},
+        {"kind": "wheel", "x": 930, "y": 1040, "delta": 1440, "label": "return_to_politics_header"},
+        {"kind": "hover_sweep", "points": [[397, 530], [465, 530], [532, 530], [600, 530], [665, 530], [730, 530], [797, 530], [864, 530], [932, 530], [998, 530], [397, 610]], "label": "national_spirit_modifier_rows"}
+      ]
+    },
+    {
+      "id": "S04_ADVISOR_SLOT_STATE",
+      "line_kind": "advisor_slot_capacity_vacancy_eligibility_and_disabled_reason",
+      "actions": [
+        {"kind": "wheel", "x": 930, "y": 1040, "delta": -1080, "label": "scroll_to_laws_and_cabinet"},
+        {"kind": "hover_sweep", "points": [[360, 720], [540, 720], [720, 720], [900, 720], [360, 810], [540, 810], [720, 810], [900, 810], [360, 900], [540, 900], [720, 900], [900, 900], [360, 990], [540, 990], [720, 990], [900, 990]], "label": "slot_capacity_vacancy_matrix"},
+        {"kind": "click", "x": 390, "y": 960, "label": "open_slot_selection"},
+        {"kind": "hover_sweep", "points": [[1160, 260], [1430, 260], [1700, 260], [1160, 410], [1430, 410], [1700, 410]], "label": "slot_eligibility_rows"}
+      ]
+    },
+    {
+      "id": "S05_TIMED_DYNAMIC_MODIFIER",
+      "line_kind": "timed_dynamic_modifier_value_source_and_expiry",
+      "actions": [
+        {"kind": "key", "virtual_key": 27, "scan_code": 1, "label": "close_slot_selection"},
+        {"kind": "wheel", "x": 930, "y": 1040, "delta": 1800, "label": "return_to_national_spirits"},
+        {"kind": "hover_sweep", "points": [[397, 530], [465, 530], [532, 530], [600, 530], [665, 530], [730, 530], [797, 530], [864, 530], [932, 530], [998, 530], [397, 610]], "label": "timed_spirit_expiry_rows"}
+      ]
+    },
+    {
+      "id": "S06_DISPLAYED_PARTY_POPULARITY_CHANGE",
+      "line_kind": "displayed_party_popularity_change_source",
+      "actions": [
+        {"kind": "wheel", "x": 930, "y": 1040, "delta": 1800, "label": "pin_politics_header"},
+        {"kind": "hover_sweep", "points": [[575, 810], [690, 780], [690, 812], [690, 844], [690, 876], [875, 780], [875, 812], [875, 844], [875, 876]], "label": "party_popularity_and_why_rows"},
+        {"kind": "hover", "x": 580, "y": 825, "label": "popularity_chart_final_present"}
+      ]
+    }
+  ]
+}

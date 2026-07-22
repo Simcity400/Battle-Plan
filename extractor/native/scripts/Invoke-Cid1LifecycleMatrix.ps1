@@ -7,6 +7,7 @@ param(
     [string]$OutputRoot = 'C:\hoi4_evidence\cid1_lifecycle_matrix',
     [string]$ContractPath = 'extractor\re_evidence\CID1_LIFECYCLE_MATRIX_V1\matrix_contract.json',
     [string]$ActionDriverPath,
+    [string]$OwnerProfilePath,
     [string[]]$EndpointDescriptorPaths = @(),
     [string]$MatrixReceiptPath,
     [string]$GateOutPath,
@@ -19,7 +20,7 @@ $ErrorActionPreference = 'Stop'
 $PinnedExeSha256 = '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad'
 $ContractSchema = 'battle-plan.campaign_identity_matrix_contract.v1'
 $PlanSchema = 'battle-plan.campaign_identity_matrix_plan.v1'
-$RequestSchema = 'battle-plan.campaign_identity_sd_arm_request.v1'
+$RequestSchema = 'battle-plan.campaign_identity_sd_arm_request.v2'
 $SDArms = @('S1','S2','S3','S4','D1','D2')
 $AllArms = @('S1','S2','S3','S4','D1','D2','M1','M2','M3')
 
@@ -100,19 +101,31 @@ if ($Mode -eq 'RunSDArm') {
     if (-not $AllowLiveLifecycleActions) {
         throw 'Live lifecycle actions are fail-closed. Pass -AllowLiveLifecycleActions only in an owner-authorized isolated run.'
     }
-    if ([string]::IsNullOrWhiteSpace($ActionDriverPath) -or -not (Test-Path -LiteralPath $ActionDriverPath -PathType Leaf)) {
+    if ([string]::IsNullOrWhiteSpace($ActionDriverPath)) {
+        $ActionDriverPath = Join-Path $PSScriptRoot 'Invoke-Cid1SdActionDriver.ps1'
+    }
+    if (-not (Test-Path -LiteralPath $ActionDriverPath -PathType Leaf)) {
         throw 'A real owner action driver is required; the orchestrator never fabricates game actions.'
     }
-    if ($EndpointDescriptorPaths.Count -ne 2) {
-        throw 'Every S/D arm requires exactly two real endpoint descriptor paths.'
-    }
-    $resolvedDescriptors = @()
-    foreach ($descriptor in $EndpointDescriptorPaths) {
-        $resolvedDescriptors += (Resolve-Path -LiteralPath $descriptor).Path
+    if ([string]::IsNullOrWhiteSpace($OwnerProfilePath) -or -not (Test-Path -LiteralPath $OwnerProfilePath -PathType Leaf)) {
+        throw 'RunSDArm requires a content-addressed autonomous owner profile.'
     }
     $driver = (Resolve-Path -LiteralPath $ActionDriverPath).Path
     $armRoot = Join-Path $resolvedOutput $Arm
     [System.IO.Directory]::CreateDirectory($armRoot) | Out-Null
+    $expectedRoles = @($contract.arms.$Arm.roles)
+    if ($EndpointDescriptorPaths.Count -eq 0) {
+        $EndpointDescriptorPaths = @($expectedRoles | ForEach-Object { Join-Path $armRoot ("endpoint_$_\endpoint_descriptor.json") })
+    }
+    if ($EndpointDescriptorPaths.Count -ne 2) {
+        throw 'Every S/D arm requires exactly two endpoint descriptor targets.'
+    }
+    $resolvedDescriptors = @()
+    foreach ($descriptor in $EndpointDescriptorPaths) {
+        $target = [IO.Path]::GetFullPath($descriptor)
+        if (Test-Path -LiteralPath $target) { throw "Refusing to reuse endpoint descriptor target: $target" }
+        $resolvedDescriptors += $target
+    }
     $requestPath = Join-Path $armRoot 'arm_request.json'
     $receiptPath = Join-Path $armRoot 'arm_action_receipt.json'
     $request = [ordered]@{
@@ -125,6 +138,8 @@ if ($Mode -eq 'RunSDArm') {
         contract_sha256 = $contractSha256
         action_driver_path = $driver
         action_driver_sha256 = Get-Sha256 $driver
+        owner_profile_path = (Resolve-Path -LiteralPath $OwnerProfilePath).Path
+        owner_profile_sha256 = Get-Sha256 $OwnerProfilePath
         endpoint_descriptor_paths = $resolvedDescriptors
         output_root = $armRoot
     }
@@ -138,11 +153,33 @@ if ($Mode -eq 'RunSDArm') {
     if ($receipt.schema -ne 'battle-plan.campaign_identity_arm_action_receipt.v1' -or $receipt.arm -ne $Arm -or $receipt.status -ne 'passed') {
         throw "CID1 $Arm action receipt is not a passing exact receipt."
     }
+    foreach ($descriptor in $resolvedDescriptors) {
+        if (-not (Test-Path -LiteralPath $descriptor -PathType Leaf)) { throw "CID1 $Arm driver omitted endpoint descriptor: $descriptor" }
+    }
+    $plan.arms.$Arm.state = 'complete'
+    $plan.arms.$Arm.endpoint_descriptor_paths = $resolvedDescriptors
+    $plan.arms.$Arm.action_receipt_path = $receiptPath
+    $plan.arms.$Arm.reason = $null
+    Write-AtomicJson $planPath $plan
     Write-Output $receiptPath
     return
 }
 
-if ([string]::IsNullOrWhiteSpace($MatrixReceiptPath) -or -not (Test-Path -LiteralPath $MatrixReceiptPath -PathType Leaf)) {
+if ([string]::IsNullOrWhiteSpace($MatrixReceiptPath)) {
+    $MatrixReceiptPath = Join-Path $resolvedOutput 'matrix_receipt.json'
+    if (Test-Path -LiteralPath $MatrixReceiptPath) { throw "Refusing to replace matrix receipt: $MatrixReceiptPath" }
+    $matrixArms = [ordered]@{}
+    foreach ($name in $AllArms) {
+        $state = $plan.arms.$name
+        if ($state.state -ne 'complete' -or [string]::IsNullOrWhiteSpace([string]$state.action_receipt_path) -or @($state.endpoint_descriptor_paths).Count -ne 2) {
+            throw "Finalize requires completed real endpoint/action receipts for arm $name."
+        }
+        $endpoints = @($state.endpoint_descriptor_paths | ForEach-Object { Get-Content -LiteralPath $_ -Raw | ConvertFrom-Json })
+        $matrixArms[$name] = [ordered]@{status='complete';action_receipt_path=[string]$state.action_receipt_path;action_receipt_sha256=Get-Sha256 ([string]$state.action_receipt_path);endpoints=$endpoints}
+    }
+    Write-AtomicJson $MatrixReceiptPath ([ordered]@{schema='battle-plan.campaign_identity_matrix_receipt.v1';contract_path=$resolvedContract;contract_sha256=$contractSha256;created_filetime_utc=[DateTime]::UtcNow.ToFileTimeUtc();arms=$matrixArms})
+}
+if (-not (Test-Path -LiteralPath $MatrixReceiptPath -PathType Leaf)) {
     throw 'Finalize requires a complete matrix receipt assembled from nine real arm receipts.'
 }
 if ([string]::IsNullOrWhiteSpace($GateOutPath)) {

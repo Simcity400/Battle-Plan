@@ -13,11 +13,12 @@ It must not be read as saying that every row needs a person: after Wave 6, many
 rows are autonomous early-launch, build/injection, or replay-pair runs. A row is
 never a request to guess a value; its verifier derives the value mechanically.
 
-Reconciled 2026-07-20 and refreshed for Wave5: the canonical machine register
-now has 43 external-input
-rows covered exactly once by 16 deduplicated owner/runner execution bundles,
-plus 12 product decisions and the non-human residual dispositions. The final
-reconciliation is
+Reconciled through the 2026-07-22 post-landing refreeze: the canonical machine
+register now has 55 implementation-ready autonomous acquisition rows, zero
+runtime-admitted receipts, zero user-action or unresolved-engineering rows, and
+12 separate product decisions. H-AIR is retired outside the canonical set. CID1
+M3's second physical machine is the sole separately listed genuine external
+dependency. The historical execution-bundle grouping remains in
 `dossiers/WAVE4_PROVISIONAL_HUMAN_INPUT_RECONCILIATION_20260720.json`; its
 filename is retained for link stability. Root-owned Wave4 validation is now
 complete: centralized Final/All and Release/All both passed with exit zero,
@@ -106,7 +107,7 @@ fail-closed verifier is not human semantic input.
 | H-X2-PANEL | One active land battle kept selected through a both-side combat-detail refresh | Exercise the already-active exact game materializer carrier. Require positive capture sequence, exact leader or exact-none status, canonical unique engine modifier order, simultaneous D55 combat generation/side binding, pointer-free fold, and independent replay regrade; screenshots and inferred side flags are rejected. |
 | H-A33-SUNK | One disposable exact-a729 empty-history run in which the operator causes one naval sink | The automated probe must retain a complete baseline, same-thread D49 member epoch, SHP1 history, zero-loss receipt, fold/replay parity, and independent regrade. |
 | H-B7 | One bounded read-only inspection of the paused D04 raid-system heap at `1944.2.11.18` | Authenticate exact parent/child identity, engine ordering, state and dummy classification against the retained oracle. Only an independently regraded `ACCEPTED_EXACT_440_PARENTS_167_CHILDREN` receipt may authorize a later d91 scheduling patch. |
-| H-AIR | Paused active air combat | An exhaustive 33-melt, 1.777-GB census contains no serialized active-air-combat block. |
+| H-AIR | **RETIRED / CLOSED SCHEMA** | Exact A4/A21 writer, serializer, and consumer authority proves the durable region/date/wing aggregate and typed damage causes, with no persistent tactical combat id or opposed-wing pairing. The 33-melt/1.777-GB negative census is supporting evidence, not a reason to demand a nonexistent serialized fixture. |
 | H-PEACE | One registered active conference lifecycle from pre-claim refresh through nonempty contest to terminal summary | Retain the loss-free raw trace and independent regrade. RE is closed negatively: allocation ids are refresh-scoped and terminal rows remain explicitly unjoined because exact-a729 exposes no allocation-result lifecycle identity. Acceptance authorizes later activation of that schema only; pointers, payload hashes, equality, and source order never manufacture a join. |
 | H-CONVOY | One convoy terminal loss plus a no-loss control using the engineered exact `0x141962378` pre-collapse hook and pinned exact-ten authority receipt | Authenticate `CFEXMember+0xD0` client resolution to live source/destination state while owner/killer/count still exist; terminal saves irreversibly discard that join. Exact-ten static custody is closed; this branched gameplay observation is the sole remaining convoy input. |
 | H-ACE | Same-tick raw-memory and save fixture for one ace lifecycle transition | Cross-authenticate alive, kill type, handled state, and save representation. |
@@ -160,12 +161,15 @@ aliases; another human transition cannot repair the missing semantic join.
 
 `H-C07-T1` and `H-C07-S1` are retired by
 `replay_interface/re_evidence/rendering_laws/C07/C07_HUMAN_INPUT_REQUIREMENTS.json`.
-The retained 4,781-cell T1 scope and the 129-frame L02/L03/W23 S1 execution
-chain are authorized and wired. A one-cell T1 discriminator and labelled
-single-caster S1 pair are optional automated/golden validation. Complete-pool
-tree replacement remains fail-closed for the other 95,275 cells pending an
-authenticated visibility/model/LOD carrier; that is non-human producer work,
-not permission to reissue `H-G1-C07`.
+The retained selected-submit T1 carrier and the 129-frame L02/L03/W23 S1
+execution chain are authorized and wired. Exact producer RE plus hash-pinned
+shipped inputs now supply all 296 immutable buckets / 99,056 cells, while the
+generic exact-a729 consumers close visibility, palette/model, squared-distance
+LOD, and ordered draws for every bucket. Production still admits per-frame
+state only from one authenticated selected submit; files-only selection remains
+fail-closed. A one-cell T1 discriminator, clean-launch buffer observation, and
+labelled single-caster S1 pair are optional automated/golden validation, not
+human RE and not permission to reissue `H-G1-C07`.
 
 `H-A23-REWARD-HISTORY` is retired by
 `extractor/native/project_progress_live_lane/SPECIAL_PROJECT_LIFECYCLE_REWARD_RE_20260719.json`.

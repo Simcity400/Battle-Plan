@@ -433,6 +433,31 @@ struct AcceptanceTestCli {
     nonce: String,
 }
 
+const PAUSED_EVIDENCE_DOMAIN_NAME: &str = "sunk_convoy_history_live";
+
+fn is_paused_evidence_domain_name(domain: &str) -> bool {
+    matches!(
+        compact_domain_registry::assigned_descriptor_by_name(domain),
+        Some(descriptor)
+            if domain == PAUSED_EVIDENCE_DOMAIN_NAME
+                && descriptor.id == COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE
+                && descriptor.wire_name == PAUSED_EVIDENCE_DOMAIN_NAME
+                && descriptor.status == compact_contract::CompactDomainStatus::Reserved
+                && !descriptor.schedulable
+                && descriptor.requires_data_record
+    )
+}
+
+fn paused_evidence_domain_authorized(acceptance_test: Option<&AcceptanceTestCli>) -> bool {
+    matches!(
+        acceptance_test,
+        Some(AcceptanceTestCli {
+            mode: AcceptanceTestMode::Paused,
+            nonce,
+        }) if is_lower_sha256(nonce)
+    )
+}
+
 #[derive(Clone, Debug)]
 struct EarlyLaunchCli {
     executable: PathBuf,
@@ -1416,7 +1441,7 @@ fn run() -> Result<(), String> {
         let raw_path = raw_path.clone();
         let pipe_session_token = pipe_token.clone();
         let stream_compression = cfg.stream_compression;
-        let proof_expected_domain_ids = compact_expected_domain_ids(&cfg.scheduled_domains);
+        let proof_expected_domain_ids = compact_expected_domain_ids_for_config(&cfg);
         let auto_attach_creation_filetime = auto_attach_worker
             .as_ref()
             .map(|context| context.expected_creation_filetime);
@@ -1985,7 +2010,7 @@ fn run() -> Result<(), String> {
                 &raw_path,
                 capture_identity_mode,
             )?;
-            let scheduled_expected_domain_ids = compact_expected_domain_ids(&cfg.scheduled_domains);
+            let scheduled_expected_domain_ids = compact_expected_domain_ids_for_config(&cfg);
             let coverage_errors =
                 compact_domain_coverage_errors(&summary, &scheduled_expected_domain_ids);
             let mut expected_domain_ids = scheduled_expected_domain_ids;
@@ -5660,6 +5685,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             )
         }
     };
+    validate_scheduled_domain_authority(&scheduled_domains, acceptance_test.as_ref())?;
     let g2_capture_intent = match g2_capture_intent_path {
         None => None,
         Some(path) => {
@@ -6252,9 +6278,28 @@ fn validate_domain(domain: &str) -> Result<(), String> {
     // missing a whole requested domain could pass its gates. Every explicit
     // domain name must resolve in the compact-domain registry, fail-closed at
     // parse time.
-    if compact_domain_registry::id_for_scheduled_name(domain).is_none() {
+    if compact_domain_registry::id_for_scheduled_name(domain).is_none()
+        && !is_paused_evidence_domain_name(domain)
+    {
         return Err(format!(
             "unknown scheduled domain {domain:?} (not in the compact-domain registry)"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_scheduled_domain_authority(
+    scheduled_domains: &[String],
+    acceptance_test: Option<&AcceptanceTestCli>,
+) -> Result<(), String> {
+    if scheduled_domains
+        .iter()
+        .any(|domain| is_paused_evidence_domain_name(domain))
+        && !paused_evidence_domain_authorized(acceptance_test)
+    {
+        return Err(format!(
+            "scheduled domain {PAUSED_EVIDENCE_DOMAIN_NAME:?} is reserved and requires \
+             --acceptance-test-mode paused with a valid paired --acceptance-test-nonce"
         ));
     }
     Ok(())
@@ -7797,7 +7842,7 @@ fn publish_rollover_package_set(
     fs::create_dir_all(&package_root)
         .map_err(|error| format!("create rollover package root failed: {error}"))?;
 
-    let expected_domain_ids = compact_expected_domain_ids(&cfg.scheduled_domains);
+    let expected_domain_ids = compact_expected_domain_ids_for_config(cfg);
     let mut published_members = Vec::with_capacity(descriptor.ordered_streams.len());
     let mut recovery_members = Vec::new();
     for (expected_id, stream) in descriptor.ordered_streams.iter().enumerate() {
@@ -13199,6 +13244,17 @@ fn compact_domain_names_from_ids(domains: &[u16]) -> Vec<String> {
 }
 
 fn compact_expected_domain_ids(scheduled_domains: &[String]) -> Vec<u16> {
+    compact_expected_domain_ids_with_authority(scheduled_domains, None)
+}
+
+fn compact_expected_domain_ids_for_config(cfg: &Config) -> Vec<u16> {
+    compact_expected_domain_ids_with_authority(&cfg.scheduled_domains, cfg.acceptance_test.as_ref())
+}
+
+fn compact_expected_domain_ids_with_authority(
+    scheduled_domains: &[String],
+    acceptance_test: Option<&AcceptanceTestCli>,
+) -> Vec<u16> {
     let mut ids = if scheduled_domains.is_empty() {
         vec![10, 11, 12, 13, 14, 15, 16, 17]
     } else {
@@ -13212,12 +13268,19 @@ fn compact_expected_domain_ids(scheduled_domains: &[String]) -> Vec<u16> {
                 // registry-validated at argument parse time; anything
                 // unresolvable reaching this point is a bug and must be loud,
                 // never a silently smaller expectation.
-                compact_domain_id(domain).unwrap_or_else(|| {
-                    panic!(
-                        "scheduled domain {domain:?} did not resolve in the \
-                         compact-domain registry (parse-time validation bypassed?)"
-                    )
-                })
+                compact_domain_id(domain)
+                    .or_else(|| {
+                        (is_paused_evidence_domain_name(domain)
+                            && paused_evidence_domain_authorized(acceptance_test))
+                        .then_some(COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE)
+                    })
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "scheduled domain {domain:?} did not resolve in the \
+                             compact-domain registry with the required scheduling \
+                             authority (parse-time validation bypassed?)"
+                        )
+                    })
             })
             .collect::<Vec<_>>()
     };
@@ -14250,8 +14313,9 @@ fn hour_latch_delivery_problems(summary: &CompactSummary) -> Vec<String> {
 /// The empty legacy schedule resolves to domains 10..=17, so it does not borrow
 /// the collector's profile-default expansion and does not require a speed gate.
 fn scheduled_roster_includes_domain57(scheduled_domains: &[String]) -> bool {
-    compact_expected_domain_ids(scheduled_domains)
-        .contains(&COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE)
+    scheduled_domains.iter().any(|domain| {
+        compact_domain_id(domain) == Some(COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE)
+    })
 }
 
 /// X12's suspended early-launch proof must install its mutation hooks before
@@ -28256,6 +28320,104 @@ mod tests {
         ))
         .unwrap_err();
         assert!(sink_without_early_launch.contains("require --early-launch-exe"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn d70_schedule_is_reserved_for_nonce_bound_paused_evidence() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan-recorder_d70_paused_authority_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        let ordinary_error = parse_args(profile_test_args(
+            &dir,
+            &[
+                "--profile",
+                "production",
+                "--scheduled-domains-exact",
+                "--scheduled-domain",
+                PAUSED_EVIDENCE_DOMAIN_NAME,
+            ],
+        ))
+        .expect_err("ordinary production must not schedule reserved d70");
+        assert!(
+            ordinary_error.contains("requires --acceptance-test-mode paused"),
+            "{ordinary_error}"
+        );
+
+        let wrong_mode_error = parse_args(profile_test_args(
+            &dir,
+            &[
+                "--profile",
+                "production",
+                "--scheduled-domains-exact",
+                "--scheduled-domain",
+                PAUSED_EVIDENCE_DOMAIN_NAME,
+                "--scheduled-domain",
+                "weather_live",
+                "--acceptance-test-mode",
+                "synthetic-fault",
+                "--acceptance-test-nonce",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ],
+        ))
+        .expect_err("a valid nonce in a non-paused mode must not authorize d70");
+        assert!(
+            wrong_mode_error.contains("requires --acceptance-test-mode paused"),
+            "{wrong_mode_error}"
+        );
+
+        let cfg = parse_args(profile_test_args(
+            &dir,
+            &[
+                "--profile",
+                "production",
+                "--scheduled-domains-exact",
+                "--scheduled-domain",
+                PAUSED_EVIDENCE_DOMAIN_NAME,
+                "--acceptance-test-mode",
+                "paused",
+                "--acceptance-test-nonce",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ],
+        ))
+        .expect("nonce-bound paused acceptance mode should admit reserved d70");
+        assert_eq!(
+            compact_expected_domain_ids_for_config(&cfg),
+            vec![COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE]
+        );
+
+        let pipe_token = "d70-paused-pipe-token";
+        write_control_file(&cfg, pipe_token, None).unwrap();
+        let control: Value = serde_json::from_slice(
+            &fs::read(cfg.dll.parent().unwrap().join("collector_control.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            control["scheduled_domains"],
+            json!(PAUSED_EVIDENCE_DOMAIN_NAME)
+        );
+        assert_eq!(control["acceptance_test_mode_v1"], json!("paused"));
+        assert_eq!(
+            control["acceptance_test_nonce_v1"],
+            json!("a".repeat(64))
+        );
+        assert_eq!(
+            control["acceptance_test_authorization_v1"],
+            json!(acceptance_test_authorization(
+                pipe_token,
+                &cfg.session_id,
+                "paused",
+                &"a".repeat(64),
+            ))
+        );
+
         let _ = fs::remove_dir_all(&dir);
     }
 

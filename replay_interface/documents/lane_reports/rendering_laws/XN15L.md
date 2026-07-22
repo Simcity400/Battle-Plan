@@ -136,6 +136,15 @@ The XN15L-owned normal producer path is now wired and mechanically frozen:
 - `EarlyRenderProductionSession::finalize_update` invokes `populate_exact_authority_observations` before strict selected-only finalization. The caller requests only exact admitted H4CT ranges, creates every live/static authority observation through the strict constructors, and rejects an incomplete content, program, texture, or target join. There is no non-test raw-population or caller residual left in this packet.
 - The detailed source hashes, test receipts, and final producer provenance closure are frozen in `replay_interface/re_evidence/rendering_laws/XN15L/PRODUCTION_HOOK_COLLECTOR_FREEZE_2026-07-19.md`.
 
+The remaining live gate is now executable as one autonomous transaction:
+`extractor/native/scripts/Invoke-XN15LComposedAcquisition.ps1` owns the clean
+early launch, prepared product-modset admission, d77 capture, independent replay
+relocation, playback VFS validation, normal product composition, and native
+D3D11 readback. `verify_xn15l_composed.py` independently recomputes the selected
+frame/Present hashes and exact VFS/resource/view/unified-submit joins before it
+admits the immutable pixel receipt. No manual semantic sidecar, calibration, or
+human fixture labeling remains; see `XN15L/AUTONOMOUS_COMPOSED_GATE.md`.
+
 This is not yet a production-readiness claim. Recorder-host/live-HOI4 end-to-end validation and the downstream production-render compose check remain mandatory release gates. Until they pass, scheduling/promotion state is not advanced by this report and `PROGRAM_STATUS.md` remains unchanged.
 
 The retained RenderDoc census proves only the optional-stage/stream-output null law for its 1,266 matched final draws. RenderDoc resource identifiers and process pointers are capture-local and are not a reusable production catalog. Any unavailable or incomplete exact producer causes the frame/domain to be omitted or rejected; no vanilla fallback, captured-bundle substitution, or fabricated draw is permitted.

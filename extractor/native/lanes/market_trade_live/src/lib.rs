@@ -87,6 +87,15 @@ pub const MARKET_TRADE_CLASSIC_DEAL_STATUS_NO_RESOURCES: u32 = 1 << 1;
 pub const MARKET_TRADE_CLASSIC_DEAL_STATUS_KNOWN: u32 =
     MARKET_TRADE_CLASSIC_DEAL_STATUS_NO_TRADE_INFLUENCE
         | MARKET_TRADE_CLASSIC_DEAL_STATUS_NO_RESOURCES;
+pub const MARKET_TRADE_ACTIVATION_TRAILER_MAGIC: &[u8; 4] = b"MTRA";
+pub const MARKET_TRADE_ACTIVATION_SCHEMA_VERSION: u16 = 1;
+pub const MARKET_TRADE_ACTIVATION_HEADER_LEN: usize = 32;
+pub const MARKET_TRADE_ACTIVATION_FLAG_ACTIVE: u32 = 1;
+pub const MARKET_TRADE_ACTIVATION_FLAG_ROOT_EXACT: u32 = 1 << 1;
+pub const MARKET_TRADE_ACTIVATION_FLAGS_KNOWN: u32 =
+    MARKET_TRADE_ACTIVATION_FLAG_ACTIVE | MARKET_TRADE_ACTIVATION_FLAG_ROOT_EXACT;
+pub const MARKET_TRADE_ACTIVATION_ROOT_COUNTRYTRADEVIEW: u32 = 1;
+pub const MARKET_TRADE_ACTIVATION_OPEN_RVA: u32 = 0x015e_c520;
 /// B1 exact per-country equipment-market stockpile snapshot. `MTS1` carries
 /// every country-owner witness, including measured-empty nested iterators.
 pub const MARKET_TRADE_STOCKPILE_TRAILER_MAGIC: &[u8; 4] = b"MTS1";
@@ -310,6 +319,13 @@ pub struct ClassicDealRow {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MarketTradeActivation {
+    pub active: bool,
+    pub country_tag_db_id: Option<u32>,
+    pub observation_sequence: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MarketStockpileCountryRow {
     pub tag_db_id: u32,
     pub item_first: u32,
@@ -417,6 +433,7 @@ pub struct MarketTradePayloadSummary {
     pub classic_deal_trailer_present: bool,
     pub classic_deal_rows: u32,
     pub classic_deal_country_count: u32,
+    pub activation_trailer_present: bool,
     pub stockpile_trailer_present: bool,
     pub stockpile_country_rows: u32,
     pub stockpile_item_rows: u32,
@@ -430,6 +447,7 @@ pub struct MarketTradePayloadSummary {
     pub resource_view_rows: Vec<ResourceViewRow>,
     pub classic_deal_country_witnesses: Vec<u32>,
     pub classic_deals: Vec<ClassicDealRow>,
+    pub activation: Option<MarketTradeActivation>,
     pub stockpile_countries: Vec<MarketStockpileCountryRow>,
     pub stockpile_items: Vec<MarketStockpileItemRow>,
     pub parse_errors: Vec<String>,
@@ -499,6 +517,17 @@ pub struct MarketTradeStreamSummary {
     pub resource_rows_total: u64,
     pub classic_deal_records: u64,
     pub classic_deal_rows_total: u64,
+    pub activation_records: u64,
+    pub activation_active_records: u64,
+    pub activation_closed_records: u64,
+    pub activation_state_transitions: u64,
+    pub activation_first_active: Option<bool>,
+    pub activation_last_active: Option<bool>,
+    pub activation_last_sequence: Option<u64>,
+    pub activation_saw_closed_before_active: bool,
+    pub activation_saw_active_after_closed: bool,
+    pub activation_saw_closed_after_active: bool,
+    pub activation_sequence_errors: Vec<String>,
     pub payloads: Vec<MarketTradePayloadSummary>,
     pub parse_errors: Vec<String>,
     pub ordering_errors: Vec<String>,
@@ -1136,6 +1165,30 @@ pub fn encode_factory_header_trailer(rows: &[FactoryHeaderRow]) -> Vec<u8> {
     payload
 }
 
+pub fn encode_activation_trailer(activation: MarketTradeActivation) -> Result<Vec<u8>, String> {
+    if activation.active != activation.country_tag_db_id.is_some()
+        || activation.country_tag_db_id.is_some_and(|tag| tag == 0 || tag > MARKET_TRADE_MAX_TAG_DB_ID)
+    {
+        return Err("MTRA active/country identity is inconsistent".into());
+    }
+    let flags = MARKET_TRADE_ACTIVATION_FLAG_ROOT_EXACT
+        | if activation.active {
+            MARKET_TRADE_ACTIVATION_FLAG_ACTIVE
+        } else {
+            0
+        };
+    let mut payload = Vec::with_capacity(MARKET_TRADE_ACTIVATION_HEADER_LEN);
+    payload.extend_from_slice(MARKET_TRADE_ACTIVATION_TRAILER_MAGIC);
+    payload.extend_from_slice(&MARKET_TRADE_ACTIVATION_SCHEMA_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_ACTIVATION_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&flags.to_le_bytes());
+    payload.extend_from_slice(&activation.country_tag_db_id.unwrap_or(0).to_le_bytes());
+    payload.extend_from_slice(&activation.observation_sequence.to_le_bytes());
+    payload.extend_from_slice(&MARKET_TRADE_ACTIVATION_ROOT_COUNTRYTRADEVIEW.to_le_bytes());
+    payload.extend_from_slice(&MARKET_TRADE_ACTIVATION_OPEN_RVA.to_le_bytes());
+    Ok(payload)
+}
+
 pub fn encode_market_stockpile_trailer(
     expected_country_count: u32,
     countries: &[MarketStockpileCountryRow],
@@ -1370,6 +1423,8 @@ fn decode_optional_trailer(
             decode_resource_row_trailer(offset, payload, trailer_offset, summary)
         } else if magic == MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC {
             decode_classic_deal_trailer(offset, payload, trailer_offset, summary)
+        } else if magic == MARKET_TRADE_ACTIVATION_TRAILER_MAGIC {
+            decode_activation_trailer(offset, payload, trailer_offset, summary)
         } else if magic == MARKET_TRADE_STOCKPILE_TRAILER_MAGIC {
             if summary.stockpile_trailer_present {
                 summary
@@ -1395,6 +1450,57 @@ fn decode_optional_trailer(
         }
         trailer_offset = next_offset;
     }
+}
+
+fn decode_activation_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    summary: &mut MarketTradePayloadSummary,
+) -> Option<usize> {
+    if summary.activation_trailer_present {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: duplicate MTRA activation trailer"));
+        return None;
+    }
+    summary.activation_trailer_present = true;
+    if payload.len().saturating_sub(trailer_offset) < MARKET_TRADE_ACTIVATION_HEADER_LEN {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: MTRA activation trailer is too short"));
+        return None;
+    }
+    let trailer = &payload[trailer_offset..trailer_offset + MARKET_TRADE_ACTIVATION_HEADER_LEN];
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let flags = read_u32_le(trailer, 8);
+    let country_tag_db_id = read_u32_le(trailer, 12);
+    let observation_sequence = read_u64_le(trailer, 16);
+    let root_kind = read_u32_le(trailer, 24);
+    let open_rva = read_u32_le(trailer, 28);
+    let active = flags & MARKET_TRADE_ACTIVATION_FLAG_ACTIVE != 0;
+    if version != MARKET_TRADE_ACTIVATION_SCHEMA_VERSION
+        || header_len != MARKET_TRADE_ACTIVATION_HEADER_LEN
+        || flags & !MARKET_TRADE_ACTIVATION_FLAGS_KNOWN != 0
+        || flags & MARKET_TRADE_ACTIVATION_FLAG_ROOT_EXACT == 0
+        || root_kind != MARKET_TRADE_ACTIVATION_ROOT_COUNTRYTRADEVIEW
+        || open_rva != MARKET_TRADE_ACTIVATION_OPEN_RVA
+        || active != (country_tag_db_id != 0)
+        || (active && observation_sequence == 0)
+        || country_tag_db_id > MARKET_TRADE_MAX_TAG_DB_ID
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: MTRA activation identity/shape is invalid"
+        ));
+        return None;
+    }
+    summary.activation = Some(MarketTradeActivation {
+        active,
+        country_tag_db_id: active.then_some(country_tag_db_id),
+        observation_sequence,
+    });
+    Some(trailer_offset + MARKET_TRADE_ACTIVATION_HEADER_LEN)
 }
 
 fn decode_market_stockpile_trailer(
@@ -3279,6 +3385,58 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
                 summary.classic_deal_rows_total = summary
                     .classic_deal_rows_total
                     .saturating_add(payload_summary.classic_deal_rows as u64);
+                if payload_summary.activation_trailer_present {
+                    summary.activation_records = summary.activation_records.saturating_add(1);
+                    match payload_summary.activation {
+                        Some(activation) => {
+                            if summary.activation_first_active.is_none() {
+                                summary.activation_first_active = Some(activation.active);
+                            }
+                            if let Some(previous_active) = summary.activation_last_active {
+                                if previous_active != activation.active {
+                                    summary.activation_state_transitions =
+                                        summary.activation_state_transitions.saturating_add(1);
+                                    if summary.activation_last_sequence
+                                        .is_some_and(|sequence| activation.observation_sequence <= sequence)
+                                    {
+                                        summary.activation_sequence_errors.push(format!(
+                                            "offset {offset}: MTRA state changed without a strictly increasing lifecycle sequence"
+                                        ));
+                                    }
+                                } else if summary.activation_last_sequence
+                                    .is_some_and(|sequence| activation.observation_sequence < sequence)
+                                {
+                                    summary.activation_sequence_errors.push(format!(
+                                        "offset {offset}: MTRA lifecycle sequence regressed"
+                                    ));
+                                }
+                            }
+                            if !activation.active
+                                && !summary.activation_saw_active_after_closed
+                            {
+                                summary.activation_saw_closed_before_active = true;
+                            } else if activation.active
+                                && summary.activation_saw_closed_before_active
+                            {
+                                summary.activation_saw_active_after_closed = true;
+                            } else if !activation.active
+                                && summary.activation_saw_active_after_closed
+                            {
+                                summary.activation_saw_closed_after_active = true;
+                            }
+                            summary.activation_last_active = Some(activation.active);
+                            summary.activation_last_sequence = Some(activation.observation_sequence);
+                            if activation.active {
+                            summary.activation_active_records =
+                                summary.activation_active_records.saturating_add(1);
+                            } else {
+                                summary.activation_closed_records =
+                                    summary.activation_closed_records.saturating_add(1);
+                            }
+                        }
+                        None => {}
+                    }
+                }
                 summary
                     .parse_errors
                     .extend(payload_summary.parse_errors.iter().cloned());
@@ -3493,6 +3651,9 @@ pub fn gate_compact_stream(raw: &[u8], min_game_hours: usize) -> MarketTradeGate
     }
     if !summary.boundary_errors.is_empty() {
         problems.push("boundary_errors");
+    }
+    if !summary.activation_sequence_errors.is_empty() {
+        problems.push("activation_sequence_errors");
     }
     if summary.domain_data_records == 0 {
         problems.push("no_market_trade_data_records");

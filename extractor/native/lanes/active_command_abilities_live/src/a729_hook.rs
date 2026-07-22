@@ -123,6 +123,8 @@ const MAX_TOTAL_FIELD_MARSHAL_LEADERS: usize = 65_536;
 const FM_STATE_STRIDE: usize = 0x68;
 const FM_LEADER_STATE_STRIDE: usize = 0x28;
 const ACTIVE_RECORD_STRIDE: usize = 0x58;
+const CGAMESTATE_SINGLETON_RVA: usize = 0x0331_6E90;
+const CGAMESTATE_CURRENT_DATE_OFF: usize = 0x468;
 pub const HOOK_COUNT: usize = 10;
 
 type RefreshFn = unsafe extern "system" fn(usize);
@@ -255,6 +257,7 @@ pub struct ActiveRecordWitness {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TooltipRuntimeIdentity {
+    observed_game_hour_raw: i32,
     controller_sequence: u64,
     callback_owner_runtime: usize,
     hovered_widget_runtime: usize,
@@ -289,6 +292,7 @@ struct OpenTooltipTrace {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DisabledReasonObservation {
     pub sequence: u64,
+    pub observed_game_hour_raw: i32,
     pub controller_sequence: u64,
     pub controller_runtime: usize,
     pub callback_owner_runtime: usize,
@@ -389,6 +393,7 @@ pub struct FieldMarshalAbilityLeaf {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ControllerObservation {
     pub sequence: u64,
+    pub observed_game_hour_raw: i32,
     pub controller_runtime: usize,
     pub context_mode: u32,
     pub selected_root_runtime: usize,
@@ -478,7 +483,11 @@ pub fn observations() -> Vec<ControllerObservation> {
 pub fn observation_identity_still_current(
     observation: &ControllerObservation,
 ) -> Result<(), String> {
-    let (meta, source_bytes, _state_bytes, leader_bytes, row_widget_bytes) =
+    let current_game_hour_raw = current_game_hour_raw()?;
+    if current_game_hour_raw != observation.observed_game_hour_raw {
+        return Err("A36 retained refresh crossed a game-hour boundary before exact-root join".into());
+    }
+    let (meta, source_bytes, state_bytes, leader_bytes, row_widget_bytes) =
         stable_snapshot(observation.controller_runtime)?;
     let source = pointer_rows(&source_bytes)?;
     let leaders = pointer_rows(&leader_bytes)?;
@@ -496,6 +505,90 @@ pub fn observation_identity_still_current(
         || meta.row_widgets.count != observation.row_widget_count
     {
         return Err("A36 retained refresh identity changed before exact-root join".into());
+    }
+    if observation.field_marshal_aggregate {
+        let current = parse_field_marshal_states(&state_bytes)?;
+        if current.len() != observation.field_marshal_leaves.len()
+            || !current.iter().zip(&observation.field_marshal_leaves).all(|(left, right)| {
+                left.definition_runtime == right.definition_runtime
+                    && left.leaders.iter().zip(&right.leaders).all(|(l, r)| {
+                        l.leader_runtime == r.leader_runtime
+                            && l.state_code == r.state_code
+                            && l.remaining_hours == r.remaining_hours
+                            && l.command_power_cost_fixed == r.command_power_cost_fixed
+                            && l.activation_command_power_cost_fixed
+                                == r.activation_command_power_cost_fixed
+                            && l.will_activate == r.will_activate
+                    })
+                    && left.leaders.len() == right.leaders.len()
+                    && left.available_count == right.available_count
+                    && left.active_count == right.active_count
+                    && left.cooldown_count == right.cooldown_count
+                    && left.allocated_count == right.allocated_count
+                    && left.candidate_leader_count == right.candidate_leader_count
+                    && left.definition_allowed_leader_count
+                        == right.definition_allowed_leader_count
+                    && left.minimum_active_remaining_hours
+                        == right.minimum_active_remaining_hours
+                    && left.minimum_cooldown_remaining_hours
+                        == right.minimum_cooldown_remaining_hours
+                    && left.group_activation_elapsed_hours
+                        == right.group_activation_elapsed_hours
+                    && left.allocated_command_power_cost_fixed
+                        == right.allocated_command_power_cost_fixed
+                    && left.allocated_activation_command_power_cost_fixed
+                        == right.allocated_activation_command_power_cost_fixed
+                    && left.allocated_daily_command_power_cost_fixed
+                        == right.allocated_daily_command_power_cost_fixed
+                    && left.allocated_affected_division_count
+                        == right.allocated_affected_division_count
+                    && left.group_already_active == right.group_already_active
+            })
+        {
+            return Err("A36 retained field-marshal state changed before exact-root join".into());
+        }
+    } else {
+        for leaf in &observation.ordinary_leaves {
+            let matching = observation.probe_events.iter().filter_map(|event| match event {
+                ProbeEvent::ActiveCooldown {
+                    definition_runtime,
+                    active,
+                    cooldown,
+                    elapsed_since_activation_hours,
+                    record,
+                    ..
+                } if *definition_runtime == leaf.definition_runtime => Some((
+                    *active,
+                    *cooldown,
+                    *elapsed_since_activation_hours,
+                    *record,
+                )),
+                _ => None,
+            }).collect::<Vec<_>>();
+            if matching.len() != 1 {
+                return Err("A36 retained ordinary row lacks one active-record witness".into());
+            }
+            let (active, cooldown, elapsed, record) = matching[0];
+            let refreshed = exact_active_record_witness(
+                OpenActiveProbeTrace {
+                    country_runtime: record.country_runtime,
+                    definition_runtime: leaf.definition_runtime,
+                    effect_scope_runtime: record.effect_scope_runtime,
+                    resolved_caster_runtime: Some(record.resolved_caster_runtime),
+                    duplicate_or_nested: false,
+                },
+                active,
+                cooldown,
+                elapsed,
+            )?;
+            if refreshed.record_runtime != record.record_runtime
+                || refreshed.record_caster_runtime != record.record_caster_runtime
+                || refreshed.record_group_target_runtime != record.record_group_target_runtime
+                || refreshed.record_pass_active != record.record_pass_active
+            {
+                return Err("A36 retained ordinary active-record state changed before exact-root join".into());
+            }
+        }
     }
     Ok(())
 }
@@ -612,6 +705,9 @@ fn materialize_abl1_frame(
     observations: &[DisabledReasonObservation],
 ) -> Result<(crate::AbilityFrame, Vec<u64>), String> {
     validate_identity_catalog(catalog)?;
+    if u64::try_from(controller.observed_game_hour_raw).ok() != Some(frame_hour) {
+        return Err("A36 exact-root join hour differs from retained refresh hour".into());
+    }
     if controller.sequence == 0
         || catalog.epoch != controller.sequence
         || controller.source_definition_runtime.len() != controller.row_widget_count as usize
@@ -653,6 +749,7 @@ fn materialize_abl1_frame(
         }
         let observation = matches[0];
         if observation.sequence <= controller.sequence
+            || observation.observed_game_hour_raw != controller.observed_game_hour_raw
             || observation.final_tooltip.is_empty()
             || !observation.accumulator_callsite_seen
         {
@@ -1617,6 +1714,7 @@ fn read_tooltip_identity(
     if hovered_widget == 0 || tooltip_output == 0 {
         return Err("ability tooltip has a null widget/output".into());
     }
+    let observed_game_hour_raw = current_game_hour_raw()?;
     let before = read_meta(controller)?;
     validate_header(before.source, 8, "tooltip source")?;
     validate_header(before.row_widgets, 8, "tooltip row widget")?;
@@ -1654,6 +1752,7 @@ fn read_tooltip_identity(
     let ordinal = matching[0];
     let definition_runtime = source_definition_runtime[ordinal];
     let mut identity = TooltipRuntimeIdentity {
+        observed_game_hour_raw,
         controller_sequence: 0,
         callback_owner_runtime: callback_owner,
         hovered_widget_runtime: hovered_widget,
@@ -1698,6 +1797,7 @@ fn matching_controller_sequence(identity: &TooltipRuntimeIdentity) -> Option<u64
                         && observation.source_definition_runtime
                             == identity.source_definition_runtime
                         && observation.row_owner_runtime == identity.row_owner_runtime
+                        && observation.observed_game_hour_raw == identity.observed_game_hour_raw
                 })
                 .map(|observation| observation.sequence)
         })
@@ -1740,6 +1840,7 @@ fn finish_tooltip_trace(
     let identity = trace.identity;
     Ok(DisabledReasonObservation {
         sequence: NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        observed_game_hour_raw: identity.observed_game_hour_raw,
         controller_sequence: identity.controller_sequence,
         controller_runtime: identity.controller_runtime,
         callback_owner_runtime: identity.callback_owner_runtime,
@@ -1821,8 +1922,13 @@ fn build_observation(trace: OpenTrace) -> Result<ControllerObservation, String> 
     if !matches!(trace.events.first(), Some(ProbeEvent::ContextInvalid { invalid: false })) {
         return Err("ability refresh did not pass its exact context-validity gate".into());
     }
+    let game_hour_before = current_game_hour_raw()?;
     let (meta, source_bytes, state_bytes, leader_bytes, row_widget_bytes) =
         stable_snapshot(trace.controller_runtime)?;
+    let observed_game_hour_raw = current_game_hour_raw()?;
+    if game_hour_before != observed_game_hour_raw {
+        return Err("ability refresh crossed a game-hour boundary during observation".into());
+    }
     validate_header(meta.source, 8, "source")?;
     validate_header(meta.state, FM_STATE_STRIDE, "field-marshal state")?;
     validate_header(meta.leaders, 8, "field-marshal leader")?;
@@ -1912,6 +2018,7 @@ fn build_observation(trace: OpenTrace) -> Result<ControllerObservation, String> 
         && meta.row_widgets.count == 0;
     Ok(ControllerObservation {
         sequence: NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        observed_game_hour_raw,
         controller_runtime: trace.controller_runtime,
         context_mode: meta.context_mode,
         selected_root_runtime: meta.selected_root,
@@ -2143,6 +2250,29 @@ fn stable_snapshot(
         return Err("ability controller changed during snapshot".into());
     }
     Ok((after, source, state, leaders, rows))
+}
+
+fn current_game_hour_raw() -> Result<i32, String> {
+    let base = MODULE_BASE.load(Ordering::Acquire);
+    if base == 0 {
+        return Err("A36 module base is unavailable for game-hour authentication".into());
+    }
+    let game_state = read_usize(
+        base.checked_add(CGAMESTATE_SINGLETON_RVA)
+            .ok_or("A36 game-state singleton address overflow")?,
+    )?;
+    if game_state == 0 {
+        return Err("A36 game-state singleton is null".into());
+    }
+    let hour = read_i32(
+        game_state
+            .checked_add(CGAMESTATE_CURRENT_DATE_OFF)
+            .ok_or("A36 game-hour address overflow")?,
+    )?;
+    if hour <= 0 {
+        return Err("A36 observed an implausible game hour".into());
+    }
+    Ok(hour)
 }
 
 fn read_meta(controller: usize) -> Result<ControllerMeta, String> {
@@ -2536,6 +2666,7 @@ mod tests {
     fn controller() -> ControllerObservation {
         ControllerObservation {
             sequence: 41,
+            observed_game_hour_raw: 900,
             controller_runtime: 0x7ff6_1000_0000,
             context_mode: 1,
             selected_root_runtime: 0x7ff6_2000_0000,
@@ -2595,6 +2726,7 @@ mod tests {
     fn observation() -> DisabledReasonObservation {
         DisabledReasonObservation {
             sequence: 42,
+            observed_game_hour_raw: 900,
             controller_sequence: 41,
             controller_runtime: 0x7ff6_1000_0000,
             callback_owner_runtime: 0x7ff6_1000_0028,

@@ -256,7 +256,7 @@ def exact_target_chain(models, start_index, owner_id, timed_id, permanent_id):
     return None
 
 
-def verify_documents(checkpoints, hook, manifest):
+def verify_documents(checkpoints, hook, manifest, action=None, action_checkpoint_sha256=None):
     errors = []
     details = {}
     try:
@@ -387,6 +387,29 @@ def verify_documents(checkpoints, hook, manifest):
             raise ValueError("capture manifest compact stream is not decodable")
         if manifest.get("collector_control_errors") != [] or manifest.get("parse_errors") != []:
             raise ValueError("capture manifest reports collector or parse errors")
+        if action is not None:
+            if (
+                not isinstance(action, dict)
+                or action.get("schema") != "hoi4.a18_a19.autonomous_action_receipt.v1"
+                or action.get("status") != "pass_three_exact_checkpoints"
+                or action.get("mode") != "A18DynamicModifier"
+                or action.get("immutable_receipt") is not True
+                or action.get("executable_sha256") != EXPECTED_SHA
+                or action.get("process_id") != manifest.get("pid")
+                or action.get("originator_tag") != owner_tag
+                or action.get("recipient_tag") != owner_tag
+            ):
+                raise ValueError("autonomous action receipt identity/status mismatch")
+            artifact_rows = action.get("artifacts")
+            if not isinstance(artifact_rows, list) or len(artifact_rows) != 3:
+                raise ValueError("autonomous action receipt lacks three checkpoint bindings")
+            action_artifacts = {
+                row.get("phase"): row.get("sha256")
+                for row in artifact_rows
+                if isinstance(row, dict)
+            }
+            if action_artifacts != action_checkpoint_sha256:
+                raise ValueError("autonomous action checkpoint hashes do not match verifier inputs")
         diagnostics = hook.get("diagnostics")
         if not isinstance(diagnostics, dict):
             raise ValueError("hook diagnostics are absent")
@@ -503,6 +526,7 @@ def main() -> int:
     parser.add_argument("--checkpoint", action="append", required=True)
     parser.add_argument("--hook-receipt", required=True)
     parser.add_argument("--capture-manifest", required=True)
+    parser.add_argument("--action-receipt")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     checkpoint_paths = [Path(value).resolve() for value in args.checkpoint]
@@ -511,7 +535,16 @@ def main() -> int:
     checkpoints = [json.loads(path.read_text(encoding="utf-8")) for path in checkpoint_paths]
     hook = json.loads(hook_path.read_text(encoding="utf-8"))
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    accepted, errors, details = verify_documents(checkpoints, hook, manifest)
+    action_path = Path(args.action_receipt).resolve() if args.action_receipt else None
+    action = json.loads(action_path.read_text(encoding="utf-8")) if action_path else None
+    checkpoint_hashes = {
+        document["phase"]: sha256_file(path)
+        for path, document in zip(checkpoint_paths, checkpoints)
+    }
+    accepted, errors, details = verify_documents(
+        checkpoints, hook, manifest, action,
+        checkpoint_hashes if action is not None else None,
+    )
     receipt = {
         "schema": "hoi4.a18.dynamic_modifier_fixture_verification.v1",
         "status": "PASS" if accepted else "FAIL",
@@ -533,7 +566,7 @@ def main() -> int:
         ] + [
             {"kind": "hook_receipt", "sha256": sha256_file(hook_path)},
             {"kind": "capture_manifest", "sha256": sha256_file(manifest_path)},
-        ],
+        ] + ([{"kind": "autonomous_action_receipt", "sha256": sha256_file(action_path)}] if action_path else []),
     }
     out = Path(args.out).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)

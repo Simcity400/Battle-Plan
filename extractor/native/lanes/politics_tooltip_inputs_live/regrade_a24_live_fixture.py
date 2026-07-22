@@ -234,14 +234,20 @@ def main() -> int:
     cases = [validate_producer_case(path) for path in args.producer_receipt]
     producer_receipts = [case[0] for case in cases]
     all_observations = [row for case in cases for row in case[1]]
-    frame_hours = {receipt["frame_hour"] for receipt in producer_receipts}
+    ordered_frame_hours = [receipt["frame_hour"] for receipt in producer_receipts]
+    frame_hours = set(ordered_frame_hours)
     country_tags = {receipt["country_tag"] for receipt in producer_receipts}
     case_ids = {receipt.get("capture_case_identity") for receipt in producer_receipts}
     observed_union = {row["tap_kind"] for row in all_observations}
-    require(len(frame_hours) == 1 and len(country_tags) == 1, "producer cases do not share one game-hour/country boundary")
+    require(len(country_tags) == 1, "producer cases do not share one country boundary")
+    require(
+        len(frame_hours) == len(producer_receipts)
+        and all(right > left for left, right in zip(ordered_frame_hours, ordered_frame_hours[1:])),
+        "producer cases are not ordered across distinct monotonically increasing game hours",
+    )
     require(None not in case_ids and len(case_ids) == len(producer_receipts), "producer capture-case identities are missing or duplicated")
     require(observed_union == REQUIRED_TAPS, "producer capture-case union does not cover the exact 23-tap matrix")
-    frame_hour = next(iter(frame_hours))
+    frame_hour = ordered_frame_hours[-1]
     producer_receipt = producer_receipts[-1]
     observations = all_observations
     if args.snapshot is None:
@@ -253,8 +259,11 @@ def main() -> int:
             "game_executable_sha256": EXECUTABLE_SHA256,
             "producer_manifest_sha256": PRODUCER_MANIFEST_SHA256,
             "helper_manifest_sha256": HELPER_MANIFEST_SHA256,
-            "frame_hour": producer_receipt.get("frame_hour"),
-            "selected_present_receipt_sha256": producer_receipt.get("selected_present", {}).get("receipt_sha256"),
+            "frame_hours": ordered_frame_hours,
+            "selected_present_receipt_sha256s": [
+                receipt.get("selected_present", {}).get("receipt_sha256")
+                for receipt in producer_receipts
+            ],
             "capture_case_count": len(producer_receipts),
             "observation_count": len(observations),
             "tap_kinds": sorted(REQUIRED_TAPS),

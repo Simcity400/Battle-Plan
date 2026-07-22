@@ -2,8 +2,9 @@
 
 A27's exact **single-hour census** is proven for
 `hoi4.exe 1.19.2.0.a729`. The temporal production path is now implemented but
-awaits root central validation and H-A27 live evidence. During capture the
-recorder owns one hidden repeated-census worker. Every accepted hour is a
+awaits root central validation and one autonomous H-A27 live run. During
+capture the recorder owns one hidden repeated-census worker and a separately
+authenticated physical-input action driver. Every accepted hour is a
 whole-sweep-sealed full replacement; packaging derives exact stable-ID upserts
 and absence-only tombstones and rejects any gap against the compact replay
 spine. The save remains a same-tick acceptance oracle only.
@@ -75,13 +76,29 @@ the complete native definition. D78 display order may join only when its
 - Replay reconstructs only an explicitly captured hour; missing-hour and
   cross-hour D78 joins reject.
 - `Invoke-A27TimelineCapture.ps1` plus `regrade_timeline.py` is the independent
-  owner-runnable H-A27 evidence route.
+  owner-runnable H-A27 evidence route. It no longer attaches and polls while
+  waiting for an operator mutation. The wrapper runs
+  `Invoke-A27AuthenticatedTransactions.ps1` with the pinned 1920x1080 profile,
+  which renames, priority-edits, decommissions, and reactivates the same first
+  domestic division template.
+- Before each physical-input transaction the producer requires a byte-equal
+  same-hour recheck, then writes a create-new `ready` receipt and suspends all
+  censuses. The driver must preserve the paused source hour, perform the UI
+  transaction, advance exactly one hour, repause, and publish a create-new
+  `release` receipt. Only then does the producer resume. This makes every
+  mutation belong to one exact adjacent-hour transition without a race.
+- The v2 independent regrade ignores action labels as semantic evidence. It
+  requires a same-stable-ID native row delta proving, in order, a name-field
+  change, a non-name/non-lifecycle edit, `obsolete: false->true`, and
+  `obsolete: true->false`. A missed click, reordered template, torn sweep, or
+  unexpected UI state fails closed and leaves the immutable handshake receipts.
 
 The examined creation and designer-refresh routes are not a universal lifecycle
-root. H-A27 therefore asks only for an external machine observation after root
-validation. If the external sweep cannot seal every advancing hour, that
-machine failure proves the remaining in-process boundary; no human semantic
-interpretation is permitted.
+root. H-A27 therefore requires one external machine observation after root
+validation, but no human action or semantic interpretation. If the action
+profile misses or the external sweep cannot seal every advancing hour, that
+machine failure is retained and cannot be promoted by trusting the input
+receipt.
 
 The retained frozen snapshot predates the whole-sweep coherence receipt and is
 historical evidence only. Production admission now rejects it until a new live

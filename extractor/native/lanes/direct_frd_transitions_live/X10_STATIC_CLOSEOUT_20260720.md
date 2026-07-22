@@ -146,7 +146,9 @@ retains the hook epoch, drain completeness, and cumulative per-kind witness
 mask; in-process diagnostics retain per-kind counts. The legacy five-root
 owner fixture is complete only after all low five witness bits are present.
 
-The sole remaining X10 dependency is the machine-graded live owner fixture in
-`X10_DIRECT_TRANSITION_OWNER_FIXTURE_20260720.md` and its JSON contract.
-Production activation must remain false until that fixture passes. No semantic
-labeling or subjective human judgment is requested.
+The sole remaining X10 dependency is live execution of the machine-graded owner
+fixture in `X10_DIRECT_TRANSITION_OWNER_FIXTURE_20260720.md` and its JSON
+contract. The clean suspended-launch runner, foreground action driver, and
+independent immutable-receipt verifier are now implemented; no human launch or
+UI selection remains. Production activation must remain false until that live
+fixture passes. No semantic labeling or subjective human judgment is requested.

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "a25_owner_glyph_receipt.schema.json",
+  "title": "A25 selected-Present owner-scoped glyph/icon receipt",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "case_id",
+    "process_id",
+    "process_start_utc",
+    "hook_epoch",
+    "viewport",
+    "authority",
+    "selected_present",
+    "captures",
+    "telemetry"
+  ],
+  "properties": {
+    "schema": { "const": "hoi4.a25.owner-glyph.selected-present-receipt.v1" },
+    "case_id": { "const": "mixed_glyph_inline_icon_1920x1080" },
+    "process_id": { "type": "integer", "minimum": 1 },
+    "process_start_utc": { "type": "string", "format": "date-time" },
+    "hook_epoch": { "type": "integer", "minimum": 1 },
+    "viewport": { "const": [1920, 1080] },
+    "authority": {
+      "type": "object",
+      "required": ["executable_sha256", "re_manifest_sha256"],
+      "properties": {
+        "executable_sha256": { "const": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad" },
+        "re_manifest_sha256": { "const": "0d08554c66e82e188e3dec267bb9c03a2f0718aa71c3c648fc4aedf29ed27edf" }
+      }
+    },
+    "selected_present": {
+      "type": "object",
+      "required": ["selected_candidate_id", "selected_qpc_ticks", "candidate_set_sha256", "receipt_sha256"],
+      "properties": {
+        "selected_candidate_id": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "selected_qpc_ticks": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "candidate_set_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "receipt_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "captures": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "context_id", "view_id", "element_id", "selected_final_text_sha256",
+          "gui_engine_instance_token", "paint_ordinal", "render_invocation_ordinal",
+          "destination_rect", "glyph_decision_count", "inline_icon_decision_count",
+          "glyphs", "inline_icons", "fonts", "icon_assets", "health"
+        ],
+        "properties": {
+          "gui_engine_instance_token": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+          "paint_ordinal": { "type": "integer", "minimum": 0 },
+          "render_invocation_ordinal": { "type": "integer", "minimum": 0 },
+          "selected_final_text_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "destination_rect": {
+            "type": "array", "minItems": 4, "maxItems": 4,
+            "items": { "type": "integer" }
+          },
+          "glyphs": { "type": "array" },
+          "inline_icons": { "type": "array" },
+          "fonts": { "type": "array" },
+          "icon_assets": { "type": "array" },
+          "health": { "type": "object" }
+        }
+      }
+    },
+    "telemetry": { "type": "object" }
+  }
+}

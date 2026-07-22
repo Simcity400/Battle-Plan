@@ -37,7 +37,8 @@ pub const DOMAIN_FRAME: u16 = 1000;
 pub const PROBE_DOMAIN_ID: u16 = 250;
 
 pub const PAYLOAD_HEADER_LEN: usize = 32;
-pub const ROW_LEN: usize = 104;
+pub const ROW_LEN: usize = 120;
+pub const LEGACY_ROW_LEN: usize = 104;
 pub const FIXED_SCALE_RAW: u32 = 100_000;
 pub const DIVISION_TYPE: u32 = 4_713;
 
@@ -98,6 +99,17 @@ pub const ROW_FLAG_DISRUPTED_SUPPLY: u32 = 1 << 17;
 pub const ROW_FLAG_STRATEGIC_REDEPLOYMENT: u32 = 1 << 18;
 pub const ROW_FLAG_CURRENT_MANPOWER: u32 = 1 << 19;
 pub const ROW_FLAG_CUMULATIVE_LOSSES: u32 = 1 << 20;
+pub const ROW_FLAG_MAX_ORGANISATION: u32 = 1 << 21;
+pub const ROW_FLAG_COUNTER_SUPPLY_STATUS: u32 = 1 << 22;
+pub const ROW_FLAG_DIG_IN: u32 = 1 << 23;
+pub const ROW_FLAG_DIG_IN_CAP: u32 = 1 << 24;
+pub const ROW_FLAG_TRAINING_OBSERVED: u32 = 1 << 25;
+pub const ROW_FLAG_TRAINING_VISIBLE: u32 = 1 << 26;
+pub const ROW_FLAG_DIG_IN_UI_OBSERVED: u32 = 1 << 27;
+pub const ROW_FLAG_DIG_IN_UI_VISIBLE: u32 = 1 << 28;
+pub const ROW_FLAG_DIG_IN_UI_CAPPED: u32 = 1 << 29;
+pub const ROW_FLAG_INVALID_ORDERS_OBSERVED: u32 = 1 << 30;
+pub const ROW_FLAG_INVALID_ORDERS_VISIBLE: u32 = 1 << 31;
 pub const KNOWN_ROW_FLAGS: u32 = ROW_FLAG_MOVING
     | ROW_FLAG_PROGRESS
     | ROW_FLAG_MOVE_TARGET
@@ -118,7 +130,18 @@ pub const KNOWN_ROW_FLAGS: u32 = ROW_FLAG_MOVING
     | ROW_FLAG_DISRUPTED_SUPPLY
     | ROW_FLAG_STRATEGIC_REDEPLOYMENT
     | ROW_FLAG_CURRENT_MANPOWER
-    | ROW_FLAG_CUMULATIVE_LOSSES;
+    | ROW_FLAG_CUMULATIVE_LOSSES
+    | ROW_FLAG_MAX_ORGANISATION
+    | ROW_FLAG_COUNTER_SUPPLY_STATUS
+    | ROW_FLAG_DIG_IN
+    | ROW_FLAG_DIG_IN_CAP
+    | ROW_FLAG_TRAINING_OBSERVED
+    | ROW_FLAG_TRAINING_VISIBLE
+    | ROW_FLAG_DIG_IN_UI_OBSERVED
+    | ROW_FLAG_DIG_IN_UI_VISIBLE
+    | ROW_FLAG_DIG_IN_UI_CAPPED
+    | ROW_FLAG_INVALID_ORDERS_OBSERVED
+    | ROW_FLAG_INVALID_ORDERS_VISIBLE;
 /// Shared ceiling for the primary-order instance id (collector, recorder
 /// summary decoder, world_fold, and this standalone gate all enforce it).
 pub const MAX_ORDER_INSTANCE_ID: u32 = 100_000_000;
@@ -137,6 +160,8 @@ pub const MAX_SUPPLY_GAIN_RAW: u32 = 500_000;
 pub const MAX_DISRUPTED_SUPPLY_RAW: u32 = 1_000_000;
 pub const MAX_CURRENT_MANPOWER: u32 = 10_000_000;
 pub const MAX_CUMULATIVE_LOSSES: u32 = 100_000_000;
+pub const MAX_COUNTER_SUPPLY_STATUS_RAW: u32 = 100_000;
+pub const MAX_DIG_IN_RAW: u32 = 100_000_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DivisionStateHeader {
@@ -168,6 +193,7 @@ pub struct DivisionStateRow {
     pub raw_movement_progress: Option<u32>,
     pub progress_bucket: Option<u32>,
     pub raw_organisation: u32,
+    pub raw_max_organisation: Option<u32>,
     pub organisation_bucket: u32,
     pub raw_strength: u32,
     pub strength_bucket: u32,
@@ -177,11 +203,19 @@ pub struct DivisionStateRow {
     pub army_id: Option<u32>,
     pub raw_experience: Option<u32>,
     pub raw_max_supply: Option<u32>,
+    pub raw_counter_supply_status: Option<u32>,
     pub raw_current_supply: Option<u32>,
     pub raw_supply_gain: Option<u32>,
     pub raw_fuel: Option<u32>,
     pub order_link: DivisionOrderLink,
     pub raw_disrupted_supply: Option<u32>,
+    pub raw_dig_in: Option<u32>,
+    pub raw_dig_in_cap: Option<u32>,
+    pub counter_training_visible: Option<bool>,
+    /// 0 hidden, 1 visible/not-all-capped, 2 visible/all-positive capped.
+    pub counter_dig_in_frame: Option<u8>,
+    /// Exact post-update `invalid_orders` GUI control visibility.
+    pub counter_invalid_orders_visible: Option<bool>,
     pub strategic_redeployment: Option<bool>,
     pub current_manpower: Option<u32>,
     pub cumulative_losses: Option<u32>,
@@ -358,6 +392,10 @@ pub fn encode_payload(header: &DivisionStateHeader, rows: &[DivisionStateRow]) -
         );
         payload.extend_from_slice(&row.current_manpower.unwrap_or(0).to_le_bytes());
         payload.extend_from_slice(&row.cumulative_losses.unwrap_or(0).to_le_bytes());
+        payload.extend_from_slice(&row.raw_max_organisation.unwrap_or(0).to_le_bytes());
+        payload.extend_from_slice(&row.raw_counter_supply_status.unwrap_or(0).to_le_bytes());
+        payload.extend_from_slice(&row.raw_dig_in.unwrap_or(0).to_le_bytes());
+        payload.extend_from_slice(&row.raw_dig_in_cap.unwrap_or(0).to_le_bytes());
     }
     payload
 }
@@ -394,14 +432,21 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
             "offset {offset}: divisions header reserved field is nonzero"
         ));
     }
-    let expected_len = PAYLOAD_HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
-    if payload.len() != expected_len {
+    let legacy_expected =
+        PAYLOAD_HEADER_LEN.saturating_add(row_count.saturating_mul(LEGACY_ROW_LEN));
+    let extended_expected = PAYLOAD_HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
+    let row_len = if payload.len() == extended_expected {
+        ROW_LEN
+    } else if payload.len() == legacy_expected {
+        LEGACY_ROW_LEN
+    } else {
         summary.parse_errors.push(format!(
-            "offset {offset}: divisions payload is {} byte(s), expected {expected_len}",
+            "offset {offset}: divisions payload is {} byte(s), expected legacy {legacy_expected} or extended {extended_expected}",
             payload.len()
         ));
         return summary;
-    }
+    };
+    let extended = row_len == ROW_LEN;
     let delta_data = (status_flags & STATUS_DELTA_DATA) != 0;
     if changed_rows > row_count {
         summary.parse_errors.push(format!(
@@ -447,6 +492,14 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
     let mut strategic_redeployment_rows = 0usize;
     let mut current_manpower_rows = 0usize;
     let mut cumulative_losses_rows = 0usize;
+    let mut max_organisation_rows = 0usize;
+    let mut counter_supply_status_rows = 0usize;
+    let mut dig_in_rows = 0usize;
+    let mut dig_in_cap_rows = 0usize;
+    let mut training_ui_rows = 0usize;
+    let mut training_visible_rows = 0usize;
+    let mut dig_in_ui_rows = 0usize;
+    let mut dig_in_ui_visible_rows = 0usize;
 
     for row_index in 0..row_count {
         let div_id = read_u32_le(payload, cursor);
@@ -475,7 +528,11 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
         let strategic_redeployment_raw = read_u32_le(payload, cursor + 92);
         let current_manpower = read_u32_le(payload, cursor + 96);
         let cumulative_losses = read_u32_le(payload, cursor + 100);
-        cursor += ROW_LEN;
+        let max_organisation_raw = extended.then(|| read_u32_le(payload, cursor + 104)).unwrap_or(0);
+        let counter_supply_status_raw = extended.then(|| read_u32_le(payload, cursor + 108)).unwrap_or(0);
+        let dig_in_raw = extended.then(|| read_u32_le(payload, cursor + 112)).unwrap_or(0);
+        let dig_in_cap_raw = extended.then(|| read_u32_le(payload, cursor + 116)).unwrap_or(0);
+        cursor += row_len;
         reserved_tail_zero_rows = reserved_tail_zero_rows.saturating_add((reserved1 == 0) as usize);
 
         if div_id == 0 {
@@ -516,6 +573,33 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
         let has_strategic_redeployment = has_flag(flags, ROW_FLAG_STRATEGIC_REDEPLOYMENT);
         let has_current_manpower = has_flag(flags, ROW_FLAG_CURRENT_MANPOWER);
         let has_cumulative_losses = has_flag(flags, ROW_FLAG_CUMULATIVE_LOSSES);
+        let has_max_organisation = has_flag(flags, ROW_FLAG_MAX_ORGANISATION);
+        let has_counter_supply_status = has_flag(flags, ROW_FLAG_COUNTER_SUPPLY_STATUS);
+        let has_dig_in = has_flag(flags, ROW_FLAG_DIG_IN);
+        let has_dig_in_cap = has_flag(flags, ROW_FLAG_DIG_IN_CAP);
+        let training_observed = has_flag(flags, ROW_FLAG_TRAINING_OBSERVED);
+        let training_visible = has_flag(flags, ROW_FLAG_TRAINING_VISIBLE);
+        let dig_in_ui_observed = has_flag(flags, ROW_FLAG_DIG_IN_UI_OBSERVED);
+        let dig_in_ui_visible = has_flag(flags, ROW_FLAG_DIG_IN_UI_VISIBLE);
+        let dig_in_ui_capped = has_flag(flags, ROW_FLAG_DIG_IN_UI_CAPPED);
+        let invalid_orders_observed = has_flag(flags, ROW_FLAG_INVALID_ORDERS_OBSERVED);
+        let invalid_orders_visible = has_flag(flags, ROW_FLAG_INVALID_ORDERS_VISIBLE);
+        let a15_flags = ROW_FLAG_MAX_ORGANISATION
+            | ROW_FLAG_COUNTER_SUPPLY_STATUS
+            | ROW_FLAG_DIG_IN
+            | ROW_FLAG_DIG_IN_CAP
+            | ROW_FLAG_TRAINING_OBSERVED
+            | ROW_FLAG_TRAINING_VISIBLE
+            | ROW_FLAG_DIG_IN_UI_OBSERVED
+            | ROW_FLAG_DIG_IN_UI_VISIBLE
+            | ROW_FLAG_DIG_IN_UI_CAPPED
+            | ROW_FLAG_INVALID_ORDERS_OBSERVED
+            | ROW_FLAG_INVALID_ORDERS_VISIBLE;
+        if !extended && flags & a15_flags != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: legacy divisions row {row_index} carries extended A15 flags"
+            ));
+        }
 
         if deleted {
             deleted_rows = deleted_rows.saturating_add(1);
@@ -548,6 +632,10 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
                 strategic_redeployment_raw,
                 current_manpower,
                 cumulative_losses,
+                max_organisation_raw,
+                counter_supply_status_raw,
+                dig_in_raw,
+                dig_in_cap_raw,
             ) {
                 summary.parse_errors.push(format!(
                     "offset {offset}: divisions delete row {row_index} is not zero-filled"
@@ -555,6 +643,33 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
             }
             continue;
         }
+
+        if training_visible && !training_observed {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has visible training without an evaluated UI observation"
+            ));
+        }
+        if invalid_orders_visible && !invalid_orders_observed {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has visible invalid-orders without an evaluated UI observation"
+            ));
+        }
+        if dig_in_ui_visible && !dig_in_ui_observed {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has visible dig-in without an evaluated UI observation"
+            ));
+        }
+        if dig_in_ui_capped && (!dig_in_ui_observed || !dig_in_ui_visible) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has capped dig-in without a visible evaluated UI observation"
+            ));
+        }
+        training_ui_rows = training_ui_rows.saturating_add(training_observed as usize);
+        training_visible_rows =
+            training_visible_rows.saturating_add(training_visible as usize);
+        dig_in_ui_rows = dig_in_ui_rows.saturating_add(dig_in_ui_observed as usize);
+        dig_in_ui_visible_rows =
+            dig_in_ui_visible_rows.saturating_add(dig_in_ui_visible as usize);
 
         if delta_data {
             delta_upsert_rows = delta_upsert_rows.saturating_add(1);
@@ -770,6 +885,52 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
         );
         cumulative_losses_rows =
             cumulative_losses_rows.saturating_add(has_cumulative_losses as usize);
+        validate_optional_u32(
+            &mut summary,
+            offset,
+            row_index,
+            has_max_organisation,
+            max_organisation_raw,
+            100,
+            MAX_ORGANISATION_RAW,
+            "max_organisation_raw",
+        );
+        max_organisation_rows =
+            max_organisation_rows.saturating_add(has_max_organisation as usize);
+        validate_optional_u32(
+            &mut summary,
+            offset,
+            row_index,
+            has_counter_supply_status,
+            counter_supply_status_raw,
+            0,
+            MAX_COUNTER_SUPPLY_STATUS_RAW,
+            "counter_supply_status_raw",
+        );
+        counter_supply_status_rows = counter_supply_status_rows
+            .saturating_add(has_counter_supply_status as usize);
+        validate_optional_u32(
+            &mut summary,
+            offset,
+            row_index,
+            has_dig_in,
+            dig_in_raw,
+            0,
+            MAX_DIG_IN_RAW,
+            "dig_in_raw",
+        );
+        dig_in_rows = dig_in_rows.saturating_add(has_dig_in as usize);
+        validate_optional_u32(
+            &mut summary,
+            offset,
+            row_index,
+            has_dig_in_cap,
+            dig_in_cap_raw,
+            0,
+            MAX_DIG_IN_RAW,
+            "dig_in_cap_raw",
+        );
+        dig_in_cap_rows = dig_in_cap_rows.saturating_add(has_dig_in_cap as usize);
         let has_order_army = has_flag(flags, ROW_FLAG_ORDER_ARMY);
         let has_order_group = has_flag(flags, ROW_FLAG_ORDER_ARMY_GROUP);
         let has_order_unresolved = has_flag(flags, ROW_FLAG_ORDER_UNRESOLVED);
@@ -817,6 +978,30 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
     );
     add_unit(&mut summary, "division_supply_gain_rows", supply_gain_rows);
     add_unit(&mut summary, "division_fuel_rows", fuel_rows);
+    add_unit(
+        &mut summary,
+        "division_max_organisation_rows",
+        max_organisation_rows,
+    );
+    add_unit(
+        &mut summary,
+        "division_counter_supply_status_rows",
+        counter_supply_status_rows,
+    );
+    add_unit(&mut summary, "division_dig_in_rows", dig_in_rows);
+    add_unit(&mut summary, "division_dig_in_cap_rows", dig_in_cap_rows);
+    add_unit(&mut summary, "division_training_ui_rows", training_ui_rows);
+    add_unit(
+        &mut summary,
+        "division_training_visible_rows",
+        training_visible_rows,
+    );
+    add_unit(&mut summary, "division_dig_in_ui_rows", dig_in_ui_rows);
+    add_unit(
+        &mut summary,
+        "division_dig_in_ui_visible_rows",
+        dig_in_ui_visible_rows,
+    );
     add_unit(
         &mut summary,
         "division_delta_upsert_rows",
@@ -1383,15 +1568,21 @@ fn update_lifecycle_from_payload(
         return;
     }
     let row_count = read_u32_le(payload, 8) as usize;
-    let expected_len = PAYLOAD_HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
-    if payload.len() != expected_len {
+    let legacy_expected =
+        PAYLOAD_HEADER_LEN.saturating_add(row_count.saturating_mul(LEGACY_ROW_LEN));
+    let extended_expected = PAYLOAD_HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
+    let row_len = if payload.len() == extended_expected {
+        ROW_LEN
+    } else if payload.len() == legacy_expected {
+        LEGACY_ROW_LEN
+    } else {
         return;
-    }
+    };
     let mut cursor = PAYLOAD_HEADER_LEN;
     for row_index in 0..row_count {
         let div_id = read_u32_le(payload, cursor);
         let flags = read_u32_le(payload, cursor + 8);
-        cursor += ROW_LEN;
+        cursor += row_len;
         if div_id == 0 {
             continue;
         }
@@ -1492,6 +1683,39 @@ fn row_flags(row: &DivisionStateRow) -> u32 {
     if row.cumulative_losses.is_some() {
         flags |= ROW_FLAG_CUMULATIVE_LOSSES;
     }
+    if row.raw_max_organisation.is_some() {
+        flags |= ROW_FLAG_MAX_ORGANISATION;
+    }
+    if row.raw_counter_supply_status.is_some() {
+        flags |= ROW_FLAG_COUNTER_SUPPLY_STATUS;
+    }
+    if row.raw_dig_in.is_some() {
+        flags |= ROW_FLAG_DIG_IN;
+    }
+    if row.raw_dig_in_cap.is_some() {
+        flags |= ROW_FLAG_DIG_IN_CAP;
+    }
+    if let Some(visible) = row.counter_training_visible {
+        flags |= ROW_FLAG_TRAINING_OBSERVED;
+        if visible {
+            flags |= ROW_FLAG_TRAINING_VISIBLE;
+        }
+    }
+    if let Some(frame) = row.counter_dig_in_frame {
+        flags |= ROW_FLAG_DIG_IN_UI_OBSERVED;
+        if frame != 0 {
+            flags |= ROW_FLAG_DIG_IN_UI_VISIBLE;
+        }
+        if frame == 2 {
+            flags |= ROW_FLAG_DIG_IN_UI_CAPPED;
+        }
+    }
+    if let Some(visible) = row.counter_invalid_orders_visible {
+        flags |= ROW_FLAG_INVALID_ORDERS_OBSERVED;
+        if visible {
+            flags |= ROW_FLAG_INVALID_ORDERS_VISIBLE;
+        }
+    }
     match row.order_link {
         DivisionOrderLink::None => {}
         DivisionOrderLink::ArmyOrder(_) => flags |= ROW_FLAG_ORDER_ARMY,
@@ -1525,9 +1749,13 @@ fn zero_filled_deleted_row(
     t: u32,
     u: u32,
     v: u32,
+    w: u32,
+    x: u32,
+    y: u32,
+    z: u32,
 ) -> bool {
     [
-        values, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v,
+        values, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w, x, y, z,
     ]
     .into_iter()
     .all(|value| value == 0)
@@ -1675,7 +1903,53 @@ mod tests {
         // Guard against stale-constant drift (a prior review found a sibling
         // domain-42 test asserting a stale 68): pin the LITERAL, not a derived
         // value, so a wrong ROW_LEN fails here.
-        assert_eq!(ROW_LEN, 104);
+        assert_eq!(ROW_LEN, 120);
+    }
+
+    #[test]
+    fn retained_104_byte_rows_decode_with_a15_fields_unavailable() {
+        let rows = vec![DivisionStateRow {
+            div_id: 7,
+            location: 12,
+            raw_organisation: 5_000_000,
+            raw_strength: 100_000_000,
+            ..DivisionStateRow::default()
+        }];
+        let header = DivisionStateHeader {
+            elapsed_wall_ms: 0,
+            status_flags: 0,
+            changed_rows: 1,
+            root_rows: 1,
+        };
+        let mut legacy = encode_payload(&header, &rows);
+        legacy.truncate(PAYLOAD_HEADER_LEN + LEGACY_ROW_LEN);
+        let summary = decode_payload(0, &legacy);
+        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+    }
+
+    #[test]
+    fn retained_104_byte_rows_reject_extended_a15_presence_bits() {
+        let rows = vec![DivisionStateRow {
+            div_id: 7,
+            location: 12,
+            raw_organisation: 5_000_000,
+            raw_strength: 100_000_000,
+            raw_max_organisation: Some(6_000_000),
+            ..DivisionStateRow::default()
+        }];
+        let header = DivisionStateHeader {
+            elapsed_wall_ms: 0,
+            status_flags: 0,
+            changed_rows: 1,
+            root_rows: 1,
+        };
+        let mut forged_legacy = encode_payload(&header, &rows);
+        forged_legacy.truncate(PAYLOAD_HEADER_LEN + LEGACY_ROW_LEN);
+        let summary = decode_payload(0, &forged_legacy);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("legacy divisions row 0 carries extended A15 flags")));
     }
 
     #[test]
@@ -1690,6 +1964,7 @@ mod tests {
                 raw_movement_progress: Some(42_000),
                 progress_bucket: Some(42),
                 raw_organisation: 8_500_000,
+                raw_max_organisation: Some(10_000_000),
                 organisation_bucket: 8_500,
                 raw_strength: 96_250_000,
                 strength_bucket: 96_250,
@@ -1699,10 +1974,15 @@ mod tests {
                 army_id: Some(77),
                 raw_experience: Some(1_234_000),
                 raw_max_supply: Some(2_000_000),
+                raw_counter_supply_status: Some(34_999),
                 raw_current_supply: Some(1_750_000),
                 raw_supply_gain: Some(10_000),
                 raw_fuel: Some(88_000),
                 raw_disrupted_supply: Some(39_248),
+                raw_dig_in: Some(1_000_000),
+                raw_dig_in_cap: Some(2_000_000),
+                counter_training_visible: Some(true),
+                counter_dig_in_frame: Some(0),
                 strategic_redeployment: Some(true),
                 current_manpower: Some(8_777),
                 cumulative_losses: Some(1_234),
@@ -1738,6 +2018,10 @@ mod tests {
         assert_eq!(read_u32_le(&payload, row0 + 92), 1);
         assert_eq!(read_u32_le(&payload, row0 + 96), 8_777);
         assert_eq!(read_u32_le(&payload, row0 + 100), 1_234);
+        assert_eq!(read_u32_le(&payload, row0 + 104), 10_000_000);
+        assert_eq!(read_u32_le(&payload, row0 + 108), 34_999);
+        assert_eq!(read_u32_le(&payload, row0 + 112), 1_000_000);
+        assert_eq!(read_u32_le(&payload, row0 + 116), 2_000_000);
         let summary = decode_payload(32, &payload);
         assert!(
             summary.parse_errors.is_empty(),
@@ -1770,6 +2054,14 @@ mod tests {
             summary.data_units_total.get("division_fuel_rows").copied(),
             Some(1)
         );
+        for key in [
+            "division_max_organisation_rows",
+            "division_counter_supply_status_rows",
+            "division_dig_in_rows",
+            "division_dig_in_cap_rows",
+        ] {
+            assert_eq!(summary.data_units_total.get(key).copied(), Some(1), "{key}");
+        }
         for key in [
             "division_disrupted_supply_rows",
             "division_strategic_redeployment_rows",

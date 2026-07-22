@@ -145,15 +145,20 @@ badges.
 Also once per recording (2026-07-09 review): the **active DLC list** —
 resolved DISPLAY names (plus descriptor paths if cheap) — and the
 **localisation language**. DLC gates cosmetic identities (CAN_UK vs
-CAN_ALY etc.; replay consumer `cosmetic_tags_from_resolver_with_dlc` is
-LANDED and defaults to all-DLC-present until fed the real set). Long filed
-as R-DLCLIST in `EXTRACTION_INTERFACE_REQUESTS.md`; folded here so this
+CAN_ALY etc.). The production replay consumer now builds an exact
+`ActiveDlcPresentation` from authenticated `SessionMetadataView.active_dlcs`
+and feeds its display-name predicate to NAME1b; absent or unobtained metadata
+fails closed instead of reverting to the historical all-DLC default. The
+explicit predicate helper remains only for static bundle/law tooling. Long
+filed as R-DLCLIST in `EXTRACTION_INTERFACE_REQUESTS.md`; folded here so this
 list stays the single handoff.
 
-**STATUS (reconciled 2026-07-09): partial extractor-side.** A live session
-header with player/ideology/cosmetic/DLC/start-date/save-version metadata
-exists (`world_fold.rs:1867`, domain 68 fold at `:4536`); speed/pause
-events remain OPEN per their `MASTER_EXTRACTION_CONTRACT.md:143`.
+**STATUS (reconciled 2026-07-22): DLC/language delivery and NAME1b replay
+consumption are closed.** A live session header with
+player/ideology/cosmetic/DLC/start-date/save-version metadata exists; the
+replay loader authenticates the DLC display-name binding into the typed
+session view, and `map_furniture` consumes that exact measured list. The
+separate speed/pause activation evidence remains tracked by X12/D57.
 
 ## 5. Naval supremacy per strategic region (SEA-ZONE BORDERS)
 

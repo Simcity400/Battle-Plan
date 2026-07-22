@@ -64,19 +64,28 @@ fn assert_infantry_land(c: &CounterContent, uid: &str, owner: &str) {
     assert_eq!(c.strength, Some(0.95));
     assert_eq!(c.organisation, Some(42.0));
     assert_eq!(c.str_bar_fraction, Some(0.95));
-    // GAP (A15): no max-org served → no org bar fill, ever.
+    // This legacy fixture carries no authenticated max-org denominator.
     assert_eq!(c.org_bar_fraction, None);
+    assert_eq!(c.max_organisation, None);
+    assert_eq!(c.current_supply, None);
+    assert_eq!(c.max_supply, None);
+    assert_eq!(c.supply_ratio, None);
+    assert_eq!(c.remaining_supply, replay_core::Leaf::Absent);
+    // Experience is a directly recorded scalar and is surfaced as itself; it
+    // is never reused as the engine's evaluated training predicate.
+    assert_eq!(c.experience, Some(0.2));
+    assert_eq!(c.dig_in_fraction, Some(0.3));
+    assert_eq!(c.current_order_kind, replay_core::Leaf::Absent);
+    assert_eq!(c.active_ability_kinds, replay_core::Leaf::Absent);
     assert_eq!(c.count, None);
-    // A15 gap badges are structurally not surfaced (never defaulted).
-    for badge in [
-        c.badges.low_supply,
-        c.badges.dig_in,
-        c.badges.training,
-        c.badges.attrition,
-        c.badges.active_ability,
-    ] {
-        assert_eq!(badge, ServedBadge::NotSurfaced, "{uid} A15 gap badge");
-    }
+    // The row is present but predates the evaluated A15 observations, so the
+    // three row-owned badges are explicitly unavailable this hour. Separate
+    // child-domain badges remain structurally absent.
+    assert_eq!(c.badges.low_supply, ServedBadge::NotSurfaced);
+    assert_eq!(c.badges.dig_in, ServedBadge::AbsentThisHour);
+    assert_eq!(c.badges.training, ServedBadge::AbsentThisHour);
+    assert_eq!(c.badges.attrition, ServedBadge::NotSurfaced);
+    assert_eq!(c.badges.active_ability, ServedBadge::NotSurfaced);
 }
 
 /// GATE U1a — `fx_division_movement`: div 101 (GER) and 201 (SOV) counter
@@ -102,12 +111,9 @@ fn division_movement_land_counter_content_per_pov_per_hour() {
         );
         let d101 = &ger.land[0];
         assert_infantry_land(d101, "101:1", "GER");
-        // moving = tick<8 ; in_combat = 6..=9 (mutate override).
-        assert_eq!(
-            d101.badges.orders,
-            ServedBadge::Measured(tick < 8),
-            "GER 101 orders @tick{tick}"
-        );
+        // This legacy fixture has no D20 primary-order authority. Movement is
+        // not relabelled as an order-link observation.
+        assert_eq!(d101.badges.orders, ServedBadge::NotSurfaced);
         assert_eq!(
             d101.badges.combat,
             ServedBadge::Measured((6..=9).contains(&tick)),
@@ -119,7 +125,7 @@ fn division_movement_land_counter_content_per_pov_per_hour() {
         assert_eq!(sov.land.len(), 1, "SOV land count @tick{tick}");
         let d201 = &sov.land[0];
         assert_infantry_land(d201, "201:1", "SOV");
-        assert_eq!(d201.badges.orders, ServedBadge::Measured(false));
+        assert_eq!(d201.badges.orders, ServedBadge::NotSurfaced);
         assert_eq!(d201.badges.combat, ServedBadge::Measured(false));
 
         // --- ENG POV: no owned units (never fabricated) ---

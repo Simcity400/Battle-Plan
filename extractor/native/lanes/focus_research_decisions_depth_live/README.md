@@ -231,7 +231,7 @@ materializes only after that same-view pair. Use
 `tools/verify_a31_acquisition_receipt.py` for each receipt and
 `tools/verify_a31_fixture_matrix.py` for the stable/transition pair.
 The final display and joint-country leaves are installed by the owner itself;
-run the complete interactive pair through
+run the fully autonomous clean-save pair through
 `../../scripts/Invoke-A31NationalFocusFixturePair.ps1`.
 
 No retained authenticated pair exists. Domain 89 remains reserved and

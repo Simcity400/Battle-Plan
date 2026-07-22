@@ -83,8 +83,12 @@ independent library tests concurrently (the installed-file test is exercised by
 production verification).
 Those results prove the isolated carrier and catalog behavior from that frozen
 slice. Root-owned central Final/All validation has passed and is hash-bound by
-the current contract; one real pointer observation remains required before the
-production manifest can become promotion authority.
+the current contract. The remaining real pointer observation is now a fully
+autonomous root-owned acquisition: the machine action driver resets any stale
+foreground baseline, holds one authenticated interior client point, moves to a
+second point for the exact one-hour pulse, and an
+independent verifier recomputes both the selected-Present seal and the v3 input
+observation digest before it can emit a create-new admission.
 
 The current static closure is bound to these exact canonical-LF identities:
 
@@ -119,9 +123,9 @@ extractor ledger also currently contains duplicate A29 and A31 identifiers;
 XUI25 therefore uses the next unused identifier, A32, and does not rewrite
 other agents' rows.
 
-**Implementation residual:** acquire one real foreground in-client pointer
-movement from a capture-loop sample to the later immutable in-hook
-selected-Present sample, and
-refreeze the manifest from that receipt. A32 launch-bound
+**Execution residual:** run
+`extractor/native/scripts/Invoke-A32PointerVariantAcquisition.ps1`, then pass
+its immutable admission to `XUI25/refreeze_from_a32_admission.py`. No person is
+needed to move the pointer or choose a UI target. A32 launch-bound
 display/language identity remains integrated. Non-pointer traversal is
 explicitly unsupported, not inferred.

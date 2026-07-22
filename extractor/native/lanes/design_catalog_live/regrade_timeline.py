@@ -6,18 +6,40 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 
 SCHEMA = "extractor.a27.live_heap_catalog_timeline.a729.v1"
 PROGRAM_SHA256 = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
 PROGRAM = "hoi4.exe 1.19.2.0.a729"
 DATE_EPOCH_RAW = 43_799_999
+AUTHENTICATED_D04_TARGET_STABLE_ID = "371:52"
 
 
 def canonical_bytes(value: object) -> bytes:
     return json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
+
+
+def write_create_new_json(path: Path, value: object) -> None:
+    """Durably publish an immutable report without replacing prior evidence."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        raise FileExistsError(f"refusing to replace A27 regrade receipt: {path}")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2).encode(
+        "utf-8"
+    )
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.rename(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def stable_rows(snapshot: dict) -> dict[str, dict]:
@@ -56,6 +78,60 @@ def semantic_row(row: dict) -> dict:
         key: value
         for key, value in pointer_free(row).items()
         if key != "catalog_scan_ordinal"
+    }
+
+
+def changed_paths(before: object, after: object, prefix: str = "") -> list[str]:
+    """Return deterministic leaf paths changed by one native-row upsert."""
+    if isinstance(before, dict) and isinstance(after, dict):
+        paths = []
+        for key in sorted(set(before) | set(after)):
+            path = f"{prefix}.{key}" if prefix else key
+            if key not in before or key not in after:
+                paths.append(path)
+            else:
+                paths.extend(changed_paths(before[key], after[key], path))
+        return paths
+    if before != after:
+        return [prefix]
+    return []
+
+
+def classify_mutation(before: dict, after: dict) -> dict:
+    paths = changed_paths(semantic_row(before), semantic_row(after))
+    before_obsolete = before.get("obsolete")
+    after_obsolete = after.get("obsolete")
+    before_definition = before.get("definition", {})
+    after_definition = after.get("definition", {})
+    name_paths = {
+        "definition.name",
+        "definition.name_utf8_hex",
+        "definition.display_name",
+        "definition.display_name_utf8_hex",
+        "definition.variant_name",
+        "definition.variant_name_utf8_hex",
+    }
+    classes = []
+    if any(path in name_paths for path in paths):
+        classes.append("rename")
+    if before_obsolete is not True and after_obsolete is True:
+        classes.append("obsolete")
+    if before_obsolete is True and after_obsolete is not True:
+        classes.append("reactivate")
+    if any(path not in name_paths | {"obsolete", "definition.obsolete"} for path in paths):
+        classes.append("edit")
+    return {
+        "stable_id": f"{after['id']}:{after['type']}",
+        "classes": classes,
+        "changed_paths": paths,
+        "before_name": before_definition.get("name")
+        or before_definition.get("display_name")
+        or before_definition.get("variant_name"),
+        "after_name": after_definition.get("name")
+        or after_definition.get("display_name")
+        or after_definition.get("variant_name"),
+        "before_obsolete": before_obsolete,
+        "after_obsolete": after_obsolete,
     }
 
 
@@ -103,6 +179,8 @@ def grade(
     last_hour: int | None,
     require_mutation: bool = False,
     minimum_captures: int = 1,
+    action_receipt: dict | None = None,
+    required_transactions: tuple[str, ...] = (),
 ) -> dict:
     errors = []
     transitions = []
@@ -200,6 +278,10 @@ def grade(
                 if semantic_row(rows[stable_id])
                 != semantic_row(previous_rows[stable_id])
             )
+            mutation_details = [
+                classify_mutation(previous_rows[stable_id], rows[stable_id])
+                for stable_id in mutated
+            ]
             transitions.append(
                 {
                     "sequence": sequence,
@@ -208,6 +290,7 @@ def grade(
                     "created": created,
                     "tombstones": tombstones,
                     "mutated": mutated,
+                    "mutation_details": mutation_details,
                     "ordered_design_ids": list(rows),
                 }
             )
@@ -240,13 +323,116 @@ def grade(
         for transition in transitions
     ):
         errors.append("required design mutation was not observed")
+    action_windows = timeline.get("action_windows", [])
+    if (
+        (action_windows or required_transactions or "action_window_count" in timeline)
+        and timeline.get("action_window_count") != len(action_windows)
+    ):
+        errors.append("timeline action-window summary disagrees with retained windows")
+    transaction_proofs = []
+    if required_transactions:
+        if not isinstance(action_receipt, dict):
+            errors.append("required authenticated action receipt is missing")
+        elif (
+            action_receipt.get("schema")
+            != "extractor.a27.authenticated_designer_transaction_receipt.v1"
+            or action_receipt.get("status") != "complete"
+            or action_receipt.get("executable_sha256") != PROGRAM_SHA256
+            or action_receipt.get("expected_target_stable_id")
+            != AUTHENTICATED_D04_TARGET_STABLE_ID
+            or action_receipt.get("process_id") != authority.get("pid")
+        ):
+            errors.append("authenticated action receipt identity/status is invalid")
+        else:
+            receipt_transactions = action_receipt.get("transactions", [])
+            if not isinstance(receipt_transactions, list):
+                errors.append("authenticated action receipt transactions are invalid")
+                receipt_transactions = []
+            if len(receipt_transactions) != len(action_windows):
+                errors.append("action receipt/window count mismatch")
+            transition_by_hour = {item["to_hour"]: item for item in transitions}
+            for sequence, required in enumerate(required_transactions):
+                if sequence >= len(receipt_transactions) or sequence >= len(action_windows):
+                    errors.append(f"missing authenticated {required} transaction {sequence}")
+                    continue
+                receipt_item = receipt_transactions[sequence]
+                window = action_windows[sequence]
+                transition = transition_by_hour.get(window.get("to_hour"))
+                identity_fields = (
+                    "sequence",
+                    "transaction",
+                    "from_hour",
+                    "to_hour",
+                    "profile_sha256",
+                    "request_sha256",
+                    "ready_sha256",
+                    "release_sha256",
+                )
+                if (
+                    required not in {"rename", "edit", "obsolete", "reactivate"}
+                    or receipt_item.get("transaction") != required
+                    or window.get("transaction") != required
+                    or any(receipt_item.get(key) != window.get(key) for key in identity_fields)
+                    or window.get("profile_sha256")
+                    != action_receipt.get("profile_sha256")
+                    or window.get("censuses_suspended_between_hours") is not True
+                ):
+                    errors.append(f"authenticated {required} transaction binding is invalid")
+                    continue
+                matching = [] if transition is None else [
+                    detail
+                    for detail in transition.get("mutation_details", [])
+                    if required in detail.get("classes", [])
+                ]
+                if not matching:
+                    errors.append(
+                        f"authenticated {required} action produced no exact same-ID {required} mutation"
+                    )
+                    continue
+                proof = {
+                    "sequence": sequence,
+                    "transaction": required,
+                    "from_hour": window["from_hour"],
+                    "to_hour": window["to_hour"],
+                    "matching_native_mutations": matching,
+                    "request_sha256": window["request_sha256"],
+                    "ready_sha256": window["ready_sha256"],
+                    "release_sha256": window["release_sha256"],
+                }
+                transaction_proofs.append(proof)
+            observed_kinds = [item.get("transaction") for item in receipt_transactions]
+            if observed_kinds != list(required_transactions):
+                errors.append("authenticated action order differs from required transaction order")
+            if len(transaction_proofs) == len(required_transactions):
+                common_stable_ids = set(
+                    item["stable_id"]
+                    for item in transaction_proofs[0]["matching_native_mutations"]
+                )
+                for proof in transaction_proofs[1:]:
+                    common_stable_ids &= {
+                        item["stable_id"]
+                        for item in proof["matching_native_mutations"]
+                    }
+                if not common_stable_ids:
+                    errors.append(
+                        "rename/edit/obsolete/reactivate were not proven on one common stable design identity"
+                    )
+                else:
+                    expected_target = action_receipt.get("expected_target_stable_id")
+                    if expected_target not in common_stable_ids:
+                        errors.append(
+                            "four transaction classes did not target the profile-pinned stable design identity"
+                        )
+                    for proof in transaction_proofs:
+                        proof["common_stable_design_ids"] = sorted(common_stable_ids)
     return {
-        "schema": "extractor.a27.live_heap_catalog_timeline_regrade.v1",
+        "schema": "extractor.a27.live_heap_catalog_timeline_regrade.v2",
         "status": "PASS" if not errors else "FAIL",
         "errors": errors,
         "capture_count": len(captures),
         "rejected_observations": timeline.get("rejected_observations", []),
         "transitions": transitions,
+        "transaction_proofs": transaction_proofs,
     }
 
 
@@ -258,22 +444,40 @@ def main(argv=None) -> int:
     parser.add_argument("--last-hour", type=int)
     parser.add_argument("--require-mutation", action="store_true")
     parser.add_argument("--minimum-captures", type=int, default=1)
+    parser.add_argument("--action-receipt", type=Path)
+    parser.add_argument(
+        "--require-transaction",
+        action="append",
+        choices=("rename", "edit", "obsolete", "reactivate"),
+        default=[],
+    )
     args = parser.parse_args(argv)
     if args.minimum_captures < 1:
         parser.error("--minimum-captures must be positive")
     timeline = json.loads(args.timeline.read_text(encoding="utf-8"))
+    action_receipt = (
+        json.loads(args.action_receipt.read_text(encoding="utf-8"))
+        if args.action_receipt is not None
+        else None
+    )
     report = grade(
         timeline,
         args.first_hour,
         args.last_hour,
         require_mutation=args.require_mutation,
         minimum_captures=args.minimum_captures,
+        action_receipt=action_receipt,
+        required_transactions=tuple(args.require_transaction),
     )
-    args.report_out.parent.mkdir(parents=True, exist_ok=True)
-    args.report_out.write_text(
-        json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2),
-        encoding="utf-8",
-    )
+    report["input_artifacts"] = {
+        "timeline_sha256": hashlib.sha256(args.timeline.read_bytes()).hexdigest(),
+        "action_receipt_sha256": (
+            hashlib.sha256(args.action_receipt.read_bytes()).hexdigest()
+            if args.action_receipt is not None
+            else None
+        ),
+    }
+    write_create_new_json(args.report_out, report)
     print(
         f"{report['status']}: {report['capture_count']} authenticated hourly A27 censuses"
     )

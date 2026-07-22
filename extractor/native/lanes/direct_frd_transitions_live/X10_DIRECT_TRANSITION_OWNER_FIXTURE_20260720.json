@@ -1,6 +1,6 @@
 {
   "schema": "hoi4.x10.direct_transition_owner_fixture.v1",
-  "status": "external_state_required",
+  "status": "autonomous_acquisition_ready_live_execution_required",
   "binary": {
     "version": "hoi4.exe 1.19.2.0.a729",
     "image_base": "0x140000000",
@@ -71,10 +71,21 @@
     "clean_final_drain": true,
     "zero_hook_diagnostics_errors": true
   },
-  "human_input": [
-    "launch or authorize one exact-a729 fixture session",
-    "select the named targeted decision row only if harness automation cannot select it"
-  ],
+  "autonomous_acquisition": {
+    "runner": "extractor/native/scripts/Invoke-X10DirectTransitionOwnerFixture.ps1",
+    "action_driver": "extractor/native/scripts/Invoke-X10AuthenticatedFixtureActions.ps1",
+    "verifier": "extractor/native/lanes/direct_frd_transitions_live/tools/verify_x10_owner_fixture.py",
+    "action_profile_schema": "hoi4.x10.autonomous-owner-fixture-actions.v1",
+    "action_receipt_schema": "hoi4.x10.authenticated-owner-fixture-action-receipt.v1",
+    "verification_receipt_schema": "hoi4.x10.direct-transition-owner-fixture-verification.v1",
+    "requires_clean_suspended_early_launch": true,
+    "evidence_gate_is_child_process_scoped": true,
+    "restores_continue_game_state": true,
+    "requires_central_release_attestation": true,
+    "requires_finalized_static_bundle_token_join": true,
+    "immutable_create_new_verification_receipt": true
+  },
+  "human_input": [],
   "out_of_scope_owners": {
     "delayed_event_lifecycle": "D64/A19",
     "popup_materialization": "D75",

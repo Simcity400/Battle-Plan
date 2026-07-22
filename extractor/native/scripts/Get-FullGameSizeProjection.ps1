@@ -252,7 +252,7 @@ function Invoke-SizeProjectionSelfTest {
         }
         $badDir = Join-Path $tmp "bad"
         New-Item -ItemType Directory -Path $badDir -Force | Out-Null
-        $badManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $badDir "native_session_manifest.json") -Encoding UTF8
+        Write-AtomicJson -Path (Join-Path $badDir "native_session_manifest.json") -Value $badManifest -Depth 8
         $threw2 = $false
         try { Invoke-SizeProjection -RunDir $badDir -FullGameHours 400 -OutFile (Join-Path $badDir "p.json") | Out-Null }
         catch { $threw2 = $true }
@@ -268,7 +268,7 @@ function Invoke-SizeProjectionSelfTest {
             game_hours_advanced = 4
             stream_storage      = [ordered]@{ compression = "zstd"; decoded_bytes = 8000; stored_bytes = 2048 }
         }
-        $missManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $missDir "native_session_manifest.json") -Encoding UTF8
+        Write-AtomicJson -Path (Join-Path $missDir "native_session_manifest.json") -Value $missManifest -Depth 8
         $threw3 = $false
         try { Invoke-SizeProjection -RunDir $missDir -FullGameHours 400 -OutFile (Join-Path $missDir "p.json") | Out-Null }
         catch { $threw3 = $true }
@@ -285,7 +285,7 @@ function Invoke-SizeProjectionSelfTest {
             game_hours_advanced = 4
             stream_storage      = [ordered]@{ compression = "zstd"; decoded_bytes = 8000; stored_bytes = 999 }
         }
-        $mismatchManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $mismatchDir "native_session_manifest.json") -Encoding UTF8
+        Write-AtomicJson -Path (Join-Path $mismatchDir "native_session_manifest.json") -Value $mismatchManifest -Depth 8
         $threw4 = $false
         $mismatchMsg = ""
         try { Invoke-SizeProjection -RunDir $mismatchDir -FullGameHours 400 -OutFile (Join-Path $mismatchDir "p.json") | Out-Null }
@@ -304,7 +304,7 @@ function Invoke-SizeProjectionSelfTest {
             game_hours_advanced = 4
             stream_storage      = [ordered]@{ compression = "zstd"; decoded_bytes = 8000; stored_bytes = 2048 }
         }
-        $noRawManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $noRawDir "native_session_manifest.json") -Encoding UTF8
+        Write-AtomicJson -Path (Join-Path $noRawDir "native_session_manifest.json") -Value $noRawManifest -Depth 8
         $noRawOut = Join-Path $noRawDir "p.json"
         $threw5 = $false
         $noRawMsg = ""
@@ -323,7 +323,7 @@ function Invoke-SizeProjectionSelfTest {
             game_hours_advanced = 4
             stream_storage      = [ordered]@{ compression = "zstd"; decoded_bytes = 8000; stored_bytes = 2048 }
         }
-        $nullRawManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $nullRawDir "native_session_manifest.json") -Encoding UTF8
+        Write-AtomicJson -Path (Join-Path $nullRawDir "native_session_manifest.json") -Value $nullRawManifest -Depth 8
         $threw6 = $false
         try { Invoke-SizeProjection -RunDir $nullRawDir -FullGameHours 400 -OutFile (Join-Path $nullRawDir "p.json") | Out-Null }
         catch { $threw6 = $true }
@@ -344,7 +344,7 @@ function Invoke-SizeProjectionSelfTest {
             game_hours_advanced = 4
             stream_storage      = [ordered]@{ compression = "zstd"; decoded_bytes = 8000; stored_bytes = 2048 }
         }
-        $escManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $escDir "native_session_manifest.json") -Encoding UTF8
+        Write-AtomicJson -Path (Join-Path $escDir "native_session_manifest.json") -Value $escManifest -Depth 8
         $escOut = Join-Path $escDir "p.json"
         $threw7 = $false
         $escMsg = ""
@@ -365,7 +365,7 @@ function Invoke-SizeProjectionSelfTest {
             game_hours_advanced = 4
             stream_storage      = [ordered]@{ compression = "zstd"; decoded_bytes = 8000; stored_bytes = 2048 }
         }
-        $absManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $absDir "native_session_manifest.json") -Encoding UTF8
+        Write-AtomicJson -Path (Join-Path $absDir "native_session_manifest.json") -Value $absManifest -Depth 8
         $threw8 = $false
         try { Invoke-SizeProjection -RunDir $absDir -FullGameHours 400 -OutFile (Join-Path $absDir "p.json") | Out-Null }
         catch { $threw8 = $true }
@@ -382,7 +382,7 @@ function Invoke-SizeProjectionSelfTest {
             game_hours_advanced = 4
             stream_storage      = [ordered]@{ compression = "zstd"; decoded_bytes = 8000; stored_bytes = 2048 }
         }
-        $subManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $subDir "native_session_manifest.json") -Encoding UTF8
+        Write-AtomicJson -Path (Join-Path $subDir "native_session_manifest.json") -Value $subManifest -Depth 8
         $subResult = Invoke-SizeProjection -RunDir $subDir -FullGameHours 400 -OutFile (Join-Path $subDir "p.json")
         Assert-True ($subResult.inputs.observed_stream_file_bytes -eq 2048) "an in-RunDir subdirectory raw_stream must be accepted and cross-checked"
     } finally {

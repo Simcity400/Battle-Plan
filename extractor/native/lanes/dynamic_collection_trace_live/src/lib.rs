@@ -6,6 +6,7 @@
 //! remains unschedulable until the retained zero-gap fixture set is complete.
 
 pub mod a729_controller_observation;
+pub mod a729_air_mio_controller;
 #[cfg(windows)]
 pub mod a729_facility_smooth_list_hook;
 #[cfg(windows)]

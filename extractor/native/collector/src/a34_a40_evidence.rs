@@ -183,16 +183,55 @@ pub struct A36ActiveAbilityDrain {
 pub struct A36PortableJoinReceipt {
     pub controller_sequence: u64,
     pub catalog_epoch: u64,
+    pub observation_game_hour_raw: i32,
     pub frame_hour: u64,
     pub elapsed_wall_ms: u64,
+    pub tooltip_sequences: Vec<u64>,
+    pub tooltip_game_hours_raw: Vec<i32>,
     pub selected_context_runtime: usize,
     pub country_tag: String,
     pub context_kind: active_command_abilities_live_lane::SelectedContextKind,
     pub stable_context_id: u64,
     pub division_ids_by_leader_runtime: Vec<(usize, Vec<u32>)>,
     pub abl1_len: u64,
+    pub abl1_hex: String,
     pub abl1_sha256: String,
     pub row_count: u32,
+    pub abl1_rows: Vec<A36PortableAbilityRowReceipt>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct A36PortableTimerReceipt {
+    pub kind: &'static str,
+    pub hours: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct A36PortableAbilityRowReceipt {
+    pub ability_id: String,
+    pub available: bool,
+    pub active: bool,
+    pub activation_hour: Option<u64>,
+    pub cooldown_total: A36PortableTimerReceipt,
+    pub cooldown_remaining: A36PortableTimerReceipt,
+    pub duration_total: A36PortableTimerReceipt,
+    pub duration_remaining: A36PortableTimerReceipt,
+    pub cost_command_power_fixed: i64,
+    pub display_order: u32,
+    pub tooltip: String,
+    pub disabled_reason: Option<String>,
+    pub affected_division_ids: Vec<String>,
+}
+
+fn a36_timer_receipt(
+    value: active_command_abilities_live_lane::TimerValue,
+) -> A36PortableTimerReceipt {
+    use active_command_abilities_live_lane::TimerValue;
+    match value {
+        TimerValue::NotStarted => A36PortableTimerReceipt { kind: "not_started", hours: None },
+        TimerValue::Indefinite => A36PortableTimerReceipt { kind: "indefinite", hours: None },
+        TimerValue::Hours(hours) => A36PortableTimerReceipt { kind: "hours", hours: Some(hours) },
+    }
 }
 
 /// Evidence-only owner for A36 selected-context ability refresh and tooltip
@@ -282,8 +321,40 @@ impl A36ActiveAbilityEvidenceOwner {
             &source,
             frame_hour,
         )?;
+        let tooltip_sequences = source.tooltip_sequences().to_vec();
+        let tooltip_game_hours_raw = tooltip_sequences
+            .iter()
+            .map(|sequence| {
+                tooltips
+                    .iter()
+                    .find(|tooltip| tooltip.sequence == *sequence)
+                    .map(|tooltip| tooltip.observed_game_hour_raw)
+                    .ok_or_else(|| "A36 portable join lost its exact tooltip sequence".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if tooltip_game_hours_raw
+            .iter()
+            .any(|hour| *hour != controller.observed_game_hour_raw)
+        {
+            return Err("A36 portable join tooltip hour differs from retained refresh".into());
+        }
         let abl1 = active_command_abilities_live_lane::encode_payload(&frame)
             .map_err(|error| format!("A36 evidence ABL1 encode failed: {error:?}"))?;
+        let abl1_rows = frame.rows.iter().map(|row| A36PortableAbilityRowReceipt {
+            ability_id: row.ability_id.clone(),
+            available: row.available,
+            active: row.active,
+            activation_hour: row.activation_hour,
+            cooldown_total: a36_timer_receipt(row.cooldown_total),
+            cooldown_remaining: a36_timer_receipt(row.cooldown_remaining),
+            duration_total: a36_timer_receipt(row.duration_total),
+            duration_remaining: a36_timer_receipt(row.duration_remaining),
+            cost_command_power_fixed: row.cost_command_power_fixed,
+            display_order: row.display_order,
+            tooltip: row.tooltip.clone(),
+            disabled_reason: row.disabled_reason.clone(),
+            affected_division_ids: row.affected_division_ids.clone(),
+        }).collect::<Vec<_>>();
         let selected_context_runtime = [
             controller.selected_leader_runtime,
             controller.selected_army_group_runtime,
@@ -306,16 +377,21 @@ impl A36ActiveAbilityEvidenceOwner {
         self.portable_joins.push(A36PortableJoinReceipt {
             controller_sequence: controller.sequence,
             catalog_epoch: catalog.epoch,
+            observation_game_hour_raw: controller.observed_game_hour_raw,
             frame_hour,
             elapsed_wall_ms,
+            tooltip_sequences,
+            tooltip_game_hours_raw,
             selected_context_runtime,
             country_tag: context.country_tag.clone(),
             context_kind: context.kind,
             stable_context_id: context.stable_id,
             division_ids_by_leader_runtime: divisions,
             abl1_len: abl1.len().try_into().map_err(|_| "A36 ABL1 length exceeds u64")?,
+            abl1_hex: abl1.iter().map(|byte| format!("{byte:02x}")).collect(),
             abl1_sha256: format!("{:x}", Sha256::digest(&abl1)),
             row_count: frame.rows.len().try_into().map_err(|_| "A36 row count exceeds u32")?,
+            abl1_rows,
         });
         self.portable_joins
             .sort_by_key(|receipt| receipt.controller_sequence);

@@ -1,4 +1,4 @@
-# A31 owner-runnable acquisition closeout
+# A31 autonomous acquisition closeout
 
 The missing A31 reachability seam is now implemented without scheduling d89.
 The injected collector owns a concrete `A31FixtureAcquisitionOwner`; it installs
@@ -36,7 +36,7 @@ percentage is captured by the owner's byte-gated relay at the proven
 treated as equivalent. The exact joint-country positive call at
 `0x141379E5F` is joined to its enclosing item-producer detour, while producer
 entry records measured absence. A missed helper leaf therefore cannot
-impersonate hidden. The owner runner keeps the national-focus panel closed
+impersonate hidden. The autonomous runner closes the national-focus panel
 during exact-site install and teardown, so those two mid-function boundaries
 are quiescent while their byte-gated patches change. Its receipts require an
 actual positive joint-country callsite observation; recording the producer's
@@ -70,7 +70,9 @@ record, independently decodes the full NFP1 payload, checks every identity and
 item invariant, proves the refresh preceded the selected Present, and requires
 nonzero invocation counts for every hook family.
 
-d89 remains reserved and unschedulable. The only remaining gate is the live
-fixture already listed in H-A31: one complete stable focus-view frame and one
-discriminating state/transient transition, captured and regraded by
-`Invoke-A31NationalFocusFixturePair.ps1` after central validation.
+d89 remains reserved and unschedulable. The live gate is now fully unattended:
+`Invoke-A31NationalFocusFixturePair.ps1` clean-launches the frozen New D04 save,
+authenticates paused readiness, switches to the save-proven SWE tree, discovers
+its `CCountry` address through the exact country database/CGameState table,
+opens the focus view, applies the pinned `SWE_infrastructure` transition, and
+emits a create-new admission after both receipt and pair regraders pass.

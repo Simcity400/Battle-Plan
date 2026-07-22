@@ -49,16 +49,11 @@ def _strict_object(path: Path) -> dict[str, Any]:
     return value
 
 
-def _validate_ui14_capture_binding(
-    *, capture_root: Path, process: dict[str, Any], ui14: dict[str, Any],
+def _validate_ui14_capture_binding_paths(
+    *, manifest_path: Path, active_path: Path, ready_path: Path, trace_path: Path,
+    process: dict[str, Any], ui14: dict[str, Any],
 ) -> dict[str, Any]:
-    """Join the supplied UI14 receipt to the selected live process and raw trace."""
-    root = capture_root.resolve()
-    manifest_path = root / "manifest.json"
-    active_path = root / "configuration" / "dlc_load.active.json"
-    cpu = root / "cpu"
-    ready_path = cpu / "cpu_capture_ready.json"
-    trace_path = cpu / "cpu_state.jsonl"
+    """Join four retained UI14 artifacts to one captured process and raw trace."""
     if (not manifest_path.is_file() or not active_path.is_file()
             or not ready_path.is_file() or not trace_path.is_file()):
         raise LR.ResolutionError(
@@ -155,6 +150,21 @@ def _validate_ui14_capture_binding(
         "trace_event_count": len(events),
         "matched_mod_descriptor_count": len(ui14["layers"]),
     }
+
+
+def _validate_ui14_capture_binding(
+    *, capture_root: Path, process: dict[str, Any], ui14: dict[str, Any],
+) -> dict[str, Any]:
+    """Join a capture-root UI14 receipt to its process and raw trace."""
+    root = capture_root.resolve()
+    return _validate_ui14_capture_binding_paths(
+        manifest_path=root / "manifest.json",
+        active_path=root / "configuration" / "dlc_load.active.json",
+        ready_path=root / "cpu" / "cpu_capture_ready.json",
+        trace_path=root / "cpu" / "cpu_state.jsonl",
+        process=process,
+        ui14=ui14,
+    )
 
 
 def _pairs_or_error(pairs: list[tuple[str, Any]], line_number: int) -> dict[str, Any]:
@@ -506,8 +516,33 @@ def prepare(
             "executable, userdir, UI14 engine-VFS receipt and UI14 capture root must exist"
         )
 
+    # The raw capture receipt, rather than process liveness after capture, is
+    # the authority for the captured process identity.  This permits a
+    # fail-closed postmortem preparation if the game exits after the DLL has
+    # durably flushed its process-bound UI14 artifacts.  The complete nonce,
+    # manifest, active-config and trace joins are rechecked below.
+    captured_ready = _strict_object(
+        ui14_capture_root.resolve() / "cpu" / "cpu_capture_ready.json"
+    )
+    creation_filetime = captured_ready.get("process_creation_filetime_utc")
+    if (captured_ready.get("schema") != "hoi4-rendering-law-cpu-capture-ready-v1"
+            or captured_ready.get("executable_sha256") != LR.EXPECTED_EXE_SHA256
+            or captured_ready.get("process_id") != pid
+            or not isinstance(creation_filetime, int)
+            or isinstance(creation_filetime, bool)
+            or creation_filetime <= 0):
+        raise LR.ResolutionError(
+            "UI14 capture-ready receipt cannot originate the selected process identity"
+        )
+    process = {
+        "pid": pid,
+        "exe": str(exe),
+        "creation_filetime_utc": creation_filetime,
+        "created_utc": LR._filetime_to_datetime(
+            creation_filetime & 0xFFFFFFFF, creation_filetime >> 32
+        ),
+    }
     bindings_dir = output / "bindings"
-    process = LR.query_process(pid)
     LR.resolve_live_bindings(
         exe=exe,
         userdir=userdir,
@@ -572,9 +607,65 @@ def prepare_offline(*, exe: Path, bindings: Path, output: Path) -> dict[str, Any
         pass
     else:
         raise LR.ResolutionError("offline output cannot be nested inside its binding corpus")
+    # A six-document binding set alone proves content, not how the engine
+    # selected it.  Offline reuse is admitted only from a prior live-prepared
+    # handoff that retained the four raw process-bound UI14 artifacts and the
+    # corresponding resolution-report join.
+    report, _product_modset = _validate_binding_corpus(exe, bindings)
+    source_evidence = bindings.parent / "ui14_capture_evidence"
+    evidence_paths = {
+        "manifest": source_evidence / "manifest.json",
+        "active_config": source_evidence / "dlc_load.active.json",
+        "ready": source_evidence / "cpu_capture_ready.json",
+        "trace": source_evidence / "cpu_state.jsonl",
+    }
+    ui14_binding = report.get("ui14_capture_binding")
+    if not isinstance(ui14_binding, dict) or not all(
+        path.is_file() for path in evidence_paths.values()
+    ):
+        raise LR.ResolutionError(
+            "offline binding corpus has no retained process-bound UI14 evidence"
+        )
+    process = report.get("process")
+    if not isinstance(process, dict):
+        raise LR.ResolutionError("offline binding corpus has no captured process identity")
+    computed_binding = _validate_ui14_capture_binding_paths(
+        manifest_path=evidence_paths["manifest"],
+        active_path=evidence_paths["active_config"],
+        ready_path=evidence_paths["ready"],
+        trace_path=evidence_paths["trace"],
+        process=process,
+        ui14=SB.load_object(bindings / "ui14_engine_vfs.json", "capture UI14 receipt"),
+    )
+    retained_core = {
+        key: value for key, value in ui14_binding.items()
+        if key not in {"manifest_file", "active_config_file", "ready_file", "trace_file"}
+    }
+    if retained_core != computed_binding:
+        raise LR.ResolutionError(
+            "offline UI14 evidence differs from its process-bound resolution report"
+        )
+
     output.mkdir(parents=True, exist_ok=False)
     copied_bindings = output / "bindings"
     corpus = _copy_binding_corpus(bindings, copied_bindings)
+    copied_evidence = output / "ui14_capture_evidence"
+    copied_evidence.mkdir(parents=True, exist_ok=False)
+    for role, source in evidence_paths.items():
+        before = source.read_bytes()
+        after = source.read_bytes()
+        if before != after:
+            raise LR.ResolutionError(f"offline UI14 evidence changed while copying {role}")
+        destination_name = {
+            "manifest": "manifest.json",
+            "active_config": "dlc_load.active.json",
+            "ready": "cpu_capture_ready.json",
+            "trace": "cpu_state.jsonl",
+        }[role]
+        destination = copied_evidence / destination_name
+        destination.write_bytes(before)
+        if destination.read_bytes() != before:
+            raise LR.ResolutionError(f"copied offline UI14 evidence changed for {role}")
     return _complete_preparation(
         exe=exe,
         bindings_dir=copied_bindings,

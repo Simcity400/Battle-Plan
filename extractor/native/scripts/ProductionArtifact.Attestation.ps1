@@ -81,7 +81,25 @@ function Get-ProductionRustInputDigest {
         (Join-Path $repo "extractor\game_defs\prepare_product_modset_capture.py"),
         (Join-Path $repo "extractor\game_defs\materialize_ui14_engine_vfs.py"),
         (Join-Path $repo "extractor\game_defs\verify_product_modset_capture_ready.py"),
-        (Join-Path $repo "replay_interface\re_evidence\rendering_laws\XN15L\verify_xn15l_live.py")
+        (Join-Path $repo "replay_interface\re_evidence\rendering_laws\XN15L\verify_xn15l_live.py"),
+        (Join-Path $repo "replay_interface\re_evidence\rendering_laws\XN15L\verify_xn15l_composed.py"),
+        (Join-Path $repo "extractor\native\scripts\Invoke-XN15LComposedAcquisition.ps1"),
+        # The combined unattended D44+CAP6 transaction executes these helpers
+        # and verifier outside extractor/native. Bind them into the same
+        # centralized Release source digest as the recorder and collector.
+        (Join-Path $repo "replay_interface\re_evidence\rendering_laws\capture_harness\authenticated_wait_for_paused_save.ps1"),
+        (Join-Path $repo "replay_interface\re_evidence\rendering_laws\capture_harness\authenticated_strong_key_hover.ps1"),
+        (Join-Path $repo "replay_interface\re_evidence\rendering_laws\capture_harness\authenticated_one_hour_pulse.ps1"),
+        (Join-Path $repo "replay_interface\re_evidence\rendering_laws\CAP6\authenticated_ensure_paused.ps1"),
+        (Join-Path $repo "replay_interface\re_evidence\rendering_laws\CAP6\verify_live_final_d3d_receipt.py"),
+        # The combined B4/B5/B7 production owner executes these read-only
+        # memory observers and the independent B4 regrader outside the native
+        # source root. A centralized Release receipt must therefore become
+        # stale whenever any of their exact decoding/admission logic changes.
+        (Join-Path $repo "extractor\re_evidence\B4_B5_B7_OFFLINE_ORACLES\capture_b4_sunk_convoy_fixture.py"),
+        (Join-Path $repo "extractor\re_evidence\B4_B5_B7_OFFLINE_ORACLES\verify_b4_sunk_convoy_fixture.py"),
+        (Join-Path $repo "extractor\re_evidence\B4_B5_B7_OFFLINE_ORACLES\capture_and_verify_h_b5.py"),
+        (Join-Path $repo "extractor\re_evidence\B4_B5_B7_OFFLINE_ORACLES\capture_and_verify_h_b7.py")
     )) {
         if (-not (Test-Path -LiteralPath $extra -PathType Leaf)) { continue }
         $full = [System.IO.Path]::GetFullPath($extra)
@@ -99,7 +117,7 @@ function Get-ProductionRustInputDigest {
         schema = "battle-plan.production_rust_input_digest.v1"
         sha256 = $digest
         file_count = $records.Count
-        selection = "extractor/native and portable_replay/native Rust/C/Cargo/data/Python/PowerShell inputs plus repository Cargo/toolchain/nextest configuration and exact external product-modset/XN15L verifier inputs; Cargo output roots excluded"
+        selection = "extractor/native and portable_replay/native Rust/C/Cargo/data/Python/PowerShell inputs plus repository Cargo/toolchain/nextest configuration and exact external product-modset/XN15L/combined-capture helper and verifier inputs; Cargo output roots excluded"
     }
 }
 

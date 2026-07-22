@@ -54,7 +54,7 @@
       "encode exact NFP1 in evidence mode",
       "sync NFP1 then commit authenticated JSON receipt"
     ],
-    "site_quiescence": "interactive runner requires the national-focus panel closed for exact mid-function install and teardown",
+    "site_quiescence": "autonomous runner closes the national-focus panel for exact mid-function install and teardown",
     "joint_positive_witness": "each receipt requires a real 0x141379e5f callback; producer hidden defaults do not increment the callsite counter"
   },
   "ordering": {
@@ -72,13 +72,15 @@
     "evidence_encoder": "compact_contract::national_focus_presentation::encode_payload",
     "regrader": "tools/verify_a31_acquisition_receipt.py",
     "stable_transition_regrader": "tools/verify_a31_fixture_matrix.py",
-    "interactive_owner_runner": "extractor/native/scripts/Invoke-A31NationalFocusFixturePair.ps1"
+    "autonomous_owner_runner": "extractor/native/scripts/Invoke-A31NationalFocusFixturePair.ps1",
+    "action_profile": "extractor/documents/dossiers/A31_AUTONOMOUS_NATIONAL_FOCUS_ACTIONS_1920X1080.json",
+    "immutable_admission": "tools/verify_a31_autonomous_admission.py"
   },
   "activation": {
     "domain_id": 89,
     "production_scheduling_enabled": false,
     "live_fixture_accepted": false,
-    "reason": "The owner is runnable, but no authenticated stable plus discriminating transition receipt has passed the root-owned regrader."
+    "reason": "The owner is fully autonomous, but no authenticated stable plus discriminating transition receipt has passed the root-owned regrader."
   },
   "validation": {
     "subagent_builds_or_tests_run": false,

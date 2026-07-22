@@ -12,10 +12,16 @@ param(
     [string] $CollectorDll,
     [Parameter(Mandatory = $true, ParameterSetName = 'Capture')]
     [string] $OutDir,
+    [Parameter(Mandatory = $true, ParameterSetName = 'Capture')]
+    [string] $ActiveFixtureEventPath,
+    [Parameter(Mandatory = $true, ParameterSetName = 'Capture')]
+    [ValidatePattern('^[A-Z0-9]{3}$')] [string] $OriginatorTag,
+    [Parameter(Mandatory = $true, ParameterSetName = 'Capture')]
+    [ValidatePattern('^[A-Z0-9]{3}$')] [string] $RecipientTag,
     [Parameter(ParameterSetName = 'Capture')]
     [string] $ContinueSave,
     [Parameter(ParameterSetName = 'Capture')]
-    [int] $DurationSeconds = 1800,
+    [int] $DurationSeconds = 300,
     [Parameter(ParameterSetName = 'Capture')]
     [int] $SampleMilliseconds = 25,
     [Parameter(ParameterSetName = 'Capture')]
@@ -27,10 +33,24 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+function Write-AtomicReplaceBytes([string]$Path, [byte[]]$Bytes) {
+    $full = [IO.Path]::GetFullPath($Path); $parent = [IO.Path]::GetDirectoryName($full)
+    $tmp = [IO.Path]::Combine($parent, ([IO.Path]::GetRandomFileName() + '.tmp'))
+    try {
+        [IO.File]::WriteAllBytes($tmp, $Bytes)
+        $stream=[IO.File]::Open($tmp,'Open','ReadWrite','None'); try{$stream.Flush($true)}finally{$stream.Dispose()}
+        if ([IO.File]::Exists($full)) { [IO.File]::Replace($tmp, $full, $null, $true) }
+        else { [IO.File]::Move($tmp, $full) }
+    } finally { if ([IO.File]::Exists($tmp)) { [IO.File]::Delete($tmp) } }
+}
+
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 $verifier = Join-Path $repo "extractor\native\lanes\scripted_state_flags_variables_live\verify_a19_delayed_event_lifecycle.py"
-if (-not (Test-Path -LiteralPath $verifier -PathType Leaf)) {
-    throw "A19 verifier is missing: $verifier"
+$actionDriver = Join-Path $PSScriptRoot 'Invoke-A18A19AutonomousActionDriver.ps1'
+$fullFixtureSource = Join-Path $repo 'extractor\native\fixtures\a19\events\a19_delayed_event_fixture_full.txt'
+$cancelledFixtureSource = Join-Path $repo 'extractor\native\fixtures\a19\events\a19_delayed_event_fixture_cancelled.txt'
+foreach ($tool in @($verifier, $actionDriver, $fullFixtureSource, $cancelledFixtureSource)) {
+    if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { throw "A19 tool is missing: $tool" }
 }
 
 if ($PSCmdlet.ParameterSetName -ceq 'Regrade') {
@@ -50,6 +70,11 @@ foreach ($path in @($RecorderExe, $Hoi4Exe, $PdxUserDir, $CollectorDll)) {
     if (-not (Test-Path -LiteralPath $path)) {
         throw "Required path does not exist: $path"
     }
+}
+if ($OriginatorTag -ceq $RecipientTag) { throw 'A19 OriginatorTag and RecipientTag must differ.' }
+$resolvedActiveFixture = [IO.Path]::GetFullPath($ActiveFixtureEventPath)
+if (-not (Test-Path -LiteralPath $resolvedActiveFixture -PathType Leaf)) {
+    throw 'ActiveFixtureEventPath must be an existing event file in the selected product modset.'
 }
 if (-not [string]::IsNullOrWhiteSpace($ContinueSave) -and
     -not (Test-Path -LiteralPath $ContinueSave -PathType Leaf)) {
@@ -94,6 +119,15 @@ $verification = if ([string]::IsNullOrWhiteSpace($OutputJson)) {
 } else {
     [System.IO.Path]::GetFullPath($OutputJson)
 }
+$actionReceipt = Join-Path $resolvedOut 'a19_autonomous_action_receipt.json'
+$actionStdout = Join-Path $resolvedOut 'a19_autonomous_action.stdout.log'
+$actionStderr = Join-Path $resolvedOut 'a19_autonomous_action.stderr.log'
+$recorderStdout = Join-Path $resolvedOut 'collector_record.stdout.log'
+$recorderStderr = Join-Path $resolvedOut 'collector_record.stderr.log'
+$acquisitionReceipt = Join-Path $resolvedOut 'a19_autonomous_acquisition_receipt.json'
+$activeFixturePriorBytes = [IO.File]::ReadAllBytes($resolvedActiveFixture)
+$activeFixturePriorSha256 = (Get-FileHash -LiteralPath $resolvedActiveFixture -Algorithm SHA256).Hash.ToLowerInvariant()
+$activeFixtureFullSha256 = $null
 
 $continueGamePath = Join-Path $resolvedPdxUserDir 'continue_game.json'
 $continueGamePriorExists = Test-Path -LiteralPath $continueGamePath -PathType Leaf
@@ -169,44 +203,60 @@ foreach ($value in $EarlyLaunchArgument) {
     $arguments += @('--early-launch-arg', $value)
 }
 
-Write-Host @'
-A19 controlled-fixture requirements:
-  * Queue a delayed event for a recipient different from its originator.
-  * Retain one event across an hourly decrement.
-  * Consume one due event through a true trigger.
-  * Consume one due event through a false trigger.
-  * Cancel one queued event by removing its event definition.
-The fixture may automate these actions. No operator annotations enter the
-carrier; the verifier accepts only the exact hook-owned DEL2 observations.
-'@
-
+$recorder = $null
 try {
+    Write-AtomicReplaceBytes $resolvedActiveFixture ([IO.File]::ReadAllBytes($fullFixtureSource))
+    $activeFixtureFullSha256 = (Get-FileHash -LiteralPath $resolvedActiveFixture -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($null -ne $continueGameReplacement) {
         $continueGameOverridden = $true
-        [System.IO.File]::WriteAllText(
-            $continueGamePath,
-            $continueGameReplacement,
-            [System.Text.UTF8Encoding]::new($false)
-        )
+        Write-AtomicReplaceBytes $continueGamePath ([Text.UTF8Encoding]::new($false).GetBytes($continueGameReplacement))
     }
-    $priorEvidenceGate = $(if (Test-Path Env:BATTLE_PLAN_ENABLE_A19_DELAYED_EVENT_EVIDENCE) { $env:BATTLE_PLAN_ENABLE_A19_DELAYED_EVENT_EVIDENCE } else { $env:HOI4_ENABLE_A19_DELAYED_EVENT_EVIDENCE })
-    $env:BATTLE_PLAN_ENABLE_A19_DELAYED_EVENT_EVIDENCE = '1'
-    try {
-        & $resolvedRecorder @arguments
-        if ($LASTEXITCODE -ne 0) {
-            throw "collector_record exited with code $LASTEXITCODE"
-        }
-    } finally {
-        if ($null -eq $priorEvidenceGate) {
-            Remove-Item Env:\BATTLE_PLAN_ENABLE_A19_DELAYED_EVENT_EVIDENCE -ErrorAction SilentlyContinue
-        } else {
-            $env:BATTLE_PLAN_ENABLE_A19_DELAYED_EVENT_EVIDENCE = $priorEvidenceGate
-        }
-    }
+    $startInfo=[Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName=$resolvedRecorder; $startInfo.UseShellExecute=$false; $startInfo.CreateNoWindow=$true
+    $startInfo.RedirectStandardOutput=$true; $startInfo.RedirectStandardError=$true
+    $startInfo.Environment['BATTLE_PLAN_ENABLE_A19_DELAYED_EVENT_EVIDENCE']='1'
+    foreach($value in $arguments){[void]$startInfo.ArgumentList.Add([string]$value)}
+    $recorder=[Diagnostics.Process]::new(); $recorder.StartInfo=$startInfo
+    if(-not $recorder.Start()){throw 'collector_record did not start.'}
+    $recorderOutTask=$recorder.StandardOutput.ReadToEndAsync(); $recorderErrTask=$recorder.StandardError.ReadToEndAsync()
+    $launchDeadline=[DateTime]::UtcNow.AddMinutes(5); $game=$null
+    do {
+        Start-Sleep -Milliseconds 250
+        $candidates=@(Get-Process -Name the game -ErrorAction SilentlyContinue)
+        if($candidates.Count -eq 1 -and $candidates[0].MainWindowHandle -ne [IntPtr]::Zero){$game=$candidates[0]}
+        if($recorder.HasExited){throw "collector_record exited during launch with code $($recorder.ExitCode)"}
+    } while($null -eq $game -and [DateTime]::UtcNow -lt $launchDeadline)
+    if($null -eq $game){throw 'A19 early launch did not produce one owned the game window.'}
+    $actionArgs=@(
+        '-NoProfile','-ExecutionPolicy','Bypass','-File',$actionDriver,
+        '-Mode','A19DelayedEvent','-ProcessId',[string]$game.Id,
+        '-ExpectedProcessStartUtc',$game.StartTime.ToUniversalTime().ToString('o'),
+        '-ReceiptPath',$actionReceipt,'-OriginatorTag',$OriginatorTag,'-RecipientTag',$RecipientTag,
+        '-ActiveEventDefinitionPath',$resolvedActiveFixture,'-CancelledEventDefinitionSource',$cancelledFixtureSource,
+        '-ActionTimeoutSeconds',[string]([Math]::Max(60,$DurationSeconds-15))
+    )
+    $actionInfo=[Diagnostics.ProcessStartInfo]::new();$actionInfo.FileName='powershell.exe';$actionInfo.UseShellExecute=$false;$actionInfo.CreateNoWindow=$true
+    $actionInfo.RedirectStandardOutput=$true;$actionInfo.RedirectStandardError=$true
+    foreach($value in $actionArgs){[void]$actionInfo.ArgumentList.Add([string]$value)}
+    $action=[Diagnostics.Process]::new();$action.StartInfo=$actionInfo
+    if(-not $action.Start()){throw 'A19 autonomous action driver did not start.'}
+    $actionOutTask=$action.StandardOutput.ReadToEndAsync();$actionErrTask=$action.StandardError.ReadToEndAsync();$action.WaitForExit()
+    Write-AtomicReplaceBytes $actionStdout ([Text.UTF8Encoding]::new($false).GetBytes($actionOutTask.Result));Write-AtomicReplaceBytes $actionStderr ([Text.UTF8Encoding]::new($false).GetBytes($actionErrTask.Result))
+    if($action.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $actionReceipt -PathType Leaf)){throw "A19 autonomous action driver failed with code $($action.ExitCode); inspect $actionStderr"}
+    $action.Dispose()
+    $recorder.WaitForExit()
+    Write-AtomicReplaceBytes $recorderStdout ([Text.UTF8Encoding]::new($false).GetBytes($recorderOutTask.Result));Write-AtomicReplaceBytes $recorderStderr ([Text.UTF8Encoding]::new($false).GetBytes($recorderErrTask.Result))
+    if($recorder.ExitCode -ne 0){throw "collector_record exited with code $($recorder.ExitCode); inspect $recorderStderr"}
+    $recorder.Dispose();$recorder=$null
 } finally {
+    if($null -ne $recorder){
+        if(-not $recorder.HasExited){$recorder.WaitForExit()}
+        $recorder.Dispose()
+    }
+    Write-AtomicReplaceBytes $resolvedActiveFixture $activeFixturePriorBytes
     if ($continueGameOverridden) {
         if ($continueGamePriorExists) {
-            [System.IO.File]::WriteAllBytes($continueGamePath, $continueGamePriorBytes)
+            Write-AtomicReplaceBytes $continueGamePath $continueGamePriorBytes
         } elseif (Test-Path -LiteralPath $continueGamePath) {
             Remove-Item -LiteralPath $continueGamePath -Force
         }
@@ -236,4 +286,33 @@ if ($LASTEXITCODE -ne 0) {
 if ($LASTEXITCODE -ne 0) {
     throw "A19 lifecycle fixture was rejected; inspect $verification"
 }
+$actionObject=Get-Content -LiteralPath $actionReceipt -Raw|ConvertFrom-Json
+$verificationObject=Get-Content -LiteralPath $verification -Raw|ConvertFrom-Json
+if($actionObject.schema -cne 'hoi4.a18_a19.autonomous_action_receipt.v1' -or
+   $actionObject.mode -cne 'A19DelayedEvent' -or
+   $actionObject.status -cne 'pass_queued_decremented_executed_failed_and_definition_reloaded' -or
+   $actionObject.executable_sha256 -cne $expectedExeSha256 -or
+   [int]$actionObject.process_id -ne [int]$manifestObject.pid -or
+   $actionObject.originator_tag -cne $OriginatorTag -or $actionObject.recipient_tag -cne $RecipientTag -or
+   $verificationObject.status -cne 'pass' -or
+   [int]$verificationObject.observed_game_hour_min -lt [int]$actionObject.initial_game_hour -or
+   [int]$verificationObject.observed_game_hour_max -gt [int]$actionObject.final_game_hour) { throw 'A19 action/capture/regrade identity or temporal join rejected.' }
+$receipt=[ordered]@{
+    schema='hoi4.a19.autonomous_acquisition_receipt.v1';status='pass_exact_a729_all_lifecycle_classes'
+    executable_sha256=$expectedExeSha256;process_id=[int]$manifestObject.pid
+    originator_tag=$OriginatorTag;recipient_tag=$RecipientTag
+    active_fixture_prior_sha256=$activeFixturePriorSha256;active_fixture_full_sha256=$activeFixtureFullSha256
+    active_fixture_restored_sha256=(Get-FileHash -LiteralPath $resolvedActiveFixture -Algorithm SHA256).Hash.ToLowerInvariant()
+    action_receipt_sha256=(Get-FileHash -LiteralPath $actionReceipt -Algorithm SHA256).Hash.ToLowerInvariant()
+    capture_manifest_sha256=(Get-FileHash -LiteralPath $captureManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+    replay_sha256=(Get-FileHash -LiteralPath $replay -Algorithm SHA256).Hash.ToLowerInvariant()
+    extraction_report_sha256=(Get-FileHash -LiteralPath $extractionReport -Algorithm SHA256).Hash.ToLowerInvariant()
+    verification_sha256=(Get-FileHash -LiteralPath $verification -Algorithm SHA256).Hash.ToLowerInvariant()
+    covered_reasons=@($verificationObject.covered_reasons);single_hook_epoch=$verificationObject.single_hook_epoch
+    originator_recipient_separated=$verificationObject.originator_recipient_separated;immutable_receipt=$true
+    observed_game_hour_min=[int]$verificationObject.observed_game_hour_min;observed_game_hour_max=[int]$verificationObject.observed_game_hour_max
+    reason_counts=$verificationObject.reason_counts;reason_event_ids=$verificationObject.reason_event_ids
+}
+if($receipt.active_fixture_restored_sha256 -cne $activeFixturePriorSha256){throw 'A19 fixture event file was not restored byte-identically.'}
+Write-AtomicReplaceBytes $acquisitionReceipt ([Text.UTF8Encoding]::new($false).GetBytes((($receipt|ConvertTo-Json -Depth 10)+"`n")))
 Write-Output "A19 lifecycle fixture accepted: $verification"

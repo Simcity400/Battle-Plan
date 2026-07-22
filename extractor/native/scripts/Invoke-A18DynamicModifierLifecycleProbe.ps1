@@ -9,7 +9,7 @@ param(
     [Parameter(Mandatory = $true)] [string] $TimedModifier,
     [Parameter(Mandatory = $true)] [string] $PermanentModifier,
     [Parameter(Mandatory = $true)] [string] $OutDir,
-    [int] $DurationSeconds = 3600,
+    [int] $DurationSeconds = 600,
     [int] $SampleMilliseconds = 100,
     [int] $SaveStableMilliseconds = 1500,
     [string[]] $EarlyLaunchArgument = @('--continuelastsave'),
@@ -19,6 +19,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+function Write-AtomicReplaceText([string]$Path, [string]$Value) {
+    $full=[IO.Path]::GetFullPath($Path);$parent=[IO.Path]::GetDirectoryName($full)
+    [IO.Directory]::CreateDirectory($parent)|Out-Null;$tmp=[IO.Path]::Combine($parent,([IO.Path]::GetRandomFileName()+'.tmp'))
+    try {
+        [IO.File]::WriteAllText($tmp,$Value,[Text.UTF8Encoding]::new($false))
+        $stream=[IO.File]::Open($tmp,'Open','ReadWrite','None');try{$stream.Flush($true)}finally{$stream.Dispose()}
+        if([IO.File]::Exists($full)){[IO.File]::Replace($tmp,$full,$null,$true)}else{[IO.File]::Move($tmp,$full)}
+    } finally {if([IO.File]::Exists($tmp)){[IO.File]::Delete($tmp)}}
+}
 
 foreach ($path in @($RecorderExe, $Hoi4Exe, $PdxUserDir, $CollectorDll, $CheckpointSavePath)) {
     if (-not (Test-Path -LiteralPath $path)) {
@@ -55,18 +65,22 @@ if (@(Get-Process -Name the game -ErrorAction SilentlyContinue).Count -ne 0) {
 $laneRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\lanes\country_dynamic_modifiers_live'))
 $checkpointTool = Join-Path $laneRoot 'a18_capture_checkpoint.py'
 $verifier = Join-Path $PSScriptRoot 'verify_a18_dynamic_modifier_fixture.py'
-foreach ($tool in @($checkpointTool, $verifier)) {
+$actionDriver = Join-Path $PSScriptRoot 'Invoke-A18A19AutonomousActionDriver.ps1'
+foreach ($tool in @($checkpointTool, $verifier, $actionDriver)) {
     if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { throw "A18 tool missing: $tool" }
 }
 $captureManifest = Join-Path $resolvedOut 'native_session_manifest.json'
 $hookReceipt = Join-Path $resolvedOut 'a18_dynamic_modifier_lifecycle_witness.json'
 $verification = Join-Path $resolvedOut 'a18_dynamic_modifier_fixture_verification.json'
+$actionReceipt = Join-Path $resolvedOut 'a18_autonomous_action_receipt.json'
+$actionStdout = Join-Path $resolvedOut 'a18_autonomous_action.stdout.log'
+$actionStderr = Join-Path $resolvedOut 'a18_autonomous_action.stderr.log'
 $stdout = Join-Path $resolvedOut 'collector_record.stdout.log'
 $stderr = Join-Path $resolvedOut 'collector_record.stderr.log'
 $phases = @('positive_before', 'positive_after', 'post_removal')
 $checkpointPaths = @{}
 $captureStartedUtc = [DateTime]::UtcNow
-$ownedOutputs = @($captureManifest, $hookReceipt, $verification, $stdout, $stderr)
+$ownedOutputs = @($captureManifest, $hookReceipt, $verification, $actionReceipt, $actionStdout, $actionStderr, $stdout, $stderr)
 foreach ($phase in $phases) {
     $ownedOutputs += (Join-Path $resolvedOut ("a18_checkpoint_{0}.json" -f $phase))
 }
@@ -105,6 +119,7 @@ $recorder.StartInfo = $startInfo
 if (-not $recorder.Start()) { throw 'collector_record did not start.' }
 $stdoutTask = $recorder.StandardOutput.ReadToEndAsync()
 $stderrTask = $recorder.StandardError.ReadToEndAsync()
+$actionProcess = $null
 
 try {
     $launchDeadline = [DateTime]::UtcNow.AddMinutes(5)
@@ -114,6 +129,28 @@ try {
         if ($recorder.HasExited) { throw "collector_record exited during early launch with code $($recorder.ExitCode)" }
     } while ($game.Count -eq 0 -and [DateTime]::UtcNow -lt $launchDeadline)
     if ($game.Count -ne 1) { throw 'Early launch did not produce exactly one hoi4.exe process.' }
+
+    $gameProcess = $game[0]
+    $actionInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $actionInfo.FileName = 'powershell.exe'
+    $actionInfo.UseShellExecute = $false
+    $actionInfo.CreateNoWindow = $true
+    $actionInfo.RedirectStandardOutput = $true
+    $actionInfo.RedirectStandardError = $true
+    foreach ($value in @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $actionDriver,
+        '-Mode', 'A18DynamicModifier', '-ProcessId', [string]$gameProcess.Id,
+        '-ExpectedProcessStartUtc', $gameProcess.StartTime.ToUniversalTime().ToString('o'),
+        '-ReceiptPath', $actionReceipt, '-OriginatorTag', $OwnerTag, '-RecipientTag', $OwnerTag,
+        '-TimedModifier', $TimedModifier, '-PermanentModifier', $PermanentModifier,
+        '-CheckpointSavePath', $resolvedSave, '-CheckpointDirectory', $resolvedOut,
+        '-ActionTimeoutSeconds', [string]([Math]::Max(60, $DurationSeconds - 15))
+    )) { [void]$actionInfo.ArgumentList.Add([string]$value) }
+    $actionProcess = [System.Diagnostics.Process]::new()
+    $actionProcess.StartInfo = $actionInfo
+    if (-not $actionProcess.Start()) { throw 'A18 autonomous action driver did not start.' }
+    $actionStdoutTask = $actionProcess.StandardOutput.ReadToEndAsync()
+    $actionStderrTask = $actionProcess.StandardError.ReadToEndAsync()
 
     $phaseIndex = 0
     $lastAcceptedHash = $null
@@ -158,7 +195,7 @@ try {
                 $checkpointPaths[$phase] = $checkpoint
                 $lastAcceptedHash = $hash
                 $phaseIndex++
-                Write-Output "A18 accepted $phase checkpoint. Pause and save at the next requested boundary."
+                Write-Output "A18 accepted autonomous $phase checkpoint."
             } else {
                 # A stable save can precede the requested lifecycle boundary.
                 # Re-arm stability so the expensive save/live join is bounded
@@ -169,16 +206,27 @@ try {
         Start-Sleep -Milliseconds $SampleMilliseconds
     }
     $recorder.WaitForExit()
-    [System.IO.File]::WriteAllText($stdout, $stdoutTask.Result, [System.Text.UTF8Encoding]::new($false))
-    [System.IO.File]::WriteAllText($stderr, $stderrTask.Result, [System.Text.UTF8Encoding]::new($false))
+    Write-AtomicReplaceText $stdout $stdoutTask.Result
+    Write-AtomicReplaceText $stderr $stderrTask.Result
     if ($recorder.ExitCode -ne 0) { throw "collector_record exited with code $($recorder.ExitCode); inspect $stderr" }
+    if ($null -eq $actionProcess) { throw 'A18 autonomous action driver was not created.' }
+    $actionProcess.WaitForExit()
+    Write-AtomicReplaceText $actionStdout $actionStdoutTask.Result
+    Write-AtomicReplaceText $actionStderr $actionStderrTask.Result
+    if ($actionProcess.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $actionReceipt -PathType Leaf)) {
+        throw "A18 autonomous action driver failed with code $($actionProcess.ExitCode); inspect $actionStderr"
+    }
 } finally {
     if (-not $recorder.HasExited) {
         # Do not kill the game or tear down an injected collector unsafely. The
         # recorder owns its duration and normal unload/finalization path.
         $recorder.WaitForExit()
-        [System.IO.File]::WriteAllText($stdout, $stdoutTask.Result, [System.Text.UTF8Encoding]::new($false))
-        [System.IO.File]::WriteAllText($stderr, $stderrTask.Result, [System.Text.UTF8Encoding]::new($false))
+        Write-AtomicReplaceText $stdout $stdoutTask.Result
+        Write-AtomicReplaceText $stderr $stderrTask.Result
+    }
+    if ($null -ne $actionProcess) {
+        if (-not $actionProcess.HasExited) { $actionProcess.WaitForExit() }
+        $actionProcess.Dispose()
     }
     $recorder.Dispose()
 }
@@ -211,6 +259,7 @@ foreach ($phase in $phases) { $verifyArgs += @('--checkpoint', $checkpointPaths[
 $verifyArgs += @(
     '--hook-receipt', $hookReceipt,
     '--capture-manifest', $captureManifest,
+    '--action-receipt', $actionReceipt,
     '--out', $verification
 )
 & $Python @verifyArgs

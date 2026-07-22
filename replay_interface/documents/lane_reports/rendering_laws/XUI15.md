@@ -1,12 +1,12 @@
 # XUI15 — country resource-trade state
 
-Status: **PROVEN / SEMANTIC PRODUCTION ROUTE ACTIVE / PIXEL ACTIVATION GATED**
+Status: **PROVEN / EXACT PIXEL ROUTE IMPLEMENTED / LIVE ADMISSION RECEIPT PENDING**
 
 This packet is `XUI15`, not canonical archive-mount packet `UI15`. The Wave 4 producer integration updates the extractor carrier/fold and this program-status row without changing canonical archive-mount packet `UI15`.
 
 ## Promotion result
 
-The replay owns a typed country trade screen over `replay_core::TradeView` and the shipped `countrytradeview.gui`. The replay app now consumes that typed presentation on every selected-POV refresh. The authored canvas remains product-gated until the recording authenticates that the country-trade window was open and identifies its semantic GUI root; no always-on or inferred panel is painted.
+The replay owns a typed country trade screen over `replay_core::TradeView` and the shipped `countrytradeview.gui`. Exact-a729 RE now identifies `CCountryTradeView::Open` at RVA `0x015EC520` and `Close` at RVA `0x015EAF40` as the authored `countrytradeview` lifecycle. The extractor emits that independent observation through `MTRA v1`, replay validates it as `MarketTradeActivationView`, and the production renderer admits XUI15 only while the exact active country agrees with the selected POV. No always-on, semantic-presence, or selected-POV activation inference is reachable.
 
 Implemented replay behavior:
 
@@ -23,10 +23,15 @@ Implemented replay behavior:
 - `resources_info_entry` and `country_trade_entry` are instantiated from the shipped GUI, populated in recorded order and rendered through the production compositor;
 - missing resource/deal sections render explicit unavailable messages rather than empty tables.
 - every X15 trailer is current-hour full replacement; a missing family clears instead of projecting an older trade screen.
+- `MTRA v1` is omitted unless the active view's engine country pointer joins the current exact country census; malformed, unjoined, absent and torn activation observations fail closed;
+- a closed exact lifecycle carrier produces no pixel surface, while an active carrier without matching selected-country semantic d43 state is rejected rather than rendered.
 
 ## Producer boundary
 
 The current carrier supplies structurally complete six-pool `MTRF v2`, controller rows through `MTRR`, factory headers through `MTRH`, and classic deals through `MTRD v2`. Classic resource deals remain distinct from D43 equipment-market purchase contracts.
+
+
+Ghidra authority is job `20260722T013354Z-x15-open-close-lifecycle-521d1851`, manifest SHA-256 `de07756d379ffa51de678e5083ac8f4c6efb7453bfc20306499c44b18fba78e2`. Hook sentinels are pinned by job `20260722T013608Z-x15-activation-hook-sentinels-feaea801`, artifact SHA-256 `7dff1c3afb8d48be2987c5ce1e9f9ade92cf805094ef634fef75b444d835c62b`.
 
 `MTRD v2` now carries the exact route `+0xE8` no-influence byte and route `+0xE9` no-resources byte in the former per-row reserved word. The collector admits only raw byte values zero or one, reciprocal halves must agree, the fold emits measured booleans, and the existing typed replay/UI path consumes them. `MTRD v1` remains accepted for old recordings but projects neither field, so absence cannot silently become false. Because the schema version belongs to the single world trailer, replay and the portable schema now reject any complete snapshot that mixes v1 and v2 rows across otherwise valid reciprocal deals.
 
@@ -79,4 +84,4 @@ A fresh 18-function re-audit matched the frozen artifacts byte-for-byte at the d
 | `0x141CA5C60` | `20260717T102907Z-x15-classic-route-and-header-value-produ-c7885736` | `evidence/func_141ca5c60.decompile.c` | `f255d6515f654915c315680215049580f1cecc9d40b1e621114c8a69e5bf72bb` |
 | `0x1415ED1C0` | `20260717T102907Z-x15-classic-route-and-header-value-produ-c7885736` | `evidence/func_1415ed1c0.decompile.c` | `f255d6515f654915c315680215049580f1cecc9d40b1e621114c8a69e5bf72bb` |
 
-No human-input request is required for the semantic carrier or replay route. Pixel promotion still requires a future authenticated trade-window activation and semantic-root carrier; it is an evidence/capture task, not permission to infer activation.
+No human-input request is required for the carrier, replay route, or autonomous activation action: the authored `shortcut = "r"` on `trade_button` provides an exact non-coordinate route. Final promotion still requires running the acquisition against the already loaded exact-a729 D04 game and authenticating a closed-active-closed MTRA sequence plus the corresponding replay pixel output. This document deliberately does not claim that unrun live receipt.

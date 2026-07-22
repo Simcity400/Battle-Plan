@@ -4,6 +4,9 @@ param(
     [string]$Save,
 
     [Parameter(Mandatory = $true)]
+    [int]$ProcessId,
+
+    [Parameter(Mandatory = $true)]
     [string]$EventsOracle,
 
     [Parameter(Mandatory = $true)]
@@ -24,8 +27,15 @@ $savePath = (Resolve-Path -LiteralPath $Save).Path
 $oraclePath = (Resolve-Path -LiteralPath $EventsOracle).Path
 $snapshotPath = (Resolve-Path -LiteralPath $ProductionSnapshot).Path
 
-New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
-$output = (Resolve-Path -LiteralPath $OutDir).Path
+$output = [IO.Path]::GetFullPath($OutDir)
+if (Test-Path -LiteralPath $output) {
+    if (-not (Test-Path -LiteralPath $output -PathType Container) -or
+        @(Get-ChildItem -LiteralPath $output -Force).Count -ne 0) {
+        throw "B4 OutDir must be absent or empty: $output"
+    }
+} else {
+    [IO.Directory]::CreateDirectory($output) | Out-Null
+}
 $capture = Join-Path $output "b4_sunk_convoy_raw_debug.json"
 $report = Join-Path $output "b4_sunk_convoy_fixture_regrade.json"
 if ((Test-Path -LiteralPath $capture) -or (Test-Path -LiteralPath $report)) {
@@ -34,6 +44,7 @@ if ((Test-Path -LiteralPath $capture) -or (Test-Path -LiteralPath $report)) {
 
 & $PythonExe $captureTool `
     --save $savePath `
+    --process-id $ProcessId `
     --oracle $oraclePath `
     --production-snapshot $snapshotPath `
     --output $capture `

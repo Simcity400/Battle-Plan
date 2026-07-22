@@ -11,7 +11,7 @@
     "mechanical_verifier_run": false,
     "build_run": false,
     "test_run": false,
-    "reason": "Subagent policy forbids builds, tests, verifiers, compilers, formatters, and generators. The primary agent must run central validation after shared edits stabilize."
+    "reason": "Subagent policy forbids builds, tests, and live execution. Static Python/JSON/PowerShell parsing passed; the primary agent must run the mechanical verifier and central validation after shared edits stabilize."
   },
   "historical_results": {
     "disposition": "SUPERSEDED_BY_2026_07_20_PRODUCER_RECOVERY_AND_PTI1_V2",
@@ -40,12 +40,12 @@
     "state": "DISABLED_FAIL_CLOSED",
     "domain_registry": "reserved_unschedulable_requires_data_record",
     "production_latch": "LIVE_PRODUCER_TAPS_COMPLETE=false",
-    "existing_hook": "0x141C33FE0 tuple-only owner observation",
-    "reason": "No in-module detours currently produce authenticated rows for all six semantic families."
+    "existing_hook": "23 exact-a729 producer/owner/helper detours plus one-argument autonomous owner ABI",
+    "reason": "The autonomous live fixture has not yet executed; evidence tooling cannot pre-authorize its own d73 activation."
   },
   "remaining_gate": {
     "automation": "extractor/native/lanes/politics_tooltip_inputs_live/H_A24_CAPTURE_AUTOMATION_20260720.json",
-    "required": "Implement exact same-thread producer/helper detours and execute one complete selected-Present fixture before enabling d73.",
+    "required": "Execute the clean-launch six-surface owner, accept its exact tap-matrix regrade and immutable admission, then perform central validation before considering d73 activation.",
     "human_input_required_now": false
   }
 }

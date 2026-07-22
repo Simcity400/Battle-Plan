@@ -2,7 +2,7 @@
   "schema": "hoi4.a31.frame_order_fixture_matrix.v1",
   "date": "2026-07-20",
   "lane": "H-A31",
-  "status": "STATIC_RE_AND_TRANSPORT_CUSTODY_COMPLETE_LIVE_PAIR_ABSENT_D89_DISABLED",
+  "status": "STATIC_RE_TRANSPORT_AND_AUTONOMOUS_ACQUISITION_COMPLETE_LIVE_PAIR_ABSENT_D89_DISABLED",
   "binary_identity": {
     "binary_id": "hoi4.exe 1.19.2.0.a729",
     "image_base": "0x140000000",
@@ -82,7 +82,9 @@
       "battle-plan_a31_uninstall_fixture_owner",
       "battle-plan_a31_fixture_command_json"
     ],
-    "owner_runner": "extractor/native/scripts/Invoke-A31NationalFocusFixturePair.ps1"
+    "owner_runner": "extractor/native/scripts/Invoke-A31NationalFocusFixturePair.ps1",
+    "action_profile": "extractor/documents/dossiers/A31_AUTONOMOUS_NATIONAL_FOCUS_ACTIONS_1920X1080.json",
+    "immutable_admission": "tools/verify_a31_autonomous_admission.py"
   },
   "retained_evidence_census": {
     "nfp1_records_found": 0,
@@ -94,7 +96,8 @@
     "live_fixture_accepted": false,
     "production_activation_authorized": false,
     "compact_domain_89_scheduled": false,
-    "human_input_required": "Run the owner-runnable exact-a729 capture and perform the focus-panel interactions needed to produce one complete stable receipt plus one later receipt with a discriminating final state or transient presentation leaf. Instrumentation and all three regrades are automated."
+    "human_input_required": null,
+    "autonomous_acquisition": "Clean-launch the frozen save, authenticate paused readiness, discover SWE through the exact country roster, execute the pinned focus UI transition, and admit the paired receipts through Invoke-A31NationalFocusFixturePair.ps1."
   },
   "validation": {
     "subagent_builds_or_tests_run": false,

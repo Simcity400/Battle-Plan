@@ -290,6 +290,8 @@ def verify(repo: Path) -> dict[str, Any]:
         "validation",
         "exact10_authority",
         "dependency_reclassification",
+        "runtime_admission",
+        "genuine_external_dependencies",
         "canonical_human_inputs",
         "aliases",
         "missing_authenticated_artifacts",
@@ -318,6 +320,8 @@ def verify(repo: Path) -> dict[str, Any]:
         "external_environment_fixture",
         "external_live_acceptance",
         "external_deployment_observation",
+        "autonomous_same_tick_pair",
+        "autonomous_state_capture",
     }
     allowed_states = {
         "required",
@@ -326,6 +330,8 @@ def verify(repo: Path) -> dict[str, Any]:
         "required_after_exact_writer_hook_engineering",
         "required_after_product_choice",
         "required_after_integration",
+        "retired_closed_schema_disposition",
+        "autonomous",
     }
     for index, item in enumerate(canonical):
         context = f"canonical_human_inputs[{index}]"
@@ -348,8 +354,8 @@ def verify(repo: Path) -> dict[str, Any]:
             if not isinstance(item[key], str) or not item[key].strip():
                 fail(f"{context}.{key} must be nonempty")
 
-    if "H-A28" in canonical_ids or any(item_id.startswith("H-M03") for item_id in canonical_ids):
-        fail("closed or agent-discoverable A28/M03 work reappeared as human input")
+    if any(item_id.startswith("H-M03") for item_id in canonical_ids):
+        fail("retired M03 work reappeared as a canonical acquisition")
 
     reclassification = register["dependency_reclassification"]
     if not isinstance(reclassification, dict):
@@ -386,6 +392,13 @@ def verify(repo: Path) -> dict[str, Any]:
             f"missing={sorted(canonical_ids - classified)}, "
             f"unknown={sorted(classified - canonical_ids)}"
         )
+    canonical_by_id = {item["id"]: item for item in canonical}
+    for item_id in reclassification["stale_or_closed"]:
+        if canonical_by_id[item_id]["state"] != "retired_closed_schema_disposition":
+            fail(f"stale/closed card is not explicitly retired: {item_id}")
+    for item_id in reclassification["autonomous_external_state_acquisition"]:
+        if canonical_by_id[item_id]["state"] == "retired_closed_schema_disposition":
+            fail(f"retired card reappeared as autonomous acquisition: {item_id}")
     defaults = reclassification["authorized_defaults"]
     expected_default_keys = {
         "save_and_scene",
@@ -397,6 +410,33 @@ def verify(repo: Path) -> dict[str, Any]:
         fail("dependency_reclassification.authorized_defaults has unexpected keys")
     if reclassification["user_action_required"]:
         fail("current user authorization leaves no canonical card user-blocking")
+
+    runtime_admission = register["runtime_admission"]
+    expected_runtime_keys = {"implementation_ready_receipt_pending", "admitted", "rule"}
+    if not isinstance(runtime_admission, dict) or set(runtime_admission) != expected_runtime_keys:
+        fail("runtime_admission has unexpected keys")
+    ready = runtime_admission["implementation_ready_receipt_pending"]
+    admitted = runtime_admission["admitted"]
+    if not isinstance(ready, list) or len(ready) != len(set(ready)):
+        fail("runtime_admission implementation-ready set must be unique")
+    if not isinstance(admitted, list) or len(admitted) != len(set(admitted)):
+        fail("runtime_admission admitted set must be unique")
+    if set(ready) & set(admitted):
+        fail("runtime_admission ready and admitted sets overlap")
+    if set(ready) | set(admitted) != canonical_ids:
+        fail("runtime_admission must exhaust canonical acquisition IDs")
+    if admitted:
+        fail("no canonical runtime receipt has yet been admitted in this authority refreeze")
+
+    external_dependencies = register["genuine_external_dependencies"]
+    if not isinstance(external_dependencies, list) or len(external_dependencies) != 1:
+        fail("exactly one genuine external dependency must be listed")
+    dependency = external_dependencies[0]
+    require_keys(dependency, {"id", "state", "detail", "source"}, "genuine_external_dependencies[0]")
+    if set(dependency) != {"id", "state", "detail", "source"}:
+        fail("genuine external dependency has unexpected keys")
+    if dependency.get("id") != "P3-M3-SECOND-MACHINE" or dependency.get("state") != "external_endpoint_required":
+        fail("the sole genuine external dependency is not P3 M3")
 
     aliases = register["aliases"]
     alias_ids: set[str] = set()
@@ -509,6 +549,9 @@ def verify(repo: Path) -> dict[str, Any]:
             reclassification["unresolved_re_or_engineering"]
         ),
         "stale_or_closed_count": len(reclassification["stale_or_closed"]),
+        "implementation_ready_receipt_pending_count": len(ready),
+        "admitted_runtime_receipt_count": len(admitted),
+        "genuine_external_dependency_count": len(external_dependencies),
         "alias_count": len(alias_ids),
         "missing_authenticated_artifact_count": len(register["missing_authenticated_artifacts"]),
         "product_decision_count": len(register["product_decisions"]),

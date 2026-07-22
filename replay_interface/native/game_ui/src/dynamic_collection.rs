@@ -160,6 +160,63 @@ impl DynamicCollectionTrace {
         if self.ordered_item_ids.is_empty() && !self.materialized_slots.is_empty() {
             return Err(fail("measured-empty collection cannot materialize rows"));
         }
+        self.validate_a28_air_mio_contract()?;
+        Ok(())
+    }
+
+    /// Tighten the four controller-rooted A28 collections at the production
+    /// replay boundary.  DCT1's generic invariants are necessary but do not by
+    /// themselves prove that a plane/MIO row uses the authenticated runtime
+    /// template or a portable domain identity.
+    fn validate_a28_air_mio_contract(&self) -> Result<()> {
+        const AIR: &str = "interface/airselectionview.gui#collection-0001";
+        const MIO_BONUS: &str = "interface/military_industrial_organization/industrial_organization_detail.gui#collection-0001";
+        const MIO_VARIANT: &str = "interface/military_industrial_organization/industrial_organization_detail.gui#collection-0003";
+        const MIO_PRODUCTION: &str = "interface/military_industrial_organization/industrial_organization_detail.gui#collection-0004";
+        let (template, prefix, heterogeneous) = match self.collection_instance_id.as_str() {
+            AIR => ("CPlaneTypeSelectionEntry", "air-selection:", false),
+            MIO_BONUS => ("industrial_organisation_detail_mixed_rows", "mio-bonus:", true),
+            MIO_VARIANT => (
+                "industrial_organisation_history_item",
+                "mio-variant-history:",
+                false,
+            ),
+            MIO_PRODUCTION => (
+                "industrial_organisation_history_item",
+                "mio-production-history:",
+                false,
+            ),
+            _ => return Ok(()),
+        };
+        if self.row_template_id != template
+            || self
+                .source_items
+                .iter()
+                .any(|item| !portable_numeric_identity(&item.stable_item_id, prefix, heterogeneous))
+        {
+            return Err(fail("A28 air/MIO controller identity or template differs"));
+        }
+        if heterogeneous {
+            const ALLOWED: [&str; 4] = [
+                "industrial_organisation_detail_modifier_item",
+                "industrial_organisation_detail_bonus_item",
+                "industrial_organisation_equipment_type_window",
+                "industrial_organisation_detail_separator",
+            ];
+            if self
+                .materialized_slots
+                .iter()
+                .any(|slot| !ALLOWED.contains(&slot.row_template_id.as_str()))
+            {
+                return Err(fail("A28 MIO aggregated-bonus slot template differs"));
+            }
+        } else if self
+            .materialized_slots
+            .iter()
+            .any(|slot| slot.row_template_id != template)
+        {
+            return Err(fail("A28 air/MIO materialized slot template differs"));
+        }
         Ok(())
     }
 
@@ -281,6 +338,68 @@ fn nonempty(value: &str, field: &str) -> Result<()> {
         return Err(fail(format!("{field} must be nonempty")));
     }
     Ok(())
+}
+
+fn portable_numeric_identity(value: &str, prefix: &str, allow_controller_atom: bool) -> bool {
+    let Some(rest) = value.strip_prefix(prefix) else {
+        return false;
+    };
+    let fields = rest.split(':').collect::<Vec<_>>();
+    if fields.len() < 5 || fields[0] != "candidate" || !positive_decimal(fields[2]) {
+        return false;
+    }
+    let lane_ok = match prefix {
+        "air-selection:" => matches!(
+            fields[1],
+            "air-bucket-0" | "air-bucket-1" | "air-bucket-2" | "air-bucket-3"
+        ),
+        "mio-bonus:" => matches!(fields[1], "mio-fixed-bonus" | "mio-equipment-group"),
+        "mio-variant-history:" => fields[1] == "mio-variant-table",
+        "mio-production-history:" => {
+            matches!(fields[1], "mio-production-line" | "mio-production-table")
+        }
+        _ => false,
+    };
+    if !lane_ok {
+        return false;
+    }
+    match &fields[3..] {
+        ["object", object_type, stable_id, "resolver", resolver_sha256] => {
+            positive_decimal(object_type)
+                && positive_decimal(stable_id)
+                && lower_hex_sha256(resolver_sha256)
+        }
+        [
+            "atom",
+            producer_rva,
+            semantic_key,
+            subject_type,
+            subject_id,
+            "resolver",
+            resolver_sha256,
+        ] => {
+            allow_controller_atom
+                && matches!(*producer_rva, "01f05960" | "01f06630" | "01f05cd0" | "01fa4b90")
+                && positive_decimal(semantic_key)
+                && positive_decimal(subject_type)
+                && positive_decimal(subject_id)
+                && lower_hex_sha256(resolver_sha256)
+        }
+        _ => false,
+    }
+}
+
+fn lower_hex_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn positive_decimal(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && value.bytes().any(|byte| byte != b'0')
 }
 
 fn fail(message: impl Into<String>) -> GameUiError {

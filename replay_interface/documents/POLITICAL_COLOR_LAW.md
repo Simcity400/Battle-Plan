@@ -301,31 +301,31 @@ the same static installed content. The stats JSON hash differs from v1 because i
 the new `restore_gate_1` capture descriptor and the new vacuous/transparent
 fields.)
 
-### Proves vs assumes after v2
+### Proves vs assumes after retained Resistance recovery
 
-| Claim | Status after v2 |
+| Claim | Current status |
 | --- | --- |
-| Secondary map shape / sampler / slot (2816x1024 RGBA8, `pdxmap` slot 6, water slot 3, Linear/Wrap) | **PROVEN** from shipped shaders + capture descriptors, both captures byte-match. |
+| Secondary map shape / sampler / slot (2816x1024 RGBA8, `pdxmap` slot 6, water slot 3, Linear/Wrap) | **PROVEN** from shipped shaders + capture descriptors. |
 | The SRV drives occupation STRIPES: alpha = stripe strength, rgb = stripe target color, procedural diagonal mask, sampled unconditionally, CPU-gated | **PROVEN** from shipped `pdxmap`/`standardfuncsgfx` shaders. |
 | A fully transparent secondary map -> no stripes rendered | **PROVEN** (shader lerp with `vOccupationMask == 0`). |
-| The game writes an all-transparent secondary map in the default 3D terrain view for BOTH a 1936 start AND an ongoing war save | **OBSERVED across two captures AND EXPLAINED (2026-07-07, user testimony)**: the player (long-time vanilla the game player) reports occupation is never displayed with stripes in normal play — "occupation pretty much looks the same as normal land", i.e. the province simply takes the CONTROLLER's color in the primary fill. An all-transparent secondary map is therefore the NORMAL steady state, not an anomaly. Whatever populates the stripe path is a rarer mechanism (hypotheses: resistance/collaboration states, a specific mapmode/interaction, or DLC-specific display), currently unknown and LOW PRIORITY. |
-| The province-id -> non-transparent occupation-stripe (rgb+alpha) mapping | **STILL ASSUMED and now DEPRIORITIZED** (see row above: stripes are not how ordinary occupation renders). The synthesis's controller!=owner -> alpha-255 stripe emission is WRONG per user testimony and must NOT graduate: ordinary occupation belongs in the PRIMARY fill (controller color), which the replay's owner/controller politics path already models. The stripe synthesis stays available only for whatever the rare trigger turns out to be, behind its own gate. Validation focus moves to the PRIMARY province fill texture. |
+| The game writes an all-transparent secondary map in the default 3D terrain view for both a 1936 start and the captured ongoing-war frame | **OBSERVED** for those two frames only. This does not generalize the secondary map to all modes or states. |
+| A real Resistance-mode `ProvinceSecondaryColorMap` is nontransparent | **PROVEN from retained content**. The recovered 2816x1024 RDC payload has 3,917 nontransparent texels and alpha histogram `0:2879667, 19:96, 38:132, 57:89, 76:3600`. |
+| The province-id -> nontransparent occupation-stripe producer and raster law | **PROVEN statically and by retained content**. Exact-a729 RE closes the case-0xc membership/color/alpha writer, dirty scheduling, raster worker, and generic upload chain; the retained frame independently confirms full alpha 76 and the three 2x2 edge-coverage levels. The retained capture does not supply a current CPU upload ordinal or selected-Present receipt. |
 
-## Dynamic Data Needed
+## Remaining Dynamic Admission Data
 
-Static file law reproduces the all-transparent secondary map captured so far
-(1936 start and, byte-identically, the ongoing war save), but that agreement is
-vacuous — no non-transparent occupation-stripe texel has been captured yet.
-Validating the province-id -> stripe write law, and exact playback over time,
-still needs extractor data for:
+The two all-transparent bundle observations remain useful negative frames, but
+they are no longer the complete retained corpus. The recovered Resistance RDC
+closes the nontransparent-content discriminator and exact coverage levels. No
+new visible state, operator-selected control, or human interpretation is needed
+for the secondary occupation texture.
 
-1. Current controller/owner changes after game start.
-2. Occupation state that makes the secondary mask non-transparent.
-3. Cosmetic tags, country-tag aliases, civil-war/generated tags, and ideology
-   state when those alter the effective country color.
-4. A primary political fill SRV or render-target capture. The emitted
-   owner/controller texture is a deterministic diagnostic, but the available
-   ground truth validated only `ProvinceSecondaryColorMap`.
+Exact product admission still needs one autonomous clean-launch transaction that
+binds the nontransparent pre-upload CPU bytes to their upload ordinal and
+process/hook epoch, the same selected-Present D80 terrain-t6/water-t3 consumers,
+and a distinct native replay H2 staging readback with zero byte difference.
+Primary political fill capture/reconstruction remains a separate political-map
+scope and is not evidence missing from the occupation-secondary producer law.
 
 ## Product Rendering Status (2026-07-08)
 

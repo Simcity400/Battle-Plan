@@ -5,6 +5,26 @@
 Lane-local decoder, gates, probes, and registration plan for compact domain `43`
 (`market_trade_live`).
 
+## Exact XUI15 activation trailer
+
+`MTRA` v1 is a 32-byte independent country-trade window lifecycle carrier:
+
+- flags bit 0: active; bit 1: exact authored root;
+- `u32 country_tag_db_id` (zero iff closed);
+- `u64 observation_sequence` from the Open/Close hook lifecycle;
+- root kind `1` (`countrytradeview`);
+- exact Open RVA `0x015EC520`.
+
+The producer hooks exact-a729 `CCountryTradeView::Open` and `Close`, validates
+their pinned instruction sentinels and the view vtable, resolves the displayed
+country through the engine consumer path, and joins that pointer to the same
+current exact country census before emission. No selected POV or semantic d43
+presence is an activation substitute. The lane decoder rejects malformed or
+duplicate MTRA trailers and lifecycle sequence regression. For acquisition,
+`market_trade_gate --require-x15-activation-transition` requires an exact
+closed-active-closed sequence; `Invoke-X15AutonomousTradeActions.ps1` drives
+the authored `trade_button` shortcut `r` without coordinate tuning.
+
 Status: `NOT COMPLETE` for full trade economy. The lane now has production
 purchase-contract core capture, dynamic D-tag buyer resolution through shared
 commit `1f38b65d1`, omitted-candidate classification proof, and a lane-local

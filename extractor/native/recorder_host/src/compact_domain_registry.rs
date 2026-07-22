@@ -158,6 +158,17 @@ mod tests {
             Some("session_multiplayer_metadata_live")
         );
         assert_eq!(wire_name_for_id(62), Some("hub_motorization_live"));
+        let paused_d70 = assigned_descriptor_by_name("sunk_convoy_history_live")
+            .expect("reserved d70 remains assigned for paused evidence verification");
+        assert_eq!(paused_d70.id, 70);
+        assert_eq!(paused_d70.status, CompactDomainStatus::Reserved);
+        assert!(!paused_d70.schedulable);
+        assert!(paused_d70.requires_data_record);
+        assert_eq!(
+            id_for_scheduled_name("sunk_convoy_history_live"),
+            None,
+            "the shared production registry must remain fail-closed; the recorder host owns the nonce-bound paused exception"
+        );
         assert_eq!(id_for_scheduled_name("air_variant_archetypes_live"), None);
         assert_eq!(wire_name_for_id(46), Some("air_variant_archetypes"));
         assert_eq!(

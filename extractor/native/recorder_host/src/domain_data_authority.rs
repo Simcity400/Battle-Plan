@@ -324,6 +324,13 @@ pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_LEGACY_VERSION: u16 = 1;
 pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION: u16 = 2;
 pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN: usize = 32;
 pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_ROW_LEN: usize = 96;
+pub const COMPACT_MARKET_TRADE_ACTIVATION_TRAILER_MAGIC: &[u8; 4] = b"MTRA";
+pub const COMPACT_MARKET_TRADE_ACTIVATION_TRAILER_VERSION: u16 = 1;
+pub const COMPACT_MARKET_TRADE_ACTIVATION_HEADER_LEN: usize = 32;
+pub const COMPACT_MARKET_TRADE_ACTIVATION_FLAGS_KNOWN: u32 = 3;
+pub const COMPACT_MARKET_TRADE_ACTIVATION_FLAG_ACTIVE: u32 = 1;
+pub const COMPACT_MARKET_TRADE_ACTIVATION_ROOT_COUNTRYTRADEVIEW: u32 = 1;
+pub const COMPACT_MARKET_TRADE_ACTIVATION_OPEN_RVA: u32 = 0x015e_c520;
 pub const COMPACT_MARKET_TRADE_STOCKPILE_TRAILER_MAGIC: &[u8; 4] = b"MTS1";
 pub const COMPACT_MARKET_TRADE_STOCKPILE_TRAILER_VERSION: u16 = 1;
 pub const COMPACT_MARKET_TRADE_STOCKPILE_HEADER_LEN: usize = 40;
@@ -485,10 +492,10 @@ pub const COMPACT_SUPPLY_MAX_BUILDING_LEVEL: i32 = 1_000;
 pub const COMPACT_SUPPLY_MAX_CSUPPLY_INPUT_RAW: i32 = COMPACT_FIXED_SCALE_RAW as i32;
 pub const COMPACT_SUPPLY_MAX_DISRUPTED_RAW: i32 = COMPACT_FIXED_SCALE_RAW as i32;
 pub const COMPACT_DIVISION_TYPE: u32 = 4713;
-// E4: division row grew 92 -> 104 to carry strategic_redeployment,
-// current_manpower, and cumulative_losses (must stay in lockstep with
-// collector and world_fold row lengths).
-pub const COMPACT_DIVISION_ROW_LEN: usize = 104;
+// A15 extends the E4 104-byte row to 120 bytes with exact counter maximum
+// organisation, supply-status, and dig-in operands.
+pub const COMPACT_DIVISION_ROW_LEN: usize = 120;
+pub const LEGACY_COMPACT_DIVISION_ROW_LEN: usize = 104;
 pub const COMPACT_MAX_DIVISION_PROVINCE_ID: u32 = 1_000_000;
 pub const COMPACT_MAX_DIVISION_COMBAT_REF_COUNT: u32 = 1_000;
 pub const COMPACT_MAX_DIVISION_ORGANISATION_RAW: u32 = 100_000_000;
@@ -498,6 +505,8 @@ pub const COMPACT_MAX_ARMY_ID: u32 = i32::MAX as u32;
 pub const COMPACT_MAX_DIVISION_EXPERIENCE_RAW: u32 = u32::MAX;
 pub const COMPACT_MAX_DIVISION_SUPPLY_RAW: u32 = 100_000_000;
 pub const COMPACT_MAX_DIVISION_SUPPLY_GAIN_RAW: u32 = 500_000;
+pub const COMPACT_MAX_DIVISION_COUNTER_SUPPLY_STATUS_RAW: u32 = 100_000;
+pub const COMPACT_MAX_DIVISION_DIG_IN_RAW: u32 = 100_000_000;
 pub const COMPACT_MAX_DIVISION_FUEL_RAW: u32 = u32::MAX;
 pub const COMPACT_DIVISION_ROW_FLAG_DELETED: u32 = 1 << 12;
 pub const COMPACT_DIVISION_ROW_FLAG_TEMPLATE: u32 = 1 << 13;
@@ -513,6 +522,17 @@ pub const COMPACT_DIVISION_ROW_FLAG_DISRUPTED_SUPPLY: u32 = 1 << 17;
 pub const COMPACT_DIVISION_ROW_FLAG_STRATEGIC_REDEPLOYMENT: u32 = 1 << 18;
 pub const COMPACT_DIVISION_ROW_FLAG_CURRENT_MANPOWER: u32 = 1 << 19;
 pub const COMPACT_DIVISION_ROW_FLAG_CUMULATIVE_LOSSES: u32 = 1 << 20;
+pub const COMPACT_DIVISION_ROW_FLAG_MAX_ORGANISATION: u32 = 1 << 21;
+pub const COMPACT_DIVISION_ROW_FLAG_COUNTER_SUPPLY_STATUS: u32 = 1 << 22;
+pub const COMPACT_DIVISION_ROW_FLAG_DIG_IN: u32 = 1 << 23;
+pub const COMPACT_DIVISION_ROW_FLAG_DIG_IN_CAP: u32 = 1 << 24;
+pub const COMPACT_DIVISION_ROW_FLAG_TRAINING_OBSERVED: u32 = 1 << 25;
+pub const COMPACT_DIVISION_ROW_FLAG_TRAINING_VISIBLE: u32 = 1 << 26;
+pub const COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_OBSERVED: u32 = 1 << 27;
+pub const COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_VISIBLE: u32 = 1 << 28;
+pub const COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_CAPPED: u32 = 1 << 29;
+pub const COMPACT_DIVISION_ROW_FLAG_INVALID_ORDERS_OBSERVED: u32 = 1 << 30;
+pub const COMPACT_DIVISION_ROW_FLAG_INVALID_ORDERS_VISIBLE: u32 = 1 << 31;
 /// Sane ceiling for disrupted_supply raw (fixed x100000): a disrupted
 /// fraction far above 1.0 is a torn read.
 pub const COMPACT_MAX_DIVISION_DISRUPTED_SUPPLY_RAW: u32 = 1_000_000;
@@ -4305,14 +4325,22 @@ fn decode_compact_divisions_data_payload(
             "offset {offset}: divisions data reserved field is nonzero"
         ));
     }
-    let expected_len = 32usize.saturating_add(row_count.saturating_mul(COMPACT_DIVISION_ROW_LEN));
-    if payload.len() != expected_len {
+    let legacy_expected =
+        32usize.saturating_add(row_count.saturating_mul(LEGACY_COMPACT_DIVISION_ROW_LEN));
+    let extended_expected =
+        32usize.saturating_add(row_count.saturating_mul(COMPACT_DIVISION_ROW_LEN));
+    let row_len = if payload.len() == extended_expected {
+        COMPACT_DIVISION_ROW_LEN
+    } else if payload.len() == legacy_expected {
+        LEGACY_COMPACT_DIVISION_ROW_LEN
+    } else {
         summary.parse_errors.push(format!(
-            "offset {offset}: divisions data payload is {} byte(s), expected {expected_len}",
+            "offset {offset}: divisions data payload is {} byte(s), expected legacy {legacy_expected} or extended {extended_expected}",
             payload.len()
         ));
         return;
-    }
+    };
+    let extended = row_len == COMPACT_DIVISION_ROW_LEN;
     if changed_rows > row_count {
         summary.parse_errors.push(format!(
             "offset {offset}: divisions data changed_rows {changed_rows} > row_count {row_count}"
@@ -4385,7 +4413,11 @@ fn decode_compact_divisions_data_payload(
         let strategic_redeployment_raw = read_u32_le(payload, cursor + 92);
         let current_manpower = read_u32_le(payload, cursor + 96);
         let cumulative_losses = read_u32_le(payload, cursor + 100);
-        cursor += COMPACT_DIVISION_ROW_LEN;
+        let max_organisation_raw = extended.then(|| read_u32_le(payload, cursor + 104)).unwrap_or(0);
+        let counter_supply_status_raw = extended.then(|| read_u32_le(payload, cursor + 108)).unwrap_or(0);
+        let dig_in_raw = extended.then(|| read_u32_le(payload, cursor + 112)).unwrap_or(0);
+        let dig_in_cap_raw = extended.then(|| read_u32_le(payload, cursor + 116)).unwrap_or(0);
+        cursor += row_len;
 
         if div_id == 0 {
             summary.parse_errors.push(format!(
@@ -4411,7 +4443,18 @@ fn decode_compact_divisions_data_payload(
                 | COMPACT_DIVISION_ROW_FLAG_DISRUPTED_SUPPLY
                 | COMPACT_DIVISION_ROW_FLAG_STRATEGIC_REDEPLOYMENT
                 | COMPACT_DIVISION_ROW_FLAG_CURRENT_MANPOWER
-                | COMPACT_DIVISION_ROW_FLAG_CUMULATIVE_LOSSES)
+                | COMPACT_DIVISION_ROW_FLAG_CUMULATIVE_LOSSES
+                | COMPACT_DIVISION_ROW_FLAG_MAX_ORGANISATION
+                | COMPACT_DIVISION_ROW_FLAG_COUNTER_SUPPLY_STATUS
+                | COMPACT_DIVISION_ROW_FLAG_DIG_IN
+                | COMPACT_DIVISION_ROW_FLAG_DIG_IN_CAP
+                | COMPACT_DIVISION_ROW_FLAG_TRAINING_OBSERVED
+                | COMPACT_DIVISION_ROW_FLAG_TRAINING_VISIBLE
+                | COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_OBSERVED
+                | COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_VISIBLE
+                | COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_CAPPED
+                | COMPACT_DIVISION_ROW_FLAG_INVALID_ORDERS_OBSERVED
+                | COMPACT_DIVISION_ROW_FLAG_INVALID_ORDERS_VISIBLE)
             != 0
         {
             summary.parse_errors.push(format!(
@@ -4436,6 +4479,42 @@ fn decode_compact_divisions_data_payload(
             (flags & COMPACT_DIVISION_ROW_FLAG_STRATEGIC_REDEPLOYMENT) != 0;
         let has_current_manpower = (flags & COMPACT_DIVISION_ROW_FLAG_CURRENT_MANPOWER) != 0;
         let has_cumulative_losses = (flags & COMPACT_DIVISION_ROW_FLAG_CUMULATIVE_LOSSES) != 0;
+        let has_max_organisation =
+            (flags & COMPACT_DIVISION_ROW_FLAG_MAX_ORGANISATION) != 0;
+        let has_counter_supply_status =
+            (flags & COMPACT_DIVISION_ROW_FLAG_COUNTER_SUPPLY_STATUS) != 0;
+        let has_dig_in = (flags & COMPACT_DIVISION_ROW_FLAG_DIG_IN) != 0;
+        let has_dig_in_cap = (flags & COMPACT_DIVISION_ROW_FLAG_DIG_IN_CAP) != 0;
+        let training_observed =
+            (flags & COMPACT_DIVISION_ROW_FLAG_TRAINING_OBSERVED) != 0;
+        let training_visible =
+            (flags & COMPACT_DIVISION_ROW_FLAG_TRAINING_VISIBLE) != 0;
+        let dig_in_ui_observed =
+            (flags & COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_OBSERVED) != 0;
+        let dig_in_ui_visible =
+            (flags & COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_VISIBLE) != 0;
+        let dig_in_ui_capped =
+            (flags & COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_CAPPED) != 0;
+        let invalid_orders_observed =
+            (flags & COMPACT_DIVISION_ROW_FLAG_INVALID_ORDERS_OBSERVED) != 0;
+        let invalid_orders_visible =
+            (flags & COMPACT_DIVISION_ROW_FLAG_INVALID_ORDERS_VISIBLE) != 0;
+        let a15_flags = COMPACT_DIVISION_ROW_FLAG_MAX_ORGANISATION
+            | COMPACT_DIVISION_ROW_FLAG_COUNTER_SUPPLY_STATUS
+            | COMPACT_DIVISION_ROW_FLAG_DIG_IN
+            | COMPACT_DIVISION_ROW_FLAG_DIG_IN_CAP
+            | COMPACT_DIVISION_ROW_FLAG_TRAINING_OBSERVED
+            | COMPACT_DIVISION_ROW_FLAG_TRAINING_VISIBLE
+            | COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_OBSERVED
+            | COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_VISIBLE
+            | COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_CAPPED
+            | COMPACT_DIVISION_ROW_FLAG_INVALID_ORDERS_OBSERVED
+            | COMPACT_DIVISION_ROW_FLAG_INVALID_ORDERS_VISIBLE;
+        if !extended && flags & a15_flags != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: legacy divisions row {row_index} carries extended A15 flags"
+            ));
+        }
         let has_template = (flags & COMPACT_DIVISION_ROW_FLAG_TEMPLATE) != 0;
         if deleted {
             deleted_rows = deleted_rows.saturating_add(1);
@@ -4466,13 +4545,37 @@ fn decode_compact_divisions_data_payload(
                 && disrupted_supply_raw == 0
                 && strategic_redeployment_raw == 0
                 && current_manpower == 0
-                && cumulative_losses == 0;
+                && cumulative_losses == 0
+                && max_organisation_raw == 0
+                && counter_supply_status_raw == 0
+                && dig_in_raw == 0
+                && dig_in_cap_raw == 0;
             if !zero_filled {
                 summary.parse_errors.push(format!(
                     "offset {offset}: divisions delete row {row_index} is not zero-filled"
                 ));
             }
             continue;
+        }
+        if training_visible && !training_observed {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has visible training without an evaluated UI observation"
+            ));
+        }
+        if invalid_orders_visible && !invalid_orders_observed {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has visible invalid-orders without an evaluated UI observation"
+            ));
+        }
+        if dig_in_ui_visible && !dig_in_ui_observed {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has visible dig-in without an evaluated UI observation"
+            ));
+        }
+        if dig_in_ui_capped && (!dig_in_ui_observed || !dig_in_ui_visible) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has capped dig-in without a visible evaluated UI observation"
+            ));
         }
         org_strength_rows = org_strength_rows.saturating_add(1);
         if moving {
@@ -4694,6 +4797,46 @@ fn decode_compact_divisions_data_payload(
         if has_cumulative_losses {
             cumulative_losses_rows = cumulative_losses_rows.saturating_add(1);
         }
+        validate_optional_compact_u32(
+            summary,
+            offset,
+            row_index,
+            has_max_organisation,
+            max_organisation_raw,
+            100,
+            COMPACT_MAX_DIVISION_ORGANISATION_RAW,
+            "max_organisation_raw",
+        );
+        validate_optional_compact_u32(
+            summary,
+            offset,
+            row_index,
+            has_counter_supply_status,
+            counter_supply_status_raw,
+            0,
+            COMPACT_MAX_DIVISION_COUNTER_SUPPLY_STATUS_RAW,
+            "counter_supply_status_raw",
+        );
+        validate_optional_compact_u32(
+            summary,
+            offset,
+            row_index,
+            has_dig_in,
+            dig_in_raw,
+            0,
+            COMPACT_MAX_DIVISION_DIG_IN_RAW,
+            "dig_in_raw",
+        );
+        validate_optional_compact_u32(
+            summary,
+            offset,
+            row_index,
+            has_dig_in_cap,
+            dig_in_cap_raw,
+            0,
+            COMPACT_MAX_DIVISION_DIG_IN_RAW,
+            "dig_in_cap_raw",
+        );
         let has_order_army = (flags & COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY) != 0;
         let has_order_group = (flags & COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY_GROUP) != 0;
         let has_order_unresolved = (flags & COMPACT_DIVISION_ROW_FLAG_ORDER_UNRESOLVED) != 0;
@@ -10516,6 +10659,7 @@ fn decode_compact_market_trade_data_payload(
     let mut detail_rows = 0usize;
     let mut detail_seen = false;
     let mut stockpile_seen = false;
+    let mut activation_seen = false;
     while cursor < payload.len() {
         let Some(magic) = payload.get(cursor..cursor.saturating_add(4)) else {
             summary.parse_errors.push(format!(
@@ -10568,6 +10712,15 @@ fn decode_compact_market_trade_data_payload(
             )
         } else if magic == COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC {
             decode_compact_market_trade_classic_deal_trailer(offset, payload, cursor, summary)
+        } else if magic == COMPACT_MARKET_TRADE_ACTIVATION_TRAILER_MAGIC {
+            if activation_seen {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: market trade has duplicate MTRA trailer"
+                ));
+                break;
+            }
+            activation_seen = true;
+            decode_compact_market_trade_activation_trailer(offset, payload, cursor, summary)
         } else if magic == COMPACT_MARKET_TRADE_STOCKPILE_TRAILER_MAGIC {
             if stockpile_seen {
                 summary.parse_errors.push(format!(
@@ -10930,6 +11083,48 @@ fn decode_compact_market_trade_detail_trailer(
         computed_progress,
     );
     (row_count, mtd1_end)
+}
+
+fn decode_compact_market_trade_activation_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    summary: &mut DomainDataDecodeSummary,
+) -> usize {
+    if let Err(error) = require_compact_remaining(
+        payload,
+        trailer_offset,
+        COMPACT_MARKET_TRADE_ACTIVATION_HEADER_LEN,
+        "market trade MTRA activation header",
+    ) {
+        summary.parse_errors.push(format!("offset {offset}: {error}"));
+        return payload.len();
+    }
+    let trailer = &payload[trailer_offset..trailer_offset + COMPACT_MARKET_TRADE_ACTIVATION_HEADER_LEN];
+    let version = read_u16_le(trailer, 4);
+    let header_len = read_u16_le(trailer, 6) as usize;
+    let flags = read_u32_le(trailer, 8);
+    let country_tag_db_id = read_u32_le(trailer, 12);
+    let observation_sequence = read_u64_le(trailer, 16);
+    let root_kind = read_u32_le(trailer, 24);
+    let open_rva = read_u32_le(trailer, 28);
+    let active = flags & COMPACT_MARKET_TRADE_ACTIVATION_FLAG_ACTIVE != 0;
+    if version != COMPACT_MARKET_TRADE_ACTIVATION_TRAILER_VERSION
+        || header_len != COMPACT_MARKET_TRADE_ACTIVATION_HEADER_LEN
+        || flags & !COMPACT_MARKET_TRADE_ACTIVATION_FLAGS_KNOWN != 0
+        || flags & 2 == 0
+        || active != (country_tag_db_id != 0)
+        || (active && observation_sequence == 0)
+        || country_tag_db_id > COMPACT_MAX_OWNER_TAG_DB_ID
+        || root_kind != COMPACT_MARKET_TRADE_ACTIVATION_ROOT_COUNTRYTRADEVIEW
+        || open_rva != COMPACT_MARKET_TRADE_ACTIVATION_OPEN_RVA
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade MTRA activation identity/shape is invalid"
+        ));
+    }
+    add_compact_domain_data_unit(summary, 43, "market_trade_activation_rows", 1);
+    trailer_offset + COMPACT_MARKET_TRADE_ACTIVATION_HEADER_LEN
 }
 
 // Decode the optional MTRF resource-flow trailer that follows the MTD1 detail

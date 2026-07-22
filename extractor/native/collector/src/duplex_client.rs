@@ -123,8 +123,15 @@ pub const DUPLEX_CONTROL_CLIENT_ENABLED: bool = false;
 /// drain, durable seal, second CID1, and second CFA1 boundaries end to end.
 pub const ROLLOVER_LIVE_LIFECYCLE_EVIDENCE_BOUND: bool = false;
 
-pub const fn product_rollover_enabled() -> bool {
-    DUPLEX_CONTROL_CLIENT_ENABLED && ROLLOVER_LIVE_LIFECYCLE_EVIDENCE_BOUND
+pub fn evidence_or_product_identity_enabled() -> bool {
+    (DUPLEX_CONTROL_CLIENT_ENABLED
+        && compact_contract::build_profile::DOMAIN_CAMPAIGN_ID_LIVE_READER_ENABLED)
+        || compact_contract::cid1_lifecycle_evidence::cid1_lifecycle_evidence_permit_enabled()
+}
+
+pub fn product_rollover_enabled() -> bool {
+    (DUPLEX_CONTROL_CLIENT_ENABLED && ROLLOVER_LIVE_LIFECYCLE_EVIDENCE_BOUND)
+        || compact_contract::cid1_lifecycle_evidence::cid1_lifecycle_evidence_permit_enabled()
 }
 
 /// Move-only proof that the activation gate was consulted (mirrors the
@@ -246,10 +253,11 @@ pub fn early_render_duplex_product_permit() -> EarlyRenderDuplexProductPermit {
     EarlyRenderDuplexProductPermit { _private: () }
 }
 
-/// The ONLY production constructor for [`DuplexClientProductPermit`]: fails
-/// closed while the activation constant is `false`.
+/// The only non-test constructor for [`DuplexClientProductPermit`]. It fails
+/// closed unless the ordinary product latches or the explicit content-addressed
+/// lifecycle-evidence permit are valid.
 pub fn duplex_client_product_permit() -> Result<DuplexClientProductPermit, ClientError> {
-    if DUPLEX_CONTROL_CLIENT_ENABLED {
+    if evidence_or_product_identity_enabled() {
         Ok(DuplexClientProductPermit { _private: () })
     } else {
         Err(ClientError::ActivationDisabled)

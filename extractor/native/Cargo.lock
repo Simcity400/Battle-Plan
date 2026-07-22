@@ -131,6 +131,7 @@ dependencies = [
  "hub_motorization_live_lane",
  "hud_role_observer_live_lane",
  "land_combat_detail_events_live_lane",
+ "minhook",
  "naval_combat_live_lane",
  "naval_missions_status_live_lane",
  "nuke_stockpile_live_lane",
@@ -151,6 +152,7 @@ dependencies = [
  "spotted_units_live",
  "sunk_ship_history_live_lane",
  "supply_logistics_attrition_live_lane",
+ "windows-sys",
 ]
 
 [[package]]

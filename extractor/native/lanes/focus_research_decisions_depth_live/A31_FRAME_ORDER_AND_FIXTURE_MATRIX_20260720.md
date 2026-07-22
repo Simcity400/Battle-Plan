@@ -99,13 +99,13 @@ producer's hidden default, so both fixture members must expose at least one
 positive joint-country item.
 
 `Invoke-A31NationalFocusFixturePair.ps1` and
-`tools/capture_a31_fixture_pair.py` form the owner-runnable live path. The
-Python driver authenticates the target executable, invokes the already
-injected collector through its one-argument JSON command export, captures the
-stable and transition receipts, and runs both receipt regrades plus the pair
-regrade. It explicitly requires the focus panel to be closed while the two
-mid-function sites are installed and restored. Neither path alters either
-activation latch.
+`tools/capture_a31_fixture_pair.py` form the unattended live path. The wrapper
+owns a clean exact-save launch and paused-readiness proof. The Python driver
+discovers the sole exact process and SWE country object, invokes the injected
+collector through its one-argument JSON command export, executes the frozen
+1920x1080 focus actions, captures both receipts, and runs both receipt regrades
+plus the pair regrade. It closes the focus panel while the two mid-function
+sites are installed and restored. Neither path alters either activation latch.
 
 `tools/verify_a31_fixture_matrix.py` closes the other static acceptance seam.
 It independently regrades two committed NFP1 receipts, requires the same
@@ -117,9 +117,7 @@ visible list alone is not a qualifying transition.
 No retained `.nfp1` record or A31 acquisition receipt exists in the available
 capture/evidence roots. Therefore `PRODUCTION_SCHEDULING_ENABLED`,
 `LIVE_FIXTURE_ACCEPTED`, `PRODUCTION_ACTIVATION_AUTHORIZED`, and
-`COMPACT_DOMAIN_89_SCHEDULED` remain false. Activation now requires only the
-live interaction: run the owner against exact a729 and provide one complete
-stable receipt plus one later discriminating receipt. Instrumentation and
-regrading are automated. That live pair is evidence input, not remaining
-static RE. Root-owned central validation must then pass before a reviewed
-latch/registry change.
+`COMPACT_DOMAIN_89_SCHEDULED` remain false. Acquisition no longer requires a
+person: run the wrapper after central validation. It binds the frozen save,
+attested binaries, static bundle, action profile, address discovery, paired
+receipts, and independent matrix regrade into one immutable admission.

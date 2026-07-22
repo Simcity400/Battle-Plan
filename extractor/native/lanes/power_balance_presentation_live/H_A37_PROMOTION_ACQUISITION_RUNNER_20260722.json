@@ -1,0 +1,76 @@
+{
+  "schema": "hoi4.h_a37.passive_observation_runner.v2",
+  "date": "2026-07-22",
+  "lane": "H-A37",
+  "status": "READY_PASSIVE_NOT_EXECUTED",
+  "runner": "extractor/native/scripts/Invoke-A37PromotionAcquisition.ps1",
+  "purpose": "Passively retain and independently regrade both cross-sign exact-a729 controller/UI/WorldFrame selected-Present cases that occur while the user plays.",
+  "authority": {
+    "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "controller_manifest_sha256": "a540af1c030d9ef2fbb1cd290627087627771a196e7a60e4241cb5287b66e4e2",
+    "panel_visibility_manifest_sha256": "2c921216fb9b825716685852c026aba92b7da88a5c88fdb625a569e49afedd9c"
+  },
+  "observation_contract": {
+    "source": "immutable per-observation JSON receipts emitted by an already-present passive collector",
+    "source_schema": "hoi4.a37.raw_controller_selected_present.v1",
+    "engine_evidence": "post-original terminal controller values and range/record presence",
+    "ui_evidence": "panel_open and GUI-visible agreement",
+    "world_frame_evidence": "early-render candidate selected for the WorldFrame",
+    "selected_present_evidence": "authenticated selected/cutoff QPC and receipt SHA-256",
+    "deduplication": "raw content SHA-256",
+    "selection": "first valid immutable receipt for each required opposite-sign pair",
+    "missing_state": "write fail_closed_unobserved_states receipt and fail",
+    "inference_or_fabrication": "forbidden"
+  },
+  "required_natural_observations": [
+    {
+      "file": "positive_current_negative_change.json",
+      "required_raw_signs": [1, -1]
+    },
+    {
+      "file": "negative_current_positive_change.json",
+      "required_raw_signs": [-1, 1]
+    }
+  ],
+  "client_interaction_policy": {
+    "only_user_interacts_with_hoi4": true,
+    "scripted_input": false,
+    "console_commands": false,
+    "unpause_or_clock_changes": false,
+    "focus_or_window_changes": false,
+    "display_changes": false,
+    "launch_or_relaunch": false,
+    "process_control_or_injection": false
+  },
+  "outputs": {
+    "raw_cases": [
+      "positive_current_negative_change.json",
+      "negative_current_positive_change.json"
+    ],
+    "regrade": "a37_live_fixture_regrade.json",
+    "success_receipt": "a37_passive_observation_receipt.json",
+    "failure_receipt": "a37_passive_observation_failure.json",
+    "regrader": "extractor/native/lanes/power_balance_presentation_live/regrade_a37_live_fixture.py"
+  },
+  "required_parameters": [
+    "PID of the already-running exact-a729 client",
+    "existing passive collector ObservationDirectory",
+    "new OutDir",
+    "optional exact process-start timestamp"
+  ],
+  "collector_prerequisite": "The collector must spool a new immutable A37 receipt for every qualifying callback/selected-Present join instead of a single fixed one-shot filename. Installation belongs to the surrounding passive capture session and is not performed by this adapter.",
+  "legacy_client_driving": {
+    "production_dependency": false,
+    "isolated_scripts": [
+      "extractor/native/scripts/Invoke-A37AutonomousControllerTransaction.ps1",
+      "extractor/native/scripts/Invoke-A37AutonomousPowerBalanceMatrix.ps1"
+    ],
+    "default": "disabled",
+    "explicit_opt_in_switch": "EnableLegacyClientDriving"
+  },
+  "promotion_disposition": {
+    "controller_spine_fixture": "eligible only after passive observations regrade successfully",
+    "pbp2_emitted": false,
+    "activation_authorized": false
+  }
+}

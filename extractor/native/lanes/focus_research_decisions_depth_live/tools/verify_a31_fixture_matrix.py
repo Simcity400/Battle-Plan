@@ -3,7 +3,7 @@
 
 This consumes two independently authenticated receipts. It never changes the
 domain-89 scheduling or live-fixture latches; a successful result is the
-human-supplied evidence prerequisite for a later reviewed activation patch.
+machine-acquired evidence prerequisite for a later reviewed activation patch.
 """
 
 from __future__ import annotations

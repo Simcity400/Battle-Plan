@@ -144,6 +144,10 @@ pub struct OperativeUiRow {
     /// the currently selected assignment presentation.
     pub captured: bool,
     pub captured_by: Option<String>,
+    /// Exact country database identity from `COperativeLeader+0xFB0`.
+    pub captured_by_tag_db_id: Option<u32>,
+    /// Exact raw capture-end date from `COperativeLeader+0xFC0`.
+    pub capture_end_date_raw: Option<i64>,
     /// Membership in the recruitable pool is likewise independent producer
     /// state, even though the visible assignment row has a Recruitable branch.
     pub recruitable_pool_member: bool,
@@ -639,11 +643,22 @@ pub fn admit_intelligence_ui(trace: &IntelligenceUiTrace) -> Result<AdmittedInte
             fixed(row.experience_fixed, "operative experience")?;
             unique_nonempty(&row.traits, "operative traits")?;
             unique_nonempty(&row.nationalities, "operative nationalities")?;
-            match (row.captured, row.captured_by.as_deref()) {
-                (true, Some(country)) => nonempty(country, "captured_by")?,
-                (true, None) => return Err(fail("captured operative lacks captured_by")),
-                (false, Some(_)) => return Err(fail("uncaptured operative carries captured_by")),
-                (false, None) => {}
+            match (
+                row.captured,
+                row.captured_by.as_deref(),
+                row.captured_by_tag_db_id,
+                row.capture_end_date_raw,
+            ) {
+                (true, Some(country), Some(tag_db_id), Some(_)) if tag_db_id != 0 => {
+                    nonempty(country, "captured_by")?
+                }
+                (true, _, _, _) => {
+                    return Err(fail("captured operative lacks exact captured-by/date identity"))
+                }
+                (false, None, None, None) => {}
+                (false, _, _, _) => {
+                    return Err(fail("uncaptured operative carries captured-by/date identity"))
+                }
             }
             if row.captured && row.recruitable_pool_member {
                 return Err(fail("operative cannot be captured and recruitable"));
@@ -1105,6 +1120,29 @@ pub fn admit_intelligence_ui_with_selected_present_companion<'a>(
             return Err(fail("unobtained operatives carry mission product rows"));
         }
         ProducerValue::Unobtained { .. } => {}
+    }
+
+    match &trace.operatives {
+        ProducerValue::Measured(rows) => {
+            let capture_join = admitted.capture_recruitable_join();
+            if capture_join.rows.len() != rows.rows.len() {
+                return Err(fail("capture/recruitable companion coverage mismatch"));
+            }
+            for (row, exact) in rows.rows.iter().zip(&capture_join.rows) {
+                if row.stable_item_id != format!("operative:{}", exact.operative_id)
+                    || row.operative_id != exact.operative_id.to_string()
+                    || row.captured != exact.captured
+                    || row.captured_by_tag_db_id != exact.captured_by_tag_db_id
+                    || row.capture_end_date_raw != exact.capture_end_date_raw
+                    || row.recruitable_pool_member != exact.recruitable_pool_member
+                {
+                    return Err(fail("operative capture/recruitable producer join mismatch"));
+                }
+            }
+        }
+        ProducerValue::Unobtained { .. } => {
+            return Err(fail("unobtained operatives carry capture/recruitable companion rows"));
+        }
     }
 
     let companion_gates = exact.visibility.iter().map(|gate| {

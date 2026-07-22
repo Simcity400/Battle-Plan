@@ -1,0 +1,20 @@
+{
+  "schema": "hoi4.h_a37.legacy_client_driver.v2",
+  "date": "2026-07-22",
+  "lane": "H-A37",
+  "status": "LEGACY_ISOLATED_DISABLED_BY_DEFAULT",
+  "runner": "extractor/native/scripts/Invoke-A37AutonomousPowerBalanceMatrix.ps1",
+  "production_acquisition_runner": "extractor/native/scripts/Invoke-A37PromotionAcquisition.ps1",
+  "production_dependency": false,
+  "reason_isolated": "This historical harness sends keyboard/mouse/console input and captures the desktop. Those capabilities are forbidden in the passive production workflow.",
+  "default_behavior": "Fails before process, window, display, or input interaction unless EnableLegacyClientDriving is explicitly supplied.",
+  "opt_in_switch": "EnableLegacyClientDriving",
+  "allowed_scope": "manual harness work only, outside passive production acquisition",
+  "passive_replacement": {
+    "source": "authenticated immutable collector observation spool",
+    "engine_ui_join": "controller callback plus panel-open/visible state",
+    "world_frame_join": "selected early-render WorldFrame Present receipt",
+    "state_selection": "actual observations only",
+    "missing_state": "fail closed"
+  }
+}

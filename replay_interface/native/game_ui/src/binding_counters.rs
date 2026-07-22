@@ -42,18 +42,21 @@
 //!   fill. Surfaced verbatim as `strength`; `str_bar_fraction` is that value only
 //!   when it lies in `[0,1]` (a bar fill must; a value outside flags a non-ratio
 //!   strength and yields `None`, fail-closed).
-//! * **Org bar fraction** — UNKNOWN / GAP: `DivisionUnitRow` carries the raw
-//!   `organisation` value (e.g. 42.0 points) but NO `max_organisation`, so the
-//!   `GFX_mapicon_unit_bar_org` fill fraction (`org / max_org`) cannot be
-//!   computed. `organisation` is surfaced raw; `org_bar_fraction` is always
-//!   `None`. Filed: `REPLAY_DATA_REQUIREMENTS.md` item 3 / `EXTRACTION_NEEDS.md`
-//!   A15 (needs a max-organisation datum).
-//! * **Badges (A15)** — the on-map badge slots are supply / orders / dig-in /
-//!   training / attrition / active-ability (`interface/mapicons.gui`, A15). Of
-//!   these, `DivisionUnitRow` serves orders (`moving`), combat (`in_combat`),
-//!   training(experience) / active-ability remain recording-side gaps.
+//! * **Org bar fraction** — exact only when the row carries both
+//!   `organisation` and `max_organisation`; invalid or absent operands produce
+//!   `None`. No template/doctrine reconstruction is used. Current compact D20
+//!   still has no authenticated maximum, so ordinary live frames fail closed.
+//! * **Badges (A15)** — D20 primary-order linkage replaces the old movement
+//!   proxy; order kind is admitted only through a same-hour D54 identity and
+//!   membership join. A36 active abilities join by exact `division:<id>`
+//!   membership. Exact-a729 D20 counter-supply status drives low-supply frames;
+//!   experience is never substituted for the engine's exercising predicate.
 
-use replay_core::{DivisionUnitRow, FleetUnitRow, Leaf, ViewStatus, WingUnitRow, WorldFrame};
+use replay_core::{
+    ArmyBattleplansView, CommandAbilityEnvelope, DivisionPrimaryOrderExact, DivisionUnitRow,
+    ExactProvinceSupplyTooltipView, FleetUnitRow, Leaf, PoliticsDetailView, ViewStatus,
+    WingUnitRow, WorldFrame,
+};
 use std::collections::BTreeSet;
 
 // ---------------------------------------------------------------------------
@@ -154,30 +157,29 @@ impl ServedBadge {
     }
 }
 
-/// The A15 badge slot set for one counter. `orders`, `combat`, and exact-a729
-/// attrition are served by `DivisionUnitRow`; remaining gaps stay fail-closed.
+/// The A15 badge slot set for one counter. Primary-order linkage, combat,
+/// exact-a729 attrition, and exact affected-division abilities are served;
+/// unproven visibility predicates stay fail-closed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CounterBadges {
-    /// Orders badge, from the division `moving` leaf: `Measured(true)` = has a
-    /// move order, `Measured(false)` = no move order (`GFX_mapicon_unit_no_orders`).
-    /// The full orders KIND (area-defense / invalid-orders) is not distinguished
-    /// by the view — only move-vs-not is served.
+    /// Orders badge from D20's primary-order link. Authenticated null is false;
+    /// army/army-group is true; unresolved linkage is absent this hour.
     pub orders: ServedBadge,
     /// Combat indicator, from the division `in_combat` leaf.
     pub combat: ServedBadge,
-    /// Low-supply badge (A15) — `NotSurfaced`: `supply_status` is not in
-    /// `DivisionUnitRow`.
+    /// Exact low-supply badge from the dedicated engine counter scalar and
+    /// authenticated frame thresholds (never from current/max inventory).
     pub low_supply: ServedBadge,
-    /// Dig-in badge (A15) — `NotSurfaced`: `dig_in` is not in `DivisionUnitRow`.
+    /// Exact post-update dig-in control visibility/frame from the game UI.
     pub dig_in: ServedBadge,
-    /// Training badge (A15) — `NotSurfaced`: division `experience` is not in
-    /// `DivisionUnitRow`.
+    /// Exact post-update training control visibility from the game UI.
     pub training: ServedBadge,
+    /// Exact post-update invalid-orders control visibility from the game UI.
+    pub invalid_orders: ServedBadge,
     /// Attrition-active badge (A15), derived from the exact-a729 ATR1 carrier
     /// when the current frame authenticates that source.
     pub attrition: ServedBadge,
-    /// Active-ability badge (A15) — `NotSurfaced`: no per-unit active-ability
-    /// signal in the view.
+    /// Active-ability badge from A36's exact affected-division identities.
     pub active_ability: ServedBadge,
 }
 
@@ -191,6 +193,7 @@ impl CounterBadges {
             low_supply: ServedBadge::NotSurfaced,
             dig_in: ServedBadge::NotSurfaced,
             training: ServedBadge::NotSurfaced,
+            invalid_orders: ServedBadge::NotSurfaced,
             attrition: ServedBadge::NotSurfaced,
             active_ability: ServedBadge::NotSurfaced,
         }
@@ -238,11 +241,37 @@ pub struct CounterContent {
     pub strength: Option<f64>,
     /// Raw measured organisation (land = raw points; naval/air not served → `None`).
     pub organisation: Option<f64>,
+    /// Exact recorded maximum; never reconstructed from templates/doctrines.
+    pub max_organisation: Option<f64>,
     /// `GFX_mapicon_unit_bar_str` fill: `strength` when in `[0,1]`, else `None`.
     pub str_bar_fraction: Option<f32>,
-    /// `GFX_mapicon_unit_bar_org` fill: always `None` — no max-org served (GAP,
-    /// A15). See module note.
+    /// `GFX_mapicon_unit_bar_org` fill from exact current/max operands only.
     pub org_bar_fraction: Option<f32>,
+    /// Source-owned supply operands and their exact same-row ratio. Replay
+    /// never mixes sources to manufacture a missing ratio.
+    pub current_supply: Option<f64>,
+    pub max_supply: Option<f64>,
+    pub supply_ratio: Option<f64>,
+    /// Exact-a729 counter warning scalar (not current/max supply inventory).
+    pub counter_supply_status: Option<f64>,
+    /// `GFX_mapicon_unit_low_supply` sprite frame: 3/2/1, or `None` hidden.
+    pub low_supply_frame: Option<u8>,
+    /// Latest authenticated PST1 formatter observation for this division's
+    /// province and POV observer in the current replay frame.
+    pub remaining_supply: Leaf<f64>,
+    /// Recorded experience is surfaced without calling it an active-training
+    /// predicate.
+    pub experience: Option<f64>,
+    pub dig_in: Option<f64>,
+    pub dig_in_cap: Option<f64>,
+    pub dig_in_fraction: Option<f32>,
+    /// `GFX_mapicon_unit_dig_in` frame: 1 building, 2 capped; absent when the
+    /// complete training/friendly aggregate predicate cannot be evaluated.
+    pub dig_in_frame: Option<u8>,
+    /// Exact D20 primary-order to D54 order-kind join.
+    pub current_order_kind: Leaf<i32>,
+    /// Active A36 ability ids exactly joined to this division.
+    pub active_ability_kinds: Leaf<Vec<String>>,
     /// The counter's numeric badge: naval = `ship_count`, air = `plane_count`;
     /// `None` for land (a land counter shows a stack COUNT that is a CAP6
     /// aggregation, not a per-division datum).
@@ -313,6 +342,203 @@ fn strength_bar_fraction(strength: Option<f64>) -> Option<f32> {
         .map(|v| v as f32)
 }
 
+/// Exact bounded fraction. Invalid, non-finite, negative, zero-denominator,
+/// and numerator-above-denominator pairs fail closed; presentation never
+/// clamps an unproven value into range.
+fn exact_fraction(numerator: Option<f64>, denominator: Option<f64>) -> Option<f32> {
+    match (numerator, denominator) {
+        (Some(n), Some(d)) if n.is_finite() && d.is_finite() && n >= 0.0 && d > 0.0 && n <= d => {
+            Some((n / d) as f32)
+        }
+        _ => None,
+    }
+}
+
+/// Admit supply only as one internally consistent same-row triple. A lone
+/// legacy `max_supply` or historical normalized `supply_status` value cannot
+/// be relabelled as the current D20 numerator/denominator contract.
+fn exact_supply_operands(row: &DivisionUnitRow) -> (Option<f64>, Option<f64>, Option<f64>) {
+    match (
+        measured_f64(&row.current_supply),
+        measured_f64(&row.max_supply),
+        measured_f64(&row.supply_ratio),
+    ) {
+        (Some(current), Some(maximum), Some(ratio))
+            if current.is_finite()
+                && maximum.is_finite()
+                && ratio.is_finite()
+                && current >= 0.0
+                && maximum > 0.0
+                && current <= maximum
+                && (0.0..=1.0).contains(&ratio)
+                && (ratio - current / maximum).abs() <= f64::EPSILON * 8.0 =>
+        {
+            (Some(current), Some(maximum), Some(ratio))
+        }
+        _ => (None, None, None),
+    }
+}
+
+/// Exact wrapper vslot +0x138 organisation bar law: divide current by the
+/// authenticated max and clamp the fixed result to the 0..1 bar interval.
+fn exact_org_bar_fraction(current: Option<f64>, maximum: Option<f64>) -> Option<f32> {
+    match (current, maximum) {
+        (Some(current), Some(maximum))
+            if current.is_finite() && maximum.is_finite() && current >= 0.0 && maximum > 0.0 =>
+        {
+            Some((current / maximum).clamp(0.0, 1.0) as f32)
+        }
+        _ => None,
+    }
+}
+
+/// engine fixed-5 scale: 3 below .20, 2 below .35, 1 below .50, hidden at/above
+/// .50. Invalid/unmeasured values remain absent rather than being clamped.
+fn exact_low_supply_frame(status: &Leaf<f64>) -> (ServedBadge, Option<u8>) {
+    match status {
+        Leaf::Measured(value) if value.is_finite() && (0.0..=1.0).contains(value) => {
+            let scaled = *value * 100_000.0;
+            let rounded = scaled.round();
+            if (scaled - rounded).abs() > 1.0e-6 {
+                return (ServedBadge::AbsentThisHour, None);
+            }
+            let raw = rounded as u32;
+            let frame = if raw < 20_000 {
+                Some(3)
+            } else if raw < 35_000 {
+                Some(2)
+            } else if raw < 50_000 {
+                Some(1)
+            } else {
+                None
+            };
+            (ServedBadge::Measured(frame.is_some()), frame)
+        }
+        Leaf::Measured(_) | Leaf::Unobtained => (ServedBadge::AbsentThisHour, None),
+        Leaf::Absent => (ServedBadge::NotSurfaced, None),
+    }
+}
+
+fn exact_dig_in_ui_frame(frame: &Leaf<u32>) -> (ServedBadge, Option<u8>) {
+    match frame {
+        Leaf::Measured(0) => (ServedBadge::Measured(false), None),
+        Leaf::Measured(value @ 1..=2) => {
+            (ServedBadge::Measured(true), Some(*value as u8))
+        }
+        Leaf::Measured(_) | Leaf::Absent | Leaf::Unobtained => {
+            (ServedBadge::AbsentThisHour, None)
+        }
+    }
+}
+
+fn primary_order_badge(order: &Leaf<Option<DivisionPrimaryOrderExact>>) -> ServedBadge {
+    match order {
+        Leaf::Measured(Some(_)) => ServedBadge::Measured(true),
+        Leaf::Measured(None) => ServedBadge::Measured(false),
+        Leaf::Unobtained => ServedBadge::AbsentThisHour,
+        Leaf::Absent => ServedBadge::NotSurfaced,
+    }
+}
+
+fn exact_order_kind(row: &DivisionUnitRow, battleplans: &ArmyBattleplansView) -> Leaf<i32> {
+    let (army_id, engine_order_instance_id) = match (&row.primary_order, &row.army_id) {
+        (Leaf::Measured(None), _)
+        | (Leaf::Measured(Some(DivisionPrimaryOrderExact::ArmyGroup)), _) => {
+            return Leaf::Absent;
+        }
+        (
+            Leaf::Measured(Some(DivisionPrimaryOrderExact::Army {
+                engine_order_instance_id,
+            })),
+            Leaf::Measured(army_id),
+        ) => (*army_id, *engine_order_instance_id),
+        (Leaf::Absent, _) => return Leaf::Absent,
+        _ => return Leaf::Unobtained,
+    };
+    match battleplans.status {
+        ViewStatus::DomainAbsent => Leaf::Absent,
+        ViewStatus::DomainUnavailable => Leaf::Unobtained,
+        ViewStatus::Present => {
+            let mut matches = battleplans.orders.iter().filter(|order| {
+                order.key.army_id == army_id
+                    && order.key.engine_order_instance_id == engine_order_instance_id
+                    && order.assigned_division_ids.contains(&row.raw_division_id)
+            });
+            match (matches.next(), matches.next()) {
+                (Some(order), None) => Leaf::Measured(order.order_type),
+                _ => Leaf::Unobtained,
+            }
+        }
+    }
+}
+
+fn exact_active_ability_kinds(
+    row: &DivisionUnitRow,
+    envelope: Option<&Leaf<CommandAbilityEnvelope>>,
+) -> Leaf<Vec<String>> {
+    let envelope = match envelope {
+        Some(Leaf::Measured(envelope)) if envelope.validates_exact_authority() => envelope,
+        Some(Leaf::Measured(_)) | Some(Leaf::Unobtained) => return Leaf::Unobtained,
+        Some(Leaf::Absent) | None => return Leaf::Absent,
+    };
+    let identity = format!("division:{}", row.raw_division_id);
+    let kinds = envelope
+        .snapshot
+        .rows
+        .iter()
+        .filter(|ability| {
+            ability.active
+                && ability
+                    .affected_division_ids
+                    .iter()
+                    .any(|candidate| candidate == &identity)
+        })
+        .map(|ability| ability.ability_id.clone())
+        .collect::<Vec<_>>();
+    if kinds.is_empty() {
+        // A36 is selected-context scoped. Absence from this one context is not
+        // proof that no other leader/context affects the division.
+        Leaf::Absent
+    } else {
+        Leaf::Measured(kinds)
+    }
+}
+
+fn exact_remaining_supply(
+    row: &DivisionUnitRow,
+    observer_tag_db_id: Option<&Leaf<u32>>,
+    tooltip: &ExactProvinceSupplyTooltipView,
+) -> Leaf<f64> {
+    let province_id = match &row.location_province {
+        Leaf::Measured(value) => *value,
+        Leaf::Unobtained => return Leaf::Unobtained,
+        Leaf::Absent => return Leaf::Absent,
+    };
+    let observer_tag_db_id = match observer_tag_db_id {
+        Some(Leaf::Measured(value)) => *value,
+        Some(Leaf::Unobtained) => return Leaf::Unobtained,
+        Some(Leaf::Absent) | None => return Leaf::Absent,
+    };
+    match tooltip.status {
+        ViewStatus::DomainAbsent => Leaf::Absent,
+        ViewStatus::DomainUnavailable => Leaf::Unobtained,
+        ViewStatus::Present => match &tooltip.rows {
+            Leaf::Measured(rows) => rows
+                .iter()
+                .filter(|observation| {
+                    observation.province_id == province_id
+                        && observation.observer_tag_db_id == observer_tag_db_id
+                })
+                .max_by_key(|observation| observation.sequence)
+                .map_or(Leaf::Absent, |observation| {
+                    Leaf::Measured(observation.remaining_supply)
+                }),
+            Leaf::Unobtained => Leaf::Unobtained,
+            Leaf::Absent => Leaf::Absent,
+        },
+    }
+}
+
 /// Bind one land division row to its counter content.
 pub fn land_counter_content(row: &DivisionUnitRow) -> CounterContent {
     let owner = owner_opt(&row.owner);
@@ -324,6 +550,18 @@ pub fn land_counter_content(row: &DivisionUnitRow) -> CounterContent {
         None => (None, NatoKeySource::LandRoleUnavailable),
     };
     let strength = measured_f64(&row.strength);
+    let organisation = measured_f64(&row.organisation);
+    let max_organisation = measured_f64(&row.max_organisation);
+    let (current_supply, max_supply, supply_ratio) = exact_supply_operands(row);
+    let dig_in = measured_f64(&row.dig_in);
+    let dig_in_cap = measured_f64(&row.dig_in_cap);
+    let (low_supply_badge, low_supply_frame) =
+        exact_low_supply_frame(&row.counter_supply_status);
+    let training_badge = ServedBadge::from_bool_leaf(&row.counter_training_visible);
+    let invalid_orders_badge =
+        ServedBadge::from_bool_leaf(&row.counter_invalid_orders_visible);
+    let (dig_in_badge, dig_in_frame) =
+        exact_dig_in_ui_frame(&row.counter_dig_in_frame);
     let attrition_badge = match &row.attrition {
         Leaf::Measured(attrition) => ServedBadge::from_bool_leaf(&attrition.badge_active),
         Leaf::Unobtained => ServedBadge::AbsentThisHour,
@@ -339,23 +577,60 @@ pub fn land_counter_content(row: &DivisionUnitRow) -> CounterContent {
         symbol_source,
         symbol_hint: None,
         strength,
-        organisation: measured_f64(&row.organisation),
+        organisation,
+        max_organisation,
         str_bar_fraction: strength_bar_fraction(strength),
-        // GAP (A15): no max-organisation served → no org bar fill.
-        org_bar_fraction: None,
+        org_bar_fraction: exact_org_bar_fraction(organisation, max_organisation),
+        current_supply,
+        max_supply,
+        supply_ratio,
+        counter_supply_status: measured_f64(&row.counter_supply_status),
+        low_supply_frame,
+        remaining_supply: Leaf::Absent,
+        experience: measured_f64(&row.experience),
+        dig_in,
+        dig_in_cap,
+        dig_in_fraction: exact_fraction(dig_in, dig_in_cap),
+        dig_in_frame,
+        current_order_kind: Leaf::Absent,
+        active_ability_kinds: Leaf::Absent,
         // Land counters aggregate a stack COUNT at render (CAP6), not a
         // per-division datum.
         count: None,
         badges: CounterBadges {
-            orders: ServedBadge::from_bool_leaf(&row.moving),
+            orders: primary_order_badge(&row.primary_order),
             combat: ServedBadge::from_bool_leaf(&row.in_combat),
-            low_supply: ServedBadge::NotSurfaced,
-            dig_in: ServedBadge::NotSurfaced,
-            training: ServedBadge::NotSurfaced,
+            low_supply: low_supply_badge,
+            dig_in: dig_in_badge,
+            training: training_badge,
+            invalid_orders: invalid_orders_badge,
             attrition: attrition_badge,
             active_ability: ServedBadge::NotSurfaced,
         },
     }
+}
+
+fn land_counter_content_with_joins(
+    row: &DivisionUnitRow,
+    battleplans: &ArmyBattleplansView,
+    politics: Option<&PoliticsDetailView>,
+    tooltip: &ExactProvinceSupplyTooltipView,
+) -> CounterContent {
+    let mut content = land_counter_content(row);
+    content.current_order_kind = exact_order_kind(row, battleplans);
+    let ability_envelope = politics.map(|politics| &politics.command_ability_envelope);
+    content.active_ability_kinds = exact_active_ability_kinds(row, ability_envelope);
+    content.remaining_supply =
+        exact_remaining_supply(row, politics.map(|politics| &politics.tag_db_id), tooltip);
+    content.badges.active_ability = match &content.active_ability_kinds {
+        Leaf::Measured(kinds) if !kinds.is_empty() => ServedBadge::Measured(true),
+        Leaf::Measured(_) | Leaf::Unobtained => ServedBadge::AbsentThisHour,
+        Leaf::Absent if matches!(ability_envelope, Some(Leaf::Measured(_))) => {
+            ServedBadge::AbsentThisHour
+        }
+        Leaf::Absent => ServedBadge::NotSurfaced,
+    };
+    content
 }
 
 /// Bind one naval task-force row to its counter content.
@@ -375,8 +650,22 @@ pub fn naval_counter_content(row: &FleetUnitRow) -> CounterContent {
         // `row.ships` but the task-force aggregation law is UNKNOWN — gap).
         strength: None,
         organisation: None,
+        max_organisation: None,
         str_bar_fraction: None,
         org_bar_fraction: None,
+        current_supply: None,
+        max_supply: None,
+        supply_ratio: None,
+        counter_supply_status: None,
+        low_supply_frame: None,
+        remaining_supply: Leaf::Absent,
+        experience: None,
+        dig_in: None,
+        dig_in_cap: None,
+        dig_in_fraction: None,
+        dig_in_frame: None,
+        current_order_kind: Leaf::Absent,
+        active_ability_kinds: Leaf::Absent,
         count: measured_i64(&row.ship_count),
         badges: CounterBadges::all_not_surfaced(),
     }
@@ -396,8 +685,22 @@ pub fn air_counter_content(row: &WingUnitRow) -> CounterContent {
         symbol_hint: measured_string(&row.mission_kind),
         strength: None,
         organisation: None,
+        max_organisation: None,
         str_bar_fraction: None,
         org_bar_fraction: None,
+        current_supply: None,
+        max_supply: None,
+        supply_ratio: None,
+        counter_supply_status: None,
+        low_supply_frame: None,
+        remaining_supply: Leaf::Absent,
+        experience: None,
+        dig_in: None,
+        dig_in_cap: None,
+        dig_in_fraction: None,
+        dig_in_frame: None,
+        current_order_kind: Leaf::Absent,
+        active_ability_kinds: Leaf::Absent,
         count: measured_i64(&row.plane_count),
         badges: CounterBadges::all_not_surfaced(),
     }
@@ -414,11 +717,21 @@ pub fn counter_contents_from_frame(frame: &WorldFrame, pov_tag: Option<&str>) ->
         Some(tag) => owner_is(owner, tag),
         None => true,
     };
+    let battleplans = frame.army_battleplans();
     let land = frame
         .division_units()
         .iter()
         .filter(|d| keep(&d.owner))
-        .map(land_counter_content)
+        .map(|row| {
+            let ability_tag = pov_tag.or_else(|| row.owner.measured().map(String::as_str));
+            let politics = ability_tag.and_then(|tag| frame.politics_detail(tag));
+            land_counter_content_with_joins(
+                row,
+                &battleplans,
+                politics,
+                frame.exact_province_supply_tooltip(),
+            )
+        })
         .collect();
     let naval = frame
         .fleets()
@@ -511,8 +824,61 @@ mod tests {
         assert_eq!(strength_bar_fraction(None), None);
     }
 
+    #[test]
+    fn exact_fraction_rejects_missing_invalid_and_overfull_operands() {
+        assert_eq!(exact_fraction(Some(42.0), Some(84.0)), Some(0.5));
+        assert_eq!(exact_fraction(Some(0.0), Some(84.0)), Some(0.0));
+        assert_eq!(exact_fraction(Some(85.0), Some(84.0)), None);
+        assert_eq!(exact_fraction(Some(-1.0), Some(84.0)), None);
+        assert_eq!(exact_fraction(Some(1.0), Some(0.0)), None);
+        assert_eq!(exact_fraction(None, Some(84.0)), None);
+    }
+
+    #[test]
+    fn organisation_bar_matches_engine_clamp() {
+        assert_eq!(exact_org_bar_fraction(Some(42.0), Some(84.0)), Some(0.5));
+        assert_eq!(exact_org_bar_fraction(Some(85.0), Some(84.0)), Some(1.0));
+        assert_eq!(exact_org_bar_fraction(Some(-1.0), Some(84.0)), None);
+        assert_eq!(exact_org_bar_fraction(Some(1.0), Some(0.0)), None);
+    }
+
+    #[test]
+    fn low_supply_frames_match_exact_a729_boundaries() {
+        for (value, frame) in [
+            (0.0, Some(3)),
+            (0.19999, Some(3)),
+            (0.20, Some(2)),
+            (0.34999, Some(2)),
+            (0.35, Some(1)),
+            (0.49999, Some(1)),
+            (0.50, None),
+            (1.0, None),
+        ] {
+            let (badge, actual) = exact_low_supply_frame(&Leaf::Measured(value));
+            assert_eq!(actual, frame, "status {value}");
+            assert_eq!(badge, ServedBadge::Measured(frame.is_some()));
+        }
+        assert_eq!(
+            exact_low_supply_frame(&Leaf::Absent),
+            (ServedBadge::NotSurfaced, None)
+        );
+        assert_eq!(
+            exact_low_supply_frame(&Leaf::Unobtained),
+            (ServedBadge::AbsentThisHour, None)
+        );
+    }
+
     fn land_row(role: Option<&str>, strength: Leaf<f64>, moving: Leaf<bool>) -> DivisionUnitRow {
+        let primary_order = match &moving {
+            Leaf::Measured(true) => Leaf::Measured(Some(DivisionPrimaryOrderExact::Army {
+                engine_order_instance_id: 77,
+            })),
+            Leaf::Measured(false) => Leaf::Measured(None),
+            Leaf::Unobtained => Leaf::Unobtained,
+            Leaf::Absent => Leaf::Absent,
+        };
         DivisionUnitRow {
+            raw_division_id: 101,
             div_uid: "101:1".into(),
             owner: Leaf::Measured("GER".into()),
             location_province: Leaf::Measured(1000),
@@ -526,6 +892,19 @@ mod tests {
             },
             strength,
             organisation: Leaf::Measured(42.0),
+            max_organisation: Leaf::Absent,
+            experience: Leaf::Absent,
+            current_supply: Leaf::Absent,
+            max_supply: Leaf::Absent,
+            counter_supply_status: Leaf::Absent,
+            supply_ratio: Leaf::Absent,
+            dig_in: Leaf::Absent,
+            dig_in_cap: Leaf::Absent,
+            counter_training_visible: Leaf::Absent,
+            counter_dig_in_frame: Leaf::Absent,
+            counter_invalid_orders_visible: Leaf::Absent,
+            army_id: Leaf::Absent,
+            primary_order,
             moving,
             move_target_province: Leaf::Absent,
             move_progress: Leaf::Measured(0.0),
@@ -537,11 +916,16 @@ mod tests {
 
     #[test]
     fn land_counter_binds_name_symbol_bars_and_orders() {
-        let c = land_counter_content(&land_row(
-            Some("infantry"),
-            Leaf::Measured(0.95),
-            Leaf::Measured(true),
-        ));
+        let mut row = land_row(Some("infantry"), Leaf::Measured(0.95), Leaf::Measured(true));
+        row.max_organisation = Leaf::Measured(84.0);
+        row.current_supply = Leaf::Measured(12.5);
+        row.max_supply = Leaf::Measured(20.0);
+        row.counter_supply_status = Leaf::Measured(0.34999);
+        row.supply_ratio = Leaf::Measured(0.625);
+        row.experience = Leaf::Measured(0.3);
+        row.dig_in = Leaf::Measured(5.0);
+        row.dig_in_cap = Leaf::Measured(10.0);
+        let c = land_counter_content(&row);
         assert_eq!(c.domain, CounterDomain::Land);
         assert_eq!(c.owner.as_deref(), Some("GER"));
         assert_eq!(c.country_color_key.as_deref(), Some("GER"));
@@ -554,30 +938,166 @@ mod tests {
         assert_eq!(c.strength, Some(0.95));
         assert_eq!(c.organisation, Some(42.0));
         assert_eq!(c.str_bar_fraction, Some(0.95));
-        // GAP: org bar fraction never computed (no max served).
-        assert_eq!(c.org_bar_fraction, None);
+        assert_eq!(c.max_organisation, Some(84.0));
+        assert_eq!(c.org_bar_fraction, Some(0.5));
+        assert_eq!(c.current_supply, Some(12.5));
+        assert_eq!(c.max_supply, Some(20.0));
+        assert_eq!(c.supply_ratio, Some(0.625));
+        assert_eq!(c.counter_supply_status, Some(0.34999));
+        assert_eq!(c.low_supply_frame, Some(2));
+        assert_eq!(c.badges.low_supply, ServedBadge::Measured(true));
+        assert_eq!(c.experience, Some(0.3));
+        assert_eq!(c.dig_in_fraction, Some(0.5));
         assert_eq!(c.count, None);
         assert_eq!(c.badges.orders, ServedBadge::Measured(true));
         assert_eq!(c.badges.combat, ServedBadge::Measured(false));
     }
 
     #[test]
-    fn a15_gap_badges_are_not_surfaced_never_defaulted() {
+    fn d20_primary_order_joins_d54_kind_only_on_exact_membership() {
+        let mut row = land_row(Some("infantry"), Leaf::Measured(0.95), Leaf::Measured(true));
+        row.army_id = Leaf::Measured(17);
+        row.primary_order = Leaf::Measured(Some(DivisionPrimaryOrderExact::Army {
+            engine_order_instance_id: 10_002,
+        }));
+        let mut view = ArmyBattleplansView {
+            status: ViewStatus::Present,
+            baseline_seen: true,
+            omitted_non_exact_rows_this_hour: Some(0),
+            path_geometry_omitted_rows_this_hour: Some(0),
+            identity_or_active_omitted_rows_this_hour: Some(0),
+            orders: vec![replay_core::ArmyBattleplanOrderExact {
+                key: replay_core::ArmyBattleplanOrderKey {
+                    army_id: 17,
+                    engine_order_instance_id: 10_002,
+                    generation: 3,
+                },
+                slot_index: 0,
+                order_type: 2,
+                geometry: replay_core::ArmyBattleplanGeometry::PathProvinces(vec![1000, 1001]),
+                assigned_division_ids: vec![101],
+                active: true,
+            }],
+            diagnostic: None,
+        };
+        assert_eq!(exact_order_kind(&row, &view), Leaf::Measured(2));
+        view.orders[0].assigned_division_ids = vec![999];
+        assert_eq!(exact_order_kind(&row, &view), Leaf::Unobtained);
+        view.status = ViewStatus::DomainUnavailable;
+        assert_eq!(exact_order_kind(&row, &view), Leaf::Unobtained);
+    }
+
+    #[test]
+    fn a36_active_ability_joins_only_exact_affected_division_identity() {
+        const ENVELOPE: &str = include_str!(
+            "../../../re_evidence/rendering_laws/XUI23/canonical_active_abilities_envelope.json"
+        );
+        let envelope: CommandAbilityEnvelope = serde_json::from_str(ENVELOPE).unwrap();
+        let mut row = land_row(
+            Some("infantry"),
+            Leaf::Measured(0.95),
+            Leaf::Measured(false),
+        );
+        row.raw_division_id = 9;
+        assert_eq!(
+            exact_active_ability_kinds(&row, Some(&Leaf::Measured(envelope.clone()))),
+            Leaf::Measured(vec!["force_attack".to_string()])
+        );
+        row.raw_division_id = 10;
+        assert_eq!(
+            exact_active_ability_kinds(&row, Some(&Leaf::Measured(envelope))),
+            Leaf::Absent
+        );
+    }
+
+    #[test]
+    fn pst1_remaining_supply_joins_latest_exact_province_observer_pair() {
+        let row = land_row(
+            Some("infantry"),
+            Leaf::Measured(0.95),
+            Leaf::Measured(false),
+        );
+        let tooltip = ExactProvinceSupplyTooltipView {
+            status: ViewStatus::Present,
+            authority: Some("exact_a729_province_supply_tooltip_formatter_sink".into()),
+            hook_epoch: Some(1),
+            drain_sequence: Some(3),
+            dropped_rows: Some(0),
+            rows: Leaf::Measured(vec![
+                replay_core::ExactProvinceSupplyTooltipObservation {
+                    province_id: 1000,
+                    observer_tag_db_id: 47,
+                    remaining_supply_raw: 125_000,
+                    remaining_supply: 1.25,
+                    fixed_scale: 100_000,
+                    displayed_decimals: 2,
+                    tick: 10,
+                    sequence: 1,
+                },
+                replay_core::ExactProvinceSupplyTooltipObservation {
+                    province_id: 1000,
+                    observer_tag_db_id: 47,
+                    remaining_supply_raw: 150_000,
+                    remaining_supply: 1.5,
+                    fixed_scale: 100_000,
+                    displayed_decimals: 2,
+                    tick: 11,
+                    sequence: 2,
+                },
+            ]),
+        };
+        assert_eq!(
+            exact_remaining_supply(&row, Some(&Leaf::Measured(47)), &tooltip),
+            Leaf::Measured(1.5)
+        );
+        assert_eq!(
+            exact_remaining_supply(&row, Some(&Leaf::Measured(48)), &tooltip),
+            Leaf::Absent
+        );
+        let unavailable = ExactProvinceSupplyTooltipView {
+            status: ViewStatus::DomainUnavailable,
+            authority: None,
+            hook_epoch: Some(1),
+            drain_sequence: Some(3),
+            dropped_rows: Some(1),
+            rows: Leaf::Unobtained,
+        };
+        assert_eq!(
+            exact_remaining_supply(&row, Some(&Leaf::Measured(47)), &unavailable),
+            Leaf::Unobtained
+        );
+    }
+
+    #[test]
+    fn a15_unobserved_badges_are_fail_closed_never_defaulted() {
         let c = land_counter_content(&land_row(
             Some("infantry"),
             Leaf::Measured(0.95),
             Leaf::Measured(false),
         ));
-        for badge in [
-            c.badges.low_supply,
-            c.badges.dig_in,
-            c.badges.training,
-            c.badges.attrition,
-            c.badges.active_ability,
-        ] {
+        for badge in [c.badges.low_supply, c.badges.attrition, c.badges.active_ability] {
             assert_eq!(badge, ServedBadge::NotSurfaced);
             assert!(!badge.is_active());
         }
+        for badge in [c.badges.dig_in, c.badges.training] {
+            assert_eq!(badge, ServedBadge::AbsentThisHour);
+            assert!(!badge.is_active());
+        }
+    }
+
+    #[test]
+    fn evaluated_training_and_dig_in_badges_bind_exact_ui_result() {
+        let mut row = land_row(
+            Some("infantry"),
+            Leaf::Measured(0.95),
+            Leaf::Measured(false),
+        );
+        row.counter_training_visible = Leaf::Measured(true);
+        row.counter_dig_in_frame = Leaf::Measured(2);
+        let c = land_counter_content(&row);
+        assert_eq!(c.badges.training, ServedBadge::Measured(true));
+        assert_eq!(c.badges.dig_in, ServedBadge::Measured(true));
+        assert_eq!(c.dig_in_frame, Some(2));
     }
 
     #[test]
@@ -588,7 +1108,7 @@ mod tests {
         assert_eq!(c.symbol_source, NatoKeySource::LandRoleUnavailable);
         assert_eq!(c.strength, None);
         assert_eq!(c.str_bar_fraction, None);
-        assert_eq!(c.badges.orders, ServedBadge::AbsentThisHour);
+        assert_eq!(c.badges.orders, ServedBadge::NotSurfaced);
     }
 
     #[test]

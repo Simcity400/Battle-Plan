@@ -1,0 +1,68 @@
+{
+  "schema": "extractor.a27.authenticated_designer_transactions_profile.v1",
+  "profile_id": "exact-a729-new-d04-first-division-template-1920x1080-v1",
+  "expected_client_width": 1920,
+  "expected_client_height": 1080,
+  "expected_target_stable_id": "371:52",
+  "authority": {
+    "program": "hoi4.exe 1.19.2.0.a729",
+    "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "save": "New D04 Save Deep War.hoi4",
+    "save_sha256": "c8488b05a3b87c718eeff979976537b79e867634d0b4dccb1eef6c5a45362735",
+    "initial_game_hour_raw": 60830441,
+    "expected_country_handle": 368,
+    "gui_scale": 1.0
+  },
+  "coordinate_sources": [
+    {
+      "relpath": "interface/countrydeploymentview.gui",
+      "sha256": "3c627fe652fe7926be721221789aae1953c7169f3713e31cf05f223d5c82b556",
+      "law": "templatedeploymentwindow show_position=(538,78); templates=(10,138); first row 341x72; edit=(228,48); obsolete=(302,22); decommission checkbox=(19,103)"
+    },
+    {
+      "relpath": "interface/divisiondesignerview.gui",
+      "sha256": "9f6ed489e62ad92d29ea163037770259fe7d5c2d5a2a0ee3d3d9b9a85b42d7a4",
+      "law": "1200x720 centered root=(360,180); name edit=(175,62); non-HQ priority_3=(589,109); save=(487,-53)"
+    }
+  ],
+  "preconditions": [
+    "exact New D04 Save Deep War continue-save loaded and paused at hour 60830441",
+    "1920x1080 client at GUI scale 1.0 with vanilla deployment/designer GUI sources from the admitted product modset",
+    "the first visible domestic division template is editable and remains first when decommissioned templates are shown",
+    "the sealed A27 D04 baseline identifies that row as stable id 371:52, obsolete=false, priority=1",
+    "the timeline regrader, not action labels or coordinates, proves every same-stable-ID mutation"
+  ],
+  "transactions": [
+    {
+      "transaction": "rename",
+      "steps": [
+        {"label":"open_recruit_and_deploy","kind":"key","virtual_key":"55","settle_milliseconds":1200},
+        {"label":"edit_first_visible_domestic_template","kind":"click","x":801,"y":277,"settle_milliseconds":1000},
+        {"label":"focus_template_name","kind":"click","x":628,"y":242,"settle_milliseconds":250},
+        {"label":"replace_name_with_unique_a27_marker","kind":"text","text":"^aA27 Timeline Proof","settle_milliseconds":250},
+        {"label":"save_rename","kind":"click","x":957,"y":864,"settle_milliseconds":1200}
+      ]
+    },
+    {
+      "transaction": "edit",
+      "steps": [
+        {"label":"reopen_renamed_template","kind":"click","x":801,"y":277,"settle_milliseconds":1000},
+        {"label":"change_exact_priority_to_elite","kind":"click","x":965,"y":300,"settle_milliseconds":300},
+        {"label":"save_priority_edit","kind":"click","x":957,"y":864,"settle_milliseconds":1200}
+      ]
+    },
+    {
+      "transaction": "obsolete",
+      "steps": [
+        {"label":"decommission_renamed_template","kind":"click","x":865,"y":253,"settle_milliseconds":1200}
+      ]
+    },
+    {
+      "transaction": "reactivate",
+      "steps": [
+        {"label":"show_decommissioned_templates","kind":"click","x":573,"y":197,"settle_milliseconds":1000},
+        {"label":"reactivate_same_renamed_template","kind":"click","x":865,"y":253,"settle_milliseconds":1200}
+      ]
+    }
+  ]
+}

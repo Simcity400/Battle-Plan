@@ -24,7 +24,7 @@ CONTRACT_SCHEMA = "battle-plan.campaign_identity_matrix_contract.v1"
 TRANSCRIPT_SCHEMA = "battle-plan.campaign_identity_evidence_transcript.v1"
 GATE_SCHEMA = "battle-plan.campaign_identity_gate.v1"
 ORACLE_SCHEMA = "hoi4.save_campaign_identity_oracle.v1"
-STREAM_SCHEMA = "battle-plan.campaign_identity_stream_boundary.v1"
+STREAM_SCHEMA = "battle-plan.campaign_identity_stream_boundary.v2"
 ACTION_SCHEMA = "battle-plan.campaign_identity_arm_action_receipt.v1"
 CURRENT_EXE_SHA = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
 ARMS = ("S1", "S2", "S3", "S4", "D1", "D2", "M1", "M2", "M3")
@@ -42,12 +42,22 @@ ACTION_KEYS = {
     "schema", "arm", "status", "operation", "evidence_nonce_hex",
     "driver_path", "driver_sha256", "precondition_path", "precondition_sha256", "started_filetime_utc",
     "completed_filetime_utc", "endpoint_roles", "endpoint_transcript_sha256s",
+    "request_path", "request_sha256", "owner_profile_path", "owner_profile_sha256",
+    "execution_receipt_path", "execution_receipt_sha256",
+}
+PRECONDITION_KEYS = {
+    "schema", "arm", "executable_sha256", "modset_identity",
+    "modset_admission_sha256", "bookmark", "countries",
+    "launch_settings_sha256", "selected_save_sha256s",
 }
 STREAM_KEYS = {
     "schema", "status", "transcript_sha256", "campaign_id_v1", "boundary_kind",
     "previous_campaign_id_v1", "cra1_acknowledged", "logical_stream_id",
     "cid1_sequence", "cid1_domain", "cid1_type", "cid1_payload_sha256",
     "cfa1_payload_sha256", "first_world_sequence", "no_uncertain_frames",
+    "rollover_set_descriptor_path", "rollover_set_descriptor_sha256",
+    "raw_member_path", "raw_member_sha256", "raw_member_bytes",
+    "last_complete_sequence",
 }
 
 EXPECTED_ROLES = {
@@ -123,6 +133,39 @@ def checked_path(raw, expected_hash, label: str) -> Path:
     return path
 
 
+def checked_cid1_evidence_permit(
+    path: Path, arm: str, request_path: Path, request: dict, owner_profile_sha256: str
+) -> None:
+    try:
+        raw = path.read_bytes()
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise GateError(f"arm {arm} evidence permit is unreadable: {exc}") from exc
+    if not raw or len(raw) > 1024 or b"\r" in raw or not raw.endswith(b"\n"):
+        raise GateError(f"arm {arm} evidence permit framing is invalid")
+    lines = text[:-1].split("\n")
+    if len(lines) != 8 or lines[0] != "CID1-LIFECYCLE-EVIDENCE-PERMIT-V1":
+        raise GateError(f"arm {arm} evidence permit schema is invalid")
+    expected = (
+        ("arm", arm),
+        ("matrix_nonce_hex", request.get("matrix_nonce_hex")),
+        ("arm_nonce_hex", request.get("arm_nonce_hex")),
+        ("request_sha256", sha256_file(request_path)),
+        ("owner_profile_sha256", owner_profile_sha256),
+        ("contract_sha256", request.get("contract_sha256")),
+        ("pinned_executable_sha256", CURRENT_EXE_SHA),
+    )
+    for line, (key, expected_value) in zip(lines[1:], expected):
+        if line != f"{key}={expected_value}":
+            raise GateError(f"arm {arm} evidence permit {key} binding mismatch")
+    matrix_nonce = request.get("matrix_nonce_hex")
+    arm_nonce = request.get("arm_nonce_hex")
+    if (not isinstance(matrix_nonce, str) or not isinstance(arm_nonce, str)
+            or HEX64.fullmatch(matrix_nonce) is None or HEX64.fullmatch(arm_nonce) is None
+            or matrix_nonce == "0" * 64 or arm_nonce == "0" * 64 or matrix_nonce == arm_nonce):
+        raise GateError(f"arm {arm} evidence permit nonces are invalid")
+
+
 def campaign_id(uuid: str, seed: int) -> str:
     return hashlib.sha256(
         b"hoi4-campaign-id-v1\0" + uuid.encode("ascii") + b"\0" + str(seed).encode("ascii")
@@ -183,6 +226,40 @@ def endpoint(value: dict, arm: str, expected_role: str) -> dict:
         raise GateError(f"{arm}/{expected_role} CID1/world ordering mismatch")
     if stream["cid1_payload_sha256"] != stream["cfa1_payload_sha256"] or stream["no_uncertain_frames"] is not True:
         raise GateError(f"{arm}/{expected_role} CFA1 or uncertainty boundary mismatch")
+    descriptor_path = checked_path(
+        stream["rollover_set_descriptor_path"],
+        stream["rollover_set_descriptor_sha256"],
+        f"{arm}/{expected_role} rollover descriptor",
+    )
+    raw_member_path = checked_path(
+        stream["raw_member_path"], stream["raw_member_sha256"],
+        f"{arm}/{expected_role} raw logical stream",
+    )
+    if raw_member_path.stat().st_size != stream["raw_member_bytes"]:
+        raise GateError(f"{arm}/{expected_role} raw member byte count mismatch")
+    try:
+        import materialize_cid1_stream_boundary as boundary_authority
+        descriptor = boundary_authority.load_json(descriptor_path, "rollover set descriptor")
+        parsed_member = boundary_authority.parse_stream(raw_member_path)
+    except Exception as exc:
+        raise GateError(f"{arm}/{expected_role} raw stream authority rejected: {exc}") from exc
+    streams = descriptor.get("ordered_streams") if isinstance(descriptor, dict) else None
+    if descriptor.get("schema") != "cid1-rollover-set-v1" or not isinstance(streams, list):
+        raise GateError(f"{arm}/{expected_role} rollover descriptor schema mismatch")
+    logical_id = stream["logical_stream_id"]
+    if logical_id >= len(streams) or streams[logical_id].get("logical_stream_id") != logical_id:
+        raise GateError(f"{arm}/{expected_role} descriptor lacks logical member")
+    member = streams[logical_id]
+    descriptor_member_path = (descriptor_path.parent / member.get("relative_path", "")).resolve()
+    if descriptor_member_path != raw_member_path:
+        raise GateError(f"{arm}/{expected_role} descriptor/raw member path mismatch")
+    if (member.get("file_sha256_hex") != stream["raw_member_sha256"]
+            or member.get("file_bytes") != stream["raw_member_bytes"]
+            or member.get("last_complete_sequence") != stream["last_complete_sequence"]
+            or parsed_member["last_complete_sequence"] != stream["last_complete_sequence"]
+            or parsed_member["campaign_id_v1"] != digest
+            or parsed_member["payload_sha256"] != stream["cid1_payload_sha256"]):
+        raise GateError(f"{arm}/{expected_role} descriptor/raw CID1 join mismatch")
     if stream["boundary_kind"] not in {"initial", "rollover"} or not isinstance(stream["cra1_acknowledged"], bool):
         raise GateError(f"{arm}/{expected_role} stream boundary kind is invalid")
     if stream["boundary_kind"] == "initial":
@@ -203,6 +280,7 @@ def endpoint(value: dict, arm: str, expected_role: str) -> dict:
         "pid": process.get("pid"),
         "creation": process.get("creation_filetime_utc"),
         "oracle_filename": oracle.get("source", {}).get("filename"),
+        "oracle_save_sha256": require_hash(oracle.get("source", {}).get("sha256"), f"{arm}/{expected_role} oracle save hash"),
         "transcript_sha256": value["transcript_sha256"],
         "logical_stream_id": stream["logical_stream_id"],
         "boundary_kind": stream["boundary_kind"],
@@ -226,6 +304,94 @@ def verify_arm(arm: str, value: dict) -> dict:
     require_hash(action["precondition_sha256"], f"arm {arm} precondition hash")
     driver = checked_path(action["driver_path"], action["driver_sha256"], f"arm {arm} driver")
     precondition = checked_path(action["precondition_path"], action["precondition_sha256"], f"arm {arm} precondition")
+    precondition_value = exact(load_json(precondition, f"arm {arm} precondition"), PRECONDITION_KEYS, f"arm {arm} precondition")
+    if (precondition_value["schema"] != "battle-plan.campaign_identity_arm_precondition.v1"
+            or precondition_value["arm"] != arm
+            or precondition_value["executable_sha256"] != CURRENT_EXE_SHA
+            or not isinstance(precondition_value["modset_identity"], str) or not precondition_value["modset_identity"]
+            or not isinstance(precondition_value["bookmark"], str) or not precondition_value["bookmark"]
+            or not isinstance(precondition_value["countries"], list) or not precondition_value["countries"]
+            or not all(isinstance(tag, str) and re.fullmatch(r"[A-Z0-9]{3}", tag) for tag in precondition_value["countries"])
+            or not isinstance(precondition_value["selected_save_sha256s"], list)
+            or not all(HEX64.fullmatch(str(value)) for value in precondition_value["selected_save_sha256s"])):
+        raise GateError(f"arm {arm} precondition semantics are invalid")
+    require_hash(precondition_value["modset_admission_sha256"], f"arm {arm} modset admission")
+    require_hash(precondition_value["launch_settings_sha256"], f"arm {arm} launch settings")
+    request_path = checked_path(action["request_path"], action["request_sha256"], f"arm {arm} request")
+    owner_profile_path = checked_path(action["owner_profile_path"], action["owner_profile_sha256"], f"arm {arm} owner profile")
+    execution_path = checked_path(action["execution_receipt_path"], action["execution_receipt_sha256"], f"arm {arm} execution receipt")
+    request = load_json(request_path, f"arm {arm} request")
+    owner_profile = load_json(owner_profile_path, f"arm {arm} owner profile")
+    execution = load_json(execution_path, f"arm {arm} execution receipt")
+    sd_arm = arm in {"S1", "S2", "S3", "S4", "D1", "D2"}
+    request_schema = ("battle-plan.campaign_identity_sd_arm_request.v2" if sd_arm
+                      else "battle-plan.campaign_identity_multiplayer_action_request.v1")
+    profile_schema = ("battle-plan.campaign_identity_sd_owner_profile.v1" if sd_arm
+                      else "battle-plan.campaign_identity_multiplayer_owner_profile.v1")
+    execution_schema = ("battle-plan.campaign_identity_sd_owner_execution.v1" if sd_arm
+                        else "battle-plan.campaign_identity_multiplayer_owner_execution.v1")
+    driver_path_key = "action_driver_path" if sd_arm else "transport_driver_path"
+    driver_hash_key = "action_driver_sha256" if sd_arm else "transport_driver_sha256"
+    if (request.get("schema") != request_schema
+            or request.get("arm") != arm
+            or Path(str(request.get(driver_path_key, ""))).resolve() != driver
+            or request.get(driver_hash_key) != action["driver_sha256"]
+            or Path(str(request.get("owner_profile_path", ""))).resolve() != owner_profile_path
+            or request.get("owner_profile_sha256") != action["owner_profile_sha256"]):
+        raise GateError(f"arm {arm} request/driver/profile binding mismatch")
+    if (owner_profile.get("schema") != profile_schema
+            or owner_profile.get("arm") != arm
+            or Path(str(owner_profile.get("precondition_path", ""))).resolve() != precondition
+            or owner_profile.get("precondition_sha256") != action["precondition_sha256"]):
+        raise GateError(f"arm {arm} owner profile/precondition binding mismatch")
+    if (execution.get("schema") != execution_schema
+            or execution.get("arm") != arm
+            or Path(str(execution.get("request_path", ""))).resolve() != request_path
+            or execution.get("request_sha256") != action["request_sha256"]
+            or Path(str(execution.get("owner_profile_path", ""))).resolve() != owner_profile_path
+            or execution.get("owner_profile_sha256") != action["owner_profile_sha256"]
+            or execution.get("started_filetime_utc") != action["started_filetime_utc"]
+            or execution.get("completed_filetime_utc") != action["completed_filetime_utc"]
+            or not isinstance(execution.get("steps"), list) or not execution["steps"]):
+        raise GateError(f"arm {arm} execution receipt binding mismatch")
+    if sd_arm:
+        permit_path = checked_path(
+            execution.get("evidence_permit_path"),
+            execution.get("evidence_permit_sha256"),
+            f"arm {arm} evidence permit",
+        )
+        checked_cid1_evidence_permit(
+            permit_path, arm, request_path, request, action["owner_profile_sha256"]
+        )
+    step_kinds = [step.get("kind") for step in execution["steps"] if isinstance(step, dict)]
+    if len(step_kinds) != len(execution["steps"]):
+        raise GateError(f"arm {arm} execution receipt contains a malformed step")
+    required_step_kinds = {
+        "S1": {"observe_endpoint", "window_input", "finalize_endpoint"},
+        "S2": {"observe_endpoint", "window_input", "finalize_endpoint"},
+        "S3": {"observe_endpoint", "discover_exact_process", "wait_process_exit", "finalize_endpoint"},
+        "S4": {"copy_save_create_new", "observe_endpoint", "discover_exact_process", "finalize_endpoint"},
+        "D1": {"discover_created_save", "observe_endpoint", "window_input", "finalize_endpoint"},
+        "D2": {"observe_endpoint", "window_input", "finalize_endpoint"},
+    }
+    if sd_arm and not required_step_kinds[arm].issubset(set(step_kinds)):
+        raise GateError(f"arm {arm} execution receipt omits an operation-defining owner step")
+    if sd_arm:
+        recording_steps = [step for step in execution["steps"] if step.get("kind") == "start_recording_owner"]
+        if not recording_steps or any(
+            Path(str(step.get("evidence_permit_path", ""))).resolve() != permit_path
+            or step.get("evidence_permit_sha256") != execution.get("evidence_permit_sha256")
+            for step in recording_steps
+        ):
+            raise GateError(f"arm {arm} recording owner did not inherit the authenticated evidence permit")
+        observed_roles = [step.get("role") for step in execution["steps"] if isinstance(step, dict) and step.get("kind") == "observe_endpoint"]
+        finalized_roles = [step.get("role") for step in execution["steps"] if isinstance(step, dict) and step.get("kind") == "finalize_endpoint"]
+        if observed_roles != list(roles) or finalized_roles != list(roles):
+            raise GateError(f"arm {arm} owner steps do not acquire/finalize endpoint roles in contract order")
+        if arm == "D1" and step_kinds.count("discover_created_save") != 2:
+            raise GateError("arm D1 must discover exactly two freshly created saves")
+        if arm == "S4" and step_kinds.count("copy_save_create_new") != 1:
+            raise GateError("arm S4 must create exactly one byte-identical renamed save")
     del driver
     del precondition
     if not isinstance(action["started_filetime_utc"], int) or not isinstance(action["completed_filetime_utc"], int) or action["completed_filetime_utc"] <= action["started_filetime_utc"]:
@@ -237,11 +403,19 @@ def verify_arm(arm: str, value: dict) -> dict:
     if action["endpoint_transcript_sha256s"] != endpoint_hashes:
         raise GateError(f"arm {arm} action receipt does not bind its endpoint transcripts")
     left, right = endpoints
+    selected_save_hashes = precondition_value["selected_save_sha256s"]
+    if arm == "D1":
+        if selected_save_hashes:
+            raise GateError("arm D1 precondition must not preselect retained saves")
+    elif selected_save_hashes != [left["oracle_save_sha256"], right["oracle_save_sha256"]]:
+        raise GateError(f"arm {arm} precondition does not bind the ordered endpoint saves")
     same_pair = left["pair"] == right["pair"]
     if arm in {"S1", "S2", "S3", "S4", "M1", "M2", "M3"} and not same_pair:
         raise GateError(f"arm {arm} requires equal complete identity pairs")
     if arm in {"D1", "D2"} and same_pair:
         raise GateError(f"arm {arm} requires distinct complete identity pairs")
+    if arm == "D1" and left["hour"] != right["hour"]:
+        raise GateError("arm D1 identical-start campaigns were not observed at the same raw hour")
     if arm in {"S1", "S2", "D2"} and (left["pid"], left["creation"]) != (right["pid"], right["creation"]):
         raise GateError(f"arm {arm} requires one process lifetime")
     if arm in {"S1", "S2", "D2"}:

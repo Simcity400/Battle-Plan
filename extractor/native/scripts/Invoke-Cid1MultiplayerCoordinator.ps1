@@ -7,6 +7,7 @@ param(
     [Parameter(Mandatory=$true)]
     [string[]]$EndpointRequestPaths,
     [string]$TransportDriverPath,
+    [string]$MultiplayerOwnerProfilePath,
     [string]$OutputRoot = 'C:\hoi4_evidence\cid1_lifecycle_matrix\multiplayer',
     [switch]$AllowExternalEndpoints
 )
@@ -15,6 +16,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PinnedExeSha256 = '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad'
 $ContractPath = 'extractor\re_evidence\CID1_LIFECYCLE_MATRIX_V1\multiplayer_coordinator_contract.json'
+function Get-Sha256([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Write-AtomicJson([string]$Path,$Value) {
+    $full=[IO.Path]::GetFullPath($Path);$parent=[IO.Path]::GetDirectoryName($full);[IO.Directory]::CreateDirectory($parent)|Out-Null
+    $tmp=[IO.Path]::Combine($parent,([IO.Path]::GetRandomFileName()+'.tmp'))
+    try{[IO.File]::WriteAllText($tmp,(($Value|ConvertTo-Json -Depth 30)+"`n"),[Text.UTF8Encoding]::new($false));Move-Item -LiteralPath $tmp -Destination $full -Force}finally{if(Test-Path -LiteralPath $tmp){Remove-Item -LiteralPath $tmp -Force}}
+}
 $contract = Get-Content -LiteralPath $ContractPath -Raw | ConvertFrom-Json
 if ($contract.schema -ne 'battle-plan.campaign_identity_multiplayer_coordinator_contract.v1' -or $contract.pinned_executable_sha256 -ne $PinnedExeSha256) {
     throw 'CID1 multiplayer coordinator contract mismatch.'
@@ -63,6 +70,23 @@ if (-not $AllowExternalEndpoints) {
 if ([string]::IsNullOrWhiteSpace($TransportDriverPath) -or -not (Test-Path -LiteralPath $TransportDriverPath -PathType Leaf)) {
     throw 'A real mutually authenticated endpoint transport driver is required; missing endpoints are never synthesized.'
 }
+if ([string]::IsNullOrWhiteSpace($MultiplayerOwnerProfilePath) -or -not (Test-Path -LiteralPath $MultiplayerOwnerProfilePath -PathType Leaf)) {
+    throw 'A content-addressed multiplayer owner profile is required.'
+}
 [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetFullPath($OutputRoot)) | Out-Null
-& (Resolve-Path -LiteralPath $TransportDriverPath).Path -Arm $Arm -MatrixPlanPath $MatrixPlanPath -EndpointRequestPaths $EndpointRequestPaths -OutputRoot $OutputRoot -CoordinatorContractPath $ContractPath
+$armRoot=Join-Path ([IO.Path]::GetFullPath($OutputRoot)) $Arm
+if(Test-Path -LiteralPath $armRoot){throw "Refusing to reuse CID1 multiplayer arm root: $armRoot"}
+[IO.Directory]::CreateDirectory($armRoot)|Out-Null
+$transport=(Resolve-Path -LiteralPath $TransportDriverPath).Path;$ownerProfile=(Resolve-Path -LiteralPath $MultiplayerOwnerProfilePath).Path;$actionRequest=Join-Path $armRoot 'multiplayer_action_request.json'
+Write-AtomicJson $actionRequest ([ordered]@{schema='battle-plan.campaign_identity_multiplayer_action_request.v1';arm=$Arm;matrix_plan_path=(Resolve-Path -LiteralPath $MatrixPlanPath).Path;matrix_plan_sha256=Get-Sha256 $MatrixPlanPath;transport_driver_path=$transport;transport_driver_sha256=Get-Sha256 $transport;owner_profile_path=$ownerProfile;owner_profile_sha256=Get-Sha256 $ownerProfile;endpoint_request_paths=@($EndpointRequestPaths|ForEach-Object{(Resolve-Path -LiteralPath $_).Path});endpoint_request_sha256s=@($EndpointRequestPaths|ForEach-Object{Get-Sha256 $_});output_root=$armRoot})
+& $transport -Arm $Arm -MatrixPlanPath $MatrixPlanPath -EndpointRequestPaths $EndpointRequestPaths -OutputRoot $armRoot -CoordinatorContractPath $ContractPath -ActionRequestPath $actionRequest -OwnerProfilePath $ownerProfile
 if (-not $?) { throw "CID1 $Arm multiplayer coordinator driver failed." }
+$actionReceipt=Join-Path $armRoot 'arm_action_receipt.json'
+$descriptorPaths=@($expectedRoles|ForEach-Object{Join-Path $armRoot ("endpoint_$_\endpoint_descriptor.json")})
+if(-not(Test-Path -LiteralPath $actionReceipt -PathType Leaf)){throw "CID1 $Arm transport owner emitted no action receipt."}
+$action=Get-Content -LiteralPath $actionReceipt -Raw|ConvertFrom-Json
+if($action.schema-cne 'battle-plan.campaign_identity_arm_action_receipt.v1'-or$action.arm-cne$Arm-or$action.status-cne'passed'){throw "CID1 $Arm transport action receipt is not passing."}
+foreach($descriptor in $descriptorPaths){if(-not(Test-Path -LiteralPath $descriptor -PathType Leaf)){throw "CID1 $Arm transport owner omitted endpoint descriptor: $descriptor"}}
+$plan.arms.$Arm.state='complete';$plan.arms.$Arm.endpoint_descriptor_paths=$descriptorPaths;$plan.arms.$Arm.action_receipt_path=$actionReceipt;$plan.arms.$Arm.reason=$null
+Write-AtomicJson (Resolve-Path -LiteralPath $MatrixPlanPath).Path $plan
+Write-Output $actionReceipt

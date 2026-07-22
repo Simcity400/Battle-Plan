@@ -23,7 +23,7 @@ if (Test-Path -LiteralPath $OutDir) { throw "Selected product-modset output alre
 $parent=Split-Path -Parent $OutDir
 if (-not (Test-Path -LiteralPath $parent -PathType Container)) { New-Item -ItemType Directory -Path $parent | Out-Null }
 $temporaryReceipt=Join-Path $parent ".$([System.IO.Path]::GetFileName($OutDir)).$([guid]::NewGuid().ToString('N')).ui14_engine_vfs.json"
-$python=(Get-Command $PythonExe -CommandType Application -ErrorAction Stop).Source
+$python=@(Get-Command $PythonExe -CommandType Application -ErrorAction Stop)[0].Source
 try {
     & $python $materializer `
         --capture-root (Resolve-Path -LiteralPath $Ui14CaptureRoot).Path `

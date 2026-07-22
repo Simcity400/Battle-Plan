@@ -111,11 +111,13 @@ Track 1 — political look (no game session needed):
   ported. The Rust CPU generator contains captured-fit distance pieces and is
   research-only; product rendering keeps generated replay GB channels inert and
   does not substitute them into captured the game passes.
-- [BLOCKED 2026-07-08] Occupation striping: `secondary_color_mask` shader
-  semantics are understood and captured `ProvinceSecondaryColorMap` is
-  all-transparent in observed default political-map captures. The replay app
-  keeps the texture empty unless a real mode that populates it is captured and
-  its CPU write law is identified.
+- [TRANSACTION-GATED 2026-07-21] Occupation striping: `secondary_color_mask`
+  shader semantics and the exact-a729 case-0xc CPU writer, scheduler, raster and
+  generic upload chain are closed. A retained Resistance RDC proves real
+  nontransparent `ProvinceSecondaryColorMap` content and the exact 2x2 alpha set
+  `{0,19,38,57,76}`. Product activation now needs only an autonomous fresh
+  CPU-upload -> selected-Present terrain-t6/water-t3 D80 -> distinct replay H2
+  byte-exact transaction; it does not need a new visible case or human judgment.
 
 Track 2 — terrain look:
 - [REMOVED 2026-07-08] CPU `map_visual.rgbx` underlay: removed from bundle
@@ -142,9 +144,10 @@ Track 3 — capture-gated layers:
 - [DONE 2026-07-02] Terrain bundle VALIDATED: session_20260702d replays the
   captured pass BYTE-IDENTICAL to the game's own render target (7 draws,
   camera-updatable TerrainSceneCB0). Water bundle VALIDATED same session.
-- [DONE 2026-07-02] Live GradientBorderChannel1/2 ground truth captured
-  (dwell-end snapshots); ProvinceSecondaryColorMap confirmed all-zero on a
-  live occupied political map (user-reported no-stripes rule proven).
+- [DONE 2026-07-21] Live GradientBorderChannel1/2 ground truth and transparent
+  default-view `ProvinceSecondaryColorMap` frames remain valid. The retained
+  Resistance RDC additionally proves a nontransparent secondary map, so the old
+  all-zero-only/no-stripes generalization is retired.
 - [CAPTURE-GATED] rivers_pass, borders_pass, trees_pass: need a session with
   deep-zoom camera work; the 2026-07-02 session crashed ~3 min in before
   rivers drew (crash cause undiagnosed — investigate DLL involvement before

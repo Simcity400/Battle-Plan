@@ -17,6 +17,9 @@ use crate::hud::{
     compose_authenticated_hud, HudBinding, HudSpriteStats, MinimapBinding, TooltipBinding,
 };
 use crate::loc::Localisation;
+use crate::trade_state::{
+    admit_trade_screen, render_trade_screen, AdmittedTradeScreen, TradeData,
+};
 use crate::variant_admission::{
     DisplayMode, DisplayVariantKey, ExactKeyVariantContract, InputVariant, PixelExtent,
 };
@@ -171,7 +174,7 @@ pub const REQUIRED_AUTHORED_HUD_SOURCES: &[&str] = &[
 /// The historical public name denotes route eligibility, not proof that every
 /// extractor-side authority producer is active. In particular, XUI25 still
 /// rejects until d77 carries its authenticated same-launch input-family receipt.
-pub const PROMOTED_XUI_PACKETS: &[&str] = &["XUI24", "XUI25"];
+pub const PROMOTED_XUI_PACKETS: &[&str] = &["XUI15", "XUI24", "XUI25"];
 
 /// XUI27 is the post-XUI26 producer-role extension that makes the four core
 /// HUD roots routable. It is reported separately so the historical XUI01-26
@@ -193,10 +196,6 @@ pub const OMITTED_PIXEL_CANVAS_ROUTES: &[(&str, &str)] = &[
     (
         "XUI13",
         "authenticated designer surface activation and semantic GUI-root binding; canonical A27 catalog packaging and d78 display order are admitted",
-    ),
-    (
-        "XUI15",
-        "authenticated country-trade window activation and semantic countrytradeview root binding; the exact d43 carrier and selected-POV typed presentation are production-routed",
     ),
 ];
 
@@ -430,6 +429,142 @@ impl ProductionUiRenderer {
                 ))
             },
         )
+    }
+
+    /// Render XUI15 only while the exact a729 `CCountryTradeView` lifecycle
+    /// carrier says the authored country-trade root is active for this POV.
+    /// A closed window is a normal omission; a missing, malformed, or
+    /// country-mismatched carrier fails closed.
+    pub fn compose_xui15_frame(
+        &self,
+        frame: &WorldFrame,
+        pov_tag: Option<&str>,
+        viewport_width: usize,
+        viewport_height: usize,
+    ) -> std::result::Result<Option<ProductionUiOutput>, ProductionUiRejection> {
+        if viewport_width != PRODUCTION_UI_WIDTH || viewport_height != PRODUCTION_UI_HEIGHT {
+            return Err(ProductionUiRejection::UnsupportedDisplayVariant {
+                width: viewport_width,
+                height: viewport_height,
+            });
+        }
+        let session = frame.session_metadata();
+        let display = session.display_variant.measured().ok_or(
+            ProductionUiRejection::MissingDisplayVariantCarrier("session.display_variant"),
+        )?;
+        let language = session.localisation_language.measured().ok_or(
+            ProductionUiRejection::MissingDisplayVariantCarrier("session.localisation_language"),
+        )?;
+        let input_variant = frame
+            .production_render()
+            .and_then(|render| render.authority.recorded_input_variant)
+            .map(|variant| match variant {
+                RecordedInputVariant::MouseKeyboard => InputVariant::MouseKeyboard,
+                RecordedInputVariant::Keyboard => InputVariant::Keyboard,
+                RecordedInputVariant::Controller => InputVariant::Controller,
+            })
+            .ok_or(ProductionUiRejection::MissingDisplayVariantCarrier(
+                "session.input_variant",
+            ))?;
+        if input_variant != InputVariant::MouseKeyboard {
+            return Err(ProductionUiRejection::UnsupportedInputVariant(input_variant));
+        }
+        let key = DisplayVariantKey::from_session_metadata(display, language, input_variant)
+            .map_err(|_| {
+                ProductionUiRejection::MissingDisplayVariantCarrier("invalid exact key")
+            })?;
+        ExactKeyVariantContract::admit(production_ui_variant_key())
+            .map_err(|_| {
+                ProductionUiRejection::MissingDisplayVariantCarrier(
+                    "invalid product exact-key contract",
+                )
+            })?
+            .select(&key)
+            .map_err(|_| ProductionUiRejection::UnsupportedExactDisplayVariant(key))?;
+
+        let activation_view = frame.market_trade_activation();
+        if activation_view.status != replay_core::ViewStatus::Present {
+            return Err(ProductionUiRejection::MissingDisplayVariantCarrier(
+                "_r2_market_trade_activation_live",
+            ));
+        }
+        let activation = activation_view.activation.as_ref().ok_or(
+            ProductionUiRejection::MissingDisplayVariantCarrier(
+                "_r2_market_trade_activation_live.activation",
+            ),
+        )?;
+        if !activation.active {
+            return Ok(None);
+        }
+        let pov_tag = pov_tag.ok_or_else(|| {
+            ProductionUiRejection::IncompleteComposition(
+                "XUI15 active trade root has no selected POV".into(),
+            )
+        })?;
+        if activation.country.as_deref() != Some(pov_tag) {
+            return Err(ProductionUiRejection::IncompleteComposition(format!(
+                "XUI15 active country {:?} does not match selected POV {pov_tag:?}",
+                activation.country
+            )));
+        }
+        self.content_admission
+            .require_used_content("interface/countrytradeview.gui")
+            .map_err(ProductionUiRejection::Asset)?;
+        let screen = admit_trade_screen(frame.trade_status(), pov_tag, frame.trade(pov_tag));
+        let AdmittedTradeScreen::Visible(presentation) = &screen else {
+            return Err(ProductionUiRejection::IncompleteComposition(
+                "XUI15 active lifecycle has no complete selected-country semantic trade view"
+                    .into(),
+            ));
+        };
+        if !matches!(&presentation.resource_pools, TradeData::Available(_))
+            || !matches!(&presentation.resource_cards, TradeData::Available(_))
+            || !matches!(&presentation.deals, TradeData::Available(_))
+            || !matches!(&presentation.factories, TradeData::Available(_))
+        {
+            return Err(ProductionUiRejection::IncompleteComposition(
+                "XUI15 active lifecycle has incomplete classic resource-trade inputs".into(),
+            ));
+        }
+        let composed = render_trade_screen(
+            &self.resolver,
+            &self.registry,
+            &screen,
+            viewport_width,
+            viewport_height,
+        )
+        .map_err(|error| ProductionUiRejection::Asset(error.to_string()))?;
+        validate_complete_compose_report(&composed.report)
+            .map_err(ProductionUiRejection::IncompleteComposition)?;
+        Ok(Some(ProductionUiOutput {
+            image: composed.image,
+            report: ProductionUiReport {
+                viewport: [viewport_width, viewport_height],
+                pov_tag: Some(pov_tag.to_string()),
+                promoted_packets: PROMOTED_XUI_PACKETS
+                    .iter()
+                    .map(|value| (*value).to_string())
+                    .collect(),
+                promoted_extension_packets: PROMOTED_EXTENSION_PACKETS
+                    .iter()
+                    .map(|value| (*value).to_string())
+                    .collect(),
+                omitted_authority_blocked_packets: OMITTED_AUTHORITY_BLOCKED_PACKETS
+                    .iter()
+                    .map(|(packet, _)| (*packet).to_string())
+                    .collect(),
+                omitted_pixel_canvas_packets: OMITTED_PIXEL_CANVAS_ROUTES
+                    .iter()
+                    .map(|(packet, _)| (*packet).to_string())
+                    .collect(),
+                omitted_extension_packets: OMITTED_EXTENSION_PACKETS
+                    .iter()
+                    .map(|(packet, _)| (*packet).to_string())
+                    .collect(),
+                drawn_elements: composed.report.drawn_elements,
+                sprite_count: self.registry.len(),
+            },
+        }))
     }
 
     /// Compose the always-on, proven replay HUD.  Country-dependent content is
@@ -674,6 +809,27 @@ fn validate_complete_hud(
     Ok(())
 }
 
+fn validate_complete_compose_report(
+    report: &crate::compose::ComposeReport,
+) -> std::result::Result<(), String> {
+    if !report.missing_sprites.is_empty()
+        || !report.undecodable_sprites.is_empty()
+        || !report.missing_fonts.is_empty()
+        || !report.unresolved_loc_keys.is_empty()
+        || !report.unresolved_text_inputs.is_empty()
+    {
+        return Err(format!(
+            "production XUI15 composition is incomplete: missing_sprites={:?}; undecodable_sprites={:?}; missing_fonts={:?}; unresolved_loc={:?}; unresolved_runtime_text={:?}",
+            report.missing_sprites,
+            report.undecodable_sprites,
+            report.missing_fonts,
+            report.unresolved_loc_keys,
+            report.unresolved_text_inputs,
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -694,8 +850,11 @@ mod tests {
             .map(|(packet, _)| *packet)
             .collect::<std::collections::BTreeSet<_>>();
         assert!(promoted.is_disjoint(&omitted_canvas));
-        assert_eq!(omitted_canvas.len(), 4);
-        assert_eq!(promoted, ["XUI24", "XUI25"].into_iter().collect());
+        assert_eq!(omitted_canvas.len(), 3);
+        assert_eq!(
+            promoted,
+            ["XUI15", "XUI24", "XUI25"].into_iter().collect()
+        );
         assert_eq!(omitted.len(), 20);
         assert_eq!(PROMOTED_EXTENSION_PACKETS, ["XUI27"]);
         assert!(OMITTED_EXTENSION_PACKETS.is_empty());

@@ -42,3 +42,9 @@ detail nodes. The owner now materializes only after the same-view pair and the
 pair regrader requires a genuinely changed state/transient leaf. See
 `A31_FRAME_ORDER_AND_FIXTURE_MATRIX_20260720.md`. No retained authenticated
 pair exists, so this closes engineering rather than activation.
+
+Wave6 removes the last operator-owned inputs. The A31 wrapper now owns the
+clean frozen-save launch, paused readiness, SWE `CCountry` discovery, exact
+open/close/search/start actions, one-hour transition, terminal repause, and
+create-new admission. Caller-supplied PID, address, hour, and prompt responses
+are no longer part of the acquisition contract.

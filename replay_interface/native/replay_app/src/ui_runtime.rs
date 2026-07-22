@@ -41,6 +41,9 @@ pub enum SelectedPresentUiOutcome {
         cipher_target_count: Option<usize>,
         /// X3 licence cards consumed from the typed trade presentation.
         trade_license_count: Option<usize>,
+        /// Exact XUI15 canvas drawn from an active, POV-matched MTRA carrier.
+        xui15_surface_drawn: bool,
+        xui15_unavailable_reason: Option<String>,
         /// Exact XUI16 rows admitted through ProductionUiRenderer for this
         /// selected-Present execution.
         occupation_state_count: Option<usize>,
@@ -386,6 +389,27 @@ impl ProductSelectedPresentRuntime {
         }
         self.variant_key = Some(variant_key);
 
+        let (xui15_output, xui15_unavailable_reason) =
+            match self.production_ui_renderer.as_ref() {
+                Some(renderer) => match renderer.compose_xui15_frame(
+                    world_frame,
+                    pov_tag,
+                    gfx.width as usize,
+                    gfx.height as usize,
+                ) {
+                    Ok(output) => (output, None),
+                    Err(error) => (
+                        None,
+                        Some(format!("XUI15 production surface rejected: {error:?}")),
+                    ),
+                },
+                None => (
+                    None,
+                    Some("XUI15 production renderer is feature-local unavailable".into()),
+                ),
+            };
+        let xui15_surface_drawn = xui15_output.is_some();
+
         // A34 and this pass are independently joined to the same selected
         // Present by replay_core: build_decision_panel_exact rejects any d87
         // receipt that differs from production_render.selected_present, while
@@ -515,6 +539,15 @@ impl ProductSelectedPresentRuntime {
             }
         }
 
+        // The normal country-trade root sits below the authenticated
+        // selected-Present frontier (topbar, tooltip, and popup operations).
+        // Its transparent authored canvas is fully composed before this first
+        // target write, then the recorded frontier retains final ordering.
+        if let Some(output) = xui15_output.as_ref() {
+            self.image.set_rgba(gfx, &output.image)?;
+            self.image.draw(gfx)?;
+        }
+
         let mut m02_draw_count = 0usize;
         for operation in &prepared.operations {
             match operation {
@@ -563,6 +596,8 @@ impl ProductSelectedPresentRuntime {
             agency_upgrade_count,
             cipher_target_count,
             trade_license_count,
+            xui15_surface_drawn,
+            xui15_unavailable_reason,
             occupation_state_count,
             occupation_unavailable_reason,
             battleplan_order_count,

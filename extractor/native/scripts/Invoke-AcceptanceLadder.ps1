@@ -1706,7 +1706,7 @@ function New-FakeCaptureForRung {
         New-Item -ItemType Directory -Path $RunDir -Force | Out-Null
     }
     $manifestPath = Join-Path $RunDir "native_session_manifest.json"
-    $manifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    Write-AtomicJson -Path $manifestPath -Value $manifest -Depth 12
 
     # Capture plan: records the attempt's capture_id/session_id AND the rung this run
     # is for (finding 3 identity binding), as a real bound producer must.
@@ -1748,7 +1748,7 @@ function New-FakeCaptureForRung {
             session_id      = $sessionId
             problems        = @()
         }
-        $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $RunDir "production_validation_report.json") -Encoding UTF8
+        Write-AtomicJson -Path (Join-Path $RunDir "production_validation_report.json") -Value $report -Depth 8
     }
     return $RunDir
 }
@@ -1915,7 +1915,7 @@ Set-Content -LiteralPath $Sentinel -Value ("MODE=$Mode`nOUTDIR=$OutDir") -Encodi
 
         # 12. Stale state (mismatched rung set) is rejected fail-closed.
         $staleFile = Join-Path $tmp "stale.json"
-        ([ordered]@{ schema = "acceptance_ladder_state_v1"; rungs = @([ordered]@{ name = "not-a-rung"; order = 0; status = "passed" }) } | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $staleFile -Encoding UTF8
+        Write-AtomicJson -Path $staleFile -Value ([ordered]@{ schema = "acceptance_ladder_state_v1"; rungs = @([ordered]@{ name = "not-a-rung"; order = 0; status = "passed" }) }) -Depth 8
         $threwStale = $false
         try { Read-LadderState -StateFile $staleFile | Out-Null } catch { $threwStale = $true }
         Assert-True $threwStale "a state file with a mismatched rung set must be rejected"
@@ -2201,7 +2201,7 @@ Set-Content -LiteralPath $Sentinel -Value ("A=[$A]`nB=[$B]`nC=[$C]") -Encoding U
         $cloneManifestPath = Join-Path $cloneSrc "native_session_manifest.json"
         $cloneManifest = Get-Content -LiteralPath $cloneManifestPath -Raw | ConvertFrom-Json
         $cloneManifest | Add-Member -NotePropertyName pause_proof -NotePropertyValue ([pscustomobject]@{ observed_paused = $true; source_unavailable_degrade = $true })
-        $cloneManifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $cloneManifestPath -Encoding UTF8
+        Write-AtomicJson -Path $cloneManifestPath -Value $cloneManifest -Depth 12
         $cloneFile = Join-Path $tmp "cloned_identity_complete.json"
         $cloneState = New-LadderState
         foreach ($r in $cloneState.rungs) {
@@ -2222,7 +2222,7 @@ Set-Content -LiteralPath $Sentinel -Value ("A=[$A]`nB=[$B]`nC=[$C]") -Encoding U
                 $dstManifest.duration_ms = 21600000L
                 $dstManifest.acceptance_telemetry.clock_skew.wall_elapsed_us = 21600000000L
                 $dstManifest.acceptance_telemetry.clock_skew.mono_elapsed_us = 21600000100L
-                $dstManifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $dstManifestPath -Encoding UTF8
+                Write-AtomicJson -Path $dstManifestPath -Value $dstManifest -Depth 12
             }
             $dstPlan | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $dstPlanPath -Encoding UTF8
             if ($r.name -eq "six-hour-soak") { Write-SoakAcceptanceReceipt -RunDir $dst | Out-Null }
@@ -2290,7 +2290,7 @@ Set-Content -LiteralPath $Sentinel -Value ("A=[$A]`nB=[$B]`nC=[$C]") -Encoding U
         $badManifestPath = Join-Path $badIdDir "native_session_manifest.json"
         $badManifest = Get-Content -LiteralPath $badManifestPath -Raw | ConvertFrom-Json
         $badManifest.session_id = $true
-        $badManifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $badManifestPath -Encoding UTF8
+        Write-AtomicJson -Path $badManifestPath -Value $badManifest -Depth 12
         $badGuard2 = Test-PredecessorsPassed -State $badIdState -Name "paused-short-proof"
         Assert-True (-not $badGuard2.Ok) "a boolean manifest session_id must refuse fail-closed (re-gate2 finding 4)"
         Assert-True ($badGuard2.Reason -match "session_id_not_a") "the refusal must name the non-string session_id (got: $($badGuard2.Reason))"

@@ -77,7 +77,7 @@
     { "id": 81, "name": "rail_replay_state_live", "status": "validated_slice_open_gaps", "schedulable": true, "requires_data_record": true },
     { "id": 82, "name": "character_presentation_live", "status": "reserved", "schedulable": false, "requires_data_record": true },
     { "id": 83, "name": "nuke_stockpile_live", "status": "reserved", "schedulable": false, "requires_data_record": true },
-    { "id": 84, "name": "scripted_gui_runtime_live", "status": "reserved", "schedulable": false, "requires_data_record": true },
+    { "id": 84, "name": "scripted_gui_runtime_live", "status": "validated_slice", "schedulable": true, "requires_data_record": false },
     { "id": 85, "name": "selected_designer_identity_live", "status": "reserved", "schedulable": false, "requires_data_record": true },
     { "id": 86, "name": "sunk_ship_history_live", "status": "reserved", "schedulable": false, "requires_data_record": true },
     { "id": 87, "name": "decision_panel_live", "status": "reserved", "schedulable": false, "requires_data_record": true },

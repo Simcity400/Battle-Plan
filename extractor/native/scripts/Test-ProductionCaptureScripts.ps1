@@ -111,7 +111,7 @@ try {
     Set-Content -LiteralPath (Join-Path $root "native_session.battleplan") -Value "container" -Encoding UTF8
     $proof=[ordered]@{schema='battle-plan.speed5_proof.v2';domain57_game_speed_gate_v2_sha256=('b'*64);speed_raw=4;sample_count=10;exe_sha256=('a'*64)}
     $proof | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root "speed5_proof.json") -Encoding UTF8
-    function Write-Manifest($Value) { $Value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $root "native_session_manifest.json") -Encoding UTF8 }
+    function Write-Manifest($Value) { Write-AtomicJson -Path (Join-Path $root "native_session_manifest.json") -Value $Value -Depth 12 }
     [ordered]@{capture_id='capture-test';session_id='test';pid=123;process_start_utc='2026-07-16T00:00:00.0000000Z';process_creation_filetime_utc=134126496000000000} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'production_capture_plan.json') -Encoding UTF8
     Set-Content -LiteralPath (Join-Path $root 'speed_root_gate.json') -Value '{}' -Encoding UTF8
     Set-Content -LiteralPath (Join-Path $root 'collector_control.json') -Value '{}' -Encoding UTF8
@@ -131,7 +131,7 @@ try {
     $manifest.host_finalize.fold.truncated_tail_bytes=1; Write-Manifest $manifest; Assert-Case "truncation" (-not (Run-Gate).ok); $manifest.host_finalize.fold.truncated_tail_bytes=0
     $manifest.compact_stream.frame_time_us.max=100000; Write-Manifest $manifest; Assert-Case "100ms frame rejected" ((Run-Gate).problems -contains 'frame_time_over_100ms'); $manifest.compact_stream.frame_time_us.max=99999
     $manifest.compact_stream.frame_time_us.count=9; Write-Manifest $manifest; Assert-Case "timing count mismatch" ((Run-Gate).problems -contains 'frame_time_sample_count_mismatch'); $manifest.compact_stream.frame_time_us.count=10
-    $proof.speed_raw=3; $proof | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root "speed5_proof.json"); Write-Manifest $manifest; Assert-Case "not speed5" (-not (Run-Gate).ok)
+    $proof.speed_raw=3; Write-AtomicJson -Path (Join-Path $root "speed5_proof.json") -Value $proof; Write-Manifest $manifest; Assert-Case "not speed5" (-not (Run-Gate).ok)
     & $python (Join-Path $scriptDir 'verify_speed5_stream.py') --self-test
     Assert-Case 'speed stream positive and mutations' ($LASTEXITCODE -eq 0)
     & $python (Join-Path $scriptDir 'verify_speed_root_evidence_v2.py') --self-test

@@ -116,7 +116,7 @@ terrain chunk synthesis is blocked in replay_app until the remaining runtime/LOD
 borders are blocked in replay_app until the remaining thin-border fade/loop/sea-region law is ported; use map_viewer border dumps as development tooling; --borders-from-files is blocked; \
 country-label production integration is closed: measured control_by_province feeds the B10 controller law, authenticated reflection stamps mapname CB1, and normal D80 playback executes the exact captured glyph draw automatically; --map-labels remains blocked as a legacy manual-layer switch; \
 map furniture is blocked in replay_app only on highlight ring rendering and the 0.40 map-text scale origin; the relation-column law is engine-traced in map_viewer, but non-neutral capture coverage is still pending; the furniture module/projection API exists but --map-furniture remains blocked; \
-tree runtime replay admits the exact retained 13-buffer/three-pass model/LOD carrier (4,781 visible cells); file-derived full-map replacement remains blocked because 95,275 of 99,056 global nonzero cells lack an authenticated carrier, and season CB1 is separate; --trees-from-files and --tree-seasons-by-date are blocked; \
+tree runtime replay admits exact selected-submit visibility/model/LOD draws against the complete engine-derived 296-bucket/99,056-cell library; --trees-from-files remains blocked because a files-only request has no authenticated per-frame selection, and --tree-seasons-by-date remains separately blocked on CB1; \
 building previews are blocked until map_objects_pass or mesh/material import law exists; --buildings-from-files and --buildings-preview-all are blocked";
 
 const SENSITIVE_GAME_FILE_PATHS: &[&str] = &[

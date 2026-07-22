@@ -1,6 +1,6 @@
 # XN14Q - close-zoom weather runtime wiring audit
 
-Status: **NON-HUMAN IMPLEMENTATION WIRED; CENTRAL VALIDATION AND SAME-SESSION LIVE PROOF PENDING**
+Status: **NON-HUMAN IMPLEMENTATION AND AUTONOMOUS SAME-SESSION ACQUISITION WIRED; CENTRAL VALIDATION AND EXECUTION PENDING**
 
 Pinned binary: `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 
@@ -118,7 +118,7 @@ set. Texture absence and RenderDoc absence remain non-authoritative.
 
 No human interpretation of weather assets or native behavior is required. Static mining, exact-20 receipt binding, and the non-human consumers above are exhausted. The definition-pointer receipt is implemented from exact-10 XN15L authority and still refuses inference from pointer value, factory order, texture, or position. The retained-observation census searched the retained RDC, XN14B anchors/corpus, XN14V fixtures, native custom-harness runs, and current hook surface; none contains the required same-session proof. The census is pinned at `replay_interface/re_evidence/rendering_laws/XN14Q/retained_observation_census.json` (SHA-256 `96243fdbc74ceb910118855e58d44399f70b48f55c35bfb30cf1012c70acdb60`) and summarized by `XN14Q_RETAINED_OBSERVATION_CENSUS.md` (SHA-256 `47914c3316fa29a224b5db4896e391dcd367d5050f23e6e93ff51309218fc7ec`).
 
-Promotion therefore still requires the primary agent's central Rust validation and an authorized early-launch capture proving that the installed implementation sees every needed named-registry lookup, emits the first successful call per region even when unchanged, records exact per-update visibility and setter write masks for every instantiated pair (and an exact empty phase for a zero-pair active row), and owns the latest completed update plus complete effect-output cover in the same selected-Present transaction. The earlier 2026-07-18 registry/factory jobs are retained as discovery history only. No static receipt or unexecuted implementation enables active-weather promotion.
+Promotion therefore still requires the primary agent's central Rust validation and execution of the autonomous early-launch capture proving that the installed implementation sees every needed named-registry lookup, emits the first successful call per region even when unchanged, records exact per-update visibility and setter write masks for every instantiated pair (and an exact empty phase for a zero-pair active row), and owns the latest completed update plus complete effect-output cover in the same selected-Present transaction. The dedicated `Invoke-XN14QWeatherSameSessionAcquisition.ps1` entrypoint now owns the frozen D04 launch, exact prepared product modset and central artifact admission, durable `hoi4_re` camera feedback, bounded authenticated wheel traversal across all five branches, one authenticated clock pulse per branch, and immutable domain-77 regrading. `verify_xn14q_same_session.py` independently binds every pulse target hour to its selected Present, exact 305-region membership/checkpoint transaction, setter/fade/playback law, and non-vacuous complete output subset. No user choice or interpretation remains. The earlier 2026-07-18 registry/factory jobs are retained as discovery history only. No static receipt or unexecuted implementation enables active-weather promotion.
 
 ## Authority
 
@@ -136,5 +136,7 @@ Promotion therefore still requires the primary agent's central Rust validation a
 - `replay_interface/re_evidence/rendering_laws/XN14Q/retained_observation_census.json`
 - `replay_interface/re_evidence/rendering_laws/XN14Q/weather_update_setter_chain_promotion_request.json`
 - `replay_interface/re_evidence/rendering_laws/XN14Q/automated_selected_present_wiring.json`
+- `replay_interface/re_evidence/rendering_laws/XN14Q/autonomous_acquisition_contract.json`
+- `extractor/native/scripts/Invoke-XN14QWeatherSameSessionAcquisition.ps1`
 - `replay_interface/documents/lane_reports/rendering_laws/XN14Q_RETAINED_OBSERVATION_CENSUS.md`
 - `replay_interface/documents/lane_reports/rendering_laws/XN14Q_WEATHER_UPDATE_SETTER_CHAIN_PROMOTION_REQUEST.md`

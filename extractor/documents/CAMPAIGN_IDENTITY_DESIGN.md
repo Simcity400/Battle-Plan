@@ -20,8 +20,10 @@ from their canonical representation. Current-build serializer/deserializer RE pr
 **static representation proof, not a validated live identity**. The CID1 codec, shared explicit-mode
 stateful validator, CFA1 codec, collector producer barrier, durable rollover store, ordered package
 publication, replay selection, and recorder-main manifest gate are now statically composed. Pillar
-3 remains fail-closed: all duplex/rollover activation latches are false, so production `Known` is
-impossible until live L0/lifecycle acceptance and the complete matrix below pass.
+3 remains fail-closed: all duplex/rollover activation latches are false, so ordinary production
+`Known` is impossible until live L0/lifecycle acceptance and the complete matrix below pass. A
+separate default-off evidence permit can select IdentityV1 only for a content-addressed,
+nonce-bound lifecycle-owner child; it is not a promotion latch.
 
 The current d68 `session` scalar, start date, scenario/bookmark, modset, and human-country
 roster are witnesses only. They must never be substituted when either chosen component is
@@ -487,14 +489,20 @@ extractor/native/lanes/compact_replay_verification_gates/src/*
 
 ## Open items
 
-- Static offset and representation discovery is complete for the pinned executable, but the L0
-  guarded same-hour D-0-4 read and exact oracle comparison have not run; the composed production
-  reader remains disabled and there is no build-profile fallback.
-- CID1 placement/validation, both CFA1 barriers, durable CIF1/CIA1 failure accounting, acknowledged
-  rollover, ordered packaging, and replay selection are composed. Activation and the owner-run
-  lifecycle/multiplayer matrix remain open. Until all pass, production
-  `campaign_identity.state="known"` is impossible.
-- No capture pair proves reload/relaunch/hotjoin/observer/rehost stability or distinctness
-  across two new campaigns.
+- Static offset/representation RE, CID1 placement/validation, both CFA1 barriers, durable
+  CIF1/CIA1 failure accounting, acknowledged rollover, ordered packaging, replay selection,
+  and the executable lifecycle owner are complete for the pinned build. There is no
+  build-profile fallback.
+- `Invoke-Cid1SdActionDriver.ps1` and `Invoke-Cid1EndpointOwner.ps1` now own S1-S4/D1-D2,
+  including exact process/save discovery, automatic same-hour observations, save-oracle joins,
+  authenticated UI/process actions, and raw-H4CR/durable-rollover boundary receipts. The matrix
+  verifier independently repeats the raw CID1/descriptor join. The driver gives only its recorder
+  child an immutable permit bound to fresh matrix/arm nonces plus request/profile/contract/build
+  hashes; recorder and collector independently regrade it while ordinary activation constants stay
+  false. Live execution of those arms is still required before activation.
+- M1/M2 still require a real second multiplayer-capable exact-a729 process, though both endpoints
+  may be on one machine. M3's frozen relation intrinsically requires a second machine. A socket or
+  duplicated-transcript loopback is not engine lifecycle evidence and remains non-promotional.
+- Until all nine live arms pass, production `campaign_identity.state="known"` remains impossible.
 - Independent campaigns cloned from one save cannot be distinguished by passive persisted
   engine identity until the engine changes it.

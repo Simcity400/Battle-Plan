@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 
 
@@ -66,16 +68,45 @@ def sha256(path: Path) -> str:
 
 def canonical_text_payload(path: Path) -> bytes:
     """Return UTF-8 authority text with checkout-independent LF line endings."""
-    payload = path.read_bytes()
     try:
-        payload.decode("utf-8")
+        text = path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError as error:
-        raise SystemExit(f"static SRV closure is not UTF-8 text: {path}") from error
-    return payload.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        raise SystemExit(f"manifest input is not UTF-8 text: {path}") from error
+    return text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
 
 
 def canonical_text_sha256(path: Path) -> str:
     return hashlib.sha256(canonical_text_payload(path)).hexdigest()
+
+
+def canonical_text_identity(path: Path) -> dict[str, int | str]:
+    payload = canonical_text_payload(path)
+    return {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+
+
+def atomic_write_json(path: Path, payload: object) -> None:
+    """Publish canonical JSON without exposing a partially written manifest."""
+    rendered = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(rendered)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def checked_relative(relative: str) -> Path:
@@ -517,7 +548,11 @@ def main() -> int:
     reference_rows = []
     for relative in included_paths:
         path = checked_relative(relative)
-        files.append({"path": relative, "bytes": path.stat().st_size, "sha256": sha256(path)})
+        files.append({
+            "path": relative,
+            "hash_basis": "canonical_text_lf",
+            **canonical_text_identity(path),
+        })
         reference_rows.append({"path": relative, "references": references[relative]})
 
     # Enumerate everything deliberately left outside the freeze.  This makes
@@ -541,7 +576,8 @@ def main() -> int:
         "authority": result["authority"],
         "result": {
             "path": result_relative,
-            "sha256": sha256(result_path),
+            "hash_basis": "canonical_text_lf",
+            **canonical_text_identity(result_path),
             "status": "PASS",
             "direct_passes": 29,
             "not_applicable_diagnostics": 3,
@@ -578,12 +614,15 @@ def main() -> int:
         "files": files,
     }
 
-    MANIFEST.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    atomic_write_json(MANIFEST, payload)
 
     written = json.loads(MANIFEST.read_text(encoding="utf-8"))
     for entry in written["files"]:
         path = ROOT / entry["path"]
-        if path.stat().st_size != entry["bytes"] or sha256(path) != entry["sha256"]:
+        if canonical_text_identity(path) != {
+            "bytes": entry["bytes"],
+            "sha256": entry["sha256"],
+        }:
             raise SystemExit(f"manifest verification failed: {entry['path']}")
     frozen_paths = {entry["path"] for entry in written["files"]}
     if frozen_paths != set(included_paths):
@@ -598,7 +637,7 @@ def main() -> int:
         "excluded_obsolete_run_artifacts": len(obsolete_logs),
         "all_included_files_current_referenced": True,
         "obsolete_run_artifacts_excluded": True,
-        "manifest_sha256": sha256(MANIFEST),
+        "manifest_sha256": canonical_text_sha256(MANIFEST),
         "result_sha256": written["result"]["sha256"],
     }, indent=2, sort_keys=True))
     return 0

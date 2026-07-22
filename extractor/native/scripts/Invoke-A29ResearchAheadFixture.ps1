@@ -8,6 +8,7 @@ param(
     [Parameter(Mandatory = $true)] [string] $ContinueSave,
     [Parameter(Mandatory = $true)] [string] $StaticBundleManifest,
     [Parameter(Mandatory = $true)] [string] $StaticBundleBindingsDir,
+    [string] $PrebuiltArtifactAttestationPath = '',
     [int] $DurationSeconds = 900,
     [int] $SampleMilliseconds = 25,
     [int] $NavigationProcessTimeoutSeconds = 240,
@@ -33,8 +34,8 @@ $observedSaveSha256 = (Get-FileHash -LiteralPath $ContinueSave -Algorithm SHA256
 if ($observedSaveSha256 -cne $expectedD04SaveSha256) {
     throw "A29 autonomous navigation requires the frozen New D04 Save Deep War identity: $observedSaveSha256"
 }
-if ($DurationSeconds -lt 600) {
-    throw 'DurationSeconds must be at least 600 seconds for autonomous load, exact D04 research-tree navigation, and twelve-hour capture.'
+if ($DurationSeconds -lt 600 -or $DurationSeconds -gt 3600) {
+    throw 'DurationSeconds must be in 600..3600 for autonomous load, exact D04 research-tree navigation, and twelve-hour capture.'
 }
 if ($SampleMilliseconds -lt 10) {
     throw 'SampleMilliseconds must be at least 10 milliseconds.'
@@ -52,6 +53,26 @@ $resolvedPdxUserDir = (Resolve-Path -LiteralPath $PdxUserDir).Path
 $resolvedCollector = (Resolve-Path -LiteralPath $CollectorDll).Path
 $resolvedStaticBundleManifest = (Resolve-Path -LiteralPath $StaticBundleManifest).Path
 $resolvedStaticBundleBindingsDir = (Resolve-Path -LiteralPath $StaticBundleBindingsDir).Path
+$resolvedStaticBundleDir = Split-Path -Parent $resolvedStaticBundleManifest
+$resolvedPython = (Get-Command $Python -CommandType Application -ErrorAction Stop).Source
+$repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..\..')).Path
+$productionDriver = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot 'Start-Hoi4ProductionCaptureSafe.ps1')).Path
+$attestationHelpers = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot 'ProductionArtifact.Attestation.ps1')).Path
+$releaseRoot = Join-Path $repoRoot '.cargo-target\release'
+if ([string]::IsNullOrWhiteSpace($PrebuiltArtifactAttestationPath)) {
+    $PrebuiltArtifactAttestationPath = Join-Path $releaseRoot 'hoi4-production-prebuilt-artifacts.json'
+}
+. $attestationHelpers
+$prebuilt = Test-ProductionArtifactAttestation `
+    -RepoRoot $repoRoot `
+    -ReceiptPath $PrebuiltArtifactAttestationPath `
+    -ExpectedDriverPath $productionDriver
+$resolvedAttestation = (Resolve-Path -LiteralPath $prebuilt.receipt_path).Path
+if (-not [string]::Equals($resolvedRecorder, [string]$prebuilt.artifacts.recorder_host, [StringComparison]::OrdinalIgnoreCase) -or
+    -not [string]::Equals($resolvedCollector, [string]$prebuilt.artifacts.collector_dll, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'A29 production acquisition requires the recorder and collector from the authenticated central Release attestation.'
+}
+$staticBundleVerifier = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..\game_defs\static_bundle.py')).Path
 $resolvedOut = [System.IO.Path]::GetFullPath($OutDir)
 $sessionId = [guid]::NewGuid().ToString()
 $captureId = [guid]::NewGuid().ToString()
@@ -72,22 +93,49 @@ if (Test-Path -LiteralPath $resolvedOut) {
     [System.IO.Directory]::CreateDirectory($resolvedOut) | Out-Null
 }
 
+function Write-AtomicBytes([string]$Path, [byte[]]$Bytes, [switch]$AllowReplace) {
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $parent = [IO.Path]::GetDirectoryName($fullPath)
+    [IO.Directory]::CreateDirectory($parent) | Out-Null
+    $temporaryPath = [IO.Path]::Combine($parent, ([IO.Path]::GetRandomFileName() + '.tmp'))
+    try {
+        [IO.File]::WriteAllBytes($temporaryPath, $Bytes)
+        $stream = [IO.File]::Open($temporaryPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        try { $stream.Flush($true) } finally { $stream.Dispose() }
+        if ([IO.File]::Exists($fullPath)) {
+            if (-not $AllowReplace) { throw "Refusing to replace existing file: $fullPath" }
+            [IO.File]::Replace($temporaryPath, $fullPath, $null, $true)
+        } else {
+            [IO.File]::Move($temporaryPath, $fullPath)
+        }
+    } finally {
+        if ([IO.File]::Exists($temporaryPath)) { [IO.File]::Delete($temporaryPath) }
+    }
+}
+
+function Write-AtomicUtf8Text([string]$Path, [string]$Text, [switch]$AllowReplace) {
+    Write-AtomicBytes $Path ([Text.UTF8Encoding]::new($false).GetBytes($Text)) -AllowReplace:$AllowReplace
+}
+
 $verifier = Join-Path $PSScriptRoot 'verify_a29_research_ahead_fixture.py'
 $navigationScript = Join-Path $PSScriptRoot 'Invoke-A29AutonomousResearchNavigation.ps1'
-$unpauseScript = Join-Path $PSScriptRoot '..\..\..\replay_interface\re_evidence\rendering_laws\capture_harness\authenticated_unpause.ps1'
+$clockTransitionScript = Join-Path $PSScriptRoot 'Invoke-A29AuthenticatedClockTransition.ps1'
 if (-not (Test-Path -LiteralPath $verifier -PathType Leaf)) {
     throw "A29 verifier is missing: $verifier"
 }
 if (-not (Test-Path -LiteralPath $navigationScript -PathType Leaf)) {
     throw "A29 autonomous navigation script is missing: $navigationScript"
 }
-if (-not (Test-Path -LiteralPath $unpauseScript -PathType Leaf)) {
-    throw "A29 authenticated unpause script is missing: $unpauseScript"
+if (-not (Test-Path -LiteralPath $clockTransitionScript -PathType Leaf)) {
+    throw "A29 authenticated clock-transition script is missing: $clockTransitionScript"
 }
 $captureManifest = Join-Path $resolvedOut 'native_session_manifest.json'
 $verification = Join-Path $resolvedOut 'a29_research_ahead_fixture_verification.json'
 $navigationReceipt = Join-Path $resolvedOut 'a29_autonomous_research_navigation.json'
+$readinessReceipt = Join-Path $resolvedOut 'a29_authenticated_paused_save_readiness.json'
 $unpauseReceipt = Join-Path $resolvedOut 'a29_authenticated_unpause.json'
+$repauseReceipt = Join-Path $resolvedOut 'a29_authenticated_repause.json'
+$staticBundlePreflightReceipt = Join-Path $resolvedOut 'a29_static_bundle_preflight.json'
 $continueGamePath = Join-Path $resolvedPdxUserDir 'continue_game.json'
 $continueGamePriorExists = Test-Path -LiteralPath $continueGamePath -PathType Leaf
 $continueGamePriorBytes = if ($continueGamePriorExists) {
@@ -97,6 +145,40 @@ $continueGamePriorBytes = if ($continueGamePriorExists) {
 }
 $continueGameOverridden = $false
 $continueGameReplacement = $null
+
+$bindingPaths = [ordered]@{
+    mod_state = Join-Path $resolvedStaticBundleBindingsDir 'mod_state.json'
+    dlc_state = Join-Path $resolvedStaticBundleBindingsDir 'dlc_state.json'
+    load_order = Join-Path $resolvedStaticBundleBindingsDir 'load_order.json'
+    source_inventory = Join-Path $resolvedStaticBundleBindingsDir 'source_inventory.json'
+    resolution_report = Join-Path $resolvedStaticBundleBindingsDir 'resolution_report.json'
+}
+foreach ($key in @($bindingPaths.Keys)) {
+    $candidatePath = $bindingPaths[$key]
+    if (-not (Test-Path -LiteralPath $candidatePath -PathType Leaf)) {
+        throw "A29 static-bundle binding $key is missing: $candidatePath"
+    }
+    $bindingPaths[$key] = (Resolve-Path -LiteralPath $candidatePath).Path
+}
+
+$staticPreflightOutput = @(& $resolvedPython $staticBundleVerifier verify `
+    --bundle $resolvedStaticBundleDir `
+    --exe $resolvedExe `
+    --mod-state $bindingPaths['mod_state'] `
+    --dlc-state $bindingPaths['dlc_state'] `
+    --load-order $bindingPaths['load_order'] `
+    --source-inventory $bindingPaths['source_inventory'] `
+    --live-resolution-report $bindingPaths['resolution_report'] `
+    --allow-deferred-token-gate)
+if ($LASTEXITCODE -ne 0) { throw 'A29 static-bundle pre-injection verification failed.' }
+$staticPreflightText = ($staticPreflightOutput -join [Environment]::NewLine)
+try { $staticPreflight = $staticPreflightText | ConvertFrom-Json } catch {
+    throw "A29 static-bundle preflight did not emit JSON: $($_.Exception.Message)"
+}
+if ($staticPreflight.passed -ne $true -or $staticPreflight.verification_phase -cne 'pre_injection_deferred_allowed') {
+    throw 'A29 static-bundle preflight did not admit the deferred pre-injection phase.'
+}
+Write-AtomicUtf8Text $staticBundlePreflightReceipt ($staticPreflightText + [Environment]::NewLine)
 
 if ($ContinueSave) {
     $continueIndex = -1
@@ -162,12 +244,14 @@ $arguments = @(
     '--scheduled-domain', 'tech_live',
     '--scheduled-domains-exact',
     '--static-bundle-manifest', $resolvedStaticBundleManifest,
-    '--static-bundle-mod-state', (Join-Path $resolvedStaticBundleBindingsDir 'mod_state.json'),
-    '--static-bundle-dlc-state', (Join-Path $resolvedStaticBundleBindingsDir 'dlc_state.json'),
-    '--static-bundle-load-order', (Join-Path $resolvedStaticBundleBindingsDir 'load_order.json'),
-    '--static-bundle-source-inventory', (Join-Path $resolvedStaticBundleBindingsDir 'source_inventory.json'),
-    '--static-bundle-live-resolution-report', (Join-Path $resolvedStaticBundleBindingsDir 'resolution_report.json'),
-    '--static-bundle-timeout-ms', '1800000',
+    '--static-bundle-mod-state', $bindingPaths['mod_state'],
+    '--static-bundle-dlc-state', $bindingPaths['dlc_state'],
+    '--static-bundle-load-order', $bindingPaths['load_order'],
+    '--static-bundle-source-inventory', $bindingPaths['source_inventory'],
+    '--static-bundle-live-resolution-report', $bindingPaths['resolution_report'],
+    '--static-bundle-verifier', $staticBundleVerifier,
+    '--static-bundle-python', $resolvedPython,
+    '--static-bundle-timeout-ms', '300000',
     '--sidecar-log',
     '--hour-latch'
 )
@@ -178,16 +262,16 @@ foreach ($value in $EarlyLaunchArgument) {
 Write-Host 'A29 autonomous acquisition: clean early launch, exact D04 physical Research/active-row navigation, future-node hover, authenticated unpause, and fail-closed branch-1/2 verification.'
 
 $recorderJob = $null
+$exactProcess = $null
+$exactProcessStartUtc = $null
+$repauseError = $null
+$captureRunCompleted = $false
 try {
     if ($null -ne $continueGameReplacement) {
         # Mark the path overridden first so any partial write still restores
         # the exact prior bytes in the finally block.
         $continueGameOverridden = $true
-        [System.IO.File]::WriteAllText(
-            $continueGamePath,
-            $continueGameReplacement,
-            [System.Text.UTF8Encoding]::new($false)
-        )
+        Write-AtomicUtf8Text $continueGamePath $continueGameReplacement -AllowReplace
     }
     $recorderJob = Start-Job -ScriptBlock {
         param([string]$Recorder, [string[]]$RecorderArguments)
@@ -198,7 +282,6 @@ try {
     } -ArgumentList $resolvedRecorder, (,$arguments)
 
     $deadline = [DateTime]::UtcNow.AddSeconds($NavigationProcessTimeoutSeconds)
-    $exactProcess = $null
     while ([DateTime]::UtcNow -lt $deadline -and $null -eq $exactProcess) {
         if ($recorderJob.State -in @('Failed', 'Stopped', 'Disconnected')) {
             throw "collector_record background job terminated before exact-a729 exposed a window: $($recorderJob.State)"
@@ -227,16 +310,39 @@ try {
     if ($null -eq $exactProcess) {
         throw "Exact-a729 did not expose an authenticated main window within $NavigationProcessTimeoutSeconds seconds."
     }
+    $exactProcessStartUtc = $exactProcess.StartTime.ToUniversalTime().ToString('o')
+
+    if ($NavigationInitialSettleSeconds -gt 0) {
+        Start-Sleep -Seconds $NavigationInitialSettleSeconds
+    }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $clockTransitionScript `
+        -Action Readiness `
+        -ProcessId $exactProcess.Id `
+        -ExpectedProcessStartUtc $exactProcessStartUtc `
+        -SessionId $sessionId `
+        -CaptureId $captureId `
+        -ReceiptPath $readinessReceipt `
+        -ReadinessTimeoutSeconds $NavigationProcessTimeoutSeconds `
+        -ExpectedReadyGameHourRaw 60830441
+    if ($LASTEXITCODE -ne 0) {
+        throw "A29 authenticated paused-save readiness failed with code $LASTEXITCODE"
+    }
 
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $navigationScript `
         -ProcessId $exactProcess.Id `
         -ReceiptPath $navigationReceipt `
-        -InitialSettleSeconds $NavigationInitialSettleSeconds
+        -SessionId $sessionId `
+        -CaptureId $captureId `
+        -InitialSettleSeconds 0
     if ($LASTEXITCODE -ne 0) {
         throw "A29 autonomous research navigation failed with code $LASTEXITCODE"
     }
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $unpauseScript `
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $clockTransitionScript `
+        -Action Unpause `
         -ProcessId $exactProcess.Id `
+        -ExpectedProcessStartUtc $exactProcessStartUtc `
+        -SessionId $sessionId `
+        -CaptureId $captureId `
         -ReceiptPath $unpauseReceipt
     if ($LASTEXITCODE -ne 0) {
         throw "A29 authenticated unpause failed with code $LASTEXITCODE"
@@ -251,9 +357,30 @@ try {
     if ($recorderState -ne 'Completed') {
         throw "collector_record background job ended in state $recorderState"
     }
+    $captureRunCompleted = $true
 } finally {
+    if ($null -ne $exactProcess -and -not [string]::IsNullOrWhiteSpace($exactProcessStartUtc)) {
+        try {
+            $stillRunning = Get-Process -Id $exactProcess.Id -ErrorAction SilentlyContinue
+            if ($null -ne $stillRunning) {
+                & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $clockTransitionScript `
+                    -Action Repause `
+                    -ProcessId $exactProcess.Id `
+                    -ExpectedProcessStartUtc $exactProcessStartUtc `
+                    -SessionId $sessionId `
+                    -CaptureId $captureId `
+                    -ReceiptPath $repauseReceipt
+                if ($LASTEXITCODE -ne 0) { throw "A29 authenticated repause failed with code $LASTEXITCODE" }
+            }
+        } catch {
+            $repauseError = $_.Exception.Message
+        }
+    }
     if ($null -ne $recorderJob) {
         if ($recorderJob.State -notin @('Completed', 'Failed', 'Stopped', 'Disconnected')) {
+            if (-not $captureRunCompleted) {
+                Stop-Job -Job $recorderJob -ErrorAction SilentlyContinue
+            }
             Wait-Job -Job $recorderJob | Out-Null
         }
         Receive-Job -Job $recorderJob -ErrorAction SilentlyContinue | Out-Null
@@ -261,11 +388,12 @@ try {
     }
     if ($continueGameOverridden) {
         if ($continueGamePriorExists) {
-            [System.IO.File]::WriteAllBytes($continueGamePath, $continueGamePriorBytes)
+            Write-AtomicBytes $continueGamePath $continueGamePriorBytes -AllowReplace
         } elseif (Test-Path -LiteralPath $continueGamePath) {
             Remove-Item -LiteralPath $continueGamePath -Force
         }
     }
+    if ($null -ne $repauseError) { throw "A29 unconditional repause failed: $repauseError" }
 }
 
 if (-not (Test-Path -LiteralPath $captureManifest -PathType Leaf)) {
@@ -283,10 +411,18 @@ if (-not (Test-Path -LiteralPath $replay -PathType Leaf)) {
     throw "Recorder replay artifact was not produced: $replay"
 }
 
-& $Python $verifier `
+if (-not (Test-Path -LiteralPath $repauseReceipt -PathType Leaf)) {
+    throw "A29 authenticated repause receipt was not produced: $repauseReceipt"
+}
+
+& $resolvedPython $verifier `
     --capture-manifest $captureManifest `
+    --prebuilt-attestation $resolvedAttestation `
+    --static-bundle-preflight $staticBundlePreflightReceipt `
     --navigation-receipt $navigationReceipt `
+    --readiness-receipt $readinessReceipt `
     --unpause-receipt $unpauseReceipt `
+    --repause-receipt $repauseReceipt `
     --replay $replay `
     --out $verification
 if ($LASTEXITCODE -ne 0) {

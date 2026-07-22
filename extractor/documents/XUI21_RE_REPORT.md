@@ -1,6 +1,6 @@
 # XUI21 extractor RE report — fired events and popups
 
-Status: **IMPLEMENTED FAIL-CLOSED; RAW H-POPUP RUNTIME MATRIX ONLY**
+Status: **IMPLEMENTED FAIL-CLOSED; AUTONOMOUS H-POPUP ACQUISITION OWNER READY**
 
 This is the extractor-owned XUI21 record. It is intentionally separate from the rendering-law report under `replay_interface`. The pinned authority is `hoi4.exe 1.19.2.0.a729`, image base `0x140000000`, SHA-256 `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
 
@@ -75,7 +75,7 @@ receipt-bound evidence is in
 
 The executable and game-file questions are exhausted in retained evidence. The
 exact-ten replacement receipts are now bound to the three promotion consumers.
-One external promotion input remains:
+One machine-owned promotion execution remains:
 
 The deterministic retained-corpus census is recorded in
 `replay_interface/re_evidence/rendering_laws/XUI21/retained_runtime_matrix_census_20260720.json`.
@@ -85,11 +85,14 @@ save candidates resolve to 238 country, 9 news, and 3 unit-leader definitions,
 but they lack popup materialisation, resolution, timing, A25 ownership, and
 loss/authentication receipts and therefore retire no row.
 
-1. Run the pinned a729 harness matrix and retain the raw hook trace, process and
-   module identity, zero-loss telemetry, baseline/shadow reconciliation, all
-   five popup classes, player/AI/timeout/no-choice paths, repeated event id, and
-   same-hour correlation. Only that authenticated receipt may turn the two
-   collector coverage bits true.
+1. Run `extractor/native/scripts/Invoke-Xui21PopupMatrixAcquisition.ps1`. It
+   authenticates the frozen D04 save and release artifacts, seeds a real pending
+   instance in a derived engine save, starts a fresh capture process, drives all
+   20 class/path cells and four lifecycle edges, restores the active fixture
+   file byte-for-byte, invokes the existing strict runtime regrader, and writes
+   a create-new immutable join receipt. No human popup interaction remains.
+   Only the runtime hook receipt—not the fixture/action declaration—may turn
+   the two collector coverage bits true.
 The older 20-shard job IDs remain discovery aliases only; they are not the
 promotion authority. Ordinary RenderDoc frames or screenshots cannot satisfy
 the runtime gate. After the

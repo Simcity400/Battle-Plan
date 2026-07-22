@@ -1153,6 +1153,7 @@ FIELD_SOURCES: Dict[str, str] = {
     "_r2_selected_designer_identity_live": "C",
     "_r2_active_command_abilities_live": "C",
     "_r2_hud_surface_activation_live": "C",
+    "_r2_market_trade_activation_live": "C",
     "order_of_battle.extra.naval_missions_status_live": "C/D",
     "order_of_battle.fleets.*.task_forces.*.mission_details": "S",
     "order_of_battle.fleets.*.task_forces.*.path": "S",

@@ -67,3 +67,11 @@ injected collector now has an owner-runnable, evidence-only hook transaction
 and a fail-closed receipt writer/regrader; see
 `A31_ACQUISITION_OWNER_20260720.md`. This makes the live fixture collectible
 without changing either d89 activation latch.
+
+The Wave6 autonomous owner removes the remaining operator boundary. The
+centrally attested `Invoke-A31NationalFocusFixturePair.ps1` path now
+clean-launches the pinned New D04 save, authenticates the paused clock,
+discovers SWE from the exact country database/CGameState authority, executes
+the pinned focus transition, regrades both receipts, and writes a create-new
+pointer-free admission. Runtime execution and central validation remain
+required, but A31 requires no human fixture input.

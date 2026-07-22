@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import struct
 import sys
 import zipfile
 from pathlib import Path
@@ -350,6 +352,111 @@ def _offline_preparation_fixture(tmp_path: Path) -> tuple[Path, Path]:
     return exe, bindings_dir
 
 
+def _retain_process_bound_ui14_evidence(exe: Path, bindings_dir: Path) -> None:
+    """Turn the binding fixture into a prior live-prepared handoff."""
+    report_path = bindings_dir / "resolution_report.json"
+    report = SB.load_object(report_path, "fixture report")
+    process = report["process"]
+    ui14 = SB.load_object(bindings_dir / B.UI14_ENGINE_VFS_FILE, "fixture UI14")
+    evidence = bindings_dir.parent / "ui14_capture_evidence"
+    active_path = evidence / "dlc_load.active.json"
+    ready_path = evidence / "cpu_capture_ready.json"
+    trace_path = evidence / "cpu_state.jsonl"
+    manifest_path = evidence / "manifest.json"
+
+    _write_json(
+        active_path,
+        {"enabled_mods": [layer["id"] for layer in ui14["layers"]]},
+    )
+    module_base = 0x140000000
+    control_sha256 = hashlib.sha256(b"fixture UI14 control").hexdigest()
+    capture_nonce_sha256 = hashlib.sha256(
+        b"hoi4-rendering-law-cpu-capture-binding-v1\0"
+        + struct.pack(
+            "<IQQ",
+            process["pid"],
+            process["creation_filetime_utc"],
+            module_base,
+        )
+        + bytes.fromhex(control_sha256)
+    ).hexdigest()
+    _write_json(
+        ready_path,
+        {
+            "schema": "hoi4-rendering-law-cpu-capture-ready-v1",
+            "executable_sha256": SB.sha256_file(exe),
+            "process_id": process["pid"],
+            "process_creation_filetime_utc": process["creation_filetime_utc"],
+            "module_base": f"0x{module_base:X}",
+            "control_sha256": control_sha256,
+            "capture_nonce_sha256": capture_nonce_sha256,
+            "packets": ["UI14"],
+        },
+    )
+    events = [
+        {
+            "schema": "hoi4-rendering-law-cpu-events-v1",
+            "process_id": process["pid"],
+            "type": "cpu_capture_initialized",
+            "packets": ["UI14"],
+        },
+        *[
+            {
+                "schema": "hoi4-rendering-law-cpu-events-v1",
+                "process_id": process["pid"],
+                "type": "ui14_descriptor_parser_entry",
+                "descriptor_utf8": layer["id"],
+                "ordinal": layer["engine_descriptor_ordinal"],
+                "caller_return_rva": "0x2066E9E",
+            }
+            for layer in ui14["layers"]
+        ],
+    ]
+    trace_path.write_text(
+        "".join(
+            json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n"
+            for event in events
+        ),
+        encoding="utf-8",
+    )
+    artifacts = []
+    for relative, path in (
+        ("configuration/dlc_load.active.json", active_path),
+        ("cpu/cpu_capture_ready.json", ready_path),
+        ("cpu/cpu_state.jsonl", trace_path),
+    ):
+        artifacts.append(
+            {
+                "path": relative,
+                "bytes": path.stat().st_size,
+                "sha256": SB.sha256_file(path),
+            }
+        )
+    _write_json(
+        manifest_path,
+        {"artifact_count": len(artifacts), "artifacts": artifacts},
+    )
+
+    binding = PREPARE._validate_ui14_capture_binding_paths(
+        manifest_path=manifest_path,
+        active_path=active_path,
+        ready_path=ready_path,
+        trace_path=trace_path,
+        process=process,
+        ui14=ui14,
+    )
+    binding.update(
+        {
+            "manifest_file": "ui14_capture_evidence/manifest.json",
+            "active_config_file": "ui14_capture_evidence/dlc_load.active.json",
+            "ready_file": "ui14_capture_evidence/cpu_capture_ready.json",
+            "trace_file": "ui14_capture_evidence/cpu_state.jsonl",
+        }
+    )
+    report["ui14_capture_binding"] = binding
+    _write_json(report_path, report)
+
+
 def _fake_product_bundle_build(**kwargs):
     bindings_dir = Path(kwargs["bindings_dir"])
     output = Path(kwargs["output"])
@@ -381,6 +488,8 @@ def test_offline_product_modset_preparation_is_path_free_and_reproducible(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     exe, bindings = _offline_preparation_fixture(tmp_path)
+    monkeypatch.setattr(PREPARE.LR, "EXPECTED_EXE_SHA256", SB.sha256_file(exe))
+    _retain_process_bound_ui14_evidence(exe, bindings)
     monkeypatch.setattr(PREPARE.RB, "build", _fake_product_bundle_build)
 
     first = PREPARE.prepare_offline(
@@ -396,6 +505,8 @@ def test_offline_product_modset_preparation_is_path_free_and_reproducible(
     assert first["static_bundle"]["product_modset_sha256"] == first[
         "product_modset_sha256"
     ]
+    assert first["ui14_capture_evidence"]["capture_nonce_sha256"]
+    assert first["ui14_capture_evidence"] == second["ui14_capture_evidence"]
     PREPARE._reject_pointers(first)
     persisted = json.loads(
         (tmp_path / "prepared-a/product_modset_capture_ready.json").read_text(
@@ -407,6 +518,21 @@ def test_offline_product_modset_preparation_is_path_free_and_reproducible(
         assert (tmp_path / "prepared-a/bindings" / name).read_bytes() == (
             bindings / name
         ).read_bytes()
+
+
+def test_offline_product_modset_preparation_rejects_six_document_only_corpus(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    exe, bindings = _offline_preparation_fixture(tmp_path)
+    monkeypatch.setattr(PREPARE.RB, "build", _fake_product_bundle_build)
+
+    with pytest.raises(
+        LR.ResolutionError,
+        match=r"no retained process-bound UI14 evidence",
+    ):
+        PREPARE.prepare_offline(
+            exe=exe, bindings=bindings, output=tmp_path / "prepared"
+        )
 
 
 def test_offline_product_modset_preparation_rejects_cross_document_drift(

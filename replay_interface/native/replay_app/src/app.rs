@@ -766,6 +766,8 @@ pub fn run(
                         agency_upgrade_count,
                         cipher_target_count,
                         trade_license_count,
+                        xui15_surface_drawn,
+                        xui15_unavailable_reason,
                         occupation_state_count,
                         occupation_unavailable_reason,
                         battleplan_order_count,
@@ -774,11 +776,11 @@ pub fn run(
                     } => {
                         selected_present_executed = true;
                         let identity = format!(
-                            "SELECTED_PRESENT_UI\0executed\0{operation_count}\0{m02_draw_count}\0{decision_panel_item_count:?}\0{power_balance_item_count:?}\0{intelligence_panel_count:?}\0{intelligence_unavailable_reason:?}\0{agency_upgrade_count:?}\0{cipher_target_count:?}\0{trade_license_count:?}\0{occupation_state_count:?}\0{occupation_unavailable_reason:?}\0{battleplan_order_count:?}\0{battleplan_selected_order_present:?}\0{typed_consumption:?}"
+                            "SELECTED_PRESENT_UI\0executed\0{operation_count}\0{m02_draw_count}\0{decision_panel_item_count:?}\0{power_balance_item_count:?}\0{intelligence_panel_count:?}\0{intelligence_unavailable_reason:?}\0{agency_upgrade_count:?}\0{cipher_target_count:?}\0{trade_license_count:?}\0{xui15_surface_drawn}\0{xui15_unavailable_reason:?}\0{occupation_state_count:?}\0{occupation_unavailable_reason:?}\0{battleplan_order_count:?}\0{battleplan_selected_order_present:?}\0{typed_consumption:?}"
                         );
                         if reported_production_data_needs.insert(identity) {
                             eprintln!(
-                                "replay_app: production selected-Present UI executed {operation_count} exact operations including {m02_draw_count} M02 draws; same-Present typed companions A34={decision_panel_item_count:?}, A37={power_balance_item_count:?}, XUI14={intelligence_panel_count:?}, XUI14_unavailable={intelligence_unavailable_reason:?}, A30_agency={agency_upgrade_count:?}, A30_cipher={cipher_target_count:?}, X3_licences={trade_license_count:?}, XUI16={occupation_state_count:?}, XUI16_unavailable={occupation_unavailable_reason:?}, d54_orders={battleplan_order_count:?}, d54_selected_order={battleplan_selected_order_present:?}, remaining={typed_consumption:?}"
+                                "replay_app: production selected-Present UI executed {operation_count} exact operations including {m02_draw_count} M02 draws; same-Present typed companions A34={decision_panel_item_count:?}, A37={power_balance_item_count:?}, XUI14={intelligence_panel_count:?}, XUI14_unavailable={intelligence_unavailable_reason:?}, A30_agency={agency_upgrade_count:?}, A30_cipher={cipher_target_count:?}, X3_licences={trade_license_count:?}, XUI15_drawn={xui15_surface_drawn}, XUI15_unavailable={xui15_unavailable_reason:?}, XUI16={occupation_state_count:?}, XUI16_unavailable={occupation_unavailable_reason:?}, d54_orders={battleplan_order_count:?}, d54_selected_order={battleplan_selected_order_present:?}, remaining={typed_consumption:?}"
                             );
                         }
                     }

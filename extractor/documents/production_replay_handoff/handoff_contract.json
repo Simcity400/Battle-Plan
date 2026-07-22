@@ -45,13 +45,13 @@
       "admission": "EXTERNAL_AUTHENTICATED_LIVE_FRAME_REQUIRED",
       "domain_id": 84,
       "frozen_sources": {
-        "extractor/native/collector/src/lib.rs": "cb305667ed34bb0f59e719e0e18b1ee1833da0d84f7f86acaceb3c74a70439c2",
+        "extractor/native/collector/src/lib.rs": "517e2a8ec9c8abe9cc9e2e3eeb9da54f84a3edc18af998426881ada099545da9",
         "extractor/native/lanes/scripted_state_flags_variables_live/src/scripted_gui_runtime_carrier.rs": "0cec0df69d0df0beab13f1ac0ae8353141447f9640556cd26d72082c4b20aeff",
         "extractor/native/lanes/scripted_state_flags_variables_live/src/scripted_gui_runtime_compact.rs": "4d27854f434209b012b573954538524ea836a5c3cf456bd11709966b803d9d74",
-        "extractor/native/recorder_host/src/world_fold.rs": "4100cbc55af54fcd5e3a1e334b889ab9c7d5dffca0738d95a11236f2259594ab",
-        "extractor/native/recorder_host/src/world_fold/tests.rs": "428d135ebbc79ba3a00d8cb4e6a1809a27aa2a18e3cd3cd117eddc55ad802594",
+        "extractor/native/recorder_host/src/world_fold.rs": "2c90031cc4468cb166f5c65882bfd82f1f6c2c709d4cb1ebc657354c90efd252",
+        "extractor/native/recorder_host/src/world_fold/tests.rs": "e4da1defce10f64df66b84410fb290c72c12988eca33d07ad500de19a3f2b79f",
         "replay_interface/native/game_ui/src/scripted_gui_runtime.rs": "d920559c48a174fa7a71c5b3af61448b03638be132b2c81748ac2fd8de0d27d4",
-        "replay_interface/native/replay_core/src/world.rs": "b3b3f6d059ad1aabffca205191dc0865baa2b47179d02a33847a2d2460636dce"
+        "replay_interface/native/replay_core/src/world.rs": "5c2b1026a201f20667451c49c2b739e17931743c0f2df8421502cab6f47040ac"
       },
       "implementation": "COMPLETE_FAIL_CLOSED",
       "packets": [

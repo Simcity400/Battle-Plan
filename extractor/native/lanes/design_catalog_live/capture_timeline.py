@@ -26,6 +26,8 @@ import winmem  # noqa: E402
 import live_a729_acceptance as a27  # noqa: E402
 
 SCHEMA = "extractor.a27.live_heap_catalog_timeline.a729.v1"
+ACTION_SCHEMA = "extractor.a27.authenticated_transaction_request.v1"
+RELEASE_SCHEMA = "extractor.a27.authenticated_transaction_release.v1"
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -42,6 +44,13 @@ def _atomic_json(path: Path, value: object) -> None:
     os.replace(temporary, path)
 
 
+def _read_json(path: Path) -> dict:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{path.name} is not a JSON object")
+    return value
+
+
 def _timeline(pid: int) -> dict:
     return {
         "schema": SCHEMA,
@@ -56,6 +65,7 @@ def _timeline(pid: int) -> dict:
         "same_hour_recheck_count": 0,
         "transport": "first_full_then_native_row_deltas",
         "complete_sequence": False,
+        "action_windows": [],
     }
 
 
@@ -117,15 +127,131 @@ def _delta(previous: dict, current: dict) -> dict:
     return out
 
 
-def acquire(pid: int, output: Path, ready: Path, stop: Path, poll_ms: int) -> int:
+def _service_action_window(
+    process,
+    timeline: dict,
+    output: Path,
+    stop: Path,
+    action_directory: Path,
+    action_sequence: int,
+    poll_ms: int,
+) -> bool:
+    """Suspend censuses while one authenticated UI transaction crosses an hour.
+
+    A mutation after an admitted same-hour recheck would otherwise correctly
+    trip the producer's same-hour-mutation fatal.  The create-new request/ready/
+    release/resumed quartet proves that no census ran between the last sealed
+    baseline and the first census at the next hour.
+    """
+    request_path = action_directory / f"request_{action_sequence:02}.json"
+    if not request_path.exists():
+        return False
+    request = _read_json(request_path)
+    if (
+        request.get("schema") != ACTION_SCHEMA
+        or request.get("sequence") != action_sequence
+        or request.get("from_hour") != timeline["captures"][-1]["capture_hour_index"]
+        or request.get("baseline_snapshot_sha256")
+        != timeline["captures"][-1]["snapshot_sha256"]
+        or request.get("transaction")
+        not in {"rename", "edit", "obsolete", "reactivate"}
+        or not isinstance(request.get("profile_sha256"), str)
+        or len(request["profile_sha256"]) != 64
+    ):
+        raise RuntimeError(f"action request {action_sequence} identity is invalid")
+    if timeline["captures"][-1]["same_hour_rechecks"] < 1:
+        raise RuntimeError("action window requested before a sealed same-hour recheck")
+
+    ready_path = action_directory / f"ready_{action_sequence:02}.json"
+    ready_receipt = {
+        "schema": "extractor.a27.authenticated_transaction_ready.v1",
+        "sequence": action_sequence,
+        "transaction": request["transaction"],
+        "from_hour": request["from_hour"],
+        "baseline_snapshot_sha256": request["baseline_snapshot_sha256"],
+        "request_sha256": hashlib.sha256(request_path.read_bytes()).hexdigest(),
+        "profile_sha256": request["profile_sha256"],
+        "census_suspended": True,
+    }
+    _atomic_json(ready_path, ready_receipt)
+
+    release_path = action_directory / f"release_{action_sequence:02}.json"
+    while not release_path.exists():
+        if stop.exists():
+            raise RuntimeError("capture stopped inside an authenticated action window")
+        time.sleep(poll_ms / 1000.0)
+    release = _read_json(release_path)
+    expected_to_hour = request["from_hour"] + 1
+    game_state = process.u64(process.module_base + a27.CGAMESTATE_RVA)
+    observed_hour = process.u32(game_state + a27.GS_CURRENT_DATE) - a27.DATE_EPOCH_CONST
+    if (
+        release.get("schema") != RELEASE_SCHEMA
+        or release.get("sequence") != action_sequence
+        or release.get("transaction") != request["transaction"]
+        or release.get("from_hour") != request["from_hour"]
+        or release.get("to_hour") != expected_to_hour
+        or release.get("profile_sha256") != request["profile_sha256"]
+        or release.get("ready_sha256")
+        != hashlib.sha256(ready_path.read_bytes()).hexdigest()
+        or observed_hour != expected_to_hour
+    ):
+        raise RuntimeError(f"action release {action_sequence} identity/hour is invalid")
+
+    window = {
+        "sequence": action_sequence,
+        "transaction": request["transaction"],
+        "from_hour": request["from_hour"],
+        "to_hour": expected_to_hour,
+        "baseline_snapshot_sha256": request["baseline_snapshot_sha256"],
+        "profile_sha256": request["profile_sha256"],
+        "request_sha256": ready_receipt["request_sha256"],
+        "ready_sha256": release["ready_sha256"],
+        "release_sha256": hashlib.sha256(release_path.read_bytes()).hexdigest(),
+        "censuses_suspended_between_hours": True,
+    }
+    timeline["action_windows"].append(window)
+    _atomic_json(output, timeline)
+    _atomic_json(
+        action_directory / f"resumed_{action_sequence:02}.json",
+        {
+            "schema": "extractor.a27.authenticated_transaction_resumed.v1",
+            **window,
+        },
+    )
+    return True
+
+
+def acquire(
+    pid: int,
+    output: Path,
+    ready: Path,
+    stop: Path,
+    poll_ms: int,
+    action_directory: Path | None,
+) -> int:
     timeline = _timeline(pid)
     last_hour = None
     previous_snapshot = None
+    next_action_sequence = 0
     with winmem.Process(pid, "hoi4.exe") as process:
         while True:
             if stop.exists():
                 break
             try:
+                if (
+                    action_directory is not None
+                    and timeline["captures"]
+                    and _service_action_window(
+                        process,
+                        timeline,
+                        output,
+                        stop,
+                        action_directory,
+                        next_action_sequence,
+                        poll_ms,
+                    )
+                ):
+                    next_action_sequence += 1
                 game_state = process.u64(process.module_base + a27.CGAMESTATE_RVA)
                 if not a27._heap(game_state):
                     raise RuntimeError("CGameState root is not initialized")
@@ -196,6 +322,7 @@ def acquire(pid: int, output: Path, ready: Path, stop: Path, poll_ms: int) -> in
     timeline["capture_count"] = len(timeline["captures"])
     timeline["first_capture_hour_index"] = timeline["captures"][0]["capture_hour_index"]
     timeline["last_capture_hour_index"] = timeline["captures"][-1]["capture_hour_index"]
+    timeline["action_window_count"] = len(timeline["action_windows"])
     _atomic_json(output, timeline)
     return 0
 
@@ -207,6 +334,7 @@ def main(argv=None) -> int:
     parser.add_argument("--ready-file", required=True, type=Path)
     parser.add_argument("--stop-file", required=True, type=Path)
     parser.add_argument("--poll-ms", type=int, default=20)
+    parser.add_argument("--action-directory", type=Path)
     args = parser.parse_args(argv)
     if not 5 <= args.poll_ms <= 1000:
         parser.error("--poll-ms must be in 5..1000")
@@ -216,6 +344,7 @@ def main(argv=None) -> int:
         args.ready_file,
         args.stop_file,
         args.poll_ms,
+        args.action_directory,
     )
 
 

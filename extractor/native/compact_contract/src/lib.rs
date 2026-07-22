@@ -13,6 +13,7 @@ pub mod building_registry;
 pub mod calendar;
 pub mod campaign_identity;
 pub mod campaign_rollover;
+pub mod cid1_lifecycle_evidence;
 pub mod control_transport;
 pub mod dynamic_modifiers;
 pub mod early_render_content_manifest;
@@ -1369,15 +1370,17 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
     // results in CScriptedWindowManager updater order, bound to the exact
     // effective-VFS winner and authenticated static producer receipt. The d84
     // carrier, recorder fold, replay typed view, and generic UI consumer are
-    // implemented. Keep reserved and unscheduled until the fresh exact20 A38
-    // receipt and authenticated live producer frame are admitted together.
+    // implemented. Production now requests every effective scripted-GUI
+    // source payload through H4CT, compiles the exact registry in-process, and
+    // emits only the post-owner frame; missing/ambiguous consumer joins remain
+    // explicit unavailable values rather than inferred defaults.
     domain(
         84,
         "scripted_gui_runtime_live",
         "scripted_gui_runtime_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ValidatedSlice,
         true,
+        false,
         &[],
     ),
     // A40/XUI08 (2026-07-20): pointer-free selected designer identity and

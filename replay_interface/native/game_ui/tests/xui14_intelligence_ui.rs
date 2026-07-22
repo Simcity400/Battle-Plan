@@ -112,6 +112,8 @@ fn exact() -> IntelligenceUiTrace {
                     nationalities: vec!["GER".into()],
                     captured: false,
                     captured_by: None,
+                    captured_by_tag_db_id: None,
+                    capture_end_date_raw: None,
                     recruitable_pool_member: false,
                     assignment: OperativeAssignment::Operation {
                         operation_id: "op:9".into(),
@@ -129,6 +131,8 @@ fn exact() -> IntelligenceUiTrace {
                     nationalities: vec!["GER".into()],
                     captured: false,
                     captured_by: None,
+                    captured_by_tag_db_id: None,
+                    capture_end_date_raw: None,
                     recruitable_pool_member: false,
                     assignment: OperativeAssignment::Network {
                         network_id: "net:1".into(),
